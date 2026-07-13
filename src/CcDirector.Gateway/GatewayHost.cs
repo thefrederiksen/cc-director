@@ -1628,20 +1628,19 @@ public sealed class GatewayHost : IAsyncDisposable
         // rotation then agree); the entry is cleared once the Director reports OnHold=false. A dead
         // Director's entry is left alone - the /sessions fold surfaces it as "needs you" from the cached
         // roster (the dead-man's-switch), and it is dropped only when that Director leaves the fleet.
+        // Gateway Cleanup mission, Phase 2 (PR E-B3): the snooze watchdog reaches the owning Director
+        // tunnel-first (by director id) under stream mode, HTTP fallback otherwise - the same coexistence
+        // pattern as every other Gateway->Director caller, folded into one choke point. The RAW hold READ
+        // rides the "snapshot" read verb (a round-trip to the Director's own SessionDto, byte-identical to
+        // the old GetSessionAsync and so faithful to the nudge->next-sweep-clears cycle); the expiry NUDGE
+        // rides the "hold" write verb.
+        var snoozeClient = new Api.SnoozeSweepDirectorClient(
+            Registry, _streamMode ? PushedSessions : null, _client, _streamMode ? SendCommandAsync : null);
         _snoozeSweep = new Snooze.SnoozeExpirySweep(
             _snoozeRegistry,
-            // Owning Director id -> the base URL the Gateway dials, or null when it has no reachable
-            // endpoint (offline/dead) - the case the sweep leaves untouched.
-            resolveEndpoint: directorId =>
-            {
-                var d = Registry.Get(directorId);
-                return d is null ? null : Api.SessionWsProxyEndpoints.ForwardDestination(d);
-            },
-            // RAW hold state read straight from the owning Director: true = held, false = not held,
-            // null = the session is absent there or the read did not land.
-            readOnHold: async (endpoint, sid, ct) => (await _client.GetSessionAsync(endpoint, sid, ct))?.OnHold,
-            // The expiry nudge: forward a hold=false to the owning Director.
-            forwardUnhold: (endpoint, sid, ct) => _client.SetHoldAsync(endpoint, sid, new Contracts.HoldRequest { OnHold = false }, ct),
+            isDirectorReachable: snoozeClient.IsReachable,
+            readOnHold: snoozeClient.ReadOnHoldAsync,
+            forwardUnhold: snoozeClient.NudgeUnholdAsync,
             utcNow: () => DateTime.UtcNow);
         _snoozeSweep.Start();
 
