@@ -20,7 +20,6 @@ import {
   type PendingCarModeTurn,
 } from "./pendingTurnStore";
 import {
-  AMBIGUOUS_HELD_MESSAGE,
   CONNECTION_DOWN_MESSAGE,
   classifyHeldTurn,
   HOLDING_MESSAGE,
@@ -154,16 +153,15 @@ export interface CarModeView {
   /** The honest, saved-not-lost line to show/say for the current held state, or null when nothing is held.
    *  Distinct from `error` (a loud red failure): holding is a calm "saved, will send" state. */
   holdMessage: string | null;
-  /** The oldest held turn that cannot be auto-fired and needs the owner's explicit choice, or null.
-   *  `reason` is "stale" (never sent to the brain but older than the auto-fire cap - safe to send on the
-   *  owner's yes) or "ambiguous" (already sent to the brain, result unknown - can only be discarded in
-   *  Phase 4a, since a blind resend could act twice; Phase 4b's idempotency key makes resend safe). */
-  askOwnerTurn: { id: string; transcript: string; reason: "stale" | "ambiguous" } | null;
+  /** The oldest held turn that is too old to fire blind (past the ~30-minute staleness cap) and needs the
+   *  owner's explicit send/discard, or null. Since Phase 4b's server idempotency makes any held turn safe
+   *  to auto-retry, staleness is the only reason a turn waits for the owner. */
+  askOwnerTurn: { id: string; transcript: string } | null;
   /** True once the hands-free end-phrase watch has failed to reach the Gateway several times in a row, so
    *  the page can show the connection is down (paired with the spoken CONNECTION_DOWN cue). */
   connectionDown: boolean;
-  /** Owner explicitly sends a "stale" held turn now (safe: it never reached the brain). A no-op for an
-   *  ambiguous held turn (resend is unsafe until Phase 4b) or an unknown id. */
+  /** Owner explicitly sends a stale held turn now. Safe via Phase 4b's server idempotency (it acts at most
+   *  once whether or not it was sent before). A no-op for an unknown id. */
   sendHeldTurn: (id: string) => void;
   /** Owner explicitly discards a held turn, dropping its saved audio for good. */
   discardHeldTurn: (id: string) => void;
@@ -187,7 +185,10 @@ export interface CarModeView {
 /** Options: the brain responder is INJECTED so Phase 1 passes a canned acknowledgement and Phase 2 passes
  *  the real POST /carmode/turn call, over the identical turn-taking machine. */
 export interface UseCarModeOptions {
-  respond: (command: string, signal: AbortSignal) => Promise<CarModeReply>;
+  /** The injected brain call. `idempotencyKey` (the durable turn record id, Phase 4b) is passed so the
+   *  page can forward it to POST /carmode/turn as the Idempotency-Key, making a re-driven turn act at most
+   *  once. It is undefined only for the Phase 1 stand-in / when no durable record backs the turn. */
+  respond: (command: string, signal: AbortSignal, idempotencyKey?: string) => Promise<CarModeReply>;
   /** The spoken sign-off phrase that ends the owner's turn hands-free (default "over and out"). The page
    *  passes the owner's configured phrase; when the rolling end-phrase watch hears the transcript end with
    *  it, the turn is taken, exactly as tapping the "Over and out" button does. The button remains the
@@ -654,40 +655,12 @@ export function useCarMode(options: UseCarModeOptions): CarModeView {
     driveTickRef.current();
   }, [stopThinkingCue, speakLocal, refreshHeldTurns, enterListening]);
 
-  // Clear the brain-sent mark on a held record back to auto-retriable. Used when a brain call failed for a
-  // reason that PROVES no action was taken (a money refusal: no credits means no model call and no tools),
-  // so the saved turn is safe to auto-retry when the cause clears - it is NOT the ambiguous "may have
-  // acted" case. Best-effort: a store hiccup just leaves the record marked ambiguous (still safe: it holds
-  // for the owner rather than firing blind).
-  const markAutoRetriable = useCallback(async (id: string) => {
-    try {
-      const r = await getPendingTurn(id);
-      if (r !== null) await savePendingTurn({ ...r, brainSent: false });
-    } catch {
-      // leave it as-is; the worst case is a held-for-owner turn instead of an auto one - never a double act
-    }
-    await refreshHeldTurns();
-  }, [refreshHeldTurns]);
-
-  // Enter the HELD-FOR-OWNER state after a brain-call failure whose result is unknown (the durable record
-  // is brainSent=true). It may have acted, so it is NOT auto-retried (a blind resend could act twice); it
-  // waits for the owner to discard it (Phase 4a) - Phase 4b's idempotency key will make an automatic
-  // resend safe. Say + show the honest ambiguous line and hand the microphone back.
-  const holdForOwner = useCallback(async () => {
-    stopThinkingCue();
-    setCaptureState("held");
-    setHoldMessage(AMBIGUOUS_HELD_MESSAGE);
-    speakLocal(AMBIGUOUS_HELD_MESSAGE);
-    await refreshHeldTurns();
-    await enterListening();
-  }, [stopThinkingCue, speakLocal, refreshHeldTurns, enterListening]);
-
   // Re-drive ONE held command-audio record through the whole pipeline (transcribe -> brain -> speak),
   // exactly like a live turn but announced with the "Back online" prefix so the owner knows this is the
   // delayed answer to a request he made earlier (Architect Q3). The durable record is deleted ONLY after
   // the brain call returns a definitive success (the turn is owned server-side); a failure keeps the audio
-  // and holds. brainSent is flipped true on the record right before the brain call, so a failure AFTER
-  // that point becomes held-for-owner (ambiguous), while a failure at transcribe stays auto-retriable.
+  // and holds, staying auto-retriable. The brain call carries the record id as the Idempotency-Key (Phase
+  // 4b), so even if a prior attempt already reached the brain, this re-drive acts at most once.
   const driveHeldTurn = useCallback(
     async (rec: PendingCarModeTurn) => {
       const recorder = recorderRef.current;
@@ -705,7 +678,6 @@ export function useCarMode(options: UseCarModeOptions): CarModeView {
       thinkingCueStopRef.current = startThinkingCue();
       const controller = new AbortController();
       abortRef.current = controller;
-      let sentBrain = false;
       try {
         // Stop + release the live microphone before Thinking/Speaking (v3 rule), so the recovered reply
         // plays with getUserMedia released, just like a live reply.
@@ -740,16 +712,17 @@ export function useCarMode(options: UseCarModeOptions): CarModeView {
 
         setTranscript(command);
         setLastHeard(command);
-        // Cross the brain boundary: a failure from here is ambiguous (may have acted).
+        // Record that the brain call is being sent (kept for diagnostics; no longer gates the retry now
+        // that Phase 4b's server idempotency makes an already-sent turn safe to auto-retry).
         try {
           await savePendingTurn({ ...rec, transcript: command, brainSent: true });
         } catch {
-          // durable update failed; the in-memory sentBrain flag below still routes the failure correctly
+          // durable update failed; harmless - the brain call below still carries the Idempotency-Key
         }
-        sentBrain = true;
         turnMetricsRef.current = null; // re-drives are recovery, not part of the live performance telemetry
 
-        const answer = await respond(command, controller.signal);
+        // Pass the record id as the Idempotency-Key so a turn that already reached the brain acts at most once.
+        const answer = await respond(command, controller.signal, rec.id);
         if (controller.signal.aborted) return;
         // The brain owns the turn: delete the durable record so it can never be re-driven / double-acted.
         await deletePendingTurn(rec.id);
@@ -772,26 +745,21 @@ export function useCarMode(options: UseCarModeOptions): CarModeView {
         if (controller.signal.aborted) return;
         stopThinkingCue();
         console.log(`[CarMode] re-drive of a held turn failed: ${err instanceof Error ? err.message : String(err)}`);
-        // Keep the audio. A money refusal (402) proves nothing acted, so keep it auto-retriable and let the
-        // NEXT foreground / online / open re-drive it (no aggressive loop that a fast retry cannot fix). If
-        // the brain had already been sent for a non-credits reason, it is now ambiguous (held for the
-        // owner); otherwise the transcribe never reached the brain and it stays auto-retriable.
+        // Keep the audio; the turn stays held and auto-retriable (server idempotency makes the retry safe).
+        // A money refusal (402) is shown as the shared credits notice and NOT re-kicked immediately (a fast
+        // retry cannot conjure credits - the next foreground / online re-drives it); any other failure holds
+        // and kicks the retry cadence.
+        setHoldMessage(HOLDING_MESSAGE);
+        await refreshHeldTurns();
+        await enterListening();
         if (err instanceof CreditsError) {
-          await markAutoRetriable(rec.id);
-          setHoldMessage(HOLDING_MESSAGE);
-          await refreshHeldTurns();
-          await enterListening();
-        } else if (sentBrain) {
-          await holdForOwner();
+          announceError(err.message);
         } else {
-          setHoldMessage(HOLDING_MESSAGE);
-          await refreshHeldTurns();
-          await enterListening();
           driveTickRef.current();
         }
       }
     },
-    [refreshHeldTurns, enterListening, respond, speakAndPlay, setPhaseBoth, stopThinkingCue, holdForOwner, markAutoRetriable],
+    [refreshHeldTurns, enterListening, respond, speakAndPlay, setPhaseBoth, stopThinkingCue, announceError],
   );
 
   // Schedule the next automatic drive attempt on the retry cadence (hard for the first hour since the
@@ -908,7 +876,8 @@ export function useCarMode(options: UseCarModeOptions): CarModeView {
           return;
         }
         const brainStart = performance.now();
-        const answer = await respond(trimmed, controller.signal);
+        // Pass the durable record id as the Idempotency-Key (Phase 4b) so a re-driven turn acts at most once.
+        const answer = await respond(trimmed, controller.signal, recordId ?? undefined);
         // The brain owns the turn: delete the durable record so it can never be re-driven / double-acted.
         if (recordId !== null) {
           try {
@@ -943,26 +912,26 @@ export function useCarMode(options: UseCarModeOptions): CarModeView {
         await speakAndPlay(spoken, controller.signal);
       } catch (err) {
         if (controller.signal.aborted) return; // stop()/interrupt aborted this turn on purpose
-        // The brain call failed. A money refusal (402) proves nothing acted (no credits = no model call =
-        // no tools), so it is NOT ambiguous: announce the shared credits notice, keep the saved turn
-        // auto-retriable (it completes when credits return, on the next foreground / online), and hand the
-        // microphone back. Any OTHER failure with a durable record was marked brainSent=true, so its result
-        // is unknown - HOLD it for the owner (a blind resend could act twice). Without a durable record,
-        // fall back to the loud failure.
+        // The brain call failed. With a durable record the turn is HELD and auto-retriable: Phase 4b's
+        // server idempotency makes the retry safe (it acts at most once), so there is no "ambiguous,
+        // discard-only" case any more. A money refusal (402) shows the shared credits notice and is not
+        // re-kicked immediately (a fast retry cannot conjure credits - a later foreground / online
+        // re-drives it); any other failure holds and the driver retries on the cadence. Without a durable
+        // record (no store) fall back to the loud failure.
         if (recordId !== null && err instanceof CreditsError) {
-          await markAutoRetriable(recordId);
-          announceError(err.message);
           setHoldMessage(HOLDING_MESSAGE);
+          await refreshHeldTurns();
           await enterListening();
+          announceError(err.message);
         } else if (recordId !== null) {
-          await holdForOwner();
+          await enterHolding();
         } else {
           announceError(gatewayErrorMessage(err));
           await enterListening();
         }
       }
     },
-    [respond, announceError, enterListening, speakAndPlay, setPhaseBoth, holdForOwner, refreshHeldTurns, markAutoRetriable],
+    [respond, announceError, enterListening, speakAndPlay, setPhaseBoth, enterHolding, refreshHeldTurns],
   );
 
   // Transcribe the audio captured so far and take the turn. This is the touch "Over and out" path, the
@@ -1193,11 +1162,10 @@ export function useCarMode(options: UseCarModeOptions): CarModeView {
   // capture stream's AnalyserNode (display only) and returns 0 when the microphone is not capturing.
   const getMicLevel = useCallback(() => recorderRef.current?.level() ?? 0, []);
 
-  // Owner explicitly sends a "stale" held turn now (Architect Q2: a turn older than the auto-fire cap is
-  // surfaced for a yes). Safe ONLY because a stale held turn has brainSent=false - it never reached the
-  // brain, so this is a first brain call, no double-action. An ambiguous held turn (brainSent=true) is a
-  // no-op here: resend is unsafe until Phase 4b, so the UI only offers discard for it. Only drives while
-  // the microphone is the owner's and no other drive is running.
+  // Owner explicitly sends a stale held turn now (a turn older than the auto-fire cap is surfaced for a
+  // yes). Safe regardless of whether it was sent to the brain before: Phase 4b's server idempotency (the
+  // record id is the Idempotency-Key) makes the re-drive act at most once. Only drives while the microphone
+  // is the owner's and no other drive is running.
   const sendHeldTurn = useCallback(
     async (id: string) => {
       if (drivingRef.current || phaseRef.current !== "listening") return;
@@ -1207,7 +1175,7 @@ export function useCarMode(options: UseCarModeOptions): CarModeView {
       } catch {
         return;
       }
-      if (rec === null || rec.brainSent) return; // gone, or ambiguous (resend unsafe in Phase 4a)
+      if (rec === null) return; // gone (already delivered or discarded)
       drivingRef.current = true;
       try {
         await driveHeldTurn(rec);
@@ -1391,19 +1359,15 @@ export function useCarMode(options: UseCarModeOptions): CarModeView {
     };
   }, []);
 
-  // Derive the owner-facing held state from the store mirror. The oldest turn needing an explicit choice
-  // is surfaced as askOwnerTurn, tagged "stale" (never sent, safe to send on a yes) or "ambiguous" (sent
-  // to the brain, result unknown, discard-only in Phase 4a).
+  // Derive the owner-facing held state from the store mirror. The oldest turn past the staleness cap is
+  // surfaced as askOwnerTurn for an explicit send/discard (Phase 4b: staleness is the only reason a held
+  // turn waits for the owner, since server idempotency makes any retry safe).
   const now = Date.now();
   const askOwnerRec = heldTurns
     .filter((r) => classifyHeldTurn(r, now) === "ask-owner")
     .sort((a, b) => a.createdAt - b.createdAt)[0];
   const askOwnerTurn = askOwnerRec
-    ? {
-        id: askOwnerRec.id,
-        transcript: askOwnerRec.transcript ?? "",
-        reason: askOwnerRec.brainSent ? ("ambiguous" as const) : ("stale" as const),
-      }
+    ? { id: askOwnerRec.id, transcript: askOwnerRec.transcript ?? "" }
     : null;
 
   return {

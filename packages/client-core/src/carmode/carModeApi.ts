@@ -101,10 +101,14 @@ export interface CarModeTurnResult {
  * references ("the latest one") resolve without the browser sending any history. A 402 is the shared
  * credits error; any other non-2xx throws a specific GatewayError so the failure is spoken, never silent.
  */
-export async function carModeTurn(text: string, signal?: AbortSignal): Promise<CarModeTurnResult> {
+export async function carModeTurn(text: string, idempotencyKey?: string, signal?: AbortSignal): Promise<CarModeTurnResult> {
+  // Offline resilience Phase 4b (#1427): send the durable command-audio record id as the Idempotency-Key
+  // so a turn re-driven after a dead zone is deduped server-side - the brain acts at most once, and the
+  // retry gets the cached result. Omitted on a first-ever call is fine; the server just runs it and caches.
+  const idempotencyHeader: Record<string, string> = idempotencyKey ? { "Idempotency-Key": idempotencyKey } : {};
   const res = await gatewayFetch("/carmode/turn", {
     method: "POST",
-    headers: { "Content-Type": "application/json", Accept: "application/json", ...authHeaders() },
+    headers: { "Content-Type": "application/json", Accept: "application/json", ...idempotencyHeader, ...authHeaders() },
     body: JSON.stringify({ text }),
     signal,
   });

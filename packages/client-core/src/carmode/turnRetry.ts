@@ -20,17 +20,18 @@ const THROTTLED_DELAY_MS = 5 * 60 * 1000; // after the hard hour: one slow attem
 export const STALE_TURN_MS = 30 * 60 * 1000;
 
 /** How a held turn should be handled when connectivity returns.
- *  - "auto": the brain call never started AND the turn is fresh, so re-driving it is a safe first brain
- *    call - auto-retry it.
- *  - "ask-owner": either the brain call was already sent (its result is unknown, so a blind retry could
- *    double-act - held until Phase 4b's idempotency key makes it safe) OR the turn is too old to fire
- *    blind. Surface it to the owner for an explicit send/discard. */
+ *  - "auto": auto-retry it. Phase 4b made this safe regardless of whether the brain call was already sent:
+ *    the Gateway now dedupes by the turn's Idempotency-Key, so a re-drive either is a fresh first call (the
+ *    turn never reached the server) or returns the cached result (it did) - it ACTS at most once either way.
+ *  - "ask-owner": the turn is too old to fire blind (past the staleness cap). Surface it to the owner for
+ *    an explicit send/discard - the world has moved on, so a stale action should not fire unprompted. */
 export type HeldDisposition = "auto" | "ask-owner";
 
-/** Decide how a held turn is handled on reconnect (Architect decisions Q1/Q2). The `brainSent` flag is
- *  the safety boundary; the staleness cap is the second gate. */
-export function classifyHeldTurn(rec: Pick<PendingCarModeTurn, "brainSent" | "createdAt">, now: number): HeldDisposition {
-  if (rec.brainSent) return "ask-owner"; // already sent to the brain; result unknown; do not auto-fire
+/** Decide how a held turn is handled on reconnect. Since Phase 4b's server idempotency makes an
+ *  already-sent turn safe to auto-retry (it acts at most once), the ONLY gate is the staleness cap: a turn
+ *  older than it asks the owner; everything fresher auto-retries. (The `brainSent` flag is still recorded
+ *  for diagnostics, but no longer gates the retry.) */
+export function classifyHeldTurn(rec: Pick<PendingCarModeTurn, "createdAt">, now: number): HeldDisposition {
   if (now - rec.createdAt >= STALE_TURN_MS) return "ask-owner"; // too old to fire blind
   return "auto";
 }
@@ -56,11 +57,6 @@ export const HOLDING_MESSAGE =
  *  answer is the delayed one he asked for earlier, not a reply to something he just said (Architect Q3:
  *  always audibly acknowledge a landed held turn, briefly). */
 export const RECOVERY_PREFIX = "Back online. ";
-
-/** Spoken + shown when a turn was already sent to the brain but its result is unknown, so it is held for
- *  the owner rather than auto-fired. Honest about the uncertainty. */
-export const AMBIGUOUS_HELD_MESSAGE =
-  "I sent your last request but couldn't confirm it went through, so I've left it alone to avoid doing it twice. Say or tap discard to clear it.";
 
 /** Spoken once when the hands-free end-phrase watch has failed to reach the Gateway several times in a
  *  row, so the owner is not left silently wondering why his "over and out" never lands (the silent-stall

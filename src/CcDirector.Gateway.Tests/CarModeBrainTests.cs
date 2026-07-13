@@ -852,4 +852,92 @@ public sealed class CarModeBrainTests
         // The most recent exchange is kept.
         Assert.Equal("a19", history[^1].Content);
     }
+
+    // ---- Phase 4b: the idempotency + single-flight turn cache (issue #1427) ----
+    // The mission guarantee: a turn retried with the SAME client turn key ACTS and APPENDS to the
+    // conversation AT MOST ONCE, so an already-sent turn whose result was lost in a dead zone can auto-retry
+    // safely. Distinct keys act independently; a brain FAILURE evicts the key so a transient error recovers.
+
+    [Fact]
+    public async Task TurnCache_DuplicateKey_ActsOnceAndAppendsOnce()
+    {
+        var fleet = new FakeFleet();
+        var store = new CarModeConversationStore();
+        // One turn: start a session, then speak. The scripted chat has exactly the two rounds for ONE run;
+        // if the cache wrongly re-ran the brain, the script would be exhausted (throw) and the fleet would
+        // start twice - so this test fails loudly on any dedupe break.
+        var chat = new ScriptedChat(
+            new CarModeAssistantTurn(null, new[] { Call("start_session", "{\"repo\":\"devthrottle\"}") }),
+            Speak("Started a session in the devthrottle repo."));
+        var brain = new CarModeBrain(chat, fleet, store, new CarModePendingStore(_ => { }), new CarModeSubjectStore(_ => { }), _ => { });
+        var cache = new CarModeTurnCache(_ => { });
+
+        var r1 = await cache.GetOrRunAsync("dev", "turn-1", () => brain.RunTurnAsync("dev", "start a session in devthrottle", CancellationToken.None));
+        var r2 = await cache.GetOrRunAsync("dev", "turn-1", () => brain.RunTurnAsync("dev", "start a session in devthrottle", CancellationToken.None));
+
+        Assert.Single(fleet.StartedRepos);                 // the fleet action fired EXACTLY once
+        Assert.Equal("devthrottle", fleet.StartedRepos[0]);
+        Assert.Equal(2, store.GetHistory("dev").Count);    // ONE exchange appended (user + assistant), not two
+        Assert.Equal("Started a session in the devthrottle repo.", r1.Spoken);
+        Assert.Equal(r1.Spoken, r2.Spoken);                // the duplicate got the SAME cached result
+    }
+
+    [Fact]
+    public async Task TurnCache_DistinctKeys_ActTwice()
+    {
+        var fleet = new FakeFleet();
+        var store = new CarModeConversationStore();
+        var chat = new ScriptedChat(
+            new CarModeAssistantTurn(null, new[] { Call("start_session", "{\"repo\":\"devthrottle\"}") }),
+            Speak("Started one."),
+            new CarModeAssistantTurn(null, new[] { Call("start_session", "{\"repo\":\"devthrottle\"}") }),
+            Speak("Started two."));
+        var brain = new CarModeBrain(chat, fleet, store, new CarModePendingStore(_ => { }), new CarModeSubjectStore(_ => { }), _ => { });
+        var cache = new CarModeTurnCache(_ => { });
+
+        await cache.GetOrRunAsync("dev", "key-A", () => brain.RunTurnAsync("dev", "start a session", CancellationToken.None));
+        await cache.GetOrRunAsync("dev", "key-B", () => brain.RunTurnAsync("dev", "start another", CancellationToken.None));
+
+        Assert.Equal(2, fleet.StartedRepos.Count);         // two distinct turn keys act independently
+        Assert.Equal(4, store.GetHistory("dev").Count);    // two exchanges appended
+    }
+
+    [Fact]
+    public async Task TurnCache_BrainThrows_EvictsKeySoRetryReRuns()
+    {
+        // A brain exception must NOT be cached: the key is evicted so a transient failure can recover on the
+        // next retry (caching the failure would trap the error until the TTL).
+        var cache = new CarModeTurnCache(_ => { });
+        var calls = 0;
+        Func<Task<CarModeTurnResponse>> run = () =>
+        {
+            calls++;
+            return Task.FromException<CarModeTurnResponse>(new InvalidOperationException("transient"));
+        };
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => cache.GetOrRunAsync("dev", "k", run));
+        await Assert.ThrowsAsync<InvalidOperationException>(() => cache.GetOrRunAsync("dev", "k", run));
+
+        Assert.Equal(2, calls);                            // evicted after the first failure -> the retry re-ran
+    }
+
+    [Fact]
+    public async Task TurnCache_SuccessIsRetainedForTheKey()
+    {
+        var cache = new CarModeTurnCache(_ => { });
+        var calls = 0;
+        Func<Task<CarModeTurnResponse>> run = () =>
+        {
+            calls++;
+            return Task.FromResult(new CarModeTurnResponse { Spoken = "done" });
+        };
+
+        var a = await cache.GetOrRunAsync("dev", "k", run);
+        var b = await cache.GetOrRunAsync("dev", "k", run);
+
+        Assert.Equal(1, calls);                            // ran once; the duplicate returned the cached result
+        Assert.Equal("done", a.Spoken);
+        Assert.Same(a, b);                                 // the very same cached response object
+        Assert.Equal(1, cache.Count());
+    }
 }
