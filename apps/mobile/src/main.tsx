@@ -21,6 +21,7 @@ import { ensurePushSubscribed } from "@devthrottle/client-core/push/register";
 import { CreditsNotice } from "./components/CreditsNotice";
 import { ConnectionBanner } from "./components/ConnectionBanner";
 import { useScreenWakeLock } from "./hooks/useScreenWakeLock";
+import { useKeepWarm } from "@devthrottle/client-core/net/useKeepWarm";
 import { resumePendingDictations } from "@devthrottle/client-core/dictation/backgroundSend";
 import { RouteRecoveryBoundary, RootLayout } from "./components/StaleShellRecovery";
 import { StatusPill } from "./components/StatusPill";
@@ -40,6 +41,8 @@ function RequireDeviceKey() {
 // routes, the lock is acquired once (a single sentinel), not once per page.
 function GatedLayout() {
   useScreenWakeLock();
+  // Keep-warm heartbeat (P2): hold the direct LAN path open during active use so it never idles back to the relay.
+  useKeepWarm();
   // Resume any recorded-but-unsent dictation once the phone is enrolled (issue #1006): a clip whose
   // upload was interrupted by a refresh / crash / dropped connection is re-driven to the session here.
   React.useEffect(() => {

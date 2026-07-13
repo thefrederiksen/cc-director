@@ -1,4 +1,5 @@
 import { NavLink, Outlet, useLocation } from "react-router-dom";
+import { useKeepWarm } from "@devthrottle/client-core/net/useKeepWarm";
 import { CockpitStatusPill } from "./network/CockpitStatusPill";
 
 // The desktop layout frame (epic #967): a two-region shell - a left rail (navigation) and the main
@@ -65,6 +66,8 @@ const NAV_SECTIONS: ReadonlyArray<{ title: string; items: ReadonlyArray<NavItem>
 
 export function AppShell() {
   const location = useLocation();
+  // Keep-warm heartbeat (P2): hold the direct LAN path open during active use.
+  useKeepWarm();
 
   return (
     <div className="shell">
