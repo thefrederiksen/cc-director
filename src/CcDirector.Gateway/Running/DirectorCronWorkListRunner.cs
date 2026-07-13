@@ -65,6 +65,7 @@ public sealed class DirectorCronWorkListRunner : ICronWorkListRunner
             return CronWorkListOutcome.NoSuchDirector;
         }
         var endpoint = target.Endpoint;
+        var directorId = target.DirectorId ?? "";
 
         var machineKey = string.IsNullOrWhiteSpace(machine) ? endpoint : machine;
         if (_manager.TryAdmit(machineKey, listName) == WorkListRunnerManager.AdmitResult.RefusedMachineBusy)
@@ -85,7 +86,7 @@ public sealed class DirectorCronWorkListRunner : ICronWorkListRunner
             // unobserved, and the machine slot is always released.
             try
             {
-                await _launcher.LaunchAsync(endpoint, repoPath, listName, consumer, ct);
+                await _launcher.LaunchAsync(directorId, endpoint, repoPath, listName, consumer, ct);
                 FileLog.Write($"[DirectorCronWorkListRunner] job={job.Id}: drain complete list={listName}");
             }
             catch (Exception ex)

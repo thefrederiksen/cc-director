@@ -553,15 +553,23 @@ public sealed class GatewayHost : IAsyncDisposable
             () => Registry.ListDirectors(),
             new Running.RelayDirectorLauncher(Port, Token));
         // The single resolve-then-create path shared by the cron firing engine and the interactive
-        // POST /machines/{machine}/sessions relay ("start a session on another computer").
-        _machineSessionSpawner = new Running.MachineSessionSpawner(_client, cronTargetResolver);
+        // POST /machines/{machine}/sessions relay ("start a session on another computer"). Gateway Cleanup
+        // Phase 2 (PR E-B2): both the spawner and the work-list drain driver ride the tunnel first under
+        // stream mode (sendCommand non-null), falling back to the HTTP dial otherwise.
+        Api.DirectorCommandRouter.SendDirectorCommandAsync? spawnSendCommand = _streamMode ? SendCommandAsync : null;
+        _machineSessionSpawner = new Running.MachineSessionSpawner(_client, cronTargetResolver, spawnSendCommand);
         // A work-list cron job (#484) drains a named list via the shipped #274 runner on the resolved
-        // Director, launching the drain in the background on the shared runner manager.
+        // Director, launching the drain in the background on the shared runner manager. The tunnel-aware
+        // driver factory closes over the stream hook so a cron drain creates + reads sessions down the tunnel.
         var cronWorkListRunner = new Running.DirectorCronWorkListRunner(
             _workLists,
             cronTargetResolver,
             _runnerManager,
-            new Running.DirectorWorkListDrainLauncher(_workLists, _client));
+            new Running.DirectorWorkListDrainLauncher(
+                _workLists,
+                _client,
+                (directorId, endpoint, repoPath) =>
+                    new Running.DirectorImplSessionDriver(_client, directorId, endpoint, repoPath, spawnSendCommand)));
         // Run-complete notifications (issue #622, the deferred "notify on completion" piece of #479).
         // The notifier rides the EXISTING fleet channel - the per-Director doorbell event ring
         // (DirectorEvents, #330) observed at GET /directors/{id}/events - and optionally POSTs the same
@@ -1498,7 +1506,8 @@ public sealed class GatewayHost : IAsyncDisposable
         // watched to its IMPL-LOOP-TERMINAL sentinel (child 1, #272) before advancing. All runner
         // logic lives HERE at the Gateway; the Director host gains nothing (criterion 7). The
         // same-machine single-drain guard (criterion 8) lives on the shared runner manager.
-        WorkListRunnerEndpoints.Map(_app, _workLists, Registry, _client, _runnerManager);
+        WorkListRunnerEndpoints.Map(_app, _workLists, Registry, _client, _runnerManager,
+            _streamMode ? SendCommandAsync : null);
 
         // Issue #331: launcher registration + cross-machine Director lifecycle relay.
         // Launchers POST /launchers/register on startup; relay callers POST

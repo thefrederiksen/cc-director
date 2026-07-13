@@ -1,4 +1,5 @@
 using CcDirector.Core.Utilities;
+using CcDirector.Gateway.Api;
 using CcDirector.Gateway.Contracts;
 using CcDirector.Gateway.Discovery;
 
@@ -9,27 +10,38 @@ namespace CcDirector.Gateway.Running;
 /// <see cref="DirectorEndpointClient"/> (issue #274). It uses the SAME session-create + seed-prompt
 /// path the Cockpit/Director already use (ASSUMPTION confirmed: <see cref="NewSessionRequest.PrePrompt"/>
 /// is the seed channel - the Director dispatches it once the agent reaches Idle), and reads the
-/// session transcript with <c>GET /sessions/{sid}/buffer</c>. No new Director surface is introduced.
+/// session transcript with the session buffer. No new Director surface is introduced.
+///
+/// Gateway Cleanup mission, Phase 2 (PR E-B2): both operations (create + buffer) now route through the
+/// tunnel-first <see cref="SessionVerbClient"/> - the resolved Director is reached DOWN its stream when
+/// stream mode is on and only over HTTP as the byte-identical fallback (stream mode off, or the Director
+/// has no active stream). The driver holds the Director id (for the tunnel) and the control endpoint (for
+/// the fallback) and binds both to one <see cref="SessionVerbClient"/> via
+/// <see cref="SessionVerbClient.ForDirector"/>.
 /// </summary>
 public sealed class DirectorImplSessionDriver : IImplSessionDriver
 {
-    private readonly DirectorEndpointClient _client;
-    private readonly string _endpoint;
-    private readonly string _repoPath;
+    private readonly SessionVerbClient _verb;
 
-    /// <param name="client">The Gateway's shared Director client.</param>
+    /// <param name="client">The Gateway's shared Director client (the HTTP fallback leg).</param>
+    /// <param name="directorId">The target Director's id (the tunnel leg).</param>
     /// <param name="endpoint">Control endpoint (base URL, no trailing slash) of the target Director.</param>
     /// <param name="repoPath">Absolute repo path the seeded implementation session opens in.</param>
-    public DirectorImplSessionDriver(DirectorEndpointClient client, string endpoint, string repoPath)
+    /// <param name="sendCommand">The send-a-command-down-the-stream hook; non-null only under stream mode.</param>
+    internal DirectorImplSessionDriver(DirectorEndpointClient client, string directorId, string endpoint,
+        string repoPath, DirectorCommandRouter.SendDirectorCommandAsync? sendCommand)
     {
-        _client = client ?? throw new ArgumentNullException(nameof(client));
+        if (client is null)
+            throw new ArgumentNullException(nameof(client));
         if (string.IsNullOrWhiteSpace(endpoint))
             throw new ArgumentException("director endpoint is required", nameof(endpoint));
         if (string.IsNullOrWhiteSpace(repoPath))
             throw new ArgumentException("repo path is required", nameof(repoPath));
-        _endpoint = endpoint.TrimEnd('/');
+        _verb = SessionVerbClient.ForDirector(client, directorId, endpoint, sendCommand);
         _repoPath = repoPath;
     }
+
+    private readonly string _repoPath;
 
     public async Task<(string? sessionId, string? error)> StartImplementationSessionAsync(
         string itemId, string seedPrompt, CancellationToken ct)
@@ -37,7 +49,7 @@ public sealed class DirectorImplSessionDriver : IImplSessionDriver
         if (string.IsNullOrWhiteSpace(seedPrompt))
             throw new ArgumentException("seed prompt is required", nameof(seedPrompt));
 
-        FileLog.Write($"[DirectorImplSessionDriver] start: endpoint={_endpoint}, item={itemId}, seed={seedPrompt}");
+        FileLog.Write($"[DirectorImplSessionDriver] start: director={_verb.Director.DirectorId}, item={itemId}, seed={seedPrompt}");
 
         var req = new NewSessionRequest
         {
@@ -49,7 +61,7 @@ public sealed class DirectorImplSessionDriver : IImplSessionDriver
             PrePrompt = seedPrompt,
         };
 
-        var (ok, body, error) = await _client.CreateSessionAsync(_endpoint, req, ct);
+        var (ok, body, error) = await _verb.CreateSessionAsync(req, ct);
         if (!ok || body is null || string.IsNullOrEmpty(body.SessionId))
         {
             FileLog.Write($"[DirectorImplSessionDriver] start FAILED: item={itemId}, error={error}");
@@ -62,7 +74,7 @@ public sealed class DirectorImplSessionDriver : IImplSessionDriver
 
     public async Task<string?> ReadTranscriptAsync(string sessionId, CancellationToken ct)
     {
-        var buffer = await _client.GetBufferAsync(_endpoint, sessionId, ct: ct);
+        var buffer = await _verb.GetBufferAsync(sessionId, lines: null, raw: false, since: null, ct);
         return buffer?.Text;
     }
 }

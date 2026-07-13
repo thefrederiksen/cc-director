@@ -111,6 +111,7 @@ public sealed class CronWorkListTriggerTests : IDisposable
         // The drain runs in the background; wait until the launcher is invoked.
         await launcher.Entered.Task.WaitAsync(TimeSpan.FromSeconds(10));
         Assert.Equal("Tonight", launcher.LastListName);
+        Assert.Equal("machineA", launcher.LastDirectorId);   // the resolved Director id is threaded to the launcher (tunnel leg)
         Assert.StartsWith("cron:cj_test:", launcher.LastConsumer);
         Assert.Equal("Tonight", manager.ActiveList("workstation-A")); // the machine's slot holds the "Tonight" drain
 
@@ -133,9 +134,9 @@ public sealed class CronWorkListTriggerTests : IDisposable
         store.AppendItem("Tonight", new WorkListItemRef { Source = "github", Id = "103" });
 
         var driver = new OrderRecordingDriver();
-        var launcher = new DirectorWorkListDrainLauncher(store, client: null, driverFactory: (_, _) => driver);
+        var launcher = new DirectorWorkListDrainLauncher(store, client: null, driverFactory: (_, _, _) => driver);
 
-        await launcher.LaunchAsync("http://d", @"D:\repo", "Tonight", "cron:cj_test:abc", CancellationToken.None);
+        await launcher.LaunchAsync("d-1", "http://d", @"D:\repo", "Tonight", "cron:cj_test:abc", CancellationToken.None);
 
         Assert.Equal(new[] { "101", "102", "103" }, driver.StartOrder.ToArray()); // in list order
         Assert.Null(store.Get("Tonight")!.Consumer);                               // claim released after drain
@@ -170,12 +171,14 @@ public sealed class CronWorkListTriggerTests : IDisposable
         public TaskCompletionSource Release { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public TaskCompletionSource Completed { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public int LaunchCount { get; private set; }
+        public string? LastDirectorId { get; private set; }
         public string? LastListName { get; private set; }
         public string LastConsumer { get; private set; } = "";
 
-        public async Task LaunchAsync(string endpoint, string repoPath, string listName, string consumer, CancellationToken ct)
+        public async Task LaunchAsync(string directorId, string endpoint, string repoPath, string listName, string consumer, CancellationToken ct)
         {
             LaunchCount++;
+            LastDirectorId = directorId;
             LastListName = listName;
             LastConsumer = consumer;
             Entered.TrySetResult();
