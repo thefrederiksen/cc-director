@@ -98,6 +98,27 @@ export function NetworkDiagnosticsView() {
     return withThroughput ?? null;
   }, [results]);
 
+  // Home-vs-away quality (P4 Task 1) from the rollup's measured-path sub-sums, over the selected window.
+  // Honestly derivable per side: average latency + share-of-time. (Per-side percent-direct and average
+  // throughput are NOT derivable from the current schema - see the note to the Architect - so we don't fake
+  // them.) Framing per Decision 2c: home is judged against fast/direct; away is EXPECTED to relay.
+  const homeAway = useMemo(() => {
+    const recent = rollup.slice(-trendHours);
+    let hCount = 0, hLat = 0, hMin: number | null = null;
+    let aCount = 0, aLat = 0, aMin: number | null = null;
+    for (const b of recent) {
+      hCount += b.lanCount; hLat += b.sumLatencyLan;
+      if (b.minLatencyLan != null) hMin = hMin == null ? b.minLatencyLan : Math.min(hMin, b.minLatencyLan);
+      aCount += b.awayCount; aLat += b.sumLatencyAway;
+      if (b.minLatencyAway != null) aMin = aMin == null ? b.minLatencyAway : Math.min(aMin, b.minLatencyAway);
+    }
+    const total = hCount + aCount;
+    return {
+      home: { count: hCount, avg: hCount ? hLat / hCount : null, min: hMin, share: total ? (hCount / total) * 100 : null },
+      away: { count: aCount, avg: aCount ? aLat / aCount : null, min: aMin, share: total ? (aCount / total) * 100 : null },
+    };
+  }, [rollup, trendHours]);
+
   const testRunning = phase === "latency" || phase === "download" || phase === "upload";
   const medianLatency = useMemo(() => (latency ? median(latency) : null), [latency]);
 
@@ -173,6 +194,52 @@ export function NetworkDiagnosticsView() {
             <span className="netdiag-muted"> - throughput is measured only when a speed test runs, so it is not a continuous trend.</span>
           </div>
         )}
+      </section>
+
+      <section className="netdiag-section" aria-label="Direct versus relayed quality">
+        <h2>Direct vs relayed</h2>
+        <p className="netdiag-muted netdiag-homeaway-sub">
+          Quality by measured path over the selected window. A direct path on your LAN is your fast home
+          connection; a relayed path is normal when you are away. (A home device briefly relaying also lands
+          on the relayed side - the status pill and drift alerts, which check physical LAN presence, are the
+          authoritative "home is slow" signal; this split is the coarse trend.)
+        </p>
+        <div className="netdiag-homeaway">
+          <div className="netdiag-side netdiag-side-home">
+            <div className="netdiag-side-title">Direct on your LAN</div>
+            {homeAway.home.count === 0 ? (
+              <div className="netdiag-muted">No direct-LAN data yet.</div>
+            ) : (
+              <div className="netdiag-side-stats">
+                <div className="netdiag-side-stat">
+                  <span className="netdiag-side-num">{formatMs(homeAway.home.avg ?? 0)} ms</span>
+                  <span className="netdiag-side-lbl">average latency{homeAway.home.min != null ? ` (best ${Math.round(homeAway.home.min)})` : ""}</span>
+                </div>
+                <div className="netdiag-side-stat">
+                  <span className="netdiag-side-num">{Math.round(homeAway.home.share ?? 0)}%</span>
+                  <span className="netdiag-side-lbl">of the time</span>
+                </div>
+              </div>
+            )}
+          </div>
+          <div className="netdiag-side netdiag-side-away">
+            <div className="netdiag-side-title">Relayed / remote</div>
+            {homeAway.away.count === 0 ? (
+              <div className="netdiag-muted">No relayed connections yet - you have been direct on your LAN.</div>
+            ) : (
+              <div className="netdiag-side-stats">
+                <div className="netdiag-side-stat">
+                  <span className="netdiag-side-num">{formatMs(homeAway.away.avg ?? 0)} ms</span>
+                  <span className="netdiag-side-lbl">average latency{homeAway.away.min != null ? ` (best ${Math.round(homeAway.away.min)})` : ""}</span>
+                </div>
+                <div className="netdiag-side-stat">
+                  <span className="netdiag-side-num">{Math.round(homeAway.away.share ?? 0)}%</span>
+                  <span className="netdiag-side-lbl">of the time - relaying is normal when you are away</span>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
       </section>
 
       <section className="netdiag-section" aria-label="Network health">

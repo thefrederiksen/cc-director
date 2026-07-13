@@ -172,3 +172,28 @@
 .netdiag-chart-latest { color: var(--text); font-weight: 600; }
 .netdiag-chart-empty { padding: 28px 0; text-align: center; }
 .netdiag-throughput-note { margin-top: 12px; font-size: 13px; }
+
+/* P4 Task 1: home-vs-away quality side-by-side. Home rail = green (fast/direct expectation), away rail =
+   neutral (relay is EXPECTED, not framed as worse). */
+.netdiag-homeaway-sub { max-width: 70ch; margin: 0 0 12px; line-height: 1.5; }
+.netdiag-homeaway {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+}
+@media (max-width: 720px) {
+  .netdiag-homeaway { grid-template-columns: 1fr; }
+}
+.netdiag-side {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 14px 16px;
+  background: var(--surface);
+}
+.netdiag-side-home { border-left: 4px solid #37c26d; }
+.netdiag-side-away { border-left: 4px solid var(--text-dim); }
+.netdiag-side-title { font-weight: 700; font-size: 14px; margin-bottom: 10px; }
+.netdiag-side-stats { display: flex; gap: 24px; flex-wrap: wrap; }
+.netdiag-side-stat { display: flex; flex-direction: column; }
+.netdiag-side-num { font-size: 22px; font-weight: 800; }
+.netdiag-side-lbl { color: var(--text-dim); font-size: 12px; }
