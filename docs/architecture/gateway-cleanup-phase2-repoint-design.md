@@ -161,3 +161,30 @@ phone link", not just a demo):
 These four turn the proof from "it works" into "it works under the exact conditions that broke the old path".
 Fold them into the slot-5 run, and where cheap into PR A's integration tests. Everything else in the plan stands
 - proceed.
+
+## PR C - the explicit GatewayEndpoints session routes - SETTLED 2026-07-13 (session 51f1898e)
+
+PRs A/B1/B2 moved the browser stream legs + the catch-all read/write dispatch onto the tunnel. But the
+EXPLICITLY-registered session routes in GatewayEndpoints.cs shadow the catch-all, so they were still dialing the
+Director over HTTP. PR C gives each the same stream-first branch (DirectorCommandRouter.TrySendAsync, HTTP
+fallback on a null return, byte-identical when streamMode is off). The Director side already handles every verb
+(the read/write executors), so PR C is Gateway-side only.
+
+- Landed in PR C (plain unary): buffer, summary, git-status, handover, recap (READ), wingman-view,
+  request-deletion, cancel-deletion - plus the two slow-LLM verbs below. Covered by TunnelExplicitRouteProofTests
+  (the unreachable-Director trick proves each rode the tunnel with the correct verb + payload).
+
+- Slow LLM (wingman-ask, recap-generate) - RULING: plain SYNCHRONOUS unary threading the request
+  CancellationToken, NO trigger-and-ack. SignalR client-results have no per-invocation timeout, keep-alive pings
+  sustain a multi-minute await, and the ct mirrors RequestAborted exactly like today's HTTP forwarder, so the
+  synchronous browser contract is byte-identical (the browser contract must NOT change). VERIFY in the
+  whole-surface real-exe proof: a genuinely-slow call (>30s, past ClientTimeoutInterval) over the tunnel
+  COMPLETES with no connection drop - closes the only residual risk.
+
+- upload-image - RULING: OPTION 1 (CHUNK), as its own small additive PR. It is ruling 2 (no single message
+  monopolizes the shared tunnel) plus the Phase 0 protocol's "uploads chunk across unary commands". The Director
+  client (GatewayStreamClient) sets NO MaximumReceiveMessageSize (SignalR default 32 KB) - SET IT to the SAME
+  bounded value as the hub (MaxBinaryFrameBytes + FrameEnvelopeAllowanceBytes ~= 52 KB), symmetric up/down. Chunk
+  the image at MaxBinaryFrameBytes, reassembled on the Director by an uploadId (begin / chunk / complete), then
+  run the existing SaveUploadedImage handler. Bounded both directions, no monopoly. Option 2 (raise the down-limit
+  to a few MB) is REJECTED - it monopolizes the connection and raises the receive ceiling for ALL down-traffic.
