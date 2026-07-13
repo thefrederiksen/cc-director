@@ -4,12 +4,6 @@ using System.Net.Http.Json;
 using System.Net.Sockets;
 using System.Text.Json;
 using CcDirector.Gateway.Contracts;
-using Microsoft.AspNetCore.Builder;
-using Microsoft.AspNetCore.Hosting;
-using Microsoft.AspNetCore.Http;
-using Microsoft.Extensions.DependencyInjection;
-using Microsoft.Extensions.Hosting;
-using Microsoft.Extensions.Logging;
 using Xunit;
 
 namespace CcDirector.Gateway.Tests;
@@ -17,30 +11,37 @@ namespace CcDirector.Gateway.Tests;
 /// <summary>
 /// Destructive-call gate on DELETE /directors/{id} (issue #212 W6/L4): a shutdown must
 /// state a reason, and when the Director has live sessions the request must confirm
-/// their count - otherwise 409 with the live-session list, and the Director's
-/// POST /shutdown is never touched. Born from the 2026-06-06 post-mortem, where the
-/// force-kill path could take down a Director plus 10 live sessions without a trace.
+/// their count - otherwise 409 with the live-session list, and the graceful shutdown is
+/// never triggered. Born from the 2026-06-06 post-mortem, where the force-kill path could
+/// take down a Director plus 10 live sessions without a trace.
 ///
-/// Uses lightweight fake-Director Kestrel hosts (same pattern as
-/// SessionsAggregationTests) that record whether POST /shutdown was called.
+/// Gateway Cleanup mission (the cut): the live-session count is now read from the PUSH store
+/// (a Director's sessions arrive by PushSnapshot, never an HTTP pull), and the graceful stop is
+/// the new director-level "shutdown" tunnel verb. Each Director registers UNREACHABLE and answers
+/// the shutdown verb over the stream, so a working stop proves the tunnel by construction. An
+/// UNREACHABLE Director is one with NO fresh push and no stream: the session gate is skipped and
+/// the shutdown verb returns null (not connected) -> 502 (or the force-kill path).
 /// </summary>
 public sealed class DirectorShutdownGateTests : IAsyncLifetime
 {
+    private const string Token = "test-token";
+
     private GatewayHost _gateway = null!;
     private HttpClient _http = null!;
-    private readonly List<FakeDirector> _fakes = new();
+    private readonly List<Gate> _fakes = new();
 
     private readonly string _instancesDir =
         Path.Combine(Path.GetTempPath(), "cc-instances-" + Guid.NewGuid().ToString("N"));
 
     public async Task InitializeAsync()
     {
-        _gateway = new GatewayHost(port: FreePort(), token: "test-token", authEnabled: true,
+        _gateway = new GatewayHost(port: FreePort(), token: Token, authEnabled: true,
             instancesDirectory: _instancesDir,
-            workListsPath: Path.Combine(_instancesDir, "worklists", "worklists.json"));
+            workListsPath: Path.Combine(_instancesDir, "worklists", "worklists.json"),
+            streamMode: true);
         await _gateway.StartAsync();
         _http = new HttpClient { BaseAddress = new Uri($"http://127.0.0.1:{_gateway.Port}/") };
-        _http.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", "test-token");
+        _http.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", Token);
     }
 
     public async Task DisposeAsync()
@@ -57,20 +58,18 @@ public sealed class DirectorShutdownGateTests : IAsyncLifetime
     [Fact]
     public async Task Delete_without_reason_returns_400_and_never_calls_shutdown()
     {
-        var fake = await StartFake(live: 0);
-        await Register(fake);
+        var fake = await StartConnected(live: 0);
 
         var resp = await DeleteDirector(fake.DirectorId, new ShutdownDirectorRequest());
 
         Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
-        Assert.False(fake.ShutdownCalled, "POST /shutdown must not fire when the reason is missing");
+        Assert.False(fake.ShutdownCalled, "the shutdown verb must not fire when the reason is missing");
     }
 
     [Fact]
     public async Task Delete_with_blank_reason_returns_400()
     {
-        var fake = await StartFake(live: 0);
-        await Register(fake);
+        var fake = await StartConnected(live: 0);
 
         var resp = await DeleteDirector(fake.DirectorId, new ShutdownDirectorRequest { Reason = "   " });
 
@@ -83,13 +82,12 @@ public sealed class DirectorShutdownGateTests : IAsyncLifetime
     [Fact]
     public async Task Delete_with_live_sessions_and_no_confirm_returns_409_with_session_list()
     {
-        var fake = await StartFake(live: 3);
-        await Register(fake);
+        var fake = await StartConnected(live: 3);
 
         var resp = await DeleteDirector(fake.DirectorId, new ShutdownDirectorRequest { Reason = "test stop" });
 
         Assert.Equal(HttpStatusCode.Conflict, resp.StatusCode);
-        Assert.False(fake.ShutdownCalled, "POST /shutdown must not fire when the session gate blocks");
+        Assert.False(fake.ShutdownCalled, "the shutdown verb must not fire when the session gate blocks");
 
         using var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync());
         Assert.Equal(3, doc.RootElement.GetProperty("liveSessionCount").GetInt32());
@@ -99,8 +97,7 @@ public sealed class DirectorShutdownGateTests : IAsyncLifetime
     [Fact]
     public async Task Delete_with_wrong_confirm_count_returns_409()
     {
-        var fake = await StartFake(live: 3);
-        await Register(fake);
+        var fake = await StartConnected(live: 3);
 
         var resp = await DeleteDirector(fake.DirectorId,
             new ShutdownDirectorRequest { Reason = "test stop", ConfirmSessions = 2 });
@@ -112,14 +109,13 @@ public sealed class DirectorShutdownGateTests : IAsyncLifetime
     [Fact]
     public async Task Delete_with_matching_confirm_calls_graceful_shutdown()
     {
-        var fake = await StartFake(live: 3);
-        await Register(fake);
+        var fake = await StartConnected(live: 3);
 
         var resp = await DeleteDirector(fake.DirectorId,
             new ShutdownDirectorRequest { Reason = "test stop", ConfirmSessions = 3 });
 
         Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
-        Assert.True(fake.ShutdownCalled, "matching confirmSessions must let the graceful shutdown through");
+        Assert.True(fake.ShutdownCalled, "matching confirmSessions must let the graceful shutdown verb through");
 
         using var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync());
         Assert.True(doc.RootElement.GetProperty("accepted").GetBoolean());
@@ -128,8 +124,7 @@ public sealed class DirectorShutdownGateTests : IAsyncLifetime
     [Fact]
     public async Task Delete_with_zero_live_sessions_needs_only_a_reason()
     {
-        var fake = await StartFake(live: 0);
-        await Register(fake);
+        var fake = await StartConnected(live: 0);
 
         var resp = await DeleteDirector(fake.DirectorId, new ShutdownDirectorRequest { Reason = "idle teardown" });
 
@@ -140,8 +135,7 @@ public sealed class DirectorShutdownGateTests : IAsyncLifetime
     [Fact]
     public async Task Exited_sessions_do_not_count_toward_the_gate()
     {
-        var fake = await StartFake(live: 0, exited: 2);
-        await Register(fake);
+        var fake = await StartConnected(live: 0, exited: 2);
 
         var resp = await DeleteDirector(fake.DirectorId, new ShutdownDirectorRequest { Reason = "idle teardown" });
 
@@ -149,16 +143,16 @@ public sealed class DirectorShutdownGateTests : IAsyncLifetime
         Assert.True(fake.ShutdownCalled);
     }
 
-    // ---------- unreachable Director ----------
+    // ---------- unreachable Director (not tunnel-connected) ----------
 
     [Fact]
     public async Task Unreachable_director_skips_gate_and_returns_502_without_force()
     {
-        var fake = await StartFake(live: 1);
-        await Register(fake);
-        await fake.StopAsync(); // now unreachable: sessions unknowable, graceful shutdown fails
+        // Registered but never tunnel-connected: the live count is unknowable (gate skipped) and the
+        // shutdown verb cannot be delivered -> 502, never a silent "nothing happened".
+        var id = RegisterUnreachable();
 
-        var resp = await DeleteDirector(fake.DirectorId, new ShutdownDirectorRequest { Reason = "hung director" });
+        var resp = await DeleteDirector(id, new ShutdownDirectorRequest { Reason = "hung director" });
 
         Assert.Equal(HttpStatusCode.BadGateway, resp.StatusCode);
     }
@@ -166,14 +160,11 @@ public sealed class DirectorShutdownGateTests : IAsyncLifetime
     [Fact]
     public async Task Unreachable_director_with_force_attempts_kill_and_reports_failure_for_dead_pid()
     {
-        // Registered with a PID that cannot exist, so the force path runs and reports
-        // its failure instead of silently doing nothing (the pre-#212 behavior logged
-        // nothing on this branch at all).
-        var fake = await StartFake(live: 0);
-        await Register(fake, pid: int.MaxValue - 1);
-        await fake.StopAsync();
+        // Registered with a PID that cannot exist, so the force path runs and reports its failure
+        // instead of silently doing nothing.
+        var id = RegisterUnreachable(pid: int.MaxValue - 1);
 
-        var resp = await DeleteDirector(fake.DirectorId,
+        var resp = await DeleteDirector(id,
             new ShutdownDirectorRequest { Reason = "hung director", Force = true });
 
         Assert.Equal(HttpStatusCode.InternalServerError, resp.StatusCode);
@@ -184,8 +175,7 @@ public sealed class DirectorShutdownGateTests : IAsyncLifetime
     [Fact]
     public async Task Delete_without_body_returns_404_for_unknown_director()
     {
-        // Regression guard for the original GatewayHostTests contract: a body-less
-        // DELETE (no Content-Type at all) must still route to the handler and 404 on
+        // A body-less DELETE (no Content-Type at all) must still route to the handler and 404 on
         // an unknown id, not bounce off content negotiation.
         var resp = await _http.DeleteAsync($"directors/{Guid.NewGuid()}");
         Assert.Equal(HttpStatusCode.NotFound, resp.StatusCode);
@@ -202,52 +192,48 @@ public sealed class DirectorShutdownGateTests : IAsyncLifetime
         return await _http.SendAsync(req);
     }
 
-    private async Task Register(FakeDirector fake, int pid = 1)
+    // Register a Director UNREACHABLE - in the registry but with no tunnel connection and no push.
+    private string RegisterUnreachable(int pid = 1)
     {
-        var req = new DirectorRegistrationRequest
+        var id = Guid.NewGuid().ToString();
+        _gateway.Registry.Upsert(new DirectorRegistrationRequest
         {
-            DirectorId = fake.DirectorId,
-            TailnetEndpoint = fake.BaseUrl,
+            DirectorId = id,
+            TailnetEndpoint = $"http://127.0.0.1:{DeadPort()}/",
             Pid = pid,
             MachineName = "GATE_TEST",
             User = "tester",
             Version = "test",
             StartedAt = DateTime.UtcNow,
-        };
-        var resp = await _http.PostAsJsonAsync("directors/register", req);
-        Assert.Equal(HttpStatusCode.Created, resp.StatusCode);
+        });
+        return id;
     }
 
-    private async Task<FakeDirector> StartFake(int live, int exited = 0)
+    // A tunnel-connected Director that pushes its live/exited sessions into the roster and answers the
+    // shutdown verb. Because it is registered UNREACHABLE, a working shutdown proves the tunnel.
+    private async Task<Gate> StartConnected(int live, int exited = 0)
     {
+        var gate = new Gate();
+        var id = "dir-" + Guid.NewGuid().ToString("N")[..8];
+        gate.Director = await FakeTunnelDirector.StartAsync(_gateway, Token, id, dispatch: gate.Dispatch);
+        _fakes.Add(gate);
+
         var sessions = new List<SessionDto>();
         for (var i = 0; i < live; i++)
             sessions.Add(new SessionDto
             {
-                SessionId = $"live-{i}",
-                Name = $"live session {i}",
-                Agent = "ClaudeCode",
-                RepoPath = "/repo",
-                Status = "Running",
-                ActivityState = "Working",
-                StatusColor = "blue",
+                SessionId = $"live-{i}", Name = $"live session {i}", Agent = "ClaudeCode",
+                RepoPath = "/repo", Status = "Running", ActivityState = "Working", StatusColor = "blue",
             });
         for (var i = 0; i < exited; i++)
             sessions.Add(new SessionDto
             {
-                SessionId = $"dead-{i}",
-                Name = $"dead session {i}",
-                Agent = "ClaudeCode",
-                RepoPath = "/repo",
-                Status = "Exited",
-                ActivityState = "Exited",
-                StatusColor = "unknown",
+                SessionId = $"dead-{i}", Name = $"dead session {i}", Agent = "ClaudeCode",
+                RepoPath = "/repo", Status = "Exited", ActivityState = "Exited", StatusColor = "unknown",
             });
 
-        var fake = new FakeDirector(sessions.ToArray());
-        await fake.StartAsync();
-        _fakes.Add(fake);
-        return fake;
+        await gate.Director.PushSnapshotAsync(sessions.ToArray());
+        return gate;
     }
 
     private static int FreePort()
@@ -258,57 +244,32 @@ public sealed class DirectorShutdownGateTests : IAsyncLifetime
         finally { listener.Stop(); }
     }
 
-    /// <summary>
-    /// Minimal Kestrel host pretending to be a Director's Control API: GET /sessions
-    /// returns the canned list, POST /shutdown records that it was called.
-    /// </summary>
-    private sealed class FakeDirector : IAsyncDisposable
+    private static int DeadPort()
     {
-        public string DirectorId { get; } = Guid.NewGuid().ToString();
-        public string BaseUrl { get; private set; } = "";
+        using var l = new TcpListener(IPAddress.Loopback, 0);
+        l.Start();
+        var port = ((IPEndPoint)l.LocalEndpoint).Port;
+        l.Stop();
+        return port;
+    }
+
+    // Records whether the graceful "shutdown" verb was delivered over the tunnel.
+    private sealed class Gate : IAsyncDisposable
+    {
+        public FakeTunnelDirector Director = null!;
+        public string DirectorId => Director.DirectorId;
         public bool ShutdownCalled { get; private set; }
 
-        private readonly SessionDto[] _sessions;
-        private WebApplication? _app;
-
-        public FakeDirector(SessionDto[] sessions) => _sessions = sessions;
-
-        public async Task StartAsync()
+        public DirectorCommandResult Dispatch(DirectorCommand cmd)
         {
-            var port = FreePort();
-            BaseUrl = $"http://127.0.0.1:{port}";
-
-            var builder = WebApplication.CreateBuilder(new WebApplicationOptions
-            {
-                ApplicationName = "FakeDirector",
-            });
-            builder.WebHost.UseSetting(WebHostDefaults.PreventHostingStartupKey, "true");
-            builder.WebHost.ConfigureKestrel(o => o.Listen(IPAddress.Loopback, port));
-            builder.Logging.ClearProviders();
-            builder.Services.AddRoutingCore();
-
-            _app = builder.Build();
-            _app.UseRouting();
-            _app.MapGet("/sessions", () => Results.Json(_sessions));
-            _app.MapPost("/shutdown", () =>
+            if (cmd.Verb == "shutdown")
             {
                 ShutdownCalled = true;
-                return Results.Json(new { accepted = true });
-            });
-
-            await _app.StartAsync();
-        }
-
-        public async Task StopAsync()
-        {
-            if (_app is not null)
-            {
-                try { await _app.StopAsync(TimeSpan.FromSeconds(2)); } catch { }
-                await _app.DisposeAsync();
-                _app = null;
+                return DirectorCommandResult.Success();
             }
+            return DirectorCommandResult.Fail(DirectorCommandStatus.BadRequest, $"unexpected verb {cmd.Verb}");
         }
 
-        public async ValueTask DisposeAsync() => await StopAsync();
+        public ValueTask DisposeAsync() => Director is null ? ValueTask.CompletedTask : Director.DisposeAsync();
     }
 }

@@ -1,11 +1,7 @@
 using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
-using CcDirector.ControlApi;
-using CcDirector.Core.Backends;
-using CcDirector.Core.Configuration;
-using CcDirector.Core.Memory;
-using CcDirector.Core.Sessions;
+using System.Net.Sockets;
 using CcDirector.Gateway;
 using CcDirector.Gateway.Contracts;
 using Xunit;
@@ -13,45 +9,72 @@ using Xunit;
 namespace CcDirector.Gateway.Tests;
 
 /// <summary>
-/// Issue #1214: the read-only "Handover info" data path.
+/// Issue #1214: the read-only "Handover info" data path, AFTER the Gateway Cleanup cut.
 ///
-/// Director Control API GET /sessions/{sid}/handover returns the desktop "Copy Handover Info" identity
-/// block (name, session id, repo, director id, machine, version) - minus the Control API endpoint, which
-/// is a Director address the browser must never learn. The Gateway proxies it at the same route, gated by
-/// the same Bearer/device-key auth as every other session route.
-///
-/// This file boots a REAL ControlApiHost for the Director-side endpoint (happy path, 404, 400) and a real
-/// GatewayHost for the front-door contract (401 without a credential, 404 when no Director owns the id).
+/// The desktop "Copy Handover Info" identity block (name, session id, repo, director id, machine,
+/// version) - minus the Control API endpoint, which is a Director address the browser must never
+/// learn - is served by the Gateway at GET /sessions/{sid}/handover. Post-cut the Gateway resolves
+/// the owner from the PUSH store and reads the block over the tunnel ("handover" verb); there is no
+/// Director HTTP route left. The Director registers UNREACHABLE and answers the verb over the stream,
+/// so a working identity block proves the tunnel by construction. The block still carries NO Director
+/// address (HandoverInfoDto has no endpoint field), and an unresolvable session id is an honest 404,
+/// never a leak or a silent body.
 /// </summary>
-public sealed class HandoverInfoControlApiTests : IAsyncLifetime
+public sealed class HandoverInfoTunnelTests : IAsyncLifetime
 {
-    private ControlApiHost _host = null!;
-    private SessionManager _sm = null!;
-    private HttpClient _client = null!;
+    private const string Token = "handover-tunnel-token";
+    private const string DirectorId = "dir-handover";
+
+    private GatewayHost _gateway = null!;
+    private HttpClient _http = null!;
+    private FakeTunnelDirector _director = null!;
+
+    private readonly string _instancesDir =
+        Path.Combine(Path.GetTempPath(), "cc-handover-tunnel-" + Guid.NewGuid().ToString("N"));
 
     public async Task InitializeAsync()
     {
-        _sm = new SessionManager(new AgentOptions());
-        _host = new ControlApiHost(_sm, "9.9.9-handover-test", () => Task.CompletedTask, useEphemeralPort: true);
-        var port = await _host.StartAsync();
-        _client = new HttpClient { BaseAddress = new Uri($"http://127.0.0.1:{port}/") };
+        _gateway = new GatewayHost(port: FreePort(), token: Token, authEnabled: true,
+            instancesDirectory: _instancesDir,
+            workListsPath: Path.Combine(_instancesDir, "worklists", "worklists.json"),
+            streamMode: true);
+        await _gateway.StartAsync();
+
+        _http = new HttpClient { BaseAddress = new Uri($"http://127.0.0.1:{_gateway.Port}/") };
+        _http.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", Token);
+
+        _director = await FakeTunnelDirector.StartAsync(_gateway, Token, DirectorId, dispatch: cmd => cmd.Verb switch
+        {
+            // The Director's handover core sets DirectorId in its body; the identity block carries NO
+            // Control API endpoint (HandoverInfoDto has no such field).
+            "handover" => FakeTunnelDirector.Ok(new HandoverInfoDto
+            {
+                SessionId = cmd.SessionId,
+                DisplayName = "handover-info-test",
+                RepoPath = @"C:\test\handover-info-test",
+                DirectorId = DirectorId,
+                MachineName = Environment.MachineName,
+                Version = "9.9.9-handover-test",
+            }),
+            _ => DirectorCommandResult.Fail(DirectorCommandStatus.BadRequest, $"unexpected verb {cmd.Verb}"),
+        });
     }
 
     public async Task DisposeAsync()
     {
-        _client.Dispose();
-        await _host.StopAsync();
-        _sm.Dispose();
+        _http.Dispose();
+        await _director.DisposeAsync();
+        await _gateway.StopAsync();
+        try { if (Directory.Exists(_instancesDir)) Directory.Delete(_instancesDir, true); } catch { }
     }
 
     [Fact]
     public async Task Handover_ReturnsIdentityBlock_ForAKnownSession()
     {
-        var session = MakeIdleSession();
-        _sm.AdoptSession(session);
-        var sid = session.Id.ToString();
+        var sid = Guid.NewGuid().ToString();
+        await _director.PushSnapshotAsync(Session(sid));
 
-        var dto = await _client.GetFromJsonAsync<HandoverInfoDto>($"sessions/{sid}/handover");
+        var dto = await _http.GetFromJsonAsync<HandoverInfoDto>($"sessions/{sid}/handover");
 
         Assert.NotNull(dto);
         Assert.Equal(sid, dto!.SessionId);
@@ -60,75 +83,46 @@ public sealed class HandoverInfoControlApiTests : IAsyncLifetime
         Assert.Equal(@"C:\test\handover-info-test", dto.RepoPath);
         Assert.False(string.IsNullOrWhiteSpace(dto.DisplayName));
         Assert.False(string.IsNullOrWhiteSpace(dto.DirectorId));
+        // A working body proves the tunnel: the Director is registered UNREACHABLE.
+        Assert.Equal("handover", _director.LastCommand?.Verb);
     }
 
     [Fact]
     public async Task Handover_NeverLeaksAControlApiEndpoint()
     {
-        var session = MakeIdleSession();
-        _sm.AdoptSession(session);
-        var sid = session.Id.ToString();
+        var sid = Guid.NewGuid().ToString();
+        await _director.PushSnapshotAsync(Session(sid));
 
         // The raw JSON must carry no Director address - only the identity fields.
-        var raw = await _client.GetStringAsync($"sessions/{sid}/handover");
+        var raw = await _http.GetStringAsync($"sessions/{sid}/handover");
         Assert.DoesNotContain("controlEndpoint", raw, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("controlApi", raw, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("http://", raw, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
-    public async Task Handover_UnknownSession_Returns404()
+    public async Task Handover_UnresolvableSession_Returns404()
     {
-        var resp = await _client.GetAsync($"sessions/{Guid.NewGuid()}/handover");
+        // No session pushed -> no Director owns it -> the honest "not found across any director" 404,
+        // never a silent body. (Replaces the old Director-side GUID-format 400, which was a route
+        // concern deleted with the Director's own handover endpoint.)
+        var resp = await _http.GetAsync($"sessions/{Guid.NewGuid()}/handover");
         Assert.Equal(HttpStatusCode.NotFound, resp.StatusCode);
     }
 
-    [Fact]
-    public async Task Handover_InvalidSessionId_Returns400()
+    private static SessionDto Session(string sid) => new()
     {
-        var resp = await _client.GetAsync("sessions/not-a-guid/handover");
-        Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
-    }
+        SessionId = sid,
+        Agent = "ClaudeCode",
+        Status = "WaitingForInput",
+        ActivityState = "WaitingForInput",
+    };
 
-    private static Session MakeIdleSession()
+    private static int FreePort()
     {
-        var backend = new StubBackend();
-        var session = new Session(
-            Guid.NewGuid(),
-            repoPath: @"C:\test\handover-info-test",
-            workingDirectory: @"C:\test\handover-info-test",
-            claudeArgs: null,
-            backend: backend,
-            claudeSessionId: null,
-            activityState: ActivityState.Idle,
-            createdAt: DateTimeOffset.UtcNow,
-            customName: "handover-info-test",
-            customColor: null);
-        session.MarkRunning();
-        return session;
-    }
-
-    private sealed class StubBackend : ISessionBackend
-    {
-        public int ProcessId => 1;
-        public string Status => "Stub";
-        public bool IsRunning => true;
-        public bool HasExited => false;
-        public CircularTerminalBuffer? Buffer => null;
-
-#pragma warning disable CS0067
-        public event Action<string>? StatusChanged;
-        public event Action<int>? ProcessExited;
-#pragma warning restore CS0067
-
-        public void Start(string executable, string args, string workingDir, short cols, short rows,
-            Dictionary<string, string>? environmentVars = null) { }
-        public void Write(byte[] data) { }
-        public Task SendTextAsync(string text) => Task.CompletedTask;
-        public Task SendEnterAsync() => Task.CompletedTask;
-        public void Resize(short cols, short rows) { }
-        public Task GracefulShutdownAsync(int timeoutMs = 5000) => Task.CompletedTask;
-        public void Dispose() { }
+        using var l = new TcpListener(IPAddress.Loopback, 0);
+        l.Start();
+        return ((IPEndPoint)l.LocalEndpoint).Port;
     }
 }
 

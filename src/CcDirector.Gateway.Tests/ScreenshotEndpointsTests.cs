@@ -1,31 +1,40 @@
-using System.Net;
-using System.Net.Http.Json;
 using System.Text.Json;
 using CcDirector.ControlApi;
-using CcDirector.Core.Configuration;
-using CcDirector.Core.Sessions;
 using CcDirector.Core.Storage;
+using CcDirector.Gateway.Contracts;
 using Xunit;
 
 namespace CcDirector.Gateway.Tests;
 
 /// <summary>
-/// End-to-end smoke tests for the Director's screenshots-gallery endpoints
-/// (GET /screenshots, GET /screenshots/file, DELETE /screenshots/file). Runs a real
-/// ControlApiHost on an ephemeral port with CC_DIRECTOR_ROOT redirected to a temp dir AND
-/// the screenshots folder pinned (via config.json) into that temp dir, so nothing touches the
-/// user's real Pictures\Screenshots folder. In the "DirectorRoot" collection (serializes
-/// root-touching tests).
+/// Gateway Cleanup mission (the cut): the Director's screenshots-gallery HTTP routes
+/// (GET /screenshots, GET /screenshots/file, DELETE /screenshots/file) are DELETED. The list,
+/// delete, and traversal-safe name resolution now live in the shared command cores the tunnel
+/// verbs dispatch to - <see cref="SessionByteExecutor.ScreenshotsList"/> (the "screenshots-list"
+/// verb), <see cref="SessionByteExecutor.ScreenshotDelete"/> (the "screenshot-delete" verb) and
+/// <see cref="ControlEndpoints.ResolveScreenshot"/> (the shared traversal-safe resolver). The
+/// Gateway forwards these verbs over the tunnel (proven end to end in SessionWsProxyEndpointsTests);
+/// this file pins the DIRECTOR-SIDE listing/delete LOGIC - newest-first ordering, the count cap
+/// vs. full-folder total, image-only filtering, the time label, and traversal-safe delete - by
+/// driving those cores directly against a real on-disk screenshots folder.
+///
+/// The screenshots folder is pinned (via config.json under an isolated CC_DIRECTOR_ROOT) into a
+/// temp dir, so nothing touches the user's real Pictures\Screenshots folder. In the "DirectorRoot"
+/// collection (serializes root-touching tests).
+///
+/// The screenshot-BYTES leg (the old GET /screenshots/file, with its image/png content type and the
+/// CORS + cache-control headers) is NOT a unary verb: it rides the up-stream producer over the
+/// tunnel now, exercised end to end in the whole-surface real-exe proof. There is no faithful unary
+/// rewrite for it here, so its test is removed with the deleted HTTP route rather than faked.
 /// </summary>
 [Collection("DirectorRoot")]
 public sealed class ScreenshotEndpointsTests : IAsyncLifetime
 {
+    private static readonly JsonSerializerOptions Web = new(JsonSerializerDefaults.Web);
+
     private readonly string _root;
     private readonly string? _prevRoot;
     private string _shotsDir = null!;
-    private ControlApiHost _host = null!;
-    private SessionManager _sm = null!;
-    private HttpClient _client = null!;
 
     // A tiny valid 1x1 PNG (decodes cleanly), used as the seeded screenshot bytes.
     private static readonly byte[] OnePngBytes = Convert.FromBase64String(
@@ -61,33 +70,41 @@ public sealed class ScreenshotEndpointsTests : IAsyncLifetime
         File.SetLastWriteTimeUtc(newer, DateTime.UtcNow);
         // A non-image file that must be ignored by the listing.
         await File.WriteAllTextAsync(Path.Combine(_shotsDir, "notes.txt"), "ignore me");
-
-        _sm = new SessionManager(new AgentOptions());
-        _host = new ControlApiHost(_sm, "1.0.0-test", () => Task.CompletedTask, useEphemeralPort: true);
-        var port = await _host.StartAsync();
-        _client = new HttpClient { BaseAddress = new Uri($"http://127.0.0.1:{port}/") };
     }
 
-    public async Task DisposeAsync()
+    public Task DisposeAsync()
     {
-        _client.Dispose();
-        await _host.StopAsync();
-        _sm.Dispose();
         Environment.SetEnvironmentVariable("CC_DIRECTOR_ROOT", _prevRoot);
         try { if (Directory.Exists(_root)) Directory.Delete(_root, recursive: true); } catch { /* best effort */ }
+        return Task.CompletedTask;
     }
 
-    private sealed record ShotItem(string FileName, string Path, string TimeLabel, DateTimeOffset LastWriteUtc, long SizeBytes);
-    private sealed record ShotList(string Directory, int Total, List<ShotItem> Items);
+    // ---- helpers: drive the shared command cores the tunnel verbs dispatch to ----
+
+    private static ScreenshotListResponse List(int? count)
+    {
+        var payload = count is null ? "" : JsonSerializer.Serialize(new ScreenshotListRequest { Count = count }, Web);
+        var result = SessionByteExecutor.ScreenshotsList(new DirectorCommand { Verb = "screenshots-list", PayloadJson = payload });
+        Assert.Equal(DirectorCommandStatus.Ok, result.Status);
+        var body = JsonSerializer.Deserialize<ScreenshotListResponse>(result.BodyJson!, Web);
+        Assert.NotNull(body);
+        return body!;
+    }
+
+    private static DirectorCommandResult Delete(string name) =>
+        SessionByteExecutor.ScreenshotDelete(new DirectorCommand
+        {
+            Verb = "screenshot-delete",
+            PayloadJson = JsonSerializer.Serialize(new ScreenshotDeleteRequest { Name = name }, Web),
+        });
 
     [Fact]
-    public async Task List_returns_only_images_newest_first_with_labels()
+    public void List_returns_only_images_newest_first_with_labels()
     {
-        var list = await _client.GetFromJsonAsync<ShotList>("screenshots");
-        Assert.NotNull(list);
-        Assert.Equal(2, list!.Items.Count);                       // notes.txt excluded
+        var list = List(null);
+        Assert.Equal(2, list.Items.Count);                       // notes.txt excluded
         Assert.Equal(2, list.Total);
-        Assert.Equal("shot-newer.png", list.Items[0].FileName);   // newest first
+        Assert.Equal("shot-newer.png", list.Items[0].FileName);  // newest first
         Assert.Equal("shot-older.png", list.Items[1].FileName);
         Assert.All(list.Items, i => Assert.False(string.IsNullOrWhiteSpace(i.TimeLabel)));
         Assert.All(list.Items, i => Assert.True(i.SizeBytes > 0));
@@ -96,23 +113,22 @@ public sealed class ScreenshotEndpointsTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task List_count_caps_items_but_total_reports_the_folder()
+    public void List_count_caps_items_but_total_reports_the_folder()
     {
-        var list = await _client.GetFromJsonAsync<ShotList>("screenshots?count=1");
-        Assert.NotNull(list);
-        Assert.Single(list!.Items);                               // capped to the newest one
+        var list = List(1);
+        Assert.Single(list.Items);                               // capped to the newest one
         Assert.Equal("shot-newer.png", list.Items[0].FileName);
-        Assert.Equal(2, list.Total);                              // folder count, not the cap
+        Assert.Equal(2, list.Total);                             // folder count, not the cap
     }
 
     [Theory]
-    [InlineData("screenshots?count=0")]    // <=0 falls back to the default cap
-    [InlineData("screenshots?count=-5")]
-    [InlineData("screenshots?count=999")]  // cap above the folder size
-    public async Task List_count_edge_values_are_safe(string url)
+    [InlineData(0)]     // <=0 falls back to the default cap
+    [InlineData(-5)]
+    [InlineData(999)]   // cap above the folder size
+    public void List_count_edge_values_are_safe(int count)
     {
-        var list = await _client.GetFromJsonAsync<ShotList>(url);
-        Assert.Equal(2, list!.Items.Count);
+        var list = List(count);
+        Assert.Equal(2, list.Items.Count);
         Assert.Equal(2, list.Total);
     }
 
@@ -129,62 +145,45 @@ public sealed class ScreenshotEndpointsTests : IAsyncLifetime
             File.SetLastWriteTimeUtc(p, DateTime.UtcNow.AddMinutes(-60 - i));
         }
 
-        var list = await _client.GetFromJsonAsync<ShotList>("screenshots");
-        Assert.NotNull(list);
-        Assert.Equal(ControlEndpoints.DefaultScreenshotCount, list!.Items.Count); // capped
-        Assert.Equal(extra + 2, list.Total);                                      // full folder count
-        Assert.Equal("shot-newer.png", list.Items[0].FileName);                   // newest still first
+        var list = List(null);
+        Assert.Equal(ControlEndpoints.DefaultScreenshotCount, list.Items.Count); // capped
+        Assert.Equal(extra + 2, list.Total);                                     // full folder count
+        Assert.Equal("shot-newer.png", list.Items[0].FileName);                  // newest still first
     }
 
     [Fact]
-    public async Task File_serves_image_bytes_with_cors_and_cache_headers()
+    public void File_resolver_returns_null_for_unknown_name()
     {
-        var resp = await _client.GetAsync("screenshots/file?name=shot-newer.png");
-        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
-        Assert.Equal("image/png", resp.Content.Headers.ContentType?.MediaType);
-        Assert.True(resp.Headers.TryGetValues("Access-Control-Allow-Origin", out var acao));
-        Assert.Equal("*", acao!.Single());
-        // Screenshot files are immutable once written - the browser may cache thumbnails so
-        // session switches don't re-download the same bytes.
-        Assert.True(resp.Headers.TryGetValues("Cache-Control", out var cache));
-        Assert.Equal("public, max-age=3600", cache!.Single());
-        var bytes = await resp.Content.ReadAsByteArrayAsync();
-        Assert.Equal(OnePngBytes.Length, bytes.Length);
-    }
-
-    [Fact]
-    public async Task File_returns_404_for_unknown_name()
-    {
-        var resp = await _client.GetAsync("screenshots/file?name=nope.png");
-        Assert.Equal(HttpStatusCode.NotFound, resp.StatusCode);
+        // The old GET /screenshots/file 404 came from the shared traversal-safe resolver returning
+        // null; that resolver still guards the delete verb, so it is the piece worth pinning.
+        Assert.Null(ControlEndpoints.ResolveScreenshot("nope.png"));
     }
 
     [Theory]
-    [InlineData("..%2F..%2Fsecret.png")]   // url-encoded ../../
-    [InlineData("sub%2Fshot.png")]          // url-encoded subdir/
-    [InlineData("notes.txt")]               // non-image extension
-    public async Task File_rejects_traversal_and_non_images(string name)
+    [InlineData("../../secret.png")]   // parent traversal
+    [InlineData("sub/shot.png")]        // subdir
+    [InlineData("notes.txt")]           // non-image extension
+    public void File_resolver_rejects_traversal_and_non_images(string name)
     {
-        var resp = await _client.GetAsync($"screenshots/file?name={name}");
-        Assert.Equal(HttpStatusCode.NotFound, resp.StatusCode);
+        Assert.Null(ControlEndpoints.ResolveScreenshot(name));
     }
 
     [Fact]
-    public async Task Delete_removes_the_file_off_disk()
+    public void Delete_removes_the_file_off_disk()
     {
-        var resp = await _client.DeleteAsync("screenshots/file?name=shot-older.png");
-        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+        var result = Delete("shot-older.png");
+        Assert.Equal(DirectorCommandStatus.Ok, result.Status);
         Assert.False(File.Exists(Path.Combine(_shotsDir, "shot-older.png")));
 
-        var list = await _client.GetFromJsonAsync<ShotList>("screenshots");
-        Assert.Single(list!.Items);
+        var list = List(null);
+        Assert.Single(list.Items);
         Assert.Equal("shot-newer.png", list.Items[0].FileName);
     }
 
     [Fact]
-    public async Task Delete_returns_404_for_unknown_name()
+    public void Delete_returns_not_found_for_unknown_name()
     {
-        var resp = await _client.DeleteAsync("screenshots/file?name=ghost.png");
-        Assert.Equal(HttpStatusCode.NotFound, resp.StatusCode);
+        var result = Delete("ghost.png");
+        Assert.Equal(DirectorCommandStatus.NotFound, result.Status);
     }
 }

@@ -165,11 +165,7 @@ public sealed class TurnEndWatcherTests
     {
         var turnEnds = new List<TurnEndSignal>();
         var working = new List<string>();
-        // Registry/client are only used by the sweep; Observe never touches them.
-        var registry = new CcDirector.Gateway.Discovery.DirectorRegistry(
-            Path.Combine(Path.GetTempPath(), "tew-tests", Guid.NewGuid().ToString("N")));
-        var client = new CcDirector.Gateway.Discovery.DirectorEndpointClient("test-token");
-        var watcher = new TurnEndWatcher(registry, client, turnEnds.Add, working.Add);
+        var watcher = new TurnEndWatcher(turnEnds.Add, working.Add);
         return (watcher, turnEnds, working);
     }
 

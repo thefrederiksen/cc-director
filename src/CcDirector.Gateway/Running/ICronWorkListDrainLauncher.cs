@@ -26,32 +26,20 @@ public sealed class DirectorWorkListDrainLauncher : ICronWorkListDrainLauncher
 
     /// <param name="driverFactory">
     /// Builds the per-drain session driver from (directorId, endpoint, repoPath). Defaults to the production
-    /// <see cref="DirectorImplSessionDriver"/> over the shared client with NO stream hook (the HTTP fallback
-    /// leg only); the Gateway host injects a tunnel-aware factory in production. Tests inject a fake so the
-    /// claim + ordered drain through this launcher is verifiable without a live Director.
+    /// <see cref="DirectorImplSessionDriver"/> with NO stream hook (a no-op driver); the Gateway host injects
+    /// a tunnel-aware factory in production. Tests inject a fake so the claim + ordered drain through this
+    /// launcher is verifiable without a live Director.
     /// </param>
     public DirectorWorkListDrainLauncher(
         WorkListStore store,
-        DirectorEndpointClient? client,
         Func<string, string, string, IImplSessionDriver>? driverFactory = null)
     {
         _store = store ?? throw new ArgumentNullException(nameof(store));
-        if (driverFactory is not null)
-        {
-            _driverFactory = driverFactory;
-        }
-        else if (client is not null)
-        {
-            // Flow analysis: client is non-null in this branch, so the captured driver build is safe. No
-            // stream hook here (sendCommand = null) - this default is the HTTP-fallback-only path; the
-            // Gateway host injects a tunnel-aware factory for production stream mode.
-            _driverFactory = (directorId, endpoint, repoPath) =>
-                new DirectorImplSessionDriver(client, directorId, endpoint, repoPath, sendCommand: null);
-        }
-        else
-        {
-            throw new ArgumentException("a client or a driver factory is required", nameof(client));
-        }
+        // The default factory carries NO stream hook (sendCommand = null); the Gateway host injects a
+        // tunnel-aware factory for production. The endpoint argument is ignored post-cut (tunnel-only).
+        _driverFactory = driverFactory
+            ?? ((directorId, endpoint, repoPath) =>
+                new DirectorImplSessionDriver(directorId, repoPath, sendCommand: null));
     }
 
     public async Task LaunchAsync(string directorId, string endpoint, string repoPath, string listName, string consumer, CancellationToken ct)

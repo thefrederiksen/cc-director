@@ -47,7 +47,7 @@ public sealed class TunnelSnoozeSweepProofTests : IDisposable
     // A tunnel-enabled client whose Director is otherwise unknown to the registry, so any SUCCESS proves the
     // tunnel branch ran (the HTTP fallback resolves no endpoint and returns null).
     private SnoozeSweepDirectorClient TunnelClient(RecordingHub hub, PushedSessionStore? push = null) =>
-        new(new DirectorRegistry(_dir), push, new DirectorEndpointClient(), hub.Send);
+        new(new DirectorRegistry(_dir), push, hub.Send);
 
     [Theory]
     [InlineData(true)]
@@ -95,7 +95,7 @@ public sealed class TunnelSnoozeSweepProofTests : IDisposable
     {
         var registry = new DirectorRegistry(_dir);
         var push = new PushedSessionStore();
-        var client = new SnoozeSweepDirectorClient(registry, push, new DirectorEndpointClient(), (_, _, _) => Task.FromResult<DirectorCommandResult?>(null));
+        var client = new SnoozeSweepDirectorClient(registry, push, (_, _, _) => Task.FromResult<DirectorCommandResult?>(null));
 
         // Unknown to the Gateway entirely -> dead-man's-switch (leave the entry alone).
         Assert.False(client.IsReachable("dir-unknown"));

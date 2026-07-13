@@ -5,26 +5,26 @@ using CcDirector.Gateway.Contracts;
 namespace CcDirector.Gateway.Api;
 
 /// <summary>
-/// Issue #1177 (Phase 1): the ONE place the Gateway decides "send this command DOWN the Director's stream,
-/// or fall back to HTTP". Every command endpoint routes through <see cref="TrySendAsync"/> so the decision
-/// - and the request-DTO serialization - is uniform across verbs and cannot diverge.
+/// Issue #1177 (Phase 1): the ONE place the Gateway sends a command DOWN the Director's stream (the tunnel).
+/// Every command endpoint routes through <see cref="TrySendAsync"/> so the send decision - and the
+/// request-DTO serialization - is uniform across verbs and cannot diverge.
 ///
-/// The decision itself lives in the injected <paramref name="sendCommand"/> delegate (the Gateway host
-/// passes <c>GatewayHost.SendCommandAsync</c> when stream mode is ON, and null when it is off). That
-/// delegate returns null when the Director has no active stream connection, so a null return here means
-/// "no stream - use HTTP" for BOTH the flag-off and the flag-on-but-offline cases. A non-null result -
-/// success OR a typed failure - is authoritative and the endpoint must not also call HTTP.
+/// The send itself lives in the injected <paramref name="sendCommand"/> delegate
+/// (<c>GatewayHost.SendCommandAsync</c>). Gateway Cleanup (the cut) made the tunnel MANDATORY and deleted
+/// DirectorEndpointClient, so there is NO HTTP fallback: a null return here means the Director is not
+/// tunnel-connected and the command is UNROUTABLE - the endpoint surfaces that as a 502, never an HTTP dial.
+/// A non-null result - success OR a typed failure - is authoritative.
 /// </summary>
 internal static class DirectorCommandRouter
 {
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
 
-    /// <summary>The signature of the "send a command down a Director's stream" hook, non-null only when stream mode is on.</summary>
+    /// <summary>The signature of the "send a command down a Director's stream" hook.</summary>
     public delegate Task<DirectorCommandResult?> SendDirectorCommandAsync(string directorId, DirectorCommand command, CancellationToken ct);
 
     /// <summary>
-    /// Try to route a command down the stream. Returns the stream result, or null to signal the caller to
-    /// fall back to its existing HTTP path (stream mode off, or the Director is not stream-connected).
+    /// Try to route a command down the stream. Returns the stream result, or null when the Director is not
+    /// tunnel-connected (post-cut there is no HTTP fallback, so the caller surfaces null as a 502).
     /// </summary>
     public static async Task<DirectorCommandResult?> TrySendAsync(
         SendDirectorCommandAsync? sendCommand, string directorId, string verb, string sessionId, object? payload, CancellationToken ct)
@@ -41,7 +41,7 @@ internal static class DirectorCommandRouter
         };
 
         var result = await sendCommand(directorId, command, ct);
-        FileLog.Write($"[DirectorCommandRouter] {verb} sid={sessionId} director={directorId}: {(result is null ? "no stream -> HTTP fallback" : $"stream status={result.Status}")}");
+        FileLog.Write($"[DirectorCommandRouter] {verb} sid={sessionId} director={directorId}: {(result is null ? "director not tunnel-connected (unroutable)" : $"stream status={result.Status}")}");
         return result;
     }
 

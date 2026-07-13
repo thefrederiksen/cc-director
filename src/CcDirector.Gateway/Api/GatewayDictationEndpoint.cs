@@ -60,7 +60,7 @@ internal static class GatewayDictationEndpoint
     // is a single guid-pair and is bounded by real abandoned-upload volume.
     private static readonly ConcurrentDictionary<string, string> _uploadSids = new();
 
-    public static void Map(IEndpointRouteBuilder app, DirectorRegistry registry, DirectorEndpointClient client,
+    public static void Map(IEndpointRouteBuilder app, DirectorRegistry registry,
         SessionOwnerCache? owners, string token, GatewayTranscriptionService transcription,
         TranscribingSessions transcribingSessions, VoiceUploadStore uploads, Pairing.DeviceRegistry devices,
         Streaming.PushedSessionStore? pushedSessions = null,
@@ -182,7 +182,7 @@ internal static class GatewayDictationEndpoint
             // from then on, so there is no age-swept cache window.
             var entry = _completes.GetOrAdd(uploadId, id => new CompleteEntry(
                 new Lazy<Task<DictationOutcome>>(() => RunCompleteCoreAsync(
-                    id, req, uploads, registry, client, owners, transcription, transcribingSessions, deliverySurface,
+                    id, req, uploads, registry, owners, transcription, transcribingSessions, deliverySurface,
                     pushedSessions, sendCommand, stale))));
 
             DictationOutcome outcome;
@@ -318,7 +318,7 @@ internal static class GatewayDictationEndpoint
 
     private static async Task<DictationOutcome> RunCompleteCoreAsync(
         string uploadId, DictationCompleteRequest req, VoiceUploadStore uploads, DirectorRegistry registry,
-        DirectorEndpointClient client, SessionOwnerCache? owners, GatewayTranscriptionService transcription,
+        SessionOwnerCache? owners, GatewayTranscriptionService transcription,
         TranscribingSessions transcribingSessions, string? deliverySurface,
         Streaming.PushedSessionStore? pushedSessions, DirectorCommandRouter.SendDirectorCommandAsync? sendCommand,
         TimeSpan streamStale)
@@ -373,12 +373,12 @@ internal static class GatewayDictationEndpoint
             // Gateway Cleanup mission, Phase 2: resolve the owner push-store-first (no HTTP fan-out) and gate
             // on an exited session, exactly as the old LocateAsync did, then reach it through the tunnel.
             var (director, session) = await GatewayEndpoints.LocateSessionAsync(
-                registry, client, sid, pushedSessions, streamStale, owners);
+                registry, sid, pushedSessions, streamStale, owners);
             if (director is null || session is null)
                 return DictationOutcome.Error(StatusCodes.Status404NotFound, "session not found");
             if (IsExited(session))
                 return DictationOutcome.Error(StatusCodes.Status410Gone, "session has exited");
-            var route = new SessionVerbClient(client, director, sendCommand);
+            var route = new SessionVerbClient(director, sendCommand);
 
             // Moved-on guard (issue #1006): for a RESUMED clip, if the session's terminal output grew
             // materially since the clip was recorded, other turns happened - drop the stale dictation

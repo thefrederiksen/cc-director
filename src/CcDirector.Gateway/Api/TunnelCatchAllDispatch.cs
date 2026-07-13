@@ -6,12 +6,12 @@ using Microsoft.AspNetCore.Http;
 namespace CcDirector.Gateway.Api;
 
 /// <summary>
-/// Gateway Cleanup mission, Phase 2: dispatch the SESSION-scoped verbs that flow through the
-/// <c>/sessions/{sid}/{**rest}</c> catch-all onto the tunnel, instead of dialing the owning Director over HTTP.
-/// Used only when stream mode is on and the owner is stream-connected (the caller resolves that via
-/// <see cref="Streaming.PushedSessionStore.TryLocate"/>); a request whose (method, rest-path) is not a mapped
-/// verb, or a Director with no active stream, returns false so the caller keeps the existing HTTP proxy path -
-/// byte-identical when stream mode is off.
+/// Gateway Cleanup mission (the cut): dispatch the SESSION-scoped verbs that flow through the
+/// <c>/sessions/{sid}/{**rest}</c> catch-all onto THE TUNNEL. This verb TABLE is the explicit set the catch-all
+/// route serves - it is NOT a generic HTTP passthrough (the old HTTP reverse-proxy leg was deleted at the cut).
+/// The caller resolves the owner via <see cref="Streaming.PushedSessionStore.TryLocate"/> (a located owner is
+/// always tunnel-connected); a request whose (method, rest-path) is not a mapped verb returns false so the
+/// caller answers 404. There is NO HTTP fallback.
 ///
 /// The catch-all carries the session verbs that do NOT have their own literal Gateway route: the reads (turns,
 /// buffer-html, usage, context, history, github-urls, queue-read) and the writes (resize, clear-context,
@@ -67,7 +67,7 @@ internal sealed class TunnelCatchAllDispatch
 
     /// <summary>
     /// Try to serve this catch-all request over the tunnel. Returns true when handled (the response is written),
-    /// false to fall through to the caller's HTTP proxy path (an unmapped verb, or no active stream).
+    /// false when the (method, rest-path) is not a mapped verb (the caller answers 404). There is no HTTP fallback.
     /// </summary>
     public async Task<bool> TryDispatchAsync(HttpContext ctx, string sid, string directorId, string? rest)
     {
@@ -93,8 +93,8 @@ internal sealed class TunnelCatchAllDispatch
         };
 
         var result = await _sendCommand(directorId, command, ctx.RequestAborted);
-        FileLog.Write($"[TunnelCatchAllDispatch] {ctx.Request.Method} {rest} -> verb={plan.Verb} sid={sid}: {(result is null ? "no stream -> HTTP fallback" : result.Status.ToString())}");
-        if (result is null) return false; // no active stream -> HTTP fallback
+        FileLog.Write($"[TunnelCatchAllDispatch] {ctx.Request.Method} {rest} -> verb={plan.Verb} sid={sid}: {(result is null ? "owner not tunnel-connected" : result.Status.ToString())}");
+        if (result is null) return false; // owner dropped the tunnel between locate and dispatch (rare) -> caller answers
 
         await WriteResultAsync(ctx, result);
         return true;

@@ -1,6 +1,7 @@
 using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
+using System.Text.Json;
 using CcDirector.ControlApi;
 using CcDirector.Core.Configuration;
 using CcDirector.Core.Sessions;
@@ -47,11 +48,18 @@ public sealed class DirectorSurfaceEndpointTests : IAsyncLifetime
 
     // ---- #5 resize ----
 
+    // Gateway Cleanup (the cut): the Director's POST /sessions/{sid}/resize REST route is deleted. Resize is
+    // now a tunnel verb whose validation core lives in SessionWriteExecutor.Resize (dispatched via
+    // SessionCommandExecutor.DispatchAsync). This asserts that same input guard directly against the real
+    // core - non-positive cols/rows -> BadRequest - so the strength of the original wire test is preserved
+    // over the surviving code, not a canned stand-in. (The Gateway maps a BadRequest verb result to HTTP 400
+    // in TunnelCatchAllDispatch.)
     [Fact]
     public async Task Resize_rejects_nonpositive_dimensions()
     {
-        var resp = await _client.PostAsJsonAsync($"sessions/{Guid.NewGuid()}/resize", new ResizeRequest { Cols = 0, Rows = 24 });
-        Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
+        var result = await SessionCommandExecutor.DispatchAsync(_sm, _host.DirectorId,
+            Command("resize", Guid.NewGuid().ToString(), new ResizeRequest { Cols = 0, Rows = 24 }));
+        Assert.Equal(DirectorCommandStatus.BadRequest, result.Status);
     }
 
     [Fact]
@@ -63,11 +71,16 @@ public sealed class DirectorSurfaceEndpointTests : IAsyncLifetime
 
     // ---- #6 relink ----
 
+    // Gateway Cleanup (the cut): the Director's POST /sessions/{sid}/relink REST route is deleted. Relink is
+    // now a tunnel verb whose validation core lives in SessionWriteExecutor.Relink (dispatched via
+    // SessionCommandExecutor.DispatchAsync). This asserts that same input guard directly against the real
+    // core - absent/blank claudeSessionId -> BadRequest - so the original wire test's strength is preserved.
     [Fact]
     public async Task Relink_rejects_empty_claude_session_id()
     {
-        var resp = await _client.PostAsJsonAsync($"sessions/{Guid.NewGuid()}/relink", new RelinkRequest { ClaudeSessionId = "" });
-        Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
+        var result = await SessionCommandExecutor.DispatchAsync(_sm, _host.DirectorId,
+            Command("relink", Guid.NewGuid().ToString(), new RelinkRequest { ClaudeSessionId = "" }));
+        Assert.Equal(DirectorCommandStatus.BadRequest, result.Status);
     }
 
     [Fact]
@@ -119,4 +132,16 @@ public sealed class DirectorSurfaceEndpointTests : IAsyncLifetime
         Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
         Assert.Contains("items", await resp.Content.ReadAsStringAsync());
     }
+
+    // ---- helpers ----
+
+    private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
+
+    private static DirectorCommand Command(string verb, string sessionId, object? payload = null) => new()
+    {
+        CommandId = "cmd-surface",
+        Verb = verb,
+        SessionId = sessionId,
+        PayloadJson = payload is null ? "" : JsonSerializer.Serialize(payload, Json),
+    };
 }

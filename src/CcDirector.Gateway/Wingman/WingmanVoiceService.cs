@@ -65,15 +65,12 @@ public sealed class WingmanVoiceService
 
     /// <param name="ttsHttpClient">Optional HTTP client for the text-to-speech call (tests inject a stub
     /// over a fake handler, issue #939). A per-call 60-second client is created when null.</param>
-    public WingmanVoiceService(Func<Core.Configuration.WingmanModelRole, CancellationToken, Task<IAgentBrain>> brainProvider, KeyVault vault, DirectorEndpointClient client, string? persistPath = null, WingmanTrainingStore? training = null, Func<string>? instructionsProvider = null, HttpClient? ttsHttpClient = null)
+    public WingmanVoiceService(Func<Core.Configuration.WingmanModelRole, CancellationToken, Task<IAgentBrain>> brainProvider, KeyVault vault, string? persistPath = null, WingmanTrainingStore? training = null, Func<string>? instructionsProvider = null, HttpClient? ttsHttpClient = null)
     {
         _translator = new WingmanTranslator(brainProvider, instructionsProvider: instructionsProvider);
         _vault = vault;
-        // Gateway Cleanup mission, Phase 2: the owning Director is reached through the tunnel-first
-        // SessionVerbClient the callers pass into GenerateAsync, so this service no longer holds or dials a
-        // DirectorEndpointClient itself. The parameter is retained so existing construction sites and tests
-        // are unchanged.
-        _ = client;
+        // Post-cut: the owning Director is reached through the tunnel-only SessionVerbClient the callers pass
+        // into GenerateAsync, so this service holds no Director client.
         _ttsHttp = ttsHttpClient;
         _training = training ?? new WingmanTrainingStore();
         // Which sessions are voice sessions survives a gateway restart. Issue #553: the per-session

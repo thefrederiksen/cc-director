@@ -178,9 +178,6 @@ public sealed class ControlApiHost : IAsyncDisposable
     // Resolved lazily at request time: the scheduler is created AFTER the Control API host
     // (StartControlApi runs before StartScheduler), so we capture an accessor, not the instance.
     private readonly Func<Core.Scheduler.SchedulerService?>? _schedulerAccessor;
-    // Resolved lazily too (issue #329): the Engine starts after this host AND its dispatcher
-    // only exists once the deferred email-tool discovery completes.
-    private readonly Func<Engine.Dispatcher.CommunicationDispatcher?>? _commDispatcherAccessor;
     private readonly string? _instancesDirectory;
     private bool _stopped;
     private bool _stateServicesStarted;
@@ -196,7 +193,7 @@ public sealed class ControlApiHost : IAsyncDisposable
     /// If true, bearer-token or cookie auth is required for all routes except /healthz/login/logout.
     /// If false (default), the Director is completely open. The Tailscale tailnet is the trust boundary.
     /// </param>
-    public ControlApiHost(SessionManager sessionManager, string version, Func<Task> requestShutdownAsync, bool useEphemeralPort = false, bool authEnabled = false, RepositoryRegistry? repositoryRegistry = null, string? directorId = null, Func<Core.Scheduler.SchedulerService?>? schedulerAccessor = null, string? instancesDirectory = null, Func<Engine.Dispatcher.CommunicationDispatcher?>? commDispatcherAccessor = null)
+    public ControlApiHost(SessionManager sessionManager, string version, Func<Task> requestShutdownAsync, bool useEphemeralPort = false, bool authEnabled = false, RepositoryRegistry? repositoryRegistry = null, string? directorId = null, Func<Core.Scheduler.SchedulerService?>? schedulerAccessor = null, string? instancesDirectory = null)
     {
         _sessionManager = sessionManager ?? throw new ArgumentNullException(nameof(sessionManager));
         _version = version ?? "0.0.0";
@@ -205,7 +202,6 @@ public sealed class ControlApiHost : IAsyncDisposable
         _authEnabled = authEnabled;
         _repositoryRegistry = repositoryRegistry;
         _schedulerAccessor = schedulerAccessor;
-        _commDispatcherAccessor = commDispatcherAccessor;
         // Tests pass an isolated instances directory so test Directors never appear in a real
         // Gateway's discovery (and a real Director never appears in a test Gateway's).
         _instancesDirectory = instancesDirectory;
@@ -417,25 +413,26 @@ public sealed class ControlApiHost : IAsyncDisposable
         var signedInUserProvider = new Core.Account.SignedInUserProvider(Core.Configuration.GatewayConfig.Load);
 
         ControlEndpoints.Map(_app, _sessionManager, DirectorId, _version, _requestShutdownAsync, _authEnabled, _repositoryRegistry, _turnSummaryCache, gatewayUrl, _proactiveExplain, GatewayMonitor, resolveTailnetEndpoint, () => _gatewayClient, messageSteward, _missionStore, ct => signedInUserProvider.ResolveAsync(ct));
-        // Dictation glossary resolution mirrors the key resolver (#253): the Gateway's shared
-        // dictionary when attached, the local cache when standalone. GatewayConfig.Load (not the
-        // snapshot) is passed so the resolver re-reads config.json each dictation and self-heals
-        // into Gateway mode without a restart.
-        var dictionaryResolver = new Core.Dictation.DictionaryResolver(
-            _sessionManager.Options, Core.Configuration.GatewayConfig.Load);
-        DictationEndpoint.Map(_app, _sessionManager.Options, dictionaryResolver);
-        TerminalStreamEndpoint.Map(_app, _sessionManager);
-        // Gateway Cleanup Phase 0: these three reads now dispatch through the shared SessionReadExecutor,
-        // which needs this Director's id (for the command context/logging), so it is passed in.
-        SessionUsageEndpoint.Map(_app, _sessionManager, DirectorId);
-        // GET /sessions/{sid}/context (issue #799): the always-visible "how full is the window"
-        // gauge data, via the session driver's ContextUsage capability (Claude today).
-        SessionContextEndpoint.Map(_app, _sessionManager, DirectorId);
-        // GET /sessions/{sid}/history (epic #733): the parsed, agent-agnostic conversation
-        // history (reuses Core SessionHistoryReader) plus the transcript-derived history state.
-        // Forwarded to the Cockpit verbatim by the Gateway's generic /sessions/{sid}/{**rest} proxy.
-        SessionHistoryEndpoint.Map(_app, _sessionManager, DirectorId);
-        ClaudeTranscriptsEndpoint.Map(_app);
+
+        // Gateway Cleanup mission: the Director floor's tunnel-bounce. An operator/launcher can force
+        // this Director to re-establish its OUTBOUND tunnel without a full restart. Loopback floor route.
+        _app.MapPost("/reconnect", async (HttpContext ctx) =>
+        {
+            var caller = Core.Network.LoopbackPeerResolver.Describe(ctx.Connection.RemotePort, ctx.Connection.LocalPort);
+            FileLog.Write($"[ControlApiHost] POST reconnect requested caller={caller}");
+            if (_streamClient is null)
+                return Results.Json(new { accepted = false, reason = "tunnel not enabled" });
+            await _streamClient.ReconnectAsync();
+            return Results.Json(new { accepted = true });
+        });
+        // Gateway Cleanup mission (the cut): the browser-facing session reads, the terminal stream, and
+        // dictation no longer register their own Director routes here - they ride the tunnel exclusively.
+        // The usage/context/history/facts reads dispatch through the shared executors over the tunnel; the
+        // live terminal producer moved to the up-stream (open-terminal-stream); dictation is now
+        // client->Gateway audio; claude-transcripts and dispatch are dropped legacy. Only the Phase-4
+        // config surface below (settings/agents/tools/workspaces/scheduler) stays on the loopback floor for
+        // LOCAL access (the desktop app + cc-settings-api call it same-machine); remote config editing moves
+        // to proper tunnel verbs in Phase 4.
         SettingsEndpoint.Map(_app, ReapplyGatewayAsync, () => Port);
         // /settings/agents (issue #584): full Settings-dialog Agents-tab parity over REST -
         // library CRUD/reorder/enable plus Detect, Quick check, resolved command line, and the
@@ -444,16 +441,6 @@ public sealed class ControlApiHost : IAsyncDisposable
         ToolsEndpoint.Map(_app);
         WorkspacesEndpoint.Map(_app);
         SchedulerEndpoint.Map(_app, _schedulerAccessor);
-        // POST /dispatch (issue #329): null accessor means "no Engine hosted here" (tests
-        // that don't care, embedded hosts) - the endpoint then answers 503, never throws.
-        DispatchEndpoint.Map(_app, _commDispatcherAccessor ?? (() => null));
-        // GET /facts (issue #330): the tool inventory + launcher facts the Gateway pulls. Gateway Cleanup
-        // Phase 0 (wave 3): routes through the shared CatalogReadExecutor.Facts core, so it needs the SessionManager.
-        FactsEndpoint.Map(_app, _sessionManager, DirectorId, _version);
-        // POST /sessions/{id}/voice-turn (issue #351): server-side walkie-talkie turn
-        // (transcribe -> wait -> send -> poll -> summarize -> TTS -> SSE reply).
-        VoiceTurnEndpoint.Map(_app, _sessionManager);
-
         await _app.StartAsync();
 
         if (_useEphemeralPort || _fellBackToEphemeral)

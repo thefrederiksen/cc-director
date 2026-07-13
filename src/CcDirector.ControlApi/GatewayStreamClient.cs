@@ -296,6 +296,19 @@ public sealed class GatewayStreamClient : IAsyncDisposable
         catch (Exception ex) { FileLog.Write($"[GatewayStreamClient] {what} dropped (mid-reconnect?): {ex.Message}"); }
     }
 
+    /// <summary>Force the outbound tunnel to bounce: stop the current connection so the supervise
+    /// loop re-dials (within RestartDelay). Idempotent; inert when the tunnel is disabled. This is the
+    /// Director floor's POST /reconnect capability (Gateway Cleanup mission).</summary>
+    public async Task ReconnectAsync()
+    {
+        if (!IsEnabled) return;
+        var conn = _connection;
+        if (conn is null) return;
+        FileLog.Write("[GatewayStreamClient] ReconnectAsync: bouncing tunnel on request");
+        try { await conn.StopAsync(); }
+        catch (Exception ex) { FileLog.Write($"[GatewayStreamClient] ReconnectAsync stop error: {ex.Message}"); }
+    }
+
     public async Task StopAsync()
     {
         _disposed = true;

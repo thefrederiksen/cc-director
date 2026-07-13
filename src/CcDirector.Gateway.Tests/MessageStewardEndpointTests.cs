@@ -8,10 +8,16 @@ using Xunit;
 namespace CcDirector.Gateway.Tests;
 
 /// <summary>
-/// End-to-end proof of the fleet-message steward (messaging.steward) at the Director's /fleet/* handlers:
-/// a duplicate send is suppressed AND surfaced back to the sender; with the steward disabled the same pair
-/// delivers byte-identically; and a NORMAL prompt (POST /sessions/{sid}/prompt) is never touched by the
-/// steward (it guards only /fleet/*). A real <see cref="ControlApiHost"/> is driven over HTTP.
+/// Gateway Cleanup mission (CUT RESTORATION, SB-4a): end-to-end proof of the fleet-message steward
+/// (messaging.steward) at the Director's restored /fleet/* handlers - a duplicate send is suppressed AND
+/// surfaced back to the sender (never a silent drop), and with the steward disabled the same pair delivers
+/// byte-identically. A real <see cref="ControlApiHost"/> is driven over loopback HTTP, exactly as
+/// cc-devthrottle drives the local Director.
+///
+/// The steward guards ONLY /fleet/* (send + ask). The pre-cut version also proved "a normal
+/// POST /sessions/{sid}/prompt is never touched by the steward"; that Director REST route was deleted at the
+/// cut (prompt rides the tunnel now), so that assertion no longer has a loopback route to exercise and is not
+/// re-added - the steward's narrow scope is inherent, as it is invoked only inside the two /fleet/* handlers.
 /// </summary>
 [Collection("DirectorRoot")]
 public sealed class MessageStewardEndpointTests : IAsyncLifetime
@@ -91,29 +97,6 @@ public sealed class MessageStewardEndpointTests : IAsyncLifetime
             Assert.NotNull(resp2);
             Assert.True(resp2.Accepted);            // no dedupe when the steward is off
             Assert.Equal(1, resp2.DeliveredCount);
-        }
-        finally { http.Dispose(); await host.StopAsync(); sm.Dispose(); }
-    }
-
-    [Fact]
-    public async Task NormalPrompt_IsNeverTouchedByTheSteward()
-    {
-        var options = new AgentOptions(); // steward ON with a wide dedupe window
-        options.MessageSteward.DedupeWindowMs = 60_000;
-        var (host, sm, http, targetId) = await StartAsync(options);
-        try
-        {
-            // Two IDENTICAL normal prompts: the steward guards only /fleet/*, so ordinary typing is
-            // untouched and both are accepted (no dedupe, no throttle).
-            var body = new PromptRequest { Text = "type this", AppendEnter = false };
-
-            var resp1 = await (await http.PostAsJsonAsync($"sessions/{targetId}/prompt", body)).Content.ReadFromJsonAsync<PromptResponse>();
-            var resp2 = await (await http.PostAsJsonAsync($"sessions/{targetId}/prompt", body)).Content.ReadFromJsonAsync<PromptResponse>();
-
-            Assert.NotNull(resp1);
-            Assert.True(resp1.Accepted);
-            Assert.NotNull(resp2);
-            Assert.True(resp2.Accepted);
         }
         finally { http.Dispose(); await host.StopAsync(); sm.Dispose(); }
     }

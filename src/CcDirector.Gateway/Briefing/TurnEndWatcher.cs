@@ -47,8 +47,6 @@ public sealed class TurnEndWatcher : IDisposable
     /// </summary>
     public static bool SweepEnabled = true;
 
-    private readonly DirectorRegistry _registry;
-    private readonly DirectorEndpointClient _client;
     private readonly PushedSessionStore? _pushedSessions;
     private readonly TimeSpan _streamStale;
     private readonly Action<TurnEndSignal> _onTurnEnd;
@@ -65,16 +63,12 @@ public sealed class TurnEndWatcher : IDisposable
     /// never pushes (stream mode off / file-discovered legacy) is still pulled over HTTP, byte-identical.</param>
     /// <param name="streamStale">Freshness window for the push store read; defaults to the roster's window.</param>
     public TurnEndWatcher(
-        DirectorRegistry registry,
-        DirectorEndpointClient client,
         Action<TurnEndSignal> onTurnEnd,
         Action<string> onSessionWorking,
         TimeSpan? reconcileInterval = null,
         PushedSessionStore? pushedSessions = null,
         TimeSpan? streamStale = null)
     {
-        _registry = registry ?? throw new ArgumentNullException(nameof(registry));
-        _client = client ?? throw new ArgumentNullException(nameof(client));
         _pushedSessions = pushedSessions;
         _streamStale = streamStale ?? TimeSpan.FromSeconds(Core.Configuration.GatewayConfig.DefaultStreamStaleAfterSeconds);
         _onTurnEnd = onTurnEnd ?? throw new ArgumentNullException(nameof(onTurnEnd));
@@ -141,41 +135,21 @@ public sealed class TurnEndWatcher : IDisposable
         });
     }
 
-    internal async Task SweepAsync(bool sweepAll)
+    internal Task SweepAsync(bool sweepAll)
     {
-        // Gateway Cleanup mission, Phase 2: under stream mode the catch-up / reconcile reads each
-        // stream-connected Director's pushed session snapshot straight from the push store - no HTTP dial.
-        // Only a Director that never pushes (stream mode off / file-discovered legacy) is still pulled over
-        // HTTP below, byte-identical to before. The signal now carries the DirectorId, not a control URL.
+        // Post-cut: the catch-up / reconcile sweep reads each stream-connected Director's pushed session
+        // snapshot straight from the push store - there is no HTTP pull. A Director that never pushes is not
+        // connected to the tunnel and simply does not appear here. The signal carries the DirectorId.
+        _ = sweepAll;
         if (_pushedSessions is not null)
         {
             foreach (var (directorId, session) in _pushedSessions.SnapshotFresh(_streamStale))
             {
-                if (_disposed) return;
+                if (_disposed) return Task.CompletedTask;
                 Observe(session.SessionId, session.ActivityState, directorId);
             }
         }
-
-        foreach (var d in _registry.ListDirectors())
-        {
-            if (_disposed) return;
-            // A stream-connected Director's sessions came from the push store above; never HTTP-pull it.
-            if (_pushedSessions is not null && _registry.IsStateReporting(d.DirectorId)) continue;
-            if (!sweepAll && _registry.IsStateReporting(d.DirectorId)) continue; // it pushes
-            if (!_registry.ShouldProbe(d.DirectorId)) continue;                  // circuit open
-            var ep = d.ControlEndpoint;
-            if (string.IsNullOrEmpty(ep)) continue;
-
-            var (sessions, error) = await _client.ListSessionsWithStatusAsync(ep);
-            if (sessions is null)
-            {
-                _registry.RecordUnreachable(d.DirectorId, error ?? "unreachable");
-                continue;
-            }
-            _registry.RecordReachable(d.DirectorId);
-            foreach (var s in sessions)
-                Observe(s.SessionId, s.ActivityState, d.DirectorId);
-        }
+        return Task.CompletedTask;
     }
 
     /// <summary>

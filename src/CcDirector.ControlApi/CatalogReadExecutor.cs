@@ -48,6 +48,11 @@ internal sealed class CatalogReadExecutor : ISessionCommandArea
         "fs-list",
         "facts",
         "repos-list",
+        // Gateway Cleanup CUT RESTORATION (SB-4a): the enriched per-repo overview the Repositories page reads.
+        // Migrated late (the cut deleted the un-migrated leftover); it reads the live registry AND aggregates
+        // live/history/claude/handover activity per repo. The core reproduces the old REST lambda verbatim so
+        // the (Phase-4-DEFERRED) REST path and this tunnel verb share one core and cannot drift.
+        "repos-overview",
         // Gateway Cleanup Phase 0 (Wave 4a): the two saved-handover-DOCUMENT reads. These read the saved
         // handover documents on this machine (DISTINCT from the per-session "handover" info verb). Each core
         // reproduces its old REST lambda verbatim, so the REST route and the tunnel verb share one core and
@@ -67,6 +72,7 @@ internal sealed class CatalogReadExecutor : ISessionCommandArea
             "fs-list" => FsList(command),
             "facts" => Facts(context.DirectorId, context.Services?.DirectorVersion),
             "repos-list" => ReposList(context.Services?.Repositories),
+            "repos-overview" => ReposOverview(context.SessionManager, context.Services?.Repositories),
             "handovers-list" => HandoversList(command),
             "handovers-content" => HandoversContent(command),
             _ => DirectorCommandResult.Fail(DirectorCommandStatus.BadRequest, $"verb '{command.Verb}' is not handled by the catalog read area"),
@@ -132,6 +138,92 @@ internal sealed class CatalogReadExecutor : ISessionCommandArea
             .OrderByDescending(r => r.LastUsed ?? DateTime.MinValue)
             .ToList();
         return DirectorCommandResult.Success(SessionCommandExecutor.Serialize(repos));
+    }
+
+    /// <summary>
+    /// The <c>repos-overview</c> verb (director-level, no session): the enriched per-repository overview the
+    /// Repositories page reads. Mirrors the Director's <c>GET /repos/overview</c> lambda verbatim - a null
+    /// registry -&gt; an empty array, otherwise one <see cref="RepoOverviewDto"/> per registered repo with live
+    /// session names, resumable/history counts, last-session summary, git branch, and handover counts, ordered
+    /// by last-used descending. The live registry rides in <see cref="SessionCommandServices.Repositories"/>
+    /// (as <c>repos-list</c> reads it) and the live sessions come from the producing Director's own
+    /// <see cref="SessionManager"/>, so the value is identical on the REST path and this tunnel verb.
+    /// </summary>
+    internal static DirectorCommandResult ReposOverview(SessionManager sessionManager, RepositoryRegistry? repositories)
+    {
+        FileLog.Write("[CatalogReadExecutor] repos-overview");
+        if (repositories is null)
+            return DirectorCommandResult.Success(SessionCommandExecutor.Serialize(Array.Empty<RepoOverviewDto>()));
+
+        // Aggregate every per-repo data source once, keyed by normalized path.
+        var liveByRepo = sessionManager.ListSessions()
+            .Where(s => s.ActivityState != ActivityState.Exited)
+            .GroupBy(s => ControlEndpoints.NormalizeRepoPath(s.RepoPath))
+            .ToDictionary(g => g.Key, g => g.Select(s => s.CustomName ?? ControlEndpoints.ProjectNameOf(s.RepoPath)).ToList());
+
+        var historyByRepo = new SessionHistoryStore().LoadAll()
+            .Where(h => !string.IsNullOrEmpty(h.RepoPath))
+            .GroupBy(h => ControlEndpoints.NormalizeRepoPath(h.RepoPath))
+            .ToDictionary(g => g.Key, g => g.ToList());
+
+        var claudeByRepo = ClaudeSessionReader.ScanAllProjects()
+            .Where(m => !string.IsNullOrEmpty(m.ProjectPath))
+            .GroupBy(m => ControlEndpoints.NormalizeRepoPath(m.ProjectPath!))
+            .ToDictionary(g => g.Key, g => g.ToList());
+
+        var handoversByRepo = HandoverScanner.ScanAll()
+            .SelectMany(h => h.RepoPaths.Select(p => (Repo: ControlEndpoints.NormalizeRepoPath(p), Handover: h)))
+            .GroupBy(x => x.Repo)
+            .ToDictionary(g => g.Key, g => g.Select(x => x.Handover).ToList());
+
+        var overview = repositories.Repositories.Select(r =>
+        {
+            var key = ControlEndpoints.NormalizeRepoPath(r.Path);
+            liveByRepo.TryGetValue(key, out var liveNames);
+            historyByRepo.TryGetValue(key, out var history);
+            claudeByRepo.TryGetValue(key, out var claude);
+            handoversByRepo.TryGetValue(key, out var handovers);
+
+            var latestHistory = history?.OrderByDescending(h => h.LastUsedAt).FirstOrDefault();
+            var latestClaude = claude?.OrderByDescending(m => m.Modified).FirstOrDefault();
+
+            var lastHistoryAt = latestHistory is null || latestHistory.LastUsedAt == default
+                ? (DateTime?)null
+                : latestHistory.LastUsedAt.UtcDateTime;
+            var lastClaudeAt = latestClaude is null || latestClaude.Modified == DateTime.MinValue
+                ? (DateTime?)null
+                : latestClaude.Modified;
+
+            // Most recent activity wins; its summary describes the last session.
+            var lastSessionAt = (lastHistoryAt ?? DateTime.MinValue) >= (lastClaudeAt ?? DateTime.MinValue)
+                ? lastHistoryAt ?? lastClaudeAt
+                : lastClaudeAt;
+            var lastSummary = lastSessionAt == lastClaudeAt
+                ? latestClaude?.Summary ?? latestClaude?.FirstPrompt ?? latestHistory?.FirstPromptSnippet
+                : latestHistory?.FirstPromptSnippet ?? latestClaude?.Summary ?? latestClaude?.FirstPrompt;
+
+            return new RepoOverviewDto
+            {
+                Name = string.IsNullOrEmpty(r.Name) ? Path.GetFileName(r.Path.TrimEnd('\\', '/')) : r.Name,
+                Path = r.Path,
+                LastUsed = r.LastUsed,
+                PathExists = Directory.Exists(r.Path),
+                LiveSessionCount = liveNames?.Count ?? 0,
+                LiveSessionNames = liveNames ?? new List<string>(),
+                ResumableSessionCount = claude?.Count ?? 0,
+                HistorySessionCount = history?.Count ?? 0,
+                LastSessionAtUtc = lastSessionAt,
+                LastSessionSummary = lastSummary,
+                GitBranch = claude?.OrderByDescending(m => m.Modified)
+                    .FirstOrDefault(m => !string.IsNullOrEmpty(m.GitBranch))?.GitBranch,
+                HandoverCount = handovers?.Count ?? 0,
+                LastHandoverUtc = handovers?.Max(h => h.DateUtc),
+            };
+        })
+        .OrderByDescending(r => r.LastUsed ?? DateTime.MinValue)
+        .ToList();
+
+        return DirectorCommandResult.Success(SessionCommandExecutor.Serialize(overview));
     }
 
     /// <summary>

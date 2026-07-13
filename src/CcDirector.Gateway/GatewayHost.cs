@@ -106,7 +106,6 @@ public sealed class GatewayHost : IAsyncDisposable
     // Issue #1176 (Phase 1a): Gateway-side stream feature switch + staleness window, resolved from
     // config.json (or an explicit constructor override for tests). When off, the hub is not mapped and
     // /sessions never consults the pushed cache, so behaviour is byte-identical to today.
-    private readonly bool _streamMode;
     private readonly TimeSpan _streamStaleAfter;
 
     public bool AuthEnabled { get; }
@@ -284,7 +283,6 @@ public sealed class GatewayHost : IAsyncDisposable
     /// </summary>
     private Account.ChildDeviceMirrorService? _childMirror;
 
-    private readonly DirectorEndpointClient _client;
     // The single resolve-then-create path for spawning a session on a target machine (cron + the
     // interactive POST /machines/{machine}/sessions relay). Built in the constructor, used by both.
     private readonly Running.MachineSessionSpawner _machineSessionSpawner;
@@ -363,7 +361,6 @@ public sealed class GatewayHost : IAsyncDisposable
     // terminal tombstone de-dupes the upload id forever until the client acknowledges it - so there is no
     // age sweep for dictation staging (only the unrelated voice-turn staging is age-swept).
     private readonly Voice.VoiceUploadStore _dictationUploads = new(CcDirector.Core.Storage.CcStorage.DictationUploads());
-    private AdvertisedEndpointMonitor? _endpointMonitor;
     // Issue #629: the durable, bounded, restart-surviving retry queue behind the login-telemetry
     // relay. Constructed here (loads any events a previous run left on disk), wired into the relay
     // endpoint, started flushing in StartAsync, and disposed in StopAsync.
@@ -455,7 +452,7 @@ public sealed class GatewayHost : IAsyncDisposable
         Registry.OnDirectorRemoved += id => RosterCache.Forget(id);
         LauncherConnections = new Streaming.LauncherConnectionRegistry();
         var gatewayConfig = Core.Configuration.GatewayConfig.Load();
-        _streamMode = streamMode ?? gatewayConfig.StreamMode;
+        // Gateway Cleanup: the tunnel is mandatory; the streamMode parameter is ignored and retained only for existing test call sites (removed with the test rewrite).
         _streamStaleAfter = TimeSpan.FromSeconds(gatewayConfig.StreamStaleAfterSeconds);
         Devices = new Pairing.DeviceRegistry(devicesPath);
         AuthEnabled = ResolveAuthEnabled(authEnabled);
@@ -463,7 +460,6 @@ public sealed class GatewayHost : IAsyncDisposable
             FileLog.Write($"[GatewayHost] auth gate booted ON (enforced by default, issue #917 - a per-device key or the shared token is required, even on the tailnet; set {AuthDisabledEnvVar}=1 to disable for debugging)");
         else
             FileLog.Write($"[GatewayHost] auth gate booted OFF (disabled via override - requests are accepted without a credential; this is a debugging mode, not the shipped default)");
-        _client = new DirectorEndpointClient(Token);
         _serveProvisioner = new TailscaleServeProvisioner(Registry, Port);
 
         // The Gateway's in-process warm brain (issue #184): supervisor only - the chosen
@@ -558,8 +554,8 @@ public sealed class GatewayHost : IAsyncDisposable
         // POST /machines/{machine}/sessions relay ("start a session on another computer"). Gateway Cleanup
         // Phase 2 (PR E-B2): both the spawner and the work-list drain driver ride the tunnel first under
         // stream mode (sendCommand non-null), falling back to the HTTP dial otherwise.
-        Api.DirectorCommandRouter.SendDirectorCommandAsync? spawnSendCommand = _streamMode ? SendCommandAsync : null;
-        _machineSessionSpawner = new Running.MachineSessionSpawner(_client, cronTargetResolver, spawnSendCommand);
+        Api.DirectorCommandRouter.SendDirectorCommandAsync? spawnSendCommand = SendCommandAsync;
+        _machineSessionSpawner = new Running.MachineSessionSpawner(cronTargetResolver, spawnSendCommand);
         // A work-list cron job (#484) drains a named list via the shipped #274 runner on the resolved
         // Director, launching the drain in the background on the shared runner manager. The tunnel-aware
         // driver factory closes over the stream hook so a cron drain creates + reads sessions down the tunnel.
@@ -569,9 +565,8 @@ public sealed class GatewayHost : IAsyncDisposable
             _runnerManager,
             new Running.DirectorWorkListDrainLauncher(
                 _workLists,
-                _client,
                 (directorId, endpoint, repoPath) =>
-                    new Running.DirectorImplSessionDriver(_client, directorId, endpoint, repoPath, spawnSendCommand)));
+                    new Running.DirectorImplSessionDriver(directorId, repoPath, spawnSendCommand)));
         // Run-complete notifications (issue #622, the deferred "notify on completion" piece of #479).
         // The notifier rides the EXISTING fleet channel - the per-Director doorbell event ring
         // (DirectorEvents, #330) observed at GET /directors/{id}/events - and optionally POSTs the same
@@ -837,14 +832,14 @@ public sealed class GatewayHost : IAsyncDisposable
             // fan-out) and reach it through the tunnel-first SessionVerbClient. sendCommand is non-null only
             // under stream mode; when null the client falls back to the HTTP dial, byte-identical.
             var stale = TimeSpan.FromSeconds(Core.Configuration.GatewayConfig.DefaultStreamStaleAfterSeconds);
-            Api.DirectorCommandRouter.SendDirectorCommandAsync? sendCommand = _streamMode ? SendCommandAsync : null;
+            Api.DirectorCommandRouter.SendDirectorCommandAsync? sendCommand = SendCommandAsync;
             var generated = 0;
             foreach (var sid in vs.VoiceSessionIds())
             {
                 if (generated >= 3) break;          // gentle on the serialized brain
                 if (vs.HasVoice(sid)) continue;     // already cached, nothing to do
                 var (director, session) = await Api.GatewayEndpoints.LocateSessionAsync(
-                    Registry, _client, sid, _streamMode ? PushedSessions : null, stale, SessionOwners);
+                    Registry, sid, PushedSessions, stale, SessionOwners);
                 if (director is null || session is null) continue;   // not owned by any known Director
                 var st = session.ActivityState ?? "";
                 if (st is "Idle" or "WaitingForInput" or "WaitingForPerm")
@@ -852,7 +847,7 @@ public sealed class GatewayHost : IAsyncDisposable
                     FileLog.Write($"[GatewayHost] voice sweep: pre-building voice for idle session {sid}");
                     // A pre-build is not a new turn - generate quietly so an idle session a client
                     // may be listening to is never flipped yellow mid-play (issue #1322).
-                    var route = new Api.SessionVerbClient(_client, director, sendCommand);
+                    var route = new Api.SessionVerbClient(director, sendCommand);
                     await vs.GenerateAsync(sid, route, CancellationToken.None, showReadingWindow: false);
                     generated++;
                 }
@@ -933,12 +928,9 @@ public sealed class GatewayHost : IAsyncDisposable
         // ephemeral-port mappings (issue #179). The provisioner repeats this on a timer.
         _serveProvisioner.Reconcile();
 
-        // Issue #325: re-verify each HTTP-registered Director's advertised endpoint every
-        // heartbeat cycle (15 s) - an advertised name that goes bad AFTER the registration-time
-        // handshake (#223/#224) is flagged unreachable-by-name on the registration within two
-        // cycles, and auto-clears when the name answers again.
-        _endpointMonitor = new AdvertisedEndpointMonitor(Registry, _client);
-        _endpointMonitor.Start();
+        // Gateway Cleanup mission (post-cut): the advertised-endpoint re-verification monitor (issue #325)
+        // is DELETED. It HTTP-probed each Director's advertised /healthz; post-cut liveness is the tunnel
+        // connection itself, so there is no advertised HTTP endpoint to re-verify.
 
         // Issue #549: the always-on turn-brief stamping pipeline is retired. TurnEndWatcher stays
         // and runs unconditionally - a small always-running watcher whose only job is firing voice
@@ -947,9 +939,8 @@ public sealed class GatewayHost : IAsyncDisposable
         // #186 by Director doorbell pings and heartbeat snapshots (wired into the endpoints below);
         // the only pull left is the one-time startup catch-up sweep.
         FileLog.Write("[GatewayHost] StartAsync: starting the turn-end watcher (voice auto-refresh only; turn-brief pipeline retired in #549)");
-        _voiceService ??= new Wingman.WingmanVoiceService(WingmanBrainAsync, _keyVault, _client, training: _trainingStore, instructionsProvider: () => _instructionsStore.ActiveContent);
+        _voiceService ??= new Wingman.WingmanVoiceService(WingmanBrainAsync, _keyVault, training: _trainingStore, instructionsProvider: () => _instructionsStore.ActiveContent);
         _turnEndWatcher = new TurnEndWatcher(
-            Registry, _client,
             onTurnEnd: signal =>
             {
                 // Voice sessions (issue #531): the turn just finished on its own, so re-make the
@@ -962,8 +953,8 @@ public sealed class GatewayHost : IAsyncDisposable
                     // may be push-only (empty control URL); the tunnel path still reaches it by id.
                     var director = Registry.Get(signal.DirectorId);
                     if (director is null) return;
-                    Api.DirectorCommandRouter.SendDirectorCommandAsync? sendCommand = _streamMode ? SendCommandAsync : null;
-                    var route = new Api.SessionVerbClient(_client, director, sendCommand);
+                    Api.DirectorCommandRouter.SendDirectorCommandAsync? sendCommand = SendCommandAsync;
+                    var route = new Api.SessionVerbClient(director, sendCommand);
                     FileLog.Write($"[GatewayHost] turn-end -> voice auto-refresh: sid={signal.SessionId} director={signal.DirectorId} newTurn={signal.IsNewTurn}");
                     // Show the yellow "wingman reading" hold only for a genuinely new turn; a startup
                     // catch-up of an earlier turn refreshes quietly so a listening client is not
@@ -980,7 +971,7 @@ public sealed class GatewayHost : IAsyncDisposable
             },
             // Gateway Cleanup mission, Phase 2: under stream mode the catch-up / reconcile reads the push
             // store instead of HTTP-pulling each Director's session list (no dial).
-            pushedSessions: _streamMode ? PushedSessions : null);
+            pushedSessions: PushedSessions);
         // First tick = the startup catch-up sweep; then the 15s reconcile poll for
         // Directors that never push (file-discovered locals, old builds).
         _turnEndWatcher.Start();
@@ -1141,22 +1132,18 @@ public sealed class GatewayHost : IAsyncDisposable
 
         _app.UseRouting();
 
-        // Issue #1176 (Phase 1a): the Director-push stream endpoint, mapped only when stream mode is on
-        // (kill-switch: off => the hub does not exist and behaviour is byte-identical to today). Mapped
-        // after the host-wide auth middleware above, so the handshake is token-gated exactly like every
-        // other route; a Director's .NET SignalR client presents its Bearer token on the handshake.
-        if (_streamMode)
-        {
-            _app.MapHub<Streaming.DirectorHub>("/director-stream");
-            FileLog.Write("[GatewayHost] stream mode ON: DirectorHub mapped at /director-stream; /sessions serves from the push cache when fresh");
+        // Issue #1176 (Phase 1a): the Director-push stream endpoint (the tunnel). The tunnel/hubs are
+        // mandatory and always mapped. Mapped after the host-wide auth middleware above, so the handshake
+        // is token-gated exactly like every other route; a Director's .NET SignalR client presents its
+        // Bearer token on the handshake.
+        _app.MapHub<Streaming.DirectorHub>("/director-stream");
+        FileLog.Write("[GatewayHost] DirectorHub mapped at /director-stream; /sessions serves from the push cache when fresh");
 
-            // launcher-persistent-join: the launcher-push stream endpoint, mapped under the SAME kill-switch
-            // as DirectorHub. When a launcher joins, the machine lifecycle relay pushes commands DOWN this
-            // stream instead of dialing the launcher's REST API; off => the hub does not exist and the relay
-            // uses REST exactly as today.
-            _app.MapHub<Streaming.LauncherHub>("/launcher-stream");
-            FileLog.Write("[GatewayHost] stream mode ON: LauncherHub mapped at /launcher-stream; machine lifecycle relay prefers the stream when a launcher is joined");
-        }
+        // launcher-persistent-join: the launcher-push stream endpoint, also mandatory. When a launcher
+        // joins, the machine lifecycle relay pushes commands DOWN this stream instead of dialing the
+        // launcher's REST API.
+        _app.MapHub<Streaming.LauncherHub>("/launcher-stream");
+        FileLog.Write("[GatewayHost] LauncherHub mapped at /launcher-stream; machine lifecycle relay prefers the stream when a launcher is joined");
 
         // Product version stamped by Directory.Build.props; full form carries the commit SHA.
         var version = AppVersion.Full;
@@ -1165,7 +1152,10 @@ public sealed class GatewayHost : IAsyncDisposable
         // same instance, so both writers share one thread-safe in-memory state + file.
         _netDiagRollup = new Api.NetDiagRollupStore(Path.Combine(CcStorage.Root(), "netdiag-rollup.json"));
 
-        GatewayEndpoints.Map(_app, Registry, _client, version, Token, AuthEnabled,
+        // Gateway Cleanup mission: the cut removed the DirectorEndpointClient argument (_client) - the
+        // Gateway no longer dials Directors over HTTP, so Map no longer takes an HTTP client. The
+        // network-diagnostics rollup store is threaded in as a named argument on the tunnel-only signature.
+        GatewayEndpoints.Map(_app, Registry, version, Token, AuthEnabled,
             netDiagRollup: _netDiagRollup,
             requestShutdown: () =>
             {
@@ -1244,11 +1234,11 @@ public sealed class GatewayHost : IAsyncDisposable
             devices: Devices,
             // Issue #1176 (Phase 1a): serve /sessions from the Director-push cache when the stream is
             // fresh; null when stream mode is off, keeping /sessions byte-identical to today.
-            pushedSessions: _streamMode ? PushedSessions : null,
+            pushedSessions: PushedSessions,
             streamStaleAfter: _streamStaleAfter,
             // Issue #1177 (Phase 1): route per-session commands DOWN the Director's stream when stream mode
             // is on. Null when off, so every command endpoint stays on its HTTP path (byte-identical).
-            sendCommand: _streamMode ? SendCommandAsync : null,
+            sendCommand: SendCommandAsync,
             // Issue #1215 (Cockpit plan phase 6): the last-known-good roster cache absorbs a transient poll
             // failure as Wobbly (served stale through a short grace window) instead of blinking the
             // Director's sessions out of the roster; only a sustained failure reads as Offline.
@@ -1277,13 +1267,13 @@ public sealed class GatewayHost : IAsyncDisposable
         // fallback Cockpit proxy below.
         // Pass the fleet token (issue #457): the proxy injects it as the Bearer on every forward
         // so an auth-enabled Director (LAN mode) accepts the call. Harmless for auth-off Directors.
-        // Gateway Cleanup Phase 2: pass the tunnel hooks so the browser-facing up-stream legs (terminal, file,
-        // screenshot) ride the tunnel when stream mode is on. Null when off => the legs keep their HTTP proxy
-        // path, byte-identical. StreamRegistry is the SAME singleton the DirectorHub pumps StreamUp frames into.
-        SessionWsProxyEndpoints.Map(_app, Registry, _client, SessionOwners, Token,
-            pushedSessions: _streamMode ? PushedSessions : null,
-            streamRegistry: _streamMode ? StreamRegistry : null,
-            sendCommand: _streamMode ? SendCommandAsync : null,
+        // Gateway Cleanup mission (the cut): the browser-facing per-session legs (terminal, file, screenshot
+        // bytes/list/delete) and the director-level backfill all ride the tunnel - no HTTP dial to a Director
+        // remains. StreamRegistry is the SAME singleton the DirectorHub pumps StreamUp frames into.
+        SessionWsProxyEndpoints.Map(_app,
+            pushedSessions: PushedSessions,
+            streamRegistry: StreamRegistry,
+            sendCommand: SendCommandAsync,
             streamStaleAfter: _streamStaleAfter);
 
         // Issue #469: device enrollment via local pairing code (the ONLY way a new device gets in).
@@ -1300,10 +1290,10 @@ public sealed class GatewayHost : IAsyncDisposable
         // Wingman-voice surface for the Cockpit's Voice tab (issue #531): drive one turn of a
         // session and have the persistent wingman brain translate the reply into speakable form,
         // plus the direct-to-wingman path. Backed by the same warm Brain the brief agent uses.
-        _voiceService ??= new Wingman.WingmanVoiceService(WingmanBrainAsync, _keyVault, _client, training: _trainingStore, instructionsProvider: () => _instructionsStore.ActiveContent);
-        GatewayWingmanVoiceEndpoint.Map(_app, Registry, _client, WingmanBrainAsync, _keyVault, _voiceService,
-            pushedSessions: _streamMode ? PushedSessions : null,
-            sendCommand: _streamMode ? SendCommandAsync : null,
+        _voiceService ??= new Wingman.WingmanVoiceService(WingmanBrainAsync, _keyVault, training: _trainingStore, instructionsProvider: () => _instructionsStore.ActiveContent);
+        GatewayWingmanVoiceEndpoint.Map(_app, Registry, WingmanBrainAsync, _keyVault, _voiceService,
+            pushedSessions: PushedSessions,
+            sendCommand: SendCommandAsync,
             owners: SessionOwners,
             instructionsProvider: () => _instructionsStore.ActiveContent);
 
@@ -1341,10 +1331,10 @@ public sealed class GatewayHost : IAsyncDisposable
         // Durable, server-owned dictation upload (issue #1006): the phone streams recorded audio here
         // in resumable chunks and the Gateway assembles → transcribes → injects the turn into the
         // owning session itself, so a refresh / dropped connection cannot lose a recorded utterance.
-        GatewayDictationEndpoint.Map(_app, Registry, _client, SessionOwners, Token,
+        GatewayDictationEndpoint.Map(_app, Registry, SessionOwners, Token,
             new Transcription.GatewayTranscriptionService(_keyVault), _transcribingSessions, _dictationUploads, Devices,
-            pushedSessions: _streamMode ? PushedSessions : null,
-            sendCommand: _streamMode ? SendCommandAsync : null);
+            pushedSessions: PushedSessions,
+            sendCommand: SendCommandAsync);
         // Durable per-upload-id dictation record (issue #1183): a PENDING upload's chunks are retained
         // until it becomes DELIVERED or ABANDONED, and the delivered/abandoned tombstone (the durable
         // de-dupe marker) is retained until the client acknowledges it - so an undelivered dictation
@@ -1517,15 +1507,15 @@ public sealed class GatewayHost : IAsyncDisposable
         // watched to its IMPL-LOOP-TERMINAL sentinel (child 1, #272) before advancing. All runner
         // logic lives HERE at the Gateway; the Director host gains nothing (criterion 7). The
         // same-machine single-drain guard (criterion 8) lives on the shared runner manager.
-        WorkListRunnerEndpoints.Map(_app, _workLists, Registry, _client, _runnerManager,
-            _streamMode ? SendCommandAsync : null);
+        WorkListRunnerEndpoints.Map(_app, _workLists, Registry, _runnerManager,
+            SendCommandAsync);
 
         // Issue #331: launcher registration + cross-machine Director lifecycle relay.
         // Launchers POST /launchers/register on startup; relay callers POST
         // /machines/{machine}/director/restart|start|stop to reach that machine's Director.
         // launcher-persistent-join: pass the stream-send hook only when stream mode is on. The relay tries
         // this first and falls back to the REST relay when it returns null (stream off, or launcher offline).
-        MachineEndpoints.Map(_app, Launchers, _machineSessionSpawner, _streamMode ? SendLauncherCommandAsync : null,
+        MachineEndpoints.Map(_app, Launchers, _machineSessionSpawner, SendLauncherCommandAsync,
             // Gateway Cleanup mission (Wave 4b): validate a mission-scoped spawn against the Gateway store and
             // stamp the resolved mission name onto the create request forwarded to the Director.
             missions: Missions);
@@ -1596,16 +1586,13 @@ public sealed class GatewayHost : IAsyncDisposable
         FileLog.Write($"[GatewayHost] cron sweep started: every {CronSweepInterval.TotalSeconds:0}s");
 
         // Scheduled-run auto-dismiss (issue #1200): close automated runs that declared themselves done, by
-        // sending the kill verb DOWN the Director stream. Only when stream mode is on - the close has no REST
-        // fallback by design (the Gateway owns session lifecycle and reaches the Director through its stream).
-        if (_streamMode)
-        {
-            _autoDismissSweeper = new Running.AutoDismissSweeper(
-                () => PushedSessions.SnapshotFresh(AutoDismissStaleAfter),
-                SendCommandAsync);
-            _autoDismissTimer = new System.Threading.Timer(_ => SweepAutoDismiss(), null, AutoDismissSweepInterval, AutoDismissSweepInterval);
-            FileLog.Write($"[GatewayHost] auto-dismiss sweep started: every {AutoDismissSweepInterval.TotalSeconds:0}s");
-        }
+        // sending the kill verb DOWN the Director stream. The close has no REST fallback by design (the
+        // Gateway owns session lifecycle and reaches the Director through its stream).
+        _autoDismissSweeper = new Running.AutoDismissSweeper(
+            () => PushedSessions.SnapshotFresh(AutoDismissStaleAfter),
+            SendCommandAsync);
+        _autoDismissTimer = new System.Threading.Timer(_ => SweepAutoDismiss(), null, AutoDismissSweepInterval, AutoDismissSweepInterval);
+        FileLog.Write($"[GatewayHost] auto-dismiss sweep started: every {AutoDismissSweepInterval.TotalSeconds:0}s");
 
         // Issue #629: start the durable telemetry retry-queue flusher. It drains any events restored
         // from disk on construction (so a backend outage that spanned the previous run's lifetime now
@@ -1641,7 +1628,7 @@ public sealed class GatewayHost : IAsyncDisposable
         // the old GetSessionAsync and so faithful to the nudge->next-sweep-clears cycle); the expiry NUDGE
         // rides the "hold" write verb.
         var snoozeClient = new Api.SnoozeSweepDirectorClient(
-            Registry, _streamMode ? PushedSessions : null, _client, _streamMode ? SendCommandAsync : null);
+            Registry, PushedSessions, SendCommandAsync);
         _snoozeSweep = new Snooze.SnoozeExpirySweep(
             _snoozeRegistry,
             isDirectorReachable: snoozeClient.IsReachable,
@@ -1813,8 +1800,6 @@ public sealed class GatewayHost : IAsyncDisposable
         try { _autoDismissTimer?.Dispose(); } catch (Exception ex) { FileLog.Write($"[GatewayHost] auto-dismiss timer dispose error: {ex.Message}"); }
         _autoDismissTimer = null;
 
-        try { _endpointMonitor?.Dispose(); } catch (Exception ex) { FileLog.Write($"[GatewayHost] endpoint monitor dispose error: {ex.Message}"); }
-        _endpointMonitor = null;
 
         // Issue #640: stop the background token refresh timer.
         try { _tokenRefresh?.Dispose(); } catch (Exception ex) { FileLog.Write($"[GatewayHost] token refresh dispose error: {ex.Message}"); }
@@ -1852,7 +1837,6 @@ public sealed class GatewayHost : IAsyncDisposable
         _serveProvisioner.Dispose();
         Registry.Dispose();
         Launchers.Dispose();
-        _client.Dispose();
 
         if (_app is not null)
         {

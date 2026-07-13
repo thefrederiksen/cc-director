@@ -1,0 +1,119 @@
+using System.Net.Sockets;
+using System.Net;
+using System.Text.Json;
+using CcDirector.Gateway.Contracts;
+using Microsoft.AspNetCore.SignalR.Client;
+using Microsoft.Extensions.DependencyInjection; // AddMessagePackProtocol (client)
+
+namespace CcDirector.Gateway.Tests;
+
+/// <summary>
+/// Gateway Cleanup mission (the cut): a reusable stand-in for a tunnel-connected Director in Gateway tests.
+///
+/// After the cut the Gateway NEVER dials a Director over HTTP - it reads the roster from the PUSH store and
+/// dispatches every session/director verb over THE TUNNEL (the two-way SignalR stream). So a test that used to
+/// register a fake Kestrel Director and expect the Gateway to HTTP-dial it must now: (1) register the Director
+/// UNREACHABLE (nothing listens on its advertised endpoint), (2) open a real hub connection to
+/// <c>/director-stream</c> and say <c>Hello</c>, (3) push its sessions with <c>PushSnapshot</c>, and (4) answer
+/// the Gateway's <c>Command</c> invocations with a per-verb dispatcher. Because the advertised endpoint is dead,
+/// any working result proves the Gateway rode the tunnel, never an HTTP dial (tunnel-by-construction).
+///
+/// This wraps that setup so each test only supplies its verb dispatcher and the sessions to push. It mirrors
+/// the seam proven in <c>TunnelDirectorReadProofTests</c> / <c>TunnelRosterPushReadProofTests</c>.
+/// </summary>
+public sealed class FakeTunnelDirector : IAsyncDisposable
+{
+    /// <summary>Web-shaped JSON for verb result bodies, matching what the real Director cores emit.</summary>
+    public static readonly JsonSerializerOptions WebJson = new(JsonSerializerDefaults.Web);
+
+    private readonly HubConnection _conn;
+    private Func<DirectorCommand, DirectorCommandResult> _dispatch;
+    private long _sequence;
+
+    /// <summary>The id this Director registered + connected under.</summary>
+    public string DirectorId { get; }
+
+    /// <summary>The last command the Gateway sent over the tunnel, so a test can assert the verb + payload.</summary>
+    public DirectorCommand? LastCommand { get; private set; }
+
+    private FakeTunnelDirector(string directorId, HubConnection conn, Func<DirectorCommand, DirectorCommandResult> dispatch)
+    {
+        DirectorId = directorId;
+        _conn = conn;
+        _dispatch = dispatch;
+    }
+
+    /// <summary>
+    /// Register the Director UNREACHABLE in the Gateway and open its tunnel connection. The default verb
+    /// dispatcher fails every verb with BadRequest; call <see cref="OnCommand"/> (or pass one) to answer verbs.
+    /// </summary>
+    /// <param name="gateway">A started, streamMode Gateway.</param>
+    /// <param name="token">The Gateway auth token.</param>
+    /// <param name="directorId">The Director id to register + connect under.</param>
+    /// <param name="machineName">The advertised machine name (defaults to this machine so local-only reads surface it).</param>
+    /// <param name="dispatch">Optional per-verb dispatcher; may be set later with <see cref="OnCommand"/>.</param>
+    public static async Task<FakeTunnelDirector> StartAsync(
+        GatewayHost gateway,
+        string token,
+        string directorId,
+        string? machineName = null,
+        Func<DirectorCommand, DirectorCommandResult>? dispatch = null)
+    {
+        // Registered UNREACHABLE: nothing listens on this advertised endpoint, so any working result
+        // could only have come over the tunnel.
+        gateway.Registry.Upsert(new DirectorRegistrationRequest
+        {
+            DirectorId = directorId,
+            TailnetEndpoint = $"http://127.0.0.1:{DeadPort()}/",
+            MachineName = machineName ?? Environment.MachineName,
+            Pid = 1,
+            Version = "test",
+            StartedAt = DateTime.UtcNow,
+        });
+
+        var conn = new HubConnectionBuilder()
+            .WithUrl($"http://127.0.0.1:{gateway.Port}/director-stream",
+                o => o.AccessTokenProvider = () => Task.FromResult<string?>(token))
+            .AddMessagePackProtocol()
+            .Build();
+
+        var fake = new FakeTunnelDirector(directorId, conn,
+            dispatch ?? (cmd => DirectorCommandResult.Fail(DirectorCommandStatus.BadRequest, $"unexpected verb {cmd.Verb}")));
+
+        conn.On<DirectorCommand, DirectorCommandResult>("Command", cmd =>
+        {
+            fake.LastCommand = cmd;
+            return fake._dispatch(cmd);
+        });
+
+        await conn.StartAsync();
+        await conn.InvokeAsync("Hello", new DirectorStreamHello { DirectorId = directorId, Version = "test" });
+        return fake;
+    }
+
+    /// <summary>Replace the per-verb dispatcher (e.g. after arranging test state).</summary>
+    public void OnCommand(Func<DirectorCommand, DirectorCommandResult> dispatch) => _dispatch = dispatch;
+
+    /// <summary>Push a session snapshot into the Gateway push store. Each call bumps the sequence.</summary>
+    public Task PushSnapshotAsync(params SessionDto[] sessions) =>
+        _conn.InvokeAsync("PushSnapshot", ++_sequence, sessions);
+
+    /// <summary>Serialize a verb result body the way the real Director cores do.</summary>
+    public static DirectorCommandResult Ok(object body) =>
+        DirectorCommandResult.Success(JsonSerializer.Serialize(body, WebJson));
+
+    public async ValueTask DisposeAsync()
+    {
+        try { await _conn.DisposeAsync(); } catch { /* best effort */ }
+    }
+
+    private static int DeadPort()
+    {
+        // An OS-assigned free port we bind then immediately release, so nothing listens there.
+        using var l = new TcpListener(IPAddress.Loopback, 0);
+        l.Start();
+        var port = ((IPEndPoint)l.LocalEndpoint).Port;
+        l.Stop();
+        return port;
+    }
+}

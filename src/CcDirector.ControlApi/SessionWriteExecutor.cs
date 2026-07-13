@@ -47,6 +47,13 @@ internal sealed class SessionWriteExecutor : ISessionCommandArea
         // Each core reproduces its old REST lambda verbatim, so the REST route and the tunnel verb share one
         // core and cannot drift.
         "repo-delete", "interrupted-dismiss", "interrupted-remove", "backfill-numbers",
+        // Gateway Cleanup CUT RESTORATION (SB-4a): the director-level repository + saved-handover MANAGEMENT
+        // writes migrated late (the cut deleted these un-migrated leftovers). repo-add/repo-rename touch the
+        // live registry (as repo-delete does); handover-create/handover-delete write/remove a saved handover
+        // document via HandoverScanner. None targets a session (SessionId is ""). Each core reproduces its old
+        // REST lambda verbatim, so the (Phase-4-DEFERRED) REST path and the tunnel verb share one core and
+        // cannot drift.
+        "repo-add", "repo-rename", "handover-create", "handover-delete",
     };
 
     public async Task<DirectorCommandResult> ExecuteAsync(SessionCommandContext context, DirectorCommand command, CancellationToken cancellationToken)
@@ -79,6 +86,10 @@ internal sealed class SessionWriteExecutor : ISessionCommandArea
             "wingman-ask" => await WingmanAskAsync(context, command, cancellationToken),
             "recap-generate" => await RecapGenerateAsync(sessionManager, context.DirectorId, command, cancellationToken),
             "repo-delete" => RepoDelete(command, context.Services?.Repositories),
+            "repo-add" => RepoAdd(command, context.Services?.Repositories),
+            "repo-rename" => RepoRename(command, context.Services?.Repositories),
+            "handover-create" => HandoverCreate(command),
+            "handover-delete" => HandoverDelete(command),
             "interrupted-dismiss" => InterruptedDismiss(command),
             "interrupted-remove" => InterruptedRemove(command),
             "backfill-numbers" => BackfillNumbers(sessionManager),
@@ -722,6 +733,130 @@ internal sealed class SessionWriteExecutor : ISessionCommandArea
 
         var removed = repositories.Remove(path);
         return DirectorCommandResult.Success(SessionCommandExecutor.Serialize(new RepoDeleteResponse { Removed = removed }));
+    }
+
+    /// <summary>
+    /// The <c>repo-add</c> verb (director-level, no session): register a repository explicitly in the
+    /// recent-repository registry (no session needed). Mirrors the Director's <c>POST /repos</c> lambda - a
+    /// blank path -&gt; BadRequest, a null registry -&gt; BadRequest, a directory that does not exist -&gt;
+    /// BadRequest - otherwise adds the path (and applies the optional name) and returns
+    /// <c>{ added, repo }</c> where <c>added</c> selects the route's 201 (newly added) vs 200 (already present).
+    /// The live registry rides in the services, exactly as <c>repo-delete</c> reads it.
+    /// </summary>
+    internal static DirectorCommandResult RepoAdd(DirectorCommand command, RepositoryRegistry? repositories)
+    {
+        var request = SessionCommandExecutor.Deserialize<RepoAddRequest>(command.PayloadJson);
+        FileLog.Write($"[SessionWriteExecutor] repo-add: path={request?.Path}, name=\"{request?.Name}\"");
+        if (string.IsNullOrWhiteSpace(request?.Path))
+            return DirectorCommandResult.Fail(DirectorCommandStatus.BadRequest, "path is required");
+        if (repositories is null)
+            return DirectorCommandResult.Fail(DirectorCommandStatus.BadRequest, "repository registry not available");
+        if (!Directory.Exists(request.Path))
+            return DirectorCommandResult.Fail(DirectorCommandStatus.BadRequest, $"directory not found: {request.Path}");
+
+        var added = repositories.TryAdd(request.Path);
+        if (!string.IsNullOrWhiteSpace(request.Name))
+            repositories.Rename(request.Path, request.Name);
+
+        var wanted = ControlEndpoints.NormalizeRepoPath(request.Path);
+        var repo = repositories.Repositories.First(r => ControlEndpoints.NormalizeRepoPath(r.Path) == wanted);
+        var dto = new RepositoryDto
+        {
+            Name = string.IsNullOrEmpty(repo.Name) ? Path.GetFileName(repo.Path.TrimEnd('\\', '/')) : repo.Name,
+            Path = repo.Path,
+            LastUsed = repo.LastUsed,
+        };
+        return DirectorCommandResult.Success(SessionCommandExecutor.Serialize(new RepoAddResponse { Added = added, Repo = dto }));
+    }
+
+    /// <summary>
+    /// The <c>repo-rename</c> verb (director-level, no session): rename a registered repository (the path is the
+    /// identity). Mirrors the Director's <c>PATCH /repos</c> lambda - a blank path or blank name -&gt;
+    /// BadRequest, a null registry -&gt; BadRequest, a path not in the registry -&gt; NotFound - otherwise
+    /// renames and returns the resulting <see cref="RepositoryDto"/>.
+    /// </summary>
+    internal static DirectorCommandResult RepoRename(DirectorCommand command, RepositoryRegistry? repositories)
+    {
+        var request = SessionCommandExecutor.Deserialize<RepoRenameRequest>(command.PayloadJson);
+        FileLog.Write($"[SessionWriteExecutor] repo-rename: path={request?.Path}, name=\"{request?.Name}\"");
+        if (string.IsNullOrWhiteSpace(request?.Path))
+            return DirectorCommandResult.Fail(DirectorCommandStatus.BadRequest, "path is required");
+        if (string.IsNullOrWhiteSpace(request.Name))
+            return DirectorCommandResult.Fail(DirectorCommandStatus.BadRequest, "name is required");
+        if (repositories is null)
+            return DirectorCommandResult.Fail(DirectorCommandStatus.BadRequest, "repository registry not available");
+
+        if (!repositories.Rename(request.Path, request.Name))
+            return DirectorCommandResult.Fail(DirectorCommandStatus.NotFound, "repository not registered");
+
+        var wanted = ControlEndpoints.NormalizeRepoPath(request.Path);
+        var repo = repositories.Repositories.First(r => ControlEndpoints.NormalizeRepoPath(r.Path) == wanted);
+        return DirectorCommandResult.Success(SessionCommandExecutor.Serialize(new RepositoryDto
+        {
+            Name = repo.Name,
+            Path = repo.Path,
+            LastUsed = repo.LastUsed,
+        }));
+    }
+
+    /// <summary>
+    /// The <c>handover-create</c> verb (director-level, no session): write a standalone handover document to the
+    /// vault handover folder so it shows up in the Handovers list (unlike <c>handover-generate</c>, no target
+    /// session is involved). Mirrors the Director's <c>POST /handovers</c> lambda - a blank title or blank
+    /// content -&gt; BadRequest - otherwise writes the document and returns the parsed <see cref="HandoverDto"/>
+    /// (the route's 201; the Gateway route stamps the 201 on Ok).
+    /// </summary>
+    internal static DirectorCommandResult HandoverCreate(DirectorCommand command)
+    {
+        var request = SessionCommandExecutor.Deserialize<HandoverCreateRequest>(command.PayloadJson);
+        FileLog.Write($"[SessionWriteExecutor] handover-create: title=\"{request?.Title}\"");
+        if (string.IsNullOrWhiteSpace(request?.Title))
+            return DirectorCommandResult.Fail(DirectorCommandStatus.BadRequest, "title is required");
+        if (string.IsNullOrWhiteSpace(request.Content))
+            return DirectorCommandResult.Fail(DirectorCommandStatus.BadRequest, "content is required");
+
+        var path = HandoverScanner.WriteNew(request.Title, request.Content, request.RepoPaths, request.SessionName);
+        var h = HandoverScanner.Parse(path);
+        return DirectorCommandResult.Success(SessionCommandExecutor.Serialize(new HandoverDto
+        {
+            Path = h.Path,
+            Title = h.Title,
+            DateDisplay = h.DateDisplay,
+            DateUtc = h.DateUtc,
+            RepoPath = h.RepoPath,
+            RepoPaths = h.RepoPaths,
+            SessionName = h.SessionName,
+        }));
+    }
+
+    /// <summary>
+    /// The <c>handover-delete</c> verb (director-level, no session): delete a saved handover document. Mirrors
+    /// the Director's <c>DELETE /handovers</c> lambda - a blank path -&gt; BadRequest, a path outside the
+    /// handover folder (<see cref="UnauthorizedAccessException"/>) -&gt; BadRequest, a missing file
+    /// (<see cref="FileNotFoundException"/>) -&gt; NotFound - otherwise removes it and returns
+    /// <c>{ removed = true }</c>.
+    /// </summary>
+    internal static DirectorCommandResult HandoverDelete(DirectorCommand command)
+    {
+        var request = SessionCommandExecutor.Deserialize<RepoDeleteRequest>(command.PayloadJson);
+        var path = request?.Path;
+        FileLog.Write($"[SessionWriteExecutor] handover-delete: path={path}");
+        if (string.IsNullOrWhiteSpace(path))
+            return DirectorCommandResult.Fail(DirectorCommandStatus.BadRequest, "path is required");
+
+        try
+        {
+            HandoverScanner.Delete(path);
+            return DirectorCommandResult.Success(SessionCommandExecutor.Serialize(new HandoverDeleteResponse { Removed = true }));
+        }
+        catch (UnauthorizedAccessException ex)
+        {
+            return DirectorCommandResult.Fail(DirectorCommandStatus.BadRequest, ex.Message);
+        }
+        catch (FileNotFoundException)
+        {
+            return DirectorCommandResult.Fail(DirectorCommandStatus.NotFound, "handover not found");
+        }
     }
 
     /// <summary>

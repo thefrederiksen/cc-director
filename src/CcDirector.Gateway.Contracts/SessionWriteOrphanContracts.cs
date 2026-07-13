@@ -92,3 +92,37 @@ public sealed class BackfillNumbersResponse
     /// <summary>The count of sessions newly numbered by this call.</summary>
     public int Assigned { get; set; }
 }
+
+// Gateway Cleanup CUT RESTORATION (SB-4a): the response shapes for the two director-level MANAGEMENT writes
+// whose old REST wire shape was not a plain DTO already in Contracts. repo-add returned an anonymous
+// { added, repo } wrapper (the added flag selects 201-vs-200 at the route); handover-delete returned an
+// anonymous { removed } object. Reproduced here so the tunnel verb and the (Phase-4-DEFERRED) REST route
+// serialize identical JSON. repo-rename returns a plain RepositoryDto and handover-create a plain HandoverDto,
+// so they need no new response DTO. The request shapes (RepoAddRequest / RepoRenameRequest /
+// HandoverCreateRequest) already live in the Contracts project.
+
+/// <summary>
+/// POST /repos response. Byte-identical to the <c>{ added, repo }</c> object the REST route returned: the
+/// <c>added</c> flag is true when the path was newly registered (the route returned 201) and false when it was
+/// already present (200); <c>repo</c> is the resulting registry entry. The route reads <c>added</c> to pick
+/// the status code, so the flag must ride in the body.
+/// </summary>
+public sealed class RepoAddResponse
+{
+    /// <summary>True when the repository was newly added (route returns 201); false when it already existed (200).</summary>
+    public bool Added { get; set; }
+
+    /// <summary>The resulting registry entry (name/path/last-used).</summary>
+    public RepositoryDto? Repo { get; set; }
+}
+
+/// <summary>
+/// DELETE /handovers response. Byte-identical to the <c>{ removed = true }</c> object the REST route returned
+/// on success. A blank path is a BadRequest and a missing file a NotFound (both carried as failure command
+/// results, not this body), exactly as the old route surfaced them.
+/// </summary>
+public sealed class HandoverDeleteResponse
+{
+    /// <summary>Always true on success (the bad-path/not-found cases are BadRequest/NotFound, not this body).</summary>
+    public bool Removed { get; set; }
+}

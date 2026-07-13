@@ -6,38 +6,30 @@ using CcDirector.Gateway.Discovery;
 namespace CcDirector.Gateway.Running;
 
 /// <summary>
-/// Production <see cref="IImplSessionDriver"/> over the Gateway's existing
-/// <see cref="DirectorEndpointClient"/> (issue #274). It uses the SAME session-create + seed-prompt
+/// Production <see cref="IImplSessionDriver"/> over the Director tunnel
+/// (issue #274). It uses the SAME session-create + seed-prompt
 /// path the Cockpit/Director already use (ASSUMPTION confirmed: <see cref="NewSessionRequest.PrePrompt"/>
 /// is the seed channel - the Director dispatches it once the agent reaches Idle), and reads the
 /// session transcript with the session buffer. No new Director surface is introduced.
 ///
-/// Gateway Cleanup mission, Phase 2 (PR E-B2): both operations (create + buffer) now route through the
-/// tunnel-first <see cref="SessionVerbClient"/> - the resolved Director is reached DOWN its stream when
-/// stream mode is on and only over HTTP as the byte-identical fallback (stream mode off, or the Director
-/// has no active stream). The driver holds the Director id (for the tunnel) and the control endpoint (for
-/// the fallback) and binds both to one <see cref="SessionVerbClient"/> via
+/// Gateway Cleanup mission (post-cut): both operations (create + buffer) route through the tunnel-only
+/// <see cref="SessionVerbClient"/> - the resolved Director is reached DOWN its stream. The driver holds
+/// the Director id (for the tunnel) and binds it to one <see cref="SessionVerbClient"/> via
 /// <see cref="SessionVerbClient.ForDirector"/>.
 /// </summary>
 public sealed class DirectorImplSessionDriver : IImplSessionDriver
 {
     private readonly SessionVerbClient _verb;
 
-    /// <param name="client">The Gateway's shared Director client (the HTTP fallback leg).</param>
     /// <param name="directorId">The target Director's id (the tunnel leg).</param>
-    /// <param name="endpoint">Control endpoint (base URL, no trailing slash) of the target Director.</param>
     /// <param name="repoPath">Absolute repo path the seeded implementation session opens in.</param>
-    /// <param name="sendCommand">The send-a-command-down-the-stream hook; non-null only under stream mode.</param>
-    internal DirectorImplSessionDriver(DirectorEndpointClient client, string directorId, string endpoint,
-        string repoPath, DirectorCommandRouter.SendDirectorCommandAsync? sendCommand)
+    /// <param name="sendCommand">The send-a-command-down-the-stream hook.</param>
+    internal DirectorImplSessionDriver(string directorId, string repoPath,
+        DirectorCommandRouter.SendDirectorCommandAsync? sendCommand)
     {
-        if (client is null)
-            throw new ArgumentNullException(nameof(client));
-        if (string.IsNullOrWhiteSpace(endpoint))
-            throw new ArgumentException("director endpoint is required", nameof(endpoint));
         if (string.IsNullOrWhiteSpace(repoPath))
             throw new ArgumentException("repo path is required", nameof(repoPath));
-        _verb = SessionVerbClient.ForDirector(client, directorId, endpoint, sendCommand);
+        _verb = SessionVerbClient.ForDirector(directorId, sendCommand);
         _repoPath = repoPath;
     }
 

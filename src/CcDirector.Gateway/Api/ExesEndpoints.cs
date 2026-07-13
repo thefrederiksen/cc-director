@@ -32,7 +32,7 @@ internal static class ExesEndpoints
     private static readonly Regex SlotFromExe =
         new(@"cc-director(\d+)\.exe$", RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
-    public static void Map(IEndpointRouteBuilder app, DirectorRegistry registry, DirectorEndpointClient client,
+    public static void Map(IEndpointRouteBuilder app, DirectorRegistry registry,
         PushedSessionStore? pushedSessions = null, TimeSpan? streamStaleAfter = null)
     {
         // Gateway Cleanup Phase 2 (PR E, Group C): under streamMode the roster lives in the push store; resolve
@@ -41,7 +41,7 @@ internal static class ExesEndpoints
         var streamStale = streamStaleAfter ?? TimeSpan.FromSeconds(Core.Configuration.GatewayConfig.DefaultStreamStaleAfterSeconds);
 
         // ----- list local directors + slot status (JSON; /exes itself is the HTML page) -----
-        app.MapGet("/exes/list", async (HttpContext ctx) =>
+        app.MapGet("/exes/list", (HttpContext ctx) =>
         {
             FileLog.Write("[ExesEndpoints] GET /exes/list");
             try
@@ -54,23 +54,14 @@ internal static class ExesEndpoints
                     .OrderBy(d => d.StartedAt)
                     .ToList();
 
-                // Fan out to each local Director for its sessions, in parallel.
-                var directorTasks = local.Select(async d =>
+                // Post-cut: each local Director's sessions come ONLY from the pushed store. A Director with no
+                // fresh push is not connected to the tunnel and is surfaced with an error.
+                var directors = local.Select(d =>
                 {
                     var exePath = TryGetExePath(d.Pid);
-                    // Group C: prefer the push store; a stale/absent cache falls through to the HTTP pull.
-                    IReadOnlyList<SessionDto>? sessions;
-                    string? error;
                     var cached = pushedSessions?.TryGetFresh(d.DirectorId, streamStale);
-                    if (cached is not null)
-                    {
-                        sessions = cached;
-                        error = null;
-                    }
-                    else
-                    {
-                        (sessions, error) = await client.ListSessionsWithStatusAsync(d.ControlEndpoint, false);
-                    }
+                    IReadOnlyList<SessionDto>? sessions = cached;
+                    string? error = cached is null ? "director not connected to the tunnel" : null;
                     return new
                     {
                         directorId = d.DirectorId,
@@ -100,8 +91,7 @@ internal static class ExesEndpoints
                             repoPath = s.RepoPath,
                         }).ToList(),
                     };
-                });
-                var directors = await Task.WhenAll(directorTasks);
+                }).ToList();
 
                 // Slot status (1-4). A slot is "running" if any local Director's exe
                 // resolves to that slot file.

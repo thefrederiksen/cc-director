@@ -35,22 +35,27 @@ public sealed class TerminalPromptInjectionChokepointTests
     public void Control_api_prompt_routes_send_submitted_text_through_session_send_text()
     {
         var root = RepoRoot();
-        var control = File.ReadAllText(Path.Combine(root, "src", "CcDirector.ControlApi", "ControlEndpoints.cs"));
+        // Gateway Cleanup mission (the cut): the Control-API session verbs are no longer loopback REST routes -
+        // they are dispatched over THE TUNNEL. The prompt verb is registered + routed in the write executor;
+        // every tunnel command funnels through the ONE dispatch entry in ControlApiHost. The queue-send and
+        // chat submit paths keep their own cores. The audit stays STRICT - it pins each submit chokepoint to
+        // its new known home, not "any file".
+        var writeExec = File.ReadAllText(Path.Combine(root, "src", "CcDirector.ControlApi", "SessionWriteExecutor.cs"));
+        var host = File.ReadAllText(Path.Combine(root, "src", "CcDirector.ControlApi", "ControlApiHost.cs"));
         var executor = File.ReadAllText(Path.Combine(root, "src", "CcDirector.ControlApi", "SessionCommandExecutor.cs"));
-        var voice = File.ReadAllText(Path.Combine(root, "src", "CcDirector.ControlApi", "VoiceTurnEndpoint.cs"));
         var chat = File.ReadAllText(Path.Combine(root, "src", "CcDirector.ControlApi", "Chat", "ChatService.cs"));
-        // Gateway Cleanup mission, Phase 0: the queue-send path's chokepoint call moved with the verb, from
-        // ControlEndpoints.cs into the QueueGitExecutor.cs core (the REST route and the tunnel verb now share
-        // that one core). The audit stays STRICT - it pins the call to its new known home, not "any file".
         var queueGit = File.ReadAllText(Path.Combine(root, "src", "CcDirector.ControlApi", "QueueGitExecutor.cs"));
 
-        Assert.Contains("Verb = \"prompt\"", control);
-        Assert.Contains("SessionCommandExecutor.DispatchAsync(sessionManager, directorId, command, source: source);", control);
+        // The prompt verb dispatches to PromptAsync (never to raw input), and every tunnel command funnels
+        // through the single dispatch entry point.
+        Assert.Contains("\"prompt\" => await SessionCommandExecutor.PromptAsync(sessionManager, command, context.Source),", writeExec);
+        Assert.Contains("SessionCommandExecutor.DispatchAsync(_sessionManager, DirectorId, cmd,", host);
+        // PromptAsync funnels submitted text through the session submit chokepoint.
         Assert.Contains("await session.SendTextAsync(request.Text, source, origin);", executor);
-        Assert.Contains("await local.SendTextAsync(framed, SendSource.Internal);", control);
-        Assert.Contains("await s.SendTextAsync(framed, SendSource.Internal);", control);
+        // The queue-send and chat submit paths use the SAME chokepoint. (Fleet-message delivery is now
+        // Gateway-native and rides the prompt verb above, so it funnels through the same chokepoint; the
+        // VoiceTurn endpoint was retired at the cut.)
         Assert.Contains("await session.SendTextAsync(text, SendSource.Internal);", queueGit);
-        Assert.Contains("await session.SendTextAsync(inputText, SendSource.Internal);", voice);
         Assert.Contains("await session.SendTextAsync(req.Text, SendSource.Internal);", chat);
 
         // Raw SendInput is still allowed when the caller explicitly asked not to append Enter; that is
@@ -71,8 +76,10 @@ public sealed class TerminalPromptInjectionChokepointTests
         var mobileVoice = File.ReadAllText(Path.Combine(root, "packages", "client-core", "src", "voice", "useVoiceMode.ts"));
         var interactive = File.ReadAllText(Path.Combine(root, "packages", "client-core", "src", "terminal", "interactive.ts"));
         var gateway = File.ReadAllText(Path.Combine(root, "src", "CcDirector.Gateway", "Api", "GatewayEndpoints.cs"));
-        var directorClient = File.ReadAllText(Path.Combine(root, "src", "CcDirector.Gateway", "Discovery", "DirectorEndpointClient.cs"));
-        var stream = File.ReadAllText(Path.Combine(root, "src", "CcDirector.ControlApi", "TerminalStreamEndpoint.cs"));
+        // Gateway Cleanup mission (the cut): the Gateway reaches the Director's prompt over THE TUNNEL now
+        // (DirectorEndpointClient + the loopback TerminalStreamEndpoint were deleted). The browser keystroke
+        // chokepoint lives in the write executor's terminal-input verb.
+        var writeExec = File.ReadAllText(Path.Combine(root, "src", "CcDirector.ControlApi", "SessionWriteExecutor.cs"));
 
         Assert.Contains("gatewayFetch(`/sessions/${sid}/prompt`", client);
         Assert.Contains("await sendPrompt(sessionId, text, true);", cockpit);
@@ -81,10 +88,11 @@ public sealed class TerminalPromptInjectionChokepointTests
         Assert.Contains("await sendPrompt(sid, trimmed, true);", mobileVoice);
 
         Assert.Contains("await sendPrompt(this.sessionId, chunk, false);", interactive);
-        Assert.Contains("sessionManager.GetSession(guid)?.SendInput(bytes, InputOrigin.Typed(InputSurface.Unknown));", stream);
+        // Raw browser keystrokes go through the terminal-input verb, which calls SendInput (no submit/Enter).
+        Assert.Contains("session.SendInput(bytes);", writeExec);
 
-        Assert.Contains("await client.PostPromptAsync(director.ControlEndpoint, sid, req);", gateway);
-        Assert.Contains("new HttpRequestMessage(HttpMethod.Post, $\"{endpoint}/sessions/{sessionId}/prompt\")", directorClient);
+        // The Gateway prompt route submits over the tunnel prompt verb, never raw input.
+        Assert.Contains("DirectorCommandRouter.TrySendAsync(sendCommand, director.DirectorId, \"prompt\", sid, req, CancellationToken.None)", gateway);
     }
 
     [Fact]

@@ -31,12 +31,13 @@ public sealed class NoCrossMachineLoopbackGuardTests
         // --- Loopback BIND / same-machine control surface (the deliberate security boundary) ---
         ["src/CcDirector.ControlApi/ControlApiHost.cs"] = "Binds Kestrel to loopback (tailscale mode); same-machine ControlApiBaseUrl for in-session agents.",
         ["src/CcDirector.ControlApi/InstanceRegistration.cs"] = "FSW same-machine ControlEndpoint is http://127.0.0.1:{port} by design.",
-        ["src/CcDirector.ControlApi/ControlEndpoints.cs"] = "Same-machine control endpoint helpers / local references.",
         ["src/CcDirector.ControlApi/TailscaleServeSelfProvisioner.cs"] = "Maps the tailnet front door to local loopback backend.",
         ["src/CcDirector.ControlApi/GatewayConnectivitySelfTest.cs"] = "Probes the local loopback Control API as part of self-test.",
         ["src/CcDirector.ControlApi/GatewayEnrollmentClient.cs"] = "Epic #1069 A: doc comment on EnrollSignedInAsync states the same-machine caller MUST pass a LOOPBACK gatewayUrl (http://127.0.0.1:<local gateway port>) so the Gateway's guardrail-1 IsLoopback check passes. Documents the policy; the literal address is built by the panel's BuildLoopbackEnrollUrl.",
-        ["src/CcDirector.ControlApi/DictationEndpoint.cs"] = "Doc comment: 'Localhost-only by default' (describes the loopback bind).",
-        ["src/CcDirector.ControlApi/TerminalStreamEndpoint.cs"] = "Doc comment: 'Localhost-only by default' (describes the loopback bind).",
+        // Gateway Cleanup mission (the cut): ControlEndpoints.cs (cut to the 6-item loopback floor),
+        // DictationEndpoint.cs + TerminalStreamEndpoint.cs (deleted), and SessionWsProxyEndpoints.cs (the
+        // loopback-guarded HTTP reverse-proxy was deleted, it is a tunnel-dispatch-only file now) were
+        // removed from this allowlist because they no longer carry a loopback literal.
         ["src/CcDirector.Gateway/GatewayHost.cs"] = "Local loopback bind / same-machine wiring.",
         ["src/CcDirector.Gateway/GatewayWorker.cs"] = "Same-machine worker wiring.",
         ["src/CcDirector.Gateway/Tailscale/TailscaleServeProvisioner.cs"] = "Maps the tailnet front door to local loopback backends.",
@@ -67,7 +68,6 @@ public sealed class NoCrossMachineLoopbackGuardTests
 
         // --- Gateway routing that intentionally references same-origin / local ---
         ["src/CcDirector.Gateway/Api/GatewayEndpoints.cs"] = "Local/same-origin references in the Gateway router.",
-        ["src/CcDirector.Gateway/Api/SessionWsProxyEndpoints.cs"] = "Implements + documents the loopback guard (this issue).",
 
         // --- Desktop app: local Director/Cockpit access + local-only labels ---
         ["src/CcDirector.Avalonia/App.axaml.cs"] = "Local Control API bootstrap / loopback references.",

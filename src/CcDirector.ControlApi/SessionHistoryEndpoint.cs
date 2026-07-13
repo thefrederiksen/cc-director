@@ -3,45 +3,21 @@ using CcDirector.Core.History;
 using CcDirector.Core.Sessions;
 using CcDirector.Core.Utilities;
 using CcDirector.Gateway.Contracts;
-using Microsoft.AspNetCore.Builder;
-using Microsoft.AspNetCore.Http;
-using Microsoft.AspNetCore.Routing;
 
 namespace CcDirector.ControlApi;
 
 /// <summary>
-/// GET /sessions/{sid}/history - the parsed, agent-agnostic conversation history for a session.
-/// Reuses Core's <see cref="SessionHistoryReader"/> so every supported agent is covered, then maps
-/// the normalized <c>ConversationHistory</c> into the wire <see cref="SessionHistoryDto"/> the
-/// Cockpit reads. Also computes the transcript-derived history state (<see cref="HistoryStateDeriver"/>)
-/// so the Cockpit can show the same experimental label as the desktop History tab without
-/// re-reading the transcript itself. The Gateway forwards this verbatim through its generic
-/// <c>/sessions/{sid}/{**rest}</c> proxy, so no Gateway change is needed.
+/// Builds the parsed, agent-agnostic conversation history for a session. Reuses Core's
+/// <see cref="SessionHistoryReader"/> so every supported agent is covered, then maps the normalized
+/// <c>ConversationHistory</c> into the wire <see cref="SessionHistoryDto"/> the Cockpit reads, and
+/// computes the transcript-derived history state (<see cref="HistoryStateDeriver"/>).
+///
+/// Gateway Cleanup mission (the cut): the Director no longer registers a <c>/sessions/{sid}/history</c>
+/// route - the read reaches this mapper only through the shared <see cref="SessionReadExecutor"/> core
+/// (verb "history") over the tunnel. This class survives purely as that mapper's home.
 /// </summary>
 internal static class SessionHistoryEndpoint
 {
-    public static void Map(IEndpointRouteBuilder app, SessionManager sessionManager, string directorId)
-    {
-        // Gateway Cleanup Phase 0: the read runs through the shared SessionReadExecutor core (verb
-        // "history"), which calls the SAME BuildHistory mapper below, so this REST path and the Gateway
-        // stream down-channel are identical and cannot drift. The route's read-fault 500 is preserved by the
-        // core and mapped back here. Phase 1 deletes this route.
-        app.MapGet("/sessions/{sid}/history", async (string sid) =>
-        {
-            FileLog.Write($"[SessionHistoryEndpoint] GET /sessions/{sid}/history");
-            var command = new DirectorCommand { Verb = "history", SessionId = sid };
-            var result = await SessionCommandExecutor.DispatchAsync(sessionManager, directorId, command);
-
-            return result.Status switch
-            {
-                DirectorCommandStatus.Ok => Results.Json(SessionCommandExecutor.Deserialize<SessionHistoryDto>(result.BodyJson)),
-                DirectorCommandStatus.BadRequest => Results.BadRequest(new { error = result.Error }),
-                DirectorCommandStatus.NotFound => Results.NotFound(new { error = result.Error }),
-                _ => Results.Problem(result.Error ?? "history command failed"),
-            };
-        });
-    }
-
     /// <summary>
     /// Build the wire DTO from a session. Pure mapping over the Core reader and deriver - no I/O
     /// of its own beyond what those perform. Internal so it is unit-testable without the host.

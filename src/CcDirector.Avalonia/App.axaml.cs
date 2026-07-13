@@ -441,9 +441,7 @@ public partial class App : Application
                 return Task.CompletedTask;
             };
 
-            // commDispatcherAccessor (issue #329): resolved per request because the Engine
-            // starts after this host and its dispatcher appears only after tool discovery.
-            ControlApiHost = new ControlApiHost(SessionManager, version, requestShutdown, repositoryRegistry: RepositoryRegistry, schedulerAccessor: () => Scheduler, commDispatcherAccessor: () => EngineHost?.Dispatcher);
+            ControlApiHost = new ControlApiHost(SessionManager, version, requestShutdown, repositoryRegistry: RepositoryRegistry, schedulerAccessor: () => Scheduler);
 
             _ = Task.Run(async () =>
             {

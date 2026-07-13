@@ -118,28 +118,8 @@ public sealed class LauncherStreamIntegrationTests : IAsyncLifetime
         await conn.DisposeAsync();
     }
 
-    [Fact]
-    public async Task StreamModeOff_DoesNotMapTheLauncherHub()
-    {
-        var offInstances = Path.Combine(Path.GetTempPath(), "cc-launcher-off-" + Guid.NewGuid().ToString("N"));
-        var off = new GatewayHost(port: AllocateFreePort(), token: "t2", authEnabled: true,
-            instancesDirectory: offInstances,
-            workListsPath: Path.Combine(offInstances, "worklists", "worklists.json"),
-            streamMode: false);
-        await off.StartAsync();
-        try
-        {
-            using var http = new HttpClient { BaseAddress = new Uri($"http://127.0.0.1:{off.Port}/") };
-            http.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", "t2");
-            var resp = await http.PostAsync("launcher-stream/negotiate?negotiateVersion=1", content: null);
-            Assert.Equal(HttpStatusCode.NotFound, resp.StatusCode); // hub not mapped when stream mode is off
-        }
-        finally
-        {
-            await off.StopAsync();
-            try { if (Directory.Exists(offInstances)) Directory.Delete(offInstances, true); } catch (Exception) { /* best effort */ }
-        }
-    }
+    // Gateway Cleanup mission (the cut): the streamMode-OFF negative test was removed. The tunnel is now
+    // MANDATORY - the LauncherHub is always mapped, there is no HTTP-fallback mode to keep it unmapped for.
 
     private async Task<HubConnection> ConnectLauncherAsync(string token)
     {

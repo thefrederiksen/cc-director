@@ -9,7 +9,7 @@ namespace CcDirector.Gateway.Running;
 /// The SINGLE resolve-then-create path for starting a session on a target MACHINE ("start a session
 /// on another computer"). Resolves the machine to a runnable Director via
 /// <see cref="IDirectorTargetResolver"/> (launching one through the launcher when none is running)
-/// and creates the session on it over the Gateway's existing <see cref="DirectorEndpointClient"/>.
+/// and creates the session on it over the Director tunnel.
 /// Both the cron firing engine (<see cref="DirectorCronSessionStarter"/>) and the interactive
 /// POST /machines/{machine}/sessions relay call this ONE method, so scheduled and on-demand spawns
 /// route identically with no duplicated resolve/create logic.
@@ -31,15 +31,12 @@ public sealed class MachineSessionSpawner
     private readonly IDirectorTargetResolver _resolver;
     private readonly CreateSessionDelegate _create;
 
-    /// <param name="client">The Gateway's Director Control API client (the HTTP fallback leg).</param>
     /// <param name="resolver">Resolves the target machine to a Director, launching one on demand.</param>
-    /// <param name="sendCommand">The send-a-command-down-the-stream hook; non-null only under stream mode.</param>
-    internal MachineSessionSpawner(DirectorEndpointClient client, IDirectorTargetResolver resolver,
+    /// <param name="sendCommand">The send-a-command-down-the-stream hook.</param>
+    internal MachineSessionSpawner(IDirectorTargetResolver resolver,
         DirectorCommandRouter.SendDirectorCommandAsync? sendCommand)
         : this(resolver, (directorId, endpoint, req, ct) =>
-            SessionVerbClient.ForDirector(
-                client ?? throw new ArgumentNullException(nameof(client)), directorId, endpoint, sendCommand)
-                .CreateSessionAsync(req, ct))
+            SessionVerbClient.ForDirector(directorId, sendCommand).CreateSessionAsync(req, ct))
     {
     }
 

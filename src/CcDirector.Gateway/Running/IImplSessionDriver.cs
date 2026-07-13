@@ -2,8 +2,8 @@ namespace CcDirector.Gateway.Running;
 
 /// <summary>
 /// The seam the queue runner (#274) uses to start one implementation session on a Director and read
-/// its transcript - exactly the three operations the runner needs and nothing else. Production wraps
-/// the Gateway's existing <see cref="Discovery.DirectorEndpointClient"/> (see
+/// its transcript - exactly the three operations the runner needs and nothing else. Production reaches
+/// the Director over its tunnel (see
 /// <see cref="DirectorImplSessionDriver"/>); tests supply a fake so the sequencing logic is provable
 /// without a live Director. Keeping the runner behind this seam is also what keeps ALL runner logic
 /// at the Gateway level - the Director host gains nothing (criterion 7).

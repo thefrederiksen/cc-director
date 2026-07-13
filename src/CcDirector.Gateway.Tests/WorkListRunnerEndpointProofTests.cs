@@ -4,21 +4,19 @@ using System.Text;
 using System.Text.Json;
 using CcDirector.Gateway;
 using CcDirector.Gateway.Contracts;
-using Microsoft.AspNetCore.Builder;
-using Microsoft.AspNetCore.Http;
-using Microsoft.Extensions.Logging;
 using Xunit;
 
 namespace CcDirector.Gateway.Tests;
 
 /// <summary>
 /// End-to-end proof for the queue runner REST surface (issue #274) against the REAL production
-/// <see cref="GatewayHost"/> wiring, driven over real HTTP. A lightweight STUB Director (its own
-/// Kestrel host) answers the two routes the runner uses - <c>POST /sessions</c> (returns a session
-/// id, records the seed PrePrompt) and <c>GET /sessions/{sid}/buffer</c> (returns the
-/// IMPL-LOOP-TERMINAL sentinel, #272) - so the whole path (endpoint -> WorkListRunner ->
-/// DirectorImplSessionDriver -> DirectorEndpointClient -> ImplLoopTerminalSignal) runs deterministically
-/// without an hours-long live implementation loop.
+/// <see cref="GatewayHost"/> wiring, driven over real HTTP. Gateway Cleanup mission (the cut): the
+/// runner reaches its seeded session over THE TUNNEL, so a lightweight STUB Director registers
+/// UNREACHABLE and answers the two verbs the runner uses - <c>create</c> (returns a session id,
+/// records the seed PrePrompt) and <c>buffer</c> (returns the IMPL-LOOP-TERMINAL sentinel, #272) - so
+/// the whole path (endpoint -> WorkListRunner -> DirectorImplSessionDriver -> SessionVerbClient ->
+/// ImplLoopTerminalSignal) runs deterministically over the tunnel without an hours-long live
+/// implementation loop. Because the advertised endpoint is dead, a working drain proves the tunnel.
 ///
 /// This test is also the proof generator: when CC274_PROOF_DIR is set it writes an HTML report of
 /// Expected vs Actual per acceptance criterion to that directory (the Developer Agent commits it to
@@ -41,49 +39,31 @@ public sealed class WorkListRunnerEndpointProofTests : IAsyncLifetime
     {
         Environment.SetEnvironmentVariable("CC_GATEWAY_NO_TAILSCALE", "1");
 
-        // Two stub Directors, two machine names (criterion 6 cross-machine concurrency).
-        _machine1 = new StubDirector();
-        _machine2 = new StubDirector();
-        await _machine1.StartAsync();
-        await _machine2.StartAsync();
-
         _gateway = new GatewayHost(port: AllocateFreePort(), token: Token, authEnabled: true,
             instancesDirectory: _instancesDir,
-            workListsPath: Path.Combine(_instancesDir, "worklists", "worklists.json"));
+            workListsPath: Path.Combine(_instancesDir, "worklists", "worklists.json"),
+            streamMode: true);
         await _gateway.StartAsync();
         _http = new HttpClient { BaseAddress = new Uri($"http://127.0.0.1:{_gateway.Port}/") };
         _http.DefaultRequestHeaders.Add("Authorization", $"Bearer {Token}");
 
-        // Register both stub Directors directly (in-memory upsert; no FSW, no real session launching).
-        _gateway.Registry.Upsert(new DirectorRegistrationRequest
-        {
-            DirectorId = "dir-machine-1",
-            TailnetEndpoint = _machine1.BaseUrl,
-            MachineName = "MACHINE-1",
-            Version = "1.0.0-test",
-            StartedAt = DateTime.UtcNow,
-        });
-        _gateway.Registry.Upsert(new DirectorRegistrationRequest
-        {
-            DirectorId = "dir-machine-2",
-            TailnetEndpoint = _machine2.BaseUrl,
-            MachineName = "MACHINE-2",
-            Version = "1.0.0-test",
-            StartedAt = DateTime.UtcNow,
-        });
+        // Two tunnel-connected stub Directors, two machine names (criterion 6 cross-machine concurrency).
+        // Each registers UNREACHABLE and answers the create + buffer verbs over its own stream.
+        _machine1 = await StubDirector.StartAsync(_gateway, Token, "dir-machine-1", "MACHINE-1");
+        _machine2 = await StubDirector.StartAsync(_gateway, Token, "dir-machine-2", "MACHINE-2");
     }
 
     public async Task DisposeAsync()
     {
         _http.Dispose();
         await _gateway.StopAsync();
-        await _machine1.StopAsync();
-        await _machine2.StopAsync();
+        await _machine1.DisposeAsync();
+        await _machine2.DisposeAsync();
         try { if (Directory.Exists(_instancesDir)) Directory.Delete(_instancesDir, true); } catch { }
     }
 
     [Fact]
-    public async Task EndToEnd_AllAcceptanceCriteria_ProvenOverHttp()
+    public async Task EndToEnd_AllAcceptanceCriteria_ProvenOverTheTunnel()
     {
         var report = new ProofReport();
 
@@ -289,19 +269,19 @@ public sealed class WorkListRunnerEndpointProofTests : IAsyncLifetime
     private sealed record RunItemDto(string Source, string Id, string? Area, string Outcome, string? Signal, string? SessionId, string Note);
 
     /// <summary>
-    /// A minimal stub Director: implements only the two routes the runner calls. It records the
-    /// start order and the seed PrePrompt, enforces a single in-flight session slot (so the test can
-    /// assert the runner never overlaps two items on one list), and serves a canned IMPL-LOOP-TERMINAL
-    /// block per issue.
+    /// A minimal TUNNEL stub Director: answers only the two verbs the runner sends over the stream -
+    /// "create" and "buffer". It records the start order and the seed PrePrompt, enforces a single
+    /// in-flight session slot (so the test can assert the runner never overlaps two items on one list),
+    /// and serves a canned IMPL-LOOP-TERMINAL block per issue. Registered UNREACHABLE, so a working drain
+    /// rode the tunnel. A per-issue delay lets the concurrency criteria overlap two directors' drains.
     /// </summary>
-    private sealed class StubDirector
+    private sealed class StubDirector : IAsyncDisposable
     {
-        private WebApplication _app = null!;
+        private FakeTunnelDirector _director = null!;
         private readonly object _gate = new();
         private readonly Dictionary<string, (string signal, string merged, int delayMs)> _signals = new();
         private int _open;
 
-        public string BaseUrl { get; private set; } = "";
         public List<string> StartOrder { get; } = new();
         public List<string> Seeds { get; } = new();
         public bool EverOverlapped { get; private set; }
@@ -322,54 +302,56 @@ public sealed class WorkListRunnerEndpointProofTests : IAsyncLifetime
             }
         }
 
-        public async Task StartAsync()
+        public static async Task<StubDirector> StartAsync(GatewayHost gateway, string token, string directorId, string machineName)
         {
-            var port = AllocateFreePort();
-            BaseUrl = $"http://127.0.0.1:{port}";
-            var builder = WebApplication.CreateBuilder();
-            builder.Logging.ClearProviders();
-            _app = builder.Build();
-            _app.Urls.Add(BaseUrl);
-
-            _app.MapPost("/sessions", async (HttpContext ctx) =>
-            {
-                var req = await JsonSerializer.DeserializeAsync<NewSessionRequest>(ctx.Request.Body, JsonOpts);
-                var prePrompt = req?.PrePrompt ?? "";
-                // Derive the item id from the seed - the LAST token, so both the github form
-                // "/implementation-loop <id>" and the devops form
-                // "/implementation-loop --source devops <id>" (issue #300) parse correctly.
-                var tokens = prePrompt.Split(' ', StringSplitOptions.RemoveEmptyEntries);
-                var id = tokens.Length > 0 ? tokens[^1] : "";
-                var sid = $"sid-{id}-{Guid.NewGuid():N}";
-                lock (_gate)
-                {
-                    StartOrder.Add(id);
-                    Seeds.Add(prePrompt);
-                    if (++_open > 1) EverOverlapped = true;
-                }
-                return Results.Json(new SessionDto { SessionId = sid, ActivityState = "Working", Status = "Running" });
-            });
-
-            _app.MapGet("/sessions/{sid}/buffer", async (string sid) =>
-            {
-                // sid = "sid-<issue>-<guid>"
-                var parts = sid.Split('-');
-                var issue = parts.Length >= 2 ? parts[1] : sid;
-                (string signal, string merged, int delayMs) s;
-                lock (_gate) s = _signals.TryGetValue(issue, out var v) ? v : ("done", "yes", 0);
-                if (s.delayMs > 0) await Task.Delay(s.delayMs);
-                lock (_gate)
-                {
-                    if (_open > 0) _open--;
-                }
-                var text = $"working on the issue...\nIMPL-LOOP-TERMINAL\nissue: {issue}\nsignal: {s.signal}\npr: none\nmerged: {s.merged}\nreason: stub director canned signal\n";
-                return Results.Json(new BufferResponse { SessionId = sid, Text = text, TotalBytes = text.Length, NewCursor = text.Length });
-            });
-
-            await _app.StartAsync();
+            var stub = new StubDirector();
+            stub._director = await FakeTunnelDirector.StartAsync(gateway, token, directorId, machineName, stub.Dispatch);
+            return stub;
         }
 
-        public async Task StopAsync() => await _app.DisposeAsync();
+        private DirectorCommandResult Dispatch(DirectorCommand cmd)
+        {
+            switch (cmd.Verb)
+            {
+                case "create":
+                {
+                    var req = JsonSerializer.Deserialize<NewSessionRequest>(cmd.PayloadJson, FakeTunnelDirector.WebJson);
+                    var prePrompt = req?.PrePrompt ?? "";
+                    // Derive the item id from the seed - the LAST token, so both the github form
+                    // "/implementation-loop <id>" and the devops form
+                    // "/implementation-loop --source devops <id>" (issue #300) parse correctly.
+                    var tokens = prePrompt.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+                    var id = tokens.Length > 0 ? tokens[^1] : "";
+                    var sid = $"sid-{id}-{Guid.NewGuid():N}";
+                    lock (_gate)
+                    {
+                        StartOrder.Add(id);
+                        Seeds.Add(prePrompt);
+                        if (++_open > 1) EverOverlapped = true;
+                    }
+                    return FakeTunnelDirector.Ok(new SessionDto { SessionId = sid, ActivityState = "Working", Status = "Running" });
+                }
+                case "buffer":
+                {
+                    // sid = "sid-<issue>-<guid>"
+                    var parts = cmd.SessionId.Split('-');
+                    var issue = parts.Length >= 2 ? parts[1] : cmd.SessionId;
+                    (string signal, string merged, int delayMs) s;
+                    lock (_gate) s = _signals.TryGetValue(issue, out var v) ? v : ("done", "yes", 0);
+                    if (s.delayMs > 0) Thread.Sleep(s.delayMs);
+                    lock (_gate)
+                    {
+                        if (_open > 0) _open--;
+                    }
+                    var text = $"working on the issue...\nIMPL-LOOP-TERMINAL\nissue: {issue}\nsignal: {s.signal}\npr: none\nmerged: {s.merged}\nreason: stub director canned signal\n";
+                    return FakeTunnelDirector.Ok(new BufferResponse { SessionId = cmd.SessionId, Text = text, TotalBytes = text.Length, NewCursor = text.Length });
+                }
+                default:
+                    return DirectorCommandResult.Fail(DirectorCommandStatus.BadRequest, $"unexpected verb {cmd.Verb}");
+            }
+        }
+
+        public ValueTask DisposeAsync() => _director.DisposeAsync();
     }
 
     /// <summary>Accumulates Expected/Actual rows and renders the HTML proof report (ASCII only).</summary>
