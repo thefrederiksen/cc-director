@@ -53,22 +53,30 @@ public sealed class NetDiagMonitor : IDisposable
     private readonly Func<string, string?> _resolveMac;
     private readonly NetDiagDeviceStore? _deviceStore;
     private readonly NetDiagRollupStore? _rollup;
+    private readonly Action<string>? _onDrift;
+    private readonly Action<string>? _onResolve;
     private Timer? _timer;
 
     /// <param name="collect">Gathers the current per-device picture (production: <see cref="TailscaleDiagnostics.Collect"/>).</param>
     /// <param name="resolveMac">Resolves a LAN IP to a MAC (production: <see cref="LanPresenceProbe.TryResolveMac"/>).</param>
     /// <param name="deviceStore">Optional durable store: seeds baselines + presence identity on startup (drift starts fresh).</param>
     /// <param name="rollup">Optional hourly quality rollup: each judged observation folds into it (home/away path split).</param>
+    /// <param name="onDrift">P5: invoked with the device NAME on the rising edge into Drifted (persistent home relay).</param>
+    /// <param name="onResolve">P5: invoked with the device NAME on observed recovery (Drifted -> Ok).</param>
     public NetDiagMonitor(
         Func<TailscaleDiagnostics.NetworkDiag> collect,
         Func<string, string?> resolveMac,
         NetDiagDeviceStore? deviceStore = null,
-        NetDiagRollupStore? rollup = null)
+        NetDiagRollupStore? rollup = null,
+        Action<string>? onDrift = null,
+        Action<string>? onResolve = null)
     {
         _collect = collect ?? throw new ArgumentNullException(nameof(collect));
         _resolveMac = resolveMac ?? throw new ArgumentNullException(nameof(resolveMac));
         _deviceStore = deviceStore;
         _rollup = rollup;
+        _onDrift = onDrift;
+        _onResolve = onResolve;
 
         // Seed baselines + presence identity from the store so a restart does not re-warmup; the drift
         // MachineState is DELIBERATELY not restored - every device starts fresh at Unknown and re-accrues.
@@ -93,14 +101,27 @@ public sealed class NetDiagMonitor : IDisposable
         {
             var diag = _collect();
             var decisions = Tick(diag, _resolveMac, DateTime.UtcNow);
+            var nameByIp = diag.Peers
+                .Where(p => !string.IsNullOrEmpty(p.TailscaleIp))
+                .GroupBy(p => p.TailscaleIp!, StringComparer.Ordinal)
+                .ToDictionary(g => g.Key, g => g.First().Name, StringComparer.Ordinal);
             foreach (var (device, d) in decisions)
             {
+                var name = nameByIp.TryGetValue(device, out var n) && !string.IsNullOrEmpty(n) ? n : device;
                 if (d.ShouldAlert)
-                    FileLog.Write($"[NetDiagMonitor] DRIFT device={device} status={d.Status} (home relaying persistently) - alert channels wired in P5");
+                {
+                    FileLog.Write($"[NetDiagMonitor] DRIFT device={name} (home relaying persistently) - firing alert channels");
+                    try { _onDrift?.Invoke(name); } catch (Exception ex) { FileLog.Write($"[NetDiagMonitor] onDrift failed for {name}: {ex.Message}"); }
+                }
                 else if (d.ShouldResolve)
-                    FileLog.Write($"[NetDiagMonitor] RESOLVED device={device} - direct path restored");
+                {
+                    FileLog.Write($"[NetDiagMonitor] RESOLVED device={name} - direct path restored");
+                    try { _onResolve?.Invoke(name); } catch (Exception ex) { FileLog.Write($"[NetDiagMonitor] onResolve failed for {name}: {ex.Message}"); }
+                }
                 else if (d.Status is "suspect" or "drifted")
-                    FileLog.Write($"[NetDiagMonitor] device={device} status={d.Status}");
+                {
+                    FileLog.Write($"[NetDiagMonitor] device={name} status={d.Status}");
+                }
             }
         }
         catch (Exception ex)
