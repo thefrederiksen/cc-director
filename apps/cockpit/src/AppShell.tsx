@@ -1,4 +1,5 @@
 import { NavLink, Outlet, useLocation } from "react-router-dom";
+import { CockpitStatusPill } from "./network/CockpitStatusPill";
 
 // The desktop layout frame (epic #967): a two-region shell - a left rail (navigation) and the main
 // pane (the routed page). The main pane fills all remaining width. Desktop-first: the frame stays
@@ -47,6 +48,7 @@ const NAV_SECTIONS: ReadonlyArray<{ title: string; items: ReadonlyArray<NavItem>
       { to: "/transcripts", label: "Voice Recorder" },
       { to: "/exes", label: "Executables" },
       { to: "/transcription", label: "Transcription" },
+      { to: "/network", label: "Network" },
       { to: "/learn", label: "Learning" },
     ],
   },
@@ -68,6 +70,7 @@ export function AppShell() {
     <div className="shell">
       <nav className="rail rail-left" aria-label="Primary">
         <div className="brand">DevThrottle</div>
+        <CockpitStatusPill />
         <div className="nav">
           {NAV_SECTIONS.map((section) => (
             <div className="nav-section" key={section.title}>

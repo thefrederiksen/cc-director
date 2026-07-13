@@ -1,0 +1,29 @@
+/* The Cockpit network status pill in the left rail (Network Diagnostics mission, P1). */
+.net-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  margin: 0 12px 10px;
+  padding: 5px 11px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text-dim);
+  font-size: 12px;
+  font-weight: 600;
+  text-decoration: none;
+}
+.net-pill-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--text-dim);
+  flex: 0 0 auto;
+}
+.net-pill-green .net-pill-dot { background: #37c26d; }
+.net-pill-amber .net-pill-dot { background: #e8a33d; }
+.net-pill-red .net-pill-dot { background: var(--warn, #e8a33d); }
+.net-pill-grey .net-pill-dot { background: var(--text-dim); }
+.net-pill-green { color: #37c26d; }
+.net-pill-amber { color: #e8a33d; }
+.net-pill-red { color: var(--warn, #e8a33d); }
