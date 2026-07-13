@@ -24,16 +24,17 @@ public sealed class TurnEndWatcherVoiceRefreshTests
     private sealed class RecordingVoice
     {
         private readonly HashSet<string> _voiceSessions;
-        public readonly List<(string Sid, string Endpoint, bool IsNewTurn)> Generated = new();
+        public readonly List<(string Sid, string DirectorId, bool IsNewTurn)> Generated = new();
         public readonly List<string> Cleared = new();
 
         public RecordingVoice(params string[] voiceSessions) => _voiceSessions = new(voiceSessions);
 
         public bool IsVoiceSession(string sid) => _voiceSessions.Contains(sid);
-        // Mirrors WingmanVoiceService.GenerateAsync(sid, endpoint, ct, showReadingWindow): the host
-        // passes signal.IsNewTurn as showReadingWindow, so the yellow "wingman reading" hold shows
-        // only for a genuinely new turn and a catch-up refresh stays quiet (issue #1322).
-        public void GenerateAsync(string sid, string endpoint, bool isNewTurn) => Generated.Add((sid, endpoint, isNewTurn));
+        // Mirrors WingmanVoiceService.GenerateAsync(sid, route, ct, showReadingWindow): the host resolves
+        // the owning Director from signal.DirectorId (Gateway Cleanup Phase 2) and passes signal.IsNewTurn
+        // as showReadingWindow, so the yellow "wingman reading" hold shows only for a genuinely new turn and
+        // a catch-up refresh stays quiet (issue #1322).
+        public void GenerateAsync(string sid, string directorId, bool isNewTurn) => Generated.Add((sid, directorId, isNewTurn));
         public void OnSessionWorking(string sid) => Cleared.Add(sid);
     }
 
@@ -48,7 +49,7 @@ public sealed class TurnEndWatcherVoiceRefreshTests
             onTurnEnd: signal =>
             {
                 if (voice.IsVoiceSession(signal.SessionId))
-                    voice.GenerateAsync(signal.SessionId, signal.DirectorEndpoint, signal.IsNewTurn);
+                    voice.GenerateAsync(signal.SessionId, signal.DirectorId, signal.IsNewTurn);
             },
             onSessionWorking: sid => voice.OnSessionWorking(sid));
     }
@@ -62,12 +63,12 @@ public sealed class TurnEndWatcherVoiceRefreshTests
         // A turn runs and then finishes on its own (Working -> WaitingForInput) - the hands-off
         // boundary. The watcher must call voice GenerateAsync for the session, with the owning
         // Director endpoint, and nothing else.
-        watcher.Observe("voice-sid", "Working", "http://d1");
-        watcher.Observe("voice-sid", "WaitingForInput", "http://d1");
+        watcher.Observe("voice-sid", "Working", "d1");
+        watcher.Observe("voice-sid", "WaitingForInput", "d1");
 
         var generated = Assert.Single(voice.Generated);
         Assert.Equal("voice-sid", generated.Sid);
-        Assert.Equal("http://d1", generated.Endpoint);
+        Assert.Equal("d1", generated.DirectorId);
         // A live Working -> Waiting boundary is a genuinely new turn: show the yellow reading window.
         Assert.True(generated.IsNewTurn);
     }
@@ -83,7 +84,7 @@ public sealed class TurnEndWatcherVoiceRefreshTests
         using var watcher = BuildWatcher(voice);
 
         // No prior Working observation - the very first sighting is the waiting state.
-        watcher.Observe("voice-sid", "WaitingForInput", "http://d1");
+        watcher.Observe("voice-sid", "WaitingForInput", "d1");
 
         var generated = Assert.Single(voice.Generated);
         Assert.Equal("voice-sid", generated.Sid);
@@ -98,8 +99,8 @@ public sealed class TurnEndWatcherVoiceRefreshTests
         var voice = new RecordingVoice(/* no voice sessions */);
         using var watcher = BuildWatcher(voice);
 
-        watcher.Observe("plain-sid", "Working", "http://d1");
-        watcher.Observe("plain-sid", "WaitingForInput", "http://d1");
+        watcher.Observe("plain-sid", "Working", "d1");
+        watcher.Observe("plain-sid", "WaitingForInput", "d1");
 
         Assert.Empty(voice.Generated);
     }
@@ -111,9 +112,9 @@ public sealed class TurnEndWatcherVoiceRefreshTests
         var voice = new RecordingVoice("voice-sid");
         using var watcher = BuildWatcher(voice);
 
-        watcher.Observe("voice-sid", "Working", "http://d1");
-        watcher.Observe("voice-sid", "WaitingForInput", "http://d1");  // turn end -> generate
-        watcher.Observe("voice-sid", "Working", "http://d1");          // user replied -> clear cache
+        watcher.Observe("voice-sid", "Working", "d1");
+        watcher.Observe("voice-sid", "WaitingForInput", "d1");  // turn end -> generate
+        watcher.Observe("voice-sid", "Working", "d1");          // user replied -> clear cache
 
         Assert.Single(voice.Generated);
         Assert.Contains("voice-sid", voice.Cleared);

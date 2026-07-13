@@ -8,6 +8,7 @@ using CcDirector.Core.Configuration;
 using CcDirector.Core.HostedAi;
 using CcDirector.Core.Storage;
 using CcDirector.Core.Utilities;
+using CcDirector.Gateway.Api;
 using CcDirector.Gateway.Contracts;
 using CcDirector.Gateway.Discovery;
 using CcDirector.Gateway.HostedAi;
@@ -36,7 +37,6 @@ public sealed class WingmanVoiceService
 
     private readonly WingmanTranslator _translator;
     private readonly KeyVault _vault;
-    private readonly DirectorEndpointClient _client;
     private readonly WingmanTrainingStore _training;
     private readonly ConcurrentDictionary<string, byte> _voiceSessions = new();   // sid -> marker
     private readonly ConcurrentDictionary<string, VoiceReady> _ready = new();      // sid -> spoken+audio
@@ -69,7 +69,11 @@ public sealed class WingmanVoiceService
     {
         _translator = new WingmanTranslator(brainProvider, instructionsProvider: instructionsProvider);
         _vault = vault;
-        _client = client;
+        // Gateway Cleanup mission, Phase 2: the owning Director is reached through the tunnel-first
+        // SessionVerbClient the callers pass into GenerateAsync, so this service no longer holds or dials a
+        // DirectorEndpointClient itself. The parameter is retained so existing construction sites and tests
+        // are unchanged.
+        _ = client;
         _ttsHttp = ttsHttpClient;
         _training = training ?? new WingmanTrainingStore();
         // Which sessions are voice sessions survives a gateway restart. Issue #553: the per-session
@@ -215,8 +219,8 @@ public sealed class WingmanVoiceService
     /// Best-effort and fire-and-forget at the call site so it never delays a voice turn; the
     /// store fetches up to 20,000 chars of the session terminal and appends the record itself.
     /// </summary>
-    public Task CaptureTrainingAsync(string endpoint, string sid, string source, string reply, string recentContext, string spoken, double replySeconds, CancellationToken ct = default)
-        => _training.CaptureAsync(_client, endpoint, sid, source, reply, recentContext, spoken, replySeconds, ct);
+    internal Task CaptureTrainingAsync(SessionVerbClient route, string sid, string source, string reply, string recentContext, string spoken, double replySeconds, CancellationToken ct = default)
+        => _training.CaptureAsync(route, sid, source, reply, recentContext, spoken, replySeconds, ct);
 
     public VoiceReady? Get(string sid) => _ready.TryGetValue(sid, out var v) ? v : null;
     public byte[]? GetAudio(string sid) => _ready.TryGetValue(sid, out var v) ? v.Audio : null;
@@ -330,7 +334,7 @@ public sealed class WingmanVoiceService
     /// boundary): show the yellow "wingman reading" hold until the summary lands. False for a
     /// background refresh, a startup catch-up, or an idle pre-build sweep: generate silently so a
     /// session a client is already listening to is never flipped yellow.</param>
-    public async Task GenerateAsync(string sid, string endpoint, CancellationToken ct = default, bool showReadingWindow = true)
+    internal async Task GenerateAsync(string sid, SessionVerbClient route, CancellationToken ct = default, bool showReadingWindow = true)
     {
         Mark(sid);
 
@@ -373,7 +377,7 @@ public sealed class WingmanVoiceService
             }
             try
             {
-                await GenerateOnceAsync(sid, endpoint, ct, showReadingWindow);
+                await GenerateOnceAsync(sid, route, ct, showReadingWindow);
                 _rateGate.OnSuccess();   // reaching the provider clears any cooldown/backoff ramp
             }
             finally { _genGate.Release(); }
@@ -398,9 +402,9 @@ public sealed class WingmanVoiceService
     /// coalescing) stays readable and this stays the pure "make the voice" step. A rate-limit surfaces
     /// as <see cref="WingmanModelRateLimitedException"/> for the wrapper's cooldown to catch.
     /// </summary>
-    private async Task GenerateOnceAsync(string sid, string endpoint, CancellationToken ct, bool showReadingWindow)
+    private async Task GenerateOnceAsync(string sid, SessionVerbClient route, CancellationToken ct, bool showReadingWindow)
     {
-        var turns = await _client.GetTurnsAsync(endpoint, sid, ct);
+        var turns = await route.GetTurnsAsync(sid, ct);
         var widgets = turns?.Widgets ?? new List<TurnWidgetDto>();
         var lastReply = widgets.LastOrDefault(w => w.Kind == "Text")?.Content;
         if (string.IsNullOrWhiteSpace(lastReply)) return;  // nothing to say yet
@@ -434,7 +438,7 @@ public sealed class WingmanVoiceService
                 FileLog.Write($"[WingmanVoiceService] voice NOT ready (text-to-speech produced no audio): sid={sid}, spokenLen={t.Spoken.Length}");
             // Training capture (no-op unless the setting is on); fire-and-forget so it never
             // delays the turn. CancellationToken.None so a captured turn is not lost on shutdown.
-            _ = _training.CaptureAsync(_client, endpoint, sid, "generate", lastReply, recentContext, t.Spoken, t.ReplySeconds, CancellationToken.None);
+            _ = _training.CaptureAsync(route, sid, "generate", lastReply, recentContext, t.Spoken, t.ReplySeconds, CancellationToken.None);
         }
         finally { if (showReadingWindow) EndGenerating(sid); }
     }

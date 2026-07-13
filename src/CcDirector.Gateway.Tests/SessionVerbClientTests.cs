@@ -1,0 +1,116 @@
+using System.Text.Json;
+using System.Text.Json.Nodes;
+using CcDirector.Gateway.Api;
+using CcDirector.Gateway.Contracts;
+using CcDirector.Gateway.Discovery;
+using Xunit;
+
+namespace CcDirector.Gateway.Tests;
+
+/// <summary>
+/// Gateway Cleanup mission, Phase 2 (PR E-B): the SessionVerbClient is the ONE choke point the voice /
+/// dictation cluster reaches the owning Director through. These tests prove the tunnel-vs-HTTP decision
+/// and the per-verb marshaling directly, without a live Director:
+///  - when a sendCommand hook is present (stream mode), each read/write maps to the right verb and payload
+///    and NEVER touches the HTTP client;
+///  - the dictation delivery marker (PromptRequest.DeliveryUploadId) rides the prompt payload, so the tunnel
+///    prompt verb carries the Delivery signal with no HTTP header;
+///  - a failed tunnel result maps to the same null / (false, ...) shape the HTTP dial produced.
+/// The HTTP fallback path (null sendCommand) is exercised end to end by WingmanVoiceServiceTests over a
+/// LoopbackDirector; here we only assert the tunnel branch, so no real endpoint is dialed.
+/// </summary>
+public sealed class SessionVerbClientTests
+{
+    private static readonly JsonSerializerOptions Web = new(JsonSerializerDefaults.Web);
+
+    // A DirectorDto whose control endpoint would refuse a connection, so a test that succeeds proves the
+    // tunnel branch ran (the HTTP fallback would have failed).
+    private static DirectorDto UnreachableDirector() =>
+        new() { DirectorId = "dir-1", ControlEndpoint = "http://127.0.0.1:59921/" };
+
+    // Records the last command and returns a caller-supplied result, standing in for the Director stream.
+    private sealed class RecordingHub
+    {
+        public DirectorCommand? Last;
+        public DirectorCommandResult? Next;
+
+        public DirectorCommandRouter.SendDirectorCommandAsync Send => (directorId, command, ct) =>
+        {
+            Last = command;
+            return Task.FromResult<DirectorCommandResult?>(Next);
+        };
+    }
+
+    private static SessionVerbClient Client(RecordingHub hub) =>
+        new(new DirectorEndpointClient(), UnreachableDirector(), hub.Send);
+
+    [Fact]
+    public async Task GetTurns_ridesTheTurnsVerb_andMapsTheBody()
+    {
+        var hub = new RecordingHub
+        {
+            Next = DirectorCommandResult.Success(JsonSerializer.Serialize(
+                new TurnsResponse { Widgets = new List<TurnWidgetDto> { new() { Kind = "Text", Content = "hi" } } }, Web)),
+        };
+
+        var turns = await Client(hub).GetTurnsAsync("sid-1");
+
+        Assert.Equal("turns", hub.Last!.Verb);
+        Assert.Equal("sid-1", hub.Last.SessionId);
+        Assert.Equal("hi", turns?.Widgets?.Single().Content);
+    }
+
+    [Fact]
+    public async Task GetBuffer_ridesTheBufferVerb_andCarriesTheQueryArgs()
+    {
+        var hub = new RecordingHub
+        {
+            Next = DirectorCommandResult.Success(JsonSerializer.Serialize(new BufferResponse { Text = "term" }, Web)),
+        };
+
+        var buffer = await Client(hub).GetBufferAsync("sid-1", lines: 42, raw: true, since: 7);
+
+        Assert.Equal("buffer", hub.Last!.Verb);
+        var payload = JsonNode.Parse(hub.Last.PayloadJson)!.AsObject();
+        Assert.Equal(42, (int?)payload["lines"]);
+        Assert.True((bool?)payload["raw"]);
+        Assert.Equal(7, (long?)payload["since"]);
+        Assert.Equal("term", buffer?.Text);
+    }
+
+    [Fact]
+    public async Task PostPrompt_ridesThePromptVerb_andCarriesTheDeliveryMarker()
+    {
+        var hub = new RecordingHub
+        {
+            Next = DirectorCommandResult.Success(JsonSerializer.Serialize(new PromptResponse { Accepted = true }, Web)),
+        };
+
+        var (ok, body, error) = await Client(hub).PostPromptAsync(
+            "sid-1", new PromptRequest { Text = "hello", DeliveryUploadId = "up-1", Surface = "phone" });
+
+        Assert.True(ok);
+        Assert.Null(error);
+        Assert.True(body?.Accepted);
+        Assert.Equal("prompt", hub.Last!.Verb);
+        // The dictation delivery marker rides the prompt payload, so the tunnel carries it with no HTTP header.
+        var sent = JsonSerializer.Deserialize<PromptRequest>(hub.Last.PayloadJson, Web);
+        Assert.Equal("up-1", sent?.DeliveryUploadId);
+        Assert.Equal("phone", sent?.Surface);
+        Assert.Equal("hello", sent?.Text);
+    }
+
+    [Fact]
+    public async Task FailedTunnelResult_mapsToNull_andToFalseTuple()
+    {
+        // A NotFound from the Director is authoritative (the endpoint must not also HTTP-dial): a read maps
+        // to null and a write maps to the (false, null, error) shape the HTTP path returned on a non-200.
+        var hub = new RecordingHub { Next = DirectorCommandResult.Fail(DirectorCommandStatus.NotFound, "no such session") };
+
+        Assert.Null(await Client(hub).GetTurnsAsync("sid-1"));
+        var (ok, body, error) = await Client(hub).PostPromptAsync("sid-1", new PromptRequest { Text = "x" });
+        Assert.False(ok);
+        Assert.Null(body);
+        Assert.Contains("NotFound", error);
+    }
+}

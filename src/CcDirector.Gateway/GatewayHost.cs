@@ -822,29 +822,29 @@ public sealed class GatewayHost : IAsyncDisposable
         if (vs is null) return;
         try
         {
-            var directors = Registry.ListDirectors();
-            if (directors.Count == 0) return;
+            if (Registry.ListDirectors().Count == 0) return;
+            // Gateway Cleanup mission, Phase 2: locate each voice session's owner push-store-first (no HTTP
+            // fan-out) and reach it through the tunnel-first SessionVerbClient. sendCommand is non-null only
+            // under stream mode; when null the client falls back to the HTTP dial, byte-identical.
+            var stale = TimeSpan.FromSeconds(Core.Configuration.GatewayConfig.DefaultStreamStaleAfterSeconds);
+            Api.DirectorCommandRouter.SendDirectorCommandAsync? sendCommand = _streamMode ? SendCommandAsync : null;
             var generated = 0;
             foreach (var sid in vs.VoiceSessionIds())
             {
                 if (generated >= 3) break;          // gentle on the serialized brain
                 if (vs.HasVoice(sid)) continue;     // already cached, nothing to do
-                foreach (var d in directors)
+                var (director, session) = await Api.GatewayEndpoints.LocateSessionAsync(
+                    Registry, _client, sid, _streamMode ? PushedSessions : null, stale, SessionOwners);
+                if (director is null || session is null) continue;   // not owned by any known Director
+                var st = session.ActivityState ?? "";
+                if (st is "Idle" or "WaitingForInput" or "WaitingForPerm")
                 {
-                    var ep = (d.ControlEndpoint ?? d.TailnetEndpoint ?? "").TrimEnd('/');
-                    if (string.IsNullOrWhiteSpace(ep)) continue;
-                    var s = await _client.GetSessionAsync(ep, sid);
-                    if (s is null) continue;        // not owned by this Director
-                    var st = s.ActivityState ?? "";
-                    if (st is "Idle" or "WaitingForInput" or "WaitingForPerm")
-                    {
-                        FileLog.Write($"[GatewayHost] voice sweep: pre-building voice for idle session {sid}");
-                        // A pre-build is not a new turn - generate quietly so an idle session a client
-                        // may be listening to is never flipped yellow mid-play (issue #1322).
-                        await vs.GenerateAsync(sid, ep, CancellationToken.None, showReadingWindow: false);
-                        generated++;
-                    }
-                    break;  // found the owning Director
+                    FileLog.Write($"[GatewayHost] voice sweep: pre-building voice for idle session {sid}");
+                    // A pre-build is not a new turn - generate quietly so an idle session a client
+                    // may be listening to is never flipped yellow mid-play (issue #1322).
+                    var route = new Api.SessionVerbClient(_client, director, sendCommand);
+                    await vs.GenerateAsync(sid, route, CancellationToken.None, showReadingWindow: false);
+                    generated++;
                 }
             }
         }
@@ -947,11 +947,18 @@ public sealed class GatewayHost : IAsyncDisposable
                 // list with no wait. Non-voice sessions do nothing here - the watcher is voice-only.
                 if (_voiceService is { } vs && vs.IsVoiceSession(signal.SessionId))
                 {
-                    FileLog.Write($"[GatewayHost] turn-end -> voice auto-refresh: sid={signal.SessionId} newTurn={signal.IsNewTurn}");
+                    // Gateway Cleanup mission, Phase 2: reach the owning Director (carried on the signal as
+                    // its DirectorId) through the tunnel-first SessionVerbClient - no HTTP dial. The Director
+                    // may be push-only (empty control URL); the tunnel path still reaches it by id.
+                    var director = Registry.Get(signal.DirectorId);
+                    if (director is null) return;
+                    Api.DirectorCommandRouter.SendDirectorCommandAsync? sendCommand = _streamMode ? SendCommandAsync : null;
+                    var route = new Api.SessionVerbClient(_client, director, sendCommand);
+                    FileLog.Write($"[GatewayHost] turn-end -> voice auto-refresh: sid={signal.SessionId} director={signal.DirectorId} newTurn={signal.IsNewTurn}");
                     // Show the yellow "wingman reading" hold only for a genuinely new turn; a startup
                     // catch-up of an earlier turn refreshes quietly so a listening client is not
                     // dropped out of the speaking screen (issue #1322).
-                    _ = vs.GenerateAsync(signal.SessionId, signal.DirectorEndpoint, CancellationToken.None, showReadingWindow: signal.IsNewTurn);
+                    _ = vs.GenerateAsync(signal.SessionId, route, CancellationToken.None, showReadingWindow: signal.IsNewTurn);
                 }
             },
             onSessionWorking: sid =>
@@ -960,7 +967,10 @@ public sealed class GatewayHost : IAsyncDisposable
                 // stops showing it ready and nothing stale plays (issue #531). It regenerates on the
                 // next turn-end.
                 _voiceService?.OnSessionWorking(sid);
-            });
+            },
+            // Gateway Cleanup mission, Phase 2: under stream mode the catch-up / reconcile reads the push
+            // store instead of HTTP-pulling each Director's session list (no dial).
+            pushedSessions: _streamMode ? PushedSessions : null);
         // First tick = the startup catch-up sweep; then the 15s reconcile poll for
         // Directors that never push (file-discovered locals, old builds).
         _turnEndWatcher.Start();
@@ -1155,9 +1165,10 @@ public sealed class GatewayHost : IAsyncDisposable
                 if (string.Equals(newState, "Working", StringComparison.OrdinalIgnoreCase))
                     _voiceService?.OnSessionWorking(sessionId);
                 if (_turnEndWatcher is null) return;
-                var endpoint = Registry.Get(directorId)?.ControlEndpoint;
-                if (string.IsNullOrEmpty(endpoint)) return;
-                _turnEndWatcher.Observe(sessionId, newState, endpoint);
+                // Gateway Cleanup mission, Phase 2: the doorbell/heartbeat already carries the owning
+                // directorId, so feed THAT to the watcher (the voice-refresh path reaches the Director
+                // through the tunnel by id) instead of converting it to a dialable control URL.
+                _turnEndWatcher.Observe(sessionId, newState, directorId);
             },
             // Issue #549: the assessed-state refutation (issue #186) is dropped with the pipeline
             // (Option A) - "needs you" reverts to the Director's raw mechanical signal. The
@@ -1271,7 +1282,11 @@ public sealed class GatewayHost : IAsyncDisposable
         // session and have the persistent wingman brain translate the reply into speakable form,
         // plus the direct-to-wingman path. Backed by the same warm Brain the brief agent uses.
         _voiceService ??= new Wingman.WingmanVoiceService(WingmanBrainAsync, _keyVault, _client, training: _trainingStore, instructionsProvider: () => _instructionsStore.ActiveContent);
-        GatewayWingmanVoiceEndpoint.Map(_app, Registry, _client, WingmanBrainAsync, _keyVault, _voiceService, instructionsProvider: () => _instructionsStore.ActiveContent);
+        GatewayWingmanVoiceEndpoint.Map(_app, Registry, _client, WingmanBrainAsync, _keyVault, _voiceService,
+            pushedSessions: _streamMode ? PushedSessions : null,
+            sendCommand: _streamMode ? SendCommandAsync : null,
+            owners: SessionOwners,
+            instructionsProvider: () => _instructionsStore.ActiveContent);
 
         // Car Mode brain (Car Mode mission, New build A): the fleet tool-calling loop behind
         // POST /carmode/turn. The chat transport resolves the fast wingman model + the vault key at CALL
@@ -1308,7 +1323,9 @@ public sealed class GatewayHost : IAsyncDisposable
         // in resumable chunks and the Gateway assembles → transcribes → injects the turn into the
         // owning session itself, so a refresh / dropped connection cannot lose a recorded utterance.
         GatewayDictationEndpoint.Map(_app, Registry, _client, SessionOwners, Token,
-            new Transcription.GatewayTranscriptionService(_keyVault), _transcribingSessions, _dictationUploads, Devices);
+            new Transcription.GatewayTranscriptionService(_keyVault), _transcribingSessions, _dictationUploads, Devices,
+            pushedSessions: _streamMode ? PushedSessions : null,
+            sendCommand: _streamMode ? SendCommandAsync : null);
         // Durable per-upload-id dictation record (issue #1183): a PENDING upload's chunks are retained
         // until it becomes DELIVERED or ABANDONED, and the delivered/abandoned tombstone (the durable
         // de-dupe marker) is retained until the client acknowledges it - so an undelivered dictation

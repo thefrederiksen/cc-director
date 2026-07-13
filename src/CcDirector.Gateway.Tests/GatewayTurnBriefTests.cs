@@ -179,13 +179,13 @@ public sealed class TurnEndWatcherTests
         var (watcher, turnEnds, working) = BuildObserved();
         using (watcher)
         {
-            watcher.Observe("s1", "Working", "http://d1");
-            watcher.Observe("s1", "WaitingForInput", "http://d1");
+            watcher.Observe("s1", "Working", "d1");
+            watcher.Observe("s1", "WaitingForInput", "d1");
 
             Assert.Single(working);
             Assert.Single(turnEnds);
             Assert.Equal("s1", turnEnds[0].SessionId);
-            Assert.Equal("http://d1", turnEnds[0].DirectorEndpoint);
+            Assert.Equal("d1", turnEnds[0].DirectorId);
         }
     }
 

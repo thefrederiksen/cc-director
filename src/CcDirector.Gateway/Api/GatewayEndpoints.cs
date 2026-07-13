@@ -114,13 +114,12 @@ internal static class GatewayEndpoints
         // endpoint and the /fanout guard below. The pure scope rule lives in FleetBroadcastPolicy.
         var broadcastGovernor = new BroadcastGovernor();
 
-        // Issue #376: async voice-turn submit/poll (the phone's reconnect-resilient voice
-        // interface). Mapped first for readability; route precedence (literal segments win
-        // over the catch-all session forwarder) does the actual dispatch.
-        // Issue #1045: the device registry is passed through so the voice-turn routes' own token
-        // check accepts a phone's per-device key, not only the shared machine token.
-        if (turnJobs is not null)
-            GatewayVoiceTurnEndpoint.Map(app, turnJobs, registry, client, owners, token, devices);
+        // Gateway Cleanup mission, Phase 2 (PR E-B): the async voice-turn submit/poll surface (issue #376)
+        // is RETIRED. It drove the Director's SSE /sessions/{sid}/voice-turn endpoint over a raw HTTP dial
+        // (a Gateway->Director dial the tunnel-only endgame must remove), and it is CLIENT-DEAD - its only
+        // caller was the retired native MAUI phone client; cockpit and mobile both use /wingman/voice-turn,
+        // which runs the whole turn Gateway-side. The Gateway endpoint + its two dedicated tests are deleted;
+        // the Director SSE endpoint is on the Phase 1 deletion DROP list, removed at the cut.
 
         // Issue #1292: the fleet-wide session-number authority. A Director asks for a number when it
         // creates a session (so the number is unique across every Director on every machine) and frees
@@ -2346,7 +2345,10 @@ internal static class GatewayEndpoints
         return new BroadcastScope(session.MissionId?.ToString(), session.GroupId, session.RepoPath, machine);
     }
 
-    private static async Task<(DirectorDto? director, SessionDto? session)> LocateSessionAsync(
+    // Gateway Cleanup mission, Phase 2 (PR E-B): internal so the voice / dictation cluster endpoints reuse
+    // the SAME push-store-first owner resolution (a portless push-only Director resolves with zero remote
+    // reach) instead of each re-implementing a director-loop of GetSessionAsync HTTP dials.
+    internal static async Task<(DirectorDto? director, SessionDto? session)> LocateSessionAsync(
         DirectorRegistry registry, DirectorEndpointClient client, string sid,
         Streaming.PushedSessionStore? pushedSessions, TimeSpan streamStale,
         SessionOwnerCache? owners = null)

@@ -269,6 +269,15 @@ public sealed class WingmanVoiceServiceTests
         return new WingmanVoiceService((_, _) => Task.FromResult(brain), vault, new DirectorEndpointClient(), persistPath, ttsHttpClient: http);
     }
 
+    /// <summary>Gateway Cleanup mission, Phase 2: GenerateAsync now takes a tunnel-first SessionVerbClient
+    /// instead of a bare endpoint URL. This binds one to a loopback Director with NO stream (sendCommand
+    /// null), so generation exercises the HTTP fallback dial - the exact path these tests asserted before
+    /// the re-point (director.Hits still counts the reads).</summary>
+    private static CcDirector.Gateway.Api.SessionVerbClient RouteFor(string endpoint) =>
+        new(new DirectorEndpointClient(),
+            new CcDirector.Gateway.Contracts.DirectorDto { DirectorId = "d1", ControlEndpoint = endpoint },
+            null);
+
     [Fact]
     public async Task GenerateAsync_WhenCurrentReplyDiffersFromCache_Regenerates()
     {
@@ -286,7 +295,7 @@ public sealed class WingmanVoiceServiceTests
             svc.StoreReadyAudioForTest("sid-1", "old spoken", "the OLD interim reply", new byte[] { 1, 2, 3 });
             Assert.True(svc.HasVoice("sid-1"));
 
-            await svc.GenerateAsync("sid-1", director.Endpoint, CancellationToken.None, showReadingWindow: false);
+            await svc.GenerateAsync("sid-1", RouteFor(director.Endpoint), CancellationToken.None, showReadingWindow: false);
 
             Assert.Equal(1, brain.AskCount);                          // it regenerated (translated the new reply)
             var ready = svc.Get("sid-1");
@@ -312,7 +321,7 @@ public sealed class WingmanVoiceServiceTests
             svc.StoreReadyAudioForTest("sid-1", "old spoken", "the same reply", new byte[] { 1, 2, 3 });
             Assert.True(svc.HasVoice("sid-1"));
 
-            await svc.GenerateAsync("sid-1", director.Endpoint, CancellationToken.None, showReadingWindow: true);
+            await svc.GenerateAsync("sid-1", RouteFor(director.Endpoint), CancellationToken.None, showReadingWindow: true);
 
             Assert.Equal(0, brain.AskCount);              // never regenerated
             Assert.True(director.Hits >= 1);              // but it DID fetch to compare (identity-aware, not blind)
