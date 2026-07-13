@@ -212,6 +212,10 @@ const END_PHRASE_POLL_MS = 800;
 // (the silent-stall fix). Four ticks is ~3 seconds - long enough to ride out a single blip, short enough
 // that a real dead zone is announced quickly.
 const END_PHRASE_FAIL_THRESHOLD = 4;
+// The live microphone level (0..1, from the same AnalyserNode the meter reads) above which the owner is
+// treated as actively speaking, so the background re-drive defers rather than cutting him off. Quiet and
+// suppressed road noise sit well below this; direct speech spikes above it.
+const SPEAKING_LEVEL = 0.08;
 
 /** Whether this browser can capture audio for Car Mode. Car Mode is Chromium-first (decision 7); elsewhere
  *  the page tells the owner plainly instead of silently degrading (no fallback, decision 8). */
@@ -824,8 +828,13 @@ export function useCarMode(options: UseCarModeOptions): CarModeView {
     if (drivingRef.current) return;
     if (phaseRef.current !== "listening") return; // only when the microphone is the owner's and idle
     const recorder = recorderRef.current;
-    // If the owner has already started talking this segment, defer so the drive cannot preempt him.
-    if (recorder !== null && recorder.snapshot().size >= MIN_CLIP_BYTES) {
+    // If the owner is speaking RIGHT NOW, defer so the recovered answer cannot cut him off. Gate on the
+    // live microphone LEVEL, not the captured byte count: the byte count only ever grows (ambient sound
+    // and road noise keep accumulating), so it would wrongly read "he is talking" forever in a car and
+    // block the auto-retry indefinitely. The level (the same signal the on-screen meter uses) is low
+    // during quiet - road noise is suppressed by the echo-cancel/noise-suppress capture - and spikes only
+    // on speech, so it is the right "is he talking now" test.
+    if (recorder !== null && recorder.level() >= SPEAKING_LEVEL) {
       scheduleDrive();
       return;
     }
