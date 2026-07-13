@@ -668,12 +668,38 @@ public sealed class ControlApiHost : IAsyncDisposable
             // Gateway Cleanup mission, Phase 0 (wave 3): also carry the Director version and the repository
             // registry so the director-level reads that stamp/read them (facts, handover, repos-list) serve the
             // same value over the tunnel that their REST route served.
-            cmd => SessionCommandExecutor.DispatchAsync(_sessionManager, DirectorId, cmd,
-                new SessionCommandServices { ProactiveExplain = _proactiveExplain, TurnSummaryCache = _turnSummaryCache, MissionStore = _missionStore, DirectorVersion = _version, Repositories = _repositoryRegistry }),
+            cmd => DispatchTunnelCommandAsync(cmd),
             // Gateway Cleanup mission, Phase 0 (up-stream): pass the SessionManager so the four connection-bound
             // stream verbs work - their terminal/file producers read session and file state from it and stream
             // frames up this same connection.
             sessionManager: _sessionManager);
+    }
+
+    /// <summary>
+    /// The Director-side dispatcher for a command that arrived over the tunnel. Almost every verb runs through
+    /// the shared <see cref="SessionCommandExecutor"/> so it is byte-identical to its HTTP route. The one
+    /// exception is <c>shutdown</c> (Gateway Cleanup mission): stopping the whole Director is a HOST concern,
+    /// not a session-command concern - it has no place in a session executor and needs the host's shutdown hook -
+    /// so it is handled here. <c>POST /shutdown</c> stays on the loopback floor for the local launcher; this is
+    /// the Gateway-initiated REMOTE stop (<c>DELETE /directors/{id}</c>) taking the same in-process self-shutdown
+    /// path, fired-and-forgotten (like the REST route) so the Ok result flushes before Kestrel and the stream tear down.
+    /// </summary>
+    private Task<DirectorCommandResult> DispatchTunnelCommandAsync(DirectorCommand cmd)
+    {
+        if (string.Equals(cmd.Verb, "shutdown", StringComparison.Ordinal))
+        {
+            FileLog.Write("[ControlApiHost] tunnel 'shutdown' command received; self-shutting-down");
+            _ = Task.Run(async () =>
+            {
+                await Task.Delay(100);
+                try { await _requestShutdownAsync(); }
+                catch (Exception ex) { FileLog.Write($"[ControlApiHost] tunnel shutdown FAILED: {ex.Message}"); }
+            });
+            return Task.FromResult(DirectorCommandResult.Success());
+        }
+
+        return SessionCommandExecutor.DispatchAsync(_sessionManager, DirectorId, cmd,
+            new SessionCommandServices { ProactiveExplain = _proactiveExplain, TurnSummaryCache = _turnSummaryCache, MissionStore = _missionStore, DirectorVersion = _version, Repositories = _repositoryRegistry });
     }
 
     /// <summary>
