@@ -2,21 +2,21 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { type SessionDto } from "@devthrottle/client-core/api/client";
 import { dotColor, effectiveColor, stateLabel } from "@devthrottle/client-core/sessions/ordering";
-import { useSharedRoster } from "@devthrottle/client-core/fleet/rosterStore";
 import { getMissionNotes, setMissionNote } from "@devthrottle/client-core/missions/missionNotes";
 import { repoBasename, relativeTime } from "../fleet/format";
 import { groupByMission, type MissionGroup } from "./missionGrouping";
 
-// The Missions page (issue #1405): the same live fleet the Fleet Map draws, seen the way the owner
+// The Missions board (issue #1405): the same live fleet the Fleet Map draws, seen the way the owner
 // actually thinks about the work - grouped into MISSIONS rather than machines or repos. A mission is
 // derived purely from the session name ("<Mission> - <Role>") by the pure module missionGrouping.ts;
-// this page only lays the result out. Sessions that are not a mission member fall into a Standalone
+// this board only lays the result out. Sessions that are not a mission member fall into a Standalone
 // group shown last.
 //
-// It reads the ONE shared fleet roster store (issue #1239) - the same GET /sessions envelope the Fleet
-// Map, Sessions, and Directors pages read from a single poll loop - never a Director address, and reuses
-// the ONE shared effective-color + state-label rule so a status dot here matches every other Cockpit
-// surface. Clicking a session row opens that session (/session/:id) - the "linking".
+// This is the "Missions" pivot of the Fleet Map (the page that owns the roster, the header, and the
+// error/empty handling): the board is handed the already-loaded fleet roster as a prop rather than
+// polling its own, so it shares the ONE fleet roster store (issue #1239) the Fleet Map already reads.
+// It reuses the ONE shared effective-color + state-label rule so a status dot here matches every other
+// Cockpit surface. Clicking a session row opens that session (/session/:id) - the "linking".
 //
 // The WHY (Phase 1b): every card carries its mission's WHY, front and center, from the durable + shared
 // Gateway mission-notes store (getMissionNotes / setMissionNote in client-core) - keyed by the SAME
@@ -30,15 +30,12 @@ import { groupByMission, type MissionGroup } from "./missionGrouping";
 // opens the inline editor to add one.
 const NO_WHY_TEXT = "No why set - add one";
 
-export function MissionsView() {
+export function MissionsBoard({ sessions }: { sessions: SessionDto[] }) {
   const navigate = useNavigate();
-  // Sessions, the unreachable-machine list, and the keep-last error banner all come from the ONE shared
-  // roster store; no poll of its own.
-  const { sessions, machineErrors, error: lastError } = useSharedRoster();
 
   // The mission WHYs, keyed by the normalized mission key (the same key groupByMission produces). Read
   // once on mount from the durable, shared Gateway store; refreshed in place after an inline edit. A
-  // failed read is non-fatal - the page still renders the fleet, every card just shows its flag.
+  // failed read is non-fatal - the board still renders the fleet, every card just shows its flag.
   const [whyByKey, setWhyByKey] = useState<Map<string, string>>(new Map());
 
   const refreshNotes = useCallback(() => {
@@ -66,106 +63,61 @@ export function MissionsView() {
     });
   }, []);
 
-  const list = useMemo(() => sessions ?? [], [sessions]);
-  const grouped = useMemo(() => groupByMission(list), [list]);
-
-  // Fleet-wide summary counts, read from the same shared color rule the cards use.
-  const missionCount = grouped.missions.length;
-  const standaloneCount = grouped.standalone.length;
-  const redCount = list.filter((s) => effectiveColor(s) === "red").length;
-  const workingCount = list.filter((s) => effectiveColor(s) === "blue").length;
+  const grouped = useMemo(() => groupByMission(sessions), [sessions]);
 
   const openSession = (sid: string | null | undefined) => {
     const id = (sid ?? "").trim();
     if (id.length > 0) navigate(`/session/${encodeURIComponent(id)}`);
   };
 
+  if (grouped.missions.length === 0 && grouped.standalone.length === 0) {
+    return (
+      <div className="msn-empty">
+        <p>No missions are running anywhere on the fleet.</p>
+        <p className="msn-empty-sub">A mission appears here the moment its sessions start.</p>
+      </div>
+    );
+  }
+
   return (
-    <div className="msn">
-      <header className="msn-head">
-        <h1 className="msn-title">Missions</h1>
-        <span className="msn-stats">
-          <span>
-            {missionCount} mission{missionCount === 1 ? "" : "s"}
-          </span>
-          {workingCount > 0 && (
-            <>
-              <span className="msn-sep" aria-hidden="true" />
-              <span className="msn-stat-blue">{workingCount} working</span>
-            </>
-          )}
-          {redCount > 0 && (
-            <>
-              <span className="msn-sep" aria-hidden="true" />
-              <span className="msn-stat-red">{redCount} needs you</span>
-            </>
-          )}
-          {standaloneCount > 0 && (
-            <>
-              <span className="msn-sep" aria-hidden="true" />
-              <span>
-                {standaloneCount} standalone
-              </span>
-            </>
-          )}
-        </span>
-      </header>
+    <div className="msn-list">
+      {grouped.missions.map((m) => (
+        <MissionCard
+          key={m.key}
+          mission={m}
+          why={whyByKey.get(m.key) ?? ""}
+          onSaveWhy={saveWhy}
+          onOpen={openSession}
+        />
+      ))}
 
-      {lastError !== null && <div className="msn-error">{lastError}</div>}
-
-      {machineErrors.length > 0 && (
-        <div className="msn-warn">
-          {machineErrors.length} machine{machineErrors.length === 1 ? "" : "s"} unreachable on the last
-          sweep:{" "}
-          {machineErrors
-            .map((m) => (m.machineName ?? "").trim())
-            .filter((n) => n.length > 0)
-            .join(", ") || "(unknown)"}
-        </div>
-      )}
-
-      {sessions === null && lastError === null && <div className="msn-empty">Loading the fleet...</div>}
-
-      {sessions !== null && list.length === 0 && machineErrors.length === 0 && (
-        <div className="msn-empty">
-          <p>No sessions are running anywhere on the fleet.</p>
-          <p className="msn-empty-sub">A mission appears here the moment its sessions start.</p>
-        </div>
-      )}
-
-      {list.length > 0 && (
-        <div className="msn-list">
-          {grouped.missions.map((m) => (
-            <MissionCard
-              key={m.key}
-              mission={m}
-              why={whyByKey.get(m.key) ?? ""}
-              onSaveWhy={saveWhy}
-              onOpen={openSession}
-            />
-          ))}
-
-          {grouped.standalone.length > 0 && (
-            <>
-              <div className="msn-group-label">Standalone</div>
-              <div className="msn-card msn-card-standalone">
-                <div className="msn-sessions">
-                  {grouped.standalone.map((s) => (
-                    <SessionRow
-                      key={s.sessionId ?? s.number}
-                      session={s}
-                      label={(s.name ?? "").trim().length === 0 ? "(unnamed)" : (s.name as string)}
-                      onOpenSession={openSession}
-                    />
-                  ))}
-                </div>
-              </div>
-            </>
-          )}
-        </div>
+      {grouped.standalone.length > 0 && (
+        <>
+          <div className="msn-group-label">Standalone</div>
+          <div className="msn-card msn-card-standalone">
+            <div className="msn-sessions">
+              {grouped.standalone.map((s) => (
+                <SessionRow
+                  key={s.sessionId ?? s.number}
+                  session={s}
+                  label={(s.name ?? "").trim().length === 0 ? "(unnamed)" : (s.name as string)}
+                  onOpenSession={openSession}
+                />
+              ))}
+            </div>
+          </div>
+        </>
       )}
     </div>
   );
+}
+
+// Fleet-wide mission counts, derived from the same grouping the board renders. The Fleet Map header
+// shows these when the Missions pivot is active so the owner sees the mission / standalone tally the
+// standalone Missions page used to carry.
+export function missionCounts(sessions: SessionDto[]): { missions: number; standalone: number } {
+  const grouped = groupByMission(sessions);
+  return { missions: grouped.missions.length, standalone: grouped.standalone.length };
 }
 
 interface MissionCardProps {

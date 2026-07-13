@@ -11,6 +11,7 @@ import {
 } from "@devthrottle/client-core/fleet/fleetClient";
 import { useSharedRoster } from "@devthrottle/client-core/fleet/rosterStore";
 import { repoBasename, relativeTime } from "./format";
+import { MissionsBoard, missionCounts } from "../missions/MissionsBoard";
 
 // Per-Director reachability for the Online / Wobbly / Offline node rendering (issue #1215), provided at
 // the Fleet Map root and read by each NodeCard so the cards dim in place without prop-drilling.
@@ -20,8 +21,10 @@ const ReachabilityContext = createContext<DirectorReachability[]>([]);
 // the Fleet page (FleetView) is a list of cards grouped by machine, this is a node canvas - a root
 // node for the Gateway branching down to grouped "lane" panels of terminal-window session cards,
 // joined by SVG elbow connectors, with one status dot per node. The same fleet is re-laid-out on the
-// fly three ways (the pivot switch): by machine (machine -> Director -> session, the topology), by
-// repository (what we are building), or by agent (Claude/Codex/Gemini/... - the workforce).
+// fly several ways (the pivot switch): by machine (machine -> Director -> session, the topology), by
+// repository (what we are building), by agent (Claude/Codex/Gemini/... - the workforce), a flat Fleet
+// list, or by Mission - the way the owner actually thinks about the work. Missions used to be its own
+// left-rail page; it is now a pivot of this one page (issue #1405), so the fleet has a single home.
 //
 // It reads the ONE shared fleet roster store (issue #1239) - the same GET /sessions?envelope=true
 // envelope Sessions and Directors read, from a single poll loop - never a Director address - and reuses
@@ -29,7 +32,7 @@ const ReachabilityContext = createContext<DirectorReachability[]>([]);
 // fleet page reads that one store, this map and the Sessions roster always agree on the fleet at the
 // same moment, and a hidden tab makes no roster requests at all.
 
-type Pivot = "machine" | "repo" | "agent" | "list";
+type Pivot = "machine" | "repo" | "agent" | "list" | "mission";
 
 const PIVOTS: ReadonlyArray<{ key: Pivot; label: string; kindLabel: string }> = [
   { key: "machine", label: "By machine", kindLabel: "Machine" },
@@ -38,7 +41,15 @@ const PIVOTS: ReadonlyArray<{ key: Pivot; label: string; kindLabel: string }> = 
   // The flat "Fleet list" pivot (issue #1212) absorbs the retired Fleet page: every session once, as
   // the same node card, no lane grouping (machines are already their own pivot).
   { key: "list", label: "Fleet list", kindLabel: "Session" },
+  // The Missions pivot (issue #1405): the fleet grouped into missions (derived from the session name),
+  // each mission card carrying its WHY. Rendered by MissionsBoard, not the node canvas - a distinct
+  // board rather than a lane layout - so it sits at the end of the strip.
+  { key: "mission", label: "Missions", kindLabel: "Mission" },
 ];
+
+// The pivots that lay the fleet out on the node canvas (root -> lanes). "list" is a flat grid and
+// "mission" is its own board; neither uses the canvas or the title search.
+const CANVAS_PIVOTS: ReadonlySet<Pivot> = new Set<Pivot>(["machine", "repo", "agent"]);
 
 // The grouping is sticky per browser: the map opens on whatever the user last chose (rather than a
 // "smart" default that guesses from the fleet shape), so returning to the map lands them exactly where
@@ -48,7 +59,14 @@ const PIVOT_STORAGE_KEY = "cockpit.fleetMapPivot";
 function initialPivot(): Pivot {
   try {
     const saved = window.localStorage.getItem(PIVOT_STORAGE_KEY);
-    if (saved === "machine" || saved === "repo" || saved === "agent" || saved === "list") return saved;
+    if (
+      saved === "machine" ||
+      saved === "repo" ||
+      saved === "agent" ||
+      saved === "list" ||
+      saved === "mission"
+    )
+      return saved;
   } catch {
     /* storage unavailable (private mode) - fall through to the default */
   }
@@ -97,7 +115,10 @@ export function FleetMapView() {
   // search then only removes non-matching cards from within those fixed lanes and drops lanes that go
   // empty - a matching card never moves and the lanes never reorder (issue #1211). The flat "list"
   // pivot does not use lanes.
-  const allLanes = useMemo(() => (pivot === "list" ? [] : buildLanes(list, pivot)), [list, pivot]);
+  const allLanes = useMemo(
+    () => (CANVAS_PIVOTS.has(pivot) ? buildLanes(list, pivot) : []),
+    [list, pivot],
+  );
   const lanes = useMemo(() => {
     const q = query.trim().toLowerCase();
     if (q.length === 0) return allLanes;
@@ -129,6 +150,12 @@ export function FleetMapView() {
   }, [list]);
   const redCount = list.filter((s) => effectiveColor(s) === "red").length;
   const workingCount = list.filter((s) => effectiveColor(s) === "blue").length;
+  // Mission / standalone tally, shown in the header only while the Missions pivot is active so it
+  // carries the count the standalone Missions page used to show. Grouped only when needed.
+  const missionStats = useMemo(
+    () => (pivot === "mission" ? missionCounts(list) : null),
+    [pivot, list],
+  );
 
   return (
     <ReachabilityContext.Provider value={directors}>
@@ -136,11 +163,33 @@ export function FleetMapView() {
       <header className="fmap-head">
         <h1 className="fmap-title">Fleet Map</h1>
         <span className="fmap-stats">
-          <span>{list.length} session{list.length === 1 ? "" : "s"}</span>
-          <span className="fmap-sep" aria-hidden="true" />
-          <span>{machineCount} machine{machineCount === 1 ? "" : "s"}</span>
-          <span className="fmap-sep" aria-hidden="true" />
-          <span>{repoCount} repo{repoCount === 1 ? "" : "s"}</span>
+          {missionStats !== null ? (
+            <>
+              <span>
+                {missionStats.missions} mission{missionStats.missions === 1 ? "" : "s"}
+              </span>
+              {missionStats.standalone > 0 && (
+                <>
+                  <span className="fmap-sep" aria-hidden="true" />
+                  <span>{missionStats.standalone} standalone</span>
+                </>
+              )}
+            </>
+          ) : (
+            <>
+              <span>
+                {list.length} session{list.length === 1 ? "" : "s"}
+              </span>
+              <span className="fmap-sep" aria-hidden="true" />
+              <span>
+                {machineCount} machine{machineCount === 1 ? "" : "s"}
+              </span>
+              <span className="fmap-sep" aria-hidden="true" />
+              <span>
+                {repoCount} repo{repoCount === 1 ? "" : "s"}
+              </span>
+            </>
+          )}
           {workingCount > 0 && (
             <>
               <span className="fmap-sep" aria-hidden="true" />
@@ -156,14 +205,18 @@ export function FleetMapView() {
         </span>
 
         <div className="fmap-controls">
-          <input
-            type="search"
-            className="fmap-search"
-            placeholder="Search titles..."
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            aria-label="Search sessions by title"
-          />
+          {/* The title search filters the node canvas / flat list; the Missions board is not searchable,
+              so the box is hidden while that pivot is active rather than left as a dead control. */}
+          {pivot !== "mission" && (
+            <input
+              type="search"
+              className="fmap-search"
+              placeholder="Search titles..."
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              aria-label="Search sessions by title"
+            />
+          )}
           <div className="fmap-pivot" role="group" aria-label="Group the fleet by">
             {PIVOTS.map((p) => (
               <button
@@ -213,7 +266,9 @@ export function FleetMapView() {
           </div>
         )}
 
-      {pivot === "list"
+      {pivot === "mission"
+        ? list.length > 0 && <MissionsBoard sessions={list} />
+        : pivot === "list"
         ? flatSessions.length > 0 && (
             <FleetList
               sessions={flatSessions}
