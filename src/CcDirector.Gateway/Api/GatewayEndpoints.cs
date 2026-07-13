@@ -1711,8 +1711,25 @@ internal static class GatewayEndpoints
                 return Results.BadRequest(new { error = "owner and repo are required" });
 
             FileLog.Write($"[GatewayEndpoints] POST /directors/{id}/sessions/github: {req.Owner}/{req.Repo} mode={req.TriggerMode}");
-            var (ok, body, err) = await client.CreateGitHubSessionAsync(d.ControlEndpoint, req);
-            if (!ok)
+
+            // Gateway Cleanup Phase 2: ride the target Director's stream first (create-from-github verb,
+            // director-level so SessionId is ""); on a null return (no stream) fall back to the HTTP create. A
+            // non-Ok stream result collapses to 502, exactly as the HTTP path surfaced a Director 4xx/5xx.
+            SessionDto? body;
+            string? err;
+            var streamResult = await DirectorCommandRouter.TrySendAsync(sendCommand, id, "create-from-github", "", req, CancellationToken.None);
+            if (streamResult is not null)
+            {
+                body = streamResult.Ok ? DirectorCommandRouter.ReadBody<SessionDto>(streamResult) : null;
+                err = streamResult.Ok ? null : DirectorCommandRouter.DescribeFailure(streamResult);
+            }
+            else
+            {
+                var http = await client.CreateGitHubSessionAsync(d.ControlEndpoint, req);
+                body = http.ok ? http.body : null;
+                err = http.error;
+            }
+            if (body is null)
                 return Results.Problem(err ?? "failed", statusCode: StatusCodes.Status502BadGateway);
             return Results.Json(body, statusCode: 201);
         });
