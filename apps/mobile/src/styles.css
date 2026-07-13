@@ -3242,3 +3242,165 @@ a.banner-btn {
 .thr-swatch-typed {
   background: color-mix(in srgb, var(--text-dim) 55%, transparent);
 }
+
+/* Your Throttle mobile dashboard (devthrottle-stats): the compact headline view - three metric rings,
+   a surface split, and the totals. The heavy tables/charts stay on the desktop page. */
+.mthr {
+  padding: 12px 14px 28px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.mthr-metrics {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.mthr-metric {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 14px 16px;
+}
+.mthr-ring {
+  position: relative;
+  width: 88px;
+  height: 88px;
+  flex: none;
+}
+.mthr-ring-svg {
+  width: 100%;
+  height: 100%;
+  transform: rotate(-90deg);
+}
+.mthr-ring-track {
+  fill: none;
+  stroke: color-mix(in srgb, var(--text-dim) 20%, transparent);
+  stroke-width: 10;
+}
+.mthr-ring-arc {
+  fill: none;
+  stroke: var(--mthr-arc);
+  stroke-width: 11;
+  stroke-linecap: round;
+  filter: drop-shadow(0 0 4px color-mix(in srgb, var(--mthr-arc) 55%, transparent));
+  transition: stroke-dasharray 500ms ease;
+}
+.mthr-ring-pct {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 22px;
+  font-weight: 700;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+.mthr-metric-body {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.mthr-metric-title {
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+  margin-bottom: 8px;
+}
+.mthr-metric-legend {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.mthr-leg {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: var(--text-dim);
+}
+.mthr-leg b {
+  color: var(--text);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.mthr-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  flex: none;
+  display: inline-block;
+}
+.mthr-dot-muted {
+  background: color-mix(in srgb, var(--text-dim) 55%, transparent);
+}
+.mthr-metric-note {
+  margin-top: 8px;
+  font-size: 12px;
+  color: var(--text-dim);
+}
+.mthr-split {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 14px 16px;
+}
+.mthr-split-title {
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+  margin-bottom: 10px;
+}
+.mthr-split-bar {
+  display: flex;
+  height: 26px;
+  border-radius: 7px;
+  overflow: hidden;
+  gap: 2px;
+  background: var(--bg);
+}
+.mthr-split-seg {
+  min-width: 2px;
+  transition: width 500ms ease;
+}
+.mthr-split-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+  margin-top: 12px;
+}
+.mthr-stats {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+.mthr-stat {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 14px 16px;
+}
+.mthr-stat-value {
+  font-size: 22px;
+  font-weight: 700;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+.mthr-stat-label {
+  font-size: 12px;
+  color: var(--text-dim);
+  margin-top: 4px;
+}
+.mthr-foot {
+  font-size: 12px;
+  color: var(--text-dim);
+  margin: 4px 2px 0;
+  text-align: center;
+}
