@@ -43,30 +43,11 @@ public sealed class DirectorRegistry : IDisposable
     /// <summary>If an HTTP-registered Director has not heartbeat for this long, it gets swept.</summary>
     public static TimeSpan HttpHeartbeatTimeout { get; } = TimeSpan.FromSeconds(60);
 
-    /// <summary>Consecutive failed fleet probes before the reachability circuit opens.</summary>
-    public static int MaxConsecutiveFailures { get; } = 3;
-
-    /// <summary>While the circuit is open, the aggregator skips the Director for this long.</summary>
-    public static TimeSpan UnreachableCooldown { get; } = TimeSpan.FromSeconds(30);
-
-    /// <summary>A Director unreachable continuously for this long is evicted even if still heartbeating.</summary>
-    public static TimeSpan UnreachableEvictAfter { get; } = TimeSpan.FromMinutes(3);
-
-    /// <summary>
-    /// Per-Director reachability circuit-breaker state. Kept OFF the wire <see cref="DirectorDto"/>;
-    /// purely a Gateway-side concern. A Director can be heartbeating (process alive) yet have a control
-    /// endpoint the Gateway cannot reach - this tracks that so we stop re-probing it every poll.
-    /// </summary>
-    private sealed class Reachability
-    {
-        public int ConsecutiveFailures;
-        public DateTime? CooldownUntil;
-        public DateTime FirstUnreachableAt;
-        public string LastError = "unreachable";
-    }
+    // Gateway Cleanup mission (post-cut): the reachability circuit-breaker (consecutive-failure counting,
+    // cooldown, unreachable-evict) and the advertised-endpoint re-verification state machine are DELETED.
+    // Liveness is the tunnel connection itself now, not an HTTP probe, so there is nothing to circuit-break.
 
     private readonly ConcurrentDictionary<string, DirectorDto> _directors = new();
-    private readonly ConcurrentDictionary<string, Reachability> _reach = new();
 
     /// <summary>
     /// Directors that have answered at least one fleet probe (issue #197). Deliberately
@@ -121,10 +102,6 @@ public sealed class DirectorRegistry : IDisposable
 
         var existed = _directors.TryGetValue(req.DirectorId, out _);
         _directors[req.DirectorId] = dto;
-        // A fresh registration may carry a corrected endpoint - give it a clean reachability slate so a
-        // previously-broken Director that restarted on a good build is probed again immediately.
-        _reach.TryRemove(req.DirectorId, out _);
-        _endpointProbeFailures.TryRemove(req.DirectorId, out _);
         FileLog.Write(dto.EndpointUnreachableReason is null
             ? $"[DirectorRegistry] Upsert (http): id={dto.DirectorId}, endpoint={dto.TailnetEndpoint}, existed={existed}"
             : $"[DirectorRegistry] Upsert (http, FLAGGED no reachable endpoint): id={dto.DirectorId}, existed={existed}, reason={dto.EndpointUnreachableReason}");
@@ -174,8 +151,6 @@ public sealed class DirectorRegistry : IDisposable
         if (string.IsNullOrEmpty(directorId)) return false;
         if (_directors.TryRemove(directorId, out _))
         {
-            _reach.TryRemove(directorId, out _);
-            _endpointProbeFailures.TryRemove(directorId, out _);
             _everReachable.TryRemove(directorId, out _); // graceful goodbye: next process starts blank
             FileLog.Write($"[DirectorRegistry] Remove (http): id={directorId}");
             OnDirectorRemoved?.Invoke(directorId);
@@ -217,140 +192,6 @@ public sealed class DirectorRegistry : IDisposable
     /// <summary>Look up by Director ID. Null if unknown.</summary>
     public DirectorDto? Get(string directorId)
         => _directors.TryGetValue(directorId, out var d) ? d : null;
-
-    // ===== Reachability circuit-breaker (see DIRECTOR_LIVENESS_PLAN.md) =====
-
-    /// <summary>
-    /// Whether the fleet aggregator should probe this Director right now. False while its circuit is
-    /// open (recent run of failures) so a dead/mis-registered Director stops costing a timeout per poll.
-    /// </summary>
-    public bool ShouldProbe(string directorId)
-    {
-        if (!_reach.TryGetValue(directorId, out var r)) return true;
-        return r.CooldownUntil is not { } until || DateTime.UtcNow >= until;
-    }
-
-    /// <summary>Last error seen for an unreachable Director (surfaced in the envelope). Empty if reachable.</summary>
-    public string LastUnreachableError(string directorId)
-        => _reach.TryGetValue(directorId, out var r) ? r.LastError : "unreachable";
-
-    /// <summary>The Director answered a fleet probe: clear its breaker.</summary>
-    public void RecordReachable(string directorId)
-    {
-        _everReachable[directorId] = true;
-        if (_reach.TryRemove(directorId, out _))
-            FileLog.Write($"[DirectorRegistry] {directorId} reachable again; reachability circuit reset");
-    }
-
-    /// <summary>
-    /// True when this Director has answered at least one fleet probe since it became known
-    /// (survives the evict/re-register cycle - see <see cref="_everReachable"/>). False means
-    /// the advertised endpoint has NEVER answered, which is the "nothing is listening there"
-    /// signature (issue #197), not a transient outage.
-    /// </summary>
-    public bool WasEverReachable(string directorId)
-        => !string.IsNullOrEmpty(directorId) && _everReachable.ContainsKey(directorId);
-
-    /// <summary>
-    /// Stamp a PASSING two-way handshake (issues #223/#224) on the registration. The stamp
-    /// lives on the in-memory dto, so it naturally resets when a re-register replaces the
-    /// entry - a fresh registration must re-earn its verification.
-    /// </summary>
-    public void MarkTwoWayVerified(string directorId)
-    {
-        if (string.IsNullOrEmpty(directorId)) return;
-        if (_directors.TryGetValue(directorId, out var d))
-            d.TwoWayVerifiedAt = DateTime.UtcNow;
-    }
-
-    /// <summary>
-    /// Stamp the result of the stream-leg verification (the real WebSocket UPGRADE to
-    /// /verify-ws - the path the Cockpit terminal stream uses). <paramref name="ok"/> true ->
-    /// stamp <see cref="DirectorDto.StreamVerifiedAt"/> and clear the error; false -> clear the
-    /// stamp and record <paramref name="error"/>. Like the two-way stamp this lives on the
-    /// in-memory dto, so a re-register naturally resets it. NOT called when the leg was not
-    /// applicable (a Director predating /verify-ws), so such a Director stays "unknown" (both
-    /// fields null) rather than reading as broken.
-    /// </summary>
-    public void MarkStreamVerified(string directorId, bool ok, string? error)
-    {
-        if (string.IsNullOrEmpty(directorId)) return;
-        if (_directors.TryGetValue(directorId, out var d))
-        {
-            d.StreamVerifiedAt = ok ? DateTime.UtcNow : null;
-            d.StreamVerifyError = ok ? null : error;
-        }
-    }
-
-    // ===== Advertised-endpoint re-verification state machine (issue #325) =====
-
-    /// <summary>Consecutive advertised-endpoint probe failures per Director, for log throttling only
-    /// (the wire state lives on the dto). The #197 lesson: a structurally-dead endpoint fails forever,
-    /// so we log the transition and every 10th repeat, never every probe.</summary>
-    private readonly ConcurrentDictionary<string, int> _endpointProbeFailures = new();
-
-    /// <summary>
-    /// Record one advertised-endpoint probe result (issue #325) and stamp the named state on
-    /// the registration: healthy -> fail -> flagged <see cref="DirectorDto.EndpointStateUnreachableByName"/>;
-    /// flagged -> succeed -> cleared back to <see cref="DirectorDto.EndpointStateOk"/>. The stamp lives
-    /// on the in-memory dto, so a re-register (which replaces the dto) naturally resets it.
-    /// </summary>
-    /// <param name="directorId">The probed Director.</param>
-    /// <param name="ok">True when the probe answered /healthz AS this Director.</param>
-    /// <param name="error">Why the probe failed (required when <paramref name="ok"/> is false).</param>
-    public void RecordEndpointProbeResult(string directorId, bool ok, string? error = null)
-    {
-        if (string.IsNullOrEmpty(directorId))
-            throw new ArgumentException("directorId is required", nameof(directorId));
-        if (!ok && string.IsNullOrWhiteSpace(error))
-            throw new ArgumentException("a failed probe must carry its reason", nameof(error));
-        if (!_directors.TryGetValue(directorId, out var d)) return; // evicted between probe and record
-
-        var now = DateTime.UtcNow;
-        var endpoint = d.TailnetEndpoint ?? d.ControlEndpoint;
-        d.AdvertisedEndpointCheckedAt = now;
-
-        if (ok)
-        {
-            var wasFlagged = d.AdvertisedEndpointState == DirectorDto.EndpointStateUnreachableByName;
-            d.AdvertisedEndpointState = DirectorDto.EndpointStateOk;
-            d.AdvertisedEndpointUnreachableSince = null;
-            d.AdvertisedEndpointError = null;
-            _endpointProbeFailures.TryRemove(directorId, out _);
-            if (wasFlagged)
-                FileLog.Write($"[DirectorRegistry] {directorId} advertised endpoint REACHABLE again: endpoint={endpoint}");
-            return;
-        }
-
-        var failures = _endpointProbeFailures.AddOrUpdate(directorId, 1, (_, n) => n + 1);
-        var firstFlag = d.AdvertisedEndpointState != DirectorDto.EndpointStateUnreachableByName;
-        if (firstFlag)
-            d.AdvertisedEndpointUnreachableSince = now;
-        d.AdvertisedEndpointState = DirectorDto.EndpointStateUnreachableByName;
-        d.AdvertisedEndpointError = error;
-        // Transition + every 10th repeat - each line carries endpoint and reason (issue #325 AC).
-        if (firstFlag || failures % 10 == 0)
-            FileLog.Write($"[DirectorRegistry] {directorId} advertised endpoint UNREACHABLE-BY-NAME (still heartbeating): endpoint={endpoint}, failures={failures}, reason={error}");
-    }
-
-    /// <summary>A fleet probe to the Director failed: increment the breaker and open it after the threshold.</summary>
-    public void RecordUnreachable(string directorId, string error)
-    {
-        var now = DateTime.UtcNow;
-        var r = _reach.GetOrAdd(directorId, _ => new Reachability { FirstUnreachableAt = now });
-        r.ConsecutiveFailures++;
-        r.LastError = string.IsNullOrWhiteSpace(error) ? "unreachable" : error;
-        if (r.ConsecutiveFailures >= MaxConsecutiveFailures)
-        {
-            r.CooldownUntil = now + UnreachableCooldown;
-            // Log the closed->open transition and a heartbeat trace every 10th failure -
-            // NOT every probe. A structurally-dead endpoint fails forever; one line per
-            // failure drowned the gateway log (issue #197). CooldownUntil itself must be
-            // refreshed on every failure or the circuit would re-close while still dead.
-            if (r.ConsecutiveFailures == MaxConsecutiveFailures || r.ConsecutiveFailures % 10 == 0)
-                FileLog.Write($"[DirectorRegistry] {directorId} circuit OPEN after {r.ConsecutiveFailures} failures; skipping for {UnreachableCooldown.TotalSeconds:F0}s ({r.LastError})");
-        }
-    }
 
     private void LoadExisting()
     {
@@ -455,34 +296,14 @@ public sealed class DirectorRegistry : IDisposable
             {
                 if (kv.Value.Source == "http")
                 {
-                    // Alive but its control endpoint has been unreachable too long: evict even though it
-                    // is still heartbeating. If the process is genuinely up it self-heals - its next
-                    // heartbeat gets 410 Gone and it re-registers (possibly with a corrected endpoint).
-                    if (_reach.TryGetValue(kv.Key, out var reach)
-                        && reach.ConsecutiveFailures >= MaxConsecutiveFailures
-                        && now - reach.FirstUnreachableAt > UnreachableEvictAfter)
-                    {
-                        if (_directors.TryRemove(kv.Key, out _))
-                        {
-                            _reach.TryRemove(kv.Key, out _);
-                            _endpointProbeFailures.TryRemove(kv.Key, out _);
-                            FileLog.Write($"[DirectorRegistry] Sweeper evicted unreachable http entry: {kv.Key} (control endpoint dead {(now - reach.FirstUnreachableAt).TotalSeconds:F0}s, still heartbeating)");
-                            OnDirectorRemoved?.Invoke(kv.Key);
-                        }
-                        continue;
-                    }
-
-                    // HTTP entries: drop if no heartbeat for HttpHeartbeatTimeout.
+                    // HTTP entries: drop if no heartbeat for HttpHeartbeatTimeout. (Post-cut: the
+                    // reachability circuit-breaker's unreachable-evict branch is gone - liveness is the
+                    // tunnel connection, and a dead heartbeat is the only eviction signal that remains.)
                     var lastSeen = kv.Value.LastSeen ?? DateTime.MinValue;
                     if (now - lastSeen > HttpHeartbeatTimeout)
                     {
                         if (_directors.TryRemove(kv.Key, out _))
                         {
-                            _reach.TryRemove(kv.Key, out _);
-                            _endpointProbeFailures.TryRemove(kv.Key, out _);
-                            // The process is gone (no heartbeat) - unlike the unreachable-evict
-                            // above (still heartbeating), a future registration under this id is
-                            // a NEW process and deserves a blank ever-reachable slate.
                             _everReachable.TryRemove(kv.Key, out _);
                             FileLog.Write($"[DirectorRegistry] Sweeper removed stale http entry: {kv.Key} (last heartbeat {(now - lastSeen).TotalSeconds:F0}s ago)");
                             OnDirectorRemoved?.Invoke(kv.Key);

@@ -47,7 +47,7 @@ internal static class SessionWsProxyEndpoints
     /// owning Director from <paramref name="registry"/> via <paramref name="client"/>; 404 when
     /// the session is unknown across the fleet, 503 when the owning Director cannot be reached.
     /// </summary>
-    public static void Map(IEndpointRouteBuilder app, DirectorRegistry registry, DirectorEndpointClient client, SessionOwnerCache owners, string? fleetToken = null,
+    public static void Map(IEndpointRouteBuilder app, DirectorRegistry registry, SessionOwnerCache owners, string? fleetToken = null,
         Streaming.PushedSessionStore? pushedSessions = null, Streaming.GatewayStreamRegistry? streamRegistry = null,
         DirectorCommandRouter.SendDirectorCommandAsync? sendCommand = null, TimeSpan? streamStaleAfter = null)
     {
@@ -61,9 +61,6 @@ internal static class SessionWsProxyEndpoints
         var tunnel = (pushedSessions is not null && streamRegistry is not null && sendCommand is not null)
             ? new TunnelStreamLegs(streamRegistry, sendCommand)
             : null;
-        // The catch-all's session-verb dispatch (turns, buffer-html, usage, ... and, in later increments, the
-        // session writes). Enabled under the same stream-mode guard; null => the catch-all keeps its HTTP dial.
-        var catchAll = sendCommand is not null ? new TunnelCatchAllDispatch(sendCommand) : null;
         var stale = streamStaleAfter ?? TimeSpan.FromSeconds(10);
 
         // Live terminal stream: over the tunnel (open-terminal-stream up-stream) when the owner is
@@ -75,7 +72,7 @@ internal static class SessionWsProxyEndpoints
                 await tunnel.ServeTerminalAsync(ctx, sid, loc.DirectorId);
                 return;
             }
-            await ProxyAsync(ctx, sid, "stream", $"/sessions/{sid}/stream", registry, client, proxy, owners);
+            await ProxyAsync(ctx, sid, "stream", $"/sessions/{sid}/stream", registry, pushedSessions, stale, proxy, owners);
         });
 
         // Local Files viewer (session file read): over the tunnel (read-file up-stream) when the owner is
@@ -92,13 +89,13 @@ internal static class SessionWsProxyEndpoints
                 if (await tunnel.TryServeFileAsync(ctx, sid, loc.DirectorId, ctx.Request.Query["path"].ToString()))
                     return;
             }
-            await ProxyAsync(ctx, sid, "file", $"/sessions/{sid}/file", registry, client, proxy, owners, fastPath: true);
+            await ProxyAsync(ctx, sid, "file", $"/sessions/{sid}/file", registry, pushedSessions, stale, proxy, owners, fastPath: true);
         });
 
         // Dictation: the Gateway exposes a sid-scoped path; the Director's own endpoint is /dictate .
         app.MapGet("/sessions/{sid}/dictate", async (string sid, HttpContext ctx) =>
         {
-            await ProxyAsync(ctx, sid, "dictate", "/dictate", registry, client, proxy, owners);
+            await ProxyAsync(ctx, sid, "dictate", "/dictate", registry, pushedSessions, stale, proxy, owners);
         });
 
         // Screenshot bytes (issue #317): plain HTTP forward (no WS upgrade) to the owning
@@ -124,7 +121,7 @@ internal static class SessionWsProxyEndpoints
                 if (await tunnel.TryServeScreenshotAsync(ctx, sid, loc.DirectorId, ctx.Request.Query["name"].ToString()))
                     return;
             }
-            await ProxyAsync(ctx, sid, "shot", "/screenshots/file", registry, client, proxy, owners, fastPath: true);
+            await ProxyAsync(ctx, sid, "shot", "/screenshots/file", registry, pushedSessions, stale, proxy, owners, fastPath: true);
         });
 
         // Screenshot LIST (issue #372 slice 3): the folder is machine-wide on the Director
@@ -135,47 +132,14 @@ internal static class SessionWsProxyEndpoints
         // transiently slow ownership probe while the Director is reachable.
         app.MapGet("/sessions/{sid}/screenshots", async (string sid, HttpContext ctx) =>
         {
-            await ProxyAsync(ctx, sid, "shots", "/screenshots", registry, client, proxy, owners, fastPath: true);
+            await ProxyAsync(ctx, sid, "shots", "/screenshots", registry, pushedSessions, stale, proxy, owners, fastPath: true);
         });
 
-        // Issue #372: generic per-session HTTP forward. ANY method on /sessions/{sid}/{**rest} that
-        // is not handled by a more specific route is reverse-proxied to the owning Director at the
-        // SAME path, so the Cockpit drives every session verb (prompt, interrupt, escape,
-        // clear-context, history-picker, queue*, git, usage, brief, recap, summary, hold, rename,
-        // upload-image, ...) through this one Gateway-proxied channel and never dials a Director
-        // address directly. The explicit WS + screenshot legs above (and any literal
-        // /sessions/{sid}/x route mapped elsewhere) are more specific, so they still win; this
-        // catch-all only carries the remainder. Same ownership resolution and 404/503 semantics.
-        app.Map("/sessions/{sid}/{**rest}", async (string sid, string? rest, HttpContext ctx) =>
-        {
-            // Issue #1266: the Gateway is a READ-ONLY window on a session's source control. The git WRITE
-            // routes (/git/stage, /git/unstage, /git/discard, /git/commit) must never be reachable from the
-            // browser, so this generic forwarder refuses the "git" path segment outright rather than proxy a
-            // write to the Director. The read-only GET /sessions/{sid}/git is a LITERAL route that shadows
-            // this catch-all, so it never reaches here and nothing legitimate is lost; only the write verbs
-            // (and any other method on /git) are denied. Matched on the exact "git" segment so a sibling read
-            // route such as /sessions/{sid}/github-urls is untouched.
-            if (rest is not null
-                && (string.Equals(rest, "git", StringComparison.OrdinalIgnoreCase)
-                    || rest.StartsWith("git/", StringComparison.OrdinalIgnoreCase)))
-            {
-                ctx.Response.StatusCode = StatusCodes.Status404NotFound;
-                await ctx.Response.WriteAsJsonAsync(new { error = "git write actions are not available through the Gateway" });
-                return;
-            }
-
-            // Gateway Cleanup Phase 2: serve a mapped session verb over the tunnel when the owner is
-            // stream-connected; an unmapped verb (or no active stream) falls through to the HTTP forward below.
-            if (catchAll is not null && pushedSessions!.TryLocate(sid, stale) is { } loc
-                && await catchAll.TryDispatchAsync(ctx, sid, loc.DirectorId, rest))
-                return;
-
-            var directorPath = string.IsNullOrEmpty(rest) ? $"/sessions/{sid}" : $"/sessions/{sid}/{rest}";
-            // fastPath: this leg carries high-frequency calls (per-keystroke input POSTs), so try the
-            // cached owner before a fleet fan-out. The WS/screenshot legs are long-lived/low-frequency
-            // and keep the plain resolve.
-            await ProxyAsync(ctx, sid, "http", directorPath, registry, client, proxy, owners, fastPath: true);
-        });
+        // Gateway Cleanup mission (post-cut): the generic per-session catch-all
+        // (/sessions/{sid}/{**rest}) is DELETED. Every session verb it used to reverse-proxy to the owning
+        // Director now rides a tunnel verb served by GatewayEndpoints, so the Cockpit never HTTP-forwards a
+        // session verb through here. The explicit browser-facing legs above (stream, file, dictate,
+        // screenshots) stay.
 
         // Issue #372 slice 3: DIRECTOR-scoped settings (GET reads, PUT writes-and-reapplies-live).
         // The routing key is the Director id, not a session id, so resolution is a plain registry
@@ -249,8 +213,8 @@ internal static class SessionWsProxyEndpoints
     /// offline/unreachable, or when the forward fails.
     /// </summary>
     private static async Task ProxyAsync(HttpContext ctx, string sid, string leg, string directorPath,
-        DirectorRegistry registry, DirectorEndpointClient client, SessionWsForwarder proxy, SessionOwnerCache owners,
-        bool fastPath = false)
+        DirectorRegistry registry, Streaming.PushedSessionStore? pushedSessions, TimeSpan stale,
+        SessionWsForwarder proxy, SessionOwnerCache owners, bool fastPath = false)
     {
         FileLog.Write($"[SessionWsProxy] open leg={leg} sid={sid} query={ctx.Request.QueryString} client={ctx.Connection.RemoteIpAddress}");
 
@@ -272,7 +236,7 @@ internal static class SessionWsProxyEndpoints
             FileLog.Write($"[SessionWsProxy] leg={leg} sid={sid} fast-path owner {cachedOwnerId} failed ({cachedError}); re-resolving live");
         }
 
-        var director = await LocateOwningDirectorAsync(registry, client, sid);
+        var director = LocateOwningDirector(registry, pushedSessions, stale, sid);
         if (director is null)
         {
             // Live resolution could not reach any Director that owns this session. If we have EVER
@@ -335,27 +299,15 @@ internal static class SessionWsProxyEndpoints
     }
 
     /// <summary>
-    /// Find the one Director that owns this session id. Fans out to every registered Director in
-    /// parallel (mirrors GatewayEndpoints.LocateSessionAsync) so total latency is one lookup, not
-    /// a sum over the fleet. Null when no Director owns the session.
+    /// Find the one Director that owns this session id. Post-cut the pushed stream cache is the only
+    /// locator (mirrors GatewayEndpoints.LocateSessionAsync): a Director with no fresh push is not
+    /// connected to the tunnel, so its sessions are unlocatable here. Null when no Director owns the session.
     /// </summary>
-    private static async Task<DirectorDto?> LocateOwningDirectorAsync(DirectorRegistry registry, DirectorEndpointClient client, string sid)
+    private static DirectorDto? LocateOwningDirector(DirectorRegistry registry,
+        Streaming.PushedSessionStore? pushedSessions, TimeSpan stale, string sid)
     {
-        var lookups = registry.ListDirectors().Select(async d =>
-        {
-            // Issue #457: resolve the SAME endpoint we would forward to - never a raw loopback
-            // ControlEndpoint for a remote Director (that probe would hit the Gateway itself).
-            // A Director with no reachable endpoint (flagged, or loopback-on-another-machine) is
-            // skipped here and surfaced downstream as "no reachable endpoint".
-            var ep = ForwardDestination(d);
-            if (ep is null) return (director: d, owns: false);
-            var s = await client.GetSessionAsync(ep, sid);
-            return (director: d, owns: s is not null);
-        }).ToList();
-
-        var results = await Task.WhenAll(lookups);
-        foreach (var (director, owns) in results)
-            if (owns) return director;
+        if (pushedSessions is not null && pushedSessions.TryLocate(sid, stale) is { } loc)
+            return registry.Get(loc.DirectorId);
         return null;
     }
 

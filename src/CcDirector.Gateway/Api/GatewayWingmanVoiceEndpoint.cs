@@ -58,7 +58,6 @@ internal static class GatewayWingmanVoiceEndpoint
     public static void Map(
         IEndpointRouteBuilder app,
         DirectorRegistry registry,
-        DirectorEndpointClient client,
         Func<WingmanModelRole, CancellationToken, Task<IAgentBrain>> brainProvider,
         KeyVault vault,
         WingmanVoiceService voice,
@@ -70,13 +69,12 @@ internal static class GatewayWingmanVoiceEndpoint
     {
         var translator = new WingmanTranslator(brainProvider, instructionsProvider: instructionsProvider);
 
-        // Gateway Cleanup mission, Phase 2 (PR E-B): resolve the owning Director once (push-store first) and
-        // reach its session verbs (turns / buffer / prompt) through the tunnel-first SessionVerbClient, so
-        // the wingman voice surface no longer HTTP-dials the Director. sendCommand is non-null only under
-        // stream mode; when null the client falls back to the HTTP dial, byte-identical.
+        // Post-cut: resolve the owning Director once (from the push store) and reach its session verbs
+        // (turns / buffer / prompt) through the tunnel-only SessionVerbClient, so the wingman voice surface
+        // never HTTP-dials the Director.
         var stale = streamStale ?? TimeSpan.FromSeconds(GatewayConfig.DefaultStreamStaleAfterSeconds);
         Task<SessionVerbClient?> ResolveRouteAsync(string sid) =>
-            SessionVerbClient.ResolveAsync(sid, registry, client, pushedSessions, stale, owners, sendCommand);
+            SessionVerbClient.ResolveAsync(sid, registry, pushedSessions, stale, owners, sendCommand);
 
         // The single Gateway owner of speech-to-text (issue #839): both batch transcribe paths below
         // (the resumable /wingman/utterance/complete and the one-shot /wingman/transcribe) go through

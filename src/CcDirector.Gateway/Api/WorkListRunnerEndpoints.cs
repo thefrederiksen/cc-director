@@ -32,7 +32,6 @@ internal static class WorkListRunnerEndpoints
         IEndpointRouteBuilder app,
         WorkListStore store,
         DirectorRegistry registry,
-        DirectorEndpointClient client,
         WorkListRunnerManager manager,
         DirectorCommandRouter.SendDirectorCommandAsync? sendCommand)
     {
@@ -83,7 +82,7 @@ internal static class WorkListRunnerEndpoints
                     ? $"runner:{machineKey}:{Guid.NewGuid():N}"
                     : body.ListConsumer;
 
-                var driver = new DirectorImplSessionDriver(client, director.DirectorId, director.ControlEndpoint, body.RepoPath, sendCommand);
+                var driver = new DirectorImplSessionDriver(director.DirectorId, body.RepoPath, sendCommand);
                 var runner = new WorkListRunner(store, driver);
 
                 var result = await runner.DrainAsync(name, consumer, ctx.RequestAborted);

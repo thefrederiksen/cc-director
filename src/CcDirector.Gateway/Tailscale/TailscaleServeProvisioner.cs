@@ -59,11 +59,9 @@ public sealed class TailscaleServeProvisioner : IDisposable
     /// </summary>
     private const int LegacyCockpitPort = 7470;
 
-    /// <summary>Director Control API port range (see PortAllocator). Only LOCAL Directors in
-    /// this range get a serve mapping; ephemeral-port (hosted-agent) and remote-machine
-    /// Directors never do (issue #179).</summary>
-    internal const int DirectorPortMin = 7879;
-    internal const int DirectorPortMax = 7898;
+    // Gateway Cleanup mission (post-cut): per-Director Tailscale Serve port mappings are DELETED. Clients
+    // reach every Director THROUGH the Gateway front door (443), never a per-Director tailnet port, so only
+    // the front-door mapping is provisioned. The reconcile still sweeps any leftover per-Director mapping.
 
     /// <summary>How often the self-healing reconcile re-asserts desired state (issue #179).</summary>
     private static readonly TimeSpan ReconcileInterval = TimeSpan.FromMinutes(5);
@@ -72,12 +70,9 @@ public sealed class TailscaleServeProvisioner : IDisposable
     /// `serve status --json` read per tick; it only ever asserts, never sweeps.</summary>
     private static readonly TimeSpan FrontDoorWatchInterval = TimeSpan.FromSeconds(60);
 
-    private readonly DirectorRegistry _registry;
     private readonly int _gatewayPort;
-    private readonly string _localMachineName;
     private readonly bool _enabled;
     private readonly object _cliGate = new();
-    private readonly ConcurrentDictionary<string, int> _portsById = new();
     private Timer? _reconcileTimer;
     private Timer? _frontDoorTimer;
     private int _reconcileRunning;
@@ -86,9 +81,8 @@ public sealed class TailscaleServeProvisioner : IDisposable
 
     public TailscaleServeProvisioner(DirectorRegistry registry, int gatewayPort)
     {
-        _registry = registry;
+        _ = registry; // post-cut: no per-Director mappings, so the registry is no longer consulted
         _gatewayPort = gatewayPort;
-        _localMachineName = Environment.MachineName;
 
         // Dev/test isolation: CC_GATEWAY_NO_TAILSCALE=1 lets a second Gateway run on this machine
         // for local end-to-end testing WITHOUT touching the production Tailscale Serve mappings
@@ -114,9 +108,6 @@ public sealed class TailscaleServeProvisioner : IDisposable
         if (!_enabled) return;
         FileLog.Write($"[TailscaleServeProvisioner] Start: gatewayPort={_gatewayPort}");
 
-        _registry.OnDirectorAdded += HandleAdded;
-        _registry.OnDirectorRemoved += HandleRemoved;
-
         // Front door: https://<tailnet>/ -> gateway. Idempotent. The Cockpit is the Gateway's own
         // in-process front door (issue #979), so it never gets its own tailnet port.
         QueueServeOn(FrontDoorHttpsPort, _gatewayPort, "gateway");
@@ -125,9 +116,6 @@ public sealed class TailscaleServeProvisioner : IDisposable
         // (https://<tailnet>:7470) if this machine still carries one. Idempotent and safe
         // when absent ("serve off" on a missing mapping is a no-op).
         _ = Task.Run(() => ServeOff(LegacyCockpitPort, "legacy cockpit (one-URL: served via the front door)"));
-
-        foreach (var d in _registry.ListDirectors())
-            HandleAdded(d);
 
         // Self-healing loop (issue #179): the 443 front door vanished from the serve table
         // in production with no cc-director process removing it, turning the one URL into
@@ -164,12 +152,9 @@ public sealed class TailscaleServeProvisioner : IDisposable
         if (Interlocked.CompareExchange(ref _reconcileRunning, 1, 0) != 0) return;
         try
         {
+            // Post-cut: no per-Director mappings are desired; only the front door. Any provisioner-shaped
+            // per-Director mapping still in the serve table is therefore an orphan and gets swept below.
             var desired = new HashSet<int>();
-            foreach (var d in _registry.ListDirectors())
-            {
-                if (ShouldMap(d, _localMachineName, out var p))
-                    desired.Add(p);
-            }
 
             string statusJson;
             lock (_cliGate)
@@ -320,59 +305,8 @@ public sealed class TailscaleServeProvisioner : IDisposable
         }
     }
 
-    private void HandleAdded(DirectorDto d)
-    {
-        if (!_enabled || _disposed) return;
-
-        if (!ShouldMap(d, _localMachineName, out var port))
-        {
-            FileLog.Write($"[TailscaleServeProvisioner] HandleAdded: not mapping id={d.DirectorId} (machine={d.MachineName}, control={d.ControlEndpoint}) - only local Directors on ports {DirectorPortMin}-{DirectorPortMax} get a serve mapping");
-            return;
-        }
-
-        _portsById[d.DirectorId] = port;
-        QueueServeOn(port, port, d.DirectorId);
-    }
-
-    private void HandleRemoved(string directorId)
-    {
-        if (!_enabled || _disposed) return;
-        if (_portsById.TryRemove(directorId, out var port))
-            QueueServeOff(port, directorId);
-    }
-
-    /// <summary>
-    /// A Director gets a serve mapping only when BOTH hold (issue #179):
-    ///   1. It runs on THIS machine - the mapping proxies to http://localhost:&lt;port&gt;,
-    ///      so a remote Director's mapping points at a dead local port.
-    ///   2. Its port is in the fixed Director range - hosted-agent Directors use ephemeral
-    ///      ports and short lifetimes; they are reached through the Gateway, not directly.
-    /// </summary>
-    internal static bool ShouldMap(DirectorDto d, string localMachineName, out int port)
-    {
-        port = ExtractPort(d);
-        if (port < DirectorPortMin || port > DirectorPortMax) return false;
-
-        if (Uri.TryCreate(d.ControlEndpoint, UriKind.Absolute, out var control) && control.IsLoopback)
-            return true;
-        return !string.IsNullOrEmpty(d.MachineName)
-            && string.Equals(d.MachineName, localMachineName, StringComparison.OrdinalIgnoreCase);
-    }
-
-    private static int ExtractPort(DirectorDto d)
-    {
-        if (Uri.TryCreate(d.ControlEndpoint, UriKind.Absolute, out var control) && control.Port > 0)
-            return control.Port;
-        if (Uri.TryCreate(d.TailnetEndpoint, UriKind.Absolute, out var tailnet) && tailnet.Port > 0)
-            return tailnet.Port;
-        return -1;
-    }
-
     private void QueueServeOn(int httpsPort, int backendPort, string who)
         => _ = Task.Run(() => ServeOn(httpsPort, backendPort, who));
-
-    private void QueueServeOff(int httpsPort, string who)
-        => _ = Task.Run(() => ServeOff(httpsPort, who));
 
     // ServeOn/ServeOff are the roots of background tasks and the boundary to an external
     // process, so they own the try-catch (an unobserved task exception would otherwise be lost).
@@ -424,7 +358,5 @@ public sealed class TailscaleServeProvisioner : IDisposable
         _disposed = true;
         _reconcileTimer?.Dispose();
         _frontDoorTimer?.Dispose();
-        _registry.OnDirectorAdded -= HandleAdded;
-        _registry.OnDirectorRemoved -= HandleRemoved;
     }
 }
