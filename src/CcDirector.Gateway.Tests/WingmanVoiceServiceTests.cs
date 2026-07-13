@@ -27,7 +27,7 @@ public sealed class WingmanVoiceServiceTests
             (_, _) => throw new InvalidOperationException("brain must not be called for flag state");
         var vaultPath = Path.Combine(Path.GetTempPath(), "wmvs-" + Guid.NewGuid().ToString("N") + ".vault");
         var persistPath = Path.Combine(Path.GetTempPath(), "wmvs-" + Guid.NewGuid().ToString("N") + ".json");
-        return new WingmanVoiceService(brain, new KeyVault(vaultPath), new DirectorEndpointClient(), persistPath);
+        return new WingmanVoiceService(brain, new KeyVault(vaultPath), persistPath);
     }
 
     [Fact]
@@ -76,7 +76,7 @@ public sealed class WingmanVoiceServiceTests
         Func<WingmanModelRole, CancellationToken, Task<IAgentBrain>> brain =
             (_, _) => throw new InvalidOperationException("brain must not be called");
         var vaultPath = Path.Combine(Path.GetTempPath(), "wmvs-" + Guid.NewGuid().ToString("N") + ".vault");
-        return new WingmanVoiceService(brain, new KeyVault(vaultPath), new DirectorEndpointClient(), persistPath);
+        return new WingmanVoiceService(brain, new KeyVault(vaultPath), persistPath);
     }
 
     private static void Cleanup(string persistPath)
@@ -266,7 +266,7 @@ public sealed class WingmanVoiceServiceTests
         vault.Set("OPENAI_API_KEY", "sk-test");
         vault.Set("DEVTHROTTLE_API_KEY", "dt_live_test");
         var http = new HttpClient(new TtsStubHandler(HttpStatusCode.OK, "", audio));
-        return new WingmanVoiceService((_, _) => Task.FromResult(brain), vault, new DirectorEndpointClient(), persistPath, ttsHttpClient: http);
+        return new WingmanVoiceService((_, _) => Task.FromResult(brain), vault, persistPath, ttsHttpClient: http);
     }
 
     /// <summary>Gateway Cleanup mission, Phase 2: GenerateAsync now takes a tunnel-first SessionVerbClient
@@ -274,8 +274,7 @@ public sealed class WingmanVoiceServiceTests
     /// null), so generation exercises the HTTP fallback dial - the exact path these tests asserted before
     /// the re-point (director.Hits still counts the reads).</summary>
     private static CcDirector.Gateway.Api.SessionVerbClient RouteFor(string endpoint) =>
-        new(new DirectorEndpointClient(),
-            new CcDirector.Gateway.Contracts.DirectorDto { DirectorId = "d1", ControlEndpoint = endpoint },
+        new(new CcDirector.Gateway.Contracts.DirectorDto { DirectorId = "d1", ControlEndpoint = endpoint },
             null);
 
     [Fact]
@@ -484,7 +483,7 @@ public sealed class WingmanVoiceServiceTests
         vault.Set("OPENAI_API_KEY", "sk-test");
         vault.Set("DEVTHROTTLE_API_KEY", "dt_live_test");
         var http = new HttpClient(new TtsStubHandler(status, body, audio));
-        return new WingmanVoiceService(brain, vault, new DirectorEndpointClient(), persistPath, ttsHttpClient: http);
+        return new WingmanVoiceService(brain, vault, persistPath, ttsHttpClient: http);
     }
 
     [Fact]
@@ -566,7 +565,7 @@ public sealed class WingmanVoiceServiceTests
         var vault = new KeyVault(vaultPath);
         vault.Set("OPENAI_API_KEY", "sk-test");
         vault.Set("DEVTHROTTLE_API_KEY", "dt_live_test");
-        return new WingmanVoiceService(brain, vault, new DirectorEndpointClient(), persistPath, ttsHttpClient: new HttpClient(handler));
+        return new WingmanVoiceService(brain, vault, persistPath, ttsHttpClient: new HttpClient(handler));
     }
 
     [Fact]

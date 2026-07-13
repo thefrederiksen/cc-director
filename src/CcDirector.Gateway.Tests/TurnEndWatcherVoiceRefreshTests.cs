@@ -40,12 +40,8 @@ public sealed class TurnEndWatcherVoiceRefreshTests
 
     private static TurnEndWatcher BuildWatcher(RecordingVoice voice)
     {
-        var registry = new CcDirector.Gateway.Discovery.DirectorRegistry(
-            Path.Combine(Path.GetTempPath(), "tew-voice-tests", Guid.NewGuid().ToString("N")));
-        var client = new CcDirector.Gateway.Discovery.DirectorEndpointClient("test-token");
         // The exact wiring GatewayHost installs - voice auto-refresh only, no brief agent.
         return new TurnEndWatcher(
-            registry, client,
             onTurnEnd: signal =>
             {
                 if (voice.IsVoiceSession(signal.SessionId))

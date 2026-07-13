@@ -11,65 +11,10 @@ namespace CcDirector.Gateway.Tests;
 /// </summary>
 public class TailscaleServeProvisionerTests
 {
-    private const string LocalMachine = "MACHINE-A";
-
-    private static DirectorDto Dto(string control, string machine = LocalMachine, string? tailnet = null) => new()
-    {
-        DirectorId = "d-test",
-        ControlEndpoint = control,
-        MachineName = machine,
-        TailnetEndpoint = tailnet,
-    };
-
-    // ---------------------------------------------------------------- ShouldMap
-
-    [Fact]
-    public void ShouldMap_LocalLoopbackDirector_InFixedRange_Maps()
-    {
-        var ok = TailscaleServeProvisioner.ShouldMap(Dto("http://127.0.0.1:7884"), LocalMachine, out var port);
-
-        Assert.True(ok);
-        Assert.Equal(7884, port);
-    }
-
-    [Fact]
-    public void ShouldMap_LocalMachineName_TailnetEndpoint_InFixedRange_Maps()
-    {
-        // A local Director that registered over HTTP advertising its tailnet URL (not loopback).
-        var d = Dto("https://machine-a.tail0123.ts.net:7886", machine: "machine-a");
-
-        var ok = TailscaleServeProvisioner.ShouldMap(d, LocalMachine, out var port);
-
-        Assert.True(ok); // machine-name match is case-insensitive
-        Assert.Equal(7886, port);
-    }
-
-    [Fact]
-    public void ShouldMap_RemoteMachineDirector_DoesNotMap()
-    {
-        // The laptop's Director: mapping it here would proxy machine-a:7879 to a dead
-        // local port. This was the orphan churn source in issue #179.
-        var d = Dto("https://laptop-b.tail0123.ts.net:7879", machine: "LAPTOP-B");
-
-        Assert.False(TailscaleServeProvisioner.ShouldMap(d, LocalMachine, out _));
-    }
-
-    [Fact]
-    public void ShouldMap_LocalEphemeralPortDirector_DoesNotMap()
-    {
-        // Hosted-agent Directors register with ephemeral ports; they are reached through
-        // the Gateway, never via a per-port serve mapping (issue #179 pile-up source).
-        var d = Dto("http://127.0.0.1:50682");
-
-        Assert.False(TailscaleServeProvisioner.ShouldMap(d, LocalMachine, out _));
-    }
-
-    [Fact]
-    public void ShouldMap_NoUsablePort_DoesNotMap()
-    {
-        Assert.False(TailscaleServeProvisioner.ShouldMap(Dto("not-a-url", machine: ""), LocalMachine, out var port));
-        Assert.Equal(-1, port);
-    }
+    // Gateway Cleanup mission (the cut): the per-Director serve mapping (ShouldMap and its tests) is
+    // deleted - only the Gateway front-door 443 is provisioned now, so the ComputeReconcileActions front-door
+    // logic below is the whole surface. The PortsToMap/PortsToRemove machinery stays for the front-door
+    // watch's "assert 443, sweep orphans" contract.
 
     // ------------------------------------------------- ComputeReconcileActions
 

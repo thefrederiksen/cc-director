@@ -55,7 +55,7 @@ public sealed class TunnelSpawnerDriverProofTests
             Next = DirectorCommandResult.Success(JsonSerializer.Serialize(new SessionDto { SessionId = "sid-42" }, Web)),
         };
         var resolver = new StubResolver(new DirectorTargetResult(UnreachableEndpoint, "dir-7", null));
-        var spawner = new MachineSessionSpawner(new DirectorEndpointClient(), resolver, hub.Send);
+        var spawner = new MachineSessionSpawner(resolver, hub.Send);
 
         var (ok, dto, error, directorId) = await spawner.SpawnOnMachineAsync(
             "MACHINE_A", new NewSessionRequest { RepoPath = @"C:\repo", Agent = "ClaudeCode" }, CancellationToken.None);
@@ -73,8 +73,7 @@ public sealed class TunnelSpawnerDriverProofTests
     public async Task ImplSessionDriver_startsAndReadsOverTheTunnel_byConstruction()
     {
         var hub = new RecordingHub();
-        var driver = new DirectorImplSessionDriver(
-            new DirectorEndpointClient(), "dir-9", UnreachableEndpoint, @"C:\repo", hub.Send);
+        var driver = new DirectorImplSessionDriver("dir-9", @"C:\repo", hub.Send);
 
         // Start: rides the director-level "create" verb, returns the new session id.
         hub.Next = DirectorCommandResult.Success(JsonSerializer.Serialize(new SessionDto { SessionId = "sid-start" }, Web));
@@ -98,8 +97,7 @@ public sealed class TunnelSpawnerDriverProofTests
     public async Task ImplSessionDriver_tunnelCreateFailure_reportsTheError_noSessionId()
     {
         var hub = new RecordingHub { Next = DirectorCommandResult.Fail(DirectorCommandStatus.Conflict, "busy") };
-        var driver = new DirectorImplSessionDriver(
-            new DirectorEndpointClient(), "dir-9", UnreachableEndpoint, @"C:\repo", hub.Send);
+        var driver = new DirectorImplSessionDriver("dir-9", @"C:\repo", hub.Send);
 
         var (sid, error) = await driver.StartImplementationSessionAsync("item-1", "seed", CancellationToken.None);
 

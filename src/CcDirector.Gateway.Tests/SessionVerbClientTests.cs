@@ -42,7 +42,7 @@ public sealed class SessionVerbClientTests
     }
 
     private static SessionVerbClient Client(RecordingHub hub) =>
-        new(new DirectorEndpointClient(), UnreachableDirector(), hub.Send);
+        new(UnreachableDirector(), hub.Send);
 
     [Fact]
     public async Task GetTurns_ridesTheTurnsVerb_andMapsTheBody()

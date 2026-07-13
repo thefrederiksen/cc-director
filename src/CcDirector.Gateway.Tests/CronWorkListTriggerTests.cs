@@ -134,7 +134,7 @@ public sealed class CronWorkListTriggerTests : IDisposable
         store.AppendItem("Tonight", new WorkListItemRef { Source = "github", Id = "103" });
 
         var driver = new OrderRecordingDriver();
-        var launcher = new DirectorWorkListDrainLauncher(store, client: null, driverFactory: (_, _, _) => driver);
+        var launcher = new DirectorWorkListDrainLauncher(store, driverFactory: (_, _, _) => driver);
 
         await launcher.LaunchAsync("d-1", "http://d", @"D:\repo", "Tonight", "cron:cj_test:abc", CancellationToken.None);
 
