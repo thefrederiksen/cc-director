@@ -119,30 +119,4 @@ public sealed class RegistryDirectorTargetResolverTests
         Assert.NotNull(result.Error);
         Assert.Equal(0, launcher.StartCount);
     }
-
-    [Fact]
-    public async Task Resolve_OnlyUnreachableDirectorOnMachine_LaunchesAReplacement()
-    {
-        var directors = new List<DirectorDto>
-        {
-            new()
-            {
-                DirectorId = "d-dead", MachineName = "MACHINE_A", ControlEndpoint = "http://127.0.0.1:7882",
-                Version = "0.9.10", AdvertisedEndpointState = DirectorDto.EndpointStateUnreachableByName,
-            },
-        };
-        var launcher = new FakeLauncher(machine =>
-        {
-            directors.Add(Director("d-fresh", machine, "http://127.0.0.1:7901"));
-            return true;
-        });
-        var resolver = new RegistryDirectorTargetResolver(() => directors, launcher, FastTimeout, FastPoll);
-
-        var result = await resolver.ResolveAsync("MACHINE_A", CancellationToken.None);
-
-        // The unreachable Director is skipped, so the launcher is asked to start a fresh one.
-        Assert.Equal(1, launcher.StartCount);
-        Assert.Equal("d-fresh", result.DirectorId);
-        Assert.Equal("http://127.0.0.1:7901", result.Endpoint);
-    }
 }

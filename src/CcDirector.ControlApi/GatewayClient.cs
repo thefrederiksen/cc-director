@@ -749,7 +749,10 @@ public sealed class GatewayClient : IGatewayHold, IDisposable
     /// announces a lifecycle moment; null = a plain activity-transition ping (pre-#330 shape).</param>
     public void NotifySessionState(string sessionId, string newState, string? eventName = null)
     {
-        if (!_config.IsEnabled || _disposed || !_registered) return;
+        // Gateway Cleanup mission (tunnel-only): no longer gated on HTTP registration (which is gone) - the
+        // doorbell is an outbound Director->Gateway front-door notify that fires whenever a Gateway is
+        // configured. Failures are dropped; the tunnel's periodic snapshot re-push reconciles roster state.
+        if (!_config.IsEnabled || _disposed) return;
         var cts = _cts;
         if (cts is null || cts.IsCancellationRequested) return;
 

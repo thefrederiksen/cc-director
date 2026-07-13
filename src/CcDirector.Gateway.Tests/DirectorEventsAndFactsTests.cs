@@ -105,8 +105,9 @@ public sealed class DirectorEventsAndFactsTests : IAsyncLifetime
     [Fact]
     public async Task GatewayClient_NotifySessionState_WithEvent_LandsInTheRing()
     {
-        // The Director-side leg: the real GatewayClient registers over HTTP and rings the
-        // doorbell with the event tag - end to end, no session spawn needed.
+        // The Director-side leg (Gateway Cleanup mission, tunnel-only): the GatewayClient no longer HTTP-
+        // registers, but the doorbell is an outbound front-door notify that fires as soon as a Gateway is
+        // configured - no registration handshake needed. End to end, no session spawn.
         var id = Guid.NewGuid().ToString();
         var sid = Guid.NewGuid().ToString();
         var cfg = new GatewayConfig { Url = $"http://127.0.0.1:{_gateway.Port}", Token = Token };
@@ -115,7 +116,10 @@ public sealed class DirectorEventsAndFactsTests : IAsyncLifetime
             IdentityResolver = { LocalApiProbe = () => null, CliProbe = () => "test-node.test-tailnet.ts.net" },
         };
         client.Start();
-        await WaitFor(() => Task.FromResult(client.IsRegistered), TimeSpan.FromSeconds(5));
+
+        // In production the Director is registered via its tunnel Hello before it rings the doorbell; this
+        // test drives only the GatewayClient doorbell leg, so register it the same way (tunnel-only Source).
+        _gateway.Registry.RegisterFromStream(id, Environment.MachineName, "test", "9.9.9-test", 1, DateTime.UtcNow);
 
         client.NotifySessionState(sid, "Starting", DoorbellEvents.SessionCreated);
 

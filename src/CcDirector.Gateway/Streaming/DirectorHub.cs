@@ -132,11 +132,12 @@ public sealed class DirectorHub : Hub
         var directorId = BoundDirectorId();
         if (directorId is not null)
         {
-            // Gateway Cleanup mission (tunnel-only): the stream IS the Director's presence. Only drop it from
-            // the registry when THIS was the active connection (a genuine close) - a superseded reconnect
-            // returns false and must not wipe the Director that just re-Hello'd on a newer connection.
-            if (_store.UnregisterConnection(directorId, Context.ConnectionId))
-                _registry.RemoveFromStream(directorId);
+            // Clear the active connection so aggregation falls back to the cached roster. Gateway Cleanup
+            // mission (tunnel-only): do NOT drop the registry entry here - a dead Director's cached roster must
+            // survive the sweep window (so a Gateway-owned snooze still fires it back to "needs you" from the
+            // cache) and a brief reconnect blip must not flap the roster. The stale sweeper ages out a Director
+            // that stops refreshing LastSeen (HttpHeartbeatTimeout); a reconnect re-Hellos and refreshes it.
+            _store.UnregisterConnection(directorId, Context.ConnectionId);
         }
         FileLog.Write($"[DirectorHub] disconnected: conn={Short(Context.ConnectionId)}, director={directorId ?? "(unbound)"} ({exception?.Message ?? "clean"})");
         return base.OnDisconnectedAsync(exception);

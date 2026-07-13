@@ -87,7 +87,19 @@ public sealed class FakeTunnelDirector : IAsyncDisposable
         });
 
         await conn.StartAsync();
-        await conn.InvokeAsync("Hello", new DirectorStreamHello { DirectorId = directorId, Version = "test" });
+        // Gateway Cleanup mission (tunnel-only): the Hello now carries the Director identity and IS the
+        // registration (DirectorHub.Hello -> DirectorRegistry.RegisterFromStream). Send the full identity so
+        // the registered entry has the same machine name the Upsert above set - the stream registration
+        // overwrites the (unreachable) HTTP entry, so a working result still proves the tunnel carried it.
+        await conn.InvokeAsync("Hello", new DirectorStreamHello
+        {
+            DirectorId = directorId,
+            Version = "test",
+            MachineName = machineName ?? Environment.MachineName,
+            User = "test",
+            Pid = 1,
+            StartedAt = DateTime.UtcNow,
+        });
         return fake;
     }
 
