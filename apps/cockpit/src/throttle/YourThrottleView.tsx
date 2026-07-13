@@ -3,6 +3,12 @@ import {
   getThrottle,
   summarizeThrottle,
   formatShare,
+  last24HourKeys,
+  windowSeries,
+  emptyInputHour,
+  emptyConcurrencyHour,
+  localHourLabel,
+  safeTimeZone,
   MODALITY_LABEL,
   SURFACE_LABEL,
   SURFACE_ORDER,
@@ -335,6 +341,16 @@ function ActivityTab({ data }: { data: ThrottleData }) {
     return <div className="thr-empty">No hourly activity recorded in the last day yet.</div>;
   }
 
+  // Both charts render the SAME canonical 24-hour window (the last 24 clock hours ending now), so they
+  // line up exactly regardless of which hours each series happens to have data for. Labels are formatted
+  // in the configured display time zone, so the axis reads in local time, not UTC.
+  const now = data.generatedAtUtc ? new Date(data.generatedAtUtc) : new Date();
+  const keys = last24HourKeys(Number.isNaN(now.getTime()) ? new Date() : now);
+  const timeZone = safeTimeZone(data.timeZone);
+  const turnsWindow = windowSeries(data.hourlyTurns, keys, emptyInputHour);
+  const concurrencyWindow = windowSeries(data.concurrency?.hourly ?? [], keys, emptyConcurrencyHour);
+  const zoneLabel = friendlyZone(timeZone);
+
   return (
     <>
       {hasTurns && (
@@ -342,11 +358,11 @@ function ActivityTab({ data }: { data: ThrottleData }) {
           <div className="thr-panel-head">
             <h2>Turns per hour (last 24h)</h2>
             <span className="thr-panel-sub">
-              Your working day: how many turns you submitted each hour (UTC), voice over typed. Empty
-              hours are when you were away.
+              Your working day: how many turns you submitted each hour ({zoneLabel}), voice over typed.
+              Empty hours are when you were away.
             </span>
           </div>
-          <TurnsPerHourChart hourly={data.hourlyTurns} />
+          <TurnsPerHourChart hourly={turnsWindow} timeZone={timeZone} />
         </div>
       )}
 
@@ -355,15 +371,22 @@ function ActivityTab({ data }: { data: ThrottleData }) {
           <div className="thr-panel-head">
             <h2>Sessions per hour (last 24h)</h2>
             <span className="thr-panel-sub">
-              Peak concurrent sessions in each hour (UTC). The bar is loaded/running; the darker portion
-              is actively working. Hover a bar for that hour&apos;s distinct sessions and machines.
+              Peak concurrent sessions in each hour ({zoneLabel}). The bar is loaded/running; the darker
+              portion is actively working. Hover a bar for that hour&apos;s distinct sessions and machines.
             </span>
           </div>
-          <ConcurrencyChart hourly={data.concurrency!.hourly} />
+          <ConcurrencyChart hourly={concurrencyWindow} timeZone={timeZone} />
         </div>
       )}
     </>
   );
+}
+
+// A short, human label for the display zone shown in the chart captions: the IANA id's last segment with
+// underscores turned to spaces (e.g. "America/New_York" -> "New York"), so the caption reads plainly.
+function friendlyZone(timeZone: string): string {
+  const seg = timeZone.split("/").pop() ?? timeZone;
+  return seg.replace(/_/g, " ");
 }
 
 // One column of a bar chart: the bar node itself (its height is a percent of the plot), plus its x-axis
@@ -444,18 +467,19 @@ function BarChart({
 }
 
 // A 24-hour chart of turns submitted per hour - the "working day" shape. Each bar is the total turns that
-// hour, split voice (accent) over typed (muted), scaled against a readable y-axis.
-function TurnsPerHourChart({ hourly }: { hourly: InputHour[] }) {
-  const recent = hourly.slice(-24);
-  const { niceMax, ticks } = niceScale(Math.max(...recent.map((h) => h.turns), 0));
-  const columns: BarColumn[] = recent.map((h, i) => {
+// hour, split voice (accent) over typed (muted), scaled against a readable y-axis. The hourly array is the
+// already-windowed 24 hours; labels are the local hour in `timeZone`.
+function TurnsPerHourChart({ hourly, timeZone }: { hourly: InputHour[]; timeZone: string }) {
+  const { niceMax, ticks } = niceScale(Math.max(...hourly.map((h) => h.turns), 0));
+  const columns: BarColumn[] = hourly.map((h, i) => {
     const heightPct = (h.turns / niceMax) * 100;
     const voicePortion = h.turns > 0 ? (h.voiceTurns / h.turns) * 100 : 0;
     const typedPortion = h.turns > 0 ? (h.typedTurns / h.turns) * 100 : 0;
+    const label = localHourLabel(h.hour, timeZone);
     return {
       key: h.hour,
-      xlabel: i % 3 === 0 ? h.hour.slice(-2) : "",
-      title: `${h.hour}:00 UTC - ${h.turns} turns (${h.voiceTurns} voice, ${h.typedTurns} typed), ${h.characters.toLocaleString()} chars`,
+      xlabel: i % 3 === 0 ? label : "",
+      title: `${label}:00 ${timeZone} - ${h.turns} turns (${h.voiceTurns} voice, ${h.typedTurns} typed), ${h.characters.toLocaleString()} chars`,
       bar: (
         <div className="thr-bar" style={{ height: `${heightPct}%` }}>
           <div className="thr-seg thr-seg-typed" style={{ height: `${typedPortion}%` }} />
@@ -466,7 +490,7 @@ function TurnsPerHourChart({ hourly }: { hourly: InputHour[] }) {
   });
   return (
     <BarChart
-      ariaLabel={`Turns submitted per hour for the last ${recent.length} hours`}
+      ariaLabel={`Turns submitted per hour for the last ${hourly.length} hours`}
       ticks={ticks}
       niceMax={niceMax}
       columns={columns}
@@ -485,17 +509,18 @@ function TurnsPerHourChart({ hourly }: { hourly: InputHour[] }) {
 }
 
 // A 24-hour chart of the hourly peak concurrent sessions. Each bar is the max loaded/running that hour;
-// the darker inner portion is the max actively-working, scaled against a readable y-axis.
-function ConcurrencyChart({ hourly }: { hourly: ConcurrencyHour[] }) {
-  const recent = hourly.slice(-24);
-  const { niceMax, ticks } = niceScale(Math.max(...recent.map((h) => h.maxLive), 0));
-  const columns: BarColumn[] = recent.map((h, i) => {
+// the darker inner portion is the max actively-working, scaled against a readable y-axis. The hourly array
+// is the already-windowed 24 hours; labels are the local hour in `timeZone`.
+function ConcurrencyChart({ hourly, timeZone }: { hourly: ConcurrencyHour[]; timeZone: string }) {
+  const { niceMax, ticks } = niceScale(Math.max(...hourly.map((h) => h.maxLive), 0));
+  const columns: BarColumn[] = hourly.map((h, i) => {
     const heightPct = (h.maxLive / niceMax) * 100;
     const workPct = h.maxLive > 0 ? (h.maxWorking / h.maxLive) * 100 : 0;
+    const label = localHourLabel(h.hour, timeZone);
     return {
       key: h.hour,
-      xlabel: i % 3 === 0 ? h.hour.slice(-2) : "",
-      title: `${h.hour}:00 UTC - ${h.maxLive} loaded, ${h.maxWorking} working, ${h.sessions} distinct sessions, ${h.machines} machine(s)`,
+      xlabel: i % 3 === 0 ? label : "",
+      title: `${label}:00 ${timeZone} - ${h.maxLive} loaded, ${h.maxWorking} working, ${h.sessions} distinct sessions, ${h.machines} machine(s)`,
       bar: (
         <div className="thr-bar thr-bar-live" style={{ height: `${heightPct}%` }}>
           <div className="thr-seg thr-seg-work" style={{ height: `${workPct}%` }} />
@@ -505,7 +530,7 @@ function ConcurrencyChart({ hourly }: { hourly: ConcurrencyHour[] }) {
   });
   return (
     <BarChart
-      ariaLabel={`Peak concurrent sessions per hour for the last ${recent.length} hours`}
+      ariaLabel={`Peak concurrent sessions per hour for the last ${hourly.length} hours`}
       ticks={ticks}
       niceMax={niceMax}
       columns={columns}

@@ -10,6 +10,7 @@ import {
   setAddressingMode,
   setAutostart,
   setSnoozeDefaultMinutes,
+  setTimeZone,
   setTrainingCapture,
   type AddressingMode,
   type GatewaySettings,
@@ -339,6 +340,21 @@ function ThisMachineTab() {
     }
   };
 
+  const chooseTimeZone = async (tz: string) => {
+    if (settings === null || busy || tz === settings.timeZone) return;
+    setBusy(true);
+    setMsg("Saving...");
+    try {
+      const applied = await setTimeZone(tz);
+      setSettings({ ...settings, timeZone: applied });
+      setMsg(`Time zone set to ${applied}. Your Throttle charts now read this zone.`);
+    } catch (e) {
+      setMsg(errText(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
   if (error !== null) {
     return <div className="settings-error">Could not load settings from the Gateway: {error}</div>;
   }
@@ -429,6 +445,42 @@ function ThisMachineTab() {
           <button type="button" className="settings-btn" disabled={busy} onClick={() => void saveSnooze()}>
             Save
           </button>
+        </div>
+      </section>
+
+      <section className="settings-card">
+        <h2 className="settings-h2">Time zone</h2>
+        <p className="settings-hint">
+          The zone your private dashboards read local clock hours in - the Your Throttle hourly charts. It
+          starts on this Gateway machine&apos;s own zone ({settings.timeZoneMachineDefault}); change it if
+          you want the charts shown in a different zone. Read at render time, so it applies on the next
+          refresh.
+        </p>
+        <div className="settings-field">
+          <label htmlFor="settings-timezone">Zone</label>
+          <select
+            id="settings-timezone"
+            className="settings-select"
+            value={settings.timeZone}
+            disabled={busy}
+            onChange={(e) => void chooseTimeZone(e.target.value)}
+          >
+            {timeZoneOptions(settings.timeZone).map((tz) => (
+              <option key={tz} value={tz}>
+                {tz}
+              </option>
+            ))}
+          </select>
+          {settings.timeZone !== settings.timeZoneMachineDefault && (
+            <button
+              type="button"
+              className="settings-btn"
+              disabled={busy}
+              onClick={() => void chooseTimeZone(settings.timeZoneMachineDefault)}
+            >
+              Use gateway zone
+            </button>
+          )}
         </div>
       </section>
 
@@ -1105,4 +1157,18 @@ function ensureStrings(current: string, values: string[]): string[] {
 
 function errText(e: unknown): string {
   return gatewayErrorMessage(e);
+}
+
+// The IANA time-zone options for the picker: the browser's full supported list (Intl.supportedValuesOf),
+// with the current value guaranteed present even if the browser cannot enumerate zones.
+function timeZoneOptions(current: string): string[] {
+  let list: string[] = [];
+  try {
+    const supported = (Intl as unknown as { supportedValuesOf?: (key: string) => string[] }).supportedValuesOf;
+    if (typeof supported === "function") list = supported("timeZone");
+  } catch {
+    /* Intl.supportedValuesOf unavailable - fall through to just the current value */
+  }
+  if (current && list.indexOf(current) < 0) list = [current, ...list];
+  return list.length > 0 ? list : [current || "UTC"];
 }

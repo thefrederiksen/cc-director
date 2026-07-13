@@ -79,6 +79,11 @@ internal static class SettingsEndpoints
                 // Snooze Length mission: the per-user default snooze length in minutes (default 60),
                 // so the one Settings page can render and edit it in Phase 3.
                 snoozeDefaultMinutes = Core.Configuration.SnoozeDefaultConfig.Get(),
+                // The display time zone (IANA id) the private dashboards' hourly charts read local hours
+                // in. Auto-defaults to this Gateway machine's own zone when unset; machineDefault lets the
+                // Settings page show what "automatic" resolves to.
+                timeZone = Core.Configuration.TimeZoneConfig.Get(),
+                timeZoneMachineDefault = Core.Configuration.TimeZoneConfig.MachineDefault(),
             });
         });
 
@@ -258,6 +263,40 @@ internal static class SettingsEndpoints
             catch (JsonException ex)
             {
                 FileLog.Write($"[SettingsEndpoints] PUT /gateway/snooze-default bad JSON: {ex.Message}");
+                return Results.BadRequest(new { error = "invalid JSON" });
+            }
+        });
+
+        // The display time zone (an IANA id) the private dashboards' hourly charts read local hours in.
+        // Auto-defaults to this Gateway machine's own zone; read at render time so a change applies to the
+        // next refresh with no restart. GET also reports the machine default so the page can show what
+        // "automatic" resolves to.
+        app.MapGet("/gateway/time-zone", () =>
+            Results.Json(new
+            {
+                timeZone = Core.Configuration.TimeZoneConfig.Get(),
+                machineDefault = Core.Configuration.TimeZoneConfig.MachineDefault(),
+            }));
+
+        app.MapPut("/gateway/time-zone", async (HttpContext ctx) =>
+        {
+            try
+            {
+                var body = await JsonSerializer.DeserializeAsync<TimeZoneBody>(
+                    ctx.Request.Body, JsonOpts, ctx.RequestAborted);
+                if (body is null || string.IsNullOrWhiteSpace(body.TimeZone))
+                    return Results.BadRequest(new { error = "body { \"timeZone\": \"America/New_York\" } is required" });
+                if (!Core.Configuration.TimeZoneConfig.IsValid(body.TimeZone))
+                    return Results.BadRequest(new { error = "timeZone must be a valid IANA time zone id" });
+
+                Core.Configuration.TimeZoneConfig.Set(body.TimeZone);
+                var value = body.TimeZone.Trim();
+                FileLog.Write($"[SettingsEndpoints] time_zone set to {value}");
+                return Results.Json(new { timeZone = value });
+            }
+            catch (JsonException ex)
+            {
+                FileLog.Write($"[SettingsEndpoints] PUT /gateway/time-zone bad JSON: {ex.Message}");
                 return Results.BadRequest(new { error = "invalid JSON" });
             }
         });
@@ -505,6 +544,7 @@ internal static class SettingsEndpoints
     private sealed record TranscriptionModeBody(string? Mode);
     private sealed record AutostartBody(bool Enabled);
     private sealed record SnoozeDefaultBody(int? Minutes);
+    private sealed record TimeZoneBody(string? TimeZone);
     private sealed record WingmanBody(bool Enabled);
     private sealed record BrainConfigBody(string? AgentId, string? Tool, string? Model);
 }

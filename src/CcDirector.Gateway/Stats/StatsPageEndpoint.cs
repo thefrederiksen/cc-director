@@ -43,6 +43,9 @@ public static class StatsPageEndpoint
             return Results.Json(new
             {
                 generatedAtUtc = DateTime.UtcNow,
+                // The display time zone the hourly charts render local clock hours in (IANA id).
+                // Auto-defaults to this Gateway machine's own zone; the owner can override it in Settings.
+                timeZone = CcDirector.Core.Configuration.TimeZoneConfig.Get(),
                 buckets = totals.Buckets,
                 // DevThrottle Stats: the "working day" series - turns (by modality) + characters per UTC hour.
                 hourlyTurns = aggregator.HourlyTurns(),

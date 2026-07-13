@@ -1,11 +1,28 @@
 import { describe, it, expect } from "vitest";
-import { summarizeThrottle, formatShare, type ThrottleData } from "./statsClient";
+import {
+  summarizeThrottle,
+  formatShare,
+  last24HourKeys,
+  windowSeries,
+  emptyInputHour,
+  localHourLabel,
+  safeTimeZone,
+  type ThrottleData,
+  type InputHour,
+} from "./statsClient";
 
 // The pure "Your Throttle" summary math (devthrottle-stats mission). The network read (getThrottle) is
 // exercised through the app; here we lock the honest share arithmetic that both shells render.
 
 function data(buckets: ThrottleData["buckets"]): ThrottleData {
-  return { generatedAtUtc: "2026-07-11T00:00:00Z", buckets, hourlyTurns: [], concurrency: null, notCaptured: [] };
+  return {
+    generatedAtUtc: "2026-07-11T00:00:00Z",
+    timeZone: "UTC",
+    buckets,
+    hourlyTurns: [],
+    concurrency: null,
+    notCaptured: [],
+  };
 }
 
 describe("summarizeThrottle", () => {
@@ -56,5 +73,59 @@ describe("formatShare", () => {
 
   it("renders no-data as an ASCII placeholder, never a fabricated 0%", () => {
     expect(formatShare(null)).toBe("n/a");
+  });
+});
+
+describe("last24HourKeys", () => {
+  it("returns 24 consecutive UTC hour keys ending at the current hour, oldest first", () => {
+    const keys = last24HourKeys(new Date("2026-07-13T17:42:00Z"));
+    expect(keys).toHaveLength(24);
+    expect(keys[23]).toBe("2026-07-13T17"); // the hour containing "now"
+    expect(keys[22]).toBe("2026-07-13T16");
+    expect(keys[0]).toBe("2026-07-12T18"); // 23 hours earlier, across the day boundary
+  });
+});
+
+describe("windowSeries", () => {
+  it("aligns a sparse series onto the window and zero-fills the gaps", () => {
+    const keys = last24HourKeys(new Date("2026-07-13T02:00:00Z"));
+    const sparse: InputHour[] = [
+      { hour: "2026-07-13T01", turns: 5, voiceTurns: 4, typedTurns: 1, characters: 200 },
+    ];
+    const windowed = windowSeries(sparse, keys, emptyInputHour);
+    expect(windowed).toHaveLength(24);
+    // The one populated hour lands in its slot; every other hour is a real zero entry.
+    expect(windowed[23]).toEqual({ hour: "2026-07-13T02", turns: 0, voiceTurns: 0, typedTurns: 0, characters: 0 });
+    expect(windowed[22]).toEqual(sparse[0]);
+    expect(windowed[0].turns).toBe(0);
+  });
+
+  it("gives two different series the SAME aligned window so charts line up", () => {
+    const keys = last24HourKeys(new Date("2026-07-13T10:00:00Z"));
+    const a = windowSeries([{ hour: "2026-07-13T02", turns: 3, voiceTurns: 3, typedTurns: 0, characters: 9 }], keys, emptyInputHour);
+    const b = windowSeries([{ hour: "2026-07-13T09", turns: 7, voiceTurns: 1, typedTurns: 6, characters: 40 }], keys, emptyInputHour);
+    expect(a.map((h) => h.hour)).toEqual(b.map((h) => h.hour)); // identical hour axis -> aligned
+  });
+});
+
+describe("localHourLabel", () => {
+  it("formats a UTC hour key as the local 2-digit hour in the given zone", () => {
+    // 17:00 UTC on a July date is 13:00 in New York (EDT, UTC-4) and 17:00 in UTC.
+    expect(localHourLabel("2026-07-13T17", "UTC")).toBe("17");
+    expect(localHourLabel("2026-07-13T17", "America/New_York")).toBe("13");
+  });
+});
+
+describe("safeTimeZone", () => {
+  it("passes a usable zone through", () => {
+    expect(safeTimeZone("UTC")).toBe("UTC");
+    expect(safeTimeZone("America/New_York")).toBe("America/New_York");
+  });
+
+  it("falls back to a usable zone for a bad or empty id (never throws)", () => {
+    const fallback = safeTimeZone("Not/AZone");
+    // Whatever it resolves to, it must be a zone Intl can actually format with.
+    expect(() => new Intl.DateTimeFormat("en-US", { timeZone: fallback })).not.toThrow();
+    expect(safeTimeZone("").length).toBeGreaterThan(0);
   });
 });
