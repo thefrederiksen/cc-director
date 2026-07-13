@@ -47,6 +47,23 @@ internal static class CarModeEndpoint
             return Results.Json(new { warmed = true });
         });
 
+        // Help Mode (issue #1441): the DIRECT, model-free front door for the "Help" button on /m/car. It
+        // returns the ONE curated help content from CarModeHelp - the spoken script the button reads aloud
+        // through /wingman/tts, and the small structured cheat-sheet the page shows on screen - so the button
+        // is instant, reliable, and costs no credits (no model round trip). The spoken "help" / "what can you
+        // do" path goes through the brain's get_help tool instead, which returns the SAME script verbatim, so
+        // both triggers say the identical thing. Behind the host-wide device-key gate like the other routes.
+        app.MapGet("/carmode/help", () => Results.Json(new
+        {
+            spoken = CarModeHelp.Script,
+            cheatSheet = new
+            {
+                modes = CarModeHelp.CheatSheet.Modes.Select(m => new { title = m.Title, hint = m.Hint, examples = m.Examples }),
+                endTurn = CarModeHelp.CheatSheet.EndTurn,
+                help = CarModeHelp.CheatSheet.Help,
+            },
+        }));
+
         app.MapPost("/carmode/turn", async (HttpContext ctx, CarModeTurnRequest? req, CancellationToken ct) =>
         {
             FileLog.Write($"[CarModeEndpoint] turn: len={req?.Text?.Length ?? 0}");
