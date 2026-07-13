@@ -18,6 +18,13 @@ namespace CcDirector.Avalonia.Voice;
 /// rejected dictations into sessions that were sitting idle at their prompt, and agents accept typed
 /// input while working anyway. On ANY failure <paramref name="onFailed"/> fires with the composed text
 /// (when one exists) so the caller can put the words back in the compose box - never silent, never lost.
+///
+/// The recording itself has a DISK SAFETY NET (issue #1130): the WAV is saved to
+/// <see cref="DictationRecordingStore"/> before the single transcription attempt and deleted the moment
+/// the words are safe (delivered, or restored as text). When transcription fails there is no text to
+/// restore - the saved file is then the ONLY copy of what was said, so it is kept and the failure
+/// report names its path. This is not a queue and nothing re-drives the file; it just makes "the
+/// transcription service was down" a nuisance instead of lost speech.
 /// </summary>
 public static class BackgroundDictationSend
 {
@@ -34,6 +41,9 @@ public static class BackgroundDictationSend
     /// first argument is the error; the second is the fully-composed turn text when transcription had
     /// already succeeded (so the caller can restore the words), or null when the failure happened
     /// before a transcript existed. Never silent.</param>
+    /// <param name="recordingsDirectory">Where the disk safety net saves the WAV. Null (production)
+    /// means <see cref="DictationRecordingStore.DefaultDirectory"/>; tests point it at a scratch
+    /// directory.</param>
     public static async Task RunAsync(
         BatchDictationRecorder recorder,
         string prefix,
@@ -42,10 +52,12 @@ public static class BackgroundDictationSend
         Func<string, Task> submit,
         string before = "",
         string after = "",
-        Action<string, string?>? onFailed = null)
+        Action<string, string?>? onFailed = null,
+        string? recordingsDirectory = null)
     {
         FileLog.Write($"[BackgroundDictationSend] start: session={target.Id}, state={target.ActivityState}");
         target.IsTranscribing = true;
+        string? savedPath = null;
         try
         {
             // 1. Stop the mic and get the whole clip as a WAV. An interrupted turn with no audio throws
@@ -61,8 +73,15 @@ public static class BackgroundDictationSend
                 return;
             }
 
-            // 2. Transcribe once. On failure there is no transcript to restore - report loudly with
-            //    only the typed text recoverable, do not queue or retry.
+            // 1b. Disk safety net (issue #1130): persist the WAV BEFORE the single transcription
+            //     attempt, so a failed or slow transcription can never lose the recording. Saving is
+            //     best-effort - a full disk must not block the send - and the file is deleted below
+            //     the moment the words are safe in some other form.
+            savedPath = DictationRecordingStore.TrySave(captured.Wav, recordingsDirectory);
+
+            // 2. Transcribe once. On failure there is no transcript to restore - report loudly, do not
+            //    queue or retry. The saved WAV is now the only copy of the spoken words, so it is KEPT
+            //    and the report names it.
             string transcript;
             try
             {
@@ -70,14 +89,16 @@ public static class BackgroundDictationSend
             }
             catch (Exception ex)
             {
-                FileLog.Write($"[BackgroundDictationSend] transcription FAILED for session {target.Id} ({DiagnosticState(target)}): {ex.Message}");
-                onFailed?.Invoke(ex.Message, null);
+                FileLog.Write($"[BackgroundDictationSend] transcription FAILED for session {target.Id} ({DiagnosticState(target)}): {ex.Message}; savedRecording={savedPath ?? "none"}");
+                onFailed?.Invoke(WithSavedRecording(ex.Message, savedPath), null);
+                savedPath = null; // kept for the user; do not delete below
                 return;
             }
 
             // 3. Compose the turn (dictation dropped at the caret inside any typed text) and submit it
             //    straight through the echo-verified terminal submit. From here on the composed text is
-            //    carried into every failure report so the words can be put back in the compose box.
+            //    carried into every failure report so the words can be put back in the compose box -
+            //    the words survive as text now, so the WAV safety net is no longer needed either way.
             var dictation = DictationText.Join(prefix, transcript);
             var text = DictationText.InsertAt(before + after, before.Length, dictation).Trim();
             try
@@ -90,12 +111,15 @@ public static class BackgroundDictationSend
                 FileLog.Write($"[BackgroundDictationSend] submit FAILED for session {target.Id} ({DiagnosticState(target)}): {ex.Message}");
                 onFailed?.Invoke(ex.Message, text);
             }
+            DictationRecordingStore.TryDelete(savedPath);
+            savedPath = null;
         }
         catch (Exception ex)
         {
-            // Root of a detached task: never let it fault unobserved.
-            FileLog.Write($"[BackgroundDictationSend] unexpected error for session {target.Id} ({DiagnosticState(target)}): {ex.Message}");
-            onFailed?.Invoke(ex.Message, null);
+            // Root of a detached task: never let it fault unobserved. No transcript text reached the
+            // caller, so a saved recording (if any) is kept and named - it may be the only copy.
+            FileLog.Write($"[BackgroundDictationSend] unexpected error for session {target.Id} ({DiagnosticState(target)}): {ex.Message}; savedRecording={savedPath ?? "none"}");
+            onFailed?.Invoke(WithSavedRecording(ex.Message, savedPath), null);
         }
         finally
         {
@@ -104,6 +128,15 @@ public static class BackgroundDictationSend
             catch (Exception ex) { FileLog.Write($"[BackgroundDictationSend] recorder dispose error: {ex.Message}"); }
         }
     }
+
+    /// <summary>
+    /// Append the saved-recording pointer to a failure report, so the user learns WHERE the audio is
+    /// in the same modal that tells them the dictation failed. No file, no extra noise.
+    /// </summary>
+    private static string WithSavedRecording(string error, string? savedPath)
+        => savedPath is null
+            ? error
+            : $"{error}\n\nYour recording was saved - you can play it back or dictate again from it:\n{savedPath}";
 
     /// <summary>
     /// One-line diagnostic snapshot for failure logs: the session's activity state and how long its

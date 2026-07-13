@@ -197,8 +197,9 @@ public sealed class BatchDictationRecorder : IAsyncDisposable
     /// <summary>
     /// Stop the microphone, drain NAudio's final buffered audio, and return the whole captured clip as
     /// a WAV blob WITHOUT transcribing it. This is the durable-dictation split (issue #1130): the
-    /// fire-and-forget Send saves these bytes to disk the instant Send is pressed, then transcribes the
-    /// saved copy - so a failed or slow transcription can never lose the recording. Enforces the same
+    /// fire-and-forget Send saves these bytes to disk (<see cref="CcDirector.Core.Dictation.DictationRecordingStore"/>)
+    /// before its single transcription attempt and keeps the file when transcription fails - so a
+    /// failed or slow transcription can never lose the recording. Enforces the same
     /// completeness gate as <see cref="TranscribeAsync"/> (an empty capture throws
     /// <see cref="NoAudioCapturedException"/>), so an interrupted turn with no audio is never persisted.
     /// The recorder is consumed (stopped) here; call this OR <see cref="TranscribeAsync"/>, once.
