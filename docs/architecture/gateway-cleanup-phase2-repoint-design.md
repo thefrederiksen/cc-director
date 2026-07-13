@@ -281,3 +281,55 @@ caller HAS a tunnel branch, AND the whole-surface real-exe proof (streamMode ON)
 fallback else-branches still referencing `DirectorEndpointClient` are FINE pre-cut (they are the coexistence
 path). The literal zero-callers grep is the at-cut check run right before deleting `DirectorEndpointClient`
 (remove the streamMode-off fallbacks + delete Group D + grep-confirm zero callers + delete the client).
+
+## PR E-B status (Group B) - 2026-07-13 (Manager d262b023)
+
+The Group B session-verb dials are re-pointed through a single new choke point, `SessionVerbClient`
+(`src/CcDirector.Gateway/Api/SessionVerbClient.cs`): it binds a resolved owning `DirectorDto` (its `DirectorId`
+for the tunnel, its `ControlEndpoint` for the fallback) to the shared client + the sendCommand hook, and every
+method is tunnel-first via `DirectorCommandRouter.TrySendAsync` (turns / buffer / prompt / create verbs) with the
+HTTP dial as the byte-identical fallback (sendCommand null => stream mode off, or the Director has no active
+stream). Owner resolution reuses `GatewayEndpoints.LocateSessionAsync` (made internal) so the push-store-first
+location is shared, not re-implemented.
+
+DONE and merged in PR E-B:
+- `GatewayWingmanVoiceEndpoint.cs` - ResolveEndpointAsync's director-loop replaced by push-store resolve; the
+  helpers (DetectMenuAt / PressAndSummarize / WaitForReply / CountTextWidgets) go through SessionVerbClient; Map
+  threads sendCommand + pushedSessions + owners.
+- `WingmanVoiceService.cs` + `WingmanTrainingStore.cs` - GenerateAsync / GenerateOnce / CaptureTraining /
+  CaptureAsync take a SessionVerbClient (the service no longer holds a DirectorEndpointClient); the idle voice
+  sweep (GatewayHost) and the turn-end path build the route from the owning Director.
+- `Briefing/TurnEndWatcher.cs` (the Group-C-classified catch-up sweep, landed here with the voice cluster) -
+  `TurnEndSignal.DirectorEndpoint` became `DirectorId` (the push-fed Observe already had the id and only
+  converted it to a control URL); `SweepAsync` reads `PushedSessions.SnapshotFresh` under stream mode and
+  HTTP-pulls only non-pushing (legacy) Directors.
+- `GatewayDictationEndpoint.cs` - resolve push-store-first + inject through SessionVerbClient. The dictation
+  DELIVERY marker (was the HTTP-only `X-Dictation-Delivery` header) now rides a new `PromptRequest.DeliveryUploadId`
+  field; the shared `SessionCommandExecutor.PromptAsync` maps a non-empty DeliveryUploadId to
+  `SendSource.Delivery`, so the tunnel prompt verb carries the Delivery signal with no header and the frozen
+  `DirectorCommand` envelope is unchanged (the REST path still honors the header for back-compat). This was the
+  marker/id-only case the Architect cleared for the DTO field (no clip bytes in the prompt).
+- Proofs: `SessionVerbClientTests` (tunnel-vs-fallback routing + DeliveryUploadId marshaling + failed-result
+  mapping) and `TunnelWingmanVoiceProofTests` (unreachable-Director + PushSnapshot: the wingman menu reads the
+  session buffer over the tunnel by construction, proving the Map wiring threads sendCommand + the push store).
+
+DEFERRED to a follow-up PR (PR E-B2), still Group B: `MachineSessionSpawner.cs` / `DirectorImplSessionDriver.cs`
+(cron / worklist spawn + seed-prompt). These need the create + buffer verbs on the tunnel and touch the
+cron/worklist launcher plumbing (ICronWorkListDrainLauncher + its runner + the driver factory + tests); split out
+to keep the voice PR a coherent, tested unit. They MUST land before the completeness gate / the cut.
+
+## Architect ruling (retire the client-dead async voice-turn path) - SETTLED 2026-07-13 (session 51f1898e)
+
+`GatewayVoiceTurnEndpoint.cs` (the async `POST /sessions/{sid}/voice-turn/submit` + upload/poll surface, issue
+#376) drove the DIRECTOR's SSE endpoint `POST /sessions/{sid}/voice-turn` (`CcDirector.ControlApi/VoiceTurnEndpoint.cs`,
+issue #351) over a RAW HttpClient reading staged `data:` events - a Gateway->Director HTTP dial NOT reachable by
+the tunnel primitives without new SSE-up-stream work. It is CLIENT-DEAD: the only caller beyond the generated
+`client-core/schema.ts` is the RETIRED native MAUI phone client (`phone/CcDirectorClient`); cockpit and mobile
+both use `/wingman/voice-turn` (`GatewayWingmanVoiceEndpoint`), which runs the whole turn Gateway-side. RULING:
+OPTION A - RETIRE (Option B tunnel-SSE-up-stream and Option C decompose both REJECTED as heavy work / needless
+complexity for a dead feature). In PR E-B the Gateway endpoint + its wiring (GatewayEndpoints:123) + its two
+dedicated tests (`GatewayVoiceTurnAsyncTests`, `VoiceTurnNoMicE2EHarnessTests`) + the manual
+`scripts/test-voice-turn.ps1` are DELETED; the retired native client + its own tests stay as dead artifacts (no
+compile dep on the Gateway - they harmlessly 404). The Director SSE `VoiceTurnEndpoint.cs` is on the Phase 1
+DROP list, deleted AT the cut. The Gateway-side `GatewayTurnJobStore` / `VoiceTurnArchive` become dead once the
+endpoint is gone; leaving them is harmless (a phase-1-cut cleanup, not this PR).

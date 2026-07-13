@@ -62,8 +62,15 @@ internal static class GatewayDictationEndpoint
 
     public static void Map(IEndpointRouteBuilder app, DirectorRegistry registry, DirectorEndpointClient client,
         SessionOwnerCache? owners, string token, GatewayTranscriptionService transcription,
-        TranscribingSessions transcribingSessions, VoiceUploadStore uploads, Pairing.DeviceRegistry devices)
+        TranscribingSessions transcribingSessions, VoiceUploadStore uploads, Pairing.DeviceRegistry devices,
+        Streaming.PushedSessionStore? pushedSessions = null,
+        DirectorCommandRouter.SendDirectorCommandAsync? sendCommand = null,
+        TimeSpan? streamStale = null)
     {
+        // Gateway Cleanup mission, Phase 2 (PR E-B): resolve the owning Director push-store-first and inject
+        // the dictation through the tunnel-first SessionVerbClient (the delivery marker rides the PromptRequest
+        // DeliveryUploadId field, not an HTTP header), so this path no longer HTTP-dials the Director.
+        var stale = streamStale ?? TimeSpan.FromSeconds(Core.Configuration.GatewayConfig.DefaultStreamStaleAfterSeconds);
         app.MapPost("/dictation/upload", (DictationUploadRequest? body, HttpContext ctx) =>
         {
             if (!AuthMiddleware.HasValidToken(ctx, token, devices))
@@ -175,7 +182,8 @@ internal static class GatewayDictationEndpoint
             // from then on, so there is no age-swept cache window.
             var entry = _completes.GetOrAdd(uploadId, id => new CompleteEntry(
                 new Lazy<Task<DictationOutcome>>(() => RunCompleteCoreAsync(
-                    id, req, uploads, registry, client, owners, transcription, transcribingSessions, deliverySurface))));
+                    id, req, uploads, registry, client, owners, transcription, transcribingSessions, deliverySurface,
+                    pushedSessions, sendCommand, stale))));
 
             DictationOutcome outcome;
             try
@@ -311,7 +319,9 @@ internal static class GatewayDictationEndpoint
     private static async Task<DictationOutcome> RunCompleteCoreAsync(
         string uploadId, DictationCompleteRequest req, VoiceUploadStore uploads, DirectorRegistry registry,
         DirectorEndpointClient client, SessionOwnerCache? owners, GatewayTranscriptionService transcription,
-        TranscribingSessions transcribingSessions, string? deliverySurface)
+        TranscribingSessions transcribingSessions, string? deliverySurface,
+        Streaming.PushedSessionStore? pushedSessions, DirectorCommandRouter.SendDirectorCommandAsync? sendCommand,
+        TimeSpan streamStale)
     {
         var sid = req.SessionId!;
         // Issue #1181, Task 4: this run assembles + transcribes + delivers, so mark the session ACTIVELY
@@ -360,11 +370,15 @@ internal static class GatewayDictationEndpoint
                 return DictationOutcome.Submitted(false, false, transcript);
             }
 
-            var (endpoint, session) = await LocateAsync(registry, client, owners, sid);
-            if (endpoint is null)
-                return DictationOutcome.Error(
-                    session is null ? StatusCodes.Status404NotFound : StatusCodes.Status410Gone,
-                    session is null ? "session not found" : "session has exited");
+            // Gateway Cleanup mission, Phase 2: resolve the owner push-store-first (no HTTP fan-out) and gate
+            // on an exited session, exactly as the old LocateAsync did, then reach it through the tunnel.
+            var (director, session) = await GatewayEndpoints.LocateSessionAsync(
+                registry, client, sid, pushedSessions, streamStale, owners);
+            if (director is null || session is null)
+                return DictationOutcome.Error(StatusCodes.Status404NotFound, "session not found");
+            if (IsExited(session))
+                return DictationOutcome.Error(StatusCodes.Status410Gone, "session has exited");
+            var route = new SessionVerbClient(client, director, sendCommand);
 
             // Moved-on guard (issue #1006): for a RESUMED clip, if the session's terminal output grew
             // materially since the clip was recorded, other turns happened - drop the stale dictation
@@ -393,7 +407,7 @@ internal static class GatewayDictationEndpoint
             // one voice turn from the resolved surface. A dictation is always a real operator turn, so when
             // the device key did not resolve we stamp "unknown" (never null) - it is counted into the honest
             // "unknown" surface bucket, never silently dropped (decision 9).
-            var (ok, _, err) = await client.PostPromptAsync(endpoint, sid, new PromptRequest { Text = message, AppendEnter = true, Surface = deliverySurface ?? "unknown" }, deliveryUploadId: uploadId);
+            var (ok, _, err) = await route.PostPromptAsync(sid, new PromptRequest { Text = message, AppendEnter = true, Surface = deliverySurface ?? "unknown", DeliveryUploadId = uploadId });
             if (!ok)
                 return DictationOutcome.Error(StatusCodes.Status502BadGateway, err ?? "submit to session failed");
 
@@ -425,47 +439,10 @@ internal static class GatewayDictationEndpoint
         try { t.End(sid); } catch { /* the Gateway's stale-mark backstop clears it if this throws */ }
     }
 
-    // Resolve the owning Director's dialable endpoint + current session row (for the exited/moved-on gates).
-    private static async Task<(string? endpoint, SessionDto? session)> LocateAsync(
-        DirectorRegistry registry, DirectorEndpointClient client, SessionOwnerCache? owners, string sid)
-    {
-        if (owners?.OwnerOf(sid) is { } ownerId && registry.Get(ownerId) is { } cachedDir && DialEndpoint(cachedDir) is { } cachedEp)
-        {
-            var s = await client.GetSessionAsync(cachedEp, sid);
-            if (s is not null && !IsExited(s)) return (cachedEp, s);
-        }
-        var (director, session) = await LocateOwningDirectorAsync(registry, client, sid);
-        if (director is null || session is null) return (null, null);
-        if (IsExited(session)) return (null, session);
-        owners?.Remember(sid, director.DirectorId);
-        return (DialEndpoint(director), session);
-    }
-
-    private static async Task<(DirectorDto? director, SessionDto? session)> LocateOwningDirectorAsync(
-        DirectorRegistry registry, DirectorEndpointClient client, string sid)
-    {
-        var lookups = registry.ListDirectors().Select(async d =>
-        {
-            var ep = (d.ControlEndpoint ?? "").TrimEnd('/');
-            var s = await client.GetSessionAsync(ep, sid);
-            return (director: d, session: s);
-        }).ToList();
-        var results = await Task.WhenAll(lookups);
-        foreach (var (director, session) in results)
-            if (session is not null) return (director, session);
-        return (null, null);
-    }
-
     private static bool IsExited(SessionDto session)
         => string.Equals(session.Status, "Exited", StringComparison.OrdinalIgnoreCase)
         || string.Equals(session.Status, "Failed", StringComparison.OrdinalIgnoreCase)
         || string.Equals(session.ActivityState, "Exited", StringComparison.OrdinalIgnoreCase);
-
-    private static string? DialEndpoint(DirectorDto d)
-    {
-        var endpoint = !string.IsNullOrWhiteSpace(d.ControlEndpoint) ? d.ControlEndpoint : d.TailnetEndpoint;
-        return string.IsNullOrWhiteSpace(endpoint) ? null : endpoint.TrimEnd('/');
-    }
 }
 
 /// <summary>Register-time body: the session and the client's record-time terminal-byte baseline.</summary>

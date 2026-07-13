@@ -3,7 +3,7 @@ using System.Text.Json;
 using CcDirector.Core.Configuration;
 using CcDirector.Core.Storage;
 using CcDirector.Core.Utilities;
-using CcDirector.Gateway.Discovery;
+using CcDirector.Gateway.Api;
 
 namespace CcDirector.Gateway.Wingman;
 
@@ -49,16 +49,19 @@ public sealed class WingmanTrainingStore
     /// <summary>
     /// Capture one wingman summary: fetch up to <see cref="MaxTerminalChars"/> of the session
     /// terminal from the owning Director, then append the record. No-op when capture is off.
+    /// Gateway Cleanup mission, Phase 2: the terminal is read through the tunnel-first
+    /// <see cref="SessionVerbClient"/> (internal because it takes that internal type), so the capture no
+    /// longer HTTP-dials the Director directly.
     /// </summary>
-    public async Task CaptureAsync(
-        DirectorEndpointClient client, string endpoint, string sessionId, string source,
+    internal async Task CaptureAsync(
+        SessionVerbClient route, string sessionId, string source,
         string reply, string recentContext, string spoken, double replySeconds, CancellationToken ct = default)
     {
         if (!Enabled) return;
         string terminal = "";
         try
         {
-            var buf = await client.GetBufferAsync(endpoint, sessionId, lines: null, raw: false, since: null, ct);
+            var buf = await route.GetBufferAsync(sessionId, lines: null, raw: false, since: null, ct);
             if (!string.IsNullOrEmpty(buf?.Text)) terminal = buf!.Text;
         }
         catch (Exception ex)

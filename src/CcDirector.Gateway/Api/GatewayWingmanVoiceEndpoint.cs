@@ -62,9 +62,21 @@ internal static class GatewayWingmanVoiceEndpoint
         Func<WingmanModelRole, CancellationToken, Task<IAgentBrain>> brainProvider,
         KeyVault vault,
         WingmanVoiceService voice,
+        Streaming.PushedSessionStore? pushedSessions = null,
+        DirectorCommandRouter.SendDirectorCommandAsync? sendCommand = null,
+        SessionOwnerCache? owners = null,
+        TimeSpan? streamStale = null,
         Func<string>? instructionsProvider = null)
     {
         var translator = new WingmanTranslator(brainProvider, instructionsProvider: instructionsProvider);
+
+        // Gateway Cleanup mission, Phase 2 (PR E-B): resolve the owning Director once (push-store first) and
+        // reach its session verbs (turns / buffer / prompt) through the tunnel-first SessionVerbClient, so
+        // the wingman voice surface no longer HTTP-dials the Director. sendCommand is non-null only under
+        // stream mode; when null the client falls back to the HTTP dial, byte-identical.
+        var stale = streamStale ?? TimeSpan.FromSeconds(GatewayConfig.DefaultStreamStaleAfterSeconds);
+        Task<SessionVerbClient?> ResolveRouteAsync(string sid) =>
+            SessionVerbClient.ResolveAsync(sid, registry, client, pushedSessions, stale, owners, sendCommand);
 
         // The single Gateway owner of speech-to-text (issue #839): both batch transcribe paths below
         // (the resumable /wingman/utterance/complete and the one-shot /wingman/transcribe) go through
@@ -254,14 +266,14 @@ internal static class GatewayWingmanVoiceEndpoint
             if (req is null || string.IsNullOrWhiteSpace(req.Text))
                 return Results.Json(new { error = "text is required" }, statusCode: StatusCodes.Status400BadRequest);
 
-            var endpoint = await ResolveEndpointAsync(sid, registry, client, ct);
-            if (endpoint is null)
+            var route = await ResolveRouteAsync(sid);
+            if (route is null)
                 return Results.Json(new { error = "session not found on any director" }, statusCode: StatusCodes.Status404NotFound);
 
             // Menu handling (issue #531): if the agent is RIGHT NOW showing an on-screen menu, the
             // person's words are a CHOICE, not a new prompt. Detect it, map the words to an option,
             // and PRESS that option (raw keystrokes) - never type the spoken words as a prompt.
-            var menu = await DetectMenuAtAsync(client, translator, endpoint, sid, ct);
+            var menu = await DetectMenuAtAsync(route, translator, sid, ct);
             if (menu.IsMenu)
             {
                 var idx = WingmanMenuLogic.MatchOption(menu, req.Text);
@@ -271,7 +283,7 @@ internal static class GatewayWingmanVoiceEndpoint
                     var opt = menu.Options[idx];
                     var submit = string.Equals(menu.SelectionMode, "multiple", StringComparison.OrdinalIgnoreCase) ? menu.Submit : "";
                     FileLog.Write($"[GatewayWingmanVoice] voice-turn sid={sid}: menu choice -> option {idx + 1}");
-                    return await PressAndSummarizeAsync(client, translator, voice, endpoint, sid, opt.Send, submit, $"Selecting option {idx + 1}. ", "voice-menu", ct);
+                    return await PressAndSummarizeAsync(route, translator, voice, sid, opt.Send, submit, $"Selecting option {idx + 1}. ", "voice-menu", ct);
                 }
                 // Heard them, but no confident option: re-read the menu and send NOTHING (don't burn the turn).
                 FileLog.Write($"[GatewayWingmanVoice] voice-turn sid={sid}: menu present, choice unclear");
@@ -289,16 +301,16 @@ internal static class GatewayWingmanVoiceEndpoint
             // for the wingman so it can resolve references in the agent's reply. The current question
             // is appended below; BuildRecentContext is called on the pre-send snapshot so it
             // excludes the new turn and includes only what came before.
-            var snapshotWidgets = (await client.GetTurnsAsync(endpoint, sid, ct))?.Widgets
+            var snapshotWidgets = (await route.GetTurnsAsync(sid, ct))?.Widgets
                 ?? new List<TurnWidgetDto>();
             var widgetsBefore = snapshotWidgets.Count;
             var priorContext = WingmanTranslator.BuildRecentContext(snapshotWidgets);
 
-            var (ok, _, sendErr) = await client.PostPromptAsync(endpoint, sid, new PromptRequest { Text = req.Text, AppendEnter = true }, ct);
+            var (ok, _, sendErr) = await route.PostPromptAsync(sid, new PromptRequest { Text = req.Text, AppendEnter = true }, ct);
             if (!ok)
                 return Results.Json(new { error = "send failed: " + sendErr }, statusCode: StatusCodes.Status502BadGateway);
 
-            var reply = await WaitForReplyAsync(client, endpoint, sid, widgetsBefore, ct);
+            var reply = await WaitForReplyAsync(route, sid, widgetsBefore, ct);
             if (string.IsNullOrWhiteSpace(reply))
                 return Results.Json(new { error = "the agent did not produce a reply in time" }, statusCode: StatusCodes.Status504GatewayTimeout);
 
@@ -317,7 +329,7 @@ internal static class GatewayWingmanVoiceEndpoint
                 await voice.StoreSpokenAsync(sid, t.Spoken, reply, CancellationToken.None);   // make it a voice session + cache audio
                 FileLog.Write($"[GatewayWingmanVoice] voice-turn sid={sid}: replyLen={reply.Length}, spokenLen={t.Spoken.Length}");
                 // Training capture (no-op unless the setting is on); fire-and-forget so it adds no latency.
-                _ = voice.CaptureTrainingAsync(endpoint, sid, "voice-turn", reply, recentContext, t.Spoken, t.ReplySeconds, CancellationToken.None);
+                _ = voice.CaptureTrainingAsync(route, sid, "voice-turn", reply, recentContext, t.Spoken, t.ReplySeconds, CancellationToken.None);
                 return Results.Json(new { reply, spoken = t.Spoken, replySeconds = t.ReplySeconds });
             }
             catch (Exception ex)
@@ -382,11 +394,11 @@ internal static class GatewayWingmanVoiceEndpoint
             if (!Guid.TryParse(sid, out _))
                 return Results.Json(new { error = "invalid session id format" }, statusCode: StatusCodes.Status400BadRequest);
 
-            var endpoint = await ResolveEndpointAsync(sid, registry, client, ct);
-            if (endpoint is null)
+            var route = await ResolveRouteAsync(sid);
+            if (route is null)
                 return Results.Json(new { error = "session not found on any director" }, statusCode: StatusCodes.Status404NotFound);
 
-            var turns = await client.GetTurnsAsync(endpoint, sid, ct);
+            var turns = await route.GetTurnsAsync(sid, ct);
             var widgets = turns?.Widgets ?? new List<TurnWidgetDto>();
             var lastReply = widgets.LastOrDefault(w => w.Kind == "Text")?.Content;
             // Recent conversation so the wingman can give context to a short/terse reply.
@@ -418,7 +430,7 @@ internal static class GatewayWingmanVoiceEndpoint
                 await voice.StoreSpokenAsync(sid, t.Spoken, lastReply, CancellationToken.None);   // cache spoken + audio, ready to play
                 FileLog.Write($"[GatewayWingmanVoice] explain sid={sid}: replyLen={lastReply.Length}, spokenLen={t.Spoken.Length}");
                 // Training capture (no-op unless the setting is on); fire-and-forget so it adds no latency.
-                _ = voice.CaptureTrainingAsync(endpoint, sid, "explain", lastReply, recentContext, t.Spoken, t.ReplySeconds, CancellationToken.None);
+                _ = voice.CaptureTrainingAsync(route, sid, "explain", lastReply, recentContext, t.Spoken, t.ReplySeconds, CancellationToken.None);
                 return Results.Json(new { reply = lastReply, spoken = t.Spoken, replySeconds = t.ReplySeconds });
             }
             catch (Exception ex)
@@ -477,10 +489,10 @@ internal static class GatewayWingmanVoiceEndpoint
             FileLog.Write($"[GatewayWingmanVoice] menu sid={sid}");
             if (!Guid.TryParse(sid, out _))
                 return Results.Json(new { error = "invalid session id format" }, statusCode: StatusCodes.Status400BadRequest);
-            var endpoint = await ResolveEndpointAsync(sid, registry, client, ct);
-            if (endpoint is null)
+            var route = await ResolveRouteAsync(sid);
+            if (route is null)
                 return Results.Json(new { error = "session not found on any director" }, statusCode: StatusCodes.Status404NotFound);
-            var menu = await DetectMenuAtAsync(client, translator, endpoint, sid, ct);
+            var menu = await DetectMenuAtAsync(route, translator, sid, ct);
             return Results.Json(MenuJson(menu));
         });
 
@@ -493,20 +505,20 @@ internal static class GatewayWingmanVoiceEndpoint
                 return Results.Json(new { error = "invalid session id format" }, statusCode: StatusCodes.Status400BadRequest);
             if (req is null || string.IsNullOrEmpty(req.Send))
                 return Results.Json(new { error = "send is required" }, statusCode: StatusCodes.Status400BadRequest);
-            var endpoint = await ResolveEndpointAsync(sid, registry, client, ct);
-            if (endpoint is null)
+            var route = await ResolveRouteAsync(sid);
+            if (route is null)
                 return Results.Json(new { error = "session not found on any director" }, statusCode: StatusCodes.Status404NotFound);
-            return await PressAndSummarizeAsync(client, translator, voice, endpoint, sid, req.Send, req.Submit, null, "menu-press", ct);
+            return await PressAndSummarizeAsync(route, translator, voice, sid, req.Send, req.Submit, null, "menu-press", ct);
         });
     }
 
     /// <summary>Fetch the session terminal and, only when it cheaply looks like a menu, ask the warm
     /// brain to extract it. Returns IsMenu=false on any miss - the caller treats input as a prompt.</summary>
     private static async Task<WingmanMenu> DetectMenuAtAsync(
-        DirectorEndpointClient client, WingmanTranslator translator, string endpoint, string sid, CancellationToken ct)
+        SessionVerbClient route, WingmanTranslator translator, string sid, CancellationToken ct)
     {
         Contracts.BufferResponse? buf;
-        try { buf = await client.GetBufferAsync(endpoint, sid, lines: null, raw: false, since: null, ct); }
+        try { buf = await route.GetBufferAsync(sid, lines: null, raw: false, since: null, ct); }
         catch { buf = null; }
         var terminal = buf?.Text ?? "";
         if (!WingmanMenuLogic.LooksLikeMenu(terminal)) return new WingmanMenu { IsMenu = false };
@@ -517,24 +529,24 @@ internal static class GatewayWingmanVoiceEndpoint
     /// agent's resulting turn, translate it, cache it, and return the spoken summary. Shared by the
     /// option-button tap (menu-press) and the spoken-choice path (voice-turn).</summary>
     private static async Task<IResult> PressAndSummarizeAsync(
-        DirectorEndpointClient client, WingmanTranslator translator, WingmanVoiceService voice,
-        string endpoint, string sid, string send, string? submit, string? confirmPrefix, string source, CancellationToken ct)
+        SessionVerbClient route, WingmanTranslator translator, WingmanVoiceService voice,
+        string sid, string send, string? submit, string? confirmPrefix, string source, CancellationToken ct)
     {
         voice.OnSessionWorking(sid);   // a new turn is coming; drop the stale cached summary
-        var before = await CountTextWidgetsAsync(client, endpoint, sid, ct);
+        var before = await CountTextWidgetsAsync(route, sid, ct);
 
-        var (ok, _, err) = await client.PostPromptAsync(endpoint, sid, new PromptRequest { Text = send, AppendEnter = false }, ct);
+        var (ok, _, err) = await route.PostPromptAsync(sid, new PromptRequest { Text = send, AppendEnter = false }, ct);
         if (!ok)
             return Results.Json(new { error = "press failed: " + err }, statusCode: StatusCodes.Status502BadGateway);
         if (!string.IsNullOrEmpty(submit))
         {
             try { await Task.Delay(300, ct); } catch (OperationCanceledException) { }
-            await client.PostPromptAsync(endpoint, sid, new PromptRequest { Text = submit, AppendEnter = false }, CancellationToken.None);
+            await route.PostPromptAsync(sid, new PromptRequest { Text = submit, AppendEnter = false }, CancellationToken.None);
         }
         FileLog.Write($"[GatewayWingmanVoice] {source} sid={sid}: pressed send=\"{Escape(send)}\" submit=\"{Escape(submit)}\"");
 
         var prefix = confirmPrefix ?? "";
-        var reply = await WaitForReplyAsync(client, endpoint, sid, before, ct);
+        var reply = await WaitForReplyAsync(route, sid, before, ct);
         if (string.IsNullOrWhiteSpace(reply))
             return Results.Json(new { reply = "", spoken = prefix + "Done. The agent is working - I'll have the result shortly.", pressed = true });
 
@@ -544,7 +556,7 @@ internal static class GatewayWingmanVoiceEndpoint
             var t = await translator.TranslateAsync("(you picked a menu option)", reply, CancellationToken.None);
             var spoken = prefix + t.Spoken;
             await voice.StoreSpokenAsync(sid, spoken, reply, CancellationToken.None);
-            _ = voice.CaptureTrainingAsync(endpoint, sid, source, reply, "(menu pick)", spoken, t.ReplySeconds, CancellationToken.None);
+            _ = voice.CaptureTrainingAsync(route, sid, source, reply, "(menu pick)", spoken, t.ReplySeconds, CancellationToken.None);
             FileLog.Write($"[GatewayWingmanVoice] {source} sid={sid}: replyLen={reply.Length}, spokenLen={spoken.Length}");
             return Results.Json(new { reply, spoken, replySeconds = t.ReplySeconds, pressed = true });
         }
@@ -620,7 +632,7 @@ internal static class GatewayWingmanVoiceEndpoint
     /// full <see cref="TurnTimeout"/>. Returns the reply text, or null if none landed in time.
     /// </summary>
     private static async Task<string?> WaitForReplyAsync(
-        DirectorEndpointClient client, string endpoint, string sid, int widgetsBefore, CancellationToken ct)
+        SessionVerbClient route, string sid, int widgetsBefore, CancellationToken ct)
     {
         var deadline = DateTime.UtcNow + TurnTimeout;
         string? reply = null;
@@ -632,7 +644,7 @@ internal static class GatewayWingmanVoiceEndpoint
             try { await Task.Delay(PollInterval, ct); } catch (OperationCanceledException) { return reply; }
 
             TurnsResponse? turns;
-            try { turns = await client.GetTurnsAsync(endpoint, sid, ct); }
+            try { turns = await route.GetTurnsAsync(sid, ct); }
             catch { turns = null; }
 
             var widgets = turns?.Widgets;
@@ -664,33 +676,19 @@ internal static class GatewayWingmanVoiceEndpoint
     }
 
     private static async Task<string?> ReadNewReplyAsync(
-        DirectorEndpointClient client, string endpoint, string sid, int widgetsBefore, CancellationToken ct)
+        SessionVerbClient route, string sid, int widgetsBefore, CancellationToken ct)
     {
-        var turns = await client.GetTurnsAsync(endpoint, sid, ct);
+        var turns = await route.GetTurnsAsync(sid, ct);
         if (turns?.Widgets is null) return null;
         var last = turns.Widgets.Skip(widgetsBefore).LastOrDefault(w => w.Kind == "Text");
         return last?.Content;
     }
 
     private static async Task<int> CountTextWidgetsAsync(
-        DirectorEndpointClient client, string endpoint, string sid, CancellationToken ct)
+        SessionVerbClient route, string sid, CancellationToken ct)
     {
-        var turns = await client.GetTurnsAsync(endpoint, sid, ct);
+        var turns = await route.GetTurnsAsync(sid, ct);
         return turns?.Widgets?.Count ?? 0;
-    }
-
-    /// <summary>Find the dialable Control API base URL of the Director that owns this session.</summary>
-    private static async Task<string?> ResolveEndpointAsync(
-        string sid, DirectorRegistry registry, DirectorEndpointClient client, CancellationToken ct)
-    {
-        foreach (var d in registry.ListDirectors())
-        {
-            var ep = (d.ControlEndpoint ?? d.TailnetEndpoint ?? "").TrimEnd('/');
-            if (string.IsNullOrWhiteSpace(ep)) continue;
-            var s = await client.GetSessionAsync(ep, sid, ct);
-            if (s is not null) return ep;
-        }
-        return null;
     }
 }
 

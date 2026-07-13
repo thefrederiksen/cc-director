@@ -30,6 +30,17 @@ public sealed class PromptRequest
     /// comes from the existing X-Dictation-Delivery marker (a voice delivery) via <c>SendSource</c>.
     /// </summary>
     public string? Surface { get; set; }
+
+    /// <summary>
+    /// Gateway Cleanup mission, Phase 2: the dictation delivery marker (issue #1181). When set, this prompt
+    /// is a dictation's OWN arrival, so the Director sends it as <c>SendSource.Delivery</c> (a voice turn),
+    /// exempt from the dictation lock. Over the REST path this used to ride ONLY the <c>X-Dictation-Delivery</c>
+    /// header; carrying it in the request DTO instead lets the tunnel prompt verb mark a Delivery without any
+    /// HTTP header (the frozen tunnel envelope is unchanged - this is a request-DTO field). The header is still
+    /// honored on the REST path for back-compat; either signal marks the send as a Delivery. Null for a normal
+    /// operator prompt.
+    /// </summary>
+    public string? DeliveryUploadId { get; set; }
 }
 
 /// <summary>

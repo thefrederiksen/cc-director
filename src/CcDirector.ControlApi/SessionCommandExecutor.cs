@@ -151,7 +151,13 @@ internal static class SessionCommandExecutor
         if (session is null)
             return DirectorCommandResult.Fail(DirectorCommandStatus.NotFound, "session not found");
 
-        return await SendPromptAsync(session, request, source);
+        // Gateway Cleanup mission, Phase 2: a dictation delivery marks itself in the request DTO
+        // (DeliveryUploadId), so the tunnel prompt verb carries the Delivery source with no HTTP header.
+        // The REST path still sets `source` from the X-Dictation-Delivery header (back-compat); either
+        // signal makes this a Delivery.
+        var effectiveSource = !string.IsNullOrWhiteSpace(request.DeliveryUploadId) ? SendSource.Delivery : source;
+
+        return await SendPromptAsync(session, request, effectiveSource);
     }
 
     /// <summary>

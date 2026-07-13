@@ -2,15 +2,18 @@ using System.Collections.Concurrent;
 using CcDirector.Core.Utilities;
 using CcDirector.Gateway.Contracts;
 using CcDirector.Gateway.Discovery;
+using CcDirector.Gateway.Streaming;
 
 namespace CcDirector.Gateway.Briefing;
 
-/// <summary>One observed turn boundary: the session and the Director that owns it. <paramref
-/// name="IsNewTurn"/> is true only for a live Working -> Waiting boundary (a genuinely new turn the
-/// user is now waiting on); it is false when a session is FIRST seen already waiting (a startup
-/// catch-up of a turn that ended earlier). Voice generation uses it to show the yellow "wingman
-/// reading" hold only for a new turn and stay quiet on a catch-up refresh (issue #1322).</summary>
-public sealed record TurnEndSignal(string SessionId, string DirectorEndpoint, bool IsNewTurn = false);
+/// <summary>One observed turn boundary: the session and the id of the Director that owns it (Gateway
+/// Cleanup mission, Phase 2: the owning Director is now carried as its DirectorId, not a dialable control
+/// URL, so the voice-refresh path reaches it through the tunnel). <paramref name="IsNewTurn"/> is true only
+/// for a live Working -> Waiting boundary (a genuinely new turn the user is now waiting on); it is false
+/// when a session is FIRST seen already waiting (a startup catch-up of a turn that ended earlier). Voice
+/// generation uses it to show the yellow "wingman reading" hold only for a new turn and stay quiet on a
+/// catch-up refresh (issue #1322).</summary>
+public sealed record TurnEndSignal(string SessionId, string DirectorId, bool IsNewTurn = false);
 
 /// <summary>
 /// The brief agent's turn-boundary tracker (issues #185/#186). PUSH-fed since #186:
@@ -46,6 +49,8 @@ public sealed class TurnEndWatcher : IDisposable
 
     private readonly DirectorRegistry _registry;
     private readonly DirectorEndpointClient _client;
+    private readonly PushedSessionStore? _pushedSessions;
+    private readonly TimeSpan _streamStale;
     private readonly Action<TurnEndSignal> _onTurnEnd;
     private readonly Action<string> _onSessionWorking;
     private readonly TimeSpan _interval;
@@ -54,15 +59,24 @@ public sealed class TurnEndWatcher : IDisposable
     private int _polling;
     private bool _disposed;
 
+    /// <param name="pushedSessions">Gateway Cleanup mission, Phase 2: non-null under stream mode. When set,
+    /// the catch-up / reconcile sweep reads each stream-connected Director's pushed session snapshot from the
+    /// push store instead of HTTP-pulling it, so the watcher no longer dials the Director. A Director that
+    /// never pushes (stream mode off / file-discovered legacy) is still pulled over HTTP, byte-identical.</param>
+    /// <param name="streamStale">Freshness window for the push store read; defaults to the roster's window.</param>
     public TurnEndWatcher(
         DirectorRegistry registry,
         DirectorEndpointClient client,
         Action<TurnEndSignal> onTurnEnd,
         Action<string> onSessionWorking,
-        TimeSpan? reconcileInterval = null)
+        TimeSpan? reconcileInterval = null,
+        PushedSessionStore? pushedSessions = null,
+        TimeSpan? streamStale = null)
     {
         _registry = registry ?? throw new ArgumentNullException(nameof(registry));
         _client = client ?? throw new ArgumentNullException(nameof(client));
+        _pushedSessions = pushedSessions;
+        _streamStale = streamStale ?? TimeSpan.FromSeconds(Core.Configuration.GatewayConfig.DefaultStreamStaleAfterSeconds);
         _onTurnEnd = onTurnEnd ?? throw new ArgumentNullException(nameof(onTurnEnd));
         _onSessionWorking = onSessionWorking ?? throw new ArgumentNullException(nameof(onSessionWorking));
         _interval = reconcileInterval ?? ReconcileInterval;
@@ -90,7 +104,7 @@ public sealed class TurnEndWatcher : IDisposable
     /// row) into the tracker. Idempotent for repeated identical states - a heartbeat
     /// replaying a state the doorbell already delivered changes nothing.
     /// </summary>
-    public void Observe(string sessionId, string activityState, string directorEndpoint)
+    public void Observe(string sessionId, string activityState, string directorId)
     {
         if (_disposed) return;
         if (string.IsNullOrEmpty(sessionId) || string.IsNullOrEmpty(activityState)) return;
@@ -110,7 +124,7 @@ public sealed class TurnEndWatcher : IDisposable
             // A live boundary (previous state was Working) is a genuinely new turn; a first sighting
             // of an already-waiting session (no previous state) is a catch-up of an earlier turn.
             var isNewTurn = hadPrev && prev == "Working";
-            _onTurnEnd(new TurnEndSignal(sessionId, directorEndpoint, isNewTurn));
+            _onTurnEnd(new TurnEndSignal(sessionId, directorId, isNewTurn));
         }
     }
 
@@ -129,9 +143,24 @@ public sealed class TurnEndWatcher : IDisposable
 
     internal async Task SweepAsync(bool sweepAll)
     {
+        // Gateway Cleanup mission, Phase 2: under stream mode the catch-up / reconcile reads each
+        // stream-connected Director's pushed session snapshot straight from the push store - no HTTP dial.
+        // Only a Director that never pushes (stream mode off / file-discovered legacy) is still pulled over
+        // HTTP below, byte-identical to before. The signal now carries the DirectorId, not a control URL.
+        if (_pushedSessions is not null)
+        {
+            foreach (var (directorId, session) in _pushedSessions.SnapshotFresh(_streamStale))
+            {
+                if (_disposed) return;
+                Observe(session.SessionId, session.ActivityState, directorId);
+            }
+        }
+
         foreach (var d in _registry.ListDirectors())
         {
             if (_disposed) return;
+            // A stream-connected Director's sessions came from the push store above; never HTTP-pull it.
+            if (_pushedSessions is not null && _registry.IsStateReporting(d.DirectorId)) continue;
             if (!sweepAll && _registry.IsStateReporting(d.DirectorId)) continue; // it pushes
             if (!_registry.ShouldProbe(d.DirectorId)) continue;                  // circuit open
             var ep = d.ControlEndpoint;
@@ -145,7 +174,7 @@ public sealed class TurnEndWatcher : IDisposable
             }
             _registry.RecordReachable(d.DirectorId);
             foreach (var s in sessions)
-                Observe(s.SessionId, s.ActivityState, ep);
+                Observe(s.SessionId, s.ActivityState, d.DirectorId);
         }
     }
 
