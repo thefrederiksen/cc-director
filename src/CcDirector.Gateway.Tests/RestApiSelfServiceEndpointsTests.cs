@@ -20,11 +20,14 @@ namespace CcDirector.Gateway.Tests;
 /// Runs a real ControlApiHost on an ephemeral port with CC_DIRECTOR_ROOT + CC_VAULT_PATH redirected to a temp
 /// dir. In the "DirectorRoot" collection (serializes root-touching tests).
 ///
-/// DELETED at the cut (no surviving surface - see the report/escalation): the self-service WRITE + overview
-/// operations POST /repos (repo-add), PATCH /repos (repo-rename), POST /handovers (handover-create),
-/// DELETE /handovers (handover-delete), and GET /repos/overview (repos-overview). Post-cut there is no
-/// Director REST route, no tunnel verb (none of the executors declare these verbs), no Gateway route, and no
-/// client caller for any of them, so the tests that exercised them are removed as deleted machinery.
+/// CUT RESTORATION (SB-4a): the self-service WRITE + overview operations were briefly over-deleted, then
+/// restored as tunnel verbs (Architect ruling). Their cores now live in the executors - repo-add / repo-rename /
+/// handover-create / handover-delete in <see cref="SessionWriteExecutor"/> and repos-overview in
+/// <see cref="CatalogReadExecutor"/> - reached over the tunnel via /directors/{id}/repos|repos/overview|handovers.
+/// The Gateway ROUTE wiring + faithful status mapping (201/200/400/404/502) is proven in
+/// <c>TunnelReposHandoverMgmtProofTests</c>; here the real core LOGIC (directory-existence, registry mutation,
+/// added-flag, handover write/delete, overview aggregation) is asserted directly against a seeded
+/// CC_DIRECTOR_ROOT / CC_VAULT_PATH - the same logic the old REST lambdas ran, now over the surviving cores.
 /// </summary>
 [Collection("DirectorRoot")]
 public sealed class RestApiSelfServiceEndpointsTests : IAsyncLifetime
@@ -148,9 +151,163 @@ public sealed class RestApiSelfServiceEndpointsTests : IAsyncLifetime
         Assert.Empty(forB);
     }
 
+    // ===== repo-add verb core (POST /repos) =====
+
+    [Fact]
+    public void RepoAdd_newRepo_added_true_andReturnsTheEntry()
+    {
+        var result = SessionWriteExecutor.RepoAdd(Command("repo-add", new RepoAddRequest { Path = _repoB, Name = "Repo B" }), _registry);
+        var body = ReadOne<RepoAddResponse>(result);
+        Assert.True(body.Added);
+        Assert.NotNull(body.Repo);
+        Assert.Equal("Repo B", body.Repo!.Name);
+        Assert.Contains(_registry.Repositories, r => string.Equals(r.Path, _repoB, StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public void RepoAdd_alreadyPresent_added_false()
+    {
+        // _repoA was added in InitializeAsync.
+        var result = SessionWriteExecutor.RepoAdd(Command("repo-add", new RepoAddRequest { Path = _repoA }), _registry);
+        var body = ReadOne<RepoAddResponse>(result);
+        Assert.False(body.Added);
+    }
+
+    [Fact]
+    public void RepoAdd_directoryDoesNotExist_isBadRequest()
+    {
+        var result = SessionWriteExecutor.RepoAdd(Command("repo-add", new RepoAddRequest { Path = Path.Combine(_root, "does-not-exist") }), _registry);
+        Assert.Equal(DirectorCommandStatus.BadRequest, result.Status);
+    }
+
+    [Fact]
+    public void RepoAdd_blankPath_isBadRequest()
+    {
+        var result = SessionWriteExecutor.RepoAdd(Command("repo-add", new RepoAddRequest { Path = "" }), _registry);
+        Assert.Equal(DirectorCommandStatus.BadRequest, result.Status);
+    }
+
+    // ===== repo-rename verb core (PATCH /repos) =====
+
+    [Fact]
+    public void RepoRename_registeredRepo_renamesAndReturnsTheEntry()
+    {
+        var result = SessionWriteExecutor.RepoRename(Command("repo-rename", new RepoRenameRequest { Path = _repoA, Name = "Renamed A" }), _registry);
+        var body = ReadOne<RepositoryDto>(result);
+        Assert.Equal("Renamed A", body.Name);
+    }
+
+    [Fact]
+    public void RepoRename_unregisteredPath_isNotFound()
+    {
+        var result = SessionWriteExecutor.RepoRename(Command("repo-rename", new RepoRenameRequest { Path = _repoB, Name = "x" }), _registry);
+        Assert.Equal(DirectorCommandStatus.NotFound, result.Status);
+    }
+
+    [Fact]
+    public void RepoRename_blankName_isBadRequest()
+    {
+        var result = SessionWriteExecutor.RepoRename(Command("repo-rename", new RepoRenameRequest { Path = _repoA, Name = "" }), _registry);
+        Assert.Equal(DirectorCommandStatus.BadRequest, result.Status);
+    }
+
+    // ===== repos-overview verb core (GET /repos/overview) =====
+
+    [Fact]
+    public void ReposOverview_aggregatesHandoverAndHistoryForTheRepo()
+    {
+        var result = CatalogReadExecutor.ReposOverview(_sm, _registry);
+        var overview = ReadList<RepoOverviewDto>(result);
+        var a = Assert.Single(overview, o => string.Equals(o.Path, _repoA, StringComparison.OrdinalIgnoreCase));
+        Assert.Equal(1, a.HandoverCount);           // one seeded handover references repoA
+        Assert.Equal(1, a.HistorySessionCount);      // one seeded workspace-history entry
+        Assert.True(a.PathExists);                    // the directory was created
+    }
+
+    // ===== handover-create verb core (POST /handovers) =====
+
+    [Fact]
+    public void HandoverCreate_writesTheDocument_andItAppearsInTheList()
+    {
+        var result = SessionWriteExecutor.HandoverCreate(Command("handover-create", new HandoverCreateRequest
+        {
+            Title = "Created In Test",
+            Content = "# created body",
+            RepoPaths = new List<string> { _repoA },
+        }));
+        // HandoverScanner derives the title from the filename slug (sentence-cased), so the round-tripped title
+        // is matched case-insensitively - exactly as the old REST route returned it from Parse.
+        var body = ReadOne<HandoverDto>(result);
+        Assert.Equal("Created In Test", body.Title, ignoreCase: true);
+
+        // It is now a real saved document the list read finds.
+        var listed = ReadHandovers(_repoA);
+        Assert.Contains(listed, h => string.Equals(h.Title, "Created In Test", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public void HandoverCreate_blankTitle_isBadRequest()
+    {
+        var result = SessionWriteExecutor.HandoverCreate(Command("handover-create", new HandoverCreateRequest { Title = "", Content = "x" }));
+        Assert.Equal(DirectorCommandStatus.BadRequest, result.Status);
+    }
+
+    [Fact]
+    public void HandoverCreate_blankContent_isBadRequest()
+    {
+        var result = SessionWriteExecutor.HandoverCreate(Command("handover-create", new HandoverCreateRequest { Title = "t", Content = "" }));
+        Assert.Equal(DirectorCommandStatus.BadRequest, result.Status);
+    }
+
+    // ===== handover-delete verb core (DELETE /handovers) =====
+
+    [Fact]
+    public void HandoverDelete_existingDocument_removesIt()
+    {
+        // Create one, then delete it by its real path.
+        var created = ReadOne<HandoverDto>(SessionWriteExecutor.HandoverCreate(Command("handover-create", new HandoverCreateRequest
+        {
+            Title = "To Delete",
+            Content = "# body",
+            RepoPaths = new List<string> { _repoA },
+        })));
+
+        var result = SessionWriteExecutor.HandoverDelete(Command("handover-delete", new RepoDeleteRequest { Path = created.Path }));
+        var body = ReadOne<HandoverDeleteResponse>(result);
+        Assert.True(body.Removed);
+        Assert.DoesNotContain(ReadHandovers(_repoA), h => h.Title == "To Delete");
+    }
+
+    [Fact]
+    public void HandoverDelete_missingFile_isNotFound()
+    {
+        var result = SessionWriteExecutor.HandoverDelete(Command("handover-delete",
+            new RepoDeleteRequest { Path = Path.Combine(CcStorage.VaultHandovers(), "20260101_0000_never-existed.md") }));
+        Assert.Equal(DirectorCommandStatus.NotFound, result.Status);
+    }
+
+    [Fact]
+    public void HandoverDelete_blankPath_isBadRequest()
+    {
+        var result = SessionWriteExecutor.HandoverDelete(Command("handover-delete", new RepoDeleteRequest { Path = "" }));
+        Assert.Equal(DirectorCommandStatus.BadRequest, result.Status);
+    }
+
     // ===== helpers =====
 
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
+
+    private static T ReadOne<T>(DirectorCommandResult result)
+    {
+        Assert.Equal(DirectorCommandStatus.Ok, result.Status);
+        return JsonSerializer.Deserialize<T>(result.BodyJson ?? "{}", Json)!;
+    }
+
+    private static List<T> ReadList<T>(DirectorCommandResult result)
+    {
+        Assert.Equal(DirectorCommandStatus.Ok, result.Status);
+        return JsonSerializer.Deserialize<List<T>>(result.BodyJson ?? "[]", Json) ?? new List<T>();
+    }
 
     private static DirectorCommand Command(string verb, object? payload) => new()
     {

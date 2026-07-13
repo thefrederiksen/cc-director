@@ -1408,6 +1408,52 @@ internal static class GatewayEndpoints
             return Results.StatusCode(StatusCodes.Status502BadGateway);
         });
 
+        // Gateway Cleanup CUT RESTORATION (SB-4a): register a repository explicitly in the recent list. Rides
+        // the repo-add verb (director-level). The Director core validates directory-existence and returns
+        // { added, repo }; added selects the old route's 201 (newly added) vs 200 (already present). A typed
+        // failure preserves 400; a null result (Director not tunnel-connected) is 502.
+        app.MapPost("/directors/{id}/repos", async (string id, RepoAddRequest req, CancellationToken ct) =>
+        {
+            var d = registry.Get(id);
+            if (d is null) return Results.NotFound(new { error = "director not found" });
+            if (req is null || string.IsNullOrWhiteSpace(req.Path)) return Results.BadRequest(new { error = "path is required" });
+
+            var sr = await DirectorCommandRouter.TrySendAsync(sendCommand, id, "repo-add", "", req, ct);
+            if (sr is null || !sr.Ok) return MapDirectorFailure(sr);
+            var body = DirectorCommandRouter.ReadBody<RepoAddResponse>(sr);
+            if (body is null) return Results.StatusCode(StatusCodes.Status502BadGateway);
+            return Results.Json(body, statusCode: body.Added ? StatusCodes.Status201Created : StatusCodes.Status200OK);
+        });
+
+        // Gateway Cleanup CUT RESTORATION (SB-4a): rename a registered repository (path is the identity). Rides
+        // the repo-rename verb (director-level). A path not in the registry is the executor's NotFound -> 404;
+        // a null result (Director not tunnel-connected) is 502.
+        app.MapPatch("/directors/{id}/repos", async (string id, RepoRenameRequest req, CancellationToken ct) =>
+        {
+            var d = registry.Get(id);
+            if (d is null) return Results.NotFound(new { error = "director not found" });
+            if (req is null || string.IsNullOrWhiteSpace(req.Path)) return Results.BadRequest(new { error = "path is required" });
+            if (string.IsNullOrWhiteSpace(req.Name)) return Results.BadRequest(new { error = "name is required" });
+
+            var sr = await DirectorCommandRouter.TrySendAsync(sendCommand, id, "repo-rename", "", req, ct);
+            if (sr is null || !sr.Ok) return MapDirectorFailure(sr);
+            var body = DirectorCommandRouter.ReadBody<RepositoryDto>(sr);
+            if (body is null) return Results.StatusCode(StatusCodes.Status502BadGateway);
+            return Results.Json(body);
+        });
+
+        // Gateway Cleanup CUT RESTORATION (SB-4a): the enriched per-repo overview the Repositories page reads.
+        // Rides the repos-overview verb (director-level). A null result (Director not tunnel-connected) is 502.
+        app.MapGet("/directors/{id}/repos/overview", async (string id, CancellationToken ct) =>
+        {
+            var d = registry.Get(id);
+            if (d is null) return Results.NotFound(new { error = "director not found" });
+
+            var sr = await DirectorCommandRouter.TrySendAsync(sendCommand, id, "repos-overview", "", null, ct);
+            if (sr is null || !sr.Ok) return MapDirectorFailure(sr);
+            return Results.Json(DirectorCommandRouter.ReadBody<List<RepoOverviewDto>>(sr) ?? new List<RepoOverviewDto>());
+        });
+
         app.MapGet("/directors/{id}/coaching/categories", async (string id, CancellationToken ct) =>
         {
             var d = registry.Get(id);
@@ -1480,6 +1526,38 @@ internal static class GatewayEndpoints
 
             // Post-cut: tunnel-only. A null result (Director not connected) collapses to 502.
             return Results.StatusCode(StatusCodes.Status502BadGateway);
+        });
+
+        // Gateway Cleanup CUT RESTORATION (SB-4a): create a standalone saved-handover document. Rides the
+        // handover-create verb (director-level). Success is the old route's 201; a typed failure preserves 400;
+        // a null result (Director not tunnel-connected) is 502.
+        app.MapPost("/directors/{id}/handovers", async (string id, HandoverCreateRequest req, CancellationToken ct) =>
+        {
+            var d = registry.Get(id);
+            if (d is null) return Results.NotFound(new { error = "director not found" });
+            if (req is null || string.IsNullOrWhiteSpace(req.Title)) return Results.BadRequest(new { error = "title is required" });
+            if (string.IsNullOrWhiteSpace(req.Content)) return Results.BadRequest(new { error = "content is required" });
+
+            var sr = await DirectorCommandRouter.TrySendAsync(sendCommand, id, "handover-create", "", req, ct);
+            if (sr is null || !sr.Ok) return MapDirectorFailure(sr);
+            var body = DirectorCommandRouter.ReadBody<HandoverDto>(sr);
+            if (body is null) return Results.StatusCode(StatusCodes.Status502BadGateway);
+            return Results.Json(body, statusCode: StatusCodes.Status201Created);
+        });
+
+        // Gateway Cleanup CUT RESTORATION (SB-4a): delete a saved-handover document. Rides the handover-delete
+        // verb (director-level; the ?path query rides in the payload). A path outside the handover folder is the
+        // executor's BadRequest -> 400; a missing file its NotFound -> 404; a null result (Director not
+        // tunnel-connected) is 502.
+        app.MapDelete("/directors/{id}/handovers", async (string id, string? path, CancellationToken ct) =>
+        {
+            var d = registry.Get(id);
+            if (d is null) return Results.NotFound(new { error = "director not found" });
+            if (string.IsNullOrWhiteSpace(path)) return Results.BadRequest(new { error = "path is required" });
+
+            var sr = await DirectorCommandRouter.TrySendAsync(sendCommand, id, "handover-delete", "", new RepoDeleteRequest { Path = path }, ct);
+            if (sr is null || !sr.Ok) return MapDirectorFailure(sr);
+            return Results.Content(sr.BodyJson ?? "{\"removed\":true}", "application/json");
         });
 
         app.MapGet("/directors/{id}/fs/list", async (string id, string? path, CancellationToken ct) =>
@@ -2182,6 +2260,22 @@ internal static class GatewayEndpoints
                 s.NeedsYouSince = needsYouStampFor(s.SessionId, isRed);
             }
         }
+    }
+
+    // Gateway Cleanup CUT RESTORATION (SB-4a): map a tunnel command's null-or-failed result to the faithful
+    // HTTP status the old REST route returned. A null result (Director not tunnel-connected) is 502; a typed
+    // failure preserves the executor's BadRequest/NotFound as 400/404 so the repos/handover-management contract
+    // - which the consumers and the re-added tests assert - is byte-identical to the pre-cut REST surface. Any
+    // other status collapses to 502. Callers use this only on the not-Ok path (sr is null OR !sr.Ok).
+    private static IResult MapDirectorFailure(DirectorCommandResult? sr)
+    {
+        if (sr is null) return Results.StatusCode(StatusCodes.Status502BadGateway);
+        return sr.Status switch
+        {
+            DirectorCommandStatus.BadRequest => Results.BadRequest(new { error = sr.Error ?? "bad request" }),
+            DirectorCommandStatus.NotFound => Results.NotFound(new { error = sr.Error ?? "not found" }),
+            _ => Results.StatusCode(StatusCodes.Status502BadGateway),
+        };
     }
 
     // Locate the Director that owns a session. Every session endpoint calls this first,
