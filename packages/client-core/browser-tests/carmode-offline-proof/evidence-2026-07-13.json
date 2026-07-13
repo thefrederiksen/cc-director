@@ -1,0 +1,38 @@
+{
+  "generatedAtUtc": "2026-07-13T09:28:29.001Z",
+  "scenario": "offline mid-turn -> reconnect",
+  "steps": {
+    "claim1_noSpeechLost": {
+      "pass": true,
+      "heldRecordCount": 1,
+      "audioBytes": 18658,
+      "audioType": "audio/webm;codecs=opus",
+      "brainSent": false,
+      "holdMessage": "I can't reach the fleet right now. I've saved your request and I'll send it the moment we're back online.",
+      "phaseAfterHold": "listening",
+      "note": "The command audio is durably saved BEFORE transcribe, so the failed transcribe did not lose it."
+    },
+    "claim2_autoCompleteOnReconnect": {
+      "pass": true,
+      "storeCountAfter": 0,
+      "reply": "Two sessions need you: Local Files Manager and Snooze Length Manager.",
+      "note": "On the online event the held turn re-drove through transcribe -> brain -> speak; the record was deleted only after the brain owned the turn."
+    },
+    "claim3_statesAnnounced": {
+      "pass": true,
+      "spokenLocalLines": [
+        "I can't reach the fleet right now. I've saved your request and I'll send it the moment we're back online.",
+        "I'm not able to reach the fleet - the connection looks down. I'll keep trying, and your recording is saved."
+      ],
+      "connectionDownAnnounced": true,
+      "recoverySpokenThroughGoodVoice": true,
+      "ttsTexts": [
+        "Back online. Two sessions need you: Local Files Manager and Snooze Length Manager."
+      ],
+      "note": "Holding + connection-down were spoken locally; the recovered reply went to the good voice with the 'Back online' prefix."
+    }
+  },
+  "verdict": "PASS",
+  "covers": "Real Chromium: the shipping useCarMode turn machine, real MediaRecorder capture (fake audio device), the real WebM->WAV transcode, the real durable IndexedDB store, the real classify/cadence policy, and the real re-drive driver.",
+  "doesNotCover": "NOT the real phone: no real microphone, no mobile audio-session behaviour (ducking/autoplay), no real radio offline, and the Gateway (transcribe/brain/tts) is a controllable in-page shim, not the live server. The real-phone offline-mid-turn pass and Soren's by-hand pass remain the on-device confirmation."
+}
