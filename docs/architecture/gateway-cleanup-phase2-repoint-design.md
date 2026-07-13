@@ -203,3 +203,75 @@ fallback on a null return, byte-identical when streamMode is off). The Director 
   TunnelExplicitRouteProofTests: a 50 KB image uploaded over the tunnel in 3 chunks reassembles byte-for-byte and
   is written to disk. If the Architect prefers the literal 48 KB-binary/52 KB-limit mechanism, it is a small
   follow-up (add a byte[] payload field to DirectorCommand + set the client limit) - flagged for his call.
+
+## PR D + the DirectorEndpointClient completeness sweep - 2026-07-13 (Manager a6a3406c)
+
+Architect ruling this session (session 51f1898e): the completeness gate for the destructive cut is that EVERY
+Gateway call site that HTTP-dials the Director is re-pointed onto the tunnel in Phase 2 (additive, streamMode)
+BEFORE the cut, and that a grep confirms `DirectorEndpointClient` has ZERO callers left at the cut (only its own
+definition remains). That zero-callers state is the operational definition of "the tunnel carries everything" and
+makes the Phase 3 `DirectorEndpointClient` deletion a clean no-caller removal. Both PR-D escalations were
+approved: wingman-voice + voice-turn are Phase-2 re-points (NOT deferred to Phase 3), and the three
+director-level mutations fold into PR D.
+
+### PR D (MERGED autonomously under Option A): the `/directors/{id}/*` surface onto the tunnel
+
+Re-pointed in `GatewayEndpoints.cs`, each mirroring the create-verb pattern (`DirectorCommandRouter.TrySendAsync`
+first; a null return falls back to the byte-identical HTTP dial; a non-Ok stream result collapses to the same 502
+the HTTP null produced). All director-level, so `SessionId` is "". The Director-side verbs already existed
+(CatalogReadExecutor from Phase 0 waves 2-4a; SessionWriteExecutor for the mutations from Wave 4a), and the verb
+response DTOs match the `DirectorEndpointClient` return types exactly, so this is a pure Gateway re-point:
+
+- Reads: `repos-list`, `facts`, `coaching-categories`, `claude-sessions`, `fs-list` (path in payload),
+  `handovers-list`, `handovers-content` (path in payload), and `interrupted-list` (BOTH call sites: the
+  `GET /interrupted` fan-out across every Director, and the restore-flow journal re-read).
+- Mutations: `repo-delete` (path in payload), `interrupted-dismiss` and `interrupted-remove` (journal key /
+  session key in payload) - each on the reporting Director (`via`).
+
+Proof: `TunnelDirectorReadProofTests.cs` - a REAL streamMode `GatewayHost` + REAL DirectorHub + REAL MessagePack
+SignalR client, the Director registered UNREACHABLE so a 200 with the expected body can ONLY have ridden the
+tunnel; each test also asserts the exact verb and payload marshaling. 11/11 green; full Gateway suite green.
+
+### The full remaining DirectorEndpointClient caller sweep (the PR-E+ map)
+
+Grep of every `DirectorEndpointClient`-typed caller (the Account/Push `_client`s - RegisterAsync / HeartbeatAsync
+/ ListDevicesAsync / RequestPushMessageDeliveryAsync - are a DIFFERENT client type and are OUT of scope).
+Classified:
+
+- GROUP A - director-level `/directors/*` (DONE, PR D above). No callers remain on these routes except the HTTP
+  fallback branch (removed when the tunnel is made mandatory at the cut).
+- GROUP B - Director-backed session-verb dials still bypassing the tunnel (PR E, Phase-2 re-point). Each already
+  has a tunnel verb (turns / prompt / buffer / snapshot / create); they just call `DirectorEndpointClient`
+  directly instead of `TrySendAsync`:
+  - `GatewayWingmanVoiceEndpoint.cs` - GetTurns / PostPrompt / GetBuffer / GetSession (wingman-voice).
+  - `GatewayVoiceTurnEndpoint.cs` - GetSession (+ owner-locate) (voice-turn).
+  - `WingmanVoiceService.cs` - GetTurns.
+  - `GatewayDictationEndpoint.cs` - PostPrompt + GetSession (dictation delivers transcribed text as a prompt).
+  - `WingmanTrainingStore.cs` - GetBuffer.
+  - `MachineSessionSpawner.cs` / `DirectorImplSessionDriver.cs` - CreateSession + GetBuffer (cron/worklist spawn
+    and the seed-prompt impl driver).
+- GROUP C - roster / health PULLS for which there is NO pull verb today (the roster is a PUSH store). Needs an
+  Architect ruling (see the open question below):
+  - `ExesEndpoints.cs` - ListSessionsWithStatusAsync (per-Director session+status list).
+  - `Briefing/TurnEndWatcher.cs` - ListSessionsWithStatusAsync (turn-end detection poll).
+  - `GatewayHost.cs` - the roster fan-out (ListSessions / ListSessionsWithStatus) + GetHealthDetailedAsync.
+- GROUP D - dialing machinery DELETED in Phase 3 (NOT re-pointed): `AdvertisedEndpointMonitor` (whole class);
+  `SessionWsProxyEndpoints` SessionWsForwarder + the `/sessions/{sid}/{**rest}` catch-all + LocateOwningDirector
+  (the browser stream/file/screenshot legs already tunnel-branched in PR A); the verify / verify-ws callbacks;
+  ControlEndpoint advertisement reads (DeriveDirectorBaseUrl).
+
+OPEN QUESTION for the Architect (Group C): the roster is served from the PUSH store under streamMode for
+`GET /sessions`, but ExesEndpoints, TurnEndWatcher, and the GatewayHost fan-out each do their OWN
+`ListSessionsWithStatusAsync` pull. To reach zero `DirectorEndpointClient` callers, do these read the push store
+(`PushedSessions`) instead of pulling, or is a `list-sessions` pull verb wanted? And `GetHealthDetailedAsync` -
+is the tunnel connection liveness itself the health signal (so the caller is dropped as machinery), or is a
+health verb kept? Manager recommendation: push-store reads for the roster pulls (no new pull verb - the roster is
+authoritative in the push store under streamMode), and drop `GetHealthDetailedAsync` in favour of tunnel
+connectedness (Group D). Awaiting the ruling before PR E's Group-C leg.
+
+On the zero-callers timing: Groups A/B/C keep an HTTP fallback branch during streamMode coexistence, so the
+literal "zero DirectorEndpointClient callers" grep passes only when those fallback branches are removed (tunnel
+made mandatory) together with the Group-D deletions - i.e. AT the cut, not before it. Before the whole-surface
+proof, the guarantee is that every caller HAS a tunnel branch (Groups A/B/C re-pointed, Group D confirmed
+machinery); the zero-callers grep is the definition-of-done verified at the Phase 3 deletion. (Flagged to the
+Architect to confirm this reading of "re-point in Phase 2, then verify zero callers".)
