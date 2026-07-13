@@ -82,3 +82,55 @@ public sealed class UploadImageResponse
     /// <summary>The saved file name (an "upload-yyyyMMdd-HHmmss-fff" stamp plus the uploaded extension).</summary>
     public string FileName { get; set; } = "";
 }
+
+/// <summary>
+/// Gateway Cleanup mission, Phase 2 (PR upload-image): an image is uploaded DOWN the tunnel in bounded
+/// chunks across three unary commands - begin / chunk (repeated) / complete - reassembled on the Director by
+/// <see cref="UploadId"/>. This honours the Architect's ruling 2 (no single message monopolizes the shared
+/// tunnel): a whole photo would be a multi-hundred-KB unary message, so it is split into pieces each smaller
+/// than the SignalR receive limit. This is the BEGIN command: it opens a reassembly buffer for a fresh
+/// <see cref="UploadId"/> and carries the file name (for the saved extension). No bytes yet.
+/// </summary>
+public sealed class UploadImageBeginRequest
+{
+    /// <summary>A fresh Guid the Gateway mints for this upload; every chunk and the complete carry it.</summary>
+    public string UploadId { get; set; } = "";
+
+    /// <summary>The original file name (only its extension is used to pick the saved file's extension).</summary>
+    public string FileName { get; set; } = "";
+
+    /// <summary>The total raw byte length of the image, so the Director can reject a mismatch on complete.</summary>
+    public long TotalBytes { get; set; }
+}
+
+/// <summary>
+/// Gateway Cleanup mission, Phase 2 (PR upload-image): one CHUNK of an in-flight upload. The raw bytes are
+/// base64-encoded (so they survive the JSON payload envelope) and kept small - see
+/// <see cref="DirectorStreamLimits.UploadChunkRawBytes"/> - so the framed command stays well under the
+/// SignalR receive limit and never monopolizes the tunnel. Chunks are sent in order; <see cref="Seq"/> is
+/// zero-based and the Director rejects an out-of-order chunk (the Gateway awaits each chunk's reply before
+/// sending the next, so in-order delivery is guaranteed on the happy path).
+/// </summary>
+public sealed class UploadImageChunkRequest
+{
+    /// <summary>The upload this chunk belongs to (matches the begin's UploadId).</summary>
+    public string UploadId { get; set; } = "";
+
+    /// <summary>The zero-based chunk index; must equal the number of chunks already appended.</summary>
+    public int Seq { get; set; }
+
+    /// <summary>This chunk's raw image bytes, base64-encoded.</summary>
+    public string BytesBase64 { get; set; } = "";
+}
+
+/// <summary>
+/// Gateway Cleanup mission, Phase 2 (PR upload-image): the COMPLETE command - all chunks are in, so the
+/// Director assembles them, validates the extension and total length, writes the file into the screenshots
+/// folder (the SAME save as the single-shot path), and returns the saved <see cref="UploadImageResponse"/>.
+/// It also releases the reassembly buffer. Completing an unknown/expired upload is a fail-loud BadRequest.
+/// </summary>
+public sealed class UploadImageCompleteRequest
+{
+    /// <summary>The upload to finalize (matches the begin's UploadId).</summary>
+    public string UploadId { get; set; } = "";
+}

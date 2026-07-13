@@ -1393,8 +1393,45 @@ internal static class GatewayEndpoints
 
             FileLog.Write($"[GatewayEndpoints] POST upload-image: sid={sid}, director={director.DirectorId}, bytes={ms.Length}");
 
+            var bytes = ms.ToArray();
+
+            // Gateway Cleanup (Phase 2): upload the image DOWN the tunnel in bounded chunks - begin, then a
+            // chunk per UploadChunkRawBytes, then complete - so a whole photo never rides as one large unary
+            // message that would monopolize the shared tunnel (Architect ruling 2). A null begin means no
+            // stream (mode off / Director not stream-connected), so fall through to the HTTP dial below. A
+            // non-null-but-failed step is authoritative and collapses to 502 (a retryable upload failure).
+            var uploadId = Guid.NewGuid().ToString("N");
+            var begin = await DirectorCommandRouter.TrySendAsync(sendCommand, director.DirectorId, "upload-image-begin", sid,
+                new UploadImageBeginRequest { UploadId = uploadId, FileName = file.FileName, TotalBytes = bytes.Length }, ctx.RequestAborted);
+            if (begin is not null)
+            {
+                if (!begin.Ok)
+                    return Results.Json(new { error = DirectorCommandRouter.DescribeFailure(begin) }, statusCode: StatusCodes.Status502BadGateway);
+
+                for (var off = 0; off < bytes.Length; off += DirectorStreamLimits.UploadChunkRawBytes)
+                {
+                    var len = Math.Min(DirectorStreamLimits.UploadChunkRawBytes, bytes.Length - off);
+                    var chunk = new UploadImageChunkRequest
+                    {
+                        UploadId = uploadId,
+                        Seq = off / DirectorStreamLimits.UploadChunkRawBytes,
+                        BytesBase64 = Convert.ToBase64String(bytes, off, len),
+                    };
+                    var cr = await DirectorCommandRouter.TrySendAsync(sendCommand, director.DirectorId, "upload-image-chunk", sid, chunk, ctx.RequestAborted);
+                    if (cr is null || !cr.Ok)
+                        return Results.Json(new { error = cr is null ? "tunnel dropped mid-upload" : DirectorCommandRouter.DescribeFailure(cr) }, statusCode: StatusCodes.Status502BadGateway);
+                }
+
+                var done = await DirectorCommandRouter.TrySendAsync(sendCommand, director.DirectorId, "upload-image-complete", sid,
+                    new UploadImageCompleteRequest { UploadId = uploadId }, ctx.RequestAborted);
+                if (done is null || !done.Ok || string.IsNullOrEmpty(done.BodyJson))
+                    return Results.Json(new { error = done is null ? "tunnel dropped mid-upload" : DirectorCommandRouter.DescribeFailure(done) }, statusCode: StatusCodes.Status502BadGateway);
+
+                return Results.Content(done.BodyJson, "application/json"); // { path, fileName } - byte-identical to the HTTP body
+            }
+
             var (ok, path, fileName, err) = await client.UploadImageAsync(
-                director.ControlEndpoint, sid, ms.ToArray(), file.FileName, file.ContentType, ctx.RequestAborted);
+                director.ControlEndpoint, sid, bytes, file.FileName, file.ContentType, ctx.RequestAborted);
             if (!ok)
                 return Results.Json(new { error = err }, statusCode: StatusCodes.Status502BadGateway);
 

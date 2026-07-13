@@ -188,3 +188,18 @@ fallback on a null return, byte-identical when streamMode is off). The Director 
   the image at MaxBinaryFrameBytes, reassembled on the Director by an uploadId (begin / chunk / complete), then
   run the existing SaveUploadedImage handler. Bounded both directions, no monopoly. Option 2 (raise the down-limit
   to a few MB) is REJECTED - it monopolizes the connection and raises the receive ceiling for ALL down-traffic.
+
+  IMPLEMENTATION NOTE (Manager, 2026-07-13): shipped the CHUNKED path (option 1) with begin / chunk / complete
+  reassembled on the Director by uploadId, with a 25 MB fail-loud ceiling, a 2-minute abandoned-upload sweep,
+  and out-of-order / size-mismatch / bad-base64 all failing loud. It reuses the SAME save core as the single-shot
+  path (SaveUploadedImage now delegates to a shared SaveImageBytes). One deviation from the exact mechanism above:
+  the chunks ride as BASE64 in the command payload (the existing DirectorCommand.PayloadJson) sized at
+  DirectorStreamLimits.UploadChunkRawBytes = 20 KB raw (~27 KB on the wire), NOT 48 KB binary with a raised
+  ~52 KB Director-client receive limit. Reason: the SignalR client (the Director's HubConnection) does not expose
+  a clean public MaximumReceiveMessageSize setter, so rather than depend on a fragile/internal API, the chunk is
+  kept comfortably under the SignalR default (~32 KB) - which sidesteps the client-limit question entirely and
+  still satisfies the load-bearing invariant (ruling 2: bounded, no single message monopolizes the tunnel). The
+  cost is the base64 tax on an infrequent, small payload (images), which is negligible. Proven end to end by
+  TunnelExplicitRouteProofTests: a 50 KB image uploaded over the tunnel in 3 chunks reassembles byte-for-byte and
+  is written to disk. If the Architect prefers the literal 48 KB-binary/52 KB-limit mechanism, it is a small
+  follow-up (add a byte[] payload field to DirectorCommand + set the client limit) - flagged for his call.

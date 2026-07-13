@@ -90,6 +90,17 @@ public static class DirectorStreamLimits
     /// MaximumReceiveMessageSize = MaxBinaryFrameBytes + this.
     /// </summary>
     public const int FrameEnvelopeAllowanceBytes = 4 * 1024;
+
+    /// <summary>
+    /// Gateway Cleanup mission, Phase 2 (upload-image): the RAW byte size of one DOWN-stream image chunk. An
+    /// image uploaded to the Gateway is split into pieces this large and sent to the Director across unary
+    /// commands (begin / chunk / complete), so a whole photo never rides as one large unary message that would
+    /// monopolize the shared tunnel (Architect ruling 2). Deliberately small: each chunk is base64-encoded in
+    /// the command payload (+33%), so 20 KB raw is ~27 KB on the wire - comfortably under the SignalR default
+    /// receive limit even with the command envelope, whatever a client's limit is. Images are small and
+    /// infrequent, so the extra chunks are free; the invariant that matters is bounded, no-monopoly framing.
+    /// </summary>
+    public const int UploadChunkRawBytes = 20 * 1024;
 }
 
 /// <summary>
