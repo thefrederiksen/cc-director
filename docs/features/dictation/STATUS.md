@@ -1,5 +1,16 @@
 # Dictation Library: STATUS
 
+> **HISTORICAL DOCUMENT - the language-model cleanup described below was REMOVED.**
+> This file describes designs that shipped in May 2026 and were later replaced. In
+> particular, the "Cleanup model switch" section below (a `gpt-4o-mini` chat-completions
+> pass over the transcript) and the earlier Claude Haiku cleanup NO LONGER EXIST: the
+> only post-transcription transform today is the deterministic dictionary corrector
+> (`src/CcDirector.Core/Dictation/CleanupOrchestrator.cs` - exact mistranscription map
+> plus fuzzy dictionary matching, no model, no network). No prompt or vocabulary text is
+> sent to the transcription model either. Do not reintroduce a language-model rewrite of
+> the user's words; see `docs/architecture/transcription-quality-loop.md` for the current
+> design. The dictionary-resolution section (#253) below is still accurate.
+
 Last updated: 2026-05-21 (Speak button shipped in both desktop and browser; in-process NAudio capture on desktop; auto-insert on both surfaces). Only remaining work is global-hotkey/SendInput-into-foreign-windows (the original Phase 2) and Mac (Phase 5); both hardware-bound.
 
 ## Gateway is the single source of truth for the dictionary (#253, 2026-06-09)

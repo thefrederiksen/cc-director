@@ -11,17 +11,17 @@ public sealed class TerminalPromptInjectionChokepointTests
         var root = RepoRoot();
         var main = File.ReadAllText(Path.Combine(root, "src", "CcDirector.Avalonia", "MainWindow.axaml.cs"));
         var fifo = File.ReadAllText(Path.Combine(root, "src", "CcDirector.Avalonia", "FifoWindow.axaml.cs"));
-        var voiceMode = File.ReadAllText(Path.Combine(root, "src", "CcDirector.Core", "Voice", "Controllers", "VoiceModeController.cs"));
 
         // DevThrottle Stats threaded an InputOrigin through the desktop choke-point calls: the composer is
-        // typed-desktop, the background dictation submit and the FIFO/voice-mode injections are voice-desktop.
+        // typed-desktop, the background dictation submit and the FIFO injections are voice-desktop.
         // The chokepoint (SendTextAsync only, no Enter-retry, no raw SendInput) is unchanged - the calls still
-        // funnel here; they now also carry the honest origin tag.
+        // funnel here; they now also carry the honest origin tag. (The VoiceModeController this audit used
+        // to read was deleted: it was orphaned code no shipping app instantiated, and it pushed the
+        // transcript through a language-model summarize step the product removed everywhere else.)
         Assert.Contains("await _activeSession.Session.SendTextAsync(text, origin: InputOrigin.DesktopTyped);", main);
         Assert.Contains("await target.SendTextAsync(text, origin: InputOrigin.DesktopVoice);", main);
         Assert.Contains("await _activeSession.Session.SendTextAsync(\"/handover\", SendSource.Internal);", main);
         Assert.Contains("await _current.SendTextAsync(transcript, SendSource.Internal, InputOrigin.DesktopVoice);", fifo);
-        Assert.Contains("await _activeSession.SendTextAsync(transcription, SendSource.Internal, InputOrigin.DesktopVoice);", voiceMode);
 
         Assert.DoesNotContain("ScheduleEnterRetry", main);
         Assert.DoesNotContain("RetryEnterAfterDelay", main);
