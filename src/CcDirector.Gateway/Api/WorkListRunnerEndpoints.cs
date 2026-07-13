@@ -33,7 +33,8 @@ internal static class WorkListRunnerEndpoints
         WorkListStore store,
         DirectorRegistry registry,
         DirectorEndpointClient client,
-        WorkListRunnerManager manager)
+        WorkListRunnerManager manager,
+        DirectorCommandRouter.SendDirectorCommandAsync? sendCommand)
     {
         app.MapPost("/lists/{name}/run", async (string name, HttpContext ctx) =>
         {
@@ -82,7 +83,7 @@ internal static class WorkListRunnerEndpoints
                     ? $"runner:{machineKey}:{Guid.NewGuid():N}"
                     : body.ListConsumer;
 
-                var driver = new DirectorImplSessionDriver(client, director.ControlEndpoint, body.RepoPath);
+                var driver = new DirectorImplSessionDriver(client, director.DirectorId, director.ControlEndpoint, body.RepoPath, sendCommand);
                 var runner = new WorkListRunner(store, driver);
 
                 var result = await runner.DrainAsync(name, consumer, ctx.RequestAborted);

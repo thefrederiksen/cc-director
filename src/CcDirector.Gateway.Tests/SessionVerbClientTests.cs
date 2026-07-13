@@ -101,6 +101,42 @@ public sealed class SessionVerbClientTests
     }
 
     [Fact]
+    public async Task CreateSession_ridesTheCreateVerb_directorLevel_andMapsSessionDto()
+    {
+        // Gateway Cleanup Phase 2 (PR E-B2): the director-level create - no target session id (the command
+        // carries an EMPTY SessionId exactly like the /directors reads), the NewSessionRequest as payload,
+        // and the SessionDto mapped back.
+        var hub = new RecordingHub
+        {
+            Next = DirectorCommandResult.Success(JsonSerializer.Serialize(new SessionDto { SessionId = "sid-new" }, Web)),
+        };
+
+        var (ok, body, error) = await Client(hub).CreateSessionAsync(
+            new NewSessionRequest { RepoPath = @"C:\repo", Agent = "ClaudeCode", PrePrompt = "seed" });
+
+        Assert.True(ok);
+        Assert.Null(error);
+        Assert.Equal("sid-new", body?.SessionId);
+        Assert.Equal("create", hub.Last!.Verb);
+        Assert.Equal("", hub.Last.SessionId);   // director-level: no target session
+        var sent = JsonSerializer.Deserialize<NewSessionRequest>(hub.Last.PayloadJson, Web);
+        Assert.Equal(@"C:\repo", sent?.RepoPath);
+        Assert.Equal("seed", sent?.PrePrompt);
+    }
+
+    [Fact]
+    public async Task CreateSession_failedTunnelResult_mapsToFalseTuple()
+    {
+        var hub = new RecordingHub { Next = DirectorCommandResult.Fail(DirectorCommandStatus.Conflict, "boom") };
+
+        var (ok, body, error) = await Client(hub).CreateSessionAsync(new NewSessionRequest { RepoPath = @"C:\repo" });
+
+        Assert.False(ok);
+        Assert.Null(body);
+        Assert.Contains("Conflict", error);
+    }
+
+    [Fact]
     public async Task FailedTunnelResult_mapsToNull_andToFalseTuple()
     {
         // A NotFound from the Director is authoritative (the endpoint must not also HTTP-dial): a read maps

@@ -38,6 +38,25 @@ internal sealed class SessionVerbClient
     public DirectorDto Director => _director;
 
     /// <summary>
+    /// Gateway Cleanup mission, Phase 2 (PR E-B2): bind a tunnel-first caller to a Director known only by
+    /// its <paramref name="directorId"/> and HTTP-fallback <paramref name="endpoint"/> (a control base URL,
+    /// no trailing slash) - the shape the machine spawner and the work-list drain driver hold. These are
+    /// director-level callers (they create a session and read its buffer on a resolved MACHINE, not a
+    /// pre-located session), so there is no owning-session resolve to do; a minimal <see cref="DirectorDto"/>
+    /// carrying just the id and control endpoint is enough for both the tunnel (id) and the fallback
+    /// (endpoint). The <paramref name="sendCommand"/> hook is non-null only under stream mode, exactly like
+    /// every other tunnel caller.
+    /// </summary>
+    public static SessionVerbClient ForDirector(DirectorEndpointClient client, string directorId, string endpoint,
+        DirectorCommandRouter.SendDirectorCommandAsync? sendCommand)
+    {
+        if (string.IsNullOrWhiteSpace(endpoint))
+            throw new ArgumentException("director endpoint is required", nameof(endpoint));
+        var director = new DirectorDto { DirectorId = directorId ?? "", ControlEndpoint = endpoint.TrimEnd('/') };
+        return new SessionVerbClient(client, director, sendCommand);
+    }
+
+    /// <summary>
     /// Resolve the Director that owns <paramref name="sid"/> (push-store first, then the HTTP-pull fallback -
     /// the SAME resolution the session REST endpoints use via <see cref="GatewayEndpoints.LocateSessionAsync"/>)
     /// and bind it to a tunnel-first caller. Returns null when no Director owns the session. The
@@ -99,5 +118,24 @@ internal sealed class SessionVerbClient
                 ? (true, DirectorCommandRouter.ReadBody<PromptResponse>(result), null)
                 : (false, null, DirectorCommandRouter.DescribeFailure(result));
         return await _client.PostPromptAsync(Endpoint, sid, req, ct);
+    }
+
+    /// <summary>
+    /// Create a new session on this Director. Tunnel-first ("create" verb - director-level, so the command
+    /// carries an EMPTY session id exactly like the /directors surface reads do; the <see cref="NewSessionRequest"/>
+    /// is the payload -&gt; <see cref="SessionDto"/>). A failed tunnel result maps to the same (false, null, error)
+    /// tuple the HTTP dial produces; only a null result (no stream) falls through to the existing HTTP create.
+    /// The "create" verb is already registered on the Director (SessionWriteExecutor) and its tunnel dispatch
+    /// receives the same services (mission store included) as the REST create, so the two paths are byte-identical.
+    /// </summary>
+    public async Task<(bool ok, SessionDto? body, string? error)> CreateSessionAsync(
+        NewSessionRequest req, CancellationToken ct = default)
+    {
+        var result = await DirectorCommandRouter.TrySendAsync(_sendCommand, _director.DirectorId, "create", "", req, ct);
+        if (result is not null)
+            return result.Ok
+                ? (true, DirectorCommandRouter.ReadBody<SessionDto>(result), null)
+                : (false, null, DirectorCommandRouter.DescribeFailure(result));
+        return await _client.CreateSessionAsync(Endpoint, req, ct);
     }
 }
