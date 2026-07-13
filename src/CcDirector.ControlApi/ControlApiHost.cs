@@ -417,6 +417,18 @@ public sealed class ControlApiHost : IAsyncDisposable
         var signedInUserProvider = new Core.Account.SignedInUserProvider(Core.Configuration.GatewayConfig.Load);
 
         ControlEndpoints.Map(_app, _sessionManager, DirectorId, _version, _requestShutdownAsync, _authEnabled, _repositoryRegistry, _turnSummaryCache, gatewayUrl, _proactiveExplain, GatewayMonitor, resolveTailnetEndpoint, () => _gatewayClient, messageSteward, _missionStore, ct => signedInUserProvider.ResolveAsync(ct));
+
+        // Gateway Cleanup mission: the Director floor's tunnel-bounce. An operator/launcher can force
+        // this Director to re-establish its OUTBOUND tunnel without a full restart. Loopback floor route.
+        _app.MapPost("/reconnect", async (HttpContext ctx) =>
+        {
+            var caller = Core.Network.LoopbackPeerResolver.Describe(ctx.Connection.RemotePort, ctx.Connection.LocalPort);
+            FileLog.Write($"[ControlApiHost] POST reconnect requested caller={caller}");
+            if (_streamClient is null)
+                return Results.Json(new { accepted = false, reason = "tunnel not enabled" });
+            await _streamClient.ReconnectAsync();
+            return Results.Json(new { accepted = true });
+        });
         // Dictation glossary resolution mirrors the key resolver (#253): the Gateway's shared
         // dictionary when attached, the local cache when standalone. GatewayConfig.Load (not the
         // snapshot) is passed so the resolver re-reads config.json each dictation and self-heals
@@ -450,10 +462,6 @@ public sealed class ControlApiHost : IAsyncDisposable
         // GET /facts (issue #330): the tool inventory + launcher facts the Gateway pulls. Gateway Cleanup
         // Phase 0 (wave 3): routes through the shared CatalogReadExecutor.Facts core, so it needs the SessionManager.
         FactsEndpoint.Map(_app, _sessionManager, DirectorId, _version);
-        // POST /sessions/{id}/voice-turn (issue #351): server-side walkie-talkie turn
-        // (transcribe -> wait -> send -> poll -> summarize -> TTS -> SSE reply).
-        VoiceTurnEndpoint.Map(_app, _sessionManager);
-
         await _app.StartAsync();
 
         if (_useEphemeralPort || _fellBackToEphemeral)
