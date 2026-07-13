@@ -54,6 +54,15 @@ public static class DoorbellEvents
     /// the same per-Director event ring so the fleet's existing notification channel carries it.
     /// The accompanying state is the run's infra-status (started / not-started / catch-up / ...).</summary>
     public const string CronRunCompleted = "cron-run-completed";
+
+    /// <summary>A home device has been PERSISTENTLY relaying (drift) instead of a direct LAN path
+    /// (Network Diagnostics mission, P5). Originates in the Gateway's network monitor, rides the same
+    /// event ring as an ambient "your home network is slow" indicator. The accompanying state is the
+    /// drifted device name.</summary>
+    public const string NetworkDrift = "network-drift";
+
+    /// <summary>A previously-drifted home device is back on a direct LAN path (observed recovery).</summary>
+    public const string NetworkRecovered = "network-recovered";
 }
 
 /// <summary>

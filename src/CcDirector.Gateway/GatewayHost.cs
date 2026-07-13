@@ -1663,7 +1663,21 @@ public sealed class GatewayHost : IAsyncDisposable
         // connected device's direct-vs-relay path and log persistent home-relay drift QUIETLY. Alert
         // channels (doorbell + owner email) are wired in P5 onto the same Decide-machine state.
         var netDiagDeviceStore = new Api.NetDiagDeviceStore(Path.Combine(CcStorage.Root(), "netdiag-devices.json"));
-        _netDiagMonitor = new Api.NetDiagMonitor(Api.TailscaleDiagnostics.Collect, Api.LanPresenceProbe.TryResolveMac, netDiagDeviceStore, _netDiagRollup);
+        // P5: deliver the monitor's drift/resolve to the doorbell + owner email. The alert service owns the
+        // 401-explicit "not signed in" path, the daily email cap, and one-email-per-episode; the monitor
+        // just hands it the device name on the machine's rising/falling edges.
+        var netDiagNotify = new Core.Account.AccountNotifyClient(new HttpClient { Timeout = TimeSpan.FromSeconds(30) });
+        var netDiagAlerts = new Api.NetDiagAlertService(
+            DirectorEvents,
+            () => Account?.GetAccessTokenForForwarding(),
+            async (token, subject, bodyText) =>
+            {
+                var r = await netDiagNotify.SendOwnerAsync(token, subject, bodyText, null, null, default).ConfigureAwait(false);
+                return r.Sent;
+            });
+        _netDiagMonitor = new Api.NetDiagMonitor(
+            Api.TailscaleDiagnostics.Collect, Api.LanPresenceProbe.TryResolveMac, netDiagDeviceStore, _netDiagRollup,
+            netDiagAlerts.OnDrift, netDiagAlerts.OnResolve);
         _netDiagMonitor.Start();
     }
 
