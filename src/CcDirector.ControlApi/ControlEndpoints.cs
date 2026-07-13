@@ -157,6 +157,388 @@ internal static class ControlEndpoints
             return Results.Json(new { accepted = true });
         });
 
+        // ===== Fleet messaging (issue #705) - CUT RESTORATION (SB-4a) =====
+        // Gateway Cleanup mission: these four routes were deleted at the cut but are RESTORED to the Director's
+        // LOOPBACK floor, Phase-4-DEFERRED exactly like the config surface. cc-devthrottle (tools/cc-devthrottle)
+        // calls them on the LOCAL Director to coordinate the fleet, so the cut broke our own channel. They are
+        // loopback-only and relay OUTBOUND (Director -> Gateway) for non-local targets, so the INBOUND port
+        // stays closed - the security win is preserved. A session only ever reaches its OWN Director
+        // (CC_DIRECTOR_API); it never holds the Gateway URL or the fleet token, so this Director forwards to the
+        // Gateway using the token it already holds. Restored verbatim from the pre-cut ControlEndpoints; only
+        // /fleet/broadcast is NOT restored (Gateway-native + Hub-gated, issue #1229).
+
+        // Resolve the sender's display name from THIS Director's own session record (never trusted from the
+        // request body) and build the framed message the recipient sees.
+        string FrameForSender(string? fromSessionId, string text, bool includeReplyHint = true)
+        {
+            string? fromName = null;
+            if (!string.IsNullOrWhiteSpace(fromSessionId) && Guid.TryParse(fromSessionId, out var fromGuid))
+            {
+                var sender = sessionManager.GetSession(fromGuid);
+                if (sender is not null)
+                    // Issue #800: route the sender's display name through the single composer.
+                    fromName = SessionName.DisplayName(sender.CustomName,
+                        SessionName.FolderName(sender.RepoPath),
+                        SessionName.Disambiguator(sender.Id));
+            }
+            return FleetMessaging.BuildFramedMessage(fromSessionId, fromName, Environment.MachineName, text, includeReplyHint);
+        }
+
+        // Identity-stamp a session DTO with this Director's machine/user/tailnet endpoint (fleet directory rows).
+        SessionDto MapWithIdentity(Session s, TurnSummaryCache? cache = null)
+        {
+            var (mn, usr, ep) = resolveTailnetEndpoint is not null
+                ? ResolveDirectorIdentity(resolveTailnetEndpoint)
+                : (string.Empty, string.Empty, string.Empty);
+            return Map(s, directorId, cache, mn, usr, ep, gatewayUrl);
+        }
+
+        // Create a session LOCALLY through the shared SessionCommandExecutor (issue #1177 Phase 1), then build
+        // the identity-stamped 201 response. Used by the local branch of POST /fleet/spawn; the Machine routing
+        // field is advisory here (the routing decision is made before the request reaches this Director).
+        async Task<IResult> CreateLocalSessionAsync(NewSessionRequest? req)
+        {
+            var command = new DirectorCommand
+            {
+                Verb = "create",
+                SessionId = "",
+                PayloadJson = req is null ? "" : SessionCommandExecutor.Serialize(req),
+            };
+            // Pass the Mission store so a create-time MissionId (attach at spawn) resolves+validates
+            // through the SAME executor path the Gateway stream down-channel uses.
+            var createServices = new SessionCommandServices { ProactiveExplain = proactiveExplain, TurnSummaryCache = turnSummaryCache, MissionStore = missionStore };
+            var result = await SessionCommandExecutor.DispatchAsync(sessionManager, directorId, command, createServices);
+
+            if (result.Status == DirectorCommandStatus.BadRequest)
+                return Results.BadRequest(new { error = result.Error });
+            if (result.Status != DirectorCommandStatus.Ok)
+                return Results.Problem(result.Error ?? "create failed", statusCode: 500);
+
+            var created = SessionCommandExecutor.Deserialize<SessionDto>(result.BodyJson);
+            if (created is null || !Guid.TryParse(created.SessionId, out var newGuid))
+                return Results.Problem("created session id missing", statusCode: 500);
+            var session = sessionManager.GetSession(newGuid);
+            return session is null
+                ? Results.Problem("created session not found", statusCode: 500)
+                : Results.Json(MapWithIdentity(session, turnSummaryCache), statusCode: 201);
+        }
+
+        // Deliver a framed message to a LOCAL session, wait for it to settle back to Idle, and return its answer
+        // (transcript-first, buffer-scrape fallback). Used by the standalone branch of POST /fleet/ask.
+        async Task<(string answer, string status)> AskLocalAsync(Session target, string framed, int timeoutMs, CancellationToken ct)
+        {
+            var cursor = target.Buffer?.TotalBytesWritten ?? 0;
+
+            // For transcript-capable agents, remember how many assistant messages existed BEFORE the
+            // question, so afterwards we wait for a genuinely NEW one rather than returning a stale
+            // prior answer.
+            var supportsTranscript = CcDirector.Core.History.SessionHistoryReader.IsSupported(target);
+            var preAssistantCount = supportsTranscript
+                ? CcDirector.Core.History.SessionHistoryReader.Read(target).Messages
+                    .Count(m => m.Role == CcDirector.Core.History.ConversationRole.Assistant)
+                : 0;
+
+            await target.SendTextAsync(framed, SendSource.Internal);
+
+            // Give the target a moment to leave Idle, then wait for it to settle back to Idle.
+            var sw = System.Diagnostics.Stopwatch.StartNew();
+            await Task.Delay(300, ct);
+            while (sw.ElapsedMilliseconds < timeoutMs && target.ActivityState != ActivityState.Idle)
+                await Task.Delay(250, ct);
+
+            var timedOut = target.ActivityState != ActivityState.Idle;
+            var answer = "";
+
+            // Prefer the transcript: a clean, parsed answer (the NEW assistant message) instead of a
+            // scrape of the repainting TUI buffer. A transcript can flush several seconds after Idle, so
+            // poll for an assistant message BEYOND preAssistantCount for up to ~25 s; fall back to the
+            // buffer scrape only if no new answer appears (e.g. a turn that produced only tool calls).
+            if (supportsTranscript)
+            {
+                for (var r = 0; r < 50 && answer.Length == 0; r++)
+                {
+                    var assistants = CcDirector.Core.History.SessionHistoryReader.Read(target).Messages
+                        .Where(m => m.Role == CcDirector.Core.History.ConversationRole.Assistant)
+                        .ToList();
+                    if (assistants.Count > preAssistantCount)
+                        answer = string.Join("\n", assistants[^1].Parts
+                            .Where(p => p.Kind == CcDirector.Core.History.ConversationPartKind.Text)
+                            .Select(p => p.Text)).Trim();
+                    if (answer.Length == 0)
+                        await Task.Delay(500, ct);
+                }
+            }
+
+            if (answer.Length == 0 && target.Buffer is not null)
+            {
+                var (data, _) = target.Buffer.GetWrittenSince(cursor);
+                answer = AnsiCleaner.Clean(data);
+            }
+
+            return (answer, timedOut ? "timeout" : "idle");
+        }
+
+        // GET /fleet/sessions - the fleet directory. With a Gateway, relay its aggregated list;
+        // standalone, serve this Director's own sessions (the no-Gateway acceptance criterion).
+        app.MapGet("/fleet/sessions", async (CancellationToken ct) =>
+        {
+            var gw = gatewayClientProvider?.Invoke();
+            if (gw is { IsEnabled: true })
+            {
+                try
+                {
+                    var fleet = await gw.ListFleetSessionsAsync(ct);
+                    return Results.Json(fleet);
+                }
+                catch (Exception ex)
+                {
+                    FileLog.Write($"[ControlEndpoints] /fleet/sessions relay FAILED: {ex.Message}");
+                    return Results.Json(new { error = $"Cannot reach the Gateway: {ex.Message}" },
+                        statusCode: StatusCodes.Status502BadGateway);
+                }
+            }
+
+            var local = sessionManager.ListSessions()
+                .Where(s => s.ActivityState != ActivityState.Exited)
+                .Select(s => MapWithIdentity(s, turnSummaryCache))
+                .ToList();
+            return Results.Json(local);
+        });
+
+        // POST /fleet/send - deliver one message. A local target is delivered directly (works with
+        // or without a Gateway); a remote target is relayed through the Gateway. An unknown target
+        // with no Gateway is a clear error (no silent drop, no fallback).
+        app.MapPost("/fleet/send", async (FleetSendRequest req, CancellationToken ct) =>
+        {
+            if (req is null || string.IsNullOrWhiteSpace(req.ToSessionId))
+                return Results.BadRequest(new { error = "toSessionId is required" });
+            if (string.IsNullOrWhiteSpace(req.Text))
+                return Results.BadRequest(new { error = "text is required" });
+            if (!Guid.TryParse(req.ToSessionId, out var toGuid))
+                return Results.BadRequest(new { error = "invalid toSessionId format" });
+
+            // Fleet-message steward (messaging.steward): dedupe + per-source rate limit on this session's
+            // OUTGOING messages. Never silent - a drop is logged AND returned to the sender. Disabled or
+            // not wired => Allow (byte-identical).
+            if (messageSteward is not null)
+            {
+                var decision = messageSteward.CheckMessage(req.FromSessionId, req.ToSessionId, req.Text);
+                if (!decision.Allowed)
+                {
+                    FileLog.Write($"[ControlEndpoints] /fleet/send steward {decision.Outcome}: from={FleetMessaging.ShortId(req.FromSessionId)} to={FleetMessaging.ShortId(req.ToSessionId)} - {decision.Reason}");
+                    return Results.Json(new FleetSendResponse { Accepted = false, DeliveredCount = 0, Error = decision.Reason },
+                        statusCode: decision.Outcome == StewardOutcome.DuplicateSuppressed ? StatusCodes.Status200OK : StatusCodes.Status429TooManyRequests);
+                }
+            }
+
+            var framed = string.IsNullOrWhiteSpace(req.FromSessionId)
+                ? req.Text
+                : FrameForSender(req.FromSessionId, req.Text);
+
+            var local = sessionManager.GetSession(toGuid);
+            if (local is not null)
+            {
+                try
+                {
+                    // Fleet message delivery is framework-mediated, not a human racing the dictation, so it
+                    // is exempt from the dictation lock (issue #1181, Task 3b).
+                    await local.SendTextAsync(framed, SendSource.Internal);
+                    return Results.Json(new FleetSendResponse { Accepted = true, DeliveredCount = 1 });
+                }
+                catch (Exception ex)
+                {
+                    FileLog.Write($"[ControlEndpoints] /fleet/send local deliver to {toGuid} FAILED: {ex.Message}");
+                    return Results.Json(new FleetSendResponse { Accepted = false, Error = ex.Message },
+                        statusCode: StatusCodes.Status500InternalServerError);
+                }
+            }
+
+            var gw = gatewayClientProvider?.Invoke();
+            if (gw is not { IsEnabled: true })
+                return Results.Json(new FleetSendResponse
+                {
+                    Accepted = false,
+                    Error = "Session not found on this Director and no Gateway is configured.",
+                }, statusCode: StatusCodes.Status404NotFound);
+
+            try
+            {
+                var resp = await gw.SendPromptToFleetAsync(req.ToSessionId, framed, ct);
+                return Results.Json(new FleetSendResponse
+                {
+                    Accepted = resp.Accepted,
+                    DeliveredCount = resp.Accepted ? 1 : 0,
+                    Error = resp.Error,
+                });
+            }
+            catch (Exception ex)
+            {
+                FileLog.Write($"[ControlEndpoints] /fleet/send relay to {toGuid} FAILED: {ex.Message}");
+                return Results.Json(new FleetSendResponse
+                {
+                    Accepted = false,
+                    Error = $"Cannot reach the target via the Gateway: {ex.Message}",
+                }, statusCode: StatusCodes.Status502BadGateway);
+            }
+        });
+
+        // POST /fleet/ask - ask one session a question and return its answer. With a Gateway, relay
+        // to the Gateway's prompt-with-wait (uniform for local and remote targets); standalone, only
+        // a local target can be asked. A timeout returns 504; unreachable/unknown returns a clear error.
+        app.MapPost("/fleet/ask", async (FleetAskRequest req, CancellationToken ct) =>
+        {
+            if (req is null || string.IsNullOrWhiteSpace(req.ToSessionId))
+                return Results.BadRequest(new { error = "toSessionId is required" });
+            if (string.IsNullOrWhiteSpace(req.Question))
+                return Results.BadRequest(new { error = "question is required" });
+            if (!Guid.TryParse(req.ToSessionId, out var toGuid))
+                return Results.BadRequest(new { error = "invalid toSessionId format" });
+
+            var timeoutMs = req.TimeoutMs > 0 ? req.TimeoutMs : 120_000;
+
+            // Fleet-message steward (messaging.steward): dedupe + per-source rate limit on this session's
+            // outgoing asks too. Never silent. Disabled/unwired => Allow (byte-identical).
+            if (messageSteward is not null)
+            {
+                var decision = messageSteward.CheckMessage(req.FromSessionId, req.ToSessionId, req.Question);
+                if (!decision.Allowed)
+                {
+                    FileLog.Write($"[ControlEndpoints] /fleet/ask steward {decision.Outcome}: from={FleetMessaging.ShortId(req.FromSessionId)} to={FleetMessaging.ShortId(req.ToSessionId)} - {decision.Reason}");
+                    return Results.Json(new FleetAskResponse
+                    {
+                        Answered = false,
+                        Status = decision.Outcome == StewardOutcome.DuplicateSuppressed ? "duplicate" : "throttled",
+                        Error = decision.Reason,
+                    }, statusCode: decision.Outcome == StewardOutcome.DuplicateSuppressed ? StatusCodes.Status200OK : StatusCodes.Status429TooManyRequests);
+                }
+            }
+
+            // No reply hint for an ask: the asker is waiting and reads the answer from the target's
+            // output, so the target must answer directly rather than try to send a separate reply.
+            var framed = FrameForSender(req.FromSessionId, req.Question, includeReplyHint: false);
+
+            var gw = gatewayClientProvider?.Invoke();
+            if (gw is { IsEnabled: true })
+            {
+                try
+                {
+                    var resp = await gw.AskFleetAsync(req.ToSessionId, framed, timeoutMs, ct);
+                    if (!resp.Accepted)
+                        return Results.Json(new FleetAskResponse
+                        {
+                            Answered = false, Status = "failed",
+                            Error = resp.Error ?? "The target rejected the question.",
+                        }, statusCode: StatusCodes.Status502BadGateway);
+                    if (string.Equals(resp.WaitStatus, "timeout", StringComparison.OrdinalIgnoreCase))
+                        return Results.Json(new FleetAskResponse
+                        {
+                            Answered = false, Status = "timeout",
+                            Error = $"No answer from {req.ToSessionId} within {timeoutMs} ms.",
+                        }, statusCode: StatusCodes.Status504GatewayTimeout);
+                    return Results.Json(new FleetAskResponse
+                    {
+                        Answered = true,
+                        Status = resp.WaitStatus ?? "idle",
+                        Answer = resp.Output ?? "",
+                    });
+                }
+                catch (Exception ex)
+                {
+                    FileLog.Write($"[ControlEndpoints] /fleet/ask relay to {toGuid} FAILED: {ex.Message}");
+                    return Results.Json(new FleetAskResponse
+                    {
+                        Answered = false, Status = "failed",
+                        Error = $"Cannot reach the target via the Gateway: {ex.Message}",
+                    }, statusCode: StatusCodes.Status502BadGateway);
+                }
+            }
+
+            // Standalone: only a local target can be asked (no Gateway to reach a remote one).
+            var local = sessionManager.GetSession(toGuid);
+            if (local is null)
+                return Results.Json(new FleetAskResponse
+                {
+                    Answered = false, Status = "not_found",
+                    Error = "Session not found on this Director and no Gateway is configured.",
+                }, statusCode: StatusCodes.Status404NotFound);
+
+            try
+            {
+                var (answer, status) = await AskLocalAsync(local, framed, timeoutMs, ct);
+                if (status == "timeout")
+                    return Results.Json(new FleetAskResponse
+                    {
+                        Answered = false, Status = "timeout",
+                        Error = $"No answer from {req.ToSessionId} within {timeoutMs} ms.",
+                    }, statusCode: StatusCodes.Status504GatewayTimeout);
+                return Results.Json(new FleetAskResponse { Answered = true, Status = status, Answer = answer });
+            }
+            catch (Exception ex)
+            {
+                FileLog.Write($"[ControlEndpoints] /fleet/ask local to {toGuid} FAILED: {ex.Message}");
+                return Results.Json(new FleetAskResponse
+                {
+                    Answered = false, Status = "failed", Error = ex.Message,
+                }, statusCode: StatusCodes.Status500InternalServerError);
+            }
+        });
+
+        // POST /fleet/spawn - "start a session on another computer". The body is a NewSessionRequest whose
+        // Machine field selects the target: empty / "local" / this Director's own machine name spawns
+        // LOCALLY (unchanged local behavior); any other machine name routes the spawn through the Gateway to
+        // a Director on that machine (first available, auto-launched if none is running). A remote spawn
+        // FAILS LOUD when no Gateway is configured or the machine is off / unreachable - it NEVER falls back
+        // to a local spawn.
+        app.MapPost("/fleet/spawn", async (NewSessionRequest req, CancellationToken ct) =>
+        {
+            if (req is null || string.IsNullOrWhiteSpace(req.RepoPath))
+                return Results.BadRequest(new { error = "repoPath is required" });
+
+            var machine = req.Machine?.Trim();
+            var isLocal = string.IsNullOrEmpty(machine)
+                || string.Equals(machine, "local", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(machine, Environment.MachineName, StringComparison.OrdinalIgnoreCase);
+
+            if (isLocal)
+            {
+                FileLog.Write($"[ControlEndpoints] POST /fleet/spawn: LOCAL, repo={req.RepoPath}, agent={req.Agent}");
+                return await CreateLocalSessionAsync(req);
+            }
+
+            FileLog.Write($"[ControlEndpoints] POST /fleet/spawn: machine={machine}, repo={req.RepoPath}, agent={req.Agent}");
+            var gw = gatewayClientProvider?.Invoke();
+            if (gw is not { IsEnabled: true })
+                return Results.Json(
+                    new { error = $"Cannot start a session on '{machine}': no Gateway is configured on this Director." },
+                    statusCode: StatusCodes.Status502BadGateway);
+
+            try
+            {
+                var dto = await gw.SpawnOnMachineAsync(machine!, req, ct);
+                return Results.Json(dto, statusCode: StatusCodes.Status201Created);
+            }
+            catch (Exception ex)
+            {
+                FileLog.Write($"[ControlEndpoints] POST /fleet/spawn relay to {machine} FAILED: {ex.Message}");
+                return Results.Json(
+                    new { error = $"Cannot start a session on '{machine}': {ex.Message}" },
+                    statusCode: StatusCodes.Status502BadGateway);
+            }
+        });
+
+    }
+
+    // Gateway Cleanup CUT RESTORATION (SB-4a): the fleet-directory identity stamp. Restored with the /fleet
+    // routes (MapWithIdentity uses it) so a fleet/sessions row carries this Director's machine/user/tailnet
+    // endpoint. The tailnet endpoint is resolved through the injected resolver (empty when unresolved).
+    private static (string MachineName, string User, string TailnetEndpoint) ResolveDirectorIdentity(
+        Func<TailnetEndpointResolution> resolver)
+    {
+        var machineName = Environment.MachineName;
+        var user = Environment.UserName;
+        var resolution = resolver();
+        var tailnetEndpoint = resolution.IsResolved ? resolution.Endpoint : "";
+        return (machineName, user, tailnetEndpoint);
     }
 
     /// <summary>Folder name of a repo path, for display fallback. Empty path -> "Unknown Project".</summary>

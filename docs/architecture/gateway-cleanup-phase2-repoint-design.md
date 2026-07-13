@@ -385,3 +385,45 @@ not tunnel-connected -> 503. There is NO HTTP fallback (the HTTP reverse-proxy s
 the least-specific `/sessions/{sid}/...` route, so every literal route (stream/file/screenshots/buffer/prompt/
 patch/...) wins over it; it is mapped before the Cockpit SPA site-root fallback so it claims these verb paths.
 The SB-4 floor-only real-exe proof RE-VERIFIES this whole restored verb set works over the tunnel post-cut.
+
+## CUT RESTORATION (SB-4a): repos/handover MANAGEMENT verbs (Architect ruling: RESTORE - Option B)
+
+The cut migrated the repository/handover READS (PR D) + repo-DELETE but left the asymmetric MANAGEMENT
+leftovers un-migrated, so it deleted them: repo-add, repo-rename, repos-overview, handover-create,
+handover-delete (CONTRACT_AUDIT rows 68/69/70/74/75, "Verbs to migrate"; ReposView.tsx + mobile Repos.tsx are
+the WIP consumers). RESTORED as tunnel verbs (cores lifted VERBATIM from the pre-cut ControlEndpoints):
+`repos-overview` -> a `CatalogReadExecutor` read (aggregates live/history/claude/handover per repo); the four
+writes `repo-add` / `repo-rename` / `handover-create` / `handover-delete` -> `SessionWriteExecutor`
+director-level (empty sid), next to `repo-delete`. Gateway routes tunnel-ONLY (no HTTP fallback, mirroring
+PR D): POST/PATCH `/directors/{id}/repos`, GET `/directors/{id}/repos/overview`, POST/DELETE
+`/directors/{id}/handovers`. FAITHFUL status parity is preserved via a `MapDirectorFailure` helper on the not-Ok
+path: the executor's BadRequest -> 400, NotFound -> 404, a not-connected null -> 502; repo-add carries an
+`added` flag in its body so the route stamps 201 (newly added) vs 200; handover-create stamps 201. Proofs:
+executor-direct core logic in `RestApiSelfServiceEndpointsTests` (added-flag, dir-not-found 400,
+unregistered-rename 404, handover write/delete, overview aggregation) + Gateway-route tunnel-by-construction in
+`TunnelReposHandoverMgmtProofTests` (verb + payload + 201/200/400/404/502 mapping).
+
+## CUT RESTORATION (SB-4a): fleet-messaging CLI floor (Architect ruling: RESTORE - Option A)
+
+The cut deleted the Director's `/fleet/send|ask|sessions|spawn` routes (they were in ControlEndpoints), leaving
+`MessageSteward` consumed by nothing and `FleetMessaging.BuildFramedMessage` caller-less. cc-devthrottle
+(`tools/cc-devthrottle/src/session_ops.py`) calls these on the LOCAL Director - so on the cut build, `message
+send|ask` + `session list|spawn` BREAK, and that is our own fleet coordination channel. RESTORED to the
+Director's LOOPBACK floor, Phase-4-DEFERRED exactly like the config surface: the four routes + their local
+helpers (FrameForSender = the restored BuildFramedMessage caller, MapWithIdentity, CreateLocalSessionAsync,
+AskLocalAsync) + the `ResolveDirectorIdentity` helper, all lifted verbatim from the pre-cut ControlEndpoints;
+`MessageSteward` is re-consumed by the restored send/ask handlers (ControlApiHost already constructs + passes
+it). They are loopback-only and relay OUTBOUND (Director -> Gateway) for non-local targets, so the INBOUND port
+STAYS CLOSED - the security win holds. `/fleet/broadcast` is NOT restored (Gateway-native + Hub-gated, issue
+#1229). Route shapes match session_ops.py exactly: GET `fleet/sessions`; POST `fleet/send`
+`{toSessionId,text,fromSessionId}`; POST `fleet/ask` `{toSessionId,question,fromSessionId,timeoutMs}` ->
+`{answer}`; POST `fleet/spawn` `{machine, ...NewSessionRequest}`. Tests re-added: `FleetMessagingEndpointTests`
+(validation 400s + no-Gateway loopback 404/200/502, root-isolated so the outcomes are deterministic) +
+`MessageStewardEndpointTests` (duplicate-suppressed-and-surfaced, steward-disabled byte-identical; the pre-cut
+"normal prompt untouched" test is NOT re-added - it drove the deleted POST /sessions/{sid}/prompt route).
+
+UPDATED FLOOR DEFINITION (Architect): the TRANSITIONAL floor = the 6 permanent items (healthz, shutdown,
+reconnect, claude-hook, fleet-preamble, fleet-preamble-hook-output) + the Phase-4-DEFERRED LOOPBACK surfaces
+(the config surface 28 routes + these 4 fleet-CLI routes). The PURE 6-item floor is the Phase-4-FINAL state.
+The SB-4 floor-only proof's "404 on deleted routes" targets TRULY-deleted routes ONLY (the loopback
+session-REST like turns/buffer/prompt), NOT these deferred loopback surfaces, which ANSWER on loopback.

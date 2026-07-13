@@ -1,4 +1,10 @@
+using System.Net;
+using System.Net.Http.Headers;
+using System.Net.Http.Json;
 using CcDirector.ControlApi;
+using CcDirector.Core.Configuration;
+using CcDirector.Core.Sessions;
+using CcDirector.Gateway.Contracts;
 using Xunit;
 
 namespace CcDirector.Gateway.Tests;
@@ -7,13 +13,13 @@ namespace CcDirector.Gateway.Tests;
 /// Unit tests for the pure message-framing helper used by fleet session-to-session
 /// messaging (issue #705). Pure and machine-independent.
 ///
-/// Gateway Cleanup mission (the cut): the fleet-relay ENDPOINTS that used this helper
-/// (the Director's POST /fleet/send, /fleet/ask, /fleet/broadcast) were removed when the
-/// Director REST surface was cut to its floor, and no Gateway/tunnel-verb replacement exists.
-/// The old FleetMessagingEndpointTests exercised those deleted routes and were removed with them.
-/// This framing helper still stands on its own, so its contract is still pinned here.
-/// (See the SB-3b worker report: the direct send/ask relay + the message-steward endpoint wiring
-/// are gone with no live equivalent - flagged for the Manager to confirm the re-home is intended.)
+/// Gateway Cleanup mission (CUT RESTORATION, SB-4a): the fleet-relay ENDPOINTS that use this helper
+/// (the Director's POST /fleet/send, /fleet/ask, GET /fleet/sessions, POST /fleet/spawn) were briefly
+/// deleted at the cut, then RESTORED to the Director's LOOPBACK floor (Phase-4-DEFERRED, loopback +
+/// outbound-relay only, so the inbound port stays closed) - cc-devthrottle drives them on the local
+/// Director to coordinate the fleet. Their request-validation contract is re-pinned in
+/// <see cref="FleetMessagingEndpointTests"/> below. Only /fleet/broadcast is NOT restored (Gateway-native +
+/// Hub-gated, issue #1229), so its test is not re-added. This framing helper stands on its own.
 /// </summary>
 public sealed class FleetMessagingFramingTests
 {
@@ -69,5 +75,154 @@ public sealed class FleetMessagingFramingTests
 
         Assert.DoesNotContain("\n", framed);
         Assert.Contains("Reply with exactly GREEN-42", framed); // body newlines collapsed to spaces
+    }
+}
+
+/// <summary>
+/// Gateway Cleanup mission (CUT RESTORATION, SB-4a): endpoint validation tests for the /fleet/* relay routes
+/// (issue #705), restored to the Director's LOOPBACK floor. These assert the deterministic request-validation
+/// that runs BEFORE any Gateway interaction (so they pass whether or not this machine has a Gateway), plus the
+/// no-Gateway loopback outcomes (a local /fleet/sessions listing; an unknown target with no Gateway is a clear
+/// 404, never a silent drop). The richer relay behavior is verified by live proof against a running Director.
+/// The /fleet/broadcast route is NOT restored (Hub-gated, issue #1229), so it is not tested here.
+/// </summary>
+[Collection("DirectorRoot")]
+public sealed class FleetMessagingEndpointTests : IAsyncLifetime
+{
+    private readonly string _root;
+    private readonly string? _prevRoot;
+    private ControlApiHost _host = null!;
+    private SessionManager _sm = null!;
+    private HttpClient _client = null!;
+
+    public FleetMessagingEndpointTests()
+    {
+        // Isolate CC_DIRECTOR_ROOT to a fresh temp dir so NO Gateway is configured for this Director. That
+        // makes the no-Gateway outcomes deterministic (an unknown target -> a clear 404, a remote spawn -> a
+        // loud 502) instead of depending on whatever Gateway the test machine happens to have configured.
+        _prevRoot = Environment.GetEnvironmentVariable("CC_DIRECTOR_ROOT");
+        _root = Path.Combine(Path.GetTempPath(), "ccd-fleetmsg-root-" + Guid.NewGuid().ToString("N"));
+        Environment.SetEnvironmentVariable("CC_DIRECTOR_ROOT", _root);
+    }
+
+    public async Task InitializeAsync()
+    {
+        _sm = new SessionManager(new AgentOptions());
+        _host = new ControlApiHost(_sm, "1.0.0-test", () => Task.CompletedTask, useEphemeralPort: true);
+        var port = await _host.StartAsync();
+        _client = new HttpClient { BaseAddress = new Uri($"http://127.0.0.1:{port}/") };
+        var token = DirectorAuth.LoadOrCreateToken();
+        _client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token);
+    }
+
+    public async Task DisposeAsync()
+    {
+        _client.Dispose();
+        await _host.StopAsync();
+        _sm.Dispose();
+        try
+        {
+            var f = Path.Combine(InstanceRegistration.InstancesDirectory, $"{_host.DirectorId}.json");
+            if (File.Exists(f)) File.Delete(f);
+        }
+        catch { /* test cleanup, ignore */ }
+        Environment.SetEnvironmentVariable("CC_DIRECTOR_ROOT", _prevRoot);
+        try { if (Directory.Exists(_root)) Directory.Delete(_root, true); } catch { /* best effort */ }
+    }
+
+    // ===== /fleet/send validation =====
+
+    [Fact]
+    public async Task Fleet_send_missing_target_returns_400()
+    {
+        var resp = await _client.PostAsJsonAsync("fleet/send", new FleetSendRequest { ToSessionId = "", Text = "hi" });
+        Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
+    }
+
+    [Fact]
+    public async Task Fleet_send_bad_guid_returns_400()
+    {
+        var resp = await _client.PostAsJsonAsync("fleet/send", new FleetSendRequest { ToSessionId = "not-a-guid", Text = "hi" });
+        Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
+    }
+
+    [Fact]
+    public async Task Fleet_send_empty_text_returns_400()
+    {
+        var resp = await _client.PostAsJsonAsync("fleet/send",
+            new FleetSendRequest { ToSessionId = Guid.NewGuid().ToString(), Text = "" });
+        Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
+    }
+
+    [Fact]
+    public async Task Fleet_send_unknown_target_noGateway_returns_404_notASilentDrop()
+    {
+        // A valid, well-formed target that this Director does not own, with no Gateway configured: the route
+        // must FAIL LOUD (404), never silently accept-and-drop.
+        var resp = await _client.PostAsJsonAsync("fleet/send",
+            new FleetSendRequest { ToSessionId = Guid.NewGuid().ToString(), Text = "hi" });
+        Assert.Equal(HttpStatusCode.NotFound, resp.StatusCode);
+    }
+
+    // ===== /fleet/ask validation =====
+
+    [Fact]
+    public async Task Fleet_ask_missing_target_returns_400()
+    {
+        var resp = await _client.PostAsJsonAsync("fleet/ask", new FleetAskRequest { ToSessionId = "", Question = "q?" });
+        Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
+    }
+
+    [Fact]
+    public async Task Fleet_ask_bad_guid_returns_400()
+    {
+        var resp = await _client.PostAsJsonAsync("fleet/ask", new FleetAskRequest { ToSessionId = "not-a-guid", Question = "q?" });
+        Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
+    }
+
+    [Fact]
+    public async Task Fleet_ask_empty_question_returns_400()
+    {
+        var resp = await _client.PostAsJsonAsync("fleet/ask",
+            new FleetAskRequest { ToSessionId = Guid.NewGuid().ToString(), Question = "" });
+        Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
+    }
+
+    [Fact]
+    public async Task Fleet_ask_unknown_target_noGateway_returns_404()
+    {
+        var resp = await _client.PostAsJsonAsync("fleet/ask",
+            new FleetAskRequest { ToSessionId = Guid.NewGuid().ToString(), Question = "q?" });
+        Assert.Equal(HttpStatusCode.NotFound, resp.StatusCode);
+    }
+
+    // ===== /fleet/sessions + /fleet/spawn loopback =====
+
+    [Fact]
+    public async Task Fleet_sessions_noGateway_returns200_withThisDirectorsSessions()
+    {
+        // Standalone (no Gateway): the route serves this Director's own live sessions - an empty list is a
+        // valid 200 for a freshly-started Director with no sessions.
+        var resp = await _client.GetAsync("fleet/sessions");
+        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+        var sessions = await resp.Content.ReadFromJsonAsync<List<SessionDto>>();
+        Assert.NotNull(sessions);
+    }
+
+    [Fact]
+    public async Task Fleet_spawn_missing_repo_returns_400()
+    {
+        var resp = await _client.PostAsJsonAsync("fleet/spawn", new NewSessionRequest { RepoPath = "" });
+        Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
+    }
+
+    [Fact]
+    public async Task Fleet_spawn_remoteMachine_noGateway_failsLoud_502_neverLocalFallback()
+    {
+        // A remote machine target with no Gateway configured must FAIL LOUD (502), never fall back to a
+        // local spawn (no-fallback rule).
+        var resp = await _client.PostAsJsonAsync("fleet/spawn",
+            new NewSessionRequest { RepoPath = @"D:\ReposFred\devthrottle", Machine = "some-other-machine" });
+        Assert.Equal(HttpStatusCode.BadGateway, resp.StatusCode);
     }
 }
