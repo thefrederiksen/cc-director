@@ -34,7 +34,6 @@ const NAV_SECTIONS: ReadonlyArray<{ title: string; items: ReadonlyArray<NavItem>
     title: "Fleet",
     items: [
       { to: "/fleet-map", label: "Fleet Map" },
-      { to: "/missions", label: "Missions" },
       { to: "/sessions", label: "Sessions", subtree: "/session" },
       { to: "/directors", label: "Directors" },
       { to: "/schedule", label: "Schedule" },
@@ -56,7 +55,6 @@ const NAV_SECTIONS: ReadonlyArray<{ title: string; items: ReadonlyArray<NavItem>
     items: [
       { to: "/account", label: "Account" },
       { to: "/your-throttle", label: "Your Throttle" },
-      { to: "/telemetry", label: "Telemetry" },
       { to: "/settings", label: "Settings" },
       { to: "/about", label: "About" },
     ],

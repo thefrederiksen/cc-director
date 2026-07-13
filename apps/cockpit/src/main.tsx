@@ -14,7 +14,6 @@ import { SessionsEmpty, SessionsView } from "./sessions/SessionsView";
 import { SessionDetail } from "./sessions/SessionDetail";
 import { SessionRedirect } from "./sessions/SessionRedirect";
 import { FleetMapView } from "./fleet/FleetMapView";
-import { MissionsView } from "./missions/MissionsView";
 import { DirectorsView } from "./fleet/DirectorsView";
 import { DirectorDetailView } from "./fleet/DirectorDetailView";
 import { ScheduleView } from "./schedule/ScheduleView";
@@ -23,7 +22,6 @@ import { DictionaryView } from "./dictionary/DictionaryView";
 import { TranscriptsView } from "./transcripts/TranscriptsView";
 import { ExesView } from "./exes/ExesView";
 import { LearningView } from "./learning/LearningView";
-import { TelemetryView } from "./telemetry/TelemetryView";
 import { YourThrottleView } from "./throttle/YourThrottleView";
 import { TranscriptionHealthView } from "./transcription/TranscriptionHealthView";
 import { AccountView } from "./account/AccountView";
@@ -41,7 +39,6 @@ import "./dictionary/dictionary.css";
 import "./transcripts/transcripts.css";
 import "./exes/exes.css";
 import "./learning/learning.css";
-import "./telemetry/telemetry.css";
 import "./throttle/throttle.css";
 import "./transcription/transcriptionhealth.css";
 import "./account/account.css";
@@ -141,10 +138,10 @@ const router = createBrowserRouter(
             // page lists, pivotable by machine / repository / agent. Reads the same GET /sessions
             // envelope through client-core.
             { path: "/fleet-map", element: <FleetMapView /> },
-            // The Missions page (issue #1405, Phase 1a): the same GET /sessions roster the Fleet Map
-            // reads, grouped by mission (derived from the session name) with each session row linking
-            // into /session/:id. Full width - the Phase 2 chat pane is not shipped yet.
-            { path: "/missions", element: <MissionsView /> },
+            // Missions (issue #1405) is no longer its own page: it is the "Missions" pivot of the Fleet
+            // Map (the fleet has one home). The old /missions route redirects there so existing bookmarks
+            // still land on the map; the pivot the map opens on is the last one the browser chose.
+            { path: "/missions", element: <Navigate to="/fleet-map" replace /> },
             { path: "/directors", element: <DirectorsView /> },
             { path: "/directors/:directorId", element: <DirectorDetailView /> },
             // The Schedule + Wingman-pipeline pages (issue #976): one-to-one ports of the Blazor
@@ -164,12 +161,16 @@ const router = createBrowserRouter(
             { path: "/exes", element: <ExesView /> },
             { path: "/learn", element: <LearningView /> },
             // The settings/misc + account pages (issue #978, the last page-port): one-to-one ports of the
-            // Blazor Telemetry.razor (fleet-wide usage-telemetry consent), Account.razor (identity + Log
-            // out + Your devices), About.razor (Gateway diagnostics), and Feedback.razor (the Wingman
-            // feedback corpus), each over the same Gateway REST surface. Following the Blazor nav, Account,
-            // Telemetry, and About get a left-rail entry; Feedback is route-only (hidden from the default
-            // rail there too), reached by its direct route.
-            { path: "/telemetry", element: <TelemetryView /> },
+            // Blazor Account.razor (identity + Log out + Your devices), About.razor (Gateway diagnostics),
+            // and Feedback.razor (the Wingman feedback corpus), each over the same Gateway REST surface.
+            // Account and About get a left-rail entry; Feedback is route-only (hidden from the default rail,
+            // reached by its direct route).
+            //
+            // Usage telemetry is no longer its own page: the fleet-wide consent toggle is now the
+            // "Telemetry" tab of Settings (the rail is decluttered, matching the Missions move). The old
+            // /telemetry route redirects there, deep-linking straight to that tab so bookmarks still land
+            // on the setting.
+            { path: "/telemetry", element: <Navigate to="/settings?tab=telemetry" replace /> },
             // Your Throttle (devthrottle-stats mission): the in-Cockpit port of the standalone Gateway
             // /stats page. Reads the same GET /stats/data feed through client-core so the user sees
             // their throttle in the app rather than at a bare URL.
