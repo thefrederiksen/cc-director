@@ -73,21 +73,28 @@ public sealed class PushedSessionStore
     /// cannot wipe a newer active connection. Cached sessions are retained; while no connection is active,
     /// <see cref="TryGetFresh"/> returns null so aggregation pulls instead.
     /// </summary>
-    public void UnregisterConnection(string directorId, string connectionId)
+    /// <returns>
+    /// True when this call actually cleared the active connection (so the Director now has NO live stream);
+    /// false when it was ignored because a newer connection is active (a reconnect superseded this one) or
+    /// the Director is unknown. Gateway Cleanup mission (tunnel-only): the caller uses this to decide whether
+    /// to drop the Director from the registry - only a genuine last-connection close should.
+    /// </returns>
+    public bool UnregisterConnection(string directorId, string connectionId)
     {
         if (!_byDirector.TryGetValue(directorId, out var entry))
-            return;
+            return false;
 
         lock (entry.Gate)
         {
             if (!string.Equals(entry.ActiveConnectionId, connectionId, StringComparison.Ordinal))
             {
                 FileLog.Write($"[PushedSessionStore] UnregisterConnection IGNORED (not active): director={directorId}, conn={Short(connectionId)}, active={Short(entry.ActiveConnectionId)}");
-                return;
+                return false;
             }
             entry.ActiveConnectionId = null;
         }
         FileLog.Write($"[PushedSessionStore] UnregisterConnection: director={directorId}, conn={Short(connectionId)} cleared; aggregation will fall back to pull");
+        return true;
     }
 
     /// <summary>

@@ -111,6 +111,62 @@ public sealed class DirectorRegistry : IDisposable
     }
 
     /// <summary>
+    /// Gateway Cleanup mission (tunnel-only): register (or refresh) a Director from its DirectorHub stream
+    /// Hello. The tunnel is the ONLY registration path now (HTTP register is gone), so a live stream IS the
+    /// Director's presence. Stamped <c>Source="stream"</c> with an EMPTY control/tailnet endpoint - the Gateway
+    /// never dials a Director, it only reaches it down this stream. Marks it state-reporting so the reconcile
+    /// poll skips it. Idempotent; refreshes LastSeen on every Hello (connect + reconnect + periodic re-push).
+    /// </summary>
+    public DirectorDto RegisterFromStream(string directorId, string machineName, string user, string version, int pid, DateTime startedAt)
+    {
+        if (string.IsNullOrEmpty(directorId))
+            throw new ArgumentException("directorId is required", nameof(directorId));
+
+        var now = DateTime.UtcNow;
+        var dto = new DirectorDto
+        {
+            DirectorId = directorId,
+            Pid = pid,
+            StartedAt = startedAt == default ? now : startedAt,
+            ControlEndpoint = "",     // tunnel-only: the Gateway never dials this Director
+            TailnetEndpoint = null,
+            MachineName = machineName,
+            User = user,
+            Version = version,
+            SchemaVersion = 1,
+            LastSeen = now,
+            Source = "stream",
+        };
+        var existed = _directors.TryGetValue(directorId, out _);
+        _directors[directorId] = dto;
+        _stateReporting.TryAdd(directorId, true);
+        if (!existed)
+        {
+            FileLog.Write($"[DirectorRegistry] RegisterFromStream: id={directorId}, machine={machineName}, version={version}");
+            OnDirectorAdded?.Invoke(dto);
+        }
+        return dto;
+    }
+
+    /// <summary>
+    /// Gateway Cleanup mission (tunnel-only): drop a Director whose DirectorHub stream closed. The stream IS
+    /// its presence, so a closed stream means it is gone. Returns true if it was present.
+    /// </summary>
+    public bool RemoveFromStream(string directorId)
+    {
+        if (string.IsNullOrEmpty(directorId)) return false;
+        if (_directors.TryRemove(directorId, out _))
+        {
+            _stateReporting.TryRemove(directorId, out _);
+            _everReachable.TryRemove(directorId, out _);
+            FileLog.Write($"[DirectorRegistry] RemoveFromStream: id={directorId} (tunnel closed)");
+            OnDirectorRemoved?.Invoke(directorId);
+            return true;
+        }
+        return false;
+    }
+
+    /// <summary>
     /// Refresh the heartbeat timestamp on an existing HTTP-registered Director.
     /// Returns false if the id is unknown (caller can choose to ask the Director to re-register).
     /// </summary>

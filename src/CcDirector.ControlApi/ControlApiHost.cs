@@ -508,13 +508,19 @@ public sealed class ControlApiHost : IAsyncDisposable
         // agents) are reached through the Gateway and must not churn the serve table
         // (the #179 lesson). Issue #457: LAN addressing mode has no Serve front door at all -
         // the Director is reached directly on its LAN IP - so it never provisions a mapping.
+        // Gateway Cleanup mission (tunnel-only): the Director NO LONGER opens an inbound Tailscale Serve
+        // front door on its control port. It dials OUT to the Gateway over the tunnel and is reached ONLY
+        // down that stream, so there is nothing inbound to publish - the whole point of the cut is that the
+        // inbound port stays CLOSED on every client machine. Any Serve mapping a previous build left for this
+        // port is proactively torn down so an upgraded Director self-heals to closed.
         if (!_useEphemeralPort && addressingMode != Core.Configuration.AddressingMode.Lan && !SuppressServeProvisioning)
         {
-            // A fallback host (issue #697) is still a production loopback host, so it self-provisions
-            // Serve on whatever port it bound -- including an ephemeral fallback port -- which is how
-            // remote access keeps working when the fixed range is full.
-            _serveProvisioner = new TailscaleServeSelfProvisioner(Port);
-            _serveProvisioner.Start();
+            var portToClose = Port;
+            _ = Task.Run(() =>
+            {
+                try { using var p = new TailscaleServeSelfProvisioner(portToClose); p.RemoveOwnMapping(); }
+                catch (Exception ex) { FileLog.Write($"[ControlApiHost] tunnel-only Serve teardown failed (best-effort): {ex.Message}"); }
+            });
         }
 
         // Phase 1: if gateway.url is configured, register with the Gateway over HTTP and
@@ -644,7 +650,9 @@ public sealed class ControlApiHost : IAsyncDisposable
     /// </summary>
     private GatewayStreamClient? BuildStreamClient(GatewayConfig gatewayConfig)
     {
-        if (!gatewayConfig.IsEnabled || !gatewayConfig.StreamMode) return null;
+        // Gateway Cleanup mission (tunnel-only): the streamMode gate is GONE. If a Gateway is configured,
+        // the Director dials the tunnel - it is the ONLY connection. Null only when local-only (no gateway.url).
+        if (!gatewayConfig.IsEnabled) return null;
         // Issue #1177 (Phase 1): the stream client's down-channel dispatcher reuses the SAME in-process
         // SessionCommandExecutor the Control API endpoints call, so a command executed over the stream is
         // byte-for-byte identical to the same command over HTTP.
@@ -659,7 +667,10 @@ public sealed class ControlApiHost : IAsyncDisposable
             // Gateway Cleanup mission, Phase 0 (up-stream): pass the SessionManager so the four connection-bound
             // stream verbs work - their terminal/file producers read session and file state from it and stream
             // frames up this same connection.
-            sessionManager: _sessionManager);
+            sessionManager: _sessionManager,
+            // Gateway Cleanup mission (tunnel-only): the tunnel drives the desktop connectivity light directly -
+            // connected = green (a live stream IS the proven two-way link), reconnecting = yellow.
+            monitor: GatewayMonitor);
     }
 
     /// <summary>
