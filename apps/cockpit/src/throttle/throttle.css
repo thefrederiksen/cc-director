@@ -303,76 +303,111 @@
   color: var(--text-dim);
 }
 
-/* ---- Hourly bar charts (bigger than the old page so the shape is readable) ----------------------- */
-.thr-chart {
-  display: flex;
-  align-items: flex-end;
-  gap: 4px;
-  height: 130px;
-  padding: 10px 4px 0;
+/* ---- Hourly bar charts: a framed plot with a readable y-axis (ticks + recessive gridlines) -------- */
+.thr-chartframe {
+  --thr-plot-h: 160px;
+  --thr-yaxis-w: 34px;
+  --thr-col-gap: 4px;
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: 12px;
+  padding: 14px 16px 10px;
 }
-.thr-chart-tall {
-  height: 240px;
+.thr-chartframe.tall {
+  --thr-plot-h: 240px;
 }
-.thr-bar-col {
-  flex: 1 1 0;
+.thr-plotrow {
   display: flex;
-  flex-direction: column;
-  align-items: center;
-  height: 100%;
+  gap: 8px;
+}
+/* The y-axis: tick labels absolutely placed at their value's height, centered on their gridline. */
+.thr-yaxis {
+  position: relative;
+  width: var(--thr-yaxis-w);
+  height: var(--thr-plot-h);
+  flex: none;
+}
+.thr-ytick {
+  position: absolute;
+  right: 0;
+  width: 100%;
+  transform: translateY(50%);
+  text-align: right;
+  padding-right: 4px;
+  font-size: 10px;
+  line-height: 1;
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+/* The plot: gridlines behind, bars in front (bars are position:relative so they win the stack). */
+.thr-plot {
+  position: relative;
+  flex: 1 1 0;
+  height: var(--thr-plot-h);
+  display: flex;
+  align-items: flex-end;
+  gap: var(--thr-col-gap);
   min-width: 0;
 }
-.thr-bar-track {
-  width: 100%;
-  max-width: 22px;
-  flex: 1 1 auto;
-  display: flex;
-  align-items: flex-end;
+.thr-gridline {
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 1px;
+  background: var(--border);
+  opacity: 0.55;
 }
-.thr-chart-tall .thr-bar-track {
+.thr-col {
+  position: relative;
+  flex: 1 1 0;
+  height: 100%;
+  display: flex;
+  justify-content: center;
+  align-items: flex-end;
+  min-width: 0;
+}
+.thr-bar {
+  width: 100%;
   max-width: 40px;
-}
-.thr-bar-live {
-  width: 100%;
-  background: color-mix(in srgb, var(--accent) 32%, transparent);
-  border-radius: 4px 4px 0 0;
-  display: flex;
-  align-items: flex-end;
   min-height: 1px;
-}
-.thr-bar-work {
-  width: 100%;
-  background: var(--accent);
-  border-radius: 4px 4px 0 0;
-}
-.thr-bar-label {
-  font-size: 10px;
-  color: var(--text-dim);
-  margin-top: 6px;
-  height: 12px;
-  font-variant-numeric: tabular-nums;
-}
-
-/* Turns-per-hour stacked bar (voice over typed) */
-.thr-turns-bar {
-  width: 100%;
   display: flex;
   flex-direction: column;
   justify-content: flex-end;
   border-radius: 4px 4px 0 0;
   overflow: hidden;
-  min-height: 1px;
 }
-.thr-turns-voice {
+.thr-seg {
   width: 100%;
+}
+.thr-seg-voice {
   background: var(--accent);
 }
-.thr-turns-typed {
-  width: 100%;
+.thr-seg-typed {
   background: var(--thr-muted);
+}
+/* Concurrency bars: the outer bar is loaded/running (accent, faded); the inner bar is actively working
+   (accent, solid), anchored to the baseline. */
+.thr-bar-live {
+  background: color-mix(in srgb, var(--accent) 30%, transparent);
+}
+.thr-seg-work {
+  background: var(--accent);
+}
+/* The x-axis row, offset by the y-axis gutter so each label sits under its bar. */
+.thr-xrow {
+  display: flex;
+  gap: var(--thr-col-gap);
+  padding-left: calc(var(--thr-yaxis-w) + 8px);
+  margin-top: 7px;
+}
+.thr-xlabel {
+  flex: 1 1 0;
+  min-width: 0;
+  text-align: center;
+  font-size: 10px;
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
 }
 
 .thr-legend {

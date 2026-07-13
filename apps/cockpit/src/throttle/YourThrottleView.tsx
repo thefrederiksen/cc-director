@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type CSSProperties } from "react";
+import { useEffect, useMemo, useState, type CSSProperties, type ReactNode } from "react";
 import {
   getThrottle,
   summarizeThrottle,
@@ -366,92 +366,160 @@ function ActivityTab({ data }: { data: ThrottleData }) {
   );
 }
 
-// A 24-hour bar chart of turns submitted per hour - the "working day" shape. Each bar is the total turns
-// that hour, stacked voice (accent) over typed (muted). Pure CSS bars.
-function TurnsPerHourChart({ hourly }: { hourly: InputHour[] }) {
-  const recent = hourly.slice(-24);
-  const peak = Math.max(1, ...recent.map((h) => h.turns));
+// One column of a bar chart: the bar node itself (its height is a percent of the plot), plus its x-axis
+// label and hover title.
+interface BarColumn {
+  key: string;
+  xlabel: string;
+  title: string;
+  bar: ReactNode;
+}
+
+// A "nice" linear scale from 0 to a rounded ceiling >= max, with evenly spaced integer ticks (~4-5), so
+// the y-axis reads in round numbers and the top bar never touches the frame. Counts only, so the step is
+// clamped to a whole number.
+function niceScale(max: number): { niceMax: number; ticks: number[] } {
+  if (max <= 0) return { niceMax: 1, ticks: [0, 1] };
+  const rawStep = max / 5;
+  const pow = Math.pow(10, Math.floor(Math.log10(rawStep)));
+  const n = rawStep / pow;
+  const stepMul = n <= 1 ? 1 : n <= 2 ? 2 : n <= 5 ? 5 : 10;
+  const step = Math.max(1, Math.round(stepMul * pow));
+  const niceMax = Math.ceil(max / step) * step;
+  const ticks: number[] = [];
+  for (let t = 0; t <= niceMax; t += step) ticks.push(t);
+  return { niceMax, ticks };
+}
+
+// The shared chart frame: a left y-axis of tick labels, recessive horizontal gridlines at those ticks,
+// the bars scaled to the SAME nice ceiling as the gridlines (so a bar top lands on a gridline you can
+// read), and an aligned x-axis row beneath. role="img" with a caption; the legend below carries series
+// identity so it is never color-alone.
+function BarChart({
+  ariaLabel,
+  ticks,
+  niceMax,
+  columns,
+  legend,
+}: {
+  ariaLabel: string;
+  ticks: number[];
+  niceMax: number;
+  columns: BarColumn[];
+  legend: ReactNode;
+}) {
   return (
     <>
-      <div
-        className="thr-chart thr-chart-tall"
-        role="img"
-        aria-label={`Turns submitted per hour for the last ${recent.length} hours`}
-      >
-        {recent.map((h, i) => {
-          const totalPct = (h.turns / peak) * 100;
-          const voicePortion = h.turns > 0 ? (h.voiceTurns / h.turns) * 100 : 0;
-          const typedPortion = h.turns > 0 ? (h.typedTurns / h.turns) * 100 : 0;
-          return (
-            <div
-              className="thr-bar-col"
-              key={h.hour}
-              title={`${h.hour}:00 UTC - ${h.turns} turns (${h.voiceTurns} voice, ${h.typedTurns} typed), ${h.characters.toLocaleString()} chars`}
-            >
-              <div className="thr-bar-track">
-                <div className="thr-turns-bar" style={{ height: `${totalPct}%` }}>
-                  <div className="thr-turns-typed" style={{ height: `${typedPortion}%` }} />
-                  <div className="thr-turns-voice" style={{ height: `${voicePortion}%` }} />
-                </div>
+      <div className="thr-chartframe tall" role="img" aria-label={ariaLabel}>
+        <div className="thr-plotrow">
+          <div className="thr-yaxis">
+            {ticks.map((t) => (
+              <div key={t} className="thr-ytick" style={{ bottom: `${(t / niceMax) * 100}%` }}>
+                {t.toLocaleString()}
               </div>
-              <div className="thr-bar-label">{i % 3 === 0 ? h.hour.slice(-2) : ""}</div>
+            ))}
+          </div>
+          <div className="thr-plot">
+            {ticks.map((t) => (
+              <div key={t} className="thr-gridline" style={{ bottom: `${(t / niceMax) * 100}%` }} />
+            ))}
+            {columns.map((c) => (
+              <div key={c.key} className="thr-col" title={c.title}>
+                {c.bar}
+              </div>
+            ))}
+          </div>
+        </div>
+        <div className="thr-xrow">
+          {columns.map((c) => (
+            <div key={c.key} className="thr-xlabel">
+              {c.xlabel}
             </div>
-          );
-        })}
+          ))}
+        </div>
       </div>
-      <div className="thr-legend">
-        <span className="thr-legend-item">
-          <span className="thr-swatch thr-swatch-voice" /> Voice
-        </span>
-        <span className="thr-legend-item">
-          <span className="thr-swatch thr-swatch-typed" /> Typed
-        </span>
-      </div>
+      <div className="thr-legend">{legend}</div>
     </>
   );
 }
 
-// A 24-hour bar chart of the hourly peak concurrent sessions. Each bar is the max loaded/running in that
-// hour; the darker inner portion is the max actively-working. Pure CSS bars.
+// A 24-hour chart of turns submitted per hour - the "working day" shape. Each bar is the total turns that
+// hour, split voice (accent) over typed (muted), scaled against a readable y-axis.
+function TurnsPerHourChart({ hourly }: { hourly: InputHour[] }) {
+  const recent = hourly.slice(-24);
+  const { niceMax, ticks } = niceScale(Math.max(...recent.map((h) => h.turns), 0));
+  const columns: BarColumn[] = recent.map((h, i) => {
+    const heightPct = (h.turns / niceMax) * 100;
+    const voicePortion = h.turns > 0 ? (h.voiceTurns / h.turns) * 100 : 0;
+    const typedPortion = h.turns > 0 ? (h.typedTurns / h.turns) * 100 : 0;
+    return {
+      key: h.hour,
+      xlabel: i % 3 === 0 ? h.hour.slice(-2) : "",
+      title: `${h.hour}:00 UTC - ${h.turns} turns (${h.voiceTurns} voice, ${h.typedTurns} typed), ${h.characters.toLocaleString()} chars`,
+      bar: (
+        <div className="thr-bar" style={{ height: `${heightPct}%` }}>
+          <div className="thr-seg thr-seg-typed" style={{ height: `${typedPortion}%` }} />
+          <div className="thr-seg thr-seg-voice" style={{ height: `${voicePortion}%` }} />
+        </div>
+      ),
+    };
+  });
+  return (
+    <BarChart
+      ariaLabel={`Turns submitted per hour for the last ${recent.length} hours`}
+      ticks={ticks}
+      niceMax={niceMax}
+      columns={columns}
+      legend={
+        <>
+          <span className="thr-legend-item">
+            <span className="thr-swatch thr-swatch-voice" /> Voice
+          </span>
+          <span className="thr-legend-item">
+            <span className="thr-swatch thr-swatch-typed" /> Typed
+          </span>
+        </>
+      }
+    />
+  );
+}
+
+// A 24-hour chart of the hourly peak concurrent sessions. Each bar is the max loaded/running that hour;
+// the darker inner portion is the max actively-working, scaled against a readable y-axis.
 function ConcurrencyChart({ hourly }: { hourly: ConcurrencyHour[] }) {
   const recent = hourly.slice(-24);
-  const peak = Math.max(1, ...recent.map((h) => h.maxLive));
+  const { niceMax, ticks } = niceScale(Math.max(...recent.map((h) => h.maxLive), 0));
+  const columns: BarColumn[] = recent.map((h, i) => {
+    const heightPct = (h.maxLive / niceMax) * 100;
+    const workPct = h.maxLive > 0 ? (h.maxWorking / h.maxLive) * 100 : 0;
+    return {
+      key: h.hour,
+      xlabel: i % 3 === 0 ? h.hour.slice(-2) : "",
+      title: `${h.hour}:00 UTC - ${h.maxLive} loaded, ${h.maxWorking} working, ${h.sessions} distinct sessions, ${h.machines} machine(s)`,
+      bar: (
+        <div className="thr-bar thr-bar-live" style={{ height: `${heightPct}%` }}>
+          <div className="thr-seg thr-seg-work" style={{ height: `${workPct}%` }} />
+        </div>
+      ),
+    };
+  });
   return (
-    <>
-      <div
-        className="thr-chart thr-chart-tall"
-        role="img"
-        aria-label={`Peak concurrent sessions per hour for the last ${recent.length} hours`}
-      >
-        {recent.map((h, i) => {
-          const livePct = (h.maxLive / peak) * 100;
-          const workPct = h.maxLive > 0 ? (h.maxWorking / h.maxLive) * 100 : 0;
-          const hourNum = h.hour.slice(-2);
-          return (
-            <div
-              className="thr-bar-col"
-              key={h.hour}
-              title={`${h.hour}:00 UTC - ${h.maxLive} loaded, ${h.maxWorking} working, ${h.sessions} distinct sessions, ${h.machines} machine(s)`}
-            >
-              <div className="thr-bar-track">
-                <div className="thr-bar-live" style={{ height: `${livePct}%` }}>
-                  <div className="thr-bar-work" style={{ height: `${workPct}%` }} />
-                </div>
-              </div>
-              <div className="thr-bar-label">{i % 3 === 0 ? hourNum : ""}</div>
-            </div>
-          );
-        })}
-      </div>
-      <div className="thr-legend">
-        <span className="thr-legend-item">
-          <span className="thr-swatch thr-swatch-live" /> Loaded / running
-        </span>
-        <span className="thr-legend-item">
-          <span className="thr-swatch thr-swatch-voice" /> Actively working
-        </span>
-      </div>
-    </>
+    <BarChart
+      ariaLabel={`Peak concurrent sessions per hour for the last ${recent.length} hours`}
+      ticks={ticks}
+      niceMax={niceMax}
+      columns={columns}
+      legend={
+        <>
+          <span className="thr-legend-item">
+            <span className="thr-swatch thr-swatch-live" /> Loaded / running
+          </span>
+          <span className="thr-legend-item">
+            <span className="thr-swatch thr-swatch-voice" /> Actively working
+          </span>
+        </>
+      }
+    />
   );
 }
 
