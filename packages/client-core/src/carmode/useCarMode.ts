@@ -5,6 +5,7 @@ import { playReadyCue, playYourTurnCue, startThinkingCue, primeCueAudio, release
 import { detectPhraseAtEnd } from "./controlPhrases";
 import { playClip, type PlayOutcome, type PlayClipHooks } from "./audioPlayback";
 import {
+  getCarModeHelp,
   postCarModeTelemetry,
   postCarModeWarmup,
   speakCarModeText,
@@ -178,6 +179,11 @@ export interface CarModeView {
   /** Interrupt the assistant by TOUCH: silence the reply instantly and hand the microphone back. A no-op
    *  unless the assistant is Speaking. */
   interrupt: () => void;
+  /** Explain OUT LOUD what Car Mode can do and how to talk to it (Help Mode, issue #1441): the big "Help"
+   *  button. It speaks the ONE curated help script from the Gateway (model-free, instant). From the idle
+   *  screen it starts Car Mode first (to prime the audio inside the tap gesture) and then speaks; while
+   *  running it speaks immediately, cutting off any current reply. A no-op while the brain is thinking. */
+  help: () => void;
   start: () => Promise<void>;
   stop: () => void;
 }
@@ -1158,6 +1164,56 @@ export function useCarMode(options: UseCarModeOptions): CarModeView {
     void enterListening();
   }, [enterListening, haltPlayback]);
 
+  // Speak the curated Help explanation out loud (Help Mode, issue #1441). This is NOT a brain turn: it reads
+  // the ONE server-owned help script from the model-free GET /carmode/help and plays it through the same
+  // voice path as any reply, so the button is instant, reliable, and costs no credits. It mirrors the
+  // end-of-turn handshake (my-turn cue, Thinking synchronously, the gentle working tone) and, when the
+  // script finishes, hands the microphone back via speakAndPlay's own enterListening. Assumes Car Mode is
+  // already started (the audio was primed in the Start gesture); the public help() below starts it first
+  // from idle. A no-op while the brain is Thinking, so it cannot cut a live turn in half; while Speaking it
+  // cuts off the current reply and speaks help instead.
+  const speakHelp = useCallback(async () => {
+    if (phaseRef.current === "thinking") return;
+    if (phaseRef.current === "speaking") haltPlayback();
+    // Stop the hands-free end-phrase watch so it cannot also take a turn while help plays.
+    stopEndPhraseWatch();
+    // Release the microphone before Thinking/Speaking (v3 rule: nothing touches getUserMedia during playback).
+    const rec = recorderRef.current;
+    try {
+      if (rec !== null && rec.isRecording) await rec.stop();
+    } catch {
+      // the segment is being torn down; nothing more to do
+    }
+    // Responsive-first + the audible handshake: fire the "my turn" cue, switch to Thinking synchronously, and
+    // start the gentle working tone. The cue AudioContext was primed in the Start gesture, so these sound.
+    playReadyCue();
+    setPhaseBoth("thinking");
+    setCaptureState("thinking");
+    setError(null);
+    stopThinkingCue();
+    thinkingCueStopRef.current = startThinkingCue();
+    const controller = new AbortController();
+    abortRef.current = controller;
+    try {
+      const helpContent = await getCarModeHelp(controller.signal);
+      if (controller.signal.aborted) return;
+      const spoken = helpContent.spoken;
+      if (spoken.length === 0) throw new Error("Help is unavailable right now.");
+      turnMetricsRef.current = null; // help is not a brain turn - it carries no performance telemetry
+      setTranscript("Help");
+      setReply(spoken);
+      setActions([]);
+      setPendingConfirmation(false);
+      // Speak the help through the one good voice; speakAndPlay hands the microphone back when it finishes.
+      await speakAndPlay(spoken, controller.signal);
+    } catch (err) {
+      if (controller.signal.aborted) return;
+      stopThinkingCue();
+      announceError(gatewayErrorMessage(err));
+      await enterListening();
+    }
+  }, [haltPlayback, stopEndPhraseWatch, setPhaseBoth, stopThinkingCue, speakAndPlay, announceError, enterListening]);
+
   // The live microphone level for the on-screen meter, polled by the page on an animation frame. Reads the
   // capture stream's AnalyserNode (display only) and returns 0 when the microphone is not capturing.
   const getMicLevel = useCallback(() => recorderRef.current?.level() ?? 0, []);
@@ -1268,6 +1324,22 @@ export function useCarMode(options: UseCarModeOptions): CarModeView {
     // when the owner taps "Over and out". The AnalyserNode drives the on-screen level meter (getMicLevel).
     await enterListening();
   }, [started, unsupported, enterListening, refreshHeldTurns]);
+
+  // The big "Help" button (Help Mode, issue #1441). From idle it starts Car Mode FIRST - start() primes the
+  // cue audio and unlocks the reply <audio> element INSIDE this tap gesture (required or the phone silently
+  // blocks the spoken help, the v7/v8 audio lesson) and settles into Listening - then speaks the help. While
+  // running it speaks help immediately (speakHelp cuts off any current reply). Guarded against the
+  // unsupported browser so it never enters a half state. Defined after start() so its dependency can name it.
+  const help = useCallback(async () => {
+    if (unsupported) {
+      setError("Car Mode needs Chrome or another Chromium browser for hands-free voice.");
+      return;
+    }
+    if (!started) {
+      await start();
+    }
+    await speakHelp();
+  }, [unsupported, started, start, speakHelp]);
 
   const stop = useCallback(() => {
     console.log("[CarMode] stop");
@@ -1393,6 +1465,7 @@ export function useCarMode(options: UseCarModeOptions): CarModeView {
     getMicLevel,
     endTurn,
     interrupt,
+    help: () => void help(),
     start,
     stop,
   };

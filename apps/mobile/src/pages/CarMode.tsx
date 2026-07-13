@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { useCarMode, type CarModeReply } from "@devthrottle/client-core/carmode/useCarMode";
-import { carModeTurn } from "@devthrottle/client-core/carmode/carModeApi";
+import { carModeTurn, getCarModeHelp, type CarModeCheatSheet } from "@devthrottle/client-core/carmode/carModeApi";
 import { getAiProvider } from "@devthrottle/client-core/api/ai";
 import { useScreenWakeLock } from "../hooks/useScreenWakeLock";
 
@@ -10,7 +10,7 @@ import { useScreenWakeLock } from "../hooks/useScreenWakeLock";
 // the old git short-sha + timestamp badge was replaced by a plain human version. BUMP THIS INTEGER BY HAND
 // ON EVERY DEPLOY of the mobile app (v1 -> v2 -> v3 ...), so a glance at the corner tells the owner and the
 // Architect exactly which page is live and what to look for after a deploy.
-const CAR_MODE_VERSION = "v10";
+const CAR_MODE_VERSION = "v11";
 
 // Car Mode (Car Mode mission): the standalone, chrome-less, full-screen page the owner opens to run
 // the whole fleet by voice, hands-free, phone in his pocket. It is a THIN view over the shared
@@ -120,9 +120,30 @@ export function CarMode() {
     getMicLevel,
     endTurn,
     interrupt,
+    help,
     start,
     stop,
   } = useCarMode({ respond, endPhrase });
+
+  // Help Mode (issue #1441): the on-screen cheat-sheet - the SAME content as the spoken help, from the ONE
+  // Gateway source (GET /carmode/help). Fetched once on mount for a glanceable "how do I talk to it" while
+  // stopped or learning (Architect decision 5). Display-only: if the fetch fails we simply do not show the
+  // cheat-sheet - the spoken Help button is independent and fails loudly on its own, so this never hides a
+  // broken capability.
+  const [cheatSheet, setCheatSheet] = useState<CarModeCheatSheet | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    void getCarModeHelp()
+      .then((h) => {
+        if (!cancelled) setCheatSheet(h.cheatSheet);
+      })
+      .catch((err: unknown) => {
+        console.log(`[CarMode] cheat-sheet fetch failed (spoken Help still works): ${String(err)}`);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const statusText = phaseStatus(phase);
 
@@ -213,6 +234,11 @@ export function CarMode() {
             {started ? statusText : "Tap Start, then just talk."}
           </p>
 
+          {/* Help Mode (issue #1441): the glanceable cheat-sheet - the two ways to talk to Car Mode and a
+              few example phrases, the SAME content the "Help" button speaks. Shown only on the idle screen,
+              for learning while stopped; during a live turn the eyes-free spoken help is what matters. */}
+          {!started && cheatSheet !== null && <CheatSheet sheet={cheatSheet} />}
+
           {/* A small link to the End Word Test harness so the owner can reach it without remembering the
               URL (his ask). Shown only on the idle screen; it is a tuning tool, not part of a live turn. */}
           {!started && (
@@ -262,9 +288,16 @@ export function CarMode() {
 
       <footer className="car-foot">
         {!started ? (
-          <button type="button" className="car-start" onClick={() => void start()} disabled={unsupported}>
-            Start Car Mode
-          </button>
+          <>
+            <button type="button" className="car-start" onClick={() => void start()} disabled={unsupported}>
+              Start Car Mode
+            </button>
+            {/* Help Mode (issue #1441): the big "Help" button. From idle it starts Car Mode first (to prime
+                the audio inside this tap gesture) and then speaks the curated explanation out loud. */}
+            <button type="button" className="car-help" onClick={help} disabled={unsupported}>
+              Help - what can I say?
+            </button>
+          </>
         ) : (
           <>
             <p className="car-hint">
@@ -292,6 +325,11 @@ export function CarMode() {
                 Stop
               </button>
             </div>
+            {/* Help Mode (issue #1441): while running, "Help" speaks the explanation immediately (it cuts off
+                any current reply). Disabled only while the brain is Thinking, so it cannot cut a live turn. */}
+            <button type="button" className="car-help-active" onClick={help} disabled={phase === "thinking"}>
+              Help
+            </button>
             <button type="button" className="car-stop" onClick={stop}>
               End Car Mode
             </button>
@@ -340,6 +378,33 @@ function MicMeter({ getLevel, active }: { getLevel: () => number; active: boolea
           <span className="car-meter-bar" style={{ height: `${8 + v * 84}%` }} />
         </span>
       ))}
+    </div>
+  );
+}
+
+// Help Mode (issue #1441): the on-screen cheat-sheet. Renders the two ways to talk to Car Mode - each with
+// a one-line hint and a few example phrases - plus how to end a turn and how to get help. It is the glanceable
+// twin of the spoken help script; both come from the ONE Gateway source so they can never disagree.
+function CheatSheet({ sheet }: { sheet: CarModeCheatSheet }) {
+  return (
+    <div className="car-cheat">
+      <p className="car-cheat-title">Two ways to talk to me</p>
+      {sheet.modes.map((mode) => (
+        <div key={mode.title} className="car-cheat-mode">
+          <span className="car-cheat-mode-title">{mode.title}</span>
+          <span className="car-cheat-mode-hint">{mode.hint}</span>
+          <ul className="car-cheat-examples">
+            {mode.examples.map((example) => (
+              <li key={example} className="car-cheat-example">
+                {example}
+              </li>
+            ))}
+          </ul>
+        </div>
+      ))}
+      <p className="car-cheat-foot">
+        {sheet.endTurn} {sheet.help}
+      </p>
     </div>
   );
 }

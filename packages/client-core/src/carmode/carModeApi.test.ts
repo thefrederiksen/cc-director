@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { carModeTurn, postCarModeTelemetry, postCarModeWarmup, speakCarModeText, transcribeCarModeAudio } from "./carModeApi";
+import { carModeTurn, getCarModeHelp, postCarModeTelemetry, postCarModeWarmup, speakCarModeText, transcribeCarModeAudio } from "./carModeApi";
 import { CreditsError, GatewayError } from "../api/client";
 
 // The Car Mode Gateway calls must fail LOUD and SPECIFIC (mission decision 8): a money refusal (402) is
@@ -102,6 +102,43 @@ describe("carModeTurn", () => {
     const result = await carModeTurn("hello");
     expect(result.turnId).toBe("");
     expect(result.timing).toBeNull();
+  });
+});
+
+describe("getCarModeHelp", () => {
+  it("parses the spoken script and the structured cheat-sheet", async () => {
+    vi.stubGlobal("fetch", mockFetch(200, {
+      spoken: "  I'm your fleet manager. Two ways to talk to me.  ",
+      cheatSheet: {
+        modes: [
+          { title: "Command me", hint: "The default.", examples: ["Who needs me?", "Snooze it"] },
+          { title: "Talk to a session", hint: "Start with tell or answer.", examples: ["Tell it to run the tests"] },
+        ],
+        endTurn: "Say over and out when you're done.",
+        help: "Say help any time.",
+      },
+    }));
+    const help = await getCarModeHelp();
+    expect(help.spoken).toBe("I'm your fleet manager. Two ways to talk to me.");
+    expect(help.cheatSheet.modes).toHaveLength(2);
+    expect(help.cheatSheet.modes[0].title).toBe("Command me");
+    expect(help.cheatSheet.modes[0].examples).toEqual(["Who needs me?", "Snooze it"]);
+    expect(help.cheatSheet.endTurn).toBe("Say over and out when you're done.");
+    expect(help.cheatSheet.help).toBe("Say help any time.");
+  });
+
+  it("defaults the cheat-sheet safely when the server omits it", async () => {
+    vi.stubGlobal("fetch", mockFetch(200, { spoken: "Help text." }));
+    const help = await getCarModeHelp();
+    expect(help.spoken).toBe("Help text.");
+    expect(help.cheatSheet.modes).toEqual([]);
+    expect(help.cheatSheet.endTurn).toBe("");
+    expect(help.cheatSheet.help).toBe("");
+  });
+
+  it("throws a GatewayError on a non-2xx so the caller announces it loudly", async () => {
+    vi.stubGlobal("fetch", mockFetch(500, { error: "help unavailable" }));
+    await expect(getCarModeHelp()).rejects.toBeInstanceOf(GatewayError);
   });
 });
 

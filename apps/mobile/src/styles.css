@@ -2979,6 +2979,107 @@ a.banner-btn {
   cursor: default;
 }
 
+/* Help Mode (issue #1441). The big "Help" button on the idle screen (secondary to Start, an outline so it
+   does not compete with the primary Start), and the compact "Help" on the active screen. Both speak the
+   curated explanation out loud. */
+.car-help {
+  width: 100%;
+  max-width: 420px;
+  padding: 16px;
+  font-size: 18px;
+  font-weight: 700;
+  border-radius: 12px;
+  background: transparent;
+  color: var(--text);
+  border: 1px solid var(--border);
+  cursor: pointer;
+}
+.car-help:disabled {
+  color: #6b7391;
+  border-color: transparent;
+  background: #26314e;
+  cursor: default;
+}
+.car-help-active {
+  width: 100%;
+  max-width: 420px;
+  padding: 14px;
+  font-size: 16px;
+  font-weight: 700;
+  border-radius: 12px;
+  background: var(--surface-2);
+  color: var(--text);
+  border: 1px solid var(--border);
+  cursor: pointer;
+}
+.car-help-active:disabled {
+  color: #6b7391;
+  border-color: transparent;
+  background: #26314e;
+  cursor: default;
+}
+
+/* Help Mode: the glanceable on-screen cheat-sheet on the idle screen - the two ways to talk to Car Mode,
+   each with a hint and a few example phrases. The twin of the spoken help, same content, one Gateway source. */
+.car-cheat {
+  width: 100%;
+  max-width: 34ch;
+  margin-top: 20px;
+  padding: 14px 16px;
+  border-radius: 12px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  text-align: left;
+}
+.car-cheat-title {
+  font-size: 13px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text-dim);
+  margin: 0 0 10px;
+}
+.car-cheat-mode {
+  margin-bottom: 12px;
+}
+.car-cheat-mode-title {
+  display: block;
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--accent);
+}
+.car-cheat-mode-hint {
+  display: block;
+  font-size: 13px;
+  color: var(--text-dim);
+  margin-top: 2px;
+}
+.car-cheat-examples {
+  list-style: none;
+  padding: 0;
+  margin: 6px 0 0;
+}
+.car-cheat-example {
+  font-size: 15px;
+  color: var(--text);
+  padding: 3px 0 3px 14px;
+  position: relative;
+}
+.car-cheat-example::before {
+  content: "\0022";
+  position: absolute;
+  left: 0;
+  color: var(--text-dim);
+}
+.car-cheat-example::after {
+  content: "\0022";
+  color: var(--text-dim);
+}
+.car-cheat-foot {
+  font-size: 14px;
+  color: var(--text-dim);
+  margin: 4px 0 0;
+}
+
 /* ===== Your Throttle (devthrottle-stats mission) - the in-app port of the Gateway /stats page ===== */
 .thr-note {
   color: var(--text-dim);

@@ -225,3 +225,58 @@ export async function postCarModeWarmup(): Promise<void> {
     console.log(`[CarMode] warmup ping failed (ignored): ${String(err)}`);
   }
 }
+
+/** One addressing mode on the Car Mode cheat-sheet (Help Mode, issue #1441): its title, a one-line hint,
+ *  and a few example phrases the owner can say. Mirrors the Gateway CarModeHelpMode. */
+export interface CarModeHelpMode {
+  title: string;
+  hint: string;
+  examples: string[];
+}
+
+/** The small, glanceable cheat-sheet shown on /m/car (Help Mode): the two ways to talk to Car Mode plus
+ *  how to end a turn and how to get help. The same content as the spoken help script, from the ONE Gateway
+ *  source (CarModeHelp), so the on-screen glance and the spoken help can never drift apart. */
+export interface CarModeCheatSheet {
+  modes: CarModeHelpMode[];
+  endTurn: string;
+  help: string;
+}
+
+/** The Car Mode Help content (Help Mode, issue #1441): the curated spoken script the Help button reads
+ *  aloud through /wingman/tts, and the structured cheat-sheet the page shows on screen. Both come from the
+ *  ONE Gateway source, so the button, the cheat-sheet, and the spoken "help" all say the same thing. */
+export interface CarModeHelpContent {
+  spoken: string;
+  cheatSheet: CarModeCheatSheet;
+}
+
+/**
+ * Fetch the Car Mode help content from the direct, model-free Gateway front door (GET /carmode/help). This
+ * is what the big "Help" button uses: it returns instantly - no model round trip, no credits - with the ONE
+ * curated spoken script to read aloud and the small cheat-sheet to show. The spoken "help" / "what can you
+ * do" path instead goes through the brain's get_help tool, which returns the SAME script, so both triggers
+ * say the identical thing. Routed through gatewayFetch so it feeds the shared connection-health signal; a
+ * failure throws a specific GatewayError so the caller announces it loudly (decision 8), never a silent stall.
+ */
+export async function getCarModeHelp(signal?: AbortSignal): Promise<CarModeHelpContent> {
+  const res = await gatewayFetch("/carmode/help", {
+    method: "GET",
+    headers: { Accept: "application/json", ...authHeaders() },
+    signal,
+  });
+  if (!res.ok) {
+    const body = (await res.json().catch(() => ({}))) as { error?: string };
+    throw new GatewayError(res.status, body.error ?? `Car Mode help failed: ${res.status}`);
+  }
+  const body = (await res.json().catch(() => ({}))) as Partial<CarModeHelpContent>;
+  const modes = Array.isArray(body.cheatSheet?.modes) ? body.cheatSheet.modes : [];
+  return {
+    spoken: (body.spoken ?? "").trim(),
+    cheatSheet: {
+      modes,
+      endTurn: body.cheatSheet?.endTurn ?? "",
+      help: body.cheatSheet?.help ?? "",
+    },
+  };
+}

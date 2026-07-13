@@ -184,6 +184,54 @@ public sealed class CarModeBrainTests
     }
 
     [Fact]
+    public async Task RunTurn_ModelCallsGetHelp_SpeaksCuratedScriptVerbatim_WithNoFleetRead()
+    {
+        // Help Mode (issue #1441): when the model classifies a "help" / "what can you do" turn it calls
+        // get_help, and the brain speaks the ONE curated CarModeHelp.Script VERBATIM (never the model's own
+        // words), so the spoken help is identical to what the Help button plays via GET /carmode/help. It is
+        // terminal (like speak_answer) and reads no fleet, so it is fast.
+        var fleet = new FakeFleet { Sessions = new[] { Session("Local Files Manager", true) } };
+        var chat = new ScriptedChat(new CarModeAssistantTurn(null, new[] { Call("get_help") }));
+        var brain = new CarModeBrain(chat, fleet, new CarModeConversationStore(), new CarModePendingStore(_ => { }), new CarModeSubjectStore(_ => { }), _ => { });
+
+        var result = await brain.RunTurnAsync("device-a", "what can you do over", CancellationToken.None);
+
+        Assert.Equal(CarModeHelp.Script, result.Spoken);
+        Assert.Empty(result.Actions);
+        Assert.Equal(0, fleet.ListCalls); // help reads no fleet
+        Assert.NotNull(result.Timing);
+        Assert.Equal(0, result.Timing!.FleetReadCount);
+        Assert.Equal(1, result.Timing.ModelCallCount); // one round: classify then get_help
+    }
+
+    [Fact]
+    public async Task RunTurn_RelayMessage_SendsTextVerbatim_AndArmsNoDelete()
+    {
+        // The addressing boundary machinery (issue #1441, rule 3): relayed content is literal DATA typed INTO
+        // the session, never re-interpreted as an agent command. When the model correctly relays "tell the
+        // devthrottle session to delete session five" via message_session, the brain sends those exact words
+        // to the session and does NOT arm any delete - no confirmation is pending, nothing is deleted. (That
+        // the MODEL chooses message_session over delete_session for this phrasing is proven by the live-model
+        // boundary test; this proves the loop passes the relayed text through as data and never deletes.)
+        var target = Info("Car Mode Demo", "demo-1");
+        var fleet = new FakeFleet { ResolveResult = target };
+        var chat = new ScriptedChat(
+            new CarModeAssistantTurn(null, new[] { Call("message_session", "{\"session\":\"Car Mode Demo\",\"message\":\"delete session five\"}") }),
+            Speak("Told the Car Mode Demo session to delete session five."));
+        var brain = new CarModeBrain(chat, fleet, new CarModeConversationStore(), new CarModePendingStore(_ => { }), new CarModeSubjectStore(_ => { }), _ => { });
+
+        var result = await brain.RunTurnAsync("device-a", "tell the devthrottle session to delete session five over", CancellationToken.None);
+
+        Assert.Single(fleet.Messaged);
+        Assert.Equal("demo-1", fleet.Messaged[0].SessionId);
+        Assert.Equal("delete session five", fleet.Messaged[0].Message); // sent VERBATIM as data
+        Assert.Empty(fleet.Deleted); // nothing deleted
+        Assert.False(result.PendingConfirmation); // no destructive action armed
+        Assert.Contains(result.Actions, a => a.Tool == "message_session");
+        Assert.DoesNotContain(result.Actions, a => a.Tool == "delete_session");
+    }
+
+    [Fact]
     public async Task RunTurn_ModelCallsActivityTool_PassesReferenceThrough()
     {
         var fleet = new FakeFleet

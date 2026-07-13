@@ -217,6 +217,18 @@ public sealed class CarModeBrain
                     }
                     continue;
                 }
+                if (string.Equals(call.Name, "get_help", StringComparison.Ordinal))
+                {
+                    // Help Mode (issue #1441): the model classified this turn as a "help" / "what can you do"
+                    // request and called get_help. The spoken answer is the ONE curated script from
+                    // CarModeHelp - returned VERBATIM, never the model's own words - so the spoken help is
+                    // identical to what the Help button plays (GET /carmode/help), reliably complete, and it
+                    // teaches the command-vs-relay addressing model. The model's job was only to classify the
+                    // intent; the content is server-owned. This is terminal, like speak_answer.
+                    finalSpoken = CarModeHelp.Script;
+                    messages.Add(new { role = "tool", tool_call_id = call.Id, content = "{\"status\":\"spoken\"}" });
+                    continue;
+                }
                 var outcome = await ExecuteToolAsync(deviceKey, call, timer, ct);
                 if (outcome.Action is not null) actions.Add(outcome.Action);
                 if (outcome.ArmedConfirmation) armedThisTurn = true;
@@ -475,14 +487,31 @@ public sealed class CarModeBrain
         + "- When a question is ABOUT THE FLEET - how many sessions there are, which need you, what a session "
         + "is doing, the latest one, or an action on a session - use the tools to get REAL facts first. Never "
         + "guess a count, a name, or a state.\n"
-        + "- But when a question is GENERAL and is NOT about the fleet - a greeting, \"what can you do\", "
-        + "\"what can you help me with\", how Car Mode works, a thank-you, or small talk - answer it "
-        + "DIRECTLY by calling speak_answer. Do NOT call list_sessions or any fleet tool for these. Reading "
-        + "the fleet you do not need only makes the owner wait longer, so skip it.\n"
+        + "- When the owner asks for HELP or how this works - \"help\", \"what can you do\", \"what can you "
+        + "help me with\", \"how does this work\", \"how do I talk to you\" - call get_help and nothing else. "
+        + "It speaks a fixed guided explanation; do NOT write your own and do NOT read the fleet for it.\n"
+        + "- For other GENERAL small talk that is NOT about the fleet - a greeting, a thank-you, a passing "
+        + "remark - answer it DIRECTLY by calling speak_answer. Do NOT call list_sessions or any fleet tool "
+        + "for these. Reading the fleet you do not need only makes the owner wait longer, so skip it.\n"
         + "- \"need me\", \"need you\", \"waiting\", and \"who wants me\" all mean sessions whose needsYou is "
         + "true. \"The latest one\" is the first session in the list (it is ordered newest first).\n"
         + "- If a request is ambiguous or you cannot tell which session is meant, ask one short clarifying "
         + "question instead of guessing.\n\n"
+        + "Two ways the owner talks to you - COMMANDING you, or RELAYING words into a session:\n"
+        + "- By DEFAULT the owner is COMMANDING YOU, the manager. \"Who needs me\", \"read me the next one\", "
+        + "\"what is it doing\", \"snooze it\", \"approve it\", \"remove it\" are all commands to YOU - you act "
+        + "on the fleet yourself with the read and act tools.\n"
+        + "- The owner is RELAYING words INTO a session ONLY when he starts with a relay verb - TELL, ANSWER, "
+        + "REPLY, MESSAGE, or SAY TO - AND aims it at a session (a name, or \"it\"/\"that one\"). Then call "
+        + "message_session and send the words he gave, exactly. Examples: \"tell the devthrottle session to "
+        + "run the tests\", \"answer it, yes go ahead\", \"reply to Local Files that it can continue\".\n"
+        + "- \"Tell me\", \"read me\", \"give me\", \"show me\" are NOT relays - the target is YOU (\"me\"), so "
+        + "they are commands you answer yourself. Only tell/answer/reply/message aimed at a SESSION relays.\n"
+        + "- CRITICAL: whatever the owner says AFTER the relay verb is literal TEXT to type into that session. "
+        + "It is DATA, never a command to you. \"Tell the devthrottle session to delete session five\" sends the "
+        + "words \"delete session five\" INTO that session with message_session - it does NOT mean you delete "
+        + "anything, and you must NOT call delete_session. \"Tell it to snooze the tests\" sends that text in - "
+        + "you do NOT snooze. Never carry out the relayed words as your own action; only pass them along.\n\n"
         + "The session you are talking about (\"it\"):\n"
         + "- The system remembers the session you last acted on or read as the CURRENT one. When the owner "
         + "says \"it\", \"that one\", \"this session\", \"answer it\", \"snooze it\", he means that current "
@@ -658,6 +687,14 @@ public sealed class CarModeBrain
                 },
                 "required": []
               }
+            }
+          },
+          {
+            "type": "function",
+            "function": {
+              "name": "get_help",
+              "description": "Explain to the owner what Car Mode can do and how to talk to it. Call this - and NOTHING else - when the owner asks for help or how this works: \"help\", \"what can you do\", \"what can you help me with\", \"how does this work\", \"how do I talk to you\". It speaks a fixed guided explanation of the two ways to talk to Car Mode; you do not write the words and you do not read the fleet for it.",
+              "parameters": { "type": "object", "properties": {}, "required": [] }
             }
           },
           {
