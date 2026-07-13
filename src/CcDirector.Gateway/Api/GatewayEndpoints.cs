@@ -962,15 +962,30 @@ internal static class GatewayEndpoints
             // exists but never gets renamed or journal-cleaned). Dedicated 20s client,
             // same as the cross-director handover's spawn leg above.
             var targetEp = (target.ControlEndpoint ?? "").TrimEnd('/');
-            SessionDto? created;
-            using (var spawnHttp = new HttpClient { Timeout = TimeSpan.FromSeconds(20) })
+            var spawnReq = new NewSessionRequest
             {
-                var spawnResp = await spawnHttp.PostAsJsonAsync($"{targetEp}/sessions", new NewSessionRequest
-                {
-                    RepoPath = row.RepoPath,
-                    Agent = row.Agent,
-                    PrePrompt = context,
-                });
+                RepoPath = row.RepoPath,
+                Agent = row.Agent,
+                PrePrompt = context,
+            };
+            // Gateway Cleanup Phase 2: create the continuation over the tunnel (create verb, director-level so
+            // SessionId is ""), tunnel-first. The tunnel unary has no 2s aggregate timeout - keep-alive sustains
+            // a multi-second spawn - so the orphan risk the dedicated 20s HttpClient guarded against does not
+            // apply on the tunnel path; the HTTP fallback keeps that dedicated client. Post-cut the HTTP arm goes.
+            SessionDto? created;
+            var createSr = await DirectorCommandRouter.TrySendAsync(sendCommand, target.DirectorId, "create", "", spawnReq, CancellationToken.None);
+            if (createSr is not null)
+            {
+                created = createSr.Ok ? DirectorCommandRouter.ReadBody<SessionDto>(createSr) : null;
+                if (created is null)
+                    return Results.Problem(
+                        $"target director failed to create the continuation session: {DirectorCommandRouter.DescribeFailure(createSr)}",
+                        statusCode: StatusCodes.Status502BadGateway);
+            }
+            else
+            {
+                using var spawnHttp = new HttpClient { Timeout = TimeSpan.FromSeconds(20) };
+                var spawnResp = await spawnHttp.PostAsJsonAsync($"{targetEp}/sessions", spawnReq);
                 if (!spawnResp.IsSuccessStatusCode)
                 {
                     var body = await spawnResp.Content.ReadAsStringAsync();
@@ -990,16 +1005,33 @@ internal static class GatewayEndpoints
             var restoredName = string.IsNullOrWhiteSpace(row.Name) ? null : row.Name;
             if (restoredName is not null)
             {
-                var (patched, body, patchErr) = await client.PatchSessionAsync(targetEp, created.SessionId,
-                    new SessionUpdateRequest { Name = restoredName });
-                if (patched && body is not null) { body.DirectorId = target.DirectorId; created = body; }
+                // Gateway Cleanup Phase 2: rename over the tunnel (patch verb, tunnel-first, HTTP fallback pre-cut).
+                var renameReq = new SessionUpdateRequest { Name = restoredName };
+                SessionDto? renamed; string? patchErr;
+                var patchSr = await DirectorCommandRouter.TrySendAsync(sendCommand, target.DirectorId, "patch", created.SessionId, renameReq, CancellationToken.None);
+                if (patchSr is not null)
+                {
+                    renamed = patchSr.Ok ? DirectorCommandRouter.ReadBody<SessionDto>(patchSr) : null;
+                    patchErr = patchSr.Ok ? null : DirectorCommandRouter.DescribeFailure(patchSr);
+                }
+                else
+                {
+                    var http = await client.PatchSessionAsync(targetEp, created.SessionId, renameReq);
+                    renamed = http.body; patchErr = http.error;
+                }
+                if (renamed is not null) { renamed.DirectorId = target.DirectorId; created = renamed; }
                 else FileLog.Write($"[GatewayEndpoints] restore: rename failed (continuing): {patchErr}");
             }
 
             // Pull the restored session out of the Interrupted sessions list. Best-effort too - the
             // user can still Dismiss the row by hand if this leg fails.
-            var cleaned = await client.RemoveInterruptedSessionAsync(
-                (reporter.ControlEndpoint ?? "").TrimEnd('/'), deadDirectorId, deadPid, row.SessionId);
+            // Gateway Cleanup Phase 2: journal cleanup over the tunnel (interrupted-remove verb on the reporting
+            // Director, tunnel-first, HTTP fallback pre-cut).
+            var removeReq = new InterruptedRemoveRequest { DeadDirectorId = deadDirectorId, DeadPid = deadPid, SessionId = row.SessionId };
+            var removeSr = await DirectorCommandRouter.TrySendAsync(sendCommand, reporter.DirectorId, "interrupted-remove", "", removeReq, CancellationToken.None);
+            var cleaned = removeSr is not null
+                ? removeSr.Ok
+                : await client.RemoveInterruptedSessionAsync((reporter.ControlEndpoint ?? "").TrimEnd('/'), deadDirectorId, deadPid, row.SessionId);
             if (!cleaned)
                 FileLog.Write($"[GatewayEndpoints] restore: journal cleanup failed for {row.SessionId} (row stays in the Interrupted sessions list)");
 
@@ -1350,16 +1382,18 @@ internal static class GatewayEndpoints
             while (DateTime.UtcNow < deadline)
             {
                 await Task.Delay(750);
-                var cur = await client.GetSessionAsync(director.ControlEndpoint, sid);
+                // Gateway Cleanup Phase 2: the idle poll rides the tunnel too (snapshot verb, tunnel-first);
+                // a null return falls back to the byte-identical HTTP dial. Post-cut the HTTP arm is removed.
+                var cur = await SnapshotTunnelFirstAsync(sendCommand, client, director, sid, CancellationToken.None);
                 if (cur is null) { finalState = "Exited"; break; }
                 finalState = cur.ActivityState;
                 if (finalState is "Idle" or "WaitingForInput" or "Exited" or "Failed") break;
             }
             sw.Stop();
 
-            // Fetch new output since prompt was sent
+            // Fetch new output since prompt was sent. Gateway Cleanup Phase 2: buffer verb, tunnel-first.
             string output = "";
-            var buf = await client.GetBufferAsync(director.ControlEndpoint, sid, lines: 500, raw: false, since: body.BufferCursor);
+            var buf = await BufferTunnelFirstAsync(sendCommand, client, director, sid, 500, body.BufferCursor, CancellationToken.None);
             if (buf is not null) output = buf.Text;
 
             body.WaitStatus = finalState switch
@@ -2097,7 +2131,20 @@ internal static class GatewayEndpoints
                 }
 
                 var promptReq = new PromptRequest { Text = req.Text, AppendEnter = req.AppendEnter };
-                var (ok, body, err) = await client.PostPromptAsync(director.ControlEndpoint, sid, promptReq);
+                // Gateway Cleanup Phase 2: fanout delivery rides the tunnel (prompt verb, tunnel-first);
+                // a null return falls back to the byte-identical HTTP dial. Post-cut the HTTP arm is removed.
+                bool ok; PromptResponse? body; string? err;
+                var deliverSr = await DirectorCommandRouter.TrySendAsync(sendCommand, director.DirectorId, "prompt", sid, promptReq, CancellationToken.None);
+                if (deliverSr is not null)
+                {
+                    ok = deliverSr.Ok;
+                    body = deliverSr.Ok ? DirectorCommandRouter.ReadBody<PromptResponse>(deliverSr) : null;
+                    err = deliverSr.Ok ? null : DirectorCommandRouter.DescribeFailure(deliverSr);
+                }
+                else
+                {
+                    (ok, body, err) = await client.PostPromptAsync(director.ControlEndpoint, sid, promptReq);
+                }
                 if (!ok || body is null)
                 {
                     sw.Stop();
@@ -2124,20 +2171,20 @@ internal static class GatewayEndpoints
                     };
                 }
 
-                // Poll for idle
+                // Poll for idle. Gateway Cleanup Phase 2: snapshot verb, tunnel-first (HTTP fallback pre-cut).
                 var deadline = DateTime.UtcNow.AddMilliseconds(req.TimeoutMs);
                 string finalState = body.ActivityState;
                 while (DateTime.UtcNow < deadline)
                 {
                     await Task.Delay(750);
-                    var cur = await client.GetSessionAsync(director.ControlEndpoint, sid);
+                    var cur = await SnapshotTunnelFirstAsync(sendCommand, client, director, sid, CancellationToken.None);
                     if (cur is null) { finalState = "Exited"; break; }
                     finalState = cur.ActivityState;
                     if (finalState is "Idle" or "WaitingForInput" or "Exited" or "Failed") break;
                 }
 
-                // Get the diff
-                var buf = await client.GetBufferAsync(director.ControlEndpoint, sid, lines: 500, raw: false, since: body.BufferCursor);
+                // Get the diff. Gateway Cleanup Phase 2: buffer verb, tunnel-first (HTTP fallback pre-cut).
+                var buf = await BufferTunnelFirstAsync(sendCommand, client, director, sid, 500, body.BufferCursor, CancellationToken.None);
                 var output = buf?.Text ?? "";
 
                 sw.Stop();
@@ -2343,6 +2390,31 @@ internal static class GatewayEndpoints
     {
         var machine = string.IsNullOrWhiteSpace(session.MachineName) ? (director.MachineName ?? "") : session.MachineName;
         return new BroadcastScope(session.MissionId?.ToString(), session.GroupId, session.RepoPath, machine);
+    }
+
+    // Gateway Cleanup mission, Phase 2: the idle-wait poll (single prompt AND fanout broadcast) reads the
+    // owning session snapshot / terminal buffer over the tunnel FIRST (snapshot / buffer verbs), falling back
+    // to the byte-identical HTTP dial only when the Director has no stream. Post-cut the HTTP arm is removed.
+    // Shared by both poll sites so there is one tunnel-branch to prove.
+    private static async Task<SessionDto?> SnapshotTunnelFirstAsync(
+        DirectorCommandRouter.SendDirectorCommandAsync? sendCommand, DirectorEndpointClient client,
+        DirectorDto director, string sid, CancellationToken ct)
+    {
+        var sr = await DirectorCommandRouter.TrySendAsync(sendCommand, director.DirectorId, "snapshot", sid, null, ct);
+        if (sr is not null)
+            return sr.Ok ? DirectorCommandRouter.ReadBody<SessionDto>(sr) : null;
+        return await client.GetSessionAsync(director.ControlEndpoint, sid, ct);
+    }
+
+    private static async Task<BufferResponse?> BufferTunnelFirstAsync(
+        DirectorCommandRouter.SendDirectorCommandAsync? sendCommand, DirectorEndpointClient client,
+        DirectorDto director, string sid, int lines, long? since, CancellationToken ct)
+    {
+        var sr = await DirectorCommandRouter.TrySendAsync(sendCommand, director.DirectorId, "buffer", sid,
+            new BufferRequest { Lines = lines, Raw = false, Since = since }, ct);
+        if (sr is not null)
+            return sr.Ok ? DirectorCommandRouter.ReadBody<BufferResponse>(sr) : null;
+        return await client.GetBufferAsync(director.ControlEndpoint, sid, lines, raw: false, since: since, ct);
     }
 
     // Gateway Cleanup mission, Phase 2 (PR E-B): internal so the voice / dictation cluster endpoints reuse
