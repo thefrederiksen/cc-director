@@ -22,6 +22,7 @@ import { TranscriptsView } from "./transcripts/TranscriptsView";
 import { ExesView } from "./exes/ExesView";
 import { LearningView } from "./learning/LearningView";
 import { YourThrottleView } from "./throttle/YourThrottleView";
+import { ReposView } from "./throttle/ReposView";
 import { TranscriptionHealthView } from "./transcription/TranscriptionHealthView";
 import { NetworkDiagnosticsView } from "./network/NetworkDiagnosticsView";
 import { AccountView } from "./account/AccountView";
@@ -175,6 +176,11 @@ const router = createBrowserRouter(
             // /stats page. Reads the same GET /stats/data feed through client-core so the user sees
             // their throttle in the app rather than at a bare URL.
             { path: "/your-throttle", element: <YourThrottleView /> },
+            // Repos (devthrottle-stats mission): the PRIVATE per-repo split. Its own route + rail entry,
+            // deliberately separate from Your Throttle so which codebases take the owner's time is never
+            // on-screen alongside the shareable throttle. Reads the same GET /stats/data feed (repos ride
+            // on it) through client-core.
+            { path: "/repos", element: <ReposView /> },
             // Transcription Health: read-only view over the local transcription telemetry the Gateway
             // records (latency, failures, most-corrected words). Same Gateway REST surface via client-core.
             { path: "/transcription", element: <TranscriptionHealthView /> },

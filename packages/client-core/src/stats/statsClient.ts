@@ -67,6 +67,26 @@ export interface InputHour {
   characters: number;
 }
 
+/** One repository's all-time input tally for the private Repos page: how much development landed in this
+ * codebase, in submitted turns (total + voice/typed split), character volume, and distinct sessions.
+ * Mirrors the Gateway RepoStatBucketDto. Counts only - never any message text. */
+export interface RepoStat {
+  /** Full repository / working-directory path the sessions ran in (the grouping key). */
+  repo: string;
+  /** Display leaf of the path (its last segment), e.g. "devthrottle". */
+  repoName: string;
+  /** Total submitted turns into this repo (voice + typed). */
+  turns: number;
+  /** Submitted turns driven by voice. */
+  voiceTurns: number;
+  /** Submitted turns driven by typing. */
+  typedTurns: number;
+  /** Total character volume of input into this repo. */
+  characters: number;
+  /** Distinct sessions that drove counted input into this repo. */
+  sessions: number;
+}
+
 /** The GET /stats/data body: the fleet-wide aggregated tally plus the honesty caveats. */
 export interface ThrottleData {
   /** When the Gateway generated this snapshot (ISO 8601 UTC), or "" when absent. */
@@ -81,6 +101,8 @@ export interface ThrottleData {
   concurrency: ConcurrencyStats | null;
   /** Wingman usage (a session "uses the wingman" when it has voice mode on). */
   wingman: WingmanUsage;
+  /** Per-repository all-time tally, ranked most-driven first (the private Repos page). */
+  repos: RepoStat[];
   /** Plain-English caveats about what the numbers do and do not include. */
   notCaptured: string[];
 }
@@ -159,10 +181,12 @@ export async function getThrottle(signal?: AbortSignal): Promise<ThrottleData> {
     hourlyTurns?: unknown;
     concurrency?: unknown;
     wingman?: unknown;
+    repos?: unknown;
     notCaptured?: unknown;
   } | null;
   const buckets = Array.isArray(body?.buckets) ? body!.buckets.map(normalizeBucket) : [];
   const hourlyTurns = Array.isArray(body?.hourlyTurns) ? body!.hourlyTurns.map(normalizeInputHour) : [];
+  const repos = Array.isArray(body?.repos) ? body!.repos.map(normalizeRepo) : [];
   const notCaptured = Array.isArray(body?.notCaptured)
     ? body!.notCaptured.filter((x): x is string => typeof x === "string")
     : [];
@@ -173,6 +197,7 @@ export async function getThrottle(signal?: AbortSignal): Promise<ThrottleData> {
     hourlyTurns,
     concurrency: normalizeConcurrency(body?.concurrency),
     wingman: normalizeWingman(body?.wingman),
+    repos,
     notCaptured,
   };
 }
@@ -180,6 +205,19 @@ export async function getThrottle(signal?: AbortSignal): Promise<ThrottleData> {
 function normalizeWingman(raw: unknown): WingmanUsage {
   const w = (raw ?? {}) as { turns?: unknown; sessions?: unknown };
   return { turns: num(w.turns), sessions: num(w.sessions) };
+}
+
+function normalizeRepo(raw: unknown): RepoStat {
+  const r = (raw ?? {}) as Partial<Record<keyof RepoStat, unknown>>;
+  return {
+    repo: String(r.repo ?? ""),
+    repoName: String(r.repoName ?? ""),
+    turns: num(r.turns),
+    voiceTurns: num(r.voiceTurns),
+    typedTurns: num(r.typedTurns),
+    characters: num(r.characters),
+    sessions: num(r.sessions),
+  };
 }
 
 function normalizeInputHour(raw: unknown): InputHour {
@@ -257,6 +295,55 @@ export function summarizeThrottle(data: ThrottleData): ThrottleSummary {
     voiceShare: share(voiceTurns),
     turnsBySurface,
     phoneShare: share(turnsBySurface.phone),
+    hasData: totalTurns > 0 || totalCharacters > 0,
+  };
+}
+
+/** A derived, presentation-ready summary of the per-repo tally for the Repos page headline cards. */
+export interface RepoSummary {
+  /** How many repos have any counted input. */
+  repoCount: number;
+  /** Total submitted turns across every repo. */
+  totalTurns: number;
+  /** Total character volume across every repo. */
+  totalCharacters: number;
+  /** Total distinct sessions across every repo (a session belongs to exactly one repo, so summing the
+   * per-repo distinct counts is itself a distinct total). */
+  totalSessions: number;
+  /** Total voice-driven turns across every repo. */
+  voiceTurns: number;
+  /** The most-driven repo's share of all turns, or null when no turns are counted yet. */
+  topShare: number | null;
+  /** The most-driven repo's display name, or null when there is no data. */
+  topRepoName: string | null;
+  hasData: boolean;
+}
+
+/** Derive the Repos-page headline summary from the per-repo tally. Shares are null (never a fabricated
+ * 0%) when there are no counted turns yet. */
+export function summarizeRepos(repos: RepoStat[]): RepoSummary {
+  let totalTurns = 0;
+  let totalCharacters = 0;
+  let totalSessions = 0;
+  let voiceTurns = 0;
+  let top: RepoStat | null = null;
+
+  for (const r of repos) {
+    totalTurns += r.turns;
+    totalCharacters += r.characters;
+    totalSessions += r.sessions;
+    voiceTurns += r.voiceTurns;
+    if (top === null || r.turns > top.turns) top = r;
+  }
+
+  return {
+    repoCount: repos.length,
+    totalTurns,
+    totalCharacters,
+    totalSessions,
+    voiceTurns,
+    topShare: totalTurns > 0 && top !== null ? top.turns / totalTurns : null,
+    topRepoName: top !== null ? top.repoName : null,
     hasData: totalTurns > 0 || totalCharacters > 0,
   };
 }

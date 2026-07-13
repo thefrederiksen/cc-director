@@ -13,6 +13,7 @@ import { AiSettings } from "./pages/AiSettings";
 import { About } from "./pages/About";
 import { Diagnostics } from "./pages/Diagnostics";
 import { YourThrottle } from "./pages/YourThrottle";
+import { Repos } from "./pages/Repos";
 import { SignIn } from "@devthrottle/client-core/auth/SignIn";
 import { DeviceCallback } from "@devthrottle/client-core/auth/DeviceCallback";
 import { hasDeviceKey } from "@devthrottle/client-core/auth/deviceKey";
@@ -129,6 +130,9 @@ const router = createBrowserRouter(
             // Your Throttle (devthrottle-stats mission): the in-app port of the standalone Gateway
             // /stats page, reading the same GET /stats/data feed through client-core.
             { path: "/throttle", element: <YourThrottle /> },
+            // Repos (devthrottle-stats mission): the PRIVATE per-repo split, its own page separate from
+            // Your Throttle. Reads the same GET /stats/data feed (repos ride on it) through client-core.
+            { path: "/repos", element: <Repos /> },
             { path: "/new", element: <NewSession /> },
             { path: "/session/:sessionId", element: <Chat /> },
             { path: "/session/:sessionId/chat", element: <Chat /> },

@@ -44,6 +44,17 @@ public sealed class GatewayInputStatsAggregatorTests : IDisposable
         return dto;
     }
 
+    private static SessionDto SessionInRepo(string id, string repoPath, params (string modality, string surface, long turns, long chars)[] buckets)
+    {
+        var dto = Session(id, buckets);
+        dto.RepoPath = repoPath;
+        return dto;
+    }
+
+    private static RepoStatBucketDto? Repo(GatewayInputStatsAggregator agg, string repoName) =>
+        agg.RepoTotals().FirstOrDefault(r => r.RepoName == repoName);
+
+
     private static long Turns(InputStatsDto dto, string modality, string surface) =>
         dto.Buckets.FirstOrDefault(b => b.Modality == modality && b.Surface == surface)?.Turns ?? 0;
 
@@ -228,5 +239,50 @@ public sealed class GatewayInputStatsAggregatorTests : IDisposable
         b.Observe(VoiceSession("s1", ("voice", "phone", 3, 120)));
         Assert.Equal(3, b.WingmanUsage().Turns);
         Assert.Equal(1, b.WingmanUsage().Sessions);
+    }
+
+    [Fact]
+    public void RepoTotals_AttributeTurnsToRepo_SplitByModality_AndRankByTurns()
+    {
+        var agg = new GatewayInputStatsAggregator(_path);
+        // Two repos drive input; devthrottle gets more, so it must rank first.
+        agg.Observe(SessionInRepo("s1", @"D:\ReposFred\devthrottle", ("voice", "phone", 6, 600)));
+        agg.Observe(SessionInRepo("s2", @"D:\ReposFred\devthrottle", ("typed", "desktop", 2, 40)));
+        agg.Observe(SessionInRepo("s3", @"C:\repos\mindzieWeb", ("typed", "cockpit", 3, 90)));
+
+        var ranked = agg.RepoTotals();
+        Assert.Equal(2, ranked.Count);
+        Assert.Equal("devthrottle", ranked[0].RepoName);     // 8 turns - ranked first
+        Assert.Equal("mindzieWeb", ranked[1].RepoName);      // 3 turns
+
+        var dt = ranked[0];
+        Assert.Equal(8, dt.Turns);
+        Assert.Equal(6, dt.VoiceTurns);
+        Assert.Equal(2, dt.TypedTurns);
+        Assert.Equal(640, dt.Characters);
+        Assert.Equal(2, dt.Sessions);                         // two distinct sessions drove it
+        Assert.Equal(@"D:\ReposFred\devthrottle", dt.Repo);   // full path preserved
+    }
+
+    [Fact]
+    public void RepoTotals_DistinctSessions_NoDoubleCountAcrossRepush_AndSurviveRestart()
+    {
+        var agg = new GatewayInputStatsAggregator(_path);
+        agg.Observe(SessionInRepo("s1", @"D:\repos\app", ("voice", "phone", 3, 120)));
+        agg.Observe(SessionInRepo("s1", @"D:\repos\app", ("voice", "phone", 3, 120))); // re-push, no change
+        agg.Observe(SessionInRepo("s1", @"D:\repos\app", ("voice", "phone", 5, 200))); // grew by 2
+
+        var app = Repo(agg, "app");
+        Assert.NotNull(app);
+        Assert.Equal(5, app!.Turns);
+        Assert.Equal(1, app.Sessions); // the same session id must count once, not three times
+
+        // Gateway restart: the per-repo tally (and its distinct-session set) reload from disk.
+        var reloaded = new GatewayInputStatsAggregator(_path);
+        var app2 = Repo(reloaded, "app");
+        Assert.NotNull(app2);
+        Assert.Equal(5, app2!.Turns);
+        Assert.Equal(200, app2.Characters);
+        Assert.Equal(1, app2.Sessions);
     }
 }

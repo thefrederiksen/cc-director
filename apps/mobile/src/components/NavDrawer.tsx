@@ -38,6 +38,9 @@ export function NavDrawer() {
             <Link className="drawer-item" to="/throttle" onClick={close}>
               Your Throttle
             </Link>
+            <Link className="drawer-item" to="/repos" onClick={close}>
+              Repos
+            </Link>
             <div className="drawer-sep" />
             <Link className="drawer-item" to="/settings" onClick={close}>
               AI settings

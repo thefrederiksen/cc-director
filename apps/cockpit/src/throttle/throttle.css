@@ -445,6 +445,184 @@
   background: color-mix(in srgb, var(--accent) 32%, transparent);
 }
 
+/* ============================================================================
+   Repos page (private per-person view) - reuses the throttle tokens and card /
+   section / caveat styles above, and adds the ranked repository list, the
+   private badge, and the metric toggle.
+   ============================================================================ */
+
+/* The "private - only you" badge sits above the title so the page announces, at a glance, that it is
+   not for sharing (unlike the shareable Your Throttle splits). */
+.repos-private {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent) 32%, transparent);
+  border-radius: 999px;
+  padding: 4px 10px;
+  margin-bottom: 10px;
+}
+.repos-lock {
+  width: 9px;
+  height: 8px;
+  border: 1.5px solid currentColor;
+  border-radius: 1px 1px 2px 2px;
+  position: relative;
+  margin-top: 3px;
+}
+.repos-lock::before {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: -6px;
+  width: 6px;
+  height: 6px;
+  border: 1.5px solid currentColor;
+  border-bottom: none;
+  border-radius: 4px 4px 0 0;
+  transform: translateX(-50%);
+}
+
+/* Metric toggle (Turns / Characters / Sessions) */
+.repos-controls {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 18px;
+}
+.repos-controls-label {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+}
+.repos-seg {
+  display: inline-flex;
+  gap: 2px;
+  padding: 3px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 9px;
+}
+.repos-seg-btn {
+  appearance: none;
+  border: none;
+  background: none;
+  cursor: pointer;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-dim);
+  padding: 5px 13px;
+  border-radius: 6px;
+}
+.repos-seg-btn:hover {
+  color: var(--text);
+}
+.repos-seg-btn.on {
+  background: var(--surface);
+  color: var(--accent);
+}
+
+/* Ranked repository list */
+.repo-rows {
+  display: flex;
+  flex-direction: column;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  overflow: hidden;
+}
+.repo-row {
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr) 88px;
+  align-items: center;
+  gap: 14px;
+  padding: 13px 16px;
+  border-top: 1px solid var(--border);
+}
+.repo-row:first-child {
+  border-top: none;
+}
+.repo-rank {
+  font-size: 13px;
+  color: var(--text-dim);
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.repo-main {
+  min-width: 0;
+}
+.repo-top {
+  display: flex;
+  align-items: baseline;
+  gap: 9px;
+  margin-bottom: 4px;
+  flex-wrap: wrap;
+}
+.repo-name {
+  font-weight: 600;
+  font-size: 14px;
+}
+.repo-path {
+  font-size: 11px;
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 100%;
+}
+.repo-meta {
+  font-size: 12px;
+  color: var(--text-dim);
+  margin-bottom: 7px;
+  font-variant-numeric: tabular-nums;
+}
+.repo-bar-track {
+  height: 10px;
+  background: var(--surface-2);
+  border-radius: 5px;
+  overflow: hidden;
+  display: flex;
+}
+.repo-bar-voice {
+  height: 100%;
+  background: var(--accent);
+}
+.repo-bar-typed {
+  height: 100%;
+  background: color-mix(in srgb, var(--text-dim) 45%, transparent);
+}
+.repo-val {
+  text-align: right;
+}
+.repo-val-num {
+  font-size: 15px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.repo-val-share {
+  font-size: 11px;
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+}
+
+@media (max-width: 560px) {
+  .repo-row {
+    grid-template-columns: 22px minmax(0, 1fr) 72px;
+    gap: 10px;
+    padding: 12px;
+  }
+}
+
 /* ---- Honesty caveats ----------------------------------------------------------------------------- */
 .thr-caveats {
   background: var(--surface-2);
