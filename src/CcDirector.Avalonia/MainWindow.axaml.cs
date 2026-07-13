@@ -185,37 +185,6 @@ public partial class MainWindow : Window
         BtnStartFifo.IsVisible = alpha;
         BtnHandover.IsVisible = alpha;
         FileLog.Write($"[MainWindow] ApplyAlphaFeatureVisibility: alphaFeatures={alpha}");
-
-        // The Wingman tab and "Open Wingman" button are alpha-gated for the v1 default install
-        // (issue 559). Re-evaluate them here so a live alpha toggle (AlphaMode.Changed) shows or
-        // hides them without a restart.
-        ApplyWingmanTabVisibility();
-    }
-
-    /// <summary>
-    /// Single source of truth for the visibility of the Wingman tab and the "Open Wingman" button.
-    /// Alpha mode is a hard gate for both: when it is off they are hidden regardless of the
-    /// per-session Wingman state; when it is on, the Wingman tab additionally requires the session's
-    /// Wingman experience to be enabled. When the Wingman tab gets hidden out from under the active
-    /// tab, fall back to Terminal so the session view is never stuck on a hidden tab.
-    /// </summary>
-    private void ApplyWingmanTabVisibility()
-    {
-        var alpha = AlphaMode.IsEnabled;
-        var hasSession = _activeSession is not null;
-
-        var openWingmanVisible = alpha && hasSession;
-        var wingmanVisible = alpha && hasSession && _activeSession is not null
-            && _activeSession.Session.WingmanEnabled;
-
-        TabBarOpenWingmanButton.IsVisible = openWingmanVisible;
-        WingmanTabButton.IsVisible = wingmanVisible;
-
-        // Never leave the view on a tab whose button just disappeared.
-        if (!wingmanVisible && string.Equals(_activeLeftTab, "Wingman", StringComparison.Ordinal))
-            SwitchLeftTab("Terminal");
-
-        FileLog.Write($"[MainWindow] ApplyWingmanTabVisibility: alpha={alpha}, hasSession={hasSession}, wingman={wingmanVisible}, openWingman={openWingmanVisible}");
     }
 
     private void MainWindow_Activated(object? sender, EventArgs e)
@@ -270,14 +239,6 @@ public partial class MainWindow : Window
 
         // Wire source control view file event
         GitChangesView.ViewFileRequested += OnGitViewFileRequested;
-
-        // Wire clean view rewind event
-        CleanView.RewindRequested += OnCleanViewRewindRequested;
-
-        // The Wingman tab is a single-turn view: our prompt, then Claude's full reply,
-        // with all tool/bash/thinking cards stripped out. The briefing banner above
-        // supplies the title and summary.
-        CleanView.ResponseOnlyMode = true;
 
         // Wire prompt input text changes for slash command autocomplete
         PromptInput.TextChanged += PromptInput_TextChanged;
@@ -1580,7 +1541,6 @@ public partial class MainWindow : Window
                     vm.Session.OnPendingPromptTextChanged -= OnActiveSessionPendingPromptTextChanged;
                     TerminalHost.Detach();
                     GitChangesView.Detach();
-                    CleanView.Detach();
                     _activeSession = null;
 
                     SetSessionHeaderVisible(false);
@@ -1745,11 +1705,9 @@ public partial class MainWindow : Window
             _activeSession.Session.OnClaudeMetadataChanged -= OnActiveSessionMetadataChanged;
             _activeSession.Session.OnActivityStateChanged -= OnActiveSessionActivityChanged;
             _activeSession.Session.OnPendingPromptTextChanged -= OnActiveSessionPendingPromptTextChanged;
-            _activeSession.Session.OnCachedExplainChanged -= OnActiveSessionCachedExplainChanged;
             _activeSession.Session.OnIsTranscribingChanged -= OnActiveSessionTranscribingChanged;
             TerminalHost.Detach();
             GitChangesView.Detach();
-            CleanView.Detach();
         }
 
         _activeSession = vm;
@@ -1766,11 +1724,7 @@ public partial class MainWindow : Window
             PromptBarBorder.IsVisible = false;
             TabBarRefreshButton.IsVisible = false;
             TabBarCaptureButton.IsVisible = false;
-            // No active session: the Wingman tab and "Open Wingman" button are hidden. Centralized
-            // so the alpha gate stays the single source of truth (issue 559).
-            ApplyWingmanTabVisibility();
             GitChangesView.Detach();
-            CleanView.Detach();
             return;
         }
 
@@ -1782,9 +1736,6 @@ public partial class MainWindow : Window
         // and pushes it through this event; we mirror it into "Type a message..."
         // when the box is empty.
         vm.Session.OnPendingPromptTextChanged += OnActiveSessionPendingPromptTextChanged;
-        // Re-render the Wingman tab whenever ProactiveExplainService stores a fresh
-        // briefing on this session. The tab is a passive viewer of CachedExplainText.
-        vm.Session.OnCachedExplainChanged += OnActiveSessionCachedExplainChanged;
         // Lock the compose surface while this session is transcribing a dictated utterance in the
         // background, so a second Speak/Send/Queue cannot fire into a session mid-transcribe.
         vm.Session.OnIsTranscribingChanged += OnActiveSessionTranscribingChanged;
@@ -1803,44 +1754,22 @@ public partial class MainWindow : Window
         GitChangesView.Attach(vm.Session.RepoPath);
         UpdateSourceControlTabVisibility(vm.Session.RepoPath);
 
-        // Attach clean view (legacy Agent tab)
-        CleanView.Attach(vm.Session);
-
         // Show prompt bar
         PromptBarBorder.IsVisible = true;
-
-        // Wingman tab and "Open Wingman" button are alpha-gated (issue 559). Centralized so the
-        // alpha flag and the per-session Wingman state are the single source of truth for this
-        // active session.
-        ApplyWingmanTabVisibility();
-        // Render whatever cached briefing the ProactiveExplainService has produced so far
-        // (or the brand-new greeting set on session creation) IMMEDIATELY for responsiveness,
-        // then asynchronously upgrade to the richer Gateway turn brief if one exists. Reset the
-        // per-session gateway-brief state first so a stale brief from the previous session is
-        // never shown against the incoming one.
-        _wingmanShowingGatewayBrief = false;
-        _lastWingmanGatewayFetchUtc = DateTime.MinValue;
-        RenderWingmanCachedExplain(vm.Session);
-        RefreshWingmanTabAsync(vm.Session, force: true);
 
         // Restore prompt text for incoming session
         PromptInput.Text = vm.Session.PendingPromptText ?? "";
         PromptInput.CaretIndex = PromptInput.Text.Length;
 
-        // Restore last selected tab. The Session/Agent tabs and the Voice/History tabs were
-        // removed. Normalize any persisted values from older builds and default to Terminal.
-        // Also fall back to Terminal if the saved tab was Wingman but the session has it disabled.
+        // Restore last selected tab. The Session/Agent tabs, the Voice/History tabs, and the
+        // Wingman tab were removed. Normalize any persisted values from older builds and default
+        // to Terminal.
         var tabName = vm.Session.SelectedTabName;
         if (string.Equals(tabName, "Session", StringComparison.Ordinal) ||
             string.Equals(tabName, "Agent", StringComparison.Ordinal) ||
             string.Equals(tabName, "Voice", StringComparison.Ordinal) ||
-            string.Equals(tabName, "History", StringComparison.Ordinal))
-            tabName = "Terminal";
-        if (string.Equals(tabName, "Wingman", StringComparison.Ordinal) && !vm.Session.WingmanEnabled)
-            tabName = "Terminal";
-        // When alpha mode is off, the Wingman tab is hidden (issue 559); never open the session
-        // view on a hidden tab.
-        if (!AlphaMode.IsEnabled && string.Equals(tabName, "Wingman", StringComparison.Ordinal))
+            string.Equals(tabName, "History", StringComparison.Ordinal) ||
+            string.Equals(tabName, "Wingman", StringComparison.Ordinal))
             tabName = "Terminal";
         if (string.IsNullOrEmpty(tabName)) tabName = "Terminal";
         if (tabName != _activeLeftTab)
@@ -1909,22 +1838,6 @@ public partial class MainWindow : Window
     private void OnActiveSessionActivityChanged(ActivityState oldState, ActivityState newState)
     {
         Dispatcher.UIThread.Post(UpdateSessionHeader);
-        // Wingman note updates are driven by OnCachedExplainChanged, not by activity-state
-        // edges. The ProactiveExplainService owns the analysis; this tab only reads what
-        // it has produced.
-    }
-
-    private void OnActiveSessionCachedExplainChanged()
-    {
-        Dispatcher.UIThread.Post(() =>
-        {
-            if (_activeSession is null) return;
-            // The local explain changed. The Gateway turn brief is the preferred source when
-            // present, so don't clobber a shown gateway brief with the weaker local one - the
-            // gateway poll keeps it fresh. Only re-render when the local explain IS the source.
-            if (_wingmanShowingGatewayBrief) return;
-            RenderWingmanCachedExplain(_activeSession.Session);
-        });
     }
 
     /// <summary>
@@ -1971,7 +1884,6 @@ public partial class MainWindow : Window
         }
         TerminalHost.Detach();
         GitChangesView.Detach();
-        CleanView.Detach();
         _activeSession = null;
 
         var snapshots = _sessions.ToList();
@@ -2114,22 +2026,6 @@ public partial class MainWindow : Window
             : "Snooze this session so it drops out of the \"Your Turn\" rotation and is marked dark blue.");
         hold.Click += (_, _) => ToggleSessionHold(vm);
 
-        // Wingman toggle is an alpha-only feature (issue #559): the Voice/Wingman tabs are
-        // hidden outside alpha mode, so the menu action that turns Wingman on must be hidden
-        // too, or a non-alpha user could enable a feature they cannot otherwise reach.
-        MenuItem? wingman = null;
-        if (AlphaMode.IsEnabled)
-        {
-            // When on, the session gets the auto-explain briefing, the Voice/Wingman tabs,
-            // and the Yellow "Wingman is reading" state. Removing it drops the session back
-            // to a plain terminal (Blue->Red, no Wingman tabs).
-            wingman = new MenuItem { Header = vm.Session.WingmanEnabled ? "Remove Wingman" : "Add Wingman" };
-            ToolTip.SetTip(wingman, vm.Session.WingmanEnabled
-                ? "Turn off Wingman auto-briefing and hide the Voice and Wingman tabs."
-                : "Turn on Wingman auto-briefing and show the Voice and Wingman tabs.");
-            wingman.Click += (_, _) => ToggleSessionWingman(vm);
-        }
-
         // --- Section 2: open the session's repository in an external tool ---
 
         var openExplorer = new MenuItem { Header = "Open in Explorer" };
@@ -2191,8 +2087,6 @@ public partial class MainWindow : Window
 
         menu.Items.Add(rename);
         menu.Items.Add(hold);
-        if (wingman is not null)
-            menu.Items.Add(wingman);
         menu.Items.Add(new Separator());
         menu.Items.Add(openExplorer);
         menu.Items.Add(openVsCode);
@@ -2312,31 +2206,6 @@ public partial class MainWindow : Window
     }
 
     /// <summary>
-    /// Flips <see cref="Session.WingmanEnabled"/> for the session. When the active
-    /// session is toggled, the Wingman tab is shown/hidden immediately and the view
-    /// falls back to Terminal if the Wingman tab was open while it gets disabled.
-    /// </summary>
-    private void ToggleSessionWingman(SessionViewModel vm)
-    {
-        var newState = !vm.Session.WingmanEnabled;
-        FileLog.Write($"[MainWindow] ToggleSessionWingman: session={vm.Session.Id}, wingmanEnabled={newState}");
-        vm.Session.WingmanEnabled = newState;
-        PersistSessionState();
-
-        if (_activeSession == vm)
-        {
-            // Re-evaluate the Wingman tab against the new per-session state and the alpha gate
-            // (issue 559). The centralized method also falls the view back to Terminal if the
-            // Wingman tab disappears while it is the active tab.
-            ApplyWingmanTabVisibility();
-        }
-
-        ShowNotification(newState
-            ? $"Wingman added to {vm.DisplayName}"
-            : $"Wingman removed from {vm.DisplayName}");
-    }
-
-    /// <summary>
     /// Copies a full handover block to the clipboard: the session's display name and
     /// stable ID plus the identity of the Director hosting it (Director ID, machine,
     /// version) and the Control API endpoint another machine can reach it at. When this
@@ -2419,8 +2288,6 @@ public partial class MainWindow : Window
             if (_activeSession == vm)
             {
                 UpdateSessionHeader();
-                CleanView.Detach();
-                CleanView.Attach(vm.Session);
             }
 
             ShowNotification($"Session relinked to {dialog.SelectedSessionId[..8]}...");
@@ -2469,7 +2336,6 @@ public partial class MainWindow : Window
             vm.Session.OnPendingPromptTextChanged -= OnActiveSessionPendingPromptTextChanged;
             TerminalHost.Detach();
             GitChangesView.Detach();
-            CleanView.Detach();
             _activeSession = null;
 
             SetSessionHeaderVisible(false);
@@ -3021,8 +2887,8 @@ public partial class MainWindow : Window
     /// spec section 10). Unlike <see cref="SendPrompt"/> this does NOT read the compose box - it
     /// targets the session the user dictated into (captured when the Speak dialog opened), so it lands
     /// in the right session even if the user has since switched away or typed something else. Keeps
-    /// the important parts of the normal send: a history snapshot (a rewind point), the Clean-view
-    /// echo when that session is on screen, and the shared submit path. Runs on the UI thread.
+    /// the important parts of the normal send: a history snapshot (a rewind point) and the shared
+    /// submit path. Runs on the UI thread.
     /// </summary>
     private async Task SubmitDictatedTextAsync(Session target, string text)
     {
@@ -3035,11 +2901,6 @@ public partial class MainWindow : Window
         // Rewind point, exactly like SendPrompt.
         target.InitializeHistory();
         target.History?.TakeSnapshot();
-
-        // Only echo into the Clean view when the dictated session is the one on screen; if the user
-        // switched away, the prompt still lands in the right session and shows when they switch back.
-        if (_activeSession?.Session == target)
-            CleanView.InjectUserPrompt(text);
 
         // DevThrottle Stats: desktop dictation - spoken input from the local machine.
         await target.SendTextAsync(text, origin: InputOrigin.DesktopVoice);
@@ -3490,7 +3351,7 @@ public partial class MainWindow : Window
             agent = CreateAgentForEntry(agentKind, selectedEntry.ExecutablePath);
         }
 
-        FileLog.Write($"[MainWindow] ShowNewSessionDialog: path={dialog.SelectedPath}, agent={agentKind}, exe={agent.ExecutablePath}, resume={resumeSessionId ?? "null"}, bypassPermissions={dialog.BypassPermissions}, remoteControl={dialog.EnableRemoteControl}, wingmanEnabled={dialog.WingmanEnabled}");
+        FileLog.Write($"[MainWindow] ShowNewSessionDialog: path={dialog.SelectedPath}, agent={agentKind}, exe={agent.ExecutablePath}, resume={resumeSessionId ?? "null"}, bypassPermissions={dialog.BypassPermissions}, remoteControl={dialog.EnableRemoteControl}");
 
         // Preflight: make sure the chosen agent's CLI actually exists before we try to spawn it.
         // Without this, a missing binary makes CreateProcess fail with a cryptic Win32 error that
@@ -3530,11 +3391,6 @@ public partial class MainWindow : Window
                 + (_lastSessionCreateError ?? "See the Director log for details."));
             return;
         }
-
-        // Apply the per-session Wingman opt-in chosen in the dialog. Default in the checkbox
-        // is true (matches Session.WingmanEnabled's default); the dialog can flip it off so
-        // the session boots as plain-terminal with no auto-explain and no Voice/Wingman tabs.
-        vm.Session.WingmanEnabled = dialog.WingmanEnabled;
 
         // Track last used time for repository sorting
         registry?.MarkUsed(dialog.SelectedPath);
@@ -3915,94 +3771,6 @@ public partial class MainWindow : Window
         SwitchLeftTab("SourceControl");
     }
 
-    private void WingmanTabButton_Click(object? sender, RoutedEventArgs e)
-    {
-        // The Wingman tab is alpha-gated (issue 559); ignore activation when it is hidden.
-        if (!WingmanTabButton.IsVisible) return;
-        SwitchLeftTab("Wingman");
-    }
-
-    // The wingman annotation banner is a passive viewer of the structured briefing the
-    // ProactiveExplainService stores on the session at each turn-end. No Opus calls are
-    // made from this tab; updates arrive via Session.OnCachedExplainChanged.
-    //
-    // The banner has these sections, each independently visible so a partial briefing still
-    // renders cleanly:
-    //   - title (headline)
-    //   - what Claude wants you to do next (verbatim, highlighted)
-    //   - voice preview: the spoken-version field + a Speak-it button
-    // The Opus "what happened" paraphrase (CachedExplainWhatHappened / LongDescription) is
-    // deliberately NOT rendered here: the verbatim final answer shows in full in the CleanView
-    // below, so a paraphrase on top of it only duplicates. Those fields are still generated and
-    // consumed by the phone, which has no verbatim answer to show.
-    // The whole top section is a testing/QA surface so we can iterate on how good the
-    // wingman is at explaining a session.
-    private void RenderWingmanCachedExplain(global::CcDirector.Core.Sessions.Session session)
-    {
-        var headline = session.CachedExplainHeadline?.Trim();
-        var whatNext = session.CachedExplainWhatClaudeWants?.Trim();
-        var say = session.CachedExplainSay?.Trim();
-
-        // The "what happened" paraphrase fields are intentionally not part of this surface
-        // (see the method doc above); the desktop shows the verbatim answer in the CleanView.
-        bool hasAny =
-            !string.IsNullOrEmpty(headline) ||
-            !string.IsNullOrEmpty(whatNext) ||
-            !string.IsNullOrEmpty(say);
-
-        WingmanEmptyText.IsVisible = !hasAny;
-        WingmanHeaderRow.IsVisible = hasAny;
-
-        // Title: headline if we have it, otherwise hide.
-        WingmanTitleText.IsVisible = !string.IsNullOrEmpty(headline);
-        WingmanTitleText.Text = headline ?? "";
-
-        // What Claude wants you to do next. The orange box is an URGENT "you must act" callout,
-        // so it must only appear when the session is actually red (needs you). When Claude is
-        // working (blue) or idle (green) the briefing still fills whatClaudeWants ("...still
-        // working; nothing needed" / "nothing pending"), and painting that in the orange action
-        // box is a false alarm. Gate on red; the headline carries the working/idle state instead.
-        var isRed = string.Equals(session.StatusColor, "red", StringComparison.OrdinalIgnoreCase);
-        WingmanWhatNextSection.IsVisible = isRed && !string.IsNullOrEmpty(whatNext);
-        WingmanWhatNextText.Text = whatNext ?? "";
-
-        // CLAUDE SAID: the verbatim trust anchor (validated against the terminal). Shown above the
-        // synthesized "what Claude wants" line so the user sees Claude's actual words and can catch
-        // any drift in the summary. Hidden when no verbatim line was validated.
-        var verbatim = session.CachedExplainClaudeVerbatim?.Trim();
-        var hasVerbatim = !string.IsNullOrEmpty(verbatim);
-        WingmanClaudeSaidLabel.IsVisible = hasVerbatim;
-        WingmanClaudeVerbatimText.IsVisible = hasVerbatim;
-        WingmanClaudeVerbatimText.Text = verbatim ?? "";
-
-        // Tap-to-answer buttons: one per briefing action (Session.CachedQuickReplies).
-        // Clicking sends that literal text to the agent through the normal send path, so
-        // the user can answer the ask in one click instead of typing. Rebuilt each render
-        // because the set changes per turn; hidden when the briefing offered no short answers.
-        RenderWingmanActionButtons(session.CachedQuickReplies);
-
-        // Voice preview + Speak button. The preview is a QA surface, off by default; it only
-        // shows when the user has flipped the header toggle AND there is a spoken version.
-        WingmanVoiceText.Text = say ?? "";
-        WingmanSpeakVoiceButton.IsEnabled = !string.IsNullOrEmpty(say);
-        WingmanVoiceSection.IsVisible = _wingmanShowVoicePreview && !string.IsNullOrEmpty(say);
-
-        // Meta row: model + freshness. Updated live by a timer so the age does not freeze
-        // between briefings (it used to show a single stale "Xs ago" computed at render time),
-        // and so a regeneration in flight reads "refreshing..." instead of a stale age.
-        if (hasAny)
-        {
-            UpdateWingmanMetaText(session);
-            EnsureWingmanFreshnessTimer();
-        }
-        else
-        {
-            WingmanMetaText.Text = "";
-        }
-    }
-
-    // Ticks every 2s while the Wingman tab is active, refreshing only the small meta line.
-    // Lazily created on first render; cheap (one text update, no full re-render).
     // Per-session status-color subscriptions so the needs-you count updates the instant any
     // session flips red, not just on the 15s timer. Keyed by VM so we can unsubscribe on remove.
     private readonly Dictionary<SessionViewModel, Action<string, string, string>> _needsYouHandlers = new();
@@ -4044,349 +3812,6 @@ public partial class MainWindow : Window
         SessionsNeedYouText.Text = n > 0 ? $"{n} need you" : "";
         SessionsNeedYouText.IsVisible = n > 0;
     }
-
-    private global::Avalonia.Threading.DispatcherTimer? _wingmanFreshnessTimer;
-
-    // Desktop Wingman tab: the Gateway turn brief (the rich per-turn brief the warm brain stamps,
-    // same content the Cockpit shows) is the PREFERRED source when the Director is gateway-connected
-    // and a brief exists; otherwise the local explain. These track the current source so the local
-    // explain event + freshness timer never clobber a shown gateway brief, and throttle the poll.
-    private bool _wingmanShowingGatewayBrief;
-    private DateTime _lastWingmanGatewayFetchUtc = DateTime.MinValue;
-
-    private void EnsureWingmanFreshnessTimer()
-    {
-        if (_wingmanFreshnessTimer is not null) return;
-        _wingmanFreshnessTimer = new global::Avalonia.Threading.DispatcherTimer
-        {
-            Interval = TimeSpan.FromSeconds(2),
-        };
-        _wingmanFreshnessTimer.Tick += (_, _) =>
-        {
-            if (_activeLeftTab != "Wingman" || _activeSession is null) return;
-            var s = _activeSession.Session;
-            // Poll the Gateway for a fresh turn brief (throttled internally to ~3s). Preferred
-            // source when present; falls back to the local explain when absent.
-            RefreshWingmanTabAsync(s, force: false);
-            // While the LOCAL explain is the shown source, self-correct the orange box visibility
-            // as the session flips red<->working<->idle (the status color can change without a new
-            // briefing). When a gateway brief is shown, its own render owns that gating.
-            if (!_wingmanShowingGatewayBrief)
-            {
-                var isRed = string.Equals(s.StatusColor, "red", StringComparison.OrdinalIgnoreCase);
-                WingmanWhatNextSection.IsVisible = isRed && !string.IsNullOrEmpty(s.CachedExplainWhatClaudeWants);
-                if (string.IsNullOrEmpty(s.CachedExplainModel) && s.CachedExplainAt is null) return;
-                UpdateWingmanMetaText(s);
-            }
-        };
-        _wingmanFreshnessTimer.Start();
-    }
-
-    // model + live freshness. "refreshing..." while the ProactiveExplainService is mid-flight
-    // (IsExplaining), otherwise a human age (Xs / Xm / Xh ago) that ticks on its own.
-    private void UpdateWingmanMetaText(global::CcDirector.Core.Sessions.Session session)
-    {
-        var parts = new List<string>();
-        if (!string.IsNullOrEmpty(session.CachedExplainModel))
-            parts.Add(session.CachedExplainModel!);
-        if (session.IsExplaining)
-            parts.Add("refreshing...");
-        else if (session.CachedExplainAt is { } at)
-            parts.Add(RelativeTime.Ago(DateTime.UtcNow - at));
-        WingmanMetaText.Text = string.Join("  ", parts);
-    }
-
-    // Build one tap-to-answer button per briefing action. Each sends its own literal text
-    // to the agent. The buttons are styled to read as answers to the orange "what Claude
-    // wants" box they sit inside (amber fill on the action accent color).
-    private void RenderWingmanActionButtons(global::System.Collections.Generic.IReadOnlyList<string> actions)
-    {
-        WingmanActionsPanel.Children.Clear();
-
-        var shown = 0;
-        foreach (var action in actions)
-        {
-            if (string.IsNullOrWhiteSpace(action)) continue;
-            var replyText = action.Trim();
-            var button = new global::Avalonia.Controls.Button
-            {
-                Content = replyText,
-                Background = new global::Avalonia.Media.SolidColorBrush(global::Avalonia.Media.Color.FromRgb(0xD9, 0x77, 0x06)),
-                Foreground = global::Avalonia.Media.Brushes.White,
-                BorderThickness = new global::Avalonia.Thickness(0),
-                CornerRadius = new global::Avalonia.CornerRadius(4),
-                Padding = new global::Avalonia.Thickness(12, 6),
-                Margin = new global::Avalonia.Thickness(0, 0, 8, 8),
-                FontSize = 13,
-                FontWeight = global::Avalonia.Media.FontWeight.SemiBold,
-                Cursor = new global::Avalonia.Input.Cursor(global::Avalonia.Input.StandardCursorType.Hand),
-            };
-            button.Click += (_, _) => SendWingmanActionReply(replyText);
-            WingmanActionsPanel.Children.Add(button);
-            shown++;
-        }
-
-        WingmanActionsPanel.IsVisible = shown > 0;
-    }
-
-    // Send a tap-to-answer reply through the same path as the Wingman input box, so the
-    // prompt + reply render in the Clean view the Wingman tab hosts.
-    private void SendWingmanActionReply(string text)
-    {
-        if (_activeSession is null || string.IsNullOrWhiteSpace(text)) return;
-        // Disable all action buttons the instant one is clicked. The box lingers until the
-        // session flips to Working (re-gated by the 2s timer), so without this a rapid second
-        // click would send a duplicate answer to the agent. Buttons are rebuilt (enabled) on the
-        // next briefing. Also gives an immediate "sent" affordance.
-        foreach (var child in WingmanActionsPanel.Children)
-            if (child is global::Avalonia.Controls.Button b) b.IsEnabled = false;
-        FileLog.Write($"[MainWindow] SendWingmanActionReply: sid={_activeSession.Session.Id}, text=\"{text}\"");
-        PromptInput.Text = text;
-        SendPrompt();
-    }
-
-    // ==================== GATEWAY TURN BRIEF (preferred Wingman-tab source) ====================
-
-    /// <summary>
-    /// Fetch the latest Gateway turn brief for the session and render it (preferred over the local
-    /// explain), else leave/show the local explain. Throttled to ~3s unless forced, so the 2s
-    /// freshness timer can call it every tick. Best-effort: a null brief (no gateway configured,
-    /// none stamped yet, or unreachable) keeps the local explain shown - a source preference, not
-    /// a silent failure.
-    /// </summary>
-    private async void RefreshWingmanTabAsync(global::CcDirector.Core.Sessions.Session session, bool force)
-    {
-        var sid = session.Id;
-        if (!force && (DateTime.UtcNow - _lastWingmanGatewayFetchUtc) < TimeSpan.FromSeconds(3))
-            return;
-        _lastWingmanGatewayFetchUtc = DateTime.UtcNow;
-
-        var host = (global::Avalonia.Application.Current as App)?.ControlApiHost;
-        global::CcDirector.Gateway.Contracts.TurnBriefDto? brief = null;
-        if (host is not null)
-        {
-            try { brief = await host.GetLatestTurnBriefAsync(sid.ToString()); }
-            catch (Exception ex) { FileLog.Write($"[MainWindow] RefreshWingmanTabAsync FAILED: {ex.Message}"); }
-        }
-
-        // Stale guard: the active session or tab may have changed while awaiting the network call.
-        if (_activeSession is null || _activeSession.Session.Id != sid || _activeLeftTab != "Wingman") return;
-
-        if (brief is not null && !brief.Degraded)
-        {
-            _wingmanShowingGatewayBrief = true;
-            RenderWingmanTurnBrief(brief);
-        }
-        else if (_wingmanShowingGatewayBrief)
-        {
-            // A brief was showing but is now gone (session ended / gateway down): drop back to the
-            // local explain rather than leave stale content on screen.
-            _wingmanShowingGatewayBrief = false;
-            RenderWingmanCachedExplain(session);
-        }
-    }
-
-    /// <summary>
-    /// Render a Gateway turn brief into the EXISTING Wingman-tab controls - Claude's verbatim words
-    /// first (CLAUDE SAID), the statement in the orange "what next" box, tap-to-answer option
-    /// buttons, and "if you do nothing". The richer sibling of <see cref="RenderWingmanCachedExplain"/>.
-    /// </summary>
-    private void RenderWingmanTurnBrief(global::CcDirector.Gateway.Contracts.TurnBriefDto brief)
-    {
-        var ny = brief.NeedsYou;
-
-        WingmanEmptyText.IsVisible = false;
-        WingmanHeaderRow.IsVisible = true;
-
-        // Title = chapter headline (fallback intent, then the all-clear line when nothing is needed).
-        var title = !string.IsNullOrWhiteSpace(brief.Headline) ? brief.Headline.Trim()
-                  : !string.IsNullOrWhiteSpace(brief.Intent) ? brief.Intent.Trim()
-                  : (ny is null ? (brief.AllClear ?? "").Trim() : "");
-        WingmanTitleText.IsVisible = !string.IsNullOrEmpty(title);
-        WingmanTitleText.Text = title;
-
-        // CLAUDE SAID - the verbatim trust anchor (NeedsYou.Evidence), shown above the statement.
-        var verbatim = ny?.Evidence?.Trim();
-        var hasVerbatim = !string.IsNullOrEmpty(verbatim);
-        WingmanClaudeSaidLabel.IsVisible = hasVerbatim;
-        WingmanClaudeVerbatimText.IsVisible = hasVerbatim;
-        WingmanClaudeVerbatimText.Text = verbatim ?? "";
-
-        // Statement + the orange "what Claude wants" box: shown whenever there is a needs-you. The
-        // gateway brief only carries a NeedsYou when the warm brain decided something is needed, so
-        // (unlike the local explain) it does not need a red-status gate to avoid false alarms.
-        var hasAsk = ny is not null && !string.IsNullOrWhiteSpace(ny.Statement);
-        WingmanWhatNextSection.IsVisible = hasAsk;
-        WingmanWhatNextText.Text = ny?.Statement ?? "";
-
-        // Tap-to-answer options.
-        if (ny is not null && ny.Options.Count > 0) RenderWingmanBriefOptions(ny);
-        else { WingmanActionsPanel.Children.Clear(); WingmanActionsPanel.IsVisible = false; }
-
-        // "If you do nothing" - the single most triage-relevant fact.
-        var ifIgnored = ny?.IfIgnored?.Trim();
-        WingmanIfIgnoredText.IsVisible = !string.IsNullOrEmpty(ifIgnored);
-        WingmanIfIgnoredText.Text = string.IsNullOrEmpty(ifIgnored) ? "" : $"If you do nothing: {ifIgnored}";
-
-        // The gateway brief has no spoken field; the QA voice preview is a local-explain surface.
-        WingmanVoiceSection.IsVisible = false;
-
-        // Meta: model + turn + freshness.
-        WingmanMetaText.Text = $"{brief.Model}  turn {brief.TurnNumber}  {RelativeTime.Ago(DateTime.UtcNow - brief.GeneratedAtUtc)}";
-    }
-
-    /// <summary>
-    /// Build one tap-to-answer button per brief option. The recommended option is spelled out
-    /// "(recommended)" (never "(rec)") and outlined green; the note becomes the tooltip. Clicking
-    /// sends the option through the appropriate path (raw keys vs reply) via <see cref="SendWingmanBriefOption"/>.
-    /// </summary>
-    private void RenderWingmanBriefOptions(global::CcDirector.Gateway.Contracts.TurnBriefNeedsYou ny)
-    {
-        WingmanActionsPanel.Children.Clear();
-        var shown = 0;
-        foreach (var o in ny.Options)
-        {
-            if (o is null || string.IsNullOrEmpty(o.Send)) continue;
-            var button = new global::Avalonia.Controls.Button
-            {
-                Content = o.Key + (o.Recommended ? " (recommended)" : ""),
-                Background = new global::Avalonia.Media.SolidColorBrush(global::Avalonia.Media.Color.FromRgb(0xD9, 0x77, 0x06)),
-                Foreground = global::Avalonia.Media.Brushes.White,
-                BorderThickness = o.Recommended ? new global::Avalonia.Thickness(2) : new global::Avalonia.Thickness(0),
-                BorderBrush = o.Recommended ? new global::Avalonia.Media.SolidColorBrush(global::Avalonia.Media.Color.FromRgb(0x22, 0xC5, 0x5E)) : null,
-                CornerRadius = new global::Avalonia.CornerRadius(4),
-                Padding = new global::Avalonia.Thickness(12, 6),
-                Margin = new global::Avalonia.Thickness(0, 0, 8, 8),
-                FontSize = 13,
-                FontWeight = global::Avalonia.Media.FontWeight.SemiBold,
-                Cursor = new global::Avalonia.Input.Cursor(global::Avalonia.Input.StandardCursorType.Hand),
-            };
-            if (!string.IsNullOrWhiteSpace(o.Note))
-                global::Avalonia.Controls.ToolTip.SetTip(button, o.Note);
-            var opt = o;
-            var answerVia = ny.AnswerVia;
-            button.Click += (_, _) => SendWingmanBriefOption(opt, answerVia);
-            WingmanActionsPanel.Children.Add(button);
-            shown++;
-        }
-        WingmanActionsPanel.IsVisible = shown > 0;
-    }
-
-    /// <summary>
-    /// Send a brief option to the active session. A "keys" answer (on-screen menu) carries a raw
-    /// key sequence (e.g. "1\r") and is sent literally; a reply answer is routed through the
-    /// composer path so it renders in the Clean view with a trailing Enter.
-    /// </summary>
-    private async void SendWingmanBriefOption(global::CcDirector.Gateway.Contracts.TurnBriefOption o, string answerVia)
-    {
-        if (_activeSession is null || string.IsNullOrEmpty(o.Send)) return;
-        foreach (var child in WingmanActionsPanel.Children)
-            if (child is global::Avalonia.Controls.Button b) b.IsEnabled = false;
-        FileLog.Write($"[MainWindow] SendWingmanBriefOption: sid={_activeSession.Session.Id}, key=\"{o.Key}\", answerVia={answerVia}");
-        if (string.Equals(answerVia, "keys", StringComparison.OrdinalIgnoreCase))
-        {
-            // DevThrottle Stats: a desktop wingman menu answer is a non-voice desktop action. Count it as
-            // typed (never voice) so answering menus from the desktop cannot inflate the published voice share.
-            try { await _activeSession.Session.SendTextAsync(o.Send, origin: InputOrigin.DesktopTyped); }
-            catch (Exception ex) { FileLog.Write($"[MainWindow] SendWingmanBriefOption keys FAILED: {ex.Message}"); }
-        }
-        else
-        {
-            SendWingmanActionReply(o.Send);
-        }
-    }
-
-    // Whether the QA voice-preview box is shown. Off by default to keep the tab clean;
-    // toggled by the header ToggleButton. Persists across re-renders within the session.
-    private bool _wingmanShowVoicePreview;
-
-    private void WingmanVoicePreviewToggle_Changed(object? sender, RoutedEventArgs e)
-    {
-        _wingmanShowVoicePreview = WingmanVoicePreviewToggle.IsChecked == true;
-        if (_activeSession is not null)
-            RenderWingmanCachedExplain(_activeSession.Session);
-    }
-
-    // Play the spoken-version field aloud through TTS. Opens a modal SpeakPlaybackDialog
-    // with a Stop button instead of firing playback in the background: the modal blocks
-    // this button while audio plays (no stacking repeated clicks) and gives the user an
-    // explicit way to stop listening. The DesktopTtsPlayer is lazily initialised on first click.
-    private async void WingmanSpeakVoiceButton_Click(object? sender, RoutedEventArgs e)
-    {
-        try
-        {
-            if (_activeSession is null) return;
-            var say = _activeSession.Session.CachedExplainSay?.Trim();
-            if (string.IsNullOrEmpty(say)) return;
-
-            if (_ttsPlayer is null)
-            {
-                var options = (global::Avalonia.Application.Current as App)?.SessionManager?.Options;
-                if (options is null)
-                {
-                    ShowNotification("TTS not available: SessionManager not initialised.");
-                    return;
-                }
-                _ttsPlayer = new global::CcDirector.Avalonia.Voice.DesktopTtsPlayer(options);
-            }
-
-            var dlg = new global::CcDirector.Avalonia.Voice.SpeakPlaybackDialog(_ttsPlayer, say);
-            await dlg.ShowDialog(this);
-        }
-        catch (Exception ex)
-        {
-            FileLog.Write($"[MainWindow] WingmanSpeakVoiceButton FAILED: {ex.Message}");
-            ShowNotification($"Play failed: {ex.Message}");
-        }
-    }
-
-    // Wingman tab "Send": route the typed/dictated text to the agent through the
-    // normal send path so the prompt + reply render in the Clean view that the
-    // Wingman tab hosts.
-    private void WingmanSendButton_Click(object? sender, RoutedEventArgs e) => WingmanSend();
-
-    private void WingmanSend()
-    {
-        if (_activeSession is null || string.IsNullOrWhiteSpace(WingmanInput.Text)) return;
-        PromptInput.Text = WingmanInput.Text;
-        WingmanInput.Text = "";
-        SendPrompt();
-    }
-
-    // Wingman tab "Speak": dictate into the Wingman input box via the same in-process
-    // SpeakDialog the Terminal tab's Speak button uses. If the user finishes with Send
-    // in the dialog, fire the send immediately.
-    private async void WingmanSpeakButton_Click(object? sender, RoutedEventArgs e)
-    {
-        try
-        {
-            var options = (global::Avalonia.Application.Current as App)?.SessionManager?.Options;
-            if (options is null)
-            {
-                ShowNotification("Dictation not available: AgentOptions not loaded.");
-                return;
-            }
-            if (!await global::CcDirector.Avalonia.HostedAi.DesktopHostedAiGate.EnsureReadyAsync(this))
-                return;
-            var dlg = new global::CcDirector.Avalonia.Voice.SpeakDialog(options);
-            await dlg.ShowDialog(this);
-            var transcript = dlg.ResultText;
-            if (string.IsNullOrWhiteSpace(transcript)) return;
-            var existing = WingmanInput.Text ?? "";
-            WingmanInput.Text = string.IsNullOrEmpty(existing) ? transcript! : existing + " " + transcript!;
-            if (dlg.ShouldSubmit) WingmanSend();
-        }
-        catch (Exception ex)
-        {
-            FileLog.Write($"[MainWindow] WingmanSpeakButton FAILED: {ex.Message}");
-            ShowNotification($"Dictation failed: {ex.Message}");
-        }
-    }
-
-    // Text-to-speech player for the Wingman tab's "Play" button (spoken-briefing preview).
-    // Lazily created on first use; needs AgentOptions, which are not available until the
-    // SessionManager is constructed.
-    private global::CcDirector.Avalonia.Voice.DesktopTtsPlayer? _ttsPlayer;
 
     private bool _commsInitialized;
 
@@ -4540,8 +3965,6 @@ public partial class MainWindow : Window
         TerminalTabButton.Foreground = tab == "Terminal" ? whiteBrush : InactiveTextBrush;
         SourceControlTabButton.Background = tab == "SourceControl" ? accentBrush : TransparentBrush;
         SourceControlTabButton.Foreground = tab == "SourceControl" ? whiteBrush : InactiveTextBrush;
-        WingmanTabButton.Background = tab == "Wingman" ? accentBrush : TransparentBrush;
-        WingmanTabButton.Foreground = tab == "Wingman" ? whiteBrush : InactiveTextBrush;
         // Update document tab button styles
         foreach (var docTab in _documentTabs)
         {
@@ -4553,21 +3976,11 @@ public partial class MainWindow : Window
         // Show/hide panels
         TerminalPanel.IsVisible = tab == "Terminal";
         SourceControlPanel.IsVisible = tab == "SourceControl";
-        WingmanPanel.IsVisible = tab == "Wingman";
         DocumentPanel.IsVisible = isDocTab;
 
-        // The shared prompt bar belongs to the terminal-style tabs. The Wingman tab has its
-        // own input affordances (a Speak+Send bar), so hide the shared bar there to avoid a
-        // duplicate input.
+        // The shared prompt bar belongs to the terminal-style tabs.
         if (_activeSession != null)
-            PromptBarBorder.IsVisible = tab != "Wingman";
-
-        // The Wingman tab is a passive viewer of Session.CachedExplainText. Just render
-        // whatever is currently cached; OnCachedExplainChanged will keep it fresh.
-        if (tab == "Wingman" && _activeSession is not null)
-        {
-            RenderWingmanCachedExplain(_activeSession.Session);
-        }
+            PromptBarBorder.IsVisible = true;
 
         // Show refresh button only when Terminal tab is active and a session exists
         TabBarRefreshButton.IsVisible = tab == "Terminal" && _activeSession != null;
@@ -4892,9 +4305,6 @@ public partial class MainWindow : Window
         // Snapshot the JSONL before sending so we can rewind to this point
         _activeSession.Session.InitializeHistory();
         _activeSession.Session.History?.TakeSnapshot();
-
-        // Inject user prompt into Clean view immediately for instant feedback
-        CleanView.InjectUserPrompt(text);
 
         // Notify user when large input is redirected to a temp file. Name the
         // active session's actual agent, not a hardcoded "Claude Code".
@@ -5781,94 +5191,6 @@ public partial class MainWindow : Window
 
     // ==================== RIGHT PANEL TAB SWITCHING ====================
 
-    // ==================== REWIND ====================
-
-    private async void OnCleanViewRewindRequested(Session session, int entryNumber)
-    {
-        FileLog.Write($"[MainWindow] OnCleanViewRewindRequested: session={session.Id}, entry={entryNumber}");
-
-        if (session.History == null)
-        {
-            FileLog.Write("[MainWindow] OnCleanViewRewindRequested: no History on session");
-            ShowNotification("Cannot rewind -- session has no history");
-            return;
-        }
-
-        var repoPath = session.RepoPath;
-        var oldSessionVm = _sessions.FirstOrDefault(vm => vm.Session.Id == session.Id);
-
-        if (entryNumber == 0)
-        {
-            // Fresh reset: start a new session from scratch
-            FileLog.Write("[MainWindow] OnCleanViewRewindRequested: entry 0 -- fresh reset");
-
-            // Detach and remove old session
-            if (oldSessionVm != null)
-            {
-                if (_activeSession == oldSessionVm)
-                {
-                    _activeSession.Session.OnClaudeMetadataChanged -= OnActiveSessionMetadataChanged;
-                    _activeSession.Session.OnActivityStateChanged -= OnActiveSessionActivityChanged;
-                    TerminalHost.Detach();
-                    GitChangesView.Detach();
-                    CleanView.Detach();
-                    _activeSession = null;
-                }
-
-                _sessions.Remove(oldSessionVm);
-            }
-
-            // Kill old session in background
-            _ = Task.Run(async () =>
-            {
-                await _sessionManager.KillSessionAsync(session.Id);
-                _sessionManager.RemoveSession(session.Id);
-            });
-
-            CreateSession(repoPath);
-            ShowNotification("Session reset -- started fresh");
-        }
-        else
-        {
-            // Restore from snapshot
-            var newSessionId = session.History.RestoreSnapshot(entryNumber, repoPath);
-            if (newSessionId == null)
-            {
-                FileLog.Write("[MainWindow] OnCleanViewRewindRequested: RestoreSnapshot returned null");
-                ShowNotification("Rewind failed -- snapshot not found");
-                return;
-            }
-
-            FileLog.Write($"[MainWindow] OnCleanViewRewindRequested: restored snapshot -> newSessionId={newSessionId}");
-
-            // Detach and remove old session
-            if (oldSessionVm != null)
-            {
-                if (_activeSession == oldSessionVm)
-                {
-                    _activeSession.Session.OnClaudeMetadataChanged -= OnActiveSessionMetadataChanged;
-                    _activeSession.Session.OnActivityStateChanged -= OnActiveSessionActivityChanged;
-                    TerminalHost.Detach();
-                    GitChangesView.Detach();
-                    CleanView.Detach();
-                    _activeSession = null;
-                }
-
-                _sessions.Remove(oldSessionVm);
-            }
-
-            // Kill old session in background
-            _ = Task.Run(async () =>
-            {
-                await _sessionManager.KillSessionAsync(session.Id);
-                _sessionManager.RemoveSession(session.Id);
-            });
-
-            CreateSession(repoPath, resumeSessionId: newSessionId);
-            ShowNotification($"Rewound to turn {entryNumber} -- resumed as new session");
-        }
-    }
-
     // ==================== WINDOW CLOSING ====================
 
     private bool _closeConfirmed;
@@ -5924,10 +5246,9 @@ public partial class MainWindow : Window
         SyncPromptTextToSessions();
         PersistSessionStateCore();
 
-        // Detach terminal, source control, and clean view
+        // Detach terminal and source control
         TerminalHost.Detach();
         GitChangesView.Detach();
-        CleanView.Detach();
         _activeSession = null;
 
         // Stop git status polling

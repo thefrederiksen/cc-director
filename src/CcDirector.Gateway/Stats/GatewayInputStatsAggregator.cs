@@ -48,11 +48,28 @@ public sealed class GatewayInputStatsAggregator
     private long _wingmanTurns;
     private readonly HashSet<string> _wingmanSessions = new(StringComparer.Ordinal);
 
+    // Per-repository all-time tally, keyed by the session's RepoPath (working directory). Accumulated from
+    // the SAME high-water deltas as the totals: when a session's counted input grows, that increase is also
+    // attributed to the session's repo. Feeds the private Repos page ("where your development actually
+    // happens"). All-time, like the totals - never pruned. Only counts travel; never any message text.
+    private readonly Dictionary<string, RepoTally> _repos = new(StringComparer.OrdinalIgnoreCase);
+
     private sealed class HourTurns
     {
         public long VoiceTurns;
         public long TypedTurns;
         public long Characters;
+    }
+
+    private sealed class RepoTally
+    {
+        public long VoiceTurns;
+        public long TypedTurns;
+        public long Characters;
+        // The distinct session ids that drove counted input into this repo, so "sessions" is a true
+        // distinct count that never double-counts across a re-push or a Gateway restart (the set is
+        // persisted and re-adding a known id is a no-op).
+        public readonly HashSet<string> Sessions = new(StringComparer.Ordinal);
     }
 
     private sealed class Counters
@@ -151,6 +168,50 @@ public sealed class GatewayInputStatsAggregator
         }
     }
 
+    /// <summary>The per-repository all-time tally (turns by modality, character volume, distinct sessions),
+    /// ranked most-driven first, for the private Repos page. Repos with no counted turns are omitted.</summary>
+    public IReadOnlyList<RepoStatBucketDto> RepoTotals()
+    {
+        lock (_lock)
+        {
+            var list = new List<RepoStatBucketDto>(_repos.Count);
+            foreach (var kvp in _repos)
+            {
+                var t = kvp.Value;
+                list.Add(new RepoStatBucketDto
+                {
+                    Repo = kvp.Key,
+                    RepoName = RepoLeaf(kvp.Key),
+                    Turns = t.VoiceTurns + t.TypedTurns,
+                    VoiceTurns = t.VoiceTurns,
+                    TypedTurns = t.TypedTurns,
+                    Characters = t.Characters,
+                    Sessions = t.Sessions.Count,
+                });
+            }
+            // Rank by turns (the headline metric), then characters, then name, so the order is stable.
+            list.Sort((a, b) =>
+            {
+                var byTurns = b.Turns.CompareTo(a.Turns);
+                if (byTurns != 0) return byTurns;
+                var byChars = b.Characters.CompareTo(a.Characters);
+                return byChars != 0 ? byChars : string.CompareOrdinal(a.RepoName, b.RepoName);
+            });
+            return list;
+        }
+    }
+
+    // The display leaf of a repository path: the last path segment of the working directory, so
+    // "D:\ReposFred\devthrottle" reads as "devthrottle". Handles both slash styles across machines (the
+    // Gateway aggregates repos from Windows and Unix Directors alike). Empty path reads as "(unknown)".
+    private static string RepoLeaf(string path)
+    {
+        if (string.IsNullOrWhiteSpace(path)) return "(unknown)";
+        var trimmed = path.TrimEnd('/', '\\');
+        var idx = trimmed.LastIndexOfAny(new[] { '/', '\\' });
+        return idx >= 0 && idx < trimmed.Length - 1 ? trimmed[(idx + 1)..] : trimmed;
+    }
+
     private static string HourKey(DateTime utc) =>
         utc.ToUniversalTime().ToString(HourFormat, System.Globalization.CultureInfo.InvariantCulture);
 
@@ -214,6 +275,8 @@ public sealed class GatewayInputStatsAggregator
                 total.Turns += deltaTurns;
                 total.Characters += deltaChars;
 
+                var isVoice = string.Equals(key.Item1, "voice", StringComparison.OrdinalIgnoreCase);
+
                 // Attribute this increase to the hour it was observed (the "working day" series). Turns are
                 // split by modality; characters are summed. Surface is not split here - the hourly log is
                 // about WHEN work happened, not from where.
@@ -222,13 +285,31 @@ public sealed class GatewayInputStatsAggregator
                     hour = new HourTurns();
                     _hourly[hourKey] = hour;
                 }
-                if (string.Equals(key.Item1, "voice", StringComparison.OrdinalIgnoreCase))
+                if (isVoice)
                     hour.VoiceTurns += deltaTurns;
                 else
                     hour.TypedTurns += deltaTurns;
                 hour.Characters += deltaChars;
 
                 sessionDeltaTurns += deltaTurns;
+
+                // Attribute the SAME increase to the session's repository (the private Repos page): which
+                // codebase the work landed in. Turns split by modality, characters summed, and the session
+                // id remembered so a repo's distinct-session count is honest.
+                var repoKey = s.RepoPath ?? "";
+                if (!_repos.TryGetValue(repoKey, out var repo))
+                {
+                    repo = new RepoTally();
+                    _repos[repoKey] = repo;
+                }
+                if (isVoice)
+                    repo.VoiceTurns += deltaTurns;
+                else
+                    repo.TypedTurns += deltaTurns;
+                repo.Characters += deltaChars;
+                if (!string.IsNullOrEmpty(s.SessionId))
+                    repo.Sessions.Add(s.SessionId);
+
                 changed = true;
             }
 
@@ -265,6 +346,7 @@ public sealed class GatewayInputStatsAggregator
         public Dictionary<string, HourTurnsStore> Hourly { get; set; } = new();
         public long WingmanTurns { get; set; }
         public List<string> WingmanSessions { get; set; } = new();
+        public Dictionary<string, RepoTallyStore> Repos { get; set; } = new();
     }
 
     private sealed class HourTurnsStore
@@ -272,6 +354,14 @@ public sealed class GatewayInputStatsAggregator
         public long VoiceTurns { get; set; }
         public long TypedTurns { get; set; }
         public long Characters { get; set; }
+    }
+
+    private sealed class RepoTallyStore
+    {
+        public long VoiceTurns { get; set; }
+        public long TypedTurns { get; set; }
+        public long Characters { get; set; }
+        public List<string> Sessions { get; set; } = new();
     }
 
     private void Load()
@@ -312,7 +402,13 @@ public sealed class GatewayInputStatsAggregator
         _wingmanTurns = parsed.WingmanTurns;
         foreach (var id in parsed.WingmanSessions)
             if (!string.IsNullOrEmpty(id)) _wingmanSessions.Add(id);
-        FileLog.Write($"[GatewayInputStatsAggregator] Load: restored {_totals.Count} total bucket(s), {_highWater.Count} live session(s), {_hourly.Count} hourly bucket(s), {_wingmanSessions.Count} wingman session(s)/{_wingmanTurns} wingman turn(s) from {_path}");
+        foreach (var (repoKey, rt) in parsed.Repos)
+        {
+            var tally = new RepoTally { VoiceTurns = rt.VoiceTurns, TypedTurns = rt.TypedTurns, Characters = rt.Characters };
+            foreach (var sid in rt.Sessions) tally.Sessions.Add(sid);
+            _repos[repoKey] = tally;
+        }
+        FileLog.Write($"[GatewayInputStatsAggregator] Load: restored {_totals.Count} total bucket(s), {_highWater.Count} live session(s), {_hourly.Count} hourly bucket(s), {_wingmanSessions.Count} wingman session(s)/{_wingmanTurns} wingman turn(s), {_repos.Count} repo(s) from {_path}");
     }
 
     private void Quarantine(string reason)
@@ -340,6 +436,14 @@ public sealed class GatewayInputStatsAggregator
                 file.Hourly[hour] = new HourTurnsStore { VoiceTurns = ht.VoiceTurns, TypedTurns = ht.TypedTurns, Characters = ht.Characters };
             file.WingmanTurns = _wingmanTurns;
             file.WingmanSessions = _wingmanSessions.ToList();
+            foreach (var (repoKey, rt) in _repos)
+                file.Repos[repoKey] = new RepoTallyStore
+                {
+                    VoiceTurns = rt.VoiceTurns,
+                    TypedTurns = rt.TypedTurns,
+                    Characters = rt.Characters,
+                    Sessions = rt.Sessions.ToList(),
+                };
 
             var json = JsonSerializer.Serialize(file, FileJsonOptions);
             var tmp = _path + ".tmp";
@@ -371,5 +475,32 @@ public sealed class InputHourDto
 public sealed class WingmanUsageDto
 {
     public long Turns { get; set; }
+    public int Sessions { get; set; }
+}
+
+/// <summary>One repository's all-time input tally for the private Repos page: how much development landed
+/// in this codebase, measured in submitted TURNS (total and split voice vs typed), CHARACTER volume, and
+/// the count of distinct SESSIONS that drove input into it. Only counts ever travel - never message text.</summary>
+public sealed class RepoStatBucketDto
+{
+    /// <summary>The full repository / working-directory path the sessions ran in (the grouping key).</summary>
+    public string Repo { get; set; } = "";
+
+    /// <summary>The display leaf of <see cref="Repo"/> (its last path segment), e.g. "devthrottle".</summary>
+    public string RepoName { get; set; } = "";
+
+    /// <summary>Total submitted turns into this repo (voice + typed).</summary>
+    public long Turns { get; set; }
+
+    /// <summary>Submitted turns driven by voice.</summary>
+    public long VoiceTurns { get; set; }
+
+    /// <summary>Submitted turns driven by typing.</summary>
+    public long TypedTurns { get; set; }
+
+    /// <summary>Total character volume of input into this repo.</summary>
+    public long Characters { get; set; }
+
+    /// <summary>Distinct sessions that drove counted input into this repo.</summary>
     public int Sessions { get; set; }
 }

@@ -862,6 +862,232 @@ export async function getGatewayHealth(signal?: AbortSignal): Promise<GatewayHea
   return (await res.json()) as GatewayHealth;
 }
 
+// ===== Network diagnostics (auto-network-switching mission) =====
+// Back the mobile Diagnostics page. A phone cannot run `tailscale ping`, so these let it measure the
+// phone-to-Gateway path from the phone itself: which route it is on (direct LAN vs relayed through
+// Tailscale), the round-trip latency, and the download/upload throughput.
+
+/** GET /diag/echo - what the Gateway sees about THIS connection. clientPath is "tailscale" | "lan" | "local" | "other". */
+export interface NetDiagEcho {
+  clientIp: string | null;
+  clientPath: string;
+  forwardedFor: string;
+  host: string;
+  machineName: string;
+  gatewayLanIp: string | null;
+  gatewayTailnetName: string | null;
+  serverTime: string;
+}
+
+// GET /diag/echo - the IP and host the Gateway sees for this request. RemoteIpAddress reflects
+// X-Forwarded-For on the Gateway, so clientPath is the one clean signal that distinguishes a direct-LAN
+// hit from a Tailscale relay. Gated like the rest of the data API, so it carries the per-device key.
+export async function getNetDiagEcho(signal?: AbortSignal): Promise<NetDiagEcho> {
+  const res = await gatewayFetch("/diag/echo", {
+    method: "GET",
+    headers: { Accept: "application/json", ...authHeaders() },
+    signal,
+  }, { timeoutMs: POLL_TIMEOUT_MS });
+  if (!res.ok) throw new GatewayError(res.status, `GET /diag/echo failed: ${res.status}`);
+  return (await res.json()) as NetDiagEcho;
+}
+
+/** One throughput measurement: bytes moved, milliseconds taken, and the derived megabits per second. */
+export interface ThroughputResult {
+  bytes: number;
+  ms: number;
+  mbps: number;
+}
+
+function megabitsPerSecond(bytes: number, ms: number): number {
+  if (ms <= 0) return 0;
+  return (bytes * 8) / (ms / 1000) / 1_000_000;
+}
+
+// Measure round-trip latency: fire `samples` tiny GET /diag/echo requests back to back and return each
+// timing in milliseconds. Sequential (not parallel) so every number is a clean single-request round trip -
+// the same thing the user feels tapping through the app. Stops early if the caller aborts.
+export async function measureLatency(samples: number, signal?: AbortSignal): Promise<number[]> {
+  const timings: number[] = [];
+  for (let i = 0; i < samples; i++) {
+    if (signal?.aborted) break;
+    const t0 = performance.now();
+    // /diag/ping is featherweight (no address lookup), so this measures wire time, not server work.
+    const res = await gatewayFetch("/diag/ping", {
+      method: "GET",
+      headers: { Accept: "application/json", ...authHeaders() },
+      signal,
+    });
+    await res.arrayBuffer(); // drain the body so the timing spans the whole round trip
+    timings.push(performance.now() - t0);
+  }
+  return timings;
+}
+
+// Measure DOWNLOAD throughput: fetch `bytes` of incompressible data from the Gateway and time the whole
+// transfer. The payload is no-store on the server, so the service worker never serves a cached copy that
+// would fake the number.
+export async function measureDownload(bytes: number, signal?: AbortSignal): Promise<ThroughputResult> {
+  const t0 = performance.now();
+  const res = await gatewayFetch(`/diag/payload?bytes=${bytes}`, {
+    method: "GET",
+    headers: { ...authHeaders() },
+    signal,
+  });
+  if (!res.ok) throw new GatewayError(res.status, `GET /diag/payload failed: ${res.status}`);
+  const buf = await res.arrayBuffer();
+  const ms = performance.now() - t0;
+  return { bytes: buf.byteLength, ms, mbps: megabitsPerSecond(buf.byteLength, ms) };
+}
+
+// Measure UPLOAD throughput: POST `bytes` of data and time it. Upload is the direction that carries
+// dictation audio, so it is worth measuring on its own - a relay can be asymmetric.
+export async function measureUpload(bytes: number, signal?: AbortSignal): Promise<ThroughputResult> {
+  const body = new Uint8Array(bytes); // zero-filled is fine; we are timing the wire, not inspecting content
+  const t0 = performance.now();
+  const res = await gatewayFetch("/diag/payload", {
+    method: "POST",
+    headers: { "Content-Type": "application/octet-stream", ...authHeaders() },
+    body,
+    signal,
+  });
+  if (!res.ok) throw new GatewayError(res.status, `POST /diag/payload failed: ${res.status}`);
+  await res.arrayBuffer();
+  const ms = performance.now() - t0;
+  return { bytes, ms, mbps: megabitsPerSecond(bytes, ms) };
+}
+
+/** One connected device's live Tailscale path, from GET /diag/network. */
+export interface NetDiagPeer {
+  name: string;
+  tailscaleIp: string | null;
+  os: string | null;
+  online: boolean;
+  /** true = direct LAN/peer path, false = relayed through DERP, null = not determined. */
+  direct: boolean | null;
+  /** "192.168.x.y:port" when direct, or "DERP(region)" when relayed. */
+  path: string | null;
+  latencyMs: number | null;
+  note: string | null;
+}
+
+/** GET /diag/network - the server-side Tailscale diagnostic (direct-vs-relay per device, no phone needed). */
+export interface NetworkDiag {
+  tailscaleAvailable: boolean;
+  backendState: string | null;
+  selfName: string | null;
+  selfTailscaleIp: string | null;
+  udpOk: boolean | null;
+  mappingVariesByDestIp: boolean | null;
+  nearestDerp: string | null;
+  peers: NetDiagPeer[];
+  notes: string[];
+  collectedAt: string;
+}
+
+// Keep-warm heartbeat (Network Diagnostics mission, P2): a lightweight GET /diag/ping that keeps the
+// WireGuard direct path from idling out during active foreground use (an idle path silently drops back to
+// the relay until Tailscale re-establishes direct on the next request). Best-effort - a failure is ignored,
+// this is NOT a reachability signal and must never surface an error.
+export async function keepWarmPing(signal?: AbortSignal): Promise<void> {
+  try {
+    const res = await gatewayFetch("/diag/ping", { method: "GET", headers: { ...authHeaders() }, signal });
+    await res.arrayBuffer();
+  } catch {
+    /* best-effort: keep-warm never reports failure */
+  }
+}
+
+// GET /diag/network - the server-side Tailscale check. Slower than the other reads (it shells the CLI and
+// pings peers), so give it a longer timeout. Lets a client show the AUTHORITATIVE direct-vs-relay state
+// for its own connection instead of guessing from the speed numbers.
+export async function getNetworkDiag(signal?: AbortSignal): Promise<NetworkDiag> {
+  const res = await gatewayFetch("/diag/network", {
+    method: "GET",
+    headers: { Accept: "application/json", ...authHeaders() },
+    signal,
+  }, { timeoutMs: 20000 });
+  if (!res.ok) throw new GatewayError(res.status, `GET /diag/network failed: ${res.status}`);
+  return (await res.json()) as NetworkDiag;
+}
+
+/** A completed speed-test result, as submitted to POST /diag/result and returned by GET /diag/results. */
+export interface NetDiagResult {
+  route: string;
+  latencyMedianMs: number | null;
+  latencyBestMs: number | null;
+  latencySamples: number;
+  downloadMbps: number | null;
+  uploadMbps: number | null;
+  rating: string;
+  verdict: string;
+  loadedFrom: string;
+  surface: string;
+  /** Actual-path tags (from the authoritative self-peer): decide the home(LAN-direct)/away(relay) sub-sum. */
+  direct?: boolean | null;
+  isLanPath?: boolean;
+  clientIp?: string | null;
+  clientPath?: string | null;
+  receivedAt?: string;
+}
+
+// POST /diag/result - hand the Gateway the result the page just computed so it is logged and readable by
+// an agent at GET /diag/results. Best-effort: a failure here must never break the page, so callers treat a
+// rejection as non-fatal (the numbers are still on screen).
+export async function postNetDiagResult(result: NetDiagResult, signal?: AbortSignal): Promise<void> {
+  const res = await gatewayFetch("/diag/result", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...authHeaders() },
+    body: JSON.stringify(result),
+    signal,
+  });
+  if (!res.ok) throw new GatewayError(res.status, `POST /diag/result failed: ${res.status}`);
+}
+
+// GET /diag/results - recent logged results, newest first. Backs the Cockpit history view and lets an
+// agent read what users have been seeing.
+export async function getNetDiagResults(signal?: AbortSignal): Promise<NetDiagResult[]> {
+  const res = await gatewayFetch("/diag/results", {
+    method: "GET",
+    headers: { Accept: "application/json", ...authHeaders() },
+    signal,
+  }, { timeoutMs: POLL_TIMEOUT_MS });
+  if (!res.ok) throw new GatewayError(res.status, `GET /diag/results failed: ${res.status}`);
+  return (await res.json()) as NetDiagResult[];
+}
+
+/** One UTC-hour quality bucket from GET /diag/rollup, with the home(LAN)/away(relay) sub-sums. */
+export interface NetDiagRollupBucket {
+  hour: string;
+  count: number;
+  sumLatencyMs: number;
+  minLatencyMs: number | null;
+  directCount: number;
+  relayCount: number;
+  lanCount: number;
+  sumLatencyLan: number;
+  minLatencyLan: number | null;
+  sumDownLan: number;
+  sumUpLan: number;
+  awayCount: number;
+  sumLatencyAway: number;
+  minLatencyAway: number | null;
+  sumDownAway: number;
+  sumUpAway: number;
+}
+
+// GET /diag/rollup - the hourly quality trend (oldest first) for the Cockpit dashboard. Sums, not
+// averages: derive percent-direct = directCount/(directCount+relayCount) and avg latency = sum/count on read.
+export async function getNetDiagRollup(signal?: AbortSignal): Promise<NetDiagRollupBucket[]> {
+  const res = await gatewayFetch("/diag/rollup", {
+    method: "GET",
+    headers: { Accept: "application/json", ...authHeaders() },
+    signal,
+  }, { timeoutMs: POLL_TIMEOUT_MS });
+  if (!res.ok) throw new GatewayError(res.status, `GET /diag/rollup failed: ${res.status}`);
+  return (await res.json()) as NetDiagRollupBucket[];
+}
+
 // GET /directors - the fleet's machines (Directors). Sorted most-recently-seen first so the picker
 // can default-select the top one (matching FleetParser.ParseDirectors), tie-broken by machine name.
 // Entries with no directorId are dropped (they cannot be addressed). Throws GatewayError on non-2xx

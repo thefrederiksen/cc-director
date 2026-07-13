@@ -85,7 +85,6 @@ public sealed class BrowserPageRoutesTests : IAsyncLifetime
     [InlineData("GET", "/exes/list", "text/html")]             // page is /exes; /exes/list stays JSON
     [InlineData("GET", "/account/status", "text/html")]        // page is /account; nested API stays JSON
     [InlineData("GET", "/account/devices", "text/html")]       // page is /account; nested API stays JSON
-    [InlineData("GET", "/wingman/queue", "text/html")]         // page is /wingman; queue API stays JSON
     [InlineData("GET", "/fleet", "text/html")]                 // no same-path JSON: served by SPA fallback
     [InlineData("GET", "/schedule", "text/html")]              // no same-path JSON: served by SPA fallback
     [InlineData("GET", "/dictionary", "text/html")]            // no same-path JSON: served by SPA fallback

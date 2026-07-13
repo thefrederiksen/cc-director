@@ -489,7 +489,6 @@ public partial class NewSessionDialog : Window
 
     public bool BypassPermissions => BypassPermissionsCheckBox.IsChecked == true;
     public bool EnableRemoteControl => false;
-    public bool WingmanEnabled => WingmanCheckBox?.IsChecked == true;
     public bool IsStudioMode => false;
 
     /// <summary>

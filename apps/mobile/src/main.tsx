@@ -11,7 +11,9 @@ import { CarMode } from "./pages/CarMode";
 import { EndWordTest } from "./pages/EndWordTest";
 import { AiSettings } from "./pages/AiSettings";
 import { About } from "./pages/About";
+import { Diagnostics } from "./pages/Diagnostics";
 import { YourThrottle } from "./pages/YourThrottle";
+import { Repos } from "./pages/Repos";
 import { SignIn } from "@devthrottle/client-core/auth/SignIn";
 import { DeviceCallback } from "@devthrottle/client-core/auth/DeviceCallback";
 import { hasDeviceKey } from "@devthrottle/client-core/auth/deviceKey";
@@ -20,8 +22,10 @@ import { ensurePushSubscribed } from "@devthrottle/client-core/push/register";
 import { CreditsNotice } from "./components/CreditsNotice";
 import { ConnectionBanner } from "./components/ConnectionBanner";
 import { useScreenWakeLock } from "./hooks/useScreenWakeLock";
+import { useKeepWarm } from "@devthrottle/client-core/net/useKeepWarm";
 import { resumePendingDictations } from "@devthrottle/client-core/dictation/backgroundSend";
 import { RouteRecoveryBoundary, RootLayout } from "./components/StaleShellRecovery";
+import { StatusPill } from "./components/StatusPill";
 import "./styles.css";
 
 // The auth gate (issue #908): every real screen requires an enrolled device key. Without one, the
@@ -38,6 +42,8 @@ function RequireDeviceKey() {
 // routes, the lock is acquired once (a single sentinel), not once per page.
 function GatedLayout() {
   useScreenWakeLock();
+  // Keep-warm heartbeat (P2): hold the direct LAN path open during active use so it never idles back to the relay.
+  useKeepWarm();
   // Resume any recorded-but-unsent dictation once the phone is enrolled (issue #1006): a clip whose
   // upload was interrupted by a refresh / crash / dropped connection is re-driven to the session here.
   React.useEffect(() => {
@@ -49,6 +55,7 @@ function GatedLayout() {
   return (
     <>
       <ConnectionBanner />
+      <StatusPill />
       <Outlet />
     </>
   );
@@ -117,9 +124,15 @@ const router = createBrowserRouter(
             { path: "/endword", element: <EndWordTest /> },
             { path: "/settings", element: <AiSettings /> },
             { path: "/about", element: <About /> },
+            // Diagnostics (auto-network-switching mission): a phone-side connection tester - route
+            // (direct LAN vs Tailscale relay), latency, and download/upload throughput, with a verdict.
+            { path: "/diagnostics", element: <Diagnostics /> },
             // Your Throttle (devthrottle-stats mission): the in-app port of the standalone Gateway
             // /stats page, reading the same GET /stats/data feed through client-core.
             { path: "/throttle", element: <YourThrottle /> },
+            // Repos (devthrottle-stats mission): the PRIVATE per-repo split, its own page separate from
+            // Your Throttle. Reads the same GET /stats/data feed (repos ride on it) through client-core.
+            { path: "/repos", element: <Repos /> },
             { path: "/new", element: <NewSession /> },
             { path: "/session/:sessionId", element: <Chat /> },
             { path: "/session/:sessionId/chat", element: <Chat /> },

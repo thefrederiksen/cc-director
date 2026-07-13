@@ -373,6 +373,8 @@ public sealed class GatewayHost : IAsyncDisposable
     private readonly Push.PushSubscriptionStore _pushSubscriptions;
     private readonly HttpClient _pushLoopbackHttp = new() { Timeout = TimeSpan.FromSeconds(20) };
     private Push.WebPushNeedsYouNotifier? _pushNotifier;
+    private Api.NetDiagMonitor? _netDiagMonitor;
+    private Api.NetDiagRollupStore? _netDiagRollup;
     private WebApplication? _app;
     private bool _stopped;
 
@@ -1088,6 +1090,9 @@ public sealed class GatewayHost : IAsyncDisposable
                 var path = ctx.Request.Path.Value ?? "";
                 if (!path.Equals("/healthz", StringComparison.OrdinalIgnoreCase)
                     && !path.Equals("/favicon.ico", StringComparison.OrdinalIgnoreCase)
+                    // The keep-warm heartbeat (P2) hits /diag/ping every ~25s per client - warming traffic,
+                    // not a request worth logging; skip it so it does not flood the access log.
+                    && !path.Equals("/diag/ping", StringComparison.OrdinalIgnoreCase)
                     // The React Cockpit's hashed static assets would flood the log.
                     && !path.StartsWith("/assets/", StringComparison.OrdinalIgnoreCase))
                 {
@@ -1142,7 +1147,16 @@ public sealed class GatewayHost : IAsyncDisposable
 
         // Product version stamped by Directory.Build.props; full form carries the commit SHA.
         var version = AppVersion.Full;
+        // Network Diagnostics mission (P1): the shared hourly quality rollup - POST /diag/result folds
+        // client results into it, and the monitor (started below) folds its per-tick observations into the
+        // same instance, so both writers share one thread-safe in-memory state + file.
+        _netDiagRollup = new Api.NetDiagRollupStore(Path.Combine(CcStorage.Root(), "netdiag-rollup.json"));
+
+        // Gateway Cleanup mission: the cut removed the DirectorEndpointClient argument (_client) - the
+        // Gateway no longer dials Directors over HTTP, so Map no longer takes an HTTP client. The
+        // network-diagnostics rollup store is threaded in as a named argument on the tunnel-only signature.
         GatewayEndpoints.Map(_app, Registry, version, Token, AuthEnabled,
+            netDiagRollup: _netDiagRollup,
             requestShutdown: () =>
             {
                 var handler = OnShutdownRequested;
@@ -1511,11 +1525,6 @@ public sealed class GatewayHost : IAsyncDisposable
         // for status/brain; run mode + autostart come from SettingsHooks (GatewayApp-owned).
         SettingsEndpoints.Map(_app, this);
 
-        // The fleet-level wingman pipeline view (issue #239): GET /wingman/queue. Issue #549
-        // retired the always-on stamping machine that fed it, so there is no live pipeline to
-        // snapshot - pass null and the endpoint answers an honest idle "Disabled" snapshot.
-        WingmanQueueEndpoints.Map(_app, snapshot: null);
-
         // Gateway-served turn briefs (issue #185): the Cockpit and the interrupted/restore paths
         // read briefs from the store HERE. Issue #549 removed the only WRITER (GatewayTurnBriefAgent),
         // so the store is read-only-serving (effectively empty going forward); the read endpoints
@@ -1636,6 +1645,27 @@ public sealed class GatewayHost : IAsyncDisposable
             _vapidStore.PublicKey, _vapidStore.PrivateKey, "mailto:support@devthrottle.com");
         _pushNotifier = new Push.WebPushNeedsYouNotifier(_pushSubscriptions, GetNeedsYouCountAsync, pushSender);
         _pushNotifier.Start();
+
+        // Network Diagnostics monitor (Network Diagnostics mission, Phase 1): on a timer, watch each
+        // connected device's direct-vs-relay path and log persistent home-relay drift QUIETLY. Alert
+        // channels (doorbell + owner email) are wired in P5 onto the same Decide-machine state.
+        var netDiagDeviceStore = new Api.NetDiagDeviceStore(Path.Combine(CcStorage.Root(), "netdiag-devices.json"));
+        // P5: deliver the monitor's drift/resolve to the doorbell + owner email. The alert service owns the
+        // 401-explicit "not signed in" path, the daily email cap, and one-email-per-episode; the monitor
+        // just hands it the device name on the machine's rising/falling edges.
+        var netDiagNotify = new Core.Account.AccountNotifyClient(new HttpClient { Timeout = TimeSpan.FromSeconds(30) });
+        var netDiagAlerts = new Api.NetDiagAlertService(
+            DirectorEvents,
+            () => Account?.GetAccessTokenForForwarding(),
+            async (token, subject, bodyText) =>
+            {
+                var r = await netDiagNotify.SendOwnerAsync(token, subject, bodyText, null, null, default).ConfigureAwait(false);
+                return r.Sent;
+            });
+        _netDiagMonitor = new Api.NetDiagMonitor(
+            Api.TailscaleDiagnostics.Collect, Api.LanPresenceProbe.TryResolveMac, netDiagDeviceStore, _netDiagRollup,
+            netDiagAlerts.OnDrift, netDiagAlerts.OnResolve);
+        _netDiagMonitor.Start();
     }
 
     /// <summary>
@@ -1783,6 +1813,7 @@ public sealed class GatewayHost : IAsyncDisposable
         // loopback HTTP client it read /sessions with. Subscriptions are already on disk (written through
         // on every change), so stopping loses nothing.
         try { _pushNotifier?.Dispose(); } catch (Exception ex) { FileLog.Write($"[GatewayHost] push notifier dispose error: {ex.Message}"); }
+        try { _netDiagMonitor?.Dispose(); } catch (Exception ex) { FileLog.Write($"[GatewayHost] netdiag monitor dispose error: {ex.Message}"); }
         try { _snoozeSweep?.Dispose(); } catch (Exception ex) { FileLog.Write($"[GatewayHost] snooze sweep dispose error: {ex.Message}"); }
         _pushNotifier = null;
         try { _pushLoopbackHttp.Dispose(); } catch (Exception ex) { FileLog.Write($"[GatewayHost] push loopback client dispose error: {ex.Message}"); }

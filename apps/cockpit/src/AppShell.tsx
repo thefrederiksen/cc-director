@@ -1,4 +1,6 @@
 import { NavLink, Outlet, useLocation } from "react-router-dom";
+import { useKeepWarm } from "@devthrottle/client-core/net/useKeepWarm";
+import { CockpitStatusPill } from "./network/CockpitStatusPill";
 
 // The desktop layout frame (epic #967): a two-region shell - a left rail (navigation) and the main
 // pane (the routed page). The main pane fills all remaining width. Desktop-first: the frame stays
@@ -14,7 +16,7 @@ import { NavLink, Outlet, useLocation } from "react-router-dom";
 // running and how it is driven), Data (the corpora and tools the fleet reads and writes), and System
 // (this browser's account and the app's own settings). Every built page that is meant to be reachable
 // has an entry - the pages that used to be reachable only by typing their address (Voice Recorder,
-// Executables, Wingman) are now in the menu.
+// Executables) are now in the menu.
 //
 // The Fleet Map is first and is the default landing (issue #1303): a fresh boot at "/" redirects to
 // it, so the Cockpit opens on the whole-fleet picture (main.tsx). Sessions lives at its own /sessions
@@ -37,7 +39,6 @@ const NAV_SECTIONS: ReadonlyArray<{ title: string; items: ReadonlyArray<NavItem>
       { to: "/sessions", label: "Sessions", subtree: "/session" },
       { to: "/directors", label: "Directors" },
       { to: "/schedule", label: "Schedule" },
-      { to: "/wingman", label: "Wingman" },
     ],
   },
   {
@@ -47,6 +48,7 @@ const NAV_SECTIONS: ReadonlyArray<{ title: string; items: ReadonlyArray<NavItem>
       { to: "/transcripts", label: "Voice Recorder" },
       { to: "/exes", label: "Executables" },
       { to: "/transcription", label: "Transcription" },
+      { to: "/network", label: "Network" },
       { to: "/learn", label: "Learning" },
     ],
   },
@@ -55,6 +57,7 @@ const NAV_SECTIONS: ReadonlyArray<{ title: string; items: ReadonlyArray<NavItem>
     items: [
       { to: "/account", label: "Account" },
       { to: "/your-throttle", label: "Your Throttle" },
+      { to: "/repos", label: "Repos" },
       { to: "/settings", label: "Settings" },
       { to: "/about", label: "About" },
     ],
@@ -63,11 +66,14 @@ const NAV_SECTIONS: ReadonlyArray<{ title: string; items: ReadonlyArray<NavItem>
 
 export function AppShell() {
   const location = useLocation();
+  // Keep-warm heartbeat (P2): hold the direct LAN path open during active use.
+  useKeepWarm();
 
   return (
     <div className="shell">
       <nav className="rail rail-left" aria-label="Primary">
         <div className="brand">DevThrottle</div>
+        <CockpitStatusPill />
         <div className="nav">
           {NAV_SECTIONS.map((section) => (
             <div className="nav-section" key={section.title}>

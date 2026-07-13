@@ -3,6 +3,7 @@ using System.Net.Http.Json;
 using System.Net.Sockets;
 using CcDirector.Core.Diagnostics;
 using CcDirector.Core.Network;
+using CcDirector.Core.Storage;
 using CcDirector.Core.Utilities;
 using CcDirector.Gateway.Contracts;
 using CcDirector.Gateway.Discovery;
@@ -56,6 +57,10 @@ internal static class GatewayEndpoints
         Gateway.Events.DirectorEventLog? directorEvents = null,
         Voice.GatewayTurnJobStore? turnJobs = null,
         Pairing.DeviceRegistry? devices = null,
+        // Network Diagnostics mission (P1): the shared hourly quality rollup that POST /diag/result folds
+        // client speed-test results into (home/away split on the measured path). The monitor folds into the
+        // same instance. Null in tests / when diagnostics are off.
+        NetDiagRollupStore? netDiagRollup = null,
         // Issue #1176 (Phase 1a): when non-null, /sessions serves a Director from this push cache instead
         // of pulling it, whenever that Director's stream is connected and its last push is within
         // streamStaleAfter. Null (stream mode off) keeps the pull-only behaviour byte-identical to today.
@@ -285,6 +290,95 @@ internal static class GatewayEndpoints
                 ServerTime = DateTime.UtcNow,
             });
         });
+
+        // ===== Network diagnostics (auto-network-switching mission) =====
+        // Back the mobile Diagnostics page so the owner can measure the phone-to-Gateway path from the
+        // phone itself (a phone cannot run `tailscale ping`). These routes are gated like the rest of the
+        // data API - the page calls them with its per-device key - so they are not an open bandwidth tap.
+
+        // GET /diag/echo: report what the Gateway sees about the caller's connection. RemoteIpAddress
+        // reflects X-Forwarded-For (UseForwardedHeaders trusts ONLY the loopback tailscale-serve proxy),
+        // so it is the phone's tailnet 100.x address through the front door and its 192.168.x LAN address
+        // on a direct hit - the one clean signal that says "you are relaying through Tailscale" vs "you are
+        // direct on the LAN". Also hands back the Gateway's own LAN IP and tailnet name so the page can
+        // show where a direct path would point.
+        app.MapGet("/diag/echo", (HttpContext ctx) => Results.Json(new NetDiagEchoDto
+        {
+            ClientIp = ctx.Connection.RemoteIpAddress?.ToString(),
+            ClientPath = NetDiag.ClassifyClientIp(ctx.Connection.RemoteIpAddress),
+            ForwardedFor = ctx.Request.Headers["X-Forwarded-For"].ToString(),
+            Host = ctx.Request.Host.Value ?? "",
+            MachineName = Environment.MachineName,
+            GatewayLanIp = LanIdentity.TryGetPrimaryLanIpv4(),
+            GatewayTailnetName = TailscaleIdentity.TryGetMagicDnsName(),
+            ServerTime = DateTime.UtcNow,
+        }));
+
+        // GET /diag/payload?bytes=N streams N bytes of incompressible data so the phone can time a DOWNLOAD
+        // and derive throughput. Size is clamped so the endpoint cannot be turned into a bandwidth
+        // amplifier, and the response is no-store so a proxy or the service worker never serves a cached
+        // copy that would fake the number.
+        app.MapGet("/diag/payload", (HttpContext ctx, int? bytes) =>
+        {
+            int size = Math.Clamp(bytes ?? NetDiag.DefaultPayloadBytes, 0, NetDiag.MaxPayloadBytes);
+            ctx.Response.Headers.CacheControl = "no-store";
+            return Results.Bytes(NetDiag.BuildPayload(size), "application/octet-stream");
+        });
+
+        // POST /diag/payload reads and discards the request body and returns the byte count, so the phone
+        // can time an UPLOAD (the direction that carries dictation audio) and derive throughput.
+        app.MapPost("/diag/payload", async (HttpContext ctx) =>
+        {
+            long received = 0;
+            var buffer = new byte[64 * 1024];
+            int read;
+            while ((read = await ctx.Request.Body.ReadAsync(buffer)) > 0)
+                received += read;
+            return Results.Json(new { received });
+        });
+
+        // GET /diag/network: the SERVER-SIDE diagnostic an agent runs with no phone and no app open. Runs
+        // tailscale status/ping/netcheck and reports, per connected device, direct-vs-DERP-relay + latency,
+        // plus UDP/NAT health - the one signal the phone speed test cannot see (it cannot tell "warming up
+        // on the relay" apart from "genuinely broken"). Ran off the request thread so the CLI shell-outs do
+        // not block the Kestrel I/O thread.
+        app.MapGet("/diag/network", async () =>
+        {
+            var diag = await Task.Run(TailscaleDiagnostics.Collect);
+            return Results.Json(diag);
+        });
+
+        // GET /diag/ping: the featherweight latency endpoint the client's latency loop hits. Unlike
+        // /diag/echo it does NO network-interface scan or Tailscale lookup, so its round trip is the wire
+        // time, not server work - keeping the reported latency honest.
+        app.MapGet("/diag/ping", () => Results.Json(new { t = DateTime.UtcNow }));
+
+        // Result logging: the phone/Cockpit POSTs its completed speed-test result here; the Gateway stamps
+        // what IT saw about the connection, writes one greppable log line, and keeps it in a small ring so
+        // an agent can read the recent history at GET /diag/results with no phone. This is the "log all of
+        // this so the agent can get to it" piece of the mission.
+        var netDiagResults = new NetDiagResultStore(Path.Combine(CcStorage.Root(), "diagnostics-results.json"));
+        app.MapPost("/diag/result", async (HttpContext ctx, NetDiagResultDto result) =>
+        {
+            result.ClientIp = ctx.Connection.RemoteIpAddress?.ToString();
+            result.ClientPath = NetDiag.ClassifyClientIp(ctx.Connection.RemoteIpAddress);
+            result.ReceivedAt = DateTime.UtcNow;
+            netDiagResults.Add(result);
+            // Fold into the hourly quality rollup by the MEASURED path (Direct/IsLanPath the client tagged
+            // from its authoritative self-peer), never the front-door ClientPath.
+            netDiagRollup?.Fold(result.ReceivedAt, result.LatencyMedianMs, result.Direct, result.IsLanPath, result.DownloadMbps, result.UploadMbps);
+            FileLog.Write(
+                $"[NetDiag] result surface={result.Surface} route={result.Route} clientPath={result.ClientPath} " +
+                $"client={result.ClientIp} latencyMedian={result.LatencyMedianMs}ms down={result.DownloadMbps}Mbps " +
+                $"up={result.UploadMbps}Mbps rating={result.Rating} loadedFrom={result.LoadedFrom}");
+            await Task.CompletedTask;
+            return Results.Json(new { ok = true });
+        });
+        app.MapGet("/diag/results", () => Results.Json(netDiagResults.Recent()));
+
+        // GET /diag/rollup: the hourly quality trend (one bucket per UTC hour, oldest first) for the
+        // Cockpit dashboard - percent-direct over time, latency trend, and the stored home/away split.
+        app.MapGet("/diag/rollup", () => Results.Json(netDiagRollup?.All() ?? new List<NetDiagRollupStore.HourBucket>()));
 
         // About / diagnostics: product, version, build date, install root, the one Cockpit URL, and
         // the installed component versions (from installed.json on this box). Feeds the Cockpit About

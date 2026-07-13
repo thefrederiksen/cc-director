@@ -17,13 +17,14 @@ import { FleetMapView } from "./fleet/FleetMapView";
 import { DirectorsView } from "./fleet/DirectorsView";
 import { DirectorDetailView } from "./fleet/DirectorDetailView";
 import { ScheduleView } from "./schedule/ScheduleView";
-import { WingmanQueueView } from "./wingman/WingmanQueueView";
 import { DictionaryView } from "./dictionary/DictionaryView";
 import { TranscriptsView } from "./transcripts/TranscriptsView";
 import { ExesView } from "./exes/ExesView";
 import { LearningView } from "./learning/LearningView";
 import { YourThrottleView } from "./throttle/YourThrottleView";
+import { ReposView } from "./throttle/ReposView";
 import { TranscriptionHealthView } from "./transcription/TranscriptionHealthView";
+import { NetworkDiagnosticsView } from "./network/NetworkDiagnosticsView";
 import { AccountView } from "./account/AccountView";
 import { AboutView } from "./about/AboutView";
 import { SettingsView } from "./settings/SettingsView";
@@ -34,7 +35,6 @@ import "./fleet/fleet.css";
 import "./fleet/fleetmap.css";
 import "./missions/missions.css";
 import "./schedule/schedule.css";
-import "./wingman/wingman.css";
 import "./dictionary/dictionary.css";
 import "./transcripts/transcripts.css";
 import "./exes/exes.css";
@@ -144,12 +144,13 @@ const router = createBrowserRouter(
             { path: "/missions", element: <Navigate to="/fleet-map" replace /> },
             { path: "/directors", element: <DirectorsView /> },
             { path: "/directors/:directorId", element: <DirectorDetailView /> },
-            // The Schedule + Wingman-pipeline pages (issue #976): one-to-one ports of the Blazor
-            // Schedule.razor (cron jobs, /cron/jobs surface) and WingmanQueue.razor (read-only
-            // /wingman/queue snapshot) over the same Gateway REST surface. Both now have a Fleet-section
-            // nav entry (issue #1247).
+            // The Schedule page (issue #976): a one-to-one port of the Blazor Schedule.razor (cron
+            // jobs, /cron/jobs surface) over the same Gateway REST surface, with a Fleet-section nav
+            // entry (issue #1247). The Wingman Pipeline page that used to sit beside it was removed:
+            // it was a read-only view of the always-on stamping machine that issue #549 retired, so it
+            // only ever rendered an idle "Disabled" snapshot. "Wingman" now means only the live voice
+            // narration (the phone/Cockpit Voice mode), not a fleet pipeline surface.
             { path: "/schedule", element: <ScheduleView /> },
-            { path: "/wingman", element: <WingmanQueueView /> },
             // The tools + data pages (issue #977): one-to-one ports of the Blazor Dictionary.razor,
             // Transcripts.razor, Exes.razor, and Learning.razor over the same Gateway REST surface.
             // All four have a Data-section nav entry now (issue #1247, exposing Voice Recorder and
@@ -175,9 +176,15 @@ const router = createBrowserRouter(
             // /stats page. Reads the same GET /stats/data feed through client-core so the user sees
             // their throttle in the app rather than at a bare URL.
             { path: "/your-throttle", element: <YourThrottleView /> },
+            // Repos (devthrottle-stats mission): the PRIVATE per-repo split. Its own route + rail entry,
+            // deliberately separate from Your Throttle so which codebases take the owner's time is never
+            // on-screen alongside the shareable throttle. Reads the same GET /stats/data feed (repos ride
+            // on it) through client-core.
+            { path: "/repos", element: <ReposView /> },
             // Transcription Health: read-only view over the local transcription telemetry the Gateway
             // records (latency, failures, most-corrected words). Same Gateway REST surface via client-core.
             { path: "/transcription", element: <TranscriptionHealthView /> },
+            { path: "/network", element: <NetworkDiagnosticsView /> },
             { path: "/account", element: <AccountView /> },
             { path: "/about", element: <AboutView /> },
             // The Settings page (issue #1025): a real React port of the retired Blazor

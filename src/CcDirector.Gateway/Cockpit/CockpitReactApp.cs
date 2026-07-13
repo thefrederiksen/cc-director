@@ -56,7 +56,7 @@ public static class CockpitReactApp
     /// API-only; <c>/cockpit/{sid}</c> would fall through to the shell anyway, but matching it here
     /// keeps the policy one rule instead of two.
     ///
-    /// Every OTHER React page (<c>/fleet</c>, <c>/schedule</c>, <c>/wingman</c>, <c>/dictionary</c>,
+    /// Every OTHER React page (<c>/fleet</c>, <c>/schedule</c>, <c>/dictionary</c>,
     /// <c>/transcripts</c>, <c>/exes</c>, <c>/learn</c>, <c>/telemetry</c>, <c>/account</c>,
     /// <c>/about</c>, <c>/feedback</c>, <c>/session/{id}</c>) is deliberately absent: none has a
     /// top-level single-segment <c>MapGet</c> at its own path, so a hard navigation to it already falls

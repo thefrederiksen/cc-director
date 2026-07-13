@@ -56,11 +56,6 @@ public class SessionViewModel : INotifyPropertyChanged
     // list strip rather than the wingman writing it.
     private static readonly ISolidColorBrush OnHoldStatusBrush  = new SolidColorBrush(Color.FromRgb(0x9C, 0xA3, 0xAF));
 
-    // Session-list headline color. Warm amber when the session needs you (red) so the eye is
-    // drawn to actionable sessions in a multi-session list; muted otherwise.
-    private static readonly ISolidColorBrush HeadlineNeedsYouBrush = new SolidColorBrush(Color.FromRgb(0xF0, 0xB8, 0x48));
-    private static readonly ISolidColorBrush HeadlineMutedBrush    = new SolidColorBrush(Color.FromRgb(0x9F, 0xB0, 0xC3));
-
     private static readonly Dictionary<ActivityState, string> ActivityLabels = new()
     {
         { ActivityState.Starting, "Starting" },
@@ -110,7 +105,6 @@ public class SessionViewModel : INotifyPropertyChanged
         {
             OnPropertyChanged(nameof(StatusColorBrush));
             OnPropertyChanged(nameof(StatusReason));
-            OnPropertyChanged(nameof(WingmanHeadlineBrush));
             OnPropertyChanged(nameof(WaitingDurationLabel));
             OnPropertyChanged(nameof(HasWaitingDuration));
         });
@@ -185,9 +179,6 @@ public class SessionViewModel : INotifyPropertyChanged
     {
         Dispatcher.UIThread.Post(() =>
         {
-            OnPropertyChanged(nameof(WingmanHeadline));
-            OnPropertyChanged(nameof(HasWingmanHeadline));
-            OnPropertyChanged(nameof(WingmanHeadlineBrush));
             // The waiting duration is proxied from CachedExplainAt, which this briefing just
             // set. When a session is already red and its first briefing lands, HasWaitingDuration
             // flips false->true here; without raising it the "waiting Xm" list label would not
@@ -196,20 +187,6 @@ public class SessionViewModel : INotifyPropertyChanged
             OnPropertyChanged(nameof(WaitingDurationLabel));
         });
     }
-
-    /// <summary>The latest wingman headline. Shown under the session name in the list so the
-    /// sidebar gives an at-a-glance "what this session is about / needs" without opening the
-    /// Wingman tab. Updates when the ProactiveExplainService caches a new briefing.</summary>
-    public string WingmanHeadline => Session.CachedExplainHeadline ?? "";
-
-    public bool HasWingmanHeadline => !string.IsNullOrWhiteSpace(Session.CachedExplainHeadline);
-
-    /// <summary>Headline color: warm amber when the session needs you (red), muted otherwise,
-    /// so actionable sessions stand out in the list at a glance.</summary>
-    public ISolidColorBrush WingmanHeadlineBrush =>
-        string.Equals(Session.StatusColor, "red", StringComparison.OrdinalIgnoreCase)
-            ? HeadlineNeedsYouBrush
-            : HeadlineMutedBrush;
 
     /// <summary>How long this session has been waiting on you, shown in the list only when red,
     /// so you can see at a glance WHICH needs-you session is the most stale and triage it first.
