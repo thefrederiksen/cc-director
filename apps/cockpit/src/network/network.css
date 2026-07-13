@@ -103,3 +103,72 @@
   font-weight: 700;
   margin-top: 2px;
 }
+
+/* P3 trend dashboard: status light + window toggle + two dependency-free line charts. Theme-aware (uses
+   the cockpit tokens) and colourblind-safe (percent-direct = accent, latency = amber, distinct hues). */
+.netdiag-trend {
+  margin-bottom: 24px;
+}
+.netdiag-light-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 14px;
+  flex-wrap: wrap;
+}
+.netdiag-light {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--text-dim);
+  flex: 0 0 auto;
+}
+.netdiag-light-green { background: #37c26d; }
+.netdiag-light-amber { background: #e8a33d; }
+.netdiag-light-red { background: var(--warn, #e8a33d); }
+.netdiag-light-grey { background: var(--text-dim); }
+.netdiag-light-label { font-weight: 700; }
+.netdiag-light-detail { color: var(--text-dim); font-size: 13px; }
+.netdiag-window {
+  margin-left: auto;
+  display: inline-flex;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  overflow: hidden;
+}
+.netdiag-window button {
+  border: none;
+  background: var(--surface);
+  color: var(--text-dim);
+  padding: 5px 12px;
+  font-size: 12px;
+  cursor: pointer;
+}
+.netdiag-window button.on { background: var(--accent); color: #fff; }
+.netdiag-trend-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+}
+@media (max-width: 720px) {
+  .netdiag-trend-grid { grid-template-columns: 1fr; }
+}
+.netdiag-trend-card {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 12px 14px;
+  background: var(--surface);
+}
+.netdiag-trend-title { font-weight: 700; font-size: 14px; }
+.netdiag-trend-sub { color: var(--text-dim); font-size: 12px; margin-bottom: 10px; }
+.netdiag-chart { width: 100%; height: 90px; display: block; }
+.netdiag-chart-axis {
+  display: flex;
+  justify-content: space-between;
+  color: var(--text-dim);
+  font-size: 11px;
+  margin-top: 4px;
+}
+.netdiag-chart-latest { color: var(--text); font-weight: 600; }
+.netdiag-chart-empty { padding: 28px 0; text-align: center; }
+.netdiag-throughput-note { margin-top: 12px; font-size: 13px; }

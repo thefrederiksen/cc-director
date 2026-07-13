@@ -1099,6 +1099,9 @@ public sealed class GatewayHost : IAsyncDisposable
                 var path = ctx.Request.Path.Value ?? "";
                 if (!path.Equals("/healthz", StringComparison.OrdinalIgnoreCase)
                     && !path.Equals("/favicon.ico", StringComparison.OrdinalIgnoreCase)
+                    // The keep-warm heartbeat (P2) hits /diag/ping every ~25s per client - warming traffic,
+                    // not a request worth logging; skip it so it does not flood the access log.
+                    && !path.Equals("/diag/ping", StringComparison.OrdinalIgnoreCase)
                     // The React Cockpit's hashed static assets would flood the log.
                     && !path.StartsWith("/assets/", StringComparison.OrdinalIgnoreCase))
                 {

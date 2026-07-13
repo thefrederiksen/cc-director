@@ -985,6 +985,19 @@ export interface NetworkDiag {
   collectedAt: string;
 }
 
+// Keep-warm heartbeat (Network Diagnostics mission, P2): a lightweight GET /diag/ping that keeps the
+// WireGuard direct path from idling out during active foreground use (an idle path silently drops back to
+// the relay until Tailscale re-establishes direct on the next request). Best-effort - a failure is ignored,
+// this is NOT a reachability signal and must never surface an error.
+export async function keepWarmPing(signal?: AbortSignal): Promise<void> {
+  try {
+    const res = await gatewayFetch("/diag/ping", { method: "GET", headers: { ...authHeaders() }, signal });
+    await res.arrayBuffer();
+  } catch {
+    /* best-effort: keep-warm never reports failure */
+  }
+}
+
 // GET /diag/network - the server-side Tailscale check. Slower than the other reads (it shells the CLI and
 // pings peers), so give it a longer timeout. Lets a client show the AUTHORITATIVE direct-vs-relay state
 // for its own connection instead of guessing from the speed numbers.
@@ -1041,6 +1054,38 @@ export async function getNetDiagResults(signal?: AbortSignal): Promise<NetDiagRe
   }, { timeoutMs: POLL_TIMEOUT_MS });
   if (!res.ok) throw new GatewayError(res.status, `GET /diag/results failed: ${res.status}`);
   return (await res.json()) as NetDiagResult[];
+}
+
+/** One UTC-hour quality bucket from GET /diag/rollup, with the home(LAN)/away(relay) sub-sums. */
+export interface NetDiagRollupBucket {
+  hour: string;
+  count: number;
+  sumLatencyMs: number;
+  minLatencyMs: number | null;
+  directCount: number;
+  relayCount: number;
+  lanCount: number;
+  sumLatencyLan: number;
+  minLatencyLan: number | null;
+  sumDownLan: number;
+  sumUpLan: number;
+  awayCount: number;
+  sumLatencyAway: number;
+  minLatencyAway: number | null;
+  sumDownAway: number;
+  sumUpAway: number;
+}
+
+// GET /diag/rollup - the hourly quality trend (oldest first) for the Cockpit dashboard. Sums, not
+// averages: derive percent-direct = directCount/(directCount+relayCount) and avg latency = sum/count on read.
+export async function getNetDiagRollup(signal?: AbortSignal): Promise<NetDiagRollupBucket[]> {
+  const res = await gatewayFetch("/diag/rollup", {
+    method: "GET",
+    headers: { Accept: "application/json", ...authHeaders() },
+    signal,
+  }, { timeoutMs: POLL_TIMEOUT_MS });
+  if (!res.ok) throw new GatewayError(res.status, `GET /diag/rollup failed: ${res.status}`);
+  return (await res.json()) as NetDiagRollupBucket[];
 }
 
 // GET /directors - the fleet's machines (Directors). Sorted most-recently-seen first so the picker

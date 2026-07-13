@@ -382,6 +382,10 @@ internal static class GatewayEndpoints
         });
         app.MapGet("/diag/results", () => Results.Json(netDiagResults.Recent()));
 
+        // GET /diag/rollup: the hourly quality trend (one bucket per UTC hour, oldest first) for the
+        // Cockpit dashboard - percent-direct over time, latency trend, and the stored home/away split.
+        app.MapGet("/diag/rollup", () => Results.Json(netDiagRollup?.All() ?? new List<NetDiagRollupStore.HourBucket>()));
+
         // About / diagnostics: product, version, build date, install root, the one Cockpit URL, and
         // the installed component versions (from installed.json on this box). Feeds the Cockpit About
         // page; loopback-reachable like the rest of the read API.
