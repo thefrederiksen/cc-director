@@ -57,6 +57,7 @@ const NAV_SECTIONS: ReadonlyArray<{ title: string; items: ReadonlyArray<NavItem>
     items: [
       { to: "/account", label: "Account" },
       { to: "/your-throttle", label: "Your Throttle" },
+      { to: "/repos", label: "Repos" },
       { to: "/settings", label: "Settings" },
       { to: "/about", label: "About" },
     ],

@@ -124,6 +124,40 @@ public sealed class StatsPageEndpointTests : IDisposable
     }
 
     [Fact]
+    public async Task StatsData_RanksRepos_ByTurns()
+    {
+        var agg = new GatewayInputStatsAggregator(Path.Combine(_dir, "s.json"));
+        agg.Observe(new SessionDto
+        {
+            SessionId = "s1",
+            RepoPath = @"D:\ReposFred\devthrottle",
+            InputStats = new InputStatsDto { Buckets = { new InputStatBucketDto { Modality = "voice", Surface = "phone", Turns = 6, Characters = 600 } } },
+        });
+        agg.Observe(new SessionDto
+        {
+            SessionId = "s2",
+            RepoPath = @"C:\repos\mindzieWeb",
+            InputStats = new InputStatsDto { Buckets = { new InputStatBucketDto { Modality = "typed", Surface = "desktop", Turns = 2, Characters = 40 } } },
+        });
+
+        var (app, http) = await StartAsync(agg, authEnabled: false);
+        try
+        {
+            using var doc = JsonDocument.Parse(await (await http.GetAsync("/stats/data")).Content.ReadAsStringAsync());
+            var repos = doc.RootElement.GetProperty("repos");
+            Assert.Equal(2, repos.GetArrayLength());
+
+            var first = repos[0];
+            Assert.Equal("devthrottle", first.GetProperty("repoName").GetString()); // most turns ranks first
+            Assert.Equal(6, first.GetProperty("turns").GetInt64());
+            Assert.Equal(6, first.GetProperty("voiceTurns").GetInt64());
+            Assert.Equal(1, first.GetProperty("sessions").GetInt32());
+            Assert.Equal("mindzieWeb", repos[1].GetProperty("repoName").GetString());
+        }
+        finally { http.Dispose(); await app.DisposeAsync(); }
+    }
+
+    [Fact]
     public async Task AuthEnabled_NoToken_Returns401_AndWithToken_Returns200()
     {
         var agg = new GatewayInputStatsAggregator(Path.Combine(_dir, "s.json"));

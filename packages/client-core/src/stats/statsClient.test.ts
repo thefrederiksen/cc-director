@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
   summarizeThrottle,
+  summarizeRepos,
   formatShare,
   last24HourKeys,
   windowSeries,
@@ -8,6 +9,7 @@ import {
   localHourLabel,
   safeTimeZone,
   type ThrottleData,
+  type RepoStat,
   type InputHour,
 } from "./statsClient";
 
@@ -22,8 +24,13 @@ function data(buckets: ThrottleData["buckets"]): ThrottleData {
     hourlyTurns: [],
     concurrency: null,
     wingman: { turns: 0, sessions: 0 },
+    repos: [],
     notCaptured: [],
   };
+}
+
+function repo(repoName: string, turns: number, voiceTurns: number, characters: number, sessions: number): RepoStat {
+  return { repo: `D:/${repoName}`, repoName, turns, voiceTurns, typedTurns: turns - voiceTurns, characters, sessions };
 }
 
 describe("summarizeThrottle", () => {
@@ -62,6 +69,32 @@ describe("summarizeThrottle", () => {
     expect(s.totalCharacters).toBe(42);
     expect(s.voiceShare).toBeNull();
     expect(s.hasData).toBe(true);
+  });
+});
+
+describe("summarizeRepos", () => {
+  it("totals turns, characters and distinct sessions, and finds the top repo's share", () => {
+    const s = summarizeRepos([
+      repo("devthrottle", 8, 6, 640, 2),
+      repo("mindzieWeb", 2, 0, 60, 1),
+    ]);
+    expect(s.repoCount).toBe(2);
+    expect(s.totalTurns).toBe(10);
+    expect(s.totalCharacters).toBe(700);
+    expect(s.totalSessions).toBe(3);
+    expect(s.voiceTurns).toBe(6);
+    expect(s.topRepoName).toBe("devthrottle");
+    expect(s.topShare).toBeCloseTo(0.8);
+    expect(s.hasData).toBe(true);
+  });
+
+  it("reports a null top share (not 0%) when nothing is counted yet", () => {
+    const s = summarizeRepos([]);
+    expect(s.repoCount).toBe(0);
+    expect(s.totalTurns).toBe(0);
+    expect(s.topShare).toBeNull();
+    expect(s.topRepoName).toBeNull();
+    expect(s.hasData).toBe(false);
   });
 });
 

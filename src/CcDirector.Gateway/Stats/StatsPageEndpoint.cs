@@ -55,6 +55,11 @@ public static class StatsPageEndpoint
                 // DevThrottle Stats: fleet concurrency (both series: live loaded/running, and actively
                 // working). Null until the aggregator is wired (old callers / tests).
                 concurrency = concurrency?.Snapshot(DateTime.UtcNow),
+                // DevThrottle Stats (private Repos page): the per-repository all-time tally, ranked
+                // most-driven first, so the owner can see where development actually happens. Same
+                // owner-only auth as the rest of this feed; rendered on a SEPARATE page from Your Throttle
+                // so it never rides along when the throttle is shared.
+                repos = aggregator.RepoTotals(),
                 notCaptured = NotCaptured,
             });
         });

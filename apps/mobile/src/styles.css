@@ -3313,6 +3313,121 @@ a.banner-btn {
   margin-bottom: 6px;
 }
 
+/* ===== Repos page (private per-person view) - reuses the throttle cards/list/caveats above ===== */
+.repos-private {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent) 34%, transparent);
+  border-radius: 999px;
+  padding: 4px 10px;
+  margin: 12px 14px 0;
+}
+.repos-lock {
+  width: 9px;
+  height: 8px;
+  border: 1.5px solid currentColor;
+  border-radius: 1px 1px 2px 2px;
+  position: relative;
+  margin-top: 3px;
+}
+.repos-lock::before {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: -6px;
+  width: 6px;
+  height: 6px;
+  border: 1.5px solid currentColor;
+  border-bottom: none;
+  border-radius: 4px 4px 0 0;
+  transform: translateX(-50%);
+}
+.repos-seg {
+  display: flex;
+  gap: 2px;
+  margin: 14px 14px 0;
+  padding: 3px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 9px;
+}
+.repos-seg-btn {
+  appearance: none;
+  border: none;
+  background: none;
+  cursor: pointer;
+  font: inherit;
+  flex: 1 1 0;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-dim);
+  padding: 7px 8px;
+  border-radius: 6px;
+}
+.repos-seg-btn.on {
+  background: var(--surface);
+  color: var(--accent);
+}
+.repo-item {
+  padding: 10px 0;
+  border-bottom: 1px solid var(--border);
+}
+.repo-item-top {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+.repo-item-rank {
+  font-size: 12px;
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+  min-width: 16px;
+}
+.repo-item-name {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text);
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.repo-item-val {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+.repo-item-share {
+  color: var(--text-dim);
+  font-weight: 400;
+}
+.repo-item-bar {
+  height: 9px;
+  background: var(--surface-2);
+  border-radius: 5px;
+  overflow: hidden;
+  display: flex;
+  margin-left: 24px;
+}
+.repo-item-voice {
+  height: 100%;
+  background: var(--accent);
+}
+.repo-item-typed {
+  height: 100%;
+  background: color-mix(in srgb, var(--text-dim) 45%, transparent);
+}
+
 /* 24-hour concurrency bar chart */
 .thr-chart {
   display: flex;
