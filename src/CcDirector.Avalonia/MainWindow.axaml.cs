@@ -3053,7 +3053,10 @@ public partial class MainWindow : Window
     // submit itself is the only arbiter of "the session took the text" (the old ActivityState gate
     // rejected healthy idle sessions because that state lags real silence by 10 seconds - see issue
     // #1308). On failure the words are put back in the compose box and reported with a modal, so
-    // nothing the user said is ever lost.
+    // nothing the user said is ever lost. The recorded WAV itself is saved to disk before the
+    // transcription attempt (DictationRecordingStore) and deleted once the words are safe; when
+    // transcription fails there is no text to restore, so the file is kept and the failure modal
+    // names its path - the audio is the only remaining copy of what was said.
 
     private global::CcDirector.Core.Transcription.IDictationTranscriber? _dictationTranscriber;
     private bool _dictationInfraReady;
