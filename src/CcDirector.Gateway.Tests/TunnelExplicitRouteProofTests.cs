@@ -4,6 +4,9 @@ using System.Net.Http.Json;
 using System.Net.Sockets;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using CcDirector.ControlApi;
+using CcDirector.Core.Configuration;
+using CcDirector.Core.Sessions;
 using CcDirector.Gateway.Contracts;
 using Microsoft.AspNetCore.SignalR.Client;
 using Microsoft.Extensions.DependencyInjection; // AddMessagePackProtocol (client)
@@ -35,6 +38,8 @@ public sealed class TunnelExplicitRouteProofTests : IAsyncLifetime
     private GatewayHost _gateway = null!;
     private HttpClient _http = null!;
     private HubConnection _conn = null!;
+    private SessionManager _sm = null!;
+    private Session _session = null!;
     private string _sid = "";
 
     // The last command the Director saw over the tunnel, so a test can assert the verb + payload the route sent.
@@ -56,7 +61,11 @@ public sealed class TunnelExplicitRouteProofTests : IAsyncLifetime
         await _gateway.StartAsync();
         _http = new HttpClient { BaseAddress = new Uri($"http://127.0.0.1:{_gateway.Port}/") };
         _http.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", Token);
-        _sid = Guid.NewGuid().ToString();
+
+        // A REAL session so the Director-side handlers (which validate the session exists) run the real code.
+        _sm = new SessionManager(new AgentOptions());
+        _session = _sm.CreateEmbeddedSession(Path.GetTempPath(), null, new ExecuteActionTestBackend());
+        _sid = _session.Id.ToString();
 
         // The Director registers UNREACHABLE, so any working route proves it rode the tunnel, never an HTTP dial.
         _gateway.Registry.Upsert(new DirectorRegistrationRequest
@@ -86,6 +95,7 @@ public sealed class TunnelExplicitRouteProofTests : IAsyncLifetime
     public async Task DisposeAsync()
     {
         try { await _conn.DisposeAsync(); } catch { /* best effort */ }
+        _sm.Dispose();
         _http.Dispose();
         await _gateway.StopAsync();
         Environment.SetEnvironmentVariable("CC_DIRECTOR_ROOT", _prevRoot);
@@ -110,6 +120,11 @@ public sealed class TunnelExplicitRouteProofTests : IAsyncLifetime
             "cancel-deletion" => DirectorCommandResult.Success(),
             "wingman-ask" => DirectorCommandResult.Success(JsonSerializer.Serialize(new { status = "ok", answer = "an answer" })),
             "recap-generate" => DirectorCommandResult.Success(JsonSerializer.Serialize(new { sessionId = cmd.SessionId, recap = "a generated recap", model = "opus" })),
+            // The chunked upload verbs run the REAL Director reassembly + save so the proof exercises the real
+            // begin/chunk/complete path end to end (a real file is written under the test's screenshots folder).
+            "upload-image-begin" => SessionByteExecutor.UploadImageBegin(_sm, cmd),
+            "upload-image-chunk" => SessionByteExecutor.UploadImageChunk(cmd),
+            "upload-image-complete" => SessionByteExecutor.UploadImageComplete(cmd),
             _ => DirectorCommandResult.Fail(DirectorCommandStatus.BadRequest, $"unexpected verb {cmd.Verb}"),
         };
     }
@@ -234,6 +249,36 @@ public sealed class TunnelExplicitRouteProofTests : IAsyncLifetime
         Assert.Equal("recap-generate", _lastCommand!.Verb);
         var payload = JsonNode.Parse(_lastCommand.PayloadJson)!.AsObject();
         Assert.Equal("opus", (string?)payload["model"]); // the model query param rode the payload
+    }
+
+    // ------------------------------------------------------------------------- chunked upload-image ----
+
+    [Fact]
+    public async Task UploadImage_ridesTheTunnel_chunked_andReassemblesByteForByte()
+    {
+        // A 50 KB image spans multiple chunks (UploadChunkRawBytes = 20 KB -> 3 chunks: 20 + 20 + 10).
+        var image = new byte[(DirectorStreamLimits.UploadChunkRawBytes * 2) + 10 * 1024];
+        for (var i = 0; i < image.Length; i++) image[i] = (byte)((i * 31 + 7) % 251);
+
+        using var form = new MultipartFormDataContent();
+        var filePart = new ByteArrayContent(image);
+        filePart.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("image/png");
+        form.Add(filePart, "file", "photo.png");
+
+        var resp = await _http.PostAsync($"sessions/{_sid}/upload-image", form);
+        Assert.Equal(HttpStatusCode.OK, resp.StatusCode); // an HTTP dial to the unreachable Director would have failed
+        var node = await resp.Content.ReadFromJsonAsync<JsonNode>();
+        var savedPath = node?["path"]?.GetValue<string>();
+        Assert.False(string.IsNullOrEmpty(savedPath));
+
+        // The chunked upload rode the tunnel: begin, three chunks, then complete were the commands seen.
+        Assert.Equal("upload-image-complete", _lastCommand!.Verb);
+
+        // The Director reassembled the chunks byte-for-byte and saved the real file (same machine, in-process).
+        Assert.True(File.Exists(savedPath), $"expected the reassembled image at {savedPath}");
+        var saved = await File.ReadAllBytesAsync(savedPath!);
+        Assert.Equal(image, saved);
+        Assert.EndsWith(".png", savedPath);
     }
 
     // -------------------------------------------------------------------------------------- helpers ----
