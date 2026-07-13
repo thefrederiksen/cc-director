@@ -293,14 +293,16 @@ public sealed class TunnelMechanismProofTests : IAsyncLifetime
         var send = _conn.SendAsync("StreamUp", streamId, Produce(), testTimeout.Token);
         try
         {
-            // Let it run ahead as far as buffering allows, then confirm it has STOPPED (pinned), not merely slow.
-            await Task.Delay(600, testTimeout.Token);
-            var pinnedA = Volatile.Read(ref yielded);
-            await Task.Delay(1500, testTimeout.Token);
-            var pinnedB = Volatile.Read(ref yielded);
+            // POLL until the producer's progress STOPS advancing (buffers full -> pinned), rather than assuming
+            // it pins within a fixed delay: the OS socket + pipe buffers fill at a machine-dependent rate, so a
+            // fixed sample can catch the ramp mid-flight on a slow CI runner. Throughout the ramp the count MUST
+            // stay below total - if backpressure were broken the producer would run to completion (caught here).
+            var pinned = await PollUntilStableAsync(() => Volatile.Read(ref yielded), total, testTimeout.Token);
 
-            Assert.True(pinnedA < total, $"producer ran to {pinnedA}/{total} with the sink stalled - backpressure is broken");
-            Assert.Equal(pinnedA, pinnedB); // stable: the producer is BLOCKED on its yield, not slowly draining ahead
+            // Now confirm it STAYS pinned for a further window - blocked on its yield, not slowly draining ahead.
+            await Task.Delay(1000, testTimeout.Token);
+            Assert.Equal(pinned, Volatile.Read(ref yielded));
+            Assert.True(pinned < total, $"producer ran to {pinned}/{total} with the sink stalled - backpressure is broken");
             Assert.Equal(0, sink.CompletedWrites); // the first write is in-flight (held by the gate); none have completed
         }
         finally
@@ -316,6 +318,34 @@ public sealed class TunnelMechanismProofTests : IAsyncLifetime
         await WaitUntilAsync(() => Volatile.Read(ref yielded) == total && sink.CompletedWrites == expectedWrites, TimeSpan.FromSeconds(10));
         Assert.Equal(total, Volatile.Read(ref yielded));
         Assert.Equal(expectedWrites, sink.CompletedWrites); // 100 binary + 1 closed, delivered to the sink in order
+    }
+
+    // Poll `read` until it STOPS advancing (the same value for several consecutive samples = pinned), returning
+    // that stable value. Deterministic where a fixed delay is not: the socket/pipe buffers fill at a
+    // machine-dependent rate, so this waits for the ramp to finish instead of assuming it finished by some
+    // instant. Throughout the ramp the value MUST stay below `total`; if it ever reaches `total` the producer
+    // ran to completion and backpressure is broken - asserted here so the poll cannot mask a real regression.
+    // Fails fast via the shared test timeout if it never stabilizes.
+    private static async Task<int> PollUntilStableAsync(Func<int> read, int total, CancellationToken ct)
+    {
+        int last = -1, stable = 0;
+        while (!ct.IsCancellationRequested)
+        {
+            await Task.Delay(200, ct);
+            var cur = read();
+            Assert.True(cur < total, $"producer ran to {cur}/{total} with the sink stalled - backpressure is broken");
+            if (cur == last && cur > 0)
+            {
+                if (++stable >= 4) return cur; // ~800ms with no advance (and past the ramp) = pinned
+            }
+            else
+            {
+                stable = 0;
+                last = cur;
+            }
+        }
+        ct.ThrowIfCancellationRequested();
+        return last; // unreachable: the line above always throws when cancelled
     }
 
     // A sink whose writes block on a gate, so a test can hold the Gateway's pull and observe backpressure. It
