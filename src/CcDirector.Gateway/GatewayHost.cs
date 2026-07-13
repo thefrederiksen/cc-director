@@ -338,6 +338,10 @@ public sealed class GatewayHost : IAsyncDisposable
     // Car Mode performance round: the durable, Gateway-local store of per-turn timing records. The browser
     // posts ONE record per turn; GET /carmode/telemetry reads them back. Retained about 90 days by age.
     private readonly CarMode.CarModeTelemetryStore _carModeTelemetry = new();
+    // Car Mode offline resilience Phase 4b (issue #1427): idempotency + single-flight cache for
+    // POST /carmode/turn keyed by the client's turn id, so an already-sent turn whose result was lost in a
+    // dead zone auto-retries and ACTS at most once. In-memory, one instance for the whole Gateway.
+    private readonly CarMode.CarModeTurnCache _carModeTurnCache = new();
     // Gateway-owned set of sessions whose dictated utterance is being transcribed in the background
     // (the phone released the Speak dialog and the audio is uploading/transcribing). Stamps the
     // orange "Transcribing..." roster color so nobody else grabs the session mid-dictation.
@@ -1289,7 +1293,7 @@ public sealed class GatewayHost : IAsyncDisposable
                 var key = _keyVault.Get(tts.KeyName) ?? "";
                 return (tts.BaseUrl, Core.Configuration.TtsVoiceConfig.Resolve(mode), Core.Configuration.TtsModelConfig.Resolve(mode), key);
             });
-        Api.CarModeEndpoint.Map(_app, carModeBrain, _carModeTelemetry, carModeWarmup);
+        Api.CarModeEndpoint.Map(_app, carModeBrain, _carModeTurnCache, _carModeTelemetry, carModeWarmup);
         // Editable/versioned wingman instructions settings surface (issue #537), incl. A/B test
         // over saved training sessions (reads the shared training store; uses the hosted wingman brain).
         WingmanInstructionsEndpoint.Map(_app, _instructionsStore, _trainingStore, WingmanBrainAsync);

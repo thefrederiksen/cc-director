@@ -10,7 +10,7 @@ import { useScreenWakeLock } from "../hooks/useScreenWakeLock";
 // the old git short-sha + timestamp badge was replaced by a plain human version. BUMP THIS INTEGER BY HAND
 // ON EVERY DEPLOY of the mobile app (v1 -> v2 -> v3 ...), so a glance at the corner tells the owner and the
 // Architect exactly which page is live and what to look for after a deploy.
-const CAR_MODE_VERSION = "v9";
+const CAR_MODE_VERSION = "v10";
 
 // Car Mode (Car Mode mission): the standalone, chrome-less, full-screen page the owner opens to run
 // the whole fleet by voice, hands-free, phone in his pocket. It is a THIN view over the shared
@@ -63,9 +63,11 @@ export function CarMode() {
 
   // The injected brain responder. Phase 2+: the real fleet brain. The stand-in (below) just echoes the
   // heard command so Phase 1's barge-in proof needs no server and no credits.
-  const respond = useCallback(async (command: string, signal: AbortSignal): Promise<CarModeReply> => {
+  const respond = useCallback(async (command: string, signal: AbortSignal, idempotencyKey?: string): Promise<CarModeReply> => {
     if (USE_FLEET_BRAIN) {
-      const result = await carModeTurn(command, signal);
+      // Forward the durable turn record id as the Idempotency-Key (Phase 4b, #1427) so a re-driven turn
+      // acts at most once server-side.
+      const result = await carModeTurn(command, idempotencyKey, signal);
       return {
         spoken: result.spoken,
         actions: result.actions,
@@ -172,28 +174,24 @@ export function CarMode() {
           </div>
         )}
 
-        {/* A held turn that needs the owner's explicit choice. A "stale" turn (never sent to the brain,
-            just old) can be sent safely; an "ambiguous" turn (already sent, result unknown) can only be
-            discarded in Phase 4a, since a blind resend could act twice. */}
+        {/* A held turn that is too old to fire blind (past the ~30-minute staleness cap) waits for the
+            owner's explicit choice. Sending it is safe via Phase 4b's server idempotency (it acts at most
+            once), so both Send and Discard are offered. */}
         {askOwnerTurn && (
           <div className="car-askowner" role="status">
             <span className="car-askowner-text">
-              {askOwnerTurn.reason === "ambiguous"
-                ? "I sent an earlier request but couldn't confirm it. I've left it alone to avoid doing it twice."
-                : "You have an earlier saved request from a while ago."}
+              You have an earlier saved request from a while ago.
               {askOwnerTurn.transcript.length > 0 && <> "{askOwnerTurn.transcript}"</>}
             </span>
             <div className="car-askowner-buttons">
-              {askOwnerTurn.reason === "stale" && (
-                <button
-                  type="button"
-                  className="car-askowner-send"
-                  onClick={() => sendHeldTurn(askOwnerTurn.id)}
-                  disabled={phase !== "listening"}
-                >
-                  Send it now
-                </button>
-              )}
+              <button
+                type="button"
+                className="car-askowner-send"
+                onClick={() => sendHeldTurn(askOwnerTurn.id)}
+                disabled={phase !== "listening"}
+              >
+                Send it now
+              </button>
               <button
                 type="button"
                 className="car-askowner-discard"

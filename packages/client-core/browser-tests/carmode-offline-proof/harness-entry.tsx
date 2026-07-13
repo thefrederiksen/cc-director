@@ -99,8 +99,8 @@ window.fetch = (async (input: RequestInfo | URL, init?: RequestInit): Promise<Re
 }) as typeof window.fetch;
 
 function Harness(): React.ReactElement {
-  const respond = useCallback(async (command: string, signal: AbortSignal): Promise<CarModeReply> => {
-    const r = await carModeTurn(command, signal);
+  const respond = useCallback(async (command: string, signal: AbortSignal, idempotencyKey?: string): Promise<CarModeReply> => {
+    const r = await carModeTurn(command, idempotencyKey, signal);
     return {
       spoken: r.spoken,
       actions: r.actions,

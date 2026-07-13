@@ -31,7 +31,7 @@ namespace CcDirector.Gateway.Api;
 /// </summary>
 internal static class CarModeEndpoint
 {
-    public static void Map(IEndpointRouteBuilder app, CarModeBrain brain, CarModeTelemetryStore telemetry, CarModeWarmup warmup)
+    public static void Map(IEndpointRouteBuilder app, CarModeBrain brain, CarModeTurnCache turnCache, CarModeTelemetryStore telemetry, CarModeWarmup warmup)
     {
         // Keep-warm (Car Mode performance round): the browser calls this the instant the owner taps Start,
         // and every few minutes WHILE Car Mode is open, so the hosted model + text-to-speech are hot before
@@ -54,11 +54,30 @@ internal static class CarModeEndpoint
                 return Results.Json(new { error = "text is required" }, statusCode: StatusCodes.Status400BadRequest);
 
             var deviceKey = ExtractCallerCredential(ctx);
-            // A server-minted turn id ties the browser's posted timing record back to this turn's log line.
-            var turnId = Guid.NewGuid().ToString("N");
+            var text = req.Text.Trim();
+            // Offline resilience Phase 4b (issue #1427): the client sends its durable command-audio record id
+            // as the Idempotency-Key so an already-sent turn whose result was lost in a dead zone auto-retries
+            // and ACTS at most once. When present it also becomes the turnId, so a retry's telemetry ties back
+            // to the original rather than double-counting. When absent (a legacy caller), the old behavior
+            // holds: a fresh server turnId and a direct brain run on the request token.
+            var idemKey = ExtractIdempotencyKey(ctx);
+            var turnId = string.IsNullOrEmpty(idemKey) ? Guid.NewGuid().ToString("N") : idemKey;
             try
             {
-                var result = await brain.RunTurnAsync(deviceKey, req.Text.Trim(), ct);
+                CarModeTurnResponse result;
+                if (string.IsNullOrEmpty(idemKey))
+                {
+                    result = await brain.RunTurnAsync(deviceKey, text, ct);
+                }
+                else
+                {
+                    // Run the brain on CancellationToken.None (NOT the request token) inside the single-flight
+                    // cache, so a client that drops mid-turn does NOT abort the work - it completes and caches,
+                    // and the client's retry gets the cached result instead of re-acting. Await with the request
+                    // token so a disconnected client still returns promptly (the underlying work continues).
+                    var work = turnCache.GetOrRunAsync(deviceKey, idemKey, () => brain.RunTurnAsync(deviceKey, text, CancellationToken.None));
+                    result = await work.WaitAsync(ct);
+                }
                 return Results.Json(new
                 {
                     turnId,
@@ -186,6 +205,17 @@ internal static class CarModeEndpoint
         if (ctx.Request.Cookies.TryGetValue(AuthMiddleware.CookieName, out var cookie) && !string.IsNullOrWhiteSpace(cookie))
             return cookie;
         return "";
+    }
+
+    /// <summary>The client's idempotency key for this turn (the durable command-audio record id), from the
+    ///  standard <c>Idempotency-Key</c> header. Empty when absent (a legacy caller), which the handler maps
+    ///  to the non-deduped legacy path. Trimmed and length-capped so a malformed header cannot bloat the
+    ///  cache key.</summary>
+    private static string ExtractIdempotencyKey(HttpContext ctx)
+    {
+        if (!ctx.Request.Headers.TryGetValue("Idempotency-Key", out var header)) return "";
+        var raw = header.ToString().Trim();
+        return raw.Length > 200 ? raw[..200] : raw;
     }
 }
 

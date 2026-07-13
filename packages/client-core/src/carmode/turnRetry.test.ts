@@ -14,26 +14,26 @@ const NOW = 1_000_000_000_000;
 
 describe("classifyHeldTurn", () => {
   it("auto-retries a fresh turn that never reached the brain (the dominant dead-zone case)", () => {
-    // brainSent=false means transcribe never succeeded, so re-driving is a FIRST brain call = safe.
-    expect(classifyHeldTurn({ brainSent: false, createdAt: NOW - 1000 }, NOW)).toBe("auto");
+    expect(classifyHeldTurn({ createdAt: NOW - 1000 }, NOW)).toBe("auto");
   });
 
-  it("holds for the owner a turn already sent to the brain (result unknown, could double-act)", () => {
-    // Even a brand-new brainSent turn is ambiguous - it may have acted - so it is never auto-fired in 4a.
-    expect(classifyHeldTurn({ brainSent: true, createdAt: NOW - 1000 }, NOW)).toBe("ask-owner");
+  it("auto-retries a fresh turn even if it was already sent to the brain (Phase 4b server dedupe makes it safe)", () => {
+    // With the Idempotency-Key, an already-sent turn acts at most once, so brainSent no longer forces
+    // ask-owner - only staleness does.
+    expect(classifyHeldTurn({ createdAt: NOW - 1000 }, NOW)).toBe("auto");
   });
 
-  it("holds for the owner a never-sent turn that is older than the staleness cap", () => {
-    // brainSent=false but stale: firing a half-hour-old action blind is wrong, so surface it for a yes.
-    expect(classifyHeldTurn({ brainSent: false, createdAt: NOW - STALE_TURN_MS - 1 }, NOW)).toBe("ask-owner");
+  it("holds for the owner a turn older than the staleness cap", () => {
+    // Firing a half-hour-old action blind is wrong, so surface it for an explicit yes regardless of state.
+    expect(classifyHeldTurn({ createdAt: NOW - STALE_TURN_MS - 1 }, NOW)).toBe("ask-owner");
   });
 
-  it("still auto-retries a never-sent turn right up to the staleness cap", () => {
-    expect(classifyHeldTurn({ brainSent: false, createdAt: NOW - (STALE_TURN_MS - 1) }, NOW)).toBe("auto");
+  it("still auto-retries a turn right up to the staleness cap", () => {
+    expect(classifyHeldTurn({ createdAt: NOW - (STALE_TURN_MS - 1) }, NOW)).toBe("auto");
   });
 
   it("treats exactly the staleness cap as too old to auto-fire", () => {
-    expect(classifyHeldTurn({ brainSent: false, createdAt: NOW - STALE_TURN_MS }, NOW)).toBe("ask-owner");
+    expect(classifyHeldTurn({ createdAt: NOW - STALE_TURN_MS }, NOW)).toBe("ask-owner");
   });
 });
 
