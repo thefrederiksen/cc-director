@@ -15,7 +15,7 @@ import { CockpitStatusPill } from "./network/CockpitStatusPill";
 // running and how it is driven), Data (the corpora and tools the fleet reads and writes), and System
 // (this browser's account and the app's own settings). Every built page that is meant to be reachable
 // has an entry - the pages that used to be reachable only by typing their address (Voice Recorder,
-// Executables, Wingman) are now in the menu.
+// Executables) are now in the menu.
 //
 // The Fleet Map is first and is the default landing (issue #1303): a fresh boot at "/" redirects to
 // it, so the Cockpit opens on the whole-fleet picture (main.tsx). Sessions lives at its own /sessions
@@ -38,7 +38,6 @@ const NAV_SECTIONS: ReadonlyArray<{ title: string; items: ReadonlyArray<NavItem>
       { to: "/sessions", label: "Sessions", subtree: "/session" },
       { to: "/directors", label: "Directors" },
       { to: "/schedule", label: "Schedule" },
-      { to: "/wingman", label: "Wingman" },
     ],
   },
   {
