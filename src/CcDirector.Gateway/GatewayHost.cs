@@ -1535,11 +1535,6 @@ public sealed class GatewayHost : IAsyncDisposable
         // for status/brain; run mode + autostart come from SettingsHooks (GatewayApp-owned).
         SettingsEndpoints.Map(_app, this);
 
-        // The fleet-level wingman pipeline view (issue #239): GET /wingman/queue. Issue #549
-        // retired the always-on stamping machine that fed it, so there is no live pipeline to
-        // snapshot - pass null and the endpoint answers an honest idle "Disabled" snapshot.
-        WingmanQueueEndpoints.Map(_app, snapshot: null);
-
         // Gateway-served turn briefs (issue #185): the Cockpit and the interrupted/restore paths
         // read briefs from the store HERE. Issue #549 removed the only WRITER (GatewayTurnBriefAgent),
         // so the store is read-only-serving (effectively empty going forward); the read endpoints

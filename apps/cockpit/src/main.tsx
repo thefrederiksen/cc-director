@@ -17,7 +17,6 @@ import { FleetMapView } from "./fleet/FleetMapView";
 import { DirectorsView } from "./fleet/DirectorsView";
 import { DirectorDetailView } from "./fleet/DirectorDetailView";
 import { ScheduleView } from "./schedule/ScheduleView";
-import { WingmanQueueView } from "./wingman/WingmanQueueView";
 import { DictionaryView } from "./dictionary/DictionaryView";
 import { TranscriptsView } from "./transcripts/TranscriptsView";
 import { ExesView } from "./exes/ExesView";
@@ -35,7 +34,6 @@ import "./fleet/fleet.css";
 import "./fleet/fleetmap.css";
 import "./missions/missions.css";
 import "./schedule/schedule.css";
-import "./wingman/wingman.css";
 import "./dictionary/dictionary.css";
 import "./transcripts/transcripts.css";
 import "./exes/exes.css";
@@ -145,12 +143,13 @@ const router = createBrowserRouter(
             { path: "/missions", element: <Navigate to="/fleet-map" replace /> },
             { path: "/directors", element: <DirectorsView /> },
             { path: "/directors/:directorId", element: <DirectorDetailView /> },
-            // The Schedule + Wingman-pipeline pages (issue #976): one-to-one ports of the Blazor
-            // Schedule.razor (cron jobs, /cron/jobs surface) and WingmanQueue.razor (read-only
-            // /wingman/queue snapshot) over the same Gateway REST surface. Both now have a Fleet-section
-            // nav entry (issue #1247).
+            // The Schedule page (issue #976): a one-to-one port of the Blazor Schedule.razor (cron
+            // jobs, /cron/jobs surface) over the same Gateway REST surface, with a Fleet-section nav
+            // entry (issue #1247). The Wingman Pipeline page that used to sit beside it was removed:
+            // it was a read-only view of the always-on stamping machine that issue #549 retired, so it
+            // only ever rendered an idle "Disabled" snapshot. "Wingman" now means only the live voice
+            // narration (the phone/Cockpit Voice mode), not a fleet pipeline surface.
             { path: "/schedule", element: <ScheduleView /> },
-            { path: "/wingman", element: <WingmanQueueView /> },
             // The tools + data pages (issue #977): one-to-one ports of the Blazor Dictionary.razor,
             // Transcripts.razor, Exes.razor, and Learning.razor over the same Gateway REST surface.
             // All four have a Data-section nav entry now (issue #1247, exposing Voice Recorder and

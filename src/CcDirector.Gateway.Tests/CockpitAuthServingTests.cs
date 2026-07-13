@@ -155,7 +155,7 @@ public sealed class CockpitAuthServingTests : IAsyncLifetime
         // The gate must NOT be weakened by the public sign-in surface: an arbitrary non-public path
         // carrying no Accept: text/html and no credential gets the JSON 401, never a redirect and
         // never a pass-through.
-        using var res = await _http.GetAsync("/wingman/queue");
+        using var res = await _http.GetAsync("/directors");
         Assert.Equal(HttpStatusCode.Unauthorized, res.StatusCode);
     }
 
