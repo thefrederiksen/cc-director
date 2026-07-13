@@ -44,6 +44,7 @@ internal sealed class SessionReadExecutor : ISessionCommandArea
         "wingman-view",
         "wingman-explain",
         "handover",
+        "handover-context",
     };
 
     public Task<DirectorCommandResult> ExecuteAsync(SessionCommandContext context, DirectorCommand command, CancellationToken cancellationToken)
@@ -65,6 +66,7 @@ internal sealed class SessionReadExecutor : ISessionCommandArea
             "wingman-view" => WingmanView(context, command),
             "wingman-explain" => WingmanExplain(sessionManager, command),
             "handover" => Handover(sessionManager, context.DirectorId, context.Services?.DirectorVersion, command),
+            "handover-context" => HandoverContext(sessionManager, context.DirectorId, command),
             _ => DirectorCommandResult.Fail(DirectorCommandStatus.BadRequest, $"verb '{command.Verb}' is not handled by the session read area"),
         };
         return Task.FromResult(result);
@@ -635,5 +637,56 @@ internal sealed class SessionReadExecutor : ISessionCommandArea
             MachineName = Environment.MachineName,
             Version = version ?? string.Empty,
         }));
+    }
+
+    /// <summary>
+    /// The <c>handover-context</c> verb: the plain-text prompt that would be sent to a target session on a
+    /// handover. Mirrors the Director's <c>GET /sessions/{sid}/handover-context</c> lambda verbatim - invalid id
+    /// -&gt; BadRequest, missing session -&gt; NotFound - building the same <see cref="SessionSummaryDto"/> and
+    /// running it through <see cref="SummaryBuilder.FormatAsHandoverPrompt"/> with the optional extra context.
+    /// The text is wrapped in a <see cref="HandoverContextResponse"/> so the tunnel body is valid JSON; the
+    /// re-pointed REST route unwraps it back to <c>text/plain</c>. Gateway Cleanup mission: the cross-Director
+    /// handover reads this over the tunnel before spawning the continuation on the target Director.
+    /// </summary>
+    internal static DirectorCommandResult HandoverContext(SessionManager sessionManager, string directorId, DirectorCommand command)
+    {
+        FileLog.Write($"[SessionReadExecutor] handover-context: sid={command.SessionId}");
+        if (!Guid.TryParse(command.SessionId, out var guid))
+            return DirectorCommandResult.Fail(DirectorCommandStatus.BadRequest, "invalid session id format");
+
+        var session = sessionManager.GetSession(guid);
+        if (session is null)
+            return DirectorCommandResult.Fail(DirectorCommandStatus.NotFound, "session not found");
+
+        var extraContext = SessionCommandExecutor.Deserialize<HandoverContextRequest>(command.PayloadJson)?.ExtraContext;
+
+        SessionSummaryDto summary;
+        if (string.IsNullOrEmpty(session.ClaudeSessionId))
+        {
+            summary = new SessionSummaryDto
+            {
+                SessionId = command.SessionId, DirectorId = directorId,
+                Agent = session.AgentKind.ToString(),
+                RepoPath = session.RepoPath,
+                ActivityState = session.ActivityState.ToString(),
+                CreatedAt = session.CreatedAt.UtcDateTime,
+            };
+        }
+        else
+        {
+            var jsonl = ClaudeSessionReader.GetJsonlPath(session.ClaudeSessionId, session.RepoPath);
+            summary = File.Exists(jsonl)
+                ? SummaryBuilder.Build(StreamMessageParser.ParseFile(jsonl))
+                : new SessionSummaryDto();
+            summary.SessionId = command.SessionId;
+            summary.DirectorId = directorId;
+            summary.Agent = session.AgentKind.ToString();
+            summary.RepoPath = session.RepoPath;
+            summary.ActivityState = session.ActivityState.ToString();
+            summary.CreatedAt = session.CreatedAt.UtcDateTime;
+        }
+
+        var text = SummaryBuilder.FormatAsHandoverPrompt(summary, extraContext);
+        return DirectorCommandResult.Success(SessionCommandExecutor.Serialize(new HandoverContextResponse { Text = text }));
     }
 }

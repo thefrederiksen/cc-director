@@ -1792,7 +1792,14 @@ internal static class GatewayEndpoints
                 FileLog.Write($"[GatewayEndpoints] DELETE director: id={id} live-session count UNKNOWN (director unreachable); session gate skipped");
             }
 
-            var ok = await client.PostShutdownAsync(director.ControlEndpoint);
+            // Gateway Cleanup Phase 2: the Gateway-initiated REMOTE stop rides the tunnel (shutdown verb,
+            // director-level so SessionId is ""), tunnel-first; a null return falls back to the byte-identical
+            // HTTP dial. POST /shutdown stays on the Director loopback floor for the local launcher; this tunnel
+            // verb triggers the same in-process self-shutdown. Post-cut the HTTP arm is removed.
+            var shutdownSr = await DirectorCommandRouter.TrySendAsync(sendCommand, director.DirectorId, "shutdown", "", null, CancellationToken.None);
+            var ok = shutdownSr is not null
+                ? shutdownSr.Ok
+                : await client.PostShutdownAsync(director.ControlEndpoint);
             if (ok)
             {
                 FileLog.Write($"[GatewayEndpoints] DELETE director: id={id} pid={director.Pid} graceful shutdown accepted");
@@ -1974,9 +1981,22 @@ internal static class GatewayEndpoints
 
             if (targetDirector is null)
             {
-                // Same-Director: proxy the entire request.
-                var (ok, body, err) = await client.PostHandoverAsync(sourceDirector.ControlEndpoint, req);
-                if (!ok || body is null)
+                // Same-Director: proxy the entire request. Gateway Cleanup Phase 2: ride the tunnel first
+                // (handover-generate verb, director-level so SessionId is ""); a null return falls back to the
+                // byte-identical HTTP proxy. A non-Ok stream result collapses to 502 exactly as the HTTP null did.
+                HandoverResponse? body; string? err;
+                var hgSr = await DirectorCommandRouter.TrySendAsync(sendCommand, sourceDirector.DirectorId, "handover-generate", "", req, CancellationToken.None);
+                if (hgSr is not null)
+                {
+                    body = hgSr.Ok ? DirectorCommandRouter.ReadBody<HandoverResponse>(hgSr) : null;
+                    err = hgSr.Ok ? null : DirectorCommandRouter.DescribeFailure(hgSr);
+                }
+                else
+                {
+                    var http = await client.PostHandoverAsync(sourceDirector.ControlEndpoint, req);
+                    body = http.body; err = http.error;
+                }
+                if (body is null)
                     return Results.Problem(err ?? "handover failed", statusCode: StatusCodes.Status502BadGateway);
                 if (body.TargetSession is not null) body.TargetSession.DirectorId = sourceDirector.DirectorId;
                 return Results.Json(body, statusCode: 201);
@@ -1988,18 +2008,31 @@ internal static class GatewayEndpoints
             if (string.IsNullOrEmpty(req.ToRepoPath))
                 return Results.BadRequest(new { error = "toRepoPath is required for cross-director handover" });
 
+            // Gateway Cleanup Phase 2: read the source session's handover context over the tunnel
+            // (handover-context verb), falling back to the byte-identical HTTP GET when the source has no stream.
             string contextText;
-            try
+            var ctxSr = await DirectorCommandRouter.TrySendAsync(sendCommand, sourceDirector.DirectorId, "handover-context",
+                req.FromSessionId, new HandoverContextRequest { ExtraContext = req.ExtraContext }, CancellationToken.None);
+            if (ctxSr is not null)
             {
-                var ctxUrl = $"{sourceDirector.ControlEndpoint}/sessions/{req.FromSessionId}/handover-context";
-                if (!string.IsNullOrEmpty(req.ExtraContext))
-                    ctxUrl += "?extraContext=" + Uri.EscapeDataString(req.ExtraContext);
-                using var ctxHttp = new HttpClient { Timeout = TimeSpan.FromSeconds(10) };
-                contextText = await ctxHttp.GetStringAsync(ctxUrl);
+                if (!ctxSr.Ok)
+                    return Results.Problem("failed to read handover-context from source director: " + DirectorCommandRouter.DescribeFailure(ctxSr), statusCode: 502);
+                contextText = DirectorCommandRouter.ReadBody<HandoverContextResponse>(ctxSr)?.Text ?? "";
             }
-            catch (Exception ex)
+            else
             {
-                return Results.Problem("failed to read handover-context from source director: " + ex.Message, statusCode: 502);
+                try
+                {
+                    var ctxUrl = $"{sourceDirector.ControlEndpoint}/sessions/{req.FromSessionId}/handover-context";
+                    if (!string.IsNullOrEmpty(req.ExtraContext))
+                        ctxUrl += "?extraContext=" + Uri.EscapeDataString(req.ExtraContext);
+                    using var ctxHttp = new HttpClient { Timeout = TimeSpan.FromSeconds(10) };
+                    contextText = await ctxHttp.GetStringAsync(ctxUrl);
+                }
+                catch (Exception ex)
+                {
+                    return Results.Problem("failed to read handover-context from source director: " + ex.Message, statusCode: 502);
+                }
             }
 
             var spawnReq = new NewSessionRequest
@@ -2008,14 +2041,27 @@ internal static class GatewayEndpoints
                 Agent = req.ToAgent,
                 PrePrompt = contextText,
             };
-            using var spawnHttp = new HttpClient { Timeout = TimeSpan.FromSeconds(20) };
-            var spawnResp = await spawnHttp.PostAsJsonAsync($"{targetDirector.ControlEndpoint}/sessions", spawnReq);
-            if (!spawnResp.IsSuccessStatusCode)
+            // Gateway Cleanup Phase 2: create the target over the tunnel (create verb, director-level), tunnel-first;
+            // the dedicated 20s HTTP client is the fallback pre-cut (the tunnel unary has no 2s aggregate timeout).
+            SessionDto? newSession;
+            var spawnSr = await DirectorCommandRouter.TrySendAsync(sendCommand, targetDirector.DirectorId, "create", "", spawnReq, CancellationToken.None);
+            if (spawnSr is not null)
             {
-                var body = await spawnResp.Content.ReadAsStringAsync();
-                return Results.Problem($"target director returned {(int)spawnResp.StatusCode}: {body}", statusCode: 502);
+                if (!spawnSr.Ok)
+                    return Results.Problem($"target director returned {DirectorCommandRouter.DescribeFailure(spawnSr)}", statusCode: 502);
+                newSession = DirectorCommandRouter.ReadBody<SessionDto>(spawnSr);
             }
-            var newSession = await spawnResp.Content.ReadFromJsonAsync<SessionDto>();
+            else
+            {
+                using var spawnHttp = new HttpClient { Timeout = TimeSpan.FromSeconds(20) };
+                var spawnResp = await spawnHttp.PostAsJsonAsync($"{targetDirector.ControlEndpoint}/sessions", spawnReq);
+                if (!spawnResp.IsSuccessStatusCode)
+                {
+                    var body = await spawnResp.Content.ReadAsStringAsync();
+                    return Results.Problem($"target director returned {(int)spawnResp.StatusCode}: {body}", statusCode: 502);
+                }
+                newSession = await spawnResp.Content.ReadFromJsonAsync<SessionDto>();
+            }
             if (newSession is not null) newSession.DirectorId = targetDirector.DirectorId;
 
             return Results.Json(new HandoverResponse

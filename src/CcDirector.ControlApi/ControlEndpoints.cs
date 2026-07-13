@@ -1493,46 +1493,29 @@ internal static class ControlEndpoints
             }
         });
 
-        app.MapGet("/sessions/{sid}/handover-context", (string sid, string? extraContext) =>
+        // Return the plain-text prompt that would be sent to a target session on POST /handover. Useful for
+        // clients (skills, UI) that want to preview or edit the context before dispatching. Gateway Cleanup Phase 0:
+        // the read runs through the shared SessionReadExecutor core (handover-context verb) so this REST path and
+        // the Gateway stream down-channel are identical and cannot drift. Phase 1 deletes this route.
+        app.MapGet("/sessions/{sid}/handover-context", async (string sid, string? extraContext) =>
         {
-            // Return the plain-text prompt that would be sent to a target session on
-            // POST /handover. Useful for clients (skills, UI) that want to preview or
-            // edit the context before dispatching.
-            if (!Guid.TryParse(sid, out var guid))
-                return Results.BadRequest(new { error = "invalid session id format" });
-
-            var session = sessionManager.GetSession(guid);
-            if (session is null)
-                return Results.NotFound(new { error = "session not found" });
-
-            SessionSummaryDto summary;
-            if (string.IsNullOrEmpty(session.ClaudeSessionId))
+            var command = new DirectorCommand
             {
-                summary = new SessionSummaryDto
-                {
-                    SessionId = sid, DirectorId = directorId,
-                    Agent = session.AgentKind.ToString(),
-                    RepoPath = session.RepoPath,
-                    ActivityState = session.ActivityState.ToString(),
-                    CreatedAt = session.CreatedAt.UtcDateTime,
-                };
-            }
-            else
-            {
-                var jsonl = ClaudeSessionReader.GetJsonlPath(session.ClaudeSessionId, session.RepoPath);
-                summary = File.Exists(jsonl)
-                    ? SummaryBuilder.Build(StreamMessageParser.ParseFile(jsonl))
-                    : new SessionSummaryDto();
-                summary.SessionId = sid;
-                summary.DirectorId = directorId;
-                summary.Agent = session.AgentKind.ToString();
-                summary.RepoPath = session.RepoPath;
-                summary.ActivityState = session.ActivityState.ToString();
-                summary.CreatedAt = session.CreatedAt.UtcDateTime;
-            }
+                Verb = "handover-context",
+                SessionId = sid,
+                PayloadJson = SessionCommandExecutor.Serialize(new HandoverContextRequest { ExtraContext = extraContext }),
+            };
+            var result = await SessionCommandExecutor.DispatchAsync(sessionManager, directorId, command);
 
-            var text = SummaryBuilder.FormatAsHandoverPrompt(summary, extraContext);
-            return Results.Text(text, "text/plain; charset=utf-8");
+            return result.Status switch
+            {
+                DirectorCommandStatus.Ok => Results.Text(
+                    SessionCommandExecutor.Deserialize<HandoverContextResponse>(result.BodyJson)?.Text ?? "",
+                    "text/plain; charset=utf-8"),
+                DirectorCommandStatus.BadRequest => Results.BadRequest(new { error = result.Error }),
+                DirectorCommandStatus.NotFound => Results.NotFound(new { error = result.Error }),
+                _ => Results.Problem(result.Error ?? "handover-context command failed"),
+            };
         });
 
         // ===== REST: Recap (cheap claude --print side-call, cached) =====

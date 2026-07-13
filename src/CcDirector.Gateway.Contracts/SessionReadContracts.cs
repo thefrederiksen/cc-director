@@ -69,3 +69,23 @@ public sealed class WingmanExplainResponse
     public string? ClaudeVerbatim { get; set; }
     public string? Say { get; set; }
 }
+
+/// <summary>
+/// GET /sessions/{sid}/handover-context request. Carries the optional <c>extraContext</c> query argument the
+/// old REST route took (it has no home on <see cref="DirectorCommand"/>, so it rides in the command payload).
+/// Gateway Cleanup mission: the cross-Director handover reads this over the tunnel before spawning the target.
+/// </summary>
+public sealed class HandoverContextRequest
+{
+    public string? ExtraContext { get; set; }
+}
+
+/// <summary>
+/// GET /sessions/{sid}/handover-context response - the plain-text handover prompt the old REST route returned
+/// as <c>text/plain</c>. Wrapped in a typed body (like <c>buffer-html</c>) so the tunnel verb serializes valid
+/// JSON; the re-pointed REST route unwraps it back to <c>Results.Text</c>, byte-identical.
+/// </summary>
+public sealed class HandoverContextResponse
+{
+    public string Text { get; set; } = "";
+}

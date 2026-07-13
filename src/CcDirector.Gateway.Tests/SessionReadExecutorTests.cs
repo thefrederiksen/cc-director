@@ -478,4 +478,54 @@ public sealed class SessionReadExecutorTests
         }
         finally { sm.Dispose(); }
     }
+
+    // ---------- handover-context (Gateway Cleanup mission: cross-Director handover reads this over the tunnel) ----------
+
+    [Fact]
+    public async Task DispatchAsync_HandoverContext_InvalidSessionId_ReturnsBadRequest()
+    {
+        var sm = new SessionManager(new Core.Configuration.AgentOptions());
+        try
+        {
+            var result = await SessionCommandExecutor.DispatchAsync(sm, "dir-A", Cmd("handover-context", "not-a-guid"));
+            Assert.Equal(DirectorCommandStatus.BadRequest, result.Status);
+        }
+        finally { sm.Dispose(); }
+    }
+
+    [Fact]
+    public async Task DispatchAsync_HandoverContext_MissingSession_ReturnsNotFound()
+    {
+        var sm = new SessionManager(new Core.Configuration.AgentOptions());
+        try
+        {
+            var result = await SessionCommandExecutor.DispatchAsync(sm, "dir-A", Cmd("handover-context", Guid.NewGuid().ToString()));
+            Assert.Equal(DirectorCommandStatus.NotFound, result.Status);
+        }
+        finally { sm.Dispose(); }
+    }
+
+    [Fact]
+    public async Task DispatchAsync_HandoverContext_ExistingSession_ReturnsTheHandoverPromptText()
+    {
+        var (sm, session, _) = NewSession();
+        try
+        {
+            var command = new DirectorCommand
+            {
+                CommandId = "r1",
+                Verb = "handover-context",
+                SessionId = session.Id.ToString(),
+                PayloadJson = SessionCommandExecutor.Serialize(new HandoverContextRequest { ExtraContext = "carry this note" }),
+            };
+            var result = await SessionCommandExecutor.DispatchAsync(sm, "dir-A", command);
+
+            Assert.Equal(DirectorCommandStatus.Ok, result.Status);
+            var body = JsonSerializer.Deserialize<HandoverContextResponse>(result.BodyJson ?? "", Json);
+            Assert.NotNull(body);
+            Assert.False(string.IsNullOrWhiteSpace(body!.Text)); // the formatted handover prompt
+            Assert.Contains("carry this note", body.Text);       // the extra context rode the payload into the prompt
+        }
+        finally { sm.Dispose(); }
+    }
 }
