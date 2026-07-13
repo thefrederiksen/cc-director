@@ -155,21 +155,15 @@ public sealed class NetDiagDriftTests
         Assert.False(d.ShouldAlert);
     }
 
-    // ---- secondary (latency) signal: generous margin, and NO presence probe needed (device is LAN-direct) ----
+    // ---- a STILL-DIRECT device is NEVER drift, whatever its latency (P5 hardening: drift == relay only) ----
 
     [Fact]
-    public void DirectButSlightlySlow_WithinMargin_IsOk()
+    public void DirectDevice_IsOk_RegardlessOfLatency()
     {
-        var d = Decide(Obs(true, true, 50, T0, homePresent: true), new MachineState()); // 50 vs 44 baseline
-        Assert.Equal("ok", d.Status);
-    }
-
-    [Fact]
-    public void SecondaryLatencySignal_AccruesWithoutPresenceProbe()
-    {
-        // 200 ms vs a 44 ms baseline exceeds 3x. The device IS LAN-direct (presence self-evident), so it
-        // accrues even though HomeLanPresent is false - the probe is only for the primary relay signal.
-        var d = Decide(Obs(true, true, 200, T0, homePresent: false), new MachineState());
-        Assert.Equal("suspect", d.Status);
+        // Direct on the LAN but slow (200 ms vs a 44 ms baseline) is NOT drift: a relay-framed alert for a
+        // direct device would be a misleading diagnosis (wrong cause + wrong fix). "Direct but slow" shows on
+        // the dashboard's latency trend, never as a drift / relay alert. The machine keys only on path type.
+        Assert.Equal("ok", Decide(Obs(true, true, 200, T0, homePresent: false), new MachineState()).Status);
+        Assert.Equal("ok", Decide(Obs(true, true, 50, T0, homePresent: true), new MachineState()).Status);
     }
 }

@@ -28,9 +28,6 @@ public static class NetDiagDrift
     /// <summary>T: drift must persist at least this long (with the cold-start relay window well under it).</summary>
     public static readonly TimeSpan MinDriftDuration = TimeSpan.FromMinutes(5);
 
-    /// <summary>Secondary (latency) signal margin: only flag a still-direct device whose latency exceeds its own baseline by this factor.</summary>
-    public const double LatencyDriftFactor = 3.0;
-
     /// <summary>A device's established "good" state, derived from HOME+DIRECT history only.</summary>
     public sealed record Baseline
     {
@@ -72,6 +69,7 @@ public static class NetDiagDrift
         public Baseline? Baseline { get; init; }
         public bool? CurrentDirect { get; init; }
         public bool CurrentIsLanPath { get; init; }
+        /// <summary>Carried for context/logging only - the drift decision keys on PATH TYPE, never latency (P5 hardening: a direct-but-slow device is not drift). Latency lives in the dashboard trend.</summary>
         public double? CurrentLatencyMs { get; init; }
         /// <summary>
         /// The monitor's POSITIVE physical-presence verdict for a RELAYING device: a best-effort ARP probe
@@ -105,28 +103,26 @@ public static class NetDiagDrift
         if (!obs.TailscaleUp || obs.Baseline is not { IsLanDirect: true })
             return Settle(State.Unknown, "unknown", state);
 
-        var baseline = obs.Baseline;
+        // Drift is RELAY by construction (Architect P5-hardening): a device whose baseline is LAN-direct now
+        // shows a relay / not-direct path. Latency degradation on a STILL-DIRECT device is deliberately NOT
+        // drift - a relay-framed alert (owner email AND the NetworkDrift doorbell) for a direct device is a
+        // MISLEADING diagnosis, wrong cause + wrong fix, which for this mission is as bad as a false one. So
+        // the machine keys ONLY on path type, never latency; "direct but slow" is shown honestly on the
+        // dashboard's latency trend, where the framing is right, and never triggers a relay alert.
+        bool relaying = obs.CurrentDirect == false || !obs.CurrentIsLanPath;
 
-        // PRIMARY drift signal: baseline is LAN-direct, but the device now shows a relay / not-direct path.
-        bool primaryBad = obs.CurrentDirect == false || !obs.CurrentIsLanPath;
-        // SECONDARY: still direct on the LAN, but latency far above its OWN baseline (generous margin so a
-        // 44 ms baseline never flags at 50 ms).
-        bool secondaryBad = obs.CurrentDirect == true && obs.CurrentIsLanPath
-            && obs.CurrentLatencyMs is { } lat && lat > baseline.TypicalLatencyMs * LatencyDriftFactor;
-
-        if (!(primaryBad || secondaryBad))
+        if (!relaying)
             return Settle(State.Ok, "ok", state);
 
         // The crux of the "never a false alert" guarantee. A relaying device that "fell to DERP at home"
         // (DRIFT) and one whose "user left the house" (away, NOT drift) look IDENTICAL on the active path,
         // and tailscale exposes no persistent LAN candidate to tell them apart. No time window can close
-        // this (a departed device's last-seen-home time is frozen at departure). So the PRIMARY (relay)
-        // signal requires the monitor's POSITIVE physical-presence verdict - a best-effort ARP probe to the
-        // device's cached LAN IP that resolves to its SAME cached MAC. Absent / mismatch / probe error =>
-        // UNKNOWN, never alert: we deliberately MISS a home-drift over ever crying wolf, and the in-app pill
-        // catches the missed case the moment the user looks. The SECONDARY (latency) signal already requires
-        // CurrentIsLanPath (the device IS LAN-direct), so presence is self-evident and needs no probe.
-        if (primaryBad && !obs.HomeLanPresent)
+        // this (a departed device's last-seen-home time is frozen at departure). So we require the monitor's
+        // POSITIVE physical-presence verdict - a best-effort ARP probe to the device's cached LAN IP that
+        // resolves to its SAME cached MAC. Absent / mismatch / probe error => UNKNOWN, never alert: we
+        // deliberately MISS a home-drift over ever crying wolf, and the in-app pill catches the missed case
+        // the moment the user looks.
+        if (!obs.HomeLanPresent)
             return Settle(State.Unknown, "unknown", state);
 
         // Bad observation: accrue consecutive count + episode start.
