@@ -79,8 +79,17 @@ export interface ThrottleData {
   hourlyTurns: InputHour[];
   /** Fleet concurrency (both series), or null when nothing tracked yet. */
   concurrency: ConcurrencyStats | null;
+  /** Wingman usage (a session "uses the wingman" when it has voice mode on). */
+  wingman: WingmanUsage;
   /** Plain-English caveats about what the numbers do and do not include. */
   notCaptured: string[];
+}
+
+/** All-time wingman usage: turns submitted while a session had voice mode on, and the count of distinct
+ *  sessions ever seen with voice mode on. */
+export interface WingmanUsage {
+  turns: number;
+  sessions: number;
 }
 
 /** A derived, presentation-ready summary of the tally. Shares are fractions in [0,1], or null when
@@ -149,6 +158,7 @@ export async function getThrottle(signal?: AbortSignal): Promise<ThrottleData> {
     buckets?: unknown;
     hourlyTurns?: unknown;
     concurrency?: unknown;
+    wingman?: unknown;
     notCaptured?: unknown;
   } | null;
   const buckets = Array.isArray(body?.buckets) ? body!.buckets.map(normalizeBucket) : [];
@@ -162,8 +172,14 @@ export async function getThrottle(signal?: AbortSignal): Promise<ThrottleData> {
     buckets,
     hourlyTurns,
     concurrency: normalizeConcurrency(body?.concurrency),
+    wingman: normalizeWingman(body?.wingman),
     notCaptured,
   };
+}
+
+function normalizeWingman(raw: unknown): WingmanUsage {
+  const w = (raw ?? {}) as { turns?: unknown; sessions?: unknown };
+  return { turns: num(w.turns), sessions: num(w.sessions) };
 }
 
 function normalizeInputHour(raw: unknown): InputHour {

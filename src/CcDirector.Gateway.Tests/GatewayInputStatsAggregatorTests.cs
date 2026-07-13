@@ -36,6 +36,14 @@ public sealed class GatewayInputStatsAggregatorTests : IDisposable
         return dto;
     }
 
+    // A session with voice mode ON - the owner's definition of "using the wingman".
+    private static SessionDto VoiceSession(string id, params (string modality, string surface, long turns, long chars)[] buckets)
+    {
+        var dto = Session(id, buckets);
+        dto.VoiceMode = true;
+        return dto;
+    }
+
     private static long Turns(InputStatsDto dto, string modality, string surface) =>
         dto.Buckets.FirstOrDefault(b => b.Modality == modality && b.Surface == surface)?.Turns ?? 0;
 
@@ -168,5 +176,57 @@ public sealed class GatewayInputStatsAggregatorTests : IDisposable
         Assert.Equal("2026-07-11T17", hours[0].Hour);
         Assert.Equal(3, hours[0].VoiceTurns);
         Assert.Equal(300, hours[0].Characters);
+    }
+
+    [Fact]
+    public void WingmanUsage_CountsVoiceModeSessionsAndTheirTurns()
+    {
+        var agg = new GatewayInputStatsAggregator(_path);
+        agg.Observe(VoiceSession("s1", ("voice", "phone", 3, 120))); // voice mode on -> 3 wingman turns
+        agg.Observe(Session("s2", ("typed", "desktop", 5, 100)));    // no voice mode -> not the wingman
+
+        var w = agg.WingmanUsage();
+        Assert.Equal(3, w.Turns);
+        Assert.Equal(1, w.Sessions);
+    }
+
+    [Fact]
+    public void WingmanUsage_CountsAVoiceModeSessionEvenWithNoInputYet()
+    {
+        var agg = new GatewayInputStatsAggregator(_path);
+        // Voice mode on, no turns typed yet - the session still counts as "using the wingman".
+        agg.Observe(new SessionDto { SessionId = "s1", VoiceMode = true });
+
+        var w = agg.WingmanUsage();
+        Assert.Equal(0, w.Turns);
+        Assert.Equal(1, w.Sessions);
+    }
+
+    [Fact]
+    public void WingmanUsage_AddsOnlyTheTurnIncrease_AndDoesNotDoubleCountTheSession()
+    {
+        var agg = new GatewayInputStatsAggregator(_path);
+        agg.Observe(VoiceSession("s1", ("voice", "phone", 2, 40)));
+        agg.Observe(VoiceSession("s1", ("voice", "phone", 5, 100))); // grew by 3 while voice mode on
+
+        var w = agg.WingmanUsage();
+        Assert.Equal(5, w.Turns);
+        Assert.Equal(1, w.Sessions); // still one distinct wingman session
+    }
+
+    [Fact]
+    public void WingmanUsage_SurvivesRestart_AndDoesNotDoubleCountOnRepush()
+    {
+        var a = new GatewayInputStatsAggregator(_path);
+        a.Observe(VoiceSession("s1", ("voice", "phone", 3, 120)));
+
+        var b = new GatewayInputStatsAggregator(_path); // reload from disk
+        Assert.Equal(3, b.WingmanUsage().Turns);
+        Assert.Equal(1, b.WingmanUsage().Sessions);
+
+        // The same live session re-pushes its current snapshot - must not re-add its turns.
+        b.Observe(VoiceSession("s1", ("voice", "phone", 3, 120)));
+        Assert.Equal(3, b.WingmanUsage().Turns);
+        Assert.Equal(1, b.WingmanUsage().Sessions);
     }
 }

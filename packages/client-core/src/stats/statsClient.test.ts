@@ -21,6 +21,7 @@ function data(buckets: ThrottleData["buckets"]): ThrottleData {
     buckets,
     hourlyTurns: [],
     concurrency: null,
+    wingman: { turns: 0, sessions: 0 },
     notCaptured: [],
   };
 }

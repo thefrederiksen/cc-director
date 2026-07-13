@@ -9,6 +9,7 @@
      the colors are reinforcement, not the sole carrier of identity. */
   --thr-voice: var(--accent);
   --thr-mobile: #8b5cf6;
+  --thr-wingman: #14b8a6;
   --thr-track: color-mix(in srgb, var(--text-dim) 20%, transparent);
   --thr-muted: color-mix(in srgb, var(--text-dim) 55%, transparent);
 }
@@ -81,7 +82,7 @@
 /* ---- Overview: hero rings ------------------------------------------------------------------------ */
 .thr-heroes {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
   gap: 18px;
   margin-bottom: 22px;
 }
@@ -173,6 +174,12 @@
 }
 .thr-dot-muted {
   background: var(--thr-muted);
+}
+.thr-hero-note {
+  margin-top: 12px;
+  font-size: 12px;
+  color: var(--text-dim);
+  text-align: center;
 }
 
 /* ---- Panels (a titled section wrapping a chart, table, or bar) ----------------------------------- */

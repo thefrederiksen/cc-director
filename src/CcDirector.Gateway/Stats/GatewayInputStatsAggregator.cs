@@ -41,6 +41,13 @@ public sealed class GatewayInputStatsAggregator
     private const int RetentionDays = 90;
     private readonly Dictionary<string, HourTurns> _hourly = new(StringComparer.Ordinal);
 
+    // Wingman usage (owner's definition: a session "uses the wingman" when it has voice mode on).
+    // _wingmanSessions is the all-time set of session ids ever seen with voice mode on (never pruned on
+    // removal, like the totals); _wingmanTurns is the count of submitted turns folded while a session had
+    // voice mode on (a subset of the all-time turn total). Both persist across restarts.
+    private long _wingmanTurns;
+    private readonly HashSet<string> _wingmanSessions = new(StringComparer.Ordinal);
+
     private sealed class HourTurns
     {
         public long VoiceTurns;
@@ -113,6 +120,16 @@ public sealed class GatewayInputStatsAggregator
         }
     }
 
+    /// <summary>All-time wingman usage: the number of submitted turns folded while a session had voice mode
+    /// on, and the count of distinct sessions ever seen with voice mode on.</summary>
+    public WingmanUsageDto WingmanUsage()
+    {
+        lock (_lock)
+        {
+            return new WingmanUsageDto { Turns = _wingmanTurns, Sessions = _wingmanSessions.Count };
+        }
+    }
+
     /// <summary>The per-hour turn log (the "working day" series: turns by modality and character volume per
     /// UTC clock hour), oldest hour first.</summary>
     public IReadOnlyList<InputHourDto> HourlyTurns()
@@ -153,8 +170,19 @@ public sealed class GatewayInputStatsAggregator
     // holds the lock.
     private bool FoldLocked(SessionDto s, string hourKey)
     {
-        if (string.IsNullOrEmpty(s.SessionId) || s.InputStats?.Buckets is null || s.InputStats.Buckets.Count == 0)
+        if (string.IsNullOrEmpty(s.SessionId))
             return false;
+
+        var changed = false;
+
+        // Wingman usage (owner's definition): a session "uses the wingman" the moment it is seen with voice
+        // mode on - recorded even if it has no input this fold, so a voice-mode session that never typed a
+        // turn still counts. The set is all-time, never pruned on removal (like the totals).
+        if (s.VoiceMode && _wingmanSessions.Add(s.SessionId))
+            changed = true;
+
+        if (s.InputStats?.Buckets is null || s.InputStats.Buckets.Count == 0)
+            return changed;
 
         if (!_highWater.TryGetValue(s.SessionId, out var hw))
         {
@@ -162,7 +190,7 @@ public sealed class GatewayInputStatsAggregator
             _highWater[s.SessionId] = hw;
         }
 
-        var changed = false;
+        long sessionDeltaTurns = 0;
         foreach (var b in s.InputStats.Buckets)
         {
             var key = (b.Modality ?? "", b.Surface ?? "");
@@ -200,11 +228,17 @@ public sealed class GatewayInputStatsAggregator
                     hour.TypedTurns += deltaTurns;
                 hour.Characters += deltaChars;
 
+                sessionDeltaTurns += deltaTurns;
                 changed = true;
             }
 
             hw[key] = new Counters { Turns = b.Turns, Characters = b.Characters };
         }
+
+        // Turns submitted while this session had voice mode on are wingman turns (a subset of the totals).
+        if (s.VoiceMode && sessionDeltaTurns > 0)
+            _wingmanTurns += sessionDeltaTurns;
+
         return changed;
     }
 
@@ -229,6 +263,8 @@ public sealed class GatewayInputStatsAggregator
         public List<InputStatBucketDto> Totals { get; set; } = new();
         public Dictionary<string, List<InputStatBucketDto>> HighWater { get; set; } = new();
         public Dictionary<string, HourTurnsStore> Hourly { get; set; } = new();
+        public long WingmanTurns { get; set; }
+        public List<string> WingmanSessions { get; set; } = new();
     }
 
     private sealed class HourTurnsStore
@@ -273,7 +309,10 @@ public sealed class GatewayInputStatsAggregator
         }
         foreach (var (hour, ht) in parsed.Hourly)
             _hourly[hour] = new HourTurns { VoiceTurns = ht.VoiceTurns, TypedTurns = ht.TypedTurns, Characters = ht.Characters };
-        FileLog.Write($"[GatewayInputStatsAggregator] Load: restored {_totals.Count} total bucket(s), {_highWater.Count} live session(s), {_hourly.Count} hourly bucket(s) from {_path}");
+        _wingmanTurns = parsed.WingmanTurns;
+        foreach (var id in parsed.WingmanSessions)
+            if (!string.IsNullOrEmpty(id)) _wingmanSessions.Add(id);
+        FileLog.Write($"[GatewayInputStatsAggregator] Load: restored {_totals.Count} total bucket(s), {_highWater.Count} live session(s), {_hourly.Count} hourly bucket(s), {_wingmanSessions.Count} wingman session(s)/{_wingmanTurns} wingman turn(s) from {_path}");
     }
 
     private void Quarantine(string reason)
@@ -299,6 +338,8 @@ public sealed class GatewayInputStatsAggregator
                 file.HighWater[sid] = ToDtoLocked(hw).Buckets;
             foreach (var (hour, ht) in _hourly)
                 file.Hourly[hour] = new HourTurnsStore { VoiceTurns = ht.VoiceTurns, TypedTurns = ht.TypedTurns, Characters = ht.Characters };
+            file.WingmanTurns = _wingmanTurns;
+            file.WingmanSessions = _wingmanSessions.ToList();
 
             var json = JsonSerializer.Serialize(file, FileJsonOptions);
             var tmp = _path + ".tmp";
@@ -322,4 +363,13 @@ public sealed class InputHourDto
     public long VoiceTurns { get; set; }
     public long TypedTurns { get; set; }
     public long Characters { get; set; }
+}
+
+/// <summary>All-time wingman usage (owner's definition: a session uses the wingman when it has voice mode
+/// on): the count of turns submitted while a session had voice mode on, and the number of distinct sessions
+/// ever seen with voice mode on.</summary>
+public sealed class WingmanUsageDto
+{
+    public long Turns { get; set; }
+    public int Sessions { get; set; }
 }

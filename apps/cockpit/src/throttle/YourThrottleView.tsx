@@ -156,11 +156,17 @@ function OverviewTab({ summary, data }: { summary: ThrottleSummary; data: Thrott
 
   const peakLive = data.concurrency?.live.allTimeMax ?? 0;
 
+  // Wingman usage (a session "uses the wingman" when voice mode is on): the share of turns submitted while
+  // in voice mode, over the same total the other rings use, and the count of distinct sessions that used it.
+  const wingmanTurns = data.wingman.turns;
+  const wingmanShare = summary.totalTurns > 0 ? wingmanTurns / summary.totalTurns : null;
+  const wingmanSessions = data.wingman.sessions;
+
   return (
     <>
-      {/* The two hero rings: the questions the owner actually asks - how much do I speak, and how much do
-          I drive from my phone. Each ring is its own metric (not two series in one chart), so each fills
-          with its own accent against a muted remainder; the center number is the headline. */}
+      {/* The three hero rings: the questions the owner actually asks - how much do I speak, how much do I
+          drive from my phone, and how much do I lean on the wingman (voice mode). Each ring is its own
+          metric, so each fills with its own accent against a muted remainder; the center is the headline. */}
       <div className="thr-heroes">
         <HeroRing
           title="Voice vs typing"
@@ -180,6 +186,15 @@ function OverviewTab({ summary, data }: { summary: ThrottleSummary; data: Thrott
             label: "Desktop + Cockpit",
             count: summary.totalTurns - summary.turnsBySurface.phone,
           }}
+        />
+        <HeroRing
+          title="Wingman (voice mode)"
+          share={wingmanShare}
+          accentVar="--thr-wingman"
+          centerCaption="in voice mode"
+          primary={{ label: "Voice mode", count: wingmanTurns }}
+          secondary={{ label: "Hands-on", count: Math.max(0, summary.totalTurns - wingmanTurns) }}
+          note={`${wingmanSessions.toLocaleString()} session${wingmanSessions === 1 ? "" : "s"} used the wingman`}
         />
       </div>
 
@@ -212,6 +227,7 @@ function HeroRing({
   centerCaption,
   primary,
   secondary,
+  note,
 }: {
   title: string;
   share: number | null;
@@ -219,6 +235,7 @@ function HeroRing({
   centerCaption: string;
   primary: { label: string; count: number };
   secondary: { label: string; count: number };
+  note?: string;
 }) {
   const R = 42;
   const C = 2 * Math.PI * R;
@@ -264,6 +281,7 @@ function HeroRing({
           <b>{secondary.count.toLocaleString()}</b>
         </span>
       </div>
+      {note !== undefined && <div className="thr-hero-note">{note}</div>}
     </section>
   );
 }

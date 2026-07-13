@@ -49,6 +49,9 @@ public static class StatsPageEndpoint
                 buckets = totals.Buckets,
                 // DevThrottle Stats: the "working day" series - turns (by modality) + characters per UTC hour.
                 hourlyTurns = aggregator.HourlyTurns(),
+                // Wingman usage: turns submitted while a session had voice mode on, and the count of distinct
+                // sessions ever in voice mode ("using the wingman" = voice mode on for that session).
+                wingman = aggregator.WingmanUsage(),
                 // DevThrottle Stats: fleet concurrency (both series: live loaded/running, and actively
                 // working). Null until the aggregator is wired (old callers / tests).
                 concurrency = concurrency?.Snapshot(DateTime.UtcNow),
