@@ -71,13 +71,25 @@ export interface InputHour {
 export interface ThrottleData {
   /** When the Gateway generated this snapshot (ISO 8601 UTC), or "" when absent. */
   generatedAtUtc: string;
+  /** The display time zone (IANA id) the hourly charts render local clock hours in. Defaults to the
+   *  Gateway machine's own zone; a browser zone fills in for an older Gateway that does not send one. */
+  timeZone: string;
   buckets: ThrottleBucket[];
   /** Turns per UTC hour (the "working day" series), oldest hour first. */
   hourlyTurns: InputHour[];
   /** Fleet concurrency (both series), or null when nothing tracked yet. */
   concurrency: ConcurrencyStats | null;
+  /** Wingman usage (a session "uses the wingman" when it has voice mode on). */
+  wingman: WingmanUsage;
   /** Plain-English caveats about what the numbers do and do not include. */
   notCaptured: string[];
+}
+
+/** All-time wingman usage: turns submitted while a session had voice mode on, and the count of distinct
+ *  sessions ever seen with voice mode on. */
+export interface WingmanUsage {
+  turns: number;
+  sessions: number;
 }
 
 /** A derived, presentation-ready summary of the tally. Shares are fractions in [0,1], or null when
@@ -142,9 +154,11 @@ export async function getThrottle(signal?: AbortSignal): Promise<ThrottleData> {
   if (!res.ok) throw await gatewayErrorFrom(res, "GET /stats/data");
   const body = (await res.json()) as {
     generatedAtUtc?: unknown;
+    timeZone?: unknown;
     buckets?: unknown;
     hourlyTurns?: unknown;
     concurrency?: unknown;
+    wingman?: unknown;
     notCaptured?: unknown;
   } | null;
   const buckets = Array.isArray(body?.buckets) ? body!.buckets.map(normalizeBucket) : [];
@@ -154,11 +168,18 @@ export async function getThrottle(signal?: AbortSignal): Promise<ThrottleData> {
     : [];
   return {
     generatedAtUtc: typeof body?.generatedAtUtc === "string" ? body.generatedAtUtc : "",
+    timeZone: safeTimeZone(typeof body?.timeZone === "string" ? body.timeZone : null),
     buckets,
     hourlyTurns,
     concurrency: normalizeConcurrency(body?.concurrency),
+    wingman: normalizeWingman(body?.wingman),
     notCaptured,
   };
+}
+
+function normalizeWingman(raw: unknown): WingmanUsage {
+  const w = (raw ?? {}) as { turns?: unknown; sessions?: unknown };
+  return { turns: num(w.turns), sessions: num(w.sessions) };
 }
 
 function normalizeInputHour(raw: unknown): InputHour {
@@ -257,3 +278,85 @@ export const SURFACE_LABEL: Record<Surface, string> = {
 
 /** The surfaces in a stable presentation order. */
 export const SURFACE_ORDER = SURFACES;
+
+// ---- Hourly-chart time window + time zone --------------------------------------------------------
+//
+// The two hourly series (turns, concurrency) only carry the hours that had activity, so slicing each to
+// its own "last 24" produced two DIFFERENT windows that did not line up. Instead, both charts render one
+// canonical window: the 24 consecutive UTC clock hours ending at "now", with absent hours zero-filled.
+// Labels are then formatted in the configured display time zone, so the axis reads in local time.
+
+function padHourKey(d: Date): string {
+  const p = (n: number) => String(n).padStart(2, "0");
+  return `${d.getUTCFullYear()}-${p(d.getUTCMonth() + 1)}-${p(d.getUTCDate())}T${p(d.getUTCHours())}`;
+}
+
+/** The 24 consecutive UTC hour keys ("yyyy-MM-ddTHH") ending at the hour containing `nowUtc`, oldest
+ *  first. Both hourly charts render this SAME window so they line up exactly. */
+export function last24HourKeys(nowUtc: Date): string[] {
+  const topOfHour = Date.UTC(
+    nowUtc.getUTCFullYear(),
+    nowUtc.getUTCMonth(),
+    nowUtc.getUTCDate(),
+    nowUtc.getUTCHours(),
+  );
+  const keys: string[] = [];
+  for (let i = 23; i >= 0; i--) keys.push(padHourKey(new Date(topOfHour - i * 3_600_000)));
+  return keys;
+}
+
+/** Map an hourly series (keyed by UTC hour) onto a fixed window of hour keys, filling any absent hour with
+ *  a zero entry, so a chart renders a continuous, aligned axis. */
+export function windowSeries<T extends { hour: string }>(
+  series: readonly T[],
+  keys: readonly string[],
+  zero: (hour: string) => T,
+): T[] {
+  const byHour = new Map(series.map((s) => [s.hour, s]));
+  return keys.map((k) => byHour.get(k) ?? zero(k));
+}
+
+/** A zero-filled turn-hour for an absent hour in the window. */
+export function emptyInputHour(hour: string): InputHour {
+  return { hour, turns: 0, voiceTurns: 0, typedTurns: 0, characters: 0 };
+}
+
+/** A zero-filled concurrency-hour for an absent hour in the window. */
+export function emptyConcurrencyHour(hour: string): ConcurrencyHour {
+  return { hour, maxLive: 0, maxWorking: 0, sessions: 0, machines: 0, repos: 0 };
+}
+
+function canFormatZone(tz: string): boolean {
+  try {
+    new Intl.DateTimeFormat("en-US", { timeZone: tz });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function browserTimeZone(): string {
+  try {
+    return Intl.DateTimeFormat().resolvedOptions().timeZone ?? "";
+  } catch {
+    return "";
+  }
+}
+
+/** A time zone id we can format with: the given id when usable, else the browser's zone, else "UTC" - so
+ *  one bad setting never throws inside a render. */
+export function safeTimeZone(timeZone: string | null | undefined): string {
+  const candidate = (timeZone ?? "").trim();
+  if (candidate.length > 0 && canFormatZone(candidate)) return candidate;
+  const browser = browserTimeZone();
+  if (browser.length > 0 && canFormatZone(browser)) return browser;
+  return "UTC";
+}
+
+/** Format one UTC hour key ("yyyy-MM-ddTHH") as its 2-digit local hour ("00".."23") in the given IANA
+ *  zone. Assumes `timeZone` is already a usable id (see {@link safeTimeZone}). */
+export function localHourLabel(hourKeyUtc: string, timeZone: string): string {
+  const d = new Date(`${hourKeyUtc}:00:00Z`);
+  if (Number.isNaN(d.getTime())) return hourKeyUtc.slice(-2);
+  return new Intl.DateTimeFormat("en-US", { hour: "2-digit", hourCycle: "h23", timeZone }).format(d);
+}

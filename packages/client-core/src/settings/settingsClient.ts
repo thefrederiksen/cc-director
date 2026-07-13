@@ -42,6 +42,11 @@ export interface GatewaySettings {
   // Snooze Length mission: the per-user default snooze length in minutes (one value across every device,
   // because they all talk to this one Gateway). Default 60.
   snoozeDefaultMinutes: number;
+  // The display time zone (IANA id) the private dashboards' hourly charts read local hours in. Auto-
+  // defaults to the Gateway machine's own zone when unset; the owner can override it here.
+  timeZone: string;
+  // What "automatic" resolves to: the Gateway machine's own zone. Lets the page show it and offer a reset.
+  timeZoneMachineDefault: string;
 }
 
 async function gatewayErrorFrom(res: Response, label: string): Promise<GatewayError> {
@@ -111,7 +116,20 @@ export async function getGatewaySettings(signal?: AbortSignal): Promise<GatewayS
     wingmanTrainingCapture: Boolean(body.wingmanTrainingCapture),
     telemetryConsent: Boolean(body.telemetryConsent),
     snoozeDefaultMinutes: Number(body.snoozeDefaultMinutes ?? 60),
+    timeZone: typeof body.timeZone === "string" && body.timeZone.length > 0 ? body.timeZone : "UTC",
+    timeZoneMachineDefault:
+      typeof body.timeZoneMachineDefault === "string" && body.timeZoneMachineDefault.length > 0
+        ? body.timeZoneMachineDefault
+        : "UTC",
   };
+}
+
+// PUT /gateway/time-zone { timeZone } - set the display time zone (an IANA id) the private dashboards read
+// local hours in. Read at render time, so a change applies on the next refresh with no restart. Returns
+// the applied id.
+export async function setTimeZone(timeZone: string, signal?: AbortSignal): Promise<string> {
+  const body = await putJson<{ timeZone?: string }>("/gateway/time-zone", "PUT /gateway/time-zone", { timeZone }, signal);
+  return typeof body.timeZone === "string" && body.timeZone.length > 0 ? body.timeZone : timeZone;
 }
 
 // PUT /gateway/snooze-default { minutes } - set the per-user default snooze length (Snooze Length

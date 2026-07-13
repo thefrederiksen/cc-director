@@ -43,9 +43,15 @@ public static class StatsPageEndpoint
             return Results.Json(new
             {
                 generatedAtUtc = DateTime.UtcNow,
+                // The display time zone the hourly charts render local clock hours in (IANA id).
+                // Auto-defaults to this Gateway machine's own zone; the owner can override it in Settings.
+                timeZone = CcDirector.Core.Configuration.TimeZoneConfig.Get(),
                 buckets = totals.Buckets,
                 // DevThrottle Stats: the "working day" series - turns (by modality) + characters per UTC hour.
                 hourlyTurns = aggregator.HourlyTurns(),
+                // Wingman usage: turns submitted while a session had voice mode on, and the count of distinct
+                // sessions ever in voice mode ("using the wingman" = voice mode on for that session).
+                wingman = aggregator.WingmanUsage(),
                 // DevThrottle Stats: fleet concurrency (both series: live loaded/running, and actively
                 // working). Null until the aggregator is wired (old callers / tests).
                 concurrency = concurrency?.Snapshot(DateTime.UtcNow),

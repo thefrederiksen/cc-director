@@ -1,100 +1,29 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, type CSSProperties } from "react";
 import { Link } from "react-router-dom";
 import {
   getThrottle,
   summarizeThrottle,
   formatShare,
-  MODALITY_LABEL,
   SURFACE_LABEL,
   SURFACE_ORDER,
   type ThrottleData,
   type ThrottleSummary,
-  type ConcurrencyHour,
-  type InputHour,
 } from "@devthrottle/client-core/stats/statsClient";
 import { gatewayErrorMessage } from "@devthrottle/client-core/api/client";
 
-// Your Throttle (devthrottle-stats mission): the in-app port of the standalone Gateway /stats page for
-// the phone. Reads the same GET /stats/data feed the Cockpit reads, so the phone shows the same numbers
-// in the app the user already has open. Renders immediately with a loading state, loads asynchronously,
-// shows an explicit error banner on failure (no-fallback rule), and auto-refreshes so the split moves
-// live as the user drives by voice.
+// Your Throttle on the phone (devthrottle-stats mission): a compact dashboard of the MAIN stats, not the
+// whole desktop page - many people drive the fleet mostly from their phone, so this is a clean, glanceable
+// view of how they work. It reads the same GET /stats/data feed as the Cockpit, so the numbers match.
+// Leads with the three headline rings (spoken, from phone, wingman voice mode), then where the turns come
+// from, then the totals. The hourly charts, full breakdown, and caveats stay on the desktop page.
+// Renders immediately with a loading state, shows an explicit error banner on failure (no-fallback rule),
+// and auto-refreshes so the split moves live as the user drives by voice.
 
 const REFRESH_MS = 10_000;
 
-/** A 24-hour bar chart of the hourly peak concurrent sessions. Bar = max loaded/running that hour;
- * darker inner portion = max actively-working. Pure CSS bars, theme-aware. */
-function ConcurrencyChart({ hourly }: { hourly: ConcurrencyHour[] }) {
-  const recent = hourly.slice(-24);
-  const peak = Math.max(1, ...recent.map((h) => h.maxLive));
-  return (
-    <div
-      className="thr-chart"
-      role="img"
-      aria-label={`Peak concurrent sessions per hour for the last ${recent.length} hours`}
-    >
-      {recent.map((h, i) => {
-        const livePct = (h.maxLive / peak) * 100;
-        const workPct = h.maxLive > 0 ? (h.maxWorking / h.maxLive) * 100 : 0;
-        return (
-          <div
-            className="thr-bar-col"
-            key={h.hour}
-            title={`${h.hour}:00 UTC - ${h.maxLive} loaded, ${h.maxWorking} working, ${h.sessions} sessions`}
-          >
-            <div className="thr-bar-track">
-              <div className="thr-bar-live" style={{ height: `${livePct}%` }}>
-                <div className="thr-bar-work" style={{ height: `${workPct}%` }} />
-              </div>
-            </div>
-            <div className="thr-bar-label">{i % 6 === 0 ? h.hour.slice(-2) : ""}</div>
-          </div>
-        );
-      })}
-    </div>
-  );
-}
-
-/** A 24-hour bar chart of turns submitted per hour - the "working day" shape. Bar = total turns that
- * hour, stacked voice (accent) over typed (muted). Pure CSS bars, theme-aware. */
-function TurnsPerHourChart({ hourly }: { hourly: InputHour[] }) {
-  const recent = hourly.slice(-24);
-  const peak = Math.max(1, ...recent.map((h) => h.turns));
-  return (
-    <>
-      <div
-        className="thr-chart"
-        role="img"
-        aria-label={`Turns submitted per hour for the last ${recent.length} hours`}
-      >
-        {recent.map((h, i) => {
-          const totalPct = (h.turns / peak) * 100;
-          const voicePortion = h.turns > 0 ? (h.voiceTurns / h.turns) * 100 : 0;
-          const typedPortion = h.turns > 0 ? (h.typedTurns / h.turns) * 100 : 0;
-          return (
-            <div
-              className="thr-bar-col"
-              key={h.hour}
-              title={`${h.hour}:00 UTC - ${h.turns} turns (${h.voiceTurns} voice, ${h.typedTurns} typed)`}
-            >
-              <div className="thr-bar-track">
-                <div className="thr-turns-bar" style={{ height: `${totalPct}%` }}>
-                  <div className="thr-turns-typed" style={{ height: `${typedPortion}%` }} />
-                  <div className="thr-turns-voice" style={{ height: `${voicePortion}%` }} />
-                </div>
-              </div>
-              <div className="thr-bar-label">{i % 6 === 0 ? h.hour.slice(-2) : ""}</div>
-            </div>
-          );
-        })}
-      </div>
-      <div className="thr-legend">
-        <span className="thr-legend-item"><span className="thr-swatch thr-swatch-voice" /> Voice</span>
-        <span className="thr-legend-item"><span className="thr-swatch thr-swatch-typed" /> Typed</span>
-      </div>
-    </>
-  );
-}
+const RING_VOICE = "var(--accent)";
+const RING_MOBILE = "#8b5cf6";
+const RING_WINGMAN = "#14b8a6";
 
 export function YourThrottle() {
   const [data, setData] = useState<ThrottleData | null>(null);
@@ -142,7 +71,7 @@ export function YourThrottle() {
         </div>
       )}
 
-      {summary === null && error === null && <div className="thr-note">Loading...</div>}
+      {summary === null && error === null && <div className="thr-note">Loading your throttle...</div>}
 
       {summary !== null && !summary.hasData && (
         <div className="thr-note">
@@ -150,97 +79,145 @@ export function YourThrottle() {
         </div>
       )}
 
-      {data !== null && data.concurrency !== null && (
-        <section className="thr-list" aria-label="Fleet concurrency">
-          <div className="thr-list-title">Fleet concurrency</div>
-          <div className="thr-row">
-            <span className="thr-row-label">Loaded / running</span>
-            <span className="thr-row-value">
-              {data.concurrency.live.current} now, {data.concurrency.live.allTimeMax} peak
-            </span>
-          </div>
-          <div className="thr-row">
-            <span className="thr-row-label">Actively working</span>
-            <span className="thr-row-value">
-              {data.concurrency.working.current} now, {data.concurrency.working.allTimeMax} peak
-            </span>
-          </div>
-        </section>
-      )}
-
-      {data !== null && data.concurrency !== null && data.concurrency.hourly.length > 0 && (
-        <section className="thr-list" aria-label="Sessions per hour">
-          <div className="thr-list-title">Sessions per hour (last 24h)</div>
-          <ConcurrencyChart hourly={data.concurrency.hourly} />
-        </section>
-      )}
-
-      {data !== null && data.hourlyTurns.length > 0 && (
-        <section className="thr-list" aria-label="Turns per hour">
-          <div className="thr-list-title">Turns per hour (last 24h)</div>
-          <TurnsPerHourChart hourly={data.hourlyTurns} />
-        </section>
-      )}
-
-      {summary !== null && summary.hasData && (
-        <>
-          <section className="thr-cards" aria-label="Headline shares">
-            <div className="thr-card">
-              <div className="thr-card-value">{formatShare(summary.voiceShare)}</div>
-              <div className="thr-card-label">Voice</div>
-            </div>
-            <div className="thr-card">
-              <div className="thr-card-value">{formatShare(summary.phoneShare)}</div>
-              <div className="thr-card-label">Phone</div>
-            </div>
-            <div className="thr-card">
-              <div className="thr-card-value">{summary.totalTurns}</div>
-              <div className="thr-card-label">Turns</div>
-            </div>
-          </section>
-
-          <div className="thr-caption">
-            {summary.voiceTurns} of {summary.totalTurns} turns spoken;{" "}
-            {summary.turnsBySurface.phone} of {summary.totalTurns} from phone.{" "}
-            {summary.totalCharacters.toLocaleString()} characters total.
+      {data !== null && summary !== null && summary.hasData && (
+        <div className="mthr">
+          <div className="mthr-metrics">
+            <MetricRing
+              title="Voice vs typing"
+              share={summary.voiceShare}
+              color={RING_VOICE}
+              primary={{ label: "Voice", count: summary.voiceTurns }}
+              secondary={{ label: "Typed", count: summary.typedTurns }}
+            />
+            <MetricRing
+              title="Mobile vs desktop"
+              share={summary.phoneShare}
+              color={RING_MOBILE}
+              primary={{ label: "Phone", count: summary.turnsBySurface.phone }}
+              secondary={{ label: "Desk + Cockpit", count: summary.totalTurns - summary.turnsBySurface.phone }}
+            />
+            <MetricRing
+              title="Wingman (voice mode)"
+              share={summary.totalTurns > 0 ? data.wingman.turns / summary.totalTurns : null}
+              color={RING_WINGMAN}
+              primary={{ label: "Voice mode", count: data.wingman.turns }}
+              secondary={{ label: "Hands-on", count: Math.max(0, summary.totalTurns - data.wingman.turns) }}
+              note={`${data.wingman.sessions.toLocaleString()} session${data.wingman.sessions === 1 ? "" : "s"} used the wingman`}
+            />
           </div>
 
-          <section className="thr-list" aria-label="Turns by surface">
-            <div className="thr-list-title">Turns by surface</div>
-            {SURFACE_ORDER.map((s) => (
-              <div className="thr-row" key={s}>
-                <span className="thr-row-label">{SURFACE_LABEL[s]}</span>
-                <span className="thr-row-value">{summary.turnsBySurface[s]}</span>
-              </div>
-            ))}
-          </section>
+          <SurfaceSplitBar summary={summary} />
 
-          <section className="thr-list" aria-label="Full breakdown">
-            <div className="thr-list-title">Full breakdown</div>
-            {data!.buckets.map((b) => (
-              <div className="thr-row" key={`${b.modality}-${b.surface}`}>
-                <span className="thr-row-label">
-                  {MODALITY_LABEL[b.modality]} / {SURFACE_LABEL[b.surface]}
-                </span>
-                <span className="thr-row-value">
-                  {b.turns} turns, {b.characters.toLocaleString()} chars
-                </span>
-              </div>
-            ))}
-          </section>
-        </>
-      )}
+          <div className="mthr-stats">
+            <div className="mthr-stat">
+              <div className="mthr-stat-value">{summary.totalTurns.toLocaleString()}</div>
+              <div className="mthr-stat-label">Total turns</div>
+            </div>
+            <div className="mthr-stat">
+              <div className="mthr-stat-value">{summary.totalCharacters.toLocaleString()}</div>
+              <div className="mthr-stat-label">Characters</div>
+            </div>
+          </div>
 
-      {data !== null && data.notCaptured.length > 0 && (
-        <section className="thr-caveats" aria-label="What is not included">
-          <div className="thr-list-title">What these numbers do not include</div>
-          <ul>
-            {data.notCaptured.map((c, i) => (
-              <li key={i}>{c}</li>
-            ))}
-          </ul>
-        </section>
+          <p className="mthr-foot">
+            The full hourly charts and breakdown live on Your Throttle in the desktop Cockpit.
+          </p>
+        </div>
       )}
     </div>
+  );
+}
+
+// One metric as a compact card: a donut ring (the share) on the left, the title and the two named counts
+// on the right. role="img" + aria-label so the number is announced; the counts carry identity so it is
+// never color-alone.
+function MetricRing({
+  title,
+  share,
+  color,
+  primary,
+  secondary,
+  note,
+}: {
+  title: string;
+  share: number | null;
+  color: string;
+  primary: { label: string; count: number };
+  secondary: { label: string; count: number };
+  note?: string;
+}) {
+  const R = 42;
+  const C = 2 * Math.PI * R;
+  const filled = share === null ? 0 : share * C;
+  const pctText = formatShare(share);
+
+  return (
+    <section className="mthr-metric">
+      <div
+        className="mthr-ring"
+        role="img"
+        aria-label={`${title}: ${primary.label} ${pctText} (${primary.count} of ${primary.count + secondary.count} turns)`}
+      >
+        <svg viewBox="0 0 100 100" className="mthr-ring-svg" style={{ ["--mthr-arc" as string]: color } as CSSProperties}>
+          <circle className="mthr-ring-track" cx="50" cy="50" r={R} />
+          <circle className="mthr-ring-arc" cx="50" cy="50" r={R} style={{ strokeDasharray: `${filled} ${C}` }} />
+        </svg>
+        <div className="mthr-ring-pct">{pctText}</div>
+      </div>
+      <div className="mthr-metric-body">
+        <div className="mthr-metric-title">{title}</div>
+        <div className="mthr-metric-legend">
+          <span className="mthr-leg">
+            <span className="mthr-dot" style={{ background: color }} />
+            {primary.label} <b>{primary.count.toLocaleString()}</b>
+          </span>
+          <span className="mthr-leg">
+            <span className="mthr-dot mthr-dot-muted" />
+            {secondary.label} <b>{secondary.count.toLocaleString()}</b>
+          </span>
+        </div>
+        {note !== undefined && <div className="mthr-metric-note">{note}</div>}
+      </div>
+    </section>
+  );
+}
+
+// A single horizontal stacked bar of turns by surface (largest first, brightest first), plus a legend -
+// the compact "where you drive from" the phone version keeps.
+function SurfaceSplitBar({ summary }: { summary: ThrottleSummary }) {
+  const total = summary.totalTurns;
+  const segments = SURFACE_ORDER.map((s) => ({ surface: s, turns: summary.turnsBySurface[s] }))
+    .filter((seg) => seg.turns > 0)
+    .sort((a, b) => b.turns - a.turns);
+  const fill = (i: number) => {
+    const o = [100, 66, 42, 26][Math.min(i, 3)];
+    return `color-mix(in srgb, var(--accent) ${o}%, transparent)`;
+  };
+
+  return (
+    <section className="mthr-split" aria-label="Where you drive from">
+      <div className="mthr-split-title">Where you drive from</div>
+      <div className="mthr-split-bar">
+        {segments.map((seg, i) => {
+          const pct = total > 0 ? (seg.turns / total) * 100 : 0;
+          return (
+            <div
+              key={seg.surface}
+              className="mthr-split-seg"
+              style={{ width: `${pct}%`, background: fill(i) }}
+              title={`${SURFACE_LABEL[seg.surface]}: ${seg.turns} (${Math.round(pct)}%)`}
+            />
+          );
+        })}
+      </div>
+      <div className="mthr-split-legend">
+        {segments.map((seg, i) => (
+          <span key={seg.surface} className="mthr-leg">
+            <span className="mthr-dot" style={{ background: fill(i) }} />
+            {SURFACE_LABEL[seg.surface]} <b>{seg.turns.toLocaleString()}</b>
+          </span>
+        ))}
+      </div>
+    </section>
   );
 }
