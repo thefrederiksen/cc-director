@@ -10,7 +10,7 @@ import { useScreenWakeLock } from "../hooks/useScreenWakeLock";
 // the old git short-sha + timestamp badge was replaced by a plain human version. BUMP THIS INTEGER BY HAND
 // ON EVERY DEPLOY of the mobile app (v1 -> v2 -> v3 ...), so a glance at the corner tells the owner and the
 // Architect exactly which page is live and what to look for after a deploy.
-const CAR_MODE_VERSION = "v8";
+const CAR_MODE_VERSION = "v9";
 
 // Car Mode (Car Mode mission): the standalone, chrome-less, full-screen page the owner opens to run
 // the whole fleet by voice, hands-free, phone in his pocket. It is a THIN view over the shared
@@ -108,6 +108,13 @@ export function CarMode() {
     pendingConfirmation,
     error,
     unsupported,
+    holding,
+    heldCount,
+    holdMessage,
+    askOwnerTurn,
+    connectionDown,
+    sendHeldTurn,
+    discardHeldTurn,
     getMicLevel,
     endTurn,
     interrupt,
@@ -143,6 +150,58 @@ export function CarMode() {
           <div className="car-error" role="alert">
             Car Mode needs Chrome or another Chromium browser for hands-free voice. Open this page in
             Chrome.
+          </div>
+        )}
+
+        {/* Offline resilience (Phase 4a, #1427). The connection-down notice: the hands-free watch cannot
+            reach the fleet, but the owner's audio keeps recording locally, so nothing is lost. */}
+        {connectionDown && (
+          <div className="car-conn-down" role="status">
+            Connection down - I'll keep trying. Your recording is still being saved.
+          </div>
+        )}
+
+        {/* The calm "saved, will send" holding banner: never a red error, because the speech is SAVED and
+            auto-sends when the connection returns. Shows how many requests are waiting. */}
+        {holding && (
+          <div className="car-holding" role="status">
+            <span className="car-holding-text">
+              {holdMessage ?? "Saved - I'll send your request the moment we're back online."}
+            </span>
+            {heldCount > 1 && <span className="car-holding-count">{heldCount} requests saved</span>}
+          </div>
+        )}
+
+        {/* A held turn that needs the owner's explicit choice. A "stale" turn (never sent to the brain,
+            just old) can be sent safely; an "ambiguous" turn (already sent, result unknown) can only be
+            discarded in Phase 4a, since a blind resend could act twice. */}
+        {askOwnerTurn && (
+          <div className="car-askowner" role="status">
+            <span className="car-askowner-text">
+              {askOwnerTurn.reason === "ambiguous"
+                ? "I sent an earlier request but couldn't confirm it. I've left it alone to avoid doing it twice."
+                : "You have an earlier saved request from a while ago."}
+              {askOwnerTurn.transcript.length > 0 && <> "{askOwnerTurn.transcript}"</>}
+            </span>
+            <div className="car-askowner-buttons">
+              {askOwnerTurn.reason === "stale" && (
+                <button
+                  type="button"
+                  className="car-askowner-send"
+                  onClick={() => sendHeldTurn(askOwnerTurn.id)}
+                  disabled={phase !== "listening"}
+                >
+                  Send it now
+                </button>
+              )}
+              <button
+                type="button"
+                className="car-askowner-discard"
+                onClick={() => discardHeldTurn(askOwnerTurn.id)}
+              >
+                Discard
+              </button>
+            </div>
           </div>
         )}
 

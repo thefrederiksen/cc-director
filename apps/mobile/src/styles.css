@@ -2677,6 +2677,79 @@ a.banner-btn {
   font-size: 15px;
 }
 
+/* Offline resilience (Phase 4a, #1427). These are NOT red errors: holding is a calm "saved, will send"
+   state, so it reads amber/blue, never as a failure. The audio is safe; nothing is lost. */
+.car-conn-down {
+  margin: 12px 16px 0;
+  padding: 10px 14px;
+  border-radius: 10px;
+  background: #3a2f1c;
+  border: 1px solid #c79a3a;
+  color: #ffe6b0;
+  font-size: 15px;
+}
+
+.car-holding {
+  margin: 12px 16px 0;
+  padding: 12px 14px;
+  border-radius: 10px;
+  background: #1c2a3a;
+  border: 1px solid #3a6ea5;
+  color: #cfe4ff;
+  font-size: 15px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.car-holding-count {
+  font-size: 13px;
+  opacity: 0.8;
+}
+
+.car-askowner {
+  margin: 12px 16px 0;
+  padding: 12px 14px;
+  border-radius: 10px;
+  background: #26233a;
+  border: 1px solid #6a5acd;
+  color: #ddd6ff;
+  font-size: 15px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.car-askowner-buttons {
+  display: flex;
+  gap: 10px;
+}
+
+.car-askowner-send,
+.car-askowner-discard {
+  flex: 1 1 0;
+  padding: 10px 12px;
+  border-radius: 10px;
+  font-size: 15px;
+  font-weight: 600;
+  border: 1px solid transparent;
+}
+
+.car-askowner-send {
+  background: #2f7d4f;
+  color: #fff;
+}
+
+.car-askowner-send:disabled {
+  opacity: 0.5;
+}
+
+.car-askowner-discard {
+  background: transparent;
+  border-color: #6a5acd;
+  color: #ddd6ff;
+}
+
 .car-body {
   flex: 1 1 auto;
   display: flex;
