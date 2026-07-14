@@ -1143,6 +1143,20 @@ internal static class GatewayEndpoints
             if (session is null || director is null)
                 return Results.NotFound(new { error = "session not found across any director" });
             var holdReq = req ?? new HoldRequest();
+            // Issue #1500: an explicit per-call snooze length. Validate it BEFORE forwarding the hold, so
+            // a bad value fails loudly (no fallback / no silent clamp) and never parks the session. Null =
+            // use the per-user default (unchanged behaviour). Only the Gateway reads this - the Director
+            // gets the same plain hold it always did, so this stays a Gateway-only capability.
+            if (holdReq.OnHold && holdReq.SnoozeMinutes is int requested
+                && !Core.Configuration.SnoozeDefaultConfig.IsValid(requested))
+            {
+                return Results.BadRequest(new
+                {
+                    error = $"snoozeMinutes must be a whole number of minutes between "
+                            + $"{Core.Configuration.SnoozeDefaultConfig.MinMinutes} and "
+                            + $"{Core.Configuration.SnoozeDefaultConfig.MaxMinutes}"
+                });
+            }
             // Post-cut: tunnel-only. The Ok result's body IS the { onHold } JSON; a null result (Director not
             // connected) or a non-Ok result collapses to 502.
             var streamResult = await DirectorCommandRouter.TrySendAsync(sendCommand, director.DirectorId, "hold", sid, holdReq, ct);
@@ -1154,9 +1168,10 @@ internal static class GatewayEndpoints
             {
                 if (holdReq.OnHold)
                 {
-                    // One snooze length for everyone (the per-user Gateway default) - read now so a
-                    // Settings change applies to the next snooze. No per-snooze duration by design.
-                    var minutes = Core.Configuration.SnoozeDefaultConfig.Get();
+                    // Issue #1500: honour a per-call snooze length when the caller passed one (already
+                    // validated above); otherwise fall back to the per-user default (snooze_default_minutes),
+                    // read now so a Settings change applies to the next snooze.
+                    var minutes = holdReq.SnoozeMinutes ?? Core.Configuration.SnoozeDefaultConfig.Get();
                     snoozeRegistry.Snooze(sid, DateTime.UtcNow.AddMinutes(minutes), director.DirectorId);
                 }
                 else
