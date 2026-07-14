@@ -8,12 +8,20 @@ namespace CcDirector.Core.Tests.Drivers;
 
 public sealed class TerminalSubmitTests
 {
+    /// <summary>
+    /// Fast beat for the post-Enter submit watchdog so the suite does not wait out real-time beats.
+    /// Every test that reaches an Enter passes this; the watchdog's own semantics are covered in
+    /// <see cref="SubmitVerifierTests"/>.
+    /// </summary>
+    private static readonly TimeSpan FastVerifyBeat = TimeSpan.FromMilliseconds(20);
+
     [Fact]
     public async Task EchoVerifiedSubmit_EchoingBackend_TypesTextThenSeparateEnter()
     {
         var backend = new RecordingSessionBackend { Buffer = new CircularTerminalBuffer() };
 
-        await TerminalSubmit.EchoVerifiedSubmitAsync(backend, "hello world", "Test");
+        await TerminalSubmit.EchoVerifiedSubmitAsync(
+            backend, "hello world", "Test", submitVerifyBeat: FastVerifyBeat);
 
         Assert.Equal(2, backend.WrittenBytes.Count);
         Assert.Equal(Encoding.UTF8.GetBytes("hello world"), backend.WrittenBytes[0]);
@@ -33,7 +41,8 @@ public sealed class TerminalSubmitTests
             "Test",
             echoTimeout: TimeSpan.FromSeconds(1),
             pollInterval: TimeSpan.FromMilliseconds(5),
-            enterSettleDelay: TimeSpan.FromMilliseconds(1));
+            enterSettleDelay: TimeSpan.FromMilliseconds(1),
+            submitVerifyBeat: FastVerifyBeat);
 
         await Task.Delay(40);
 
@@ -62,7 +71,8 @@ public sealed class TerminalSubmitTests
             "Test",
             echoTimeout: TimeSpan.FromSeconds(1),
             pollInterval: TimeSpan.FromMilliseconds(5),
-            enterSettleDelay: TimeSpan.FromMilliseconds(1));
+            enterSettleDelay: TimeSpan.FromMilliseconds(1),
+            submitVerifyBeat: FastVerifyBeat);
 
         await Task.Delay(30);
 
@@ -91,7 +101,8 @@ public sealed class TerminalSubmitTests
             "Test",
             echoTimeout: TimeSpan.FromMilliseconds(100),
             pollInterval: TimeSpan.FromMilliseconds(5),
-            enterSettleDelay: TimeSpan.FromMilliseconds(1));
+            enterSettleDelay: TimeSpan.FromMilliseconds(1),
+            submitVerifyBeat: FastVerifyBeat);
 
         Assert.True(backend.WrittenBytes.Count > 2);
         Assert.Equal(Encoding.UTF8.GetBytes(text), backend.WrittenBytes.SkipLast(1).SelectMany(b => b).ToArray());
@@ -112,7 +123,8 @@ public sealed class TerminalSubmitTests
                 "Test",
                 echoTimeout: TimeSpan.FromMilliseconds(20),
                 pollInterval: TimeSpan.FromMilliseconds(5),
-                enterSettleDelay: TimeSpan.FromMilliseconds(1)));
+                enterSettleDelay: TimeSpan.FromMilliseconds(1),
+            submitVerifyBeat: FastVerifyBeat));
 
         Assert.Contains("never echoed", error.Message, StringComparison.OrdinalIgnoreCase);
         Assert.Equal(0, backend.EnterCount);
@@ -131,7 +143,8 @@ public sealed class TerminalSubmitTests
             "Test",
             echoTimeout: TimeSpan.FromMilliseconds(30),
             pollInterval: TimeSpan.FromMilliseconds(5),
-            enterSettleDelay: TimeSpan.FromMilliseconds(1));
+            enterSettleDelay: TimeSpan.FromMilliseconds(1),
+            submitVerifyBeat: FastVerifyBeat);
 
         Assert.Equal(4, backend.WrittenBytes.Count);
         Assert.Equal(Encoding.UTF8.GetBytes("retry me"), backend.WrittenBytes[0]);
@@ -154,7 +167,8 @@ public sealed class TerminalSubmitTests
                 "Test",
                 echoTimeout: TimeSpan.FromMilliseconds(20),
                 pollInterval: TimeSpan.FromMilliseconds(5),
-                enterSettleDelay: TimeSpan.FromMilliseconds(1)));
+                enterSettleDelay: TimeSpan.FromMilliseconds(1),
+            submitVerifyBeat: FastVerifyBeat));
 
         Assert.Contains("never echoed", error.Message, StringComparison.OrdinalIgnoreCase);
         Assert.Equal(4, backend.WrittenBytes.Count);
@@ -182,7 +196,8 @@ public sealed class TerminalSubmitTests
                 "Test",
                 echoTimeout: TimeSpan.FromMilliseconds(20),
                 pollInterval: TimeSpan.FromMilliseconds(5),
-                enterSettleDelay: TimeSpan.FromMilliseconds(1)));
+                enterSettleDelay: TimeSpan.FromMilliseconds(1),
+            submitVerifyBeat: FastVerifyBeat));
 
         Assert.Contains("never echoed", error.Message, StringComparison.OrdinalIgnoreCase);
         Assert.Empty(backend.SentTexts);
@@ -253,7 +268,8 @@ public sealed class TerminalSubmitTests
             echoTimeout: TimeSpan.FromMilliseconds(30),
             pollInterval: TimeSpan.FromMilliseconds(5),
             enterSettleDelay: TimeSpan.FromMilliseconds(1),
-            screenSnapshot: () => screen);
+            screenSnapshot: () => screen,
+            submitVerifyBeat: FastVerifyBeat);
 
         // Rescued on attempt 1: text typed once, Enter pressed, and no Escape ever disturbed the composer.
         Assert.Equal(1, backend.EnterCount);
@@ -281,6 +297,91 @@ public sealed class TerminalSubmitTests
 
         Assert.Contains("never echoed", error.Message, StringComparison.OrdinalIgnoreCase);
         Assert.Equal(0, backend.EnterCount);
+    }
+
+    // ===== post-Enter submit verification (issue #1512) =============================================
+    // The echo check proves the text ARRIVED in the composer. These pin the other half: that it LEFT.
+    // The live shape was a phone dictation whose Enter the TUI swallowed - the text sat in the
+    // composer, the session was marked Working, and the NEXT dictation typed itself onto the end of
+    // the orphan (both prompts visible run-together in one composer, neither ever sent).
+
+    /// <summary>
+    /// A SHORT, single-line prompt - the common route, and every phone dictation. Before this fix it
+    /// was the one route with no post-Enter verification at all: only the large/multi-line
+    /// @-temp-file route was watched, so exactly the everyday case went unchecked.
+    /// </summary>
+    [Fact]
+    public async Task ShortPrompt_TuiSwallowsTheEnter_NudgedThroughInsteadOfParking()
+    {
+        var backend = new RecordingSessionBackend { Buffer = new CircularTerminalBuffer() };
+        // The composer takes the text but is not ready to submit when the first Enter lands, so that
+        // Enter is LOST and nothing streams. It starts accepting again shortly after, so the
+        // watchdog's nudge is what actually sends the prompt.
+        backend.EchoScript.UseDefault(
+            RecordingEchoStep.CustomEcho("short dictation").SwallowsEnterUntilReady(TimeSpan.FromMilliseconds(30)));
+
+        await TerminalSubmit.EchoVerifiedSubmitAsync(
+            backend,
+            "short dictation",
+            "Test",
+            echoTimeout: TimeSpan.FromMilliseconds(200),
+            pollInterval: TimeSpan.FromMilliseconds(5),
+            enterSettleDelay: TimeSpan.FromMilliseconds(1),
+            submitVerifyBeat: FastVerifyBeat);
+
+        // How MANY nudges it takes is timing, not behaviour: the beat and the composer's recovery
+        // window race, so pinning an exact count would be a flake. The invariants are that an Enter
+        // really was swallowed, that the watchdog kept nudging, and that the prompt went through.
+        Assert.True(backend.LostEnterCount >= 1, "the fake must have swallowed the submitting Enter");
+        Assert.True(backend.EnterCount > backend.LostEnterCount, "the watchdog must nudge the parked composer");
+        Assert.Equal(["short dictation"], backend.SubmittedTexts);
+        Assert.Empty(backend.ParkedComposerText);
+    }
+
+    /// <summary>
+    /// The failure the operator actually saw: the Enter is swallowed and the TUI stays dead. The
+    /// submit must FAIL rather than return success, because a quiet return is what marked the session
+    /// Working for a turn that never started and let the next send append to the orphan.
+    /// </summary>
+    [Fact]
+    public async Task ShortPrompt_EnterNeverLands_ThrowsInsteadOfReportingSuccess()
+    {
+        var backend = new RecordingSessionBackend { Buffer = new CircularTerminalBuffer() };
+        // Echoes (so the text is provably in the composer) but never accepts a submit: every Enter,
+        // including every nudge, is swallowed and nothing ever streams.
+        backend.EchoScript.UseDefault(RecordingEchoStep.CustomEcho("dictation that never sends").NotAcceptingSubmit());
+
+        var error = await Assert.ThrowsAsync<PromptNotSubmittedException>(
+            () => TerminalSubmit.EchoVerifiedSubmitAsync(
+                backend,
+                "dictation that never sends",
+                "Test",
+                echoTimeout: TimeSpan.FromMilliseconds(200),
+                pollInterval: TimeSpan.FromMilliseconds(5),
+                enterSettleDelay: TimeSpan.FromMilliseconds(1),
+                submitVerifyBeat: FastVerifyBeat));
+
+        Assert.Contains("parked in the composer", error.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Empty(backend.SubmittedTexts);
+        Assert.Equal("dictation that never sends", backend.ParkedComposerText);
+    }
+
+    /// <summary>
+    /// A submit that lands first time must not be nudged. The nudge is an extra Enter, and an extra
+    /// Enter into a composer the operator is typing into would submit their half-written text - so
+    /// "only nudge what we can SEE is parked" is a safety property, not just an efficiency one.
+    /// </summary>
+    [Fact]
+    public async Task ShortPrompt_EnterLandsFirstTime_NoNudgeEverSent()
+    {
+        var backend = new RecordingSessionBackend { Buffer = new CircularTerminalBuffer() };
+
+        await TerminalSubmit.EchoVerifiedSubmitAsync(
+            backend, "clean send", "Test", submitVerifyBeat: FastVerifyBeat);
+
+        Assert.Equal(1, backend.EnterCount);
+        Assert.Equal(0, backend.LostEnterCount);
+        Assert.Equal(["clean send"], backend.SubmittedTexts);
     }
 
     [Fact]
