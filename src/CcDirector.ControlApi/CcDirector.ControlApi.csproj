@@ -27,6 +27,13 @@
 
   <ItemGroup>
     <InternalsVisibleTo Include="CcDirector.Gateway.Tests" />
+    <!-- The desktop rail renders the SAME presentation fold (SessionOrdering) the Gateway serves to the
+         Cockpit and the phone, so all three screens cannot disagree about a session's colour and label.
+         The fold takes a SessionDto, and ControlEndpoints.Map is the ONE mapper that builds one from a live
+         Session - the desktop reuses it rather than hand-rolling a second projection, which is exactly the
+         drift this change removes. See docs/architecture/session-state-machine-2026-07-14.html. -->
+    <!-- The desktop app's ASSEMBLY name, not its project name (see its AssemblyName property). -->
+    <InternalsVisibleTo Include="cc-director" />
   </ItemGroup>
 
   <ItemGroup>

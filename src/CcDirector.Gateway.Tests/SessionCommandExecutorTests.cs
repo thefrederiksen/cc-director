@@ -283,7 +283,7 @@ public sealed class SessionCommandExecutorTests
         var (sm, session, _) = NewSession();
         try
         {
-            session.OnHold = true; // start held
+            session.RequestHold(true); // start held
             var command = new DirectorCommand
             {
                 Verb = "hold",

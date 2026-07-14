@@ -724,7 +724,8 @@ public sealed class ControlApiHost : IAsyncDisposable
     private void WireDoorbellPush()
     {
         void Attach(Core.Sessions.Session session)
-            => session.OnActivityStateChanged += (_, newState) =>
+        {
+            session.OnActivityStateChanged += (_, newState) =>
             {
                 var eventName = newState switch
                 {
@@ -738,6 +739,16 @@ public sealed class ControlApiHost : IAsyncDisposable
                 // Issue #1176 (Phase 1a): push the changed session up the stream as a delta.
                 _streamClient?.NotifyDelta(ControlEndpoints.Map(session, DirectorId));
             };
+            // A hold change is a state change like any other, so it pushes like any other. Without this the
+            // Director set the flag, answered the caller, and told the Gateway NOTHING: a hold toggle that
+            // rode no activity change stayed invisible to every OTHER screen until the next 10-second
+            // re-push - and because the Gateway derives each session's color and triage bucket from this
+            // flag when it serves the roster, the session also sorted into the wrong bucket for that whole
+            // window. Fires on every HoldState transition, including None <-> DeferredHold, which leaves
+            // OnHold untouched but does change the label clients render.
+            session.HoldStateChanged += _ =>
+                _streamClient?.NotifyDelta(ControlEndpoints.Map(session, DirectorId));
+        }
 
         _sessionManager.OnSessionCreated += session =>
         {

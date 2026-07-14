@@ -293,9 +293,17 @@ internal static class SessionCommandExecutor
         if (session is null)
             return DirectorCommandResult.Fail(DirectorCommandStatus.NotFound, "session not found");
 
-        session.OnHold = onHold;
-        FileLog.Write($"[SessionCommandExecutor] hold: session={guid} onHold={onHold}");
-        return DirectorCommandResult.Success(Serialize(new HoldResponse { OnHold = session.OnHold }));
+        // RequestHold runs the hold state machine rather than poking a flag: a hold that arrives while the
+        // agent is working is DEFERRED and lands when the work stops ("hold my session when it finishes"),
+        // instead of parking a session that is visibly still running. An immediate hold / un-hold is
+        // unchanged. See docs/architecture/session-state-machine-2026-07-14.html.
+        var outcome = session.RequestHold(onHold);
+        FileLog.Write($"[SessionCommandExecutor] hold: session={guid} onHold={onHold} outcome={outcome} state={session.HoldState}");
+        return DirectorCommandResult.Success(Serialize(new HoldResponse
+        {
+            OnHold = session.OnHold,
+            Pending = outcome == Session.HoldOutcome.Pending,
+        }));
     }
 
     /// <summary>

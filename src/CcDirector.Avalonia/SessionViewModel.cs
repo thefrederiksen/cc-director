@@ -2,6 +2,7 @@ using System.ComponentModel;
 using System.Runtime.CompilerServices;
 using Avalonia.Media;
 using Avalonia.Threading;
+using CcDirector.ControlApi;
 using CcDirector.Core.Agents;
 using CcDirector.Core.Claude;
 using CcDirector.Core.Sessions;
@@ -111,37 +112,52 @@ public class SessionViewModel : INotifyPropertyChanged
     }
 
     /// <summary>
-    /// Phase 4d: the sidebar color strip's brush. Reads <see cref="Session.StatusColor"/>
-    /// written by the SessionStatusWingman. Desktop and Gateway use the same field
-    /// so the same session shows the same color in both windows.
+    /// The live session projected into the wire DTO the shared presentation fold reads, via the ONE mapper
+    /// that already builds it for the Gateway - so the rail folds exactly the same inputs the phone does.
     ///
-    /// Exception: when the user has parked the session on hold (<see cref="Session.OnHold"/>),
-    /// the strip shows a light gray so held sessions recede and read as "set aside" at a glance.
-    /// OnHold is an orthogonal user override that sits on top of the wingman's color.
+    /// Deliberately NOT cached. Map is pure property reads with no I/O, and the rail re-reads only when a
+    /// change event raises a property, not in a loop. A cache here would buy nothing measurable and would
+    /// add an invalidation obligation across nine change handlers, where missing one means the rail quietly
+    /// shows stale state - the precise failure this whole change exists to remove.
     /// </summary>
-    public ISolidColorBrush StatusColorBrush
+    private SessionDto FoldInput => ControlEndpoints.Map(Session, directorId: "");
+
+    /// <summary>
+    /// The ONE presentation fold, shared with the Gateway and therefore with the Cockpit and the phone
+    /// (<see cref="SessionOrdering"/> lives in CcDirector.Gateway.Contracts, which this app references).
+    ///
+    /// The desktop used to hand-roll three separate folds of its own - the strip read the hold flag, while
+    /// the label and the "waiting" clock read the activity state and the wingman colour and had never heard
+    /// of hold. That is why a snoozed session showed a grey strip next to a red "Your Turn" and a nagging
+    /// hours-long clock, while the phone correctly showed "Snoozed": four readings of the same session, and
+    /// nothing reconciled them. Calling the same function the other screens call makes agreement structural
+    /// instead of something we re-verify every release.
+    ///
+    /// Known gap (Phase 2b): SessionRole is derived by the Gateway from the WHOLE fleet - the Director
+    /// cannot know whether a controlled session's controller is alive on another machine - so it is absent
+    /// here until the Gateway pushes it down. Until then a live Worker's red is suppressed on the Cockpit
+    /// and the phone but still surfaces on this rail.
+    /// </summary>
+    private string EffectiveColor => SessionOrdering.EffectiveColor(FoldInput);
+
+    /// <summary>
+    /// The sidebar colour strip's brush: the shared fold's colour, mapped to this app's palette. Hold,
+    /// dictation, briefing and the activity colour are all folded by <see cref="SessionOrdering"/> - this
+    /// only picks the brush.
+    /// </summary>
+    public ISolidColorBrush StatusColorBrush => EffectiveColor switch
     {
-        get
-        {
-            if (Session.OnHold) return OnHoldStatusBrush;
-            // Issue #1181, Task 3b: a session receiving a dictation from the phone shows ORANGE, so the
-            // "a dictation is arriving" state is obvious at a glance in the rail (it overrides the base
-            // red "needs you", which would otherwise hide the fact that input is temporarily locked).
-            if (Session.IsReceivingDictation) return OrangeStatusBrush;
-            return (Session.StatusColor?.ToLowerInvariant()) switch
-            {
-                "green"  => GreenStatusBrush,
-                "blue"   => BlueStatusBrush,
-                "yellow" => YellowStatusBrush,
-                "red"    => RedStatusBrush,
-                "purple" => PurpleStatusBrush,
-                "orange" => OrangeStatusBrush,
-                "supporting" => SupportingStatusBrush,
-                "error"  => ErrorStatusBrush,
-                _        => UnknownStatusBrush,
-            };
-        }
-    }
+        "grey"       => Session.OnHold ? OnHoldStatusBrush : UnknownStatusBrush,
+        "green"      => GreenStatusBrush,
+        "blue"       => BlueStatusBrush,
+        "yellow"     => YellowStatusBrush,
+        "red"        => RedStatusBrush,
+        "purple"     => PurpleStatusBrush,
+        "orange"     => OrangeStatusBrush,
+        "supporting" => SupportingStatusBrush,
+        "error"      => ErrorStatusBrush,
+        _            => UnknownStatusBrush,
+    };
 
     /// <summary>True when the user has parked this session on hold. Drives the menu toggle
     /// label and the light-gray strip color.</summary>
@@ -190,9 +206,11 @@ public class SessionViewModel : INotifyPropertyChanged
 
     /// <summary>How long this session has been waiting on you, shown in the list only when red,
     /// so you can see at a glance WHICH needs-you session is the most stale and triage it first.
-    /// Proxied from the last briefing time (generated at turn-end, when the session goes red).</summary>
+    /// Proxied from the last briefing time (generated at turn-end, when the session goes red).
+    /// Reads the shared fold, NOT the raw wingman colour: a snoozed session is not red and must not nag
+    /// with an hours-long clock - that mismatch is exactly what this change removes.</summary>
     public bool HasWaitingDuration =>
-        string.Equals(Session.StatusColor, "red", StringComparison.OrdinalIgnoreCase)
+        string.Equals(EffectiveColor, "red", StringComparison.OrdinalIgnoreCase)
         && Session.CachedExplainAt is not null;
 
     public string WaitingDurationLabel
@@ -274,8 +292,12 @@ public class SessionViewModel : INotifyPropertyChanged
         }
     }
 
-    public string ActivityLabel =>
-        ActivityLabels.TryGetValue(Session.ActivityState, out var label) ? label : "Unknown";
+    /// <summary>
+    /// The session's state in words. The shared fold's label - the SAME string the Cockpit and the phone
+    /// render - so a session cannot read "Your Turn" here and "Snoozed" there. This used to read the raw
+    /// activity state and therefore had no idea the session was held.
+    /// </summary>
+    public string ActivityLabel => SessionOrdering.StateLabel(FoldInput);
 
     public ISolidColorBrush ActivityBrush =>
         ActivityBrushes.TryGetValue(Session.ActivityState, out var brush) ? brush : Brushes.Gray;
