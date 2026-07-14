@@ -111,6 +111,29 @@ public sealed class AgentLaunchDefaultsTests : IDisposable
     }
 
     [Fact]
+    public void ResolveDefaultArgs_BypassPermissionsFalse_KeepsModelDropsBypass()
+    {
+        // Issue #1497: when the caller clears the Bypass-permissions checkbox, the session keeps the
+        // agent's configured model but is launched WITHOUT the permission-bypass flag, so it stops for
+        // each permission prompt - exactly as the desktop dialog launches with the checkbox cleared.
+        SeedConfig("""
+        {
+          "agent": {
+            "entries": [
+              { "type": "ClaudeCode", "enabled": true, "executable_path": "C:/tools/claude.cmd",
+                "preset_id": "Standard", "default_model": "opus[1m]", "launch_mode": "Guided" }
+            ]
+          }
+        }
+        """);
+
+        var args = AgentLaunchDefaults.ResolveDefaultArgs(AgentKind.ClaudeCode, new AgentOptions(), bypassPermissions: false);
+
+        Assert.Contains("--model opus[1m]", args);
+        Assert.DoesNotContain(ClaudeSkip, args);
+    }
+
+    [Fact]
     public void ResolveDefaultArgs_MultipleClaudeEntries_PicksFirstEnabled()
     {
         // The New Session dialog pre-selects the first ENABLED entry of the kind; ResolveDefaultArgs

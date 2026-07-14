@@ -450,9 +450,12 @@ internal static class SessionCommandExecutor
         string? effectiveArgs = req.Args;
         if (req.Args is null && kind != AgentKind.RawCli)
         {
-            var resolvedDefault = AgentLaunchDefaults.ResolveDefaultArgs(kind, sessionManager.Options);
+            // Issue #1497: honor the caller's Bypass-permissions choice (the desktop dialog's checkbox,
+            // default ON). Null keeps the historic default of true, so callers that omit it are unchanged.
+            var bypassPermissions = req.BypassPermissions ?? true;
+            var resolvedDefault = AgentLaunchDefaults.ResolveDefaultArgs(kind, sessionManager.Options, bypassPermissions);
             effectiveArgs = string.IsNullOrWhiteSpace(resolvedDefault) ? null : resolvedDefault;
-            FileLog.Write($"[SessionCommandExecutor] create: no args supplied; applied default agent settings for {kind}: \"{effectiveArgs ?? "(empty)"}\"");
+            FileLog.Write($"[SessionCommandExecutor] create: no args supplied; applied default agent settings for {kind} (bypassPermissions={bypassPermissions}): \"{effectiveArgs ?? "(empty)"}\"");
         }
 
         // Issue #800: enforce a meaningful name at birth. An EXPLICIT name that is blank or equal to the

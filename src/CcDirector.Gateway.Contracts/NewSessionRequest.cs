@@ -36,6 +36,17 @@ public sealed class NewSessionRequest
     public string? Args { get; set; }
 
     /// <summary>
+    /// Optional per-session permission-bypass choice, mirroring the desktop New Session dialog's
+    /// "Bypass permission prompts" checkbox (issue #1497). Consulted ONLY when <see cref="Args"/> is
+    /// null (no explicit command-line override): <c>true</c> (the desktop default) launches the agent's
+    /// configured default model AND its permission-bypass flag; <c>false</c> launches the same configured
+    /// model but WITHOUT the bypass flag, so the agent stops for each permission prompt. When
+    /// <see cref="Args"/> is supplied, that explicit line wins and this is ignored. Null defaults to
+    /// <c>true</c> (the desktop default), so callers that omit it are unaffected.
+    /// </summary>
+    public bool? BypassPermissions { get; set; }
+
+    /// <summary>
     /// For <see cref="Agent"/> = "RawCli": the executable to run (e.g. "pwsh", "aider",
     /// or an absolute path). Resolved against PATH+PATHEXT before spawning; a path that
     /// cannot be resolved fails loudly at launch. Ignored for all other agent kinds.

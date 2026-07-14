@@ -59,6 +59,21 @@ export interface RepoInfo {
   lastUsed: string;
 }
 
+// One selectable agent on a Director, projected from GET /directors/{id}/agents (issue #1497): the
+// machine's configured, enabled agents, one per kind - the remote counterpart of the desktop New
+// Session dialog's agent radios. Not in the OpenAPI schema; read with this narrow local shape.
+export interface AgentChoice {
+  /** The agent kind to launch, sent verbatim as the create request's `agent` (e.g. "ClaudeCode"). */
+  type: string;
+  /** The configured display name shown to the user. */
+  displayName: string;
+  /** The configured default model id, or empty when the agent uses its own built-in default. */
+  defaultModel: string;
+  /** A friendly label for the default model (e.g. "Opus 4.8"), or empty - shown so the user sees which
+   *  model the agent will use. The desktop shape: pick the agent, the model comes from its default. */
+  modelLabel: string;
+}
+
 // The app's credential is the per-device key it obtained at enrollment (issue #908/#1088), read from
 // the device-key store - NOT a token injected into the page (the shell carries no secret). Empty until
 // this device has enrolled, in which case the caller (the auth gate) routes to the Sign in screen.
@@ -1145,31 +1160,66 @@ export async function getRepos(directorId: string, signal?: AbortSignal): Promis
   return list;
 }
 
-// POST /directors/{id}/sessions - create a new session in repoPath. Agent is hardcoded "ClaudeCode"
-// and wingmanEnabled=false, type omitted, exactly like the Android NewSessionPanel
-// (FleetParser.BuildCreateBody). Returns the created SessionDto so the caller can open it. The
-// Gateway answers 201 on success; throws GatewayError on non-2xx with the server's reason.
-//
-// launchArgs is the exact command-line argument string the Director passes to the agent (for example
-// "--model opus --dangerously-skip-permissions"). Session launch applies no defaults, so a session
-// created with no launchArgs comes up on the default model and blocked on a permission prompt - the
-// caller decides. An empty or whitespace-only launchArgs sends no "args" at all, matching the
-// historic behavior; callers that do not care (the mobile NewSession flow) simply omit it.
+// GET /directors/{id}/agents - a machine's configured, enabled agents (one per kind) for the New
+// Session dialog's agent picker (issue #1497). The Director already de-duplicates by kind and orders by
+// the configured order, so the list is used as-is. Entries with no type are dropped. Throws GatewayError
+// on non-2xx (e.g. 502 when the Director is not connected), which the dialog surfaces inline.
+export async function getAgents(directorId: string, signal?: AbortSignal): Promise<AgentChoice[]> {
+  const id = encodeURIComponent(directorId);
+  const res = await gatewayFetch(`/directors/${id}/agents`, {
+    method: "GET",
+    headers: { Accept: "application/json", ...authHeaders() },
+    signal,
+  });
+  if (!res.ok) {
+    throw new GatewayError(res.status, `GET /directors/${directorId}/agents failed: ${res.status}`);
+  }
+  const raw = (await res.json()) as Array<Record<string, unknown>>;
+  return raw
+    .map((a) => ({
+      type: String(a.type ?? ""),
+      displayName: String(a.displayName ?? ""),
+      defaultModel: String(a.defaultModel ?? ""),
+      modelLabel: String(a.modelLabel ?? ""),
+    }))
+    .filter((a) => a.type.length > 0);
+}
+
+// Options for createSession, mirroring the desktop New Session dialog's launch controls (issue #1497):
+// pick the AGENT (the model is the agent's own configured default - there is no model override), and the
+// per-session Bypass-permissions choice. No command-line arguments are composed on the client; the
+// Director applies the agent's configured default launch line (its model and permission preset) exactly
+// as the desktop dialog does.
+export interface CreateSessionOptions {
+  /** The agent kind to launch (e.g. "ClaudeCode", "Codex", "Gemini"). Defaults to "ClaudeCode". */
+  agent?: string;
+  /** The desktop "Bypass permission prompts" checkbox (default ON). When omitted, the Director applies
+   *  its default (true). True launches the agent's configured model AND its permission-bypass flag;
+   *  false launches the same model but stops for each permission prompt. */
+  bypassPermissions?: boolean;
+  signal?: AbortSignal;
+}
+
+// POST /directors/{id}/sessions - create a new session in repoPath. Sends the chosen agent kind and the
+// Bypass-permissions choice ONLY; it never composes an args string, so the Director applies that agent's
+// configured default model and permission preset - identical to the desktop New Session dialog (issue
+// #1497). Returns the created SessionDto so the caller can open it. The Gateway answers 201 on success;
+// throws GatewayError on non-2xx with the server's reason. Callers that pass nothing (the mobile
+// NewSession flow) get Claude Code with its configured defaults, exactly as before.
 export async function createSession(
   directorId: string,
   repoPath: string,
-  launchArgs?: string | null,
-  signal?: AbortSignal,
+  options?: CreateSessionOptions,
 ): Promise<SessionDto> {
   const id = encodeURIComponent(directorId);
-  const body: NewSessionRequest = { repoPath: repoPath.trim(), agent: "ClaudeCode", wingmanEnabled: false };
-  const trimmedArgs = (launchArgs ?? "").trim();
-  if (trimmedArgs.length > 0) body.args = trimmedArgs;
+  const agent = options?.agent?.trim() || "ClaudeCode";
+  const body: NewSessionRequest = { repoPath: repoPath.trim(), agent, wingmanEnabled: false };
+  if (options?.bypassPermissions !== undefined) body.bypassPermissions = options.bypassPermissions;
   const res = await gatewayFetch(`/directors/${id}/sessions`, {
     method: "POST",
     headers: { "Content-Type": "application/json", Accept: "application/json", ...authHeaders() },
     body: JSON.stringify(body),
-    signal,
+    signal: options?.signal,
   });
   if (!res.ok) {
     let detail = `${res.status}`;

@@ -1,3 +1,4 @@
+using System.Linq;
 using System.Text.Json;
 using CcDirector.ControlApi;
 using CcDirector.Core.Sessions;
@@ -286,6 +287,82 @@ public sealed class CatalogReadExecutorTests
             try { if (File.Exists(registryFile)) File.Delete(registryFile); } catch { /* best effort */ }
             try { if (Directory.Exists(repoDir)) Directory.Delete(repoDir, true); } catch { /* best effort */ }
         }
+    }
+
+    // ---------- agents-list (issue #1497: the machine's configured, enabled agents for the Cockpit New
+    // Session dialog's agent picker). Pins CC_DIRECTOR_ROOT into a temp dir and seeds a controlled
+    // config.json so the read is deterministic and never touches the user's real agent library.
+
+    [Fact]
+    public async Task DispatchAsync_AgentsList_ReturnsEnabledAgentsDedupedByKind()
+    {
+        var (root, prev) = PinDirectorRoot();
+        var sm = new SessionManager(new Core.Configuration.AgentOptions());
+        try
+        {
+            // Two Claude entries (only the first should survive the by-kind dedupe), one Codex, one
+            // DISABLED Gemini (must be excluded). The create request selects an agent by kind, so a second
+            // entry of the same kind is a choice create cannot honor - hence one row per kind.
+            SeedConfig("""
+            {
+              "agent": {
+                "entries": [
+                  { "type": "ClaudeCode", "enabled": true, "display_name": "Claude Code",
+                    "default_model": "opus", "preset_id": "Standard", "launch_mode": "Guided" },
+                  { "type": "ClaudeCode", "enabled": true, "display_name": "Claude Two",
+                    "preset_id": "Standard", "launch_mode": "Guided" },
+                  { "type": "Codex", "enabled": true, "display_name": "Codex",
+                    "preset_id": "Standard", "launch_mode": "Guided" },
+                  { "type": "Gemini", "enabled": false, "display_name": "Gemini",
+                    "preset_id": "Standard", "launch_mode": "Guided" }
+                ]
+              }
+            }
+            """);
+
+            var result = await SessionCommandExecutor.DispatchAsync(sm, "dir-A", Cmd("agents-list"));
+
+            Assert.Equal(DirectorCommandStatus.Ok, result.Status);
+            var agents = JsonSerializer.Deserialize<List<AgentChoiceDto>>(result.BodyJson ?? "", Json);
+            Assert.NotNull(agents);
+            // Enabled-only: the disabled Gemini is excluded.
+            Assert.DoesNotContain(agents!, a => a.Type == "Gemini");
+            // Deduped by kind: exactly one ClaudeCode row, and it is the FIRST enabled entry.
+            Assert.Equal(1, agents!.Count(a => a.Type == "ClaudeCode"));
+            var claude = agents!.First(a => a.Type == "ClaudeCode");
+            Assert.Equal("Claude Code", claude.DisplayName);
+            // Its configured model resolves to a friendly label from the driver's known-models list.
+            Assert.False(string.IsNullOrEmpty(claude.ModelLabel));
+            // Codex is offered too.
+            Assert.Contains(agents!, a => a.Type == "Codex");
+        }
+        finally { sm.Dispose(); RestoreDirectorRoot(root, prev); }
+    }
+
+    // Pin CC_DIRECTOR_ROOT into a fresh temp dir so config.json (the agent library the agents-list verb
+    // reads) is a controlled file that never touches the user's real config. Returns the pinned root and
+    // the previous value so RestoreDirectorRoot can put it back and delete the temp tree.
+    private static (string root, string? prev) PinDirectorRoot()
+    {
+        var prev = Environment.GetEnvironmentVariable("CC_DIRECTOR_ROOT");
+        var root = Path.Combine(Path.GetTempPath(), "ccd-agentslist-test-" + Guid.NewGuid().ToString("N"));
+        Environment.SetEnvironmentVariable("CC_DIRECTOR_ROOT", root);
+        return (root, prev);
+    }
+
+    private static void RestoreDirectorRoot(string root, string? prev)
+    {
+        Environment.SetEnvironmentVariable("CC_DIRECTOR_ROOT", prev);
+        try { if (Directory.Exists(root)) Directory.Delete(root, recursive: true); } catch { /* best effort */ }
+    }
+
+    private static void SeedConfig(string json)
+    {
+        var path = CcStorage.ConfigJson();
+        var dir = Path.GetDirectoryName(path);
+        Assert.NotNull(dir);
+        Directory.CreateDirectory(dir!);
+        File.WriteAllText(path, json);
     }
 
     // ---------- handovers-list / handovers-content (Gateway Cleanup Phase 0 Wave 4a: the saved-handover

@@ -1,3 +1,5 @@
+using CcDirector.Core.AgentPlugins;
+using CcDirector.Core.Agents;
 using CcDirector.Core.Claude;
 using CcDirector.Core.Configuration;
 using CcDirector.Core.Diagnostics;
@@ -48,6 +50,9 @@ internal sealed class CatalogReadExecutor : ISessionCommandArea
         "fs-list",
         "facts",
         "repos-list",
+        // Issue #1497: the machine's configured, enabled agents (one per kind) for the Cockpit New
+        // Session dialog's agent picker - the remote counterpart of the desktop dialog's agent radios.
+        "agents-list",
         // Gateway Cleanup CUT RESTORATION (SB-4a): the enriched per-repo overview the Repositories page reads.
         // Migrated late (the cut deleted the un-migrated leftover); it reads the live registry AND aggregates
         // live/history/claude/handover activity per repo. The core reproduces the old REST lambda verbatim so
@@ -72,6 +77,7 @@ internal sealed class CatalogReadExecutor : ISessionCommandArea
             "fs-list" => FsList(command),
             "facts" => Facts(context.DirectorId, context.Services?.DirectorVersion),
             "repos-list" => ReposList(context.Services?.Repositories),
+            "agents-list" => AgentsList(context.SessionManager.Options),
             "repos-overview" => ReposOverview(context.SessionManager, context.Services?.Repositories),
             "handovers-list" => HandoversList(command),
             "handovers-content" => HandoversContent(command),
@@ -138,6 +144,54 @@ internal sealed class CatalogReadExecutor : ISessionCommandArea
             .OrderByDescending(r => r.LastUsed ?? DateTime.MinValue)
             .ToList();
         return DirectorCommandResult.Success(SessionCommandExecutor.Serialize(repos));
+    }
+
+    /// <summary>
+    /// The <c>agents-list</c> verb (director-level, no session): this machine's configured, ENABLED agents,
+    /// one per kind, for the Cockpit New Session dialog's agent picker (issue #1497). This is the remote
+    /// counterpart of the desktop New Session dialog, which shows a radio per enabled configured agent and
+    /// launches it with that agent's own default model - there is no model picker. Reads the same configured
+    /// library the desktop dialog reads (<see cref="AgentEntryStore.LoadEntries"/>, first-run seeded by tool
+    /// detection), keeps only enabled entries, and de-duplicates by kind because the create request selects an
+    /// agent by KIND (<see cref="NewSessionRequest.Agent"/>) and the Director launches the first enabled entry
+    /// of that kind - so a second entry of the same kind is a choice create cannot honor. Each choice carries a
+    /// friendly model label resolved from the driver's known-models list, so the Cockpit can show which model
+    /// the agent will use. Always a 200 (an empty list is a valid answer). Ordered by the configured order.
+    /// </summary>
+    internal static DirectorCommandResult AgentsList(AgentOptions options)
+    {
+        FileLog.Write("[CatalogReadExecutor] agents-list");
+        var choices = new List<AgentChoiceDto>();
+        var seenKinds = new HashSet<AgentKind>();
+        foreach (var entry in AgentEntryStore.LoadEntries(options))
+        {
+            if (!entry.Enabled) continue;
+            if (!seenKinds.Add(entry.Type)) continue; // one row per kind: create launches the first enabled of a kind
+            choices.Add(new AgentChoiceDto
+            {
+                Type = entry.Type.ToString(),
+                DisplayName = string.IsNullOrWhiteSpace(entry.DisplayName) ? entry.Type.ToString() : entry.DisplayName,
+                DefaultModel = entry.DefaultModel ?? "",
+                ModelLabel = ResolveModelLabel(entry.Type, entry.DefaultModel),
+            });
+        }
+        FileLog.Write($"[CatalogReadExecutor] agents-list: {choices.Count} enabled agent kind(s)");
+        return DirectorCommandResult.Success(SessionCommandExecutor.Serialize(choices));
+    }
+
+    /// <summary>
+    /// A friendly one-line label for a configured default model id, resolved from the kind's driver
+    /// known-models list (e.g. "opus" -&gt; "Opus 4.8"). Falls back to the raw id when the driver does not
+    /// list it, and to an empty string when no model is configured (the agent uses its own built-in default).
+    /// </summary>
+    private static string ResolveModelLabel(AgentKind kind, string? modelId)
+    {
+        if (string.IsNullOrWhiteSpace(modelId)) return "";
+        if (!AgentPluginRegistry.Contains(kind)) return modelId;
+        var driver = AgentPluginRegistry.Get(kind).Driver;
+        if (driver is null) return modelId;
+        var match = driver.KnownModels.FirstOrDefault(m => string.Equals(m.Id, modelId, StringComparison.OrdinalIgnoreCase));
+        return match?.DisplayName ?? modelId;
     }
 
     /// <summary>
