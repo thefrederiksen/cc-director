@@ -276,4 +276,36 @@ public sealed class FleetMessagingEndpointTests : IAsyncLifetime
             new FleetDoneRequest { ToSessionId = Guid.NewGuid().ToString() });
         Assert.Equal(HttpStatusCode.NotFound, resp.StatusCode);
     }
+
+    // ===== /fleet/broadcast validation (issue #1490 - "message send all", route was never built) =====
+
+    // A 400 from the handler proves the route now exists (a missing route 404s) - the gap that made
+    // `message send all` 404.
+    [Fact]
+    public async Task Fleet_broadcast_missing_text_returns_400_provingRouteExists()
+    {
+        var resp = await _client.PostAsJsonAsync("fleet/broadcast",
+            new FleetBroadcastRequest { Text = "", FromSessionId = Guid.NewGuid().ToString() });
+        Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
+    }
+
+    [Fact]
+    public async Task Fleet_broadcast_missing_sender_returns_400_soTheTeamCanBeResolved()
+    {
+        // Without the sender's id the team cannot be resolved, so a broadcast that would otherwise reach
+        // "everyone" is refused up front rather than guessing.
+        var resp = await _client.PostAsJsonAsync("fleet/broadcast",
+            new FleetBroadcastRequest { Text = "hi", FromSessionId = "" });
+        Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
+    }
+
+    [Fact]
+    public async Task Fleet_broadcast_senderNotInFleet_returns_404()
+    {
+        // Standalone Director with no sessions: the sender is not in the (empty) fleet, so its team cannot
+        // be resolved - fail loud (404), never broadcast to a guessed set.
+        var resp = await _client.PostAsJsonAsync("fleet/broadcast",
+            new FleetBroadcastRequest { Text = "hi", FromSessionId = Guid.NewGuid().ToString() });
+        Assert.Equal(HttpStatusCode.NotFound, resp.StatusCode);
+    }
 }
