@@ -817,7 +817,7 @@ internal static class GatewayEndpoints
                 // A non-null stream result is authoritative for this Director - Ok carries its journals, a non-Ok
                 // is treated as no journals (skipped), exactly as a failed HTTP read returned null and was
                 // skipped below. A null return (no stream) falls back to the existing reachability-gated HTTP read.
-                var sr = await DirectorCommandRouter.TrySendAsync(sendCommand, d.DirectorId, "interrupted-list", "", null, ct);
+                var sr = await DirectorCommandRouter.TrySendAsync(sendCommand, d.DirectorId, "interrupted-list", "", null, ct, machineName: d.MachineName);
                 // Post-cut: tunnel-only. A null result means the Director is not connected, so no journals.
                 return (Director: d, Journals: sr is not null && sr.Ok ? DirectorCommandRouter.ReadBody<List<CrashJournalDto>>(sr) : null);
             }).ToList();
@@ -874,7 +874,7 @@ internal static class GatewayEndpoints
             var sr = await DirectorCommandRouter.TrySendAsync(sendCommand, via, "interrupted-dismiss", "",
                 new InterruptedDismissRequest { DeadDirectorId = deadDirectorId, DeadPid = deadPid }, ct);
             // Post-cut: tunnel-only. A null result (Director not connected) collapses to 502 like a failed dismiss.
-            return sr is not null && sr.Ok ? Results.Json(new { dismissed = true }) : Results.StatusCode(StatusCodes.Status502BadGateway);
+            return sr is not null && sr.Ok ? Results.Json(new { dismissed = true }) : TunnelFailure(sr);
         });
 
         // Dismiss ONE session from an interrupted journal (issue #212 W4): the rest of the
@@ -894,7 +894,7 @@ internal static class GatewayEndpoints
             var sr = await DirectorCommandRouter.TrySendAsync(sendCommand, via, "interrupted-remove", "",
                 new InterruptedRemoveRequest { DeadDirectorId = deadDirectorId, DeadPid = deadPid, SessionId = sessionId }, ct);
             // Post-cut: tunnel-only. A null result (Director not connected) collapses to 502.
-            return sr is not null && sr.Ok ? Results.Json(new { removed = true }) : Results.StatusCode(StatusCodes.Status502BadGateway);
+            return sr is not null && sr.Ok ? Results.Json(new { removed = true }) : TunnelFailure(sr);
         });
 
         // Restore one interrupted session (issue #212 W4): create a CONTINUATION session -
@@ -950,7 +950,7 @@ internal static class GatewayEndpoints
                 Agent = row.Agent,
                 PrePrompt = context,
             };
-            var createSr = await DirectorCommandRouter.TrySendAsync(sendCommand, target.DirectorId, "create", "", spawnReq, CancellationToken.None);
+            var createSr = await DirectorCommandRouter.TrySendAsync(sendCommand, target.DirectorId, "create", "", spawnReq, CancellationToken.None, machineName: target.MachineName);
             if (createSr is null)
                 return Results.Problem("target director is not connected to the tunnel", statusCode: StatusCodes.Status502BadGateway);
             SessionDto? created = createSr.Ok ? DirectorCommandRouter.ReadBody<SessionDto>(createSr) : null;
@@ -971,7 +971,7 @@ internal static class GatewayEndpoints
                 // Gateway Cleanup Phase 2: rename over the tunnel (patch verb, tunnel-first, HTTP fallback pre-cut).
                 var renameReq = new SessionUpdateRequest { Name = restoredName };
                 SessionDto? renamed; string? patchErr;
-                var patchSr = await DirectorCommandRouter.TrySendAsync(sendCommand, target.DirectorId, "patch", created.SessionId, renameReq, CancellationToken.None);
+                var patchSr = await DirectorCommandRouter.TrySendAsync(sendCommand, target.DirectorId, "patch", created.SessionId, renameReq, CancellationToken.None, machineName: target.MachineName);
                 // Post-cut: tunnel-only. A null result (Director not connected) leaves the rename un-applied.
                 renamed = patchSr is not null && patchSr.Ok ? DirectorCommandRouter.ReadBody<SessionDto>(patchSr) : null;
                 patchErr = patchSr is null ? "target director not connected to the tunnel"
@@ -985,7 +985,7 @@ internal static class GatewayEndpoints
             // Gateway Cleanup Phase 2: journal cleanup over the tunnel (interrupted-remove verb on the reporting
             // Director, tunnel-first, HTTP fallback pre-cut).
             var removeReq = new InterruptedRemoveRequest { DeadDirectorId = deadDirectorId, DeadPid = deadPid, SessionId = row.SessionId };
-            var removeSr = await DirectorCommandRouter.TrySendAsync(sendCommand, reporter.DirectorId, "interrupted-remove", "", removeReq, CancellationToken.None);
+            var removeSr = await DirectorCommandRouter.TrySendAsync(sendCommand, reporter.DirectorId, "interrupted-remove", "", removeReq, CancellationToken.None, machineName: reporter.MachineName);
             var cleaned = removeSr is not null && removeSr.Ok;
             if (!cleaned)
                 FileLog.Write($"[GatewayEndpoints] restore: journal cleanup failed for {row.SessionId} (row stays in the Interrupted sessions list)");
@@ -1021,11 +1021,13 @@ internal static class GatewayEndpoints
             var (director, session) = await LocateSessionAsync(registry, sid, pushedSessions, streamStaleResolved, owners);
             if (session is null || director is null)
                 return Results.NotFound(new { error = "session not found across any director" });
-            // Post-cut: tunnel-only. A null result (Director not connected) collapses to 502 like a failed kill.
-            var streamResult = await DirectorCommandRouter.TrySendAsync(sendCommand, director.DirectorId, "kill", sid, null, CancellationToken.None);
+            // Post-cut: tunnel-only. A null result (Director not connected) stays 502 like a failed kill, but now
+            // says so. This verb is the sharpest case for explaining itself: on a timeout or a mid-flight drop the
+            // session may or may not have been killed, and a bare 502 left the user with no idea which.
+            var streamResult = await DirectorCommandRouter.TrySendAsync(sendCommand, director.DirectorId, "kill", sid, null, CancellationToken.None, machineName: director.MachineName);
             var ok = streamResult is not null && streamResult.Ok;
             if (!ok)
-                return Results.StatusCode(StatusCodes.Status502BadGateway);
+                return TunnelFailure(streamResult, director.MachineName);
             return Results.Json(new { killed = true });
         });
 
@@ -1041,10 +1043,10 @@ internal static class GatewayEndpoints
             // mode off / Director not stream-connected) falls back to the HTTP dial below, byte-identical. The
             // stream Ok result is success, so it synthesizes the same { pendingDeletion } body the HTTP path returns.
             // Post-cut: tunnel-only. A null result (Director not connected) collapses to 502.
-            var streamResult = await DirectorCommandRouter.TrySendAsync(sendCommand, director.DirectorId, "request-deletion", sid, body, ct);
+            var streamResult = await DirectorCommandRouter.TrySendAsync(sendCommand, director.DirectorId, "request-deletion", sid, body, ct, machineName: director.MachineName);
             return streamResult is not null && streamResult.Ok
                 ? Results.Json(new { pendingDeletion = true })
-                : Results.StatusCode(StatusCodes.Status502BadGateway);
+                : TunnelFailure(streamResult);
         });
 
         // Forward "cancel the pending deletion" to the owning Director (grace-window undo).
@@ -1055,10 +1057,10 @@ internal static class GatewayEndpoints
                 return Results.NotFound(new { error = "session not found across any director" });
             // Gateway Cleanup (Phase 2, PR C): tunnel-first, HTTP fallback on a null return (byte-identical).
             // Post-cut: tunnel-only. A null result (Director not connected) collapses to 502.
-            var streamResult = await DirectorCommandRouter.TrySendAsync(sendCommand, director.DirectorId, "cancel-deletion", sid, null, ct);
+            var streamResult = await DirectorCommandRouter.TrySendAsync(sendCommand, director.DirectorId, "cancel-deletion", sid, null, ct, machineName: director.MachineName);
             return streamResult is not null && streamResult.Ok
                 ? Results.Json(new { pendingDeletion = false })
-                : Results.StatusCode(StatusCodes.Status502BadGateway);
+                : TunnelFailure(streamResult);
         });
 
         // Phase 4b: forward wingman observability through the Gateway so the merged
@@ -1071,10 +1073,10 @@ internal static class GatewayEndpoints
             // Gateway Cleanup (Phase 2, PR C): tunnel-first; a null return falls back to the HTTP dial below,
             // byte-identical. The Ok body IS the WingmanViewDto JSON, passed through exactly as the HTTP body.
             // Post-cut: tunnel-only. A null result (Director not connected) collapses to 502.
-            var streamResult = await DirectorCommandRouter.TrySendAsync(sendCommand, director.DirectorId, "wingman-view", sid, null, ct);
+            var streamResult = await DirectorCommandRouter.TrySendAsync(sendCommand, director.DirectorId, "wingman-view", sid, null, ct, machineName: director.MachineName);
             return streamResult is not null && streamResult.Ok && !string.IsNullOrEmpty(streamResult.BodyJson)
                 ? Results.Content(streamResult.BodyJson, "application/json")
-                : Results.StatusCode(StatusCodes.Status502BadGateway);
+                : TunnelFailure(streamResult);
         });
 
         // Phase 5: forward "ask the wingman" calls. Each is one fresh side-call
@@ -1092,10 +1094,12 @@ internal static class GatewayEndpoints
             // the long await), so the synchronous browser contract is byte-identical to the HTTP forward. A null
             // return falls back to the HTTP dial below. The Ok body IS the WingmanAskResult JSON.
             // Post-cut: tunnel-only. A null result (Director not connected) collapses to 502.
-            var streamResult = await DirectorCommandRouter.TrySendAsync(sendCommand, director.DirectorId, "wingman-ask", sid, req, ct);
+            // Runs a language model on the Director before it can answer, so it gets the longer wait.
+            var streamResult = await DirectorCommandRouter.TrySendAsync(sendCommand, director.DirectorId, "wingman-ask", sid, req, ct,
+                timeout: DirectorCommandRouter.LanguageModelCommandTimeout, machineName: director.MachineName);
             return streamResult is not null && streamResult.Ok && !string.IsNullOrEmpty(streamResult.BodyJson)
                 ? Results.Content(streamResult.BodyJson, "application/json")
-                : Results.StatusCode(StatusCodes.Status502BadGateway);
+                : TunnelFailure(streamResult);
         });
 
         // Forward "set the session goal" to the owning Director. Body forwards verbatim.
@@ -1107,7 +1111,7 @@ internal static class GatewayEndpoints
             var goalReq = req ?? new WingmanGoalRequest();
             // Post-cut: tunnel-only. The Ok stream body IS the { goal, goalSetAt, goalState } JSON; a null
             // result (Director not connected) or a non-Ok result collapses to 502.
-            var streamResult = await DirectorCommandRouter.TrySendAsync(sendCommand, director.DirectorId, "wingman-goal", sid, goalReq, ct);
+            var streamResult = await DirectorCommandRouter.TrySendAsync(sendCommand, director.DirectorId, "wingman-goal", sid, goalReq, ct, machineName: director.MachineName);
             var body = streamResult is not null && streamResult.Ok ? streamResult.BodyJson : null;
             if (body is null)
                 return Results.StatusCode(StatusCodes.Status502BadGateway);
@@ -1123,7 +1127,7 @@ internal static class GatewayEndpoints
                 return Results.NotFound(new { error = "session not found across any director" });
             var roleReq = req ?? new SetRoleRequest();
             // Post-cut: tunnel-only. The Ok stream body is the updated SessionDto JSON; a null or non-Ok result collapses to 502.
-            var streamResult = await DirectorCommandRouter.TrySendAsync(sendCommand, director.DirectorId, "set-role", sid, roleReq, ct);
+            var streamResult = await DirectorCommandRouter.TrySendAsync(sendCommand, director.DirectorId, "set-role", sid, roleReq, ct, machineName: director.MachineName);
             var body = streamResult is not null && streamResult.Ok ? streamResult.BodyJson : null;
             if (body is null)
                 return Results.StatusCode(StatusCodes.Status502BadGateway);
@@ -1159,7 +1163,7 @@ internal static class GatewayEndpoints
             }
             // Post-cut: tunnel-only. The Ok result's body IS the { onHold } JSON; a null result (Director not
             // connected) or a non-Ok result collapses to 502.
-            var streamResult = await DirectorCommandRouter.TrySendAsync(sendCommand, director.DirectorId, "hold", sid, holdReq, ct);
+            var streamResult = await DirectorCommandRouter.TrySendAsync(sendCommand, director.DirectorId, "hold", sid, holdReq, ct, machineName: director.MachineName);
             var body = streamResult is not null && streamResult.Ok ? streamResult.BodyJson : null;
             if (body is null)
                 return Results.StatusCode(StatusCodes.Status502BadGateway);
@@ -1219,7 +1223,7 @@ internal static class GatewayEndpoints
             // Post-cut: tunnel-only. A null result means the Director is not connected -> 502.
             SessionDto? body;
             string? err;
-            var streamResult = await DirectorCommandRouter.TrySendAsync(sendCommand, director.DirectorId, "patch", sid, req, CancellationToken.None);
+            var streamResult = await DirectorCommandRouter.TrySendAsync(sendCommand, director.DirectorId, "patch", sid, req, CancellationToken.None, machineName: director.MachineName);
             if (streamResult is null)
             {
                 body = null;
@@ -1249,10 +1253,11 @@ internal static class GatewayEndpoints
             // Post-cut: tunnel-only. The query params ride in a BufferRequest payload the Director's buffer
             // verb reads. A null result (Director not connected) collapses to 502.
             var streamResult = await DirectorCommandRouter.TrySendAsync(sendCommand, director.DirectorId, "buffer", sid,
-                new BufferRequest { Lines = lines, Raw = raw == true, Since = since }, ct);
+                new BufferRequest { Lines = lines, Raw = raw == true, Since = since }, ct,
+                machineName: director.MachineName);
             return streamResult is not null && streamResult.Ok && !string.IsNullOrEmpty(streamResult.BodyJson)
                 ? Results.Content(streamResult.BodyJson, "application/json")
-                : Results.StatusCode(StatusCodes.Status502BadGateway);
+                : TunnelFailure(streamResult);
         });
 
         app.MapPost("/sessions/{sid}/prompt", async (string sid, PromptRequest req, HttpContext httpCtx) =>
@@ -1279,7 +1284,7 @@ internal static class GatewayEndpoints
             // Post-cut: tunnel-only. A null result means the Director is not connected -> 502. The WaitForIdle
             // poll below is unchanged - it observes the session regardless of how the prompt was delivered.
             bool ok; PromptResponse? body; string? err;
-            var streamResult = await DirectorCommandRouter.TrySendAsync(sendCommand, director.DirectorId, "prompt", sid, req, CancellationToken.None);
+            var streamResult = await DirectorCommandRouter.TrySendAsync(sendCommand, director.DirectorId, "prompt", sid, req, CancellationToken.None, machineName: director.MachineName);
             if (streamResult is null)
             {
                 ok = false;
@@ -1341,11 +1346,11 @@ internal static class GatewayEndpoints
                 return Results.NotFound(new { error = "session not found across any director" });
 
             // Post-cut: tunnel-only. A null result (Director not connected) collapses to 502.
-            var streamResult = await DirectorCommandRouter.TrySendAsync(sendCommand, director.DirectorId, "interrupt", sid, null, CancellationToken.None);
+            var streamResult = await DirectorCommandRouter.TrySendAsync(sendCommand, director.DirectorId, "interrupt", sid, null, CancellationToken.None, machineName: director.MachineName);
             var ok = streamResult is not null && streamResult.Ok;
             return ok
                 ? Results.Json(new { accepted = true })
-                : Results.StatusCode(StatusCodes.Status502BadGateway);
+                : TunnelFailure(streamResult);
         });
 
         app.MapPost("/sessions/{sid}/escape", async (string sid) =>
@@ -1355,11 +1360,11 @@ internal static class GatewayEndpoints
                 return Results.NotFound(new { error = "session not found across any director" });
 
             // Post-cut: tunnel-only. A null result (Director not connected) collapses to 502.
-            var streamResult = await DirectorCommandRouter.TrySendAsync(sendCommand, director.DirectorId, "escape", sid, null, CancellationToken.None);
+            var streamResult = await DirectorCommandRouter.TrySendAsync(sendCommand, director.DirectorId, "escape", sid, null, CancellationToken.None, machineName: director.MachineName);
             var ok = streamResult is not null && streamResult.Ok;
             return ok
                 ? Results.Json(new { accepted = true })
-                : Results.StatusCode(StatusCodes.Status502BadGateway);
+                : TunnelFailure(streamResult);
         });
 
         // Phone image upload: the browser POSTs the image to the Gateway (its origin); we
@@ -1393,7 +1398,8 @@ internal static class GatewayEndpoints
             // non-null-but-failed step is authoritative and collapses to 502 (a retryable upload failure).
             var uploadId = Guid.NewGuid().ToString("N");
             var begin = await DirectorCommandRouter.TrySendAsync(sendCommand, director.DirectorId, "upload-image-begin", sid,
-                new UploadImageBeginRequest { UploadId = uploadId, FileName = file.FileName, TotalBytes = bytes.Length }, ctx.RequestAborted);
+                new UploadImageBeginRequest { UploadId = uploadId, FileName = file.FileName, TotalBytes = bytes.Length }, ctx.RequestAborted,
+                machineName: director.MachineName);
             if (begin is not null)
             {
                 if (!begin.Ok)
@@ -1408,13 +1414,14 @@ internal static class GatewayEndpoints
                         Seq = off / DirectorStreamLimits.UploadChunkRawBytes,
                         BytesBase64 = Convert.ToBase64String(bytes, off, len),
                     };
-                    var cr = await DirectorCommandRouter.TrySendAsync(sendCommand, director.DirectorId, "upload-image-chunk", sid, chunk, ctx.RequestAborted);
+                    var cr = await DirectorCommandRouter.TrySendAsync(sendCommand, director.DirectorId, "upload-image-chunk", sid, chunk, ctx.RequestAborted, machineName: director.MachineName);
                     if (cr is null || !cr.Ok)
                         return Results.Json(new { error = cr is null ? "tunnel dropped mid-upload" : DirectorCommandRouter.DescribeFailure(cr) }, statusCode: StatusCodes.Status502BadGateway);
                 }
 
                 var done = await DirectorCommandRouter.TrySendAsync(sendCommand, director.DirectorId, "upload-image-complete", sid,
-                    new UploadImageCompleteRequest { UploadId = uploadId }, ctx.RequestAborted);
+                    new UploadImageCompleteRequest { UploadId = uploadId }, ctx.RequestAborted,
+                    machineName: director.MachineName);
                 if (done is null || !done.Ok || string.IsNullOrEmpty(done.BodyJson))
                     return Results.Json(new { error = done is null ? "tunnel dropped mid-upload" : DirectorCommandRouter.DescribeFailure(done) }, statusCode: StatusCodes.Status502BadGateway);
 
@@ -1433,15 +1440,15 @@ internal static class GatewayEndpoints
             // Gateway Cleanup Phase 2 (PR D): ride the tunnel first (repos-list verb, director-level so SessionId
             // is ""); a null return means no stream, so fall back to the byte-identical HTTP dial. A non-Ok stream
             // result collapses to 502, exactly as the HTTP path surfaced a null.
-            var sr = await DirectorCommandRouter.TrySendAsync(sendCommand, id, "repos-list", "", null, ct);
+            var sr = await DirectorCommandRouter.TrySendAsync(sendCommand, id, "repos-list", "", null, ct, machineName: d.MachineName);
             if (sr is not null)
             {
-                if (!sr.Ok) return Results.StatusCode(StatusCodes.Status502BadGateway);
+                if (!sr.Ok) return TunnelFailure(sr);
                 return Results.Json(DirectorCommandRouter.ReadBody<List<RepositoryDto>>(sr) ?? new List<RepositoryDto>());
             }
 
-            // Post-cut: tunnel-only. A null result (Director not connected) collapses to 502.
-            return Results.StatusCode(StatusCodes.Status502BadGateway);
+            // Post-cut: tunnel-only. A null result (Director not connected) stays 502, but now says so instead of arriving as a silent bare status.
+            return TunnelFailure(null);
         });
 
         // Issue #330: pull a registered Director's machine facts (tool inventory with
@@ -1455,17 +1462,17 @@ internal static class GatewayEndpoints
             if (d is null) return Results.NotFound(new { error = "director not found" });
 
             // Gateway Cleanup Phase 2 (PR D): ride the tunnel first (facts verb, director-level).
-            var sr = await DirectorCommandRouter.TrySendAsync(sendCommand, id, "facts", "", null, ct);
+            var sr = await DirectorCommandRouter.TrySendAsync(sendCommand, id, "facts", "", null, ct, machineName: d.MachineName);
             if (sr is not null)
             {
-                if (!sr.Ok) return Results.StatusCode(StatusCodes.Status502BadGateway);
+                if (!sr.Ok) return TunnelFailure(sr);
                 var body = DirectorCommandRouter.ReadBody<DirectorFactsDto>(sr);
                 if (body is null) return Results.StatusCode(StatusCodes.Status502BadGateway);
                 return Results.Json(body);
             }
 
-            // Post-cut: tunnel-only. A null result (Director not connected) collapses to 502.
-            return Results.StatusCode(StatusCodes.Status502BadGateway);
+            // Post-cut: tunnel-only. A null result (Director not connected) stays 502, but now says so instead of arriving as a silent bare status.
+            return TunnelFailure(null);
         });
 
         // Issue #1497: the target Director's configured, enabled agents (one per kind) for the Cockpit New
@@ -1476,14 +1483,14 @@ internal static class GatewayEndpoints
             var d = registry.Get(id);
             if (d is null) return Results.NotFound(new { error = "director not found" });
 
-            var sr = await DirectorCommandRouter.TrySendAsync(sendCommand, id, "agents-list", "", null, ct);
+            var sr = await DirectorCommandRouter.TrySendAsync(sendCommand, id, "agents-list", "", null, ct, machineName: d.MachineName);
             if (sr is not null)
             {
-                if (!sr.Ok) return Results.StatusCode(StatusCodes.Status502BadGateway);
+                if (!sr.Ok) return TunnelFailure(sr);
                 return Results.Json(DirectorCommandRouter.ReadBody<List<AgentChoiceDto>>(sr) ?? new List<AgentChoiceDto>());
             }
 
-            return Results.StatusCode(StatusCodes.Status502BadGateway);
+            return TunnelFailure(null, d.MachineName);
         });
 
         app.MapPost("/directors/{id}/sessions", async (string id, NewSessionRequest req) =>
@@ -1524,15 +1531,15 @@ internal static class GatewayEndpoints
 
             // Gateway Cleanup Phase 2 (PR D): ride the tunnel first (repo-delete verb, director-level). The
             // Director core returns { removed } in its body; a non-Ok stream result collapses to 502.
-            var sr = await DirectorCommandRouter.TrySendAsync(sendCommand, id, "repo-delete", "", new RepoDeleteRequest { Path = path }, ct);
+            var sr = await DirectorCommandRouter.TrySendAsync(sendCommand, id, "repo-delete", "", new RepoDeleteRequest { Path = path }, ct, machineName: d.MachineName);
             if (sr is not null)
             {
-                if (!sr.Ok) return Results.StatusCode(StatusCodes.Status502BadGateway);
+                if (!sr.Ok) return TunnelFailure(sr);
                 return Results.Content(sr.BodyJson ?? "{\"removed\":false}", "application/json");
             }
 
-            // Post-cut: tunnel-only. A null result (Director not connected) collapses to 502.
-            return Results.StatusCode(StatusCodes.Status502BadGateway);
+            // Post-cut: tunnel-only. A null result (Director not connected) stays 502, but now says so instead of arriving as a silent bare status.
+            return TunnelFailure(null);
         });
 
         // Gateway Cleanup CUT RESTORATION (SB-4a): register a repository explicitly in the recent list. Rides
@@ -1545,7 +1552,7 @@ internal static class GatewayEndpoints
             if (d is null) return Results.NotFound(new { error = "director not found" });
             if (req is null || string.IsNullOrWhiteSpace(req.Path)) return Results.BadRequest(new { error = "path is required" });
 
-            var sr = await DirectorCommandRouter.TrySendAsync(sendCommand, id, "repo-add", "", req, ct);
+            var sr = await DirectorCommandRouter.TrySendAsync(sendCommand, id, "repo-add", "", req, ct, machineName: d.MachineName);
             if (sr is null || !sr.Ok) return MapDirectorFailure(sr);
             var body = DirectorCommandRouter.ReadBody<RepoAddResponse>(sr);
             if (body is null) return Results.StatusCode(StatusCodes.Status502BadGateway);
@@ -1562,7 +1569,7 @@ internal static class GatewayEndpoints
             if (req is null || string.IsNullOrWhiteSpace(req.Path)) return Results.BadRequest(new { error = "path is required" });
             if (string.IsNullOrWhiteSpace(req.Name)) return Results.BadRequest(new { error = "name is required" });
 
-            var sr = await DirectorCommandRouter.TrySendAsync(sendCommand, id, "repo-rename", "", req, ct);
+            var sr = await DirectorCommandRouter.TrySendAsync(sendCommand, id, "repo-rename", "", req, ct, machineName: d.MachineName);
             if (sr is null || !sr.Ok) return MapDirectorFailure(sr);
             var body = DirectorCommandRouter.ReadBody<RepositoryDto>(sr);
             if (body is null) return Results.StatusCode(StatusCodes.Status502BadGateway);
@@ -1576,7 +1583,7 @@ internal static class GatewayEndpoints
             var d = registry.Get(id);
             if (d is null) return Results.NotFound(new { error = "director not found" });
 
-            var sr = await DirectorCommandRouter.TrySendAsync(sendCommand, id, "repos-overview", "", null, ct);
+            var sr = await DirectorCommandRouter.TrySendAsync(sendCommand, id, "repos-overview", "", null, ct, machineName: d.MachineName);
             if (sr is null || !sr.Ok) return MapDirectorFailure(sr);
             return Results.Json(DirectorCommandRouter.ReadBody<List<RepoOverviewDto>>(sr) ?? new List<RepoOverviewDto>());
         });
@@ -1587,15 +1594,15 @@ internal static class GatewayEndpoints
             if (d is null) return Results.NotFound(new { error = "director not found" });
 
             // Gateway Cleanup Phase 2 (PR D): ride the tunnel first (coaching-categories verb, director-level).
-            var sr = await DirectorCommandRouter.TrySendAsync(sendCommand, id, "coaching-categories", "", null, ct);
+            var sr = await DirectorCommandRouter.TrySendAsync(sendCommand, id, "coaching-categories", "", null, ct, machineName: d.MachineName);
             if (sr is not null)
             {
-                if (!sr.Ok) return Results.StatusCode(StatusCodes.Status502BadGateway);
+                if (!sr.Ok) return TunnelFailure(sr);
                 return Results.Json(DirectorCommandRouter.ReadBody<List<CoachingCategoryDto>>(sr) ?? new List<CoachingCategoryDto>());
             }
 
-            // Post-cut: tunnel-only. A null result (Director not connected) collapses to 502.
-            return Results.StatusCode(StatusCodes.Status502BadGateway);
+            // Post-cut: tunnel-only. A null result (Director not connected) stays 502, but now says so instead of arriving as a silent bare status.
+            return TunnelFailure(null);
         });
 
         app.MapGet("/directors/{id}/claude-sessions", async (string id, CancellationToken ct) =>
@@ -1605,15 +1612,15 @@ internal static class GatewayEndpoints
 
             // Gateway Cleanup Phase 2 (PR D): ride the tunnel first (claude-sessions verb, director-level; no
             // repo filter on this route, so the payload is empty).
-            var sr = await DirectorCommandRouter.TrySendAsync(sendCommand, id, "claude-sessions", "", null, ct);
+            var sr = await DirectorCommandRouter.TrySendAsync(sendCommand, id, "claude-sessions", "", null, ct, machineName: d.MachineName);
             if (sr is not null)
             {
-                if (!sr.Ok) return Results.StatusCode(StatusCodes.Status502BadGateway);
+                if (!sr.Ok) return TunnelFailure(sr);
                 return Results.Json(DirectorCommandRouter.ReadBody<List<ClaudeSessionDto>>(sr) ?? new List<ClaudeSessionDto>());
             }
 
-            // Post-cut: tunnel-only. A null result (Director not connected) collapses to 502.
-            return Results.StatusCode(StatusCodes.Status502BadGateway);
+            // Post-cut: tunnel-only. A null result (Director not connected) stays 502, but now says so instead of arriving as a silent bare status.
+            return TunnelFailure(null);
         });
 
         app.MapGet("/directors/{id}/handovers", async (string id, CancellationToken ct) =>
@@ -1623,15 +1630,15 @@ internal static class GatewayEndpoints
 
             // Gateway Cleanup Phase 2 (PR D): ride the tunnel first (handovers-list verb, director-level; this
             // route has no repo filter, so the payload is empty).
-            var sr = await DirectorCommandRouter.TrySendAsync(sendCommand, id, "handovers-list", "", null, ct);
+            var sr = await DirectorCommandRouter.TrySendAsync(sendCommand, id, "handovers-list", "", null, ct, machineName: d.MachineName);
             if (sr is not null)
             {
-                if (!sr.Ok) return Results.StatusCode(StatusCodes.Status502BadGateway);
+                if (!sr.Ok) return TunnelFailure(sr);
                 return Results.Json(DirectorCommandRouter.ReadBody<List<HandoverDto>>(sr) ?? new List<HandoverDto>());
             }
 
-            // Post-cut: tunnel-only. A null result (Director not connected) collapses to 502.
-            return Results.StatusCode(StatusCodes.Status502BadGateway);
+            // Post-cut: tunnel-only. A null result (Director not connected) stays 502, but now says so instead of arriving as a silent bare status.
+            return TunnelFailure(null);
         });
 
         app.MapGet("/directors/{id}/handovers/content", async (string id, string? path, CancellationToken ct) =>
@@ -1642,17 +1649,17 @@ internal static class GatewayEndpoints
 
             // Gateway Cleanup Phase 2 (PR D): ride the tunnel first (handovers-content verb, director-level; the
             // ?path query rides in the payload). A non-Ok stream result collapses to 502, matching the HTTP null.
-            var sr = await DirectorCommandRouter.TrySendAsync(sendCommand, id, "handovers-content", "", new HandoverContentRequest { Path = path }, ct);
+            var sr = await DirectorCommandRouter.TrySendAsync(sendCommand, id, "handovers-content", "", new HandoverContentRequest { Path = path }, ct, machineName: d.MachineName);
             if (sr is not null)
             {
-                if (!sr.Ok) return Results.StatusCode(StatusCodes.Status502BadGateway);
+                if (!sr.Ok) return TunnelFailure(sr);
                 var body = DirectorCommandRouter.ReadBody<HandoverContentDto>(sr);
                 if (body is null) return Results.StatusCode(StatusCodes.Status502BadGateway);
                 return Results.Json(body);
             }
 
-            // Post-cut: tunnel-only. A null result (Director not connected) collapses to 502.
-            return Results.StatusCode(StatusCodes.Status502BadGateway);
+            // Post-cut: tunnel-only. A null result (Director not connected) stays 502, but now says so instead of arriving as a silent bare status.
+            return TunnelFailure(null);
         });
 
         // Gateway Cleanup CUT RESTORATION (SB-4a): create a standalone saved-handover document. Rides the
@@ -1665,7 +1672,7 @@ internal static class GatewayEndpoints
             if (req is null || string.IsNullOrWhiteSpace(req.Title)) return Results.BadRequest(new { error = "title is required" });
             if (string.IsNullOrWhiteSpace(req.Content)) return Results.BadRequest(new { error = "content is required" });
 
-            var sr = await DirectorCommandRouter.TrySendAsync(sendCommand, id, "handover-create", "", req, ct);
+            var sr = await DirectorCommandRouter.TrySendAsync(sendCommand, id, "handover-create", "", req, ct, machineName: d.MachineName);
             if (sr is null || !sr.Ok) return MapDirectorFailure(sr);
             var body = DirectorCommandRouter.ReadBody<HandoverDto>(sr);
             if (body is null) return Results.StatusCode(StatusCodes.Status502BadGateway);
@@ -1682,7 +1689,7 @@ internal static class GatewayEndpoints
             if (d is null) return Results.NotFound(new { error = "director not found" });
             if (string.IsNullOrWhiteSpace(path)) return Results.BadRequest(new { error = "path is required" });
 
-            var sr = await DirectorCommandRouter.TrySendAsync(sendCommand, id, "handover-delete", "", new RepoDeleteRequest { Path = path }, ct);
+            var sr = await DirectorCommandRouter.TrySendAsync(sendCommand, id, "handover-delete", "", new RepoDeleteRequest { Path = path }, ct, machineName: d.MachineName);
             if (sr is null || !sr.Ok) return MapDirectorFailure(sr);
             return Results.Content(sr.BodyJson ?? "{\"removed\":true}", "application/json");
         });
@@ -1695,17 +1702,17 @@ internal static class GatewayEndpoints
             // Gateway Cleanup Phase 2 (PR D): ride the tunnel first (fs-list verb, director-level; the ?path
             // query rides in the payload). A non-Ok stream result (e.g. the Director core's bad-path BadRequest)
             // collapses to 502, exactly as the HTTP path surfaced a null.
-            var sr = await DirectorCommandRouter.TrySendAsync(sendCommand, id, "fs-list", "", new FsListRequest { Path = path }, ct);
+            var sr = await DirectorCommandRouter.TrySendAsync(sendCommand, id, "fs-list", "", new FsListRequest { Path = path }, ct, machineName: d.MachineName);
             if (sr is not null)
             {
-                if (!sr.Ok) return Results.StatusCode(StatusCodes.Status502BadGateway);
+                if (!sr.Ok) return TunnelFailure(sr);
                 var body = DirectorCommandRouter.ReadBody<DirectoryListingDto>(sr);
                 if (body is null) return Results.StatusCode(StatusCodes.Status502BadGateway);
                 return Results.Json(body);
             }
 
-            // Post-cut: tunnel-only. A null result (Director not connected) collapses to 502.
-            return Results.StatusCode(StatusCodes.Status502BadGateway);
+            // Post-cut: tunnel-only. A null result (Director not connected) stays 502, but now says so instead of arriving as a silent bare status.
+            return TunnelFailure(null);
         });
 
         app.MapPost("/directors/{id}/sessions/github", async (string id, GitHubSessionRequest req) =>
@@ -1815,7 +1822,7 @@ internal static class GatewayEndpoints
             // director-level so SessionId is ""), tunnel-first; a null return falls back to the byte-identical
             // HTTP dial. POST /shutdown stays on the Director loopback floor for the local launcher; this tunnel
             // verb triggers the same in-process self-shutdown. Post-cut the HTTP arm is removed.
-            var shutdownSr = await DirectorCommandRouter.TrySendAsync(sendCommand, director.DirectorId, "shutdown", "", null, CancellationToken.None);
+            var shutdownSr = await DirectorCommandRouter.TrySendAsync(sendCommand, director.DirectorId, "shutdown", "", null, CancellationToken.None, machineName: director.MachineName);
             var ok = shutdownSr is not null && shutdownSr.Ok;
             if (ok)
             {
@@ -1855,10 +1862,10 @@ internal static class GatewayEndpoints
             if (director is null)
                 return Results.NotFound(new { error = "session not found across any director" });
             // Post-cut: tunnel-only. A null result (Director not connected) collapses to 502.
-            var streamResult = await DirectorCommandRouter.TrySendAsync(sendCommand, director.DirectorId, "summary", sid, null, ct);
+            var streamResult = await DirectorCommandRouter.TrySendAsync(sendCommand, director.DirectorId, "summary", sid, null, ct, machineName: director.MachineName);
             return streamResult is not null && streamResult.Ok && !string.IsNullOrEmpty(streamResult.BodyJson)
                 ? Results.Content(streamResult.BodyJson, "application/json")
-                : Results.StatusCode(StatusCodes.Status502BadGateway);
+                : TunnelFailure(streamResult);
         });
 
         // Read-only source-control snapshot proxy (issue #1266): forwards to whichever Director owns the
@@ -1881,10 +1888,10 @@ internal static class GatewayEndpoints
             // Gateway Cleanup (Phase 2, PR C): tunnel-first (verb "git-status"); a null return falls back to the
             // HTTP dial below, byte-identical. The Ok body IS the GitSnapshot JSON, passed through unchanged.
             // Post-cut: tunnel-only. A null result (Director not connected) collapses to 502.
-            var streamResult = await DirectorCommandRouter.TrySendAsync(sendCommand, director.DirectorId, "git-status", sid, null, ctx.RequestAborted);
+            var streamResult = await DirectorCommandRouter.TrySendAsync(sendCommand, director.DirectorId, "git-status", sid, null, ctx.RequestAborted, machineName: director.MachineName);
             return streamResult is not null && streamResult.Ok && !string.IsNullOrEmpty(streamResult.BodyJson)
                 ? Results.Content(streamResult.BodyJson, "application/json")
-                : Results.StatusCode(StatusCodes.Status502BadGateway);
+                : TunnelFailure(streamResult);
         });
 
         // Handover info proxy (issue #1214). Forwards to whichever Director owns the session and returns
@@ -1903,10 +1910,10 @@ internal static class GatewayEndpoints
             // Gateway Cleanup (Phase 2, PR C): tunnel-first; a null return falls back to the HTTP dial below,
             // byte-identical. The Director's handover core sets DirectorId in its body, so the pass-through matches.
             // Post-cut: tunnel-only. A null result (Director not connected) collapses to 502.
-            var streamResult = await DirectorCommandRouter.TrySendAsync(sendCommand, director.DirectorId, "handover", sid, null, ct);
+            var streamResult = await DirectorCommandRouter.TrySendAsync(sendCommand, director.DirectorId, "handover", sid, null, ct, machineName: director.MachineName);
             return streamResult is not null && streamResult.Ok && !string.IsNullOrEmpty(streamResult.BodyJson)
                 ? Results.Content(streamResult.BodyJson, "application/json")
-                : Results.StatusCode(StatusCodes.Status502BadGateway);
+                : TunnelFailure(streamResult);
         });
 
         // Recap proxy. Both endpoints transparently forward to whichever Director owns the
@@ -1920,10 +1927,10 @@ internal static class GatewayEndpoints
             // Gateway Cleanup (Phase 2, PR C): tunnel-first (read the cached recap); a null return falls back to
             // the HTTP dial below, byte-identical. This is the READ; the slow generate (POST) is handled separately.
             // Post-cut: tunnel-only. A null result (Director not connected) collapses to 502.
-            var streamResult = await DirectorCommandRouter.TrySendAsync(sendCommand, director.DirectorId, "recap", sid, null, ct);
+            var streamResult = await DirectorCommandRouter.TrySendAsync(sendCommand, director.DirectorId, "recap", sid, null, ct, machineName: director.MachineName);
             return streamResult is not null && streamResult.Ok && !string.IsNullOrEmpty(streamResult.BodyJson)
                 ? Results.Content(streamResult.BodyJson, "application/json")
-                : Results.StatusCode(StatusCodes.Status502BadGateway);
+                : TunnelFailure(streamResult);
         });
 
         app.MapPost("/sessions/{sid}/recap", async (string sid, HttpContext ctx) =>
@@ -1939,7 +1946,9 @@ internal static class GatewayEndpoints
             // return falls back to the HTTP dial below. The Ok body IS the RecapResponse JSON, returned 201 as before.
             // Post-cut: tunnel-only. A null result (Director not connected) collapses to 502.
             var streamResult = await DirectorCommandRouter.TrySendAsync(sendCommand, director.DirectorId, "recap-generate", sid,
-                new RecapGenerateRequest { Model = model }, ctx.RequestAborted);
+                new RecapGenerateRequest { Model = model }, ctx.RequestAborted,
+                // Runs a language model on the Director before it can answer, so it gets the longer wait.
+                timeout: DirectorCommandRouter.LanguageModelCommandTimeout, machineName: director.MachineName);
             return streamResult is not null && streamResult.Ok && !string.IsNullOrEmpty(streamResult.BodyJson)
                 ? Results.Content(streamResult.BodyJson, "application/json", null, StatusCodes.Status201Created)
                 : Results.Problem("recap failed", statusCode: StatusCodes.Status502BadGateway);
@@ -1979,7 +1988,9 @@ internal static class GatewayEndpoints
                 // (handover-generate verb, director-level so SessionId is ""); a null return falls back to the
                 // byte-identical HTTP proxy. A non-Ok stream result collapses to 502 exactly as the HTTP null did.
                 HandoverResponse? body; string? err;
-                var hgSr = await DirectorCommandRouter.TrySendAsync(sendCommand, sourceDirector.DirectorId, "handover-generate", "", req, CancellationToken.None);
+                // Runs a language model on the Director before it can answer, so it gets the longer wait.
+                var hgSr = await DirectorCommandRouter.TrySendAsync(sendCommand, sourceDirector.DirectorId, "handover-generate", "", req, CancellationToken.None,
+                    timeout: DirectorCommandRouter.LanguageModelCommandTimeout, machineName: sourceDirector.MachineName);
                 if (hgSr is null)
                 {
                     body = null; err = "source director not connected to the tunnel";
@@ -2021,7 +2032,7 @@ internal static class GatewayEndpoints
             // Gateway Cleanup Phase 2: create the target over the tunnel (create verb, director-level), tunnel-first;
             // the dedicated 20s HTTP client is the fallback pre-cut (the tunnel unary has no 2s aggregate timeout).
             // Post-cut: tunnel-only. A null result means the target Director is not connected -> 502.
-            var spawnSr = await DirectorCommandRouter.TrySendAsync(sendCommand, targetDirector.DirectorId, "create", "", spawnReq, CancellationToken.None);
+            var spawnSr = await DirectorCommandRouter.TrySendAsync(sendCommand, targetDirector.DirectorId, "create", "", spawnReq, CancellationToken.None, machineName: targetDirector.MachineName);
             if (spawnSr is null)
                 return Results.Problem("target director is not connected to the tunnel", statusCode: 502);
             if (!spawnSr.Ok)
@@ -2145,7 +2156,7 @@ internal static class GatewayEndpoints
                 // Gateway Cleanup Phase 2: fanout delivery rides the tunnel (prompt verb, tunnel-first);
                 // a null return falls back to the byte-identical HTTP dial. Post-cut the HTTP arm is removed.
                 bool ok; PromptResponse? body; string? err;
-                var deliverSr = await DirectorCommandRouter.TrySendAsync(sendCommand, director.DirectorId, "prompt", sid, promptReq, CancellationToken.None);
+                var deliverSr = await DirectorCommandRouter.TrySendAsync(sendCommand, director.DirectorId, "prompt", sid, promptReq, CancellationToken.None, machineName: director.MachineName);
                 if (deliverSr is null)
                 {
                     ok = false; body = null; err = "director not connected to the tunnel";
@@ -2394,13 +2405,58 @@ internal static class GatewayEndpoints
     // failure preserves the executor's BadRequest/NotFound as 400/404 so the repos/handover-management contract
     // - which the consumers and the re-added tests assert - is byte-identical to the pre-cut REST surface. Any
     // other status collapses to 502. Callers use this only on the not-Ok path (sr is null OR !sr.Ok).
+    //
+    // Stable Release (v1.3.0), Tier 1 item 1: the two Gateway-synthesized outcomes get their own arms, and both
+    // carry the message in the BODY. Without these arms they would fall into the bare collapse below - which
+    // sends no body at all - and the explanation the whole item exists to deliver would be silently dropped one
+    // line before reaching the caller. The Director-sent statuses above and the collapse below are untouched, so
+    // the byte-identical pre-cut contract still holds for every status that existed before.
+    // Stable Release (v1.3.0), Tier 1 item 1: the message-preserving twin of MapDirectorFailure, for the many
+    // endpoints that answer a failed tunnel command with a BARE 502 carrying no body at all.
+    //
+    // The router now explains every dropped command, but an endpoint that throws the explanation away leaves the
+    // user staring at a naked 502 - so the fix would compute a perfect message nobody ever reads. This carries
+    // the body for the three outcomes that have something to say, and changes NOTHING else:
+    //   - not connected     -> 502 (unchanged status) + "the Director is offline"
+    //   - timed out         -> 504 + the router's message
+    //   - dropped mid-flight-> 502 (unchanged status) + the router's message
+    //   - any other status  -> the exact bare 502 it returns today, byte-for-byte
+    // Deliberately NOT MapDirectorFailure: that maps BadRequest/NotFound to 400/404, and these call sites ship
+    // a 502 for those today. Changing that is a contract change and belongs to a different piece of work.
+    private static IResult TunnelFailure(DirectorCommandResult? sr, string? machineName = null)
+    {
+        if (sr is null)
+        {
+            var offline = string.IsNullOrWhiteSpace(machineName)
+                ? "The Director is not connected right now, so the command was not delivered."
+                : $"The Director on {machineName} is not connected right now, so the command was not delivered.";
+            return Results.Json(new { error = offline }, statusCode: StatusCodes.Status502BadGateway);
+        }
+        return sr.Status switch
+        {
+            DirectorCommandStatus.Timeout => Results.Json(new { error = sr.Error },
+                statusCode: StatusCodes.Status504GatewayTimeout),
+            DirectorCommandStatus.TunnelDropped => Results.Json(new { error = sr.Error },
+                statusCode: StatusCodes.Status502BadGateway),
+            _ => Results.StatusCode(StatusCodes.Status502BadGateway),
+        };
+    }
+
     private static IResult MapDirectorFailure(DirectorCommandResult? sr)
     {
-        if (sr is null) return Results.StatusCode(StatusCodes.Status502BadGateway);
+        // The Director is not tunnel-connected. The status stays 502 - no contract moves - but it now says why
+        // instead of arriving as a silent bare status the user cannot act on.
+        if (sr is null)
+            return Results.Json(new { error = "The Director is not connected right now, so the command was not delivered." },
+                statusCode: StatusCodes.Status502BadGateway);
         return sr.Status switch
         {
             DirectorCommandStatus.BadRequest => Results.BadRequest(new { error = sr.Error ?? "bad request" }),
             DirectorCommandStatus.NotFound => Results.NotFound(new { error = sr.Error ?? "not found" }),
+            DirectorCommandStatus.Timeout => Results.Json(new { error = sr.Error ?? "The Director did not answer in time." },
+                statusCode: StatusCodes.Status504GatewayTimeout),
+            DirectorCommandStatus.TunnelDropped => Results.Json(new { error = sr.Error ?? "The connection to the Director dropped while the command was being sent." },
+                statusCode: StatusCodes.Status502BadGateway),
             _ => Results.StatusCode(StatusCodes.Status502BadGateway),
         };
     }
@@ -2427,7 +2483,7 @@ internal static class GatewayEndpoints
         DirectorCommandRouter.SendDirectorCommandAsync? sendCommand,
         DirectorDto director, string sid, CancellationToken ct)
     {
-        var sr = await DirectorCommandRouter.TrySendAsync(sendCommand, director.DirectorId, "snapshot", sid, null, ct);
+        var sr = await DirectorCommandRouter.TrySendAsync(sendCommand, director.DirectorId, "snapshot", sid, null, ct, machineName: director.MachineName);
         return sr is not null && sr.Ok ? DirectorCommandRouter.ReadBody<SessionDto>(sr) : null;
     }
 
@@ -2436,7 +2492,8 @@ internal static class GatewayEndpoints
         DirectorDto director, string sid, int lines, long? since, CancellationToken ct)
     {
         var sr = await DirectorCommandRouter.TrySendAsync(sendCommand, director.DirectorId, "buffer", sid,
-            new BufferRequest { Lines = lines, Raw = false, Since = since }, ct);
+            new BufferRequest { Lines = lines, Raw = false, Since = since }, ct,
+            machineName: director.MachineName);
         return sr is not null && sr.Ok ? DirectorCommandRouter.ReadBody<BufferResponse>(sr) : null;
     }
 

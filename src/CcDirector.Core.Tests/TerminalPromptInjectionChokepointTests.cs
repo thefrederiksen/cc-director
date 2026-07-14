@@ -92,7 +92,11 @@ public sealed class TerminalPromptInjectionChokepointTests
         Assert.Contains("session.SendInput(bytes);", writeExec);
 
         // The Gateway prompt route submits over the tunnel prompt verb, never raw input.
-        Assert.Contains("DirectorCommandRouter.TrySendAsync(sendCommand, director.DirectorId, \"prompt\", sid, req, CancellationToken.None)", gateway);
+        // Matched WITHOUT the closing parenthesis: the guarded invariant is "the prompt verb carries req through
+        // the router", not the exact argument count. Stable Release (v1.3.0) added a trailing machineName so the
+        // timeout message can name the Director, and pinning the closing parenthesis made that read as a broken
+        // chokepoint. The verb, the payload and the route through the router are what must not drift.
+        Assert.Contains("DirectorCommandRouter.TrySendAsync(sendCommand, director.DirectorId, \"prompt\", sid, req, CancellationToken.None", gateway);
     }
 
     [Fact]

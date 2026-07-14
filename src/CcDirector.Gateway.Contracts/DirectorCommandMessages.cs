@@ -44,6 +44,22 @@ public enum DirectorCommandStatus
     /// HTTP 423 Locked - the same status/message the Gateway front door returns (issue #1188).
     /// </summary>
     Locked = 5,
+
+    /// <summary>
+    /// The Director was tunnel-connected but did not answer the command in time, so the Gateway gave up
+    /// waiting. Unlike every status above, this outcome is synthesized by the GATEWAY - no reply ever came -
+    /// so the Director never sends it. The REST layer maps it to HTTP 504 Gateway Timeout and carries the
+    /// message verbatim, because a dropped command must explain itself rather than hang forever.
+    /// </summary>
+    Timeout = 6,
+
+    /// <summary>
+    /// The tunnel dropped while the command was in flight - the send threw rather than returning a reply.
+    /// Like <see cref="Timeout"/> this is synthesized by the GATEWAY, never sent by the Director. The REST
+    /// layer maps it to HTTP 502 Bad Gateway and carries the message verbatim; before this existed the
+    /// exception escaped uncaught and the caller saw a raw 500 with no explanation.
+    /// </summary>
+    TunnelDropped = 7,
 }
 
 /// <summary>

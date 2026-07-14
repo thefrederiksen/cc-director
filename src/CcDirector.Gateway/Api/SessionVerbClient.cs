@@ -65,7 +65,8 @@ internal sealed class SessionVerbClient
     /// a failed or absent tunnel result maps to null (owning Director not connected = unreachable).</summary>
     public async Task<TurnsResponse?> GetTurnsAsync(string sid, CancellationToken ct = default)
     {
-        var result = await DirectorCommandRouter.TrySendAsync(_sendCommand, _director.DirectorId, "turns", sid, null, ct);
+        var result = await DirectorCommandRouter.TrySendAsync(_sendCommand, _director.DirectorId, "turns", sid, null, ct,
+            machineName: _director.MachineName);
         return result is not null && result.Ok ? DirectorCommandRouter.ReadBody<TurnsResponse>(result) : null;
     }
 
@@ -74,7 +75,8 @@ internal sealed class SessionVerbClient
     public async Task<BufferResponse?> GetBufferAsync(string sid, int? lines, bool raw, long? since, CancellationToken ct = default)
     {
         var result = await DirectorCommandRouter.TrySendAsync(_sendCommand, _director.DirectorId, "buffer", sid,
-            new BufferRequest { Lines = lines, Raw = raw, Since = since }, ct);
+            new BufferRequest { Lines = lines, Raw = raw, Since = since }, ct,
+            machineName: _director.MachineName);
         return result is not null && result.Ok ? DirectorCommandRouter.ReadBody<BufferResponse>(result) : null;
     }
 
@@ -84,7 +86,8 @@ internal sealed class SessionVerbClient
     public async Task<(bool ok, PromptResponse? body, string? error)> PostPromptAsync(
         string sid, PromptRequest req, CancellationToken ct = default)
     {
-        var result = await DirectorCommandRouter.TrySendAsync(_sendCommand, _director.DirectorId, "prompt", sid, req, ct);
+        var result = await DirectorCommandRouter.TrySendAsync(_sendCommand, _director.DirectorId, "prompt", sid, req, ct,
+            machineName: _director.MachineName);
         if (result is null)
             return (false, null, "owning Director is not connected to the tunnel");
         return result.Ok
@@ -101,7 +104,8 @@ internal sealed class SessionVerbClient
     public async Task<(bool ok, SessionDto? body, string? error)> CreateSessionAsync(
         NewSessionRequest req, CancellationToken ct = default)
     {
-        var result = await DirectorCommandRouter.TrySendAsync(_sendCommand, _director.DirectorId, "create", "", req, ct);
+        var result = await DirectorCommandRouter.TrySendAsync(_sendCommand, _director.DirectorId, "create", "", req, ct,
+            machineName: _director.MachineName);
         if (result is null)
             return (false, null, "owning Director is not connected to the tunnel");
         return result.Ok

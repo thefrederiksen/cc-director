@@ -178,6 +178,9 @@ internal static class SessionWsProxyEndpoints
         {
             DirectorCommandStatus.NotFound => StatusCodes.Status404NotFound,
             DirectorCommandStatus.BadRequest => StatusCodes.Status400BadRequest,
+            // Stable Release (v1.3.0), Tier 1 item 1: a timeout is its own outcome, not the generic 502 the
+            // collapse below gives every other failure. The drop stays 502, but now says so in the body.
+            DirectorCommandStatus.Timeout => StatusCodes.Status504GatewayTimeout,
             _ => StatusCodes.Status502BadGateway,
         };
         FileLog.Write($"[SessionWsProxy] {verb} -> {code} ({result.Status} {result.Error})");

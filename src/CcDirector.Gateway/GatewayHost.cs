@@ -1751,9 +1751,16 @@ public sealed class GatewayHost : IAsyncDisposable
     /// <summary>
     /// Issue #1177 (Phase 1): send a command DOWN a Director's stream and await its result over the SAME
     /// connection (SignalR client results), modeled exactly on <see cref="PingDirectorAsync"/>. Returns
-    /// null when that Director has no active stream connection (or the hub is unavailable), which the
-    /// caller treats as "no stream" and falls back to the HTTP command path. Any non-null result - success
-    /// OR a typed failure - means the stream handled the command and its outcome is authoritative.
+    /// null when that Director has no active stream connection (or the hub is unavailable). Gateway Cleanup
+    /// (the cut) made the tunnel MANDATORY and deleted the HTTP command path, so null means the command is
+    /// UNROUTABLE and the caller surfaces it as a 502 - there is nothing to fall back to. Any non-null
+    /// result - success OR a typed failure - means the stream handled the command and its outcome is
+    /// authoritative.
+    ///
+    /// This does not bound its own wait. The wait lives at the ONE chokepoint every command routes through,
+    /// <c>DirectorCommandRouter.TrySendAsync</c>, which passes a token already linked to its timeout - so a
+    /// Director that holds the tunnel open and answers nothing cancels the InvokeAsync below rather than
+    /// hanging forever. Do not add a second timeout here; two would drift.
     /// </summary>
     public async Task<DirectorCommandResult?> SendCommandAsync(string directorId, DirectorCommand command, CancellationToken ct = default)
     {
