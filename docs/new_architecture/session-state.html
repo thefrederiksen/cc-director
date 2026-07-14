@@ -561,18 +561,17 @@ record. The mistake is that <strong>one flag is answering two different question
 <p>The colour is currently driven by the answer to question 1. So any upload that never reaches a terminal
 state leaves the session orange indefinitely, reading "Uploading from phone" about an upload that is not
 happening.</p>
-<p><strong>And the likeliest cause is not a dying phone - it is running out of credits.</strong>
-<span class="file">GatewayDictationEndpoint.cs:277-290</span>: when transcription returns
-<code>OutOfCredits</code>, or any retryable error, the handler returns the outcome to the client
-<em>without</em> marking the record <code>Delivered</code>, <code>Abandoned</code> or <code>Failed</code>.
-Only <code>PermanentError</code> parks the record (<code>MarkFailed</code>). So the record stays
-<code>Pending</code>, the session stays locked, and the dot stays orange - after a completed upload that
-reached the server, was understood, and simply could not be paid for. The active-transcription mark
-clears in its <code>finally</code> (<span class="file">:429-433</span>), so the label even
-<em>degrades</em> from the honest "Transcribing" back to "Uploading from phone" - describing an upload
-that finished minutes ago.</p>
-<p>The phone-dies-mid-upload case is real but rare. <strong>The out-of-credits case is ordinary, and it
-is almost certainly what you have been seeing.</strong></p>
+<p><strong>Which path actually fires in practice is NOT KNOWN, and this document does not guess.</strong>
+Reading the code tells us which paths CAN leave a record non-terminal
+(<span class="file">GatewayDictationEndpoint.cs:277-290</span>: <code>OutOfCredits</code> and any retryable
+error both return without a terminal write; only <code>PermanentError</code> parks the record). It does
+not tell us which one produced any orange dot anyone has actually seen. Nobody has looked at a real
+wedged record yet.</p>
+<p><strong>To diagnose it, look - do not reason.</strong> The durable records are on disk on the Gateway:
+enumerate the <code>Pending</code> ones, read their age and their session id, and check the Gateway log for
+the outcome that was returned when each one completed. That is a five-minute answer from evidence. Any
+claim about the cause that is not backed by one of those records is a guess, and a guess written into this
+document is exactly the disease this document exists to cure.</p>
 </div>
 
 <p><strong>Today's fix already removes the common case.</strong> The normal dictation path ends with the
@@ -620,7 +619,7 @@ shipped this morning.</p>
 <tr><td>A sub-agent needs someone but its controller has died</td><td class="good">Red - it surfaces to you (the escape hatch)</td><td class="good">Unchanged.</td></tr>
 <tr><td>A snoozed session exits</td><td class="bad">Reads "Snoozed" forever - the dead session hides behind the label</td><td class="bad">Unchanged. <strong>Defect 21, open.</strong> Exit clears a deferred hold but not a landed one.</td></tr>
 <tr><td>The Director restarts while sessions are snoozed</td><td class="bad">Every snooze is forgotten; every deferral is lost</td><td class="bad">Unchanged. <strong>Defect 22, open</strong> - hold state is runtime-only.</td></tr>
-<tr><td>You dictate and the Gateway is out of credits</td><td class="bad">Orange forever, reading "Uploading from phone"</td><td class="bad">Unchanged. <strong>Defect 19, open</strong> - and this is the likely everyday cause of the wedged orange.</td></tr>
+<tr><td>A dictation reaches no terminal state (any cause)</td><td class="bad">Orange forever, reading "Uploading from phone"</td><td class="bad">Unchanged. <strong>Defect 19, open.</strong> The mechanism is known; which path fires in practice is undiagnosed.</td></tr>
 <tr><td>A session is flagged for deletion</td><td class="bad">Director paints it grey locally; Gateway clients still show red/blue</td><td class="bad">Unchanged. <strong>Defect 23, open</strong> - the fold ignores <code>PendingDeletion</code> and the Director writes a colour it is not allowed to write.</td></tr>
 <tr><td>A session crashes mid-turn</td><td class="bad">Looks identical to a clean exit</td><td class="bad">Unchanged. <strong>Defect 4, open</strong> - the fold cannot return "error".</td></tr>
 </table>
@@ -679,7 +678,7 @@ or its own hold expiry, so it cannot compute its own colour. It must ask.</p>
 <tr><td><strong>22</strong></td><td><strong>The hold state is not persisted, so a Director restart silently forgets every snooze.</strong> <code>HoldState</code> is runtime-only - <span class="file">SessionStateStore.cs</span> stores no hold at all. Restart the Director and every <code>Held</code> session comes back un-held, and every <code>DeferredHold</code> ("park me when this finishes") is forgotten - the work finishes and the session never parks. The Gateway's timer entry may still exist, now pointing at a session that is not held. Note this partially <em>masks</em> defect 20: a restart is currently the only thing that clears a timer-less permanent snooze.</td><td><span class="file">SessionStateStore.cs:10-102</span>; <span class="file">SessionManager.cs:1161-1182</span>; <span class="file">Session.cs:563-573</span></td></tr>
 <tr><td><strong>21</strong></td><td><strong>A snoozed session that exits reads "Snoozed" forever, not "Exited" - and the code that prevents this only covers the deferred case.</strong> On exit, <span class="file">Session.cs:1918-1923</span> clears a <code>DeferredHold</code> with the comment <em>"parking a dead session would just hide it behind a 'Snoozed' label forever"</em>. That reasoning is exactly right - and it is not applied to a session that is already <code>Held</code>. A held session that exits keeps <code>OnHold=true</code>, so the fold checks <code>OnHold</code> first and labels it "Snoozed". The dead session hides behind the Snoozed label forever, which is the outcome the neighbouring comment forbids. Either clear <code>Held</code> on exit, or let Exited/Crashed outrank <code>OnHold</code> in the fold. <strong class="good">DECIDED 14 July 2026: it reads Exited.</strong> A dead session must never hide behind a Snoozed label.</td><td><span class="file">Session.cs:1918-1923</span>; <span class="file">SessionOrdering.cs</span> (<code>OnHold</code> before <code>BaseColor</code>)</td></tr>
 <tr><td><strong>20</strong></td><td><strong class="bad">A deferred snooze loses its timer within 15 seconds, so an agent-requested snooze NEVER EXPIRES.</strong> The most serious open defect, and it breaks two of the owner's rules at once. Walk it: you (or the agent) press Snooze while the agent is working. The Director correctly enters <code>DeferredHold</code> - "park me when this turn ends" - and <code>DeferredHold</code> reports <code>OnHold=false</code>, because it is not parked yet. The Gateway records a 12-hour timer regardless. Fifteen seconds later the expiry sweep asks the Director "is this session held?", is told <em>no</em> (it is deferred, not held), concludes the snooze is over, and <strong>deletes the timer</strong>. The turn then ends, the Director lands <code>DeferredHold &rarr; Held</code>, and the session is now snoozed <strong>with no Gateway clock at all</strong>. It will never expire. It can only be cleared by the agent working again or by an explicit unsnooze. <strong>The root cause is defect 12</strong> - the hold machine has three states and the wire has one boolean, so the sweep cannot tell "not held" from "about to be held". Note that <code>HoldResponse.Pending</code> ALREADY carries exactly this fact and the hold endpoint already receives it; nothing reads it. <em>This is the very feature the owner described - an agent snoozing its own session, which by definition happens while it is working - so it is the case that fails, not an edge case.</em></td><td><span class="file">GatewayEndpoints.cs:1171-1180</span> (records the timer without inspecting <code>Pending</code>); <span class="file">SnoozeExpirySweep.cs:38</span> (<code>SweepInterval = 15s</code>), <span class="file">:120-128</span> (clears on <code>OnHold==false</code>); <span class="file">Session.cs:599</span> (<code>OnHold =&gt; _holdState == Held</code>); <span class="file">SessionDto.cs:255</span> (one boolean); <span class="file">HoldRequest.cs:27-35</span> (<code>Pending</code> exists, unread)</td></tr>
-<tr><td>19</td><td><strong>A dictation that never reaches a terminal state wedges the session orange - and out-of-credits is the everyday way in.</strong> The durable record paints orange while <code>Pending</code>, and <code>Pending</code> ends only at <code>Delivered</code> / <code>Abandoned</code> / <code>Failed</code>. Two paths never mark it: <strong>OutOfCredits</strong> and any <strong>retryable transcription error</strong> return to the client without a terminal write (only <code>PermanentError</code> parks the record). The session then reads "Uploading from phone" forever - about an upload that completed and simply could not be paid for - because the active-transcription mark cleared in its <code>finally</code> and the label degraded back to the upload phase. The phone-dies-mid-upload case is real but far rarer. <em>One flag answers two questions: the durable record must never expire (correct - an age cut would make a phone out of signal lose its words), but the colour must always be bounded.</em> <strong>Today's fix removes the common case</strong> - a delivered dictation submits text, the agent works, and working is now blue no matter what any stale flag says - but a dictation that never delivers never makes the session work, so nothing knocks the orange off. See "The dictation lifecycle" above.</td><td><span class="file">GatewayDictationEndpoint.cs:277-290</span> (no terminal write on OutOfCredits / retryable), <span class="file">:429-433</span> (label degrades); <span class="file">GatewayHost.cs:1345-1351, :1212-1215</span>; <span class="file">VoiceUploadStore.cs:288-289</span></td></tr>
+<tr><td>19</td><td><strong>A dictation that never reaches a terminal state wedges the session orange.</strong> The durable record paints orange while <code>Pending</code>, and <code>Pending</code> ends only at <code>Delivered</code> / <code>Abandoned</code> / <code>Failed</code>. Two paths never mark it: <strong>OutOfCredits</strong> and any <strong>retryable transcription error</strong> return to the client without a terminal write (only <code>PermanentError</code> parks the record). The session then reads "Uploading from phone" forever - about an upload that is not happening - because the active-transcription mark cleared in its <code>finally</code> and the label degraded back to the upload phase. A phone that dies mid-upload reaches no terminal state either. <strong>WHICH of these actually causes the orange anyone has seen is UNDIAGNOSED - read the pending records on the Gateway before claiming a cause.</strong> <em>One flag answers two questions: the durable record must never expire (correct - an age cut would make a phone out of signal lose its words), but the colour must always be bounded.</em> <strong>Today's fix removes the common case</strong> - a delivered dictation submits text, the agent works, and working is now blue no matter what any stale flag says - but a dictation that never delivers never makes the session work, so nothing knocks the orange off. See "The dictation lifecycle" above.</td><td><span class="file">GatewayDictationEndpoint.cs:277-290</span> (no terminal write on OutOfCredits / retryable), <span class="file">:429-433</span> (label degrades); <span class="file">GatewayHost.cs:1345-1351, :1212-1215</span>; <span class="file">VoiceUploadStore.cs:288-289</span></td></tr>
 </table>
 
 <h3>The traps - comments that lie to the next agent</h3>
@@ -782,7 +781,7 @@ implements <em>this</em>, and does not re-open the question.</p>
 <tr><td><strong>You snooze a working session for 12 hours. When does the clock start - when you ask, or when the work ends?</strong></td><td><strong>When the work ends.</strong> "Snooze me for 12 hours when this finishes" means twelve hours of quiet <em>after</em> it finishes. A clock started at request time could expire before the hold has even landed - which is nonsense, and is a second way to produce the same bug.</td><td>Defect 20 - the agent-requested snooze that never expires</td></tr>
 <tr><td><strong>A snoozed session exits. Does it read "Snoozed" or "Exited"?</strong></td><td><strong>Exited.</strong> A dead session must never hide behind a Snoozed label. The code already makes this argument in its own comment for the deferred case; apply it to the landed case too.</td><td>Defect 21</td></tr>
 <tr><td><strong>A session flagged for deletion: colour, or badge?</strong></td><td><strong>A badge. Never a colour.</strong> Pending deletion says nothing about what the agent is <em>doing</em>. If the session is still working it is <strong>blue</strong>, with a badge. The Director's <code>SetStatusColor</code> call in <code>MarkForDeletion</code> is deleted - the Director does not write colours.</td><td>Defect 23</td></tr>
-<tr><td><strong>An out-of-credits dictation: stay orange until retry, or keep the record durable and bound the colour?</strong></td><td><strong>Bound the colour; keep the record.</strong> The durable record must never expire - a phone out of signal must not lose your words. But the colour must always be bounded. Nothing is lost except the lie on the dot.</td><td>Defect 19 - the wedged orange</td></tr>
+<tr><td><strong>A dictation that never reaches a terminal state: stay orange until retry, or keep the record durable and bound the colour?</strong></td><td><strong>Bound the colour; keep the record.</strong> The durable record must never expire - a phone out of signal must not lose your words. But the colour must always be bounded. Nothing is lost except the lie on the dot.</td><td>Defect 19 - the wedged orange</td></tr>
 <tr><td><strong>A Director dies while a snooze is still deferred.</strong></td><td><strong>Persist the hold state, and land the deferral on restart if the session is not working.</strong> This follows from ruling 1: the deferral waits for the work to end, and a Director that died ended the work. If the session exited, the existing rule already applies - drop the deferral, because there is no turn to come back to. <em>This one was inferred from the other rulings rather than stated outright; it is the only entry in this table the owner did not answer word-for-word.</em></td><td>Defect 22 - hold state is not persisted</td></tr>
 </table>
 
@@ -812,6 +811,27 @@ been written that same afternoon. The name did that.</p>
 <p>If you change a state or colour rule in code, you change it here in the same pull request. A change
 that lands in one and not the other is the whole failure mode described in section 1, and it will be
 reverted by the next agent who reads whichever half you left behind.</p>
+
+<div class="callout warn">
+<p><strong>NEVER WRITE A CAUSE YOU HAVE NOT OBSERVED. This rule is here because this document broke
+it.</strong></p>
+<p>An earlier version of defect 19 stated that the wedged orange was "almost certainly" caused by the
+Gateway running out of credits, and called it "the everyday way in". <strong>That was invented.</strong>
+Nobody had run out of credits. No log was read, no balance was checked, no pending record was examined.
+What was actually verified was much narrower and much less interesting: <em>the code contains paths that
+can leave a record non-terminal</em>. A plausible-sounding cause was then attached to a real symptom and
+written down as near-fact.</p>
+<p>That is the most dangerous thing anyone can do to this document, and it is worse than the bug it
+described. A cited defect is checkable. <strong>A fabricated cause is not - it reads exactly like a
+finding, it survives review because it sounds reasonable, and the next agent implements against a world
+that does not exist.</strong> Every disaster in section 1 started this way: a document asserting something
+nobody had checked.</p>
+<p><strong>The standard for this document:</strong> a mechanism may be stated from reading the code, and
+must be cited by file and line. <strong>A cause may only be stated from evidence you have actually
+observed</strong> - a log line, a record on disk, a reproduction. If you have not looked, the honest
+sentence is "this is undiagnosed; here is how to find out." Write that sentence. It is worth more than a
+confident guess, because it tells the reader the truth about what is known.</p>
+</div>
 
 <footer>
 The authoritative definition of DevThrottle session state. Every rule cited by file and line, read from
