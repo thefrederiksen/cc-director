@@ -30,7 +30,11 @@ public static class BrowserDefaultStore
     public static BrowserDefault? Load()
     {
         var root = CcDirectorConfigService.ReadRaw();
-        return ReadDefaultObject(root["browser"]?["default"]);
+        var value = ReadDefaultObject(root["browser"]?["default"]);
+        FileLog.Write(value is null
+            ? "[BrowserDefaultStore] Load: no application-wide default set"
+            : $"[BrowserDefaultStore] Load: exe={value.ExePath}, profile={value.ProfileFolder}");
+        return value;
     }
 
     /// <summary>Persists <paramref name="value"/> as the remembered application-wide default in config.json.</summary>
@@ -61,13 +65,24 @@ public static class BrowserDefaultStore
     public static BrowserDefault? LoadForRepo(string repoPath)
     {
         if (string.IsNullOrWhiteSpace(repoPath))
+        {
+            FileLog.Write("[BrowserDefaultStore] LoadForRepo: blank repo path, no repository default");
             return null;
+        }
 
+        var key = NormalizeRepoKey(repoPath);
         var root = CcDirectorConfigService.ReadRaw();
         if (root["browser"]?["repoDefaults"] is not JsonObject repoDefaults)
+        {
+            FileLog.Write($"[BrowserDefaultStore] LoadForRepo: no repoDefaults section, repo={key}");
             return null;
+        }
 
-        return ReadDefaultObject(repoDefaults[NormalizeRepoKey(repoPath)]);
+        var value = ReadDefaultObject(repoDefaults[key]);
+        FileLog.Write(value is null
+            ? $"[BrowserDefaultStore] LoadForRepo: no default for repo={key}"
+            : $"[BrowserDefaultStore] LoadForRepo: repo={key}, exe={value.ExePath}, profile={value.ProfileFolder}");
+        return value;
     }
 
     /// <summary>
@@ -109,14 +124,23 @@ public static class BrowserDefaultStore
     /// </summary>
     public static BrowserDefault? Resolve(string? repoPath)
     {
+        FileLog.Write($"[BrowserDefaultStore] Resolve: repo={repoPath ?? "(none)"}");
+
         if (!string.IsNullOrWhiteSpace(repoPath))
         {
             var repoDefault = LoadForRepo(repoPath);
             if (repoDefault is not null)
+            {
+                FileLog.Write("[BrowserDefaultStore] Resolve: using the repository default");
                 return repoDefault;
+            }
         }
 
-        return Load();
+        var global = Load();
+        FileLog.Write(global is null
+            ? "[BrowserDefaultStore] Resolve: nothing remembered, caller uses the OS default browser"
+            : "[BrowserDefaultStore] Resolve: using the application-wide default");
+        return global;
     }
 
     /// <summary>
