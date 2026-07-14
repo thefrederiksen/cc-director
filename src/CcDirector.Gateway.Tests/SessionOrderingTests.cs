@@ -378,11 +378,23 @@ public sealed class SessionOrderingTests
     }
 
     [Fact]
-    public void EffectiveColor_ControlledNonRed_IsSupporting_FromRawFacts()
+    public void EffectiveColor_ControlledAndWorking_IsBlue_NothingOutranksWorking()
     {
-        // A controlled sub-agent recedes to slate ("supporting") while its controller is present.
-        Assert.Equal("supporting", SessionOrdering.EffectiveColor(
+        // Owner's ruling, 2026-07-14: if a session is working, it is BLUE - no matter what. Being driven
+        // by another session is NOT a reason to hide that it is working. This REPLACES the 2026-07-10
+        // decision in issue #1286 (a controlled session that was not red returned "supporting", which threw
+        // the real activity state away and painted a busy sub-agent gray "Sub-agent"). That rule is void.
+        Assert.Equal("blue", SessionOrdering.EffectiveColor(
             Raw("Working", controlled: true, controllerId: Guid.NewGuid().ToString())));
+    }
+
+    [Fact]
+    public void EffectiveColor_ControlledWorker_WhileWorking_IsStillBlue()
+    {
+        // The exact shape that failed: a controlled sub-agent with the Worker role, mid-turn. Red
+        // suppression must not leak into a working session - only a Worker's RED recedes.
+        Assert.Equal("blue", SessionOrdering.EffectiveColor(
+            Raw("Working", controlled: true, controllerId: Guid.NewGuid().ToString(), sessionRole: "Worker")));
     }
 
     [Fact]
@@ -538,10 +550,22 @@ public sealed class SessionOrderingTests
     }
 
     [Fact]
-    public void StateLabel_Controlled_IsSubAgent()
+    public void StateLabel_ControlledAndWorking_ReadsWorking_NotSubAgent()
     {
-        Assert.Equal("Sub-agent", SessionOrdering.StateLabel(
+        // The label must agree with the blue dot: a controlled sub-agent that is working reads "Working"
+        // like any other working session. It used to read "Sub-agent" (the void issue #1286 rule), which
+        // is what let a session 23 minutes into real work look parked.
+        Assert.Equal("Working", SessionOrdering.StateLabel(
             Raw("Working", controlled: true, controllerId: Guid.NewGuid().ToString())));
+    }
+
+    [Fact]
+    public void StateLabel_LiveWorker_WhoseRedIsSuppressed_IsSubAgent()
+    {
+        // "Sub-agent" survives for the ONE case that still recedes: a live Worker whose red is suppressed
+        // so the need routes to its manager rather than the human.
+        Assert.Equal("Sub-agent", SessionOrdering.StateLabel(
+            Raw("WaitingForInput", controlled: true, controllerId: Guid.NewGuid().ToString(), sessionRole: "Worker")));
     }
 
     [Fact]

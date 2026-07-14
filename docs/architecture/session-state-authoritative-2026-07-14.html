@@ -1,0 +1,351 @@
+<title>DevThrottle Session State - The Authoritative Machine</title>
+<style>
+  :root {
+    --ink:#1a1f2b; --mute:#5b6675; --line:#d8dee8; --bg:#ffffff; --panel:#f6f8fb;
+    --red:#ef4444; --blue:#3b82f6; --grey:#9ca3af; --slate:#64748b;
+    --green:#16a34a; --amber:#f0b848; --accent:#2563eb; --purple:#a855f7; --orange:#f97316;
+  }
+  * { box-sizing:border-box; }
+  body {
+    margin:0; padding:0 24px 80px; background:var(--bg); color:var(--ink);
+    font:16px/1.65 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+  }
+  .wrap { max-width:960px; margin:0 auto; }
+  header { border-bottom:3px solid var(--ink); padding:48px 0 20px; margin-bottom:36px; }
+  h1 { font-size:34px; line-height:1.15; margin:0 0 10px; letter-spacing:-0.02em; }
+  .sub { color:var(--mute); font-size:15px; margin:0; }
+  h2 { font-size:24px; margin:56px 0 14px; padding-top:24px; border-top:1px solid var(--line); letter-spacing:-0.01em; }
+  h3 { font-size:17.5px; margin:32px 0 8px; }
+  p { margin:0 0 14px; }
+  .lede { font-size:18.5px; line-height:1.6; }
+  .callout { background:var(--panel); border-left:4px solid var(--accent); padding:16px 18px; margin:22px 0; border-radius:0 6px 6px 0; }
+  .callout.warn { border-left-color:var(--red); }
+  .callout.ok { border-left-color:var(--green); }
+  .callout.law { border-left-color:var(--blue); background:#eff6ff; }
+  .callout p:last-child { margin-bottom:0; }
+  table { border-collapse:collapse; width:100%; margin:18px 0; font-size:14px; }
+  th, td { border-bottom:1px solid var(--line); padding:9px 10px; text-align:left; vertical-align:top; }
+  th { background:var(--panel); font-weight:600; font-size:12px; text-transform:uppercase; letter-spacing:.06em; color:var(--mute); }
+  code { font:13px/1.4 "SF Mono",Consolas,"Liberation Mono",monospace; background:var(--panel); padding:1px 5px; border-radius:3px; }
+  pre { background:var(--panel); border:1px solid var(--line); border-radius:6px; padding:14px 16px; overflow-x:auto; font:13px/1.5 "SF Mono",Consolas,monospace; }
+  .dot { display:inline-block; width:10px; height:10px; border-radius:50%; margin-right:7px; vertical-align:middle; }
+  .d-red{background:var(--red)} .d-blue{background:var(--blue)} .d-grey{background:var(--grey)}
+  .d-slate{background:var(--slate)} .d-green{background:var(--green)} .d-yellow{background:#eab308}
+  .d-orange{background:var(--orange)} .d-purple{background:var(--purple)}
+  .bad { color:var(--red); font-weight:600; }
+  .good { color:var(--green); font-weight:600; }
+  .scroll { overflow-x:auto; }
+  ul, ol { margin:0 0 14px; padding-left:22px; }
+  li { margin-bottom:7px; }
+  .file { font:12.5px/1.4 "SF Mono",Consolas,monospace; color:var(--mute); }
+  footer { margin-top:64px; padding-top:20px; border-top:1px solid var(--line); color:var(--mute); font-size:13px; }
+  .big { font-size:20px; font-weight:600; }
+  @media (prefers-color-scheme: dark) {
+    :root { --ink:#e8ecf3; --mute:#9aa7b8; --line:#2b3340; --bg:#12161d; --panel:#1a1f28; }
+    .callout.law { background:#132033; }
+  }
+</style>
+<div class="wrap">
+<header>
+  <h1>DevThrottle Session State</h1>
+  <p class="sub">The authoritative machine &middot; 14 July 2026 &middot; read from origin/main, not from memory and not from a working tree</p>
+</header>
+
+<p class="lede">You asked why fixing one state rule breaks another. The answer is not that the code is
+sloppy. It is that <strong>the written design says the opposite of what you want</strong>, there are three
+competing documents and none is authoritative, and the decision "what colour is this session?" is
+answered independently in about fourteen places. Every fix lands in one of them. This document
+replaces all three, states the machine once, and lists every place that currently disagrees with it.</p>
+
+<div class="callout law">
+  <p><strong>The law, in the owner's words (14 July 2026). This is not open for debate.</strong></p>
+  <ol style="margin-bottom:0">
+    <li><strong>If a session is working, it is BLUE. No matter what. Period, full stop.</strong> Nothing
+    outranks Working.</li>
+    <li><strong>The Gateway owns every state, centrally.</strong> It is the ONLY thing that decides a colour.</li>
+    <li><strong>The Director decides nothing.</strong> It reports FACTS - "I am working", plus a heartbeat.</li>
+    <li>When a run finishes there is no more output. We wait about ten seconds, and then it goes RED.</li>
+    <li><strong>Gray-when-controlled is a LATER, more intelligent feature.</strong> It applies ONLY to a RED
+    controlled session. It must NEVER touch a working one.</li>
+    <li>Any of those is overwritten by blue the moment it starts working again.</li>
+    <li>Every device shows the same thing, always.</li>
+  </ol>
+</div>
+
+<div class="callout warn">
+  <p><strong>Explicitly superseded.</strong> This law voids the 2026-07-10 decision recorded in issue #1286
+  ("a controlled worker always shows the recessive Supporting colour"). That decision is the direct cause of
+  defect 1 below. It must not be restored, and it must not be cited as precedent. If you are an agent reading
+  this because a document or a code comment told you that a controlled session recedes while it is working -
+  that instruction is void, and this paragraph is why.</p>
+</div>
+
+<h2>1. Why this keeps happening</h2>
+
+<h3>Finding 1: the specification ranks ownership above working</h3>
+
+<p><span class="file">docs/new_architecture/state-and-color-architecture.html</span> - which
+<span class="file">phase-2-state-color-spec.md</span> explicitly names "source of truth" - defines colour
+as a first-match-wins ladder:</p>
+
+<table>
+<tr><th>Order</th><th>Colour</th><th>Fires when</th></tr>
+<tr><td>1</td><td><span class="dot d-grey"></span>Grey</td><td>On hold, or exited</td></tr>
+<tr><td>2</td><td><span class="dot d-orange"></span>Orange</td><td>Transcribing, or explaining</td></tr>
+<tr><td>3</td><td><span class="dot d-yellow"></span>Yellow</td><td>Wingman reading, or preparing voice</td></tr>
+<tr><td>4</td><td><span class="dot d-purple"></span>Purple</td><td>Background task</td></tr>
+<tr><td><strong>5</strong></td><td><span class="dot d-slate"></span><strong>Slate</strong></td><td><strong>Controlled by another session</strong></td></tr>
+<tr><td>6</td><td><span class="dot d-green"></span>Green</td><td>Brand new</td></tr>
+<tr><td><strong>7</strong></td><td><span class="dot d-blue"></span><strong>Blue</strong></td><td><strong>Working</strong></td></tr>
+<tr><td>8</td><td><span class="dot d-red"></span>Red</td><td>Needs you</td></tr>
+</table>
+
+<p><strong>Six of the eight rules outrank Working.</strong> Slate - "somebody else owns this" - sits two
+rows above blue. So a controlled session that is working reports slate, and the fact that it is working is
+discarded. That is not a typo anybody introduced. It is the design, written down, marked as the source of
+truth, and faithfully implemented.</p>
+
+<div class="callout warn">
+  <p><strong>This is the mechanism of the whack-a-mole.</strong> An agent is told to fix the rail. It reads
+  the specification. The specification says slate beats blue. It implements that. The bug returns. The next
+  agent removes it. The one after reads the same specification and puts it back. Nothing here is anybody
+  being careless - the document and the law disagree, and the document wins because it is written down.</p>
+</div>
+
+<h3>Finding 1b: the same specification is also wrong in the opposite direction</h3>
+
+<p>The ladder is not merely out of date. It describes a system that has never existed. Twice - at lines 88
+and 104 - it states:</p>
+
+<pre>"A sub-agent being driven by another session; it recedes so the operator is not nagged.
+ <strong>Red still breaks through this.</strong>"
+
+"<strong>Red breaks through the slate "supporting" recede</strong> so a genuinely blocked sub-agent still surfaces."</pre>
+
+<p>The shipped code does the opposite. <span class="file">SessionOrdering.cs:138-139</span>:</p>
+
+<pre>if (isRed &amp;&amp; string.Equals(s.SessionRole, SessionRoles.Worker, ...))
+    return "supporting";</pre>
+
+<p>A live-controlled Worker's red is <strong>suppressed</strong>, deliberately - the need routes to its
+manager instead of to you. Red does not break through. The specification's claim is a half-truth at best:
+red breaks through for a controlled session whose controller has <em>died</em>, and is suppressed for one
+whose controller is alive, which is the common case and the whole point of the rule.</p>
+
+<div class="callout warn">
+  <p><strong>So the document on origin/main is wrong in both directions at once.</strong> It says slate
+  beats blue, which contradicts the law. It says red beats slate, which contradicts the code that is
+  actually running - and did so <em>before</em> today's change. It matches neither the old rule nor the new
+  one. Anyone reading it to learn how session state works comes away with a picture that has never been
+  true of this product.</p>
+  <p>This is the strongest possible argument for why the code fix cannot ship alone. The bug is not in the
+  code. The bug is in the paper the code is written from.</p>
+</div>
+
+<h3>Finding 2: three documents, none authoritative</h3>
+
+<table>
+<tr><th>Document</th><th>Dated</th><th>Covers</th><th>Status</th></tr>
+<tr><td><span class="file">new_architecture/state-and-color-architecture.html</span></td><td>8 July</td><td>The colour ladder, the violation inventory</td><td>Called "source of truth". Contains the bug above. Several open decisions never closed.</td></tr>
+<tr><td><span class="file">new_architecture/phase-2-state-color-spec.md</span></td><td>9 July</td><td>The implementation plan for the above</td><td>Largely built. Its increment 2.3 was flagged "owner please confirm" and the confirmation is not recorded.</td></tr>
+<tr><td><span class="file">architecture/session-state-machine-2026-07-14.html</span></td><td>14 July (today)</td><td>Hold/snooze only, plus the desktop folds</td><td>Written as "for approval before any code is written", then merged as part of pull request #1537 along with the code.</td></tr>
+</table>
+
+<p>They contradict each other, none supersedes the others, and the newest covers only hold. An agent
+looking for "how does state work" finds three answers.</p>
+
+<h3>Finding 3: the same question is answered in about fourteen places</h3>
+
+<p>Counted from origin/main. This is the real cost.</p>
+
+<table>
+<tr><th>Where</th><th>Folds</th><th>Reads the shared answer?</th></tr>
+<tr><td>Director (<span class="file">SessionStatusWingman.ColorFromActivityState</span>)</td><td>1</td><td>No - and nothing that paints reads its output. Dead computation.</td></tr>
+<tr><td>Gateway (<span class="file">SessionOrdering</span>, stamped by <span class="file">StampFleetRolesAndFold</span>)</td><td>1</td><td>This is the real one. Correct by construction.</td></tr>
+<tr><td>Gateway Exes page (<span class="file">ExesEndpoints</span>)</td><td>1</td><td>Calls the fold but skips the fleet pass - so it produces different answers.</td></tr>
+<tr><td>Desktop app</td><td><strong>7 live</strong> (+1 dead, +1 historical)</td><td>Only 3 properties, all in <span class="file">SessionViewModel</span>.</td></tr>
+<tr><td>Web / mobile clients</td><td>1 colour (good), <strong>3 label / triage</strong></td><td>Colour: yes, cleanly. Labels and triage: no.</td></tr>
+<tr><td>Retired MAUI phone app</td><td>2 (+2 duplicates)</td><td>No. Different palette entirely. Retired.</td></tr>
+</table>
+
+<h2>2. The machine</h2>
+
+<p>Three layers. Each has exactly one job. The whole design is that no layer does another layer's job.</p>
+
+<h3>Layer 1 - the sensor. The Director reports facts and decides nothing.</h3>
+
+<p>This layer already exists and is already close to right.
+<span class="file">src/CcDirector.Core/Wingman/TerminalStateDetector.cs</span></p>
+
+<table>
+<tr><th>Rule</th><th>Where</th><th>Statement</th></tr>
+<tr><td>Byte means working</td><td><span class="file">:217-223</span></td><td>Any single byte out of the terminal sets Working instantly and restarts the ten-second countdown. The byte is never inspected. There is no debounce on the working flip.</td></tr>
+<tr><td>Ten seconds of silence means needs you</td><td><span class="file">:30, :296-318</span></td><td><code>QuietThreshold = 10 seconds</code>. When the stream has been silent that long, the session flips to WaitingForInput. A 250 millisecond tolerance guards a raced timer. The reason for the silence is never considered.</td></tr>
+<tr><td>Exit means exited</td><td><span class="file">Session.cs:2303</span></td><td>The process ended. A non-zero code, or a death while working, is a crash.</td></tr>
+<tr><td>Suppress the Director's own repaint</td><td><span class="file">:191-192</span></td><td>Bytes caused by our own terminal resize are discarded, so we do not read our own repaint as the agent working.</td></tr>
+<tr><td>Ignore a brand-new session's splash</td><td><span class="file">:200-201</span></td><td>A session that has never had a user submission ignores bytes, so the startup banner does not paint it blue.</td></tr>
+<tr><td>Screen-body rule for continuous agents</td><td><span class="file">:239-256</span></td><td>For an agent whose idle terminal never goes quiet (Grok), activity means the screen body above the cursor changed, sampled at most every 500 milliseconds. A footer-only repaint is not activity.</td></tr>
+</table>
+
+<div class="callout ok">
+  <p><strong>Your ten-second rule is real, is exactly as you described it, and works.</strong> It is also
+  published on the wire (<code>QuietThresholdSeconds</code>) so no client hard-codes it. The sensor is the
+  healthiest part of this system.</p>
+</div>
+
+<p><strong>Only three states are ever written.</strong> <code>Working</code>, <code>WaitingForInput</code>,
+<code>Exited</code>. The enum also declares <code>Starting</code>, <code>Idle</code>, and
+<code>WaitingForPerm</code> - <strong>nothing writes any of them.</strong> They exist only as read-side
+branches that can never be taken. That is very close to the machine you just described to me, which is why
+the sensor is not the problem.</p>
+
+<h3>Layer 2 - the state. The Gateway decides, once.</h3>
+
+<p>One function, over raw facts, producing three outputs that must always agree: a colour, a label, and a
+triage bucket. This is <span class="file">SessionOrdering</span>, and structurally it is correct today - the
+Gateway runs it in one pass after the whole fleet is assembled, because deciding whether a session is a
+Worker needs the whole fleet, not one Director.</p>
+
+<p>The proposed ladder. The only change from today is that <strong>Working moves to the top</strong>, where
+your law puts it.</p>
+
+<table>
+<tr><th>Order</th><th>Colour</th><th>Label</th><th>Fires when</th></tr>
+<tr><td><strong>0</strong></td><td><span class="dot d-blue"></span><strong>Blue</strong></td><td><strong>Working</strong></td><td><strong>ActivityState is Working. Nothing outranks this. No exceptions.</strong></td></tr>
+<tr><td colspan="4" style="background:var(--panel);font-weight:600;">Everything below applies only to a session that is NOT working.</td></tr>
+<tr><td>1</td><td><span class="dot" style="background:#b91c1c"></span>Deep red</td><td>Crashed</td><td>The agent process died unexpectedly.</td></tr>
+<tr><td>2</td><td><span class="dot" style="background:#6a6a6a"></span>Dark grey</td><td>Exited</td><td>The process ended cleanly.</td></tr>
+<tr><td>3</td><td><span class="dot d-grey"></span>Grey</td><td>Snoozed</td><td>Parked by you or by the agent, and the timer has not expired.</td></tr>
+<tr><td>4</td><td><span class="dot d-orange"></span>Orange</td><td>Transcribing</td><td>A dictated utterance is uploading or being transcribed. Do not let anyone else type into it.</td></tr>
+<tr><td>5</td><td><span class="dot d-orange"></span>Orange</td><td>Explaining</td><td>A deep dive you asked for is running.</td></tr>
+<tr><td>6</td><td><span class="dot d-yellow"></span>Yellow</td><td>Wingman reading</td><td>The wingman is reading the finished turn. We do not yet know if it needs you.</td></tr>
+<tr><td>7</td><td><span class="dot d-yellow"></span>Yellow</td><td>Preparing voice</td><td>A voice-mode session is generating its spoken summary.</td></tr>
+<tr><td>8</td><td><span class="dot d-purple"></span>Purple</td><td>Background</td><td>Parked on its own background task, not on you.</td></tr>
+<tr><td>9</td><td><span class="dot d-green"></span>Green</td><td>Ready</td><td>Brand new, never took a turn.</td></tr>
+<tr><td>10</td><td><span class="dot d-slate"></span>Slate</td><td>Sub-agent</td><td>It needs someone, and a live controller owns it - so the need goes to its manager, not to you. <strong>This is the gray-when-controlled rule, and it applies ONLY here, at the red position.</strong></td></tr>
+<tr><td>11</td><td><span class="dot d-red"></span>Red</td><td>Needs you</td><td>Ten seconds silent and none of the above. The only colour that drives the needs-you bucket.</td></tr>
+</table>
+
+<div class="callout">
+  <p><strong>What actually changed.</strong> Only the position of blue. Every other rule keeps its meaning
+  and its relative order. That is the point: the ladder was not wrong about what orange or purple mean. It
+  was wrong about one thing - it let six different facts erase the one fact that matters most.</p>
+  <p>Read the two halves in plain English: <em>"If it is working, it is blue. Otherwise, here is why it is
+  not working."</em> Every rule below the divider is an answer to a question that only makes sense once the
+  session has stopped.</p>
+</div>
+
+<h3>Layer 3 - the render. Clients draw and decide nothing.</h3>
+
+<p>Every surface renders the Gateway's stamped colour and stamped label. No surface re-derives either. A
+client that cannot get a stamped answer fails loudly rather than guessing - that rule already exists in
+<span class="file">packages/client-core/src/sessions/ordering.ts</span> and it works.</p>
+
+<h2>3. Who owns which fact</h2>
+
+<p>"Which component is authoritative?" has no single answer, and that ambiguity is what made this hard. The
+split is per fact, not per component.</p>
+
+<table>
+<tr><th>Fact</th><th>Owner</th><th>Why it can only be there</th></tr>
+<tr><td>Activity: working / not working</td><td>The Director's terminal detector</td><td>Only the Director sees the bytes. Nothing may override it. It is pushed up as a fact, never as a colour.</td></tr>
+<tr><td>Hold intent and the timer</td><td>The Gateway</td><td>The timer must survive a dead Director. That is the whole point of it.</td></tr>
+<tr><td>Session role (Worker / Manager / Standalone / Architect)</td><td>The Gateway</td><td>"Is this session's controller still alive?" is unanswerable from one Director.</td></tr>
+<tr><td>Colour, label, triage bucket</td><td>The Gateway, from the three facts above</td><td>One fold, one answer, every screen.</td></tr>
+</table>
+
+<p>Note the consequence, because it is the thing that keeps biting: <strong>the desktop is a producer of
+the first fact and a consumer of the other two, at the same time.</strong> It cannot compute its own role
+or its own hold expiry, so it cannot compute its own colour. It must ask.</p>
+
+<h2>4. Every place that disagrees today</h2>
+
+<p>All verified against origin/main. This is the list that has to go to zero.</p>
+
+<h3>The ones you can see</h3>
+
+<table>
+<tr><th>#</th><th>Symptom</th><th>Cause</th></tr>
+<tr><td>1</td><td>A controlled session that is working reads grey "Sub-agent" while 23 minutes and 56 thousand tokens into real work.</td><td><span class="file">SessionOrdering.cs:129</span> - <code>if (controlled &amp;&amp; !isRed) return "supporting";</code>. The specification's order 5 beating order 7.</td></tr>
+<tr><td>2</td><td>A snoozed session shows a grey "Snoozed" row underneath a header reading "1 need you".</td><td><span class="file">MainWindow.axaml.cs:3814</span> counts raw red with no hold check, no role check, no overlays.</td></tr>
+<tr><td>3</td><td>A snoozed session still pops the "Claude is waiting on your answer" card.</td><td><span class="file">CleanView.axaml.cs:258</span> reads raw status colour. Never heard of hold.</td></tr>
+<tr><td>4</td><td>A crashed session looks identical to an exited one.</td><td><strong>New regression, today.</strong> When the rail joined the shared fold (#1537) it inherited a fold that can never return <code>"error"</code>. <span class="file">SessionViewModel.cs:158</span> still has the deep-red brush. Nothing can select it.</td></tr>
+<tr><td>5</td><td>A live Worker shows slate "Sub-agent" on your phone and red "Needs you" on your desktop, at the same instant.</td><td><span class="file">ControlEndpoints.Map</span> never sets <code>SessionRole</code> (it is computed at the Gateway). The desktop's red-suppression gates on that field, so on the desktop it can never fire. Marked in the code as "Known gap (Phase 2b)".</td></tr>
+<tr><td>6</td><td>The same session shows a different colour on the Exes page than on every other screen.</td><td><span class="file">ExesEndpoints.cs:89</span> calls the fold without the fleet pass - no role, no snooze expiry, no voice or transcribing enrichment.</td></tr>
+<tr><td>7</td><td>In the Director detail table, the dot and the State cell beside it disagree.</td><td><span class="file">DirectorDetailView.tsx:185</span> uses the Gateway's answer; <span class="file">:195</span> ignores it and re-derives. Same row, two authorities.</td></tr>
+<tr><td>8</td><td>A snoozed, mid-brief, controlled sub-agent renders as plain teal "Idle".</td><td><span class="file">SessionRowViewModel.cs:61</span> receives a fully stamped session off the wire and throws all of it away, re-deriving from raw activity with a private palette where Idle is teal and Exited is red.</td></tr>
+<tr><td>9</td><td>A snoozed session reads "needs you" in the schedule picker.</td><td><span class="file">ScheduleView.tsx:1122</span> - an entire parallel triage fold deriving "needs you" from a timestamp instead of the bucket.</td></tr>
+</table>
+
+<h3>The ones you cannot see yet</h3>
+
+<table>
+<tr><th>#</th><th>Defect</th><th>Evidence</th></tr>
+<tr><td>10</td><td><strong>The prompt queue never auto-drains.</strong> The drain is gated on <code>ActivityState.Idle</code>, and <code>Idle</code> is a state nothing ever writes. The "auto-send when Claude is ready" behaviour cannot occur. A Control API poll waits on the same dead state and always times out.</td><td><span class="file">Session.cs:1909, :1921</span>; <span class="file">ControlEndpoints.cs:246</span></td></tr>
+<tr><td>11</td><td><strong>"Explaining" orange cannot reach the roster.</strong> The rule requires <code>BriefingState == "Explaining"</code>, but the Director's enum has only None / Briefing / Briefed / Failed. The value is produced by a different endpoint family and never fed back. So issue #217's orange exists only in the brief pane - the exact cross-surface contradiction its own comment claims to have fixed.</td><td><span class="file">BriefingState.cs:9-22</span> vs <span class="file">SessionOrdering.cs:51</span></td></tr>
+<tr><td>12</td><td><strong>"Snoozing when done" cannot reach any screen.</strong> The hold machine has three states; the wire has one boolean. Two comments claim clients render the deferred state distinctly. They cannot - it is byte-identical on the wire.</td><td><span class="file">HoldState.cs</span> vs <span class="file">SessionDto.cs:255</span></td></tr>
+<tr><td>13</td><td><strong>A filtered roster call computes wrong roles.</strong> The query filters run before the fleet pass, so <code>?state=Working</code> can drop a waiting controller out of the liveness set - reclassifying its worker as Standalone and un-suppressing its red.</td><td><span class="file">GatewayEndpoints.cs:674-688</span> vs <span class="file">:2359</span></td></tr>
+<tr><td>14</td><td><strong>Three colour inputs are invisible to the Gateway until something else happens.</strong> Transcribing, background-running, and auto-explaining all raise Director events with no push subscriber. The Gateway folds orange, purple, and yellow from exactly those facts - so those colours can lag by up to one ten-second re-push.</td><td><span class="file">ControlApiHost.cs:724-773</span></td></tr>
+<tr><td>15</td><td><strong>Two endpoints violate the DTO's stated contract.</strong> <code>EffectiveColor</code> and <code>TriageBucket</code> are documented "Required on Gateway /sessions responses". <code>GET /sessions/{sid}</code> returns them null. So the roster says "Needs you" while the by-id route still says <code>onHold: true</code>.</td><td><span class="file">SessionDto.cs:158</span> vs <span class="file">GatewayEndpoints.cs:1002-1014</span></td></tr>
+<tr><td>16</td><td><strong>Case-sensitivity is inconsistent inside one file.</strong> <code>RawActivityColor</code> is a case-sensitive switch; <code>IsAtTurnEnd</code>, <code>IsVoicePreparing</code>, and the role rules all compare case-insensitively on the same field. A mis-cased state produces incoherent output.</td><td><span class="file">SessionOrdering.cs:163</span> vs <span class="file">:176</span></td></tr>
+<tr><td>17</td><td><strong>Four greys and a slate, indistinguishable in a rail dot.</strong> Snoozed <code>#9CA3AF</code>, exited <code>#6A6A6A</code>, unknown <code>#6B7280</code>, supporting <code>#64748B</code>. This is why you read a working session as "on hold".</td><td><span class="file">SessionViewModel.cs:43-54</span>; <span class="file">ordering.ts:116-127</span></td></tr>
+<tr><td>18</td><td><strong>Five palettes for the same colour names.</strong> "red" is <code>#EF4444</code> on the rail, <code>#E5484D</code> in the turn review, <code>#F44747</code> in the Director view - where it means Exited, not needs-you.</td><td>desktop, various</td></tr>
+</table>
+
+<h3>The traps - comments that lie to the next agent</h3>
+
+<p>These cost more than the bugs, because they are what the next agent reads before writing code. Every one
+of them is on origin/main right now.</p>
+
+<ul>
+<li><strong>The specification itself is the biggest trap of all</strong> - it is wrong about blue and wrong about red, and it is the first thing any agent reads. See findings 1 and 1b.</li>
+<li><strong>Five comments</strong> name <code>SessionStatusWingman.ColorFor</code> as the source of truth. That method was renamed in phase 2.3 and <strong>does not exist</strong>.</li>
+<li><strong>Four comments</strong> describe green, yellow, purple, orange, and slate as colours "the wingman writes onto each Session". It has not since phase 2.3. It emits only blue, red, and unknown.</li>
+<li>The fold claims the Gateway "reads the Director's cooked StatusColor for NOTHING". <strong>Half true</strong> - the fold is clean, but the pipeline feeding it still gates a stamp on <code>StatusColor == "red"</code>.</li>
+<li>A dead copy of the voice rule (<code>VoiceColorFor</code>) <strong>still carries the bug the Gateway fixed</strong> - the one that wedged a session orange forever when text-to-speech failed - and its comment claims the Gateway "applies the same rule". It does not.</li>
+<li><code>SessionStatusWingman</code> and <code>Session.cs</code> both claim to be the "single writer" of the status colour. <strong>Three other paths write it.</strong></li>
+<li>A dead desktop fold maps <code>Working</code> to <strong>green</strong> and <code>WaitingForInput</code> to <strong>amber</strong>. Unreferenced - but it is the corpse the next agent will read and copy.</li>
+<li>The role DTO documents three roles. The code produces four (it omits Architect).</li>
+<li><code>ProactiveExplainService</code> says the wingman defaults ON. It defaults OFF.</li>
+</ul>
+
+<h2>5. What has to change</h2>
+
+<ol>
+<li><strong>Move blue to the top of the ladder</strong> and delete the rule that lets ownership erase activity. One line. This is the fix already built and proven on a running rail; it is waiting on your word.</li>
+<li><strong>Correct the specification</strong>, or the next agent restores the bug from the document. Retire <span class="file">state-and-color-architecture.html</span> and <span class="file">phase-2-state-color-spec.md</span>, fold <span class="file">session-state-machine-2026-07-14.html</span> into this one, and leave exactly one document standing.</li>
+<li><strong>Send the session role down to the desktop</strong> so it stops being the one screen that cannot suppress a worker's red. Until then, desktop and phone disagree by construction.</li>
+<li><strong>Delete the Director's colour computation.</strong> Nothing that paints reads it. It exists only to be mistaken for the answer.</li>
+<li><strong>Delete the six other desktop folds</strong> and the three client label folds. Every one is a future contradiction.</li>
+<li><strong>Restore the crashed colour.</strong> A crashed session must not look like an exited one.</li>
+<li><strong>Separate the greys</strong>, or accept that snoozed, exited, unknown, and sub-agent are the same dot to the human eye.</li>
+<li><strong>Fix the traps.</strong> Every stale comment above, deleted or corrected in the same pass. They are not cosmetic; they are the delivery mechanism for the next regression.</li>
+</ol>
+
+<h2>6. How we prove it, and why a green test is not enough</h2>
+
+<p>The measurement that found this becomes the test: <strong>read the live fleet and assert that every
+session's desktop answer equals its phone answer equals its Cockpit answer.</strong> The earlier document
+ran that check and got six disagreements out of thirteen. When it reports zero, and keeps reporting zero,
+the job is done.</p>
+
+<p>That check is the only thing that would have caught defects 5, 6, 7, and 8 - every one of which passes
+its own unit tests today, because each fold is internally consistent and consistent with nothing else.</p>
+
+<h2>7. Decisions only you can make</h2>
+
+<ol>
+<li><strong>Does blue beat orange?</strong> Your law says working is blue with no exceptions. Transcribing orange currently fires even while working. In practice you dictate at a prompt, not mid-turn, so gating orange on not-working costs nothing - but it is your call, not mine.</li>
+<li><strong>Gray-when-controlled: build it now or later?</strong> The law says it applies only at the red position and never touches a working session. It is written into the ladder above at order 10. It is not built.</li>
+<li><strong>Does a controlled session whose controller has died still recede?</strong> Today, a non-red one does (the fold checks only that a controller id exists, not that it is alive). A red one correctly surfaces.</li>
+<li><strong>Snoozed, exited, crashed, sub-agent: four distinct colours, or do you accept the collision?</strong></li>
+</ol>
+
+<footer>
+Read from origin/main at 00c2605 on 14 July 2026. Every rule cited by file and line. This document is
+intended to supersede <span class="file">docs/new_architecture/state-and-color-architecture.html</span>,
+<span class="file">docs/new_architecture/phase-2-state-color-spec.md</span>, and
+<span class="file">docs/architecture/session-state-machine-2026-07-14.html</span>. Nothing in it has been
+committed.
+</footer>
+</div>

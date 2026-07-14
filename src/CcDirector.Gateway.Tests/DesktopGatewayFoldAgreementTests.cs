@@ -80,6 +80,29 @@ public sealed class DesktopGatewayFoldAgreementTests
     }
 
     [Fact]
+    public void AControlledWorkingSession_IsBlueAndReadsWorking_OnEveryScreen()
+    {
+        // The "Stable Release - Manager" row (session 107): driven by its Architect and 23 minutes into a
+        // real turn, yet the rail painted it slate and labelled it "Sub-agent" - indistinguishable from
+        // on-hold or exited, so the owner read a busy session as parked. Owner's ruling, 2026-07-14: if a
+        // session is working it is BLUE, no matter what. Nothing outranks working. Who DRIVES a session
+        // travels on the rail's role badge; colour says what it is DOING and never who owns it.
+        var manager = new SessionDto
+        {
+            SessionId = "manager-107",
+            ActivityState = "Working",
+            StatusColor = "blue",
+            IsControlled = true,
+            ControllerSessionId = "architect",
+            SessionRole = SessionRoles.Worker,
+        };
+
+        Assert.Equal("blue", SessionOrdering.EffectiveColor(manager));
+        Assert.Equal("Working", SessionOrdering.StateLabel(manager));
+        Assert.NotEqual(SessionOrdering.TriageBucket.OnHold, SessionOrdering.Classify(manager));
+    }
+
+    [Fact]
     public void AHeldSession_CanNeverAlsoReadWorking()
     {
         // The invariant the hold state machine makes unreachable on the Director, asserted here at the

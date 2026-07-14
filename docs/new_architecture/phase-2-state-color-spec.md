@@ -1,7 +1,23 @@
+> # SUPERSEDED - DO NOT IMPLEMENT FROM THIS DOCUMENT
+>
+> **Retired 14 July 2026.** The authoritative definition of session state is now
+> [`docs/architecture/session-state-authoritative-2026-07-14.html`](../architecture/session-state-authoritative-2026-07-14.html).
+> Read that instead. This file is kept only as a record of how the single fold was built.
+>
+> **Why this is retired:** it names `state-and-color-architecture.html` as its source of truth, and that
+> document is wrong in two directions. It ranks the slate "controlled sub-agent" colour ABOVE blue
+> "Working", which discards the fact that a session is working and paints a busy sub-agent gray. The
+> owner's ruling of 14 July 2026 voids that: **a session that is working is BLUE, always - nothing
+> outranks Working.** It also claims red breaks through slate, which the shipped code has never done for a
+> live Worker. The "target precedence" list in this file's "current fold" section reproduces both errors.
+>
+> **Historical note:** this spec's increment 2.3 was explicitly flagged "owner please confirm" before
+> changing standalone desktop colour. No confirmation was ever recorded, and the work shipped anyway.
+
 # Phase 2 spec: Gateway owns state + color (the single fold)
 
 **For:** STREAM WORKER 1 (`05896efe`). **Controller:** `c9f9a8e3`. Branch `feat/director-gateway-stream-1a`, worktree `D:/ReposFred/dt-stream-wt`. Build/test with `dotnet`. **Do NOT commit.**
-**Source of truth:** `docs/new_architecture/state-and-color-architecture.html`. **Read `docs/CodingStyle.md`.**
+**Source of truth:** ~~`docs/new_architecture/state-and-color-architecture.html`~~ - SUPERSEDED, see the banner above. **Read `docs/CodingStyle.md`.**
 
 ## Goal
 

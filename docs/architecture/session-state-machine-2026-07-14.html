@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>DevThrottle Session State - Design for Approval</title>
+<title>DevThrottle Session State - Design for Approval (SUPERSEDED)</title>
 <style>
   :root {
     --ink:#1a1f2b; --mute:#5b6675; --line:#d8dee8; --bg:#ffffff; --panel:#f6f8fb;
@@ -60,6 +60,25 @@
 </style>
 </head>
 <body>
+<div style="background:#78350f;color:#fff;border:4px solid #f59e0b;border-radius:8px;padding:22px 26px;margin:0 0 32px;font:16px/1.6 -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
+  <div style="font-size:24px;font-weight:800;letter-spacing:-0.01em;margin-bottom:10px;">SUPERSEDED - partial, and no longer the whole picture</div>
+  <p style="margin:0 0 12px;"><strong>Retired 14 July 2026, the same day it was written.</strong> The
+  authoritative definition of session state is now
+  <code style="background:rgba(255,255,255,.15);padding:1px 5px;border-radius:3px;">docs/architecture/session-state-authoritative-2026-07-14.html</code>. Read that instead.</p>
+  <p style="margin:0 0 12px;">This document is <strong>correct and still worth reading on hold and
+  snooze</strong> - that machine shipped in pull request #1537 and stands. It is retired for two reasons:</p>
+  <ul style="margin:0 0 12px;padding-left:22px;">
+    <li><strong>It only covers hold.</strong> It does not define the colour ladder, which is where the real
+    damage was: the colour specification ranked "somebody else owns this" above "it is working". Reading
+    this document alone leaves that untouched and invisible.</li>
+    <li><strong>Its "three folds" evidence is now the past, not the present.</strong> The desktop rail joined
+    the shared fold in #1537. Seven other independent folds survive elsewhere in the desktop, and the symptom
+    it describes ("a grey strip next to a red Your Turn") moved rather than disappeared - it is now a grey
+    "Snoozed" row under a header reading "1 need you". The successor document has the current inventory.</li>
+  </ul>
+  <p style="margin:0;">It was also written as "prepared for approval before any code is written", and then
+  merged together with the code. Treat its open questions as unanswered unless the successor answers them.</p>
+</div>
 <div class="wrap">
 
 <header>
