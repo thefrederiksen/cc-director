@@ -125,10 +125,9 @@ public sealed class ControlApiHost : IAsyncDisposable
     internal bool SuppressServeProvisioning { get; set; }
 
     /// <summary>
-    /// The one home of this Director's Gateway-connection truth (issues #223/#224).
-    /// Host-owned so it survives GatewayClient replacement on settings changes; the
-    /// desktop indicator subscribes to its Changed event, the /verify/{nonce} endpoint
-    /// records callback receipts in it.
+    /// The one home of this Director's Gateway-connection truth. Host-owned so it survives
+    /// GatewayClient replacement on settings changes; the desktop indicator subscribes to its
+    /// Changed event and the Gateway tunnel marks itself connected/reconnecting in it.
     /// </summary>
     public GatewayConnectionMonitor GatewayMonitor { get; } = new();
 
@@ -138,7 +137,7 @@ public sealed class ControlApiHost : IAsyncDisposable
     /// instead of setting <c>Session.OnHold</c> in-process. Backed by the live <see cref="GatewayClient"/>
     /// (which already holds the resolved Gateway address + fleet token), so it reuses the Director's
     /// existing Gateway connection. Null while the Gateway is not configured (no client) - the desktop
-    /// gates the Snooze button on <see cref="GatewayMonitor"/> being Verified anyway.
+    /// gates the Snooze button on <see cref="GatewayMonitor"/> being Connected anyway.
     /// </summary>
     public IGatewayHold? GatewayHold => _gatewayClient;
 
@@ -147,14 +146,6 @@ public sealed class ControlApiHost : IAsyncDisposable
     /// provisioner's LastError explains WHY a mapping is missing. Null on ephemeral-port
     /// hosts (tests, hosted agents), which never self-provision.</summary>
     public TailscaleServeSelfProvisioner? ServeProvisioner => _serveProvisioner;
-
-    /// <summary>
-    /// On-demand two-way handshake (issues #223/#224) for the troubleshooter's Re-test
-    /// button. Null result when no Gateway is configured or a handshake is already in
-    /// flight; the verdict also lands in <see cref="GatewayMonitor"/> either way.
-    /// </summary>
-    public Task<Gateway.Contracts.DirectorVerifyResultDto?> VerifyGatewayNowAsync(CancellationToken ct = default)
-        => _gatewayClient?.VerifyAsync(ct) ?? Task.FromResult<Gateway.Contracts.DirectorVerifyResultDto?>(null);
 
     /// <summary>
     /// Fetch the latest Gateway turn brief for a session - the desktop Wingman tab's source.
@@ -243,9 +234,11 @@ public sealed class ControlApiHost : IAsyncDisposable
         var gatewayConfig = Core.Configuration.GatewayConfig.Load();
         var addressingMode = gatewayConfig.AddressingMode;
 
-        // LAN mode puts the Control API on a routable interface, so it MUST be authenticated -
-        // auto-enable auth (the tailnet trust boundary is gone). This is why LAN "just works"
-        // without a separate toggle: choosing LAN turns on auth.
+        // LAN mode auto-enables auth. This began (issue #457) because LAN mode put the Control API on a
+        // routable interface, which MUST be authenticated. The bind is now loopback in every mode, so this
+        // no longer guards a routable interface - it is kept because a LAN-mode Director has required the
+        // fleet token since #457, and quietly dropping auth on upgrade would WEAKEN a running install. It
+        // costs a local caller nothing it was not already paying.
         if (addressingMode == Core.Configuration.AddressingMode.Lan && !_authEnabled)
         {
             _authEnabled = true;
@@ -262,22 +255,18 @@ public sealed class ControlApiHost : IAsyncDisposable
         {
             builder.WebHost.ConfigureKestrel(o => o.Listen(IPAddress.Loopback, 0));
         }
-        else if (addressingMode == Core.Configuration.AddressingMode.Lan)
-        {
-            // LAN addressing mode (issue #457): the Director must be reachable on its real LAN
-            // IP, so the Control API binds to ALL interfaces - there is no Tailscale Serve
-            // fronting it in this mode. Auth was auto-enabled above so the raw port is not open;
-            // the fleet token (gateway.token) is required on every call.
-            Port = PortAllocator.Allocate(DirectorId);
-            FileLog.Write($"[ControlApiHost] LAN addressing mode: binding Control API to 0.0.0.0:{Port} (auth enabled)");
-            builder.WebHost.ConfigureKestrel(o => o.Listen(IPAddress.Any, Port));
-        }
         else
         {
-            // Loopback ONLY. The raw port is never exposed on the LAN or the Tailscale
-            // interface; the sole remote path is Tailscale Serve (HTTPS), which the
-            // Gateway's TailscaleServeProvisioner maps as https://<host>:<port> ->
-            // http://localhost:<port>. This kills the plain-HTTP-on-raw-port surface.
+            // Loopback ONLY, in EVERY addressing mode. The tunnel-only cut made the Director dial
+            // OUT to the Gateway and be reached only down that stream, so no caller anywhere needs
+            // this port from off-machine: the Gateway creates sessions and drains work lists over
+            // the tunnel (SessionVerbClient / DirectorImplSessionDriver carry no HTTP client), and
+            // the two-way verify handshake that used to dial back was deleted with its route.
+            // Binding a routable interface would therefore open an inbound port with no user at
+            // all - pure attack surface - and break the cut's invariant that the inbound port stays
+            // CLOSED on every client machine. LAN addressing mode used to bind IPAddress.Any here
+            // (issue #457) for a Gateway->Director dial that no longer exists; it no longer changes
+            // the bind interface.
             int? allocated = PortAllocationOverride is not null
                 ? PortAllocationOverride(DirectorId)
                 : (PortAllocator.TryAllocate(DirectorId, out var p) ? p : (int?)null);
@@ -459,9 +448,7 @@ public sealed class ControlApiHost : IAsyncDisposable
         // "listening" line) and release the reservation so a restart picks a different port.
         if (await SelfProbeControlApiAsync(Port))
         {
-            FileLog.Write(addressingMode == Core.Configuration.AddressingMode.Lan
-                ? $"[ControlApiHost] Kestrel listening on http://0.0.0.0:{Port} (LAN addressing mode; reachable on this machine's LAN IP)"
-                : $"[ControlApiHost] Kestrel listening on http://127.0.0.1:{Port} (loopback only; remote access via Tailscale Serve)");
+            FileLog.Write($"[ControlApiHost] Kestrel listening on http://127.0.0.1:{Port} (loopback only; the inbound port is closed - remote access is the outbound tunnel to the Gateway)");
         }
         else
         {
@@ -504,17 +491,16 @@ public sealed class ControlApiHost : IAsyncDisposable
         _registration = new InstanceRegistration(DirectorId, Port, _version, _instancesDirectory);
         _registration.Register();
 
-        // Issue #197: this Director owns its own Tailscale Serve front door. Only real
-        // fixed-range Directors self-provision; ephemeral-port hosts (tests, hosted
-        // agents) are reached through the Gateway and must not churn the serve table
-        // (the #179 lesson). Issue #457: LAN addressing mode has no Serve front door at all -
-        // the Director is reached directly on its LAN IP - so it never provisions a mapping.
         // Gateway Cleanup mission (tunnel-only): the Director NO LONGER opens an inbound Tailscale Serve
         // front door on its control port. It dials OUT to the Gateway over the tunnel and is reached ONLY
         // down that stream, so there is nothing inbound to publish - the whole point of the cut is that the
         // inbound port stays CLOSED on every client machine. Any Serve mapping a previous build left for this
-        // port is proactively torn down so an upgraded Director self-heals to closed.
-        if (!_useEphemeralPort && addressingMode != Core.Configuration.AddressingMode.Lan && !SuppressServeProvisioning)
+        // port is proactively torn down so an upgraded Director self-heals to closed. This runs in EVERY
+        // addressing mode: a Director that was on tailscale mode when an older build published a mapping, and
+        // has since been switched to LAN mode, must still have that stale inbound mapping torn down. Only
+        // ephemeral-port hosts (tests, hosted agents) are skipped - they never published one to begin with,
+        // and must not churn the serve table (the #179 lesson).
+        if (!_useEphemeralPort && !SuppressServeProvisioning)
         {
             var portToClose = Port;
             _ = Task.Run(() =>
@@ -688,7 +674,7 @@ public sealed class ControlApiHost : IAsyncDisposable
         }
 
         return SessionCommandExecutor.DispatchAsync(_sessionManager, DirectorId, cmd,
-            new SessionCommandServices { ProactiveExplain = _proactiveExplain, TurnSummaryCache = _turnSummaryCache, MissionStore = _missionStore, DirectorVersion = _version, Repositories = _repositoryRegistry });
+            new SessionCommandServices { ProactiveExplain = _proactiveExplain, TurnSummaryCache = _turnSummaryCache, MissionStore = _missionStore, DirectorVersion = _version, Repositories = _repositoryRegistry, ReapplyGatewayAsync = ReapplyGatewayAsync });
     }
 
     /// <summary>

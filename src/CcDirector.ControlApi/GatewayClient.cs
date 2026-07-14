@@ -35,14 +35,6 @@ public sealed class GatewayClient : IGatewayHold, IDisposable
     /// <summary>Max delay between failed register/heartbeat retries.</summary>
     public static TimeSpan MaxBackoff { get; } = TimeSpan.FromSeconds(60);
 
-    /// <summary>
-    /// How often a VERIFIED two-way connection re-proves itself (issues #223/#224). While
-    /// unverified or failed, re-verification instead rides every heartbeat tick (15s) so
-    /// recovery is fast; once green, this slower cadence keeps the proof fresh without
-    /// dialing the callback loop four times a minute.
-    /// </summary>
-    public static TimeSpan ReverifyInterval { get; } = TimeSpan.FromSeconds(60);
-
     private readonly GatewayConfig _config;
     private readonly string _directorId;
     private readonly int _port;
@@ -55,9 +47,6 @@ public sealed class GatewayClient : IGatewayHold, IDisposable
     // Start() to the first reachable entry of _config.CandidateUrls (machine name -> Tailscale -> IP).
     // volatile: read by the fleet-relay one-off clients on other threads.
     private volatile string _activeUrl = "";
-
-    private DateTime _lastVerifyStartedUtc = DateTime.MinValue;
-    private int _verifying; // re-entrancy guard: never stack a second handshake on a slow one
 
     private Timer? _heartbeat;
     private CancellationTokenSource? _cts;
@@ -710,13 +699,9 @@ public sealed class GatewayClient : IGatewayHold, IDisposable
                 if (await TryRegisterAsync(ct))
                 {
                     _registered = true;
-                    // Registration only proves leg 1. Run the two-way handshake right away
-                    // (issues #223/#224) so the indicator earns its green - or names the
-                    // broken return leg - within seconds of connecting, not at the next tick.
-                    // A flagged no-endpoint registration (issue #324) has nothing the Gateway
-                    // could call back, so the handshake is skipped until identity heals.
-                    if (!string.IsNullOrEmpty(_advertisedEndpoint))
-                        _ = Task.Run(() => VerifyAsync(ct), ct);
+                    // The post-registration verify kick is gone with the handshake (tunnel-only): the
+                    // indicator's green is earned by the live tunnel, not by a callback the Gateway no
+                    // longer makes.
                     return;
                 }
             }
@@ -801,11 +786,8 @@ public sealed class GatewayClient : IGatewayHold, IDisposable
                 // heartbeat, no restart.
                 MaybeReRegisterOnIdentityChange();
 
-                // Issues #223/#224: keep the two-way proof fresh. Re-verifies every
-                // ReverifyInterval while green, every tick while failed/unverified - so
-                // killing the return path flips the indicator red within one cycle and
-                // a repaired path flips it back green within one heartbeat.
-                MaybeKickVerify();
+                // The per-heartbeat verify kick is gone with the handshake (tunnel-only): the tunnel's
+                // own connected/reconnecting transitions drive the indicator now, within one cycle.
 
                 // The per-session state snapshot rides the heartbeat (issue #186): it lets
                 // the Gateway reconcile any doorbell ping it missed. Old Gateways ignore
@@ -902,112 +884,15 @@ public sealed class GatewayClient : IGatewayHold, IDisposable
         });
     }
 
-    /// <summary>Kick a background handshake when one is due (see <see cref="ReverifyInterval"/>).</summary>
-    private void MaybeKickVerify()
-    {
-        if (_monitor is null) return;
-        // A flagged no-endpoint registration (issue #324) has nothing the Gateway could call
-        // back; a handshake would only overwrite the precise identity-failure message with a
-        // generic callback error. The heartbeat identity re-resolve restores verification
-        // the moment a real endpoint registers.
-        if (string.IsNullOrEmpty(_advertisedEndpoint)) return;
-        if (_monitor.Status == GatewayConnectionStatus.Verified
-            && _lastVerifyStartedUtc + ReverifyInterval > DateTime.UtcNow)
-            return;
-        var cts = _cts;
-        if (cts is null || cts.IsCancellationRequested) return;
-        _ = Task.Run(() => VerifyAsync(cts.Token));
-    }
-
-    /// <summary>
-    /// Run ONE two-way handshake (issues #223/#224): POST a fresh nonce to the Gateway's
-    /// /directors/{id}/verify (this call arriving proves leg 1), which makes the Gateway
-    /// dial GET /verify/{nonce} back on the advertised endpoint (leg 2). The verdict -
-    /// including the cross-check that the callback actually landed HERE - goes to the
-    /// <see cref="GatewayConnectionMonitor"/>; the return value is for on-demand callers
-    /// (the troubleshooting dialog's Re-test). Null when verification is disabled, a
-    /// handshake is already in flight, or the verdict never round-tripped.
-    /// </summary>
-    public async Task<DirectorVerifyResultDto?> VerifyAsync(CancellationToken ct = default)
-    {
-        if (!_config.IsEnabled || _monitor is null || _disposed) return null;
-        if (Interlocked.CompareExchange(ref _verifying, 1, 0) != 0) return null;
-        var nonce = _monitor.BeginHandshake();
-        try
-        {
-            _lastVerifyStartedUtc = DateTime.UtcNow;
-            var resp = await _http.PostAsJsonAsync($"directors/{_directorId}/verify", new DirectorVerifyRequest { Nonce = nonce }, ct);
-
-            if (resp.StatusCode == HttpStatusCode.Gone)
-            {
-                // Same contract as the heartbeat: the Gateway forgot us, re-register first.
-                _monitor.CompleteHandshake(nonce, null, "Gateway no longer knows this Director - re-registering");
-                _registered = false;
-                var cts = _cts;
-                if (cts is not null && !cts.IsCancellationRequested)
-                    _ = Task.Run(() => RegisterLoop(cts.Token));
-                return null;
-            }
-            if (resp.StatusCode is HttpStatusCode.NotFound or HttpStatusCode.MethodNotAllowed)
-            {
-                _monitor.CompleteHandshake(nonce, null,
-                    $"The Gateway at {_activeUrl} does not support the verify handshake - update the Gateway");
-                return null;
-            }
-            if (!resp.IsSuccessStatusCode)
-            {
-                _monitor.CompleteHandshake(nonce, null, $"Gateway verify returned HTTP {(int)resp.StatusCode} {resp.ReasonPhrase}");
-                return null;
-            }
-
-            var result = await resp.Content.ReadFromJsonAsync<DirectorVerifyResultDto>(cancellationToken: ct);
-            if (result is null)
-            {
-                _monitor.CompleteHandshake(nonce, null, "Gateway verify answered 2xx with an unparsable body");
-                return null;
-            }
-
-            string? summary = null;
-            if (!result.Verified)
-            {
-                // The leg that broke in #197/#223: heartbeats land, callbacks die.
-                summary = $"The Gateway cannot call this Director back: {result.CallbackError}";
-            }
-            else if (!_monitor.CallbackReceived(nonce))
-            {
-                // The nonce correlation earning its keep: the Gateway believes its callback
-                // succeeded, but it never arrived here - whatever answered the advertised
-                // URL was not this process. One leg alone can never fake a green.
-                result.Verified = false;
-                summary = $"The Gateway's callback was answered by something that is not this Director (at {result.CallbackEndpoint})";
-            }
-            // Stream leg (the Cockpit terminal path): HTTP control can be fully verified while the
-            // WebSocket UPGRADE the terminal needs is dead. Don't flip Verified (the advertise gate
-            // is HTTP-based, issue #197) - but record it loudly. result is stored as LastResult, so
-            // any director UI reading the monitor sees StreamOk/StreamError too.
-            if (result.Verified && !result.StreamOk && result.StreamError is not null)
-                FileLog.Write($"[GatewayClient] verify: HTTP callback OK but TERMINAL STREAM leg failed: {result.StreamError}");
-
-            _monitor.CompleteHandshake(nonce, result, summary);
-            return result;
-        }
-        catch (OperationCanceledException) when (ct.IsCancellationRequested)
-        {
-            _monitor.AbandonHandshake(nonce); // shutdown: no verdict, no state flip
-            return null;
-        }
-        catch (Exception ex)
-        {
-            // Includes the HttpClient timeout (TaskCanceledException without ct signaled):
-            // leg 1 itself is down or crawling.
-            _monitor.CompleteHandshake(nonce, null, $"Cannot reach the Gateway at {_activeUrl}: {ex.Message}");
-            return null;
-        }
-        finally
-        {
-            Interlocked.Exchange(ref _verifying, 0);
-        }
-    }
+    // Gateway Cleanup mission (tunnel-only): the two-way verify handshake is GONE from this client.
+    // MaybeKickVerify and VerifyAsync used to POST directors/{id}/verify and ask the Gateway to dial this
+    // Director back on its advertised endpoint. The Gateway deleted that route - and its whole dial-back -
+    // at the cut ("Liveness is now the tunnel connection itself"), and the Director's own GET /verify/{nonce}
+    // callback door went with it, so the handshake could never pass again by two independent counts. What it
+    // could still do was LIE: on the 404 it told the owner "the Gateway does not support the verify handshake
+    // - update the Gateway", which sent him to fix a Gateway that was already correct, and flipped a healthy
+    // green light to red for doing nothing but opening diagnostics. Liveness is the tunnel: GatewayStreamClient
+    // marks the monitor connected/reconnecting directly.
 
     // Stamped by BuildRegistrationRequest: true while the last resolution found no tailnet
     // identity. RegisterLoop reads it to keep identity retries at heartbeat cadence (#324).

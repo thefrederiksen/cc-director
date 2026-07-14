@@ -44,6 +44,15 @@ internal sealed class SessionCommandServices
     /// returned when no registry was wired).
     /// </summary>
     public RepositoryRegistry? Repositories { get; init; }
+
+    /// <summary>
+    /// Gateway Cleanup CUT RESTORATION: the live "re-apply the Gateway settings now" hook, so the
+    /// <c>settings-put</c> verb makes a gateway change take effect immediately exactly as the Director's own
+    /// <c>PUT /settings</c> route does. This is the one service that is NOT an optional side effect: the REST
+    /// route always holds one, so a null here means the host wired the stream client wrong, and the verb
+    /// refuses a gateway patch outright rather than writing settings that never take effect.
+    /// </summary>
+    public Func<Task>? ReapplyGatewayAsync { get; init; }
 }
 
 /// <summary>
@@ -74,6 +83,7 @@ internal static class SessionCommandExecutor
         new SessionWriteExecutor(),
         new QueueGitExecutor(),
         new SessionByteExecutor(),
+        new DirectorConfigExecutor(),
     };
 
     /// <summary>

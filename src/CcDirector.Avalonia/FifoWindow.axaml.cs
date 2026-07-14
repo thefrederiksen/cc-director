@@ -228,7 +228,7 @@ public partial class FifoWindow : Window
         // records the snooze-until AND forwards the hold back down to this Director (which sets OnHold),
         // so OnHold is already set when we Advance - no optimistic local set.
         var host = (global::Avalonia.Application.Current as App)?.ControlApiHost;
-        if (host?.GatewayMonitor.Status != GatewayConnectionStatus.Verified || host.GatewayHold is null)
+        if (host?.GatewayMonitor.Status != GatewayConnectionStatus.Connected || host.GatewayHold is null)
         {
             // No Gateway -> no snooze (owner rule, no-fallback). Do NOT advance, set NO local hold.
             SetStatus("Connect to a Gateway to snooze.", Red);

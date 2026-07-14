@@ -119,7 +119,7 @@ public partial class GatewayConnectionPanel : UserControl
         var status = host?.GatewayMonitor?.Status;
 
         // A proven handshake opens on the signed-in view (Step 2 vs Done settles from account status).
-        if (status == GatewayConnectionStatus.Verified)
+        if (status == GatewayConnectionStatus.Connected)
             return new GatewayConnectionPanel(GatewayPanelStep.Done, repairMode: false);
 
         // A prior failure (or a lost tailnet identity) opens Step 1 in REPAIR mode (Phase 5): the failing
@@ -240,12 +240,12 @@ public partial class GatewayConnectionPanel : UserControl
                 (monitor.FailureSummary ?? "Start Tailscale on this machine, or set the Director public URL under Advanced.")
                 + " Once Tailscale is up this heals automatically; you can also pick your Gateway below to reconnect.");
 
-        var callbackFailed = monitor.LastResult is { CallbackOk: false };
+        // The callback-leg branch is gone with the handshake (tunnel-only): there is no Gateway->Director
+        // dial any more, so "the callback leg failed" is not a thing that can happen. The monitor's own
+        // summary says why the tunnel is not up.
         var wasWorking = monitor.LastVerifiedAt is not null;
         var title = wasWorking ? "Your Gateway became unreachable" : "Could not connect to your Gateway";
-        var summary = callbackFailed
-            ? "The Gateway could not reach this Director back (the callback leg). It may have moved - pick its current address below to reconnect. Show diagnostics for the full check."
-            : (monitor.FailureSummary ?? "The connection could not be completed.")
+        var summary = (monitor.FailureSummary ?? "The connection could not be completed.")
               + " It may have moved - pick its current address below to reconnect. Show diagnostics for the full check.";
         return (title, summary);
     }
@@ -261,8 +261,15 @@ public partial class GatewayConnectionPanel : UserControl
     }
 
     // Reuse the troubleshooter's diagnostic engine INLINE (spec section 8: the dialog-as-destination is
-    // gone, the logic is reused): re-run the handshake, then walk GatewayConnectivitySelfTest's ladder and
-    // render each rung. No new verification is built here.
+    // gone, the logic is reused): report the live connection state, then walk GatewayConnectivitySelfTest's
+    // ladder and render each rung. No new verification is built here.
+    //
+    // Gateway Cleanup mission (tunnel-only): opening this used to RUN the two-way handshake first
+    // (host.VerifyGatewayNowAsync). That handshake's Gateway route was deleted at the cut, so the call could
+    // only ever 404 - and on the 404 it wrote "the Gateway does not support the verify handshake - update the
+    // Gateway" into the monitor as a FAILURE. The result: opening diagnostics on a perfectly healthy,
+    // tunnel-connected Director flipped its light from green to red and told the owner to go update a Gateway
+    // that was already correct. Diagnostics now REPORT the connection state; they do not manufacture one.
     private async Task RunDiagnosticsAsync()
     {
         var host = (global::Avalonia.Application.Current as App)?.ControlApiHost;
@@ -278,20 +285,18 @@ public partial class GatewayConnectionPanel : UserControl
 
         DiagnosticsHost.Children.Clear();
         DiagnosticsRunning.IsVisible = true;
-        DiagnosticsVerdict.Text = "Running the two-way handshake and the diagnostic ladder...";
+        DiagnosticsVerdict.Text = "Running the diagnostic ladder...";
         try
         {
-            await host.VerifyGatewayNowAsync(ct);
             DiagnosticsVerdict.Text = DiagnosticsVerdictText(host.GatewayMonitor);
 
-            var monitor = host.GatewayMonitor;
             var port = host.Port;
             var (gatewayUrl, endpoint) = await Task.Run(() =>
             {
                 var cfg = GatewayConfig.Load();
-                var ep = monitor.LastResult?.CallbackEndpoint;
-                if (string.IsNullOrEmpty(ep))
-                    ep = TailscaleIdentity.TryGetMagicDnsName() is { } dns ? $"https://{dns}:{port}" : cfg.TailnetEndpoint;
+                // The callback endpoint the deleted handshake used to report is gone with it; resolve this
+                // machine's advertised address the same way it did when no verdict had been recorded yet.
+                var ep = TailscaleIdentity.TryGetMagicDnsName() is { } dns ? $"https://{dns}:{port}" : cfg.TailnetEndpoint;
                 return (cfg.IsEnabled ? cfg.Url : null, ep);
             }, ct);
 
@@ -320,10 +325,10 @@ public partial class GatewayConnectionPanel : UserControl
 
     private static string DiagnosticsVerdictText(GatewayConnectionMonitor m) => m.Status switch
     {
-        GatewayConnectionStatus.Verified => "Two-way verification PASSED - the Gateway and this Director can each reach the other.",
-        GatewayConnectionStatus.Failed => $"Two-way verification FAILED - {m.FailureSummary}",
+        GatewayConnectionStatus.Connected => "CONNECTED - this Director's tunnel to the Gateway is up, which is what lets the two reach each other.",
+        GatewayConnectionStatus.Failed => $"NOT CONNECTED - {m.FailureSummary}",
         GatewayConnectionStatus.NoTailnetIdentity => $"No tailnet identity - {m.FailureSummary}",
-        GatewayConnectionStatus.Connecting => "Still verifying - the handshake is in flight. Re-open diagnostics in a few seconds.",
+        GatewayConnectionStatus.Connecting => "Connecting - the tunnel is dialing. Re-open diagnostics in a few seconds.",
         _ => "No Gateway is configured.",
     };
 
@@ -857,7 +862,7 @@ public partial class GatewayConnectionPanel : UserControl
 
         switch (monitor.Status)
         {
-            case GatewayConnectionStatus.Verified:
+            case GatewayConnectionStatus.Connected:
                 OnHandshakeVerified();
                 break;
             case GatewayConnectionStatus.Failed:
@@ -891,7 +896,7 @@ public partial class GatewayConnectionPanel : UserControl
         if (attempt != _attemptId || !_connecting) return; // superseded or already settled
 
         var monitor = _monitor;
-        if (monitor?.Status == GatewayConnectionStatus.Verified)
+        if (monitor?.Status == GatewayConnectionStatus.Connected)
         {
             OnHandshakeVerified();
             return;
