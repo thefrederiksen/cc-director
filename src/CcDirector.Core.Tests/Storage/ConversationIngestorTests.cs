@@ -282,6 +282,28 @@ public sealed class ConversationIngestorTests : IDisposable
         Assert.Single(Recorded());
     }
 
+    /// <summary>
+    /// Backfill for a live session is automatic and needs no separate pass: the first ingest reads the
+    /// WHOLE transcript, so history written before the feature existed is copied on the next turn end.
+    /// </summary>
+    [Fact]
+    public void First_ingest_backfills_the_whole_existing_conversation()
+    {
+        var session = NewSession();
+        var ts = DateTime.UtcNow.AddHours(-3);
+        WriteTranscript(session,
+            UserLine("an old prompt", ts),
+            AssistantLine("an old reply", ts.AddSeconds(2)),
+            UserLine("a later prompt", ts.AddMinutes(30)));
+
+        using var ingestor = new ConversationIngestor(new SessionManager(new AgentOptions { ClaudePath = TestShell.Path }));
+        ingestor.Ingest(session);
+
+        Assert.Equal(
+            new[] { "an old prompt", "an old reply", "a later prompt" },
+            Recorded().Select(r => r.Text));
+    }
+
     [Fact]
     public void A_real_agent_timestamp_is_marked_as_the_agents_own()
     {
