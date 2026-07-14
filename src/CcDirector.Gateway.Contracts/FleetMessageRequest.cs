@@ -140,6 +140,47 @@ public sealed class FleetRenameResponse
 }
 
 /// <summary>
+/// Body of POST /fleet/role on the Director. Declares a session's EXPLICIT role after birth - the set-role
+/// verb the tunnel-only cut removed with POST /sessions/{sid}/role, leaving a session stuck with whatever
+/// role it was born with. Architect cannot be derived from the spawn graph, so without this a running
+/// session can never become one.
+/// </summary>
+public sealed class FleetRoleRequest
+{
+    /// <summary>Target session GUID (defaults, at the CLI, to the caller itself).</summary>
+    public string ToSessionId { get; set; } = "";
+
+    /// <summary>
+    /// One of <see cref="SessionRoles.All"/> (case-insensitive). An empty or null value CLEARS the explicit
+    /// role, reverting the session to auto-derivation. An unknown value is REJECTED as a bad request so a
+    /// mistyped role never silently drops.
+    /// </summary>
+    public string? Role { get; set; }
+}
+
+/// <summary>Response from POST /fleet/role.</summary>
+public sealed class FleetRoleResponse
+{
+    /// <summary>True when the explicit role was applied.</summary>
+    public bool Applied { get; set; }
+
+    /// <summary>The target session's GUID.</summary>
+    public string SessionId { get; set; } = "";
+
+    /// <summary>The explicit role after the call, or null when it was cleared.</summary>
+    /// <remarks>
+    /// The EFFECTIVE role is deliberately not returned here. Worker and Manager are derived from the
+    /// fleet-wide spawn graph, which only the Gateway holds - a Director cannot compute it alone, so the
+    /// field would always be null. Read the effective role from the roster (GET /fleet/sessions), which
+    /// relays to the Gateway.
+    /// </remarks>
+    public string? ExplicitRole { get; set; }
+
+    /// <summary>Error message when Applied is false.</summary>
+    public string? Error { get; set; }
+}
+
+/// <summary>
 /// Body of POST /fleet/done on the Director (issue #1490). Flags a session anywhere in the fleet for
 /// asynchronous teardown by its owning Director's deletion reaper: flagged locally when the target lives on
 /// this machine, otherwise relayed through the Gateway (POST /sessions/{sid}/request-deletion). Restores the

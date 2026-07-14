@@ -21,6 +21,7 @@ from .session_ops import (
     list_sessions,
     mark_done,
     rename_session,
+    set_session_role,
     selftest as run_selftest,
     send_message,
     spawn_session,
@@ -351,6 +352,35 @@ def rename(
         rename_session(None, target_or_name)
     else:
         rename_session(target_or_name, new_name)
+
+
+@session_app.command()
+def role(
+    role_or_target: str = typer.Argument(
+        ...,
+        help="Role for this session (Standalone, Manager, Worker, Architect), or a target when ROLE is "
+             "also provided. Pass 'none' to clear the explicit role.",
+    ),
+    role_value: Optional[str] = typer.Argument(
+        None, help="Role when an explicit target is provided."
+    ),
+) -> None:
+    """Declare a session's explicit role, defaulting to the current session.
+
+    Valid roles: Standalone, Manager, Worker, Architect (case-insensitive). Pass 'none' to clear
+    the explicit role and revert to automatic derivation.
+
+    Worker and Manager are normally derived from the fleet: a controlled session with a live
+    controller is a Worker; a session controlling a live session is a Manager. Architect cannot be
+    inferred from the spawn graph, so declaring it here is the only way to make one after birth.
+    An explicit role is sticky and wins over derivation.
+    """
+    if role_value is None:
+        target, wanted = None, role_or_target
+    else:
+        target, wanted = role_or_target, role_value
+    # "none" is the CLI's way to say "clear it" - the endpoint clears on an empty role.
+    set_session_role(target, "" if wanted.strip().lower() == "none" else wanted)
 
 
 @session_app.command()

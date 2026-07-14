@@ -253,6 +253,67 @@ public sealed class FleetMessagingEndpointTests : IAsyncLifetime
         Assert.Equal(HttpStatusCode.NotFound, resp.StatusCode);
     }
 
+    // ===== /fleet/role validation (the set-role verb restored to the tunnel-only floor) =====
+
+    // A missing route returns 404, so a 400 from the HANDLER is itself the proof that /fleet/role is
+    // registered - the gap was that POST /sessions/{sid}/role was deleted in the tunnel-only cut, leaving a
+    // running session stuck with the role it was born with.
+    [Fact]
+    public async Task Fleet_role_missing_target_returns_400_provingRouteExists()
+    {
+        var resp = await _client.PostAsJsonAsync("fleet/role", new FleetRoleRequest { ToSessionId = "", Role = "Architect" });
+        Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
+    }
+
+    [Fact]
+    public async Task Fleet_role_bad_guid_returns_400()
+    {
+        var resp = await _client.PostAsJsonAsync("fleet/role",
+            new FleetRoleRequest { ToSessionId = "not-a-guid", Role = "Architect" });
+        Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
+    }
+
+    // An unknown role must be REJECTED, not silently dropped - a mistyped --role that quietly did nothing is
+    // exactly how a session ends up with the wrong role and nobody notices.
+    [Fact]
+    public async Task Fleet_role_unknown_role_returns_400()
+    {
+        var resp = await _client.PostAsJsonAsync("fleet/role",
+            new FleetRoleRequest { ToSessionId = Guid.NewGuid().ToString(), Role = "Overlord" });
+        Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
+    }
+
+    // Validation order matters: an unknown role is rejected as a bad request BEFORE the session lookup, so a
+    // typo is reported as a typo rather than as "session not found".
+    [Fact]
+    public async Task Fleet_role_unknown_role_beats_unknown_session_inValidationOrder()
+    {
+        var resp = await _client.PostAsJsonAsync("fleet/role",
+            new FleetRoleRequest { ToSessionId = Guid.NewGuid().ToString(), Role = "Overlord" });
+        Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
+        Assert.DoesNotContain("not found", await resp.Content.ReadAsStringAsync(), StringComparison.OrdinalIgnoreCase);
+    }
+
+    // A well-formed target this Director does not own: fail loud (502), never a silent no-op. Roles are set on
+    // the owning Director - there is no Gateway route to relay to.
+    [Fact]
+    public async Task Fleet_role_unknown_target_returns_502_notSilentNoOp()
+    {
+        var resp = await _client.PostAsJsonAsync("fleet/role",
+            new FleetRoleRequest { ToSessionId = Guid.NewGuid().ToString(), Role = "Architect" });
+        Assert.Equal(HttpStatusCode.BadGateway, resp.StatusCode);
+    }
+
+    // An EMPTY role is the documented "clear it" path, so it must pass validation and reach the session
+    // lookup (502 here) rather than being rejected as a bad request alongside genuine typos.
+    [Fact]
+    public async Task Fleet_role_empty_role_isClearNotReject()
+    {
+        var resp = await _client.PostAsJsonAsync("fleet/role",
+            new FleetRoleRequest { ToSessionId = Guid.NewGuid().ToString(), Role = "" });
+        Assert.Equal(HttpStatusCode.BadGateway, resp.StatusCode);
+    }
+
     // ===== /fleet/done validation (issue #1490 - the self-reap route restored to the floor) =====
 
     [Fact]

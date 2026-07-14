@@ -227,6 +227,38 @@ def rename_session(target: Optional[str], new_name: str) -> Dict[str, Any]:
     return resp
 
 
+def set_session_role(target: Optional[str], role: Optional[str]) -> Dict[str, Any]:
+    """Declare a session's explicit role, defaulting to the current session.
+
+    Restores the set-role verb the tunnel-only cut removed with POST /sessions/{sid}/role, which
+    left a running session stuck with the role it was born with. Architect cannot be derived from
+    the spawn graph, so this is the only way to make one after birth. An empty role clears the
+    explicit role and reverts the session to auto-derivation.
+    """
+    sid = resolve_target_or_current(target)
+    wanted = (role or "").strip()
+    try:
+        resp = director.post_json("fleet/role", {"toSessionId": sid, "role": wanted})
+    except director.DirectorError as err:
+        console.print(f"[red]Error:[/red] {err}")
+        raise typer.Exit(1)
+
+    if not isinstance(resp, dict):
+        console.print("[red]Error:[/red] the Director did not return the session's role.")
+        raise typer.Exit(1)
+
+    actual_sid = director.field(resp, "sessionId", "SessionId") or sid
+    explicit = director.field(resp, "explicitRole", "ExplicitRole")
+    short = director.short_id(actual_sid)
+    # Only the explicit role is reported: Worker/Manager derivation needs the fleet-wide spawn graph, which
+    # lives in the Gateway, so the effective role is read from `session list`, not returned here.
+    if explicit:
+        console.print(f"[green]Role set[/green] {short} is now explicitly {explicit}.")
+    else:
+        console.print(f"[green]Role cleared[/green] {short} reverts to automatic role derivation.")
+    return resp
+
+
 def mark_done(target: Optional[str], reason: Optional[str]) -> Dict[str, Any]:
     """Flag a session for deletion, defaulting to the current session.
 

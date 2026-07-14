@@ -573,6 +573,52 @@ internal static class ControlEndpoints
             }
         });
 
+        // POST /fleet/role - declare a session's EXPLICIT role after birth. Restores the set-role verb off the
+        // POST /sessions/{sid}/role route the tunnel-only cut removed, which left a running session stuck with
+        // whatever role it was born with - Architect cannot be derived from the spawn graph, so there was no way
+        // to make one after the fact. An unknown role is REJECTED (400) so a mistyped role never silently drops;
+        // an empty role CLEARS the explicit role back to auto-derivation. A remote target fails loud (502): the
+        // Gateway has no role route to relay to, and a silent no-op would be worse than a clear error.
+        app.MapPost("/fleet/role", (FleetRoleRequest req) =>
+        {
+            if (req is null || string.IsNullOrWhiteSpace(req.ToSessionId))
+                return Results.BadRequest(new { error = "toSessionId is required" });
+            if (!Guid.TryParse(req.ToSessionId, out var toGuid))
+                return Results.BadRequest(new { error = "invalid toSessionId format" });
+
+            // Blank clears; a non-blank value must be one of the four known roles.
+            var clearing = string.IsNullOrWhiteSpace(req.Role);
+            if (!clearing && !SessionRoles.IsValid(req.Role))
+                return Results.BadRequest(new
+                {
+                    error = $"unknown role '{req.Role}'. Valid roles: {string.Join(", ", SessionRoles.All)} (or empty to clear).",
+                });
+
+            var local = sessionManager.GetSession(toGuid);
+            if (local is null)
+                return Results.Json(new FleetRoleResponse
+                {
+                    Applied = false, SessionId = req.ToSessionId,
+                    Error = "Session not found on this Director. Setting a role on a session hosted by another "
+                          + "Director is not supported - run this against the Director that owns the session.",
+                }, statusCode: StatusCodes.Status502BadGateway);
+
+            var normalized = clearing ? null : SessionRoles.Normalize(req.Role);
+            FileLog.Write($"[ControlEndpoints] POST /fleet/role: session={toGuid}, role={normalized ?? "(cleared)"}");
+            local.SetExplicitRole(normalized);
+
+            // Only the EXPLICIT role is reported back. The effective role folds in Worker/Manager derivation
+            // from the fleet-wide spawn graph, which lives in the Gateway - this Director cannot compute it,
+            // so reporting it here would always be null. Callers read it from the roster.
+            var dto = MapWithIdentity(local, turnSummaryCache);
+            return Results.Json(new FleetRoleResponse
+            {
+                Applied = true,
+                SessionId = dto.SessionId ?? "",
+                ExplicitRole = dto.ExplicitRole,
+            });
+        });
+
         // POST /fleet/done - flag a session anywhere in the fleet for teardown (issue #1490). A local target is
         // flagged directly (its Director's reaper removes it after the grace window); a remote target is relayed
         // through the Gateway (POST /sessions/{sid}/request-deletion). Restores `cc-devthrottle session done` -
