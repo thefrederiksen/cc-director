@@ -243,28 +243,51 @@ public sealed class ProcessHost : IDisposable
         });
     }
 
-    /// <summary>Write raw bytes to the process input.</summary>
+    /// <summary>
+    /// Write raw bytes to the process input - the ONLY door bytes take from the Director into the
+    /// agent's terminal.
+    ///
+    /// EVERY exit from this method is logged, and that is the whole point (issue #1551). On
+    /// 2026-07-14 a 1031-character phone dictation never reached Claude Code's composer. The
+    /// terminal's OUTPUT is recorded byte-for-byte (session-logs/&lt;id&gt;/raw.jsonl), so we could
+    /// prove the text was absent from the composer - but this direction recorded NOTHING, so we
+    /// could not tell whether the bytes failed to leave here or left and were dropped by the TUI.
+    /// Those two causes need opposite fixes and the evidence to separate them did not exist.
+    ///
+    /// The failure paths used <see cref="System.Diagnostics.Debug.WriteLine"/>, which is
+    /// [Conditional("DEBUG")] and therefore compiled out of the shipped build entirely: a write that
+    /// threw was silent on disk, in the exact place a lost prompt would go missing.
+    ///
+    /// SILENCE HERE NOW MEANS SUCCESS. FileStream.Write either writes every byte or throws, so a
+    /// send with no line from this method is proof the bytes left the Director - which points the
+    /// next investigation at the TUI instead of at us. That inference only holds while every
+    /// non-success path below stays loud; do not quiet one.
+    ///
+    /// Success is deliberately NOT logged: every keystroke goes through here, and per-write lines
+    /// would bury the failures this exists to surface.
+    /// </summary>
     public void Write(byte[] data)
     {
         if (_disposed || _inputStream == null)
         {
-            System.Diagnostics.Debug.WriteLine($"[ConPTY Write] SKIPPED — disposed={_disposed}, stream null={_inputStream == null}");
+            FileLog.Write($"[ProcessHost] Write SKIPPED: pid={ProcessId}, bytes={data.Length}, " +
+                          $"disposed={_disposed}, streamNull={_inputStream == null} - the bytes never left the Director");
             return;
         }
         try
         {
-            System.Diagnostics.Debug.WriteLine($"[ConPTY Write] {data.Length} bytes: [{string.Join(", ", data.Select(b => $"0x{b:X2}"))}] \"{System.Text.Encoding.UTF8.GetString(data).Replace("\r", "\\r").Replace("\n", "\\n")}\"");
             _inputStream.Write(data, 0, data.Length);
             _inputStream.Flush();
-            System.Diagnostics.Debug.WriteLine($"[ConPTY Write] Flushed OK");
         }
         catch (IOException ex)
         {
-            System.Diagnostics.Debug.WriteLine($"[ConPTY Write] IOException: {ex.Message}");
+            FileLog.Write($"[ProcessHost] Write FAILED: pid={ProcessId}, bytes={data.Length}: " +
+                          $"{ex.GetType().Name}: {ex.Message} - the bytes never left the Director");
         }
         catch (ObjectDisposedException ex)
         {
-            System.Diagnostics.Debug.WriteLine($"[ConPTY Write] ObjectDisposedException: {ex.Message}");
+            FileLog.Write($"[ProcessHost] Write FAILED: pid={ProcessId}, bytes={data.Length}: " +
+                          $"{ex.GetType().Name}: {ex.Message} - the bytes never left the Director");
         }
     }
 
