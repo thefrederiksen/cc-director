@@ -23,7 +23,22 @@ internal sealed class RecordingSessionBackend : ISessionBackend
     public bool SimulateBlindSubmitPath { get; init; }
     public TimeSpan BlindSubmitDelay { get; init; } = TimeSpan.FromMilliseconds(50);
     public RecordingEchoScript EchoScript { get; } = new();
+
+    /// <summary>
+    /// What is parked in the composer RIGHT NOW because an Enter was swallowed - empty once something
+    /// finally submits. Live-state, not a tally: a prompt the watchdog nudged through was parked and
+    /// then wasn't, and reporting it as still parked would hide the fix working.
+    /// </summary>
     public string ParkedComposerText { get; private set; } = string.Empty;
+
+    /// <summary>
+    /// Bytes this fake streams into the terminal buffer when a submit actually lands - the agent
+    /// echoing the prompt, animating its spinner and streaming a reply. This is what the submit
+    /// watchdog reads as proof the turn started, so a fake that never streams looks exactly like a
+    /// parked composer (which is the point: a LOST Enter streams nothing, and the watchdog must
+    /// catch it). Comfortably above SubmitVerifier.SubmittedGrowthBytes.
+    /// </summary>
+    public int SubmitResponseBytes { get; init; } = 4096;
 
     public event Action<string>? StatusChanged;
     public event Action<int>? ProcessExited;
@@ -94,9 +109,15 @@ internal sealed class RecordingSessionBackend : ISessionBackend
         {
             SubmittedTexts.Add(EchoScript.ComposerText);
             EchoScript.ClearComposer();
+            ParkedComposerText = string.Empty; // whatever was parked has now gone through
+            // The turn started: the real agent now floods the terminal with its reply. The submit
+            // watchdog watches for exactly this and stops nudging once it appears.
+            Buffer?.Write(Encoding.UTF8.GetBytes(new string('r', SubmitResponseBytes)));
             return;
         }
 
+        // The TUI swallowed the Enter (pull request #1513): the composer keeps the text and NOTHING is
+        // streamed, so the watchdog sees dead window after dead window and nudges.
         LostEnterCount++;
         ParkedComposerText = EchoScript.ComposerText;
     }
@@ -160,6 +181,15 @@ internal sealed class RecordingEchoScript
         var echoText = step.EchoText ?? typedText;
         buffer.Write(Encoding.UTF8.GetBytes(echoText));
         IsComposerReady = step.AcceptsSubmit;
+
+        // A TUI that swallows an Enter mid-repaint is not broken forever - it comes back. Model that
+        // window so a submit can be lost and then nudged through, which is the whole point of the
+        // watchdog (a composer that NEVER accepts leaves ReadyAfter null and must end in a throw).
+        if (step.ReadyAfter is TimeSpan readyAfter)
+        {
+            await Task.Delay(readyAfter);
+            IsComposerReady = true;
+        }
     }
 }
 
@@ -168,7 +198,8 @@ internal sealed record RecordingEchoStep(
     TimeSpan Delay,
     string? PlaceholderText,
     string? EchoText,
-    bool AcceptsSubmit)
+    bool AcceptsSubmit,
+    TimeSpan? ReadyAfter = null)
 {
     public static RecordingEchoStep Immediate() =>
         new(RecordingEchoMode.Delayed, TimeSpan.Zero, null, null, true);
@@ -187,6 +218,22 @@ internal sealed record RecordingEchoStep(
 
     public static RecordingEchoStep SlashCorrupted(string text) =>
         new(RecordingEchoMode.SlashCorrupted, TimeSpan.Zero, null, "/" + text, false);
+
+    /// <summary>
+    /// The text echoes (so it is provably sitting in the composer) but the TUI SWALLOWS every Enter -
+    /// the composer never reaches a submitting state. The unrecoverable form of the live failure in
+    /// pull request #1513. Distinct from <see cref="Withheld"/>, where the text never arrives at all.
+    /// </summary>
+    public RecordingEchoStep NotAcceptingSubmit() => this with { AcceptsSubmit = false, ReadyAfter = null };
+
+    /// <summary>
+    /// The recoverable form of pull request #1513, and the common one: the text echoes, the TUI swallows the
+    /// submitting Enter (an autocomplete popup, a startup window that drops Enter, a composer
+    /// repaint), and then <paramref name="readyAfter"/> later it is accepting again - so the
+    /// watchdog's nudge lands and the turn starts.
+    /// </summary>
+    public RecordingEchoStep SwallowsEnterUntilReady(TimeSpan readyAfter) =>
+        this with { AcceptsSubmit = false, ReadyAfter = readyAfter };
 }
 
 internal enum RecordingEchoMode

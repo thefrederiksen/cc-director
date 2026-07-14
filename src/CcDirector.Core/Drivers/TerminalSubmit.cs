@@ -4,6 +4,7 @@ using CcDirector.Core.Input;
 using CcDirector.Core.Memory;
 using CcDirector.Core.Utilities;
 
+
 namespace CcDirector.Core.Drivers;
 
 /// <summary>
@@ -14,13 +15,53 @@ namespace CcDirector.Core.Drivers;
 /// The fix is to type the text, wait until the composer echoes it back in the terminal byte stream,
 /// then press Enter as a separate keystroke. This class is the single home for that logic so every
 /// driver (Codex, Pi, ...) uses one tested implementation.
+///
+/// A submit has TWO halves, and both are verified here:
+///   1. The text ARRIVED in the composer - the echo check (<see cref="EchoVerifiedInlineSubmitAsync"/>).
+///   2. The text LEFT the composer - the Enter actually submitted (<see cref="SubmitVerifier"/>).
+/// Half 2 used to be checked only on the @-temp-file route, so the COMMON route (a short single-line
+/// prompt - every phone dictation) pressed Enter and returned without ever looking back. A swallowed
+/// Enter therefore reported success: the prompt sat parked in the composer, the session was marked
+/// Working, and the next send typed itself onto the end of the orphan and ran the two mashed together
+/// (pull request #1513). Every Enter now goes through <see cref="PressEnterAndVerifyAsync"/>.
 /// </summary>
 public static class TerminalSubmit
 {
-    private static readonly byte[] EnterByte = [0x0D];
     private static readonly byte[] EscapeByte = [0x1B];
     private static readonly byte[] BracketedPasteStart = Encoding.UTF8.GetBytes("\x1b[200~");
     private static readonly byte[] BracketedPasteEnd = Encoding.UTF8.GetBytes("\x1b[201~");
+
+    /// <summary>
+    /// THE one place an Enter is pressed to submit a prompt. Settle, press, then watch the TUI until
+    /// it proves the turn started - nudging a parked composer and throwing if it never does.
+    ///
+    /// With no terminal buffer there is no evidence either way, so this presses Enter and returns
+    /// unverified. It deliberately does NOT send the blind nudge the @-reference-only verifier used
+    /// to: that nudge was safe when a composer could only ever hold OUR text, but the operator also
+    /// hand-types into the composer and sends more from their phone to run both together. An
+    /// unconditional second Enter would submit whatever they were halfway through typing. When the
+    /// buffer exists we only ever nudge a composer we can SEE is parked, which cannot do that.
+    /// </summary>
+    private static async Task PressEnterAndVerifyAsync(
+        ISessionBackend backend,
+        string text,
+        string driverTag,
+        TimeSpan settle,
+        TimeSpan? submitVerifyBeat)
+    {
+        await Task.Delay(settle);
+        await SubmitVerifier.PressEnterAndVerifyAsync(
+            backend.Buffer, backend.Write, LabelFor(text, driverTag), submitVerifyBeat);
+    }
+
+    /// <summary>Short, log-safe description of what was submitted.</summary>
+    private static string LabelFor(string text, string driverTag)
+    {
+        var oneLine = text.Replace('\r', ' ').Replace('\n', ' ');
+        const int maxChars = 60;
+        var shown = oneLine.Length <= maxChars ? oneLine : oneLine[..maxChars] + "...";
+        return $"{driverTag}: {shown}";
+    }
 
     /// <summary>
     /// The single ConPTY submit protocol: trim caller submit newlines, use bracketed paste for
@@ -29,6 +70,8 @@ public static class TerminalSubmit
     /// <paramref name="screenSnapshot"/>, when provided, returns the CURRENT rendered screen rows
     /// and is consulted as a second opinion whenever the byte-stream echo check misses (see
     /// <see cref="ScreenShowsText"/>).
+    /// <paramref name="submitVerifyBeat"/> overrides the post-Enter watchdog's beat length; tests pass
+    /// a fast one so the suite does not wait out real-time beats.
     /// </summary>
     public static async Task SharedSubmitAsync(
         ISessionBackend backend,
@@ -39,7 +82,8 @@ public static class TerminalSubmit
         TimeSpan? echoTimeout = null,
         TimeSpan? pollInterval = null,
         TimeSpan? enterSettleDelay = null,
-        Func<string[]>? screenSnapshot = null)
+        Func<string[]>? screenSnapshot = null,
+        TimeSpan? submitVerifyBeat = null)
     {
         ArgumentNullException.ThrowIfNull(backend);
 
@@ -56,7 +100,8 @@ public static class TerminalSubmit
                 echoTimeout,
                 pollInterval,
                 enterSettleDelay,
-                screenSnapshot);
+                screenSnapshot,
+                submitVerifyBeat);
             return;
         }
 
@@ -64,13 +109,13 @@ public static class TerminalSubmit
         {
             if (bracketedPasteEnabled)
             {
-                await BracketedPasteSubmitAsync(backend, textForCheck, driverTag, enterSettleDelay);
+                await BracketedPasteSubmitAsync(backend, textForCheck, driverTag, enterSettleDelay, submitVerifyBeat);
                 return;
             }
 
             if (!string.IsNullOrWhiteSpace(backend.WorkingDirectory))
             {
-                await SubmitViaAtReferenceAsync(backend, textForCheck, driverTag, echoTimeout, pollInterval, enterSettleDelay, screenSnapshot);
+                await SubmitViaAtReferenceAsync(backend, textForCheck, driverTag, echoTimeout, pollInterval, enterSettleDelay, screenSnapshot, submitVerifyBeat);
                 return;
             }
         }
@@ -84,11 +129,12 @@ public static class TerminalSubmit
                 echoTimeout,
                 pollInterval,
                 enterSettleDelay,
-                screenSnapshot);
+                screenSnapshot,
+                submitVerifyBeat);
         }
         else
         {
-            await TypeSettleEnterSubmitAsync(backend, textForCheck, driverTag, enterSettleDelay);
+            await TypeSettleEnterSubmitAsync(backend, textForCheck, driverTag, enterSettleDelay, submitVerifyBeat);
         }
     }
 
@@ -105,7 +151,8 @@ public static class TerminalSubmit
         TimeSpan? echoTimeout = null,
         TimeSpan? pollInterval = null,
         TimeSpan? enterSettleDelay = null,
-        Func<string[]>? screenSnapshot = null)
+        Func<string[]>? screenSnapshot = null,
+        TimeSpan? submitVerifyBeat = null)
         => await SharedSubmitAsync(
             backend,
             text,
@@ -115,7 +162,8 @@ public static class TerminalSubmit
             echoTimeout,
             pollInterval,
             enterSettleDelay,
-            screenSnapshot);
+            screenSnapshot,
+            submitVerifyBeat);
 
     private static async Task EchoVerifiedInlineSubmitAsync(
         ISessionBackend backend,
@@ -124,7 +172,8 @@ public static class TerminalSubmit
         TimeSpan? echoTimeout = null,
         TimeSpan? pollInterval = null,
         TimeSpan? enterSettleDelay = null,
-        Func<string[]>? screenSnapshot = null)
+        Func<string[]>? screenSnapshot = null,
+        TimeSpan? submitVerifyBeat = null)
     {
         ArgumentNullException.ThrowIfNull(backend);
 
@@ -132,8 +181,8 @@ public static class TerminalSubmit
         if (buffer is null)
         {
             backend.Write(Encoding.UTF8.GetBytes(text));
-            await Task.Delay(enterSettleDelay ?? TimeSpan.FromMilliseconds(50));
-            backend.Write(EnterByte);
+            await PressEnterAndVerifyAsync(
+                backend, text, driverTag, enterSettleDelay ?? TimeSpan.FromMilliseconds(50), submitVerifyBeat);
             return;
         }
 
@@ -151,8 +200,7 @@ public static class TerminalSubmit
 
             if (needle.Length == 0 || await WaitForEchoAsync(buffer, cursor, needle, visibleTailNeedle, to, poll))
             {
-                await Task.Delay(settle);
-                backend.Write(EnterByte);
+                await PressEnterAndVerifyAsync(backend, text, driverTag, settle, submitVerifyBeat);
                 return;
             }
 
@@ -166,8 +214,7 @@ public static class TerminalSubmit
             {
                 FileLog.Write($"[{driverTag}] EchoVerifiedSubmit: byte-stream echo missed on attempt {attempt} " +
                               $"but the rendered screen shows the typed text (len={text.Length}) - pressing Enter");
-                await Task.Delay(settle);
-                backend.Write(EnterByte);
+                await PressEnterAndVerifyAsync(backend, text, driverTag, settle, submitVerifyBeat);
                 return;
             }
 
@@ -184,8 +231,7 @@ public static class TerminalSubmit
         if (driverTag.Contains("OpenCode", StringComparison.OrdinalIgnoreCase))
         {
             FileLog.Write($"[{driverTag}] EchoVerifiedSubmit: OpenCode echo was torn; pressing Enter instead of failing route");
-            await Task.Delay(settle);
-            backend.Write(EnterByte);
+            await PressEnterAndVerifyAsync(backend, text, driverTag, settle, submitVerifyBeat);
             return;
         }
 
@@ -200,28 +246,35 @@ public static class TerminalSubmit
         ISessionBackend backend,
         string text,
         string driverTag,
-        TimeSpan? enterSettleDelay = null)
+        TimeSpan? enterSettleDelay = null,
+        TimeSpan? submitVerifyBeat = null)
     {
         FileLog.Write($"[{driverTag}] SharedSubmit: bracketed paste submit len={text.Length}");
         backend.Write(BracketedPasteStart);
         await WriteTextAsync(backend, text);
         backend.Write(BracketedPasteEnd);
-        await Task.Delay(enterSettleDelay ?? TimeSpan.FromMilliseconds(80));
-        backend.Write(EnterByte);
+        await PressEnterAndVerifyAsync(
+            backend, text, driverTag, enterSettleDelay ?? TimeSpan.FromMilliseconds(80), submitVerifyBeat);
     }
 
     private static async Task TypeSettleEnterSubmitAsync(
         ISessionBackend backend,
         string text,
         string driverTag,
-        TimeSpan? enterSettleDelay = null)
+        TimeSpan? enterSettleDelay = null,
+        TimeSpan? submitVerifyBeat = null)
     {
         FileLog.Write($"[{driverTag}] SharedSubmit: type-settle-enter submit len={text.Length}");
         await WriteTextAsync(backend, text);
-        await Task.Delay(enterSettleDelay ?? TimeSpan.FromMilliseconds(50));
-        backend.Write(EnterByte);
+        await PressEnterAndVerifyAsync(
+            backend, text, driverTag, enterSettleDelay ?? TimeSpan.FromMilliseconds(50), submitVerifyBeat);
     }
 
+    /// <summary>
+    /// The large-input route. It no longer calls the submit watchdog itself: the Enter inside
+    /// <see cref="EchoVerifiedInlineSubmitAsync"/> is now verified like every other Enter, so calling
+    /// it again here would watch the same submit twice.
+    /// </summary>
     private static async Task SubmitViaAtReferenceAsync(
         ISessionBackend backend,
         string text,
@@ -229,7 +282,8 @@ public static class TerminalSubmit
         TimeSpan? echoTimeout = null,
         TimeSpan? pollInterval = null,
         TimeSpan? enterSettleDelay = null,
-        Func<string[]>? screenSnapshot = null)
+        Func<string[]>? screenSnapshot = null,
+        TimeSpan? submitVerifyBeat = null)
     {
         var tempPath = LargeInputHandler.CreateTempFile(text, backend.WorkingDirectory);
         var relRef = LargeInputHandler.MakeAtReference(tempPath, backend.WorkingDirectory);
@@ -243,9 +297,8 @@ public static class TerminalSubmit
             echoTimeout,
             pollInterval,
             enterSettleDelay,
-            screenSnapshot);
-
-        await AtReferenceSubmitVerifier.EnsureSubmittedAsync(backend.Buffer, backend.Write, atReference);
+            screenSnapshot,
+            submitVerifyBeat);
     }
 
     private static async Task SubmitViaInstructionFileAsync(
@@ -257,7 +310,8 @@ public static class TerminalSubmit
         TimeSpan? echoTimeout = null,
         TimeSpan? pollInterval = null,
         TimeSpan? enterSettleDelay = null,
-        Func<string[]>? screenSnapshot = null)
+        Func<string[]>? screenSnapshot = null,
+        TimeSpan? submitVerifyBeat = null)
     {
         var tempPath = LargeInputHandler.CreateTempFile(text, backend.WorkingDirectory);
         var relRef = LargeInputHandler.MakeAtReference(tempPath, backend.WorkingDirectory);
@@ -277,11 +331,12 @@ public static class TerminalSubmit
                 echoTimeout,
                 pollInterval,
                 enterSettleDelay,
-                screenSnapshot);
+                screenSnapshot,
+                submitVerifyBeat);
         }
         else
         {
-            await TypeSettleEnterSubmitAsync(backend, instruction, driverTag, enterSettleDelay);
+            await TypeSettleEnterSubmitAsync(backend, instruction, driverTag, enterSettleDelay, submitVerifyBeat);
         }
     }
 
