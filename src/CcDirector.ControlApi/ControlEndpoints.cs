@@ -502,6 +502,50 @@ internal static class ControlEndpoints
             if (isLocal)
             {
                 FileLog.Write($"[ControlEndpoints] POST /fleet/spawn: LOCAL, repo={req.RepoPath}, agent={req.Agent}");
+
+                // Issue #1548: a mission-scoped LOCAL spawn resolves the mission NAME against the Gateway's
+                // mission store - the source of truth - before handing the create request to the floor. The
+                // REMOTE leg below already gets this for free: it goes out through the Gateway, whose
+                // POST /machines/{machine}/sessions stamps the name for it. The local leg never touched the
+                // Gateway, so a caller sending only a mission id (which is all the CLI's `session spawn
+                // --mission <id>` can send) fell through to the Director's TEMPORARY local-store bridge and
+                // was rejected against the wrong store - telling the human to create a mission that already
+                // existed. Resolving here makes both legs consult the same store and leaves the floor
+                // stamping only what create carries, which is the documented end state.
+                if (req.MissionId is Guid localMissionId && string.IsNullOrWhiteSpace(req.MissionName))
+                {
+                    var missionGw = gatewayClientProvider?.Invoke();
+                    if (missionGw is { IsEnabled: true })
+                    {
+                        MissionDto? mission;
+                        try
+                        {
+                            mission = await missionGw.GetMissionAsync(localMissionId, ct);
+                        }
+                        catch (Exception ex)
+                        {
+                            // Fail loud. An unreachable Gateway is NOT an unknown mission, and reporting it as
+                            // one is the exact lie this issue is about.
+                            FileLog.Write($"[ControlEndpoints] POST /fleet/spawn: mission lookup {localMissionId} FAILED: {ex.Message}");
+                            return Results.Json(
+                                new { error = $"Cannot attach the new session to mission '{localMissionId}': the Gateway could not be reached to look up its name. {ex.Message}" },
+                                statusCode: StatusCodes.Status502BadGateway);
+                        }
+
+                        if (mission is null)
+                            return Results.BadRequest(new
+                            {
+                                error = $"unknown mission '{localMissionId}'. The Gateway has no mission with that id. "
+                                      + "List the missions with: cc-devthrottle mission list",
+                            });
+
+                        FileLog.Write($"[ControlEndpoints] POST /fleet/spawn: mission {localMissionId} resolved to \"{mission.MissionName}\"");
+                        req.MissionName = mission.MissionName;
+                    }
+                    // No Gateway configured: leave the name blank and let the floor's local-store bridge
+                    // resolve it exactly as it does today. That is the only store a Gateway-less Director has.
+                }
+
                 return await CreateLocalSessionAsync(req);
             }
 

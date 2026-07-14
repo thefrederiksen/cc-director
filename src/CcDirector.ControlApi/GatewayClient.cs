@@ -468,6 +468,43 @@ public sealed class GatewayClient : IGatewayHold, IDisposable
     }
 
     /// <summary>
+    /// Issue #1548: look a Mission up by id in the GATEWAY's mission store - the source of truth for
+    /// Missions, which are a fleet-level concept spanning Directors and machines. A LOCAL spawn resolves
+    /// the mission name through here so it stamps the create request exactly the way the Gateway already
+    /// stamps a REMOTE spawn in <c>POST /machines/{machine}/sessions</c>, leaving the Director floor to
+    /// stamp only what create carries.
+    ///
+    /// Returns null ONLY when the Gateway genuinely has no mission with that id (404). Throws when the
+    /// Gateway is disabled or unreachable - a missing answer must never be reported as "unknown mission",
+    /// which is the lie this issue is about. Same fail-loud posture as the fleet relays above.
+    /// </summary>
+    public async Task<MissionDto?> GetMissionAsync(Guid missionId, CancellationToken ct = default)
+    {
+        if (!_config.IsEnabled)
+            throw new InvalidOperationException("Gateway is not configured; cannot look up a mission.");
+
+        FileLog.Write($"[GatewayClient] GetMissionAsync: GET /missions/{missionId}");
+        using var resp = await _http.GetAsync($"missions/{missionId}", ct);
+        if (resp.StatusCode == HttpStatusCode.NotFound)
+        {
+            FileLog.Write($"[GatewayClient] GetMissionAsync {missionId}: the Gateway has no such mission");
+            return null;
+        }
+        if (!resp.IsSuccessStatusCode)
+        {
+            var detail = await resp.Content.ReadAsStringAsync(ct);
+            throw new InvalidOperationException(
+                $"Gateway could not look up mission '{missionId}': HTTP {(int)resp.StatusCode} {resp.ReasonPhrase} {detail}".TrimEnd());
+        }
+
+        var mission = await resp.Content.ReadFromJsonAsync<MissionDto>(ct);
+        if (mission is null)
+            throw new InvalidOperationException($"Gateway mission lookup for '{missionId}' returned an unparsable body.");
+        FileLog.Write($"[GatewayClient] GetMissionAsync {missionId}: resolved name=\"{mission.MissionName}\"");
+        return mission;
+    }
+
+    /// <summary>
     /// Snooze Length mission (Phase 3): record or clear a Gateway-owned snooze/hold for a session by
     /// driving the Gateway's <c>POST /sessions/{sid}/hold</c> with the SAME authenticated client (already
     /// pointed at the resolved Gateway address and carrying the fleet token) the other Director-to-Gateway
