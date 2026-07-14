@@ -1,6 +1,8 @@
 using System.Diagnostics;
 using System.Net.Http.Json;
 using System.Net.Sockets;
+using System.Text.Json;
+using System.Text.Json.Nodes;
 using CcDirector.Core.Diagnostics;
 using CcDirector.Core.Network;
 using CcDirector.Core.Storage;
@@ -1493,6 +1495,63 @@ internal static class GatewayEndpoints
             return TunnelFailure(null, d.MachineName);
         });
 
+        // Gateway Cleanup CUT RESTORATION: the Cockpit's Director Settings editor
+        // (apps/cockpit/src/fleet/DirectorDetailView.tsx -> client-core getDirectorSettings/putDirectorSettings).
+        // The cut dropped the HTTP reverse-proxy leg that used to serve these two and deferred remote config
+        // editing to Phase 4, but the CALLER was left pointing here. With nothing mapped, the request fell
+        // through to the single-page-app fallback, which answered the Cockpit's GET with the HTML shell at
+        // status 200 - and the client only checks res.ok, so it loaded a web page into the settings editor and
+        // called it settings. These legs ride the tunnel like every director-level verb above; the settings body
+        // is an OPAQUE object the Director owns, so it is forwarded VERBATIM in both directions rather than
+        // being modelled here (the Gateway must not become a second definition of the Director's config).
+        app.MapGet("/directors/{id}/settings", async (string id, CancellationToken ct) =>
+        {
+            var d = registry.Get(id);
+            if (d is null) return Results.NotFound(new { error = "director not found" });
+
+            var sr = await DirectorCommandRouter.TrySendAsync(sendCommand, id, "settings-get", "", null, ct, machineName: d.MachineName);
+            if (sr is null || !sr.Ok) return DirectorAnswerFailure(sr, d.MachineName);
+
+            // The verb's body IS the config object; forward the exact bytes the Director sent.
+            return Results.Content(sr.BodyJson ?? "{}", "application/json");
+        });
+
+        app.MapPut("/directors/{id}/settings", async (string id, HttpContext ctx, CancellationToken ct) =>
+        {
+            var d = registry.Get(id);
+            if (d is null) return Results.NotFound(new { error = "director not found" });
+
+            string raw;
+            using (var reader = new StreamReader(ctx.Request.Body))
+                raw = await reader.ReadToEndAsync(ct);
+
+            // Parse only far enough to know it is a JSON object - the Director owns what the keys MEAN. A
+            // malformed edit is rejected HERE, naming the fault, rather than travelling to the Director to
+            // fail there or, worse, being written as garbage.
+            JsonNode? patch;
+            try
+            {
+                patch = JsonNode.Parse(raw);
+            }
+            catch (JsonException ex)
+            {
+                return Results.Json(new { error = $"The settings you sent are not valid JSON: {ex.Message}" },
+                    statusCode: StatusCodes.Status400BadRequest);
+            }
+            if (patch is not JsonObject)
+                return Results.Json(new { error = "request body must be a JSON object" },
+                    statusCode: StatusCodes.Status400BadRequest);
+
+            FileLog.Write($"[GatewayEndpoints] PUT /directors/{id}/settings: machine={d.MachineName}");
+
+            var sr = await DirectorCommandRouter.TrySendAsync(sendCommand, id, "settings-put", "",
+                new SettingsPutPayload { Settings = patch }, ct, machineName: d.MachineName);
+            if (sr is null || !sr.Ok) return DirectorAnswerFailure(sr, d.MachineName);
+
+            // The merged config the Director actually stored, forwarded verbatim.
+            return Results.Content(sr.BodyJson ?? "{}", "application/json");
+        });
+
         app.MapPost("/directors/{id}/sessions", async (string id, NewSessionRequest req) =>
         {
             var d = registry.Get(id);
@@ -2423,6 +2482,34 @@ internal static class GatewayEndpoints
     //   - any other status  -> the exact bare 502 it returns today, byte-for-byte
     // Deliberately NOT MapDirectorFailure: that maps BadRequest/NotFound to 400/404, and these call sites ship
     // a 502 for those today. Changing that is a contract change and belongs to a different piece of work.
+    /// <summary>
+    /// The settings legs' failure mapping. <see cref="TunnelFailure"/> words the two GATEWAY-synthesized
+    /// outcomes (no tunnel, timeout, mid-command drop) well, so those are handed straight to it. What it does
+    /// NOT do is carry a DIRECTOR-sent failure's message: its default branch collapses every one to a bare 502
+    /// with no body. That is exactly the trap item 1 paid for - a command that computes a perfect explanation
+    /// which no endpoint ever shows a human. The settings verbs return real, actionable messages ("request body
+    /// must be a JSON object"; a refused gateway patch saying nothing was written), so these legs map the
+    /// Director's own status to its HTTP equivalent and carry its words through to the person who typed the
+    /// edit. Scoped to these two routes deliberately: the other legs' bare-502 behaviour is not this item's to
+    /// change.
+    /// </summary>
+    private static IResult DirectorAnswerFailure(DirectorCommandResult? sr, string? machineName)
+    {
+        if (sr is null
+            || sr.Status is DirectorCommandStatus.Timeout or DirectorCommandStatus.TunnelDropped)
+            return TunnelFailure(sr, machineName);
+
+        var status = sr.Status switch
+        {
+            DirectorCommandStatus.BadRequest => StatusCodes.Status400BadRequest,
+            DirectorCommandStatus.NotFound => StatusCodes.Status404NotFound,
+            DirectorCommandStatus.Conflict => StatusCodes.Status409Conflict,
+            DirectorCommandStatus.Locked => StatusCodes.Status423Locked,
+            _ => StatusCodes.Status502BadGateway,
+        };
+        return Results.Json(new { error = sr.Error }, statusCode: status);
+    }
+
     private static IResult TunnelFailure(DirectorCommandResult? sr, string? machineName = null)
     {
         if (sr is null)
@@ -2642,5 +2729,15 @@ internal static class GatewayEndpoints
         if (string.IsNullOrEmpty(s)) return "";
         var oneLine = s.Replace('\r', ' ').Replace('\n', ' ');
         return oneLine.Length <= 200 ? oneLine : oneLine[..200] + "...";
+    }
+
+    /// <summary>
+    /// The <c>settings-put</c> verb payload. Mirrors the Director-side <c>SettingsPutRequest</c>: the settings
+    /// patch travels as an opaque JSON object under one property, so the command envelope stays well-formed
+    /// without the Gateway modelling the Director's config keys.
+    /// </summary>
+    private sealed class SettingsPutPayload
+    {
+        public JsonNode? Settings { get; set; }
     }
 }

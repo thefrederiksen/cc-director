@@ -629,19 +629,20 @@ public partial class MainWindow : Window
             Account: _boxAccount);
     }
 
-    // Map the monitor's raw status onto the resolver's connection verification plus the failing leg. A
-    // Failed handshake with a recorded callback verdict is the callback leg; without one, the outbound
-    // reach never got that far. NoTailnetIdentity is a local identity failure named generically here (the
-    // panel names it precisely in Step 1 repair).
+    // Map the monitor's raw status onto the resolver's connection verification plus the failing leg.
+    // Gateway Cleanup mission (tunnel-only): a failure is always the OUTBOUND reach now - this Director could
+    // not get its tunnel up. The Callback leg (the Gateway dialing this Director back) no longer exists, so it
+    // is never reported: the handshake that used to distinguish the two legs is gone with the dial-back it
+    // measured. NoTailnetIdentity is a local identity failure named generically here (the panel names it
+    // precisely in Step 1 repair).
     private static (GatewayConnectionVerification, GatewayConnectionFailedLeg) MapMonitor(GatewayConnectionMonitor? m)
     {
         if (m is null) return (GatewayConnectionVerification.Unknown, GatewayConnectionFailedLeg.None);
         return m.Status switch
         {
-            GatewayConnectionStatus.Verified => (GatewayConnectionVerification.Connected, GatewayConnectionFailedLeg.None),
+            GatewayConnectionStatus.Connected => (GatewayConnectionVerification.Connected, GatewayConnectionFailedLeg.None),
             GatewayConnectionStatus.Connecting => (GatewayConnectionVerification.Verifying, GatewayConnectionFailedLeg.None),
-            GatewayConnectionStatus.Failed => (GatewayConnectionVerification.Failed,
-                m.LastResult is { CallbackOk: false } ? GatewayConnectionFailedLeg.Callback : GatewayConnectionFailedLeg.OutboundReach),
+            GatewayConnectionStatus.Failed => (GatewayConnectionVerification.Failed, GatewayConnectionFailedLeg.OutboundReach),
             GatewayConnectionStatus.NoTailnetIdentity => (GatewayConnectionVerification.Failed, GatewayConnectionFailedLeg.None),
             _ => (GatewayConnectionVerification.Unknown, GatewayConnectionFailedLeg.None),
         };
@@ -1247,7 +1248,7 @@ public partial class MainWindow : Window
         if (_lastHomeStatus is not { } status) return;
 
         var healthy = status.AllReady && !_gatewayError;
-        var summary = _gatewayMonitor?.Status == GatewayConnectionStatus.Verified
+        var summary = _gatewayMonitor?.Status == GatewayConnectionStatus.Connected
             ? "Gateway connected - ready to work"
             : "Ready to start a session";
         // When all tools pass, show the count (and any optional not-installed) quietly here rather than
@@ -2185,7 +2186,7 @@ public partial class MainWindow : Window
 
         // No Gateway -> no snooze (owner rule, no-fallback): require a VERIFIED connection, which proves
         // BOTH legs the round-trip needs (Director->Gateway to record, Gateway->Director to forward back).
-        if (host?.GatewayMonitor.Status != GatewayConnectionStatus.Verified || host.GatewayHold is null)
+        if (host?.GatewayMonitor.Status != GatewayConnectionStatus.Connected || host.GatewayHold is null)
         {
             ShowNotification("You need to be connected to a Gateway to use snooze.");
             return;

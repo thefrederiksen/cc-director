@@ -149,7 +149,7 @@ public partial class OnboardingWizardDialog : Window
     {
         var host = (global::Avalonia.Application.Current as App)?.ControlApiHost;
         var connected = _gatewayConnected
-            || host?.GatewayMonitor?.Status == CcDirector.ControlApi.GatewayConnectionStatus.Verified;
+            || host?.GatewayMonitor?.Status == CcDirector.ControlApi.GatewayConnectionStatus.Connected;
         if (!connected)
         {
             FileLog.Write("[OnboardingWizardDialog] AdvanceFromGateway: not connected yet, nudging");

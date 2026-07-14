@@ -1,13 +1,17 @@
 using CcDirector.ControlApi;
-using CcDirector.Gateway.Contracts;
 using Xunit;
 
 namespace CcDirector.Gateway.Tests;
 
 /// <summary>
-/// The Director-side home of the handshake truth (issues #223/#224): green is earned by a
-/// completed nonce handshake only; NotConfigured is a legitimate gray, never red; a stale
-/// LastVerifiedAt survives later failures so the UI can say "was verified until HH:mm".
+/// The Director-side home of the Gateway-connection truth: green is earned by a LIVE TUNNEL only;
+/// NotConfigured is a legitimate gray, never red; a stale LastVerifiedAt survives later failures so the UI
+/// can say "was connected until HH:mm".
+///
+/// Gateway Cleanup mission (tunnel-only): the two-way nonce handshake these tests were written against
+/// (issues #223/#224) is gone - the Gateway deleted its half at the cut, so it could never pass again and its
+/// only remaining effect was to paint a lie over a healthy connection. The behaviours it used to guard are
+/// re-asserted here against the tunnel writers, which now earn the green.
 /// </summary>
 public sealed class GatewayConnectionMonitorTests
 {
@@ -33,62 +37,69 @@ public sealed class GatewayConnectionMonitorTests
     {
         var m = new GatewayConnectionMonitor();
         m.Reset(gatewayConfigured: true);
-        var n = m.BeginHandshake();
-        m.CompleteHandshake(n, new DirectorVerifyResultDto { Verified = true }, null);
+        m.MarkTunnelConnected();
 
         m.Reset(gatewayConfigured: false);
         Assert.Equal(GatewayConnectionStatus.NotConfigured, m.Status);
-        Assert.Null(m.LastVerifiedAt); // a verification against the old gateway says nothing now
-        Assert.Null(m.LastResult);
+        Assert.Null(m.LastVerifiedAt); // a connection to the old gateway says nothing now
     }
 
     [Fact]
-    public void RecordCallback_KnownNonce_True_UnknownNonce_False()
+    public void MarkTunnelConnected_GoesConnected_AndStamps()
     {
         var m = new GatewayConnectionMonitor();
         m.Reset(gatewayConfigured: true);
-        var nonce = m.BeginHandshake();
 
-        Assert.True(m.RecordCallback(nonce));
-        Assert.True(m.CallbackReceived(nonce));
-        Assert.False(m.RecordCallback("never-issued"));
-        Assert.False(m.RecordCallback(""));
-    }
+        m.MarkTunnelConnected();
 
-    [Fact]
-    public void CompleteHandshake_Pass_GoesVerified_AndStamps()
-    {
-        var m = new GatewayConnectionMonitor();
-        m.Reset(gatewayConfigured: true);
-        var nonce = m.BeginHandshake();
-        var result = new DirectorVerifyResultDto { Verified = true, Nonce = nonce };
-
-        m.CompleteHandshake(nonce, result, failureSummary: null);
-
-        Assert.Equal(GatewayConnectionStatus.Verified, m.Status);
+        Assert.Equal(GatewayConnectionStatus.Connected, m.Status);
         Assert.NotNull(m.LastVerifiedAt);
         Assert.Null(m.FailureSummary);
-        Assert.Same(result, m.LastResult);
-        Assert.False(m.CallbackReceived(nonce)); // nonce retired
     }
 
     [Fact]
-    public void CompleteHandshake_Fail_GoesFailed_KeepsOlderVerifiedStamp()
+    public void MarkTunnelConnected_NeverGoesGreenFromNotConfigured()
+    {
+        // Gray is sticky: a local-only Director with no gateway.url never lights up.
+        var m = new GatewayConnectionMonitor();
+
+        m.MarkTunnelConnected();
+
+        Assert.Equal(GatewayConnectionStatus.NotConfigured, m.Status);
+        Assert.Null(m.LastVerifiedAt);
+    }
+
+    [Fact]
+    public void TunnelDrop_GoesConnecting_AndKeepsOlderConnectedStamp()
     {
         var m = new GatewayConnectionMonitor();
         m.Reset(gatewayConfigured: true);
 
-        var n1 = m.BeginHandshake();
-        m.CompleteHandshake(n1, new DirectorVerifyResultDto { Verified = true }, null);
-        var verifiedAt = m.LastVerifiedAt;
-        Assert.NotNull(verifiedAt);
+        m.MarkTunnelConnected();
+        var connectedAt = m.LastVerifiedAt;
+        Assert.NotNull(connectedAt);
 
-        var n2 = m.BeginHandshake();
-        m.CompleteHandshake(n2, new DirectorVerifyResultDto { Verified = false }, "The Gateway cannot call this Director back: TCP timeout");
+        m.MarkTunnelConnecting(); // the tunnel dropped and is redialing
+
+        Assert.Equal(GatewayConnectionStatus.Connecting, m.Status);
+        Assert.Equal(connectedAt, m.LastVerifiedAt); // "was connected until HH:mm" survives
+    }
+
+    [Fact]
+    public void RegistrationFailureAfterConnected_GoesFailed_KeepsOlderConnectedStamp()
+    {
+        var m = new GatewayConnectionMonitor();
+        m.Reset(gatewayConfigured: true);
+
+        m.MarkTunnelConnected();
+        var connectedAt = m.LastVerifiedAt;
+        Assert.NotNull(connectedAt);
+
+        m.ReportRegistrationFailure("Cannot reach the Gateway at http://gw:7878: connection refused");
 
         Assert.Equal(GatewayConnectionStatus.Failed, m.Status);
-        Assert.Contains("cannot call this Director back", m.FailureSummary);
-        Assert.Equal(verifiedAt, m.LastVerifiedAt); // "was verified until HH:mm" survives
+        Assert.Contains("connection refused", m.FailureSummary);
+        Assert.Equal(connectedAt, m.LastVerifiedAt); // "was connected until HH:mm" survives
     }
 
     [Fact]
@@ -149,22 +160,9 @@ public sealed class GatewayConnectionMonitorTests
         m.ReportRegistrationFailure("reason A");        // 2
         m.ReportRegistrationFailure("reason A");        // suppressed (no churn)
         m.ReportRegistrationFailure("reason B");        // 3
-        var n = m.BeginHandshake();                     // no event (no state change yet)
-        m.CompleteHandshake(n, null, null);             // 4
+        m.MarkTunnelConnected();                        // 4
+        m.MarkTunnelConnected();                        // suppressed (no churn)
 
         Assert.Equal(4, fired);
-    }
-
-    [Fact]
-    public void AbandonHandshake_RetiresNonce_WithoutStateFlip()
-    {
-        var m = new GatewayConnectionMonitor();
-        m.Reset(gatewayConfigured: true);
-        var nonce = m.BeginHandshake();
-
-        m.AbandonHandshake(nonce);
-
-        Assert.Equal(GatewayConnectionStatus.Connecting, m.Status);
-        Assert.False(m.RecordCallback(nonce)); // no longer pending
     }
 }
