@@ -590,6 +590,52 @@ public sealed class Session : IDisposable
     /// </summary>
     private bool _turnInFlight;
 
+    /// <summary>
+    /// An EXPLICIT "hold this session" that arrived WHILE a real turn was in flight, deferred until the
+    /// turn ends. The problem it solves: "put my session on hold" set OnHold immediately, but the very
+    /// turn that was underway then ended and the turn-END auto-lift cleared it - so the hold never stuck.
+    /// When the session next settles, this is applied as a DURABLE hold (OnHold goes true and is NOT lifted
+    /// by that same turn boundary, unlike the automatic snooze). Set only via <see cref="RequestHold"/>;
+    /// cleared when applied, when the session exits, or when a new submission supersedes it. Runtime-only.
+    /// </summary>
+    private bool _pendingHold;
+
+    /// <summary>Outcome of a <see cref="RequestHold"/> call.</summary>
+    public enum HoldOutcome
+    {
+        /// <summary>The hold was applied immediately (the session was already settled).</summary>
+        Held,
+        /// <summary>A turn was in flight, so the hold was deferred and will apply when the turn ends.</summary>
+        Pending,
+        /// <summary>The session was taken OFF hold (onHold=false), clearing any pending deferral too.</summary>
+        Released,
+    }
+
+    /// <summary>
+    /// Request an EXPLICIT hold / un-hold of this session - the user's "put my session on hold". Un-hold
+    /// (<paramref name="onHold"/> false) clears the hold and any pending deferral at once. A hold requested
+    /// while a real turn is in flight is DEFERRED: it applies durably when the turn ends, so the very turn
+    /// boundary that auto-lifts an ordinary snooze does not bounce it. A hold requested while the session is
+    /// settled applies immediately. Returns which of those happened.
+    /// </summary>
+    public HoldOutcome RequestHold(bool onHold)
+    {
+        if (!onHold)
+        {
+            _pendingHold = false;
+            OnHold = false;
+            return HoldOutcome.Released;
+        }
+        if (_turnInFlight)
+        {
+            _pendingHold = true;
+            FileLog.Write($"[Session] Hold requested during an active turn - deferring until it ends: session={Id}");
+            return HoldOutcome.Pending;
+        }
+        OnHold = true;
+        return HoldOutcome.Held;
+    }
+
     /// <summary>Fires when <see cref="OnHold"/> changes. Arg: new value. The desktop
     /// session list subscribes so the color strip can repaint dark blue (held) without
     /// the wingman touching <see cref="StatusColor"/>; OnHold sits on top of it.</summary>
@@ -1566,6 +1612,7 @@ public sealed class Session : IDisposable
             // stale Hold deferral no longer reflects intent -- clear it (issue #470).
             // The OnHold setter no-ops + skips OnHoldChanged when already false.
             OnHold = false;
+            _pendingHold = false; // a fresh submission supersedes a not-yet-applied deferred hold
             // A real turn is now underway; arm the turn-END hold lift (see SetActivityState).
             _turnInFlight = true;
             SetActivityState(ActivityState.Working);
@@ -1678,6 +1725,7 @@ public sealed class Session : IDisposable
         // session again, so clear any stale Hold deferral (issue #470). The OnHold
         // setter no-ops + skips OnHoldChanged when already false.
         OnHold = false;
+        _pendingHold = false; // a fresh submission supersedes a not-yet-applied deferred hold
         // A real turn is now underway; arm the turn-END hold lift (see SetActivityState).
         _turnInFlight = true;
         SetActivityState(ActivityState.Working);
@@ -1806,12 +1854,23 @@ public sealed class Session : IDisposable
         if (newState is ActivityState.WaitingForInput or ActivityState.WaitingForPerm
             or ActivityState.Idle or ActivityState.Exited)
         {
-            if (_turnInFlight && newState is ActivityState.WaitingForInput or ActivityState.WaitingForPerm)
+            if (_pendingHold && newState is not ActivityState.Exited)
+            {
+                // A deferred EXPLICIT hold (RequestHold while a turn was in flight): the turn the user asked
+                // to hold during has now finished, so apply it DURABLY. This WINS over the turn-END auto-lift
+                // below - an explicit hold sticks; it is not cleared by the very turn boundary it was waiting
+                // for. The session parks held (red or idle) until the user comes back to it.
+                if (!OnHold)
+                    FileLog.Write($"[Session] Deferred hold applied at turn end ({newState}): session={Id}");
+                OnHold = true;
+            }
+            else if (_turnInFlight && newState is ActivityState.WaitingForInput or ActivityState.WaitingForPerm)
             {
                 if (OnHold)
                     FileLog.Write($"[Session] Turn ended ({newState}) - lifting hold: session={Id}");
                 OnHold = false;
             }
+            _pendingHold = false;
             _turnInFlight = false;
         }
         // A real activity change ends any Wingman "running in the background" overlay: once the

@@ -293,9 +293,16 @@ internal static class SessionCommandExecutor
         if (session is null)
             return DirectorCommandResult.Fail(DirectorCommandStatus.NotFound, "session not found");
 
-        session.OnHold = onHold;
-        FileLog.Write($"[SessionCommandExecutor] hold: session={guid} onHold={onHold}");
-        return DirectorCommandResult.Success(Serialize(new HoldResponse { OnHold = session.OnHold }));
+        // RequestHold defers an EXPLICIT hold that arrives mid-turn so it applies durably when the turn
+        // ends, instead of being bounced by the turn-END auto-lift (the "put my session on hold while it is
+        // still working" case). An immediate hold / un-hold behaves as before.
+        var outcome = session.RequestHold(onHold);
+        FileLog.Write($"[SessionCommandExecutor] hold: session={guid} onHold={onHold} outcome={outcome}");
+        return DirectorCommandResult.Success(Serialize(new HoldResponse
+        {
+            OnHold = session.OnHold,
+            Pending = outcome == Session.HoldOutcome.Pending,
+        }));
     }
 
     /// <summary>

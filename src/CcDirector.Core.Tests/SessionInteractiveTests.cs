@@ -165,6 +165,86 @@ public sealed class SessionInteractiveTests
         Assert.True(s.OnHold);
     }
 
+    // ---- explicit "put my session on hold" (RequestHold): a hold asked for mid-turn is DEFERRED and
+    // applied durably at the turn end, instead of being bounced by the turn-END auto-lift ----
+
+    [Fact]
+    public async Task RequestHold_MidTurn_IsDeferred_ThenAppliesDurablyAtRedSettle()
+    {
+        var backend = new RecordingBackend();
+        using var s = NewSession(backend, ActivityState.Working);
+
+        await s.SendTextAsync("do the thing"); // real submission arms the turn
+        var outcome = s.RequestHold(true);      // user says "put my session on hold" WHILE it is working
+
+        Assert.Equal(Session.HoldOutcome.Pending, outcome);
+        Assert.False(s.OnHold); // not held yet - it finishes the current turn first
+
+        s.ApplyTerminalActivityState(ActivityState.WaitingForInput); // turn ends -> red "needs you"
+        Assert.True(s.OnHold); // the deferred hold applied at the settle
+
+        // ...and it STICKS: the turn boundary that would auto-lift an ordinary snooze does not bounce it,
+        // and later cosmetic repaints leave it held.
+        s.ApplyTerminalActivityState(ActivityState.Working);
+        s.ApplyTerminalActivityState(ActivityState.WaitingForInput);
+        Assert.True(s.OnHold);
+    }
+
+    [Fact]
+    public async Task RequestHold_MidTurn_AppliesAtIdleSettleToo()
+    {
+        var backend = new RecordingBackend();
+        using var s = NewSession(backend, ActivityState.Working);
+
+        await s.SendTextAsync("go");
+        s.RequestHold(true);
+
+        s.ApplyTerminalActivityState(ActivityState.Idle); // turn ends at ready, not "needs you"
+        Assert.True(s.OnHold); // still parks held
+    }
+
+    [Fact]
+    public void RequestHold_WhenSettled_HoldsImmediately()
+    {
+        var backend = new RecordingBackend();
+        using var s = NewSession(backend, ActivityState.Idle);
+
+        var outcome = s.RequestHold(true); // no turn in flight
+        Assert.Equal(Session.HoldOutcome.Held, outcome);
+        Assert.True(s.OnHold);
+    }
+
+    [Fact]
+    public async Task RequestHold_False_ReleasesAndClearsAPendingDefer()
+    {
+        var backend = new RecordingBackend();
+        using var s = NewSession(backend, ActivityState.Working);
+
+        await s.SendTextAsync("go");
+        s.RequestHold(true);                          // pending
+        var outcome = s.RequestHold(false);           // user changes their mind before it applies
+
+        Assert.Equal(Session.HoldOutcome.Released, outcome);
+        Assert.False(s.OnHold);
+
+        s.ApplyTerminalActivityState(ActivityState.WaitingForInput); // turn ends
+        Assert.False(s.OnHold); // the cleared deferral is NOT resurrected
+    }
+
+    [Fact]
+    public async Task RequestHold_PendingDefer_IsSupersededByANewSubmission()
+    {
+        var backend = new RecordingBackend();
+        using var s = NewSession(backend, ActivityState.Working);
+
+        await s.SendTextAsync("first");
+        s.RequestHold(true);            // pending
+        await s.SendTextAsync("second"); // a fresh submission - the user is driving again
+
+        s.ApplyTerminalActivityState(ActivityState.WaitingForInput); // that turn ends
+        Assert.False(s.OnHold); // the superseded deferral did not apply
+    }
+
     // ---- #5 PTY resize guard ----
 
     [Fact]

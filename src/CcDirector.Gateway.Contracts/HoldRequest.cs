@@ -27,4 +27,12 @@ public sealed class HoldRequest
 public sealed class HoldResponse
 {
     public bool OnHold { get; set; }
+
+    /// <summary>
+    /// True when an EXPLICIT hold was DEFERRED because a real turn was in flight: the session is not held
+    /// yet (<see cref="OnHold"/> is still false), but it will park held the moment the current turn ends.
+    /// Lets the caller tell the user "it'll hold when it finishes what it's doing" instead of implying it
+    /// is already held. False for an immediate hold, an un-hold, or a Gateway that predates this field.
+    /// </summary>
+    public bool Pending { get; set; }
 }
