@@ -223,6 +223,37 @@ public sealed class GatewayClient : IGatewayHold, IDisposable
     }
 
     /// <summary>
+    /// Push captured prompts and replies to the Gateway's prompt log (issue #1551): POST /prompts.
+    /// Returns how many the Gateway stored, or null when it could not be reached or refused - the
+    /// Director keeps no copy, so a null must be treated as "not recorded" and retried, never as done.
+    /// Unlike most calls here this does not throw: a logging failure must not break a turn.
+    /// </summary>
+    public async Task<int?> PushPromptsAsync(IReadOnlyList<PromptRecord> records, CancellationToken ct = default)
+    {
+        if (!_config.IsEnabled) return null;
+        if (records.Count == 0) return 0;
+
+        try
+        {
+            var body = new PromptIngestRequest { Records = records };
+            using var resp = await _http.PostAsJsonAsync("prompts", body, ct);
+            if (!resp.IsSuccessStatusCode)
+            {
+                FileLog.Write($"[GatewayClient] PushPromptsAsync: POST /prompts returned HTTP {(int)resp.StatusCode}");
+                return null;
+            }
+
+            var parsed = await resp.Content.ReadFromJsonAsync<PromptIngestResponse>(ct);
+            return parsed?.Written;
+        }
+        catch (Exception ex)
+        {
+            FileLog.Write($"[GatewayClient] PushPromptsAsync FAILED: {ex.Message}");
+            return null;
+        }
+    }
+
+    /// <summary>
     /// Rename a session anywhere in the fleet via the Gateway's PATCH /sessions/{sid}, which routes the
     /// rename to the owning Director over the tunnel and returns the updated <see cref="SessionDto"/>.
     /// Issue #1490: the Director's loopback POST /fleet/rename relays here for a non-local target. Throws
