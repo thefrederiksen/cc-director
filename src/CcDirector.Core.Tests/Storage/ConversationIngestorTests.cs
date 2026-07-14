@@ -50,17 +50,20 @@ public sealed class ConversationIngestorTests : IDisposable
         return path;
     }
 
-    private static string TextLine(string type, string role, string text, DateTime ts) =>
+    private static string TextLine(string type, string role, string text, DateTime ts, string? contextId = null) =>
         JsonSerializer.Serialize(new
         {
             type,
             timestamp = ts.ToString("O"),
+            sessionId = contextId,
             message = new { role, content = new[] { new { type = "text", text } } },
         });
 
-    private static string UserLine(string text, DateTime ts) => TextLine("user", "user", text, ts);
+    private static string UserLine(string text, DateTime ts, string? contextId = null)
+        => TextLine("user", "user", text, ts, contextId);
 
-    private static string AssistantLine(string text, DateTime ts) => TextLine("assistant", "assistant", text, ts);
+    private static string AssistantLine(string text, DateTime ts, string? contextId = null)
+        => TextLine("assistant", "assistant", text, ts, contextId);
 
     private static string AssistantToolLine(string toolName, DateTime ts) =>
         JsonSerializer.Serialize(new
@@ -302,6 +305,68 @@ public sealed class ConversationIngestorTests : IDisposable
         Assert.Equal(
             new[] { "an old prompt", "an old reply", "a later prompt" },
             Recorded().Select(r => r.Text));
+    }
+
+    // ===== the context id: replaying one conversation, and resetting on /clear =====
+
+    [Fact]
+    public void Every_message_of_one_conversation_carries_the_same_context_id()
+    {
+        var session = NewSession();
+        var ts = DateTime.UtcNow;
+        WriteTranscript(session,
+            UserLine("first", ts, "ctx-abc"),
+            AssistantLine("reply", ts.AddSeconds(2), "ctx-abc"),
+            UserLine("second", ts.AddSeconds(9), "ctx-abc"));
+
+        using var ingestor = new ConversationIngestor(new SessionManager(new AgentOptions { ClaudePath = TestShell.Path }));
+        ingestor.Ingest(session);
+
+        var records = Recorded();
+        Assert.Equal(3, records.Count);
+        Assert.All(records, r => Assert.Equal("ctx-abc", r.ContextId));
+        // The whole point: one group key reloads the whole back-and-forth.
+        Assert.Equal(3, records.Count(r => r.ContextId == "ctx-abc"));
+    }
+
+    [Fact]
+    public void Clearing_the_context_starts_a_new_context_id_under_the_same_session()
+    {
+        var session = NewSession();
+        var ts = DateTime.UtcNow;
+
+        // A conversation, then /clear - Claude mints a new context id AND a new transcript file, and
+        // the SessionStart hook repoints the session at it.
+        WriteTranscript(session, UserLine("before the clear", ts, "ctx-one"));
+        using var ingestor = new ConversationIngestor(new SessionManager(new AgentOptions { ClaudePath = TestShell.Path }));
+        ingestor.Ingest(session);
+
+        WriteTranscript(session, UserLine("after the clear", ts.AddMinutes(1), "ctx-two"));
+        ingestor.Ingest(session);
+
+        var records = Recorded();
+        Assert.Equal(2, records.Count);
+        Assert.Equal("ctx-one", records[0].ContextId);
+        Assert.Equal("ctx-two", records[1].ContextId);
+        // ...while the Director session id spans both, so the workstream stays joined up.
+        Assert.All(records, r => Assert.Equal(session.Id.ToString(), r.SessionId));
+    }
+
+    [Fact]
+    public void A_context_id_is_recorded_as_absent_rather_than_invented()
+    {
+        var session = NewSession();
+        // A transcript whose lines carry no sessionId at all.
+        WriteTranscript(session, UserLine("no context id on this line", DateTime.UtcNow));
+
+        using var ingestor = new ConversationIngestor(new SessionManager(new AgentOptions { ClaudePath = TestShell.Path }));
+        ingestor.Ingest(session);
+
+        // Falls back to the transcript file's own name - which for a file-per-context agent IS the
+        // context identity - rather than borrowing the Director session id and pretending.
+        var only = Assert.Single(Recorded());
+        Assert.NotNull(only.ContextId);
+        Assert.NotEqual(session.Id.ToString(), only.ContextId);
     }
 
     [Fact]

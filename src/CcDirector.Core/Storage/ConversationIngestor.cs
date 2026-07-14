@@ -108,6 +108,7 @@ public sealed class ConversationIngestor : IDisposable
                 {
                     TsUtc = ts,
                     SessionId = session.Id.ToString(),
+                    ContextId = ContextIdFor(session, message),
                     SessionName = session.CustomName,
                     RepoPath = session.RepoPath,
                     Agent = session.AgentKind.ToString(),
@@ -136,6 +137,39 @@ public sealed class ConversationIngestor : IDisposable
         {
             FileLog.Write($"[ConversationIngestor] Ingest FAILED (swallowed) session={session.Id}: {ex.Message}");
         }
+    }
+
+    /// <summary>
+    /// Which agent CONTEXT a message belonged to - what you group by to replay one conversation as the
+    /// agent saw it, and what resets when the context is cleared (issue #1551).
+    ///
+    /// Prefer the id the source itself stamped on the message: Claude and Gemini both carry one, and
+    /// only a per-message value is correct for a source that holds several contexts in one file. Fall
+    /// back to the transcript file's own name, which for the file-per-context agents (Codex, Pi, Grok)
+    /// IS the context's identity - a new context means a new file.
+    ///
+    /// Null when the agent exposes no context identity at all (Copilot and OpenCode resolve out of a
+    /// shared store by repo). Recorded as absent rather than invented; the Director session id still
+    /// groups the work.
+    /// </summary>
+    private static string? ContextIdFor(Session session, ConversationMessage message)
+    {
+        if (!string.IsNullOrWhiteSpace(message.ContextId)) return message.ContextId;
+
+        return session.AgentKind switch
+        {
+            // These resolve out of one shared per-repo store and expose no context identity we can read.
+            AgentKind.Copilot or AgentKind.OpenCode => null,
+            _ => TranscriptStem(session),
+        };
+    }
+
+    /// <summary>The transcript file's name without extension - the context identity for the agents that
+    /// keep one file per context. Null when no transcript path resolves.</summary>
+    private static string? TranscriptStem(Session session)
+    {
+        var path = SessionHistoryReader.ResolveTranscriptPath(session);
+        return string.IsNullOrWhiteSpace(path) ? null : Path.GetFileNameWithoutExtension(path);
     }
 
     /// <summary>

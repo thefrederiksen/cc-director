@@ -93,10 +93,17 @@ public static class GeminiPromptLogReader
                     && DateTimeOffset.TryParse(tsEl.GetString(), out var parsed))
                     ts = parsed;
 
+                // This file is per REPO and accumulates every Gemini context ever run there, so the
+                // per-entry sessionId is the only thing separating one context from the next.
+                string? contextId = null;
+                if (entry.TryGetProperty("sessionId", out var sidEl) && sidEl.ValueKind == JsonValueKind.String)
+                    contextId = sidEl.GetString();
+
                 messages.Add(new ConversationMessage(
                     ConversationRole.User,
                     new[] { new ConversationPart(ConversationPartKind.Text, text) },
-                    ts));
+                    ts,
+                    contextId));
             }
 
             return new ConversationHistory(messages);

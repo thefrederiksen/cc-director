@@ -115,7 +115,18 @@ public static class ConversationLog
 public sealed record ConversationRecord
 {
     [JsonPropertyName("ts")] public required DateTime TsUtc { get; init; }
+    /// <summary>The DIRECTOR session (the window/slot). Stable for its whole life - it does NOT reset
+    /// when the context is cleared - so it groups every context in one workstream.</summary>
     [JsonPropertyName("sessionId")] public required string SessionId { get; init; }
+    /// <summary>
+    /// The AGENT's own id for the context this message belonged to. Resets whenever the context does:
+    /// Claude mints a new one on /clear AND on auto-compaction. This is what to group by to replay one
+    /// conversation exactly as the agent saw it - everything that shared a context window.
+    ///
+    /// Null when the agent exposes no context identity of its own. Never invented: an absent context id
+    /// is recorded as absent, and the Director session id above still groups the work.
+    /// </summary>
+    [JsonPropertyName("contextId")] public string? ContextId { get; init; }
     [JsonPropertyName("sessionName")] public string? SessionName { get; init; }
     [JsonPropertyName("repoPath")] public string? RepoPath { get; init; }
     [JsonPropertyName("agent")] public string? Agent { get; init; }
