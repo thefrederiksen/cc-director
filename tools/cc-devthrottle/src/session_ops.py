@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import os
-import platform
 import sys
 import tempfile
 import time
@@ -210,7 +209,10 @@ def rename_session(target: Optional[str], new_name: str) -> Dict[str, Any]:
 
     sid = resolve_target_or_current(target)
     try:
-        resp = director.patch_json(f"sessions/{sid}", {"name": name})
+        # Tunnel-only floor (#1490): rename goes through the Director's loopback POST /fleet/rename, which
+        # renames a local session directly or relays a remote one via the Gateway over the tunnel. The old
+        # PATCH /sessions/{sid} route was removed from the Director in the tunnel-only cut.
+        resp = director.post_json("fleet/rename", {"toSessionId": sid, "name": name})
     except director.DirectorError as err:
         console.print(f"[red]Error:[/red] {err}")
         raise typer.Exit(1)
@@ -234,11 +236,14 @@ def mark_done(target: Optional[str], reason: Optional[str]) -> Dict[str, Any]:
     nothing left for the user, instead of lingering as a dead session in the fleet.
     """
     sid = resolve_target_or_current(target)
-    body: Dict[str, Any] = {}
+    body: Dict[str, Any] = {"toSessionId": sid}
     if reason and reason.strip():
         body["reason"] = reason.strip()
     try:
-        resp = director.post_json(f"sessions/{sid}/request-deletion", body)
+        # Tunnel-only floor (#1490): self-reap goes through the Director's loopback POST /fleet/done, which
+        # flags a local session directly or relays a remote one via the Gateway. The old
+        # POST /sessions/{sid}/request-deletion route was removed from the Director in the tunnel-only cut.
+        resp = director.post_json("fleet/done", body)
     except director.DirectorError as err:
         console.print(f"[red]Error:[/red] {err}")
         raise typer.Exit(1)
@@ -424,23 +429,16 @@ def spawn_session(
     if mission:
         body["missionId"] = mission
 
-    # "Start a session on another computer": with no --machine, or a --machine that names THIS machine,
-    # keep the unchanged LOCAL spawn (POST /sessions on the local Director). A remote machine name routes
-    # the spawn through the local Director's POST /fleet/spawn, which forwards it via the Gateway to a
-    # Director on that machine (first available, auto-launched if none is running). An off/unreachable
-    # machine fails loudly (DirectorError -> red error + exit 1) with NO local fallback.
+    # "Start a session on another computer": both local and remote spawns now go through the Director's
+    # loopback POST /fleet/spawn (issue #1490). With no --machine (or a --machine naming THIS machine) the
+    # floor spawns LOCALLY (CreateLocalSessionAsync); a remote machine name is forwarded via the Gateway to a
+    # Director on that machine (first available, auto-launched if none is running). An off/unreachable machine
+    # fails loudly (DirectorError -> red error + exit 1) with NO local fallback. The old POST /sessions route
+    # was removed from the Director floor in the tunnel-only cut.
     target_machine = machine.strip() if machine else ""
-    is_local = (
-        not target_machine
-        or target_machine.lower() == "local"
-        or target_machine.lower() == platform.node().lower()
-    )
 
     try:
-        if is_local:
-            resp = director.post_json("sessions", body)
-        else:
-            resp = director.post_json("fleet/spawn", {"machine": target_machine, **body})
+        resp = director.post_json("fleet/spawn", {"machine": target_machine, **body})
     except director.DirectorError as err:
         console.print(f"[red]Error:[/red] {err}")
         raise typer.Exit(1)

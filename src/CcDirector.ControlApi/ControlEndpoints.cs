@@ -526,6 +526,96 @@ internal static class ControlEndpoints
             }
         });
 
+        // POST /fleet/rename - rename a session anywhere in the fleet (issue #1490). A local target is renamed
+        // directly; a remote target is relayed through the Gateway (PATCH /sessions/{sid}), which routes the
+        // rename to the owning Director over the tunnel. Restores the CLI `session rename` off the PATCH
+        // /sessions/{sid} route the tunnel-only cut removed from the Director floor. Fails loud (404) for an
+        // unknown target with no Gateway - never a silent no-op.
+        app.MapPost("/fleet/rename", async (FleetRenameRequest req, CancellationToken ct) =>
+        {
+            if (req is null || string.IsNullOrWhiteSpace(req.ToSessionId))
+                return Results.BadRequest(new { error = "toSessionId is required" });
+            if (!Guid.TryParse(req.ToSessionId, out var toGuid))
+                return Results.BadRequest(new { error = "invalid toSessionId format" });
+
+            var local = sessionManager.GetSession(toGuid);
+            if (local is not null)
+            {
+                if (!sessionManager.RenameSession(toGuid, req.Name))
+                    return Results.Json(
+                        new FleetRenameResponse { Renamed = false, SessionId = req.ToSessionId, Error = "rename failed" },
+                        statusCode: StatusCodes.Status500InternalServerError);
+                var dto = MapWithIdentity(local, turnSummaryCache);
+                return Results.Json(new FleetRenameResponse { Renamed = true, SessionId = dto.SessionId ?? "", Name = dto.Name ?? "" });
+            }
+
+            var gw = gatewayClientProvider?.Invoke();
+            if (gw is not { IsEnabled: true })
+                return Results.Json(new FleetRenameResponse
+                {
+                    Renamed = false, SessionId = req.ToSessionId,
+                    Error = "Session not found on this Director and no Gateway is configured.",
+                }, statusCode: StatusCodes.Status404NotFound);
+
+            try
+            {
+                var dto = await gw.RenameFleetAsync(req.ToSessionId, req.Name, ct);
+                return Results.Json(new FleetRenameResponse { Renamed = true, SessionId = dto.SessionId ?? "", Name = dto.Name ?? "" });
+            }
+            catch (Exception ex)
+            {
+                FileLog.Write($"[ControlEndpoints] /fleet/rename relay to {toGuid} FAILED: {ex.Message}");
+                return Results.Json(new FleetRenameResponse
+                {
+                    Renamed = false, SessionId = req.ToSessionId,
+                    Error = $"Cannot rename the target via the Gateway: {ex.Message}",
+                }, statusCode: StatusCodes.Status502BadGateway);
+            }
+        });
+
+        // POST /fleet/done - flag a session anywhere in the fleet for teardown (issue #1490). A local target is
+        // flagged directly (its Director's reaper removes it after the grace window); a remote target is relayed
+        // through the Gateway (POST /sessions/{sid}/request-deletion). Restores `cc-devthrottle session done` -
+        // how an unattended run tears ITSELF down - off the route the tunnel-only cut removed. Fails loud (404)
+        // for an unknown target with no Gateway.
+        app.MapPost("/fleet/done", async (FleetDoneRequest req, CancellationToken ct) =>
+        {
+            if (req is null || string.IsNullOrWhiteSpace(req.ToSessionId))
+                return Results.BadRequest(new { error = "toSessionId is required" });
+            if (!Guid.TryParse(req.ToSessionId, out var toGuid))
+                return Results.BadRequest(new { error = "invalid toSessionId format" });
+
+            var local = sessionManager.GetSession(toGuid);
+            if (local is not null)
+            {
+                local.MarkForDeletion(req.Reason);
+                return Results.Json(new FleetDoneResponse { Accepted = true });
+            }
+
+            var gw = gatewayClientProvider?.Invoke();
+            if (gw is not { IsEnabled: true })
+                return Results.Json(new FleetDoneResponse
+                {
+                    Accepted = false,
+                    Error = "Session not found on this Director and no Gateway is configured.",
+                }, statusCode: StatusCodes.Status404NotFound);
+
+            try
+            {
+                await gw.RequestDeletionFleetAsync(req.ToSessionId, req.Reason, ct);
+                return Results.Json(new FleetDoneResponse { Accepted = true });
+            }
+            catch (Exception ex)
+            {
+                FileLog.Write($"[ControlEndpoints] /fleet/done relay to {toGuid} FAILED: {ex.Message}");
+                return Results.Json(new FleetDoneResponse
+                {
+                    Accepted = false,
+                    Error = $"Cannot reach the target via the Gateway: {ex.Message}",
+                }, statusCode: StatusCodes.Status502BadGateway);
+            }
+        });
+
     }
 
     // Gateway Cleanup CUT RESTORATION (SB-4a): the fleet-directory identity stamp. Restored with the /fleet

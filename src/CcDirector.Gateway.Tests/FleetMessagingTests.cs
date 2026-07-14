@@ -225,4 +225,55 @@ public sealed class FleetMessagingEndpointTests : IAsyncLifetime
             new NewSessionRequest { RepoPath = @"D:\ReposFred\devthrottle", Machine = "some-other-machine" });
         Assert.Equal(HttpStatusCode.BadGateway, resp.StatusCode);
     }
+
+    // ===== /fleet/rename validation (issue #1490 - route restored to the tunnel-only floor) =====
+
+    // A missing route returns 404, so a 400 from the HANDLER is itself the proof that /fleet/rename is
+    // registered again - the exact gap #1490 was: the CLI's rename 404'd because the route was gone.
+    [Fact]
+    public async Task Fleet_rename_missing_target_returns_400_provingRouteExists()
+    {
+        var resp = await _client.PostAsJsonAsync("fleet/rename", new FleetRenameRequest { ToSessionId = "", Name = "x" });
+        Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
+    }
+
+    [Fact]
+    public async Task Fleet_rename_bad_guid_returns_400()
+    {
+        var resp = await _client.PostAsJsonAsync("fleet/rename", new FleetRenameRequest { ToSessionId = "not-a-guid", Name = "x" });
+        Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
+    }
+
+    [Fact]
+    public async Task Fleet_rename_unknown_target_noGateway_returns_404()
+    {
+        // A well-formed target this Director does not own, with no Gateway: fail loud (404), never a silent no-op.
+        var resp = await _client.PostAsJsonAsync("fleet/rename",
+            new FleetRenameRequest { ToSessionId = Guid.NewGuid().ToString(), Name = "x" });
+        Assert.Equal(HttpStatusCode.NotFound, resp.StatusCode);
+    }
+
+    // ===== /fleet/done validation (issue #1490 - the self-reap route restored to the floor) =====
+
+    [Fact]
+    public async Task Fleet_done_missing_target_returns_400_provingRouteExists()
+    {
+        var resp = await _client.PostAsJsonAsync("fleet/done", new FleetDoneRequest { ToSessionId = "" });
+        Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
+    }
+
+    [Fact]
+    public async Task Fleet_done_bad_guid_returns_400()
+    {
+        var resp = await _client.PostAsJsonAsync("fleet/done", new FleetDoneRequest { ToSessionId = "not-a-guid" });
+        Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
+    }
+
+    [Fact]
+    public async Task Fleet_done_unknown_target_noGateway_returns_404()
+    {
+        var resp = await _client.PostAsJsonAsync("fleet/done",
+            new FleetDoneRequest { ToSessionId = Guid.NewGuid().ToString() });
+        Assert.Equal(HttpStatusCode.NotFound, resp.StatusCode);
+    }
 }
