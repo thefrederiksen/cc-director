@@ -174,6 +174,7 @@ public sealed class ControlApiHost : IAsyncDisposable
     private TransientErrorAutoResume? _transientErrorAutoResume;
     private TerminalSessionRecorder? _sessionRecorder;
     private Core.Storage.TurnReviewLogger? _turnReviewLogger;
+    private Core.Storage.ConversationIngestor? _conversationIngestor;
     private Core.Storage.SessionLogManager? _sessionLogManager;
     // Resolved lazily at request time: the scheduler is created AFTER the Control API host
     // (StartControlApi runs before StartScheduler), so we capture an accessor, not the instance.
@@ -616,6 +617,12 @@ public sealed class ControlApiHost : IAsyncDisposable
         // retention. See CcStorage.TurnReviewLogs().
         _turnReviewLogger = new Core.Storage.TurnReviewLogger(_sessionManager);
         _turnReviewLogger.Start();
+
+        // Durable prompt + reply record (issue #1551): on the same turn-end trigger, copy each
+        // session's conversation out of the agent's own transcript into our own log, with the origin
+        // of each prompt joined on from InputOriginLog. The foundation for the weekly review.
+        _conversationIngestor = new Core.Storage.ConversationIngestor(_sessionManager);
+        _conversationIngestor.Start();
     }
 
     /// <summary>
@@ -882,6 +889,8 @@ public sealed class ControlApiHost : IAsyncDisposable
         _transientErrorAutoResume = null;
         _turnReviewLogger?.Dispose();
         _turnReviewLogger = null;
+        _conversationIngestor?.Dispose();
+        _conversationIngestor = null;
         _sessionRecorder?.Dispose();
         _sessionRecorder = null;
         _proactiveExplain?.Dispose();

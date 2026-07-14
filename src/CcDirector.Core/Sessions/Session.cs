@@ -2,6 +2,7 @@ using CcDirector.Core.Agents;
 using CcDirector.Core.Backends;
 using CcDirector.Core.Claude;
 using CcDirector.Core.Memory;
+using CcDirector.Core.Storage;
 using CcDirector.Core.Utilities;
 using CcDirector.Core.Wingman;
 using CcDirector.Terminal.Core;
@@ -1606,19 +1607,37 @@ public sealed class Session : IDisposable
     /// <summary>Send raw bytes to the backend. <paramref name="origin"/> tags this input for the
     /// DevThrottle Stats tally as typed CHARACTER volume for its surface (never a turn - a bare keystroke
     /// is the user composing, not a submitted turn). Null origin = framework-internal, not counted.</summary>
+    /// <summary>Printable characters typed at the terminal since the last submission, accumulated so
+    /// the origin event written on Enter carries the size of the whole line rather than of the final
+    /// keystroke. Reset at each submission. See <see cref="RecordOrigin"/>.</summary>
+    private int _pendingOriginChars;
+
     public void SendInput(byte[] data, InputOrigin? origin = null)
     {
         if (_disposed || Status is SessionStatus.Exited or SessionStatus.Failed) return;
         FileLog.Write($"[Session] SendInput: session={Id}, bytes={data.Length}, firstByte=0x{(data.Length > 0 ? data[0].ToString("X2") : "00")}");
         _backend.Write(data);
         if (origin is InputOrigin o)
+        {
             InputStats.RecordCharacters(o, CountPrintable(data));
+            _pendingOriginChars += CountPrintable(data);
+        }
         // Only promote to Working when the write contains an actual submission
         // (CR or LF). A bare keystroke is the user composing at the prompt --
         // Claude Code hasn't received a turn yet. Treating every byte as Working
         // flickered the sidebar dot blue on every character typed.
         if (ContainsSubmit(data))
         {
+            // A submission is the moment to note the origin (issue #1551). Terminal typing arrives
+            // here one keystroke at a time, so the prompt TEXT cannot be reconstructed from these
+            // bytes - backspace, arrow-key edits, history recall, paste and the agent's own
+            // autocomplete all mutate the line invisibly, and replaying keystrokes would silently
+            // record prompts the user never sent. Only the provenance is recorded here; the text is
+            // read back from the agent's own transcript by the conversation ingest and joined to
+            // this event by timestamp.
+            if (origin is InputOrigin so)
+                RecordOrigin(so, _pendingOriginChars);
+            _pendingOriginChars = 0;
             IsBrandNew = false;
             // A real submission means the user is driving this session again, so neither a hold nor a
             // not-yet-landed deferral reflects intent any more - both are superseded (issue #470).
@@ -1739,7 +1758,33 @@ public sealed class Session : IDisposable
         // volume) for the tagged origin. Null origin = framework-internal (handover, queue drain) - not
         // counted, even though it still submits a turn to the agent.
         if (origin is InputOrigin o)
+        {
             InputStats.RecordTurn(o, text?.Length ?? 0);
+            RecordOrigin(o, text?.Length ?? 0);
+        }
+    }
+
+    /// <summary>
+    /// Note WHERE this submission came from in the <see cref="InputOriginLog"/> (issue #1551). Carries
+    /// no text: the conversation ingest reads the text back from the agent's own transcript and joins
+    /// this event to it by session + nearest timestamp. This choke point is the only place the origin
+    /// is ever known.
+    ///
+    /// Gated on the same non-null origin as the stats tally, so framework-internal sends (handover
+    /// text, queue drain, framing) stay out for the same reason they stay out of the counts: they carry
+    /// no human keystrokes and no spoken words.
+    /// </summary>
+    private void RecordOrigin(InputOrigin origin, int charCount)
+    {
+        if (charCount <= 0) return;
+        InputOriginLog.Write(new InputOriginRecord
+        {
+            TsUtc = DateTime.UtcNow,
+            SessionId = Id.ToString(),
+            Modality = origin.ModalityToken,
+            Surface = origin.SurfaceToken,
+            CharCount = charCount,
+        });
     }
 
     /// <summary>Send text followed by Enter (sync wrapper). See
