@@ -127,6 +127,9 @@ public partial class MainWindow : Window
     private FileSystemWatcher? _screenshotWatcher;
     private DispatcherTimer? _screenshotDebounceTimer;
     private string? _screenshotsDirectory;
+    // The image file types the Screenshots panel loads and clears. Kept in one place so listing
+    // (LoadScreenshotViewModels) and Clear All (DeleteAllScreenshots) agree on what a screenshot is.
+    private static readonly string[] ScreenshotExtensions = { ".png", ".jpg", ".jpeg", ".bmp", ".gif" };
 
     public MainWindow()
     {
@@ -4975,13 +4978,30 @@ public partial class MainWindow : Window
 
     private static List<ScreenshotViewModel> LoadScreenshotViewModels(string directory)
     {
-        var extensions = new[] { ".png", ".jpg", ".jpeg", ".bmp", ".gif" };
         return Directory.GetFiles(directory)
-            .Where(f => extensions.Contains(Path.GetExtension(f).ToLowerInvariant()))
+            .Where(f => ScreenshotExtensions.Contains(Path.GetExtension(f).ToLowerInvariant()))
             .OrderByDescending(f => File.GetLastWriteTime(f))
             .Take(50)
             .Select(f => new ScreenshotViewModel(f))
             .ToList();
+    }
+
+    // Deletes every screenshot image file in the folder from disk and returns how many were removed.
+    // Clear All must delete the files, not just empty the in-memory list: the folder watcher re-reads
+    // the directory on the next change and any surviving file reappears in the panel (issue #1494).
+    private static int DeleteAllScreenshots(string directory)
+    {
+        var files = Directory.GetFiles(directory)
+            .Where(f => ScreenshotExtensions.Contains(Path.GetExtension(f).ToLowerInvariant()))
+            .ToList();
+
+        var deleted = 0;
+        foreach (var file in files)
+        {
+            File.Delete(file);
+            deleted++;
+        }
+        return deleted;
     }
 
     private void OnScreenshotFileChanged(object sender, FileSystemEventArgs e)
@@ -5012,11 +5032,34 @@ public partial class MainWindow : Window
         _ = RefreshScreenshots();
     }
 
-    private void BtnClearScreenshots_Click(object? sender, RoutedEventArgs e)
+    private async void BtnClearScreenshots_Click(object? sender, RoutedEventArgs e)
     {
         FileLog.Write("[MainWindow] BtnClearScreenshots_Click");
-        // Clear from UI only (not from disk)
-        _screenshots.Clear();
+        try
+        {
+            if (_screenshotsDirectory == null)
+                return;
+
+            // Deleting the files is permanent, so warn before destroying data (issue #1494).
+            var confirm = new ConfirmDialog(
+                "Clear all screenshots?",
+                "This permanently deletes every screenshot in this Director's screenshots folder from disk. This cannot be undone.",
+                confirmLabel: "Delete All");
+            if (await confirm.ShowDialog<bool>(this) != true)
+                return;
+
+            var deleted = await Task.Run(() => DeleteAllScreenshots(_screenshotsDirectory));
+            FileLog.Write($"[MainWindow] BtnClearScreenshots_Click: deleted {deleted} file(s)");
+
+            // Re-read from disk so the panel reflects the now-empty folder even if the watcher's
+            // debounced refresh has not fired yet.
+            await RefreshScreenshots();
+        }
+        catch (Exception ex)
+        {
+            FileLog.Write($"[MainWindow] BtnClearScreenshots_Click FAILED: {ex.Message}");
+            await new MessageDialog("Cannot Clear Screenshots", ex.Message).ShowDialog<bool?>(this);
+        }
     }
 
     private async void ScreenshotItem_PointerPressed(object? sender, global::Avalonia.Input.PointerPressedEventArgs e)
