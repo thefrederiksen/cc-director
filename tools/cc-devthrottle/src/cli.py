@@ -18,9 +18,14 @@ from . import settings_ops
 from . import setup_ops
 from .session_ops import (
     ask_session,
+    hold_session,
+    interrupt_session,
     list_sessions,
     mark_done,
+    prompt_session,
+    read_session_buffer,
     rename_session,
+    set_session_role,
     selftest as run_selftest,
     send_message,
     spawn_session,
@@ -351,6 +356,90 @@ def rename(
         rename_session(None, target_or_name)
     else:
         rename_session(target_or_name, new_name)
+
+
+@session_app.command()
+def prompt(
+    target: str = typer.Argument(..., help="Session to prompt (id prefix, number, or exact name)."),
+    text: str = typer.Argument(..., help="The text to send."),
+    no_submit: bool = typer.Option(
+        False, "--no-submit", help="Type the text but do not press Enter - leave it in the composer."
+    ),
+) -> None:
+    """Send raw text into a session, as if you had typed it.
+
+    Unlike `message send`, the text is NOT framed with a sender - the session sees exactly what
+    you passed. Use `message send` for agent-to-agent messages, and this to drive a session.
+    """
+    prompt_session(target, text, no_submit=no_submit)
+
+
+@session_app.command()
+def interrupt(
+    target: Optional[str] = typer.Argument(
+        None, help="Session to interrupt. Defaults to THIS session (CC_SESSION_ID)."
+    ),
+) -> None:
+    """Stop what a session is currently doing."""
+    interrupt_session(target)
+
+
+@session_app.command()
+def hold(
+    target: Optional[str] = typer.Argument(
+        None, help="Session to hold. Defaults to THIS session (CC_SESSION_ID)."
+    ),
+    release: bool = typer.Option(False, "--release", help="Release the hold instead of applying one."),
+    minutes: Optional[int] = typer.Option(
+        None, "--minutes", help="Hold for this many minutes, then surface it again."
+    ),
+) -> None:
+    """Park a session so it stops asking for you, or release it.
+
+    A hold asked for while the session is still working is DEFERRED - it applies when the turn
+    finishes, and you are told so. A held session that starts working again always takes itself
+    off hold.
+    """
+    hold_session(target, release=release, minutes=minutes)
+
+
+@session_app.command()
+def buffer(
+    target: Optional[str] = typer.Argument(
+        None, help="Session to read. Defaults to THIS session (CC_SESSION_ID)."
+    ),
+) -> None:
+    """Print what a session's terminal is showing - how you see what a session is actually doing."""
+    read_session_buffer(target)
+
+
+@session_app.command()
+def role(
+    role_or_target: str = typer.Argument(
+        ...,
+        help="Role for this session (Standalone, Manager, Worker, Architect), or a target when ROLE is "
+             "also provided. Pass 'none' to clear the explicit role.",
+    ),
+    role_value: Optional[str] = typer.Argument(
+        None, help="Role when an explicit target is provided."
+    ),
+) -> None:
+    """Declare a session's explicit role, defaulting to the current session.
+
+    Valid roles: Standalone, Manager, Worker, Architect (case-insensitive). Pass 'none' to clear
+    the explicit role and revert to automatic derivation.
+
+    Worker and Manager are normally derived from the fleet: a controlled session with a live
+    controller is a Worker; a session controlling a live session is a Manager. Architect cannot be
+    inferred from the spawn graph, so declaring it here is the only way to make one after birth.
+    An explicit role is sticky and wins over derivation.
+    """
+    if role_value is None:
+        target, wanted = None, role_or_target
+    else:
+        target, wanted = role_or_target, role_value
+    # "none" is the CLI's way to say "clear it" - the endpoint clears on an empty role.
+    set_session_role(target, "" if wanted.strip().lower() == "none" else wanted)
 
 
 @session_app.command()

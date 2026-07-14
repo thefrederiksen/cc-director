@@ -573,6 +573,229 @@ internal static class ControlEndpoints
             }
         });
 
+        // The session-control verbs below restore what the old REST API offered agents and the tunnel-only cut
+        // took off the loopback surface. They are NOT new logic: a local target is dispatched through the SAME
+        // SessionCommandExecutor the tunnel dispatches into, so the loopback path and the Gateway path run
+        // identical code. A target this Director does not host is relayed through the Gateway, which routes it
+        // to the owning Director over the tunnel. No Gateway and not local is a loud 404 - never a silent no-op.
+
+        // POST /fleet/prompt - send text into a session (the old POST /sessions/{sid}/prompt). Unlike
+        // /fleet/send this does NOT frame the text with a sender: it is a raw prompt, exactly what a human
+        // typing into the session would produce.
+        app.MapPost("/fleet/prompt", async (FleetPromptRequest req, CancellationToken ct) =>
+        {
+            if (req is null || string.IsNullOrWhiteSpace(req.ToSessionId))
+                return Results.BadRequest(new { error = "toSessionId is required" });
+            if (string.IsNullOrEmpty(req.Text))
+                return Results.BadRequest(new { error = "text is required" });
+            if (!Guid.TryParse(req.ToSessionId, out var toGuid))
+                return Results.BadRequest(new { error = "invalid toSessionId format" });
+
+            if (sessionManager.GetSession(toGuid) is not null)
+            {
+                var command = new DirectorCommand
+                {
+                    Verb = "prompt",
+                    SessionId = req.ToSessionId,
+                    PayloadJson = JsonSerializer.Serialize(new PromptRequest { Text = req.Text, AppendEnter = req.AppendEnter }),
+                };
+                var result = await SessionCommandExecutor.DispatchAsync(sessionManager, directorId, command, cancellationToken: ct);
+                return CommandResultToHttp(result);
+            }
+
+            var gw = gatewayClientProvider?.Invoke();
+            if (gw is not { IsEnabled: true })
+                return Results.Json(new { error = "Session not found on this Director and no Gateway is configured." },
+                    statusCode: StatusCodes.Status404NotFound);
+            try
+            {
+                await gw.SendPromptToFleetAsync(req.ToSessionId, req.Text, ct);
+                return Results.Json(new { accepted = true, sessionId = req.ToSessionId });
+            }
+            catch (Exception ex)
+            {
+                FileLog.Write($"[ControlEndpoints] /fleet/prompt relay to {toGuid} FAILED: {ex.Message}");
+                return Results.Json(new { error = $"Cannot prompt the target via the Gateway: {ex.Message}" },
+                    statusCode: StatusCodes.Status502BadGateway);
+            }
+        });
+
+        // POST /fleet/interrupt - stop what a session is doing (the old POST /sessions/{sid}/interrupt).
+        app.MapPost("/fleet/interrupt", async (FleetTargetRequest req, CancellationToken ct) =>
+        {
+            if (req is null || string.IsNullOrWhiteSpace(req.ToSessionId))
+                return Results.BadRequest(new { error = "toSessionId is required" });
+            if (!Guid.TryParse(req.ToSessionId, out var toGuid))
+                return Results.BadRequest(new { error = "invalid toSessionId format" });
+
+            if (sessionManager.GetSession(toGuid) is not null)
+            {
+                var command = new DirectorCommand { Verb = "interrupt", SessionId = req.ToSessionId };
+                var result = await SessionCommandExecutor.DispatchAsync(sessionManager, directorId, command, cancellationToken: ct);
+                return CommandResultToHttp(result);
+            }
+
+            var gw = gatewayClientProvider?.Invoke();
+            if (gw is not { IsEnabled: true })
+                return Results.Json(new { error = "Session not found on this Director and no Gateway is configured." },
+                    statusCode: StatusCodes.Status404NotFound);
+            try
+            {
+                await gw.InterruptFleetAsync(req.ToSessionId, ct);
+                return Results.Json(new { accepted = true, sessionId = req.ToSessionId });
+            }
+            catch (Exception ex)
+            {
+                FileLog.Write($"[ControlEndpoints] /fleet/interrupt relay to {toGuid} FAILED: {ex.Message}");
+                return Results.Json(new { error = $"Cannot interrupt the target via the Gateway: {ex.Message}" },
+                    statusCode: StatusCodes.Status502BadGateway);
+            }
+        });
+
+        // POST /fleet/hold - park a session, or release it (the old POST /sessions/{sid}/hold). A hold asked
+        // for mid-turn is DEFERRED and applies when the turn settles (see HoldState) - the response's pending
+        // flag says so, which is why it is surfaced rather than swallowed.
+        app.MapPost("/fleet/hold", async (FleetHoldRequest req, CancellationToken ct) =>
+        {
+            if (req is null || string.IsNullOrWhiteSpace(req.ToSessionId))
+                return Results.BadRequest(new { error = "toSessionId is required" });
+            if (!Guid.TryParse(req.ToSessionId, out var toGuid))
+                return Results.BadRequest(new { error = "invalid toSessionId format" });
+
+            if (sessionManager.GetSession(toGuid) is not null)
+            {
+                var command = new DirectorCommand
+                {
+                    Verb = "hold",
+                    SessionId = req.ToSessionId,
+                    PayloadJson = JsonSerializer.Serialize(new HoldRequest { OnHold = req.OnHold, SnoozeMinutes = req.SnoozeMinutes }),
+                };
+                var result = await SessionCommandExecutor.DispatchAsync(sessionManager, directorId, command, cancellationToken: ct);
+                return CommandResultToHttp(result);
+            }
+
+            var gw = gatewayClientProvider?.Invoke();
+            if (gw is not { IsEnabled: true })
+                return Results.Json(new { error = "Session not found on this Director and no Gateway is configured." },
+                    statusCode: StatusCodes.Status404NotFound);
+            try
+            {
+                var held = await gw.HoldFleetAsync(req.ToSessionId, req.OnHold, req.SnoozeMinutes, ct);
+                return Results.Json(held);
+            }
+            catch (Exception ex)
+            {
+                FileLog.Write($"[ControlEndpoints] /fleet/hold relay to {toGuid} FAILED: {ex.Message}");
+                return Results.Json(new { error = $"Cannot hold the target via the Gateway: {ex.Message}" },
+                    statusCode: StatusCodes.Status502BadGateway);
+            }
+        });
+
+        // GET /fleet/buffer?sessionId=... - read what a session's terminal is showing (the old GET
+        // /sessions/{sid}/buffer). How a manager sees what a worker is actually doing.
+        app.MapGet("/fleet/buffer", async (string? sessionId, CancellationToken ct) =>
+        {
+            if (string.IsNullOrWhiteSpace(sessionId))
+                return Results.BadRequest(new { error = "sessionId is required" });
+            if (!Guid.TryParse(sessionId, out var toGuid))
+                return Results.BadRequest(new { error = "invalid sessionId format" });
+
+            if (sessionManager.GetSession(toGuid) is not null)
+            {
+                var command = new DirectorCommand { Verb = "buffer", SessionId = sessionId };
+                var result = await SessionCommandExecutor.DispatchAsync(sessionManager, directorId, command, cancellationToken: ct);
+                return CommandResultToHttp(result);
+            }
+
+            var gw = gatewayClientProvider?.Invoke();
+            if (gw is not { IsEnabled: true })
+                return Results.Json(new { error = "Session not found on this Director and no Gateway is configured." },
+                    statusCode: StatusCodes.Status404NotFound);
+            try
+            {
+                var text = await gw.GetBufferFleetAsync(sessionId, ct);
+                return Results.Content(text, "application/json");
+            }
+            catch (Exception ex)
+            {
+                FileLog.Write($"[ControlEndpoints] /fleet/buffer relay to {toGuid} FAILED: {ex.Message}");
+                return Results.Json(new { error = $"Cannot read the target's buffer via the Gateway: {ex.Message}" },
+                    statusCode: StatusCodes.Status502BadGateway);
+            }
+        });
+
+        // POST /fleet/role - declare a session's EXPLICIT role after birth. Restores the set-role verb off the
+        // POST /sessions/{sid}/role route the tunnel-only cut removed, which left a running session stuck with
+        // whatever role it was born with - Architect cannot be derived from the spawn graph, so there was no way
+        // to make one after the fact. An unknown role is REJECTED (400) so a mistyped role never silently drops;
+        // an empty role CLEARS the explicit role back to auto-derivation. A target this Director does not host
+        // is relayed through the Gateway (POST /sessions/{sid}/role), which routes it to the owning Director
+        // over the tunnel - the same shape as /fleet/rename. Fails loud with no Gateway; never a silent no-op.
+        app.MapPost("/fleet/role", async (FleetRoleRequest req, CancellationToken ct) =>
+        {
+            if (req is null || string.IsNullOrWhiteSpace(req.ToSessionId))
+                return Results.BadRequest(new { error = "toSessionId is required" });
+            if (!Guid.TryParse(req.ToSessionId, out var toGuid))
+                return Results.BadRequest(new { error = "invalid toSessionId format" });
+
+            // Blank clears; a non-blank value must be one of the four known roles.
+            var clearing = string.IsNullOrWhiteSpace(req.Role);
+            if (!clearing && !SessionRoles.IsValid(req.Role))
+                return Results.BadRequest(new
+                {
+                    error = $"unknown role '{req.Role}'. Valid roles: {string.Join(", ", SessionRoles.All)} (or empty to clear).",
+                });
+
+            var normalized = clearing ? null : SessionRoles.Normalize(req.Role);
+
+            var local = sessionManager.GetSession(toGuid);
+            if (local is null)
+            {
+                // Not ours: relay through the Gateway, which routes it to the owning Director over the tunnel.
+                var gw = gatewayClientProvider?.Invoke();
+                if (gw is not { IsEnabled: true })
+                    return Results.Json(new FleetRoleResponse
+                    {
+                        Applied = false, SessionId = req.ToSessionId,
+                        Error = "Session not found on this Director and no Gateway is configured.",
+                    }, statusCode: StatusCodes.Status404NotFound);
+
+                try
+                {
+                    var relayed = await gw.SetRoleFleetAsync(req.ToSessionId, normalized, ct);
+                    return Results.Json(new FleetRoleResponse
+                    {
+                        Applied = true,
+                        SessionId = relayed.SessionId ?? req.ToSessionId,
+                        ExplicitRole = relayed.ExplicitRole,
+                    });
+                }
+                catch (Exception ex)
+                {
+                    FileLog.Write($"[ControlEndpoints] /fleet/role relay to {toGuid} FAILED: {ex.Message}");
+                    return Results.Json(new FleetRoleResponse
+                    {
+                        Applied = false, SessionId = req.ToSessionId,
+                        Error = $"Cannot set the role via the Gateway: {ex.Message}",
+                    }, statusCode: StatusCodes.Status502BadGateway);
+                }
+            }
+
+            FileLog.Write($"[ControlEndpoints] POST /fleet/role: session={toGuid}, role={normalized ?? "(cleared)"}");
+            local.SetExplicitRole(normalized);
+
+            // Only the EXPLICIT role is reported back. The effective role folds in Worker/Manager derivation
+            // from the fleet-wide spawn graph, which lives in the Gateway - this Director cannot compute it,
+            // so reporting it here would always be null. Callers read it from the roster.
+            var dto = MapWithIdentity(local, turnSummaryCache);
+            return Results.Json(new FleetRoleResponse
+            {
+                Applied = true,
+                SessionId = dto.SessionId ?? "",
+                ExplicitRole = dto.ExplicitRole,
+            });
+        });
+
         // POST /fleet/done - flag a session anywhere in the fleet for teardown (issue #1490). A local target is
         // flagged directly (its Director's reaper removes it after the grace window); a remote target is relayed
         // through the Gateway (POST /sessions/{sid}/request-deletion). Restores `cc-devthrottle session done` -
@@ -722,6 +945,21 @@ internal static class ControlEndpoints
         });
 
     }
+
+    /// <summary>
+    /// Map a <see cref="DirectorCommandResult"/> onto the HTTP shape the OLD REST endpoints returned, so a
+    /// caller sees the same status and { error } body it always did: Ok passes the handler's own JSON body
+    /// through, BadRequest/NotFound/Conflict keep their meaning, and anything else is a 500. Shared by every
+    /// /fleet session-control verb so they cannot drift apart from each other or from the tunnel path.
+    /// </summary>
+    private static IResult CommandResultToHttp(DirectorCommandResult result) => result.Status switch
+    {
+        DirectorCommandStatus.Ok => Results.Content(result.BodyJson ?? "{}", "application/json"),
+        DirectorCommandStatus.BadRequest => Results.BadRequest(new { error = result.Error }),
+        DirectorCommandStatus.NotFound => Results.NotFound(new { error = result.Error }),
+        DirectorCommandStatus.Conflict => Results.Json(new { error = result.Error }, statusCode: StatusCodes.Status409Conflict),
+        _ => Results.Json(new { error = result.Error ?? "command failed" }, statusCode: StatusCodes.Status500InternalServerError),
+    };
 
     // Gateway Cleanup CUT RESTORATION (SB-4a): the fleet-directory identity stamp. Restored with the /fleet
     // routes (MapWithIdentity uses it) so a fleet/sessions row carries this Director's machine/user/tailnet

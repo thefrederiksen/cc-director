@@ -227,6 +227,121 @@ def rename_session(target: Optional[str], new_name: str) -> Dict[str, Any]:
     return resp
 
 
+def prompt_session(target: str, text: str, no_submit: bool = False) -> Dict[str, Any]:
+    """Send raw text into a session - what a human typing into it would produce.
+
+    Unlike `message send`, this does NOT frame the text with a sender. Restores the old
+    POST /sessions/{sid}/prompt.
+    """
+    if not text.strip():
+        console.print("[red]Error:[/red] the prompt text cannot be blank.")
+        raise typer.Exit(1)
+    sid = resolve_target_or_current(target)
+    try:
+        resp = director.post_json(
+            "fleet/prompt", {"toSessionId": sid, "text": text, "appendEnter": not no_submit}
+        )
+    except director.DirectorError as err:
+        console.print(f"[red]Error:[/red] {err}")
+        raise typer.Exit(1)
+    console.print(f"[green]Sent[/green] prompt to {director.short_id(sid)}.")
+    return resp if isinstance(resp, dict) else {}
+
+
+def interrupt_session(target: Optional[str]) -> Dict[str, Any]:
+    """Stop what a session is currently doing. Restores the old POST /sessions/{sid}/interrupt."""
+    sid = resolve_target_or_current(target)
+    try:
+        resp = director.post_json("fleet/interrupt", {"toSessionId": sid})
+    except director.DirectorError as err:
+        console.print(f"[red]Error:[/red] {err}")
+        raise typer.Exit(1)
+    console.print(f"[green]Interrupted[/green] {director.short_id(sid)}.")
+    return resp if isinstance(resp, dict) else {}
+
+
+def hold_session(target: Optional[str], release: bool = False, minutes: Optional[int] = None) -> Dict[str, Any]:
+    """Park a session, or release it. Restores the old POST /sessions/{sid}/hold.
+
+    A hold asked for while the session is still working is DEFERRED: it applies when the turn
+    settles, and the response's pending flag says so. A held session that starts working again
+    always takes itself off hold.
+    """
+    sid = resolve_target_or_current(target)
+    body: Dict[str, Any] = {"toSessionId": sid, "onHold": not release}
+    if minutes is not None:
+        body["snoozeMinutes"] = minutes
+    try:
+        resp = director.post_json("fleet/hold", body)
+    except director.DirectorError as err:
+        console.print(f"[red]Error:[/red] {err}")
+        raise typer.Exit(1)
+
+    short = director.short_id(sid)
+    if release:
+        console.print(f"[green]Released[/green] {short} - no longer held.")
+    elif isinstance(resp, dict) and director.field(resp, "pending", "Pending"):
+        console.print(f"[green]Hold queued[/green] {short} is still working; it parks when it finishes.")
+    else:
+        for_text = f" for {minutes} minutes" if minutes else ""
+        console.print(f"[green]Held[/green] {short}{for_text}.")
+    return resp if isinstance(resp, dict) else {}
+
+
+def read_session_buffer(target: Optional[str]) -> None:
+    """Print what a session's terminal is showing. Restores the old GET /sessions/{sid}/buffer."""
+    sid = resolve_target_or_current(target)
+    try:
+        resp = director.get_json(f"fleet/buffer?sessionId={sid}")
+    except director.DirectorError as err:
+        console.print(f"[red]Error:[/red] {err}")
+        raise typer.Exit(1)
+
+    # The buffer verb returns the terminal text under one of a couple of shapes depending on the
+    # path it came back through; print whichever carries the text rather than guessing one.
+    text = None
+    if isinstance(resp, dict):
+        text = director.field(resp, "text", "Text") or director.field(resp, "buffer", "Buffer")
+    elif isinstance(resp, str):
+        text = resp
+    if text is None:
+        console.print("[red]Error:[/red] the Director did not return the session's buffer.")
+        raise typer.Exit(1)
+    console.print(text)
+
+
+def set_session_role(target: Optional[str], role: Optional[str]) -> Dict[str, Any]:
+    """Declare a session's explicit role, defaulting to the current session.
+
+    Restores the set-role verb the tunnel-only cut removed with POST /sessions/{sid}/role, which
+    left a running session stuck with the role it was born with. Architect cannot be derived from
+    the spawn graph, so this is the only way to make one after birth. An empty role clears the
+    explicit role and reverts the session to auto-derivation.
+    """
+    sid = resolve_target_or_current(target)
+    wanted = (role or "").strip()
+    try:
+        resp = director.post_json("fleet/role", {"toSessionId": sid, "role": wanted})
+    except director.DirectorError as err:
+        console.print(f"[red]Error:[/red] {err}")
+        raise typer.Exit(1)
+
+    if not isinstance(resp, dict):
+        console.print("[red]Error:[/red] the Director did not return the session's role.")
+        raise typer.Exit(1)
+
+    actual_sid = director.field(resp, "sessionId", "SessionId") or sid
+    explicit = director.field(resp, "explicitRole", "ExplicitRole")
+    short = director.short_id(actual_sid)
+    # Only the explicit role is reported: Worker/Manager derivation needs the fleet-wide spawn graph, which
+    # lives in the Gateway, so the effective role is read from `session list`, not returned here.
+    if explicit:
+        console.print(f"[green]Role set[/green] {short} is now explicitly {explicit}.")
+    else:
+        console.print(f"[green]Role cleared[/green] {short} reverts to automatic role derivation.")
+    return resp
+
+
 def mark_done(target: Optional[str], reason: Optional[str]) -> Dict[str, Any]:
     """Flag a session for deletion, defaulting to the current session.
 
