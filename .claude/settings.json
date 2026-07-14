@@ -1,0 +1,14 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "powershell -NoProfile -ExecutionPolicy Bypass -File \"${CLAUDE_PROJECT_DIR}\\scripts\\check-tree-freshness.ps1\" -MaxBehind 0 -Quiet"
+          }
+        ]
+      }
+    ]
+  }
+}
