@@ -616,6 +616,111 @@ internal static class ControlEndpoints
             }
         });
 
+        // POST /fleet/broadcast - "message send all": one message to the sender's whole TEAM, or (with
+        // Everyone + a human grant + reason) the whole fleet (issue #1229). The Director narrows the recipients
+        // to the sender's team HERE using the SHARED BroadcastScope - the same definition the Gateway enforces
+        // as the authority, so the two cannot drift - then relays to the Gateway's /fanout. Standalone (no
+        // Gateway) it delivers to the in-team sessions this Director can see. Restores `message send all`,
+        // which the CLI already calls but which had no Director route on the tunnel-only floor (issue #1490).
+        app.MapPost("/fleet/broadcast", async (FleetBroadcastRequest req, CancellationToken ct) =>
+        {
+            if (req is null || string.IsNullOrWhiteSpace(req.Text))
+                return Results.BadRequest(new { error = "text is required" });
+            if (string.IsNullOrWhiteSpace(req.FromSessionId))
+                return Results.BadRequest(new { error = "fromSessionId is required to resolve your team" });
+
+            var framed = FrameForSender(req.FromSessionId, req.Text);
+            var gw = gatewayClientProvider?.Invoke();
+
+            // The candidate fleet: the aggregated fleet via the Gateway, or - standalone - this Director's
+            // own live sessions mapped to the same shape so one scope filter serves both paths.
+            List<SessionDto> fleet;
+            if (gw is { IsEnabled: true })
+            {
+                try
+                {
+                    fleet = await gw.ListFleetSessionsAsync(ct);
+                }
+                catch (Exception ex)
+                {
+                    FileLog.Write($"[ControlEndpoints] /fleet/broadcast list FAILED: {ex.Message}");
+                    return Results.Json(new FleetSendResponse { Accepted = false, Error = $"Cannot reach the Gateway: {ex.Message}" },
+                        statusCode: StatusCodes.Status502BadGateway);
+                }
+            }
+            else
+            {
+                fleet = sessionManager.ListSessions()
+                    .Where(s => s.ActivityState != ActivityState.Exited)
+                    .Select(s => MapWithIdentity(s, turnSummaryCache))
+                    .ToList();
+            }
+
+            var sender = fleet.FirstOrDefault(s => string.Equals(s.SessionId, req.FromSessionId, StringComparison.OrdinalIgnoreCase));
+            if (sender is null)
+                return Results.Json(new FleetSendResponse
+                {
+                    Accepted = false,
+                    Error = "The broadcasting session was not found in the fleet, so its team cannot be resolved.",
+                }, statusCode: StatusCodes.Status404NotFound);
+
+            var senderScope = BroadcastScope.FromAggregatedSession(sender);
+            var targetIds = fleet
+                .Where(s => !string.Equals(s.SessionId, req.FromSessionId, StringComparison.OrdinalIgnoreCase)
+                            && (req.Everyone || senderScope.Includes(BroadcastScope.FromAggregatedSession(s))))
+                .Select(s => s.SessionId)
+                .ToList();
+
+            if (targetIds.Count == 0)
+                return Results.Json(new FleetSendResponse
+                {
+                    Accepted = true,
+                    DeliveredCount = 0,
+                    Warning = req.Everyone ? "No other sessions in the fleet." : "No other sessions on your team.",
+                });
+
+            if (gw is { IsEnabled: true })
+            {
+                try
+                {
+                    // A plain team broadcast passes no reason/grant (every target is in scope). Everyone carries
+                    // the reason + human grant the Hub requires to reach beyond the team.
+                    var resp = await gw.FanoutToFleetAsync(targetIds, framed, req.FromSessionId,
+                        req.Everyone ? req.Reason : null, req.Everyone ? req.GrantId : null, ct);
+                    if (resp.Denied)
+                        return Results.Json(new FleetSendResponse { Accepted = false, Error = resp.DeniedReason ?? "The broadcast was refused on scope grounds." });
+                    var delivered = resp.Results.Count(r => r.Error is null);
+                    return Results.Json(new FleetSendResponse { Accepted = true, DeliveredCount = delivered });
+                }
+                catch (Exception ex)
+                {
+                    FileLog.Write($"[ControlEndpoints] /fleet/broadcast relay FAILED: {ex.Message}");
+                    return Results.Json(new FleetSendResponse { Accepted = false, Error = $"Cannot broadcast via the Gateway: {ex.Message}" },
+                        statusCode: StatusCodes.Status502BadGateway);
+                }
+            }
+
+            // Standalone: the targets are all local sessions on this Director; deliver directly. Per-session
+            // failures are logged and counted out, never silently dropped, and never abort the whole broadcast.
+            var count = 0;
+            foreach (var tid in targetIds)
+            {
+                if (Guid.TryParse(tid, out var tguid) && sessionManager.GetSession(tguid) is { } local)
+                {
+                    try
+                    {
+                        await local.SendTextAsync(framed, SendSource.Internal);
+                        count++;
+                    }
+                    catch (Exception ex)
+                    {
+                        FileLog.Write($"[ControlEndpoints] /fleet/broadcast local deliver to {tid} FAILED: {ex.Message}");
+                    }
+                }
+            }
+            return Results.Json(new FleetSendResponse { Accepted = true, DeliveredCount = count });
+        });
+
     }
 
     // Gateway Cleanup CUT RESTORATION (SB-4a): the fleet-directory identity stamp. Restored with the /fleet
