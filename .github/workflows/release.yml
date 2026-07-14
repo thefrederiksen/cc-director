@@ -171,6 +171,24 @@ jobs:
           path: artifacts-mac/cc-director-setup-mac-arm64.zip
           if-no-files-found: error
 
+      # The headless CLI ships for macOS too, so an agent (or a user over ssh) can install and
+      # update every component from the command line without the graphical wizard (issue #1445).
+      # No EnableCompressionInSingleFile on macOS - memory corruption, issue #1442.
+      - name: Publish self-contained setup CLI for macOS arm64
+        run: >
+          dotnet publish tools/cc-director-setup-cli/CcDirector.Setup.Cli.csproj
+          -c Release -r osx-arm64 --self-contained true
+          -p:PublishSingleFile=true
+          -p:IncludeNativeLibrariesForSelfExtract=true
+          --nologo
+
+      - name: Upload macOS setup CLI artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: setup-cli-mac
+          path: tools/cc-director-setup-cli/bin/Release/net10.0/osx-arm64/publish/cc-director-setup-cli
+          if-no-files-found: error
+
   # ---------------------------------------------------------------
   # Job 1c: Build the CC Gateway tray app (Windows)
   # ---------------------------------------------------------------
@@ -647,6 +665,9 @@ jobs:
           # Windows setup CLI (the wizard downloads this to run the elevated Gateway install)
           cp release-artifacts/setup-cli-win/cc-director-setup-cli.exe "$RELEASE_DIR/devthrottle-setup-cli-win-x64.exe"
 
+          # macOS setup CLI (issue #1445: command line install/update on the Mac)
+          cp release-artifacts/setup-cli-mac/cc-director-setup-cli "$RELEASE_DIR/devthrottle-setup-cli-mac-arm64"
+
           echo ""
           echo "Release files:"
           ls -lh "$RELEASE_DIR/"
@@ -669,6 +690,7 @@ jobs:
             cc-launcher-mac-arm64
             devthrottle-setup-win-x64.exe
             devthrottle-setup-cli-win-x64.exe
+            devthrottle-setup-cli-mac-arm64
             cc-python-win-x64.zip
             cc-tools-pyenv-win-x64.zip
             cc-python-macos-arm64.tar.gz

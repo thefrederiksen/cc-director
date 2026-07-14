@@ -59,7 +59,7 @@ public class OrchestratorTests : IDisposable
             var copy = Path.Combine(_dir, "dl-" + Guid.NewGuid().ToString("N"));
             File.Copy(staged, copy);
             return Task.FromResult(copy);
-        });
+        }, macOs: false);
 
         Assert.False(result.NoWork);
         Assert.Equal(1, result.Run!.Installed);

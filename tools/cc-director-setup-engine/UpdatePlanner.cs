@@ -13,25 +13,32 @@ public static class UpdatePlanner
     /// <summary>
     /// Build a plan. <paramref name="installed"/> is keyed by component id; a
     /// component missing from the map is treated as not present.
+    /// <paramref name="macOs"/> selects which platform's release asset each component is judged
+    /// against (null = the platform this process runs on). Passing it explicitly keeps the
+    /// planner pure for tests; before this parameter existed the planner always used the
+    /// Windows asset, which made a macOS install download Windows executables (issue #1445).
     /// </summary>
     public static UpdatePlan Plan(
         IEnumerable<Component> components,
         IReadOnlyDictionary<string, InstalledComponent> installed,
         ReleaseManifest manifest,
-        UpdatePins? pins = null)
+        UpdatePins? pins = null,
+        bool? macOs = null)
     {
         ArgumentNullException.ThrowIfNull(components);
         ArgumentNullException.ThrowIfNull(installed);
         ArgumentNullException.ThrowIfNull(manifest);
         pins ??= new UpdatePins();
+        var mac = macOs ?? OperatingSystem.IsMacOS();
 
         var items = new List<PlanItem>();
         foreach (var c in components)
         {
-            var asset = manifest.TryGetAsset(c.WindowsAsset);
+            var assetName = c.AssetFor(mac);
+            var asset = assetName is null ? null : manifest.TryGetAsset(assetName);
             if (asset is null)
             {
-                items.Add(new PlanItem(c.Id, PlanItemKind.MissingAsset, c.WindowsAsset, null, null, ""));
+                items.Add(new PlanItem(c.Id, PlanItemKind.MissingAsset, assetName ?? c.WindowsAsset, null, null, ""));
                 continue;
             }
 
@@ -74,6 +81,12 @@ public static class UpdatePlanner
             else if (poisonedInstalledVersion && string.IsNullOrWhiteSpace(fromVersion))
                 // Poisoned record AND no readable exe stamp to trust: never report UpToDate on a
                 // version we just discarded - re-apply the released build to correct the state.
+                kind = PlanItemKind.Update;
+            else if (string.IsNullOrWhiteSpace(fromVersion))
+                // Present but no recorded version and no readable stamp (a hand-placed binary, or a
+                // macOS single-file build that carries no Windows version resource): we cannot claim
+                // it matches the release, so re-apply the released build. The apply records the
+                // version in installed.json, so this heals to a normal UpToDate on the next plan.
                 kind = PlanItemKind.Update;
             else
                 kind = PlanItemKind.UpToDate;

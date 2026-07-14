@@ -10,15 +10,17 @@ public static class InstallScope
 {
     /// <summary>
     /// Whether this pass installs the per-user Python tools bundle (the shared venv that carries
-    /// every cc-* tool). True for an install of EITHER role on Windows: the Gateway is a per-user
-    /// tray app (no elevation), so a Gateway install is a true SUPERSET of a Workstation install
-    /// and must include the tools too (INSTALLATION.md section 1). It is deliberately role-INDEPENDENT;
-    /// <paramref name="role"/> is kept in the signature to document and lock that fact (the old
-    /// workstation-only gate dated from when the Gateway was an elevated Windows service).
+    /// every cc-* tool). True for an install of EITHER role on either platform: the Gateway is a
+    /// per-user tray app (no elevation), so a Gateway install is a true SUPERSET of a Workstation
+    /// install and must include the tools too (INSTALLATION.md section 1), and the release ships
+    /// macOS bundles (cc-python-macos-arm64 / cc-tools-pyenv-macos-arm64) that the platform-aware
+    /// PythonToolsInstaller consumes - the old Windows-only gate silently skipped the tools on a
+    /// macOS install (issue #1445). It is deliberately role-INDEPENDENT; <paramref name="role"/>
+    /// is kept in the signature to document and lock that fact.
     /// </summary>
-    public static bool InstallsPythonTools(InstallRole role, bool installMode, bool dryRun, bool isWindows)
+    public static bool InstallsPythonTools(InstallRole role, bool installMode, bool dryRun)
     {
         _ = role; // role-independent by design (see summary); both roles get the tools bundle.
-        return installMode && !dryRun && isWindows;
+        return installMode && !dryRun;
     }
 }
