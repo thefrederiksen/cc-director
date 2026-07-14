@@ -446,13 +446,13 @@
 }
 
 /* ============================================================================
-   Repos page (private per-person view) - reuses the throttle tokens and card /
+   Repos tab (private per-person view) - reuses the throttle tokens and card /
    section / caveat styles above, and adds the ranked repository list, the
    private badge, and the metric toggle.
    ============================================================================ */
 
-/* The "private - only you" badge sits above the title so the page announces, at a glance, that it is
-   not for sharing (unlike the shareable Your Throttle splits). */
+/* The "private - only you" badge leads the tab body so it announces, at a glance, that this view is not
+   for sharing (unlike the shareable Your Throttle splits it now sits beside). */
 .repos-private {
   display: inline-flex;
   align-items: center;
@@ -487,6 +487,22 @@
   border-bottom: none;
   border-radius: 4px 4px 0 0;
   transform: translateX(-50%);
+}
+
+/* The headline tiles reuse .thr-stats, which on the Overview tab is the last block on the page and so
+   carries no bottom margin. Here the metric toggle follows it, so this tab adds the gap. */
+.repos-cards {
+  margin-bottom: 18px;
+}
+
+/* The tab's own standfirst. The page-level subtitle in the head belongs to Your Throttle as a whole, so
+   the per-repo framing lives here, on the tab body, and reads at the same weight as that subtitle. */
+.repos-intro {
+  margin: 0 0 18px;
+  max-width: 78ch;
+  font-size: 13px;
+  line-height: 1.55;
+  color: var(--text-dim);
 }
 
 /* Metric toggle (Turns / Characters / Sessions) */

@@ -19,6 +19,8 @@ import {
   type Surface,
 } from "@devthrottle/client-core/stats/statsClient";
 import { gatewayErrorMessage } from "@devthrottle/client-core/api/client";
+import { ReposTab } from "./ReposTab";
+import { TABS, DEFAULT_TAB, isThrottleTab, type ThrottleTab } from "./throttleTabs";
 
 // The "Your Throttle" page (devthrottle-stats mission): the in-Cockpit view of how the owner drives the
 // fleet - spoken vs typed, and from phone vs desktop vs cockpit. Read-only over the same GET /stats/data
@@ -29,17 +31,11 @@ import { gatewayErrorMessage } from "@devthrottle/client-core/api/client";
 // The page is TABBED so the two questions the owner actually cares about are not buried under supporting
 // tables (owner ask, 2026-07-13): Overview leads with the two headline percentages as big rings - how
 // much do I speak vs type, and how much do I drive from my phone; Activity holds the (now larger) time
-// charts; Breakdown holds the supporting tables and honesty caveats.
+// charts; Breakdown holds the supporting tables and honesty caveats; Repos holds the private per-repo
+// split, which was its own page and rail entry until 2026-07-14 (owner ask). All four tabs read the one
+// /stats/data snapshot this page already polls, so folding Repos in added no second request.
 
 const REFRESH_MS = 10_000;
-
-type ThrottleTab = "overview" | "activity" | "breakdown";
-
-const TABS: ReadonlyArray<{ key: ThrottleTab; label: string }> = [
-  { key: "overview", label: "Overview" },
-  { key: "activity", label: "Activity" },
-  { key: "breakdown", label: "Breakdown" },
-];
 
 // The tab is sticky per browser so returning to the page lands on whatever the owner last read.
 const TAB_STORAGE_KEY = "cockpit.throttleTab";
@@ -47,11 +43,11 @@ const TAB_STORAGE_KEY = "cockpit.throttleTab";
 function initialTab(): ThrottleTab {
   try {
     const saved = window.localStorage.getItem(TAB_STORAGE_KEY);
-    if (saved === "overview" || saved === "activity" || saved === "breakdown") return saved;
+    if (saved !== null && isThrottleTab(saved)) return saved;
   } catch {
     /* storage unavailable (private mode) - fall through to the default */
   }
-  return "overview";
+  return DEFAULT_TAB;
 }
 
 export function YourThrottleView() {
@@ -136,6 +132,7 @@ export function YourThrottleView() {
           {tab === "overview" && <OverviewTab summary={summary} data={data} />}
           {tab === "activity" && <ActivityTab data={data} />}
           {tab === "breakdown" && <BreakdownTab summary={summary} data={data} />}
+          {tab === "repos" && <ReposTab data={data} />}
         </>
       )}
     </div>
