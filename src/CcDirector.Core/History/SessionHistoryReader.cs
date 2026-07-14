@@ -68,7 +68,23 @@ public static class SessionHistoryReader
         };
     }
 
-    public static ConversationHistory Read(Session session)
+    /// <summary>
+    /// The session's conversation, as a reader of the conversation expects it: main thread only, no
+    /// content-less lines. This is the long-standing contract of this facade and every caller depends
+    /// on it.
+    ///
+    /// The underlying parse deliberately keeps more than this (nested subagent turns, agent-injected
+    /// meta lines, lines that carry only token usage) so that ONE read can serve every consumer -
+    /// the Agent view wants the subagent turns this hides. Those consumers read
+    /// <see cref="ReadAll"/> and narrow it themselves.
+    /// </summary>
+    public static ConversationHistory Read(Session session) => ReadAll(session).MainThread;
+
+    /// <summary>
+    /// Everything the source holds, unfiltered - including nested subagent turns, meta lines, and
+    /// lines carrying only token usage. Prefer <see cref="Read"/> unless you specifically need those.
+    /// </summary>
+    public static ConversationHistory ReadAll(Session session)
     {
         ArgumentNullException.ThrowIfNull(session);
 

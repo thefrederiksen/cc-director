@@ -34,11 +34,15 @@ public enum ConversationPartKind
 /// <param name="ToolName">For a tool call, the tool's name; otherwise null.</param>
 /// <param name="ToolId">For a tool call, its id; for a tool result, the id of the call it
 /// answers. Lets a consumer pair a call with its result. Null when not applicable.</param>
+/// <param name="IsError">For a <see cref="ConversationPartKind.ToolResult"/>, whether the tool
+/// reported a failure. False for every other kind. Without this a rebuilt view cannot tell a failed
+/// tool call from a successful one.</param>
 public sealed record ConversationPart(
     ConversationPartKind Kind,
     string Text,
     string? ToolName = null,
-    string? ToolId = null);
+    string? ToolId = null,
+    bool IsError = false);
 
 /// <summary>One normalized message: a role plus its ordered content parts.</summary>
 /// <param name="Role">Who produced the message.</param>
@@ -50,11 +54,23 @@ public sealed record ConversationPart(
 /// what groups messages that actually shared a context window. Distinct from the Director session id,
 /// which spans every context in one window. A source holding several contexts in one file (Gemini's
 /// logs.json) carries it per message, which is why it lives here rather than on the history.</param>
+/// <param name="IsMeta">True for a message the agent injected rather than the human or the model
+/// producing it. Consumers that render a conversation skip these - showing them adds cards a user never
+/// saw. Also the turn boundary for usage accounting. Sources that have no such concept leave it false.</param>
+/// <param name="IsSidechain">True when this belongs to a nested subagent conversation rather than the
+/// main thread. Kept rather than filtered at parse time so each consumer decides: the Agent view shows
+/// them, a conversation replay may not. Filtering here would silently change what the UI displays.</param>
+/// <param name="LineNumber">Where this message sits in its source, 1-based, when the source is a
+/// line-oriented file; null otherwise. Lets a consumer resume from an offset instead of re-reading a
+/// whole transcript.</param>
 public sealed record ConversationMessage(
     ConversationRole Role,
     IReadOnlyList<ConversationPart> Parts,
     DateTimeOffset? Timestamp = null,
-    string? ContextId = null);
+    string? ContextId = null,
+    bool IsMeta = false,
+    bool IsSidechain = false,
+    int? LineNumber = null);
 
 /// <summary>
 /// An agent-agnostic, normalized view of a session's conversation. Every agent provider
@@ -67,4 +83,23 @@ public sealed record ConversationHistory(IReadOnlyList<ConversationMessage> Mess
 {
     /// <summary>An empty history (no messages).</summary>
     public static ConversationHistory Empty { get; } = new(Array.Empty<ConversationMessage>());
+
+    /// <summary>
+    /// The main-thread conversation: what a reader of the conversation expects to see. Drops nested
+    /// subagent turns, and drops messages carrying no content (an assistant line can exist purely to
+    /// hold a token-usage block - real for accounting, not something anyone said).
+    ///
+    /// A parse keeps everything so it can serve every consumer from one read; the ones that render a
+    /// conversation narrow it here. Sources with no sidechain concept are unaffected.
+    /// </summary>
+    public ConversationHistory MainThread
+    {
+        get
+        {
+            var kept = Messages.Where(m => !m.IsSidechain && m.Parts.Count > 0).ToList();
+            return kept.Count == Messages.Count ? this
+                : kept.Count == 0 ? Empty
+                : new ConversationHistory(kept);
+        }
+    }
 }

@@ -7,8 +7,13 @@ namespace CcDirector.Core.Tests.Claude;
 /// <summary>
 /// Validates that ClaudeTranscriptReader maps a Claude Code transcript .jsonl into the
 /// canonical ConversationHistory: it keeps user/assistant/tool conversation lines, skips
-/// bookkeeping lines and subagent sidechains, parses every content part kind, and
-/// tolerates a truncated final line.
+/// bookkeeping lines, parses every content part kind, and tolerates a truncated final line.
+///
+/// Sidechains changed with issue #1561: they are no longer dropped at PARSE, they are flagged and
+/// dropped by <see cref="ConversationHistory.MainThread"/>. The parse is now a superset serving every
+/// consumer from one read - the Agent view wants the subagent turns a conversation replay hides - so
+/// only a consumer can decide. This test pins BOTH: the raw parse keeps it, MainThread hides it, which
+/// is what every caller of SessionHistoryReader.Read still sees.
 /// </summary>
 public class ClaudeTranscriptReaderTests
 {
@@ -36,10 +41,19 @@ public class ClaudeTranscriptReaderTests
         File.WriteAllLines(path, FixtureLines);
         try
         {
-            var history = ClaudeTranscriptReader.Read(path);
+            var raw = ClaudeTranscriptReader.Read(path);
 
-            // 4 conversation messages survive (lines 3, 4, 5, 8); bookkeeping, sidechain,
-            // title, and the truncated line are dropped.
+            // The raw parse keeps 5 (lines 3, 4, 5, 6-the-sidechain, 8); bookkeeping, title and the
+            // truncated line are dropped. The sidechain is FLAGGED, not dropped - the Agent view shows
+            // subagent turns, so the parse cannot decide for it.
+            Assert.Equal(5, raw.Messages.Count);
+            Assert.Equal("subagent noise", raw.Messages[3].Parts[0].Text);
+            Assert.True(raw.Messages[3].IsSidechain);
+            Assert.All(raw.Messages.Where((_, i) => i != 3), m => Assert.False(m.IsSidechain));
+
+            // What every caller of SessionHistoryReader.Read sees - unchanged by #1561: 4 messages,
+            // sidechain hidden.
+            var history = raw.MainThread;
             Assert.Equal(4, history.Messages.Count);
 
             // 0: user prompt (plain string content) with a timestamp.

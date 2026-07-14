@@ -39,11 +39,13 @@ public static class ClaudeTranscriptReader
             using var fs = new FileStream(jsonlPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
             using var reader = new StreamReader(fs);
             string? line;
+            var lineNumber = 0;
             while ((line = reader.ReadLine()) != null)
             {
+                lineNumber++;
                 if (string.IsNullOrWhiteSpace(line))
                     continue;
-                var message = ParseLine(line);
+                var message = ParseLine(line, lineNumber);
                 if (message != null)
                     messages.Add(message);
             }
@@ -56,7 +58,9 @@ public static class ClaudeTranscriptReader
         return messages.Count == 0 ? ConversationHistory.Empty : new ConversationHistory(messages);
     }
 
-    private static ConversationMessage? ParseLine(string line)
+    /// <param name="lineNumber">1-based position in the file, carried onto the message so a consumer can
+    /// resume from an offset rather than re-read the whole transcript.</param>
+    private static ConversationMessage? ParseLine(string line, int lineNumber = 0)
     {
         JsonDocument doc;
         try
@@ -78,9 +82,13 @@ public static class ClaudeTranscriptReader
             if (type != "user" && type != "assistant")
                 return null;
 
-            // Skip subagent sidechains - nested Task-tool conversations, not the main thread.
-            if (root.TryGetProperty("isSidechain", out var sidechain) && sidechain.ValueKind == JsonValueKind.True)
-                return null;
+            // Sidechains (nested Task-tool conversations) and meta lines are FLAGGED, not dropped. This
+            // parse is the single source for every consumer, and they disagree: the Agent view shows
+            // sidechain turns and hides meta, a conversation replay wants neither. Filtering here would
+            // silently change what one of them displays. Each consumer filters on the flag instead.
+            var isSidechain = root.TryGetProperty("isSidechain", out var sidechain)
+                && sidechain.ValueKind == JsonValueKind.True;
+            var isMeta = root.TryGetProperty("isMeta", out var meta) && meta.ValueKind == JsonValueKind.True;
 
             if (!root.TryGetProperty("message", out var message) || message.ValueKind != JsonValueKind.Object)
                 return null;
@@ -107,8 +115,11 @@ public static class ClaudeTranscriptReader
                 }
             }
 
-            if (parts.Count == 0)
-                return null; // meta-only line with no usable content
+            // A line with no content parts is KEPT when it carries usage - an assistant line can hold a
+            // token-usage block and no text, and dropping it loses that turn from the accounting. It is
+            // only discarded when there is genuinely nothing on it at all.
+            if (parts.Count == 0 && !message.TryGetProperty("usage", out _))
+                return null;
 
             DateTimeOffset? timestamp = null;
             if (root.TryGetProperty("timestamp", out var ts) && ts.ValueKind == JsonValueKind.String
@@ -122,7 +133,9 @@ public static class ClaudeTranscriptReader
             if (root.TryGetProperty("sessionId", out var sid) && sid.ValueKind == JsonValueKind.String)
                 contextId = sid.GetString();
 
-            return new ConversationMessage(role, parts, timestamp, contextId);
+            return new ConversationMessage(
+                role, parts, timestamp, contextId, isMeta, isSidechain,
+                lineNumber > 0 ? lineNumber : null);
         }
     }
 
@@ -149,7 +162,11 @@ public static class ClaudeTranscriptReader
 
             case "tool_result":
                 var toolUseId = GetString(item, "tool_use_id");
-                return new ConversationPart(ConversationPartKind.ToolResult, ExtractToolResultText(item), null, toolUseId);
+                // is_error distinguishes a failed tool call from a successful one. Without it a rebuilt
+                // Agent view cannot show the error state it shows today.
+                var isError = item.TryGetProperty("is_error", out var errEl) && errEl.ValueKind == JsonValueKind.True;
+                return new ConversationPart(
+                    ConversationPartKind.ToolResult, ExtractToolResultText(item), null, toolUseId, isError);
 
             default:
                 return null;
