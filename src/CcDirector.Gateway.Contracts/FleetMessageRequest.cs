@@ -107,3 +107,59 @@ public sealed class FleetAskResponse
     /// <summary>Error or timeout message when Answered is false.</summary>
     public string? Error { get; set; }
 }
+
+/// <summary>
+/// Body of POST /fleet/rename on the Director (issue #1490). A session asks its own Director to rename a
+/// session anywhere in the fleet: renamed locally when the target lives on this machine, otherwise relayed
+/// through the Gateway (PATCH /sessions/{sid}), so the fleet token never reaches the calling agent. The
+/// tunnel-only floor restores this off the PATCH /sessions/{sid} route the cut removed from the Director.
+/// </summary>
+public sealed class FleetRenameRequest
+{
+    /// <summary>Target session GUID anywhere in the fleet.</summary>
+    public string ToSessionId { get; set; } = "";
+
+    /// <summary>New custom display name, or empty/null to clear it back to the default (repo folder name).</summary>
+    public string? Name { get; set; }
+}
+
+/// <summary>Response from POST /fleet/rename.</summary>
+public sealed class FleetRenameResponse
+{
+    /// <summary>True when the rename was applied.</summary>
+    public bool Renamed { get; set; }
+
+    /// <summary>The renamed session's GUID.</summary>
+    public string SessionId { get; set; } = "";
+
+    /// <summary>The session's resolved display name after the rename.</summary>
+    public string Name { get; set; } = "";
+
+    /// <summary>Error message when Renamed is false.</summary>
+    public string? Error { get; set; }
+}
+
+/// <summary>
+/// Body of POST /fleet/done on the Director (issue #1490). Flags a session anywhere in the fleet for
+/// asynchronous teardown by its owning Director's deletion reaper: flagged locally when the target lives on
+/// this machine, otherwise relayed through the Gateway (POST /sessions/{sid}/request-deletion). Restores the
+/// CLI self-reap (`cc-devthrottle session done`) off the route the tunnel-only cut removed from the Director.
+/// </summary>
+public sealed class FleetDoneRequest
+{
+    /// <summary>Target session GUID anywhere in the fleet (usually the caller flagging itself).</summary>
+    public string ToSessionId { get; set; } = "";
+
+    /// <summary>Short human reason for the teardown, surfaced while the session winds down. Optional.</summary>
+    public string? Reason { get; set; }
+}
+
+/// <summary>Response from POST /fleet/done.</summary>
+public sealed class FleetDoneResponse
+{
+    /// <summary>True when the session was flagged for deletion.</summary>
+    public bool Accepted { get; set; }
+
+    /// <summary>Error message when Accepted is false.</summary>
+    public string? Error { get; set; }
+}

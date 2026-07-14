@@ -250,6 +250,50 @@ public sealed class GatewayClient : IGatewayHold, IDisposable
     }
 
     /// <summary>
+    /// Rename a session anywhere in the fleet via the Gateway's PATCH /sessions/{sid}, which routes the
+    /// rename to the owning Director over the tunnel and returns the updated <see cref="SessionDto"/>.
+    /// Issue #1490: the Director's loopback POST /fleet/rename relays here for a non-local target. Throws
+    /// when the Gateway is disabled or the call fails.
+    /// </summary>
+    public async Task<SessionDto> RenameFleetAsync(string toSessionId, string? name, CancellationToken ct = default)
+    {
+        if (!_config.IsEnabled)
+            throw new InvalidOperationException("Gateway is not configured; cannot reach a remote session.");
+        if (string.IsNullOrWhiteSpace(toSessionId))
+            throw new ArgumentException("Target session id is required", nameof(toSessionId));
+
+        FileLog.Write($"[GatewayClient] RenameFleetAsync: PATCH /sessions/{toSessionId}");
+        var body = new SessionUpdateRequest { Name = name };
+        using var resp = await _http.PatchAsJsonAsync($"sessions/{toSessionId}", body, ct);
+        if (!resp.IsSuccessStatusCode)
+            throw new InvalidOperationException($"Gateway rename of {toSessionId} returned HTTP {(int)resp.StatusCode} {resp.ReasonPhrase}");
+
+        var parsed = await resp.Content.ReadFromJsonAsync<SessionDto>(ct);
+        if (parsed is null)
+            throw new InvalidOperationException("Gateway rename returned an unparsable body.");
+        return parsed;
+    }
+
+    /// <summary>
+    /// Flag a session anywhere in the fleet for teardown via the Gateway's POST /sessions/{sid}/request-deletion,
+    /// which routes to the owning Director over the tunnel. Issue #1490: the Director's loopback POST /fleet/done
+    /// relays here for a non-local target. Throws when the Gateway is disabled or the call fails.
+    /// </summary>
+    public async Task RequestDeletionFleetAsync(string toSessionId, string? reason, CancellationToken ct = default)
+    {
+        if (!_config.IsEnabled)
+            throw new InvalidOperationException("Gateway is not configured; cannot reach a remote session.");
+        if (string.IsNullOrWhiteSpace(toSessionId))
+            throw new ArgumentException("Target session id is required", nameof(toSessionId));
+
+        FileLog.Write($"[GatewayClient] RequestDeletionFleetAsync: POST /sessions/{toSessionId}/request-deletion");
+        var body = new SessionDeletionRequest { Reason = reason };
+        using var resp = await _http.PostAsJsonAsync($"sessions/{toSessionId}/request-deletion", body, ct);
+        if (!resp.IsSuccessStatusCode)
+            throw new InvalidOperationException($"Gateway deletion request for {toSessionId} returned HTTP {(int)resp.StatusCode} {resp.ReasonPhrase}");
+    }
+
+    /// <summary>
     /// Ask a question to a session anywhere in the fleet and wait for its answer (issue #717), via
     /// the Gateway's POST /sessions/{sid}/prompt with WaitForIdle=true. The Gateway holds the
     /// response open until the target returns to Idle (or the timeout), then returns the captured
