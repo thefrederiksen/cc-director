@@ -23,7 +23,7 @@ namespace CcDirector.Core.Drivers;
 /// prompt - every phone dictation) pressed Enter and returned without ever looking back. A swallowed
 /// Enter therefore reported success: the prompt sat parked in the composer, the session was marked
 /// Working, and the next send typed itself onto the end of the orphan and ran the two mashed together
-/// (issue #1512). Every Enter now goes through <see cref="PressEnterAndVerifyAsync"/>.
+/// (pull request #1513). Every Enter now goes through <see cref="PressEnterAndVerifyAsync"/>.
 /// </summary>
 public static class TerminalSubmit
 {

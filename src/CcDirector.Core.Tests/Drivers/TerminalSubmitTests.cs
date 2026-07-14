@@ -299,7 +299,7 @@ public sealed class TerminalSubmitTests
         Assert.Equal(0, backend.EnterCount);
     }
 
-    // ===== post-Enter submit verification (issue #1512) =============================================
+    // ===== post-Enter submit verification (pull request #1513) =============================================
     // The echo check proves the text ARRIVED in the composer. These pin the other half: that it LEFT.
     // The live shape was a phone dictation whose Enter the TUI swallowed - the text sat in the
     // composer, the session was marked Working, and the NEXT dictation typed itself onto the end of

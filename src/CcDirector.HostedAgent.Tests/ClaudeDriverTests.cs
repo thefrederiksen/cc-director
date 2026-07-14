@@ -105,6 +105,25 @@ public class ClaudeDriverTests
         Assert.Equal(new byte[] { 0x0D }, backend.RawWrites[1]);
     }
 
+    /// <summary>
+    /// The live failure: the composer echoes the text (so it provably arrived) but the TUI swallows
+    /// the submitting Enter, so the turn never starts and the prompt is parked. The real driver must
+    /// FAIL here. Returning quietly is what let a phone dictation sit in the composer while the
+    /// session was marked Working and the next send appended to the orphan.
+    /// </summary>
+    [Fact]
+    public async Task SubmitAsync_EchoesButTuiSwallowsTheEnter_ThrowsInsteadOfParkingSilently()
+    {
+        var backend = new FakeBackend { SwallowEnter = true };
+        backend.Start("x", "", ".", 80, 24);
+        backend.OnRawWrite = bytes => backend.EmitOutput(System.Text.Encoding.UTF8.GetString(bytes));
+
+        var error = await Assert.ThrowsAsync<PromptNotSubmittedException>(
+            () => FastDriver().SubmitAsync(backend, "a dictation that never sends"));
+
+        Assert.Contains("parked in the composer", error.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
     [Fact]
     public async Task SubmitAsync_SlashCorruptedEcho_ClearsComposerAndRetypes()
     {

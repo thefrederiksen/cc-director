@@ -66,11 +66,31 @@ public sealed class FakeBackend : ISessionBackend
     /// typed characters back into the terminal stream.</summary>
     public Action<byte[]>? OnRawWrite { get; set; }
 
+    /// <summary>
+    /// Bytes this fake streams when a submitting Enter lands - the agent echoing the prompt,
+    /// animating its spinner and streaming a reply. <see cref="SubmitVerifier"/> reads exactly this
+    /// as proof the turn started, so a fake that stays silent after Enter is indistinguishable from a
+    /// TUI that swallowed it. Comfortably above SubmitVerifier.SubmittedGrowthBytes.
+    /// </summary>
+    public int SubmitResponseBytes { get; set; } = 4096;
+
+    /// <summary>
+    /// When true this fake SWALLOWS the submitting Enter: nothing streams, so the submit watchdog
+    /// sees dead window after dead window, nudges, and finally throws. This is the live failure a
+    /// working TUI must never look like.
+    /// </summary>
+    public bool SwallowEnter { get; set; }
+
     public void Write(byte[] data)
     {
         RawWrites.Add(data);
         OnRawWrite?.Invoke(data);
+
+        if (IsEnter(data) && !SwallowEnter && SubmitResponseBytes > 0)
+            EmitOutput(new string('r', SubmitResponseBytes));
     }
+
+    private static bool IsEnter(byte[] data) => data.Length == 1 && data[0] == 0x0D;
 
     public Task SendTextAsync(string text)
     {

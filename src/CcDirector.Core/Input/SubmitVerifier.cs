@@ -6,7 +6,7 @@ namespace CcDirector.Core.Input;
 
 /// <summary>
 /// Ensures a typed prompt actually SUBMITS - that the Enter after the text was not swallowed
-/// (issues #212, #1512).
+/// (issue #212, pull request #1513).
 ///
 /// THE TRAP
 /// --------

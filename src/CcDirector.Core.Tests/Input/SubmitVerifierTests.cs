@@ -7,7 +7,7 @@ using Xunit;
 namespace CcDirector.Core.Tests.Input;
 
 /// <summary>
-/// The submit watchdog (issues #212, #1512). The Enter that submits a prompt is unreliable
+/// The submit watchdog (issue #212, pull request #1513). The Enter that submits a prompt is unreliable
 /// (autocomplete popup eats it; the agent's startup window drops Enter keypresses; a repainting
 /// composer swallows it) and a parked prompt freezes the terminal byte count - observed live on the
 /// 2026-06-06 restore E2E and again on 2026-07-14 from a phone dictation. The watchdog judges by

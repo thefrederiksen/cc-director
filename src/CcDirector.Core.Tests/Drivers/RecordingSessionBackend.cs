@@ -116,7 +116,7 @@ internal sealed class RecordingSessionBackend : ISessionBackend
             return;
         }
 
-        // The TUI swallowed the Enter (issue #1512): the composer keeps the text and NOTHING is
+        // The TUI swallowed the Enter (pull request #1513): the composer keeps the text and NOTHING is
         // streamed, so the watchdog sees dead window after dead window and nudges.
         LostEnterCount++;
         ParkedComposerText = EchoScript.ComposerText;
@@ -222,12 +222,12 @@ internal sealed record RecordingEchoStep(
     /// <summary>
     /// The text echoes (so it is provably sitting in the composer) but the TUI SWALLOWS every Enter -
     /// the composer never reaches a submitting state. The unrecoverable form of the live failure in
-    /// issue #1512. Distinct from <see cref="Withheld"/>, where the text never arrives at all.
+    /// pull request #1513. Distinct from <see cref="Withheld"/>, where the text never arrives at all.
     /// </summary>
     public RecordingEchoStep NotAcceptingSubmit() => this with { AcceptsSubmit = false, ReadyAfter = null };
 
     /// <summary>
-    /// The recoverable form of issue #1512, and the common one: the text echoes, the TUI swallows the
+    /// The recoverable form of pull request #1513, and the common one: the text echoes, the TUI swallows the
     /// submitting Enter (an autocomplete popup, a startup window that drops Enter, a composer
     /// repaint), and then <paramref name="readyAfter"/> later it is accepting again - so the
     /// watchdog's nudge lands and the turn starts.
