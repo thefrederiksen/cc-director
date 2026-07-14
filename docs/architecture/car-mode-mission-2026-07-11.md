@@ -237,6 +237,32 @@ The owner must be able to tell the two apart without looking. Keep them short an
     Kit can drive open-source OpenAI-compatible models fine. If a framework is later wanted, it is
     the .NET-native Microsoft Agent Framework, in-process, not the OpenAI one.
 
+## A responsive interface is everything (load-bearing principle, owner, 2026-07-12)
+
+Car Mode is used eyes-nearly-free and hands-free, so the single most important quality after
+"it works" is that the owner is never left staring at a screen that has not changed, wondering
+whether his action registered. The owner stated this plainly: waiting for the voice, the model,
+or the network is completely acceptable - as long as he can see and hear that he is waiting. A
+silent, unchanged screen during that wait is the defect, not the wait itself.
+
+The rule, applied everywhere in Car Mode: the instant anything happens - a tap, a recognized
+"over and out", a recognized "stop" - change the visible state first, synchronously, before any
+asynchronous work begins. Do not run the transcription, the brain, or the text-to-speech and then
+update the screen; flip the screen into its next state (for example Thinking) as the very first
+thing, and only then start the asynchronous pipeline. The audible acknowledgement cue must fire on
+the same synchronous beat.
+
+While the assistant is thinking or waiting, play a soft, low-volume ambient cue in the background
+so the owner hears, without looking, that work is in progress - the pattern other good voice
+assistants use (a gentle, quiet, recurring sound, not a loud one-shot). This cue must use the soft
+water-droplet sound from dictation (`readyCue.ts`), not a harsh tone; the owner finds the current
+tone harsh and wants the whole experience to move toward the gentle water sound. Stop the ambient
+cue the moment the reply audio starts.
+
+This principle sits above the individual fixes: every state Car Mode can be in must show and sound
+like what it is doing, and every transition must be immediate on the screen even when the real work
+behind it takes seconds.
+
 ## The work, in phases
 
 Each phase ships alone: implemented, merged to origin/main per the trunk rule, deployed to the
