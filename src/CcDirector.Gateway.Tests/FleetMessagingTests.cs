@@ -294,24 +294,24 @@ public sealed class FleetMessagingEndpointTests : IAsyncLifetime
         Assert.DoesNotContain("not found", await resp.Content.ReadAsStringAsync(), StringComparison.OrdinalIgnoreCase);
     }
 
-    // A well-formed target this Director does not own: fail loud (502), never a silent no-op. Roles are set on
-    // the owning Director - there is no Gateway route to relay to.
+    // A well-formed target this Director does not own, with no Gateway to relay through: fail loud (404),
+    // never a silent no-op. Matches /fleet/rename's contract exactly.
     [Fact]
-    public async Task Fleet_role_unknown_target_returns_502_notSilentNoOp()
+    public async Task Fleet_role_unknown_target_noGateway_returns_404()
     {
         var resp = await _client.PostAsJsonAsync("fleet/role",
             new FleetRoleRequest { ToSessionId = Guid.NewGuid().ToString(), Role = "Architect" });
-        Assert.Equal(HttpStatusCode.BadGateway, resp.StatusCode);
+        Assert.Equal(HttpStatusCode.NotFound, resp.StatusCode);
     }
 
     // An EMPTY role is the documented "clear it" path, so it must pass validation and reach the session
-    // lookup (502 here) rather than being rejected as a bad request alongside genuine typos.
+    // lookup (404 here, no Gateway) rather than being rejected as a bad request alongside genuine typos.
     [Fact]
     public async Task Fleet_role_empty_role_isClearNotReject()
     {
         var resp = await _client.PostAsJsonAsync("fleet/role",
             new FleetRoleRequest { ToSessionId = Guid.NewGuid().ToString(), Role = "" });
-        Assert.Equal(HttpStatusCode.BadGateway, resp.StatusCode);
+        Assert.Equal(HttpStatusCode.NotFound, resp.StatusCode);
     }
 
     // ===== /fleet/done validation (issue #1490 - the self-reap route restored to the floor) =====

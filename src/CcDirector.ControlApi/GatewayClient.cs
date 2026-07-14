@@ -259,6 +259,30 @@ public sealed class GatewayClient : IGatewayHold, IDisposable
     }
 
     /// <summary>
+    /// Set a session's EXPLICIT role anywhere in the fleet, through the Gateway's POST
+    /// /sessions/{sid}/role, which routes it to the owning Director over the tunnel. Used by the local
+    /// POST /fleet/role for a target this Director does not host.
+    /// </summary>
+    public async Task<SessionDto> SetRoleFleetAsync(string toSessionId, string? role, CancellationToken ct = default)
+    {
+        if (!_config.IsEnabled)
+            throw new InvalidOperationException("Gateway is not configured; cannot reach a remote session.");
+        if (string.IsNullOrWhiteSpace(toSessionId))
+            throw new ArgumentException("Target session id is required", nameof(toSessionId));
+
+        FileLog.Write($"[GatewayClient] SetRoleFleetAsync: POST /sessions/{toSessionId}/role role={role ?? "(cleared)"}");
+        var body = new SetRoleRequest { Role = role };
+        using var resp = await _http.PostAsJsonAsync($"sessions/{toSessionId}/role", body, ct);
+        if (!resp.IsSuccessStatusCode)
+            throw new InvalidOperationException($"Gateway set-role of {toSessionId} returned HTTP {(int)resp.StatusCode} {resp.ReasonPhrase}");
+
+        var parsed = await resp.Content.ReadFromJsonAsync<SessionDto>(ct);
+        if (parsed is null)
+            throw new InvalidOperationException("Gateway set-role returned an unparsable body.");
+        return parsed;
+    }
+
+    /// <summary>
     /// Flag a session anywhere in the fleet for teardown via the Gateway's POST /sessions/{sid}/request-deletion,
     /// which routes to the owning Director over the tunnel. Issue #1490: the Director's loopback POST /fleet/done
     /// relays here for a non-local target. Throws when the Gateway is disabled or the call fails.

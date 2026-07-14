@@ -577,9 +577,10 @@ internal static class ControlEndpoints
         // POST /sessions/{sid}/role route the tunnel-only cut removed, which left a running session stuck with
         // whatever role it was born with - Architect cannot be derived from the spawn graph, so there was no way
         // to make one after the fact. An unknown role is REJECTED (400) so a mistyped role never silently drops;
-        // an empty role CLEARS the explicit role back to auto-derivation. A remote target fails loud (502): the
-        // Gateway has no role route to relay to, and a silent no-op would be worse than a clear error.
-        app.MapPost("/fleet/role", (FleetRoleRequest req) =>
+        // an empty role CLEARS the explicit role back to auto-derivation. A target this Director does not host
+        // is relayed through the Gateway (POST /sessions/{sid}/role), which routes it to the owning Director
+        // over the tunnel - the same shape as /fleet/rename. Fails loud with no Gateway; never a silent no-op.
+        app.MapPost("/fleet/role", async (FleetRoleRequest req, CancellationToken ct) =>
         {
             if (req is null || string.IsNullOrWhiteSpace(req.ToSessionId))
                 return Results.BadRequest(new { error = "toSessionId is required" });
@@ -594,16 +595,41 @@ internal static class ControlEndpoints
                     error = $"unknown role '{req.Role}'. Valid roles: {string.Join(", ", SessionRoles.All)} (or empty to clear).",
                 });
 
+            var normalized = clearing ? null : SessionRoles.Normalize(req.Role);
+
             var local = sessionManager.GetSession(toGuid);
             if (local is null)
-                return Results.Json(new FleetRoleResponse
-                {
-                    Applied = false, SessionId = req.ToSessionId,
-                    Error = "Session not found on this Director. Setting a role on a session hosted by another "
-                          + "Director is not supported - run this against the Director that owns the session.",
-                }, statusCode: StatusCodes.Status502BadGateway);
+            {
+                // Not ours: relay through the Gateway, which routes it to the owning Director over the tunnel.
+                var gw = gatewayClientProvider?.Invoke();
+                if (gw is not { IsEnabled: true })
+                    return Results.Json(new FleetRoleResponse
+                    {
+                        Applied = false, SessionId = req.ToSessionId,
+                        Error = "Session not found on this Director and no Gateway is configured.",
+                    }, statusCode: StatusCodes.Status404NotFound);
 
-            var normalized = clearing ? null : SessionRoles.Normalize(req.Role);
+                try
+                {
+                    var relayed = await gw.SetRoleFleetAsync(req.ToSessionId, normalized, ct);
+                    return Results.Json(new FleetRoleResponse
+                    {
+                        Applied = true,
+                        SessionId = relayed.SessionId ?? req.ToSessionId,
+                        ExplicitRole = relayed.ExplicitRole,
+                    });
+                }
+                catch (Exception ex)
+                {
+                    FileLog.Write($"[ControlEndpoints] /fleet/role relay to {toGuid} FAILED: {ex.Message}");
+                    return Results.Json(new FleetRoleResponse
+                    {
+                        Applied = false, SessionId = req.ToSessionId,
+                        Error = $"Cannot set the role via the Gateway: {ex.Message}",
+                    }, statusCode: StatusCodes.Status502BadGateway);
+                }
+            }
+
             FileLog.Write($"[ControlEndpoints] POST /fleet/role: session={toGuid}, role={normalized ?? "(cleared)"}");
             local.SetExplicitRole(normalized);
 
