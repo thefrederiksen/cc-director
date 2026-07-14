@@ -97,22 +97,6 @@ public sealed class GatewayClient : IGatewayHold, IDisposable
     internal Func<TailnetEndpointResolution> ResolveAdvertisedEndpoint { get; set; }
 
     /// <summary>
-    /// Verify-before-advertise (issue #197): called with the advertised endpoint before
-    /// every register POST. Returns null when the endpoint is confirmed reachable from
-    /// the outside; otherwise a human-readable reason, which SKIPS the registration -
-    /// a dead endpoint is never advertised, and <see cref="RegisterLoop"/>'s backoff
-    /// retries later (covering the first-serve TLS cert issuance window and a Tailscale
-    /// daemon that comes up after the Director). Null (the default) disables verification:
-    /// direct constructions (tests, ephemeral-port hosts) register exactly as before;
-    /// ControlApiHost wires it for real fixed-port Directors.
-    /// </summary>
-    public Func<string, CancellationToken, Task<string?>>? EndpointVerifier { get; set; }
-
-    /// <summary>Reason the last register attempt refused to advertise, or null when the
-    /// endpoint verified (or verification is disabled). Surfaced for diagnostics.</summary>
-    public string? LastVerifyError { get; private set; }
-
-    /// <summary>
     /// The gateway address currently in use (issue #1233): <see cref="GatewayConfig.Url"/> until
     /// <see cref="Start"/> narrows it to the first reachable entry of
     /// <see cref="GatewayConfig.CandidateUrls"/>. Exposed for tests and diagnostics.
@@ -698,24 +682,6 @@ public sealed class GatewayClient : IGatewayHold, IDisposable
             return false;
         }
 
-        // Verify-before-advertise (issue #197): never register an endpoint that does not
-        // demonstrably answer. The verifier (composed in ControlApiHost) asserts the
-        // Director's own tailscale serve mapping and probes the advertised URL from the
-        // outside-in. On failure the precise reason lands in THIS machine's log - the one
-        // place someone can act on it - instead of an eternal unreachable flap on the Gateway.
-        if (EndpointVerifier is not null)
-        {
-            var reason = await EndpointVerifier(req.TailnetEndpoint, ct);
-            if (reason is not null)
-            {
-                LastVerifyError = reason;
-                FileLog.Write($"[GatewayClient] NOT registering {req.TailnetEndpoint}: {reason}");
-                _monitor?.ReportRegistrationFailure($"This Director's own front door failed verification: {reason}");
-                return false;
-            }
-            LastVerifyError = null;
-        }
-
         FileLog.Write($"[GatewayClient] POST /directors/register: endpoint={req.TailnetEndpoint}");
         var resp = await _http.PostAsJsonAsync("directors/register", req, ct);
         if (resp.IsSuccessStatusCode)
@@ -989,30 +955,5 @@ public sealed class GatewayClient : IGatewayHold, IDisposable
             Version = _version,
             StartedAt = System.Diagnostics.Process.GetCurrentProcess().StartTime.ToUniversalTime(),
         };
-    }
-
-    /// <summary>
-    /// One outside-in probe of an advertised Director endpoint: GET &lt;endpoint&gt;/healthz
-    /// through the real HTTPS front door (the tailscale serve mapping + tailnet cert), NOT
-    /// loopback. Returns null when it answers 2xx, else the reason. Deliberately a single
-    /// short attempt: <see cref="RegisterLoop"/>'s exponential backoff supplies the long
-    /// retry horizon (first-ever serve on a node can take seconds to get its TLS cert).
-    /// </summary>
-    public static async Task<string?> ProbeAdvertisedEndpointAsync(string endpoint, CancellationToken ct = default)
-    {
-        using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(5) };
-        try
-        {
-            var resp = await http.GetAsync($"{endpoint.TrimEnd('/')}/healthz", ct);
-            return resp.IsSuccessStatusCode ? null : $"healthz answered HTTP {(int)resp.StatusCode}";
-        }
-        catch (OperationCanceledException) when (!ct.IsCancellationRequested)
-        {
-            return "healthz probe timed out after 5s";
-        }
-        catch (Exception ex)
-        {
-            return $"healthz probe failed: {ex.Message}";
-        }
     }
 }
