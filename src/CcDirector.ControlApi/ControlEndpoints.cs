@@ -1184,6 +1184,11 @@ internal static class ControlEndpoints
             RepoPath = s.RepoPath,
             Status = s.Status.ToString(),
             ActivityState = s.ActivityState.ToString(),
+            // Issue #959: the raw crash fact. ActivityState says only "Exited", so without this the fold
+            // cannot tell a crash from a clean exit. This ONE mapper feeds both the Gateway wire and the
+            // desktop rail's own fold input, so stamping it here restores the deep-red on the rail, the
+            // Cockpit and the phone together.
+            Crashed = s.Crashed,
             // SessionDto.AssessedState is intentionally left null (defaults null): the Gateway-pushed
             // "assessed state" display annotation (issue #186) was retired with the Director's overlay
             // fold (issue #1177, Phase 2.3). Readers still do "AssessedState ?? ActivityState", so a null
