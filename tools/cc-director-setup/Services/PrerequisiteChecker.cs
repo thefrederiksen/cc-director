@@ -7,22 +7,15 @@ public static class PrerequisiteChecker
 {
     public static List<PrerequisiteInfo> CreateChecklist(CcDirector.Setup.Engine.InstallRole role)
     {
-        // Tailscale stays optional and never blocks the install. Only the WHY differs by role:
-        // on the gateway it is what lets a phone or another computer reach this machine securely
-        // (browsers require HTTPS off localhost, and Tailscale supplies that certificate for free);
-        // on a workstation it only matters when the machine leaves the gateway's local network.
-        // Everything runs on this machine at localhost over plain HTTP with no Tailscale, because
-        // browsers treat localhost as already secure.
-        var tailscaleDescription = role == CcDirector.Setup.Engine.InstallRole.Gateway
-            ? "Optional but needed for your phone and other computers to reach this gateway. The "
-              + "mobile app and the Cockpit run in a browser, which requires a secure (HTTPS) "
-              + "connection off this machine - Tailscale provides that automatically and for free. "
-              + "Everything still works on this machine at localhost without it."
-            : "Optional: only needed if you use this machine away from your gateway's local "
-              + "network. On the same network it reaches the gateway directly, with no Tailscale.";
-
-        return
-        [
+        // Tailscale is NOT a product requirement on a workstation - the tunnel-only
+        // architecture means every Director and launcher dials OUT to the Gateway and no
+        // inbound port is ever opened, so a workstation shows no Tailscale row at all.
+        // The one optional use left is on the GATEWAY machine itself: phones and browsers
+        // reaching the Cockpit off-machine need a secure (HTTPS) address, which Tailscale
+        // can provide for free. Everything on the gateway machine itself works at
+        // localhost over plain HTTP without it.
+        var checklist = new List<PrerequisiteInfo>
+        {
             new PrerequisiteInfo
             {
                 Name = ".NET 10 Runtime",
@@ -53,16 +46,26 @@ public static class PrerequisiteChecker
                 IsRequired = true,
                 InstallUrl = "https://nodejs.org/"
             },
-            new PrerequisiteInfo
+        };
+
+        if (role == CcDirector.Setup.Engine.InstallRole.Gateway)
+        {
+            checklist.Add(new PrerequisiteInfo
             {
                 Name = "Tailscale",
-                Description = tailscaleDescription,
+                Description = "Optional, gateway machine only: lets your phone and browsers on "
+                    + "other computers reach this gateway's Cockpit over a secure (HTTPS) "
+                    + "connection. Directors and launchers connect to the gateway on their own "
+                    + "and never need Tailscale. Everything on this machine works at localhost "
+                    + "without it.",
                 IsRequired = false,
                 CanAutoInstall = true,
                 WingetId = "tailscale.Tailscale",
                 InstallUrl = "https://tailscale.com/download"
-            },
-        ];
+            });
+        }
+
+        return checklist;
     }
 
     public static async Task CheckAllAsync(List<PrerequisiteInfo> items)
@@ -258,17 +261,17 @@ public static class PrerequisiteChecker
     }
 
     /// <summary>
-    /// Tailscale preflight (issue #197): remote reachability needs the CLI installed, the
-    /// daemon running/logged in, AND a MagicDNS name. The shared engine check supplies the
-    /// per-leg result with the exact fix; the checklist row shows the first failing leg so
-    /// the user knows WHAT to do, not just that something is off.
+    /// Tailscale status for the OPTIONAL gateway-role row (the workstation checklist has no
+    /// Tailscale row - the tunnel-only architecture needs none). The shared engine check
+    /// supplies the per-leg result; the row shows the first failing leg so the user knows
+    /// what to do if they WANT off-machine Cockpit access.
     /// </summary>
     private static void CheckTailscale(PrerequisiteInfo item)
     {
         var results = CcDirector.Setup.Engine.TailscalePreflight.Run();
         if (CcDirector.Setup.Engine.TailscalePreflight.AllOk(results))
         {
-            // The last check carries the MagicDNS name - the address Directors advertise.
+            // The last check carries the MagicDNS name - the HTTPS address for the Cockpit.
             item.Version = results[^1].Detail;
             item.Status = "Found";
             item.IsFound = true;
