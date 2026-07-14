@@ -159,9 +159,16 @@ public static class SessionOrdering
 
     /// <summary>The pure activity-state color. Starting/Working -&gt; blue; Waiting/Idle -&gt; red;
     /// Exited -&gt; "grey" (Phase 2.3, owner-approved: an exited session shows the SAME grey string as an
-    /// OnHold one, so clients render it identically). This deliberately DIVERGES from the Director's
-    /// standalone <c>ColorFromActivityState</c>, which keeps exited as "unknown" - the Gateway is the single
-    /// source of truth for the fold. Any unrecognized state -&gt; "unknown".</summary>
+    /// OnHold one, so clients render it identically), EXCEPT a crashed one -&gt; "error" (issue #959: the
+    /// deep red #B91C1C, deliberately darker than the bright "needs you" red, so a session that DIED is
+    /// never mistaken for one that finished). This deliberately DIVERGES from the Director's standalone
+    /// <c>ColorFromActivityState</c>, which keeps exited as "unknown" - the Gateway is the single source of
+    /// truth for the fold. Any unrecognized state -&gt; "unknown".
+    ///
+    /// The crash arm reads <see cref="SessionDto.Crashed"/>, NOT the activity state: a crash was never
+    /// modelled in ActivityState (a crashed session is "Exited" like any other), which is exactly how the
+    /// deep red went missing for two releases - this fold reads raw facts, and the crash fact was not on
+    /// the wire to read.</summary>
     private static string RawActivityColor(SessionDto s) => s.ActivityState switch
     {
         "Starting" => "blue",
@@ -169,7 +176,7 @@ public static class SessionOrdering
         "WaitingForInput" => "red",
         "WaitingForPerm" => "red",
         "Idle" => "red",
-        "Exited" => "grey",
+        "Exited" => s.Crashed ? "error" : "grey",
         _ => "unknown",
     };
 
@@ -206,6 +213,7 @@ public static class SessionOrdering
             "blue" => "Working",
             "red" => "Needs you",
             "grey" => "Exited",              // Phase 2.3: an exited session's grey base (see RawActivityColor)
+            "error" => "Crashed",            // issue #959: died, not finished - never reads as a clean "Exited"
             _ => "Idle",
         };
     }

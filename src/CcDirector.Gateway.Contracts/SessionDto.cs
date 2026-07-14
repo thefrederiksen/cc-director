@@ -124,6 +124,23 @@ public sealed class SessionDto
     public string StatusColor { get; set; } = "unknown";
 
     /// <summary>
+    /// True when the agent process ended UNEXPECTEDLY - a crash (issue #959). Mirrors
+    /// <c>Session.Crashed</c> on the owning Director, which decides it from the exit code AND whether the
+    /// session dropped out while working (some crashes exit 0, so the code alone is not enough).
+    ///
+    /// This is a RAW fact and the fold reads it directly. It exists because a crash was NEVER modelled in
+    /// <see cref="ActivityState"/> - a crashed session is <c>Exited</c> like any other - so without it the
+    /// wire could not tell a crash from a clean exit and every client rendered both as the same grey. That
+    /// is precisely what happened: the Director kept setting its deep-red Error colour, and the fold, which
+    /// reads only raw facts, had no raw fact to read.
+    ///
+    /// Deliberately NOT inferred from <see cref="Status"/> == "Failed". The two coincide today only because
+    /// the one other writer of Failed (a create-time failure) disposes the session before it ever reaches
+    /// the roster. Reading the producer's own fact keeps that coincidence from becoming a dependency.
+    /// </summary>
+    public bool Crashed { get; set; }
+
+    /// <summary>
     /// Short human-readable reason for the current <see cref="StatusColor"/>
     /// (e.g. "session created", "working", "waiting for input"). Surfaced as a
     /// tooltip on the dot so the user can see WHY the color is what it is.
