@@ -162,6 +162,88 @@ These four turn the proof from "it works" into "it works under the exact conditi
 Fold them into the slot-5 run, and where cheap into PR A's integration tests. Everything else in the plan stands
 - proceed.
 
+## Architect ruling (tunnel wire protocol = MessagePack) - SETTLED 2026-07-12 (session 51f1898e)
+
+The mechanism proof did exactly its job: the under-load additions (rulings 1 and 2) caught a REAL Phase 0 gap
+before Phase 1 built on it. Root cause: the tunnel SignalR connection was left on the DEFAULT JSON protocol,
+which base64-encodes a byte[] frame (+33%). A full-cap 48 KB Binary frame inflates to ~64 KB and exceeds the hub
+MaximumReceiveMessageSize (~52 KB = MaxBinaryFrameBytes 48 KB + 4 KB envelope), aborting the connection
+(confirmed empirically: a 30 KB sub-cap frame passes, a 48 KB full-cap frame disconnects). Ruling 2's size
+accounting ASSUMED binary framing; the connection was never switched to a binary protocol - that is the gap.
+
+RULING: OPTION A - add MessagePack on BOTH ends (.AddMessagePackProtocol() on the Gateway DirectorHub, the
+Director's HubConnectionBuilder, and the test client; the Microsoft.AspNetCore.SignalR.Protocols.MessagePack
+package). This is the ROOT-CAUSE fix and it completes ruling 2: with binary framing a 48 KB byte[] is ~48 KB on
+the wire (not ~64 KB base64), so the existing MaxBinaryFrameBytes + FrameEnvelopeAllowanceBytes (~52 KB) limit
+is CORRECT and the DirectorStreamLimits constants stay as-is. It also removes the 33% base64 bandwidth + CPU tax
+on ALL tunnel traffic - directly serving the slow-phone-link case this mission exists to fix.
+
+Options B (raise MaximumReceiveMessageSize to cover base64) and C (lower the frame cap so base64 fits) are
+REJECTED: both keep JSON's permanent 33% bandwidth + CPU tax, which is counter to the mission's whole purpose,
+and merely patch around the broken assumption instead of fixing it (the no-fallback rule: fix the root cause).
+
+Implementation notes:
+- The tunnel connection also carries roster push and the existing nine write verbs, so the switch affects ALL
+  tunnel traffic. Validate that the existing verbs + roster push still round-trip under MessagePack (the DTOs -
+  DirectorCommand / DirectorCommandResult, DirectorStreamFrame - are simple string / byte[] / int / enum shapes,
+  MessagePack-friendly).
+- ROLLOUT COORDINATION (folds into the Phase 6 rollout gate): both ends of a stream-serving connection must
+  speak MessagePack. The hub can ADD MessagePack while KEEPING JSON (an un-updated Director still connects via
+  JSON), but a JSON Director still hits the base64 bug on large frames, so any Director serving streams MUST be
+  on MessagePack. In the big-bang the fleet updates together; do not assume a mixed (JSON-Director) fleet can
+  serve large streams.
+- Validation: re-run the mechanism proof; the three red cases (large file, concurrency, backpressure) MUST go
+  green with MessagePack (the 48 KB full-cap frame no longer inflates past the limit). Then finish C and D.
+
+## Architect ruling (upload-image chunking + slow-LLM verbs) - SETTLED 2026-07-13 (session 51f1898e)
+
+- upload-image (large payload DOWN the tunnel): OPTION 1 - CHUNK. The Director HubConnection
+  (GatewayStreamClient.cs:132) had NO MaximumReceiveMessageSize (SignalR default 32 KB), so a real photo is
+  rejected. Set it to the SAME bounded value as the hub (MaxBinaryFrameBytes + FrameEnvelopeAllowanceBytes,
+  ~52 KB) - symmetric up/down and bounded. CHUNK the image at MaxBinaryFrameBytes across unary commands keyed by
+  an uploadId (begin / chunk / complete), reassembled on the Director, then the existing upload-image handler
+  runs on the reassembled bytes. Option 2 (raise the down-limit to a few MB) is REJECTED: a multi-MB single
+  message monopolizes the one shared tunnel connection (against ruling 2) and raises the limit for ALL traffic -
+  the no-fallback rule (fix the root cause, do not patch around it).
+  - UPDATE 2026-07-13 (implementation reality, SETTLED): the "raise the Director-client MaximumReceiveMessageSize
+    to a symmetric ~52 KB + 48 KB binary chunks" mechanism was REVISED after the Manager found the constraints.
+    The SignalR CLIENT (the Director HubConnection) exposes NO clean public MaximumReceiveMessageSize setter
+    (only the server HubOptions does), and adding a byte[] field to DirectorCommand would CHANGE the FROZEN
+    envelope. So the settled mechanism is: keep the chunk bytes BASE64 in the existing DirectorCommand.PayloadJson
+    string carrier at 20 KB raw (~27 KB on the wire) - comfortably under the SignalR client ~32 KB default, so no
+    client-limit change is needed and the frozen envelope is respected. This still fully satisfies ruling 2
+    (bounded, no single message monopolizes the tunnel), and the base64 tax is negligible because upload-image is
+    infrequent and small (unlike the high-volume up-stream, where MessagePack binary framing was worth it). This
+    is the RIGHT PERMANENT answer, not a stopgap - no binary follow-up needed. Everything else is option 1
+    exactly: begin/chunk/complete keyed by uploadId, a 25 MB fail-loud ceiling, a 2-minute abandoned-upload sweep,
+    fail-loud on out-of-order / size-mismatch / bad-base64, and the SAME save core as the single-shot path
+    (shared SaveImageBytes) - proven byte-for-byte (a 50 KB image over the tunnel in 3 chunks, 11/11 green).
+
+## Architect ruling (Phase 2 completeness gate = zero DirectorEndpointClient callers) - SETTLED 2026-07-13
+
+The invariant that governs which re-points belong in Phase 2 vs later: EVERY Gateway call site that HTTP-dials
+the Director (via DirectorEndpointClient or any other direct dial) MUST be re-pointed onto the tunnel in PHASE 2
+(additive, under streamMode) BEFORE the destructive cut, because (a) the pre-deletion whole-surface proof must
+cover it, and (b) deleting DirectorEndpointClient in Phase 3 STRANDS any un-re-pointed caller (it will not
+compile / it breaks). Consequences settled 2026-07-13:
+- wingman-voice + voice-turn Gateway endpoints (which call DirectorEndpointClient.GetTurns / PostPrompt /
+  GetBuffer / GetSession directly, bypassing TrySendAsync) are re-pointed in PHASE 2 (a small PR E after PR D),
+  NOT deferred to Phase 3.
+- The three director-level mutations (repo-delete / interrupted-dismiss / interrupted-remove - Wave-4a verbs
+  already exist) are folded into PR D so the /directors surface is uniformly tunnel-carried.
+- COMPLETENESS GATE: before the whole-surface proof, sweep every remaining DirectorEndpointClient call site
+  (mission brief Appendix B lists them) and re-point each in Phase 2, then VERIFY DirectorEndpointClient has
+  ZERO callers left (grep - only its own definition remains). That zero-callers check IS the definition of "the
+  tunnel carries everything", it makes the Phase 3 deletion of DirectorEndpointClient a clean no-op-caller
+  removal, and together with the whole-surface real-exe proof it is what the Architect clears the destructive
+  cut on.
+- wingman-ask + recap-generate (slow LLM): plain SYNCHRONOUS unary threading the caller CancellationToken, NO
+  trigger-and-ack. This resolves the earlier Phase-2 caution: SignalR client-results have NO per-invocation
+  timeout, the connection keep-alive pings sustain a long await, and the caller ct mirrors the HTTP
+  RequestAborted exactly - so the synchronous unary preserves the existing synchronous browser contract
+  byte-identically (the browser contract must not change). VERIFY in the whole-surface real-exe proof: a
+  genuinely-slow call (over 30 seconds, past ClientTimeoutInterval) over the tunnel COMPLETES without a
+  connection drop - confirm the keep-alive pings sustain it. That closes the only residual risk.
 ## PR C - the explicit GatewayEndpoints session routes - SETTLED 2026-07-13 (session 51f1898e)
 
 PRs A/B1/B2 moved the browser stream legs + the catch-all read/write dispatch onto the tunnel. But the
