@@ -9,8 +9,6 @@
 
 - `gateway-director-overview.d2` / `gateway-director-overview.png` - one-glance topology (read first)
 - `gateway-director-detail.d2` / `gateway-director-detail.png` - same topology with each component's feature list spelled out
-- `../../CC_Gateway_Design.md` - original design / intent doc (predates Recap + rename)
-- `../../Gateway_Dashboard.md` - operator-facing notes about the dashboard
 - `../../CcDirector.Engine-Design.md` - the in-process Engine (scheduler + dispatcher) co-hosted in each Director
 - `../../HowTerminalsWork.md` - ConPty / terminal internals that sit underneath every Session
 

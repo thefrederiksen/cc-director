@@ -3,7 +3,6 @@
 **Status:** Draft for review
 **Date:** 2026-05-16
 **Author:** Architecture planning session
-**Related:** [CC_Gateway_Design.md](../CC_Gateway_Design.md), [PRD-RemoteControl.md](../PRD-RemoteControl.md), [Gateway_Dashboard.md](../Gateway_Dashboard.md)
 
 ---
 
@@ -50,7 +49,7 @@ The two are independent but designed to compose. The Gateway is the only piece t
 | `Session.ActivityState` (Idle / Working / WaitingForUser etc.) is already driven by hook events. | `src/CcDirector.Core/Sessions/Session.cs:79` |
 | Director has NO HTTP/Kestrel/WebSocket today. | No `WebApplication`, `Kestrel`, `HttpListener`, `WebSocketServer` in `src/` |
 | The retired Python scheduler exposed FastAPI on port 6060, but its scope was JOBS / CRON, not sessions. | Removed legacy scheduler |
-| Existing prior design at `docs/CC_Gateway_Design.md` predates the new PRD: it assumed one Director + named pipes + Discord-only. This plan replaces it. | - |
+| An earlier design predated the new PRD: it assumed one Director + named pipes + Discord-only. This plan replaces it, and that document has since been deleted. | - |
 
 Implication: We do not need to invent multi-Director coordination. The file-event directory pattern is the proven shared rendezvous and we extend it for discovery.
 
@@ -182,7 +181,7 @@ Consolidation (running a summarizer) lives in the **Manager view**, not the Gate
 
 ### 4.6 Output cleaning
 
-Gateway includes a small ANSI/control sequence stripper (same patterns as the legacy `CC_Gateway_Design.md` section "Output Cleaning"). Implementation in `CcDirector.Gateway.Util.AnsiCleaner`. Unit-tested with golden inputs from real Claude sessions.
+Gateway includes a small ANSI/control sequence stripper. Implementation in `CcDirector.Gateway.Util.AnsiCleaner`. Unit-tested with golden inputs from real Claude sessions.
 
 ### 4.7 Tray UI
 
