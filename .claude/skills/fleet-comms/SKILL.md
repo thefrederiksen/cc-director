@@ -40,6 +40,29 @@ no name displays as the bare folder name and is impossible to tell apart. Lead w
 `implement #799`); spawn warns when you give neither. A blank name, or a name equal to the bare
 repository folder name, is rejected - pass something meaningful or a purpose.
 
+### If rename, done, or "message send all" answers "HTTP 404 from the Director"
+
+The command is right and the code is right. The Director you are talking to is too old.
+
+These verbs travel to the Director's loopback floor - rename to `POST /fleet/rename`, done to
+`POST /fleet/done`, send-all to `POST /fleet/broadcast`. All three were restored to the floor
+AFTER the v1.1.0 release, so a Director still running v1.1.0 does not have those routes and
+answers 404 to a perfectly correct call.
+
+Check which build is actually answering before you go hunting for a bug:
+
+```
+curl http://127.0.0.1:7879/healthz
+```
+
+If `version` reads `1.1.0`, that is the whole explanation - the fix is to update the Director,
+not to change your command or work around it. Do NOT reach for the Gateway as a substitute
+route; it answers 401 for this and is not the agent-facing surface.
+
+This is worth a beat of suspicion generally: a Director, a `cc-devthrottle`, and a checkout can
+each be older than origin/main, and a stale one will contradict the code you just read. Verify
+what is running before you conclude a feature is broken (issue #1514).
+
 ### Display-name convention (ratified by Soren, 2026-07-11)
 
 Names are how the fleet sorts, so compose them so related sessions group together:
