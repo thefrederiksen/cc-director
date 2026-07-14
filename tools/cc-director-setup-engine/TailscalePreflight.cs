@@ -7,13 +7,13 @@ namespace CcDirector.Setup.Engine;
 public sealed record TailscaleCheckResult(string Check, bool Ok, string Detail, string? Remedy);
 
 /// <summary>
-/// Detection-only Tailscale preflight for installs (issue #197). A Director is reachable
-/// from the Gateway/Cockpit ONLY through a tailscale serve mapping on its own machine, so
-/// the deployment story is: install Tailscale, install cc-director, set gateway.url - done.
-/// This preflight tells the user up front which of those legs is missing and exactly how
-/// to fix it. It never installs anything and never blocks: a local-only Director (no
-/// Tailscale) is a legitimate state; the Director itself refuses to advertise an endpoint
-/// that does not answer (verify-before-advertise).
+/// Detection-only Tailscale status check, used ONLY by the setup wizard's optional
+/// gateway-role row. Tailscale is NOT a product requirement: the tunnel-only architecture
+/// means every Director and launcher dials OUT to the Gateway and no inbound port is ever
+/// opened, so workstations never need this check at all. On the gateway machine it is an
+/// optional convenience - phones and browsers reaching the Cockpit off-machine need a
+/// secure (HTTPS) address, which Tailscale can provide. It never installs anything and
+/// never blocks.
 ///
 /// Checks, in dependency order (later checks are skipped once one fails):
 ///   1. CLI installed   - tailscale.exe at the standard install path.
