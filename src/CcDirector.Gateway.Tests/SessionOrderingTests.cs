@@ -144,10 +144,20 @@ public sealed class SessionOrderingTests
     }
 
     [Fact]
-    public void EffectiveColor_WhileExplaining_IsOrange_EvenWhenWorking()
+    public void EffectiveColor_WhileExplaining_IsOrange_ONLYWhenNotWorking()
     {
-        Assert.Equal("orange", SessionOrdering.EffectiveColor(S("x", color: "blue", briefingState: "Explaining")));
+        // Renamed and flipped, 2026-07-14. This test used to be called
+        // "..._IsOrange_EvenWhenWorking" and asserted that a deep dive paints a WORKING session
+        // orange. That is the old law, and the owner has voided it: working is BLUE, always.
+        //
+        // Keep reading, because this is the whole reason the bug kept coming back. The old
+        // assertion was not an accident - it was deliberate, named after its own intent, and
+        // green. An agent sent to make working blue would flip the code, watch THIS test fail,
+        // conclude it had misunderstood the requirement, and revert. The test defended the defect.
         Assert.Equal("orange", SessionOrdering.EffectiveColor(S("x", color: "red", briefingState: "Explaining")));
+
+        // ... and the working case, which is now the law:
+        Assert.Equal("blue", SessionOrdering.EffectiveColor(S("x", color: "blue", briefingState: "Explaining")));
     }
 
     // ---------- Transcribing "orange while a dictated utterance is being transcribed" ----------
@@ -459,13 +469,14 @@ public sealed class SessionOrderingTests
     }
 
     [Fact]
-    public void EffectiveColor_DesktopTranscribing_IsOrange_FromRawFact()
+    public void EffectiveColor_DesktopTranscribing_IsOrange_WhenNotWorking()
     {
-        // Newly covered (issue #1177 audit): the desktop-dictation transcribing fact (Session.IsTranscribing)
-        // must paint orange, exactly as the mobile Speak flag does - previously this survived ONLY via the
-        // cooked StatusColor fall-through and was untested.
-        Assert.Equal("orange", SessionOrdering.EffectiveColor(Raw("Working", transcribing: true)));
+        // Issue #1177 audit: the desktop-dictation transcribing fact (Session.IsTranscribing) paints
+        // orange exactly as the mobile Speak flag does. Gated on NOT working since 2026-07-14 - orange
+        // marks "dictation in flight, do not grab this session", which is a statement about a session
+        // sitting at a prompt. A working session is blue.
         Assert.Equal("orange", SessionOrdering.EffectiveColor(Raw("WaitingForInput", transcribing: true)));
+        Assert.Equal("blue", SessionOrdering.EffectiveColor(Raw("Working", transcribing: true)));
     }
 
     [Fact]
@@ -506,12 +517,17 @@ public sealed class SessionOrderingTests
     }
 
     [Fact]
-    public void StateLabel_Transcribing_IsTranscribing()
+    public void StateLabel_Transcribing_IsTranscribing_WhenNotWorking()
     {
-        Assert.Equal("Transcribing", SessionOrdering.StateLabel(Raw("Working", transcribing: true)));
-        var mobile = Raw("Working");
+        // Gated on NOT working since 2026-07-14, mirroring EffectiveColor so the dot and the label
+        // are folded from the same inputs in the same order and cannot disagree.
+        Assert.Equal("Transcribing", SessionOrdering.StateLabel(Raw("WaitingForInput", transcribing: true)));
+        var mobile = Raw("WaitingForInput");
         mobile.Transcribing = true;
         Assert.Equal("Transcribing", SessionOrdering.StateLabel(mobile));
+
+        // A working session reads "Working", whatever else is in flight.
+        Assert.Equal("Working", SessionOrdering.StateLabel(Raw("Working", transcribing: true)));
     }
 
     [Fact]
@@ -710,5 +726,137 @@ public sealed class SessionOrderingTests
 
         // Original array order preserved (grouping snapshots, never sorts in place).
         Assert.Equal(new[] { "b", "a" }, sessions.Select(s => s.SessionId));
+    }
+
+    // ===================================================================================
+    // THE LAW: a working session is BLUE, always. Nothing outranks working.
+    // (Owner's ruling, 2026-07-14. See docs/new_architecture/session-state.html.)
+    //
+    // These tests exist to make the law UNBREAKABLE. Every colour that has ever been put
+    // above working in the ladder gets its own case below. If you are here because one of
+    // these went red, you have re-introduced a defect the owner has personally reported
+    // more than once - do not "fix" the test. Fix the code, or the law changed and the
+    // owner said so out loud.
+    // ===================================================================================
+
+    /// <summary>Every overlay that has ever outranked working, asserted one at a time.</summary>
+    public static TheoryData<string, SessionDto> OverlaysThatMustNotBeatWorking() => new()
+    {
+        { "snoozed (OnHold)",        new SessionDto { SessionId = "w", ActivityState = "Working", OnHold = true } },
+        { "mobile dictation phase",  new SessionDto { SessionId = "w", ActivityState = "Working", DictationStatus = "Uploading from phone" } },
+        { "gateway transcribing",    new SessionDto { SessionId = "w", ActivityState = "Working", Transcribing = true } },
+        { "director transcribing",   new SessionDto { SessionId = "w", ActivityState = "Working", IsTranscribing = true } },
+        { "explaining (deep dive)",  new SessionDto { SessionId = "w", ActivityState = "Working", BriefingState = "Explaining" } },
+        { "wingman briefing",        new SessionDto { SessionId = "w", ActivityState = "Working", BriefingState = "Briefing" } },
+        { "voice preparing",         new SessionDto { SessionId = "w", ActivityState = "Working", VoiceMode = true, VoiceGenerating = true } },
+        { "controlled sub-agent",    new SessionDto { SessionId = "w", ActivityState = "Working", SessionRole = SessionRoles.Worker, ControllerSessionId = "mgr" } },
+    };
+
+    [Theory]
+    [MemberData(nameof(OverlaysThatMustNotBeatWorking))]
+    public void EffectiveColor_Working_IsAlwaysBlue_NoMatterWhatElseIsTrue(string overlay, SessionDto s)
+    {
+        var actual = SessionOrdering.EffectiveColor(s);
+        Assert.True(actual == "blue",
+            $"A WORKING session rendered '{actual}' because {overlay} was true. Working is BLUE, always - " +
+            $"nothing outranks it. Remove the rule you put above the working check in EffectiveColor.");
+    }
+
+    [Theory]
+    [MemberData(nameof(OverlaysThatMustNotBeatWorking))]
+    public void StateLabel_Working_AlwaysReadsWorking_NoMatterWhatElseIsTrue(string overlay, SessionDto s)
+    {
+        // The dot and its label are folded from the same inputs in the same order: a blue dot
+        // labelled "Snoozed" is the contradiction this pins shut.
+        var actual = SessionOrdering.StateLabel(s);
+        Assert.True(actual == "Working",
+            $"A WORKING session was labelled '{actual}' because {overlay} was true. The label must " +
+            $"match the dot: a working session is blue and reads 'Working'.");
+    }
+
+    [Theory]
+    [MemberData(nameof(OverlaysThatMustNotBeatWorking))]
+    public void Classify_Working_IsAlwaysActive_NeverParked(string overlay, SessionDto s)
+    {
+        // A working session never sinks into the parked bucket at the bottom of the roster.
+        var actual = SessionOrdering.Classify(s);
+        Assert.True(actual == SessionOrdering.TriageBucket.Active,
+            $"A WORKING session was triaged '{actual}' because {overlay} was true. A running session " +
+            $"is Active - it cannot be parked while it is working.");
+    }
+
+    [Fact]
+    public void EffectiveColor_EverySignalAtOnce_StillBlue()
+    {
+        // The pathological case: every overlay in the ladder is true at the same instant, and the
+        // session is working. Working still wins. "Nothing outranks working" means nothing.
+        var s = new SessionDto
+        {
+            SessionId = "w",
+            ActivityState = "Working",
+            OnHold = true,
+            DictationStatus = "Transcribing",
+            Transcribing = true,
+            IsTranscribing = true,
+            BriefingState = "Explaining",
+            VoiceMode = true,
+            VoiceGenerating = true,
+            WingmanEnabled = true,
+            IsAutoExplaining = true,
+            IsBackgroundRunning = true,
+            IsBrandNew = true,
+            SessionRole = SessionRoles.Worker,
+            ControllerSessionId = "mgr",
+        };
+
+        Assert.Equal("blue", SessionOrdering.EffectiveColor(s));
+        Assert.Equal("Working", SessionOrdering.StateLabel(s));
+        Assert.Equal(SessionOrdering.TriageBucket.Active, SessionOrdering.Classify(s));
+    }
+
+    [Fact]
+    public void EffectiveColor_Starting_IsAlsoBlue()
+    {
+        // "Starting" is the sensor's first working byte - the session is running, so it is blue.
+        Assert.Equal("blue", SessionOrdering.EffectiveColor(
+            new SessionDto { SessionId = "s", ActivityState = "Starting", OnHold = true }));
+    }
+
+    [Fact]
+    public void EffectiveColor_WorkingIsCaseInsensitive()
+    {
+        // Defect 16: RawActivityColor was a case-sensitive switch while the role rules compared
+        // case-insensitively on the same field. The working check must never be the fold's weak link.
+        Assert.Equal("blue", SessionOrdering.EffectiveColor(
+            new SessionDto { SessionId = "w", ActivityState = "working", OnHold = true }));
+    }
+
+    // ===== The other half of the law: the overlays STILL work for a session that has stopped. =====
+    // Hoisting working to the top must not weaken any rule below it - each one keeps its meaning
+    // for the case it was actually built for, which is a session that is NOT running.
+
+    [Fact]
+    public void EffectiveColor_NotWorking_SnoozeStillWins()
+    {
+        Assert.Equal("grey", SessionOrdering.EffectiveColor(
+            new SessionDto { SessionId = "q", ActivityState = "WaitingForInput", OnHold = true }));
+        Assert.Equal("Snoozed", SessionOrdering.StateLabel(
+            new SessionDto { SessionId = "q", ActivityState = "WaitingForInput", OnHold = true }));
+    }
+
+    [Fact]
+    public void EffectiveColor_NotWorking_TranscribingStillOrange()
+    {
+        // The case orange exists for: dictation in flight at a PROMPT, so nobody else grabs it.
+        Assert.Equal("orange", SessionOrdering.EffectiveColor(
+            new SessionDto { SessionId = "q", ActivityState = "WaitingForInput", Transcribing = true }));
+    }
+
+    [Fact]
+    public void Classify_NotWorking_SnoozedRedStillSinksToOnHold()
+    {
+        // The deferral the snooze was built for: a red session the user parked stays parked.
+        Assert.Equal(SessionOrdering.TriageBucket.OnHold, SessionOrdering.Classify(
+            new SessionDto { SessionId = "q", ActivityState = "WaitingForInput", OnHold = true }));
     }
 }

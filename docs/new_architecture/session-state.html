@@ -1,0 +1,824 @@
+<title>DevThrottle Session State - The Authoritative Machine</title>
+<style>
+  :root {
+    --ink:#1a1f2b; --mute:#5b6675; --line:#d8dee8; --bg:#ffffff; --panel:#f6f8fb;
+    --red:#ef4444; --blue:#3b82f6; --grey:#9ca3af; --slate:#64748b;
+    --green:#16a34a; --amber:#f0b848; --accent:#2563eb; --purple:#a855f7; --orange:#f97316;
+  }
+  * { box-sizing:border-box; }
+  body {
+    margin:0; padding:0 24px 80px; background:var(--bg); color:var(--ink);
+    font:16px/1.65 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+  }
+  .wrap { max-width:960px; margin:0 auto; }
+  header { border-bottom:3px solid var(--ink); padding:48px 0 20px; margin-bottom:36px; }
+  h1 { font-size:34px; line-height:1.15; margin:0 0 10px; letter-spacing:-0.02em; }
+  .sub { color:var(--mute); font-size:15px; margin:0; }
+  h2 { font-size:24px; margin:56px 0 14px; padding-top:24px; border-top:1px solid var(--line); letter-spacing:-0.01em; }
+  h3 { font-size:17.5px; margin:32px 0 8px; }
+  p { margin:0 0 14px; }
+  .lede { font-size:18.5px; line-height:1.6; }
+  .callout { background:var(--panel); border-left:4px solid var(--accent); padding:16px 18px; margin:22px 0; border-radius:0 6px 6px 0; }
+  .callout.warn { border-left-color:var(--red); }
+  .callout.ok { border-left-color:var(--green); }
+  .callout.law { border-left-color:var(--blue); background:#eff6ff; }
+  .callout p:last-child { margin-bottom:0; }
+  table { border-collapse:collapse; width:100%; margin:18px 0; font-size:14px; }
+  th, td { border-bottom:1px solid var(--line); padding:9px 10px; text-align:left; vertical-align:top; }
+  th { background:var(--panel); font-weight:600; font-size:12px; text-transform:uppercase; letter-spacing:.06em; color:var(--mute); }
+  code { font:13px/1.4 "SF Mono",Consolas,"Liberation Mono",monospace; background:var(--panel); padding:1px 5px; border-radius:3px; }
+  pre { background:var(--panel); border:1px solid var(--line); border-radius:6px; padding:14px 16px; overflow-x:auto; font:13px/1.5 "SF Mono",Consolas,monospace; }
+  .dot { display:inline-block; width:10px; height:10px; border-radius:50%; margin-right:7px; vertical-align:middle; }
+  .d-red{background:var(--red)} .d-blue{background:var(--blue)} .d-grey{background:var(--grey)}
+  .d-slate{background:var(--slate)} .d-green{background:var(--green)} .d-yellow{background:#eab308}
+  .d-orange{background:var(--orange)} .d-purple{background:var(--purple)}
+  .bad { color:var(--red); font-weight:600; }
+  .good { color:var(--green); font-weight:600; }
+  .scroll { overflow-x:auto; }
+  ul, ol { margin:0 0 14px; padding-left:22px; }
+  li { margin-bottom:7px; }
+  .file { font:12.5px/1.4 "SF Mono",Consolas,monospace; color:var(--mute); }
+  footer { margin-top:64px; padding-top:20px; border-top:1px solid var(--line); color:var(--mute); font-size:13px; }
+  .big { font-size:20px; font-weight:600; }
+  @media (prefers-color-scheme: dark) {
+    :root { --ink:#e8ecf3; --mute:#9aa7b8; --line:#2b3340; --bg:#12161d; --panel:#1a1f28; }
+    .callout.law { background:#132033; }
+  }
+</style>
+<div class="wrap">
+<header>
+  <h1>DevThrottle Session State</h1>
+  <p class="sub">The authoritative machine &middot; the ONLY document that defines session state &middot; living document, kept current on origin/main</p>
+</header>
+
+<p class="lede">You asked why fixing one state rule breaks another. The answer is not that the code is
+sloppy. It is that <strong>the written design says the opposite of what you want</strong>, there are three
+competing documents and none is authoritative, and the decision "what colour is this session?" is
+answered independently in about fourteen places. Every fix lands in one of them. This document
+replaces all three, states the machine once, and lists every place that currently disagrees with it.</p>
+
+<div class="callout law">
+  <p><strong>The law, in the owner's words (14 July 2026). This is not open for debate.</strong></p>
+  <ol style="margin-bottom:0">
+    <li><strong>If a session is working, it is BLUE. No matter what. Period, full stop.</strong> Nothing
+    outranks Working.</li>
+    <li><strong>The Gateway owns every state, centrally.</strong> It is the ONLY thing that decides a colour.</li>
+    <li><strong>The Director decides nothing.</strong> It reports FACTS - "I am working", plus a heartbeat.</li>
+    <li>When a run finishes there is no more output. We wait about ten seconds, and then it goes RED.</li>
+    <li><strong>Gray-when-controlled is a LATER, more intelligent feature.</strong> It applies ONLY to a RED
+    controlled session. It must NEVER touch a working one.</li>
+    <li>Any of those is overwritten by blue the moment it starts working again.</li>
+    <li>Every device shows the same thing, always.</li>
+  </ol>
+</div>
+
+<div class="callout warn">
+  <p><strong>Explicitly superseded.</strong> This law voids the 2026-07-10 decision recorded in issue #1286
+  ("a controlled worker always shows the recessive Supporting colour"). That decision is the direct cause of
+  defect 1 below. It must not be restored, and it must not be cited as precedent. If you are an agent reading
+  this because a document or a code comment told you that a controlled session recedes while it is working -
+  that instruction is void, and this paragraph is why.</p>
+</div>
+
+<h2>1. Why this keeps happening</h2>
+
+<h3>Finding 1: the specification ranks ownership above working</h3>
+
+<p><span class="file">docs/new_architecture/state-and-color-architecture.html</span> - which
+<span class="file">phase-2-state-color-spec.md</span> explicitly names "source of truth" - defines colour
+as a first-match-wins ladder:</p>
+
+<table>
+<tr><th>Order</th><th>Colour</th><th>Fires when</th></tr>
+<tr><td>1</td><td><span class="dot d-grey"></span>Grey</td><td>On hold, or exited</td></tr>
+<tr><td>2</td><td><span class="dot d-orange"></span>Orange</td><td>Transcribing, or explaining</td></tr>
+<tr><td>3</td><td><span class="dot d-yellow"></span>Yellow</td><td>Wingman reading, or preparing voice</td></tr>
+<tr><td>4</td><td><span class="dot d-purple"></span>Purple</td><td>Background task</td></tr>
+<tr><td><strong>5</strong></td><td><span class="dot d-slate"></span><strong>Slate</strong></td><td><strong>Controlled by another session</strong></td></tr>
+<tr><td>6</td><td><span class="dot d-green"></span>Green</td><td>Brand new</td></tr>
+<tr><td><strong>7</strong></td><td><span class="dot d-blue"></span><strong>Blue</strong></td><td><strong>Working</strong></td></tr>
+<tr><td>8</td><td><span class="dot d-red"></span>Red</td><td>Needs you</td></tr>
+</table>
+
+<p><strong>Six of the eight rules outrank Working.</strong> Slate - "somebody else owns this" - sits two
+rows above blue. So a controlled session that is working reports slate, and the fact that it is working is
+discarded. That is not a typo anybody introduced. It is the design, written down, marked as the source of
+truth, and faithfully implemented.</p>
+
+<div class="callout warn">
+  <p><strong>This is the mechanism of the whack-a-mole.</strong> An agent is told to fix the rail. It reads
+  the specification. The specification says slate beats blue. It implements that. The bug returns. The next
+  agent removes it. The one after reads the same specification and puts it back. Nothing here is anybody
+  being careless - the document and the law disagree, and the document wins because it is written down.</p>
+</div>
+
+<h3>Finding 1b: the same specification is also wrong in the opposite direction</h3>
+
+<p>The ladder is not merely out of date. It describes a system that has never existed. Twice - at lines 88
+and 104 - it states:</p>
+
+<pre>"A sub-agent being driven by another session; it recedes so the operator is not nagged.
+ <strong>Red still breaks through this.</strong>"
+
+"<strong>Red breaks through the slate "supporting" recede</strong> so a genuinely blocked sub-agent still surfaces."</pre>
+
+<p>The shipped code does the opposite. <span class="file">SessionOrdering.cs:138-139</span>:</p>
+
+<pre>if (isRed &amp;&amp; string.Equals(s.SessionRole, SessionRoles.Worker, ...))
+    return "supporting";</pre>
+
+<p>A live-controlled Worker's red is <strong>suppressed</strong>, deliberately - the need routes to its
+manager instead of to you. Red does not break through. The specification's claim is a half-truth at best:
+red breaks through for a controlled session whose controller has <em>died</em>, and is suppressed for one
+whose controller is alive, which is the common case and the whole point of the rule.</p>
+
+<div class="callout warn">
+  <p><strong>So the document on origin/main is wrong in both directions at once.</strong> It says slate
+  beats blue, which contradicts the law. It says red beats slate, which contradicts the code that is
+  actually running - and did so <em>before</em> today's change. It matches neither the old rule nor the new
+  one. Anyone reading it to learn how session state works comes away with a picture that has never been
+  true of this product.</p>
+  <p>This is the strongest possible argument for why the code fix cannot ship alone. The bug is not in the
+  code. The bug is in the paper the code is written from.</p>
+</div>
+
+<h3>Finding 2: three documents, none authoritative</h3>
+
+<table>
+<tr><th>Document</th><th>Dated</th><th>Covers</th><th>Status</th></tr>
+<tr><td><span class="file">new_architecture/state-and-color-architecture.html</span></td><td>8 July</td><td>The colour ladder, the violation inventory</td><td>Called "source of truth". Contains the bug above. Several open decisions never closed.</td></tr>
+<tr><td><span class="file">new_architecture/phase-2-state-color-spec.md</span></td><td>9 July</td><td>The implementation plan for the above</td><td>Largely built. Its increment 2.3 was flagged "owner please confirm" and the confirmation is not recorded.</td></tr>
+<tr><td><span class="file">architecture/session-state-machine-2026-07-14.html</span></td><td>14 July (today)</td><td>Hold/snooze only, plus the desktop folds</td><td>Written as "for approval before any code is written", then merged as part of pull request #1537 along with the code.</td></tr>
+</table>
+
+<p>They contradict each other, none supersedes the others, and the newest covers only hold. An agent
+looking for "how does state work" finds three answers.</p>
+
+<div class="callout ok">
+<p><strong>Resolved, 14 July 2026: all three are DELETED.</strong> They were first marked superseded
+with a banner, which was not enough - a retired document is still a document, it still answers a grep,
+and an agent in a hurry reads the ladder and not the banner. They are now removed from the repository
+outright, and every reference to them in the code, the tests, and the overnight charter points here
+instead. An agent looking for "how does state work" finds exactly one answer, which is the entire
+point.</p>
+<p><strong>And this document does not carry a date in its filename</strong>, because that is what made
+each of its predecessors look disposable. See section 8.</p>
+</div>
+
+<h3>Finding 3: the same question is answered in about fourteen places</h3>
+
+<p>Counted from origin/main. This is the real cost.</p>
+
+<table>
+<tr><th>Where</th><th>Folds</th><th>Reads the shared answer?</th></tr>
+<tr><td>Director (<span class="file">SessionStatusWingman.ColorFromActivityState</span>)</td><td>1</td><td>No - and nothing that paints reads its output. Dead computation.</td></tr>
+<tr><td>Gateway (<span class="file">SessionOrdering</span>, stamped by <span class="file">StampFleetRolesAndFold</span>)</td><td>1</td><td>This is the real one. Correct by construction.</td></tr>
+<tr><td>Gateway Exes page (<span class="file">ExesEndpoints</span>)</td><td>1</td><td>Calls the fold but skips the fleet pass - so it produces different answers.</td></tr>
+<tr><td>Desktop app</td><td><strong>7 live</strong> (+1 dead, +1 historical)</td><td>Only 3 properties, all in <span class="file">SessionViewModel</span>.</td></tr>
+<tr><td>Web / mobile clients</td><td>1 colour (good), <strong>3 label / triage</strong></td><td>Colour: yes, cleanly. Labels and triage: no.</td></tr>
+<tr><td>Retired MAUI phone app</td><td>2 (+2 duplicates)</td><td>No. Different palette entirely. Retired.</td></tr>
+</table>
+
+<h2>2. The machine</h2>
+
+<p>Three layers. Each has exactly one job. The whole design is that no layer does another layer's job.</p>
+
+<div class="scroll">
+<svg viewBox="0 0 900 250" width="100%" style="max-width:900px;height:auto;margin:10px 0 4px" role="img" aria-labelledby="layers-t">
+  <title id="layers-t">Three layers: the Director senses facts, the Gateway decides the colour, clients render it</title>
+  <defs>
+    <marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="var(--mute)"/>
+    </marker>
+  </defs>
+  <rect x="10" y="40" width="245" height="150" rx="8" fill="var(--panel)" stroke="var(--line)" stroke-width="1.5"/>
+  <text x="132" y="28" text-anchor="middle" font-size="12" font-weight="700" fill="var(--mute)" letter-spacing="1.2">LAYER 1 - SENSOR</text>
+  <text x="132" y="68" text-anchor="middle" font-size="16" font-weight="700" fill="var(--ink)">The Director</text>
+  <text x="132" y="94" text-anchor="middle" font-size="13" fill="var(--mute)">Watches terminal bytes.</text>
+  <text x="132" y="113" text-anchor="middle" font-size="13" fill="var(--mute)">Decides NOTHING.</text>
+  <text x="132" y="145" text-anchor="middle" font-size="12.5" fill="var(--ink)">Reports facts only:</text>
+  <text x="132" y="166" text-anchor="middle" font-size="12.5" font-weight="600" fill="var(--blue)">"I am working" + heartbeat</text>
+
+  <line x1="258" y1="115" x2="322" y2="115" stroke="var(--mute)" stroke-width="2" marker-end="url(#ar)"/>
+  <text x="290" y="105" text-anchor="middle" font-size="11" fill="var(--mute)">facts</text>
+
+  <rect x="325" y="40" width="250" height="150" rx="8" fill="var(--panel)" stroke="var(--accent)" stroke-width="2.5"/>
+  <text x="450" y="28" text-anchor="middle" font-size="12" font-weight="700" fill="var(--accent)" letter-spacing="1.2">LAYER 2 - THE DECISION</text>
+  <text x="450" y="68" text-anchor="middle" font-size="16" font-weight="700" fill="var(--ink)">The Gateway</text>
+  <text x="450" y="94" text-anchor="middle" font-size="13" fill="var(--mute)">ONE fold, over the whole fleet.</text>
+  <text x="450" y="113" text-anchor="middle" font-size="13" fill="var(--mute)">The ONLY thing that picks a colour.</text>
+  <text x="450" y="145" text-anchor="middle" font-size="12.5" fill="var(--ink)">Stamps three outputs that must agree:</text>
+  <text x="450" y="166" text-anchor="middle" font-size="12.5" font-weight="600" fill="var(--accent)">colour + label + triage bucket</text>
+
+  <line x1="578" y1="115" x2="642" y2="115" stroke="var(--mute)" stroke-width="2" marker-end="url(#ar)"/>
+  <text x="610" y="105" text-anchor="middle" font-size="11" fill="var(--mute)">stamped</text>
+
+  <rect x="645" y="40" width="245" height="150" rx="8" fill="var(--panel)" stroke="var(--line)" stroke-width="1.5"/>
+  <text x="767" y="28" text-anchor="middle" font-size="12" font-weight="700" fill="var(--mute)" letter-spacing="1.2">LAYER 3 - RENDER</text>
+  <text x="767" y="68" text-anchor="middle" font-size="16" font-weight="700" fill="var(--ink)">Every client</text>
+  <text x="767" y="94" text-anchor="middle" font-size="13" fill="var(--mute)">Desktop, phone, Cockpit.</text>
+  <text x="767" y="113" text-anchor="middle" font-size="13" fill="var(--mute)">Draws. Decides NOTHING.</text>
+  <text x="767" y="145" text-anchor="middle" font-size="12.5" fill="var(--ink)">No client re-derives a colour.</text>
+  <text x="767" y="166" text-anchor="middle" font-size="12.5" font-weight="600" fill="var(--ink)">No answer &rarr; fail loudly</text>
+
+  <text x="450" y="225" text-anchor="middle" font-size="13" fill="var(--mute)">Every device shows the same thing, always - because only one component ever decided it.</text>
+</svg>
+</div>
+
+<h3>The sensor's state machine</h3>
+
+<p>These are the only session states that exist. The Director writes exactly three of them
+(<code>Working</code>, <code>WaitingForInput</code>, <code>Exited</code>); everything else on any
+screen is a presentation of these facts, not a state of its own.</p>
+
+<div class="scroll">
+<svg viewBox="0 0 900 340" width="100%" style="max-width:900px;height:auto;margin:10px 0 4px" role="img" aria-labelledby="sensor-t">
+  <title id="sensor-t">Session state machine: Starting to Working on the first byte, Working to WaitingForInput after ten seconds of silence, any byte returns it to Working, and the process ending gives Exited or Crashed</title>
+  <defs>
+    <marker id="ar2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="var(--mute)"/>
+    </marker>
+    <marker id="ar2b" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="var(--blue)"/>
+    </marker>
+  </defs>
+
+  <circle cx="48" cy="120" r="9" fill="var(--ink)"/>
+  <line x1="58" y1="120" x2="104" y2="120" stroke="var(--mute)" stroke-width="2" marker-end="url(#ar2)"/>
+  <text x="52" y="102" font-size="11" fill="var(--mute)">spawn</text>
+
+  <rect x="108" y="92" width="118" height="56" rx="28" fill="var(--panel)" stroke="var(--blue)" stroke-width="2"/>
+  <circle cx="132" cy="120" r="6" fill="var(--blue)"/>
+  <text x="152" y="118" font-size="14" font-weight="700" fill="var(--ink)">Starting</text>
+  <text x="152" y="134" font-size="10.5" fill="var(--mute)">blue</text>
+
+  <line x1="229" y1="120" x2="316" y2="120" stroke="var(--mute)" stroke-width="2" marker-end="url(#ar2)"/>
+  <text x="272" y="112" text-anchor="middle" font-size="11" fill="var(--mute)">first byte</text>
+
+  <rect x="320" y="86" width="150" height="68" rx="34" fill="var(--panel)" stroke="var(--blue)" stroke-width="3.5"/>
+  <circle cx="350" cy="120" r="7" fill="var(--blue)"/>
+  <text x="368" y="116" font-size="16" font-weight="700" fill="var(--ink)">Working</text>
+  <text x="368" y="134" font-size="10.5" font-weight="600" fill="var(--blue)">BLUE - always</text>
+
+  <path d="M 356 84 C 340 44, 452 44, 436 84" fill="none" stroke="var(--blue)" stroke-width="2" marker-end="url(#ar2b)"/>
+  <text x="396" y="42" text-anchor="middle" font-size="11" fill="var(--blue)">any byte - restarts the 10s countdown</text>
+
+  <line x1="473" y1="120" x2="596" y2="120" stroke="var(--mute)" stroke-width="2" marker-end="url(#ar2)"/>
+  <text x="534" y="105" text-anchor="middle" font-size="11.5" font-weight="600" fill="var(--ink)">10 seconds</text>
+  <text x="534" y="119" text-anchor="middle" font-size="11" fill="var(--mute)">of silence</text>
+
+  <rect x="600" y="86" width="168" height="68" rx="34" fill="var(--panel)" stroke="var(--red)" stroke-width="3"/>
+  <circle cx="630" cy="120" r="7" fill="var(--red)"/>
+  <text x="648" y="116" font-size="15" font-weight="700" fill="var(--ink)">WaitingForInput</text>
+  <text x="648" y="134" font-size="10.5" font-weight="600" fill="var(--red)">red - needs you</text>
+
+  <path d="M 610 158 C 560 214, 430 214, 384 158" fill="none" stroke="var(--blue)" stroke-width="2.5" marker-end="url(#ar2b)"/>
+  <text x="497" y="230" text-anchor="middle" font-size="12" font-weight="700" fill="var(--blue)">any byte - back to work, instantly, no debounce</text>
+
+  <path d="M 340 156 L 340 285 L 372 285" fill="none" stroke="var(--mute)" stroke-width="2" marker-end="url(#ar2)"/>
+  <text x="330" y="268" text-anchor="end" font-size="11" fill="var(--mute)">died mid-turn,</text>
+  <text x="330" y="282" text-anchor="end" font-size="11" fill="var(--mute)">or non-zero exit</text>
+
+  <rect x="376" y="262" width="140" height="46" rx="8" fill="var(--panel)" stroke="#B91C1C" stroke-width="2"/>
+  <circle cx="400" cy="285" r="6" fill="#B91C1C"/>
+  <text x="416" y="282" font-size="13.5" font-weight="700" fill="var(--ink)">Crashed</text>
+  <text x="416" y="297" font-size="10" fill="var(--mute)">deep red</text>
+
+  <line x1="684" y1="156" x2="684" y2="258" stroke="var(--mute)" stroke-width="2" marker-end="url(#ar2)"/>
+  <text x="694" y="212" font-size="11" fill="var(--mute)">process ends cleanly</text>
+
+  <rect x="614" y="262" width="140" height="46" rx="8" fill="var(--panel)" stroke="var(--grey)" stroke-width="2"/>
+  <circle cx="638" cy="285" r="6" fill="var(--grey)"/>
+  <text x="654" y="282" font-size="13.5" font-weight="700" fill="var(--ink)">Exited</text>
+  <text x="654" y="297" font-size="10" fill="var(--mute)">grey</text>
+</svg>
+</div>
+
+<div class="callout law">
+<p><strong>Read the diagram and the law together.</strong> There are only two things a running session
+can be: it is producing bytes (Working, blue), or it has been silent for ten seconds (WaitingForInput,
+red). Everything else in this document - grey, orange, yellow, purple, slate - decorates the
+<em>right-hand</em> box. None of them can touch the left one. That is what "nothing outranks working"
+means, drawn.</p>
+</div>
+
+<h3>Layer 1 - the sensor. The Director reports facts and decides nothing.</h3>
+
+<p>This layer already exists and is already close to right.
+<span class="file">src/CcDirector.Core/Wingman/TerminalStateDetector.cs</span></p>
+
+<table>
+<tr><th>Rule</th><th>Where</th><th>Statement</th></tr>
+<tr><td>Byte means working</td><td><span class="file">:217-223</span></td><td>Any single byte out of the terminal sets Working instantly and restarts the ten-second countdown. The byte is never inspected. There is no debounce on the working flip.</td></tr>
+<tr><td>Ten seconds of silence means needs you</td><td><span class="file">:30, :296-318</span></td><td><code>QuietThreshold = 10 seconds</code>. When the stream has been silent that long, the session flips to WaitingForInput. A 250 millisecond tolerance guards a raced timer. The reason for the silence is never considered.</td></tr>
+<tr><td>Exit means exited</td><td><span class="file">Session.cs:2303</span></td><td>The process ended. A non-zero code, or a death while working, is a crash.</td></tr>
+<tr><td>Suppress the Director's own repaint</td><td><span class="file">:191-192</span></td><td>Bytes caused by our own terminal resize are discarded, so we do not read our own repaint as the agent working.</td></tr>
+<tr><td>Ignore a brand-new session's splash</td><td><span class="file">:200-201</span></td><td>A session that has never had a user submission ignores bytes, so the startup banner does not paint it blue.</td></tr>
+<tr><td>Screen-body rule for continuous agents</td><td><span class="file">:239-256</span></td><td>For an agent whose idle terminal never goes quiet (Grok), activity means the screen body above the cursor changed, sampled at most every 500 milliseconds. A footer-only repaint is not activity.</td></tr>
+</table>
+
+<div class="callout ok">
+  <p><strong>Your ten-second rule is real, is exactly as you described it, and works.</strong> It is also
+  published on the wire (<code>QuietThresholdSeconds</code>) so no client hard-codes it. The sensor is the
+  healthiest part of this system.</p>
+</div>
+
+<p><strong>Only three states are ever written.</strong> <code>Working</code>, <code>WaitingForInput</code>,
+<code>Exited</code>. The enum also declares <code>Starting</code>, <code>Idle</code>, and
+<code>WaitingForPerm</code> - <strong>nothing writes any of them.</strong> They exist only as read-side
+branches that can never be taken. That is very close to the machine you just described to me, which is why
+the sensor is not the problem.</p>
+
+<h3>Layer 2 - the state. The Gateway decides, once.</h3>
+
+<p>One function, over raw facts, producing three outputs that must always agree: a colour, a label, and a
+triage bucket. This is <span class="file">SessionOrdering</span>, and structurally it is correct today - the
+Gateway runs it in one pass after the whole fleet is assembled, because deciding whether a session is a
+Worker needs the whole fleet, not one Director.</p>
+
+<p><strong>The ladder is stated ONCE, in
+<a href="#">&ldquo;Every state, listed&rdquo;</a> below (section 2, part 4).</strong> It is deliberately not
+repeated here.</p>
+
+<div class="callout warn">
+<p><strong>An earlier draft of this document printed the ladder twice</strong> - once here as a
+"proposed ladder" and once below as the "full ladder" - and <strong>the two copies disagreed</strong>.
+This one ranked Crashed and Exited above Snoozed; the one below ranks Snoozed above them, which is what
+<span class="file">SessionOrdering.cs</span> actually does (<code>OnHold</code> is checked before the base
+activity colour, so a held session that exits still reads "Snoozed").</p>
+<p>That is this document committing, inside itself, the exact sin it was written to end: two written
+sources, disagreeing, both authoritative-looking, one of them wrong. It was caught in review on the day it
+was written. <strong>State each rule once. If you find yourself repeating the ladder, link to it
+instead.</strong></p>
+</div>
+
+<div class="callout">
+  <p><strong>What actually changed on 14 July 2026.</strong> Only the position of blue. Every other rule
+  keeps its meaning and its relative order. That is the point: the ladder was not wrong about what orange
+  or purple mean. It was wrong about one thing - it let six different facts erase the one fact that matters
+  most.</p>
+  <p>Read the two halves in plain English: <em>"If it is working, it is blue. Otherwise, here is why it is
+  not working."</em> Every rule below the divider is an answer to a question that only makes sense once the
+  session has stopped.</p>
+</div>
+
+<h3>Layer 3 - the render. Clients draw and decide nothing.</h3>
+
+<p>Every surface renders the Gateway's stamped colour and stamped label. No surface re-derives either. A
+client that cannot get a stamped answer fails loudly rather than guessing - that rule already exists in
+<span class="file">packages/client-core/src/sessions/ordering.ts</span> and it works.</p>
+
+<h3>Every state, listed</h3>
+
+<p>This is the complete inventory. If a state is not in this table, it does not exist. The single most
+expensive confusion in this system is that <strong>"state" has meant four different things in four
+different conversations</strong> - so they are separated here, and each one names its owner.</p>
+
+<h4>1. Activity - what the agent is doing. Owner: the Director.</h4>
+
+<p><span class="file">src/CcDirector.Core/Sessions/ActivityState.cs</span>. Six values are declared.
+<strong>Only three are ever written.</strong></p>
+
+<table>
+<tr><th>Value</th><th>Written?</th><th>Means</th></tr>
+<tr><td><code>Working</code></td><td class="good">YES</td><td>A byte came out of the terminal. <strong>Blue. Always.</strong></td></tr>
+<tr><td><code>WaitingForInput</code></td><td class="good">YES</td><td>Ten seconds of silence. The session wants a human.</td></tr>
+<tr><td><code>Exited</code></td><td class="good">YES</td><td>The process ended. A non-zero code, or a death mid-turn, is a crash.</td></tr>
+<tr><td><code>Starting</code></td><td class="bad">NO</td><td>Declared; nothing writes it. <strong>Semantically it means working</strong>, and both the fold and the hold machine treat it that way (<span class="file">SessionOrdering.cs:90-92</span>, <span class="file">Session.cs:601-604</span>): if it ever appears - from an old Director, a restored state, or a test - it is blue, reads "Working", is Active, and a snooze request against it defers. Do not implement order 0 as a literal <code>== "Working"</code>.</td></tr>
+<tr><td><code>Idle</code></td><td class="bad">NO</td><td><strong>Dead state.</strong> Nothing writes it - and defect 10 is that the prompt queue's auto-drain waits for it, so the drain can never fire.</td></tr>
+<tr><td><code>WaitingForPerm</code></td><td class="bad">NO</td><td>Declared; nothing writes it. Read-side branches exist that can never be taken.</td></tr>
+</table>
+
+<h4>2. Hold - the user's "not this one, not now". Owner: the Director; the timer, the Gateway.</h4>
+
+<p><span class="file">src/CcDirector.Core/Sessions/HoldState.cs</span>. Three values, and only one of them
+crosses the wire (as the boolean <code>OnHold</code>).</p>
+
+<table>
+<tr><th>Value</th><th>On the wire</th><th>Means</th></tr>
+<tr><td><code>None</code></td><td><code>OnHold=false</code></td><td>Not held. The activity state is the whole story.</td></tr>
+<tr><td><code>Held</code></td><td><code>OnHold=true</code></td><td>Parked. Grey, sunk to the bottom, never "needs you". <strong>Left the instant the agent works again.</strong></td></tr>
+<tr><td><code>DeferredHold</code></td><td><code>OnHold=false</code></td><td>"Snooze me when this finishes." Still working, still blue, still reads as working. Parks when the work stops.</td></tr>
+</table>
+
+<h4>3. Briefing - what the wingman is doing with the finished turn. Owner: the Gateway.</h4>
+
+<table>
+<tr><th>Value</th><th>Means</th></tr>
+<tr><td><code>None</code></td><td>Nothing in flight.</td></tr>
+<tr><td><code>Briefing</code></td><td>The wingman is reading the finished turn. Yellow - but only at raw red.</td></tr>
+<tr><td><code>Briefed</code> / <code>Failed</code></td><td>Terminal. No colour of their own.</td></tr>
+<tr><td><code>"Explaining"</code></td><td><span class="bad">NOT IN THE ENUM.</span> The fold compares <code>BriefingState == "Explaining"</code>, a string the Director's enum cannot produce. See defect 11.</td></tr>
+</table>
+
+<h4>4. Overlays and lifecycle flags that reach the wire</h4>
+
+<p>These are not activity states, but they are real, they cross the wire, and they change what you see -
+so they belong in the inventory. Several are the subject of open defects.</p>
+
+<table>
+<tr><th>Field</th><th>Owner</th><th>What it does</th></tr>
+<tr><td><code>PendingDeletion</code></td><td>Director</td><td>The session is flagged to be reaped. <span class="bad">Two problems.</span> (a) The Gateway's fold does not read it at all, so a session flagged for deletion still renders red "Needs you" or blue "Working" on every Gateway-backed screen, while <span class="file">SessionDto.cs:268-277</span> claims "the row paints as a winding-down grey". (b) <span class="file">Session.cs:1217-1227</span> implements it by calling <code>SetStatusColor(Unknown, ...)</code> - <strong>the Director deciding a colour</strong>, which law 2 forbids. Note that a pending-deletion session may still be working (<span class="file">SessionManager.cs:334-338</span>), so under the law it is blue. <strong>Open - see the owner questions.</strong></td></tr>
+<tr><td><code>SnoozeExpired</code></td><td>Gateway</td><td>Display-only marker: this session came back on its own because its snooze timer fired. Clients render a distinct "Snooze ended" badge so you know it is a "go and see why it went quiet" item, not a fresh turn-end. Set by the expiry overlay.</td></tr>
+<tr><td><code>SessionRole</code></td><td>Gateway</td><td><code>Standalone</code> / <code>Manager</code> / <code>Worker</code> / <code>Architect</code>. Computed from the WHOLE fleet (it needs to know whether a controller is still alive), which is why only the Gateway can produce it. Drives the slate suppression at ladder position 8. <span class="bad">The role DTO documents three roles; the code produces four - it omits Architect.</span></td></tr>
+<tr><td><code>NeedsYouSince</code></td><td>Gateway</td><td>The clock that orders the "needs you" queue oldest-first. Stamped as the fleet is assembled.</td></tr>
+<tr><td><code>DictationDeliveryState</code></td><td>Gateway (durable, on disk)</td><td><code>Pending</code> / <code>Delivered</code> / <code>Abandoned</code> / <code>Failed</code>. Not a session state, but <code>Pending</code> locks the session and paints it orange - see the dictation lifecycle below, and defect 19.</td></tr>
+</table>
+
+<h4>5. Presentation - the colour, the label, the bucket. Owner: the Gateway, and nothing else.</h4>
+
+<p>These are <strong>not</strong> states. They are one function of the facts above, computed once, in
+<span class="file">SessionOrdering.cs</span>, and stamped onto every session before it reaches any
+screen. This is the full ladder, in order. Read the divider as the whole design.</p>
+
+<table>
+<tr><th>#</th><th>Colour</th><th>Label</th><th>Fires when</th></tr>
+<tr><td><strong>0</strong></td><td><span class="dot d-blue"></span><strong>Blue</strong></td><td><strong>Working</strong></td><td><strong>ActivityState is <code>Working</code> - or <code>Starting</code>, which means the same thing anywhere it appears. NOTHING OUTRANKS THIS. No exceptions.</strong> Compared case-insensitively.</td></tr>
+<tr><td colspan="4" style="background:var(--panel);text-align:center;font-weight:600">&darr; Everything below applies ONLY to a session that is NOT working &darr;</td></tr>
+<tr><td>1</td><td><span class="dot d-grey"></span>Grey</td><td>Snoozed</td><td>Parked by you or the agent, and the timer has not expired.</td></tr>
+<tr><td>2</td><td><span class="dot d-orange"></span>Orange</td><td>Uploading from phone / Transcribing</td><td>A dictated utterance is uploading or being transcribed. Do not let anyone else type into it.</td></tr>
+<tr><td>3</td><td><span class="dot d-orange"></span>Orange</td><td>Explaining</td><td>A deep dive you asked for is running. (Currently unreachable - defect 11.)</td></tr>
+<tr><td>4</td><td><span class="dot d-yellow"></span>Yellow</td><td>Wingman reading</td><td>The wingman is reading the finished turn. We do not yet know if it needs you.</td></tr>
+<tr><td>5</td><td><span class="dot d-yellow"></span>Yellow</td><td>Preparing voice</td><td>A voice-mode session is generating its spoken summary.</td></tr>
+<tr><td>6</td><td><span class="dot d-purple"></span>Purple</td><td>Background</td><td>Parked on its own background task, not on you.</td></tr>
+<tr><td>7</td><td><span class="dot d-green"></span>Green</td><td>Ready</td><td>Brand new, never took a turn.</td></tr>
+<tr><td>8</td><td><span class="dot d-slate"></span>Slate</td><td>Sub-agent</td><td>It needs someone, and a live controller owns it - so the need goes to its manager, not to you.</td></tr>
+<tr><td>9</td><td><span class="dot d-grey"></span>Grey</td><td>Exited</td><td>The process ended cleanly.</td></tr>
+<tr><td>10</td><td><span class="dot" style="background:#B91C1C"></span>Deep red</td><td>Crashed</td><td>The agent process died unexpectedly. (Currently unreachable - defect 4.)</td></tr>
+<tr><td>11</td><td><span class="dot d-red"></span>Red</td><td>Needs you</td><td>Ten seconds silent and none of the above. The only colour that drives the needs-you bucket.</td></tr>
+</table>
+
+<div class="callout law">
+<p><strong>The whole ladder in two sentences.</strong> If it is working, it is blue. Otherwise, here is
+why it is not working.</p>
+<p>Every rule below the divider answers a question that only makes sense once the session has stopped.
+That is why none of them can outrank blue: they are not competing with "working", they are
+<em>explaining the absence of it</em>.</p>
+</div>
+
+<h3>The snooze machine, and the only two things that clear a snooze</h3>
+
+<div class="callout law">
+<p><strong>The owner's rules, 14 July 2026.</strong></p>
+<ol>
+<li><strong>Working knocks a session out of snooze. Always.</strong></li>
+<li><strong>An expired snooze is gone.</strong> Set it for twelve hours; twelve hours later there is no snooze.</li>
+<li><strong>Snooze pressed while working means "snooze me when the work ends"</strong> - otherwise an agent could never snooze its own session, because an agent asking for a snooze is by definition working at that moment.</li>
+<li><strong>Nothing else clears a snooze.</strong> Only: it starts working, you unsnooze it, or the timer expires.</li>
+</ol>
+</div>
+
+<p>Rules 1, 3 and 4 are implemented correctly. <strong class="bad">Rule 2 is broken for exactly the case
+rule 3 exists to serve</strong> - see the warning below the table. Verified against origin/main:</p>
+
+<table>
+<tr><th>Rule</th><th>Where</th><th>How</th></tr>
+<tr><td>Working clears the hold</td><td><span class="file">Session.cs:1911-1915</span></td><td><code>if (IsWorking &amp;&amp; HoldState == Held) HoldState = None;</code> - unconditional, on the activity edge. The snooze timer dies with it.</td></tr>
+<tr><td>Snooze while working defers</td><td><span class="file">Session.cs:644-653</span></td><td>Snooze pressed while working sets <code>DeferredHold</code>, which reports <code>OnHold=false</code> - so the session stays blue and reads "Working" while it finishes.</td></tr>
+<tr><td>A deferral lands when work stops</td><td><span class="file">Session.cs:1931-1935</span></td><td>On settling to WaitingForInput, <code>DeferredHold &rarr; Held</code>. The snooze the agent asked for takes effect exactly when the turn ends.</td></tr>
+<tr><td>A deferral is dropped on exit</td><td><span class="file">Session.cs:1922-1923</span></td><td>A dead session has no turn to come back to; parking it would hide it behind "Snoozed" forever.</td></tr>
+<tr><td>A fresh prompt supersedes</td><td><span class="file">Session.cs:1645, :1755</span></td><td>You typed at it, so you clearly want it.</td></tr>
+<tr><td>The timer expires</td><td><span class="file">GatewayEndpoints.cs:2347-2357</span></td><td>The Gateway owns the clock (it must survive a dead Director). An expired snooze is overlaid <code>OnHold=false</code> on every read <em>before</em> the fold, so it returns to red with no flicker and no new logic.</td></tr>
+</table>
+
+<div class="callout ok">
+<p><strong>"A session can never be both held and working" is now true twice over.</strong> The Director
+makes the combination unreachable by lifting the hold on the working edge. And as of today the Gateway
+would render it blue anyway, because working is the top of the ladder. The belt and the braces disagree
+about nothing - which is the first time that has been true.</p>
+<p>This matters because the Director's lift is a <em>local</em> guarantee. A snoozed session on a
+Director that has gone dark still carries <code>OnHold=true</code> in the Gateway's cached roster. Before
+today, that stale flag outranked everything. Now, if any fact says the session is working, it is blue.</p>
+</div>
+
+<div class="callout warn">
+<p><strong>But rule 2 fails on the deferred path - defect 20, and it is the worst thing in this
+document.</strong> The table above is true of the <em>Director</em>. The Gateway's timer does not survive
+the deferral.</p>
+<p>A deferred hold reports <code>OnHold=false</code> (correctly - it is not parked yet). The expiry sweep
+runs <strong>every 15 seconds</strong>, asks the Director "is it held?", hears <em>no</em>, and deletes
+the 12-hour timer. Minutes later the turn ends, the deferral lands, and the session is held
+<strong>with no clock</strong>. <strong>An agent-requested snooze never expires.</strong></p>
+<p>The two rules collide because the wire is lossy: three hold states are squeezed into one boolean
+(defect 12), so "not held" and "about to be held" are indistinguishable to the sweep. This is why defect
+12 is not cosmetic. <code>HoldResponse.Pending</code> already carries the missing bit and nothing reads
+it.</p>
+<p><strong class="good">DECIDED, 14 July 2026: the clock starts when the work ENDS.</strong> "Snooze me
+for 12 hours when this finishes" means twelve hours of quiet after it finishes. A clock started at
+request time could expire before the hold has even landed.</p>
+<p><strong>So the fix is:</strong> carry the hold state on the wire (three states, not a boolean - this
+is defect 12, and it is the root cause); start the Gateway's timer when the deferral <em>lands</em>, not
+when it is requested; and make the sweep clear a timer only on a true <code>None</code> - never on a
+<code>DeferredHold</code>, and never merely because <code>OnHold</code> reads false.</p>
+</div>
+
+<h3>The dictation lifecycle - and why orange wedges</h3>
+
+<p>This is the "transcription that never disappears" you keep seeing. It is not one bug; it is three
+separate flags, with three different lifetimes, driving the same colour.</p>
+
+<table>
+<tr><th>Flag</th><th>Set / cleared by</th><th>Can it wedge?</th></tr>
+<tr><td><code>IsTranscribing</code><br><span class="file">desktop dictation</span></td><td><span class="file">BackgroundDictationSend.cs:59, :135</span> - set at start, cleared in a <code>finally</code>.</td><td class="good">No. The <code>finally</code> runs on every path, including a crash mid-transcribe.</td></tr>
+<tr><td><code>Transcribing</code><br><span class="file">Gateway, active run</span></td><td><span class="file">TranscribingSessions.cs</span> - explicit <code>End()</code> on every terminal outcome, plus a <strong>90-second idle backstop</strong> that clears a mark making no progress.</td><td class="good">No. Bounded to 90 seconds even if the explicit clear is missed entirely.</td></tr>
+<tr><td><code>DictationStatus</code><br>= "Uploading from phone"<br><span class="file">Gateway, durable marker</span></td><td><span class="file">VoiceUploadStore</span> - a durable record on disk. It paints while, and only while, the record is <code>Pending</code>. <code>Pending</code> ends when the record reaches a terminal state: <code>Delivered</code>, <code>Abandoned</code>, or <code>Failed</code>.</td><td class="bad">YES - but only when the record never reaches a terminal state at all.</td></tr>
+</table>
+
+<p><strong>The three-term lifecycle, stated once, because getting this wrong is what makes people
+believe the wedge is unavoidable:</strong></p>
+
+<ol>
+<li><strong><code>Pending</code> locks and colours.</strong> While the record is Pending, the session is locked (nobody else may type into it) and painted orange. <span class="file">VoiceUploadStore.cs:288-289</span></li>
+<li><strong>A terminal tombstone (<code>Delivered</code> / <code>Abandoned</code> / <code>Failed</code>) ends the lock and the colour</strong>, and exists to de-duplicate a re-delivery or support a retry. On the normal path <code>MarkDelivered</code> is written <em>immediately after the session accepts the prompt</em> - <strong>not</strong> when the phone acknowledges. <span class="file">GatewayDictationEndpoint.cs:414-420</span></li>
+<li><strong>The phone's later acknowledgement retires the tombstone only.</strong> It has nothing to do with the lock, which ended at step 2.</li>
+</ol>
+
+<div class="callout warn">
+<p><strong>An earlier draft of this document said the Pending marker "clears only on the phone's delivery
+acknowledgement". That was wrong</strong>, and it is worth recording <em>why</em> it was wrong, because
+the error is instructive: two comments in the code say it. <span class="file">SessionDto.cs:327-328</span>
+says <code>DictationStatus</code> is derived from the durable marker "so it never wedges", and
+<span class="file">GatewayHost.cs:1212-1215</span> says the marker "clears only on delivery/abandon" and
+therefore "never wedges". Both are half-true: the marker does clear on delivery, so the
+<em>normal</em> path never wedges - but neither comment mentions the paths that reach no terminal state
+at all, which is the entire defect. A reader who trusts them concludes there is no bug. A reader who
+believes the first draft concludes orange must persist until an acknowledgement that is not actually
+required. Both readers are wrong, in opposite directions. This is finding 3 of section 1 repeating
+itself in miniature: <strong>the comments are the bug's delivery mechanism.</strong></p>
+</div>
+
+<div class="callout warn">
+<p><strong>Defect 19 - this is the wedged orange, and it is deliberate.</strong>
+<span class="file">GatewayHost.cs:1345-1351</span> says so in as many words: <em>"There is deliberately NO
+age sweep here: a fixed age cut would reopen exactly the hole this closes - a phone out of signal for
+longer than the cut would lose its already-uploaded chunks."</em></p>
+<p>That reasoning is <strong>correct</strong>, and the record must stay. The mistake is not the durable
+record. The mistake is that <strong>one flag is answering two different questions</strong>:</p>
+<ol>
+<li><em>"Is there an undelivered dictation for this session?"</em> - a durable fact. Must never expire, or the phone loses your words. Today: correct.</li>
+<li><em>"Should this session be painted orange right now?"</em> - a presentation question. Must always be bounded, or a phone that never comes back wedges a session orange until the Gateway restarts.</li>
+</ol>
+<p>The colour is currently driven by the answer to question 1. So any upload that never reaches a terminal
+state leaves the session orange indefinitely, reading "Uploading from phone" about an upload that is not
+happening.</p>
+<p><strong>And the likeliest cause is not a dying phone - it is running out of credits.</strong>
+<span class="file">GatewayDictationEndpoint.cs:277-290</span>: when transcription returns
+<code>OutOfCredits</code>, or any retryable error, the handler returns the outcome to the client
+<em>without</em> marking the record <code>Delivered</code>, <code>Abandoned</code> or <code>Failed</code>.
+Only <code>PermanentError</code> parks the record (<code>MarkFailed</code>). So the record stays
+<code>Pending</code>, the session stays locked, and the dot stays orange - after a completed upload that
+reached the server, was understood, and simply could not be paid for. The active-transcription mark
+clears in its <code>finally</code> (<span class="file">:429-433</span>), so the label even
+<em>degrades</em> from the honest "Transcribing" back to "Uploading from phone" - describing an upload
+that finished minutes ago.</p>
+<p>The phone-dies-mid-upload case is real but rare. <strong>The out-of-credits case is ordinary, and it
+is almost certainly what you have been seeing.</strong></p>
+</div>
+
+<p><strong>Today's fix already removes the common case.</strong> The normal dictation path ends with the
+transcribed text being submitted into the session - which makes the agent <em>work</em> - and working is
+now blue, unconditionally. So a delivered dictation goes orange &rarr; blue on its own, no matter what
+any stale flag says. That is the owner's rule ("transcription pretty much always goes to working")
+falling straight out of the law, with no special case written for it.</p>
+
+<p><strong>What is left is the case where the text never arrives</strong> - out of credits, a retryable
+error, or a phone that never comes back - so the session never works, so nothing knocks the orange off.</p>
+
+<div class="callout ok">
+<p><strong>DECIDED, 14 July 2026: bound the colour, keep the record.</strong> Paint "Uploading from
+phone" only while the upload is actually making progress - the same idle rule the active-transcription
+mark already uses - and let the session fall back to its true colour when it goes quiet. The durable
+record survives untouched and still delivers whenever the phone returns; the delivery still submits the
+text; the session still goes blue by itself, because working is blue. <strong>Nothing is lost except the
+lie on the dot.</strong></p>
+<p>Fix the two paths that leave the record non-terminal while you are there
+(<span class="file">GatewayDictationEndpoint.cs:277-290</span>): out-of-credits and retryable errors
+should park the record in a state that says what actually happened, so the honest answer is available to
+show. And fix the two comments that claim the pending-derived status "never wedges" - they are why nobody
+believed this bug was real.</p>
+</div>
+
+<h3>Every scenario, walked</h3>
+
+<p>The cases that have caused arguments, each with the answer the machine now gives. "Before" is what
+shipped this morning.</p>
+
+<div class="scroll">
+<table>
+<tr><th>Scenario</th><th>Before</th><th>Now</th></tr>
+<tr><td>A snoozed session's agent starts working again</td><td class="bad">Grey "Snoozed", sunk to the parked bucket, still snoozed</td><td class="good">Blue "Working", Active. The Director lifts the hold; the Gateway would say blue regardless.</td></tr>
+<tr><td>An agent asks to snooze its own session (so it is working when it asks)</td><td class="good">DeferredHold - stays blue, parks when the turn ends</td><td class="good">Unchanged, and correct. This is why DeferredHold exists.</td></tr>
+<tr><td>...and then that deferred snooze lands</td><td class="bad">Its 12-hour timer was deleted 15 seconds after it was asked for</td><td class="bad"><strong>Unchanged. Defect 20 - the snooze is permanent.</strong> The sweep reads one boolean and cannot tell "deferred" from "not held".</td></tr>
+<tr><td>A 12-hour snooze on a session that was NOT working when you pressed it</td><td class="good">Gateway overlays OnHold=false at expiry, returns to red, "Snooze ended" badge</td><td class="good">Unchanged, and correct. The timer survives because the hold landed immediately.</td></tr>
+<tr><td>A snoozed session on a Director that has died</td><td class="bad">Stale OnHold=true in the roster keeps it grey</td><td class="good">The expiry overlay still fires (the Gateway owns the clock). If any fact says working, blue wins.</td></tr>
+<tr><td>You dictate into a session, and the text submits</td><td class="bad">Orange, and could stay orange over the working turn</td><td class="good">Orange while uploading &rarr; text submits &rarr; agent works &rarr; <strong>blue, automatically</strong>.</td></tr>
+<tr><td>You dictate, and the phone dies mid-upload</td><td class="bad">Orange forever</td><td class="bad">Still orange until the Gateway restarts. <strong>Defect 19, open.</strong> Bounded only if the session works for some other reason.</td></tr>
+<tr><td>The wingman is reading a finished turn</td><td class="good">Yellow, then red when the brief lands</td><td class="good">Unchanged - it is gated on raw red, so it only ever describes a stopped session.</td></tr>
+<tr><td>A voice-mode session's text-to-speech fails</td><td class="good">Falls to red (fixed 8 July - the <code>VoiceGenerating</code> gate gives it a terminal exit)</td><td class="good">Unchanged.</td></tr>
+<tr><td>A controlled sub-agent is 20 minutes into real work</td><td class="bad">Slate "Sub-agent" - the work was discarded</td><td class="good">Blue "Working". Ownership travels on the role badge, not the colour.</td></tr>
+<tr><td>A controlled sub-agent finishes and needs its manager</td><td class="good">Slate - the need routes to the manager, not to you</td><td class="good">Unchanged. This is the rule's real job, and it still has it.</td></tr>
+<tr><td>A sub-agent needs someone but its controller has died</td><td class="good">Red - it surfaces to you (the escape hatch)</td><td class="good">Unchanged.</td></tr>
+<tr><td>A snoozed session exits</td><td class="bad">Reads "Snoozed" forever - the dead session hides behind the label</td><td class="bad">Unchanged. <strong>Defect 21, open.</strong> Exit clears a deferred hold but not a landed one.</td></tr>
+<tr><td>The Director restarts while sessions are snoozed</td><td class="bad">Every snooze is forgotten; every deferral is lost</td><td class="bad">Unchanged. <strong>Defect 22, open</strong> - hold state is runtime-only.</td></tr>
+<tr><td>You dictate and the Gateway is out of credits</td><td class="bad">Orange forever, reading "Uploading from phone"</td><td class="bad">Unchanged. <strong>Defect 19, open</strong> - and this is the likely everyday cause of the wedged orange.</td></tr>
+<tr><td>A session is flagged for deletion</td><td class="bad">Director paints it grey locally; Gateway clients still show red/blue</td><td class="bad">Unchanged. <strong>Defect 23, open</strong> - the fold ignores <code>PendingDeletion</code> and the Director writes a colour it is not allowed to write.</td></tr>
+<tr><td>A session crashes mid-turn</td><td class="bad">Looks identical to a clean exit</td><td class="bad">Unchanged. <strong>Defect 4, open</strong> - the fold cannot return "error".</td></tr>
+</table>
+</div>
+
+<h2>3. Who owns which fact</h2>
+
+<p>"Which component is authoritative?" has no single answer, and that ambiguity is what made this hard. The
+split is per fact, not per component.</p>
+
+<table>
+<tr><th>Fact</th><th>Owner</th><th>Why it can only be there</th></tr>
+<tr><td>Activity: working / not working</td><td>The Director's terminal detector</td><td>Only the Director sees the bytes. Nothing may override it. It is pushed up as a fact, never as a colour.</td></tr>
+<tr><td>Hold intent and the timer</td><td>The Gateway</td><td>The timer must survive a dead Director. That is the whole point of it.</td></tr>
+<tr><td>Session role (Worker / Manager / Standalone / Architect)</td><td>The Gateway</td><td>"Is this session's controller still alive?" is unanswerable from one Director.</td></tr>
+<tr><td>Colour, label, triage bucket</td><td>The Gateway, from the three facts above</td><td>One fold, one answer, every screen.</td></tr>
+</table>
+
+<p>Note the consequence, because it is the thing that keeps biting: <strong>the desktop is a producer of
+the first fact and a consumer of the other two, at the same time.</strong> It cannot compute its own role
+or its own hold expiry, so it cannot compute its own colour. It must ask.</p>
+
+<h2>4. Every place that disagrees today</h2>
+
+<p>All verified against origin/main. This is the list that has to go to zero.</p>
+
+<h3>The ones you can see</h3>
+
+<table>
+<tr><th>#</th><th>Symptom</th><th>Cause</th></tr>
+<tr><td>1</td><td><span class="good">FIXED 14 July 2026.</span> A controlled session that is working read grey "Sub-agent" while 23 minutes and 56 thousand tokens into real work. Also fixed in the same pass: a <em>snoozed</em> session that woke and started working stayed grey and sank to the parked bucket, and a working session with dictation in flight painted orange.</td><td><span class="file">SessionOrdering.cs:129</span> - <code>if (controlled &amp;&amp; !isRed) return "supporting";</code>. The specification's order 5 beating order 7. The rule is deleted and <code>EffectiveColor</code> now answers the working question first; a theory test asserts blue against every overlay that ever outranked it.</td></tr>
+<tr><td>2</td><td>A snoozed session shows a grey "Snoozed" row underneath a header reading "1 need you".</td><td><span class="file">MainWindow.axaml.cs:3814</span> counts raw red with no hold check, no role check, no overlays.</td></tr>
+<tr><td>3</td><td>A snoozed session still pops the "Claude is waiting on your answer" card.</td><td><span class="file">CleanView.axaml.cs:258</span> reads raw status colour. Never heard of hold.</td></tr>
+<tr><td>4</td><td>A crashed session looks identical to an exited one.</td><td><strong>New regression, today.</strong> When the rail joined the shared fold (#1537) it inherited a fold that can never return <code>"error"</code>. <span class="file">SessionViewModel.cs:158</span> still has the deep-red brush. Nothing can select it.</td></tr>
+<tr><td>5</td><td>A live Worker shows slate "Sub-agent" on your phone and red "Needs you" on your desktop, at the same instant.</td><td><span class="file">ControlEndpoints.Map</span> never sets <code>SessionRole</code> (it is computed at the Gateway). The desktop's red-suppression gates on that field, so on the desktop it can never fire. Marked in the code as "Known gap (Phase 2b)".</td></tr>
+<tr><td>6</td><td>The same session shows a different colour on the Exes page than on every other screen.</td><td><span class="file">ExesEndpoints.cs:89</span> calls the fold without the fleet pass - no role, no snooze expiry, no voice or transcribing enrichment.</td></tr>
+<tr><td>7</td><td>In the Director detail table, the dot and the State cell beside it disagree.</td><td><span class="file">DirectorDetailView.tsx:185</span> uses the Gateway's answer; <span class="file">:195</span> ignores it and re-derives. Same row, two authorities.</td></tr>
+<tr><td>8</td><td>A snoozed, mid-brief, controlled sub-agent renders as plain teal "Idle".</td><td><span class="file">SessionRowViewModel.cs:61</span> receives a fully stamped session off the wire and throws all of it away, re-deriving from raw activity with a private palette where Idle is teal and Exited is red.</td></tr>
+<tr><td>9</td><td>A snoozed session reads "needs you" in the schedule picker.</td><td><span class="file">ScheduleView.tsx:1122</span> - an entire parallel triage fold deriving "needs you" from a timestamp instead of the bucket.</td></tr>
+</table>
+
+<h3>The ones you cannot see yet</h3>
+
+<table>
+<tr><th>#</th><th>Defect</th><th>Evidence</th></tr>
+<tr><td>10</td><td><strong>The prompt queue never auto-drains.</strong> The drain is gated on <code>ActivityState.Idle</code>, and <code>Idle</code> is a state nothing ever writes. The "auto-send when Claude is ready" behaviour cannot occur. A Control API poll waits on the same dead state and always times out.</td><td><span class="file">Session.cs:1909, :1921</span>; <span class="file">ControlEndpoints.cs:246</span></td></tr>
+<tr><td>11</td><td><strong>"Explaining" orange cannot reach the roster.</strong> The rule requires <code>BriefingState == "Explaining"</code>, but the Director's enum has only None / Briefing / Briefed / Failed. The value is produced by a different endpoint family and never fed back. So issue #217's orange exists only in the brief pane - the exact cross-surface contradiction its own comment claims to have fixed.</td><td><span class="file">BriefingState.cs:9-22</span> vs <span class="file">SessionOrdering.cs:51</span></td></tr>
+<tr><td>12</td><td><strong>"Snoozing when done" cannot reach any screen.</strong> The hold machine has three states; the wire has one boolean. Two comments claim clients render the deferred state distinctly. They cannot - it is byte-identical on the wire.</td><td><span class="file">HoldState.cs</span> vs <span class="file">SessionDto.cs:255</span></td></tr>
+<tr><td>13</td><td><strong>A filtered roster call computes wrong roles.</strong> The query filters run before the fleet pass, so <code>?state=Working</code> can drop a waiting controller out of the liveness set - reclassifying its worker as Standalone and un-suppressing its red.</td><td><span class="file">GatewayEndpoints.cs:674-688</span> vs <span class="file">:2359</span></td></tr>
+<tr><td>14</td><td><strong>Three colour inputs are invisible to the Gateway until something else happens.</strong> Transcribing, background-running, and auto-explaining all raise Director events with no push subscriber. The Gateway folds orange, purple, and yellow from exactly those facts - so those colours can lag by up to one ten-second re-push.</td><td><span class="file">ControlApiHost.cs:724-773</span></td></tr>
+<tr><td>15</td><td><strong>Two endpoints violate the DTO's stated contract.</strong> <code>EffectiveColor</code> and <code>TriageBucket</code> are documented "Required on Gateway /sessions responses". <code>GET /sessions/{sid}</code> returns them null. So the roster says "Needs you" while the by-id route still says <code>onHold: true</code>.</td><td><span class="file">SessionDto.cs:158</span> vs <span class="file">GatewayEndpoints.cs:1002-1014</span></td></tr>
+<tr><td>16</td><td><strong>Case-sensitivity is inconsistent inside one file.</strong> <code>RawActivityColor</code> is a case-sensitive switch; <code>IsAtTurnEnd</code>, <code>IsVoicePreparing</code>, and the role rules all compare case-insensitively on the same field. A mis-cased state produces incoherent output.</td><td><span class="file">SessionOrdering.cs:163</span> vs <span class="file">:176</span></td></tr>
+<tr><td>17</td><td><strong>Four greys and a slate, indistinguishable in a rail dot.</strong> Snoozed <code>#9CA3AF</code>, exited <code>#6A6A6A</code>, unknown <code>#6B7280</code>, supporting <code>#64748B</code>. This is why you read a working session as "on hold".</td><td><span class="file">SessionViewModel.cs:43-54</span>; <span class="file">ordering.ts:116-127</span></td></tr>
+<tr><td>18</td><td><strong>Five palettes for the same colour names.</strong> "red" is <code>#EF4444</code> on the rail, <code>#E5484D</code> in the turn review, <code>#F44747</code> in the Director view - where it means Exited, not needs-you.</td><td>desktop, various</td></tr>
+<tr><td><strong>23</strong></td><td><strong>A session flagged for deletion is invisible to the fold, and the Director paints it anyway.</strong> <span class="file">SessionDto.cs:268-277</span> says a <code>PendingDeletion</code> row "paints as a winding-down grey". The Gateway's fold never reads the field, so on every Gateway-backed screen the session keeps its normal colour - red "Needs you", or blue "Working" (a pending-deletion session may still be working, <span class="file">SessionManager.cs:334-338</span>). Meanwhile <span class="file">Session.cs:1217-1227</span> implements deletion by calling <code>SetStatusColor(Unknown, ...)</code> - the Director deciding a colour, which law 2 forbids and which nothing that paints reads anyway. Two implementations, neither delivering what the DTO promises. <strong class="good">DECIDED 14 July 2026: pending deletion is a BADGE, never a colour.</strong> If the session is still working it is blue, with a badge. The Director's <code>SetStatusColor</code> call is deleted.</td><td><span class="file">SessionDto.cs:268-277</span>; <span class="file">Session.cs:1217-1227</span>; <span class="file">SessionOrdering.cs</span> (no <code>PendingDeletion</code> branch)</td></tr>
+<tr><td><strong>22</strong></td><td><strong>The hold state is not persisted, so a Director restart silently forgets every snooze.</strong> <code>HoldState</code> is runtime-only - <span class="file">SessionStateStore.cs</span> stores no hold at all. Restart the Director and every <code>Held</code> session comes back un-held, and every <code>DeferredHold</code> ("park me when this finishes") is forgotten - the work finishes and the session never parks. The Gateway's timer entry may still exist, now pointing at a session that is not held. Note this partially <em>masks</em> defect 20: a restart is currently the only thing that clears a timer-less permanent snooze.</td><td><span class="file">SessionStateStore.cs:10-102</span>; <span class="file">SessionManager.cs:1161-1182</span>; <span class="file">Session.cs:563-573</span></td></tr>
+<tr><td><strong>21</strong></td><td><strong>A snoozed session that exits reads "Snoozed" forever, not "Exited" - and the code that prevents this only covers the deferred case.</strong> On exit, <span class="file">Session.cs:1918-1923</span> clears a <code>DeferredHold</code> with the comment <em>"parking a dead session would just hide it behind a 'Snoozed' label forever"</em>. That reasoning is exactly right - and it is not applied to a session that is already <code>Held</code>. A held session that exits keeps <code>OnHold=true</code>, so the fold checks <code>OnHold</code> first and labels it "Snoozed". The dead session hides behind the Snoozed label forever, which is the outcome the neighbouring comment forbids. Either clear <code>Held</code> on exit, or let Exited/Crashed outrank <code>OnHold</code> in the fold. <strong class="good">DECIDED 14 July 2026: it reads Exited.</strong> A dead session must never hide behind a Snoozed label.</td><td><span class="file">Session.cs:1918-1923</span>; <span class="file">SessionOrdering.cs</span> (<code>OnHold</code> before <code>BaseColor</code>)</td></tr>
+<tr><td><strong>20</strong></td><td><strong class="bad">A deferred snooze loses its timer within 15 seconds, so an agent-requested snooze NEVER EXPIRES.</strong> The most serious open defect, and it breaks two of the owner's rules at once. Walk it: you (or the agent) press Snooze while the agent is working. The Director correctly enters <code>DeferredHold</code> - "park me when this turn ends" - and <code>DeferredHold</code> reports <code>OnHold=false</code>, because it is not parked yet. The Gateway records a 12-hour timer regardless. Fifteen seconds later the expiry sweep asks the Director "is this session held?", is told <em>no</em> (it is deferred, not held), concludes the snooze is over, and <strong>deletes the timer</strong>. The turn then ends, the Director lands <code>DeferredHold &rarr; Held</code>, and the session is now snoozed <strong>with no Gateway clock at all</strong>. It will never expire. It can only be cleared by the agent working again or by an explicit unsnooze. <strong>The root cause is defect 12</strong> - the hold machine has three states and the wire has one boolean, so the sweep cannot tell "not held" from "about to be held". Note that <code>HoldResponse.Pending</code> ALREADY carries exactly this fact and the hold endpoint already receives it; nothing reads it. <em>This is the very feature the owner described - an agent snoozing its own session, which by definition happens while it is working - so it is the case that fails, not an edge case.</em></td><td><span class="file">GatewayEndpoints.cs:1171-1180</span> (records the timer without inspecting <code>Pending</code>); <span class="file">SnoozeExpirySweep.cs:38</span> (<code>SweepInterval = 15s</code>), <span class="file">:120-128</span> (clears on <code>OnHold==false</code>); <span class="file">Session.cs:599</span> (<code>OnHold =&gt; _holdState == Held</code>); <span class="file">SessionDto.cs:255</span> (one boolean); <span class="file">HoldRequest.cs:27-35</span> (<code>Pending</code> exists, unread)</td></tr>
+<tr><td>19</td><td><strong>A dictation that never reaches a terminal state wedges the session orange - and out-of-credits is the everyday way in.</strong> The durable record paints orange while <code>Pending</code>, and <code>Pending</code> ends only at <code>Delivered</code> / <code>Abandoned</code> / <code>Failed</code>. Two paths never mark it: <strong>OutOfCredits</strong> and any <strong>retryable transcription error</strong> return to the client without a terminal write (only <code>PermanentError</code> parks the record). The session then reads "Uploading from phone" forever - about an upload that completed and simply could not be paid for - because the active-transcription mark cleared in its <code>finally</code> and the label degraded back to the upload phase. The phone-dies-mid-upload case is real but far rarer. <em>One flag answers two questions: the durable record must never expire (correct - an age cut would make a phone out of signal lose its words), but the colour must always be bounded.</em> <strong>Today's fix removes the common case</strong> - a delivered dictation submits text, the agent works, and working is now blue no matter what any stale flag says - but a dictation that never delivers never makes the session work, so nothing knocks the orange off. See "The dictation lifecycle" above.</td><td><span class="file">GatewayDictationEndpoint.cs:277-290</span> (no terminal write on OutOfCredits / retryable), <span class="file">:429-433</span> (label degrades); <span class="file">GatewayHost.cs:1345-1351, :1212-1215</span>; <span class="file">VoiceUploadStore.cs:288-289</span></td></tr>
+</table>
+
+<h3>The traps - comments that lie to the next agent</h3>
+
+<p>These cost more than the bugs, because they are what the next agent reads before writing code. Every one
+of them is on origin/main right now.</p>
+
+<ul>
+<li><strong>The specification itself is the biggest trap of all</strong> - it is wrong about blue and wrong about red, and it is the first thing any agent reads. See findings 1 and 1b.</li>
+<li><strong>Five comments</strong> name <code>SessionStatusWingman.ColorFor</code> as the source of truth. That method was renamed in phase 2.3 and <strong>does not exist</strong>.</li>
+<li><strong>Four comments</strong> describe green, yellow, purple, orange, and slate as colours "the wingman writes onto each Session". It has not since phase 2.3. It emits only blue, red, and unknown.</li>
+<li>The fold claims the Gateway "reads the Director's cooked StatusColor for NOTHING". <strong>Half true</strong> - the fold is clean, but the pipeline feeding it still gates a stamp on <code>StatusColor == "red"</code>.</li>
+<li>A dead copy of the voice rule (<code>VoiceColorFor</code>) <strong>still carries the bug the Gateway fixed</strong> - the one that wedged a session orange forever when text-to-speech failed - and its comment claims the Gateway "applies the same rule". It does not.</li>
+<li><code>SessionStatusWingman</code> and <code>Session.cs</code> both claim to be the "single writer" of the status colour. <strong>Three other paths write it.</strong></li>
+<li>A dead desktop fold maps <code>Working</code> to <strong>green</strong> and <code>WaitingForInput</code> to <strong>amber</strong>. Unreferenced - but it is the corpse the next agent will read and copy.</li>
+<li>The role DTO documents three roles. The code produces four (it omits Architect).</li>
+<li><code>ProactiveExplainService</code> says the wingman defaults ON. It defaults OFF.</li>
+</ul>
+
+<h2>5. What has to change</h2>
+
+<h3>Done - 14 July 2026</h3>
+
+<div class="callout ok">
+<p><strong>1. Blue is at the top of the ladder.</strong> <code>EffectiveColor</code> now opens with the
+working check and returns blue before any other rule is consulted. <code>StateLabel</code> and
+<code>Classify</code> were hoisted in the same order, so the dot, the words beside it, and the roster
+bucket are folded from the same inputs and cannot disagree. The slate rule that let ownership erase
+activity is gone. <span class="file">SessionOrdering.cs</span></p>
+<p><strong>2. There is exactly one document.</strong> The other three were <strong>deleted</strong>, not
+banner-retired - a retired document is still a document an agent can find and read. Every reference in
+the code, the tests, and the overnight charter now points here. <span class="file">this file</span></p>
+<p><strong>3. The tests now defend the law instead of the defect.</strong> Three tests asserted the old
+rule outright - one was named <code>EffectiveColor_WhileExplaining_IsOrange_EvenWhenWorking</code> and a
+client test read "on-hold is never working, even if blue". They were green, deliberate, and they are why
+this kept coming back: an agent that fixed the code watched them fail and reverted. They are rewritten,
+and a theory now asserts blue against every overlay that has ever outranked working - individually and
+all at once - with failure messages that name the law.</p>
+<p><strong>4. The client stopped re-deriving.</strong> <code>isWorking</code> had its own
+<code>if (onHold) return false</code> override, and <code>contextLine</code> ran a third private ladder
+in a different order from the Gateway's - the direct cause of a blue dot labelled "Snoozed". Both now
+render the Gateway's stamped answer. <span class="file">packages/client-core/src/sessions/ordering.ts</span></p>
+</div>
+
+<h3>Still to do</h3>
+
+<p>Every item below is DECIDED - the rulings are in section 7 and are not to be re-opened. What remains
+is implementation. The first three are grouped because they are one change: <strong>the wire must carry
+the hold state instead of a boolean.</strong> That single lossy field (defect 12) is the root cause of
+defects 20, 21 and 22, which is why they land together or not at all.</p>
+
+<ol>
+<li><strong>Carry the hold state on the wire</strong> - three states, not one boolean. Defect 12, and the root cause of the next two.</li>
+<li><strong>Make the snooze timer survive a deferral.</strong> Start the Gateway clock when the deferral LANDS, and never let the sweep clear a timer just because <code>OnHold</code> reads false. Defect 20 - today an agent-requested snooze never expires.</li>
+<li><strong>Persist the hold state, and clear a landed hold on exit.</strong> A restart must not forget every snooze (defect 22), and a dead session must read Exited, never Snoozed (defect 21).</li>
+<li><strong>Bound the dictation colour without touching the durable record</strong>, and park the out-of-credits and retryable paths in a terminal state. Defect 19 - the wedged orange.</li>
+<li><strong>Make pending deletion a badge</strong>, and delete the Director's <code>SetStatusColor</code> call. Defect 23.</li>
+<li><strong>Send the session role down to the desktop</strong> so it stops being the one screen that cannot suppress a worker's red. Until then, desktop and phone disagree by construction.</li>
+<li><strong>Delete the Director's colour computation.</strong> Nothing that paints reads it. It exists only to be mistaken for the answer.</li>
+<li><strong>Delete the six other desktop folds</strong> and the three client label folds. Every one is a future contradiction.</li>
+<li><strong>Restore the crashed colour.</strong> A crashed session must not look like an exited one.</li>
+<li><strong>Separate the greys</strong>, or accept that snoozed, exited, unknown, and sub-agent are the same dot to the human eye.</li>
+<li><strong>Fix the traps.</strong> Every stale comment above, deleted or corrected in the same pass. They are not cosmetic; they are the delivery mechanism for the next regression.</li>
+</ol>
+
+<h2>6. How we prove it, and why a green test is not enough</h2>
+
+<p>The measurement that found this becomes the test: <strong>read the live fleet and assert that every
+session's desktop answer equals its phone answer equals its Cockpit answer.</strong> The earlier document
+ran that check and got six disagreements out of thirteen. When it reports zero, and keeps reporting zero,
+the job is done.</p>
+
+<p>That check is the only thing that would have caught defects 5, 6, 7, and 8 - every one of which passes
+its own unit tests today, because each fold is internally consistent and consistent with nothing else.</p>
+
+<h2>7. Decisions</h2>
+
+<h3>Answered</h3>
+
+<div class="callout law">
+<p><strong>Does blue beat orange? YES. Asked and answered by the owner, 14 July 2026:</strong></p>
+<p class="big">"If an agent is working, it is blue. Working equals blue."</p>
+<p>No exceptions, and no more asking. Transcribing orange, explaining orange, briefing yellow, voice
+yellow and snooze grey are now all gated on the session NOT working. Each one keeps its full meaning for
+the case it was built for - a session sitting at a prompt - and none of them can touch a running one.
+This is built and merged. If you are an agent about to raise this question again: <strong>do not.</strong>
+It has been settled more times than it should have been.</p>
+</div>
+
+<h3>Answered - 14 July 2026. These are rulings, not proposals.</h3>
+
+<div class="callout law">
+<p>The owner reviewed each of these with its recommendation and answered: <strong>"I am good with your
+recommendations."</strong> They are now the specification. An agent implementing any of the defects below
+implements <em>this</em>, and does not re-open the question.</p>
+</div>
+
+<table>
+<tr><th>Question</th><th>THE RULING</th><th>Unblocks</th></tr>
+<tr><td><strong>You snooze a working session for 12 hours. When does the clock start - when you ask, or when the work ends?</strong></td><td><strong>When the work ends.</strong> "Snooze me for 12 hours when this finishes" means twelve hours of quiet <em>after</em> it finishes. A clock started at request time could expire before the hold has even landed - which is nonsense, and is a second way to produce the same bug.</td><td>Defect 20 - the agent-requested snooze that never expires</td></tr>
+<tr><td><strong>A snoozed session exits. Does it read "Snoozed" or "Exited"?</strong></td><td><strong>Exited.</strong> A dead session must never hide behind a Snoozed label. The code already makes this argument in its own comment for the deferred case; apply it to the landed case too.</td><td>Defect 21</td></tr>
+<tr><td><strong>A session flagged for deletion: colour, or badge?</strong></td><td><strong>A badge. Never a colour.</strong> Pending deletion says nothing about what the agent is <em>doing</em>. If the session is still working it is <strong>blue</strong>, with a badge. The Director's <code>SetStatusColor</code> call in <code>MarkForDeletion</code> is deleted - the Director does not write colours.</td><td>Defect 23</td></tr>
+<tr><td><strong>An out-of-credits dictation: stay orange until retry, or keep the record durable and bound the colour?</strong></td><td><strong>Bound the colour; keep the record.</strong> The durable record must never expire - a phone out of signal must not lose your words. But the colour must always be bounded. Nothing is lost except the lie on the dot.</td><td>Defect 19 - the wedged orange</td></tr>
+<tr><td><strong>A Director dies while a snooze is still deferred.</strong></td><td><strong>Persist the hold state, and land the deferral on restart if the session is not working.</strong> This follows from ruling 1: the deferral waits for the work to end, and a Director that died ended the work. If the session exited, the existing rule already applies - drop the deferral, because there is no turn to come back to. <em>This one was inferred from the other rulings rather than stated outright; it is the only entry in this table the owner did not answer word-for-word.</em></td><td>Defect 22 - hold state is not persisted</td></tr>
+</table>
+
+<h3>Still open</h3>
+
+<ol>
+<li><strong>Gray-when-controlled: build it now or later?</strong> The law says it applies only at the red position and never touches a working session. It is written into the ladder at order 8. It is not built.</li>
+<li><strong>Does a controlled session whose controller has died still recede?</strong> Today, a non-red one does (the fold checks only that a controller id exists, not that it is alive). A red one correctly surfaces.</li>
+<li><strong>Snoozed, exited, crashed, sub-agent: four distinct colours, or do you accept the collision?</strong> Today they are four greys and a slate, indistinguishable in a rail dot (defect 17).</li>
+</ol>
+
+<h2>8. How to keep this document true</h2>
+
+<div class="callout warn">
+<p><strong>This document has no date in its filename, on purpose.</strong> It is
+<span class="file">docs/new_architecture/session-state.html</span> and it stays there. Do not write
+<span class="file">session-state-2026-08-01.html</span>. Do not write "the new state architecture". Do
+not write a fresh document because this one looks out of date - <strong>update this one.</strong></p>
+<p>Every dated state document this project has produced became a competing source of truth within days,
+and each one cost the owner a day of the same argument. The date is what made them look disposable, and
+disposable documents get replaced instead of corrected. On 14 July 2026 the owner read the previous
+version's filename, concluded from the date alone that it must be stale, and asked for a new one - it had
+been written that same afternoon. The name did that.</p>
+<p>There is exactly one document. It is this one. Keep it correct.</p>
+</div>
+
+<p>If you change a state or colour rule in code, you change it here in the same pull request. A change
+that lands in one and not the other is the whole failure mode described in section 1, and it will be
+reverted by the next agent who reads whichever half you left behind.</p>
+
+<footer>
+The authoritative definition of DevThrottle session state. Every rule cited by file and line, read from
+origin/main. Replaced and DELETED three predecessors on 14 July 2026:
+<span class="file">docs/new_architecture/state-and-color-architecture.html</span>,
+<span class="file">docs/new_architecture/phase-2-state-color-spec.md</span>, and
+<span class="file">docs/architecture/session-state-machine-2026-07-14.html</span> - deleted rather than
+banner-retired, so that no grep, no search, and no agent can ever surface them again.
+</footer>
+</div>

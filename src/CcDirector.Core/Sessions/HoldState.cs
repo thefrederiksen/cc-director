@@ -2,7 +2,7 @@ namespace CcDirector.Core.Sessions;
 
 /// <summary>
 /// Where a session sits in the hold ("Snooze") state machine - the user's "I do not want to deal with
-/// this one right now". Design and diagram: docs/architecture/session-state-machine-2026-07-14.html.
+/// this one right now". Design and diagram: docs/new_architecture/session-state.html.
 ///
 /// The whole machine, driven by two things: what the user pressed, and whether the agent is working
 /// (<see cref="ActivityState"/>, the authoritative live fact - never a latch):

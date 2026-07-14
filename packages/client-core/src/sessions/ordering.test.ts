@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { SessionDto } from "../api/client";
-import { classify, dotColor, effectiveColor, inBucket, inWaitingOrder, isWorking, stateLabel } from "./ordering";
+import { classify, contextLine, dotColor, effectiveColor, inBucket, inWaitingOrder, isWorking, stateLabel } from "./ordering";
 
 function session(fields: Partial<SessionDto> & { sessionId?: string } = {}): SessionDto {
   return {
@@ -64,15 +64,37 @@ describe("Gateway-stamped session presentation state", () => {
       .toThrow("Gateway /sessions missing stateLabel");
   });
 
-  it("isWorking uses the Gateway effectiveColor, not the raw statusColor", () => {
+  it("isWorking is exactly the Gateway's blue - nothing else gets a vote", () => {
+    // THE LAW (2026-07-14): a working session is BLUE, always. So blue IS working, and the client
+    // asks the Gateway and nothing else.
+    //
+    // Two assertions here used to encode the OLD law and were deliberately removed:
+    //   - `isWorking({ effectiveColor: "yellow", activityState: "Working" })` -> true, on the theory
+    //     that a working session's colour might not have "settled" yet. It cannot: the Gateway's fold
+    //     returns blue for ANY working session, so yellow-while-working is a DTO it can never emit.
+    //   - `isWorking({ effectiveColor: "blue", onHold: true })` -> false, commented "on-hold is never
+    //     working, even if blue". That is the defect itself, written down as a requirement: it is the
+    //     reason a snoozed session that woke up and started working still read as parked.
+
     // Blue effectiveColor is working, regardless of the raw Director statusColor.
     expect(isWorking(session({ effectiveColor: "blue", statusColor: "red" }))).toBe(true);
-    // A non-blue effective color at a working activity state still counts (mid-turn before color settles).
-    expect(isWorking(session({ effectiveColor: "yellow", activityState: "Working" }))).toBe(true);
     // Red and not working -> not working.
     expect(isWorking(session({ effectiveColor: "red", activityState: "WaitingForInput" }))).toBe(false);
-    // On-hold is never working, even if blue.
-    expect(isWorking(session({ effectiveColor: "blue", onHold: true }))).toBe(false);
+    // Blue AND snoozed is working: the Gateway stamped blue, so the session is running. Snooze is a
+    // statement about a session that has stopped; it cannot un-work a running one.
+    expect(isWorking(session({ effectiveColor: "blue", onHold: true }))).toBe(true);
+  });
+
+  it("contextLine renders the Gateway's stamped label instead of re-deriving one", () => {
+    // The row's words come from the same fold as its dot, so they cannot contradict it.
+    expect(contextLine(session({ effectiveColor: "blue", stateLabel: "Working", onHold: true })))
+      .toBe("Working");
+    expect(contextLine(session({ effectiveColor: "grey", stateLabel: "Snoozed", onHold: true })))
+      .toBe("Snoozed");
+    // A working session with dictation in flight reads "Working", not "Transcribing...": the local
+    // ladder that produced a blue dot beside the word "Snoozed" is gone.
+    expect(contextLine(session({ effectiveColor: "blue", stateLabel: "Working", transcribing: true })))
+      .toBe("Working");
   });
 });
 
