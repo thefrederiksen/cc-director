@@ -1765,10 +1765,12 @@ public sealed class Session : IDisposable
     }
 
     /// <summary>
-    /// Note WHERE this submission came from in the <see cref="InputOriginLog"/> (issue #1551). Carries
-    /// no text: the conversation ingest reads the text back from the agent's own transcript and joins
-    /// this event to it by session + nearest timestamp. This choke point is the only place the origin
-    /// is ever known.
+    /// Note WHERE this submission came from (issue #1551). Carries no text: the conversation ingest
+    /// reads the text back from the agent's own transcript at the end of the turn and joins this event
+    /// to it by nearest timestamp, then pushes the joined record to the Gateway. This choke point is
+    /// the only place the origin is ever known - the Gateway never sees desktop-local input at all.
+    ///
+    /// Held in memory, not written anywhere: the Director keeps no log of its own.
     ///
     /// Gated on the same non-null origin as the stats tally, so framework-internal sends (handover
     /// text, queue drain, framing) stay out for the same reason they stay out of the counts: they carry
@@ -1777,14 +1779,8 @@ public sealed class Session : IDisposable
     private void RecordOrigin(InputOrigin origin, int charCount)
     {
         if (charCount <= 0) return;
-        InputOriginLog.Write(new InputOriginRecord
-        {
-            TsUtc = DateTime.UtcNow,
-            SessionId = Id.ToString(),
-            Modality = origin.ModalityToken,
-            Surface = origin.SurfaceToken,
-            CharCount = charCount,
-        });
+        InputOriginBuffer.Record(Id.ToString(), new InputOriginEvent(
+            DateTime.UtcNow, origin.ModalityToken, origin.SurfaceToken, charCount));
     }
 
     /// <summary>Send text followed by Enter (sync wrapper). See
