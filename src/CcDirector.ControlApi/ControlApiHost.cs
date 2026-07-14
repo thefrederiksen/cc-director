@@ -619,29 +619,13 @@ public sealed class ControlApiHost : IAsyncDisposable
     }
 
     /// <summary>
-    /// Construct the Gateway client and, when this Director self-provisions its serve
-    /// mapping, wire verify-before-advertise (issue #197): every register attempt first
-    /// asserts the own-port mapping, then probes the advertised URL from the outside-in.
-    /// The PROBE is the gate - a registration only happens for an endpoint that
-    /// demonstrably answers; the mapping step is best-effort-but-loud, so an exotic
-    /// setup (hand-run reverse proxy via gateway.tailnetEndpoint) that answers without
-    /// our mapping still registers truthfully.
+    /// Construct the Gateway client. Tunnel-only: the Director dials OUT and is reached only down that
+    /// stream, so there is no inbound endpoint to verify-before-advertise anymore. The old issue #197
+    /// own-port probe was already dead once the Director stopped self-provisioning a serve front door
+    /// (the wiring here was gated on a serve provisioner this Director never creates), so it is removed.
     /// </summary>
     private GatewayClient BuildGatewayClient(GatewayConfig gatewayConfig)
-    {
-        var client = new GatewayClient(gatewayConfig, DirectorId, Port, _version, SnapshotSessionStates, GatewayMonitor);
-        if (_serveProvisioner is { } provisioner)
-        {
-            client.EndpointVerifier = async (endpoint, ct) =>
-            {
-                var (mapped, mapError) = await provisioner.EnsureMappingAsync(ct);
-                var probeError = await GatewayClient.ProbeAdvertisedEndpointAsync(endpoint, ct);
-                if (probeError is null) return null;
-                return mapped ? probeError : $"{probeError} (serve mapping: {mapError})";
-            };
-        }
-        return client;
-    }
+        => new(gatewayConfig, DirectorId, Port, _version, SnapshotSessionStates, GatewayMonitor);
 
     /// <summary>
     /// Issue #1176 (Phase 1a): build the push-stream client, or null when stream mode is off / no Gateway
