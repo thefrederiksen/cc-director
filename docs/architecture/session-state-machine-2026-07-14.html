@@ -1,0 +1,525 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DevThrottle Session State - Design for Approval</title>
+<style>
+  :root {
+    --ink:#1a1f2b; --mute:#5b6675; --line:#d8dee8; --bg:#ffffff; --panel:#f6f8fb;
+    --red:#ef4444; --blue:#3b82f6; --grey:#9ca3af; --slate:#64748b;
+    --green:#16a34a; --amber:#f0b848; --accent:#2563eb;
+  }
+  * { box-sizing:border-box; }
+  body {
+    margin:0; padding:0 24px 80px; background:var(--bg); color:var(--ink);
+    font:16px/1.65 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+  }
+  .wrap { max-width:920px; margin:0 auto; }
+  header { border-bottom:3px solid var(--ink); padding:48px 0 20px; margin-bottom:36px; }
+  h1 { font-size:32px; line-height:1.2; margin:0 0 8px; letter-spacing:-0.02em; }
+  .sub { color:var(--mute); font-size:15px; margin:0; }
+  h2 {
+    font-size:23px; margin:52px 0 14px; padding-top:22px; border-top:1px solid var(--line);
+    letter-spacing:-0.01em;
+  }
+  h3 { font-size:17px; margin:30px 0 8px; }
+  p { margin:0 0 14px; }
+  .lede { font-size:18px; line-height:1.6; }
+  .callout {
+    background:var(--panel); border-left:4px solid var(--accent);
+    padding:16px 18px; margin:20px 0; border-radius:0 6px 6px 0;
+  }
+  .callout.warn { border-left-color:var(--red); }
+  .callout.ok { border-left-color:var(--green); }
+  .callout p:last-child { margin-bottom:0; }
+  table { border-collapse:collapse; width:100%; margin:18px 0; font-size:14px; }
+  th, td { border-bottom:1px solid var(--line); padding:9px 10px; text-align:left; vertical-align:top; }
+  th { background:var(--panel); font-weight:600; font-size:12px; text-transform:uppercase;
+       letter-spacing:.06em; color:var(--mute); }
+  code { font:13px/1.4 "SF Mono",Consolas,"Liberation Mono",monospace;
+         background:var(--panel); padding:1px 5px; border-radius:3px; }
+  .dot { display:inline-block; width:9px; height:9px; border-radius:50%; margin-right:6px;
+         vertical-align:middle; }
+  .d-red{background:var(--red)} .d-blue{background:var(--blue)} .d-grey{background:var(--grey)}
+  .d-slate{background:var(--slate)}
+  .bad { color:var(--red); font-weight:600; }
+  .good { color:var(--green); font-weight:600; }
+  figure { margin:26px 0; }
+  figure svg { width:100%; height:auto; display:block; }
+  figcaption { color:var(--mute); font-size:13px; margin-top:10px; text-align:center; }
+  .scroll { overflow-x:auto; }
+  ul { margin:0 0 14px; padding-left:22px; }
+  li { margin-bottom:7px; }
+  .file { font:12.5px/1.4 "SF Mono",Consolas,monospace; color:var(--mute); }
+  footer { margin-top:60px; padding-top:20px; border-top:1px solid var(--line);
+           color:var(--mute); font-size:13px; }
+  @media (prefers-color-scheme: dark) {
+    :root { --ink:#e8ecf3; --mute:#9aa7b8; --line:#2b3340; --bg:#12161d; --panel:#1a1f28; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <h1>DevThrottle Session State</h1>
+  <p class="sub">Design for approval &middot; 14 July 2026 &middot; prepared by session "Dev Throttle State" (3a2239de)</p>
+</header>
+
+<p class="lede">
+  Right now your desktop and your phone show <strong>different states for the same session</strong>. I measured
+  it on your live fleet this morning: six of thirteen sessions disagreed. This document explains why,
+  proposes one state machine and one place where state is decided, and asks for your approval before
+  any code is written.
+</p>
+
+<div class="callout warn">
+  <p><strong>The short version.</strong> There is no single answer to "what is this session doing?".
+  The Gateway computes one answer for your phone and the Cockpit. The desktop computes three
+  different answers of its own. Nobody reconciles them. On top of that, the hold flag is built on a
+  latch that a slow command destroys, so a snoozed session can keep working and never come back.</p>
+</div>
+
+<h2>1. The evidence</h2>
+
+<p>
+  The Gateway's session list carries both colors at once: <code>statusColor</code> (what your desktop
+  paints) and <code>effectiveColor</code> (what your phone paints). That let me compare the two views
+  of the same session at the same instant, on the running fleet. Six rows disagreed.
+</p>
+
+<div class="scroll">
+<table>
+  <thead>
+    <tr><th>Session</th><th>Really doing</th><th>Desktop shows</th><th>Phone shows</th><th>Cause</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>Enrichment Facade Eval - Architect</td><td>Waiting, snoozed</td>
+        <td><span class="dot d-red"></span><span class="bad">"Your Turn", waiting 10h</span></td>
+        <td><span class="dot d-grey"></span>"Snoozed"</td><td>Label ignores hold</td></tr>
+    <tr><td>cc-consult - Perry</td><td>Waiting, snoozed</td>
+        <td><span class="dot d-red"></span><span class="bad">"Your Turn", waiting 10h</span></td>
+        <td><span class="dot d-grey"></span>"Snoozed"</td><td>Label ignores hold</td></tr>
+    <tr><td>mindzieWeb - james template</td><td>Waiting, snoozed</td>
+        <td><span class="dot d-red"></span><span class="bad">"Your Turn"</span></td>
+        <td><span class="dot d-grey"></span>"Snoozed"</td><td>Label ignores hold</td></tr>
+    <tr><td>mindzieWeb - James</td><td>Waiting, snoozed</td>
+        <td><span class="dot d-red"></span><span class="bad">"Your Turn", waiting 10h</span></td>
+        <td><span class="dot d-grey"></span>"Snoozed"</td><td>Label ignores hold</td></tr>
+    <tr><td>devthrottle - snooze longer</td><td>Waiting, snoozed</td>
+        <td><span class="dot d-red"></span><span class="bad">"Your Turn"</span></td>
+        <td><span class="dot d-grey"></span>"Snoozed"</td><td>Label ignores hold</td></tr>
+    <tr><td><strong>Tunnel-Only Review - Reviewer 2 (Codex)</strong></td><td>Waiting, is a Worker</td>
+        <td><span class="dot d-red"></span><span class="bad">"Your Turn"</span></td>
+        <td><span class="dot d-slate"></span>"Sub-agent"</td><td>Desktop cannot see roles</td></tr>
+  </tbody>
+</table>
+</div>
+
+<p>
+  That last row is the Codex session you spotted. It is a Worker, and the Gateway deliberately keeps
+  Workers quiet so they nag their manager instead of you. The desktop does not know the session is a
+  Worker, so it nags you anyway. Both halves of what you saw are real, and they have two different
+  causes.
+</p>
+
+<h2>2. Why the hold breaks</h2>
+
+<p>
+  Hold is meant to lift itself when a turn ends. Whether it is allowed to lift depends on a private
+  latch called <code>_turnInFlight</code>. That latch is armed only when you press Enter, and it is
+  destroyed by <strong>any ten seconds of terminal silence</strong> - because the detector treats ten
+  seconds of quiet as "the turn is over", with no attempt to tell a finished turn apart from a slow
+  build. Almost every real turn contains such a gap.
+</p>
+
+<figure>
+<svg viewBox="0 0 880 250" xmlns="http://www.w3.org/2000/svg" role="img"
+     aria-label="Timeline showing the turn latch destroyed by a ten second quiet gap mid-turn">
+  <defs>
+    <marker id="ar" markerWidth="9" markerHeight="9" refX="8" refY="3" orient="auto">
+      <path d="M0,0 L0,6 L8,3 z" fill="#5b6675"/>
+    </marker>
+  </defs>
+  <line x1="40" y1="60" x2="840" y2="60" stroke="#d8dee8" stroke-width="2"/>
+
+  <rect x="40"  y="46" width="150" height="28" fill="#3b82f6" opacity=".85" rx="3"/>
+  <rect x="190" y="46" width="120" height="28" fill="#f6f8fb" stroke="#d8dee8" rx="3"/>
+  <rect x="310" y="46" width="260" height="28" fill="#3b82f6" opacity=".85" rx="3"/>
+  <rect x="570" y="46" width="270" height="28" fill="#3b82f6" opacity=".85" rx="3"/>
+
+  <text x="115" y="65" font-size="12" fill="#fff" text-anchor="middle" font-family="sans-serif">agent working</text>
+  <text x="250" y="65" font-size="12" fill="#5b6675" text-anchor="middle" font-family="sans-serif">slow build (quiet)</text>
+  <text x="440" y="65" font-size="12" fill="#fff" text-anchor="middle" font-family="sans-serif">agent working again</text>
+  <text x="705" y="65" font-size="12" fill="#fff" text-anchor="middle" font-family="sans-serif">still working</text>
+
+  <line x1="40" y1="30" x2="40" y2="46" stroke="#5b6675" stroke-width="1.5"/>
+  <text x="40" y="24" font-size="11.5" fill="#1a1f2b" text-anchor="middle" font-family="sans-serif">you press Enter</text>
+  <text x="40" y="94" font-size="11" fill="#16a34a" text-anchor="middle" font-family="sans-serif">latch ARMED</text>
+
+  <line x1="310" y1="30" x2="310" y2="46" stroke="#ef4444" stroke-width="1.5"/>
+  <text x="310" y="24" font-size="11.5" fill="#ef4444" text-anchor="middle" font-family="sans-serif">10s of quiet elapses</text>
+  <text x="310" y="94" font-size="11" fill="#ef4444" text-anchor="middle" font-family="sans-serif" font-weight="bold">latch DESTROYED</text>
+  <text x="310" y="110" font-size="10.5" fill="#5b6675" text-anchor="middle" font-family="sans-serif">(detector assumes the turn ended)</text>
+
+  <line x1="570" y1="30" x2="570" y2="46" stroke="#5b6675" stroke-width="1.5"/>
+  <text x="570" y="24" font-size="11.5" fill="#1a1f2b" text-anchor="middle" font-family="sans-serif">you press Snooze</text>
+  <text x="570" y="94" font-size="11" fill="#1a1f2b" text-anchor="middle" font-family="sans-serif">held = true</text>
+
+  <line x1="840" y1="30" x2="840" y2="46" stroke="#5b6675" stroke-width="1.5"/>
+  <text x="840" y="24" font-size="11.5" fill="#1a1f2b" text-anchor="end" font-family="sans-serif">turn really ends</text>
+
+  <rect x="300" y="150" width="560" height="76" fill="#fdecec" stroke="#ef4444" rx="5"/>
+  <text x="316" y="172" font-size="13" fill="#ef4444" font-family="sans-serif" font-weight="bold">The hold never lifts.</text>
+  <text x="316" y="192" font-size="12.5" fill="#1a1f2b" font-family="sans-serif">The turn-end lift is gated on a latch that the quiet gap already threw away,</text>
+  <text x="316" y="210" font-size="12.5" fill="#1a1f2b" font-family="sans-serif">so the session runs to completion still marked "Snoozed".</text>
+
+  <path d="M570,110 C570,140 430,120 430,150" stroke="#5b6675" stroke-width="1.2" fill="none" marker-end="url(#ar)"/>
+</svg>
+<figcaption>Today: one ordinary slow command mid-turn silently disables the hold's ability to lift itself.</figcaption>
+</figure>
+
+<div class="callout">
+  <p>This is also why a mid-turn snooze does not stick, and why the fix on the open pull request
+  #1512 - which reads the same latch to decide whether to defer - would inherit the same bug in a new
+  place. That pull request is parked pending this design.</p>
+</div>
+
+<h2>3. The proposed state machine</h2>
+
+<p>
+  Hold is currently three variables that can disagree: the public flag, the fragile latch, and a
+  pending flag on the unmerged branch. Replace all three with <strong>one field, three states</strong>,
+  owned by the Director's session object. The only other thing it reads is whether the session is
+  working right now - which the terminal detector already decides.
+</p>
+
+<figure>
+<svg viewBox="0 0 880 420" xmlns="http://www.w3.org/2000/svg" role="img"
+     aria-label="State diagram with three states: None, Held, and Deferred Hold">
+  <defs>
+    <marker id="a2" markerWidth="10" markerHeight="10" refX="9" refY="3.2" orient="auto">
+      <path d="M0,0 L0,6.4 L9,3.2 z" fill="#5b6675"/>
+    </marker>
+    <marker id="a3" markerWidth="10" markerHeight="10" refX="9" refY="3.2" orient="auto">
+      <path d="M0,0 L0,6.4 L9,3.2 z" fill="#16a34a"/>
+    </marker>
+  </defs>
+
+  <circle cx="62" cy="127" r="7" fill="#1a1f2b"/>
+  <path d="M70,127 L112,127" stroke="#5b6675" stroke-width="1.6" marker-end="url(#a2)"/>
+
+  <rect x="120" y="96" width="180" height="62" rx="31" fill="#f6f8fb" stroke="#1a1f2b" stroke-width="2"/>
+  <text x="210" y="123" font-size="17" text-anchor="middle" font-family="sans-serif" font-weight="600">None</text>
+  <text x="210" y="142" font-size="11.5" fill="#5b6675" text-anchor="middle" font-family="sans-serif">not held</text>
+
+  <rect x="580" y="96" width="180" height="62" rx="31" fill="#f1f3f7" stroke="#9ca3af" stroke-width="2.5"/>
+  <text x="670" y="123" font-size="17" text-anchor="middle" font-family="sans-serif" font-weight="600">Held</text>
+  <text x="670" y="142" font-size="11.5" fill="#5b6675" text-anchor="middle" font-family="sans-serif">"Snoozed"</text>
+
+  <rect x="110" y="300" width="200" height="66" rx="33" fill="#eef4ff" stroke="#3b82f6" stroke-width="2.5"/>
+  <text x="210" y="327" font-size="16" text-anchor="middle" font-family="sans-serif" font-weight="600">DeferredHold</text>
+  <text x="210" y="347" font-size="11" fill="#5b6675" text-anchor="middle" font-family="sans-serif">"Working, snoozing when done"</text>
+
+  <path d="M670,96 C670,36 210,36 210,94" stroke="#16a34a" stroke-width="2.8" fill="none" marker-end="url(#a3)"/>
+  <text x="440" y="20" font-size="13.5" fill="#16a34a" text-anchor="middle" font-family="sans-serif" font-weight="bold">it starts working -&gt; the hold lifts, always</text>
+  <text x="440" y="36" font-size="11" fill="#5b6675" text-anchor="middle" font-family="sans-serif">(and the snooze timer is cancelled, whatever its length)</text>
+
+  <path d="M300,113 L576,113" stroke="#5b6675" stroke-width="1.6" marker-end="url(#a2)"/>
+  <text x="438" y="105" font-size="12" fill="#1a1f2b" text-anchor="middle" font-family="sans-serif">Snooze pressed while idle</text>
+
+  <path d="M578,141 L304,141" stroke="#5b6675" stroke-width="1.6" marker-end="url(#a2)"/>
+  <text x="440" y="158" font-size="12" fill="#1a1f2b" text-anchor="middle" font-family="sans-serif">Unsnooze pressed</text>
+
+  <path d="M180,158 L180,296" stroke="#5b6675" stroke-width="1.6" marker-end="url(#a2)"/>
+  <text x="168" y="216" font-size="12" fill="#1a1f2b" text-anchor="end" font-family="sans-serif">Snooze pressed</text>
+  <text x="168" y="232" font-size="12" fill="#1a1f2b" text-anchor="end" font-family="sans-serif">while working</text>
+
+  <path d="M248,298 L248,162" stroke="#5b6675" stroke-width="1.6" fill="none" stroke-dasharray="5,4" marker-end="url(#a2)"/>
+  <text x="262" y="216" font-size="11.5" fill="#5b6675" font-family="sans-serif">you send a new prompt</text>
+  <text x="262" y="232" font-size="11.5" fill="#5b6675" font-family="sans-serif">(supersedes the deferral)</text>
+
+  <path d="M312,338 C500,338 640,300 664,164" stroke="#5b6675" stroke-width="1.6" fill="none" marker-end="url(#a2)"/>
+  <text x="452" y="392" font-size="12" fill="#1a1f2b" text-anchor="middle" font-family="sans-serif">it stops working -&gt; the deferral lands</text>
+</svg>
+<figcaption>Three states. The green edge is your rule: a held session that starts working comes off hold, every time.</figcaption>
+</figure>
+
+<h3>The whole machine as a table</h3>
+
+<div class="scroll">
+<table>
+  <thead>
+    <tr><th>From state</th><th>It starts working</th><th>It stops working</th><th>You send a prompt</th>
+        <th>You press Snooze</th><th>You press Unsnooze</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><strong>None</strong></td>
+      <td>None</td><td>None</td><td>None</td>
+      <td>working? <strong>DeferredHold</strong><br>idle? <strong>Held</strong></td>
+      <td>None</td>
+    </tr>
+    <tr>
+      <td><strong>Held</strong></td>
+      <td class="good">None - the rule</td><td>Held</td><td class="good">None</td>
+      <td>Held</td><td>None</td>
+    </tr>
+    <tr>
+      <td><strong>DeferredHold</strong></td>
+      <td>DeferredHold</td><td class="good">Held - lands</td><td class="good">None - superseded</td>
+      <td>DeferredHold</td><td>None</td>
+    </tr>
+  </tbody>
+</table>
+</div>
+
+<div class="callout ok">
+  <p><strong>Why this is simpler, not just renamed.</strong> Today the question "should I defer this
+  hold?" and the question "may I lift this hold?" are answered by two different signals that fall out
+  of step with each other. In the new machine both read the same authoritative fact - is it working
+  right now - so they cannot disagree. The fragile latch disappears entirely.</p>
+</div>
+
+<h3>Timed snoozes</h3>
+<p>
+  A snooze can carry its own length (a caller passes minutes, anywhere from one minute to seven days;
+  the account setting is only the fallback when none is given). Your rule applies to those too:
+  <strong>when a session starts working, the hold lifts and its timer is cancelled</strong>, whether it
+  was set for twelve hours or twenty-four. An alarm for a session you are already back working on is
+  noise.
+</p>
+
+<h2>4. One place decides state</h2>
+
+<p>
+  The state machine fixes what is true. This fixes whether all three screens agree about it.
+</p>
+
+<p>
+  The Gateway already has one function that decides color and label together from raw facts, and every
+  browser client just renders its output. That was the intent all along. The desktop never joined - it
+  hand-rolls three folds of its own, each reading different fields with different rules. Two of them
+  have never heard of hold, which is precisely why you get a grey strip and a red "Your Turn" on the
+  same row.
+</p>
+
+<figure>
+<svg viewBox="0 0 880 380" xmlns="http://www.w3.org/2000/svg" role="img"
+     aria-label="Diagram comparing three desktop folds today against one shared fold after the change">
+  <defs>
+    <marker id="a4" markerWidth="9" markerHeight="9" refX="8" refY="3" orient="auto">
+      <path d="M0,0 L0,6 L8,3 z" fill="#5b6675"/>
+    </marker>
+  </defs>
+
+  <text x="16" y="22" font-size="14" font-family="sans-serif" font-weight="bold" fill="#ef4444">TODAY - four folds, nobody reconciles them</text>
+
+  <rect x="16" y="40" width="120" height="112" rx="5" fill="#f6f8fb" stroke="#d8dee8"/>
+  <text x="76" y="62" font-size="12" text-anchor="middle" font-family="sans-serif" font-weight="600">raw facts</text>
+  <text x="76" y="83" font-size="11" text-anchor="middle" font-family="sans-serif" fill="#5b6675">activity state</text>
+  <text x="76" y="101" font-size="11" text-anchor="middle" font-family="sans-serif" fill="#5b6675">hold flag</text>
+  <text x="76" y="119" font-size="11" text-anchor="middle" font-family="sans-serif" fill="#5b6675">session role</text>
+  <text x="76" y="137" font-size="11" text-anchor="middle" font-family="sans-serif" fill="#5b6675">status color</text>
+
+  <path d="M138,70  L196,58"  stroke="#5b6675" stroke-width="1.3" marker-end="url(#a4)"/>
+  <path d="M138,92  L196,100" stroke="#5b6675" stroke-width="1.3" marker-end="url(#a4)"/>
+  <path d="M138,114 L196,142" stroke="#5b6675" stroke-width="1.3" marker-end="url(#a4)"/>
+  <path d="M138,136 L196,196" stroke="#5b6675" stroke-width="1.3" marker-end="url(#a4)"/>
+
+  <rect x="198" y="42" width="176" height="32" rx="4" fill="#fdecec" stroke="#ef4444"/>
+  <text x="286" y="63" font-size="11.5" text-anchor="middle" font-family="sans-serif">desktop strip (knows hold)</text>
+  <rect x="198" y="84" width="176" height="32" rx="4" fill="#fdecec" stroke="#ef4444"/>
+  <text x="286" y="105" font-size="11.5" text-anchor="middle" font-family="sans-serif" fill="#ef4444">desktop label (no hold)</text>
+  <rect x="198" y="126" width="176" height="32" rx="4" fill="#fdecec" stroke="#ef4444"/>
+  <text x="286" y="147" font-size="11.5" text-anchor="middle" font-family="sans-serif" fill="#ef4444">desktop "waiting 10h" (no hold)</text>
+  <rect x="198" y="180" width="176" height="32" rx="4" fill="#eef4ff" stroke="#3b82f6"/>
+  <text x="286" y="201" font-size="11.5" text-anchor="middle" font-family="sans-serif">Gateway fold (knows all)</text>
+
+  <path d="M376,58  L440,84"  stroke="#5b6675" stroke-width="1.3" marker-end="url(#a4)"/>
+  <path d="M376,100 L440,94"  stroke="#5b6675" stroke-width="1.3" marker-end="url(#a4)"/>
+  <path d="M376,142 L440,104" stroke="#5b6675" stroke-width="1.3" marker-end="url(#a4)"/>
+  <path d="M376,196 L440,180" stroke="#5b6675" stroke-width="1.3" marker-end="url(#a4)"/>
+
+  <rect x="442" y="76" width="120" height="36" rx="4" fill="#fff" stroke="#ef4444" stroke-width="2"/>
+  <text x="502" y="99" font-size="12" text-anchor="middle" font-family="sans-serif" font-weight="600">DESKTOP</text>
+  <rect x="442" y="164" width="120" height="36" rx="4" fill="#fff" stroke="#3b82f6" stroke-width="2"/>
+  <text x="502" y="187" font-size="12" text-anchor="middle" font-family="sans-serif" font-weight="600">phone + Cockpit</text>
+
+  <text x="590" y="100" font-size="13" font-family="sans-serif" fill="#ef4444" font-weight="bold">"Your Turn"</text>
+  <text x="590" y="120" font-size="11.5" font-family="sans-serif" fill="#5b6675">red, waiting 10h</text>
+  <text x="590" y="188" font-size="13" font-family="sans-serif" fill="#5b6675" font-weight="bold">"Snoozed"</text>
+  <text x="590" y="208" font-size="11.5" font-family="sans-serif" fill="#5b6675">grey, recessed</text>
+  <text x="590" y="146" font-size="12" font-family="sans-serif" fill="#ef4444" font-weight="bold">same session, two answers</text>
+
+  <line x1="16" y1="248" x2="864" y2="248" stroke="#d8dee8" stroke-width="1"/>
+  <text x="16" y="278" font-size="14" font-family="sans-serif" font-weight="bold" fill="#16a34a">AFTER - one fold, three screens</text>
+
+  <rect x="16" y="296" width="120" height="60" rx="5" fill="#f6f8fb" stroke="#d8dee8"/>
+  <text x="76" y="322" font-size="12" text-anchor="middle" font-family="sans-serif" font-weight="600">raw facts</text>
+  <text x="76" y="341" font-size="11" text-anchor="middle" font-family="sans-serif" fill="#5b6675">(unchanged)</text>
+
+  <path d="M138,326 L242,326" stroke="#5b6675" stroke-width="1.4" marker-end="url(#a4)"/>
+
+  <rect x="244" y="302" width="190" height="48" rx="5" fill="#e9f7ee" stroke="#16a34a" stroke-width="2.5"/>
+  <text x="339" y="323" font-size="13" text-anchor="middle" font-family="sans-serif" font-weight="600">SessionOrdering</text>
+  <text x="339" y="341" font-size="11" text-anchor="middle" font-family="sans-serif" fill="#5b6675">the one fold</text>
+
+  <path d="M436,318 L516,300" stroke="#16a34a" stroke-width="1.4" marker-end="url(#a4)"/>
+  <path d="M436,326 L516,326" stroke="#16a34a" stroke-width="1.4" marker-end="url(#a4)"/>
+  <path d="M436,334 L516,352" stroke="#16a34a" stroke-width="1.4" marker-end="url(#a4)"/>
+
+  <rect x="518" y="284" width="110" height="32" rx="4" fill="#fff" stroke="#16a34a" stroke-width="1.6"/>
+  <text x="573" y="305" font-size="12" text-anchor="middle" font-family="sans-serif">desktop</text>
+  <rect x="518" y="310" width="110" height="32" rx="4" fill="#fff" stroke="#16a34a" stroke-width="1.6"/>
+  <text x="573" y="331" font-size="12" text-anchor="middle" font-family="sans-serif">Cockpit</text>
+  <rect x="518" y="336" width="110" height="32" rx="4" fill="#fff" stroke="#16a34a" stroke-width="1.6"/>
+  <text x="573" y="357" font-size="12" text-anchor="middle" font-family="sans-serif">phone</text>
+
+  <text x="654" y="322" font-size="13" font-family="sans-serif" fill="#16a34a" font-weight="bold">one answer</text>
+  <text x="654" y="342" font-size="11.5" font-family="sans-serif" fill="#5b6675">agreement is structural</text>
+</svg>
+<figcaption>The desktop already references the project the shared fold lives in. It can call the identical function and delete its private copies.</figcaption>
+</figure>
+
+<div class="callout">
+  <p><strong>One open question for you.</strong> Suppressing a Worker's red needs to know the session
+  is a Worker, and that is worked out by the Gateway from the whole fleet - the Director does not know
+  it. Either the Gateway sends the role back down so the desktop can read it (my recommendation: one
+  place still decides, at the cost of the rail being briefly unaware right after a restart), or the
+  desktop works the role out locally (instant and works offline, but that is a second derivation that
+  can drift - the exact disease we are curing).</p>
+</div>
+
+<h2>5. Near real-time</h2>
+
+<p>
+  Your Director already dials out to the Gateway and pushes its sessions the instant anything changes,
+  plus every ten seconds regardless. That part works. But it only announces <em>activity</em> changes.
+  <strong>Nobody announces a hold change.</strong> The hold flag has exactly one listener in the whole
+  product, and it is the desktop rail sitting in the same process.
+</p>
+
+<p>
+  So when you press Snooze on your phone, the Director sets the flag, answers your phone, and tells
+  the Gateway nothing. The news waits for the next ten-second heartbeat, then the receiving screen's
+  own refresh. Every <em>other</em> screen is wrong for up to fifteen seconds - and because the
+  Gateway works out the color and the sort order from that flag, the session also sits in the wrong
+  part of the list for that whole window.
+</p>
+
+<figure>
+<svg viewBox="0 0 880 260" xmlns="http://www.w3.org/2000/svg" role="img"
+     aria-label="Timeline comparing the current fifteen second blind window against instant push after the fix">
+  <line x1="150" y1="66" x2="840" y2="66" stroke="#d8dee8" stroke-width="2"/>
+  <line x1="150" y1="186" x2="840" y2="186" stroke="#d8dee8" stroke-width="2"/>
+
+  <text x="16" y="46" font-size="13" font-family="sans-serif" font-weight="bold" fill="#ef4444">TODAY</text>
+  <text x="16" y="70" font-size="11.5" font-family="sans-serif" fill="#5b6675">you press</text>
+  <text x="16" y="86" font-size="11.5" font-family="sans-serif" fill="#5b6675">Snooze on phone</text>
+
+  <circle cx="150" cy="66" r="6" fill="#1a1f2b"/>
+  <rect x="150" y="52" width="450" height="28" fill="#fdecec" stroke="#ef4444" stroke-dasharray="4,3" rx="3"/>
+  <text x="375" y="71" font-size="12" fill="#ef4444" text-anchor="middle" font-family="sans-serif" font-weight="bold">desktop + Cockpit still show the OLD state</text>
+  <circle cx="600" cy="66" r="6" fill="#5b6675"/>
+  <text x="600" y="42" font-size="11.5" fill="#5b6675" text-anchor="middle" font-family="sans-serif">10s heartbeat</text>
+  <rect x="600" y="52" width="130" height="28" fill="#f6f8fb" stroke="#d8dee8" rx="3"/>
+  <text x="665" y="71" font-size="11.5" fill="#5b6675" text-anchor="middle" font-family="sans-serif">their refresh</text>
+  <circle cx="730" cy="66" r="6" fill="#16a34a"/>
+  <text x="748" y="71" font-size="12" fill="#16a34a" font-family="sans-serif" font-weight="bold">agree</text>
+  <text x="440" y="104" font-size="12.5" fill="#ef4444" text-anchor="middle" font-family="sans-serif" font-weight="bold">up to 15 seconds of disagreement</text>
+
+  <text x="16" y="166" font-size="13" font-family="sans-serif" font-weight="bold" fill="#16a34a">AFTER</text>
+  <text x="16" y="190" font-size="11.5" font-family="sans-serif" fill="#5b6675">you press</text>
+  <text x="16" y="206" font-size="11.5" font-family="sans-serif" fill="#5b6675">Snooze on phone</text>
+
+  <circle cx="150" cy="186" r="6" fill="#1a1f2b"/>
+  <rect x="150" y="172" width="34" height="28" fill="#e9f7ee" stroke="#16a34a" rx="3"/>
+  <circle cx="184" cy="186" r="6" fill="#16a34a"/>
+  <text x="230" y="191" font-size="12" fill="#16a34a" font-family="sans-serif" font-weight="bold">every screen agrees</text>
+  <text x="167" y="160" font-size="11" fill="#16a34a" text-anchor="middle" font-family="sans-serif">push</text>
+  <text x="440" y="224" font-size="12.5" fill="#16a34a" text-anchor="middle" font-family="sans-serif">the hold change announces itself, like activity already does</text>
+</svg>
+<figcaption>The fix is to announce hold changes on the same channel activity changes already use.</figcaption>
+</figure>
+
+<p>
+  Being honest about the remaining limit: the last hop, Gateway to browser, is still a poll - the
+  Cockpit asks every 2 seconds, the phone every 5. So "near real-time" after this change means about
+  <strong>2 seconds on the Cockpit and 5 on the phone</strong>, down from up to 15, with the desktop
+  instant. Pushing that last hop is a known follow-on and deliberately out of scope here; I would
+  rather land the truth first and shorten the last hop separately.
+</p>
+
+<h2>6. What changes</h2>
+
+<div class="scroll">
+<table>
+  <thead><tr><th>Change</th><th>Where</th><th>Why</th></tr></thead>
+  <tbody>
+    <tr><td>One <code>HoldState</code> replacing the flag, the latch, and the pending flag</td>
+        <td class="file">Core/Sessions/Session.cs</td>
+        <td>The machine in section 3</td></tr>
+    <tr><td>Working lifts a hold; snooze timer cancelled with it</td>
+        <td class="file">Core/Sessions/Session.cs, Gateway/Snooze</td>
+        <td>Your rule</td></tr>
+    <tr><td>Announce hold changes to the Gateway</td>
+        <td class="file">ControlApi/ControlApiHost.cs</td>
+        <td>Closes the 15-second window</td></tr>
+    <tr><td>Desktop calls the shared fold; delete its three private folds</td>
+        <td class="file">Avalonia/SessionViewModel.cs</td>
+        <td>Screens cannot disagree</td></tr>
+    <tr><td>Add the "snoozing when done" label; hold no longer hides working</td>
+        <td class="file">Gateway.Contracts/SessionOrdering.cs</td>
+        <td>Labels stop lying</td></tr>
+    <tr><td>Report a deferred hold back to the button</td>
+        <td class="file">Gateway.Contracts/HoldRequest.cs</td>
+        <td>The button can say what it did</td></tr>
+    <tr><td>Fix the mobile double-tap race</td>
+        <td class="file">apps/mobile/.../SessionManageBar.tsx</td>
+        <td>Button releases before the refresh lands</td></tr>
+    <tr><td>Correct two doc comments that describe behavior we no longer have</td>
+        <td class="file">Core/Configuration/SnoozeDefaultConfig.cs, Gateway/Api/SettingsEndpoints.cs</td>
+        <td>They say per-snooze duration does not exist. It does. They misled me today.</td></tr>
+  </tbody>
+</table>
+</div>
+
+<h2>7. How we prove it</h2>
+
+<p>
+  Not by me saying it works. The same measurement that found the problem becomes the test: read your
+  live fleet and assert that <strong>every session's desktop answer equals its phone answer</strong>.
+  Today that check reports six failures. When it reports zero, and keeps reporting zero, the job is
+  done. Alongside that go unit tests for every cell of the table in section 3, including the five
+  already written for the deferred hold on pull request #1512, which I will lift and credit.
+</p>
+
+<div class="callout ok">
+  <p><strong>The end state.</strong> One field says what a session is doing. One function turns that
+  into a color and a label. Three screens render it. A held session that starts working comes back on
+  its own, every time, whatever its timer said. Agreement stops being something we re-check each
+  release and becomes something the structure will not let us break.</p>
+</div>
+
+<h2>8. Coordination</h2>
+<ul>
+  <li><strong>Gateway Cleanup (11e753a3)</strong> - parked. Pull request #1512 stays open and unmerged;
+      no mobile snooze work started. It agreed the latch is the wrong signal.</li>
+  <li><strong>snooze longer (fb3582a6)</strong> - clear. Nothing snooze is open; it handed over the
+      snooze registry, the hold endpoint, and the shared fold. It also caught that my checkout was 53
+      commits behind, which is how the stale doc comments got into this document's scope.</li>
+  <li>No fleet-wide broadcasts were sent - three targeted messages only.</li>
+</ul>
+
+<footer>
+  <p>Prepared for approval before any code is written. Open questions: the state machine as designed;
+  the desktop fold rewrite; how the desktop learns a session's role (section 4); and whether I
+  implement or hand this to 11e753a3.</p>
+  <p>Saved at <span class="file">docs/architecture/session-state-machine-2026-07-14.html</span></p>
+</footer>
+
+</div>
+</body>
+</html>

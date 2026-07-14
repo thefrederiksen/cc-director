@@ -46,14 +46,73 @@ public sealed class SessionInteractiveTests
         Assert.Equal(new byte[] { 0x1b, (byte)'[', (byte)'A' }, backend.Writes[0]);
     }
 
-    // ---- #470 typing into a held session takes it off Hold ----
+    // ================= the hold state machine =================
+    // One field, three states: None / Held / DeferredHold. Design and diagram:
+    // docs/architecture/session-state-machine-2026-07-14.html. These tests walk every cell of the
+    // transition table in that document. Credit: the five deferred-hold cases come from pull request
+    // #1512 (session "Gateway Cleanup - Tunnel-Only Migration"), re-pointed at the live ActivityState.
+
+    // ---- THE RULE: a held session that starts working comes off hold, every time ----
+
+    [Fact]
+    public void HeldSession_ThatStartsWorking_LiftsTheHold()
+    {
+        var backend = new RecordingBackend();
+        using var s = NewSession(backend, ActivityState.Idle);
+        s.RequestHold(true);
+        Assert.True(s.OnHold);
+
+        // The agent comes back to life on its own - a background task landed, a sub-agent reported,
+        // the model resumed. Nobody submitted anything.
+        s.ApplyTerminalActivityState(ActivityState.Working);
+
+        Assert.False(s.OnHold);                       // it cannot be parked and working at once
+        Assert.Equal(HoldState.None, s.HoldState);
+    }
+
+    [Fact]
+    public void HeldSession_ThatStartsWorking_LiftsEvenWithNoSubmissionBehindIt()
+    {
+        // THE REGRESSION THIS MACHINE EXISTS TO KILL. Before, the lift was gated on a turn latch that
+        // was armed only by Enter and destroyed by any 10 seconds of terminal quiet - so an ordinary
+        // slow command mid-turn left the session able to work forever while still reading "Snoozed".
+        var backend = new RecordingBackend();
+        using var s = NewSession(backend, ActivityState.Working);
+
+        s.ApplyTerminalActivityState(ActivityState.WaitingForInput); // a 10s quiet gap MID-turn
+        s.ApplyTerminalActivityState(ActivityState.Working);         // output resumes
+        s.RequestHold(true);                                         // user snoozes it -> deferred
+        s.ApplyTerminalActivityState(ActivityState.WaitingForInput); // the turn really ends -> parks
+        Assert.True(s.OnHold);
+
+        s.ApplyTerminalActivityState(ActivityState.Working);         // it wakes up again
+        Assert.False(s.OnHold);                                      // and comes back. Every time.
+    }
+
+    [Fact]
+    public void HeldSession_LeftAlone_StaysHeld()
+    {
+        // The other half of the rule: silence is not work. A held session with no output sits held -
+        // measured on the live fleet, an idle Claude Code session is byte-silent for tens of minutes,
+        // so it never reaches Working and never lifts.
+        var backend = new RecordingBackend();
+        using var s = NewSession(backend, ActivityState.WaitingForInput);
+        s.RequestHold(true);
+
+        s.ApplyTerminalActivityState(ActivityState.Idle); // settling around, no work
+        Assert.True(s.OnHold);
+        s.ApplyTerminalActivityState(ActivityState.WaitingForInput);
+        Assert.True(s.OnHold);
+    }
+
+    // ---- #470: a fresh submission supersedes any hold ----
 
     [Fact]
     public async Task SendTextAsync_OnHeldSession_ClearsOnHold()
     {
         var backend = new RecordingBackend();
-        using var s = NewSession(backend, ActivityState.Working);
-        s.OnHold = true;
+        using var s = NewSession(backend, ActivityState.Idle);
+        s.RequestHold(true);
 
         await s.SendTextAsync("hello");
 
@@ -64,8 +123,8 @@ public sealed class SessionInteractiveTests
     public void SendInput_WithSubmitByte_ClearsOnHold()
     {
         var backend = new RecordingBackend();
-        using var s = NewSession(backend, ActivityState.Working);
-        s.OnHold = true;
+        using var s = NewSession(backend, ActivityState.Idle);
+        s.RequestHold(true);
 
         s.SendInput(new byte[] { (byte)'h', (byte)'i', 0x0D }); // text + CR (Enter)
 
@@ -76,8 +135,8 @@ public sealed class SessionInteractiveTests
     public void SendInput_BareKeystroke_LeavesOnHold()
     {
         var backend = new RecordingBackend();
-        using var s = NewSession(backend, ActivityState.Working);
-        s.OnHold = true;
+        using var s = NewSession(backend, ActivityState.Idle);
+        s.RequestHold(true);
 
         s.SendInput(new byte[] { (byte)'h', (byte)'i' }); // composing - no CR/LF
 
@@ -88,8 +147,8 @@ public sealed class SessionInteractiveTests
     public async Task SendTextAsync_OnHeldSession_RaisesOnHoldChangedOnceWithFalse()
     {
         var backend = new RecordingBackend();
-        using var s = NewSession(backend, ActivityState.Working);
-        s.OnHold = true;
+        using var s = NewSession(backend, ActivityState.Idle);
+        s.RequestHold(true);
         var events = new List<bool>();
         s.OnHoldChanged += value => events.Add(value);
 
@@ -99,70 +158,113 @@ public sealed class SessionInteractiveTests
         Assert.False(events[0]);        // with value false
     }
 
-    // ---- Hold auto-lift on turns: the OUT-of-a-turn edge ----
-    // A snoozed session must come off hold when the agent FINISHES a real turn and lands at a
-    // "needs you" settle - so a session parked mid-work cannot silently sit there needing the user.
-    // The lift is anchored to a real submission, so the periodic cosmetic terminal repaints (which
-    // reach WaitingForInput with no submission behind them) never break the hold.
+    // ---- DeferredHold: "hold my session when it finishes what it is doing" (credit: #1512) ----
 
     [Fact]
-    public async Task TurnEnd_AfterMidWorkSnooze_LiftsHold()
+    public async Task RequestHold_MidTurn_IsDeferred_ThenAppliesDurablyAtRedSettle()
     {
         var backend = new RecordingBackend();
         using var s = NewSession(backend, ActivityState.Working);
 
-        await s.SendTextAsync("do the thing"); // real submission arms the turn (also clears hold on the way in)
-        s.OnHold = true;                        // user snoozes WHILE it is still working
+        await s.SendTextAsync("do the thing");
+        var outcome = s.RequestHold(true);      // user says "hold this" WHILE it is working
 
-        s.ApplyTerminalActivityState(ActivityState.WaitingForInput); // agent finishes -> needs you
+        Assert.Equal(Session.HoldOutcome.Pending, outcome);
+        Assert.Equal(HoldState.DeferredHold, s.HoldState);
+        Assert.False(s.OnHold);                 // not parked yet - it is still visibly working
 
-        Assert.False(s.OnHold); // the completed turn took it off hold
+        s.ApplyTerminalActivityState(ActivityState.WaitingForInput); // turn ends -> red "needs you"
+        Assert.True(s.OnHold);                  // the deferral landed
+        Assert.Equal(HoldState.Held, s.HoldState);
     }
 
     [Fact]
-    public async Task TurnEnd_WaitingForPerm_LiftsHold()
+    public async Task RequestHold_MidTurn_AppliesAtIdleSettleToo()
     {
         var backend = new RecordingBackend();
         using var s = NewSession(backend, ActivityState.Working);
 
-        await s.SendTextAsync("run it");
-        s.OnHold = true;
+        await s.SendTextAsync("go");
+        s.RequestHold(true);
 
-        s.ApplyTerminalActivityState(ActivityState.WaitingForPerm); // agent stops to ask permission
-
-        Assert.False(s.OnHold);
+        s.ApplyTerminalActivityState(ActivityState.Idle); // turn ends at ready, not "needs you"
+        Assert.True(s.OnHold);                            // still parks held
     }
 
     [Fact]
-    public void CosmeticRepaint_OnHeldIdleSession_KeepsHold()
+    public void RequestHold_WhenSettled_HoldsImmediately()
     {
         var backend = new RecordingBackend();
         using var s = NewSession(backend, ActivityState.Idle);
-        s.OnHold = true; // parked while idle - no turn in flight
 
-        // A periodic Claude repaint: a byte blip to Working, then settling straight back to needs-you.
-        s.ApplyTerminalActivityState(ActivityState.Working);
-        s.ApplyTerminalActivityState(ActivityState.WaitingForInput);
-
-        Assert.True(s.OnHold); // no real submission behind it -> the hold survives the repaint
+        var outcome = s.RequestHold(true); // not working
+        Assert.Equal(Session.HoldOutcome.Held, outcome);
+        Assert.True(s.OnHold);
     }
 
     [Fact]
-    public async Task TurnEndingAtIdle_ConsumesArming_SoLaterRepaintCannotLiftHold()
+    public async Task RequestHold_False_ReleasesAndClearsAPendingDefer()
     {
         var backend = new RecordingBackend();
         using var s = NewSession(backend, ActivityState.Working);
 
-        await s.SendTextAsync("go"); // arms the turn
-        s.OnHold = true;
+        await s.SendTextAsync("go");
+        s.RequestHold(true);                          // deferred
+        var outcome = s.RequestHold(false);           // user changes their mind before it lands
 
-        s.ApplyTerminalActivityState(ActivityState.Idle); // quiet return to ready - not a "needs you" settle
-        Assert.True(s.OnHold);       // a turn ending at ready does not surface a held session
+        Assert.Equal(Session.HoldOutcome.Released, outcome);
+        Assert.Equal(HoldState.None, s.HoldState);
 
-        // The arming was consumed at the Idle settle, so a later cosmetic repaint cannot pose as a turn-end.
-        s.ApplyTerminalActivityState(ActivityState.Working);
-        s.ApplyTerminalActivityState(ActivityState.WaitingForInput);
-        Assert.True(s.OnHold);
+        s.ApplyTerminalActivityState(ActivityState.WaitingForInput); // turn ends
+        Assert.False(s.OnHold); // the cleared deferral is NOT resurrected
+    }
+
+    [Fact]
+    public async Task RequestHold_PendingDefer_IsSupersededByANewSubmission()
+    {
+        var backend = new RecordingBackend();
+        using var s = NewSession(backend, ActivityState.Working);
+
+        await s.SendTextAsync("first");
+        s.RequestHold(true);             // deferred
+        await s.SendTextAsync("second"); // a fresh submission - the user is driving again
+
+        s.ApplyTerminalActivityState(ActivityState.WaitingForInput); // that turn ends
+        Assert.False(s.OnHold); // the superseded deferral did not apply
+    }
+
+    [Fact]
+    public async Task RequestHold_Deferred_IsDroppedIfTheSessionExits()
+    {
+        // A deferral has nothing to come back to once the agent is gone; parking a dead session would
+        // just hide it behind a "Snoozed" label forever.
+        var backend = new RecordingBackend();
+        using var s = NewSession(backend, ActivityState.Working);
+
+        await s.SendTextAsync("go");
+        s.RequestHold(true);
+
+        s.ApplyTerminalActivityState(ActivityState.Exited);
+        Assert.False(s.OnHold);
+        Assert.Equal(HoldState.None, s.HoldState);
+    }
+
+    [Fact]
+    public void RequestHold_WhileWorking_DoesNotRaiseOnHoldChanged_ButDoesRaiseHoldStateChanged()
+    {
+        // None -> DeferredHold parks nothing, so the "is it parked?" listeners (rail strip, FIFO
+        // conductor) must not fire. The push to the Gateway must, because the LABEL changes.
+        var backend = new RecordingBackend();
+        using var s = NewSession(backend, ActivityState.Working);
+        var parked = new List<bool>();
+        var states = new List<HoldState>();
+        s.OnHoldChanged += v => parked.Add(v);
+        s.HoldStateChanged += st => states.Add(st);
+
+        s.RequestHold(true);
+
+        Assert.Empty(parked);
+        Assert.Equal(new[] { HoldState.DeferredHold }, states);
     }
 
     // ---- #5 PTY resize guard ----
@@ -204,10 +306,13 @@ public sealed class SessionInteractiveTests
     {
         var backend = new RecordingBackend();
         using var s = NewSession(backend, ActivityState.Working);
-        s.OnHold = true;
+        s.RequestHold(true); // asked for while working -> deferred, lands at the Idle settle below
         s.PromptQueue.Enqueue("held");
 
+        // The deferral must land BEFORE the drain check on this same transition, or a session the user
+        // just parked would immediately fire the next queued prompt at it.
         s.ApplyTerminalActivityState(ActivityState.Idle);
+        Assert.True(s.OnHold);
 
         await Task.Delay(250);
         Assert.Empty(backend.SentTexts);

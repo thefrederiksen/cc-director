@@ -27,4 +27,12 @@ public sealed class HoldRequest
 public sealed class HoldResponse
 {
     public bool OnHold { get; set; }
+
+    /// <summary>
+    /// True when an explicit hold was DEFERRED because the agent was working: the session is not held yet
+    /// (<see cref="OnHold"/> is still false), but it parks the moment the work stops. Lets the caller's
+    /// button say "it'll hold when it finishes what it's doing" instead of implying it is already held.
+    /// False for an immediate hold, an un-hold, or a Director that predates this field.
+    /// </summary>
+    public bool Pending { get; set; }
 }

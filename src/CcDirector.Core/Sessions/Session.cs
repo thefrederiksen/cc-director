@@ -560,40 +560,98 @@ public sealed class Session : IDisposable
     public bool VoiceMode => ViewMode == MobileViewMode.Voice;
 
     /// <summary>
-    /// True when the user has explicitly parked this session in the FIFO voice queue:
-    /// "I do not want to deal with this one right now." A user override that is
-    /// ORTHOGONAL to <see cref="ActivityState"/> and <see cref="StatusColor"/> - the
-    /// terminal-state detector keeps reporting the true underlying state, and this flag
-    /// sits on top of it so the FIFO conductor can skip held sessions without the
-    /// detector ever clobbering the intent. Cleared when the user takes it off hold.
-    /// Runtime-only (not persisted across a Director restart): it tracks what the user
-    /// is currently choosing to defer, not durable session state. Off by default.
+    /// Where this session sits in the hold state machine: the user's "I do not want to deal with this one
+    /// right now". Design and diagram: docs/architecture/session-state-machine-2026-07-14.html.
+    ///
+    /// This ONE field replaces what used to be three that could disagree (a public OnHold flag, a private
+    /// turn-in-flight latch gating the auto-lift, and a private pending-hold flag). Both questions the hold
+    /// has to answer - "should this hold be deferred?" and "may this hold lift?" - now read the same
+    /// authoritative fact, <see cref="ActivityState"/>, so they cannot fall out of step with each other.
+    ///
+    /// Runtime-only (not persisted across a Director restart): it tracks what the user is currently
+    /// choosing to defer, not durable session state.
     /// </summary>
-    public bool OnHold
+    public HoldState HoldState
     {
-        get => _onHold;
-        set
+        get => _holdState;
+        private set
         {
-            if (_onHold == value) return;
-            _onHold = value;
-            OnHoldChanged?.Invoke(value);
+            if (_holdState == value) return;
+            var wasOnHold = OnHold;
+            _holdState = value;
+            // OnHoldChanged is the "is it parked?" signal (rail strip, FIFO conductor), so it fires only
+            // when that answer actually flips - None <-> DeferredHold does not park anything.
+            if (OnHold != wasOnHold) OnHoldChanged?.Invoke(OnHold);
+            // HoldStateChanged fires on EVERY transition: a client's label distinguishes DeferredHold
+            // ("Working, snoozing when done") from None, so it must hear about that edge too.
+            HoldStateChanged?.Invoke(value);
         }
     }
-    private bool _onHold;
+    private HoldState _holdState;
 
     /// <summary>
-    /// True while a genuine, submitted turn is underway: set when a real submission enters the session
-    /// (a human Enter, or a delivered prompt/message), and cleared the moment the session settles again.
-    /// It is the anchor that lets a turn-END lift the Hold (the agent finishing a turn takes the session
-    /// off hold) WITHOUT the cosmetic terminal repaints - which flicker Working -> WaitingForInput with no
-    /// submission behind them - ever clearing it. Runtime-only, same lifetime semantics as <see cref="OnHold"/>.
+    /// True when the session is parked right now. Derived from <see cref="HoldState"/>; a DeferredHold is
+    /// NOT parked yet - the user asked for it while the agent was working and it lands when the work stops.
+    /// Read-only: every transition goes through <see cref="RequestHold"/> or the machine in
+    /// <see cref="SetActivityState"/>, so no caller can put the state machine into a state it cannot reach.
     /// </summary>
-    private bool _turnInFlight;
+    public bool OnHold => _holdState == HoldState.Held;
+
+    /// <summary>True when the agent is producing output right now. The single authoritative input to the
+    /// hold machine: it decides both whether an incoming hold defers and whether a held session lifts.
+    /// Starting counts as working - a session that has not settled yet has a turn ahead of it.</summary>
+    private bool IsWorking => ActivityState is ActivityState.Working or ActivityState.Starting;
 
     /// <summary>Fires when <see cref="OnHold"/> changes. Arg: new value. The desktop
-    /// session list subscribes so the color strip can repaint dark blue (held) without
+    /// session list subscribes so the color strip can repaint (held) without
     /// the wingman touching <see cref="StatusColor"/>; OnHold sits on top of it.</summary>
     public event Action<bool>? OnHoldChanged;
+
+    /// <summary>Fires on EVERY <see cref="HoldState"/> transition, including ones that leave
+    /// <see cref="OnHold"/> unchanged (None &lt;-&gt; DeferredHold). The Control API subscribes so a hold
+    /// change is pushed to the Gateway the instant it happens, exactly as an activity change already is -
+    /// without it, a hold toggle is invisible to every other screen until the next 10-second heartbeat.</summary>
+    public event Action<HoldState>? HoldStateChanged;
+
+    /// <summary>Outcome of a <see cref="RequestHold"/> call.</summary>
+    public enum HoldOutcome
+    {
+        /// <summary>The hold was applied immediately (the session was not working).</summary>
+        Held,
+        /// <summary>The session was working, so the hold was DEFERRED and lands when the work stops.</summary>
+        Pending,
+        /// <summary>The session was taken OFF hold, clearing any pending deferral too.</summary>
+        Released,
+    }
+
+    /// <summary>
+    /// Request an EXPLICIT hold / un-hold - the user pressing Snooze. Un-hold clears the hold and any
+    /// pending deferral at once. A hold requested while the agent is WORKING is deferred (the user's "hold
+    /// this one when it finishes"); a hold requested while it is settled applies immediately. Returns which
+    /// of those happened so the caller's button can say what it did.
+    ///
+    /// The defer decision reads <see cref="IsWorking"/> - the live state - deliberately NOT a turn latch.
+    /// The old latch was armed only by a submitted turn and destroyed by any 10 seconds of terminal quiet
+    /// (see TerminalStateDetector.QuietThreshold), which an ordinary slow command produces mid-turn, so a
+    /// hold requested after such a gap read as "no turn in flight" and was applied immediately instead of
+    /// deferred - and could then never lift itself.
+    /// </summary>
+    public HoldOutcome RequestHold(bool onHold)
+    {
+        if (!onHold)
+        {
+            HoldState = HoldState.None;
+            return HoldOutcome.Released;
+        }
+        if (IsWorking)
+        {
+            FileLog.Write($"[Session] Hold requested while working - deferring until it stops: session={Id}");
+            HoldState = HoldState.DeferredHold;
+            return HoldOutcome.Pending;
+        }
+        HoldState = HoldState.Held;
+        return HoldOutcome.Held;
+    }
 
     /// <summary>
     /// Whether this session participates in the Wingman experience: the auto-explain
@@ -1562,12 +1620,10 @@ public sealed class Session : IDisposable
         if (ContainsSubmit(data))
         {
             IsBrandNew = false;
-            // A real submission means the user is driving this session again, so a
-            // stale Hold deferral no longer reflects intent -- clear it (issue #470).
-            // The OnHold setter no-ops + skips OnHoldChanged when already false.
-            OnHold = false;
-            // A real turn is now underway; arm the turn-END hold lift (see SetActivityState).
-            _turnInFlight = true;
+            // A real submission means the user is driving this session again, so neither a hold nor a
+            // not-yet-landed deferral reflects intent any more - both are superseded (issue #470).
+            // The HoldState setter no-ops when already None.
+            HoldState = HoldState.None;
             SetActivityState(ActivityState.Working);
         }
     }
@@ -1674,12 +1730,10 @@ public sealed class Session : IDisposable
             await _backend.SendTextAsync(text);
         }
         IsBrandNew = false;
-        // A SendTextAsync is always a submitted turn -- the user is driving this
-        // session again, so clear any stale Hold deferral (issue #470). The OnHold
-        // setter no-ops + skips OnHoldChanged when already false.
-        OnHold = false;
-        // A real turn is now underway; arm the turn-END hold lift (see SetActivityState).
-        _turnInFlight = true;
+        // A SendTextAsync is always a submitted turn -- the user is driving this session again, so both a
+        // hold and a not-yet-landed deferral are superseded (issue #470). The HoldState setter no-ops when
+        // already None.
+        HoldState = HoldState.None;
         SetActivityState(ActivityState.Working);
         // DevThrottle Stats: a SendTextAsync is exactly one submitted turn. Count it (plus its character
         // volume) for the tagged origin. Null origin = framework-internal (handover, queue drain) - not
@@ -1795,24 +1849,45 @@ public sealed class Session : IDisposable
         var old = ActivityState;
         if (old == newState) return;
         ActivityState = newState;
-        // Hold auto-lift on turns: a genuine turn boundary takes a snoozed session OFF hold so it can
-        // never silently change state under the user. The INTO-a-turn edge is handled at the submission
-        // sites (SendInput / SendTextAsync clear OnHold as the turn starts, so the user sees it go blue
-        // right away); this is the OUT-of-a-turn edge - the agent finishing a real turn and landing at a
-        // "needs you" settle. It is gated on _turnInFlight so the periodic cosmetic repaints (which reach
-        // WaitingForInput with no submission behind them) never lift the hold. _turnInFlight is consumed on
-        // ANY settle, including a quiet return to Idle, so a stale flag cannot let a later repaint pose as a
-        // turn-end.
-        if (newState is ActivityState.WaitingForInput or ActivityState.WaitingForPerm
-            or ActivityState.Idle or ActivityState.Exited)
+        // ===== The hold state machine's activity edges (docs/architecture/session-state-machine-2026-07-14.html).
+        // ActivityState has already been assigned above, so IsWorking below reads the NEW state.
+        if (IsWorking)
         {
-            if (_turnInFlight && newState is ActivityState.WaitingForInput or ActivityState.WaitingForPerm)
+            // THE RULE: a held session that starts working takes itself off hold, every time, with no
+            // condition attached. A session cannot be both held and working - the user would see a parked
+            // session quietly doing work, which is exactly the lie this machine exists to make impossible.
+            //
+            // This is safe against cosmetic repaints - the concern the old turn-latch was built to handle -
+            // because the detector no longer reports cosmetic Working. Both of its paths filter noise before
+            // they get here: for a byte-silent-idle agent a byte IS real output, and for an agent with an
+            // animated idle footer the continuous-idle path diffs the screen BODY and stays silent on
+            // footer-only repaints (see TerminalStateDetector). The GitHubActions backend's ActivitySink is
+            // authoritative run status. So reaching Working means real work, on every path.
+            if (HoldState == HoldState.Held)
             {
-                if (OnHold)
-                    FileLog.Write($"[Session] Turn ended ({newState}) - lifting hold: session={Id}");
-                OnHold = false;
+                FileLog.Write($"[Session] Session started working - lifting hold: session={Id}");
+                HoldState = HoldState.None;
             }
-            _turnInFlight = false;
+            // A DeferredHold deliberately survives here: it is WAITING for this work to stop.
+        }
+        else if (newState is ActivityState.Exited)
+        {
+            // Exited: a deferral can never land - there is no turn to come back to, and parking a dead
+            // session would just hide it behind a "Snoozed" label forever.
+            if (HoldState == HoldState.DeferredHold)
+                HoldState = HoldState.None;
+        }
+        else
+        {
+            // Settled (WaitingForInput / WaitingForPerm / Idle): a deferred hold lands DURABLY. There is no
+            // turn-end auto-lift any more - the lift edge moved to "starts working" above, which is both
+            // earlier (the user sees it go blue immediately) and immune to the quiet-gap problem that made
+            // the old turn-end lift unreachable after any slow command.
+            if (HoldState == HoldState.DeferredHold)
+            {
+                FileLog.Write($"[Session] Deferred hold landed at settle ({newState}): session={Id}");
+                HoldState = HoldState.Held;
+            }
         }
         // A real activity change ends any Wingman "running in the background" overlay: once the
         // terminal produces output again (Working), or the session otherwise leaves the parked
