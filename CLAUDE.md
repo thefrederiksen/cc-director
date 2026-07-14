@@ -10,6 +10,39 @@ This is **enterprise-level software** requiring robust error handling, comprehen
 
 ## Critical Rules
 
+### 00. NEVER READ OR WORK FROM A STALE CHECKOUT - THIS IS RULE ZERO
+
+**A checkout that is behind origin/main is a lie. Reading it and reporting what you find as fact is the single most expensive mistake we make. Verify freshness BEFORE you read a single file.**
+
+This has already cost real time, repeatedly, in one day:
+
+- A session read `GatewayEndpoints.cs` in a tree 53 commits behind, concluded a shipped feature "was never merged or was reverted", and escalated. It had shipped days earlier.
+- Another session read `session_ops.py` in a tree 55 commits behind, concluded a fixed file was still broken, and wrote that into a GitHub issue comment as evidence. The fix was already on main.
+
+Both sessions were confident. Both were wrong. Both were caught only because a third party double-checked. **Do not rely on being double-checked.**
+
+**The rule:**
+
+1. **Before reading code to answer a question, check the tree.** The `SessionStart` hook runs `scripts/check-tree-freshness.ps1` and fails loud when this tree is behind origin/main. If you see that banner, believe it. Run it yourself any time you are unsure:
+   ```
+   powershell -NoProfile -File scripts\check-tree-freshness.ps1
+   ```
+2. **To READ shipped code, read origin/main directly - never the working tree:**
+   ```
+   git fetch origin
+   git show origin/main:path/to/file.cs
+   git grep <pattern> origin/main
+   ```
+3. **To WORK - edit, build, open a pull request - cut a worktree from origin/main.** Never work in the shared checkout, and never `git checkout -b` in it:
+   ```
+   git fetch origin
+   git worktree add ../<repo>-<task> -b <branch-name> origin/main
+   ```
+4. **Never `git pull` the shared checkout to "fix" staleness.** Other sessions and agents are working in it; pulling underneath them breaks them. Cut a worktree instead.
+5. **A branch is stale the moment origin/main moves past it.** Rebase onto origin/main or cut a fresh worktree. Do not build on a base you fetched hours ago.
+
+**When you state a fact about the code, it must come from origin/main or a worktree cut from it.** If you cannot say which, you do not know the fact - go and check. Saying "the code says X" when X came from a stale tree is reporting fiction as evidence.
+
 ### 0a. WRITE IN PLAIN ENGLISH - NO ABBREVIATIONS
 
 **Never use abbreviations, acronyms, initialisms, or jargon. Write out the full words in plain English, everywhere.**
