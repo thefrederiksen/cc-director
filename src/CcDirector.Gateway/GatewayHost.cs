@@ -1017,7 +1017,12 @@ public sealed class GatewayHost : IAsyncDisposable
             .AddMessagePackProtocol()
             .AddHubOptions<Streaming.DirectorHub>(o =>
             {
-                o.MaximumReceiveMessageSize = Contracts.DirectorStreamLimits.MaxBinaryFrameBytes + Contracts.DirectorStreamLimits.FrameEnvelopeAllowanceBytes;
+                // The receive cap must admit the LARGER of a framed up-stream message (chunked at
+                // MaxBinaryFrameBytes) and a single unary command REPLY (turns / full buffer can be MBs, sent as
+                // one client-result message). Using only the frame size tore the tunnel down on any large read
+                // ("maximum message size ... exceeded"), which 500'd voice/History and dropped the roster. The
+                // up-stream producer still chunks at MaxBinaryFrameBytes, so backpressure is unchanged.
+                o.MaximumReceiveMessageSize = Contracts.DirectorStreamLimits.MaxInboundMessageBytes;
                 o.StreamBufferCapacity = Contracts.DirectorStreamLimits.StreamBufferCapacity;
             });
         builder.Services.AddSingleton(PushedSessions);
