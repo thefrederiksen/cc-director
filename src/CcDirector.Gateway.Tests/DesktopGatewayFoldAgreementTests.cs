@@ -14,7 +14,7 @@ namespace CcDirector.Gateway.Tests;
 /// fold (<see cref="SessionOrdering"/>), so the only honest assertion is that one function yields one
 /// answer per session. Anything that re-introduces a second reading fails here.
 ///
-/// Design: docs/architecture/session-state-machine-2026-07-14.html
+/// Design: docs/new_architecture/session-state.html
 /// </summary>
 public sealed class DesktopGatewayFoldAgreementTests
 {
@@ -103,13 +103,38 @@ public sealed class DesktopGatewayFoldAgreementTests
     }
 
     [Fact]
-    public void AHeldSession_CanNeverAlsoReadWorking()
+    public void AHeldSessionThatIsWorking_ReadsWorking()
     {
-        // The invariant the hold state machine makes unreachable on the Director, asserted here at the
-        // presentation layer too: there is no input for which a screen shows a parked session working.
-        // (A session the user snoozed WHILE working is DeferredHold - not held - and reads as working,
-        // which is correct: it is still working.)
-        var held = Snoozed("Working"); // a state the machine cannot produce - belt and braces
-        Assert.NotEqual("Working", SessionOrdering.StateLabel(held));
+        // Flipped 14 July 2026, and worth reading closely, because this test contained BOTH the law and
+        // the defect at once. It used to be called "AHeldSession_CanNeverAlsoReadWorking" and asserted
+        // that a parked-and-working session does NOT read "Working" - while its own comment said, in
+        // parentheses: "a session the user snoozed WHILE working ... reads as working, which is correct:
+        // it is still working." The comment was right. The assertion was wrong. They sat one line apart
+        // and the suite was green.
+        //
+        // The old test defended itself with "a state the machine cannot produce - belt and braces". That
+        // is the trap: if the input really were unreachable the assertion would be untestable either way,
+        // so the belt-and-braces bought nothing and cost the law. And the input IS reachable - a snoozed
+        // session whose agent starts producing bytes again is exactly this DTO.
+        //
+        // THE LAW: if it is working, it is blue and it reads "Working". Snooze says "do not nag me about
+        // this one when it stops"; it cannot un-work a session that is running right now.
+        var held = Snoozed("Working");
+
+        Assert.Equal("blue", SessionOrdering.EffectiveColor(held));
+        Assert.Equal("Working", SessionOrdering.StateLabel(held));
+        Assert.Equal(SessionOrdering.TriageBucket.Active, SessionOrdering.Classify(held));
+    }
+
+    [Fact]
+    public void AHeldSessionThatIsNotWorking_StillReadsSnoozed()
+    {
+        // The other half: hoisting working to the top must not weaken snooze for the case it was built
+        // for - a session that has stopped and that the user has explicitly deferred.
+        var held = Snoozed("WaitingForInput");
+
+        Assert.Equal("grey", SessionOrdering.EffectiveColor(held));
+        Assert.Equal("Snoozed", SessionOrdering.StateLabel(held));
+        Assert.Equal(SessionOrdering.TriageBucket.OnHold, SessionOrdering.Classify(held));
     }
 }

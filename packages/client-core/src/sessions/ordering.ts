@@ -56,17 +56,18 @@ export function snoozeExpired(s: SessionDto): boolean {
 }
 
 // True while the agent is actively running a turn - the "working" state. Blue is the authoritative
-// working color (blue = agent working / a turn is in progress); the raw activity / assessed state is
-// checked too so a session mid-turn still counts before its color settles. A deferred (on-hold) session
-// is never "working" - the user parked it. Used to retire a now-stale Wingman voice cue: the roster
-// play-triangle is shown only while a session is red / parked and is removed the instant it starts
-// working again (you no longer want to hear the finished-turn narration). Issue #1177 (Phase 2.3): reads
-// the Gateway-owned effectiveColor, not the raw Director statusColor, so the client never re-derives.
+// working color (blue = agent working / a turn is in progress). Used to retire a now-stale Wingman
+// voice cue: the roster play-triangle is shown only while a session is red / parked and is removed the
+// instant it starts working again (you no longer want to hear the finished-turn narration).
+//
+// THE LAW (2026-07-14): a working session is BLUE, always - so blue IS working, and nothing else gets
+// a vote. This used to open with `if (s.onHold) return false`, a client-side override that made a
+// snoozed session report NOT working even while the Gateway said blue. That is the client re-deriving
+// state, which is exactly what this module exists to prevent: the Gateway owns the fold, clients render
+// it. The Gateway now applies the working check at the top of its own ladder, so a snoozed session that
+// starts working arrives here already stamped blue and must be reported as working.
 export function isWorking(s: SessionDto): boolean {
-  if (s.onHold) return false;
-  if (effectiveColor(s).toLowerCase() === "blue") return true;
-  const state = s.assessedState ?? s.activityState ?? "";
-  return state === "Working";
+  return effectiveColor(s).toLowerCase() === "blue";
 }
 
 // Classify a session for triage. The Gateway owns this fold; the client consumes the stamped bucket.
@@ -132,16 +133,23 @@ export function dotColor(color: string): string {
   return value;
 }
 
-// One short context line per row: the on-hold note, else the latest status reason, else the
-// activity state. Never empty so every row reads cleanly.
+// One short context line per row: the Gateway's stamped label, else the latest status reason.
+// Never empty so every row reads cleanly.
+//
+// THE LAW (2026-07-14): a working session is BLUE and reads "Working". This used to open with
+// `if (s.onHold) return "Snoozed"` followed by its own dictation/transcribing ladder - a THIRD fold
+// of the same question, in a third place, in a different order from the Gateway's. That is how a row
+// ended up with a blue dot and the word "Snoozed" beside it. The Gateway already stamps stateLabel
+// from the same inputs as the dot, so the row simply renders it: one fold, one answer, every screen.
+// It FAILS LOUDLY when the Gateway did not stamp a label, exactly like stateLabel() - it does not fall
+// back to raw fields. An earlier version fell back to lastStatusReason / assessedState / activityState /
+// status when stateLabel was missing, which reintroduced the whole problem in miniature: against a
+// mixed-version Gateway the dot and bucket came from the Gateway while the WORDS came from a local guess,
+// which is the "blue dot labelled Snoozed" class of bug this module exists to prevent. Both callers
+// (the Cockpit roster and the mobile home list) render Gateway /sessions rows, so a missing stamp is a
+// real defect and must be seen, not painted over.
 export function contextLine(s: SessionDto): string {
-  if (s.onHold) return "Snoozed";
-  // Issue #1181, Task 4: the honest phase - "Uploading from phone" while the phone is still sending the
-  // audio up, "Transcribing" while the server turns it into text. Falls back to the old blanket flag.
-  if (s.dictationStatus) return s.dictationStatus;
-  if (s.transcribing) return "Transcribing...";
-  if (s.lastStatusReason) return s.lastStatusReason;
-  return s.assessedState ?? s.activityState ?? s.status ?? "";
+  return stateLabel(s);
 }
 
 // The leaf repo name for a row's secondary label.

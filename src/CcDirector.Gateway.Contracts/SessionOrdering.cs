@@ -80,29 +80,53 @@ public static class SessionOrdering
     }
 
     /// <summary>
+    /// True when the Director's terminal sensor says bytes are flowing: the session IS WORKING.
+    /// This is the top of the ladder and the only rule that cannot be overridden.
+    ///
+    /// Read from the RAW activity fact only. Nothing else may contribute - not hold, not
+    /// dictation, not briefing, not role. Those answer "why is it NOT working?", which is a
+    /// question that only means anything once this returns false.
+    /// </summary>
+    private static bool IsWorking(SessionDto s) =>
+        string.Equals(s.ActivityState, "Working", StringComparison.OrdinalIgnoreCase)
+        || string.Equals(s.ActivityState, "Starting", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>
     /// The ONE effective status color every client renders and triages on (issue #196).
-    /// The Director stamps the raw <see cref="SessionDto.StatusColor"/> (it no longer knows
-    /// about briefing since #187 moved the pipeline to the Gateway), and the Gateway stamps
-    /// <see cref="SessionDto.BriefingState"/> on top. Folding the two HERE - instead of in
-    /// each view - is what keeps the dot, the "wingman reading..." chip, and the triage
-    /// bucket atomic: while the wingman reads a finished turn the session IS yellow; while
-    /// a user-requested deep dive runs it IS orange (issue #217); red ("needs you") may
-    /// only appear after the brief or report lands. Issue #553: a voice-mode session also
-    /// holds yellow until its playable audio exists (<see cref="IsVoicePreparing"/>). A session
-    /// whose dictated utterance is being transcribed in the background
-    /// (<see cref="SessionDto.Transcribing"/>) shows orange ("Transcribing...") so no one else grabs it.
+    ///
+    /// THE LAW (owner's ruling, 2026-07-14, restated and final): IF A SESSION IS WORKING, IT IS
+    /// BLUE. ALWAYS. NOTHING OUTRANKS WORKING. There are no exceptions and none may be added.
+    /// If you are about to add a rule above the working check - don't. Every rule that ever sat
+    /// above it has been a defect, and each one cost the owner a day.
+    ///
+    /// Everything below the working check answers a single question: "why is this session NOT
+    /// working?" Grey = parked. Orange = its dictation is in flight, or a deep dive is running.
+    /// Yellow = the wingman is reading the finished turn, or voice is generating. Those are all
+    /// states of a session that has STOPPED. A working session has stopped being none of them,
+    /// so they cannot apply to it - that is not a policy choice, it is what the words mean.
+    ///
+    /// The Director stamps the raw facts; the Gateway stamps <see cref="SessionDto.BriefingState"/>
+    /// on top. Folding them HERE - instead of in each view - is what keeps the dot, the
+    /// "wingman reading..." chip, and the triage bucket atomic across every screen.
     /// </summary>
     public static string EffectiveColor(SessionDto s) =>
-        s.OnHold ? "grey"
+        // ===== ORDER 0: WORKING IS BLUE. NOTHING GOES ABOVE THIS LINE. =====
+        IsWorking(s) ? "blue"
+        // ===== Everything below applies ONLY to a session that is NOT working. =====
+        : s.OnHold ? "grey"
         // Transcribing orange fires for ANY dictation source: the Task 4 phase label (mobile Speak -
         // "Uploading from phone" or "Transcribing", s.DictationStatus), the legacy Gateway flag
         // (s.Transcribing), OR the Director raw fact (desktop dictation, s.IsTranscribing). All orange.
+        // It marks "a dictated utterance is in flight, do not grab this session" - which is only
+        // meaningful at a prompt. Mid-turn it is invisible anyway: blue already won above.
         : (s.DictationStatus != null || s.Transcribing || s.IsTranscribing) ? "orange"
-        // The Gateway user-initiated deep dive (issue #217) is orange, ungated.
+        // The Gateway user-initiated deep dive (issue #217) is orange. It used to be UNGATED, which
+        // let it paint a WORKING session orange - a direct violation of the law, now impossible:
+        // the working check above returns first.
         : IsExplaining(s) ? "orange"
         : IsBriefing(s) ? "yellow"
         : IsVoicePreparing(s) ? "yellow"
-        // Issue #1177 (Phase 2): the base color is now computed from RAW facts (the Gateway is the single
+        // Issue #1177 (Phase 2): the base color is computed from RAW facts (the Gateway is the single
         // fold and reads the Director's cooked StatusColor for NOTHING).
         : BaseColor(s);
 
@@ -193,6 +217,10 @@ public static class SessionOrdering
     /// </summary>
     public static string StateLabel(SessionDto s)
     {
+        // ORDER 0: WORKING. Mirrors EffectiveColor exactly - the label and the dot are folded from the
+        // same inputs in the same order, so they cannot disagree. A snoozed session that starts working
+        // is blue AND reads "Working"; it must never be a blue dot labelled "Snoozed".
+        if (IsWorking(s)) return "Working";
         if (s.OnHold) return "Snoozed";
         // Issue #1181, Task 4: the honest phase label wins - "Uploading from phone" while the phone is still
         // sending the audio, "Transcribing" while the server turns it into text. Falls back to the blanket
@@ -219,14 +247,23 @@ public static class SessionOrdering
     }
 
     /// <summary>
-    /// Classify a session for triage. On-hold takes precedence over color: a parked session sinks
-    /// to the bottom even if it would otherwise be "needs you", because the user has explicitly
-    /// deferred it. Uses <see cref="EffectiveColor"/>, NOT the raw Director color: a session the
-    /// wingman is still reading stays in Active until the brief lands, instead of flopping into
-    /// NEEDS YOU mid-brief and possibly back out (issue #196).
+    /// Classify a session for triage, folded in the same order as <see cref="EffectiveColor"/> and
+    /// <see cref="StateLabel"/> so all three always agree.
+    ///
+    /// ORDER 0: a WORKING session is Active. Snooze is a statement about a session that has STOPPED
+    /// ("do not nag me about this when it finishes"); it cannot park a session that is running right
+    /// now. This used to read <c>s.OnHold ? OnHold</c> first, which sank a working session into the
+    /// parked bucket at the bottom of the roster while its dot was blue - the colour said working, the
+    /// list said parked. Snooze still wins for a session that is NOT working, which is the case it was
+    /// built for and the only case it means anything in.
+    ///
+    /// Uses <see cref="EffectiveColor"/>, NOT the raw Director color: a session the wingman is still
+    /// reading stays in Active until the brief lands, instead of flopping into NEEDS YOU mid-brief and
+    /// possibly back out (issue #196).
     /// </summary>
     public static TriageBucket Classify(SessionDto s) =>
-        s.OnHold ? TriageBucket.OnHold
+        IsWorking(s) ? TriageBucket.Active
+        : s.OnHold ? TriageBucket.OnHold
         : EffectiveColor(s) == "red" ? TriageBucket.NeedsYou
         : TriageBucket.Active;
 

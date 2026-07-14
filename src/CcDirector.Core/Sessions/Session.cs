@@ -562,7 +562,7 @@ public sealed class Session : IDisposable
 
     /// <summary>
     /// Where this session sits in the hold state machine: the user's "I do not want to deal with this one
-    /// right now". Design and diagram: docs/architecture/session-state-machine-2026-07-14.html.
+    /// right now". Design and diagram: docs/new_architecture/session-state.html.
     ///
     /// This ONE field replaces what used to be three that could disagree (a public OnHold flag, a private
     /// turn-in-flight latch gating the auto-lift, and a private pending-hold flag). Both questions the hold
@@ -1894,7 +1894,7 @@ public sealed class Session : IDisposable
         var old = ActivityState;
         if (old == newState) return;
         ActivityState = newState;
-        // ===== The hold state machine's activity edges (docs/architecture/session-state-machine-2026-07-14.html).
+        // ===== The hold state machine's activity edges (docs/new_architecture/session-state.html).
         // ActivityState has already been assigned above, so IsWorking below reads the NEW state.
         if (IsWorking)
         {

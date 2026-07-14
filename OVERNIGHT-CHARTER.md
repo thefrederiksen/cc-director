@@ -22,7 +22,7 @@ tests pass; full Gateway suite 1388 pass / 1 pre-existing environmental failure 
 needs a live transcription key - ignore it). Read these first:
 - `docs/new_architecture/phase-1a-qa-report.md` (per-increment proof)
 - `docs/new_architecture/phase-1-director-gateway-stream-plan.md` (the merged plan)
-- `docs/new_architecture/state-and-color-architecture.html` (the state+color law: Director senses, Gateway decides)
+- `docs/new_architecture/session-state.html` (the state+color law: Director senses, Gateway decides, working is BLUE)
 - `docs/new_architecture/portless-director-gateway-stream.html` (the portless end-state)
 - PR #1179; issues #1176 (Phase 1a, ready-qa) and #1177 (Phase 1b).
 

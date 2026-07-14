@@ -1,5 +1,14 @@
 # Overnight status - Director <-> Gateway full bidirectional stream
 
+> **HISTORICAL SNAPSHOT - 9 July 2026. NOT current, and not a source of truth for anything.**
+> This is the frozen log of one overnight run, kept as a record of what happened that night. Every
+> "decision awaiting the owner" in it was resolved long ago. It links to `phase-2-state-color-spec.md`
+> and `state-and-color-architecture.html`, both **deleted** on 14 July 2026 - they described a colour
+> ladder that ranked ownership above working, which the owner has voided.
+>
+> **For how session state works, read [`session-state.html`](session-state.html). It is the only
+> document that defines it.**
+
 **Controller:** session c9f9a8e3 ("OVERNIGHT MANAGER"), machine SOREN_NORTH, worktree `D:/ReposFred/dt-stream-wt`, branch `feat/director-gateway-stream-1a`.
 **Owner:** asleep. Unattended run authorized until mission complete or fully blocked.
 **Last updated:** 2026-07-09 ~02:55.
