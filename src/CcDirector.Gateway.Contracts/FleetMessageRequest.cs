@@ -140,6 +140,53 @@ public sealed class FleetRenameResponse
 }
 
 /// <summary>
+/// Body of POST /fleet/prompt on the Director: send raw text into a session anywhere in the fleet. Unlike
+/// <see cref="FleetSendRequest"/> this does NOT frame the text with a sender - it is exactly what a human
+/// typing into the session would produce. Restores the old POST /sessions/{sid}/prompt to the loopback
+/// surface the tunnel-only cut removed it from.
+/// </summary>
+public sealed class FleetPromptRequest
+{
+    /// <summary>Target session GUID anywhere in the fleet.</summary>
+    public string ToSessionId { get; set; } = "";
+
+    /// <summary>The text to send. Required.</summary>
+    public string Text { get; set; } = "";
+
+    /// <summary>
+    /// Whether to press Enter after the text. Defaults to true - a prompt normally submits. Named to match
+    /// <see cref="PromptRequest.AppendEnter"/>, which this is passed straight through to.
+    /// </summary>
+    public bool AppendEnter { get; set; } = true;
+}
+
+/// <summary>
+/// Body of a Director fleet verb whose only input is the target session (for example POST
+/// /fleet/interrupt).
+/// </summary>
+public sealed class FleetTargetRequest
+{
+    /// <summary>Target session GUID anywhere in the fleet.</summary>
+    public string ToSessionId { get; set; } = "";
+}
+
+/// <summary>
+/// Body of POST /fleet/hold on the Director: park a session, or release it. Restores the old POST
+/// /sessions/{sid}/hold to the loopback surface.
+/// </summary>
+public sealed class FleetHoldRequest
+{
+    /// <summary>Target session GUID anywhere in the fleet.</summary>
+    public string ToSessionId { get; set; } = "";
+
+    /// <summary>True to hold (the default), false to release.</summary>
+    public bool OnHold { get; set; } = true;
+
+    /// <summary>Optional timed snooze in minutes; null holds until something lifts it.</summary>
+    public int? SnoozeMinutes { get; set; }
+}
+
+/// <summary>
 /// Body of POST /fleet/role on the Director. Declares a session's EXPLICIT role after birth - the set-role
 /// verb the tunnel-only cut removed with POST /sessions/{sid}/role, leaving a session stuck with whatever
 /// role it was born with. Architect cannot be derived from the spawn graph, so without this a running

@@ -259,6 +259,67 @@ public sealed class GatewayClient : IGatewayHold, IDisposable
     }
 
     /// <summary>
+    /// Interrupt a session anywhere in the fleet, through the Gateway's POST /sessions/{sid}/interrupt,
+    /// which routes it to the owning Director over the tunnel. Used by the local POST /fleet/interrupt for
+    /// a target this Director does not host.
+    /// </summary>
+    public async Task InterruptFleetAsync(string toSessionId, CancellationToken ct = default)
+    {
+        if (!_config.IsEnabled)
+            throw new InvalidOperationException("Gateway is not configured; cannot reach a remote session.");
+        if (string.IsNullOrWhiteSpace(toSessionId))
+            throw new ArgumentException("Target session id is required", nameof(toSessionId));
+
+        FileLog.Write($"[GatewayClient] InterruptFleetAsync: POST /sessions/{toSessionId}/interrupt");
+        using var resp = await _http.PostAsync($"sessions/{toSessionId}/interrupt", content: null, ct);
+        if (!resp.IsSuccessStatusCode)
+            throw new InvalidOperationException($"Gateway interrupt of {toSessionId} returned HTTP {(int)resp.StatusCode} {resp.ReasonPhrase}");
+    }
+
+    /// <summary>
+    /// Hold (or release) a session anywhere in the fleet, through the Gateway's POST /sessions/{sid}/hold,
+    /// which routes it to the owning Director over the tunnel. Used by the local POST /fleet/hold for a
+    /// target this Director does not host.
+    /// </summary>
+    public async Task<HoldResponse> HoldFleetAsync(string toSessionId, bool onHold, int? snoozeMinutes, CancellationToken ct = default)
+    {
+        if (!_config.IsEnabled)
+            throw new InvalidOperationException("Gateway is not configured; cannot reach a remote session.");
+        if (string.IsNullOrWhiteSpace(toSessionId))
+            throw new ArgumentException("Target session id is required", nameof(toSessionId));
+
+        FileLog.Write($"[GatewayClient] HoldFleetAsync: POST /sessions/{toSessionId}/hold onHold={onHold}");
+        var body = new HoldRequest { OnHold = onHold, SnoozeMinutes = snoozeMinutes };
+        using var resp = await _http.PostAsJsonAsync($"sessions/{toSessionId}/hold", body, ct);
+        if (!resp.IsSuccessStatusCode)
+            throw new InvalidOperationException($"Gateway hold of {toSessionId} returned HTTP {(int)resp.StatusCode} {resp.ReasonPhrase}");
+
+        var parsed = await resp.Content.ReadFromJsonAsync<HoldResponse>(ct);
+        if (parsed is null)
+            throw new InvalidOperationException("Gateway hold returned an unparsable body.");
+        return parsed;
+    }
+
+    /// <summary>
+    /// Read a session's terminal buffer anywhere in the fleet, through the Gateway's GET
+    /// /sessions/{sid}/buffer, which routes it to the owning Director over the tunnel. Used by the local
+    /// GET /fleet/buffer for a target this Director does not host.
+    /// </summary>
+    public async Task<string> GetBufferFleetAsync(string toSessionId, CancellationToken ct = default)
+    {
+        if (!_config.IsEnabled)
+            throw new InvalidOperationException("Gateway is not configured; cannot reach a remote session.");
+        if (string.IsNullOrWhiteSpace(toSessionId))
+            throw new ArgumentException("Target session id is required", nameof(toSessionId));
+
+        FileLog.Write($"[GatewayClient] GetBufferFleetAsync: GET /sessions/{toSessionId}/buffer");
+        using var resp = await _http.GetAsync($"sessions/{toSessionId}/buffer", ct);
+        if (!resp.IsSuccessStatusCode)
+            throw new InvalidOperationException($"Gateway buffer read of {toSessionId} returned HTTP {(int)resp.StatusCode} {resp.ReasonPhrase}");
+        return await resp.Content.ReadAsStringAsync(ct);
+    }
+
+    /// <summary>
     /// Set a session's EXPLICIT role anywhere in the fleet, through the Gateway's POST
     /// /sessions/{sid}/role, which routes it to the owning Director over the tunnel. Used by the local
     /// POST /fleet/role for a target this Director does not host.

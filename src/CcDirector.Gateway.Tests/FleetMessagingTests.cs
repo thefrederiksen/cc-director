@@ -253,6 +253,79 @@ public sealed class FleetMessagingEndpointTests : IAsyncLifetime
         Assert.Equal(HttpStatusCode.NotFound, resp.StatusCode);
     }
 
+    // ===== the session-control verbs restored to the tunnel-only floor =====
+    // A missing route returns 404 with no body, so a 400 from the HANDLER is itself proof the route is
+    // registered. These pin that each verb exists and validates, which is the gap: the tunnel-only cut took
+    // them off the loopback surface and only rename/done/broadcast (#1490) were ever restored.
+
+    [Fact]
+    public async Task Fleet_prompt_missing_target_returns_400_provingRouteExists()
+    {
+        var resp = await _client.PostAsJsonAsync("fleet/prompt", new FleetPromptRequest { ToSessionId = "", Text = "hi" });
+        Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
+    }
+
+    // Text is required: a prompt that silently sent nothing would look like it worked.
+    [Fact]
+    public async Task Fleet_prompt_empty_text_returns_400()
+    {
+        var resp = await _client.PostAsJsonAsync("fleet/prompt",
+            new FleetPromptRequest { ToSessionId = Guid.NewGuid().ToString(), Text = "" });
+        Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
+    }
+
+    [Fact]
+    public async Task Fleet_prompt_unknown_target_noGateway_returns_404()
+    {
+        var resp = await _client.PostAsJsonAsync("fleet/prompt",
+            new FleetPromptRequest { ToSessionId = Guid.NewGuid().ToString(), Text = "hi" });
+        Assert.Equal(HttpStatusCode.NotFound, resp.StatusCode);
+    }
+
+    [Fact]
+    public async Task Fleet_interrupt_bad_guid_returns_400_provingRouteExists()
+    {
+        var resp = await _client.PostAsJsonAsync("fleet/interrupt", new FleetTargetRequest { ToSessionId = "not-a-guid" });
+        Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
+    }
+
+    [Fact]
+    public async Task Fleet_interrupt_unknown_target_noGateway_returns_404()
+    {
+        var resp = await _client.PostAsJsonAsync("fleet/interrupt",
+            new FleetTargetRequest { ToSessionId = Guid.NewGuid().ToString() });
+        Assert.Equal(HttpStatusCode.NotFound, resp.StatusCode);
+    }
+
+    [Fact]
+    public async Task Fleet_hold_bad_guid_returns_400_provingRouteExists()
+    {
+        var resp = await _client.PostAsJsonAsync("fleet/hold", new FleetHoldRequest { ToSessionId = "not-a-guid" });
+        Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
+    }
+
+    [Fact]
+    public async Task Fleet_hold_unknown_target_noGateway_returns_404()
+    {
+        var resp = await _client.PostAsJsonAsync("fleet/hold",
+            new FleetHoldRequest { ToSessionId = Guid.NewGuid().ToString(), OnHold = true });
+        Assert.Equal(HttpStatusCode.NotFound, resp.StatusCode);
+    }
+
+    [Fact]
+    public async Task Fleet_buffer_missing_sessionId_returns_400_provingRouteExists()
+    {
+        var resp = await _client.GetAsync("fleet/buffer");
+        Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
+    }
+
+    [Fact]
+    public async Task Fleet_buffer_unknown_target_noGateway_returns_404()
+    {
+        var resp = await _client.GetAsync($"fleet/buffer?sessionId={Guid.NewGuid()}");
+        Assert.Equal(HttpStatusCode.NotFound, resp.StatusCode);
+    }
+
     // ===== /fleet/role validation (the set-role verb restored to the tunnel-only floor) =====
 
     // A missing route returns 404, so a 400 from the HANDLER is itself the proof that /fleet/role is
