@@ -301,7 +301,7 @@ public partial class GatewayConnectionPanel : UserControl
             }, ct);
 
             var selfTest = new GatewayConnectivitySelfTest(
-                port, host.DirectorId, endpoint, gatewayUrl, host.ServeProvisioner?.LastError);
+                port, host.DirectorId, endpoint, gatewayUrl);
 
             DiagnosticsHost.Children.Clear();
             var index = 0;
@@ -388,21 +388,6 @@ public partial class GatewayConnectionPanel : UserControl
                 Spacing = 8,
                 Margin = new Thickness(0, 8, 0, 0),
             };
-            var host = (global::Avalonia.Application.Current as App)?.ControlApiHost;
-            if (rung.CanAutoFix && host?.ServeProvisioner is not null)
-            {
-                var fixBtn = new Button
-                {
-                    Content = "Fix it now",
-                    Padding = new Thickness(12, 4),
-                    Background = Brush("#007ACC"),
-                    Foreground = Brushes.White,
-                    BorderThickness = new Thickness(0),
-                    Cursor = new Cursor(StandardCursorType.Hand),
-                };
-                fixBtn.Click += (_, _) => _ = FixServeMappingAsync(fixBtn);
-                buttons.Children.Add(fixBtn);
-            }
             var copyBtn = new Button
             {
                 Content = "Copy command",
@@ -450,29 +435,6 @@ public partial class GatewayConnectionPanel : UserControl
             Padding = new Thickness(0, 8),
             Child = row,
         };
-    }
-
-    // "Fix it now" on the serve-mapping rung: run the provisioner's EnsureMapping (the same command the
-    // Fix box shows), then re-run the ladder to prove or disprove the fix.
-    private async Task FixServeMappingAsync(Button fixBtn)
-    {
-        var provisioner = (global::Avalonia.Application.Current as App)?.ControlApiHost?.ServeProvisioner;
-        if (provisioner is null) return;
-        try
-        {
-            fixBtn.IsEnabled = false;
-            fixBtn.Content = "Fixing...";
-            var (ok, error) = await provisioner.EnsureMappingAsync(_diagCts?.Token ?? CancellationToken.None);
-            FileLog.Write($"[GatewayConnectionPanel] fix-it-now serve mapping: ok={ok}{(ok ? "" : $", error={error}")}");
-            await RunDiagnosticsAsync();
-        }
-        catch (OperationCanceledException) { /* panel left mid-fix */ }
-        catch (Exception ex)
-        {
-            FileLog.Write($"[GatewayConnectionPanel] fix-it-now failed: {ex.Message}");
-            fixBtn.IsEnabled = true;
-            fixBtn.Content = "Fix it now";
-        }
     }
 
     // The Recommended rule (spec section 5): the most stable LOCAL name reachable, in priority order This
