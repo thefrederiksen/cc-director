@@ -37,8 +37,13 @@ public static class AgentLaunchDefaults
     ///     entry configured with the "Automatic" preset is not doubled.
     /// Returns an empty string for a kind with no catalog plugin (e.g. <see cref="AgentKind.RawCli"/>),
     /// whose command line is supplied explicitly by the caller and has nothing to inherit.
+    ///
+    /// <paramref name="bypassPermissions"/> mirrors the dialog's Bypass-permissions checkbox: <c>true</c>
+    /// (the default, matching the checkbox's default-ON) appends the bypass flag as described above;
+    /// <c>false</c> resolves the SAME entry preset and model but WITHOUT the bypass flag, exactly as the
+    /// desktop dialog launches when the user clears the checkbox (issue #1497).
     /// </summary>
-    public static string ResolveDefaultArgs(AgentKind agentKind, AgentOptions options)
+    public static string ResolveDefaultArgs(AgentKind agentKind, AgentOptions options, bool bypassPermissions = true)
     {
         if (options is null) throw new ArgumentNullException(nameof(options));
 
@@ -56,7 +61,14 @@ public static class AgentLaunchDefaults
         // launches with the permission-bypass flag on top of the preset. Replicate that default so a
         // spawned session has the SAME permission profile and is usable without hand-fixing
         // permissions. Add only when absent so an "Automatic" preset that already carries the flag is
-        // not doubled.
+        // not doubled. When the caller cleared the checkbox (bypassPermissions=false), skip this layer
+        // entirely so the session keeps the configured model but stops for each permission prompt.
+        if (!bypassPermissions)
+        {
+            FileLog.Write($"[AgentLaunchDefaults] ResolveDefaultArgs: {agentKind} bypass cleared; preset/model only -> \"{baseArgs}\"");
+            return baseArgs;
+        }
+
         var bypassArg = PermissionBypassArgFor(agentKind);
         if (bypassArg is not null && !baseArgs.Contains(bypassArg, StringComparison.Ordinal))
         {

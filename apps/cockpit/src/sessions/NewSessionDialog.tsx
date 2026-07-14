@@ -1,9 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   createSession,
+  getAgents,
   getDirectors,
   getRepos,
   gatewayErrorMessage,
+  type AgentChoice,
   type DirectorInfo,
   type RepoInfo,
 } from "@devthrottle/client-core/api/client";
@@ -14,10 +16,15 @@ import {
 // contract the mobile NewSession flow uses - getDirectors / getRepos / createSession - so both shells
 // create sessions through the one Gateway front door (POST /directors/{id}/sessions).
 //
-// The flow mirrors the mobile two-step:
-//   1. Pick a MACHINE from GET /directors (default-select the most-recently-seen so repos load with
-//      one fewer click).
+// The flow mirrors the desktop New Session dialog:
+//   1. Pick a MACHINE from GET /directors (default-select the most-recently-seen so repos+agents load
+//      with one fewer click).
 //   2. Pick a REPOSITORY from GET /directors/{id}/repos (newest-used first) OR type a path.
+//   3. LAUNCH OPTIONS: pick the AGENT from GET /directors/{id}/agents (that machine's configured,
+//      enabled agents), and choose the permission mode. There is deliberately NO model picker - the
+//      model comes from the chosen agent's own configured default, exactly like the desktop dialog
+//      (issue #1497). The client sends only the agent kind and the Bypass-permissions choice; the
+//      Director applies that agent's configured default model and permission preset.
 // On success the parent is told the new session id so it can refresh the roster and open it.
 
 export interface NewSessionDialogProps {
@@ -27,60 +34,39 @@ export interface NewSessionDialogProps {
   onCreated: (sessionId: string) => void;
 }
 
-// A launch choice: the value we remember (key), what the user reads (label), and the exact command-line
-// fragment it contributes (arg - empty string means "add nothing", which is the Director's own default).
-interface LaunchChoice {
+// Permission choices, mapped to the desktop dialog's "Bypass permission prompts" checkbox. "Skip
+// permission prompts" is the desktop default (the checkbox defaults to ON), so it is first / pre-selected.
+// Neither adds a command-line argument on the client: the choice is sent as a structured flag and the
+// Director resolves the agent's configured launch line accordingly, so the model is unaffected either way.
+interface PermissionChoice {
   key: string;
   label: string;
-  arg: string;
+  bypass: boolean;
 }
-
-// Model choices. "Default" adds no argument, so the Director launches the agent's built-in default model;
-// the others pass "--model <name>" exactly (issue #1243).
-const MODEL_CHOICES: LaunchChoice[] = [
-  { key: "default", label: "Default", arg: "" },
-  { key: "opus", label: "Opus", arg: "--model opus" },
-  { key: "sonnet", label: "Sonnet", arg: "--model sonnet" },
+const PERMISSION_CHOICES: PermissionChoice[] = [
+  { key: "skip", label: "Skip permission prompts", bypass: true },
+  { key: "ask", label: "Ask for permissions", bypass: false },
 ];
 
-// Permission choices. "Ask for permissions" adds no argument (the agent stops for each permission prompt);
-// "Skip permission prompts" passes --dangerously-skip-permissions so the session starts working at once.
-// We do not steer the user toward either - the default selection is simply their last-used choice.
-const PERMISSION_CHOICES: LaunchChoice[] = [
-  { key: "ask", label: "Ask for permissions", arg: "" },
-  { key: "skip", label: "Skip permission prompts", arg: "--dangerously-skip-permissions" },
-];
-
-const MODEL_STORAGE_KEY = "cockpit.newSession.model";
+const AGENT_STORAGE_KEY = "cockpit.newSession.agent";
 const PERMISSION_STORAGE_KEY = "cockpit.newSession.permission";
 
-// Read the last-used choice key from localStorage, falling back to the first choice when nothing was
-// stored or the stored key no longer matches a known choice.
-function loadChoiceKey(storageKey: string, choices: LaunchChoice[]): string {
+// Read a remembered string from localStorage, or null when unavailable/absent (private mode is fine).
+function loadStored(storageKey: string): string | null {
   try {
-    const saved = window.localStorage.getItem(storageKey);
-    if (saved && choices.some((c) => c.key === saved)) return saved;
+    return window.localStorage.getItem(storageKey);
   } catch {
-    /* localStorage can be unavailable (private mode); fall back to the first choice */
+    return null;
   }
-  return choices[0].key;
 }
 
-// Save the chosen key so the next open of the dialog pre-selects it.
-function saveChoiceKey(storageKey: string, key: string): void {
+// Save a chosen value so the next open pre-selects it. Best-effort (private mode may reject it).
+function saveStored(storageKey: string, value: string): void {
   try {
-    window.localStorage.setItem(storageKey, key);
+    window.localStorage.setItem(storageKey, value);
   } catch {
     /* localStorage can be unavailable (private mode); remembering the choice is best-effort */
   }
-}
-
-// Assemble the launch-argument string from the two chosen fragments, dropping the empty ("default")
-// ones. Returns "" when both are default, so createSession sends no "args" at all.
-function buildLaunchArgs(modelKey: string, permissionKey: string): string {
-  const model = MODEL_CHOICES.find((c) => c.key === modelKey);
-  const permission = PERMISSION_CHOICES.find((c) => c.key === permissionKey);
-  return [model?.arg ?? "", permission?.arg ?? ""].filter((a) => a.length > 0).join(" ");
 }
 
 function directorLabel(d: DirectorInfo): string {
@@ -94,6 +80,15 @@ function repoLabel(r: RepoInfo): string {
   return parts.length ? parts[parts.length - 1] : r.path;
 }
 
+// The one-line summary of what will launch, e.g. "Claude Code . Opus 4.8 . skips permission prompts".
+// Mirrors the desktop dialog telling you the agent and the model it will use (issue #1497).
+function launchSummary(agent: AgentChoice | null, bypass: boolean): string {
+  if (agent === null) return "Pick an agent above.";
+  const model = agent.modelLabel.trim() || "its default model";
+  const permission = bypass ? "skips permission prompts" : "asks for permissions";
+  return `${agent.displayName} . ${model} . ${permission}`;
+}
+
 export function NewSessionDialog({ onClose, onCreated }: NewSessionDialogProps) {
   const [directors, setDirectors] = useState<DirectorInfo[] | null>(null);
   const [directorsError, setDirectorsError] = useState<string | null>(null);
@@ -102,23 +97,32 @@ export function NewSessionDialog({ onClose, onCreated }: NewSessionDialogProps) 
   const [repos, setRepos] = useState<RepoInfo[] | null>(null);
   const [reposStatus, setReposStatus] = useState("Pick a machine first.");
 
+  // The selected machine's configured agents (issue #1497), loaded like the repos when the machine
+  // changes. `agentsStatus` carries the loading / empty / error line for the agent picker.
+  const [agents, setAgents] = useState<AgentChoice[] | null>(null);
+  const [agentsStatus, setAgentsStatus] = useState<string | null>(null);
+  const [selectedAgentType, setSelectedAgentType] = useState<string | null>(null);
+
   const [manualPath, setManualPath] = useState("");
   const [creating, setCreating] = useState(false);
   const [createError, setCreateError] = useState<string | null>(null);
 
-  // Launch options, pre-selected from the last-used choice (issue #1243). Lazy initial state reads
-  // localStorage exactly once.
-  const [modelKey, setModelKey] = useState(() => loadChoiceKey(MODEL_STORAGE_KEY, MODEL_CHOICES));
-  const [permissionKey, setPermissionKey] = useState(() =>
-    loadChoiceKey(PERMISSION_STORAGE_KEY, PERMISSION_CHOICES),
-  );
-  const launchArgs = buildLaunchArgs(modelKey, permissionKey);
+  // Permission mode, pre-selected from the last-used choice (default: Skip, matching the desktop
+  // Bypass-permissions checkbox default of ON).
+  const [permissionKey, setPermissionKey] = useState(() => {
+    const saved = loadStored(PERMISSION_STORAGE_KEY);
+    return saved && PERMISSION_CHOICES.some((c) => c.key === saved) ? saved : PERMISSION_CHOICES[0].key;
+  });
+  const permission = PERMISSION_CHOICES.find((c) => c.key === permissionKey) ?? PERMISSION_CHOICES[0];
 
-  // Guards against a stale repo response landing after the user switched machines.
+  const selectedAgent = agents?.find((a) => a.type === selectedAgentType) ?? null;
+
+  // Guards against a stale repo/agent response landing after the user switched machines.
   const reposReqRef = useRef(0);
+  const agentsReqRef = useRef(0);
 
   // Step 1: load the machines once, default-selecting the most-recently-seen (directors[0]) so the
-  // repos load immediately (mobile NewSession / Android OpenNewSessionPanelAsync parity).
+  // repos and agents load immediately (desktop New Session parity).
   useEffect(() => {
     const controller = new AbortController();
     getDirectors(controller.signal)
@@ -154,9 +158,38 @@ export function NewSessionDialog({ onClose, onCreated }: NewSessionDialogProps) 
       .catch((err) => {
         if (controller.signal.aborted || reqId !== reposReqRef.current) return;
         setRepos([]);
-        setReposStatus(
-          `Could not load repos: ${gatewayErrorMessage(err)}`,
-        );
+        setReposStatus(`Could not load repos: ${gatewayErrorMessage(err)}`);
+      });
+    return () => controller.abort();
+  }, [selectedId]);
+
+  // Step 3: whenever the selected machine changes, load THAT machine's configured agents (issue #1497).
+  // Default-select the last-used agent when it is still offered, else the first - mirroring the desktop
+  // dialog, which pre-selects the first enabled agent.
+  useEffect(() => {
+    if (!selectedId) return;
+    const controller = new AbortController();
+    const reqId = ++agentsReqRef.current;
+    setAgents(null);
+    setSelectedAgentType(null);
+    setAgentsStatus("Loading agents...");
+    getAgents(selectedId, controller.signal)
+      .then((list) => {
+        if (reqId !== agentsReqRef.current) return; // a newer selection superseded this one
+        setAgents(list);
+        if (list.length === 0) {
+          setAgentsStatus("No agents configured on this machine.");
+          return;
+        }
+        setAgentsStatus(null);
+        const remembered = loadStored(AGENT_STORAGE_KEY);
+        const pick = list.find((a) => a.type === remembered) ?? list[0];
+        setSelectedAgentType(pick.type);
+      })
+      .catch((err) => {
+        if (controller.signal.aborted || reqId !== agentsReqRef.current) return;
+        setAgents([]);
+        setAgentsStatus(`Could not load agents: ${gatewayErrorMessage(err)}`);
       });
     return () => controller.abort();
   }, [selectedId]);
@@ -182,13 +215,24 @@ export function NewSessionDialog({ onClose, onCreated }: NewSessionDialogProps) 
         setCreateError("Enter a repo path, or click a recent repo above.");
         return;
       }
+      // The agent is required when the machine offers a list; fall back to Claude Code only when the
+      // list could not be loaded, so the dialog still works if the agents read failed.
+      if (agents !== null && agents.length > 0 && !selectedAgentType) {
+        setCreateError("Pick an agent below.");
+        return;
+      }
+      const agentType = selectedAgentType ?? "ClaudeCode";
       setCreating(true);
       setCreateError(null);
-      // Remember the choices so the next open pre-selects them (issue #1243).
-      saveChoiceKey(MODEL_STORAGE_KEY, modelKey);
-      saveChoiceKey(PERMISSION_STORAGE_KEY, permissionKey);
+      // Remember the choices so the next open pre-selects them.
+      saveStored(AGENT_STORAGE_KEY, agentType);
+      saveStored(PERMISSION_STORAGE_KEY, permissionKey);
       try {
-        const session = await createSession(selectedId, path, launchArgs);
+        const session = await createSession(selectedId, path, {
+          agent: agentType,
+          bypassPermissions: permission.bypass,
+          signal: undefined,
+        });
         const sid = session.sessionId;
         if (!sid) throw new Error("The created session had no id.");
         onCreated(sid);
@@ -199,7 +243,7 @@ export function NewSessionDialog({ onClose, onCreated }: NewSessionDialogProps) 
         setCreating(false);
       }
     },
-    [creating, selectedId, onCreated, launchArgs, modelKey, permissionKey],
+    [creating, selectedId, agents, selectedAgentType, permission.bypass, permissionKey, onCreated],
   );
 
   return (
@@ -297,27 +341,31 @@ export function NewSessionDialog({ onClose, onCreated }: NewSessionDialogProps) 
             </div>
           </div>
 
-          {/* Step 3: launch options (model and permission mode), remembered across uses */}
+          {/* Step 3: launch options (agent and permission mode), remembered across uses. No model
+              picker - the model comes from the chosen agent's own configured default (issue #1497). */}
           <div className="newsess-step">
             <div className="newsess-step-label">3. Launch options</div>
 
-            <div className="newsess-opt-label" id="newsess-model-label">
-              Model
+            <div className="newsess-opt-label" id="newsess-agent-label">
+              Agent
             </div>
-            <div className="newsess-seg" role="group" aria-labelledby="newsess-model-label">
-              {MODEL_CHOICES.map((c) => (
-                <button
-                  key={c.key}
-                  type="button"
-                  className={`newsess-seg-btn${c.key === modelKey ? " sel" : ""}`}
-                  aria-pressed={c.key === modelKey}
-                  disabled={creating}
-                  onClick={() => setModelKey(c.key)}
-                >
-                  {c.label}
-                </button>
-              ))}
-            </div>
+            {agentsStatus !== null && <div className="newsess-status">{agentsStatus}</div>}
+            {agents !== null && agents.length > 0 && (
+              <div className="newsess-seg" role="group" aria-labelledby="newsess-agent-label">
+                {agents.map((a) => (
+                  <button
+                    key={a.type}
+                    type="button"
+                    className={`newsess-seg-btn${a.type === selectedAgentType ? " sel" : ""}`}
+                    aria-pressed={a.type === selectedAgentType}
+                    disabled={creating}
+                    onClick={() => setSelectedAgentType(a.type)}
+                  >
+                    {a.displayName}
+                  </button>
+                ))}
+              </div>
+            )}
 
             <div className="newsess-opt-label" id="newsess-permission-label">
               Permission mode
@@ -337,9 +385,9 @@ export function NewSessionDialog({ onClose, onCreated }: NewSessionDialogProps) 
               ))}
             </div>
 
-            <div className="newsess-opt-label">Arguments passed to the session</div>
+            <div className="newsess-opt-label">This session will start as</div>
             <div className="newsess-args mono" aria-live="polite">
-              {launchArgs.length > 0 ? launchArgs : "(none - default model, asks for permissions)"}
+              {launchSummary(selectedAgent, permission.bypass)}
             </div>
           </div>
 

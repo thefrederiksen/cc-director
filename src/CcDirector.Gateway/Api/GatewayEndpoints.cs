@@ -1468,6 +1468,24 @@ internal static class GatewayEndpoints
             return Results.StatusCode(StatusCodes.Status502BadGateway);
         });
 
+        // Issue #1497: the target Director's configured, enabled agents (one per kind) for the Cockpit New
+        // Session dialog's agent picker. Rides the tunnel (agents-list verb, director-level), mirroring the
+        // facts/repos-list read legs above; a null result (Director not connected) collapses to 502.
+        app.MapGet("/directors/{id}/agents", async (string id, CancellationToken ct) =>
+        {
+            var d = registry.Get(id);
+            if (d is null) return Results.NotFound(new { error = "director not found" });
+
+            var sr = await DirectorCommandRouter.TrySendAsync(sendCommand, id, "agents-list", "", null, ct);
+            if (sr is not null)
+            {
+                if (!sr.Ok) return Results.StatusCode(StatusCodes.Status502BadGateway);
+                return Results.Json(DirectorCommandRouter.ReadBody<List<AgentChoiceDto>>(sr) ?? new List<AgentChoiceDto>());
+            }
+
+            return Results.StatusCode(StatusCodes.Status502BadGateway);
+        });
+
         app.MapPost("/directors/{id}/sessions", async (string id, NewSessionRequest req) =>
         {
             var d = registry.Get(id);

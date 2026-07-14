@@ -5184,6 +5184,7 @@ export interface components {
             purpose?: null | string;
             agent?: string;
             args?: null | string;
+            bypassPermissions?: boolean | null;
             command?: null | string;
             commandArgs?: null | string;
             type?: null | string;
