@@ -133,6 +133,48 @@ public sealed class SnoozeEndToEndTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Hold_with_an_explicit_duration_records_that_duration_not_the_default()
+    {
+        // Issue #1500: the per-user default is short (1 minute), but the caller asks for a 12-hour snooze.
+        // The Gateway must arm the timer for the REQUESTED length, not the default.
+        await SetDefaultMinutes(1);
+        var fake = await StartFakeAsync("s6", onHold: false);
+
+        var holdResp = await _http.PostAsJsonAsync(
+            "sessions/s6/hold", new HoldRequest { OnHold = true, SnoozeMinutes = 12 * 60 });
+        Assert.Equal(HttpStatusCode.OK, holdResp.StatusCode);
+
+        // The hold still rode the tunnel to the Director, and the recorded snooze-until is ~12 hours out -
+        // clearly the requested length, not the 1-minute default.
+        Assert.True(fake.CurrentOnHold("s6"));
+        var entry = Assert.Single(_gw.SnoozeRegistry.Entries());
+        Assert.Equal("s6", entry.SessionId);
+        var until = entry.SnoozeUntilUtc - DateTime.UtcNow;
+        Assert.InRange(until.TotalMinutes, 12 * 60 - 2, 12 * 60 + 1); // 12 hours, generous tolerance
+    }
+
+    [Fact]
+    public async Task Hold_with_an_out_of_range_duration_is_rejected_and_arms_nothing()
+    {
+        // Issue #1500: a bad length fails loudly (400) and leaves NO side effect - the session is not held
+        // and no timer is armed (no fallback / no silent clamp). MaxMinutes is 7 days (10080).
+        await SetDefaultMinutes(1);
+        var fake = await StartFakeAsync("s7", onHold: false);
+
+        var tooLong = await _http.PostAsJsonAsync(
+            "sessions/s7/hold", new HoldRequest { OnHold = true, SnoozeMinutes = 10081 });
+        Assert.Equal(HttpStatusCode.BadRequest, tooLong.StatusCode);
+
+        var tooShort = await _http.PostAsJsonAsync(
+            "sessions/s7/hold", new HoldRequest { OnHold = true, SnoozeMinutes = 0 });
+        Assert.Equal(HttpStatusCode.BadRequest, tooShort.StatusCode);
+
+        // Neither the Director nor the registry saw anything.
+        Assert.False(fake.CurrentOnHold("s7"));
+        Assert.Empty(_gw.SnoozeRegistry.Entries());
+    }
+
+    [Fact]
     public async Task Watchdog_nudges_the_live_director_off_hold_and_clears_once_confirmed()
     {
         await SetDefaultMinutes(1);

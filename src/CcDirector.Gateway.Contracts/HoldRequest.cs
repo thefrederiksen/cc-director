@@ -8,6 +8,16 @@ namespace CcDirector.Gateway.Contracts;
 public sealed class HoldRequest
 {
     public bool OnHold { get; set; } = true;
+
+    /// <summary>
+    /// Optional per-call snooze length in whole minutes (issue #1500). When a caller holds a session
+    /// (<see cref="OnHold"/> = true) and supplies a value here, the Gateway arms its snooze timer for
+    /// exactly this many minutes instead of the per-user default (<c>snooze_default_minutes</c>). Null
+    /// keeps the existing behaviour - the Gateway uses the default - so the field is backward
+    /// compatible. Read and validated (1..10080) ONLY by the Gateway hold endpoint; the Director never
+    /// reads it, so this is a Gateway-only capability and needs no Director change.
+    /// </summary>
+    public int? SnoozeMinutes { get; set; }
 }
 
 /// <summary>
