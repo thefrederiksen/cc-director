@@ -22,7 +22,5 @@ How the two `cc-director` processes split responsibility today, and where they a
 
 ## See also
 
-- `../../CC_Gateway_Design.md` - the original design / intent doc (predates Recap + rename)
-- `../../Gateway_Dashboard.md` - operator-facing dashboard notes
 - `../../HowTerminalsWork.md` - ConPty and terminal internals underneath each Session
 - `../../CcDirector.Engine-Design.md` - the in-process Engine co-hosted in each Director

@@ -57,7 +57,7 @@ that feeds existing code.
 | `DictionaryLoader` + dictionary YAML | `src/CcDirector.Core/Dictation/` | Company-term vocabulary bias (ConPTY, Avalonia, acmeflow, etc.) |
 | `AudioBuffer` (disk spill) | `src/CcDirector.Core/Dictation/AudioBuffer.cs` | Reference for the crash-safe / chunked philosophy; the phone mirrors this on-device |
 | Gateway endpoint pattern | `src/CcDirector.Gateway/Api/GatewayEndpoints.cs` | Where the new `/ingest/*` routes are mapped |
-| Gateway auth (token) + Tailscale Serve | `src/CcDirector.Gateway/Tailscale/`, `docs/plans/phase1-https-via-tailscale.md` | The HTTPS-only remote path the phone uploads over |
+| Gateway auth (token) + Tailscale Serve | `src/CcDirector.Gateway/Tailscale/` | The HTTPS-only remote path the phone uploads over |
 | `cc-vault docs` CLI | on PATH | File the final transcript as a vault document |
 
 Read `docs/features/dictation/STATUS.md` before touching the server side.
@@ -126,8 +126,7 @@ attached to the final vault document.
 ### 4. Upload over Tailscale HTTPS only
 
 The Gateway is HTTPS-only by construction (Kestrel on loopback, Tailscale
-Serve as the only remote path - see the HTTPS memory rule and
-`phase1-https-via-tailscale.md`). The phone is on the same tailnet and
+Serve as the only remote path - see the HTTPS memory rule). The phone is on the same tailnet and
 uploads to the Gateway's Tailscale HTTPS hostname. No plain-HTTP path, no
 degraded mode. Auth uses the existing Gateway token (the same token the
 web UI uses), supplied by the phone as a bearer header.

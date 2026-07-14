@@ -62,8 +62,6 @@ public sealed class NoCrossMachineLoopbackGuardTests
 
         // --- Contracts / DTO docs that DESCRIBE endpoints ---
         ["src/CcDirector.Gateway.Contracts/DirectorDto.cs"] = "Doc comment example endpoint string.",
-        ["src/CcDirector.Gateway.Contracts/CockpitWsUrls.cs"] = "Doc comment explains why URLs are same-origin, not loopback.",
-        ["src/CcDirector.Gateway.Contracts/CockpitShotUrls.cs"] = "Doc comment explains same-origin routing vs loopback.",
         ["src/CcDirector.Gateway.Contracts/CockpitInfoDto.cs"] = "Doc comment example.",
 
         // --- Gateway routing that intentionally references same-origin / local ---

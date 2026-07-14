@@ -1,74 +1,114 @@
 # Control API
 
-Every running Director hosts a REST Control API on loopback (`127.0.0.1`, port range 7879-7898, one stable port per Director). It is the programmatic surface for everything the desktop UI can do: sessions, prompts, terminal buffers, git, handovers, repositories, settings, and more. The Cockpit, the phone clients, and agents running inside sessions all drive Directors through this API.
+Every running Director hosts a small REST Control API on loopback (`127.0.0.1`, port range 7879-7898, one stable port per Director).
+
+This surface is a **floor**, not a full remote-control API. It is deliberately narrow: health, the fleet verbs, local settings, the tool catalog, the workspace list, and the scheduler. It is reachable only from the machine the Director runs on.
+
+The Director does **not** expose routes for creating, reading, renaming or killing sessions directly, nor for terminal buffers, git, handovers, repositories, screenshots, dictation, text-to-speech or a terminal WebSocket stream. Those either live on the Gateway or no longer exist. If you are looking for the session surface, you want the Gateway, and the supported way to drive it is the `cc-devthrottle` command line tool.
 
 ## A session can find itself
 
-The Director injects three environment variables into every session it spawns:
+The Director injects these environment variables into every session it spawns:
 
 | Variable | Meaning |
 |----------|---------|
-| `CC_SESSION_ID` | The Director's session GUID for this session |
+| `CC_SESSION_ID` | The Director's session identifier for this session |
 | `CC_DIRECTOR_API` | Base URL of the owning Director's Control API, e.g. `http://127.0.0.1:7880` |
-| `CC_DIRECTOR_ID` | The owning Director's stable id |
+| `CC_DIRECTOR_ID` | The owning Director's stable identifier |
 
-An agent inside a session can therefore look itself up with one call:
+A session reaches the rest of the fleet through its own Director, which forwards to the Gateway when one is configured. A session is never handed the Gateway address or the fleet token.
+
+The supported way for an agent to identify itself and reach the fleet is the command line tool, not a raw call:
 
 ```
-GET %CC_DIRECTOR_API%/sessions/%CC_SESSION_ID%
+cc-devthrottle session whoami
+cc-devthrottle session list
 ```
 
-and from there read its own terminal buffer, list its Director's other sessions, create handovers, or manage the repository list. Sessions spawned before the Control API finished starting (rare; the API starts at boot) only have `CC_SESSION_ID`.
+## The routes
 
-## Key endpoint groups
+All bodies are JSON unless noted.
 
-This is the working subset most clients need. All bodies are JSON.
-
-### Sessions
+### Health and lifecycle
 
 | Method | Route | Purpose |
 |--------|-------|---------|
-| GET | /sessions | List sessions (`?includeExited=true` to include dead ones) |
-| GET | /sessions/{sid} | One session: name, repo, activity state, idle time |
-| POST | /sessions | Create a session (`repoPath`, `agent`, `args`, `resumeSessionId`, `prePrompt`, `wingmanEnabled`) |
-| DELETE | /sessions/{sid} | Kill a session |
-| PATCH | /sessions/{sid} | Rename a session (`name`) |
-| POST | /sessions/{sid}/prompt | Send a prompt into the session |
-| POST | /sessions/{sid}/interrupt | Send Ctrl+C |
-| GET | /sessions/{sid}/buffer | Read the terminal buffer (`?lines=`, `?raw=true`) |
-| GET | /sessions/{sid}/git | Git status for the session's repo (stage/unstage/discard/commit via POST sub-routes) |
+| GET | /healthz | Director identifier, version, machine name, live session count, server time |
+| POST | /shutdown | Ask this Director to shut down gracefully |
+| POST | /reconnect | Force this Director to re-establish its outbound tunnel without a full restart |
 
-### Handovers
+### Session launch hooks
 
-Handover documents live in the Director's vault (`vault/handovers/*.md`, YAML frontmatter + markdown body) and let one session pass its context to a later one.
+These serve the agent hook scripts the Director installs. They are not a session management surface.
 
 | Method | Route | Purpose |
 |--------|-------|---------|
-| GET | /handovers | List all handovers (`?repo=<path>` filters by referenced repository) |
-| GET | /handovers/content?path= | Full markdown of one handover |
-| POST | /handovers | Create a standalone handover document: `{ "title", "content", "repoPaths": [], "sessionName" }` |
-| DELETE | /handovers?path= | Delete a handover document |
-| POST | /handover | Dispatch: summarize a source session and send the context into a target session |
-| GET | /sessions/{sid}/handover-context | Preview the context text a dispatch would send |
+| GET | /sessions/{sid}/fleet-preamble | The launch-time fleet awareness text for a session: its own identity plus the commands that reach the fleet. Plain text, so a hook can drop it straight into a context field. |
+| GET | /sessions/{sid}/fleet-preamble-hook-output | The same preamble, already wrapped in the hook output envelope, for shell hooks that cannot safely build JSON. Empty body when there is no preamble. |
+| POST | /sessions/{sid}/claude-hook | Receives a Claude Code hook event. Accepts both the mapped body and Claude's raw event. Records what it is given and returns 200. |
 
-Paths passed to content/delete must live inside the handover folder; anything else is rejected.
+### The fleet verbs
 
-### Repositories
-
-The Director keeps a registry of repositories you have worked in (this backs the New Session picker).
+Each of these acts on a session by identifier. When the target is local, the Director handles it; otherwise it forwards to the Gateway.
 
 | Method | Route | Purpose |
 |--------|-------|---------|
-| GET | /repos | Registered repos: name, path, last used |
-| POST | /repos | Register a repo explicitly: `{ "path", "name?" }` (400 if the directory does not exist) |
-| PATCH | /repos | Rename a repo: `{ "path", "name" }` |
-| DELETE | /repos?path= | Remove a repo from the registry |
-| GET | /repos/overview | Everything a repositories page needs, per repo: live session count and names, resumable Claude session count, history count, last session date and summary, git branch, handover count, whether the path still exists |
-| GET | /claude-sessions | Resumable Claude Code sessions (`?repo=<path>` filters to one repo) |
+| GET | /fleet/sessions | List the sessions in the fleet |
+| GET | /fleet/buffer?sessionId= | Read a session's terminal buffer |
+| POST | /fleet/spawn | Open a new session |
+| POST | /fleet/rename | Rename a session |
+| POST | /fleet/prompt | Send a prompt into a session |
+| POST | /fleet/send | Send a message to a session |
+| POST | /fleet/ask | Ask a session a question and wait for its answer |
+| POST | /fleet/interrupt | Interrupt a session |
+| POST | /fleet/hold | Place a hold on a session |
+| POST | /fleet/role | Set or clear a session's explicit role. A blank value clears; a non-blank value must be one of the four known roles. |
+| POST | /fleet/done | Flag a session for reaping once it is finished |
+| POST | /fleet/broadcast | Send a message to the sender's own team. Requires `fromSessionId` so the team can be resolved. Fleet-wide broadcast is refused by the Gateway without a human grant. |
 
-### Other groups
+### Settings
 
-Settings (GET/PUT /settings), tools catalog and invocation (/tools, POST /tools/run - run a catalog cc-* tool with args and stream its output as NDJSON), comm dispatch (POST /dispatch - send ONE already-approved communication-queue item by id; unapproved items are refused with 409 and nothing sends), scheduler (/scheduler), workspaces (/workspaces, /history), screenshots (/screenshots), dictation and TTS (/dictate, /tts), wingman (/sessions/{sid}/wingman/...), and a WebSocket terminal stream (/sessions/{sid}/stream). Explore `GET /healthz` for the Director id and version.
+| Method | Route | Purpose |
+|--------|-------|---------|
+| GET | /settings | The raw configuration |
+| PUT | /settings | Write the configuration |
+| POST | /settings/detect/gateway | Detect the Gateway address (`?apply=true` to save it) |
+| POST | /settings/detect/public-url | Detect the public URL (`?apply=true` to save it) |
+| POST | /settings/detect/screenshots | Detect the screenshots location (`?apply=true` to save it) |
+| POST | /settings/test/gateway | Test a Gateway address |
+
+### Agents
+
+The catalog of coding agent command lines this Director can launch.
+
+| Method | Route | Purpose |
+|--------|-------|---------|
+| GET | /settings/agents | List the configured agents |
+| POST | /settings/agents | Add an agent |
+| GET | /settings/agents/{id} | One agent |
+| PATCH | /settings/agents/{id} | Update an agent |
+| DELETE | /settings/agents/{id} | Remove an agent |
+| POST | /settings/agents/{id}/enabled | Enable or disable an agent |
+| POST | /settings/agents/reorder | Reorder the agent list |
+| POST | /settings/agents/detect | Detect installed agents |
+| POST | /settings/agents/quick-check | Check whether an agent runs |
+| POST | /settings/agents/command-line | Preview the command line an agent would launch with |
+| GET | /settings/agents/catalog | The catalog of known agents |
+
+### Tools, workspaces, scheduler
+
+| Method | Route | Purpose |
+|--------|-------|---------|
+| GET | /tools | The tool catalog |
+| GET | /tools/{name} | One tool |
+| POST | /tools/{name}/test | Test one tool |
+| POST | /tools/test | Test every tool |
+| POST | /tools/run | Run a catalog tool with arguments and stream its output |
+| GET | /workspaces | The workspace list |
+| GET | /workspaces/{slug} | One workspace |
+| GET | /history | Session history |
+| GET | /scheduler | The schedule list |
+| POST | /scheduler/{name}/run | Run one schedule now |
 
 ## Finding a Director's port
 

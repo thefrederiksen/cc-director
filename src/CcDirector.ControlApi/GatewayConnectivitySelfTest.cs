@@ -25,11 +25,6 @@ public sealed class LadderRung
     public string Found { get; init; } = "";
     /// <summary>The exact command or action that fixes this rung. Null when passing/info.</summary>
     public string? Fix { get; init; }
-
-    /// <summary>True when the Director can apply <see cref="Fix"/> itself (the serve-mapping
-    /// rung: the self-provisioner's own EnsureMapping). The dialog offers "Fix it now";
-    /// nothing is ever auto-applied without that click.</summary>
-    public bool CanAutoFix { get; init; }
 }
 
 /// <summary>
@@ -58,7 +53,6 @@ public sealed class GatewayConnectivitySelfTest
     private readonly string _directorId;
     private readonly string? _advertisedEndpoint;
     private readonly string? _gatewayUrl;
-    private readonly string? _provisionerLastError;
 
     /// <summary>Test seam: read-only tailscale CLI calls. Production: the real CLI.</summary>
     internal Func<string, (bool ok, string stdout, string message)> Runner { get; set; } = TailscaleCli.Run;
@@ -71,17 +65,13 @@ public sealed class GatewayConnectivitySelfTest
 
     /// <param name="advertisedEndpoint">The URL the Gateway dials back - prefer the one from the
     /// last handshake verdict (what was ACTUALLY dialed) over a recomputed value.</param>
-    /// <param name="provisionerLastError">TailscaleServeSelfProvisioner.LastError, surfaced on
-    /// the serve-mapping rung: it explains WHY the mapping is missing when the provisioner
-    /// already tried and failed.</param>
-    public GatewayConnectivitySelfTest(int port, string directorId, string? advertisedEndpoint, string? gatewayUrl, string? provisionerLastError)
+    public GatewayConnectivitySelfTest(int port, string directorId, string? advertisedEndpoint, string? gatewayUrl)
     {
         if (port <= 0) throw new ArgumentOutOfRangeException(nameof(port), port, "port must be positive");
         _port = port;
         _directorId = directorId ?? throw new ArgumentNullException(nameof(directorId));
         _advertisedEndpoint = advertisedEndpoint;
         _gatewayUrl = gatewayUrl;
-        _provisionerLastError = provisionerLastError;
     }
 
     /// <summary>Run the ladder, yielding each rung as it completes.</summary>
@@ -149,15 +139,12 @@ public sealed class GatewayConnectivitySelfTest
                 var why = ok
                     ? $"The serve table has NO mapping for port {_port} - the Gateway's probes hit nothing and time out. This was the EXAMPLE-PC root cause."
                     : $"tailscale serve status failed: {message}";
-                if (_provisionerLastError is not null)
-                    why += $" Self-provisioner last error: {_provisionerLastError}";
                 yield return new LadderRung
                 {
                     Title = "Is the Serve mapping present?",
                     Status = RungStatus.Fail,
                     Found = why,
                     Fix = $"tailscale serve --bg --https={_port} http://localhost:{_port}",
-                    CanAutoFix = true,
                 };
                 failed = true;
             }

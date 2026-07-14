@@ -98,7 +98,6 @@ public sealed class ControlApiHost : IAsyncDisposable
     // Issue #1176 (Phase 1a): the outbound push-stream client, running alongside _gatewayClient when
     // gateway.streamMode is on. Null when stream mode is off, so the Director behaves exactly as today.
     private GatewayStreamClient? _streamClient;
-    private TailscaleServeSelfProvisioner? _serveProvisioner;
     private readonly SemaphoreSlim _gatewayReapplyLock = new(1, 1);
 
     /// <summary>
@@ -140,12 +139,6 @@ public sealed class ControlApiHost : IAsyncDisposable
     /// gates the Snooze button on <see cref="GatewayMonitor"/> being Connected anyway.
     /// </summary>
     public IGatewayHold? GatewayHold => _gatewayClient;
-
-    /// <summary>This Director's own serve provisioner (issue #197). Exposed for the
-    /// troubleshooting dialog: rung 2's "Fix it now" runs EnsureMappingAsync, and the
-    /// provisioner's LastError explains WHY a mapping is missing. Null on ephemeral-port
-    /// hosts (tests, hosted agents), which never self-provision.</summary>
-    public TailscaleServeSelfProvisioner? ServeProvisioner => _serveProvisioner;
 
     /// <summary>
     /// Fetch the latest Gateway turn brief for a session - the desktop Wingman tab's source.
@@ -889,16 +882,6 @@ public sealed class ControlApiHost : IAsyncDisposable
         _sessionLogManager = null;
 
         _registration?.Unregister();
-
-        // Issue #197: graceful shutdown removes this Director's own serve mapping. A crash
-        // skips this; the next startup re-asserts the same stable port, so the leftover
-        // self-heals.
-        if (_serveProvisioner is not null)
-        {
-            _serveProvisioner.RemoveOwnMapping();
-            _serveProvisioner.Dispose();
-            _serveProvisioner = null;
-        }
 
         // Release the persisted port file only if we used a real allocated port
         if (!_useEphemeralPort && Port > 0)

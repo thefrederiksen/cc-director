@@ -23,9 +23,8 @@ public sealed class GatewayConnectivitySelfTestTests
         Func<string, (bool, string, string)> runner,
         Func<string, CancellationToken, Task<(bool, string)>>? httpProbe = null,
         bool cliAvailable = true,
-        string? endpoint = "https://machine-a.tail0123.ts.net:7885",
-        string? provisionerLastError = null)
-        => new(Port, DirectorId, endpoint, gatewayUrl: null, provisionerLastError)
+        string? endpoint = "https://machine-a.tail0123.ts.net:7885")
+        => new(Port, DirectorId, endpoint, gatewayUrl: null)
         {
             Runner = runner,
             CliAvailable = () => cliAvailable,
@@ -84,18 +83,16 @@ public sealed class GatewayConnectivitySelfTestTests
     }
 
     [Fact]
-    public async Task ServeMappingMissing_FailsRungTwo_WithExactServeCommand_AndProvisionerError()
+    public async Task ServeMappingMissing_FailsRungTwo_WithExactServeCommand()
     {
         // The EXAMPLE-PC root cause: tailnet up, nothing serves the port.
         var rungs = await RunAll(Make(
-            args => args == "status --json" ? (true, RunningStatusJson, "") : (true, ServeEmpty, ""),
-            provisionerLastError: "tailscale serve --https=7885 failed: access denied"));
+            args => args == "status --json" ? (true, RunningStatusJson, "") : (true, ServeEmpty, "")));
 
         Assert.Equal(RungStatus.Pass, rungs[0].Status);
         Assert.Equal(RungStatus.Fail, rungs[1].Status);
         Assert.Equal($"tailscale serve --bg --https={Port} http://localhost:{Port}", rungs[1].Fix);
         Assert.Contains("EXAMPLE-PC", rungs[1].Found);
-        Assert.Contains("access denied", rungs[1].Found); // provisioner's recorded reason rides along
         Assert.Equal(RungStatus.Skipped, rungs[2].Status);
         Assert.Equal(RungStatus.Skipped, rungs[3].Status);
     }

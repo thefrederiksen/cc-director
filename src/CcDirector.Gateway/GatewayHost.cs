@@ -994,8 +994,6 @@ public sealed class GatewayHost : IAsyncDisposable
         builder.Logging.ClearProviders();
         builder.Logging.SetMinimumLevel(LogLevel.Warning);
         builder.Services.AddRoutingCore();
-        // Direct forwarding for the per-Director request proxy (see DirectorForwarding).
-        builder.Services.AddHttpForwarder();
         // Issue #806 (mobile foundation): emit an OpenAPI document at /openapi/v1.json. The mobile
         // app's build-time codegen (openapi-typescript) turns it into a typed TypeScript client, so
         // the C# DTOs stay the single source of truth for the front-end.

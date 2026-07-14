@@ -57,7 +57,6 @@ Beyond that, the minimum is a known-good floor, not a cage: Claude Code is the d
 - [docs/install/install-prompt.md](install/install-prompt.md) -- the Claude Code install prompt (current)
 - Spec: unified install + auto-update (Director + Gateway + Cockpit) -- see the tracking issue below
 - [docs/architecture/gateway/](architecture/gateway/) -- Gateway architecture
-- [docs/plans/phase1-https-via-tailscale.md](plans/phase1-https-via-tailscale.md) -- Tailscale remote access
 
 ## Document History
 
