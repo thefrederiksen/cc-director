@@ -46,18 +46,31 @@ The command is right and the code is right. The Director you are talking to is t
 
 These verbs travel to the Director's loopback floor - rename to `POST /fleet/rename`, done to
 `POST /fleet/done`, send-all to `POST /fleet/broadcast`. All three were restored to the floor
-AFTER the v1.1.0 release, so a Director still running v1.1.0 does not have those routes and
-answers 404 to a perfectly correct call.
+AFTER the v1.1.0 release, so a Director built before that restoration does not have those
+routes and answers 404 to a perfectly correct call.
 
-Check which build is actually answering before you go hunting for a bug:
+**Do NOT use `/healthz` version to decide this.** The version comes from
+`Directory.Build.props`, which still reads `1.1.0` on main - so the shipped v1.1.0 Director
+that LACKS the routes and a fresh build from main that HAS them both report `"version":"1.1.0"`.
+Verified 2026-07-14 by running both side by side. The version cannot tell them apart.
+
+Probe the route itself, and compare it against a route you know is fake:
 
 ```
-curl http://127.0.0.1:7879/healthz
+curl -s -o /dev/null -w "%{http_code}\n" -X POST http://127.0.0.1:7879/fleet/rename \
+  -H "Content-Type: application/json" \
+  -d '{"toSessionId":"00000000-0000-0000-0000-000000000000","name":"probe"}'
+curl -s -o /dev/null -w "%{http_code}\n" -X POST http://127.0.0.1:7879/fleet/definitely-not-a-route -d '{}'
 ```
 
-If `version` reads `1.1.0`, that is the whole explanation - the fix is to update the Director,
-not to change your command or work around it. Do NOT reach for the Gateway as a substitute
-route; it answers 401 for this and is not the agent-facing surface.
+- Both 404 -> the route genuinely is not there. The Director is older than the restoration;
+  update it. There is no workaround.
+- The real route answers something OTHER than 404 (a JSON body, 400, 502) while the fake one
+  404s -> the route exists and your problem is elsewhere. A 502 with a JSON body just means it
+  ran and the relay failed - that is the route working.
+
+Do NOT reach for the Gateway as a substitute route; it answers 401 for this and is not the
+agent-facing surface.
 
 This is worth a beat of suspicion generally: a Director, a `cc-devthrottle`, and a checkout can
 each be older than origin/main, and a stale one will contradict the code you just read. Verify
