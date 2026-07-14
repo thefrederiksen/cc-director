@@ -503,7 +503,76 @@
   release and becomes something the structure will not let us break.</p>
 </div>
 
-<h2>8. Coordination</h2>
+<h2>8. Decisions taken, and why</h2>
+
+<p>
+  Recorded so the next reader does not have to re-litigate them, and so a future change that breaks one of
+  them does it knowingly.
+</p>
+
+<h3>Who owns which fact</h3>
+<p>
+  Not "which component is authoritative" - that question has no single answer, which is what made this hard.
+  The split is per <em>fact</em>:
+</p>
+<div class="scroll">
+<table>
+  <thead><tr><th>Fact</th><th>Owner</th><th>Consequence</th></tr></thead>
+  <tbody>
+    <tr><td>Activity (Working / needs you)</td><td>The terminal, on the Director</td>
+        <td>Nothing may override Working. Pushed up. Only the Director sees the instant work stops.</td></tr>
+    <tr><td>Hold intent</td><td>The Gateway</td>
+        <td>No client invents it; no Gateway means no snooze (already enforced, and it fails loudly).</td></tr>
+    <tr><td>Session role</td><td>The Gateway</td>
+        <td>Needs the whole fleet - "is this session's controller alive?" is unanswerable from one Director.</td></tr>
+  </tbody>
+</table>
+</div>
+<p>
+  The desktop is a <em>producer</em> of the first and a <em>cache</em> of the other two, at the same time.
+  That is why "is the desktop a producer or a dumb cache?" had no answer: it depends which fact.
+</p>
+
+<h3>The Gateway owns the deferred hold; the Director applies it</h3>
+<p>
+  The Gateway records the intent and the timer. The Director applies it at the settle. If the Gateway
+  applied it, the sequence would be: session settles, pushes up, Gateway notices, sends the hold down,
+  Director holds, pushes up - and for that entire round trip the session reads red "needs you" on every
+  screen, a spurious nag for a session you already snoozed. Only the Director is fast enough to act without
+  that flash. The Gateway stays the source of truth; the Director is its hands.
+</p>
+
+<h3>Opening a snoozed session's terminal lifts its hold</h3>
+<p>
+  Accepted deliberately. Attaching a terminal can resize it, a resize reflows the screen, and those bytes
+  read as work. It takes a human deliberately opening that session (a resize no-ops on an unchanged size,
+  and only an attached terminal resizes at all - background sessions never trip it). The alternative,
+  suppressing resize-induced activity, is timing-based fragility, which is a worse defect than the surprise.
+  And it fails <strong>safe</strong>: the disease being cured is a session hidden behind "Snoozed" while it
+  works. An unwanted un-snooze is visible and one tap to undo; a hidden working session is neither.
+</p>
+
+<h3>Two existing tests deleted</h3>
+<p>
+  <code>CosmeticRepaint_OnHeldIdleSession_KeepsHold</code> and
+  <code>TurnEndingAtIdle_ConsumesArming_SoLaterRepaintCannotLiftHold</code> both asserted that a byte-blip to
+  Working must leave a hold intact - the exact opposite of the rule. Their premise is periodic Claude
+  repaints, and that premise is false: measured on the live fleet, a held idle session was byte-silent for
+  <strong>34 minutes</strong>. The noise they feared is already filtered inside the detector before it ever
+  reports Working.
+</p>
+
+<h2>9. Captured, not built</h2>
+<div class="callout">
+  <p><strong>Snooze a session whose Director is offline.</strong> Today this is impossible and fails
+  honestly: the hold endpoint forwards over the tunnel, a disconnected Director yields a 502, and the snooze
+  timer is armed only after a successful forward - so nothing is half-recorded. Making it work means moving
+  hold intent to the Gateway <em>durably</em> and making the Director a follower that reconciles on
+  reconnect. That is a real capability and a real architecture change, and it is its own later phase - not a
+  reconciliation step bolted onto this one. Noted here so it is not lost.</p>
+</div>
+
+<h2>10. Coordination</h2>
 <ul>
   <li><strong>Gateway Cleanup (11e753a3)</strong> - parked. Pull request #1512 stays open and unmerged;
       no mobile snooze work started. It agreed the latch is the wrong signal.</li>
