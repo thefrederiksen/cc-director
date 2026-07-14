@@ -14,7 +14,7 @@ namespace CcDirector.Gateway.Tests;
 /// Wiring + validation tests for the final-build Director surface: #5 resize, and the #6
 /// endpoints (relink, git writes, scheduler, workspaces/history). No live session is needed -
 /// these prove the routes exist, validate input, and 404/503 correctly. The behavior of
-/// resize/auto-drain/git lives in the Core unit tests.
+/// resize/prompt-queue/git lives in the Core unit tests.
 /// </summary>
 [Collection("DirectorRoot")]
 public sealed class DirectorSurfaceEndpointTests : IAsyncLifetime

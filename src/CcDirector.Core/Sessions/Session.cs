@@ -1949,35 +1949,26 @@ public sealed class Session : IDisposable
         // Log the transition (blue<->red) to the in-memory ring the Wingman tab renders.
         RecordStateChange(old, newState);
         OnActivityStateChanged?.Invoke(old, newState);
-
-        // Auto-drain the prompt queue when the session returns to Idle (ready at the prompt).
-        if (newState == ActivityState.Idle)
-            TryDrainQueue();
     }
 
-    /// <summary>
-    /// When the session goes Idle and isn't on hold, send the next queued prompt - so the
-    /// queue means "auto-send when Claude is ready", not a manual holding list. One item per
-    /// Idle transition; SendText -> Working -> Idle drains the rest in FIFO order. We never
-    /// drain on WaitingForInput/WaitingForPerm: a queued prompt must not answer Claude's own
-    /// question. The send is scheduled off the current stack to avoid re-entering
-    /// SetActivityState (SendText synchronously flips to Working).
-    /// </summary>
-    private void TryDrainQueue()
-    {
-        if (OnHold || !PromptQueue.HasItems) return;
-        if (Status is SessionStatus.Exited or SessionStatus.Failed) return;
-
-        var next = PromptQueue.Items[0];
-        PromptQueue.Remove(next.Id); // remove first so a double Idle can't send it twice
-        FileLog.Write($"[Session] Queue auto-drain: session={Id}, remaining={PromptQueue.Count}");
-
-        _ = Task.Run(async () =>
-        {
-            try { await SendTextAsync(next.Text); }
-            catch (Exception ex) { FileLog.Write($"[Session] Queue auto-drain FAILED: session={Id}: {ex.Message}"); }
-        });
-    }
+    // The prompt queue does NOT auto-send, and never has. A "TryDrainQueue" used to hang here, gated on
+    // a transition to ActivityState.Idle - a state NOTHING has ever assigned. It went in with the auto-drain
+    // itself in May 2026 and shipped dead: the terminal detector emits WaitingForInput at a turn end,
+    // deliberately ("we do not try to tell 'finished cleanly' apart from 'blocked on a question'"), and Idle
+    // is not even the enum's zero value (Starting is), so it could not arrive by default or deserialization
+    // either. The only assignments of Idle in the whole repository were, and are, in tests - which is why the
+    // drain's own tests passed for fourteen months by calling ApplyTerminalActivityState(Idle) directly and
+    // injecting a state production never emits.
+    //
+    // It is deleted rather than repaired because the queue that users actually have is the one the product
+    // describes: PromptQueue is "prompts the user wants to send later... sent in any order", the desktop
+    // offers only "Add to prompt queue", and there is an explicit send verb (queue-send). NOTHING
+    // user-facing has ever promised auto-send. Switching it on now would make DevThrottle fire prompts into
+    // sessions by itself for the first time ever, at the exact moment it cannot tell a finished turn from a
+    // question it would be answering with unrelated text.
+    //
+    // Auto-send is a real feature and needs a real turn-end classifier that can separate "finished cleanly"
+    // from "blocked on a question" - the thing the detector explicitly refuses to do. See issue #1564.
 
     /// <summary>
     /// Set ActivityState from the <c>TerminalStateDetector</c> in terminal-driven mode.

@@ -9,8 +9,10 @@ namespace CcDirector.Core.Tests;
 /// Behavior tests for the final-build session features:
 ///   #3 terminal input  -> SendInput forwards raw bytes to the backend (the exact path the
 ///                          /stream WebSocket now drives).
-///   #4 queue auto-drain -> the next queued prompt is sent when the session goes Idle, gated
-///                          by OnHold and never on WaitingForInput.
+///   #4 the prompt queue  -> a MANUAL holding list: it never auto-sends, whatever the activity
+///                          state. The auto-drain this line used to describe was gated on a
+///                          transition to Idle, which no producer has ever emitted, so it never
+///                          ran in a real session and is now deleted (issue #1564).
 ///   #5 PTY resize       -> Resize no-ops on an unchanged size (the repaint-loop guard).
 /// </summary>
 public sealed class SessionInteractiveTests
@@ -284,52 +286,74 @@ public sealed class SessionInteractiveTests
         Assert.Equal((120, 30), backend.Resizes[1]);
     }
 
-    // ---- #4 queue auto-drain ----
+    // ---- the prompt queue is a MANUAL holding list, and always has been ----
 
-    [Fact]
-    public async Task Queue_auto_drains_one_item_when_session_goes_idle()
+    // These replace three tests that certified an auto-drain which has never run in a real session. They
+    // passed for fourteen months by calling ApplyTerminalActivityState(ActivityState.Idle) directly - a state
+    // NOTHING in the product has ever assigned, so the transition they relied on could not occur outside the
+    // test. The old gate is deleted (see Session.SetActivityState), and what is pinned here is the behaviour
+    // users actually have and the product actually describes: a queue you send from explicitly.
+
+    /// <summary>
+    /// The queue never auto-sends, on ANY activity state. Deliberately a theory over EVERY member of the
+    /// enum rather than the one state the detector happens to emit today: that makes the guarantee immune to
+    /// the producer changing which state it reports at a turn end - the exact coupling that let the original
+    /// drain sit dead behind a state no producer emitted, with a green test in front of it.
+    /// </summary>
+    [Theory]
+    [InlineData(ActivityState.Starting)]
+    [InlineData(ActivityState.Idle)]
+    [InlineData(ActivityState.Working)]
+    [InlineData(ActivityState.WaitingForInput)]
+    [InlineData(ActivityState.WaitingForPerm)]
+    [InlineData(ActivityState.Exited)]
+    public async Task Queue_neverAutoSends_onAnyActivityState(ActivityState state)
     {
         var backend = new RecordingBackend();
         using var s = NewSession(backend, ActivityState.Working);
-        s.PromptQueue.Enqueue("first");
-        s.PromptQueue.Enqueue("second");
+        s.PromptQueue.Enqueue("queued work");
 
-        s.ApplyTerminalActivityState(ActivityState.Idle); // transition triggers the drain
+        s.ApplyTerminalActivityState(state);
 
-        await WaitUntil(() => backend.SentTexts.Count >= 1);
-        Assert.Equal("first", backend.SentTexts[0]); // FIFO
-        Assert.Equal(1, s.PromptQueue.Count);          // exactly one drained per Idle
+        await Task.Delay(250);
+        Assert.Empty(backend.SentTexts);          // nothing was fired at the session
+        Assert.Equal(1, s.PromptQueue.Count);     // and the item is still there, waiting to be sent
     }
 
+    /// <summary>
+    /// The turn end specifically. This is the moment a queued prompt would have gone out, and the moment it
+    /// must not: the detector reports WaitingForInput for BOTH "finished cleanly" and "blocked on a question"
+    /// and explicitly refuses to tell them apart, so an auto-send here could answer a question the agent
+    /// asked with unrelated text - a silent wrong action. Auto-send needs a real turn-end classifier first
+    /// (issue #1564).
+    /// </summary>
     [Fact]
-    public async Task Queue_does_not_drain_when_on_hold()
+    public async Task Queue_doesNotAutoSend_atATurnEnd_whichCouldAnswerTheAgentsOwnQuestion()
     {
         var backend = new RecordingBackend();
         using var s = NewSession(backend, ActivityState.Working);
-        s.RequestHold(true); // asked for while working -> deferred, lands at the Idle settle below
-        s.PromptQueue.Enqueue("held");
+        s.PromptQueue.Enqueue("also update the README");
 
-        // The deferral must land BEFORE the drain check on this same transition, or a session the user
-        // just parked would immediately fire the next queued prompt at it.
-        s.ApplyTerminalActivityState(ActivityState.Idle);
-        Assert.True(s.OnHold);
+        s.ApplyTerminalActivityState(ActivityState.WaitingForInput);
 
         await Task.Delay(250);
         Assert.Empty(backend.SentTexts);
         Assert.Equal(1, s.PromptQueue.Count);
     }
 
+    /// <summary>The queue still does what it is for: the user sends an item, explicitly, whenever they want.</summary>
     [Fact]
-    public async Task Queue_does_not_drain_on_waiting_for_input()
+    public async Task Queue_itemIsSentWhenTheUserSendsIt()
     {
         var backend = new RecordingBackend();
         using var s = NewSession(backend, ActivityState.Working);
-        s.PromptQueue.Enqueue("answer?");
+        var item = s.PromptQueue.Enqueue("first");
+        s.PromptQueue.Enqueue("second");
 
-        s.ApplyTerminalActivityState(ActivityState.WaitingForInput); // Claude is asking - do NOT auto-answer
+        await s.SendTextAsync(item.Text);
+        s.PromptQueue.Remove(item.Id);
 
-        await Task.Delay(250);
-        Assert.Empty(backend.SentTexts);
+        Assert.Equal("first", backend.SentTexts[0]);
         Assert.Equal(1, s.PromptQueue.Count);
     }
 
