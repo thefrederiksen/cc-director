@@ -180,6 +180,10 @@ internal sealed class TunnelCatchAllDispatch
             DirectorCommandStatus.NotFound => StatusCodes.Status404NotFound,
             DirectorCommandStatus.Conflict => StatusCodes.Status409Conflict,
             DirectorCommandStatus.Locked => StatusCodes.Status423Locked,
+            // Stable Release (v1.3.0), Tier 1 item 1: the Gateway gave up waiting, or the tunnel died in flight.
+            // Neither is an internal server error - the collapse below would say the Gateway itself broke.
+            DirectorCommandStatus.Timeout => StatusCodes.Status504GatewayTimeout,
+            DirectorCommandStatus.TunnelDropped => StatusCodes.Status502BadGateway,
             _ => StatusCodes.Status500InternalServerError,
         };
         await ctx.Response.WriteAsJsonAsync(new { error = result.Error ?? $"director returned {result.Status}" });
