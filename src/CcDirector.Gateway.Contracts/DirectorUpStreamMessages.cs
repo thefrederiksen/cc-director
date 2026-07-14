@@ -101,6 +101,32 @@ public static class DirectorStreamLimits
     /// infrequent, so the extra chunks are free; the invariant that matters is bounded, no-monopoly framing.
     /// </summary>
     public const int UploadChunkRawBytes = 20 * 1024;
+
+    /// <summary>
+    /// The maximum bytes in a single unary command REPLY (a <see cref="DirectorCommandResult"/> carried back
+    /// over the tunnel as a SignalR client result via InvokeAsync). Unlike the up-stream - which is chunked at
+    /// <see cref="MaxBinaryFrameBytes"/> - a command reply is ONE message: some read verbs (turns, full
+    /// buffer/html) legitimately return the whole structure at once, and for a long-running session that is far
+    /// larger than a single stream frame. The hub's MaximumReceiveMessageSize must therefore admit the LARGER of
+    /// a framed up-stream message and this value; otherwise a big reply tears down the shared tunnel connection
+    /// ("The maximum message size ... was exceeded"), which both 500s the read (voice/explain, History/turns,
+    /// full buffer) AND drops the Director's roster registration - the mobile "blinking". Raising the receive cap
+    /// does NOT weaken streaming backpressure: the up-stream producer still chunks at <see cref="MaxBinaryFrameBytes"/>
+    /// and <see cref="StreamBufferCapacity"/> is unchanged. 32 MB is a generous ceiling for a realistic
+    /// full-history turns or whole-buffer reply while still bounding a single message's memory.
+    /// </summary>
+    public const int MaxCommandReplyBytes = 32 * 1024 * 1024;
+
+    /// <summary>
+    /// The hub's MaximumReceiveMessageSize: the LARGER of a framed up-stream message
+    /// (<see cref="MaxBinaryFrameBytes"/> + <see cref="FrameEnvelopeAllowanceBytes"/>) and a unary command reply
+    /// (<see cref="MaxCommandReplyBytes"/>). One knob bounds every inbound message on the shared tunnel. Kept as
+    /// a single derived constant so the hub option and any future producer share one source of truth.
+    /// </summary>
+    public const int MaxInboundMessageBytes =
+        MaxBinaryFrameBytes + FrameEnvelopeAllowanceBytes > MaxCommandReplyBytes
+            ? MaxBinaryFrameBytes + FrameEnvelopeAllowanceBytes
+            : MaxCommandReplyBytes;
 }
 
 /// <summary>
