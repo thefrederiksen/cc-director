@@ -30,7 +30,8 @@ This mission makes the *rest* of the code tell the truth too. Every item below i
 5. **Every product decision is already made.** They are recorded in section 7 of the spec ("Answered - these are rulings, not proposals"). **Do not re-open them. Do not ask about them.** If you hit a question the spec does not answer, decide it the way the rulings point and write down what you decided.
 6. **Token cost is not a constraint.** The owner: *"I don't care about the tokens, I care about doing it right."* Do not cut scope to save tokens.
 7. **A green test is not proof.** Every fold in this codebase passes its own tests today and agrees with nothing else. The proof that matters is in the spec's section 6: read the live fleet and assert every session's desktop answer equals its phone answer equals its Cockpit answer.
-8. **Fix the lying comments in the same pass as the code.** They are not cosmetic - the spec's section 4 shows they are the delivery mechanism for the next regression.
+8. **NEVER state a cause you have not observed.** A mechanism may be stated from reading the code, cited by file and line. A **cause** may only be stated from evidence you actually looked at - a log line, a record on disk, a reproduction. If you have not looked, write "this is undiagnosed; here is how to find out." The spec's own defect 19 was caught fabricating a cause that sounded reasonable and was never checked. A fabricated cause reads exactly like a finding, survives review, and sends the next agent to fix a world that does not exist. It is worse than the bug.
+9. **Fix the lying comments in the same pass as the code.** They are not cosmetic - the spec's section 4 shows they are the delivery mechanism for the next regression.
 
 ---
 
@@ -51,7 +52,7 @@ The Gateway owns every state and is the ONLY thing that picks a colour. The Dire
 | Snooze a working session for 12 hours - when does the clock start? | **When the work ENDS.** Not when you ask. |
 | A snoozed session exits - "Snoozed" or "Exited"? | **Exited.** A dead session never hides behind a Snoozed label. |
 | Pending deletion - colour or badge? | **A badge, never a colour.** If it is still working it is blue, with a badge. |
-| Out-of-credits dictation - stay orange, or bound the colour? | **Bound the colour, keep the record.** Nothing is lost except the lie on the dot. |
+| A dictation that never reaches a terminal state - stay orange, or bound the colour? | **Bound the colour, keep the record.** Nothing is lost except the lie on the dot. |
 | A Director dies while a snooze is deferred? | **Persist the hold state; land the deferral on restart if the session is not working.** |
 
 Plus the snooze rules, which the Director already implements correctly: working ALWAYS clears a snooze; an expired snooze is gone; snooze-while-working means "snooze me when the work ends"; **nothing else** clears a snooze.
@@ -75,10 +76,21 @@ The root cause is a lossy wire: three hold states (`None` / `Held` / `DeferredHo
 *This phase is intricate and cross-cutting. Prefer ONE strong worker over a fan-out.*
 
 ### Phase 2 - The orange tells the truth
-**Defect 19 - the wedged orange the owner keeps seeing.**
+**Defect 19 - the wedged orange.**
 
-- Bound the colour without touching the durable record. Paint "Uploading from phone" only while the upload is actually making progress (the same idle rule `TranscribingSessions` already uses).
-- Park the out-of-credits and retryable paths in a terminal state (`GatewayDictationEndpoint.cs:277-290`) - today they return without marking the record terminal, so it stays `Pending` and paints forever.
+**FIRST: DIAGNOSE IT. Do not reason about the cause - go and look.** The durable records are on disk on
+the Gateway. Enumerate the `Pending` ones, read their age and session id, and check the Gateway log for the
+outcome returned when each completed. Report what you actually find.
+
+An earlier draft of the spec asserted this was "almost certainly" caused by running out of credits. **That
+was fabricated** - nobody had run out of credits, and no record or log had been read. It has been removed.
+Do not restore it, and do not replace it with a different guess. **The mechanism is known and cited; the
+cause is UNDIAGNOSED until you have looked at a real wedged record.**
+
+Then fix it:
+
+- Bound the colour without touching the durable record. Paint "Uploading from phone" only while the upload is actually making progress (the same idle rule `TranscribingSessions` already uses). **This fix stands regardless of which path turns out to cause it** - it bounds the colour for every cause at once.
+- Park every non-terminal path in a terminal state (`GatewayDictationEndpoint.cs:277-290` - today `OutOfCredits` and retryable errors return without marking the record, so it stays `Pending` and paints forever; only `PermanentError` parks it).
 - Fix the two comments claiming the pending-derived status "never wedges". They are why nobody believed this bug was real.
 
 ### Phase 3 - Deletion is a badge
