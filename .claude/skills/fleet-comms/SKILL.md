@@ -72,8 +72,11 @@ important lost. Cheaper and sharper, every phase.
 
 At each phase boundary:
 1. Confirm the current Manager is stood down (its tree is clean, nothing in flight).
-2. Reap it: `curl -X DELETE http://127.0.0.1:7878/sessions/<full-session-id>` (the Gateway routes to
-   whichever Director hosts it), or have the user close its tab. This build has no `session done` verb.
+2. Reap it. To reap ANOTHER session (a Manager reaping a Worker, or you reaping the outgoing
+   Manager), call the Gateway front door: `curl -X DELETE http://127.0.0.1:7878/sessions/<full-session-id>`
+   (the Gateway routes it to whichever Director hosts the session over the tunnel), or have the user
+   close its tab. A session reaps ITSELF with `cc-devthrottle session done`, which flags the current
+   session (`CC_SESSION_ID`) for graceful removal without killing it mid-turn.
 3. Spawn a fresh Manager with a tight brief: `session spawn <repo> --name "<Mission> - Manager"`,
    pointing it at the mission document, stating plainly what is DONE and only THIS phase's goal.
 
