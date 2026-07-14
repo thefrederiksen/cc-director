@@ -30,20 +30,23 @@ public sealed class Orchestrator
     /// <summary>
     /// Plan the given components against the manifest and apply any actionable
     /// items. Returns the plan plus the run result (null when there was no work).
+    /// <paramref name="macOs"/> selects which platform's release assets are planned
+    /// (null = the platform this process runs on); tests pin it to stay hermetic.
     /// </summary>
     public async Task<OrchestratorResult> RunAsync(
         IReadOnlyList<Component> components,
         ReleaseManifest manifest,
         UpdateRunner.Downloader downloader,
         UpdatePins? pins = null,
-        CancellationToken ct = default)
+        CancellationToken ct = default,
+        bool? macOs = null)
     {
         ArgumentNullException.ThrowIfNull(components);
         ArgumentNullException.ThrowIfNull(manifest);
         ArgumentNullException.ThrowIfNull(downloader);
 
         var installed = _reader.ReadAll(components);
-        var plan = UpdatePlanner.Plan(components, installed, manifest, pins);
+        var plan = UpdatePlanner.Plan(components, installed, manifest, pins, macOs);
 
         EngineLog.Write($"[Orchestrator] RunAsync: {components.Count} components, {plan.Actionable.Count} actionable.");
         if (!plan.HasWork)

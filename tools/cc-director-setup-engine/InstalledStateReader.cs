@@ -3,8 +3,9 @@ namespace CcDirector.Setup.Engine;
 /// <summary>
 /// Reads the installed state (present? which version?) of components from disk.
 /// File existence and version reading are injectable so the logic is testable
-/// without a real filesystem; the default wiring uses <see cref="File.Exists"/>
-/// and the Windows file-version stamp.
+/// without a real filesystem; the default wiring accepts files and directories
+/// (the macOS .app bundle is a directory) and reads the Windows file-version
+/// stamp or the macOS bundle Info.plist version.
 /// </summary>
 public sealed class InstalledStateReader
 {
@@ -20,10 +21,17 @@ public sealed class InstalledStateReader
         InstalledManifest? installed = null)
     {
         _layout = layout ?? throw new ArgumentNullException(nameof(layout));
-        _fileExists = fileExists ?? File.Exists;
+        _fileExists = fileExists ?? DefaultExists;
         _readVersion = readVersion ?? DefaultReadVersion;
         _installed = installed ?? InstalledManifest.Load(layout);
     }
+
+    /// <summary>
+    /// Default presence check. A component can be a single file (every Windows exe, the macOS
+    /// launcher) or a DIRECTORY (the macOS "CC Director.app" bundle), so presence must accept
+    /// both; File.Exists alone reported an installed .app bundle as "not installed".
+    /// </summary>
+    internal static bool DefaultExists(string path) => File.Exists(path) || Directory.Exists(path);
 
     /// <summary>Inspect one component.</summary>
     public InstalledComponent Read(Component component)
@@ -55,23 +63,38 @@ public sealed class InstalledStateReader
     }
 
     /// <summary>
-    /// Default version reader: the Windows product-version stamp on the exe. Only
-    /// meaningful on Windows; returns null elsewhere (the engine treats a null
-    /// version as "present but version unknown", which the planner handles).
+    /// Default version reader: the Windows product-version stamp on the exe, or the
+    /// CFBundleShortVersionString of a macOS .app bundle. A macOS single-file binary
+    /// carries neither, so it reads as null ("present but version unknown", which the
+    /// planner answers by re-applying the release so the version gets recorded).
     /// </summary>
     private static string? DefaultReadVersion(string path)
     {
-        if (!OperatingSystem.IsWindows())
-            return null;
-        try
+        if (OperatingSystem.IsWindows())
         {
-            var info = System.Diagnostics.FileVersionInfo.GetVersionInfo(path);
-            return info.ProductVersion;
+            try
+            {
+                var info = System.Diagnostics.FileVersionInfo.GetVersionInfo(path);
+                return info.ProductVersion;
+            }
+            catch (Exception ex)
+            {
+                EngineLog.Write($"[InstalledStateReader] version read FAILED for {path}: {ex.Message}");
+                return null;
+            }
         }
-        catch (Exception ex)
+
+        // macOS .app bundle: the version lives in Contents/Info.plist. plutil is part of macOS.
+        var plist = Path.Combine(path, "Contents", "Info.plist");
+        if (!OperatingSystem.IsMacOS() || !File.Exists(plist))
+            return null;
+        var (exit, output) = ProcessRunner.Run(
+            "/usr/bin/plutil", $"-extract CFBundleShortVersionString raw \"{plist}\"");
+        if (exit != 0 || string.IsNullOrWhiteSpace(output))
         {
-            EngineLog.Write($"[InstalledStateReader] version read FAILED for {path}: {ex.Message}");
+            EngineLog.Write($"[InstalledStateReader] bundle version read FAILED for {plist} (plutil exit {exit})");
             return null;
         }
+        return output.Trim();
     }
 }

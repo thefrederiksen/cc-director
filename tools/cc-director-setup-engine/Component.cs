@@ -26,4 +26,12 @@ public sealed record Component(
     string? MacAsset = null)
 {
     public bool InRole(InstallRole role) => Roles.Contains(role);
+
+    /// <summary>
+    /// The release-asset filename for the requested platform: <see cref="MacAsset"/> on macOS
+    /// (null when the component has no macOS build), <see cref="WindowsAsset"/> otherwise.
+    /// The platform is a parameter, not read from the environment, so planning stays pure and
+    /// testable on any development machine.
+    /// </summary>
+    public string? AssetFor(bool macOs) => macOs ? MacAsset : WindowsAsset;
 }

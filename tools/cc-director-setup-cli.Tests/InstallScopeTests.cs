@@ -12,13 +12,13 @@ public class InstallScopeTests
     [Fact]
     public void InstallsPythonTools_GatewayInstall_True()
     {
-        Assert.True(InstallScope.InstallsPythonTools(InstallRole.Gateway, installMode: true, dryRun: false, isWindows: true));
+        Assert.True(InstallScope.InstallsPythonTools(InstallRole.Gateway, installMode: true, dryRun: false));
     }
 
     [Fact]
     public void InstallsPythonTools_WorkstationInstall_True()
     {
-        Assert.True(InstallScope.InstallsPythonTools(InstallRole.Workstation, installMode: true, dryRun: false, isWindows: true));
+        Assert.True(InstallScope.InstallsPythonTools(InstallRole.Workstation, installMode: true, dryRun: false));
     }
 
     [Theory]
@@ -27,17 +27,17 @@ public class InstallScopeTests
     public void InstallsPythonTools_BothRolesAgree(InstallRole role)
     {
         // Role-independent by design: whatever Workstation does, Gateway does too.
-        var gateway = InstallScope.InstallsPythonTools(InstallRole.Gateway, installMode: true, dryRun: false, isWindows: true);
-        var workstation = InstallScope.InstallsPythonTools(InstallRole.Workstation, installMode: true, dryRun: false, isWindows: true);
+        var gateway = InstallScope.InstallsPythonTools(InstallRole.Gateway, installMode: true, dryRun: false);
+        var workstation = InstallScope.InstallsPythonTools(InstallRole.Workstation, installMode: true, dryRun: false);
         Assert.Equal(workstation, gateway);
         // The parameterized role still resolves to the same decision.
-        Assert.True(InstallScope.InstallsPythonTools(role, installMode: true, dryRun: false, isWindows: true));
+        Assert.True(InstallScope.InstallsPythonTools(role, installMode: true, dryRun: false));
     }
 
     [Fact]
     public void InstallsPythonTools_DryRun_False()
     {
-        Assert.False(InstallScope.InstallsPythonTools(InstallRole.Gateway, installMode: true, dryRun: true, isWindows: true));
+        Assert.False(InstallScope.InstallsPythonTools(InstallRole.Gateway, installMode: true, dryRun: true));
     }
 
     [Fact]
@@ -45,13 +45,15 @@ public class InstallScopeTests
     {
         // A plain `update` pass (installMode: false) refreshes apps/tools already present; it does not
         // run the full bundle install step.
-        Assert.False(InstallScope.InstallsPythonTools(InstallRole.Gateway, installMode: false, dryRun: false, isWindows: true));
+        Assert.False(InstallScope.InstallsPythonTools(InstallRole.Gateway, installMode: false, dryRun: false));
     }
 
     [Fact]
-    public void InstallsPythonTools_NonWindows_False()
+    public void InstallsPythonTools_PlatformIndependent_TrueOnInstall()
     {
-        // The shared-venv bundle path here is Windows-only (macOS has its own placement).
-        Assert.False(InstallScope.InstallsPythonTools(InstallRole.Workstation, installMode: true, dryRun: false, isWindows: false));
+        // The decision is platform-independent: PythonToolsInstaller selects the right bundle
+        // assets per platform itself, and the release ships macOS bundles. The old Windows-only
+        // gate silently skipped the cc-* tools on a macOS install (issue #1445).
+        Assert.True(InstallScope.InstallsPythonTools(InstallRole.Workstation, installMode: true, dryRun: false));
     }
 }

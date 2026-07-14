@@ -44,13 +44,14 @@ internal static class Commands
     public static int Components(CliArgs args, InstallLayout layout, bool json)
     {
         var components = ScopedComponents(args);
+        var macOs = OperatingSystem.IsMacOS();
         if (json)
         {
             Program.WriteJson(components.Select(c => new
             {
                 id = c.Id,
                 kind = c.Kind.ToString(),
-                asset = c.WindowsAsset,
+                asset = c.AssetFor(macOs),
                 path = layout.PathFor(c),
                 roles = c.Roles.Select(r => r.ToString()).OrderBy(s => s),
             }));
@@ -59,7 +60,7 @@ internal static class Commands
 
         Console.WriteLine($"Components for role '{Role(args)}':");
         foreach (var c in components)
-            Console.WriteLine($"  {c.Id,-14} {c.Kind,-9} {c.WindowsAsset}");
+            Console.WriteLine($"  {c.Id,-14} {c.Kind,-9} {c.AssetFor(macOs) ?? "(no macOS build)"}");
         return Ok;
     }
 
@@ -191,12 +192,44 @@ internal static class Commands
 
         var source = new ReleaseSource();
 
-        var result = new UpdateRunResult { Results = Array.Empty<ApplyResult>() };
+        // macOS: the Director ships as a .app-bundle zip (cc-director-mac-arm64.zip) that the
+        // generic single-file runner cannot place. Route it through MacAppPlacer - the exact step
+        // the setup wizard uses - and hand the rest of the plan to the generic runner. Before this
+        // split the CLI downloaded the WINDOWS Director exe onto macOS (issue #1445).
+        PlanItem? macDirectorItem = null;
+        if (OperatingSystem.IsMacOS())
+        {
+            macDirectorItem = plan.Items.FirstOrDefault(i =>
+                i.ComponentId.Equals(ComponentRegistry.Director.Id, StringComparison.OrdinalIgnoreCase)
+                && i.Kind is PlanItemKind.Install or PlanItemKind.Update);
+            if (macDirectorItem is not null)
+                plan = new UpdatePlan { Items = plan.Items.Where(i => !ReferenceEquals(i, macDirectorItem)).ToList() };
+        }
+
+        var applied = new List<ApplyResult>();
         if (plan.HasWork)
         {
             var runner = new UpdateRunner(layout, components,
                 (item, ct) => source.DownloadAssetAsync(item.AssetName, release.DownloadUrls, ct));
-            result = await runner.ApplyAsync(plan);
+            var runResult = await runner.ApplyAsync(plan);
+            applied.AddRange(runResult.Results);
+        }
+
+        if (macDirectorItem is not null)
+        {
+            var placed = await PlaceMacDirectorAsync(layout, release, source, json);
+            applied.Add(new ApplyResult(
+                ComponentRegistry.Director.Id,
+                placed.Success
+                    ? (macDirectorItem.Kind == PlanItemKind.Update ? ApplyStatus.Updated : ApplyStatus.Installed)
+                    : ApplyStatus.Failed,
+                macDirectorItem.FromVersion, placed.Version ?? macDirectorItem.ToVersion,
+                placed.Success ? null : placed.Message, null));
+        }
+
+        var result = new UpdateRunResult { Results = applied };
+        if (applied.Count > 0)
+        {
             PrintRun(result, installMode, json);
         }
         else if (!isGatewayInstall && !(installMode && Role(args) == InstallRole.Workstation))
@@ -237,7 +270,7 @@ internal static class Commands
         // old workstation-only gate dated from when the Gateway was an elevated Windows service that
         // ran as admin while the venv belonged in the logged-in user's profile; that model is retired.
         var toolsInstalled = false;
-        if (InstallScope.InstallsPythonTools(Role(args), installMode, args.HasFlag("dry-run"), OperatingSystem.IsWindows()))
+        if (InstallScope.InstallsPythonTools(Role(args), installMode, args.HasFlag("dry-run")))
         {
             var py = await new PythonToolsInstaller(layout).InstallAsync(release, source);
             if (json)
@@ -268,6 +301,13 @@ internal static class Commands
                 Console.WriteLine(shortcut ? "Start Menu shortcut: created" : "Start Menu shortcut: skipped (Director not installed)");
             }
         }
+        else if (perUserTouched && OperatingSystem.IsMacOS())
+        {
+            // Wizard parity: make sure ~/.local/bin (the cc-* tool shims) is on the login PATH.
+            var pathChanged = InstallFinalizer.EnsureMacUserBinOnPath();
+            if (!json)
+                Console.WriteLine(pathChanged ? "PATH: added ~/.local/bin (open a new terminal to use the tools)" : "PATH: already set");
+        }
 
         // The Launcher tray app ships to BOTH roles. The generic runner PLACES its exe but never
         // starts it (so a fresh install leaves it dormant and its autostart Run key unwritten). Start
@@ -279,23 +319,47 @@ internal static class Commands
         // the self-update loop on start. Idempotent: an already-running launcher just keeps serving. If
         // the launcher's OWN install failed its exe is absent and we skip (counted in result.Failed below).
         var launcherExe = layout.PathFor(ComponentRegistry.Launcher);
-        if (installMode && OperatingSystem.IsWindows() && File.Exists(launcherExe))
+        if (installMode && File.Exists(launcherExe))
         {
-            var launcherInstaller = new LauncherTrayInstaller(layout);
-            var launcherTray = await launcherInstaller.InstallAsync();
+            // Same contract both platforms: the exe/binary is already placed; this step starts it
+            // and verifies health + autostart registration (Run key on Windows, launch agent on
+            // macOS, where a kickstart hands a running launcher over to the newly placed binary).
+            LauncherInstallResult launcherStart;
+            if (OperatingSystem.IsWindows())
+                launcherStart = await new LauncherTrayInstaller(layout).InstallAsync();
+            else if (OperatingSystem.IsMacOS())
+                launcherStart = await new LauncherMacInstaller(layout).InstallAsync();
+            else
+                throw new PlatformNotSupportedException("The launcher install step supports Windows and macOS only.");
+
             if (json)
-                Program.WriteJson(new { launcherTray = new { success = launcherTray.Success, message = launcherTray.Message, steps = launcherTray.Steps } });
+                Program.WriteJson(new { launcherTray = new { success = launcherStart.Success, message = launcherStart.Message, steps = launcherStart.Steps } });
             else
             {
                 Console.WriteLine();
-                Console.WriteLine(launcherTray.Success ? "Launcher tray app:" : "Launcher tray app FAILED:");
-                foreach (var s in launcherTray.Steps) Console.WriteLine($"  {s}");
-                Console.WriteLine($"  {launcherTray.Message}");
+                Console.WriteLine(launcherStart.Success ? "Launcher tray app:" : "Launcher tray app FAILED:");
+                foreach (var s in launcherStart.Steps) Console.WriteLine($"  {s}");
+                Console.WriteLine($"  {launcherStart.Message}");
             }
-            if (!launcherTray.Success) return Error;
+            if (!launcherStart.Success) return Error;
         }
 
         return result.Failed > 0 ? Error : Ok;
+    }
+
+    /// <summary>
+    /// Place the macOS Director .app bundle via <see cref="MacAppPlacer"/> (download, SHA-256
+    /// verify, ditto-extract, swap into ~/Applications, de-quarantine). Fresh install and update
+    /// are the same operation; the placer records the installed version for the planner.
+    /// </summary>
+    private static async Task<MacAppResult> PlaceMacDirectorAsync(
+        InstallLayout layout, ResolvedRelease release, ReleaseSource source, bool json)
+    {
+        if (!OperatingSystem.IsMacOS())
+            throw new InvalidOperationException("PlaceMacDirectorAsync is macOS-only.");
+        if (!json) Console.WriteLine("Placing CC Director.app:");
+        return await MacAppPlacer.PlaceAsync(layout, release, source,
+            log: m => { if (!json) Console.WriteLine($"  {m}"); });
     }
 
     /// <summary>
