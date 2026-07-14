@@ -43,6 +43,13 @@ machine-errors envelope; effective color and triage bucket are already stamped o
 5. The browser talks ONLY to the Gateway with relative addresses.
 6. No fallback programming; fail loudly with a clear message.
 7. Plain English everywhere - no abbreviations, no jargon. ASCII only in code and output.
+8. Fleet search filters by session TITLE only. Searching what sessions are actually doing
+   (terminal output or transcript content) is a noted follow-on, deliberately not in scope.
+9. Remote screen capture is OUT OF SCOPE for the Cockpit. Agents capture their own machine's
+   screen with their own tools (AgentEyes). The Cockpit only ever uploads an image from the
+   device the browser runs on.
+10. "Open in Explorer" and "Open in VS Code" are desktop-only actions and are NOT added to the
+    Cockpit session menu - the session may run on a remote machine.
 
 ## The one open dependency: the pull-request stack 1217 to 1226
 
