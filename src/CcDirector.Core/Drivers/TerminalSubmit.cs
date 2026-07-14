@@ -143,9 +143,10 @@ public static class TerminalSubmit
         var needle = NormalizeForEcho(text);
         var visibleTailNeedle = VisibleTailNeedle(needle);
 
+        var cursor = buffer.TotalBytesWritten;
         for (var attempt = 1; attempt <= 2; attempt++)
         {
-            var cursor = buffer.TotalBytesWritten;
+            cursor = buffer.TotalBytesWritten;
             await WriteTextAsync(backend, text);
 
             if (needle.Length == 0 || await WaitForEchoAsync(buffer, cursor, needle, visibleTailNeedle, to, poll))
@@ -174,7 +175,8 @@ public static class TerminalSubmit
                 break;
 
             FileLog.Write($"[{driverTag}] EchoVerifiedSubmit: composer echo not seen on attempt {attempt} " +
-                          $"(len={text.Length}) - clearing the composer and retyping");
+                          $"(len={text.Length}) - clearing the composer and retyping. " +
+                          EchoMissDiagnostics(buffer, cursor, screenSnapshot, needle, visibleTailNeedle));
             backend.Write(EscapeByte);
             await Task.Delay(TimeSpan.FromMilliseconds(300));
         }
@@ -190,7 +192,8 @@ public static class TerminalSubmit
         throw new ComposerNotAcceptingInputException(
             $"[{driverTag}] EchoVerifiedSubmit: the composer never echoed the typed text after 2 attempts - " +
             "the TUI is not accepting input (a modal, a picker, or a composer still initializing). " +
-            $"Terminal tail: {TailOf(buffer)}");
+            $"{EchoMissDiagnostics(buffer, cursor, screenSnapshot, needle, visibleTailNeedle)} " +
+            $"Readable buffer tail: {TailOf(buffer)}");
     }
 
     private static async Task BracketedPasteSubmitAsync(
@@ -377,6 +380,56 @@ public static class TerminalSubmit
         const int maxChars = 500;
         return text.Length <= maxChars ? text : text[^maxChars..];
     }
+
+    /// <summary>
+    /// Compact evidence for a missed composer echo, for post-mortem troubleshooting of a false
+    /// "composer not accepting input" (issue #1493). Reports what the submit was looking for (the
+    /// full needle and the visible-tail needle) and what each witness actually held - the raw byte
+    /// stream written since this attempt's cursor, and the rendered screen grid - each normalized to
+    /// the echo alphabet and tail-bounded. Last time this fired the log carried only the byte tail,
+    /// which could not show why the rendered-screen fallback ALSO missed; the screen fields close
+    /// that gap. Distinguishes "text present but full needle scrolled off" (HasTail true, HasNeedle
+    /// false) from "text genuinely not on the grid" (both false) from "grid empty" (screenLen 0).
+    /// </summary>
+    private static string EchoMissDiagnostics(
+        CircularTerminalBuffer buffer,
+        long cursor,
+        Func<string[]>? screenSnapshot,
+        string needle,
+        string? visibleTailNeedle)
+    {
+        const int tailChars = 400;
+
+        var (bytes, _) = buffer.GetWrittenSince(cursor);
+        var byteHay = NormalizeForEcho(StripAnsi(Encoding.UTF8.GetString(bytes)));
+        var byteHasNeedle = byteHay.Contains(needle, StringComparison.Ordinal);
+        var byteHasTail = visibleTailNeedle is not null && byteHay.Contains(visibleTailNeedle, StringComparison.Ordinal);
+
+        string screenInfo;
+        if (screenSnapshot is null)
+        {
+            screenInfo = "screen=<no snapshot supplied by driver>";
+        }
+        else
+        {
+            var rows = screenSnapshot();
+            var screenHay = NormalizeForEcho(string.Concat(rows));
+            var screenHasNeedle = screenHay.Contains(needle, StringComparison.Ordinal);
+            var screenHasTail = visibleTailNeedle is not null && screenHay.Contains(visibleTailNeedle, StringComparison.Ordinal);
+            screenInfo =
+                $"screenRows={rows.Length}, screenLen={screenHay.Length}, " +
+                $"screenHasNeedle={screenHasNeedle}, screenHasTail={screenHasTail}, " +
+                $"screenTail=\"{TailBounded(screenHay, tailChars)}\"";
+        }
+
+        return
+            $"[echo-miss] needleLen={needle.Length}, tailNeedle=\"{visibleTailNeedle}\", " +
+            $"byteLen={byteHay.Length}, byteHasNeedle={byteHasNeedle}, byteHasTail={byteHasTail}, " +
+            $"byteTail=\"{TailBounded(byteHay, tailChars)}\", {screenInfo}";
+    }
+
+    private static string TailBounded(string value, int maxChars) =>
+        value.Length <= maxChars ? value : value[^maxChars..];
 
     private static string NormalizeWhitespace(string value)
     {
