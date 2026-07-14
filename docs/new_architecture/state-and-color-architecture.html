@@ -305,6 +305,29 @@
     </style>
 </head>
 <body>
+<div style="background:#7f1d1d;color:#fff;border:4px solid #ef4444;border-radius:8px;padding:22px 26px;margin:0 0 32px;font:16px/1.6 -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
+  <div style="font-size:26px;font-weight:800;letter-spacing:-0.01em;margin-bottom:10px;">SUPERSEDED - DO NOT IMPLEMENT FROM THIS DOCUMENT</div>
+  <p style="margin:0 0 12px;"><strong>Retired 14 July 2026.</strong> The authoritative definition of session
+  state is now <code style="background:rgba(255,255,255,.15);padding:1px 5px;border-radius:3px;">docs/architecture/session-state-authoritative-2026-07-14.html</code>. Read that instead.</p>
+  <p style="margin:0 0 12px;"><strong>This document is wrong in two directions at once, and it describes a
+  system that has never existed.</strong> It was called "source of truth" by the phase 2 spec, which is why
+  the errors below kept being re-implemented by agent after agent. Do not copy its colour ladder.</p>
+  <ul style="margin:0 0 12px;padding-left:22px;">
+    <li><strong>Wrong about blue.</strong> Its precedence table ranks slate ("controlled by another session")
+    at order 5, ABOVE blue ("Working") at order 7 - so six of its eight rules outrank Working. That discards
+    the real activity state and paints a busy sub-agent gray, indistinguishable from on-hold or exited.
+    <strong>The owner's ruling of 14 July 2026 voids this: if a session is working it is BLUE, always.
+    Nothing outranks Working.</strong> This also explicitly supersedes the 2026-07-10 decision in issue
+    #1286 ("a controlled worker always shows the recessive Supporting colour").</li>
+    <li><strong>Wrong about red.</strong> It states twice that "red breaks through" the slate recede. The
+    shipped code has never done that for a live Worker: <code style="background:rgba(255,255,255,.15);padding:1px 5px;border-radius:3px;">SessionOrdering.cs</code>
+    suppresses a live-controlled Worker's red deliberately, so the need routes to its manager rather than to
+    the human. This error predates the blue one.</li>
+  </ul>
+  <p style="margin:0;">Gray-when-controlled is a LATER feature that applies ONLY to a RED controlled session
+  and must NEVER touch a working one. The Gateway owns every state centrally and is the only thing that
+  decides a colour; the Director only reports facts.</p>
+</div>
 <article class="markdown-body">
 <h1>Session State and Color Architecture</h1>
 <p><strong>Status:</strong> HYBRID. The target ownership rule (sections 1-6) is DECIDED (owner, 2026-07-08). The color scheme (section 7) and the violation inventory (section 9) are CURRENT: they describe the code as it exists today.</p>
@@ -516,7 +539,13 @@
 <tr>
 <td style="text-align:center">5</td>
 <td><span style="display:inline-block;width:18px;height:18px;border-radius:4px;background:#64748B;border:1px solid rgba(0,0,0,0.25);vertical-align:middle;margin-right:8px"></span> <strong>Slate</strong> <code>#64748B</code></td>
-<td>A sub-agent being driven by another session; it recedes so the operator is not nagged. Red still breaks through this.</td>
+<td><strong style="color:#ef4444;">[VOID - see the banner at the top of this document.]</strong> This row is
+wrong twice over. It must NEVER apply to a working session: if a session is working it is BLUE, always,
+and nothing outranks Working (owner's ruling, 14 July 2026; supersedes issue #1286). And "red still
+breaks through this" is not the shipped behaviour - a live-controlled Worker's red is deliberately
+suppressed so its manager sees it instead of the human. Slate applies ONLY at the red position, and only
+later. <span style="text-decoration:line-through;opacity:.6;">A sub-agent being driven by another session;
+it recedes so the operator is not nagged. Red still breaks through this.</span></td>
 <td>IsControlled and the controller is alive</td>
 </tr>
 <tr>
@@ -542,7 +571,11 @@
 <p>Two invariants worth stating:</p>
 <ul>
 <li><strong>Red is a verdict, not a raw reading.</strong> A session that has gone silent is not automatically red; it is red only after the overlays above have had their say. This is why the fold must be atomic and in one place: computing it in pieces is what let a session flip into "needs you" mid-brief and back out.</li>
-<li><strong>Red breaks through the slate "supporting" recede</strong> so a genuinely blocked sub-agent still surfaces.</li>
+<li><strong style="color:#ef4444;">[VOID - see the banner at the top of this document.]</strong> <span style="text-decoration:line-through;opacity:.6;">Red breaks through the slate "supporting" recede so a
+genuinely blocked sub-agent still surfaces.</span> This is not, and has not been, the shipped behaviour: a
+live-controlled Worker's red IS suppressed to slate, on purpose - the need routes to its manager, not to
+the human. Red surfaces only for a controlled session whose controller has died (the escape hatch), and for
+Managers and Standalones.</li>
 </ul>
 <hr/>
 <h2>8. The standalone fallback (CONFIRM)</h2>

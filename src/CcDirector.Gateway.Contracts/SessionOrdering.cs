@@ -110,26 +110,28 @@ public static class SessionOrdering
     // ColorFor, computed from the wire's raw facts) =====
 
     /// <summary>
-    /// The base presentation color from raw facts, reproducing the Director's structural fold: the
-    /// activity color with the purple (background), green (brand-new), and Director auto-explain (yellow)
-    /// turn-end overlays, wrapped by the slate "Supporting" overlay for a controlled sub-agent. The
-    /// briefing and Gateway-deep-dive overlays are applied by <see cref="EffectiveColor"/> above (they win
-    /// before this is reached), so they are intentionally not repeated here.
+    /// The base presentation color from raw facts: the activity color with the purple (background),
+    /// green (brand-new), and Director auto-explain (yellow) turn-end overlays, plus the slate
+    /// "Supporting" overlay that suppresses a controlled Worker's RED. The briefing and Gateway
+    /// deep-dive overlays are applied by <see cref="EffectiveColor"/> above (they win before this is
+    /// reached), so they are intentionally not repeated here.
+    ///
+    /// A WORKING session is BLUE, always - nothing outranks working (owner's ruling, 2026-07-14). This
+    /// used to open with a slate overlay that returned "supporting" for ANY controlled session that was
+    /// not red, which DISCARDED the real activity state: a controlled sub-agent 23 minutes into real
+    /// work rendered gray and read "Sub-agent", indistinguishable from on-hold or exited. That rule
+    /// implemented the 2026-07-10 decision in issue #1286 ("a controlled worker always shows the
+    /// recessive Supporting colour"), which the owner has since VOIDED. Do not restore it.
+    ///
+    /// Ownership - who is driving a session - travels on the rail's role badge, a separate channel.
+    /// Color says what a session is DOING and must never be spent saying who owns it.
     /// </summary>
     private static string BaseColor(SessionDto s)
     {
         var activity = ResolveActivity(s);
-        var controlled = s.IsControlled && !string.IsNullOrEmpty(s.ControllerSessionId);
         var isRed = string.Equals(activity, "red", StringComparison.OrdinalIgnoreCase);
 
-        // Slate overlay (issue #815): a controlled sub-agent recedes to slate while its controller is
-        // present, EXCEPT red "needs you" breaks through so a blocked sub-agent still surfaces. The
-        // Director gated this on the controller being ALIVE; the Gateway approximates with "a controller
-        // id is present" (this differs only for a controlled session whose controller has already exited).
-        if (controlled && !isRed)
-            return "supporting";
-
-        // Automatic session roles (Layer 1 - "workers never nag the human"): a LIVE-controlled Worker ALSO
+        // Automatic session roles (Layer 1 - "workers never nag the human"): a LIVE-controlled Worker
         // suppresses its red - it recedes to slate and never surfaces red to the human (its manager sees it
         // via the rail). SessionRole is stamped by the Gateway aggregation from the WHOLE fleet, so
         // "Worker" already means "controlled AND controller ALIVE". A Worker whose controller has DIED is
@@ -195,6 +197,8 @@ public static class SessionOrdering
         if (IsVoicePreparing(s)) return "Preparing voice";
         return BaseColor(s) switch
         {
+            // "supporting" now means ONLY a Worker whose red was suppressed (see BaseColor). A working
+            // controlled sub-agent reads "Working" like any other working session.
             "supporting" => "Sub-agent",
             "purple" => "Background",
             "green" => "Ready",
