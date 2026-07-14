@@ -115,7 +115,14 @@ public static class ClaudeTranscriptReader
                 && DateTimeOffset.TryParse(ts.GetString(), out var parsed))
                 timestamp = parsed;
 
-            return new ConversationMessage(role, parts, timestamp);
+            // Claude stamps every line with the id of the context it belongs to, and mints a new one on
+            // /clear and on auto-compaction - so this is what groups the messages that truly shared a
+            // context window (issue #1551).
+            string? contextId = null;
+            if (root.TryGetProperty("sessionId", out var sid) && sid.ValueKind == JsonValueKind.String)
+                contextId = sid.GetString();
+
+            return new ConversationMessage(role, parts, timestamp, contextId);
         }
     }
 

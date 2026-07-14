@@ -44,10 +44,17 @@ public sealed record ConversationPart(
 /// <param name="Role">Who produced the message.</param>
 /// <param name="Parts">The message's content parts, in order.</param>
 /// <param name="Timestamp">When the message was recorded, if the source carries it.</param>
+/// <param name="ContextId">The agent's OWN id for the context this message belongs to, when the source
+/// carries one; null otherwise. This is the CONTEXT's identity, not the Director session's: agents mint
+/// a new one whenever the context restarts (Claude does so on /clear and on auto-compaction), so it is
+/// what groups messages that actually shared a context window. Distinct from the Director session id,
+/// which spans every context in one window. A source holding several contexts in one file (Gemini's
+/// logs.json) carries it per message, which is why it lives here rather than on the history.</param>
 public sealed record ConversationMessage(
     ConversationRole Role,
     IReadOnlyList<ConversationPart> Parts,
-    DateTimeOffset? Timestamp = null);
+    DateTimeOffset? Timestamp = null,
+    string? ContextId = null);
 
 /// <summary>
 /// An agent-agnostic, normalized view of a session's conversation. Every agent provider
