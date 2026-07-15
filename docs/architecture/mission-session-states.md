@@ -156,10 +156,10 @@ That is a real piece of work and it is the owner's call.
 closed, and they are ([#1623](https://github.com/thefrederiksen/devthrottle/pull/1623)).**
 
 **Gaps 1, 2, 5 and 6 are fixed and merged.** Gap 3 is REFUSED on the evidence and stays open on purpose -
-see its census on `Session.StatusColor`. Gap 4 is a decision paper and is the ONE thing still waiting on
-the owner. A Manager is seated on them - brief at
-[`session-states-gaps-manager-brief.md`](session-states-gaps-manager-brief.md), branch
-`mission/session-states-gaps`.
+see its census on `Session.StatusColor`. **Gap 4 is DECIDED and REJECTED** - see below; nothing here is
+waiting on the owner any more. The Manager's brief is at
+[`session-states-gaps-manager-brief.md`](session-states-gaps-manager-brief.md); its work merged as
+[#1623](https://github.com/thefrederiksen/devthrottle/pull/1623) and the Manager has stood down.
 
 Two of the four are settled and being built:
 
