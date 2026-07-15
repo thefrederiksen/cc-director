@@ -1,3 +1,4 @@
+using CcDirector.Core.Agents;
 using CcDirector.Core.Sessions;
 using Xunit;
 
@@ -148,6 +149,89 @@ public class WorkspaceStoreTests : IDisposable
         Assert.Equal(0, loaded.Sessions[0].SortOrder);
         Assert.Equal("--allowedTools bash", loaded.Sessions[0].ClaudeArgs);
         Assert.Null(loaded.Sessions[1].CustomName);
+    }
+
+    // ==================== Issue #1635: the agent survives a save/load ====================
+
+    // The reported symptom: save a workspace containing a Codex session, load it back, and it is Claude
+    // Code. The agent was lost at SAVE time - WorkspaceSessionEntry had no agent field at all - so the
+    // restore had nothing to read and fell to the CreateSession default.
+    [Fact]
+    public void Save_AndLoad_RoundTripsTheAgent()
+    {
+        var store = new WorkspaceStore(_tempDir);
+        var workspace = MakeWorkspace("Codex Project");
+        workspace.Sessions = new List<WorkspaceSessionEntry>
+        {
+            new() { RepoPath = @"D:\Repos\project-a", SortOrder = 0, Agent = nameof(AgentKind.Codex) },
+            new() { RepoPath = @"D:\Repos\project-b", SortOrder = 1, Agent = nameof(AgentKind.ClaudeCode) },
+        };
+
+        store.Save(workspace);
+        var loaded = store.Load("codex-project");
+
+        Assert.NotNull(loaded);
+        Assert.Equal(nameof(AgentKind.Codex), loaded.Sessions[0].Agent);
+        Assert.Equal(AgentKind.Codex, loaded.Sessions[0].ResolveAgentKind());
+        Assert.Equal(AgentKind.ClaudeCode, loaded.Sessions[1].ResolveAgentKind());
+    }
+
+    // Every agent must survive the round trip, not just the one the fix was written against - a test of
+    // only today's value goes stale the moment another agent kind is added.
+    [Theory]
+    [InlineData(AgentKind.ClaudeCode)]
+    [InlineData(AgentKind.Pi)]
+    [InlineData(AgentKind.Codex)]
+    [InlineData(AgentKind.Gemini)]
+    [InlineData(AgentKind.OpenCode)]
+    [InlineData(AgentKind.RawCli)]
+    [InlineData(AgentKind.Cursor)]
+    [InlineData(AgentKind.Grok)]
+    public void Save_AndLoad_RoundTripsEveryAgentKind(AgentKind kind)
+    {
+        var store = new WorkspaceStore(_tempDir);
+        var workspace = MakeWorkspace("Agent Round Trip");
+        workspace.Sessions = new List<WorkspaceSessionEntry>
+        {
+            new() { RepoPath = @"D:\Repos\project-a", SortOrder = 0, Agent = kind.ToString() },
+        };
+
+        store.Save(workspace);
+        var loaded = store.Load("agent-round-trip");
+
+        Assert.NotNull(loaded);
+        Assert.Equal(kind, loaded.Sessions[0].ResolveAgentKind());
+    }
+
+    // A workspace saved before the agent field existed. ClaudeCode is not a guess here: every session in
+    // such a file was created through the old CreateSession default, so that is what it actually was.
+    [Fact]
+    public void ResolveAgentKind_AgentNeverRecorded_IsClaudeCode()
+    {
+        var entry = new WorkspaceSessionEntry { RepoPath = @"D:\Repos\legacy", SortOrder = 0 };
+
+        Assert.Null(entry.Agent);
+        Assert.Equal(AgentKind.ClaudeCode, entry.ResolveAgentKind());
+    }
+
+    // A hand-edited file, or one written by a newer build that knows an agent this one does not. It must
+    // not throw and take the whole workspace load down with it.
+    [Fact]
+    public void ResolveAgentKind_UnknownAgent_IsClaudeCodeAndDoesNotThrow()
+    {
+        var entry = new WorkspaceSessionEntry { RepoPath = @"D:\Repos\x", Agent = "NotARealAgent" };
+
+        Assert.Equal(AgentKind.ClaudeCode, entry.ResolveAgentKind());
+    }
+
+    // The agent name is written by AgentKind.ToString(), but a human editing the file by hand will not
+    // match its casing.
+    [Fact]
+    public void ResolveAgentKind_DifferentCasing_StillResolves()
+    {
+        var entry = new WorkspaceSessionEntry { RepoPath = @"D:\Repos\x", Agent = "codex" };
+
+        Assert.Equal(AgentKind.Codex, entry.ResolveAgentKind());
     }
 
     [Fact]
