@@ -2028,11 +2028,36 @@ public partial class MainWindow : Window
 
         // On-hold toggle: parks the session out of the FIFO rotation and paints its
         // list strip dark blue so you can see at a glance which sessions you've set aside.
-        var hold = new MenuItem { Header = vm.IsOnHold ? "Unsnooze" : "Snooze" };
+        //
+        // The lengths come from the Gateway-owned cache, read here because it never blocks - this menu is
+        // rebuilt on every open and owes feedback in under 100ms. SnoozeMenuModel decides what to say.
+        var snoozeMenu = SnoozeMenuModel.Build(
+            vm.IsOnHold,
+            (global::Avalonia.Application.Current as App)?.ControlApiHost?.SnoozeOptions.Current);
+
+        var hold = new MenuItem { Header = snoozeMenu.ToggleHeader };
         ToolTip.SetTip(hold, vm.IsOnHold
             ? "Unsnooze this session and return it to the \"Your Turn\" rotation."
             : "Snooze this session so it drops out of the \"Your Turn\" rotation and is marked dark blue.");
+        // Null length = "use my default", which is exactly what the plain click means.
         hold.Click += (_, _) => ToggleSessionHold(vm);
+
+        // "Snooze for" - the other lengths, so a different length for THIS session is one step instead of
+        // a trip to Settings and back. No choices means this desktop has not learned the lengths yet, and
+        // the submenu is left off entirely rather than shown empty.
+        MenuItem? snoozeFor = null;
+        if (snoozeMenu.Choices.Count > 0)
+        {
+            snoozeFor = new MenuItem { Header = "Snooze for" };
+            ToolTip.SetTip(snoozeFor, "Snooze this session for a specific length, instead of your default.");
+            foreach (var choice in snoozeMenu.Choices)
+            {
+                var item = new MenuItem { Header = choice.Header };
+                var chosen = choice.Minutes;
+                item.Click += (_, _) => SetSessionSnoozeFor(vm, chosen);
+                snoozeFor.Items.Add(item);
+            }
+        }
 
         // --- Section 2: open the session's repository in an external tool ---
 
@@ -2095,6 +2120,7 @@ public partial class MainWindow : Window
 
         menu.Items.Add(rename);
         menu.Items.Add(hold);
+        if (snoozeFor is not null) menu.Items.Add(snoozeFor);
         menu.Items.Add(new Separator());
         menu.Items.Add(openExplorer);
         menu.Items.Add(openVsCode);
@@ -2179,13 +2205,25 @@ public partial class MainWindow : Window
         }
     }
 
-    private async void ToggleSessionHold(SessionViewModel vm)
+    /// <summary>
+    /// The plain Snooze/Unsnooze click: toggles the session's hold using the user's DEFAULT length (a null
+    /// length tells the Gateway to apply it).
+    /// </summary>
+    private void ToggleSessionHold(SessionViewModel vm) => SetSessionHold(vm, !vm.Session.OnHold, null);
+
+    /// <summary>
+    /// A "Snooze for" choice: hold this session for a specific length instead of the default. Always a
+    /// hold (never an unsnooze) - picking a length while already snoozed re-arms the timer to the new
+    /// length, which is the point of offering the submenu while snoozed.
+    /// </summary>
+    private void SetSessionSnoozeFor(SessionViewModel vm, int minutes) => SetSessionHold(vm, true, minutes);
+
+    private async void SetSessionHold(SessionViewModel vm, bool target, int? snoozeMinutes)
     {
         // Snooze Length mission (Phase 3): snooze is Gateway-owned. Instead of setting Session.OnHold
         // in-process (which gave no timer), drive the Gateway hold seam so this snooze gets the same
         // Gateway-owned timer the phone and cockpit get. The Gateway records the snooze-until AND forwards
         // the hold back DOWN to this Director, which sets OnHold - so we never set it locally here.
-        var target = !vm.Session.OnHold;
         var host = (global::Avalonia.Application.Current as App)?.ControlApiHost;
 
         // No Gateway -> no snooze (owner rule, no-fallback): require a VERIFIED connection, which proves
@@ -2198,17 +2236,20 @@ public partial class MainWindow : Window
 
         // Immediate feedback (<100ms); the Gateway round-trip runs async off the UI thread - it is NOT
         // always loopback (the Gateway may be on another machine over Tailscale), so it may be slow.
-        ShowNotification(target ? $"Snoozing {vm.DisplayName}..." : $"Waking {vm.DisplayName}...");
+        var forLength = snoozeMinutes is null ? "" : $" for {Core.Configuration.SnoozeLengthText.Format(snoozeMinutes.Value)}";
+        ShowNotification(target ? $"Snoozing {vm.DisplayName}{forLength}..." : $"Waking {vm.DisplayName}...");
         try
         {
-            await host.GatewayHold.RecordHoldAsync(vm.Session.Id.ToString(), target);
-            FileLog.Write($"[MainWindow] ToggleSessionHold via Gateway: session={vm.Session.Id}, onHold={target}");
-            ShowNotification(target ? $"{vm.DisplayName} snoozed" : $"{vm.DisplayName} taken off snooze");
+            await host.GatewayHold.RecordHoldAsync(vm.Session.Id.ToString(), target, snoozeMinutes);
+            FileLog.Write(
+                $"[MainWindow] SetSessionHold via Gateway: session={vm.Session.Id}, onHold={target}, "
+                + $"snoozeMinutes={(snoozeMinutes is null ? "default" : snoozeMinutes.ToString())}");
+            ShowNotification(target ? $"{vm.DisplayName} snoozed{forLength}" : $"{vm.DisplayName} taken off snooze");
         }
         catch (Exception ex)
         {
             // Fail loud: no local OnHold set, so nothing diverges from the Gateway's truth.
-            FileLog.Write($"[MainWindow] ToggleSessionHold FAILED: session={vm.Session.Id}: {ex.Message}");
+            FileLog.Write($"[MainWindow] SetSessionHold FAILED: session={vm.Session.Id}: {ex.Message}");
             ShowNotification($"Could not snooze {vm.DisplayName} - {ex.Message}");
         }
     }

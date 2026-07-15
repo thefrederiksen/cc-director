@@ -1,3 +1,5 @@
+using CcDirector.Gateway.Contracts;
+
 namespace CcDirector.ControlApi;
 
 /// <summary>
@@ -25,5 +27,18 @@ public interface IGatewayHold
     /// session and forward the hold to its owning Director. Returns only after the Gateway confirms;
     /// throws on any failure (no fallback).
     /// </summary>
-    Task RecordHoldAsync(string sessionId, bool onHold, CancellationToken ct = default);
+    /// <param name="snoozeMinutes">
+    /// How long to hold it, in whole minutes. Null means "use the user's default length", which is what
+    /// the plain one-click Snooze sends; a value is what a specific "Snooze for" choice sends. Ignored
+    /// when <paramref name="onHold"/> is false - an unsnooze has no length.
+    /// </param>
+    Task RecordHoldAsync(string sessionId, bool onHold, int? snoozeMinutes = null, CancellationToken ct = default);
+
+    /// <summary>
+    /// Fetch the user's snooze lengths and default from the Gateway, or null when the Gateway is not
+    /// configured. Throws when the Gateway is configured but the call fails, so a caller that needs the
+    /// real answer fails loud; the desktop's cache catches that and keeps its last-known list rather than
+    /// blocking a menu on the network.
+    /// </summary>
+    Task<SnoozeOptionsResponse?> GetSnoozeOptionsAsync(CancellationToken ct = default);
 }

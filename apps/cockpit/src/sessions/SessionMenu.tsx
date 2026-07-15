@@ -9,6 +9,8 @@ import {
   type SessionHandover,
 } from "@devthrottle/client-core/api/client";
 import { renameSession } from "@devthrottle/client-core/fleet/fleetClient";
+import { useSnoozeOptions } from "@devthrottle/client-core/settings/snoozeOptions";
+import { buildSnoozeMenu } from "@devthrottle/client-core/settings/snoozeMenu";
 
 // The session menu (issue #1214): a three-dot control with Rename, Snooze / Unsnooze, Handover info,
 // and Close session. It is the SAME component on the session page and on every rail card. Every action
@@ -43,15 +45,67 @@ export function SessionMenu({ session, onClosed, variant = "page" }: SessionMenu
   // upward) for a button near the bottom of the window, so it never runs off the bottom of the screen.
   const [popPos, setPopPos] = useState<{ top?: number; bottom?: number; right: number } | null>(null);
 
+  // "Snooze for" and its flyout. The lengths come from one shared cache for the whole page, so opening
+  // any menu never waits on the network - see useSnoozeOptions.
+  const snoozeOptions = useSnoozeOptions();
+  const snoozeMenu = buildSnoozeMenu(session.onHold === true, snoozeOptions);
+  const [snoozeForOpen, setSnoozeForOpen] = useState(false);
+  const [subPos, setSubPos] = useState<{ top: number; left?: number; right?: number } | null>(null);
+  const snoozeForRef = useRef<HTMLButtonElement | null>(null);
+  const subPopRef = useRef<HTMLDivElement | null>(null);
+  const subCloseTimer = useRef<number | null>(null);
+
+  // Hover intent. The flyout is portaled, so it is NOT a DOM child of "Snooze for" - moving the pointer
+  // from the item to the flyout leaves the item and would close the flyout before the pointer arrives,
+  // making the lengths unclickable. (The proof harness caught exactly that.) So a leave schedules the
+  // close, and an enter on EITHER side cancels it.
+  const keepSubOpen = useCallback(() => {
+    if (subCloseTimer.current !== null) {
+      window.clearTimeout(subCloseTimer.current);
+      subCloseTimer.current = null;
+    }
+  }, []);
+
+  const closeSubSoon = useCallback(() => {
+    keepSubOpen();
+    subCloseTimer.current = window.setTimeout(() => setSnoozeForOpen(false), 160);
+  }, [keepSubOpen]);
+
+  useEffect(() => () => keepSubOpen(), [keepSubOpen]);
+
+  // Place the flyout beside "Snooze for" and open it.
+  //
+  // It PREFERS to open left, because the parent popup is anchored to the right edge of its button and on
+  // a rail card that is usually near the right edge of the window. But "usually" is not "always" - a card
+  // near the LEFT edge has no room on the left, and a left-opening flyout lands off-screen at a negative
+  // x where it can never be clicked. (The proof harness caught exactly that.) So it flips to the right
+  // when the left will not fit, the same way the parent flips up when the bottom will not fit.
+  const placeSubmenu = useCallback(() => {
+    const r = snoozeForRef.current?.getBoundingClientRect();
+    if (!r) return;
+    const SUB_WIDTH = 160;
+    const SUB_HEIGHT = 16 + snoozeMenu.choices.length * 34;
+    const top = Math.max(8, Math.min(r.top - 4, window.innerHeight - SUB_HEIGHT - 8));
+    const fitsLeft = r.left - 4 - SUB_WIDTH >= 8;
+    setSubPos(
+      fitsLeft
+        ? { top, right: window.innerWidth - r.left + 4 }
+        : { top, left: Math.min(r.right + 4, window.innerWidth - SUB_WIDTH - 8) },
+    );
+    setSnoozeForOpen(true);
+  }, [snoozeMenu.choices.length]);
+
   useLayoutEffect(() => {
     if (!open) return;
     const place = () => {
       const r = btnRef.current?.getBoundingClientRect();
       if (!r) return;
       const right = Math.max(8, window.innerWidth - r.right);
-      // The menu holds a fixed set of items; this height covers all of them plus padding. If the
-      // space below the button cannot fit it, open upward from the button's top instead.
-      const MENU_HEIGHT = 184;
+      // Height of the menu plus padding. If the space below the button cannot fit it, open upward from
+      // the button's top instead. "Snooze for" is only present when this client knows the user's snooze
+      // lengths, so the height is not fixed - measure it off the item count rather than hard-coding a
+      // number that silently goes stale the next time a row is added.
+      const MENU_HEIGHT = 184 + (snoozeMenu.choices.length > 0 ? 31 : 0);
       const spaceBelow = window.innerHeight - r.bottom;
       if (spaceBelow < MENU_HEIGHT + 8) {
         setPopPos({ bottom: Math.max(8, window.innerHeight - r.top + 4), right });
@@ -66,7 +120,9 @@ export function SessionMenu({ session, onClosed, variant = "page" }: SessionMenu
       window.removeEventListener("resize", place);
       window.removeEventListener("scroll", place, true);
     };
-  }, [open]);
+    // The choice count is a dependency because it changes the menu's height: the lengths can arrive from
+    // the Gateway while the menu is already open, and the flip decision has to be redone when they do.
+  }, [open, snoozeMenu.choices.length]);
 
   // Close the dropdown on an outside click or Escape. The portal'd popover is outside rootRef, so it
   // is excluded explicitly.
@@ -76,6 +132,10 @@ export function SessionMenu({ session, onClosed, variant = "page" }: SessionMenu
       const t = e.target as Node;
       if (rootRef.current?.contains(t)) return;
       if (popRef.current?.contains(t)) return;
+      // The "Snooze for" flyout is its OWN portal on document.body, so it is inside neither ref above.
+      // Without this it counts as an outside click: mousedown tears the menu down before the button's
+      // click can fire, and the lengths are unclickable. (The proof harness caught exactly that.)
+      if (subPopRef.current?.contains(t)) return;
       setOpen(false);
     };
     const onKey = (e: KeyboardEvent) => {
@@ -135,6 +195,8 @@ export function SessionMenu({ session, onClosed, variant = "page" }: SessionMenu
     }
   }, [sid, renameText, closeDialog]);
 
+  // The plain Snooze/Unsnooze click: toggle using the user's DEFAULT length (no length sent = the
+  // Gateway applies it). Mirrors the desktop's ToggleSessionHold.
   const doHold = useCallback(async () => {
     if (sid.length === 0) return;
     setOpen(false);
@@ -148,6 +210,24 @@ export function SessionMenu({ session, onClosed, variant = "page" }: SessionMenu
       setBusy(false);
     }
   }, [sid, session.onHold]);
+
+  // A "Snooze for" choice: hold for a specific length instead of the default. Always a hold, never an
+  // unsnooze - picking a length while already snoozed re-arms the timer, which is why the submenu is
+  // offered while snoozed too.
+  const doSnoozeFor = useCallback(async (minutes: number) => {
+    if (sid.length === 0) return;
+    setOpen(false);
+    setSnoozeForOpen(false);
+    setBusy(true);
+    setError(null);
+    try {
+      await holdSession(sid, true, minutes);
+    } catch (err) {
+      setError(gatewayErrorMessage(err));
+    } finally {
+      setBusy(false);
+    }
+  }, [sid]);
 
   const doClose = useCallback(async () => {
     if (sid.length === 0) return;
@@ -204,14 +284,69 @@ export function SessionMenu({ session, onClosed, variant = "page" }: SessionMenu
               Rename
             </button>
             <button type="button" role="menuitem" className="session-menu-item" onClick={() => void doHold()}>
-              {session.onHold ? "Unsnooze" : "Snooze"}
+              {snoozeMenu.toggleHeader}
             </button>
+            {snoozeMenu.choices.length > 0 && (
+              <div
+                className="session-menu-sub"
+                onMouseEnter={() => { keepSubOpen(); placeSubmenu(); }}
+                onMouseLeave={closeSubSoon}
+              >
+                <button
+                  ref={snoozeForRef}
+                  type="button"
+                  role="menuitem"
+                  className="session-menu-item has-sub"
+                  aria-haspopup="menu"
+                  aria-expanded={snoozeForOpen}
+                  onClick={() => (snoozeForOpen ? setSnoozeForOpen(false) : placeSubmenu())}
+                >
+                  <span>Snooze for</span>
+                  <span aria-hidden="true" className="session-menu-caret">&rsaquo;</span>
+                </button>
+              </div>
+            )}
             <button type="button" role="menuitem" className="session-menu-item" onClick={openHandover}>
               Handover info
             </button>
             <button type="button" role="menuitem" className="session-menu-item danger" onClick={openClose}>
               Close session
             </button>
+          </div>,
+          document.body,
+        )}
+
+      {/* The flyout is its own portal, like the parent popup, so the scrolling rail cannot clip it. It
+          stays open while the pointer is over EITHER the parent item or the flyout itself. */}
+      {open && snoozeForOpen && subPos !== null &&
+        createPortal(
+          <div
+            ref={subPopRef}
+            className="session-menu-pop session-menu-subpop"
+            role="menu"
+            // Set BOTH sides (one to a value, the other to "auto") so a flip can never leave a stale
+            // left and right set at once, which would stretch or mis-place the flyout.
+            style={{
+              position: "fixed",
+              top: subPos.top,
+              left: subPos.left ?? "auto",
+              right: subPos.right ?? "auto",
+              width: 160,
+            }}
+            onMouseEnter={keepSubOpen}
+            onMouseLeave={closeSubSoon}
+          >
+            {snoozeMenu.choices.map((c) => (
+              <button
+                key={c.minutes}
+                type="button"
+                role="menuitem"
+                className="session-menu-item"
+                onClick={() => void doSnoozeFor(c.minutes)}
+              >
+                {c.header}
+              </button>
+            ))}
           </div>,
           document.body,
         )}

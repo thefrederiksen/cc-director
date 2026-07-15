@@ -2198,6 +2198,31 @@ body {
   background: var(--surface-2);
 }
 
+/* "Snooze for" and its flyout. The flyout is portaled like the parent popup, so the scrolling rail
+   cannot clip it, and it opens to the LEFT because the parent is anchored to the right edge of a rail
+   card - a right-opening flyout would leave the window. */
+.session-menu-sub {
+  display: contents;
+}
+.session-menu-item.has-sub {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  width: 100%;
+}
+.session-menu-caret {
+  color: var(--text-dim);
+  font-size: 15px;
+  line-height: 1;
+}
+.session-menu-item.has-sub[aria-expanded="true"] {
+  background: var(--surface-2);
+}
+.session-menu-subpop {
+  min-width: 150px;
+}
+
 .session-menu-item.danger {
   color: var(--attention);
 }
