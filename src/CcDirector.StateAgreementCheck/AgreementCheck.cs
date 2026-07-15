@@ -217,16 +217,65 @@ public static class AgreementCheck
     /// Found by independent inspection of pull request 1606: it ran the tool against the live fleet, saw
     /// a zero with two Gateway-only fold inputs in play, and did not believe it.
     ///
-    /// AND IT REQUIRES RAW RED, which is the law paying for itself a third time. The first cut of this
-    /// omitted that and an existing control caught it: a WORKING session with both facts is perfectly
-    /// readable, because blue outranks briefing and voice - BOTH possible origins fold blue, so the
-    /// ambiguity cannot change the answer and there is nothing to refuse. IsBriefing is
-    /// `BriefingState == "Briefing" && IsRawRed`, so the overwrite can only ever matter to a session that
-    /// has STOPPED. Reporting a working session as unreadable would have been the instrument crying wolf
-    /// about a row it could read perfectly well - which costs exactly as much trust as missing one.
+    /// IT ASKS WHETHER THE AMBIGUITY CHANGES THE VERDICT, rather than listing when it might. Three cuts
+    /// of this predicate were wrong before this one, each a list, each wrong one rung from the last:
+    ///
+    ///   1. "VoiceGenerating && Briefing" - refused to grade WORKING sessions. Blue outranks everything,
+    ///      so both origins fold blue. An existing control caught it.
+    ///   2. "...&& IsRawRed" - still refused rows where a HOLD or a DESKTOP dictation had already won.
+    ///      Grey and orange sit above briefing too. The inspector caught it.
+    ///   3. "do both plausible desktop rows fold the same colour?" - closer, and still refused a phone
+    ///      dictation, because the DESKTOP CANNOT SEE a phone dictation: strip it and the two origins
+    ///      fold different colours (yellow or red). My own negative controls caught it.
+    ///
+    /// Every one of those was a new list, and every list was a new chance to be wrong. So this asks the
+    /// only question the check actually answers - IS THERE A FINDING? - and calls the real ladder to
+    /// answer it, rather than describing a ladder that can grow a rung tomorrow.
+    ///
+    /// The subtlety cut 3 missed: two plausible desktop rows can fold DIFFERENT colours and still both
+    /// disagree with the Gateway. A phone dictation is Gateway-orange while the desktop folds yellow or
+    /// red - we do not know which, and we do not need to: neither is orange, so the disagreement is
+    /// certain even though its exact shape is not. That is reportable. The row is only unreadable when
+    /// one origin AGREES and the other does not, because then the destroyed fact decides whether there is
+    /// anything to report at all.
+    ///
+    /// Crying wolf costs the same trust as missing one. An instrument that refuses to read rows it can
+    /// read perfectly well gets ignored just as fast as one that reads them wrong.
+    ///
+    /// The enumerating habit is the defect, not any one of its lists.
     /// </summary>
-    public static bool IsIndeterminate(SessionDto row) =>
-        row.VoiceGenerating && row.BriefingState == "Briefing" && SessionOrdering.IsRawRed(row);
+    public static bool IsIndeterminate(SessionDto row)
+    {
+        // The only shape where a Director fact was destroyed - see above. Everything else is readable.
+        if (!row.VoiceGenerating || row.BriefingState != "Briefing")
+            return false;
+
+        // (b) the Director genuinely WAS briefing: the label it carries is its own.
+        var ifDirectorWasBriefing = ToDesktopInput(row);
+
+        // (a) the Gateway overwrote a null/None/Briefed. "None" stands for all three: none of them is
+        // "Briefing", so none folds yellow via IsBriefing, so they are fold-equivalent here.
+        var ifGatewayOverwrote = ToDesktopInput(row);
+        ifGatewayOverwrote.BriefingState = "None";
+
+        // THE QUESTION IS THE VERDICT, NOT THE COLOUR - and getting that wrong is what made the first
+        // version of this refuse rows it could grade.
+        //
+        // The check reports DISAGREEMENTS. So the destroyed fact only defeats it when it changes the
+        // ANSWER TO THAT QUESTION, and it often does not. A phone dictation folds the Gateway orange
+        // while the desktop - which cannot see phone dictation at all - folds yellow or red depending on
+        // the lost label. Two different desktop colours, and they DISAGREE WITH THE GATEWAY EITHER WAY.
+        // We do not know exactly what the desktop shows; we know for certain it does not match. That is
+        // a reportable disagreement, so grade it.
+        //
+        // It is indeterminate only when one plausible origin AGREES and the other does not - when the
+        // destroyed fact decides whether there is a finding at all.
+        var gatewayAnswer = row.EffectiveColor;
+        var briefingAgrees = string.Equals(SessionOrdering.EffectiveColor(ifDirectorWasBriefing), gatewayAnswer, StringComparison.OrdinalIgnoreCase);
+        var overwrittenAgrees = string.Equals(SessionOrdering.EffectiveColor(ifGatewayOverwrote), gatewayAnswer, StringComparison.OrdinalIgnoreCase);
+
+        return briefingAgrees != overwrittenAgrees;
+    }
 
     public static SessionDto ToDesktopInput(SessionDto row)
     {

@@ -314,6 +314,56 @@ public sealed class AgreementCheckFaultInjectionTests
     }
 
     /// <summary>
+    /// THE NEGATIVE CONTROLS FOR "CANNOT READ", and they are the half that keeps the number useful.
+    ///
+    /// Every one of these carries the ambiguous pair - VoiceGenerating with BriefingState="Briefing", the
+    /// shape where the Gateway destroyed a Director fact - and every one is still perfectly GRADEABLE,
+    /// because a rung ABOVE briefing has already decided the colour. Hold folds grey; any dictation folds
+    /// orange. Both possible origins of the destroyed label land on the same answer, so it cannot matter
+    /// which was real, so there is nothing to refuse.
+    ///
+    /// Two earlier cuts of IsIndeterminate got this wrong one rung apart - the first refused working
+    /// sessions, the second refused these. Both were lists of conditions, and a list is a chance to be
+    /// wrong. The predicate now folds both plausible rows and compares them, so it cannot drift out of
+    /// step with a ladder it does not describe.
+    ///
+    /// An instrument that refuses to read what it can read gets ignored exactly as fast as one that reads
+    /// it wrong. These tests are what stop this one crying wolf.
+    /// </summary>
+    [Theory]
+    [InlineData("hold")]
+    [InlineData("phone-dictation")]
+    [InlineData("gateway-transcribing")]
+    [InlineData("desktop-dictation")]
+    public void TheAmbiguousPair_WhereAHigherRungAlreadyDecided_IsStillGraded(string higherRung)
+    {
+        var row = Waiting($"gradeable-{higherRung}");
+        row.VoiceGenerating = true;
+        row.BriefingState = "Briefing";
+        switch (higherRung)
+        {
+            case "hold": row.HoldState = HoldStates.Held; break;
+            case "phone-dictation": row.DictationStatus = "Uploading from phone"; break;
+            case "gateway-transcribing": row.Transcribing = true; break;
+            case "desktop-dictation": row.IsTranscribing = true; break;
+            default: throw new ArgumentOutOfRangeException(nameof(higherRung), higherRung, "unknown rung");
+        }
+        AsGatewayServesIt(row);
+
+        // The destroyed label cannot change the VERDICT here, so the row is graded either way.
+        Assert.False(AgreementCheck.IsIndeterminate(row));
+        Assert.DoesNotContain(Run(row), f => f.Kind == "indeterminate");
+
+        // AND GRADED IS NOT THE SAME AS SILENT. The two phone-side rungs are Gateway-only facts the
+        // desktop never receives, so those rows are real desktop-versus-Gateway divergences and must
+        // still be REPORTED - just reported as the disagreements they certainly are, rather than refused
+        // as unreadable. Without this half, "gradeable" could quietly mean "dropped", which is the
+        // failure the indeterminate kind exists to prevent, arrived at from the other side.
+        if (higherRung is "phone-dictation" or "gateway-transcribing")
+            Assert.Contains(Run(row), f => f.Kind == "desktop-vs-gateway");
+    }
+
+    /// <summary>
     /// The expired snooze. TRANSIENT rather than structural, and the difference matters: the Gateway owns
     /// the clock and overlays OnHold=false before the fold, so it says red "Needs you" while the Director
     /// still reads Held and the rail says grey "Snoozed" - but SnoozeExpirySweep nudges a LIVE Director off
