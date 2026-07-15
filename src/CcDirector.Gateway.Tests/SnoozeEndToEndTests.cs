@@ -391,7 +391,9 @@ public sealed class SnoozeEndToEndTests : IAsyncLifetime
         }
 
         public bool CurrentOnHold(string sid) { lock (_gate) return _sessions[sid].OnHold; }
-        public string CurrentHoldState(string sid) { lock (_gate) return _sessions[sid].HoldState; }
+        // Nullable since 15 July 2026: an absent holdState now reads null ("the Director did not say")
+        // rather than defaulting to None, so this fake Director's accessor has to admit that too.
+        public string? CurrentHoldState(string sid) { lock (_gate) return _sessions[sid].HoldState; }
         public IReadOnlyList<bool> HoldCalls(string sid) { lock (_gate) return _holdCalls[sid].ToList(); }
         public void SetOnHold(string sid, bool value) { lock (_gate) _sessions[sid].OnHold = value; }
 

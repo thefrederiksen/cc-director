@@ -271,8 +271,20 @@ public sealed class SessionDto
     /// <see cref="OnHold"/>, which could not distinguish <c>None</c> from <c>DeferredHold</c> - both
     /// reported false - and so lost the one fact the Gateway's expiry sweep needed. Anything deciding
     /// what to DO about a hold reads this; see <see cref="OnHold"/> for the render-side boolean.
+    ///
+    /// NULL MEANS "THE DIRECTOR DID NOT SAY", AND THAT IS NOT THE SAME AS <c>None</c>. It defaulted to
+    /// <c>None</c> until 15 July 2026, which reintroduced defect 12 across a version skew: an old
+    /// Director does not send this field at all, so an absent value deserialized to <c>None</c> - and a
+    /// deferred snooze on that Director (which reports only <c>onHold=false</c>) was read by the sweep as
+    /// "genuinely not held" and cleared, fifteen seconds after it was asked for. The defect the tri-state
+    /// exists to kill, resurrected by a default. A Gateway is routinely newer than the Directors it
+    /// serves, so this is an ordinary running state, not a corner case.
+    ///
+    /// Absent now stays null, <see cref="HoldStates.Normalize"/> maps it to null, and the sweep treats
+    /// null as a missed read and changes nothing - which keeps the snooze. Never default this to a real
+    /// state: guessing <c>None</c> is what deletes the user's twelve-hour snooze.
     /// </summary>
-    public string HoldState { get; set; } = HoldStates.None;
+    public string? HoldState { get; set; }
 
     /// <summary>
     /// True when the user has parked this session in the FIFO voice queue ("deal with this later") -

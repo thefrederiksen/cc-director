@@ -30,11 +30,20 @@ public sealed class HoldStateWireTests
     }
 
     [Fact]
-    public void ADefaultSessionIsNotHeld()
+    public void ADefaultSessionIsNotHeld_AndDoesNotClaimToKnowWhy()
     {
         var s = new SessionDto();
-        Assert.Equal(HoldStates.None, s.HoldState);
+
+        // NOT HELD is the claim this test's name makes, and it still holds: IsHeld(null) is false, so a
+        // default DTO renders unheld exactly as before. What changed on 15 July 2026 is the STRENGTH of
+        // the claim underneath it. This asserted HoldState == None, i.e. "affirmatively not held" - and
+        // that default is what let an old Director's silence be read as a positive statement that a
+        // deferred snooze was over, so the sweep deleted it. A freshly constructed DTO has been told
+        // nothing by anyone; null says so. Anything that must ACT on a hold reads HoldState and treats
+        // null as "ask again", never as None.
+        Assert.Null(s.HoldState);
         Assert.False(s.OnHold);
+        Assert.False(HoldStates.IsHeld(s.HoldState));
     }
 
     [Theory]
@@ -61,17 +70,43 @@ public sealed class HoldStateWireTests
 
     [Theory]
     [InlineData(true, HoldStates.Held)]
-    [InlineData(false, HoldStates.None)]
-    public void AnOlderDirectorSendingOnlyTheBooleanStillLands(bool onHold, string expected)
+    [InlineData(false, null)]
+    public void AnOlderDirectorSendingOnlyTheBooleanStillLands(bool onHold, string? expected)
     {
         // Backward compatibility: a payload that predates HoldState carries only the boolean, and the
         // setter maps it onto the tri-state rather than leaving the DTO reading "None" for a held session.
+        //
+        // onHold=false MUST land on null, NOT None - and this row asserted None until 15 July 2026, which
+        // made it a test defending defect 12. An old Director reports onHold=false for BOTH "not held" and
+        // "deferred", so false is not evidence of None; it is the absence of evidence. Answering None here
+        // told the sweep the session was genuinely unheld and it deleted a live deferred snooze. Null is
+        // the honest answer - "this Director did not say" - and the sweep changes nothing on it.
+        //
+        // Read the two rows as the asymmetry they are: true is CONCLUSIVE (only a landed hold reports it),
+        // false is AMBIGUOUS. The boolean can prove a hold and can never disprove one.
         var json = $$"""{"sessionId":"s","onHold":{{(onHold ? "true" : "false")}}}""";
 
         var dto = JsonSerializer.Deserialize<SessionDto>(json, Web)!;
 
         Assert.Equal(expected, dto.HoldState);
         Assert.Equal(onHold, dto.OnHold);
+    }
+
+    [Fact]
+    public void AnOldDirectorsSilenceIsNotAClaimThatTheSnoozeIsOver()
+    {
+        // The exact mixed-version case, at the seam that matters: a Gateway newer than the Director it
+        // serves. The old Director has a DEFERRED hold and says only onHold=false, because that is all its
+        // wire has. The Gateway must read "I do not know", never "not held" - the sweep clears on None,
+        // and clearing here destroys the user's snooze fifteen seconds after they asked for it.
+        var json = """{"sessionId":"s","onHold":false}""";
+
+        var dto = JsonSerializer.Deserialize<SessionDto>(json, Web)!;
+
+        Assert.Null(dto.HoldState);
+        Assert.Null(HoldStates.Normalize(dto.HoldState));
+        Assert.False(HoldStates.IsHeld(dto.HoldState));
+        Assert.False(HoldStates.IsDeferred(dto.HoldState));
     }
 
     [Theory]
