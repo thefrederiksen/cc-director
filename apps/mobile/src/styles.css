@@ -1607,6 +1607,22 @@ a.banner-btn {
   animation: voice-spin 0.9s linear infinite;
 }
 
+/* "No voice": what a voice session shows in place of the play-triangle when the Gateway has told us it
+   cannot make voice for it. Muted, not red - this is a statement of fact, not an error to act on, and
+   it sits where the triangle would have been so the absence reads as deliberate rather than missing. */
+.row-voice-down {
+  flex: 0 0 auto;
+  align-self: center;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  color: var(--text-dim);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 4px 8px;
+  white-space: nowrap;
+}
+
 /* The bubble list fills the remaining vertical space; .chat-scroll is the single scroll container. */
 .chat-stage {
   flex: 1 1 auto;

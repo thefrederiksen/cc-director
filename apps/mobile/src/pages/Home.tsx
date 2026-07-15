@@ -7,7 +7,8 @@ import { classify, contextLine, dotColor, effectiveColor, inBucket, inDesktopOrd
 import { applyFilter, filterIsActive, filterSummary, machineName, pruneFilter } from "@devthrottle/client-core/sessions/filter";
 import { useDictationStatusFor } from "@devthrottle/client-core/dictation/status";
 import { useNow, waitingLabel } from "@devthrottle/client-core/sessions/waiting";
-import { getClipState, playClip, playingSid, stopPlayback, syncVoiceSessions, useVoiceClips } from "@devthrottle/client-core/voice/clips";
+import { playClip, playingSid, rowVoiceInputs, stopPlayback, syncVoiceSessions, useVoiceClips } from "@devthrottle/client-core/voice/clips";
+import { isVoiceReady, voiceRowState } from "@devthrottle/client-core/voice/voiceRowState";
 import { NavDrawer } from "../components/NavDrawer";
 import { SessionFilterPanel } from "../components/SessionFilterPanel";
 import { useSessionFilter } from "../hooks/useSessionFilter";
@@ -25,6 +26,9 @@ import { enablePush, notificationPermission, pushSupported, reconcileBadge } fro
 // session and back) without churning React state.
 const POLL_INTERVAL_MS = 5000;
 
+/** The roster's two lenses: the full roster, or only the sessions that can speak to you right now. */
+type RosterTab = "all" | "voice";
+
 export function Home() {
   const [sessions, setSessions] = useState<SessionDto[] | null>(null);
   // Per-session reachability marks from the merge - only unreachable (wobbly/offline) sessions have one.
@@ -35,6 +39,15 @@ export function Home() {
   // is persisted across navigations and restarts by the hook; the panel is transient UI state.
   const [filter, setFilter] = useSessionFilter();
   const [showFilter, setShowFilter] = useState(false);
+  // The roster's two tabs. "All" is the roster as it has always been; "Voice" is the hands-free view -
+  // only the sessions with narration ready to play THIS INSTANT, nothing else. When you are listening
+  // rather than reading, a session that is working, executing, or has nothing to say is not a smaller
+  // priority, it is noise, so the Voice tab does not rank it down - it leaves it out.
+  //
+  // Transient by design: it is a lens you pick up for a minute, not a mode you can get stranded in.
+  // Persisting it (as the machine/repo filter is persisted) would mean coming back to the app hours
+  // later, during an outage, to an empty roster and no memory of why.
+  const [tab, setTab] = useState<RosterTab>("all");
 
   // Re-render the roster when a voice clip finishes downloading (a card flips from the yellow
   // working state to the play-triangle the moment its audio is phone-ready).
@@ -92,6 +105,11 @@ export function Home() {
   // The roster narrowed to the active machine/repo filter. Facet lists in the panel and the total
   // count in the app bar come from the FULL roster; only the displayed groups below are narrowed.
   const filtered = sessions ? applyFilter(sessions, filter) : sessions;
+  // The Voice tab's roster: exactly the sessions whose row shows a play-triangle, by construction -
+  // isVoiceReady IS "voiceRowState === ready", so the tab and the triangle can never disagree about
+  // what "ready with voice" means. In waiting order, longest-waiting first, so it can be worked top to
+  // bottom by ear.
+  const voiceReady = filtered ? inWaitingOrder(filtered.filter((s) => isVoiceReady(rowVoiceInputs(s, isWorking(s))))) : [];
   // The "Needs you" group is a waiting line: the session that has been waiting for you the longest
   // sits at the top, and a session that only just started needing you drops in at the bottom
   // (inWaitingOrder). This keeps the list from reshuffling under you as sessions change state, and
@@ -150,12 +168,38 @@ export function Home() {
 
       <EnableAlerts />
 
+      {/* The roster's two lenses, in the same segmented control the session screen uses for its own
+          views, so "Voice mode" means the same thing and looks the same wherever it appears. */}
+      <div className="view-tabs" role="tablist" aria-label="Roster view">
+        <button
+          type="button"
+          role="tab"
+          aria-selected={tab === "all"}
+          className={`view-tab${tab === "all" ? " active" : ""}`}
+          onClick={() => setTab("all")}
+        >
+          All
+        </button>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={tab === "voice"}
+          className={`view-tab${tab === "voice" ? " active" : ""}`}
+          onClick={() => setTab("voice")}
+        >
+          Voice mode
+        </button>
+      </div>
+
       {/* "+ New session" entry (issue #812): opens the add-session flow (machine -> repo -> create),
-          a faithful translation of the Android NewSessionPanel. */}
-      <Link className="new-session-entry" to="/new">
-        <span className="new-session-plus" aria-hidden="true">+</span>
-        New session
-      </Link>
+          a faithful translation of the Android NewSessionPanel. Hidden in the Voice tab: starting a new
+          session is a typing job, and the Voice tab is for the sessions that can talk right now. */}
+      {tab === "all" && (
+        <Link className="new-session-entry" to="/new">
+          <span className="new-session-plus" aria-hidden="true">+</span>
+          New session
+        </Link>
+      )}
 
       {/* Car Mode (Car Mode mission): the hands-free, eyes-free voice channel to the whole fleet. Its
           own full-screen page; one tap in, then just talk. */}
@@ -170,9 +214,31 @@ export function Home() {
         <p className="status-line">No sessions running.</p>
       )}
 
+      {/* The Voice tab, empty. Said plainly and without alarm: nothing is ready to listen to yet. The
+          way out is one tap, so an empty voice roster is never a dead end. */}
+      {tab === "voice" && sessions !== null && total > 0 && voiceReady.length === 0 && (
+        <p className="status-line">
+          Nothing to listen to right now.{" "}
+          <button type="button" className="link-btn" onClick={() => setTab("all")}>
+            Show all sessions
+          </button>
+        </p>
+      )}
+
+      {tab === "voice" && voiceReady.length > 0 && (
+        <section className="group">
+          <h2 className="group-title">Ready to play</h2>
+          <ul className="roster">
+            {voiceReady.map((s) => (
+              <SessionRow key={`voice-${s.sessionId}`} session={s} mark={marks.get(s.sessionId ?? "")} />
+            ))}
+          </ul>
+        </section>
+      )}
+
       {/* Sessions exist but the active filter hides them all: say so plainly and offer a way back,
           instead of an empty screen that reads like "no sessions running". */}
-      {sessions !== null && total > 0 && shownTotal === 0 && (
+      {tab === "all" && sessions !== null && total > 0 && shownTotal === 0 && (
         <p className="status-line">
           No sessions match this filter.{" "}
           <button type="button" className="link-btn" onClick={() => setFilter({ machines: [], repos: [] })}>
@@ -181,7 +247,7 @@ export function Home() {
         </p>
       )}
 
-      {needsYou.length > 0 && (
+      {tab === "all" && needsYou.length > 0 && (
         <section className="group">
           <h2 className="group-title group-title-attention">Needs you</h2>
           <ul className="roster">
@@ -192,7 +258,7 @@ export function Home() {
         </section>
       )}
 
-      {others.length > 0 && (
+      {tab === "all" && others.length > 0 && (
         <section className="group">
           <h2 className="group-title">Other sessions</h2>
           <ul className="roster">
@@ -321,30 +387,29 @@ function SessionRow({ session, mark }: { session: SessionDto; mark?: RosterSessi
   );
 }
 
-// Issue #850: the trailing voice control on a voice-mode card. A play-triangle appears ONLY once
-// the clip's audio is on the phone (clip phase "ready"); while the Wingman is generating on the
-// Gateway or the phone is still downloading, a yellow spinner shows instead. Non-voice sessions
-// render nothing here. Tapping the triangle plays the locally-stored clip with no download wait;
-// preventDefault/stopPropagation keep the tap from also following the row's link.
+// Issue #850: the trailing voice control on a voice-mode card. What it is allowed to say is decided by
+// the shared voiceRowState rule (client-core/voice/voiceRowState.ts), which this component only
+// renders. That rule is shared with the Voice screen's own readiness test on purpose: the triangle is a
+// promise that tapping through will speak, and the roster must not make that promise on weaker evidence
+// than the screen it hands you to.
 //
-// The finished-turn narration is retired the instant the session starts working again: while
-// isWorking(session) is true the whole indicator renders nothing (no triangle, no spinner), because
-// that verbal cue is now stale. If this session's clip is playing at that moment it is stopped, so a
-// stale clip cannot keep talking after the agent has resumed.
+// It used to make exactly that mistake - it drew the triangle on `clip.phase === "ready"`, which asks
+// "do I hold any bytes?" and never "which turn are they for?". A held clip from an older turn earned a
+// green triangle; tapping it landed on "Voice service down". See voiceRowState.ts for the full account.
+//
+// Tapping the triangle plays the locally-stored clip with no download wait; preventDefault and
+// stopPropagation keep the tap from also following the row's link. If this session's clip is playing
+// when the agent resumes, it is stopped - a stale clip must not keep talking.
 function VoiceIndicator({ session }: { session: SessionDto }) {
   const sid = session.sessionId ?? "";
   const working = isWorking(session);
+  const state = voiceRowState(rowVoiceInputs(session, working));
 
   useEffect(() => {
     if (working && playingSid() === sid) stopPlayback();
   }, [working, sid]);
 
-  if (!session.voiceMode) return null;
-  if (working) return null;
-
-  const clip = getClipState(sid);
-
-  if (clip.phase === "ready") {
+  if (state === "ready") {
     const isPlaying = playingSid() === sid;
     return (
       <button
@@ -363,9 +428,15 @@ function VoiceIndicator({ session }: { session: SessionDto }) {
     );
   }
 
-  // Voice on but no phone-ready clip yet: generating on the Gateway, or downloading to the phone.
-  if (session.voiceGenerating || session.voiceAudioReady || clip.phase === "downloading") {
+  if (state === "preparing") {
     return <span className="row-spin" aria-label="Preparing voice" />;
+  }
+
+  // The Gateway cannot make voice for this session and said so. Say it on the row, quietly: the owner
+  // asked to be told there is no voice rather than be handed a play button that leads to a dead screen.
+  // No call to action - the Gateway is already retrying, and out-of-credits has its own banner.
+  if (state === "down") {
+    return <span className="row-voice-down">No voice</span>;
   }
 
   return null;
