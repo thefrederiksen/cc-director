@@ -48,20 +48,36 @@ public sealed class TranscriptionAudioArchive
     public const int MaxClips = 500;
 
     private readonly object _gate = new();
-    private readonly string _directory;
+
+    /// <summary>
+    /// An explicit directory override, or null to use <see cref="DefaultDirectory"/>. Only the OVERRIDE
+    /// is stored; the default is resolved PER ACCESS by <see cref="ArchiveDirectory"/> and never captured here.
+    /// <see cref="Shared"/> is a static field, so anything this constructor resolves is baked at type
+    /// load - which happens once, before a test can set CC_DIRECTOR_ROOT, and no test can undo it. That
+    /// bug shipped: test clips landed in the real user's archive because the isolated tests fell back to
+    /// Shared, whose path had already been fixed to the real location. The tests were isolated
+    /// correctly; the static defeated them.
+    /// </summary>
+    private readonly string? _directoryOverride;
 
     /// <param name="directory">Override the archive directory (tests). Defaults to the per-user location.</param>
     public TranscriptionAudioArchive(string? directory = null)
     {
-        _directory = string.IsNullOrWhiteSpace(directory) ? DefaultDirectory() : directory;
+        _directoryOverride = string.IsNullOrWhiteSpace(directory) ? null : directory;
     }
 
-    /// <summary>The per-user transcription-audio directory.</summary>
+    /// <summary>
+    /// Where clips are kept, resolved per access so CC_DIRECTOR_ROOT redirects it. NOT a get-only
+    /// initializer and NOT captured in the constructor - see <see cref="_directoryOverride"/>.
+    /// </summary>
+    private string ArchiveDirectory => _directoryOverride ?? DefaultDirectory();
+
+    /// <summary>The per-user transcription-audio directory. Resolved per call, never cached.</summary>
     public static string DefaultDirectory() => CcStorage.TranscriptionAudio();
 
     /// <summary>The file a clip for <paramref name="turnId"/> lands in.</summary>
     public string FileFor(string turnId, string extension)
-        => Path.Combine(_directory, $"turn-{SafeName(turnId)}{extension}");
+        => Path.Combine(ArchiveDirectory, $"turn-{SafeName(turnId)}{extension}");
 
     /// <summary>
     /// Keep a turn id to characters a filename allows. Production ids are GUIDs and pass through
@@ -86,7 +102,7 @@ public sealed class TranscriptionAudioArchive
         {
             lock (_gate)
             {
-                Directory.CreateDirectory(_directory);
+                Directory.CreateDirectory(ArchiveDirectory);
                 var path = FileFor(turnId, ExtensionFor(contentType));
                 File.WriteAllBytes(path, audio);
                 FileLog.Write($"[TranscriptionAudioArchive] archived {audio.Length} bytes for turn {turnId} to {path}");
@@ -108,7 +124,7 @@ public sealed class TranscriptionAudioArchive
     /// </summary>
     private void Prune()
     {
-        var files = new DirectoryInfo(_directory)
+        var files = new DirectoryInfo(ArchiveDirectory)
             .GetFiles("turn-*")
             .OrderByDescending(f => f.LastWriteTimeUtc)
             .ToList();
@@ -133,18 +149,16 @@ public sealed class TranscriptionAudioArchive
     }
 
     /// <summary>
-    /// A playable extension for the clip's MIME type. The archive exists to be listened to, so the file
-    /// must open in a player by double-click. An unrecognized type keeps its bytes under .bin rather
-    /// than claiming a format it may not be.
+    /// A playable extension for the clip's MIME type. The archive exists to be LISTENED TO, so the file
+    /// must open in a player on a double-click.
+    ///
+    /// Delegates to <see cref="GatewayTranscriptionService.ExtensionFor"/> - the same mapping that names
+    /// the upload sent to the provider, so the archived clip and the transcribed clip can never disagree
+    /// about what format they are. A private copy here did disagree: it exact-matched the MIME string, so
+    /// the "audio/webm;codecs=opus" the browser and phone actually send missed every arm and real clips
+    /// landed as unplayable .bin. The shared one strips the parameter and was already tested for exactly
+    /// that case.
     /// </summary>
-    private static string ExtensionFor(string contentType) => contentType?.ToLowerInvariant() switch
-    {
-        "audio/wav" or "audio/wave" or "audio/x-wav" => ".wav",
-        "audio/mpeg" or "audio/mp3" => ".mp3",
-        "audio/webm" => ".webm",
-        "audio/ogg" => ".ogg",
-        "audio/mp4" or "audio/m4a" or "audio/x-m4a" => ".m4a",
-        "audio/flac" or "audio/x-flac" => ".flac",
-        _ => ".bin",
-    };
+    private static string ExtensionFor(string contentType)
+        => "." + GatewayTranscriptionService.ExtensionFor(contentType);
 }
