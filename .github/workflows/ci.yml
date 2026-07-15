@@ -27,3 +27,52 @@ jobs:
 
       - name: Run tests
         run: dotnet test cc-director.sln -c Release --no-build --verbosity normal
+
+  # The browser shells (the mobile PWA and the React Cockpit) and the client-core library they share.
+  #
+  # This job exists because CI ran NO JavaScript tests at all: 583 vitest tests across client-core and
+  # the Cockpit were green only when someone happened to run them by hand, so nothing stopped a pull
+  # request from landing a broken shell. The mobile voice-mode fix in #1631 is guarded by tests in
+  # client-core that CI would not have run - which is what prompted this.
+  #
+  # Ubuntu on purpose: the .NET job needs Windows because the product is a Windows app, but these are
+  # platform-independent unit tests and a Vite build, and Ubuntu runners are quicker and cheaper.
+  web:
+    name: Build & Test (web)
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Setup Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      # tsc --noEmit across every workspace. The shells are typechecked on every build locally
+      # (#1578/#1579); this is the same gate, enforced on the pull request.
+      - name: Typecheck the workspaces
+        run: npm run typecheck
+
+      # Named one workspace per line, deliberately NOT `npm test --workspaces --if-present`: that form
+      # passes silently for a workspace with no test script, so a suite that lost its script - or a
+      # workspace renamed out from under it - would report green while testing nothing. A dead test
+      # looks exactly like coverage. If a new workspace gains tests, add a line here and this stays
+      # honest about what it actually ran.
+      - name: Run client-core tests
+        run: npm test --workspace @devthrottle/client-core
+
+      - name: Run Cockpit tests
+        run: npm test --workspace @devthrottle/cockpit
+
+      # The shells must still BUILD, not just typecheck: the production build runs the real Vite
+      # pipeline (bundling, the PWA service worker) and fails on things tsc never sees.
+      - name: Build the mobile PWA
+        run: npm run build --workspace @devthrottle/mobile
+
+      - name: Build the Cockpit
+        run: npm run build --workspace @devthrottle/cockpit
