@@ -1144,41 +1144,11 @@ a.banner-btn {
 
 /* Turn voice off: a low-emphasis, full-width text button below the active voice content. Ghost
    styling (transparent, muted) so it never competes with the in-state actions (Respond, Submit). */
-.voice-off-toggle {
-  display: block;
-  width: 100%;
-  margin-top: 18px;
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  padding: 11px 0;
-  font-size: 13px;
-  font-weight: 700;
-  color: var(--text-dim);
-  background: transparent;
-  cursor: pointer;
-}
 
 /* Regenerate response: a secondary action sitting just above Turn voice off. More emphasis than the
    muted off-toggle (full text color, accent-tinted border) so it reads as an action, but still a
    ghost button so it never competes with the primary in-state controls (Respond, the player). */
-.voice-regen-btn {
-  display: block;
-  width: 100%;
-  margin-top: 18px;
-  border: 1px solid #5b2bd6;
-  border-radius: 10px;
-  padding: 11px 0;
-  font-size: 13px;
-  font-weight: 700;
-  color: var(--text);
-  background: transparent;
-  cursor: pointer;
-}
 
-.voice-regen-btn:disabled {
-  opacity: 0.55;
-  cursor: default;
-}
 
 /* Status bar: a state pill on the left, an optional reference note on the right. */
 .voice-statusbar {
@@ -1295,12 +1265,6 @@ a.banner-btn {
   min-height: 0;
   overflow-y: auto;
   -webkit-overflow-scrolling: touch;
-}
-
-/* "Turn voice off" stays a fixed strip at the very bottom, below the scrolling narrative. */
-.voice-body-speaking .voice-off-toggle,
-.voice-body-speaking .voice-regen-btn {
-  flex: 0 0 auto;
 }
 
 /* C. Speaking: the player row (play/pause + restart + seek slider + clock). */
@@ -1447,17 +1411,57 @@ a.banner-btn {
   margin-top: 0;
 }
 
+/* The Voice mode bottom bar (owner design review, "Option A"): the two controls used on almost every
+   turn - Snooze ("I press the snooze button a lot") and Respond ("clicked on almost every single
+   turn") - pinned in the thumb zone, in the same place on every visit.
+
+   Respond used to sit in the fixed header at the TOP of a tall phone, the hardest place to reach,
+   while rarely-used buttons (Regenerate response, Turn voice off) sat comfortably at the bottom.
+   Those two moved into the app bar's overflow menu and this bar took their place. */
+.voice-bottom-bar {
+  flex: 0 0 auto;
+  display: flex;
+  gap: 8px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+}
+
+/* Secondary weight: frequent, but never the thing you reach for first. */
+.voice-snooze-btn {
+  flex: 0 0 auto;
+  min-width: 104px;
+  min-height: 52px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 13px 12px;
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--text);
+  background: var(--surface-2);
+  cursor: pointer;
+  touch-action: manipulation;
+}
+
+.voice-snooze-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* The one saturated control on the screen, and the biggest target on it. When Respond is absent (any
+   state that is not "speaking"), Snooze keeps its own width rather than stretching to fill - a
+   control must not change shape depending on what happens to be beside it. */
 .voice-respond {
-  display: block;
-  width: 100%;
+  flex: 1 1 auto;
+  min-height: 52px;
   border: none;
   border-radius: 10px;
   padding: 13px 0;
-  font-size: 14px;
+  font-size: 16px;
   font-weight: 700;
   color: #ffffff;
   background: #0e7c6b;
   cursor: pointer;
+  touch-action: manipulation;
 }
 
 /* D. Waiting on a choice: option buttons (single, or multi-select with Submit). */
@@ -2076,40 +2080,136 @@ a.banner-btn {
   color: #ffffff;
 }
 
-/* Hold/Resume + Remove: large buttons on the session screen (owner decision A). */
-.session-manage {
-  flex: 0 0 auto;
-  padding: 8px 2px 2px;
-}
+/* ===== The session app bar (owner design review, "Option A") =====
+   One header for Chat, Terminal and Voice mode: back-to-Sessions on the left (navigation, identical
+   on every screen), the title in the middle, and an overflow menu on the right holding the rare
+   verbs. This replaces the old three-slab .session-manage row, in which navigation, Snooze and a
+   destructive Remove were the same size and colour, sitting directly under the Voice mode tab -
+   which is how Remove got mis-tapped.
 
-.session-manage-row {
-  display: flex;
+   Layout, and why it is two rows: the top-right corner is NOT ours. The network pill (.net-pill) is
+   mounted globally and is position: fixed, top-right, and its width changes with its label ("Fast" /
+   "Warming up" / "Direct LAN"). So:
+
+     row 1:  [<- Sessions] [...]            <- controls left; the right is left free for the pill
+     row 2:  the session name, full width   <- sits BELOW the pill, so nothing can cover it
+
+   Putting the controls on the left means no code has to guess how wide the pill is. The name used to
+   share row 1 and run underneath the pill; giving it its own row is what makes a real session name
+   ("102 Ghost Directors from tests") readable instead of "102 M...". */
+.session-app-bar {
   gap: 8px;
 }
 
-.manage-btn {
-  flex: 1 1 0;
-  min-height: 50px;
+/* Pushes nothing - it just claims the empty right end of row 1 where the fixed pill sits. */
+.session-bar-spacer {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+
+/* Row two: the session name, full width, nothing overlapping it. */
+.session-title {
+  flex: 0 0 auto;
+  padding: 6px 2px 2px;
+  font-size: 17px;
+}
+
+/* Back is NAVIGATION, so it is quiet chrome, not a saturated slab competing with the actions. It
+   keeps the >= 44x44 tap target .back-link has always guaranteed (issue #1004). */
+.session-back {
+  padding: 8px 12px;
+  font-size: 14px;
+}
+
+.session-menu-wrap {
+  position: relative;
+  flex: 0 0 auto;
+}
+
+.session-menu-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 44px;
+  min-height: 44px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface);
+  cursor: pointer;
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* The three dots, drawn rather than typed so no glyph or font fallback can change them. */
+.session-menu-dots,
+.session-menu-dots::before,
+.session-menu-dots::after {
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: var(--text-dim);
+}
+
+.session-menu-dots {
+  position: relative;
+  display: block;
+}
+
+.session-menu-dots::before,
+.session-menu-dots::after {
+  content: "";
+  position: absolute;
+  left: 0;
+}
+
+.session-menu-dots::before { top: -7px; }
+.session-menu-dots::after { top: 7px; }
+
+.session-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 60;
+  min-width: 208px;
+  display: flex;
+  flex-direction: column;
+  padding: 6px;
+  gap: 2px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  box-shadow: 0 12px 28px rgb(0 0 0 / 0.45);
+}
+
+.menu-group {
+  display: contents;
+}
+
+.menu-item {
+  min-height: 44px;
+  padding: 10px 12px;
   border: none;
-  border-radius: 10px;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text);
   font-size: 15px;
-  font-weight: 700;
+  font-weight: 600;
+  text-align: left;
   cursor: pointer;
   touch-action: manipulation;
 }
 
-.manage-btn:disabled {
-  opacity: 0.5;
+.menu-item:disabled {
+  opacity: 0.45;
   cursor: default;
 }
 
-/* Back to sessions = accent blue, and the widest button in the row (the most-used control, #1004).
-   Hold = amber (defer), Resume = green (re-activate), Remove = red (destructive) - matching the
-   Android-tab semantic palette already used by .term-esc / .term-enter / .term-stop. */
-.manage-back { flex: 1.6 1 0; background: var(--accent); color: #ffffff; }
-.manage-hold { background: #e8b339; color: #221a06; }
-.manage-resume { background: #5fd08a; color: #06210f; }
-.manage-remove { background: #e5484d; color: #ffffff; }
+/* Red appears ONLY here and in the confirmation - so it still means "danger" rather than "the third
+   button". Remove is two taps away and is never in the thumb zone. */
+.menu-item-danger {
+  color: var(--attention);
+}
 
 .manage-held-pill {
   display: inline-block;

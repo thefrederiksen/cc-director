@@ -4,8 +4,9 @@ import { listSessions } from "@devthrottle/client-core/api/client";
 import { useSessionChat } from "@devthrottle/client-core/history/useSessionChat";
 import { chatLinkLabel } from "@devthrottle/client-core/history/chatView";
 import { DictationStatusStrip } from "../components/DictationStatusStrip";
+import { SessionAppBar } from "../components/SessionAppBar";
 import { SessionControls } from "../components/SessionControls";
-import { SessionManageBar } from "../components/SessionManageBar";
+import { useSessionManage } from "../components/useSessionManage";
 import { ViewTabs } from "../components/ViewTabs";
 
 // Session Chat mode (issue #811): the SAME screen and SAME controls as the Terminal (#817), with ONLY
@@ -27,6 +28,7 @@ export function Chat() {
   const [status, setStatus] = useState(STATUS_BASE);
   const [error, setError] = useState<string | null>(null);
   const [copied, setCopied] = useState<string | null>(null);
+  const manage = useSessionManage(sessionId);
 
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const atBottomRef = useRef(true);
@@ -82,14 +84,11 @@ export function Chat() {
 
   return (
     <div className="terminal-screen">
-      <header className="app-bar">
-        <h1 className="term-title">{name ?? "Session"}</h1>
-      </header>
+      {/* Snooze is in the overflow here: this screen's bottom belongs to the message composer, so
+          there is no thumb-zone room for it (Voice mode, which has room, keeps it one tap). */}
+      <SessionAppBar title={name ?? "Session"} manage={manage} showSnooze />
 
       <ViewTabs sessionId={sessionId} active="chat" />
-
-      {/* Hold/Resume + Remove management buttons on the session screen (issue #812). */}
-      <SessionManageBar sessionId={sessionId} />
 
       <div className="term-statusbar">
         <span className="term-status" role="status">{status}</span>
