@@ -735,6 +735,32 @@ So a red-watch counts only when all three hold:
 If you cannot make a test fail for the right reason, you do not have a test. You have a line of
 code that has never been asked a question.
 
+**And the rule is not about tests. It is about CHECKS - including the one-line `grep` you ran to
+prove something is gone.** This mission has now produced the same defect three times in one day, in
+three different disguises, and the third one landed while quoting the evidence at the Architect:
+
+1. `Assert.DoesNotContain("repo", keys)` - an exact-element check that would have passed against
+   `repo_raw`. It could not see the thing it was for.
+2. A red-watch that died on a `KeyNotFoundException` before ever reaching its assertion. It went red
+   for a reason that does not generalise.
+3. A `grep` for surviving references, piped through a filter that **excluded comment lines** - while
+   every surviving reference was a comment. It printed nothing, and the nothing was reported as
+   proof.
+
+All three are one failure: **a check that cannot find the thing it is looking for will report that
+the thing is not there.** Empty output is not evidence. It is evidence *only* once you have shown
+the check can produce non-empty output for the case you care about.
+
+So: **red-watch your `grep` the same way you red-watch your test.** Before believing that a search
+found nothing, make it find something - point it at a case you know exists and watch it print. If
+it cannot print, it was never searching.
+
+The Manager's own diagnosis of the third instance is the most useful sentence in this document, and
+it generalises well past this mission: *"The filter existed because I wanted to suppress the noise of
+my own comment prose; suppressing the noise suppressed the signal, and I never re-read the filter I
+wrote."* A filter written to hide noise will hide signal, and its author is the last person who will
+notice, because they are the one who decided what counted as noise.
+
 1. `GET /stats/data` returns the same numbers after the port as before it, for the owner's real
    data on this machine. Captured before, captured after, compared field by field
    (`Stats/StatsPageEndpoint.cs:40-71` maps this response from the aggregator outputs). This is the
