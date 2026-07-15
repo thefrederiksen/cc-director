@@ -1,5 +1,6 @@
 using CcDirector.Core.Agents;
 using CcDirector.Core.Configuration;
+using CcDirector.Core.Storage;
 
 namespace CcDirector.Core.AgentPlugins;
 
@@ -78,10 +79,7 @@ public static class AgentPluginRegistry
         if (!string.IsNullOrWhiteSpace(fromEnv))
             return fromEnv;
 
-        var localAppData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
-        return string.IsNullOrWhiteSpace(localAppData)
-            ? string.Empty
-            : Path.Combine(localAppData, "cc-director", "agent-plugins");
+        return CcStorage.AgentPlugins();
     }
 
     private static IReadOnlyList<IAgentPlugin> BuildBuiltIns() =>

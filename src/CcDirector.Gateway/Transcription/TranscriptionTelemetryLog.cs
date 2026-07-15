@@ -1,6 +1,7 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using CcDirector.Core.Dictation;
+using CcDirector.Core.Storage;
 using CcDirector.Core.Utilities;
 
 namespace CcDirector.Gateway.Transcription;
@@ -46,11 +47,7 @@ public sealed class TranscriptionTelemetryLog
     }
 
     /// <summary>The per-user transcription-log directory.</summary>
-    public static string DefaultDirectory()
-    {
-        var localAppData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
-        return Path.Combine(localAppData, "cc-director", "transcription-log");
-    }
+    public static string DefaultDirectory() => CcStorage.TranscriptionLog();
 
     /// <summary>The daily file a record written at <paramref name="utcNow"/> lands in.</summary>
     public string FileFor(DateTime utcNow)

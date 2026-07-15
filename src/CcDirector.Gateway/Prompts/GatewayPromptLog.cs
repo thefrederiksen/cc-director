@@ -1,5 +1,6 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using CcDirector.Core.Storage;
 using CcDirector.Core.Utilities;
 using CcDirector.Gateway.Contracts;
 
@@ -47,11 +48,7 @@ public sealed class GatewayPromptLog
     }
 
     /// <summary>The Gateway's prompt-log directory.</summary>
-    public static string DefaultDirectory()
-    {
-        var localAppData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
-        return Path.Combine(localAppData, "cc-director", "prompt-log");
-    }
+    public static string DefaultDirectory() => CcStorage.PromptLog();
 
     /// <summary>The daily file a message at <paramref name="utcNow"/> lands in.</summary>
     public string FileFor(DateTime utcNow)

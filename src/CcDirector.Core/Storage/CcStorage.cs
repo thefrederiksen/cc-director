@@ -167,6 +167,62 @@ public static class CcStorage
 
     // -- Tool-specific shortcuts --
 
+    // -- Feature folders --
+    //
+    // Each of these used to be composed by hand at its call site from
+    // GetFolderPath(LocalApplicationData) + "cc-director" + ..., which produced a path that
+    // CC_DIRECTOR_ROOT could not redirect - so any test reaching that code wrote into the real
+    // running Director's folders (#1577, #1580). They are declared here, once, so the root has a
+    // single owner. StorageRootGuardTests fails the build if a new hand-rolled one appears.
+
+    /// <summary>The shared credentials file every tool reads: config/credentials.env.</summary>
+    public static string CredentialsEnv() => Path.Combine(Config(), "credentials.env");
+
+    /// <summary>Installed agent plugin manifests: base/agent-plugins/.</summary>
+    public static string AgentPlugins() => Path.Combine(Base(), "agent-plugins");
+
+    /// <summary>Claude hook scripts the Director installs: base/claude-hooks/.</summary>
+    public static string ClaudeHooks() => Path.Combine(Base(), "claude-hooks");
+
+    /// <summary>Codex hook scripts the Director installs: base/codex-hooks/.</summary>
+    public static string CodexHooks() => Path.Combine(Base(), "codex-hooks");
+
+    /// <summary>Dictation root: base/dictation/. Holds the user dictionary plus the
+    /// recordings/ and sessions/ subfolders.</summary>
+    public static string Dictation() => Path.Combine(Base(), "dictation");
+
+    /// <summary>The user's dictation dictionary: base/dictation/dictionary.yaml. Read by both the
+    /// Director and the Gateway transcription owner, which composed it separately before.</summary>
+    public static string DictationDictionary() => Path.Combine(Dictation(), "dictionary.yaml");
+
+    /// <summary>Durable dictation audio: base/dictation/recordings/.</summary>
+    public static string DictationRecordings() => Path.Combine(Dictation(), "recordings");
+
+    /// <summary>Per-session dictation logs: base/dictation/sessions/.</summary>
+    public static string DictationSessions() => Path.Combine(Dictation(), "sessions");
+
+    /// <summary>The preamble file handed to the Pi agent: base/pi-preamble/.</summary>
+    public static string PiPreamble() => Path.Combine(Base(), "pi-preamble");
+
+    /// <summary>Recorded terminal sessions: base/session-recordings/.</summary>
+    public static string SessionRecordings() => Path.Combine(Base(), "session-recordings");
+
+    /// <summary>Transient recording transcripts (audio + markdown) before the user promotes the
+    /// keepers into the vault: base/transcripts/.</summary>
+    public static string Transcripts() => Path.Combine(Base(), "transcripts");
+
+    /// <summary>The Gateway's durable prompt + reply record: base/prompt-log/.</summary>
+    public static string PromptLog() => Path.Combine(Base(), "prompt-log");
+
+    /// <summary>Transcription telemetry: base/transcription-log/.</summary>
+    public static string TranscriptionLog() => Path.Combine(Base(), "transcription-log");
+
+    /// <summary>Terminal screen captures: base/terminal-captures/.</summary>
+    public static string TerminalCaptures() => Path.Combine(Base(), "terminal-captures");
+
+    /// <summary>WebView2 user-data directory for the card renderer: base/webview2-card/.</summary>
+    public static string WebView2Card() => Path.Combine(Base(), "webview2-card");
+
     /// <summary>Config directory for a specific tool: config/{tool}/</summary>
     public static string ToolConfig(string tool) => Path.Combine(Config(), tool);
 
@@ -189,6 +245,11 @@ public static class CcStorage
 
     /// <summary>Imported files: vault/documents/</summary>
     public static string VaultDocuments() => Path.Combine(Vault(), "documents");
+
+    /// <summary>Promoted recording transcripts (the permanent copy): vault/transcripts/. RecordingEndpoints
+    /// hardcoded LocalApplicationData + "cc-director/vault/transcripts", which ignored CC_VAULT_PATH and so
+    /// would have promoted into the wrong vault for anyone who relocated theirs.</summary>
+    public static string VaultTranscripts() => Path.Combine(Vault(), "transcripts");
 
     /// <summary>Embeddings: vault/vectors/</summary>
     public static string VaultVectors() => Path.Combine(Vault(), "vectors");

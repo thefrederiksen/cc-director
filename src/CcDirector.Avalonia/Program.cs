@@ -1,6 +1,7 @@
 using System.Runtime.InteropServices;
 using Avalonia;
 using CcDirector.ControlApi;
+using CcDirector.Core.Storage;
 using CcDirector.Core.Update;
 using CcDirector.Core.Utilities;
 
@@ -154,9 +155,7 @@ internal static class Program
     {
         try
         {
-            var dir = Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-                "cc-director", "logs", "director");
+            var dir = CcStorage.ToolLogs("director");
             Directory.CreateDirectory(dir);
             // No Date.Now in a reproducible context is fine here -- this is a real crash path.
             var path = Path.Combine(dir, $"crash-{kind}-{DateTime.Now:yyyyMMdd-HHmmss}-{Environment.ProcessId}.log");

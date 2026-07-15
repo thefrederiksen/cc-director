@@ -1,4 +1,5 @@
 using System.Text.Json;
+using CcDirector.Core.Storage;
 using CcDirector.Core.Utilities;
 
 namespace CcDirector.Core.Claude;
@@ -129,10 +130,7 @@ public static class ClaudeHookInstaller
         }
     }
 
-    private static string DefaultDirectory()
-        => Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-            "cc-director", "claude-hooks");
+    private static string DefaultDirectory() => CcStorage.ClaudeHooks();
 
     private static string BuildSettingsJson(string scriptPath, bool forWindows)
     {

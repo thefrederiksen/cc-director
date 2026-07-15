@@ -4,6 +4,7 @@ using System.Text;
 using System.Text.Json;
 using CcDirector.Core.Memory;
 using CcDirector.Core.Sessions;
+using CcDirector.Core.Storage;
 using CcDirector.Core.Utilities;
 
 namespace CcDirector.Core.Wingman;
@@ -39,9 +40,7 @@ public sealed class TerminalSessionRecorder : IDisposable
     public TerminalSessionRecorder(SessionManager sessionManager, string? root = null, long maxBytesPerSession = 8L * 1024 * 1024)
     {
         _sessionManager = sessionManager;
-        _root = root ?? Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-            "cc-director", "session-recordings");
+        _root = root ?? CcStorage.SessionRecordings();
         _maxBytesPerSession = maxBytesPerSession;
     }
 

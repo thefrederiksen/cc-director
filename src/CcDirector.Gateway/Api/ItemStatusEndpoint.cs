@@ -1,6 +1,7 @@
 using System.Net;
 using System.Net.Http.Headers;
 using System.Text.Json;
+using CcDirector.Core.Storage;
 using CcDirector.Core.Utilities;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
@@ -216,8 +217,7 @@ internal sealed class GitHubItemStatusResolver
     /// </summary>
     private static (string? token, string? error) ReadCredentialsFileToken()
     {
-        var localAppData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
-        var path = Path.Combine(localAppData, "cc-director", "config", "credentials.env");
+        var path = CcStorage.CredentialsEnv();
         if (!File.Exists(path))
             return (null, $"GITHUB_TOKEN not configured (no {path}); per-item GitHub status unavailable.");
 

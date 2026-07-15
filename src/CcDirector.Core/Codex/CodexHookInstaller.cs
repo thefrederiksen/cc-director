@@ -1,5 +1,6 @@
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using CcDirector.Core.Storage;
 using CcDirector.Core.Utilities;
 
 namespace CcDirector.Core.Codex;
@@ -145,10 +146,7 @@ public static class CodexHookInstaller
             ?? throw new InvalidOperationException($"hooks.json is not a JSON object: {hooksJsonPath}");
     }
 
-    private static string DefaultScriptDirectory()
-        => Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-            "cc-director", "codex-hooks");
+    private static string DefaultScriptDirectory() => CcStorage.CodexHooks();
 
     private static string DefaultCodexHooksPath()
     {

@@ -1,3 +1,4 @@
+using CcDirector.Core.Storage;
 using CcDirector.Core.Utilities;
 
 namespace CcDirector.Core.Backends;
@@ -15,14 +16,7 @@ public static class GitHubCredentials
     /// Resolve the credentials.env path. Honors LOCALAPPDATA on Windows and falls
     /// back to the OS-specific local application data folder elsewhere.
     /// </summary>
-    public static string CredentialsPath
-    {
-        get
-        {
-            var localAppData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
-            return Path.Combine(localAppData, "cc-director", "config", "credentials.env");
-        }
-    }
+    public static string CredentialsPath => CcStorage.CredentialsEnv();
 
     /// <summary>
     /// Read GITHUB_TOKEN. Throws with an explicit, fixable message when the file

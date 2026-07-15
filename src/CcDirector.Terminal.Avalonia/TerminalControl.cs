@@ -505,9 +505,7 @@ public class TerminalControl : Control
     {
         try
         {
-            var dir = System.IO.Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-                "cc-director", "terminal-captures");
+            var dir = CcDirector.Core.Storage.CcStorage.TerminalCaptures();
             System.IO.Directory.CreateDirectory(dir);
 
             var ts = DateTime.Now.ToString("yyyyMMdd-HHmmss");
