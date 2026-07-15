@@ -35,7 +35,48 @@ public static class AgreementCheck
     /// instrument cannot read is not a row that agrees, and quietly counting it as agreement is how a
     /// measurement turns into a lie.
     /// </param>
-    public sealed record Finding(string? SessionId, string Name, string Kind, string Detail);
+    public sealed record Finding(string? SessionId, string Name, string Kind, string Detail)
+    {
+        /// <summary>
+        /// WHAT THIS FINDING MEANS - decided ONCE, here, and never re-derived by anyone who renders it.
+        ///
+        /// THIS IS THE GENERATOR OF THIS PULL REQUEST'S ENTIRE DEFECT LIST, and it took fourteen
+        /// inspection passes to see it. <see cref="Kind"/> is a free string, so every consumer had to
+        /// decide for itself what the string meant - and five of them did, separately: the summary
+        /// arithmetic, the exit code, the candidate-count line, the not-graded prose, and the detail
+        /// heading. Each was fixed the moment it was caught, and the NEXT one was still wrong, because
+        /// each was an independent re-derivation of the same classification. Binding them one at a time
+        /// was reactive, and reactive is what this mission exists to end.
+        ///
+        /// So the classification lives on the finding. A renderer asks; it does not decide.
+        ///
+        /// (The reviewer's stronger form - a typed CheckId replacing the Kind string entirely - is the
+        /// next hardening pass. This is the half that stops the drift: what a kind MEANS now has exactly
+        /// one home, even while the kind itself is still a string.)
+        /// </summary>
+        public FindingOutcome Outcome =>
+            Kind == "indeterminate" ? FindingOutcome.NotGraded : FindingOutcome.Disagreement;
+
+        /// <summary>The word this finding is printed under. One home, so no renderer can invent its own.</summary>
+        public string Label => Outcome == FindingOutcome.NotGraded ? "NOT GRADED" : "DISAGREEMENT";
+    }
+
+    /// <summary>
+    /// What a finding IS, as against what it is ABOUT (that is <see cref="Finding.Kind"/>).
+    /// </summary>
+    public enum FindingOutcome
+    {
+        /// <summary>The check ran and the surfaces genuinely disagree. A defect.</summary>
+        Disagreement,
+
+        /// <summary>
+        /// The check could not run on this row, so nothing is claimed either way. NOT a defect and NOT a
+        /// pass - the third answer this instrument needed and did not have, which is why an
+        /// indeterminate-only run was reported as a disagreement by the exit code and as zero
+        /// disagreements by the headline, in the same run.
+        /// </summary>
+        NotGraded,
+    }
 
     /// <summary>
     /// One check's verdict, and the ONLY honest way to state it: what it found, and how many rows it
@@ -226,9 +267,12 @@ public static class AgreementCheck
     public static Summary Summarize(IReadOnlyList<SessionDto> roster, IReadOnlyList<Finding> findings)
     {
         int Count(string kind) => findings.Count(f => f.Kind == kind);
-        var indeterminate = Count("indeterminate");
+        // Ask the finding what it IS. This used to be `findings.Count - indeterminate` - the summary
+        // re-deriving the classification from the kind string, one of five consumers doing that
+        // separately, which is what made them drift apart one pass at a time.
+        var indeterminate = findings.Count(f => f.Outcome == FindingOutcome.NotGraded);
         return new Summary(
-            Disagreements: findings.Count - indeterminate,
+            Disagreements: findings.Count(f => f.Outcome == FindingOutcome.Disagreement),
             LiveSessions: roster.Count,
             IndeterminateRows: indeterminate,
             Unstamped: Count("unstamped"),

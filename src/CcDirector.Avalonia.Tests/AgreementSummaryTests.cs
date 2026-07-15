@@ -316,6 +316,55 @@ public sealed class AgreementSummaryTests
     }
 
     /// <summary>
+    /// THE GENERATOR, PINNED - what a finding MEANS has exactly one home, and every renderer asks it.
+    ///
+    /// Fourteen inspection passes on this pull request found fourteen instances of one defect, and on the
+    /// fourteenth the inspector named the thing producing them: Kind is a free string, so EVERY CONSUMER
+    /// DECIDED FOR ITSELF what the string meant. Five did, separately - the summary arithmetic, the exit
+    /// code, the candidate-count line, the not-graded prose, and the detail heading. Each was fixed the
+    /// moment it was caught, and the next one was still wrong, because each was an independent
+    /// re-derivation of the same classification. I was binding instances while the generator sat
+    /// untouched, which is precisely the reactive habit this mission exists to end.
+    ///
+    /// These tests pin the one home. If a new kind is added and nobody classifies it, it defaults to
+    /// Disagreement - so this file must fail rather than let a sixth consumer guess.
+    /// </summary>
+    [Theory]
+    [InlineData("unstamped", "DISAGREEMENT")]
+    [InlineData("stamp-not-fold", "DISAGREEMENT")]
+    [InlineData("law-broken", "DISAGREEMENT")]
+    [InlineData("desktop-vs-gateway", "DISAGREEMENT")]
+    [InlineData("two-different-pixels", "DISAGREEMENT")]
+    [InlineData("palette-missing", "DISAGREEMENT")]
+    [InlineData("indeterminate", "NOT GRADED")]
+    public void EveryKindHasOneClassification_AndOneWord(string kind, string expectedLabel)
+    {
+        var finding = F("x", kind);
+
+        Assert.Equal(expectedLabel, finding.Label);
+        Assert.Equal(
+            kind == "indeterminate" ? AgreementCheck.FindingOutcome.NotGraded : AgreementCheck.FindingOutcome.Disagreement,
+            finding.Outcome);
+    }
+
+    /// <summary>
+    /// The live shape the fourteenth pass caught: an indeterminate row printed under the word
+    /// DISAGREEMENT, four lines above a headline reporting zero disagreements. Same run, same tool, two
+    /// renderers, one of which had learned the distinction.
+    /// </summary>
+    [Fact]
+    public void AnIndeterminateRow_IsNeverPrintedAsADisagreement()
+    {
+        var finding = F("ambiguous", "indeterminate");
+        var sum = AgreementCheck.Summarize(new[] { Row("ambiguous") }, new[] { finding });
+
+        // What the detail line prints, and what the headline counts, now come from the same place.
+        Assert.Equal("NOT GRADED", finding.Label);
+        Assert.Equal(0, sum.Disagreements);
+        Assert.Equal(3, sum.ExitCode);
+    }
+
+    /// <summary>
     /// The control: a genuinely clean fleet is the ONLY thing that may print the unqualified word.
     /// Without this, "never say PASS" would be trivially satisfiable by never saying it.
     /// </summary>

@@ -132,7 +132,11 @@ public static class Program
         Console.WriteLine();
 
         foreach (var f in findings)
-            Console.WriteLine($"DISAGREEMENT [{f.Kind}] {f.Name}\n    {f.Detail}\n");
+            // f.Label, never a literal. This was the word "DISAGREEMENT" hard-coded here, so a row the
+            // check merely could not READ printed as "DISAGREEMENT [indeterminate]" - four lines above a
+            // headline correctly reporting zero disagreements. The fifth consumer to decide for itself
+            // what a kind string meant, and the last one caught. It asks now.
+            Console.WriteLine($"{f.Label} [{f.Kind}] {f.Name}\n    {f.Detail}\n");
 
         // The arithmetic lives in AgreementCheck.Summarize so a test can reach it - see that method for
         // why, and for the two ways this counting was wrong before it was bindable.
