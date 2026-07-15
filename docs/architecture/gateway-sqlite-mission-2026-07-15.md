@@ -1068,6 +1068,34 @@ until the quality-assurance report.
   "the same repository", but it silently rewrites history that was recorded as two. This mission
   deliberately preserves the split (see Constraints) because changing it would break the one proof
   Phase 1 has. Worth raising with the owner separately.
+- **RULING for whoever builds the fold: the agent tally gets its OWN `agent_delta` table, and
+  `agent_id` comes OFF `stat_delta`.** The Manager raised this and was right to refuse to decide it
+  alone - it changes the schema this brief mandated, and the brief could not answer it because the
+  brief predates #1647.
+
+  The fact: `AttributeToAgentLocked` has **two** call sites. The ordinary path (`:460`) attributes
+  the *same* delta that feeds totals, hourly and repos. The first-fold back-fill (`:395`) attributes
+  a session's **prior high-water**, which has **no totals counterpart at all**. So
+  "agent totals = `stat_delta GROUP BY agent_id`" holds only while the back-fill contributes nothing.
+
+  It is inert in a fresh database - `hw` is created empty immediately before the seed block, so a
+  session's first fold back-fills zero, always. But that is a *coincidence of the empty start*, not
+  a structural guarantee, and "true today" has been wrong three times in this mission alone.
+
+  **The decisive point is that Option A has no correct behaviour if the back-fill ever fires.** If
+  the back-fill wrote a `stat_delta` row, its turns would land in the totals - but those turns are
+  *already* in the totals from before, so the totals would inflate. If it wrote no row, the agent
+  tally would miss them. There is no right answer available, only two wrong ones. That is not a
+  trade-off; it is a design that cannot express the situation.
+
+  Option B mirrors the code: `AttributeToAgentLocked` writes `agent_delta` from **both** call sites,
+  one source, no divergence possible. The cost is real and worth stating - `stat_delta` no longer
+  carries the agent dimension, so "turns by agent by hour" becomes a schema change rather than a
+  query. **Pay it.** Carrying `agent_id` on `stat_delta` would advertise a cross-product the code
+  does not actually maintain, and answering that question from it would silently omit every
+  back-fill attribution. That is the same lie as "What the historical data cannot tell us", written
+  fresh into a new schema: do not claim a cross-product you do not have.
+
 - **The test suite writing into the owner's live storage is a REPEAT, not a first, and the repeat is
   the finding.** On 2026-07-15 a full test run imported the owner's live `gateway-input-stats.json`
   and renamed it aside. No data was lost - the running Gateway held its state in memory and rewrote
