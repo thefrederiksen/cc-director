@@ -1,7 +1,9 @@
 using System.Diagnostics;
 using System.Net.Http;
+using System.Net.Http.Headers;
 using Avalonia;
 using CcDirector.Core.Utilities;
+using CcDirector.Gateway.Util;
 using CcDirector.Setup.Engine;
 
 namespace CcDirector.GatewayApp;
@@ -55,6 +57,38 @@ public static class Program
         }
     }
 
+    /// <summary>
+    /// Read the running Gateway's bearer token so the self-update helper can authenticate its
+    /// POST /shutdown (issue #1609). Deliberately READ-ONLY: GatewayAuth.LoadOrCreate would MINT a token
+    /// when the file is absent, and a freshly minted token is precisely the one the already-running
+    /// Gateway does not know - it would 401 exactly like sending none, only more confusingly. Returns
+    /// null when there is no token to read, so the caller can say so instead of blaming the exe lock.
+    /// </summary>
+    private static string? TryReadGatewayToken()
+    {
+        try
+        {
+            var path = GatewayAuth.TokenFile;
+            if (!File.Exists(path))
+            {
+                FileLog.Write($"[Program] gateway token file not found at {path}");
+                return null;
+            }
+            var token = File.ReadAllText(path).Trim();
+            if (token.Length == 0)
+            {
+                FileLog.Write($"[Program] gateway token file is empty at {path}");
+                return null;
+            }
+            return token;
+        }
+        catch (Exception ex)
+        {
+            FileLog.Write($"[Program] could not read the gateway token: {ex.Message}");
+            return null;
+        }
+    }
+
     private static int ApplyUpdate(string[] args)
     {
         string Arg(string name) { var i = Array.IndexOf(args, name); return i >= 0 && i + 1 < args.Length ? args[i + 1] : ""; }
@@ -74,14 +108,31 @@ public static class Program
             target, stagedSelf, version,
             stopGateway: () =>
             {
-                // Best-effort graceful exit; GatewaySelfUpdate's exe-writability wait is the real
-                // exit barrier (a single-file exe unlocks only when its process has fully exited,
-                // which also releases the single-instance mutex for the relaunch).
+                // Issue #1609: /shutdown is behind the Gateway's token gate, so this MUST authenticate.
+                // Sent token-less, it was answered 401, the Gateway never exited, its exe never unlocked,
+                // and every self-update aborted with the misleading "exe still locked after stop" - which
+                // is why no managed install has updated since the gate closed. The exe-writability wait
+                // below is only a barrier if the process actually exits; it cannot substitute for it.
+                //
+                // Reading the token is legitimate here: this helper is the Gateway's own exe, running as
+                // the same user on the same machine, and the file it reads is the very one the running
+                // Gateway loaded its token from (GatewayAuth.TokenFile).
+                var request = new HttpRequestMessage(HttpMethod.Post, $"http://127.0.0.1:{port}/shutdown");
+                var token = TryReadGatewayToken();
+                if (token is null)
+                {
+                    // Fail loudly rather than post a request we know will 401 and then blame the exe lock.
+                    FileLog.Write("[Program] /shutdown SKIPPED: no gateway token readable; cannot ask the Gateway to exit, so the swap will abort");
+                    return false;
+                }
+                request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
+
                 try
                 {
-                    using var resp = http.PostAsync($"http://127.0.0.1:{port}/shutdown", content: null)
-                        .GetAwaiter().GetResult();
+                    using var resp = http.SendAsync(request).GetAwaiter().GetResult();
                     FileLog.Write($"[Program] /shutdown -> {(int)resp.StatusCode}");
+                    if (!resp.IsSuccessStatusCode)
+                        FileLog.Write($"[Program] /shutdown REFUSED ({(int)resp.StatusCode}); the Gateway will not exit and the swap will abort on a locked exe");
                     return resp.IsSuccessStatusCode;
                 }
                 catch (Exception ex)
