@@ -1,17 +1,28 @@
 # Mission Brief: SQLite on the Gateway
 
-Status: PROPOSED - revised after Codex review, awaiting the Codex reviewer's re-review and the
-owner's approval. No code is written until both approve this document.
+Status: PROPOSED - revised twice after Codex review, awaiting the Codex reviewer's final sign-off
+and the owner's approval. No code is written until both approve this document.
 
 Written 2026-07-15 by the Architect session ("Gateway SQLite - Architect", session 8c17dc1c,
 machine SOREN_NORTH). This document is the Architect's handover to the Manager. The Manager owns
 execution from here; the Architect settles the design and then lets the Manager drive.
 
-Revision 2 folds in the Codex reviewer's findings, recorded in full at
+Revision 2 folded in the Codex reviewer's round-one findings, recorded in full at
 `docs/architecture/gateway-sqlite-review-codex-2026-07-15.md`. That review returned CHANGES
 REQUIRED and was right to: it found that the original import design promised something the existing
-data cannot deliver. The design below is materially different as a result. The section "What the
-historical data cannot tell us" is new and is the most important section in this document.
+data cannot deliver. The design is materially different as a result. The section "What the
+historical data cannot tell us" is the most important section in this document.
+
+Revision 3 folds in the round-two findings, recorded at
+`docs/architecture/gateway-sqlite-review-codex-round2-2026-07-15.md`, which approved the baseline
+design and then found three more holes in it. The sharpest: the row schema had no way to express a
+wingman turn, because wingman turns are **not** voice-modality turns (Decision 2 explains). The
+other two: a fold is not "one row write" and the brief should stop claiming it, and archive rows
+sharing a table with real rows need an explicit query rule or they invent a phantom bucket in the
+working-day series. All three are folded in below.
+
+Two reviews, eleven accepted defects. That is the reviewer doing its job on a document, which is
+the cheapest place in this mission for it to happen.
 
 Every claim below carries a file and line citation. Revision 1 asserted that all of its citations
 had been verified against `origin/main`; the Codex review proved that claim was itself overstated -
@@ -60,7 +71,9 @@ specific ways:
 
 SQLite makes all three go away: a narrow table of rows answers new questions with a `GROUP BY`
 instead of a deploy, `PRAGMA user_version` gives real migrations instead of quarantine-and-lose,
-and a counter move becomes one row write instead of a rewrite of the file.
+and a counter move becomes one delta row plus a little bounded bookkeeping, instead of a rewrite of
+the entire file. (Revision 1 said "one row write". That was too strong, and Decision 2 below states
+what a fold actually costs.)
 
 The cost is near zero. `Microsoft.Data.Sqlite` 9.0.2 is already a package reference in
 `src/CcDirector.Core/CcDirector.Core.csproj:18`, the Gateway already references Core
@@ -205,17 +218,35 @@ For every delta observed **after** the cutover, store one narrow row carrying it
 columns:
 
 ```
-stat_delta(hour_utc, session_id, modality, surface, repo, agent, turns, chars)
+stat_delta(hour_utc, session_id, modality, surface, repo, agent, wingman, turns, chars)
 ```
+
+**The `wingman` column is load-bearing and is not the same thing as `modality = 'voice'`.** It
+records `SessionDto.VoiceMode` as observed at fold time. The distinction is easy to miss and the
+Codex reviewer caught the brief missing it: `GatewayInputStatsAggregator.cs:425-427` folds the
+session's **entire** turn delta into `_wingmanTurns` whenever `s.VoiceMode` is true, and that delta
+includes typed turns. A turn typed while voice mode is on is a wingman turn today. The owner's
+definition, recorded at `:44-47`, is "a session uses the wingman when it has voice mode on" - it is
+a property of the session's mode, not of how any single turn was entered. Without this column,
+post-cutover wingman turns could not be derived from rows at all, and no `GROUP BY modality` would
+recover them. Wingman turns become `SUM(turns) WHERE wingman = 1`.
 
 Each dashboard number becomes a baseline value plus a query over the rows recorded since:
 
 - all-time totals by modality and surface - baseline plus `SUM(...) GROUP BY modality, surface`
-- the working-day series - baseline hourly buckets, plus `GROUP BY hour_utc` for recent hours
+- the working-day series - baseline hourly buckets, plus `GROUP BY hour_utc` over real hour keys
+  for recent hours (see the archive-marker rule in Decision 4)
 - the per-repository page - baseline plus `GROUP BY repo`
 - the per-agent page - baseline plus `GROUP BY agent`
+- wingman turns - baseline plus `SUM(turns) WHERE wingman = 1`
 
-Two honest qualifications, both raised by the Codex reviewer and both accepted:
+Three honest qualifications, all raised by the Codex reviewer and all accepted:
+
+- **A fold is not "one row write".** A correct post-cutover fold is one `INSERT` into `stat_delta`,
+  one upsert into `session_highwater`, and possibly an `INSERT OR IGNORE` into each distinct-id
+  table when a repository, agent, or wingman session is seen for the first time. That is bounded,
+  small, and independent of history length - which is the actual win over an O(all history)
+  document rewrite. It is not a single write, and the brief does not get to claim one.
 
 - **"A new question is a query, not a deploy" holds only for dimensions already carried on the
   row.** A question about a dimension `stat_delta` does not capture still needs a schema change and
@@ -244,12 +275,26 @@ as #1376. So, on prune, departing rows are folded into archive rows before delet
 
 Revision 1 said "an archive row", singular, which is not enough and would itself have lost data.
 The archive must **preserve every grouping dimension that any all-time answer is derived from** -
-at minimum modality, surface, repository, and agent, plus wingman-turn attribution for as long as
-that stays derived from rows. Concretely: pruning collapses the hour, and nothing else. An archive
-row is a `stat_delta` row with its `hour_utc` and `session_id` replaced by an archive marker, so
-that every existing `GROUP BY` over the remaining dimensions still returns the same sum. Distinct
-counts are unaffected because they never read `stat_delta` (Decision 2). Whether an all-time answer
-survives pruning is a testable property, and Acceptance criterion 7 pins it.
+modality, surface, repository, agent, and the `wingman` flag. Concretely: pruning collapses the
+hour and the session identifier, and nothing else. An archive row is a `stat_delta` row with its
+`hour_utc` and `session_id` replaced by archive markers and every other column preserved, so that
+every all-time `GROUP BY` over the remaining dimensions still returns the same sum. Distinct counts
+are unaffected because they never read `stat_delta` (Decision 2).
+
+**The archive-marker query rule, stated explicitly because leaving it implicit is how this design
+breaks.** Archive rows and real rows share one table, so every query must declare which it wants:
+
+- **All-time aggregate queries include archive rows.** That is the entire point of archiving - the
+  totals must not shrink when detail is pruned.
+- **Hourly and working-day queries filter to real hour keys and exclude the archive marker.**
+  `HourlyTurns()` (`GatewayInputStatsAggregator.cs:185-203`) returns an ordered hour series today,
+  and pruning drops old hours from it rather than folding them into a catch-all bucket
+  (`:310-315`). A plain `GROUP BY hour_utc` over a table containing archive rows would invent a
+  fake bucket in that series and change what the user sees. It must not.
+
+Whether an all-time answer survives pruning is a testable property, and Acceptance criterion 7
+pins it. That the working-day series does **not** grow a phantom bucket is equally testable, and
+criterion 7 pins that too.
 
 **Decision 5 - The import is a baseline, not a reconstruction, and it is fail-loud.** This decision
 is rewritten from revision 1, per the section "What the historical data cannot tell us".
@@ -329,10 +374,14 @@ fail is not a criterion.
    (`apps/mobile/src/pages/YourThrottle.tsx`) render unchanged. **Evidence, not opinion:** the
    captured `/stats/data` payload from criterion 1, plus a before-and-after screenshot of each of
    the three surfaces, attached to the phase report. "Looks fine" is not acceptance.
-3. A counter move performs one row write, not a document rewrite. **Demonstrated by:** an
-   integration test that observes a single delta and asserts the exact count of `INSERT` and
-   `UPDATE` statements issued against the database, plus an assertion that no JSON store file's
-   last-write timestamp changes after the import has completed.
+3. A counter move costs bounded work that does not grow with history, rather than a whole-document
+   rewrite. **Demonstrated by:** an integration test that observes a single delta and asserts the
+   expected statement mix for the real schema - one `INSERT` into `stat_delta`, one upsert into
+   `session_highwater`, and at most one `INSERT OR IGNORE` per distinct-id table - plus an
+   assertion that no JSON store file's last-write timestamp changes after the import has completed.
+   The test must pin that this mix is **unchanged** when the table already holds a large number of
+   historical rows, since "does not grow with history" is the actual claim being proven. The
+   obsolete "one row write" phrasing is not what is tested, because it is not what the schema does.
 4. A new question that uses dimensions already carried on `stat_delta` is answered by a query with
    no schema change, for data recorded since the cutover. The Manager picks one the owner has not
    asked for yet and shows the query and its result.
@@ -341,8 +390,15 @@ fail is not a criterion.
 6. A regression test pins the baseline import: given a real JSON store as a fixture, every imported
    baseline value matches the value the JSON store reported, and the import refuses to complete on
    an induced mismatch. The refusal leg must be proven by watching it fail, not asserted.
-7. A regression test pins pruning: given rows spanning the retention boundary, every all-time answer
-   is identical before and after a prune runs.
+7. Regression tests pin pruning, on both legs: given rows spanning the retention boundary, (a) every
+   all-time answer - including wingman turns and every per-repository and per-agent tally - is
+   identical before and after a prune runs, and (b) the working-day series contains exactly the
+   real hours it contained before, with no phantom bucket from an archive marker.
+8. A regression test pins wingman-turn semantics: a turn **typed** while the session has voice mode
+   on is counted as a wingman turn, matching `GatewayInputStatsAggregator.cs:425-427` today. This
+   is pinned because the distinction is subtle enough that the first draft of this brief missed it,
+   and a worker who assumes wingman turns means `modality = 'voice'` would silently change the
+   owner's numbers.
 
 ## Constraints
 
