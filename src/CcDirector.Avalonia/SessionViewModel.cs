@@ -188,12 +188,23 @@ public class SessionViewModel : INotifyPropertyChanged
     // suppresses a controlled worker's red to "supporting" - so the rail must re-read exactly as it does
     // for an activity or hold change. Nothing re-read on a role before this, so the stamp arrived, the
     // fold was right, and the dot stayed red anyway.
+    //
+    // RAISE EVERY PROPERTY THE FOLD FEEDS, NOT JUST THE DOT. The first version of this handler raised
+    // only the brush, the reason and the count, and review caught it: ActivityLabel is
+    // SessionOrdering.StateLabel(FoldInput), and HasWaitingDuration/WaitingDurationLabel gate on
+    // EffectiveColor - all three read the role. So the dot repainted to "supporting" while the row text
+    // still said "Needs you" with a live waiting timer beside it. A half-re-read is its own lie: one row
+    // disagreeing with itself is worse than the stale row it replaced, because it looks deliberate.
+    // Match OnStatusColorChanged and OnActivityStateChanged between them - the same fold, the same reads.
     private void OnGatewayResolvedRoleChangedVm(string? _)
     {
         Dispatcher.UIThread.Post(() =>
         {
             OnPropertyChanged(nameof(StatusColorBrush));
             OnPropertyChanged(nameof(StatusReason));
+            OnPropertyChanged(nameof(ActivityLabel));
+            OnPropertyChanged(nameof(WaitingDurationLabel));
+            OnPropertyChanged(nameof(HasWaitingDuration));
             OnPropertyChanged(nameof(NeedsYou));
         });
     }

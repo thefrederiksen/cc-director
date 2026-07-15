@@ -118,6 +118,53 @@ public sealed class SessionRailStateTests
         Assert.NotEqual(Color.Parse("#6A6A6A"), actual);
     }
 
+    // ===== Defect 5: the role stamp must move the WHOLE row, not just the dot =====
+
+    /// <summary>
+    /// The row a controlled worker actually renders once the Gateway names its role. This is the
+    /// PROJECTION, not the model event: GatewayResolvedRoleSignalTests prove Session raises the change,
+    /// and raising it means nothing if the view model does not re-read what the fold feeds.
+    ///
+    /// The first fix here raised only the brush, the reason and the count - so the dot went "supporting"
+    /// while the row text still read "Needs you" beside a running waiting timer. One row disagreeing with
+    /// itself is worse than the stale row it replaced: it looks deliberate. Caught by review, not by the
+    /// suite, because nothing asserted the row AS A WHOLE.
+    /// </summary>
+    [Fact]
+    public void AStampedWorker_MovesEveryFoldFedFieldTogether_NotJustTheDot()
+    {
+        var session = RedAtTurnEnd();
+        // The waiting timer only shows once an explain has been cached - that is what stamps the "waiting
+        // since" instant. Without it HasWaitingDuration is false for a reason unrelated to the role, and
+        // this test would prove nothing about the fix.
+        session.SetCachedExplain("waiting on you", model: "test");
+        var vm = new SessionViewModel(session);
+
+        // Before: an ordinary red session that wants you, timer running.
+        Assert.True(vm.NeedsYou);
+        Assert.True(vm.HasWaitingDuration);
+
+        var changed = new List<string>();
+        vm.PropertyChanged += (_, e) => { if (e.PropertyName is not null) changed.Add(e.PropertyName); };
+
+        session.SetGatewayResolvedRole("Worker");
+        Dispatcher.UIThread.RunJobs();
+
+        // Every field the fold feeds must be re-read. Name them individually: a missing one is exactly
+        // the defect, and asserting "some property changed" would pass while the label stayed wrong.
+        Assert.Contains(nameof(SessionViewModel.StatusColorBrush), changed);
+        Assert.Contains(nameof(SessionViewModel.ActivityLabel), changed);
+        Assert.Contains(nameof(SessionViewModel.HasWaitingDuration), changed);
+        Assert.Contains(nameof(SessionViewModel.WaitingDurationLabel), changed);
+        Assert.Contains(nameof(SessionViewModel.NeedsYou), changed);
+        Assert.Contains(nameof(SessionViewModel.StatusReason), changed);
+
+        // And the row must actually AGREE with itself afterwards - the point of raising them at all.
+        Assert.False(vm.NeedsYou);
+        Assert.False(vm.HasWaitingDuration);
+        Assert.DoesNotContain("Needs you", vm.ActivityLabel, StringComparison.OrdinalIgnoreCase);
+    }
+
     /// <summary>An inert backend: the Session needs one, these tests never run a process.</summary>
     private sealed class InertBackend : ISessionBackend
     {
