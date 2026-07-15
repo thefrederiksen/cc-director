@@ -18,9 +18,9 @@ import { CockpitStatusPill } from "./network/CockpitStatusPill";
 // labels beneath them, so instead of chunking the list they added three rows of noise you scanned
 // past. Raising their contrast was the obvious fix and the wrong one: it makes them louder without
 // making them useful, because the grouping was not earning its keep - "Dictionary, Voice Recorder,
-// Executables, Transcription, Network, Learning" under "DATA" is not a category anyone feels, it is a
-// category invented to justify a header. So the list is flat now, which is what comparable product
-// navigation does at this size.
+// Transcription, Network, Learning" under "DATA" is not a category anyone feels, it is a category
+// invented to justify a header. So the list is flat now, which is what comparable product navigation
+// does at this size.
 //
 // Every destination carries an ICON, and that is what replaced the headers rather than merely
 // decorating them: in a flat rail the scan is carried by SHAPE - you find the row by silhouette
@@ -29,6 +29,10 @@ import { CockpitStatusPill } from "./network/CockpitStatusPill";
 // The one surviving grouping is positional, not labeled: the destinations about the app itself
 // (Account, Your Throttle, Settings, About) sit in a second list pinned to the BOTTOM of the rail,
 // away from the fleet work. That is a grouping you feel without being told.
+//
+// Executables was in this rail too - issue #1247 put it there - and has been deleted: it was a
+// DEVELOPER page (the Director processes on the Gateway's own machine, and the local_builds slots), so
+// putting it in an end-user rail was the mistake, not leaving it out.
 //
 // The Fleet Map is first and is the default landing (issue #1303): a fresh boot at "/" redirects to
 // it, so the Cockpit opens on the whole-fleet picture (main.tsx). Sessions lives at its own /sessions
@@ -55,7 +59,6 @@ const NAV_MAIN: ReadonlyArray<NavItem> = [
   { to: "/workflows", label: "Workflows", icon: "workflows" },
   { to: "/dictionary", label: "Dictionary", icon: "dictionary" },
   { to: "/transcripts", label: "Voice Recorder", icon: "voice-recorder" },
-  { to: "/exes", label: "Executables", icon: "executables" },
   { to: "/transcription", label: "Transcription", icon: "transcription" },
   { to: "/network", label: "Network", icon: "network" },
   { to: "/learn", label: "Learning", icon: "learning" },

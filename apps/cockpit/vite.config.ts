@@ -28,7 +28,7 @@ const cockpitBuildTime = new Date().toISOString();
 const proxyTarget = process.env.COCKPIT_PROXY_TARGET;
 // Every root-relative prefix any Cockpit page calls must be fronted, or that page 404s under
 // `npm run dev`. The list below is the union of the prefixes the pages fetch (client-core + the
-// views): the session/fleet core plus every later-ported page - Lists (/lists), Exes (/exes),
+// views): the session/fleet core plus every later-ported page -
 // Account (/account), the settings + telemetry + about pages (/gateway), Dictionary + recordings
 // (/ingest, /dictation), Feedback (/turnbriefs), and the settings AI-key panel (/vault).
 const devProxy = proxyTarget
@@ -40,7 +40,6 @@ const devProxy = proxyTarget
       "/cron": { target: proxyTarget, changeOrigin: true },
       "/wingman": { target: proxyTarget, changeOrigin: true },
       "/lists": { target: proxyTarget, changeOrigin: true },
-      "/exes": { target: proxyTarget, changeOrigin: true },
       "/account": { target: proxyTarget, changeOrigin: true },
       "/gateway": { target: proxyTarget, changeOrigin: true },
       "/ingest": { target: proxyTarget, changeOrigin: true },
