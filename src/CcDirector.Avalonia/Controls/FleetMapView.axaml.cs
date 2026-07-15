@@ -1,4 +1,5 @@
 using System.Collections.ObjectModel;
+using System.ComponentModel;
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Input;
@@ -12,11 +13,14 @@ using CcDirector.Gateway.Contracts;
 namespace CcDirector.Avalonia.Controls;
 
 /// <summary>One lane in the desktop fleet map, bound by the XAML.</summary>
-public sealed class FleetLaneItem
+public sealed class FleetLaneItem : INotifyPropertyChanged
 {
     public required string Title { get; init; }
-    public required List<FleetCardItem> Nodes { get; init; }
+    public ObservableCollection<FleetCardItem> Nodes { get; } = new();
     public string CountDisplay => Nodes.Count == 1 ? "1 session" : $"{Nodes.Count} sessions";
+
+    public event PropertyChangedEventHandler? PropertyChanged;
+    public void RaiseCountChanged() => PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(CountDisplay)));
 }
 
 /// <summary>
@@ -24,13 +28,41 @@ public sealed class FleetLaneItem
 /// (<see cref="SessionDto.EffectiveColor"/>, <see cref="SessionDto.StateLabel"/>,
 /// <see cref="SessionDto.SessionRole"/>) - never recomputed here. See <see cref="FleetMapTree"/> for why.
 /// </summary>
-public sealed class FleetCardItem
+public sealed class FleetCardItem : INotifyPropertyChanged
 {
-    public required SessionDto Session { get; init; }
-    public required int Depth { get; init; }
+    public required SessionDto Session { get; set; }
+    public required int Depth { get; set; }
 
     /// <summary>True when this Director owns the session, so clicking it can select it in the rail.</summary>
-    public required bool IsLocal { get; init; }
+    public required bool IsLocal { get; set; }
+
+    public event PropertyChangedEventHandler? PropertyChanged;
+
+    /// <summary>
+    /// Refresh this card from a newer roster WITHOUT replacing the object.
+    ///
+    /// This exists because the poll used to rebuild every card from scratch, which destroys and recreates
+    /// every control several times a minute. That is not merely wasteful: it drops keyboard focus (so a card
+    /// cannot be tabbed to and activated), resets hover, and lets a click that lands mid-rebuild hit nothing
+    /// at all - which is exactly the case this view is FOR (watch the map, a session goes red, click it).
+    /// Updating in place keeps the controls alive, so the card under the pointer stays the card that gets
+    /// clicked.
+    /// </summary>
+    public void UpdateFrom(SessionDto session, int depth, bool isLocal)
+    {
+        Session = session;
+        Depth = depth;
+        IsLocal = isLocal;
+        // Everything the XAML binds is computed from those three, so tell it all of them may have moved.
+        foreach (var p in new[]
+                 {
+                     nameof(Session), nameof(Depth), nameof(IsLocal), nameof(IndentMargin), nameof(DotBrush),
+                     nameof(BorderBrushForCard), nameof(HasNumber), nameof(NumberDisplay), nameof(NameDisplay),
+                     nameof(AgentDisplay), nameof(HasRole), nameof(RoleDisplay), nameof(RoleBrush),
+                     nameof(LocationDisplay), nameof(StateDisplay), nameof(OwnershipDisplay), nameof(AutomationName),
+                 })
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(p));
+    }
 
     // The indent is capped even though the depth is not: nesting is real, but a deep chain must lean right
     // a little and then stop rather than squeezing the cards into a sliver.
@@ -207,27 +239,13 @@ public partial class FleetMapView : UserControl
             var local = LocalSessionIds?.Invoke() ?? new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             var lanes = FleetMapLanes.Build(sessions, _pivot, FleetMapLanes.DefaultSort);
 
-            // The rebuild below replaces every item, which resets the ScrollViewer to the top. On a 3-second
-            // poll that means a reader scrolled halfway down the fleet is yanked back to the top every three
-            // seconds - the map is unusable past the first screenful. Capture the offset and put it back
-            // after the new items have been laid out (posting at Loaded priority; setting it inline lands
-            // before the new content has an extent to scroll within, and is silently clamped to zero).
+            // Reconcile in place - do NOT rebuild. See FleetCardItem.UpdateFrom for why: a from-scratch
+            // rebuild on a 3-second timer destroys and recreates every control, which drops keyboard focus
+            // and lets a click that lands mid-rebuild hit nothing. The steady state here (same sessions,
+            // changed colours/labels) touches no controls at all. Structure only changes when a session
+            // actually appears or disappears, which is rare and is when a reflow is honest.
             var offset = MapScroll.Offset;
-
-            _lanes.Clear();
-            foreach (var lane in lanes)
-            {
-                _lanes.Add(new FleetLaneItem
-                {
-                    Title = lane.Title,
-                    Nodes = lane.Nodes.Select(n => new FleetCardItem
-                    {
-                        Session = n.Session,
-                        Depth = n.Depth,
-                        IsLocal = local.Contains(n.Session.SessionId ?? ""),
-                    }).ToList(),
-                });
-            }
+            Reconcile(lanes, local);
 
             var machines = sessions.Select(s => (s.MachineName ?? "").Trim())
                                    .Where(m => m.Length > 0)
@@ -246,6 +264,72 @@ public partial class FleetMapView : UserControl
             Show($"Could not read the fleet from the Gateway: {ex.Message}");
         }
     }
+
+    /// <summary>
+    /// Fold a freshly-built lane set into the live collections, keeping every existing control alive when
+    /// the SHAPE has not changed (same lanes, same sessions in the same order) - which is the overwhelmingly
+    /// common case between two polls three seconds apart.
+    ///
+    /// The comparison is deliberately by SHAPE (lane titles, then session ids in order), not by content: the
+    /// content changes constantly (idle clocks, colours, labels) and none of it needs a control rebuilt.
+    /// </summary>
+    private void Reconcile(List<FleetLane> lanes, HashSet<string> local)
+    {
+        var titlesMatch = _lanes.Count == lanes.Count;
+        if (titlesMatch)
+            for (var i = 0; i < lanes.Count; i++)
+                if (!string.Equals(_lanes[i].Title, lanes[i].Title, StringComparison.Ordinal))
+                {
+                    titlesMatch = false;
+                    break;
+                }
+
+        if (!titlesMatch)
+        {
+            _lanes.Clear();
+            foreach (var lane in lanes)
+            {
+                var item = new FleetLaneItem { Title = lane.Title };
+                foreach (var n in lane.Nodes) item.Nodes.Add(Card(n, local));
+                _lanes.Add(item);
+            }
+            return;
+        }
+
+        for (var i = 0; i < lanes.Count; i++)
+        {
+            var want = lanes[i].Nodes;
+            var have = _lanes[i].Nodes;
+
+            var idsMatch = have.Count == want.Count;
+            if (idsMatch)
+                for (var j = 0; j < want.Count; j++)
+                    if (!string.Equals(have[j].Session.SessionId, want[j].Session.SessionId, StringComparison.Ordinal))
+                    {
+                        idsMatch = false;
+                        break;
+                    }
+
+            if (idsMatch)
+            {
+                // The steady state: same cards, newer facts. Update the objects; the controls never move.
+                for (var j = 0; j < want.Count; j++)
+                    have[j].UpdateFrom(want[j].Session, want[j].Depth, local.Contains(want[j].Session.SessionId ?? ""));
+                continue;
+            }
+
+            have.Clear();
+            foreach (var n in want) have.Add(Card(n, local));
+            _lanes[i].RaiseCountChanged();
+        }
+    }
+
+    private static FleetCardItem Card(FleetTreeNode n, HashSet<string> local) => new()
+    {
+        Session = n.Session,
+        Depth = n.Depth,
+        IsLocal = local.Contains(n.Session.SessionId ?? ""),
+    };
 
     private void Show(string message)
     {
