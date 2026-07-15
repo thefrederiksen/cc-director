@@ -57,28 +57,22 @@ public sealed class DirectorDto
     public string Source { get; set; } = "file";
 
     /// <summary>
-    /// UTC timestamp of the last PASSING two-way handshake (issues #223/#224): the
-    /// Director reached the Gateway AND the Gateway's nonce callback reached the Director.
-    /// Null = never verified for this registration (resets on re-register, which is
-    /// truthful - a fresh registration may carry a different endpoint). Server-side stamp.
-    /// </summary>
-    public DateTime? TwoWayVerifiedAt { get; set; }
-
-    /// <summary>
-    /// UTC timestamp of the last PASSING stream-leg verification: the Gateway completed a real
-    /// WebSocket UPGRADE to this Director's /verify-ws callback - the same path the Cockpit
-    /// terminal stream uses. Distinct from <see cref="TwoWayVerifiedAt"/> (plain HTTP only): a
-    /// Director can pass the HTTP handshake while terminal streaming is dead (the exact remote
-    /// streaming failure). Null = stream not proven for this registration (resets on
-    /// re-register). Server-side stamp.
+    /// UTC timestamp of the last PASSING stream-leg verification.
+    ///
+    /// NOTHING WRITES THIS. It is always null on the wire. Its writer was the two-way verify handshake,
+    /// which the tunnel-only cut deleted along with the Gateway's dial-back and the /verify-ws callback -
+    /// liveness is now the tunnel connection itself. The Cockpit still READS it (DirectorDetailView), so
+    /// it is kept rather than deleted: removing it would break a live client, and whether to restore the
+    /// signal or drop the row is a product decision. See issue #1570.
     /// </summary>
     public DateTime? StreamVerifiedAt { get; set; }
 
     /// <summary>
-    /// Why the last stream-leg verification FAILED (WebSocket upgrade rejected, blocked, wrong
-    /// process...). Null while the stream path is proven OR while it is untested - a Director
-    /// that predates the /verify-ws endpoint leaves BOTH <see cref="StreamVerifiedAt"/> and this
-    /// null (unknown), distinct from a non-null error (a real, tested failure). Server-side stamp.
+    /// Why the last stream-leg verification FAILED.
+    ///
+    /// NOTHING WRITES THIS EITHER - see <see cref="StreamVerifiedAt"/> and issue #1570. Always null on
+    /// the wire, so the Cockpit's "DOWN - WebSocket stream unreachable" branch can never fire: the row it
+    /// feeds cannot report a problem, only silence.
     /// </summary>
     public string? StreamVerifyError { get; set; }
 

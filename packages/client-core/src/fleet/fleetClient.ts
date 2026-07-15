@@ -32,7 +32,6 @@ export interface FleetDirector {
   endpointUnreachableReason?: string | null;
   /** "file" (local filesystem discovery) or "http" (push registration). */
   source?: string;
-  twoWayVerifiedAt?: string | null;
   /** When the WebSocket UPGRADE (terminal stream) path was last verified, or null. */
   streamVerifiedAt?: string | null;
   /** Set when the terminal stream leg is down while plain HTTP is reachable (cross-machine). */
