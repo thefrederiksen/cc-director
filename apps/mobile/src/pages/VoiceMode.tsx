@@ -182,8 +182,12 @@ export function VoiceMode() {
               </span>
             </div>
             <div className="voice-narr">
+              {/* "This is not your fault." was the headline here, and it told the reader nothing: it
+                  answered a question nobody asked (whose fault?) instead of the one everybody asks
+                  (what is going on?). A headline has one job - say what happened - and the sentence
+                  underneath, which comes from the Gateway, says what is being done about it. */}
               <div className="voice-narr-title">
-                {unavailableIsServiceDown ? "This is not your fault." : "No narration is ready to play."}
+                {unavailableIsServiceDown ? "The speech service did not answer." : "No narration is ready to play."}
               </div>
               <div className="voice-narr-body">
                 {unavailableReason?.text
