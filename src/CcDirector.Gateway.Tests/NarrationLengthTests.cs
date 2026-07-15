@@ -90,11 +90,12 @@ public class NarrationLengthTests
 
     // ---- The cap and the deadline are ONE decision -------------------------
 
+    /// <summary>The flat deadline this replaced. The derived one must never be tighter than it, at any
+    /// length - deriving a number is only an improvement if it cannot be worse than the constant.</summary>
+    private static readonly TimeSpan OldFlatDeadline = TimeSpan.FromSeconds(15);
+
     [Theory]
     // input, measured synthesis seconds direct to the provider (2026-07-15, production key).
-    // The deadline must clear the MEASURED time at every length. A flat 15s - the old value - fails
-    // this at 8,000 and 12,000, which is exactly why raising the cap alone would have turned silent
-    // truncation into silent failure.
     [InlineData(4_000, 7.3)]
     [InlineData(5_000, 11.6)]
     [InlineData(8_000, 14.0)]
@@ -106,6 +107,48 @@ public class NarrationLengthTests
             $"{chars} chars: deadline {deadline:F1}s must leave >2x headroom over the measured {measuredSeconds}s");
     }
 
+    [Theory]
+    // THE REGRESSION GUARD, and the one test here that was written from a real outage.
+    //
+    // The deadline shipped as 5s + 4ms/char. It looked right - it cleared every measured synthesis
+    // time with >2x headroom - and it was TIGHTER than the flat 15s it replaced for anything under
+    // ~2,500 chars, which is almost every real narration. Minutes after deploy, on the owner's
+    // Gateway:
+    //   [TtsSynthesis] attempt 1/2 timed out after 5s (20 chars); retrying
+    //   [TtsSynthesis] attempt 2/2 timed out after 5s (20 chars); giving up
+    //
+    // The theory above could not catch it, because it only ever asked "is there room for the
+    // SYNTHESIS?" - and synthesis was never the problem. The same 47-char call measured 0.7s, 1.3s
+    // and 13.3s on one day with 72ms of GPU: the fixed overhead is large and VARIABLE, and it hits a
+    // 20-char call as hard as a 4,000-char one. So this asks the other question, the one that
+    // actually failed: is it ever WORSE than what we replaced?
+    [InlineData(0)]
+    [InlineData(20)]        // the exact length that died in production
+    [InlineData(47)]        // the call measured at 0.7s / 1.3s / 13.3s
+    [InlineData(479)]
+    [InlineData(550)]
+    [InlineData(1_292)]     // today's median narration
+    [InlineData(2_500)]
+    [InlineData(NarrationText.MaxChars)]
+    public void DeadlineFor_IsNeverTighterThanTheFlatDeadlineItReplaced(int chars)
+    {
+        var deadline = TtsSynthesis.DeadlineFor(chars);
+        Assert.True(deadline >= OldFlatDeadline,
+            $"{chars} chars: deadline {deadline.TotalSeconds:F1}s is TIGHTER than the flat "
+            + $"{OldFlatDeadline.TotalSeconds:F0}s it replaced - that is a regression, not a derivation");
+    }
+
+    [Fact]
+    public void DeadlineFor_LeavesRoomForTheOverheadOutlier_NotJustSynthesis()
+    {
+        // The 47-char call that took 13.3s of wall time for 72ms of GPU. A deadline that only budgets
+        // for synthesis kills this call every time. Whatever the formula becomes, a short narration
+        // must survive the worst overhead we have actually observed.
+        const double worstObservedOverheadSeconds = 13.3;
+        Assert.True(TtsSynthesis.DeadlineFor(47).TotalSeconds > worstObservedOverheadSeconds,
+            "a short call must outlive the worst fixed overhead we have measured, not just its own synthesis");
+    }
+
     [Fact]
     public void DeadlineFor_ScalesWithTheText_SoItCannotRotWhenTheCapMoves()
     {
@@ -115,18 +158,17 @@ public class NarrationLengthTests
         var longDeadline = TtsSynthesis.DeadlineFor(NarrationText.MaxChars);
 
         Assert.True(longDeadline > shortDeadline);
-        // A normal narration must not wait on a budget sized for a runaway.
-        Assert.True(shortDeadline < TimeSpan.FromSeconds(10),
-            $"a ~30-second narration should get a snug deadline, got {shortDeadline.TotalSeconds:F1}s");
     }
 
     [Fact]
     public void DeadlineFor_AtTheRunawayCeiling_StaysBounded()
     {
-        // The cap is what keeps the derived deadline finite. If someone raises MaxChars without
-        // thinking about this, they will see it here.
+        // The cap is what keeps the derived deadline finite: cap and deadline are ONE decision. If
+        // someone raises MaxChars without thinking about what it does to the worst-case wait, they
+        // will see it here. The ceiling only binds for a runaway that should never occur - a real
+        // narration is ~550 chars - but it must stay a bounded wait rather than an open-ended one.
         var atCap = TtsSynthesis.DeadlineFor(NarrationText.MaxChars);
-        Assert.InRange(atCap.TotalSeconds, 30, 60);
+        Assert.InRange(atCap.TotalSeconds, 30, 90);
     }
 
     [Fact]
