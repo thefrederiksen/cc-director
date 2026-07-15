@@ -768,6 +768,37 @@ until the quality-assurance report.
   unknown at fold time, and a concrete model. Merging the first two would be the `_agentsSinceUtc`
   mistake with a new coat of paint.
 
+  **The proposed cure is worse than the disease, and the fold does not want it.** To close the null
+  floor, session 60ffd96b proposed a Director-side **per-model turn tally** attributed at turn-end,
+  riding the data-transfer object alongside the `InputStats` buckets. It would indeed put turn one
+  on its real model. It should not be built, for two reasons, and the second is fatal.
+
+  *It would not reconcile.* Turns are counted at submission and the tally would be counted at
+  turn-end, so the model totals would always trail the turn totals by whatever is in flight - and a
+  session killed mid-turn would be missing from the model dimension **permanently**, which its own
+  authors acknowledge. The model page's total would silently differ from the totals page forever.
+  That is the third instance in this one mission of the same failure: two numbers that look
+  comparable, are not, and say nothing about it. The null floor by contrast **reconciles exactly** -
+  every turn is present and attributed either to a model or to a visible unknown.
+
+  *It would destroy the cross-product - the entire point of this mission.* A separate per-model
+  tally is **a second projection**. The Gateway would learn that a session's model tally rose by
+  three without learning which of that session's modality-and-surface buckets those three turns were
+  in, so `model` could never be a column on `stat_delta`. It would need its own table, collapsed on
+  its own dimension, and "how many voice turns did I take on Opus?" would be unanswerable forever -
+  by construction, not by omission. That is precisely the wall documented in "What the historical
+  data cannot tell us", rebuilt deliberately, in new code, after twelve revisions spent escaping it.
+
+  `CurrentModel` on the data-transfer object is the right shape *because* the fold reads it at fold
+  time and stamps it on every row that fold emits, giving the full cross-product. It costs one null
+  turn per session. That is a cheap, honest, visible price for a dimension that composes with every
+  other dimension. **Recommendation to the owner: keep the null floor; do not build the tally.**
+
+  If turn-one attribution is genuinely wanted later, the answer is not a parallel tally but putting
+  the model on the *same record as the turn* - which means recording at turn-end and therefore
+  touching the Director-side counting seam this brief protects in Constraints. That is a separate
+  mission with its own proof obligations, not an addition to this one.
+
   So the model dimension needs its own design pass covering: the identity table, a since-stamp in
   the `_agentsSinceUtc` mould, the three-state null handling above, and the accepted one-turn lag on
   a mid-session model switch. It is a phase, not a column.
