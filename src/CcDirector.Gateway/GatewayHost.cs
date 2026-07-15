@@ -1209,13 +1209,39 @@ public sealed class GatewayHost : IAsyncDisposable
             // and transcribed in the background for this session (mobile Speak -> Send).
             transcribingFor: sid => _transcribingSessions.IsTranscribing(sid),
             // Issue #1181, Task 4: the honest phase label. "Transcribing" while the server is actively
-            // turning the uploaded audio into text (a bounded run); otherwise "Uploading from phone" while
-            // the durable PENDING delivery marker stands (the phone is still sending, and this never wedges
-            // because the marker clears only on delivery/abandon); null when no dictation is inbound.
-            dictationStatusFor: sid =>
-                _transcribingSessions.IsActivelyTranscribing(sid) ? "Transcribing"
-                : _dictationUploads.IsSessionLocked(sid) ? "Uploading from phone"
-                : null,
+            // turning the uploaded audio into text (a bounded run); "Uploading from phone" while the durable
+            // PENDING marker stands AND the phone is still making progress; null when no dictation is
+            // inbound.
+            //
+            // ONE FLAG WAS ANSWERING TWO QUESTIONS, and that was defect 19 (fixed 14 July 2026, mission
+            // "Session State Truth"). The durable PENDING marker answers "is there an undelivered dictation
+            // for this session?" - a durable fact that must NEVER expire, or a phone out of signal loses its
+            // words. It was ALSO being used to answer "should this session be painted orange right now?" - a
+            // presentation question that must ALWAYS be bounded. So an upload that stopped progressing left
+            // the session orange indefinitely, reading "Uploading from phone" about an upload that was not
+            // happening.
+            //
+            // The colour is now bounded by the SAME idle rule the transcribing mark already uses
+            // (TranscribingSessions.IdleTimeout): the phone refreshes the mark on every stored chunk and
+            // every completion attempt, so a genuinely slow upload keeps its label and is never cut short,
+            // while one that goes quiet drops back to the session's true colour within the idle window. The
+            // durable record is untouched and still delivers whenever the phone returns - and the delivery
+            // submits text, which makes the agent work, which is blue. Nothing is lost except the lie.
+            //
+            // The earlier comment here claimed this "never wedges because the marker clears only on
+            // delivery/abandon". That was half-true and the half it left out WAS the bug: the marker does
+            // clear on delivery, so the normal path never wedges - but the paths that reach no terminal state
+            // at all never clear it. Observed: upload f13cb4b6d9d0 stood PENDING 1h30m on 12 July 2026,
+            // orange the whole time, across four Gateway restarts (so "it clears on restart" is false too -
+            // the record is on disk), before finally delivering 362 characters.
+            // The rule itself lives in DictationPhase.For so it is testable without a running Gateway; this
+            // supplies the three facts. IsTranscribing() is the progress-idle read (it also drops a stale
+            // mark), and transcribingFor above already calls it for every session, so evaluating it here
+            // costs nothing new.
+            dictationStatusFor: sid => Transcription.DictationPhase.For(
+                activelyTranscribing: _transcribingSessions.IsActivelyTranscribing(sid),
+                undelivered: _dictationUploads.IsSessionLocked(sid),
+                progressing: _transcribingSessions.IsTranscribing(sid)),
             // The mobile Speak flow marks/clears this via POST /sessions/{sid}/transcribing.
             transcribingSessions: _transcribingSessions,
             // Issue #212 W3: enrich the Interrupted sessions list from the durable brief store. Always

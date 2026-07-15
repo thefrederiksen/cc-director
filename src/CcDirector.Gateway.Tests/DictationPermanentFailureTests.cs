@@ -59,31 +59,80 @@ public sealed class DictationPermanentFailureTests : IDisposable
         Assert.Single(Directory.EnumerateFiles(Path.Combine(_root, Guid.Parse(id).ToString("N")), "*.part"));
     }
 
+    // ===== THESE TWO TESTS USED TO ASSERT DEFECT 19. Read this before you "fix" them back. =========
+    //
+    // They were named Guard_*_IsNotMappedToPermanent_AndDoesNotParkTheRecord, and each asserted TWO things
+    // in one breath:
+    //
+    //   (a) a retryable outcome must not be RECLASSIFIED as permanent - it keeps its 502/402 contract so the
+    //       durable queue re-drives it. That half is CORRECT, it is the whole point of issue #1185's guard,
+    //       and it is still asserted below. Do not lose it.
+    //   (b) `Assert.Null(_store.ReadRecord(id))` - the record must be left unparked. THAT HALF WAS THE BUG.
+    //       An unparked record stays PENDING, and PENDING paints the session orange with no bound, so the
+    //       session read "Uploading from phone" about an upload that was going nowhere. OBSERVED: upload
+    //       f13cb4b6d9d0, 12 July 2026, orange for 1h30m across four Gateway restarts before it finally
+    //       delivered 362 characters.
+    //
+    // Parking FAILED does NOT give up on the words: FAILED keeps the staged chunks and the next
+    // register/complete clears it back to PENDING and re-drives. f13cb4b6d9d0 would still have delivered at
+    // 07:40. The only thing parking removes is the lie on the dot between attempts.
+    //
+    // A green test is not proof. These two were green, and they were defending the defect.
+
     [Fact]
-    public void Guard_ProviderError_IsNotMappedToPermanent_AndDoesNotParkTheRecord()
+    public void ProviderError_KeepsItsRetryableContract_ButParksTheRecordSoTheColourIsBounded()
     {
-        // The guard: every non-Ok outcome that is NOT PermanentError keeps its existing behavior. A provider
-        // error stays a retryable 502 and must NOT park the record FAILED.
+        // (a) the CORRECT half, unchanged: a provider error is NOT reclassified as permanent.
         var id = _store.Register(null);
+        _store.MarkPending(id, "session-1");
         var result = GatewayTranscriptionResult.ProviderError("mode", "model", "provider rejected the key");
 
         var outcome = GatewayDictationEndpoint.MapNonOkTranscription(result, id, _store);
 
         Assert.NotNull(outcome);
         Assert.False(outcome!.IsIncomplete);
-        Assert.Null(_store.ReadRecord(id)); // not parked FAILED - still PENDING, so a retry re-runs
+        Assert.False(outcome.Terminal, "a provider error is retryable - the client re-drives it");
+
+        // (b) the INVERTED half - this is the defect-19 fix. The record parks FAILED, so it stops painting.
+        var record = _store.ReadRecord(id);
+        Assert.NotNull(record);
+        Assert.Equal(DictationDeliveryState.Failed, record!.State);
+        Assert.False(_store.IsPending(id), "a parked record must not paint the session 'Uploading from phone'");
+        Assert.False(_store.IsSessionLocked("session-1"), "the wedged orange is exactly this returning true forever");
+
+        // ...and the words are NOT lost: the owning session is preserved and a retry re-enters PENDING.
+        Assert.Equal("session-1", record.SessionId);
+        Assert.True(_store.ClearFailed(id), "the retry must be able to re-drive the parked record");
+        Assert.True(_store.IsPending(id));
     }
 
     [Fact]
-    public void Guard_OutOfCredits_IsNotMappedToPermanent_AndDoesNotParkTheRecord()
+    public async Task OutOfCredits_KeepsIts402Contract_ButParksTheRecordSoTheColourIsBounded()
     {
+        // NOTE: out-of-credits has NEVER been observed to fire - zero OutOfCredits in any log on this
+        // machine, ever, across 846 terminal outcomes. An earlier draft of the specification called it the
+        // "everyday" cause of the wedged orange; that was invented and is disproven. This test asserts the
+        // MECHANISM only. It says nothing about the cause.
         var id = _store.Register(null);
+        await _store.StoreChunkAsync(id, 0, Encoding.UTF8.GetBytes("AAA"), null);
+        _store.MarkPending(id, "session-1");
         var result = GatewayTranscriptionResult.OutOfCredits("mode", "model", "insufficient_credits", "no credits");
 
         var outcome = GatewayDictationEndpoint.MapNonOkTranscription(result, id, _store);
 
+        // (a) the CORRECT half, unchanged: never permanent, so adding credit and retrying still delivers.
         Assert.NotNull(outcome);
-        Assert.Null(_store.ReadRecord(id)); // out-of-credits keeps the recording, never permanent
+        Assert.False(outcome!.Terminal);
+
+        // (b) the INVERTED half: parked, so the session stops claiming an upload is in progress.
+        var record = _store.ReadRecord(id);
+        Assert.NotNull(record);
+        Assert.Equal(DictationDeliveryState.Failed, record!.State);
+        Assert.Equal("out_of_credits", record.Reason);
+        Assert.False(_store.IsSessionLocked("session-1"));
+
+        // The recording is KEPT: adding credit and retrying must still deliver the words.
+        Assert.Single(Directory.EnumerateFiles(Path.Combine(_root, Guid.Parse(id).ToString("N")), "*.part"));
     }
 
     [Fact]
