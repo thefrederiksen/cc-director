@@ -384,6 +384,51 @@ public sealed class TerminalSubmitTests
         Assert.Equal(["clean send"], backend.SubmittedTexts);
     }
 
+    /// <summary>
+    /// Issue #1591 / #1592, from the live failure on 2026-07-15 05:31:31 that lost two phone
+    /// dictations. Claude Code repaints its footer by moving the cursor away from the composer,
+    /// drawing "bypass permissions on shift+tab to cycle" and "Esc again to clear", then moving
+    /// back and continuing the composer text. StripAnsi discards those cursor moves - the only
+    /// thing that said the footer text belongs ELSEWHERE on screen - so the hint is concatenated
+    /// into the middle of the typed text, splitting "great" into "notgrea" + hint + "tforus".
+    ///
+    /// The echo check then runs a linear substring search over what is really two-dimensional
+    /// content, never finds the needle, declares "the TUI is not accepting input", and throws.
+    /// The text was in the composer the whole time.
+    ///
+    /// The echo text below is the REAL captured byte tail from that incident, not a synthetic
+    /// approximation. Synthetic terminal output is what let this defect pass review twice.
+    /// </summary>
+    [Fact]
+    public async Task EchoVerifiedSubmit_FooterHintRepaintedIntoTypedText_StillRecognizesTheEcho()
+    {
+        const string typed =
+            "that is weird and not great for us We might have pushed the skills to the agents anyway " +
+            "we just didnt commit them So lets figure out the skills and stop being a fuck ing scatterbrain " +
+            "and deal with one thing at a time please We want the repo cleaned up but we want to do it " +
+            "systematically and understand what it is were doing";
+
+        // The real bytes: the composer echo with the footer hints spliced in mid-word at each of the
+        // three points the TUI repainted, exactly as captured in the director log.
+        const string hint = "\x1B[2K bypass permissions on shift+tab to cycle   Esc again to clear \x1B[1A";
+        var interleavedEcho =
+            "that is weird and not grea" + hint + "t for us We might have pushed the skills to the agents anyway " +
+            "we just didnt commit them So lets figure out the skills and stop being a fuck" + hint + "ing scatterbrain " +
+            "and deal with one thing at a time please We want the repo cleaned up but we want to do it " +
+            "systematically and understand what" + hint + " it is were doing";
+
+        var backend = new RecordingSessionBackend { Buffer = new CircularTerminalBuffer() };
+        backend.EchoScript.UseDefault(RecordingEchoStep.CustomEcho(interleavedEcho));
+
+        // The text IS in the composer, so this must submit. Today it throws
+        // ComposerNotAcceptingInputException and the user's dictation is lost.
+        await TerminalSubmit.EchoVerifiedSubmitAsync(
+            backend, typed, "ClaudeCode", submitVerifyBeat: FastVerifyBeat);
+
+        Assert.Equal(1, backend.EnterCount);
+        Assert.Equal([typed], backend.SubmittedTexts);
+    }
+
     [Fact]
     public void StripAnsi_RemovesCsiSequences()
     {
