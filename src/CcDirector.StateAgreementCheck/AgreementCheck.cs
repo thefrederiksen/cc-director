@@ -37,6 +37,42 @@ public static class AgreementCheck
     /// </param>
     public sealed record Finding(string? SessionId, string Name, string Kind, string Detail);
 
+    /// <summary>
+    /// The numbers the run publishes: how many real disagreements, over how many sessions, and on how
+    /// many rows the desktop comparison could not be graded.
+    /// </summary>
+    public sealed record Summary(int Disagreements, int LiveSessions, int DesktopNotGraded);
+
+    /// <summary>
+    /// THE ARITHMETIC OF THE HEADLINE NUMBER, in a function, because it is the sentence people quote and
+    /// it had been wrong twice - both times found by a reader reasoning about console output, which is
+    /// the least reliable way to find anything.
+    ///
+    /// This mission's own lesson, applied to itself for the third time: an unbindable seam is an
+    /// untestable one. The counting lived inline in Program.Report, so no test could reach it, so it
+    /// drifted out of step with Compare twice without a single test going red. Now it is bindable and
+    /// AgreementSummaryTests pins it.
+    ///
+    /// THE RULE IT ENCODES: every live session IS checked. Only ONE of the five checks - the desktop
+    /// comparison - can be defeated by an indeterminate row, and only on that row; the stamp, fold, LAW
+    /// and palette checks run on everything and stand. So the denominator is every live session, and an
+    /// unreadable row's CERTAIN findings are counted like anyone else's.
+    ///
+    /// The version before this subtracted indeterminate rows from the denominator, counted their certain
+    /// findings in the numerator anyway, and then printed "the number above says nothing about them" -
+    /// three statements that cannot all be true at once. It was introduced by the fix that let an
+    /// unreadable row keep reporting its certain defects, which is the honest behaviour; the arithmetic
+    /// simply did not follow it there. Found by inspection of pull request 1606.
+    /// </summary>
+    public static Summary Summarize(IReadOnlyList<SessionDto> roster, IReadOnlyList<Finding> findings)
+    {
+        var desktopNotGraded = findings.Count(f => f.Kind == "indeterminate");
+        return new Summary(
+            Disagreements: findings.Count - desktopNotGraded,
+            LiveSessions: roster.Count,
+            DesktopNotGraded: desktopNotGraded);
+    }
+
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
 
     /// <summary>

@@ -126,34 +126,31 @@ public static class Program
         foreach (var f in findings)
             Console.WriteLine($"DISAGREEMENT [{f.Kind}] {f.Name}\n    {f.Detail}\n");
 
-        // Rows the instrument could not READ are published beside the ones it graded, never folded into
-        // them. A check that quietly counts what it cannot see as agreement is not measuring - it is
-        // reassuring, which is the failure this whole mission is about.
-        var unreadable = findings.Count(f => f.Kind == "indeterminate");
-        var graded = roster.Count - unreadable;
+        // The arithmetic lives in AgreementCheck.Summarize so a test can reach it - see that method for
+        // why, and for the two ways this counting was wrong before it was bindable.
+        var sum = AgreementCheck.Summarize(roster, findings);
 
         Console.WriteLine(new string('=', 78));
-        Console.WriteLine($"AGREEMENT NUMBER: {findings.Count - unreadable} disagreement(s) over {graded} graded session(s).");
-        if (unreadable > 0)
-            Console.WriteLine($"NOT GRADED: {unreadable} session(s) the check could not read - see [indeterminate] above. " +
-                              "The number above says nothing about them.");
+        Console.WriteLine($"AGREEMENT NUMBER: {sum.Disagreements} disagreement(s) over {sum.LiveSessions} live session(s).");
+        if (sum.DesktopNotGraded > 0)
+            Console.WriteLine($"DESKTOP COMPARISON NOT GRADED on {sum.DesktopNotGraded} row(s) - see [indeterminate] above. " +
+                              "Every other check ran on them and stands, and any disagreement they turned up IS counted above.");
         Console.WriteLine("  (It was SIX out of THIRTEEN when the specification was written.)");
         Console.WriteLine();
-        // EVERY CLAIM HERE IS SCOPED TO WHAT WAS ACTUALLY GRADED. This paragraph used to end "...the
-        // desktop's fold agrees with the Gateway's" full stop - printed verbatim on a run that had just
-        // said, two lines earlier, that it could not read one of the rows. The tool contradicted itself
-        // inside four lines, and the false half is the quotable half. Found by inspection of pull request
-        // 1606, which ran the tool and read what it PRINTED rather than what it meant.
-        var over = unreadable > 0 ? $"over the {graded} GRADED session(s)" : "over every live session";
-        Console.WriteLine($"MEASURED, {over}: the stamp is present; the stamped answer IS the shared fold's");
-        Console.WriteLine("  answer; the law (working => blue) holds; the desktop's fold agrees with the Gateway's;");
-        Console.WriteLine("  and every colour resolves to the SAME HEX in the desktop palette and the shipped");
-        Console.WriteLine("  client palette.");
-        if (unreadable > 0)
+        // EVERY CLAIM HERE IS SCOPED TO WHAT WAS ACTUALLY MEASURED. This paragraph once ended "...the
+        // desktop's fold agrees with the Gateway's" full stop, printed on a run that had just said it
+        // could not read one of the rows - the tool contradicting itself inside four lines, with the
+        // false half the quotable one.
+        Console.WriteLine("MEASURED, over every live session: the stamp is present; the stamped answer IS the shared");
+        Console.WriteLine("  fold's answer; the law (working => blue) holds; and every colour resolves to the SAME HEX");
+        Console.WriteLine("  in the desktop palette and the shipped client palette.");
+        if (sum.DesktopNotGraded == 0)
+            Console.WriteLine("  And the desktop's fold agrees with the Gateway's on every one of them.");
+        else
         {
-            Console.WriteLine($"  This says NOTHING about the {unreadable} row(s) marked [indeterminate] above. On those, the");
-            Console.WriteLine("  stamp, fold, law and palette checks above DID run and stand - it is only the desktop");
-            Console.WriteLine("  comparison that could not be graded, because the Gateway overwrote the fact it needed.");
+            Console.WriteLine($"  The desktop's fold agrees with the Gateway's on all but the {sum.DesktopNotGraded} row(s) marked");
+            Console.WriteLine("  [indeterminate], where that ONE check could not be graded because the Gateway overwrote");
+            Console.WriteLine("  the fact it needed. The other four checks stand on those rows too.");
         }
         Console.WriteLine("NOT MEASURED, and not to be claimed: the desktop's own SessionRole copy is not externally");
         Console.WriteLine("  observable (the Gateway's fleet pass overwrites the inbound role on every read), so a");
