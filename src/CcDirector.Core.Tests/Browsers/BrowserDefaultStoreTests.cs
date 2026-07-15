@@ -199,4 +199,94 @@ public sealed class BrowserDefaultStoreTests : IDisposable
         Assert.Equal(RepoDefault.ExePath, entry.GetProperty("exePath").GetString());
         Assert.Equal(RepoDefault.ProfileFolder, entry.GetProperty("profileFolder").GetString());
     }
+
+    // -- Clearing: how the user takes a default back (picking "System default" in the picker and
+    //    asking to remember it). Without these, a default set once could never be removed.
+
+    [Fact]
+    public void Clear_AfterSave_ResolvesToOperatingSystemDefault()
+    {
+        BrowserDefaultStore.Save(GlobalDefault);
+
+        BrowserDefaultStore.Clear();
+
+        Assert.Null(BrowserDefaultStore.Load());
+        Assert.Null(BrowserDefaultStore.Resolve(null));
+    }
+
+    [Fact]
+    public void Clear_NothingSaved_IsANoOp()
+    {
+        BrowserDefaultStore.Clear();
+
+        Assert.Null(BrowserDefaultStore.Load());
+    }
+
+    [Fact]
+    public void ClearForRepo_AfterSaveForRepo_FallsBackToGlobalDefault()
+    {
+        BrowserDefaultStore.Save(GlobalDefault);
+        BrowserDefaultStore.SaveForRepo(RepoPath, RepoDefault);
+
+        BrowserDefaultStore.ClearForRepo(RepoPath);
+
+        Assert.Null(BrowserDefaultStore.LoadForRepo(RepoPath));
+        Assert.Equal(GlobalDefault, BrowserDefaultStore.Resolve(RepoPath));
+    }
+
+    [Fact]
+    public void ClearForRepo_LeavesOtherRepositoriesAlone()
+    {
+        BrowserDefaultStore.SaveForRepo(RepoPath, RepoDefault);
+        BrowserDefaultStore.SaveForRepo(OtherRepoPath, GlobalDefault);
+
+        BrowserDefaultStore.ClearForRepo(RepoPath);
+
+        Assert.Null(BrowserDefaultStore.LoadForRepo(RepoPath));
+        Assert.Equal(GlobalDefault, BrowserDefaultStore.LoadForRepo(OtherRepoPath));
+    }
+
+    [Fact]
+    public void ClearForRepo_LeavesTheGlobalDefaultAlone()
+    {
+        BrowserDefaultStore.Save(GlobalDefault);
+        BrowserDefaultStore.SaveForRepo(RepoPath, RepoDefault);
+
+        BrowserDefaultStore.ClearForRepo(RepoPath);
+
+        Assert.Equal(GlobalDefault, BrowserDefaultStore.Load());
+    }
+
+    [Fact]
+    public void Clear_LeavesRepositoryDefaultsAlone()
+    {
+        BrowserDefaultStore.Save(GlobalDefault);
+        BrowserDefaultStore.SaveForRepo(RepoPath, RepoDefault);
+
+        BrowserDefaultStore.Clear();
+
+        Assert.Equal(RepoDefault, BrowserDefaultStore.LoadForRepo(RepoPath));
+        Assert.Equal(RepoDefault, BrowserDefaultStore.Resolve(RepoPath));
+    }
+
+    [Fact]
+    public void Clear_PreservesUnrelatedConfigKeys()
+    {
+        CcDirectorConfigService.MergePatch(new System.Text.Json.Nodes.JsonObject
+        {
+            ["someOtherSection"] = new System.Text.Json.Nodes.JsonObject { ["keep"] = "me" }
+        });
+        BrowserDefaultStore.Save(GlobalDefault);
+
+        BrowserDefaultStore.Clear();
+
+        var root = CcDirectorConfigService.ReadRaw();
+        Assert.Equal("me", (string?)root["someOtherSection"]?["keep"]);
+    }
+
+    [Fact]
+    public void ClearForRepo_BlankPath_Throws()
+    {
+        Assert.Throws<ArgumentException>(() => BrowserDefaultStore.ClearForRepo(""));
+    }
 }

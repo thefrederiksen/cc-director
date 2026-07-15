@@ -58,6 +58,44 @@ public static class BrowserDefaultStore
     }
 
     /// <summary>
+    /// Forgets the application-wide default, so <see cref="Resolve"/> falls through to the
+    /// operating-system default. This is how the user takes back a default they set: picking
+    /// "System default browser" in the picker and asking to remember it means "stop using a
+    /// remembered browser", which without this would be unsayable once a default existed.
+    /// </summary>
+    public static void Clear()
+    {
+        FileLog.Write("[BrowserDefaultStore] Clear: forgetting the application-wide default");
+        var patch = new JsonObject
+        {
+            ["browser"] = new JsonObject { ["default"] = null }
+        };
+        CcDirectorConfigService.MergePatch(patch);
+    }
+
+    /// <summary>
+    /// Forgets <paramref name="repoPath"/>'s default, so <see cref="Resolve"/> falls through to the
+    /// application-wide default (and then to the operating-system default). Other repositories'
+    /// defaults are untouched.
+    /// </summary>
+    public static void ClearForRepo(string repoPath)
+    {
+        if (string.IsNullOrWhiteSpace(repoPath))
+            throw new ArgumentException("Repository path is required", nameof(repoPath));
+
+        var key = NormalizeRepoKey(repoPath);
+        FileLog.Write($"[BrowserDefaultStore] ClearForRepo: repo={key}");
+        var patch = new JsonObject
+        {
+            ["browser"] = new JsonObject
+            {
+                ["repoDefaults"] = new JsonObject { [key] = null }
+            }
+        };
+        CcDirectorConfigService.MergePatch(patch);
+    }
+
+    /// <summary>
     /// Returns the browser+profile remembered for <paramref name="repoPath"/>, or null when that
     /// repository has never set one. Null is not an error - the caller should then fall back to the
     /// application-wide default (see <see cref="Resolve"/>).
