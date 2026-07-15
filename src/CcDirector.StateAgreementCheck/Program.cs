@@ -49,6 +49,15 @@ public static class Program
 
             var findings = AgreementCheck.Compare(first, clientPalette).ToList();
 
+            // THE FINDINGS AND THE FLEET THEY ARE REPORTED AGAINST MUST BE ONE SNAPSHOT. This used to
+            // confirm findings against a SECOND read and then print them beside the FIRST read's row
+            // table, exposure count and graded denominator. Sessions come and go between two reads of a
+            // live fleet - one of them gains a dictation, one exits - so the report could pair
+            // second-snapshot findings with a first-snapshot denominator and call the result measured.
+            // Internally false output, produced by the path whose whole job is to avoid false positives.
+            // Found by inspection of pull request 1606.
+            var reportRoster = first;
+
             if (findings.Count > 0)
             {
                 Console.WriteLine($"{findings.Count} candidate disagreement(s) - re-reading in {ReReadDelaySeconds}s to " +
@@ -62,9 +71,14 @@ public static class Program
                 if (transient > 0)
                     Console.WriteLine($"  {transient} did not survive the re-read (a racing state change) - NOT reported.");
                 findings = confirmed;
+                // The confirmed findings came from `second`, so `second` is the fleet the report describes.
+                reportRoster = second;
+                if (second.Count != first.Count)
+                    Console.WriteLine($"  The fleet changed between reads ({first.Count} -> {second.Count} session(s)); " +
+                                      "everything below describes the SECOND read, which is where these findings were confirmed.");
             }
 
-            Report(first, findings);
+            Report(reportRoster, findings);
             return findings.Count == 0 ? 0 : 1;
         }
         catch (Exception ex)
