@@ -170,7 +170,7 @@ const router = createBrowserRouter(
             // "Telemetry" tab of Settings (the rail is decluttered, matching the Missions move). The old
             // /telemetry route redirects there, deep-linking straight to that tab so bookmarks still land
             // on the setting.
-            { path: "/telemetry", element: <Navigate to="/settings?tab=telemetry" replace /> },
+            { path: "/telemetry", element: <Navigate to="/settings?tab=privacy" replace /> },
             // Your Throttle (devthrottle-stats mission): the in-Cockpit port of the standalone Gateway
             // /stats page. Reads the same GET /stats/data feed through client-core so the user sees
             // their throttle in the app rather than at a bare URL.

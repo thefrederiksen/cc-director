@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
+import { TABS, tabFromParam, type TabId } from "./settingsTabs";
 import {
   getTelemetryConsent,
   setTelemetryConsent,
@@ -46,9 +47,17 @@ import {
 // The Cockpit Settings page (issue #1025, epic #967) - the React port of the retired Blazor
 // wwwroot/pages/settings.html. The left-rail "Settings" item used to be a dead full-load anchor to
 // /settings (nothing served it, so it fell through to the SPA "Not found"); this is the real page it now
-// routes to. It ports the two tabs the issue names: "This machine" (the Gateway connection: process
-// diagnostics, network addressing, startup, training capture) and "AI" (DevThrottle-hosted models,
-// transcription, wingman, and voice).
+// routes to. With the Gateway headless these are the only settings the product has, so the page is
+// organised by WHAT a setting is about, not by which endpoint serves it:
+//
+//   This machine  - the Gateway host itself: process diagnostics, network addressing, startup, time zone
+//   Notifications - how a session that needs you reaches you: snooze length, browser notifications
+//   AI            - DevThrottle-hosted models, transcription, wingman, and voice
+//   Car Mode      - the phone's hands-free fleet control
+//   Privacy       - what data leaves this machine: usage telemetry, wingman training capture
+//
+// Every card carries a scope pill ("this machine" / "this browser" / "whole fleet") because the page
+// mixes all three and the reach of a change must be readable without reading the hint paragraph.
 //
 // A pure client of existing Gateway endpoints, same-origin (root-relative URLs, never a Director
 // address). Responsive (CodingStyle.md): each tab renders immediately with a loading line and loads
@@ -56,16 +65,10 @@ import {
 
 const SAMPLE_TEXT = "Hi, I'm your DevThrottle wingman. This is how I'll sound.";
 
-type TabId = "machine" | "ai" | "carmode" | "telemetry";
-
-function tabFromParam(raw: string | null): TabId {
-  return raw === "ai" || raw === "carmode" || raw === "telemetry" ? raw : "machine";
-}
-
 export function SettingsView() {
   // The initial tab can be deep-linked with ?tab= (issue #1405 companion cleanup): the retired
-  // standalone Telemetry page redirects to /settings?tab=telemetry, so an old bookmark lands straight on
-  // the telemetry setting rather than the default "This machine" tab.
+  // standalone Telemetry page redirects here, so an old bookmark lands straight on the telemetry setting
+  // rather than the default "This machine" tab. See settingsTabs.ts for the resolution rules.
   const [params] = useSearchParams();
   const [tab, setTab] = useState<TabId>(() => tabFromParam(params.get("tab")));
   return (
@@ -81,63 +84,109 @@ export function SettingsView() {
       </p>
 
       <div className="settings-tabs" role="tablist" aria-label="Settings sections">
-        <button
-          type="button"
-          role="tab"
-          aria-selected={tab === "machine"}
-          className={tab === "machine" ? "settings-tab active" : "settings-tab"}
-          onClick={() => setTab("machine")}
-        >
-          This machine
-        </button>
-        <button
-          type="button"
-          role="tab"
-          aria-selected={tab === "ai"}
-          className={tab === "ai" ? "settings-tab active" : "settings-tab"}
-          onClick={() => setTab("ai")}
-        >
-          AI
-        </button>
-        <button
-          type="button"
-          role="tab"
-          aria-selected={tab === "carmode"}
-          className={tab === "carmode" ? "settings-tab active" : "settings-tab"}
-          onClick={() => setTab("carmode")}
-        >
-          Car Mode
-        </button>
-        <button
-          type="button"
-          role="tab"
-          aria-selected={tab === "telemetry"}
-          className={tab === "telemetry" ? "settings-tab active" : "settings-tab"}
-          onClick={() => setTab("telemetry")}
-        >
-          Telemetry
-        </button>
+        {TABS.map((t) => (
+          <button
+            key={t.id}
+            type="button"
+            role="tab"
+            aria-selected={tab === t.id}
+            className={tab === t.id ? "settings-tab active" : "settings-tab"}
+            onClick={() => setTab(t.id)}
+          >
+            {t.label}
+          </button>
+        ))}
       </div>
 
       {tab === "machine" ? (
         <ThisMachineTab />
+      ) : tab === "notifications" ? (
+        <NotificationsTab />
       ) : tab === "ai" ? (
         <AiTab />
       ) : tab === "carmode" ? (
         <CarModeTab />
       ) : (
-        <TelemetryTab />
+        <PrivacyTab />
       )}
     </div>
   );
 }
 
-// ---- "Telemetry" tab: the fleet-wide richer-usage-telemetry consent (was the standalone Telemetry page,
-// issue #978, now folded in here). One fleet-wide setting on the Gateway, read from GET
+// The scope of a setting: how far a change to it reaches. Rendered as the pill in every card heading.
+type Scope = "this machine" | "this browser" | "whole fleet";
+
+function CardHead({ title, scope }: { title: string; scope: Scope }) {
+  return (
+    <h2 className="settings-h2">
+      {title} <span className="settings-pill">{scope}</span>
+    </h2>
+  );
+}
+
+// ---- "Privacy" tab: what data leaves this machine ------------------------------------------------
+//
+// The two consent switches, together: fleet-wide usage telemetry and wingman training capture. They were
+// split across a one-card "Telemetry" tab and the bottom of "This machine"; they are the same decision, so
+// they answer it in one place. Each card loads independently - a telemetry load failure must not blank the
+// training switch next to it.
+
+function PrivacyTab() {
+  return (
+    <>
+      <TelemetryCard />
+      <TrainingDataCard />
+    </>
+  );
+}
+
+// The wingman training-data capture switch. Reads/writes the same Gateway settings document as the "This
+// machine" cards, so it owns its own load of it (one fetch for this tab).
+function TrainingDataCard() {
+  const { settings, setSettings, error, busy, msg, runSave } = useGatewaySettings();
+
+  if (error !== null) {
+    return <div className="settings-error">Could not load the training setting: {error}</div>;
+  }
+  if (settings === null) {
+    return <p className="settings-loading">Loading...</p>;
+  }
+
+  const toggleTraining = (enabled: boolean) =>
+    void runSave(async () => {
+      const applied = await setTrainingCapture(enabled);
+      setSettings({ ...settings, wingmanTrainingCapture: applied });
+      return applied ? "Capturing wingman training data." : "Training capture turned off.";
+    });
+
+  return (
+    <section className="settings-card">
+      <CardHead title="Training data" scope="whole fleet" />
+      <p className="settings-hint">
+        When on, every wingman voice summary saves the session terminal plus the wingman&apos;s spoken
+        response to the Gateway machine - a labeled dataset for testing and improving the wingman. Takes
+        effect immediately, no restart.
+      </p>
+      <label className="settings-check">
+        <input
+          type="checkbox"
+          checked={settings.wingmanTrainingCapture}
+          disabled={busy}
+          onChange={(e) => toggleTraining(e.target.checked)}
+        />
+        Capture wingman training data
+      </label>
+      {msg !== "" && <div className="settings-msg">{msg}</div>}
+    </section>
+  );
+}
+
+// The fleet-wide richer-usage-telemetry consent (was the standalone Telemetry page, issue #978, then a tab
+// of its own, now a Privacy card). One fleet-wide setting on the Gateway, read from GET
 // /gateway/telemetry-consent and toggled via PUT. The always-on sign-in / startup auth-floor events are
 // never gated by it. A load failure replaces the card (no value to show); a SAVE failure keeps the toggle
 // on screen so the user can retry in place (the no-fallback rule - never a fabricated "off" state).
-function TelemetryTab() {
+function TelemetryCard() {
   const [consent, setConsent] = useState<TelemetryConsent | null>(null);
   const [loadError, setLoadError] = useState(false);
   const [saveError, setSaveError] = useState(false);
@@ -191,9 +240,7 @@ function TelemetryTab() {
 
   return (
     <section className="settings-card">
-      <h2 className="settings-h2">
-        Usage telemetry <span className="settings-pill">whole fleet</span>
-      </h2>
+      <CardHead title="Usage telemetry" scope="whole fleet" />
       <p className="settings-hint">
         One fleet-wide setting, managed on the Gateway. When on, Directors report anonymous usage events
         (event names and timestamps only - never your code, prompts, or credentials). When off, those
@@ -219,7 +266,65 @@ function TelemetryTab() {
   );
 }
 
-// ---- "This machine" tab: Gateway connection + startup ---------------------------------------------
+// ---- The Gateway settings document -----------------------------------------------------------------
+//
+// Three tabs read this one document (This machine, Notifications' snooze, Privacy's training capture), so
+// the load/error/busy/message plumbing lives here once. Each consumer mounts its own copy, which means one
+// fetch per tab - tabs unmount when you switch, so nothing double-fetches.
+//
+// runSave wraps a mutation in the immediate-feedback contract every card owes the user (CodingStyle.md):
+// the controls disable and the message reads "Saving..." before the call goes out, the caller's returned
+// sentence replaces it on success, and a failure reports the Gateway's own error rather than a fabricated
+// value. The try/catch is here because this IS the event-handler entry point.
+//
+// It also refuses to start a second save while one is in flight. Every caller applies its result over the
+// settings snapshot its render captured, so two overlapping saves would let the slower one write back a
+// value the faster one had already superseded. Disabling the controls is not enough on its own - that
+// stops a click, not a keyboard repeat or a queued change event - so the invariant is enforced here, once,
+// for every caller. The guard reads a ref because this callback is created once and would otherwise close
+// over the first render's `busy`.
+function useGatewaySettings() {
+  const [settings, setSettings] = useState<GatewaySettings | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState("");
+  const busyRef = useRef(false);
+
+  const load = useCallback(async (signal?: AbortSignal) => {
+    try {
+      setError(null);
+      setSettings(await getGatewaySettings(signal));
+    } catch (e) {
+      if (signal?.aborted) return;
+      setError(errText(e));
+    }
+  }, []);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    void load(controller.signal);
+    return () => controller.abort();
+  }, [load]);
+
+  const runSave = useCallback(async (apply: () => Promise<string>) => {
+    if (busyRef.current) return;
+    busyRef.current = true;
+    setBusy(true);
+    setMsg("Saving...");
+    try {
+      setMsg(await apply());
+    } catch (e) {
+      setMsg(errText(e));
+    } finally {
+      busyRef.current = false;
+      setBusy(false);
+    }
+  }, []);
+
+  return { settings, setSettings, error, busy, msg, setMsg, runSave };
+}
+
+// ---- "This machine" tab: the Gateway host itself ---------------------------------------------------
 
 function Row({ label, value }: { label: string; value: string }) {
   return (
@@ -243,117 +348,7 @@ function formatUptime(totalSeconds: number): string {
 }
 
 function ThisMachineTab() {
-  const [settings, setSettings] = useState<GatewaySettings | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
-  const [msg, setMsg] = useState("");
-  // Snooze Length mission: a draft of the default-snooze-length input, synced from the loaded settings.
-  const [snoozeDraft, setSnoozeDraft] = useState("");
-
-  const load = useCallback(async (signal?: AbortSignal) => {
-    try {
-      setError(null);
-      setSettings(await getGatewaySettings(signal));
-    } catch (e) {
-      if (signal?.aborted) return;
-      setError(errText(e));
-    }
-  }, []);
-
-  useEffect(() => {
-    const controller = new AbortController();
-    void load(controller.signal);
-    return () => controller.abort();
-  }, [load]);
-
-  // Keep the snooze input in sync with the loaded/saved value.
-  useEffect(() => {
-    if (settings !== null) setSnoozeDraft(String(settings.snoozeDefaultMinutes));
-  }, [settings?.snoozeDefaultMinutes]);
-
-  const chooseAddressing = async (mode: AddressingMode) => {
-    if (settings === null || busy || mode === settings.addressingMode) return;
-    setBusy(true);
-    setMsg("Saving...");
-    try {
-      const applied = await setAddressingMode(mode);
-      setSettings({ ...settings, addressingMode: applied });
-      setMsg(
-        applied === "lan"
-          ? "LAN mode saved. Applies to this machine's Directors on their next restart."
-          : "Tailscale mode saved. Applies to this machine's Directors on their next restart.",
-      );
-    } catch (e) {
-      setMsg(errText(e));
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const toggleAutostart = async (enabled: boolean) => {
-    if (settings === null || busy) return;
-    setBusy(true);
-    setMsg("Saving...");
-    try {
-      const state = await setAutostart(enabled);
-      setSettings({ ...settings, autostart: state });
-      setMsg(state.enabled ? "The Gateway will start when you log in." : "Autostart turned off.");
-    } catch (e) {
-      setMsg(errText(e));
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const toggleTraining = async (enabled: boolean) => {
-    if (settings === null || busy) return;
-    setBusy(true);
-    setMsg("Saving...");
-    try {
-      const applied = await setTrainingCapture(enabled);
-      setSettings({ ...settings, wingmanTrainingCapture: applied });
-      setMsg(applied ? "Capturing wingman training data." : "Training capture turned off.");
-    } catch (e) {
-      setMsg(errText(e));
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const saveSnooze = async () => {
-    if (settings === null || busy) return;
-    const minutes = Number(snoozeDraft);
-    if (!Number.isInteger(minutes) || minutes < 1 || minutes > 7 * 24 * 60) {
-      setMsg("Snooze length must be a whole number of minutes from 1 to 10080.");
-      return;
-    }
-    setBusy(true);
-    setMsg("Saving...");
-    try {
-      const applied = await setSnoozeDefaultMinutes(minutes);
-      setSettings({ ...settings, snoozeDefaultMinutes: applied });
-      setMsg(`Snooze length set to ${applied} minute${applied === 1 ? "" : "s"}. Applies to the next snooze, on every device.`);
-    } catch (e) {
-      setMsg(errText(e));
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const chooseTimeZone = async (tz: string) => {
-    if (settings === null || busy || tz === settings.timeZone) return;
-    setBusy(true);
-    setMsg("Saving...");
-    try {
-      const applied = await setTimeZone(tz);
-      setSettings({ ...settings, timeZone: applied });
-      setMsg(`Time zone set to ${applied}. Your Throttle charts now read this zone.`);
-    } catch (e) {
-      setMsg(errText(e));
-    } finally {
-      setBusy(false);
-    }
-  };
+  const { settings, setSettings, error, busy, msg, runSave } = useGatewaySettings();
 
   if (error !== null) {
     return <div className="settings-error">Could not load settings from the Gateway: {error}</div>;
@@ -362,10 +357,37 @@ function ThisMachineTab() {
     return <p className="settings-loading">Loading...</p>;
   }
 
+  const chooseAddressing = (mode: AddressingMode) => {
+    if (busy || mode === settings.addressingMode) return;
+    void runSave(async () => {
+      const applied = await setAddressingMode(mode);
+      setSettings({ ...settings, addressingMode: applied });
+      return applied === "lan"
+        ? "LAN mode saved. Applies to this machine's Directors on their next restart."
+        : "Tailscale mode saved. Applies to this machine's Directors on their next restart.";
+    });
+  };
+
+  const toggleAutostart = (enabled: boolean) =>
+    void runSave(async () => {
+      const state = await setAutostart(enabled);
+      setSettings({ ...settings, autostart: state });
+      return state.enabled ? "The Gateway will start when you log in." : "Autostart turned off.";
+    });
+
+  const chooseTimeZone = (tz: string) => {
+    if (busy || tz === settings.timeZone) return;
+    void runSave(async () => {
+      const applied = await setTimeZone(tz);
+      setSettings({ ...settings, timeZone: applied });
+      return `Time zone set to ${applied}. Your Throttle charts now read this zone.`;
+    });
+  };
+
   return (
     <>
       <section className="settings-card">
-        <h2 className="settings-h2">Gateway</h2>
+        <CardHead title="Gateway" scope="this machine" />
         <p className="settings-hint">The Gateway process serving this page and supervising the fleet.</p>
         <Row label="State" value={settings.state} />
         <Row label="Port" value={String(settings.port)} />
@@ -377,7 +399,7 @@ function ThisMachineTab() {
       </section>
 
       <section className="settings-card">
-        <h2 className="settings-h2">Network addressing</h2>
+        <CardHead title="Network addressing" scope="this machine" />
         <p className="settings-hint">
           How machines in the fleet address one another. Tailscale (default): each Director is reached
           over its Tailscale front door. LAN: each Director is reached on its real LAN IP - use only on a
@@ -391,7 +413,7 @@ function ThisMachineTab() {
             className="settings-select"
             value={settings.addressingMode}
             disabled={busy}
-            onChange={(e) => void chooseAddressing(e.target.value === "lan" ? "lan" : "tailscale")}
+            onChange={(e) => chooseAddressing(e.target.value === "lan" ? "lan" : "tailscale")}
           >
             <option value="tailscale">Tailscale (front door)</option>
             <option value="lan">LAN (direct IP)</option>
@@ -400,7 +422,7 @@ function ThisMachineTab() {
       </section>
 
       <section className="settings-card">
-        <h2 className="settings-h2">Startup</h2>
+        <CardHead title="Startup" scope="this machine" />
         <p className="settings-hint">
           Registers a per-user Run entry so the Gateway starts when you log in. The fleet only works
           while you are logged in, so this is per-user, never a machine service.
@@ -410,7 +432,7 @@ function ThisMachineTab() {
             type="checkbox"
             checked={settings.autostart.enabled === true}
             disabled={busy || !settings.autostart.supported}
-            onChange={(e) => void toggleAutostart(e.target.checked)}
+            onChange={(e) => toggleAutostart(e.target.checked)}
           />
           Start the Gateway when I log in
         </label>
@@ -420,36 +442,7 @@ function ThisMachineTab() {
       </section>
 
       <section className="settings-card">
-        <h2 className="settings-h2">Snooze</h2>
-        <p className="settings-hint">
-          How long a snoozed session stays parked before it returns to &quot;needs you&quot; on its own -
-          a dead-man&apos;s switch, so a session you snooze can never be lost. One length for every snooze,
-          the same on every device. Read at snooze time, so a change applies to the next snooze.
-        </p>
-        <div className="settings-field">
-          <label htmlFor="settings-snooze">Default snooze length (minutes)</label>
-          <input
-            id="settings-snooze"
-            className="settings-input"
-            type="number"
-            min={1}
-            max={10080}
-            step={1}
-            value={snoozeDraft}
-            disabled={busy}
-            onChange={(e) => setSnoozeDraft(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter") void saveSnooze();
-            }}
-          />
-          <button type="button" className="settings-btn" disabled={busy} onClick={() => void saveSnooze()}>
-            Save
-          </button>
-        </div>
-      </section>
-
-      <section className="settings-card">
-        <h2 className="settings-h2">Time zone</h2>
+        <CardHead title="Time zone" scope="this machine" />
         <p className="settings-hint">
           The zone your private dashboards read local clock hours in - the Your Throttle hourly charts. It
           starts on this Gateway machine&apos;s own zone ({settings.timeZoneMachineDefault}); change it if
@@ -463,7 +456,7 @@ function ThisMachineTab() {
             className="settings-select"
             value={settings.timeZone}
             disabled={busy}
-            onChange={(e) => void chooseTimeZone(e.target.value)}
+            onChange={(e) => chooseTimeZone(e.target.value)}
           >
             {timeZoneOptions(settings.timeZone).map((tz) => (
               <option key={tz} value={tz}>
@@ -476,34 +469,12 @@ function ThisMachineTab() {
               type="button"
               className="settings-btn"
               disabled={busy}
-              onClick={() => void chooseTimeZone(settings.timeZoneMachineDefault)}
+              onClick={() => chooseTimeZone(settings.timeZoneMachineDefault)}
             >
               Use gateway zone
             </button>
           )}
         </div>
-      </section>
-
-      <NotificationsCard />
-
-      <section className="settings-card">
-        <h2 className="settings-h2">
-          Training data <span className="settings-pill">improve the wingman</span>
-        </h2>
-        <p className="settings-hint">
-          When on, every wingman voice summary saves the session terminal plus the wingman&apos;s spoken
-          response to the Gateway machine - a labeled dataset for testing and improving the wingman.
-          Takes effect immediately, no restart.
-        </p>
-        <label className="settings-check">
-          <input
-            type="checkbox"
-            checked={settings.wingmanTrainingCapture}
-            disabled={busy}
-            onChange={(e) => void toggleTraining(e.target.checked)}
-          />
-          Capture wingman training data
-        </label>
       </section>
 
       {msg !== "" && <div className="settings-msg">{msg}</div>}
@@ -514,6 +485,86 @@ function ThisMachineTab() {
 function cockpitLabel(settings: GatewaySettings): string {
   const state = settings.cockpit.up ? "up" : "down";
   return `port ${settings.cockpit.port} (${state})`;
+}
+
+// ---- "Notifications" tab: how a session that needs you reaches you --------------------------------
+//
+// Snooze and browser notifications answer one question together - a session turned red, how and when does
+// that reach you - so they sit together. Snooze used to be on "This machine", which was wrong twice over:
+// it is a fleet-wide setting, and it is not about the machine.
+
+function NotificationsTab() {
+  return (
+    <>
+      <SnoozeCard />
+      <NotificationsCard />
+    </>
+  );
+}
+
+// The default snooze length (Snooze Length mission). A Gateway setting, so it owns its own load of the
+// settings document (one fetch for this tab).
+function SnoozeCard() {
+  const { settings, setSettings, error, busy, msg, setMsg, runSave } = useGatewaySettings();
+  // A draft of the input, synced from the loaded settings.
+  const [snoozeDraft, setSnoozeDraft] = useState("");
+
+  useEffect(() => {
+    if (settings !== null) setSnoozeDraft(String(settings.snoozeDefaultMinutes));
+  }, [settings?.snoozeDefaultMinutes]);
+
+  if (error !== null) {
+    return <div className="settings-error">Could not load the snooze setting: {error}</div>;
+  }
+  if (settings === null) {
+    return <p className="settings-loading">Loading...</p>;
+  }
+
+  const saveSnooze = () => {
+    if (busy) return;
+    const minutes = Number(snoozeDraft);
+    if (!Number.isInteger(minutes) || minutes < 1 || minutes > 7 * 24 * 60) {
+      setMsg("Snooze length must be a whole number of minutes from 1 to 10080.");
+      return;
+    }
+    void runSave(async () => {
+      const applied = await setSnoozeDefaultMinutes(minutes);
+      setSettings({ ...settings, snoozeDefaultMinutes: applied });
+      return `Snooze length set to ${applied} minute${applied === 1 ? "" : "s"}. Applies to the next snooze, on every device.`;
+    });
+  };
+
+  return (
+    <section className="settings-card">
+      <CardHead title="Snooze" scope="whole fleet" />
+      <p className="settings-hint">
+        How long a snoozed session stays parked before it returns to &quot;needs you&quot; on its own - a
+        dead-man&apos;s switch, so a session you snooze can never be lost. One length for every snooze, the
+        same on every device. Read at snooze time, so a change applies to the next snooze.
+      </p>
+      <div className="settings-field">
+        <label htmlFor="settings-snooze">Default snooze length (minutes)</label>
+        <input
+          id="settings-snooze"
+          className="settings-input"
+          type="number"
+          min={1}
+          max={10080}
+          step={1}
+          value={snoozeDraft}
+          disabled={busy}
+          onChange={(e) => setSnoozeDraft(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") saveSnooze();
+          }}
+        />
+        <button type="button" className="settings-btn" disabled={busy} onClick={() => saveSnooze()}>
+          Save
+        </button>
+      </div>
+      {msg !== "" && <div className="settings-msg">{msg}</div>}
+    </section>
+  );
 }
 
 // ---- Browser notifications (issue #1257) ----------------------------------------------------------
@@ -581,9 +632,7 @@ function NotificationsCard() {
 
   return (
     <section className="settings-card">
-      <h2 className="settings-h2">
-        Notifications <span className="settings-pill">this browser</span>
-      </h2>
+      <CardHead title="Browser notifications" scope="this browser" />
       <p className="settings-hint">
         Get a desktop notification when a session needs you, even when this tab is in the background or
         the browser is minimized. Clicking the notification brings the Cockpit forward and opens the
@@ -759,7 +808,7 @@ function AiTab() {
 
   return (
     <section className="settings-card">
-      <h2 className="settings-h2">AI</h2>
+      <CardHead title="AI" scope="whole fleet" />
       <p className="settings-hint">
         DevThrottle hosts AI for this fleet: transcription, the wingman, and spoken voice all run on
         your DevThrottle account.
@@ -943,7 +992,7 @@ function CarModeTab() {
 
   return (
     <section className="settings-card">
-      <h2 className="settings-h2">Car Mode</h2>
+      <CardHead title="Car Mode" scope="whole fleet" />
       <p className="settings-hint">
         Hands-free fleet control from your phone. Set the model it thinks with, the phrase that ends your
         turn, and test that the phrase is heard reliably - all in one place.
