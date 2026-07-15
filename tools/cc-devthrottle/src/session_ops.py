@@ -307,7 +307,13 @@ def read_session_buffer(target: Optional[str]) -> None:
     if text is None:
         console.print("[red]Error:[/red] the Director did not return the session's buffer.")
         raise typer.Exit(1)
-    console.print(text)
+    # Plain print, not console.print, for the same reason as list_sessions above. This is raw terminal
+    # text from another session, so it is arbitrary and nobody controls its shape: Rich reads a token
+    # like [/tmp/x] as a closing tag and raises MarkupError - an uncaught traceback out of a read-only
+    # verb - eats style-shaped tokens like [bold], and rewraps every line at 80 columns when stdout is
+    # not a TTY, which is exactly how an agent or a pipe calls this. The caller asked what the terminal
+    # is showing; the answer must be what the terminal was showing, byte for byte.
+    print(text)
 
 
 def set_session_role(target: Optional[str], role: Optional[str]) -> Dict[str, Any]:
