@@ -13,6 +13,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import typer
 from rich import box
 from rich.console import Console
+from rich.markup import escape
 from rich.table import Table
 
 
@@ -294,7 +295,11 @@ def read_session_buffer(target: Optional[str]) -> None:
     try:
         resp = director.get_json(f"fleet/buffer?sessionId={sid}")
     except director.DirectorError as err:
-        console.print(f"[red]Error:[/red] {err}")
+        # escape(): the error text comes from the server, so it is no more ours to trust than the buffer
+        # itself - it can quote a path or a fragment of the session's own output. Interpolated raw, a
+        # token like [/tmp/x] raises the very MarkupError this verb was crashing on, from the branch whose
+        # job is to REPORT a failure. The "Error:" label is ours, so it keeps its markup.
+        console.print(f"[red]Error:[/red] {escape(str(err))}")
         raise typer.Exit(1)
 
     # The buffer verb returns the terminal text under one of a couple of shapes depending on the
@@ -307,7 +312,19 @@ def read_session_buffer(target: Optional[str]) -> None:
     if text is None:
         console.print("[red]Error:[/red] the Director did not return the session's buffer.")
         raise typer.Exit(1)
-    console.print(text)
+    # Plain print, not console.print, for the same reason as list_sessions above. This is raw terminal
+    # text from another session, so it is arbitrary and nobody controls its shape: Rich reads a token
+    # like [/tmp/x] as a closing tag and raises MarkupError - an uncaught traceback out of a read-only
+    # verb - eats style-shaped tokens like [bold], and rewraps every line at 80 columns when stdout is
+    # not a TTY, which is exactly how an agent or a pipe calls this.
+    #
+    # What this does and does not promise: the text is not INTERPRETED - not parsed as markup, not
+    # rewrapped, not truncated, nothing added or removed in the middle. It is not a byte-for-byte
+    # guarantee, and claiming one would be a lie the next reader would rely on: print appends a trailing
+    # newline, the text layer translates newlines on the way out, and this module reconfigures stdout
+    # with errors="replace" (line 73), so a character the console encoding cannot represent still
+    # becomes a replacement character. Those three are the whole of the difference.
+    print(text)
 
 
 def set_session_role(target: Optional[str], role: Optional[str]) -> Dict[str, Any]:
