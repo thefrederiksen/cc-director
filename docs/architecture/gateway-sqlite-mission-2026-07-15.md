@@ -42,6 +42,50 @@ of writing, not trust this line.
 Disk measurements were taken on SOREN_NORTH on 2026-07-15, independently by the Architect and the
 Codex reviewer.
 
+## OWNER RULING, 2026-07-15: the old data is not being carried over
+
+**Read this before anything below it. It deletes about half of this document.**
+
+The owner, asked directly, said: "I do not care about carrying over the old data. You can throw
+away all the old data if you want, it doesn't really matter." He said it twice, unprompted, and it
+is not ambiguous. It is not to be re-litigated, and nobody is to build a smaller, safer version of
+the import to hedge against it.
+
+**This brief spent fourteen revisions on a premise the owner did not hold.** Every hard problem in
+it - the three projections that cannot be cross-multiplied, the baseline design, the `HighWater`
+import and its 60 per cent inflation, the `AgentsSeeded` null rule, the legacy-reader lift, the
+parity check, the frozen snapshot - existed to carry his old numbers across safely. He does not want
+them carried. The Architect never asked whether the data was worth preserving; the mission simply
+assumed it, and the owner approved a document whose central premise was buried in it. Check the
+premise before doing the work, not after doing it well.
+
+**Deleted outright** - do not adapt, do not shrink, delete: the import; the legacy reader; the
+parity check; the baseline tables; the `AgentsSeeded`-null rule; the `HighWater` import; the
+synthetic import fixture; acceptance criterion 1; and all four legs of criterion 6. The `HighWater`
+inflation finding no longer applies at all - there is no baseline left to double against.
+
+**Kept, unchanged, and still load-bearing:** the database and schema; `stat_delta` with its
+surrogate ids, `is_voice` and `wingman` columns; `session_highwater` as live operational state that
+simply starts empty; the separate agent-driven tables; Decision 6's membership mirror; the archive
+rule and prune safety; and criteria 3, 3a, 5 and 7.
+
+**Kept and now MORE important, not less:** do not revert anything #1647 did. The agent-driven lane
+and the back-fill are live *product behaviour*, not old data. "Throw away the data" is not
+permission to throw away a shipped bug fix.
+
+**New cutover behaviour:** on first run, rename `gateway-input-stats.json` aside and start empty. No
+parse, no read, no import path. **Rename, never delete** - discarding the numbers is the owner's
+call, destroying the file irreversibly is not, and a rename costs nothing and keeps the door open.
+
+**One consequence, accepted:** with `session_highwater` starting empty, the first roster poll folds
+each live session's whole current tally as fresh activity, so day one lands with a few hundred turns
+in a lump rather than at zero, then counts normally. A high-water-only import would avoid the lump;
+it is not worth the code. Less code is now the right trade, because the reason to write careful code
+here was to protect data nobody is protecting.
+
+Everything below this section is retained as the record of how the design was reached, and much of
+it still governs the parts that survive. Where it conflicts with this section, this section wins.
+
 ## The why
 
 The Gateway keeps its statistics in a set of hand-rolled JSON files. That was the right call when
