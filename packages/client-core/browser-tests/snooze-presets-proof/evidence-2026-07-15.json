@@ -1,0 +1,65 @@
+{
+  "scenario": "snooze lengths: render, pick default, add, remove",
+  "steps": {
+    "initial": [
+      {
+        "name": "15 minutes",
+        "isDefault": false,
+        "removeDisabled": false
+      },
+      {
+        "name": "1 hour",
+        "isDefault": true,
+        "removeDisabled": false
+      },
+      {
+        "name": "4 hours",
+        "isDefault": false,
+        "removeDisabled": false
+      },
+      {
+        "name": "8 hours",
+        "isDefault": false,
+        "removeDisabled": false
+      }
+    ],
+    "pickDefault": {
+      "presets": [
+        15,
+        60,
+        240,
+        480
+      ],
+      "defaultMinutes": 240
+    },
+    "add": {
+      "presets": [
+        15,
+        60,
+        240,
+        480,
+        30
+      ],
+      "defaultMinutes": 240
+    },
+    "addDisabledWhenFull": true,
+    "removeDefault": {
+      "presets": [
+        15,
+        30,
+        60,
+        480
+      ],
+      "defaultMinutes": 15
+    },
+    "lastRow": [
+      {
+        "name": "15 minutes",
+        "isDefault": true,
+        "removeDisabled": true
+      }
+    ]
+  },
+  "generatedAtUtc": "2026-07-15T17:07:29.070Z",
+  "result": "PASS"
+}
