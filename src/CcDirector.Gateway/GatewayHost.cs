@@ -150,15 +150,6 @@ public sealed class GatewayHost : IAsyncDisposable
     }
 
     /// <summary>
-    /// Issue #469: mints and verifies the short-lived 4-digit pairing code that authorizes a new
-    /// device to enroll. The GatewayApp host window drives this in-process (it mints the code,
-    /// shows it locally, and polls the device registry for the join); the /devices/register
-    /// endpoint verifies and consumes it. In-memory by design - a Gateway restart cancels any
-    /// pending pairing.
-    /// </summary>
-    public Pairing.PairingCodeService Pairing { get; } = new();
-
-    /// <summary>
     /// Snooze Length mission: the Gateway-owned snooze registry. Exposed so a test can inject a pending
     /// (or already-expired) snooze and assert the /sessions overlay flips it back into "needs you".
     /// </summary>
@@ -1110,7 +1101,8 @@ public sealed class GatewayHost : IAsyncDisposable
             // Issue #469: a per-device key issued at enrollment is a valid Bearer credential
             // alongside the shared machine token, so an enrolled Director authenticates with its
             // own unique key. The shared token still authenticates the host's own browser/cookie
-            // surface, but it is no longer the path a NEW device uses to get in (that is pairing).
+            // surface, but it is no longer the path a NEW device uses to get in (that is account
+            // sign-in - see SignedInEnrollmentEndpoint).
             var requireToken = new AuthMiddleware.RequireToken { Token = Token, Devices = Devices };
             _app.Use(async (ctx, next) => await AuthMiddleware.Run(ctx, requireToken, next));
         }
@@ -1279,11 +1271,9 @@ public sealed class GatewayHost : IAsyncDisposable
             sendCommand: SendCommandAsync,
             streamStaleAfter: _streamStaleAfter);
 
-        // Issue #469: device enrollment via local pairing code (the ONLY way a new device gets in).
-        // POST /devices/register verifies+consumes the 4-digit code and issues a unique per-device
-        // key; GET /devices is the host-readable registry listing. Mapped after the WS proxy so its
-        // literal routes win over the catch-all session forwarder, same as the other literal routes.
-        Api.DeviceEnrollmentEndpoint.Map(_app, Pairing, Devices, _childMirror);
+        // GET /devices: the host-readable device registry listing. Mapped after the WS proxy so its
+        // literal route wins over the catch-all session forwarder, same as the other literal routes.
+        Api.DeviceEnrollmentEndpoint.Map(_app, Devices);
 
         // POST /devices/enroll-signed-in (issue #1069): the sign-in replacement for the pairing code -
         // a co-located Director mints its own per-device key by having the Gateway signed in to

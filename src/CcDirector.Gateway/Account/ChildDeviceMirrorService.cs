@@ -5,11 +5,11 @@ using CcDirector.Gateway.Pairing;
 namespace CcDirector.Gateway.Account;
 
 /// <summary>
-/// Mirrors this Gateway's locally-paired children (workstations/phones enrolled with the 4-digit code,
-/// issue #469) up to the DevThrottle cloud account roster, and enforces account-page revokes back down
-/// (Path B: enroll+mirror-up and revoke-pull-down).
+/// Mirrors this Gateway's locally-enrolled children (workstations/phones that joined by signing in to
+/// the same DevThrottle account) up to the DevThrottle cloud account roster, and enforces account-page
+/// revokes back down (Path B: enroll+mirror-up and revoke-pull-down).
 ///
-/// The child's local pairing key (issued by <see cref="DeviceRegistry"/>) stays the source of truth and the
+/// The child's local device key (issued by <see cref="DeviceRegistry"/>) stays the source of truth and the
 /// only admission credential; the cloud row is a read-mirror for visibility plus a revoke command. Only the
 /// Gateway ever talks to the cloud - it uses its OWN account Bearer
 /// (<see cref="DevThrottleAccountService.GetAccessTokenForForwarding"/>) to register each child under its

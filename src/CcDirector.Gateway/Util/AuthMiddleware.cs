@@ -8,7 +8,7 @@ namespace CcDirector.Gateway.Util;
 /// <summary>
 /// Bearer-or-cookie auth for the Gateway.
 ///
-/// Public, no auth:    /healthz, /login, /logout, /favicon.ico, /devices/register,
+/// Public, no auth:    /healthz, /login, /logout, /favicon.ico,
 ///                     /devices/enroll-signed-in (epic #1069: carries its own loopback + signed-in
 ///                     guards, so a token-less fresh device can earn its first key), the credential-free
 ///                     cloud sign-in start front door /account/sign-in-start (issue #1076, GET + POST -
@@ -83,16 +83,12 @@ internal static class AuthMiddleware
         "/login",
         "/logout",
         "/favicon.ico",
-        // Issue #469: enrollment carries its own authorization (the pairing code), so a brand-new
-        // device with no credential yet can reach it. The endpoint itself rejects a wrong/expired/
-        // used code, so opening the route does not weaken the trust model.
-        "/devices/register",
         // Epic #1069 (fresh-device unblock): the sign-in replacement for the pairing code. A brand-new
         // co-located Director has NO Gateway token yet, so its enroll call arrives token-less and would
         // 401 at this gate BEFORE reaching the endpoint's own guards - the deadlock (the one endpoint that
         // hands a fresh device its FIRST key was unreachable by a device with no key). Opening it does not
-        // weaken the trust model: SignedInEnrollmentEndpoint carries its OWN transport-level authorization,
-        // exactly like /devices/register above - a proven-loopback caller (403 for any non-loopback, so a
+        // weaken the trust model: SignedInEnrollmentEndpoint carries its OWN transport-level authorization
+        // - a proven-loopback caller (403 for any non-loopback, so a
         // tailnet/LAN attacker gains nothing), the Gateway signed in (409 otherwise), and an idempotent
         // mint (the #1136 leak guard). Loopback = same machine = already inside the trust boundary.
         "/devices/enroll-signed-in",

@@ -70,7 +70,6 @@ public sealed class GatewayTrayController : IDisposable
     private Bitmap? _icon;
     private string _statusText = "Gateway stopped";
     private GatewayHost? _host;
-    private PairingWindow? _pairingWindow;
 
     // The flyout's "Details" section: resolved once, off the UI thread, right after Start (they are
     // small local file reads that never change within one run), so the flyout open stays I/O-free.
@@ -241,9 +240,6 @@ public sealed class GatewayTrayController : IDisposable
         var actions = new List<FlyoutAction>
         {
             new() { Text = "Open Cockpit", Primary = true, OnClick = OpenCockpit },
-            // Issue #856: adding a device leads with signing into the same DevThrottle account (a QR /
-            // deep-link), with issue #469's local pairing code kept as the secondary fallback.
-            new() { Text = "Add a device", OnClick = OpenPairing },
             // The Gateway itself has no settings; this jumps straight to the Cockpit Settings page
             // (docs/architecture/gateway/SETTINGS_OWNERSHIP.md). A real button, not a footer link.
             new() { Text = "Settings", OnClick = OpenCockpitSettings },
@@ -833,7 +829,6 @@ public sealed class GatewayTrayController : IDisposable
         await Dispatcher.UIThread.InvokeAsync(() =>
         {
             _flyout?.Close();
-            _pairingWindow?.Close();
             _consentWindow?.Close();
             if (_trayIcon is not null) _trayIcon.IsVisible = false;
             _desktop.Shutdown();
@@ -848,27 +843,6 @@ public sealed class GatewayTrayController : IDisposable
     /// </summary>
     private void OpenCockpitSettings()
         => OpenTailnetUrl(_flyoutCache.FrontDoorBaseUrl is { } d ? d + "/settings" : null, "CockpitSettings");
-
-    /// <summary>
-    /// Open the "Add a device" window (issue #856). It leads with signing into the same DevThrottle
-    /// account (QR / deep-link to the plain sign-in URL) and keeps issue #469's local pairing code as
-    /// the secondary fallback - that code lives ONLY on this host's screen (the local-presence root of
-    /// trust).
-    /// </summary>
-    private void OpenPairing()
-    {
-        Dispatcher.UIThread.Post(() =>
-        {
-            if (_pairingWindow is { } open)
-            {
-                open.Activate();
-                return;
-            }
-            _pairingWindow = new PairingWindow(this);
-            _pairingWindow.Closed += (_, _) => _pairingWindow = null;
-            _pairingWindow.Show();
-        });
-    }
 
     private void OpenCockpit()
         // ONE URL: the Cockpit is served through the gateway front door

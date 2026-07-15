@@ -3218,43 +3218,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/devices/register": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        post: {
-            parameters: {
-                query?: never;
-                header?: never;
-                path?: never;
-                cookie?: never;
-            };
-            requestBody: {
-                content: {
-                    "application/json": components["schemas"]["DeviceRegistrationRequest"];
-                };
-            };
-            responses: {
-                /** @description OK */
-                200: {
-                    headers: {
-                        [name: string]: unknown;
-                    };
-                    content?: never;
-                };
-            };
-        };
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/devices": {
         parameters: {
             query?: never;
@@ -7399,13 +7362,6 @@ export interface components {
         };
         CarModeTurnRequest: {
             text?: string;
-        };
-        DeviceRegistrationRequest: {
-            deviceId?: string;
-            machineName?: string;
-            pairingCode?: string;
-            platform?: string;
-            deviceType?: string;
         };
         DictationCompleteRequest: {
             sessionId?: null | string;

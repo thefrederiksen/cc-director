@@ -14,11 +14,11 @@ namespace CcDirector.Gateway.Pairing;
 /// alongside its name, machine, issued-at, and status.
 ///
 /// Persisted to <c>%LOCALAPPDATA%\cc-director\config\director\devices.json</c> so the registry
-/// survives a Gateway restart (a per-device key must keep working across restarts, unlike the
-/// transient pairing code). The file holds the issued keys, so it is the Gateway host's secret
-/// store - locked to the current user by living under the per-user config root.
+/// survives a Gateway restart (a per-device key must keep working across restarts). The file holds the
+/// issued keys, so it is the Gateway host's secret store - locked to the current user by living under
+/// the per-user config root.
 ///
-/// Thread-safe: registration happens on request threads while the host window lists devices.
+/// Thread-safe: registration happens on request threads while GET /devices lists devices.
 /// </summary>
 public sealed class DeviceRegistry
 {

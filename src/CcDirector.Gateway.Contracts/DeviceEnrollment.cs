@@ -1,42 +1,6 @@
 namespace CcDirector.Gateway.Contracts;
 
 /// <summary>
-/// The Director's request to enroll with a Gateway using a pairing code (issue #469).
-/// The Director reads the 4-digit code off the Gateway host's local window (Anchor B - the
-/// code never crosses the network), then POSTs this to <c>/devices/register</c>. The Gateway
-/// verifies the code (matches, not expired, not already used) and, on success, issues a unique
-/// per-device key recorded in its device registry.
-/// </summary>
-public sealed class DeviceRegistrationRequest
-{
-    /// <summary>The Director's stable device identity (its existing device GUID).</summary>
-    public string DeviceId { get; set; } = "";
-
-    /// <summary>The new machine's name, recorded in the registry and echoed back for confirmation.</summary>
-    public string MachineName { get; set; } = "";
-
-    /// <summary>The 4-digit pairing code read off the Gateway host's local window.</summary>
-    public string PairingCode { get; set; } = "";
-
-    /// <summary>
-    /// The child's operating-system platform string (for example "windows", "android"), sent so the
-    /// Gateway can mirror the child up to the cloud account roster with the right platform (Path B,
-    /// device-gateway-topology.md Diagram 2b). Optional; empty when a child app predates this field
-    /// (the mirror then records "unknown"). The workstation/phone apps supplying it are the child-side
-    /// work.
-    /// </summary>
-    public string Platform { get; set; } = "";
-
-    /// <summary>
-    /// The child's device type - "workstation" or "phone" - sent so the Gateway mirrors the child up to
-    /// the cloud roster with the correct type. Optional; empty when a child app predates this field, in
-    /// which case the Gateway defaults it to "workstation". This is a display/roster attribute only, never
-    /// an admission credential (the child's local pairing key is).
-    /// </summary>
-    public string DeviceType { get; set; } = "";
-}
-
-/// <summary>
 /// A co-located Director's request to enroll with its own Gateway using the DevThrottle account
 /// sign-in instead of a pairing code (issue #1069). The Director POSTs this to
 /// <c>/devices/enroll-signed-in</c>; the Gateway mints (or, if this device already has one, returns)
@@ -61,9 +25,9 @@ public sealed class EnrollSignedInRequest
 }
 
 /// <summary>
-/// The Gateway's response to a successful <see cref="DeviceRegistrationRequest"/> (issue #469).
-/// Carries the unique per-device key the Director writes to its local credential file. The
-/// pairing code is consumed and never returned.
+/// The Gateway's response to a successful device enrollment. Carries the unique per-device key the
+/// enrolling device writes to its local credential file. Shared by every enrollment path: the
+/// co-located Director's <see cref="EnrollSignedInRequest"/>, and the mobile/browser flows.
 /// </summary>
 public sealed class DeviceRegistrationResponse
 {
