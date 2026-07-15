@@ -1,0 +1,237 @@
+using CcDirector.Gateway.Stats;
+using Microsoft.Data.Sqlite;
+using Xunit;
+
+namespace CcDirector.Gateway.Tests;
+
+/// <summary>
+/// The Gateway statistics database foundation (mission "SQLite on the Gateway", Phase 1): the file opens,
+/// the schema is created, and the schema VERSION is real from day one.
+///
+/// The version is the point of these tests, not ceremony. The stores this database replaces had no schema
+/// version at all, so a shape change either quarantined the file and lost the numbers (pull request #1376
+/// wiped the all-time concurrency peak exactly this way) or - worse - deserialized to defaults and came up
+/// silently with zeros. PRAGMA user_version is what makes the next shape change a migration instead of a
+/// loss, so it is pinned here.
+/// </summary>
+public sealed class GatewayStatsDatabaseTests : IDisposable
+{
+    private readonly string _dir;
+    private readonly string _path;
+
+    public GatewayStatsDatabaseTests()
+    {
+        _dir = Path.Combine(Path.GetTempPath(), "cc-stats-db-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(_dir);
+        _path = Path.Combine(_dir, "gateway-stats.db");
+    }
+
+    public void Dispose()
+    {
+        SqliteConnection.ClearAllPools();
+        try { Directory.Delete(_dir, recursive: true); } catch (Exception) { /* best effort */ }
+    }
+
+    private static int UserVersion(GatewayStatsDatabase db)
+    {
+        using var cmd = db.Connection.CreateCommand();
+        cmd.CommandText = "PRAGMA user_version";
+        return Convert.ToInt32(cmd.ExecuteScalar());
+    }
+
+    private static bool TableExists(GatewayStatsDatabase db, string table)
+    {
+        using var cmd = db.Connection.CreateCommand();
+        cmd.CommandText = "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=$n";
+        cmd.Parameters.AddWithValue("$n", table);
+        return Convert.ToInt32(cmd.ExecuteScalar()) == 1;
+    }
+
+    [Fact]
+    public void Open_NewFile_CreatesFileAndStampsSchemaVersion()
+    {
+        using var db = new GatewayStatsDatabase(_path);
+
+        Assert.True(File.Exists(_path));
+        Assert.Equal(GatewayStatsDatabase.SchemaVersion, UserVersion(db));
+    }
+
+    [Fact]
+    public void Open_NewFile_CreatesEverySchemaTable()
+    {
+        using var db = new GatewayStatsDatabase(_path);
+
+        // The row table and the live operational state.
+        Assert.True(TableExists(db, "stat_delta"));
+        Assert.True(TableExists(db, "session_highwater"));
+        // The past, imported as it stands - one table per projection the JSON held.
+        Assert.True(TableExists(db, "baseline_total"));
+        Assert.True(TableExists(db, "baseline_hour"));
+        Assert.True(TableExists(db, "baseline_repo"));
+        Assert.True(TableExists(db, "baseline_agent"));
+        Assert.True(TableExists(db, "baseline_scalar"));
+        // The all-time distinct sets, deliberately never pruned.
+        Assert.True(TableExists(db, "wingman_session"));
+        Assert.True(TableExists(db, "repo_session"));
+        Assert.True(TableExists(db, "agent_session"));
+        // Folded grouping key to first-seen display spelling.
+        Assert.True(TableExists(db, "repo_identity"));
+        Assert.True(TableExists(db, "agent_identity"));
+        // The import marker.
+        Assert.True(TableExists(db, "meta"));
+    }
+
+    [Fact]
+    public void Open_ExistingFile_ReopensAtSameVersionAndKeepsData()
+    {
+        using (var first = new GatewayStatsDatabase(_path))
+        {
+            using var cmd = first.Connection.CreateCommand();
+            cmd.CommandText = "INSERT INTO baseline_scalar(name, value) VALUES ('probe', '42')";
+            cmd.ExecuteNonQuery();
+        }
+
+        using var second = new GatewayStatsDatabase(_path);
+
+        Assert.Equal(GatewayStatsDatabase.SchemaVersion, UserVersion(second));
+        using var read = second.Connection.CreateCommand();
+        read.CommandText = "SELECT value FROM baseline_scalar WHERE name='probe'";
+        // Re-opening must not re-run the migration over live data. CREATE TABLE IF NOT EXISTS is only half
+        // of that promise; this is the half that would actually notice.
+        Assert.Equal("42", read.ExecuteScalar() as string);
+    }
+
+    [Fact]
+    public void Open_FileFromNewerBuild_FailsLoudlyRatherThanDowngrading()
+    {
+        // A database written by a build that knows a shape this one does not. Opening it anyway would be a
+        // silent downgrade - exactly the class of failure this mission exists to end - so it must throw, and
+        // the message must tell the owner what to do about it.
+        using (var db = new GatewayStatsDatabase(_path))
+        {
+            using var cmd = db.Connection.CreateCommand();
+            cmd.CommandText = $"PRAGMA user_version={GatewayStatsDatabase.SchemaVersion + 1}";
+            cmd.ExecuteNonQuery();
+        }
+        SqliteConnection.ClearAllPools();
+
+        var ex = Assert.Throws<InvalidOperationException>(() => new GatewayStatsDatabase(_path));
+
+        Assert.Contains("newer build", ex.Message);
+        Assert.Contains((GatewayStatsDatabase.SchemaVersion + 1).ToString(), ex.Message);
+    }
+
+    [Fact]
+    public void Open_EnablesWriteAheadLogging()
+    {
+        using var db = new GatewayStatsDatabase(_path);
+
+        using var cmd = db.Connection.CreateCommand();
+        cmd.CommandText = "PRAGMA journal_mode";
+        Assert.Equal("wal", (cmd.ExecuteScalar() as string)?.ToLowerInvariant());
+    }
+
+    [Fact]
+    public void StatDelta_CarriesSurrogateIds_AndNoRepositoryOrAgentStringInAnyForm()
+    {
+        // The point of the surrogate id (brief Decision 2, revision 7): SQLite must never be in a position
+        // to compare a repository or agent string, because its BINARY collation would answer a
+        // case-sensitive question where the code today asks a case-insensitive one
+        // (GatewayInputStatsAggregator.cs:55 and :61). A folded string column cannot fix that - it would
+        // need a normalizer exactly equivalent to StringComparer.OrdinalIgnoreCase, and no such function
+        // exists. So the schema must not be ABLE to hold the string at all.
+        //
+        // This test pins the shape rather than a behaviour, deliberately: it is the schema, not a rule
+        // anybody has to remember, that makes the mistake impossible. A future hand adding a repo TEXT
+        // column back fails here.
+        // An EXHAUSTIVE whitelist, not a list of forbidden names. The first version of this test asserted
+        // DoesNotContain("repo", ...), which xUnit reads as "no column named exactly repo" - so it would
+        // have passed happily against repo_raw, repo_text, repository, or any other repository string column
+        // added alongside repo_id. It asserted strictly less than its own name claimed, which is the exact
+        // defect this mission keeps finding: a test that looks like coverage.
+        //
+        // A whitelist cannot rot that way. Any new column - whatever it is called - fails here until someone
+        // states it deliberately, which is the point when they must justify it against Decision 2.
+        using var db = new GatewayStatsDatabase(_path);
+
+        var columns = new Dictionary<string, string>(StringComparer.Ordinal);
+        using (var cmd = db.Connection.CreateCommand())
+        {
+            cmd.CommandText = "SELECT name, type FROM pragma_table_info('stat_delta')";
+            using var reader = cmd.ExecuteReader();
+            while (reader.Read())
+                columns[reader.GetString(0)] = reader.GetString(1);
+        }
+
+        var expected = new[]
+        {
+            "id", "hour_utc", "session_id", "modality", "surface",
+            "is_voice", "repo_id", "agent_id", "wingman", "turns", "chars",
+        };
+        Assert.Equal(expected.OrderBy(c => c, StringComparer.Ordinal),
+                     columns.Keys.OrderBy(c => c, StringComparer.Ordinal));
+
+        // The repository and agent dimensions are integers, so SQLite cannot be asked to compare a
+        // repository or agent string here even by accident.
+        Assert.Equal("INTEGER", columns["repo_id"]);
+        Assert.Equal("INTEGER", columns["agent_id"]);
+    }
+
+    [Fact]
+    public void RepoIdentity_AssignsDistinctSurrogateIds_AndKeepsTheDisplaySpellingVerbatim()
+    {
+        // The identity table stores the FIRST-SEEN spelling, which is what a .NET Dictionary with an
+        // OrdinalIgnoreCase comparer does - it keeps the key it was first given. SQLite assigns the id and
+        // never compares the spelling; the in-memory map decides equality. Here we only pin that the table
+        // hands out distinct ids and returns the display bytes unchanged, including case.
+        using var db = new GatewayStatsDatabase(_path);
+
+        long Insert(string display)
+        {
+            using var cmd = db.Connection.CreateCommand();
+            cmd.CommandText = "INSERT INTO repo_identity(repo_display) VALUES ($d); SELECT last_insert_rowid()";
+            cmd.Parameters.AddWithValue("$d", display);
+            return Convert.ToInt64(cmd.ExecuteScalar());
+        }
+
+        var first = Insert(@"D:\ReposFred\devthrottle");
+        var second = Insert(@"D:\ReposFred\private");
+
+        Assert.NotEqual(first, second);
+
+        using var read = db.Connection.CreateCommand();
+        read.CommandText = "SELECT repo_display FROM repo_identity WHERE repo_id=$i";
+        read.Parameters.AddWithValue("$i", first);
+        // Verbatim, including the exact casing the Director reported it with.
+        Assert.Equal(@"D:\ReposFred\devthrottle", read.ExecuteScalar() as string);
+    }
+
+    [Fact]
+    public void ArchiveMarker_CannotCollideWithARealHourKey()
+    {
+        // The archive marker shares the hour_utc column with real hour keys, so it must be impossible for a
+        // real key to equal it. Real keys are "yyyy-MM-ddTHH" (GatewayInputStatsAggregator.cs:40); the
+        // marker is not parseable as one.
+        Assert.False(DateTime.TryParseExact(
+            GatewayStatsDatabase.ArchiveMarker,
+            "yyyy-MM-ddTHH",
+            System.Globalization.CultureInfo.InvariantCulture,
+            System.Globalization.DateTimeStyles.AssumeUniversal,
+            out _));
+    }
+
+    [Fact]
+    public void Open_UnusableFile_FailsLoudlyAndNamesThePath()
+    {
+        // No fallback to the JSON store, ever: a database that will not open is a loud failure naming the
+        // file, not a silent empty start. A directory where the file should be is a cheap way to make the
+        // open fail for real rather than by mocking it.
+        var blocked = Path.Combine(_dir, "blocked.db");
+        Directory.CreateDirectory(blocked);
+
+        var ex = Assert.Throws<InvalidOperationException>(() => new GatewayStatsDatabase(blocked));
+
+        Assert.Contains(blocked, ex.Message);
+        Assert.Contains("will not fall back", ex.Message);
+    }
+}
