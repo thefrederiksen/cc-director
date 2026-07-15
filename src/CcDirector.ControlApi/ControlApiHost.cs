@@ -148,6 +148,27 @@ public sealed class ControlApiHost : IAsyncDisposable
     public Task<Gateway.Contracts.TurnBriefDto?> GetLatestTurnBriefAsync(string sessionId, CancellationToken ct = default)
         => _gatewayClient?.GetLatestTurnBriefAsync(sessionId, ct) ?? Task.FromResult<Gateway.Contracts.TurnBriefDto?>(null);
 
+    /// <summary>
+    /// Issue #1627: the FLEET-WIDE session roster - every session on every machine - as the desktop fleet
+    /// map's source. Backed by the live <see cref="GatewayClient"/>, which already holds the resolved
+    /// Gateway address and fleet token, so it reuses the Director's existing outbound Gateway connection.
+    ///
+    /// This is an outbound HTTP GET, NOT a tunnel call, and that is deliberate: the tunnel is push-only
+    /// (the Director pushes its own sessions up; there is no verb on DirectorHub that returns a roster).
+    /// "Tunnel-only" means the Gateway never DIALS the Director - it does not mean the Director stopped
+    /// calling out. GatewayClient survives for exactly these on-demand outbound operations.
+    ///
+    /// The returned sessions arrive with the Gateway's own answers already stamped - SessionRole,
+    /// EffectiveColor, StateLabel - because the Gateway folds them across the whole fleet before
+    /// responding. The desktop READS those; it must not recompute them (only the Gateway can see a
+    /// controller that lives on another machine).
+    ///
+    /// Null when no Gateway is configured - the caller shows "not connected" rather than an empty fleet,
+    /// which would be a lie.
+    /// </summary>
+    public Task<List<Gateway.Contracts.SessionDto>>? ListFleetSessionsAsync(CancellationToken ct = default)
+        => _gatewayClient?.ListFleetSessionsAsync(ct);
+
     private TurnSummaryCache? _turnSummaryCache;
     // Mission records (mission-as-first-class-unit-of-work): a durable, file-backed store with no runtime
     // dependencies, so it is ready from construction (unlike the caches wired up in StartAsync).

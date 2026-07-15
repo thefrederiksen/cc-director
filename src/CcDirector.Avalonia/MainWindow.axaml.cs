@@ -861,7 +861,8 @@ public partial class MainWindow : Window
     /// </summary>
     private bool IsContentOverlayOpen()
         => CommsOverlay.IsVisible
-           || ConnectionsOverlay.IsVisible || SchedulerOverlay.IsVisible;
+           || ConnectionsOverlay.IsVisible || SchedulerOverlay.IsVisible
+           || FleetMapOverlay.IsVisible;
 
     /// <summary>
     /// Show the full-screen home page exactly when this Director has zero sessions - it is
@@ -3931,6 +3932,107 @@ public partial class MainWindow : Window
 
     private bool _connectionsInitialized;
     private bool _schedulerInitialized;
+    private bool _fleetMapInitialized;
+
+    /// <summary>
+    /// Issue #1627: open the in-app fleet map - every session on every machine, sliced by repository or by
+    /// agent. Unlike the Cockpit button beside it (which hands the fleet to a browser), a click in here
+    /// SELECTS a locally-owned session in the rail.
+    /// </summary>
+    private void BtnFleetMap_Click(object? sender, RoutedEventArgs e)
+    {
+        FileLog.Write("[MainWindow] BtnFleetMap_Click: opening Fleet Map overlay");
+
+        // Close other overlays first
+        if (CommsOverlay.IsVisible)
+        {
+            CommsOverlay.IsVisible = false;
+            if (_commsInitialized)
+                CommManagerView.StopPolling();
+        }
+        if (ConnectionsOverlay.IsVisible)
+        {
+            ConnectionsOverlay.IsVisible = false;
+            if (_connectionsInitialized)
+                ConnectionsView.StopPolling();
+        }
+        if (SchedulerOverlay.IsVisible)
+        {
+            SchedulerOverlay.IsVisible = false;
+            if (_schedulerInitialized)
+                SchedulerView.StopPolling();
+        }
+
+        if (!_fleetMapInitialized)
+        {
+            // The view knows nothing about the Gateway; the host hands it the two things it needs.
+            FleetMapView.FleetSource = ct =>
+                (App.Current as App)?.ControlApiHost?.ListFleetSessionsAsync(ct);
+            FleetMapView.LocalSessionIds = () =>
+                new HashSet<string>(
+                    _sessions.Select(v => v.Session.Id.ToString()),
+                    StringComparer.OrdinalIgnoreCase);
+            FleetMapView.SessionActivated += FleetMap_SessionActivated;
+        }
+
+        FleetMapOverlay.IsVisible = true;
+        _fleetMapInitialized = true;
+        FleetMapView.StartPolling();
+        UpdateHomeVisibility(); // hide Home so the overlay is not buried behind it (#447)
+    }
+
+    private void BtnFleetMapClose_Click(object? sender, RoutedEventArgs e)
+    {
+        FileLog.Write("[MainWindow] BtnFleetMapClose_Click: closing Fleet Map overlay");
+        FleetMapOverlay.IsVisible = false;
+        if (_fleetMapInitialized)
+            FleetMapView.StopPolling();
+        UpdateHomeVisibility(); // restore Home if still at zero sessions (#447)
+    }
+
+    /// <summary>
+    /// A card was clicked on the fleet map. THE decision issue #1627 left open, made here:
+    ///
+    ///  - A session THIS Director owns is selected in the rail and the map closes. That is the entire
+    ///    point of having the map in the desktop rather than the browser.
+    ///  - A session another Director owns CANNOT be selected here - there is no SessionViewModel for it,
+    ///    because this Director does not run it. It opens in the Cockpit instead, via the ViewUrl the
+    ///    Gateway already stamped on every session. That reuses the path the Cockpit button beside it
+    ///    already uses, so a remote click lands somewhere real rather than doing nothing.
+    ///
+    /// The card states which of the two it is BEFORE it is clicked (FleetCardItem.OwnershipDisplay), so
+    /// the behaviour is never a surprise.
+    /// </summary>
+    private void FleetMap_SessionActivated(global::CcDirector.Gateway.Contracts.SessionDto dto, bool isLocal)
+    {
+        if (isLocal && Guid.TryParse(dto.SessionId, out var id))
+        {
+            var vm = _sessions.FirstOrDefault(v => v.Session.Id == id);
+            if (vm is not null)
+            {
+                FileLog.Write($"[MainWindow] FleetMap_SessionActivated: selecting local session {id}");
+                FleetMapOverlay.IsVisible = false;
+                FleetMapView.StopPolling();
+                SessionList.SelectedItem = vm;
+                UpdateHomeVisibility();
+                return;
+            }
+            // Claimed local but not in the rail: it exited between the poll and the click. Say so rather
+            // than silently doing nothing.
+            FileLog.Write($"[MainWindow] FleetMap_SessionActivated: local session {id} is no longer in the rail");
+            return;
+        }
+
+        var url = (dto.ViewUrl ?? "").Trim();
+        if (url.Length == 0)
+        {
+            FileLog.Write($"[MainWindow] FleetMap_SessionActivated: remote session {dto.SessionId} has no ViewUrl; nothing to open");
+            return;
+        }
+
+        FileLog.Write($"[MainWindow] FleetMap_SessionActivated: opening remote session {dto.SessionId} in the Cockpit");
+        OpenUrlInBrowser(url);
+    }
 
     private void BtnConnections_Click(object? sender, RoutedEventArgs e)
     {
