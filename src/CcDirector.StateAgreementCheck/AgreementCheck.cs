@@ -29,53 +29,31 @@ public static class AgreementCheck
     /// blue; <c>desktop-vs-gateway</c> - the rail's fold and the Gateway's answer differ (defect 5's
     /// family); <c>two-different-pixels</c> - both surfaces fold to the same NAME and paint different
     /// hexes (defect 18 - invisible to a check that compares the fold's answer);
-    /// <c>palette-missing</c> - a surface cannot paint the colour it was given;
-    /// <c>indeterminate</c> - the row does not carry enough to judge, so the check refuses to call it
-    /// either way (see <see cref="IsIndeterminate"/>). It is REPORTED, never skipped: a row the
-    /// instrument cannot read is not a row that agrees, and quietly counting it as agreement is how a
-    /// measurement turns into a lie.
+    /// <c>palette-missing</c> - a surface cannot paint the colour it was given.
+    ///
+    /// THERE IS NO <c>indeterminate</c> KIND ANY MORE (gap 5). It meant "the row does not carry enough to
+    /// judge", and it existed for exactly one shape - a Gateway that had overwritten the Director's
+    /// BriefingState, destroying the fact the desktop comparison needs. The Gateway no longer writes that
+    /// field, so every row is gradeable and every finding is a real disagreement. See the tombstone above
+    /// ToDesktopInput before reintroducing either.
     /// </param>
     public sealed record Finding(string? SessionId, string Name, string Kind, string Detail)
     {
         /// <summary>
-        /// WHAT THIS FINDING MEANS - decided ONCE, here, and never re-derived by anyone who renders it.
+        /// The word this finding is printed under. One home, so no renderer can invent its own.
         ///
-        /// THIS IS THE GENERATOR OF THIS PULL REQUEST'S ENTIRE DEFECT LIST, and it took fourteen
-        /// inspection passes to see it. <see cref="Kind"/> is a free string, so every consumer had to
-        /// decide for itself what the string meant - and five of them did, separately: the summary
-        /// arithmetic, the exit code, the candidate-count line, the not-graded prose, and the detail
-        /// heading. Each was fixed the moment it was caught, and the NEXT one was still wrong, because
-        /// each was an independent re-derivation of the same classification. Binding them one at a time
-        /// was reactive, and reactive is what this mission exists to end.
+        /// IT IS A CONSTANT NOW, AND THAT IS THE POINT, NOT AN OVERSIGHT. This used to ask a
+        /// FindingOutcome enum whether the finding was a Disagreement or NotGraded, because there were two
+        /// kinds of answer. There is one: with the indeterminate kind gone, NotGraded had no producer, so
+        /// the enum had one member and Outcome could only ever return it. An enum that cannot vary is not a
+        /// classification, it is ceremony.
         ///
-        /// So the classification lives on the finding. A renderer asks; it does not decide.
-        ///
-        /// (The reviewer's stronger form - a typed CheckId replacing the Kind string entirely - is the
-        /// next hardening pass. This is the half that stops the drift: what a kind MEANS now has exactly
-        /// one home, even while the kind itself is still a string.)
+        /// The property stays even though the value cannot, because the DEFECT it was born from was a
+        /// renderer deciding for itself: "DISAGREEMENT" was hard-coded in Program.cs, so a row the check
+        /// had refused to grade printed as a disagreement. Keeping the word in one place costs a line and
+        /// keeps the renderer asking. If a second kind of outcome ever returns, this is where it goes.
         /// </summary>
-        public FindingOutcome Outcome =>
-            Kind == "indeterminate" ? FindingOutcome.NotGraded : FindingOutcome.Disagreement;
-
-        /// <summary>The word this finding is printed under. One home, so no renderer can invent its own.</summary>
-        public string Label => Outcome == FindingOutcome.NotGraded ? "NOT GRADED" : "DISAGREEMENT";
-    }
-
-    /// <summary>
-    /// What a finding IS, as against what it is ABOUT (that is <see cref="Finding.Kind"/>).
-    /// </summary>
-    public enum FindingOutcome
-    {
-        /// <summary>The check ran and the surfaces genuinely disagree. A defect.</summary>
-        Disagreement,
-
-        /// <summary>
-        /// The check could not run on this row, so nothing is claimed either way. NOT a defect and NOT a
-        /// pass - the third answer this instrument needed and did not have, which is why an
-        /// indeterminate-only run was reported as a disagreement by the exit code and as zero
-        /// disagreements by the headline, in the same run.
-        /// </summary>
-        NotGraded,
+        public string Label => "DISAGREEMENT";
     }
 
     /// <summary>
@@ -131,26 +109,22 @@ public static class AgreementCheck
     /// check's verdict - including the rows it never reached, so the prose reporting them cannot claim a
     /// check passed where it did not run.
     /// </summary>
-    /// <param name="IndeterminateRows">
-    /// A CAUSE, not a check's scope - the distinction that produced the eleventh finding on pull request
-    /// 1606. This counts rows the Gateway made unreadable. It is NOT "the rows the desktop check skipped":
-    /// that is <c>DesktopAgreed.NotGraded</c>, which is this PLUS the unstamped rows, because an unstamped
-    /// row stops the desktop comparison too.
+    /// <remarks>
+    /// IndeterminateRows IS GONE (gap 5). It counted rows the Gateway's BriefingState overwrite had made
+    /// unreadable; the overwrite is deleted, so the count has no producer. Its hard-won lesson survives it
+    /// and still binds every number in this record:
     ///
-    /// The two sat side by side under names close enough to swap, and the explanatory prose duly read the
-    /// narrow one under the broad one's meaning - announcing "the desktop comparison was not graded on 1
-    /// row" on a fleet where it had not been graded on two, and adding that every other check ran on them,
-    /// which was true of one and false of the other.
-    ///
-    /// THE RULE THIS ENCODES, and it is the eleventh instance of the same lesson: PROSE IS RENDERED FROM
-    /// <see cref="AllChecks"/> AND NOTHING ELSE. A cause count is an input to a verdict, never a thing to
-    /// narrate from. If you find yourself printing this number, you are about to describe a check's scope
-    /// using a cause's count, and they are not the same set.
-    /// </param>
+    /// PROSE IS RENDERED FROM <see cref="AllChecks"/> AND NOTHING ELSE. A cause count is an input to a
+    /// verdict, never a thing to narrate from. IndeterminateRows was a CAUSE, while
+    /// <c>DesktopAgreed.NotGraded</c> is a check's SCOPE - the two sat side by side under names close
+    /// enough to swap, and the prose duly read the narrow one under the broad one's meaning, announcing
+    /// "not graded on 1 row" on a fleet where it had not been graded on two. That was the eleventh finding
+    /// on pull request 1606. <see cref="Unstamped"/> is a cause of exactly the same kind: do not narrate
+    /// from it either.
+    /// </remarks>
     public sealed record Summary(
         int Disagreements,
         int LiveSessions,
-        int IndeterminateRows,
         int Unstamped,
         int StampNotFold,
         int LawBroken,
@@ -172,7 +146,7 @@ public static class AgreementCheck
         // Check 4 is stopped by BOTH: an unstamped row (nothing to compare) and an indeterminate one (the
         // Gateway destroyed the fact it needs). The only check with two ways to be ungradeable.
         public CheckVerdict DesktopAgreed => new("the desktop's fold == the Gateway's",
-            DesktopVsGateway, Unstamped + IndeterminateRows, LiveSessions);
+            DesktopVsGateway, Unstamped, LiveSessions);
 
         public IReadOnlyList<CheckVerdict> AllChecks => new[] { StampPresent, StampIsFold, Law, SamePixels, DesktopAgreed };
 
@@ -200,37 +174,54 @@ public static class AgreementCheck
         ///
         ///   0 - every check ran on every session and found nothing. The only clean answer.
         ///   1 - real disagreements were found.
-        ///   3 - NO disagreements, and the check could not grade everything. Neither of the above is true
-        ///       and pretending otherwise is the whole defect: 0 would claim a clean fleet the instrument
-        ///       never fully read, and 1 would report a disagreement that does not exist.
         ///
         /// (2 is the harness's own failure - it could not run at all - and is raised by Main, not here.)
         ///
-        /// Main used to return 1 whenever ANY finding existed, while the contract says 1 means
-        /// disagreements and the Summary correctly says an indeterminate row is NOT one. So an
-        /// indeterminate-only run printed "AGREEMENT NUMBER: 0 disagreement(s)" and then exited 1. The
-        /// report table had learned the distinction; the process contract had not, and a script does not
-        /// read the table.
+        /// EXIT 3 IS DELETED (gap 5). It meant "NO disagreements, and the check could not grade
+        /// everything" - the third answer for a fleet the instrument had not fully read. It existed for
+        /// exactly one producer: the indeterminate row. That is now impossible, and the proof is
+        /// arithmetic rather than opinion:
         ///
-        /// The thirteenth instance of one defect, and the first in a machine interface. Everything before
-        /// it mis-stated a claim to a human who could at least read the next line down. This one hands the
-        /// false half to something that cannot.
+        ///   * exit 3 required Disagreements == 0 AND some check reporting NotGraded > 0;
+        ///   * NotGraded is now fed by <see cref="Unstamped"/> alone (see the AllChecks verdicts);
+        ///   * an unstamped row ALWAYS yields an "unstamped" finding, and every finding is a
+        ///     disagreement now;
+        ///   * so NotGraded > 0 implies Disagreements > 0, which returns 1 before 3 can be reached.
+        ///
+        /// Unreachable code in a machine interface is worse than unreachable code anywhere else: a caller
+        /// writing `if code == 3` is writing a branch that will never run, against a contract that says it
+        /// might. So the code goes and the contract shrinks to what is true.
+        ///
+        /// THE LESSON THAT PUT IT HERE STILL STANDS, and it is why 1 and 0 are computed rather than
+        /// assumed. Main used to return 1 whenever ANY finding existed, while the contract said 1 means
+        /// disagreements and the Summary correctly said an indeterminate row was not one - so an
+        /// indeterminate-only run printed "0 disagreement(s)" and exited 1. The report table had learned
+        /// the distinction; the process contract had not, and a script does not read the table. That was
+        /// the thirteenth instance of one defect and the first in a machine interface: everything before
+        /// it mis-stated a claim to a human who could read the next line down. If a not-graded-without-a-
+        /// disagreement producer ever returns, the third code returns with it - and this is its argument.
         /// </summary>
-        public int ExitCode =>
-            Disagreements > 0 ? 1
-            : AllChecks.Any(c => c.NotGraded > 0) ? 3
-            : 0;
+        public int ExitCode => Disagreements > 0 ? 1 : 0;
 
         public IReadOnlyList<string> DesktopNotGradedLines()
         {
             if (DesktopAgreed.NotGraded == 0) return Array.Empty<string>();
 
             var causes = new List<string>();
+            // One cause left: [indeterminate] went with the kind that produced it (gap 5). So the plural
+            // arithmetic below can no longer fire - one cause cannot be two.
+            //
+            // WHY THAT STAYS WHEN EXIT 3 WENT, because the asymmetry is deliberate and an inspector should
+            // not have to guess at it. Exit 3 was a documented CONTRACT promising a value the tool can
+            // never return - a false statement to a machine that cannot read the caveat, and a caller
+            // branching on it writes dead code against our promise. This is a RENDERER that is general
+            // enough to take a second cause: it claims nothing, it just does not need its generality
+            // today. Unreachable-and-lying goes; unreachable-and-honest is a judgement, and the judgement
+            // here is that "here are the reasons" is the right shape for this sentence - the twelfth
+            // finding was this prose hard-coding "for two different reasons", and collapsing it back to
+            // one hard-coded sentence is that defect's return path.
             if (Unstamped > 0)
                 causes.Add($"{Unstamped} [unstamped] - no answer arrived, so NOTHING downstream could be checked on them.");
-            if (IndeterminateRows > 0)
-                causes.Add($"{IndeterminateRows} [indeterminate] - the Gateway overwrote the fact the comparison needs. " +
-                           "Every OTHER check ran on these and stands, and anything they found IS counted above.");
 
             // Derived, never assumed. One cause is one reason; only more than one earns the plural.
             var why = causes.Count > 1 ? $", for {causes.Count} different reasons" : "";
@@ -267,14 +258,15 @@ public static class AgreementCheck
     public static Summary Summarize(IReadOnlyList<SessionDto> roster, IReadOnlyList<Finding> findings)
     {
         int Count(string kind) => findings.Count(f => f.Kind == kind);
-        // Ask the finding what it IS. This used to be `findings.Count - indeterminate` - the summary
-        // re-deriving the classification from the kind string, one of five consumers doing that
-        // separately, which is what made them drift apart one pass at a time.
-        var indeterminate = findings.Count(f => f.Outcome == FindingOutcome.NotGraded);
+        // EVERY finding is a disagreement now (gap 5 deleted the indeterminate kind), so this is a plain
+        // count rather than a classification. It used to ask each finding what it WAS, because the answer
+        // could be "not graded" - and before that it was `findings.Count - indeterminate`, the summary
+        // re-deriving the classification from the kind string, one of five consumers doing that separately,
+        // which is what made them drift apart one pass at a time. If a second outcome ever returns, it
+        // returns HERE and on Finding - not in five places again.
         return new Summary(
-            Disagreements: findings.Count(f => f.Outcome == FindingOutcome.Disagreement),
+            Disagreements: findings.Count,
             LiveSessions: roster.Count,
-            IndeterminateRows: indeterminate,
             Unstamped: Count("unstamped"),
             StampNotFold: Count("stamp-not-fold"),
             LawBroken: Count("law-broken"),
@@ -351,17 +343,21 @@ public static class AgreementCheck
             // stamp-not-fold or a broken law behind "I cannot read this one". Refusing to answer the
             // question you cannot answer is honest; refusing to answer the four you can is just silence
             // with better manners. Found by inspection of pull request 1606.
-            if (IsIndeterminate(row))
-            {
-                yield return new Finding(row.SessionId, name, "indeterminate",
-                    "VoiceGenerating with BriefingState=\"Briefing\": the Gateway stamps that label only " +
-                    "when the Director's own value was null/None/Briefed, but stamps VoiceGenerating " +
-                    "unconditionally - so this row cannot say whether the desktop folds yellow (the " +
-                    "Director was briefing too) or red (the Gateway overwrote it), and those differ in " +
-                    "whether they agree. The desktop comparison is NOT graded for this row; every other " +
-                    "check above and below it is, and stands.");
-            }
-            else
+            // THE REFUSAL THAT USED TO BE HERE IS DELETED, AND SO IS THE SHAPE THAT JUSTIFIED IT. Every
+            // row is now gradeable, because SessionDto.BriefingState has exactly ONE writer again:
+            // ControlEndpoints.Map, straight from the Director's own enum. The Gateway's overwrite - the
+            // thing that destroyed the fact this comparison needs - is gone (gap 5), so "Briefing" on a
+            // row means the Director said "Briefing", full stop, and the desktop reconstruction below is
+            // the desktop's real row rather than one of two guesses.
+            //
+            // NOTE WHAT DID *NOT* HAPPEN: the SHAPE did not become unreachable. A row can still carry
+            // VoiceGenerating=true alongside BriefingState="Briefing" - a Director genuinely briefing a
+            // session whose voice the Gateway is generating is an ordinary thing. What died is the
+            // AMBIGUITY, not the shape. That distinction is why this had to be deleted rather than left:
+            // the predicate would have kept firing on those rows and refused to grade them, and the
+            // desktop's answer there is now perfectly readable. Keeping it would not have been harmless
+            // dead code, it would have been an instrument refusing rows it can read - the exact
+            // crying-wolf failure its own comment warned about, arrived at from the other side.
             {
                 var desktopInput = ToDesktopInput(row);
                 var desktopColor = SessionOrdering.EffectiveColor(desktopInput);
@@ -440,93 +436,34 @@ public static class AgreementCheck
     /// (FleetRoleResolver.Stamp - every branch assigns). So a role that is STALE on a Director cannot be
     /// seen from here. That push is proved in-process, with nothing hand-set, by DesktopRoleStampWireProofTests.
     /// </summary>
-    /// <summary>
-    /// TRUE when this row cannot be judged from what it carries, so the check must not call it either
-    /// way. Exactly one shape today, and it is the Gateway OVERWRITING a Director fact rather than
-    /// adding one:
-    ///
-    /// <c>VoiceGenerating == true &amp;&amp; BriefingState == "Briefing"</c> has two possible origins and
-    /// the row cannot tell them apart. GatewayEndpoints stamps <c>BriefingState = "Briefing"</c> ONLY
-    /// when the Director's own value was null/None/Briefed - but it stamps <c>VoiceGenerating</c>
-    /// UNCONDITIONALLY. So either:
-    ///
-    ///   (a) the Gateway overwrote a null/None/Briefed - the desktop never sees the stamp, folds RED,
-    ///       and this is a real disagreement; or
-    ///   (b) the Director genuinely WAS briefing, the guard was false, nothing was overwritten - the
-    ///       desktop has "Briefing" too, folds YELLOW, and this agrees.
-    ///
-    /// The overwrite destroyed the fact needed to tell (a) from (b). Reporting agreement would be a
-    /// guess, and so would reporting a disagreement. This mission's own law: never state what you have
-    /// not observed. So it is reported as indeterminate and the number of sessions the instrument could
-    /// not read is published beside the number that agreed.
-    ///
-    /// The DEEPER fix is not here: the Gateway should not overwrite a Director-owned field to carry its
-    /// own fact - it should add one, the way VoiceGenerating already does. That is a change to the
-    /// Gateway's enrichment, not to this instrument, and it is recorded as a gap rather than smuggled in
-    /// here. Until then this check refuses to grade what it cannot see.
-    ///
-    /// Found by independent inspection of pull request 1606: it ran the tool against the live fleet, saw
-    /// a zero with two Gateway-only fold inputs in play, and did not believe it.
-    ///
-    /// IT ASKS WHETHER THE AMBIGUITY CHANGES THE VERDICT, rather than listing when it might. Three cuts
-    /// of this predicate were wrong before this one, each a list, each wrong one rung from the last:
-    ///
-    ///   1. "VoiceGenerating && Briefing" - refused to grade WORKING sessions. Blue outranks everything,
-    ///      so both origins fold blue. An existing control caught it.
-    ///   2. "...&& IsRawRed" - still refused rows where a HOLD or a DESKTOP dictation had already won.
-    ///      Grey and orange sit above briefing too. The inspector caught it.
-    ///   3. "do both plausible desktop rows fold the same colour?" - closer, and still refused a phone
-    ///      dictation, because the DESKTOP CANNOT SEE a phone dictation: strip it and the two origins
-    ///      fold different colours (yellow or red). My own negative controls caught it.
-    ///
-    /// Every one of those was a new list, and every list was a new chance to be wrong. So this asks the
-    /// only question the check actually answers - IS THERE A FINDING? - and calls the real ladder to
-    /// answer it, rather than describing a ladder that can grow a rung tomorrow.
-    ///
-    /// The subtlety cut 3 missed: two plausible desktop rows can fold DIFFERENT colours and still both
-    /// disagree with the Gateway. A phone dictation is Gateway-orange while the desktop folds yellow or
-    /// red - we do not know which, and we do not need to: neither is orange, so the disagreement is
-    /// certain even though its exact shape is not. That is reportable. The row is only unreadable when
-    /// one origin AGREES and the other does not, because then the destroyed fact decides whether there is
-    /// anything to report at all.
-    ///
-    /// Crying wolf costs the same trust as missing one. An instrument that refuses to read rows it can
-    /// read perfectly well gets ignored just as fast as one that reads them wrong.
-    ///
-    /// The enumerating habit is the defect, not any one of its lists.
-    /// </summary>
-    public static bool IsIndeterminate(SessionDto row)
-    {
-        // The only shape where a Director fact was destroyed - see above. Everything else is readable.
-        if (!row.VoiceGenerating || row.BriefingState != "Briefing")
-            return false;
+    // IsIndeterminate WAS HERE, AND IS DELETED - DO NOT BRING IT BACK (gap 5).
+    //
+    // It answered "can this row be graded at all?", and it existed for exactly one shape: a row carrying
+    // VoiceGenerating=true AND BriefingState="Briefing", back when the Gateway got its voice-mode yellow by
+    // WRITING "Briefing" over a Director-owned field. That write destroyed the fact the desktop
+    // reconstruction needs, so the row had two possible origins - the Director genuinely briefing (the
+    // desktop folds yellow, and agrees) or the Gateway overwriting a "None" (the desktop folds red, and
+    // disagrees) - with no way to tell them apart. Refusing to grade it was the honest answer to a question
+    // the instrument genuinely could not answer.
+    //
+    // The Gateway no longer writes that field (gap 5: the overwrite is deleted and NOTHING replaced it,
+    // because SessionOrdering.IsVoicePreparing already folds the Gateway's own VoiceGenerating fact). On
+    // the fleet path SessionDto.BriefingState now has exactly ONE writer - ControlEndpoints.Map, straight
+    // from the Director's own enum - so "Briefing" on a row means the Director said "Briefing". There is
+    // nothing left to disambiguate, and the desktop reconstruction is the desktop's real row.
+    //
+    // READ THIS BEFORE RESTORING IT, BECAUSE THE OBVIOUS REASON IS THE WRONG ONE: the SHAPE it gated on is
+    // still perfectly reachable. A Director genuinely briefing a session whose voice the Gateway is
+    // generating carries both facts at once, and that is an ordinary row. Verified by probe against the
+    // real Compare before deleting: such a row made this predicate return TRUE and emit an "indeterminate"
+    // finding, while the desktop reconstruction AGREED with the Gateway - the instrument refusing a row it
+    // could read perfectly. So this was deleted because it had become WRONG, not because it had become
+    // unused. Its own comment said it best: an instrument that refuses to read rows it can read perfectly
+    // well gets ignored just as fast as one that reads them wrong.
+    //
+    // If a Gateway-side write to a Director-owned field is ever reintroduced, the ambiguity returns and so
+    // must a refusal. Do not reintroduce the write.
 
-        // (b) the Director genuinely WAS briefing: the label it carries is its own.
-        var ifDirectorWasBriefing = ToDesktopInput(row);
-
-        // (a) the Gateway overwrote a null/None/Briefed. "None" stands for all three: none of them is
-        // "Briefing", so none folds yellow via IsBriefing, so they are fold-equivalent here.
-        var ifGatewayOverwrote = ToDesktopInput(row);
-        ifGatewayOverwrote.BriefingState = "None";
-
-        // THE QUESTION IS THE VERDICT, NOT THE COLOUR - and getting that wrong is what made the first
-        // version of this refuse rows it could grade.
-        //
-        // The check reports DISAGREEMENTS. So the destroyed fact only defeats it when it changes the
-        // ANSWER TO THAT QUESTION, and it often does not. A phone dictation folds the Gateway orange
-        // while the desktop - which cannot see phone dictation at all - folds yellow or red depending on
-        // the lost label. Two different desktop colours, and they DISAGREE WITH THE GATEWAY EITHER WAY.
-        // We do not know exactly what the desktop shows; we know for certain it does not match. That is
-        // a reportable disagreement, so grade it.
-        //
-        // It is indeterminate only when one plausible origin AGREES and the other does not - when the
-        // destroyed fact decides whether there is a finding at all.
-        var gatewayAnswer = row.EffectiveColor;
-        var briefingAgrees = string.Equals(SessionOrdering.EffectiveColor(ifDirectorWasBriefing), gatewayAnswer, StringComparison.OrdinalIgnoreCase);
-        var overwrittenAgrees = string.Equals(SessionOrdering.EffectiveColor(ifGatewayOverwrote), gatewayAnswer, StringComparison.OrdinalIgnoreCase);
-
-        return briefingAgrees != overwrittenAgrees;
-    }
 
     public static SessionDto ToDesktopInput(SessionDto row)
     {

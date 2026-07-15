@@ -13,8 +13,9 @@ namespace CcDirector.StateAgreementCheck;
 ///
 /// Run it:  dotnet run --project src/CcDirector.StateAgreementCheck -- [repoRoot]
 /// Exit code 0 = every check ran on every session and found nothing. 1 = real disagreements. 2 = the
-/// harness could not run at all (never a zero). 3 = NO disagreements AND the check could not grade
-/// everything - see AgreementCheck.Summary.ExitCode for why that is its own code rather than a 0 or a 1.
+/// harness could not run at all (never a zero). There is no 3: it meant "no disagreements AND I could not
+/// grade everything", which had exactly one producer - the indeterminate row - and that is gone (gap 5).
+/// See AgreementCheck.Summary.ExitCode for the arithmetic that makes it unreachable.
 ///
 /// READ <see cref="AgreementCheck.ToDesktopInput"/> BEFORE QUOTING ANY NUMBER THIS PRINTS. It states what
 /// this check can and cannot see, and why the obvious HTTP-only version of it would have been a
@@ -174,8 +175,8 @@ public static class Program
             Console.WriteLine();
             Console.WriteLine("  A lower-case 'pass on N of M' is NOT a pass over the fleet - it means the check ran on N");
             Console.WriteLine("  rows and found nothing, and never reached the rest. An unstamped row stops every check");
-            Console.WriteLine("  after it (there is no stamped answer to compare); an indeterminate row stops only the");
-            Console.WriteLine("  desktop comparison. Absence of a finding from a check that did not run is not evidence.");
+            Console.WriteLine("  after it: there is no stamped answer to compare. Absence of a finding from a check that");
+            Console.WriteLine("  did not run is not evidence.");
         }
         Console.WriteLine("NOT MEASURED, and not to be claimed: the desktop's own SessionRole copy is not externally");
         Console.WriteLine("  observable (the Gateway's fleet pass overwrites the inbound role on every read), so a");

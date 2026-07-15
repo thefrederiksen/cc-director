@@ -46,7 +46,6 @@ public sealed class AgreementSummaryTests
 
         Assert.Equal(0, sum.Disagreements);
         Assert.Equal(3, sum.LiveSessions);
-        Assert.Equal(0, sum.IndeterminateRows);
 
         Assert.All(sum.AllChecks, c => Assert.True(c.PassedEverywhere));
     }
@@ -162,47 +161,6 @@ public sealed class AgreementSummaryTests
         Assert.Contains("NOT GRADED on 1", law.Line);
         Assert.Contains("1 of 2", law.Line);
     }
-
-    /// <summary>
-    /// TWO CAUSES, ONE CHECK - the shape that had no test, which is why the eleventh bug lived.
-    ///
-    /// The desktop comparison is stopped by TWO different things: an unstamped row (no answer arrived, so
-    /// nothing downstream can be checked) and an indeterminate row (the Gateway overwrote the fact it
-    /// needs). IndeterminateRows counts only the second. DesktopAgreed.NotGraded counts both.
-    ///
-    /// They sat side by side under names close enough to swap, and the report duly printed the narrow
-    /// count under the broad meaning: "the desktop comparison was not graded on 1 row" on a fleet where it
-    /// had not been graded on two - and then added that every other check ran on them, which was true of
-    /// the indeterminate row and false of the unstamped one. Two true sentences about different rows,
-    /// welded into one false one.
-    ///
-    /// Every test here covered one cause or the other. None covered a roster carrying both, so nothing
-    /// could ever see the two numbers disagree. Same gap, eleventh instance.
-    /// </summary>
-    [Fact]
-    public void TheDesktopCheckCountsBOTHReasonsItDidNotRun_NotJustTheInterestingOne()
-    {
-        var sum = AgreementCheck.Summarize(
-            new[] { Row("a-no-stamp"), Row("b-ambiguous"), Row("c-fine") },
-            new[] { F("a-no-stamp", "unstamped"), F("b-ambiguous", "indeterminate") });
-
-        // The CAUSE counts are each about their own cause, and neither is the check's scope.
-        Assert.Equal(1, sum.Unstamped);
-        Assert.Equal(1, sum.IndeterminateRows);
-
-        // The CHECK knows it was blocked twice, for two different reasons, and says so.
-        Assert.Equal(2, sum.DesktopAgreed.NotGraded);
-        Assert.Equal(1, sum.DesktopAgreed.Graded);
-        Assert.False(sum.DesktopAgreed.PassedEverywhere);
-        Assert.Contains("NOT GRADED on 2", sum.DesktopAgreed.Line);
-
-        // And the other checks are blocked ONLY by the unstamped row - the indeterminate one does not
-        // touch them. That asymmetry is exactly what the old sentence flattened.
-        Assert.Equal(1, sum.Law.NotGraded);
-        Assert.Equal(1, sum.StampIsFold.NotGraded);
-        Assert.Equal(1, sum.SamePixels.NotGraded);
-    }
-
     /// <summary>
     /// ONE REASON IS NOT TWO REASONS - the twelfth finding, and the smallest of them all.
     ///
@@ -215,39 +173,26 @@ public sealed class AgreementSummaryTests
     /// The inspector found it by RUNNING the tool, because no test could reach the sentence: it was a
     /// Console.WriteLine, like every other prose defect on this pull request. That is why this is now a
     /// function returning lines instead of a print, and why these tests exist at all.
+    ///
+    /// It was written with an indeterminate row, which was one of the two possible causes; that kind is
+    /// gone (gap 5) and [unstamped] is the one that remains, so the same guard is stated with the cause
+    /// that still exists. The connective can no longer be wrong - one cause cannot be two - but the guard
+    /// stays, because "it cannot be wrong today" is the argument that lost this mission four days.
     /// </summary>
     [Fact]
     public void OneCauseIsNotTwoReasons()
     {
         var sum = AgreementCheck.Summarize(
-            new[] { Row("a"), Row("b-ambiguous") },
-            new[] { F("b-ambiguous", "indeterminate") });
+            new[] { Row("a"), Row("b-unstamped") },
+            new[] { F("b-unstamped", "unstamped") });
 
         var lines = sum.DesktopNotGradedLines();
 
         Assert.Equal(2, lines.Count); // the headline plus exactly one cause
         Assert.Contains("NOT GRADED on 1 of 2", lines[0]);
         Assert.DoesNotContain("different reasons", lines[0]);
-        Assert.Contains("[indeterminate]", lines[1]);
-        Assert.DoesNotContain(lines, l => l.Contains("[unstamped]"));
+        Assert.Contains("[unstamped]", lines[1]);
     }
-
-    [Fact]
-    public void TwoCausesEarnThePlural_AndNameThemseparately()
-    {
-        var sum = AgreementCheck.Summarize(
-            new[] { Row("a-no-stamp"), Row("b-ambiguous"), Row("c-fine") },
-            new[] { F("a-no-stamp", "unstamped"), F("b-ambiguous", "indeterminate") });
-
-        var lines = sum.DesktopNotGradedLines();
-
-        Assert.Equal(3, lines.Count); // headline plus BOTH causes
-        Assert.Contains("NOT GRADED on 2 of 3", lines[0]);
-        Assert.Contains("for 2 different reasons", lines[0]);
-        Assert.Contains(lines, l => l.Contains("[unstamped]"));
-        Assert.Contains(lines, l => l.Contains("[indeterminate]"));
-    }
-
     /// <summary>
     /// The control that stops "never overstate" being satisfied by never speaking: a check that ran on
     /// everything says NOTHING about not being graded, because there is nothing to say.
@@ -289,21 +234,6 @@ public sealed class AgreementSummaryTests
         var sum = AgreementCheck.Summarize(new[] { Row("a") }, new[] { F("a", "law-broken") });
         Assert.Equal(1, sum.ExitCode);
     }
-
-    [Fact]
-    public void AnIndeterminateOnlyRun_ExitsThree_NeitherCleanNorADisagreement()
-    {
-        var sum = AgreementCheck.Summarize(
-            new[] { Row("a"), Row("b-ambiguous") },
-            new[] { F("b-ambiguous", "indeterminate") });
-
-        // The headline is honest...
-        Assert.Equal(0, sum.Disagreements);
-        // ...and the exit code must be too. NOT 1 (there is no disagreement) and NOT 0 (the check did not
-        // grade the whole fleet). Both of those are the false half this mission is made of.
-        Assert.Equal(3, sum.ExitCode);
-    }
-
     [Fact]
     public void AnUnstampedRow_AlsoExitsOne_BecauseItIsARealDefect_NotMerelyUngradeable()
     {
@@ -336,34 +266,12 @@ public sealed class AgreementSummaryTests
     [InlineData("desktop-vs-gateway", "DISAGREEMENT")]
     [InlineData("two-different-pixels", "DISAGREEMENT")]
     [InlineData("palette-missing", "DISAGREEMENT")]
-    [InlineData("indeterminate", "NOT GRADED")]
     public void EveryKindHasOneClassification_AndOneWord(string kind, string expectedLabel)
     {
         var finding = F("x", kind);
 
         Assert.Equal(expectedLabel, finding.Label);
-        Assert.Equal(
-            kind == "indeterminate" ? AgreementCheck.FindingOutcome.NotGraded : AgreementCheck.FindingOutcome.Disagreement,
-            finding.Outcome);
     }
-
-    /// <summary>
-    /// The live shape the fourteenth pass caught: an indeterminate row printed under the word
-    /// DISAGREEMENT, four lines above a headline reporting zero disagreements. Same run, same tool, two
-    /// renderers, one of which had learned the distinction.
-    /// </summary>
-    [Fact]
-    public void AnIndeterminateRow_IsNeverPrintedAsADisagreement()
-    {
-        var finding = F("ambiguous", "indeterminate");
-        var sum = AgreementCheck.Summarize(new[] { Row("ambiguous") }, new[] { finding });
-
-        // What the detail line prints, and what the headline counts, now come from the same place.
-        Assert.Equal("NOT GRADED", finding.Label);
-        Assert.Equal(0, sum.Disagreements);
-        Assert.Equal(3, sum.ExitCode);
-    }
-
     /// <summary>
     /// The control: a genuinely clean fleet is the ONLY thing that may print the unqualified word.
     /// Without this, "never say PASS" would be trivially satisfiable by never saying it.
@@ -393,54 +301,9 @@ public sealed class AgreementSummaryTests
             new[] { Row("phone-dictation") },
             new[] { F("phone-dictation", "desktop-vs-gateway") });
 
-        Assert.Equal(0, sum.IndeterminateRows);
         Assert.False(sum.DesktopAgreed.Passed);
         Assert.Equal(1, sum.Disagreements);
     }
-
-    /// <summary>
-    /// THE SHAPE THAT EXPOSED THE BUG, and the reason this file exists: ONE row that is both unreadable
-    /// AND has a certain defect. The old arithmetic reported "1 disagreement over 0 graded sessions" and
-    /// then said the number said nothing about the unreadable row - while that row's stamp-not-fold was
-    /// the entire numerator.
-    ///
-    /// The honest answer: the row was checked. Four of the five checks ran on it and one of them found
-    /// something. It counts, and it counts over a denominator that includes it.
-    /// </summary>
-    [Fact]
-    public void AnUnreadableRowWithACertainDefect_CountsInBoth_AndTheDenominatorKeepsIt()
-    {
-        var sum = AgreementCheck.Summarize(
-            new[] { Row("ambiguous") },
-            new[] { F("ambiguous", "indeterminate"), F("ambiguous", "stamp-not-fold") });
-
-        // The certain finding is a real disagreement and is counted.
-        Assert.Equal(1, sum.Disagreements);
-        // The row was checked - four of five checks ran on it - so it stays in the denominator. The old
-        // version said "over 0 graded session(s)" here, which invited a divide-by-nothing reading of a
-        // fleet that plainly had one session in it.
-        Assert.Equal(1, sum.LiveSessions);
-        // And the ONE check that could not run is reported separately, as itself.
-        Assert.Equal(1, sum.IndeterminateRows);
-    }
-
-    /// <summary>
-    /// An unreadable row with NOTHING else wrong contributes no disagreement - the refusal is not itself
-    /// a defect, it is the absence of a verdict. If this counted as a disagreement the tool would report
-    /// a fleet as broken every time the Gateway prepared a voice summary.
-    /// </summary>
-    [Fact]
-    public void AnUnreadableRowAlone_IsNotADisagreement()
-    {
-        var sum = AgreementCheck.Summarize(
-            new[] { Row("a"), Row("quiet-ambiguous") },
-            new[] { F("quiet-ambiguous", "indeterminate") });
-
-        Assert.Equal(0, sum.Disagreements);
-        Assert.Equal(2, sum.LiveSessions);
-        Assert.Equal(1, sum.IndeterminateRows);
-    }
-
     /// <summary>
     /// Several findings on ONE row are several disagreements - the numerator counts findings, not rows.
     /// Stated because the denominator counts ROWS, and mixing the two units is how the first bug got in.
@@ -454,6 +317,5 @@ public sealed class AgreementSummaryTests
 
         Assert.Equal(3, sum.Disagreements);
         Assert.Equal(2, sum.LiveSessions);
-        Assert.Equal(0, sum.IndeterminateRows);
     }
 }
