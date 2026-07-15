@@ -80,7 +80,7 @@ public sealed class DesktopRoleStampWireProofTests
                 new SetResolvedRoleRequest { Role = role },
                 new System.Text.Json.JsonSerializerOptions(System.Text.Json.JsonSerializerDefaults.Web)),
         };
-        var context = new SessionCommandContext(manager, "director-under-test", Services: null, SendSource.Internal);
+        var context = new SessionCommandContext(manager, "director-under-test", Services: null, SendSource.Framework);
         return FleetRoleExecutor.SetResolvedRole(context, command);
     }
 

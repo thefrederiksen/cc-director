@@ -1925,8 +1925,9 @@ public sealed class Session : IDisposable
     /// backend-specific whole-turn semantics.
     ///
     /// <paramref name="source"/> names who is sending: a human (<see cref="SendSource.UserInput"/>,
-    /// the default), an arriving dictation (<see cref="SendSource.Delivery"/>), or the framework
-    /// itself (<see cref="SendSource.Internal"/>). It is diagnostic only - sends are never refused
+    /// the default), an arriving dictation (<see cref="SendSource.Delivery"/>), another agent across
+    /// the fleet (<see cref="SendSource.Agent"/>), or the framework itself
+    /// (<see cref="SendSource.Framework"/>). It is diagnostic only - sends are never refused
     /// by source. The old dictation-lock rejection here was removed deliberately: this is a
     /// single-operator tool, and a collision between the operator's own phone dictation and their
     /// own typed send is theirs to make, not the Director's to police.

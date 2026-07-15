@@ -118,7 +118,7 @@ public sealed class DictationDesktopLockTests
                 await session.SendTextAsync("typed", SendSource.UserInput);
                 await session.SendTextAsync("typed default"); // default is UserInput
                 await session.SendTextAsync("delivered", SendSource.Delivery);
-                await session.SendTextAsync("internal", SendSource.Internal);
+                await session.SendTextAsync("internal", SendSource.Framework);
             }
             finally
             {

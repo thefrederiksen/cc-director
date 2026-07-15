@@ -4564,7 +4564,7 @@ public partial class MainWindow : Window
             return;
         }
 
-        await _activeSession.Session.SendTextAsync("/handover", SendSource.Internal);
+        await _activeSession.Session.SendTextAsync("/handover", SendSource.Framework);
         FileLog.Write($"[MainWindow] BtnHandover_Click: sent /handover to session {_activeSession.Session.Id}");
     }
 
@@ -5474,7 +5474,7 @@ public partial class MainWindow : Window
             + "and what you think we should work on next. Show the scope of remaining work "
             + "and suggest priorities.";
 
-        await session.SendTextAsync(prompt, SendSource.Internal);
+        await session.SendTextAsync(prompt, SendSource.Framework);
         FileLog.Write($"[MainWindow] InjectHandoverPromptAsync: sent handover prompt for session {session.Id}");
     }
 

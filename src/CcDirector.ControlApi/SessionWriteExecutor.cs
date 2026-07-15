@@ -481,7 +481,7 @@ internal sealed class SessionWriteExecutor : ISessionCommandArea
             if (existing.Status is SessionStatus.Exited or SessionStatus.Failed)
                 return DirectorCommandResult.Fail(DirectorCommandStatus.Conflict, "target session has exited");
             target = existing;
-            await target.SendTextAsync(contextText, SendSource.Internal);
+            await target.SendTextAsync(contextText, SendSource.Framework);
         }
         else
         {
@@ -520,7 +520,7 @@ internal sealed class SessionWriteExecutor : ISessionCommandArea
                     if (st is ActivityState.Exited) { FileLog.Write($"[SessionWriteExecutor] handover-generate target exited before idle, sid={capturedTarget.Id}"); return; }
                     await Task.Delay(500);
                 }
-                try { await capturedTarget.SendTextAsync(capturedText, SendSource.Internal); }
+                try { await capturedTarget.SendTextAsync(capturedText, SendSource.Framework); }
                 catch (Exception ex) { FileLog.Write($"[SessionWriteExecutor] handover-generate dispatch FAILED: {ex.Message}"); }
             });
         }

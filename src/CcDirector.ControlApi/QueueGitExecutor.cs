@@ -214,7 +214,7 @@ internal sealed class QueueGitExecutor : ISessionCommandArea
     /// BadRequest, missing session -&gt; NotFound, an Exited/Failed session -&gt; Conflict (the REST layer returns
     /// an empty 409, so no body is carried here), a missing queue item -&gt; NotFound - and returns the resulting
     /// queue. The drain is an explicit ordered mechanism (issue #1181, Task 3b lists it exempt from the dictation
-    /// lock), so it sends as <see cref="SendSource.Internal"/> exactly as the REST lambda did.
+    /// lock), so it sends as <see cref="SendSource.Framework"/> exactly as the REST lambda did.
     /// </summary>
     internal static async Task<DirectorCommandResult> QueueSendAsync(SessionManager sessionManager, DirectorCommand command)
     {
@@ -236,7 +236,7 @@ internal sealed class QueueGitExecutor : ISessionCommandArea
         var text = item.Text;
         session.PromptQueue.Remove(itemGuid);
         FileLog.Write($"[QueueGitExecutor] queue-send: session={guid} item={itemGuid}");
-        await session.SendTextAsync(text, SendSource.Internal);
+        await session.SendTextAsync(text, SendSource.Framework);
         return DirectorCommandResult.Success(SerializeQueue(session));
     }
 

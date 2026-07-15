@@ -273,7 +273,7 @@ internal static class ControlEndpoints
                     .Count(m => m.Role == CcDirector.Core.History.ConversationRole.Assistant)
                 : 0;
 
-            await target.SendTextAsync(framed, SendSource.Internal);
+            await target.SendTextAsync(framed, SendSource.Agent);
 
             // Give the target a moment to start working, then wait for the turn to settle. Both the loop and
             // the verdict read the SAME predicate, so they cannot drift apart - which is how the old pair
@@ -378,9 +378,9 @@ internal static class ControlEndpoints
             {
                 try
                 {
-                    // Fleet message delivery is framework-mediated, not a human racing the dictation, so it
-                    // is exempt from the dictation lock (issue #1181, Task 3b).
-                    await local.SendTextAsync(framed, SendSource.Internal);
+                    // Fleet message delivery is agent-driven, not a human racing the dictation, so it is
+                    // exempt from the dictation lock (issue #1181, Task 3b).
+                    await local.SendTextAsync(framed, SendSource.Agent);
                     return Results.Json(new FleetSendResponse { Accepted = true, DeliveredCount = 1 });
                 }
                 catch (Exception ex)
@@ -1025,7 +1025,7 @@ internal static class ControlEndpoints
                 {
                     try
                     {
-                        await local.SendTextAsync(framed, SendSource.Internal);
+                        await local.SendTextAsync(framed, SendSource.Agent);
                         count++;
                     }
                     catch (Exception ex)
