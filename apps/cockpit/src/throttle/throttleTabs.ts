@@ -6,13 +6,14 @@
 // to update - and the failure is quiet: the stored tab silently fails validation and the owner is
 // dropped back on Overview every time they return to the page.
 
-export type ThrottleTab = "overview" | "activity" | "breakdown" | "repos";
+export type ThrottleTab = "overview" | "activity" | "breakdown" | "repos" | "agents";
 
 export const TABS: ReadonlyArray<{ key: ThrottleTab; label: string }> = [
   { key: "overview", label: "Overview" },
   { key: "activity", label: "Activity" },
   { key: "breakdown", label: "Breakdown" },
   { key: "repos", label: "Repos" },
+  { key: "agents", label: "Agents" },
 ];
 
 /** The tab shown when nothing valid is stored. */

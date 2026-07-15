@@ -54,6 +54,17 @@ public sealed class GatewayInputStatsAggregator
     // happens"). All-time, like the totals - never pruned. Only counts travel; never any message text.
     private readonly Dictionary<string, RepoTally> _repos = new(StringComparer.OrdinalIgnoreCase);
 
+    // Per-agent all-time tally, keyed by the session's Agent token (the AgentKind name: "ClaudeCode",
+    // "Codex", ...). Accumulated from the SAME high-water deltas as the totals: when a session's counted
+    // input grows, that increase is also attributed to the agent CLI that session drives. Feeds the private
+    // Agents page ("which agent you actually drive"). All-time, like the totals - never pruned.
+    private readonly Dictionary<string, AgentTally> _agents = new(StringComparer.OrdinalIgnoreCase);
+
+    // When the per-agent tally started counting. The totals predate this breakdown, so the agent numbers do
+    // NOT reconcile with them and the page must say so rather than imply the earlier turns had no agent.
+    // Stamped once, the first time a Gateway runs a build that has the tally, and persisted from then on.
+    private string _agentsSinceUtc = "";
+
     private sealed class HourTurns
     {
         public long VoiceTurns;
@@ -69,6 +80,16 @@ public sealed class GatewayInputStatsAggregator
         // The distinct session ids that drove counted input into this repo, so "sessions" is a true
         // distinct count that never double-counts across a re-push or a Gateway restart (the set is
         // persisted and re-adding a known id is a no-op).
+        public readonly HashSet<string> Sessions = new(StringComparer.Ordinal);
+    }
+
+    private sealed class AgentTally
+    {
+        public long VoiceTurns;
+        public long TypedTurns;
+        public long Characters;
+        // The distinct session ids that drove counted input through this agent, so "sessions" is a true
+        // distinct count across a re-push or a Gateway restart (the set is persisted; re-adding is a no-op).
         public readonly HashSet<string> Sessions = new(StringComparer.Ordinal);
     }
 
@@ -96,7 +117,7 @@ public sealed class GatewayInputStatsAggregator
         var hourKey = HourKey(now);
         lock (_lock)
         {
-            var changed = false;
+            var changed = StampAgentsSinceLocked(now);
             foreach (var s in sessions)
                 changed |= FoldLocked(s, hourKey);
             if (changed) { PruneLocked(now); Save(); }
@@ -111,8 +132,22 @@ public sealed class GatewayInputStatsAggregator
         var hourKey = HourKey(now);
         lock (_lock)
         {
-            if (FoldLocked(session, hourKey)) { PruneLocked(now); Save(); }
+            var changed = StampAgentsSinceLocked(now);
+            changed |= FoldLocked(session, hourKey);
+            if (changed) { PruneLocked(now); Save(); }
         }
+    }
+
+    // Stamp when the per-agent tally started counting, the first time a Gateway with the tally observes
+    // anything - from either entry point, so the date does not depend on which one fired first. The all-time
+    // totals predate the breakdown, so this is what lets the Agents page state which window its numbers
+    // cover instead of implying the earlier turns ran under no agent. Returns true when it stamped (the
+    // caller must persist it). Caller holds the lock.
+    private bool StampAgentsSinceLocked(DateTime nowUtc)
+    {
+        if (_agentsSinceUtc.Length > 0) return false;
+        _agentsSinceUtc = nowUtc.ToUniversalTime().ToString("o", System.Globalization.CultureInfo.InvariantCulture);
+        return true;
     }
 
     /// <summary>
@@ -200,6 +235,59 @@ public sealed class GatewayInputStatsAggregator
             return list;
         }
     }
+
+    /// <summary>The per-agent all-time tally (turns by modality, character volume, distinct sessions),
+    /// ranked most-driven first, for the private Agents page. Agents with no counted turns are omitted.</summary>
+    public IReadOnlyList<AgentStatBucketDto> AgentTotals()
+    {
+        lock (_lock)
+        {
+            var list = new List<AgentStatBucketDto>(_agents.Count);
+            foreach (var kvp in _agents)
+            {
+                var t = kvp.Value;
+                list.Add(new AgentStatBucketDto
+                {
+                    Agent = kvp.Key,
+                    AgentName = AgentDisplayName(kvp.Key),
+                    Turns = t.VoiceTurns + t.TypedTurns,
+                    VoiceTurns = t.VoiceTurns,
+                    TypedTurns = t.TypedTurns,
+                    Characters = t.Characters,
+                    Sessions = t.Sessions.Count,
+                });
+            }
+            // Rank by turns (the headline metric), then characters, then name, so the order is stable.
+            list.Sort((a, b) =>
+            {
+                var byTurns = b.Turns.CompareTo(a.Turns);
+                if (byTurns != 0) return byTurns;
+                var byChars = b.Characters.CompareTo(a.Characters);
+                return byChars != 0 ? byChars : string.CompareOrdinal(a.AgentName, b.AgentName);
+            });
+            return list;
+        }
+    }
+
+    /// <summary>When the per-agent tally started counting (round-trip UTC), or "" if it has never been
+    /// stamped. The all-time totals predate it, so the Agents page states this rather than implying the
+    /// earlier turns ran under no agent.</summary>
+    public string AgentsSinceUtc
+    {
+        get { lock (_lock) { return _agentsSinceUtc; } }
+    }
+
+    // The display name of an agent token (the AgentKind enum name the Director reports). An explicit map,
+    // not a PascalCase splitter: "OpenCode" is the product's own spelling and must not become "Open Code".
+    // An unrecognised token is shown verbatim - it is a real value we simply do not have a nicer name for,
+    // so showing it is honest where hiding it behind "Other" would not be.
+    private static string AgentDisplayName(string agent) => agent switch
+    {
+        "" => "(unknown)",
+        "ClaudeCode" => "Claude Code",
+        "RawCli" => "Raw CLI",
+        _ => agent,
+    };
 
     // The display leaf of a repository path: the last path segment of the working directory, so
     // "D:\ReposFred\devthrottle" reads as "devthrottle". Handles both slash styles across machines (the
@@ -310,6 +398,24 @@ public sealed class GatewayInputStatsAggregator
                 if (!string.IsNullOrEmpty(s.SessionId))
                     repo.Sessions.Add(s.SessionId);
 
+                // Attribute the SAME increase to the agent CLI the session drives (the private Agents page):
+                // which agent the work went through. A session whose agent the Director did not report is
+                // counted under the empty key and shown as "(unknown)" - never silently dropped, and never
+                // guessed at from the command line.
+                var agentKey = s.Agent ?? "";
+                if (!_agents.TryGetValue(agentKey, out var agent))
+                {
+                    agent = new AgentTally();
+                    _agents[agentKey] = agent;
+                }
+                if (isVoice)
+                    agent.VoiceTurns += deltaTurns;
+                else
+                    agent.TypedTurns += deltaTurns;
+                agent.Characters += deltaChars;
+                if (!string.IsNullOrEmpty(s.SessionId))
+                    agent.Sessions.Add(s.SessionId);
+
                 changed = true;
             }
 
@@ -347,6 +453,8 @@ public sealed class GatewayInputStatsAggregator
         public long WingmanTurns { get; set; }
         public List<string> WingmanSessions { get; set; } = new();
         public Dictionary<string, RepoTallyStore> Repos { get; set; } = new();
+        public Dictionary<string, AgentTallyStore> Agents { get; set; } = new();
+        public string AgentsSinceUtc { get; set; } = "";
     }
 
     private sealed class HourTurnsStore
@@ -357,6 +465,14 @@ public sealed class GatewayInputStatsAggregator
     }
 
     private sealed class RepoTallyStore
+    {
+        public long VoiceTurns { get; set; }
+        public long TypedTurns { get; set; }
+        public long Characters { get; set; }
+        public List<string> Sessions { get; set; } = new();
+    }
+
+    private sealed class AgentTallyStore
     {
         public long VoiceTurns { get; set; }
         public long TypedTurns { get; set; }
@@ -408,7 +524,14 @@ public sealed class GatewayInputStatsAggregator
             foreach (var sid in rt.Sessions) tally.Sessions.Add(sid);
             _repos[repoKey] = tally;
         }
-        FileLog.Write($"[GatewayInputStatsAggregator] Load: restored {_totals.Count} total bucket(s), {_highWater.Count} live session(s), {_hourly.Count} hourly bucket(s), {_wingmanSessions.Count} wingman session(s)/{_wingmanTurns} wingman turn(s), {_repos.Count} repo(s) from {_path}");
+        foreach (var (agentKey, at) in parsed.Agents)
+        {
+            var tally = new AgentTally { VoiceTurns = at.VoiceTurns, TypedTurns = at.TypedTurns, Characters = at.Characters };
+            foreach (var sid in at.Sessions) tally.Sessions.Add(sid);
+            _agents[agentKey] = tally;
+        }
+        _agentsSinceUtc = parsed.AgentsSinceUtc ?? "";
+        FileLog.Write($"[GatewayInputStatsAggregator] Load: restored {_totals.Count} total bucket(s), {_highWater.Count} live session(s), {_hourly.Count} hourly bucket(s), {_wingmanSessions.Count} wingman session(s)/{_wingmanTurns} wingman turn(s), {_repos.Count} repo(s), {_agents.Count} agent(s) since '{_agentsSinceUtc}' from {_path}");
     }
 
     private void Quarantine(string reason)
@@ -444,6 +567,15 @@ public sealed class GatewayInputStatsAggregator
                     Characters = rt.Characters,
                     Sessions = rt.Sessions.ToList(),
                 };
+            foreach (var (agentKey, at) in _agents)
+                file.Agents[agentKey] = new AgentTallyStore
+                {
+                    VoiceTurns = at.VoiceTurns,
+                    TypedTurns = at.TypedTurns,
+                    Characters = at.Characters,
+                    Sessions = at.Sessions.ToList(),
+                };
+            file.AgentsSinceUtc = _agentsSinceUtc;
 
             var json = JsonSerializer.Serialize(file, FileJsonOptions);
             var tmp = _path + ".tmp";
@@ -502,5 +634,35 @@ public sealed class RepoStatBucketDto
     public long Characters { get; set; }
 
     /// <summary>Distinct sessions that drove counted input into this repo.</summary>
+    public int Sessions { get; set; }
+}
+
+/// <summary>One agent CLI's all-time input tally for the private Agents page: how much development you
+/// drive through this agent, measured in submitted TURNS (total and split voice vs typed), CHARACTER
+/// volume, and the count of distinct SESSIONS that drove input through it. Only counts ever travel - never
+/// message text. The tally starts when the breakdown shipped, so it does not reconcile with the all-time
+/// totals; see <see cref="GatewayInputStatsAggregator.AgentsSinceUtc"/>.</summary>
+public sealed class AgentStatBucketDto
+{
+    /// <summary>The agent token the Director reported (the AgentKind name: "ClaudeCode", "Codex", ...),
+    /// or "" when the session carried no agent (the grouping key).</summary>
+    public string Agent { get; set; } = "";
+
+    /// <summary>The display name of <see cref="Agent"/>, e.g. "Claude Code"; "(unknown)" when empty.</summary>
+    public string AgentName { get; set; } = "";
+
+    /// <summary>Total submitted turns driven through this agent (voice + typed).</summary>
+    public long Turns { get; set; }
+
+    /// <summary>Submitted turns driven by voice.</summary>
+    public long VoiceTurns { get; set; }
+
+    /// <summary>Submitted turns driven by typing.</summary>
+    public long TypedTurns { get; set; }
+
+    /// <summary>Total character volume of input driven through this agent.</summary>
+    public long Characters { get; set; }
+
+    /// <summary>Distinct sessions that drove counted input through this agent.</summary>
     public int Sessions { get; set; }
 }

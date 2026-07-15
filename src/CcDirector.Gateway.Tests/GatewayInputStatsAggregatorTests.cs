@@ -54,6 +54,17 @@ public sealed class GatewayInputStatsAggregatorTests : IDisposable
     private static RepoStatBucketDto? Repo(GatewayInputStatsAggregator agg, string repoName) =>
         agg.RepoTotals().FirstOrDefault(r => r.RepoName == repoName);
 
+    // A session driving a named agent CLI - the Agents breakdown ("how much Claude Code vs Codex").
+    private static SessionDto SessionOnAgent(string id, string agent, params (string modality, string surface, long turns, long chars)[] buckets)
+    {
+        var dto = Session(id, buckets);
+        dto.Agent = agent;
+        return dto;
+    }
+
+    private static AgentStatBucketDto? Agent(GatewayInputStatsAggregator agg, string agentName) =>
+        agg.AgentTotals().FirstOrDefault(a => a.AgentName == agentName);
+
 
     private static long Turns(InputStatsDto dto, string modality, string surface) =>
         dto.Buckets.FirstOrDefault(b => b.Modality == modality && b.Surface == surface)?.Turns ?? 0;
@@ -284,5 +295,99 @@ public sealed class GatewayInputStatsAggregatorTests : IDisposable
         Assert.Equal(5, app2!.Turns);
         Assert.Equal(200, app2.Characters);
         Assert.Equal(1, app2.Sessions);
+    }
+
+    [Fact]
+    public void AgentTotals_AttributeTurnsToAgent_SplitByModality_AndRankByTurns()
+    {
+        var agg = new GatewayInputStatsAggregator(_path);
+        // The owner's question: how much Claude Code compared to Codex. Claude Code gets more, so it ranks first.
+        agg.Observe(SessionOnAgent("s1", "ClaudeCode", ("voice", "phone", 6, 600)));
+        agg.Observe(SessionOnAgent("s2", "ClaudeCode", ("typed", "desktop", 2, 40)));
+        agg.Observe(SessionOnAgent("s3", "Codex", ("typed", "cockpit", 3, 90)));
+
+        var ranked = agg.AgentTotals();
+        Assert.Equal(2, ranked.Count);
+        Assert.Equal("Claude Code", ranked[0].AgentName);   // 8 turns - ranked first
+        Assert.Equal("Codex", ranked[1].AgentName);         // 3 turns
+
+        var cc = ranked[0];
+        Assert.Equal("ClaudeCode", cc.Agent);               // the raw token stays the grouping key
+        Assert.Equal(8, cc.Turns);
+        Assert.Equal(6, cc.VoiceTurns);
+        Assert.Equal(2, cc.TypedTurns);
+        Assert.Equal(640, cc.Characters);
+        Assert.Equal(2, cc.Sessions);                       // two distinct sessions drove it
+    }
+
+    [Fact]
+    public void AgentTotals_DistinctSessions_NoDoubleCountAcrossRepush_AndSurviveRestart()
+    {
+        var agg = new GatewayInputStatsAggregator(_path);
+        agg.Observe(SessionOnAgent("s1", "Codex", ("voice", "phone", 3, 120)));
+        agg.Observe(SessionOnAgent("s1", "Codex", ("voice", "phone", 3, 120))); // re-push, no change
+        agg.Observe(SessionOnAgent("s1", "Codex", ("voice", "phone", 5, 200))); // grew by 2
+
+        var codex = Agent(agg, "Codex");
+        Assert.NotNull(codex);
+        Assert.Equal(5, codex!.Turns);
+        Assert.Equal(1, codex.Sessions); // the same session id must count once, not three times
+
+        // Gateway restart: the per-agent tally (and its distinct-session set) reload from disk.
+        var reloaded = new GatewayInputStatsAggregator(_path);
+        var codex2 = Agent(reloaded, "Codex");
+        Assert.NotNull(codex2);
+        Assert.Equal(5, codex2!.Turns);
+        Assert.Equal(200, codex2.Characters);
+        Assert.Equal(1, codex2.Sessions);
+    }
+
+    [Fact]
+    public void AgentTotals_SessionWithNoAgent_IsCountedAsUnknown_NeverDropped()
+    {
+        var agg = new GatewayInputStatsAggregator(_path);
+        // A Director that reported no agent must not silently vanish from the breakdown - the turns are real.
+        agg.Observe(Session("s1", ("typed", "desktop", 4, 80)));
+
+        var unknown = Agent(agg, "(unknown)");
+        Assert.NotNull(unknown);
+        Assert.Equal("", unknown!.Agent);
+        Assert.Equal(4, unknown.Turns);
+    }
+
+    [Fact]
+    public void AgentsSince_IsStampedOnFirstObservation_AndNeverMovesAfterwards()
+    {
+        var first = new DateTime(2026, 7, 15, 9, 0, 0, DateTimeKind.Utc);
+        var agg = new GatewayInputStatsAggregator(_path);
+        Assert.Equal("", agg.AgentsSinceUtc); // nothing observed yet - no claim about a window
+
+        agg.Observe(SessionOnAgent("s1", "ClaudeCode", ("typed", "desktop", 1, 10)), first);
+        var stamped = agg.AgentsSinceUtc;
+        Assert.NotEqual("", stamped);
+        Assert.StartsWith("2026-07-15T09:00:00", stamped);
+
+        // A later observation must NOT move the since-date, or the page would understate its own window.
+        agg.Observe(SessionOnAgent("s1", "ClaudeCode", ("typed", "desktop", 9, 90)), first.AddHours(5));
+        Assert.Equal(stamped, agg.AgentsSinceUtc);
+
+        // It survives a Gateway restart, so the window does not reset every time the Gateway starts.
+        var reloaded = new GatewayInputStatsAggregator(_path);
+        Assert.Equal(stamped, reloaded.AgentsSinceUtc);
+    }
+
+    [Fact]
+    public void AgentTotals_TrackTheSameTurnsAsTheTotals_FromTheSameDeltas()
+    {
+        var agg = new GatewayInputStatsAggregator(_path);
+        // The agent tally rides the SAME high-water deltas as the totals, so for turns folded while it was
+        // live, the two must agree - the breakdown is a split of the totals, not a second count of them.
+        agg.Observe(SessionOnAgent("s1", "ClaudeCode", ("voice", "phone", 6, 600)));
+        agg.Observe(SessionOnAgent("s2", "Codex", ("typed", "desktop", 4, 40)));
+
+        var totalTurns = agg.CurrentTotals().Buckets.Sum(b => b.Turns);
+        var agentTurns = agg.AgentTotals().Sum(a => a.Turns);
+        Assert.Equal(totalTurns, agentTurns);
+        Assert.Equal(10, agentTurns);
     }
 }

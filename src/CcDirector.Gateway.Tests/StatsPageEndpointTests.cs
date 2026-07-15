@@ -158,6 +158,44 @@ public sealed class StatsPageEndpointTests : IDisposable
     }
 
     [Fact]
+    public async Task StatsData_RanksAgents_ByTurns_AndCarriesTheSinceStamp()
+    {
+        var agg = new GatewayInputStatsAggregator(Path.Combine(_dir, "s.json"));
+        agg.Observe(new SessionDto
+        {
+            SessionId = "s1",
+            Agent = "ClaudeCode",
+            InputStats = new InputStatsDto { Buckets = { new InputStatBucketDto { Modality = "voice", Surface = "phone", Turns = 6, Characters = 600 } } },
+        });
+        agg.Observe(new SessionDto
+        {
+            SessionId = "s2",
+            Agent = "Codex",
+            InputStats = new InputStatsDto { Buckets = { new InputStatBucketDto { Modality = "typed", Surface = "desktop", Turns = 2, Characters = 40 } } },
+        });
+
+        var (app, http) = await StartAsync(agg, authEnabled: false);
+        try
+        {
+            using var doc = JsonDocument.Parse(await (await http.GetAsync("/stats/data")).Content.ReadAsStringAsync());
+            var agents = doc.RootElement.GetProperty("agents");
+            Assert.Equal(2, agents.GetArrayLength());
+
+            var first = agents[0];
+            Assert.Equal("Claude Code", first.GetProperty("agentName").GetString()); // most turns ranks first
+            Assert.Equal("ClaudeCode", first.GetProperty("agent").GetString());
+            Assert.Equal(6, first.GetProperty("turns").GetInt64());
+            Assert.Equal(6, first.GetProperty("voiceTurns").GetInt64());
+            Assert.Equal(1, first.GetProperty("sessions").GetInt32());
+            Assert.Equal("Codex", agents[1].GetProperty("agentName").GetString());
+
+            // The page states the window its numbers cover, so the stamp has to reach the client.
+            Assert.NotEqual("", doc.RootElement.GetProperty("agentsSinceUtc").GetString());
+        }
+        finally { http.Dispose(); await app.DisposeAsync(); }
+    }
+
+    [Fact]
     public async Task AuthEnabled_NoToken_Returns401_AndWithToken_Returns200()
     {
         var agg = new GatewayInputStatsAggregator(Path.Combine(_dir, "s.json"));
