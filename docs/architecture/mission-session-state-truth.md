@@ -1,8 +1,10 @@
 # Mission: Session State Truth
 
-**Status:** ACTIVE. Started 14 July 2026.
-**Mission worktree:** `D:\ReposFred\devthrottle-state-mission` (branch `mission/session-state-truth`, cut from origin/main at the spec merge).
-**Architect:** owns this document, sequences the phases, kills each Manager.
+**Status:** COMPLETE. Ran 14-15 July 2026. **This is a historical record, not a live brief.**
+The mission's work is landing on main in six reviewed slices; its unsliced original is preserved on the
+`backup/session-state-truth-2026-07-15` branch. The mission worktree and its branch are gone - do not look
+for them, and do not treat anything below as a live instruction.
+**Architect:** owned this document, sequenced the phases, killed each Manager.
 **The specification:** [`docs/new_architecture/session-state.html`](../new_architecture/session-state.html) - **read it before writing a single line.** It is the only document that defines session state.
 
 ---
@@ -15,18 +17,25 @@ The owner watched a session render grey "Sub-agent" while it was 23 minutes and 
 
 The spec is now fixed and merged. The law is one sentence: **if a session is working, it is BLUE - always, nothing outranks it.**
 
-This mission makes the *rest* of the code tell the truth too. Every item below is a place where DevThrottle currently says something false about a session: a snooze that never expires, an orange dot about an upload that finished, a dead session hiding behind "Snoozed", a crashed session that looks like a clean exit.
+This mission makes the *rest* of the code tell the truth too. Every item below is a place where DevThrottle currently says something false about a session: a snooze that never expires, an orange dot about a dictation that is no longer making progress, a dead session hiding behind "Snoozed", a crashed session that looks like a clean exit.
 
 **When this mission is done, every screen tells you the truth about every session, and no future agent can quietly restore a lie - because the spec and the tests both defend the law.**
 
 ---
 
-## THE RULES OF THIS MISSION - read these before you plan anything
+## THE RULES OF THIS MISSION
 
-1. **The owner is NOT interrupted until the final QA report.** Not per phase. Not per pull request. Not to confirm the plan. He said it plainly: *"I am not bothered until we have the final QA report that's the outcome for the mission... otherwise these missions are stupid."*
-2. **You have standing commit authority for the whole mission.** Commit freely on `mission/session-state-truth`. Do **not** ask per phase. This is an explicit, deliberate override of the usual "never commit without being asked" rule, granted for this mission's duration.
-3. **The owner approves the FINAL PUSH only** - one approval, at the end, on the QA report.
-4. **ONE worktree for the whole mission** - this one. All phases run here, in sequence. Do NOT cut a worktree per phase.
+> **RULES 1 TO 4 ARE EXPIRED. They are recorded here only so this mission's conduct can be audited.**
+> They were granted to THIS mission, on ITS branch, for ITS duration, and that duration ended on
+> 15 July 2026. **They grant you nothing.** If you are an agent reading this: you do NOT have standing
+> commit authority, and the repository's ordinary rule is unchanged and in force - *never commit without
+> being asked, and being granted it once does not grant it again.* Rules 5 to 9 below are the durable
+> ones; they are how this mission was expected to think, and they still read true.
+
+1. ~~**The owner is NOT interrupted until the final QA report.**~~ **EXPIRED.** Not per phase. Not per pull request. Not to confirm the plan. He said it plainly: *"I am not bothered until we have the final QA report that's the outcome for the mission... otherwise these missions are stupid."* This applied to this mission only. It does NOT license a future agent to work unsupervised.
+2. ~~**You have standing commit authority for the whole mission.**~~ **EXPIRED - THIS GRANT IS DEAD.** It permitted committing freely on `mission/session-state-truth`, a branch that no longer exists. It was an explicit, deliberate, *time-boxed* override of the usual "never commit without being asked" rule, and the box has closed. Do not read this as permission.
+3. ~~**The owner approves the FINAL PUSH only.**~~ **EXPIRED.** One approval, at the end, on the QA report - for that mission. The slices landing this work on main are each approved individually.
+4. ~~**ONE worktree for the whole mission.**~~ **EXPIRED.** That worktree is gone.
 5. **Every product decision is already made.** They are recorded in section 7 of the spec ("Answered - these are rulings, not proposals"). **Do not re-open them. Do not ask about them.** If you hit a question the spec does not answer, decide it the way the rulings point and write down what you decided.
 6. **Token cost is not a constraint.** The owner: *"I don't care about the tokens, I care about doing it right."* Do not cut scope to save tokens.
 7. **A green test is not proof.** Every fold in this codebase passes its own tests today and agrees with nothing else. The proof that matters is in the spec's section 6: read the live fleet and assert every session's desktop answer equals its phone answer equals its Cockpit answer.
@@ -53,9 +62,9 @@ The Gateway owns every state and is the ONLY thing that picks a colour. The Dire
 | A snoozed session exits - "Snoozed" or "Exited"? | **Exited.** A dead session never hides behind a Snoozed label. |
 | Pending deletion - colour or badge? | **A badge, never a colour.** If it is still working it is blue, with a badge. |
 | A dictation that never reaches a terminal state - stay orange, or bound the colour? | **Bound the colour, keep the record.** Nothing is lost except the lie on the dot. |
-| A Director dies while a snooze is deferred? | **Persist the hold state; land the deferral on restart if the session is not working.** |
+| A Director dies while a snooze is deferred? | **Persist the hold state; land the deferral on restart if the session is not working.** *(INFERRED from the rulings above, not answered word-for-word by the owner. Treat it as the way the rulings point, not as a quote.)* |
 
-Plus the snooze rules, which the Director already implements correctly: working ALWAYS clears a snooze; an expired snooze is gone; snooze-while-working means "snooze me when the work ends"; **nothing else** clears a snooze.
+Plus the snooze rules themselves: working ALWAYS clears a snooze; an expired snooze is gone (Gateway-owned, not the Director); snooze-while-working means "snooze me when the work ends"; **nothing else** clears a snooze. The Director implements the parts it owns, with two known exceptions this mission fixes: a landed hold is not cleared on exit, and hold state does not survive a restart.
 
 ---
 
