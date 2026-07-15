@@ -988,6 +988,18 @@ public sealed class Session : IDisposable
     /// <summary>True when this session has been flagged for deletion and is awaiting the reaper.</summary>
     public bool PendingDeletion => DeletionRequestedAt.HasValue;
 
+    /// <summary>
+    /// Raised when <see cref="PendingDeletion"/> changes, so a view (the desktop rail) can show or
+    /// clear the "winding down" badge. Carries the new value.
+    ///
+    /// This exists because the fact must travel as a FACT (defect 23). Flagging for deletion used to
+    /// notify the rail only as a side effect of <c>MarkForDeletion</c> writing a colour - the Director
+    /// deciding a colour, which law 2 forbids. Deleting that write removed the notification with it, so
+    /// the badge needs its own signal. Same shape as <see cref="OnNumberChanged"/> and
+    /// <see cref="OnHoldChanged"/>: report what changed, decide nothing about how it looks.
+    /// </summary>
+    public event Action<bool>? OnPendingDeletionChanged;
+
     /// <summary>Fires when StatusColor changes. Args: (oldColor, newColor, reason).</summary>
     public event Action<string, string, string>? OnStatusColorChanged;
 
@@ -1255,25 +1267,39 @@ public sealed class Session : IDisposable
 
     /// <summary>
     /// Flag this session for deletion. Idempotent: re-flagging refreshes the reason but keeps the
-    /// ORIGINAL request time, so the grace window is always measured from the first request. Paints a
-    /// sticky grey badge (the "unknown" colour every client already renders as gray) with a "Marked
-    /// for deletion" reason, so the row visibly winds down on the desktop, phone, and CLI with no
-    /// client change. The actual removal is done asynchronously by the Director's deletion reaper -
-    /// this call never touches the process, so a session can safely flag ITSELF and still finish its
-    /// turn. Uses <see cref="StatusColorSource.PositiveEvidence"/> so the wingman's activity mapping
-    /// cannot repaint over the winding-down badge before the reaper removes it.
+    /// ORIGINAL request time, so the grace window is always measured from the first request. The actual
+    /// removal is done asynchronously by the Director's deletion reaper - this call never touches the
+    /// process, so a session can safely flag ITSELF and still finish its turn.
+    ///
+    /// This RECORDS A FACT (<see cref="PendingDeletion"/> / <see cref="DeletionReason"/>) AND DECIDES
+    /// NOTHING. Pending deletion is a BADGE, never a colour (owner's ruling, 14 July 2026, defect 23):
+    /// it says nothing about what the agent is DOING, and a flagged session may still be working - the
+    /// reaper explicitly waits out a running final turn (<c>SessionManager.ReapPendingDeletions</c>).
+    /// Under the law a working session is BLUE, with a badge beside the dot.
+    ///
+    /// This used to call <c>SetStatusColor(StatusColor.Unknown, ...)</c> with
+    /// <see cref="StatusColorSource.PositiveEvidence"/> - the Director deciding a colour, which law 2
+    /// forbids, and which nothing that paints reads anyway (the Gateway is the single fold and reads
+    /// the Director's cooked StatusColor for NOTHING). Because that write was positive-evidence it was
+    /// also STICKY: within one activity generation it blocked the wingman's activity mapping from
+    /// repainting the row, so a flagged session that was working could not show blue until a genuine
+    /// state change bumped the generation. Do not restore it. The fact crosses the wire on
+    /// <c>SessionDto.PendingDeletion</c>; the Gateway folds the colour, and clients render the badge.
     /// </summary>
     public void MarkForDeletion(string? reason)
     {
         if (_disposed) return;
         var trimmed = string.IsNullOrWhiteSpace(reason) ? null : reason.Trim();
+        var wasPending = PendingDeletion;
         DeletionReason = trimmed;
         DeletionRequestedAt ??= DateTime.UtcNow;
-        var why = trimmed is null
-            ? "Marked for deletion - reaping shortly"
-            : $"Marked for deletion - {trimmed}";
-        SetStatusColor(Wingman.StatusColor.Unknown, why, source: StatusColorSource.PositiveEvidence);
         FileLog.Write($"[Session] MarkForDeletion: session={Id} reason={trimmed ?? "(none)"}");
+        // Fires only on a real transition: re-flagging refreshes the reason and is not a change.
+        if (!wasPending)
+        {
+            try { OnPendingDeletionChanged?.Invoke(true); }
+            catch (Exception ex) { FileLog.Write($"[Session] {Id} OnPendingDeletionChanged handler threw: {ex.Message}"); }
+        }
     }
 
     /// <summary>Clear a pending-deletion flag (an operator cancelled the reap during the grace
@@ -1284,6 +1310,8 @@ public sealed class Session : IDisposable
         DeletionRequestedAt = null;
         DeletionReason = null;
         FileLog.Write($"[Session] CancelDeletion: session={Id}");
+        try { OnPendingDeletionChanged?.Invoke(false); }
+        catch (Exception ex) { FileLog.Write($"[Session] {Id} OnPendingDeletionChanged handler threw: {ex.Message}"); }
     }
 
     /// <summary>

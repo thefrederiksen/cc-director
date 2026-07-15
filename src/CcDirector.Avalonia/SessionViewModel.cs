@@ -22,13 +22,23 @@ public class SessionViewModel : INotifyPropertyChanged
         { ActivityState.Exited, new SolidColorBrush(Color.FromRgb(0x66, 0x66, 0x66)) },
     };
 
-    // The sidebar color strip reads the SessionStatusWingman's color (Session.StatusColor)
-    // directly, so Desktop and Gateway always show the same color. The live states the
-    // wingman actually emits (see SessionStatusWingman.ColorFor) are:
+    // The sidebar colour strip reads the SHARED FOLD - SessionOrdering.EffectiveColor (see
+    // StatusColorBrush below) - which is what makes Desktop, Cockpit and phone agree. It does NOT read
+    // the SessionStatusWingman's Session.StatusColor, and has not since issue #1177 Phase 2: the Gateway
+    // is the single fold and reads the Director's cooked StatusColor for NOTHING.
+    //
+    // This comment used to say the strip read Session.StatusColor "directly, so Desktop and Gateway
+    // always show the same color" - a trap of exactly the kind the spec's section 4 lists (naming the
+    // wingman as the source of truth). It named the wrong source AND inverted the reason for agreement:
+    // agreement comes from calling the one shared fold, not from everyone reading the Director's colour.
+    //
+    // The colours the fold emits (see SessionOrdering.EffectiveColor) are:
     //   blue   = working          red    = needs you
     //   green  = ready (brand-new session, parked at its prompt with nothing needed)
     //   yellow = wingman narrating purple = parked on its own background task
-    //   gray   = process exited
+    //   orange = dictation in flight, or a deep dive running
+    //   grey   = parked (on hold) or exited      supporting = a live-controlled Worker's suppressed red
+    //   error  = crashed (issue #959)
     private static readonly ISolidColorBrush GreenStatusBrush   = new SolidColorBrush(Color.FromRgb(0x22, 0xC5, 0x5E));
     private static readonly ISolidColorBrush BlueStatusBrush    = new SolidColorBrush(Color.FromRgb(0x3B, 0x82, 0xF6));
     private static readonly ISolidColorBrush YellowStatusBrush  = new SolidColorBrush(Color.FromRgb(0xEA, 0xB3, 0x08));
@@ -81,6 +91,7 @@ public class SessionViewModel : INotifyPropertyChanged
         session.OnViewModeChanged += OnViewModeChangedVm;
         session.OnReceivingDictationChanged += OnReceivingDictationChangedVm;
         session.OnNumberChanged += OnNumberChangedVm;
+        session.OnPendingDeletionChanged += OnPendingDeletionChangedVm;
 
         if (session.PromptQueue != null)
         {
@@ -158,6 +169,41 @@ public class SessionViewModel : INotifyPropertyChanged
         "error"      => ErrorStatusBrush,
         _            => UnknownStatusBrush,
     };
+
+    /// <summary>
+    /// True when this session is flagged for deletion and awaiting the reaper - drives the rail's
+    /// "winding down" badge (defect 23).
+    ///
+    /// PENDING DELETION IS A BADGE, NEVER A COLOUR (owner's ruling, 14 July 2026). It says nothing about
+    /// what the agent is DOING, and a flagged session may still be working - the reaper waits out a
+    /// running final turn (SessionManager.ReapPendingDeletions). So it rides BESIDE the dot and never
+    /// touches <see cref="StatusColorBrush"/>: a flagged session that is working shows a BLUE strip with
+    /// this badge; a flagged session waiting on the user still shows red "Needs you" with this badge.
+    ///
+    /// Deliberately NOT folded into <see cref="EffectiveColor"/> - putting it there would make it a
+    /// colour and would spend the dot, which says what a session is DOING, on saying it is scheduled to
+    /// go. That is the same mistake as the "Supporting" grey that hid 23 minutes of real work.
+    /// </summary>
+    public bool IsPendingDeletion => Session.PendingDeletion;
+
+    /// <summary>The "winding down" badge tooltip: the human reason captured when the session was
+    /// flagged (e.g. "jobs-auto: nothing to report"), or a plain fallback when none was given.</summary>
+    public string PendingDeletionTooltip => Session.DeletionReason is { } reason
+        ? $"Marked for deletion - {reason}"
+        : "Marked for deletion - reaping shortly";
+
+    /// <summary>Issue: defect 23. The pending-deletion FACT changed on the Director - repaint the rail
+    /// badge on the UI thread. This is the session's own signal (<see cref="Session.OnPendingDeletionChanged"/>);
+    /// the rail used to learn about deletion only because MarkForDeletion wrote a colour, which it no
+    /// longer does and was never allowed to.</summary>
+    private void OnPendingDeletionChangedVm(bool _)
+    {
+        Dispatcher.UIThread.Post(() =>
+        {
+            OnPropertyChanged(nameof(IsPendingDeletion));
+            OnPropertyChanged(nameof(PendingDeletionTooltip));
+        });
+    }
 
     /// <summary>True when the user has parked this session on hold. Drives the menu toggle
     /// label and the light-gray strip color.</summary>

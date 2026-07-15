@@ -451,12 +451,20 @@
                                          TextTrimming actually engages and a long name
                                          can never run under the kebab menu. -->
                                     <Grid ColumnDefinitions="Auto,*,Auto,Auto">
-                                        <!-- Live wingman status indicator. Reads
-                                             Session.StatusColor (written by the
-                                             SessionStatusWingman) so the same
-                                             session shows the same color on Desktop
-                                             and Gateway. Doubles as the drag handle
-                                             for reordering the session list. -->
+                                        <!-- Live status indicator. Binds StatusColorBrush, which folds
+                                             ControlEndpoints.Map(Session) through
+                                             SessionOrdering.EffectiveColor - the SAME fold the phone and
+                                             Cockpit run - so every screen answers from one rule.
+
+                                             It used to say "reads Session.StatusColor (written by the
+                                             SessionStatusWingman) so the same session shows the same
+                                             color on Desktop and Gateway". Reading the Director's raw
+                                             colour is exactly WHY the desktop and the Gateway disagreed:
+                                             two independent deciders, one comment asserting they agreed.
+                                             The claim outlived the design by describing the intent
+                                             instead of the wiring.
+
+                                             Doubles as the drag handle for reordering the session list. -->
                                         <Border Grid.Column="0"
                                                 Width="14" Height="14"
                                                 CornerRadius="3"
@@ -571,6 +579,26 @@
                                                 ToolTip.Tip="{Binding RoleTooltip}">
                                             <TextBlock Text="{Binding RoleGlyphText}"
                                                        Foreground="{DynamicResource TextForeground}"
+                                                       FontSize="9"
+                                                       FontWeight="SemiBold" />
+                                        </Border>
+                                        <!-- Winding-down badge (defect 23): the session is flagged for
+                                             deletion and the reaper will remove it shortly. A BADGE,
+                                             NEVER A COLOUR (owner's ruling, 14 July 2026): pending
+                                             deletion says nothing about what the agent is DOING, and a
+                                             flagged session may still be working - so the status dot
+                                             keeps telling the truth (blue while it works) and this rides
+                                             beside it. Muted neutral gray like the role glyph, never a
+                                             status color; the tooltip carries the reason. -->
+                                        <Border Background="{DynamicResource ButtonBackground}"
+                                                CornerRadius="6"
+                                                Padding="6,1"
+                                                VerticalAlignment="Center"
+                                                Margin="0,0,6,0"
+                                                IsVisible="{Binding IsPendingDeletion}"
+                                                ToolTip.Tip="{Binding PendingDeletionTooltip}">
+                                            <TextBlock Text="WINDING DOWN"
+                                                       Foreground="#9CA3AF"
                                                        FontSize="9"
                                                        FontWeight="SemiBold" />
                                         </Border>

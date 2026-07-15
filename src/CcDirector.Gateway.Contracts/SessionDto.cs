@@ -338,10 +338,29 @@ public sealed class SessionDto
     /// True when this session has asked (or been asked) to be deleted and is awaiting the owning
     /// Director's deletion reaper. Set through POST /sessions/{id}/request-deletion; cleared by
     /// DELETE /sessions/{id}/request-deletion during the grace window. Mirrors
-    /// <c>Session.PendingDeletion</c>. While true the row paints as a winding-down grey with a
-    /// "Marked for deletion" reason and is removed within roughly a minute. The common case is an
-    /// unattended run flagging ITSELF once it has nothing left for the user, so the session tears
-    /// itself down instead of lingering as a dead tab. The UI renders this verbatim.
+    /// <c>Session.PendingDeletion</c>. The common case is an unattended run flagging ITSELF once it has
+    /// nothing left for the user, so the session tears itself down instead of lingering as a dead tab.
+    ///
+    /// THIS IS A BADGE, NEVER A COLOUR (owner's ruling, 14 July 2026, defect 23). Pending deletion says
+    /// nothing about what the agent is DOING, and a flagged session may still be working - the reaper
+    /// explicitly waits out a running final turn (<c>SessionManager.ReapPendingDeletions</c>). So it is
+    /// NOT folded into <see cref="SessionOrdering.EffectiveColor"/>: a flagged session that is working is
+    /// BLUE, with a badge beside the dot; a flagged session that is waiting is still red "Needs you".
+    /// Do NOT add a PendingDeletion branch to the fold - that would make it a colour.
+    ///
+    /// This comment used to claim the row "paints as a winding-down grey". IT DID NOT, on any
+    /// Gateway-backed screen. The fold has never read this field, so the row kept its normal colour;
+    /// the only implementation was the Director calling <c>SetStatusColor(Unknown, ...)</c> on itself,
+    /// which nothing that paints reads and which law 2 forbids. That call is now deleted, and the
+    /// promise is gone with it - the fact travels here, as a fact.
+    ///
+    /// THE REMAINDER, stated exactly: the fact crosses the wire, the DESKTOP RAIL RENDERS THE BADGE (see
+    /// MainWindow.axaml), and the PHONE AND COCKPIT DO NOT YET. Rendering it there is outstanding - see
+    /// "Still to do" in docs/new_architecture/session-state.html.
+    ///
+    /// This paragraph said "no client renders a badge yet" in the same change that added the desktop
+    /// badge - false the moment it was written, and false in the direction that makes a reader stop
+    /// looking. Keep it exact: name the surfaces, not "no client".
     /// </summary>
     public bool PendingDeletion { get; set; }
 

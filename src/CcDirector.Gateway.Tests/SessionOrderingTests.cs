@@ -750,6 +750,10 @@ public sealed class SessionOrderingTests
         { "wingman briefing",        new SessionDto { SessionId = "w", ActivityState = "Working", BriefingState = "Briefing" } },
         { "voice preparing",         new SessionDto { SessionId = "w", ActivityState = "Working", VoiceMode = true, VoiceGenerating = true } },
         { "controlled sub-agent",    new SessionDto { SessionId = "w", ActivityState = "Working", SessionRole = SessionRoles.Worker, ControllerSessionId = "mgr" } },
+        // Defect 23: a session flagged for deletion may still be WORKING - the Director's reaper
+        // explicitly waits out a running final turn (SessionManager.ReapPendingDeletions). Pending
+        // deletion is a BADGE, never a colour, so it cannot beat working - or anything else.
+        { "pending deletion",        new SessionDto { SessionId = "w", ActivityState = "Working", PendingDeletion = true, DeletionReason = "jobs-auto: nothing to report" } },
     };
 
     [Theory]
@@ -807,11 +811,71 @@ public sealed class SessionOrderingTests
             IsBrandNew = true,
             SessionRole = SessionRoles.Worker,
             ControllerSessionId = "mgr",
+            PendingDeletion = true,
         };
 
         Assert.Equal("blue", SessionOrdering.EffectiveColor(s));
         Assert.Equal("Working", SessionOrdering.StateLabel(s));
         Assert.Equal(SessionOrdering.TriageBucket.Active, SessionOrdering.Classify(s));
+    }
+
+    // ===================================================================================
+    // Defect 23: PENDING DELETION IS A BADGE, NEVER A COLOUR (owner's ruling, 2026-07-14).
+    //
+    // The law tests above pin "a flagged WORKING session is blue". These pin the whole
+    // ruling: the flag changes NOTHING about the fold, in ANY state. If one of these went
+    // red, someone added a PendingDeletion branch to EffectiveColor / StateLabel / Classify.
+    // Don't. It would spend the dot - which says what a session is DOING - on saying the
+    // session is scheduled to go, which is the same mistake as the "Supporting" grey that
+    // hid 23 minutes of real work. The fact rides on SessionDto.PendingDeletion, beside the
+    // dot, and the rail renders it as a badge.
+    // ===================================================================================
+
+    public static TheoryData<string, string> EveryActivityState() => new()
+    {
+        { "Working",         "blue" },
+        { "Starting",        "blue" },
+        { "WaitingForInput", "red" },
+        { "WaitingForPerm",  "red" },
+        { "Idle",            "red" },
+        { "Exited",          "grey" },
+    };
+
+    [Theory]
+    [MemberData(nameof(EveryActivityState))]
+    public void EffectiveColor_PendingDeletion_ChangesNothing_InAnyState(string activityState, string expected)
+    {
+        var flagged = new SessionDto
+        {
+            SessionId = "d",
+            ActivityState = activityState,
+            PendingDeletion = true,
+            DeletionReason = "jobs-auto: nothing to report",
+        };
+        var notFlagged = new SessionDto { SessionId = "d", ActivityState = activityState };
+
+        Assert.Equal(expected, SessionOrdering.EffectiveColor(flagged));
+        // The flag is invisible to the fold: flagged and unflagged fold identically, everywhere.
+        Assert.Equal(SessionOrdering.EffectiveColor(notFlagged), SessionOrdering.EffectiveColor(flagged));
+        Assert.Equal(SessionOrdering.StateLabel(notFlagged), SessionOrdering.StateLabel(flagged));
+        Assert.Equal(SessionOrdering.Classify(notFlagged), SessionOrdering.Classify(flagged));
+    }
+
+    [Fact]
+    public void EffectiveColor_PendingDeletion_NeverPaintsTheWindingDownGrey_TheDtoOncePromised()
+    {
+        // SessionDto.PendingDeletion's comment used to claim the row "paints as a winding-down grey".
+        // It never did on any Gateway-backed screen - the fold has never read the field - and under the
+        // ruling it never will: a flagged session that needs the user is still RED "Needs you", and a
+        // flagged session that is working is still BLUE. The grey was a promise no code kept, which is
+        // exactly how a lying comment becomes the next agent's specification.
+        var needsUser = new SessionDto { SessionId = "d", ActivityState = "WaitingForInput", PendingDeletion = true };
+        var working = new SessionDto { SessionId = "d", ActivityState = "Working", PendingDeletion = true };
+
+        Assert.Equal("red", SessionOrdering.EffectiveColor(needsUser));
+        Assert.Equal("Needs you", SessionOrdering.StateLabel(needsUser));
+        Assert.Equal("blue", SessionOrdering.EffectiveColor(working));
+        Assert.Equal("Working", SessionOrdering.StateLabel(working));
     }
 
     [Fact]
