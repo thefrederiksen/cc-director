@@ -401,7 +401,7 @@ internal static class ControlEndpoints
 
             try
             {
-                var resp = await gw.SendPromptToFleetAsync(req.ToSessionId, framed, ct);
+                var resp = await gw.SendPromptToFleetAsync(req.ToSessionId, framed, ct: ct);
                 return Results.Json(new FleetSendResponse
                 {
                     Accepted = resp.Accepted,
@@ -702,7 +702,9 @@ internal static class ControlEndpoints
                     statusCode: StatusCodes.Status404NotFound);
             try
             {
-                await gw.SendPromptToFleetAsync(req.ToSessionId, req.Text, ct);
+                // AppendEnter travels with the prompt: the local path above honors it, and a target on
+                // another Director must not behave differently just for being there.
+                await gw.SendPromptToFleetAsync(req.ToSessionId, req.Text, appendEnter: req.AppendEnter, ct: ct);
                 return Results.Json(new { accepted = true, sessionId = req.ToSessionId });
             }
             catch (Exception ex)
