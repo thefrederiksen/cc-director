@@ -743,9 +743,34 @@ until the quality-assurance report.
   submission and turn-end stamping would attribute a real turn to the alias. That ordering is a
   question to answer with evidence, not reasoning, when the phase starts.
 
+  **Update, same day: the aliasing half was fixed at the producer before merge, and it was real.**
+  Session 60ffd96b checked the ordering in code rather than reasoning about it and found the window
+  was live: the bucket increments at *submission* (`InputStats.RecordTurn`, `Session.cs:2031` on
+  `origin/main`, inside `SendTextAsync` - "a SendTextAsync is always a submitted turn"), while the
+  model stamp was at turn-*end*. A poll landing between them paired `opus[1m]` with a non-zero
+  delta. Their fix makes the producer records-only, so it never reports a launch alias and only
+  concrete recorded ids reach the wire. That is the right trade: an unknown that is visibly unknown
+  beats a wrong id that looks real and splits silently.
+
+  **The consequence that fix creates, which the model phase must handle and must not wave through.**
+  Records-only means a fresh session reports **null** until its first turn-end - and because the
+  bucket increments at submission, *every session's first turn folds with no model*. The producer's
+  authors say this is "the same as pre-dimension turns". **It is not, and the difference is exactly
+  the honesty problem `_agentsSinceUtc` exists to prevent.** Pre-dimension turns are a fixed
+  historical set that stops growing. Fresh-session first turns are an ongoing null that grows by one
+  per session forever, *after* the since-stamp date. Put them in one bucket and the page tells the
+  owner "model data starts at date X" while the unknown bucket keeps growing after X, and nobody can
+  tell "unknown because it is old" from "unknown because we had not stamped it yet".
+
+  This design already separates them, and the phase must keep it that way: pre-dimension turns live
+  in the **baseline** tables and carry no model at all, while post-cutover turns of unknown model are
+  **`stat_delta` rows with a null model id**. Three display states, not two: predates the dimension,
+  unknown at fold time, and a concrete model. Merging the first two would be the `_agentsSinceUtc`
+  mistake with a new coat of paint.
+
   So the model dimension needs its own design pass covering: the identity table, a since-stamp in
-  the `_agentsSinceUtc` mould, and an explicit owner decision on whether an alias and its concrete
-  id are one model or two. It is a phase, not a column.
+  the `_agentsSinceUtc` mould, the three-state null handling above, and the accepted one-turn lag on
+  a mid-session model switch. It is a phase, not a column.
 - **The Repos page splits the same repository across path-separator spellings.** Measured
   2026-07-15: `D:\ReposFred\devthrottle` (324 turns) and `D:/ReposFred/devthrottle` (21 turns) are
   two rows, as are two spellings each of `cc-consult` and `mw-enrich-facade-impl` - 20 rows where
