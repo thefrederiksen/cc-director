@@ -378,13 +378,30 @@ into its own baseline table. No historical `stat_delta` rows are synthesized, ev
 number is then baseline plus post-cutover rows, which is exact by construction and matches the
 existing `_agentsSinceUtc` precedent for a dimension that starts partway through.
 
-**Import all eight sections of `StoreFile`. Not six. This is stated as a count because the count is
-how the omission was caught.** The persisted document has exactly eight sections
-(`GatewayInputStatsAggregator.cs:448-457`): `Totals`, `HighWater`, `Hourly`, `WingmanTurns`,
-`WingmanSessions`, `Repos`, `Agents`, and `AgentsSinceUtc`. Revisions 1 through 3 of this brief
-listed six of them and silently dropped `HighWater` and `AgentsSinceUtc`. The Manager caught it
-before any code was written. What that omission would have cost, measured on the owner's real store
-on 2026-07-15:
+**Import EVERY section of `StoreFile`. Do not trust any count - including one written in this
+document.**
+
+Revision 4 of this brief said: "Import all eight sections of `StoreFile`. Not six. This is stated as
+a count because the count is how the omission was caught." Within hours that sentence was false.
+Pull request #1647 landed on `origin/main` and `StoreFile` gained three more sections -
+`AgentDrivenTurns`, `AgentDrivenCharacters`, and `AgentDrivenHighWater`. **Eleven, not eight.** The
+count was written *as the defence against dropping a section*, and the count itself went stale and
+became the defect. A number in a document cannot defend a schema that moves.
+
+So the requirement is structural, not numeric: **a test must reflect over `StoreFile`'s properties
+and assert that the import handles every one of them.** When someone adds a twelfth section, that
+test fails until the import covers it. Nobody has to remember a number, notice a pull request, or
+re-read this brief. This is the same move as the surrogate id and it is made for the same reason -
+prefer the design where the mistake is impossible over the design where it is merely avoided, and
+this is squarely a *silent* failure whose cost is the owner's data, which is where the principle
+says to spend.
+
+The count is deliberately not restated here. If you want to know how many sections there are, read
+`StoreFile`. If you want to know that the import covers them, run the test.
+
+The omission that started this is still worth recording, because it is what a dropped section costs.
+Revisions 1 through 3 listed six sections and silently dropped `HighWater` and `AgentsSinceUtc`. The
+Manager caught it before any code was written. Measured on the owner's real store on 2026-07-15:
 
 > All-time totals hold **1404** turns. `HighWater` holds **842** turns across **115** live
 > sessions. Start `session_highwater` empty and the very first `GET /sessions` poll refolds every
@@ -484,6 +501,27 @@ reviewer before it is committed. Per the owner's instruction for this mission, p
   tables, the one-time baseline import with its parity check, and `GatewayInputStatsAggregator`
   rewritten onto it. This is the proof: the largest, worst-behaved store, ported with its numbers
   intact.
+
+  **Phase 1 got bigger on 2026-07-15 and this brief is not pretending otherwise.** Pull request
+  #1647 landed mid-mission and added 211 lines to the aggregator, fixing real defects: real Codex
+  turns were locked out, restored sessions lied about their agent, and agent-to-agent turns were
+  never counted. Three consequences the port must handle, none of which the original design covers:
+
+  - `AgentDrivenHighWater` is a **second high-water lane**. `session_highwater` needs a
+    discriminator or a second table. It is not the same lane as the human buckets and must not be
+    merged into one.
+  - `FoldAgentDrivenLocked` folds **before** the empty-buckets guard, because a session driven only
+    by other agents has no human buckets at all. Under the row design as written such a session
+    produces **no `stat_delta` row**, so its turns would vanish. The fold must emit rows for the
+    agent-driven lane too, or this design silently drops exactly what #1647 just fixed.
+  - `_agentsSeeded` is an in-memory back-fill attributing a session's prior high-water turns to its
+    agent. It is **not** in `StoreFile`, so whether the port persists it changes behaviour across a
+    restart. Answer that with evidence, not taste.
+
+  **Do not "fix" anything #1647 does, including anything that looks wrong.** Same rule as the path
+  separators. A port that reverts a shipped bug fix is the worst outcome available to this mission -
+  worse than not shipping - because it would restore a defect the owner already saw fixed while
+  claiming the numbers were preserved.
 - **Phase 2 - The concurrency store.** `GatewaySessionConcurrencyStats` onto the same database,
   same import discipline. Restores the all-time peak that #1376 destroyed if the quarantined file
   is still on disk; if it is not, say so plainly rather than inventing a number.
@@ -587,8 +625,16 @@ code that has never been asked a question.
 6. Regression tests pin the baseline import, on three legs:
 
    (a) Given a **synthetic** fixture that is structurally faithful to a real store, every imported
-   value matches the value the fixture reported - across **all eight** `StoreFile` sections, not
-   only the ones `/stats/data` exposes.
+   value matches the value the fixture reported - across **every** `StoreFile` section, not only the
+   ones `/stats/data` exposes.
+
+   **This leg must include a reflection test that enumerates `StoreFile`'s properties and fails if
+   the import does not handle one of them.** Not a list of sections written by hand, and not a
+   count: the test reads the type. `StoreFile` grew from eight sections to eleven during this
+   mission's own review (#1647), which is exactly how a hand-written list rots. A future section
+   added by someone who has never read this document must break this test, or the import will
+   silently drop it and the parity check will pass green - because parity only compares what the
+   fixture and the import both know about, and neither knows about a section nobody handled.
 
    **The fixture must be synthetic. Never commit the owner's real store.** Earlier revisions said
    "a real JSON store as a fixture", which was dangerous and nearly shipped:
