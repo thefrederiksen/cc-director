@@ -20,8 +20,14 @@ export function VoiceMode() {
   // The roster hands the known voice-mode state on navigation (issue #1015), so the screen renders
   // the right state on the FIRST paint instead of flashing OFF while its first poll resolves. Read it
   // from the router here and pass it into the hook - the shared hook stays router-free.
+  //
+  // switchOn arrives from "Switch to voice mode" in the Chat/Terminal overflow menu (SessionAppBar):
+  // that menu item navigates here and asks the hook to run its own onSwitchOn, so the one place that
+  // knows how to enter voice mode stays the one place that does it.
   const location = useLocation();
-  const seededVoiceOn = (location.state as { voiceMode?: boolean } | null)?.voiceMode;
+  const navState = location.state as { voiceMode?: boolean; switchOn?: boolean } | null;
+  const seededVoiceOn = navState?.voiceMode;
+  const autoSwitchOn = navState?.switchOn;
 
   const {
     voiceOn,
@@ -59,7 +65,7 @@ export function VoiceMode() {
     onTogglePlay,
     onRespondSend,
     onRespondSendAudio,
-  } = useVoiceMode(sessionId, { seededVoiceOn });
+  } = useVoiceMode(sessionId, { seededVoiceOn, autoSwitchOn });
 
   // Snooze and Remove share this one live held-state, so the bottom bar and the overflow menu can
   // never disagree about it.

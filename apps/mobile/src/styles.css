@@ -2113,31 +2113,42 @@ a.banner-btn {
    destructive Remove were the same size and colour, sitting directly under the Voice mode tab -
    which is how Remove got mis-tapped.
 
-   Layout, and why it is two rows: the top-right corner is NOT ours. The network pill (.net-pill) is
-   mounted globally and is position: fixed, top-right, and its width changes with its label ("Fast" /
-   "Warming up" / "Direct LAN"). So:
+   Layout, and why it is two rows:
 
-     row 1:  [<- Sessions] [...]            <- controls left; the right is left free for the pill
-     row 2:  the session name, full width   <- sits BELOW the pill, so nothing can cover it
+     row 1:  [<- Sessions] .................... [...]      navigation left, overflow menu right
+     row 2:  102 devthrottle / f9e7 ..... ( o Fast )       name flexes; the indicator rides the end
 
-   Putting the controls on the left means no code has to guess how wide the pill is. The name used to
-   share row 1 and run underneath the pill; giving it its own row is what makes a real session name
-   ("102 Ghost Directors from tests") readable instead of "102 M...". */
+   The corner belongs to the CONTROL, not the indicator. This bar used to put the menu button on the
+   LEFT because the network pill was position:fixed in the top-right and nothing wanted to guess how
+   wide it was ("Fast" / "Warming up" / "Direct LAN"). That broke the menu outright: .session-menu is
+   anchored right:0, which is correct for a button on the right, so hanging it off a LEFT button opened
+   it off the left edge of the screen - about half of it was unreadable. The pill is now an ordinary
+   inline item on row 2 (.net-pill-inline; the fixed one stands down on session screens), so the button
+   is back in the corner and its menu opens inward. Both rows are plain flex - nothing guesses widths.
+
+   The name keeps its own row: between the two controls there was never enough of row 1 left for a real
+   session name ("102 Ghost Directors from tests" collapsed to "102 M..."). Sharing row 2 with the pill
+   costs it only the pill's width, and .term-title already flexes and ellipsizes. */
 .session-app-bar {
   gap: 8px;
 }
 
-/* Pushes nothing - it just claims the empty right end of row 1 where the fixed pill sits. */
+/* Claims the middle of row 1, so the menu button is pushed to the right edge. Guesses nothing - it
+   takes whatever is left between the back button and the menu button. */
 .session-bar-spacer {
   flex: 1 1 auto;
   min-width: 0;
 }
 
-
-/* Row two: the session name, full width, nothing overlapping it. */
-.session-title {
-  flex: 0 0 auto;
+/* Row two: the session name, flexing, with the network pill parked at its end. */
+.session-title-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
   padding: 6px 2px 2px;
+}
+
+.session-title {
   font-size: 17px;
 }
 
@@ -2793,6 +2804,17 @@ a.banner-btn {
   text-decoration: none;
   line-height: 1;
 }
+/* The session screens give the pill a real home on their title row instead of letting it hold the
+   top-right corner (which cost the overflow menu its corner, and broke that menu - see .session-app-bar).
+   Declared AFTER .net-pill so it wins on position/inset at equal specificity. */
+.net-pill-inline {
+  position: static;
+  top: auto;
+  right: auto;
+  z-index: auto;
+  flex: 0 0 auto;
+}
+
 .net-pill-dot {
   width: 8px;
   height: 8px;

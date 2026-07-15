@@ -92,7 +92,7 @@ export function Terminal() {
     <div className="terminal-screen">
       {/* Snooze is in the overflow here: this screen's bottom belongs to the composer and the key
           rows, so there is no thumb-zone room for it (Voice mode, which has room, keeps it one tap). */}
-      <SessionAppBar title={name ?? "Session"} manage={manage} showSnooze />
+      <SessionAppBar title={name ?? "Session"} manage={manage} showSnooze showSwitchToVoice />
 
       <ViewTabs sessionId={sessionId} active="terminal" />
 

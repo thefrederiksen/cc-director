@@ -13,6 +13,7 @@ import {
 import { backgroundTranscribeAndSend, type CapturedUtterance } from "../dictation/backgroundSend";
 import { ensureClip, getClipState, getVoiceMeta, saveVoiceMeta, stopPlayback, useVoiceClips, type ClipPhase } from "./clips";
 import { positionFor, saveMark, wasAutoPlayed } from "./playbackPositions";
+import { isAudioUnavailable } from "./voiceAvailability";
 import { isWorking } from "../sessions/ordering";
 
 // Session Voice mode (issue #850): the hands-free Wingman narration screen, the third session view
@@ -123,13 +124,21 @@ export interface VoiceModeView {
   onRespondSendAudio: (captured: CapturedUtterance) => void;
 }
 
-export function useVoiceMode(sessionId: string | undefined, opts?: { seededVoiceOn?: boolean }): VoiceModeView {
+export function useVoiceMode(
+  sessionId: string | undefined,
+  opts?: { seededVoiceOn?: boolean; autoSwitchOn?: boolean },
+): VoiceModeView {
   const sid = sessionId ?? "";
 
   // The roster hands the known voice-mode state on navigation (issue #1015), so the screen renders
   // the right state on the FIRST paint instead of flashing OFF while its first poll resolves. The
   // view reads this seed from its router location and passes it in - the hook stays router-free.
   const seededVoiceOn = opts?.seededVoiceOn;
+  // Arriving from "Switch to voice mode" in another screen's overflow menu: turn voice on for this
+  // session on arrival, so the menu item does the whole job. The menu deliberately does NOT make those
+  // calls itself - onSwitchOn below is the ONE implementation of that verb, and a second copy in a menu
+  // handler would be free to drift from it.
+  const autoSwitchOn = opts?.autoSwitchOn;
 
   const [name, setName] = useState<string | null>(null);
   const [session, setSession] = useState<SessionDto | null>(null);
@@ -138,7 +147,20 @@ export function useVoiceMode(sessionId: string | undefined, opts?: { seededVoice
   const [error, setError] = useState<string | null>(null);
   // Whether a real poll has resolved the true state yet. Until it has, we never paint the OFF card -
   // the screen starts blank (or ON when the roster seeded it) and only shows OFF once confirmed.
+  // NOTE: this is knowledge of the SESSION only. It says nothing about the voice - it is set as soon
+  // as listSessions resolves, while the getWingmanVoice call below has not even been made yet. The
+  // unavailable verdict used to read it as if it meant both, which is why the screen announced "no
+  // narration" and then played the narration; voiceKnown is the fact it actually needed.
   const [pollDone, setPollDone] = useState(false);
+  // Whether the getWingmanVoice fetch has RESOLVED for this session - i.e. we have actually asked
+  // about the voice and been answered. Only then may the screen say voice is unavailable.
+  const [voiceKnown, setVoiceKnown] = useState(false);
+
+  // A different session is a different question: forget what we knew about the last one's voice, so
+  // its answer can never be used to declare THIS session's narration missing.
+  useEffect(() => {
+    setVoiceKnown(false);
+  }, [sid]);
 
   // Optimistic "this session is now a voice session" the instant Switch is tapped, so the screen
   // moves to the working state immediately (responsive UI) before the roster reflects voiceMode.
@@ -233,6 +255,7 @@ export function useVoiceMode(sessionId: string | undefined, opts?: { seededVoice
 
         const v = await getWingmanVoice(sid, signal);
         setVoice((prev) => (sameVoice(prev, v) ? prev : v));
+        setVoiceKnown(true); // we have now ASKED about the voice, so a "no narration" verdict is allowed
         saveVoiceMeta(sid, v); // keep the cached state + text fresh for the next instant entry (#1015)
         // Kick the phone-side download the moment a (new) clip is ready on the Gateway.
         if (v.ready && v.generatedAt) void ensureClip(sid, v.generatedAt);
@@ -315,6 +338,10 @@ export function useVoiceMode(sessionId: string | undefined, opts?: { seededVoice
     setEnabling(true);
     setError(null);
     setLocalEnabled(true); // show the working screen immediately (responsive UI)
+    // Voice was just switched on, so nothing has asked about THIS session's narration yet. Without
+    // this the old answer ("off", hence no voice) survived the switch and the screen flashed the red
+    // unavailable banner over the top of the narration it had just asked the Gateway to make.
+    setVoiceKnown(false);
     try {
       // Two steps, matching the native phone app's enter-voice flow: first mark the session a Voice
       // session on the owning Director (ViewMode=Voice) so SessionDto.VoiceMode flips true and the
@@ -347,6 +374,7 @@ export function useVoiceMode(sessionId: string | undefined, opts?: { seededVoice
     stopPlayback(); // stop any roster clip too
     setLocalEnabled(false);
     setVoice(null);
+    setVoiceKnown(false);
     setEnableNote("");
     setSession((prev) => (prev ? { ...prev, voiceMode: false } : prev));
     restoredForRef.current = "";
@@ -542,17 +570,38 @@ export function useVoiceMode(sessionId: string | undefined, opts?: { seededVoice
   const gatewayPreparing = voiceOn && !speaking && !agentWorking && Boolean(session?.voiceGenerating);
   const phoneDownloadPending =
     voiceOn && !speaking && !agentWorking && Boolean(session?.voiceAudioReady) && clip.phase !== "error";
-  const audioUnavailable =
-    voiceOn
-    && pollDone
-    && !speaking
-    && !agentWorking
-    && !gatewayPreparing
-    && !phoneDownloadPending
-    && enableNote.length === 0;
+  // "Voice unavailable" is a POSITIVE finding - something looked and reported no narration - never the
+  // gap left when no other state matched. The rule and the two windows it closes are documented in
+  // voiceAvailability.ts; the short version is that this screen used to say "no narration is ready to
+  // play" while it was still fetching the answer, and then play the narration. Notably clipDownloading
+  // asks THIS PHONE what it holds, where phoneDownloadPending only relays what the GATEWAY holds.
+  const audioUnavailable = isAudioUnavailable({
+    voiceOn,
+    sessionKnown: pollDone,
+    voiceKnown,
+    speaking,
+    agentWorking,
+    gatewayPreparing,
+    phoneDownloadPending,
+    clipDownloading: clip.phase === "downloading",
+    hasEnableNote: enableNote.length > 0,
+  });
   const working = voiceOn && !speaking && !audioUnavailable;
   const narrative = voice?.spoken ?? "";
   const title = session?.number ? `${session.number} ${name ?? "Session"}` : name ?? "Session";
+
+  // "Switch to voice mode" from another screen's overflow menu navigated here asking for voice ON.
+  // Run the screen's own onSwitchOn exactly once, and only once a poll has told us the session is not
+  // already a voice session - so arriving at a session that is ALREADY in voice mode is a no-op rather
+  // than a pointless re-narration of the turn you came to listen to.
+  const autoSwitchedRef = useRef(false);
+  useEffect(() => {
+    if (autoSwitchOn !== true || autoSwitchedRef.current) return;
+    if (!pollDone) return; // we do not know yet whether it is already on; the next tick decides
+    autoSwitchedRef.current = true;
+    if (voiceOn) return;
+    void onSwitchOn();
+  }, [autoSwitchOn, pollDone, voiceOn, onSwitchOn]);
 
   // WHY voice is unavailable, straight from the Gateway. This field has been arriving on every poll and
   // being thrown away: it had ZERO readers, while the screens hardcoded a guess ("the Gateway has not
