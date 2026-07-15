@@ -67,9 +67,19 @@ public static class CcStorage
         return Path.Combine(Config(), "director", "instances");
     }
 
-    /// <summary>Generated files: PDFs, reports, transcripts, exports.</summary>
+    /// <summary>
+    /// Generated files: PDFs, reports, transcripts, exports. Lives in the user's Documents folder by
+    /// design - these are files the user opens - but honors CC_DIRECTOR_ROOT when set so a test that
+    /// pins the root cannot write into the real Documents\cc-director. The product never sets the root,
+    /// so its location is unchanged. Same fix already applied to <see cref="Bin"/> and
+    /// <see cref="Screenshots"/>; this was the last path here that ignored the override.
+    /// </summary>
     public static string Output()
     {
+        var overrideRoot = Environment.GetEnvironmentVariable("CC_DIRECTOR_ROOT");
+        if (!string.IsNullOrEmpty(overrideRoot))
+            return Path.Combine(overrideRoot, "output");
+
         var docs = Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments);
         return Path.Combine(docs, "cc-director");
     }
