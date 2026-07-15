@@ -1,5 +1,6 @@
 using System.Text.Json;
 using CcDirector.Core.Configuration;
+using CcDirector.Core.History;
 using CcDirector.Core.Sessions;
 using CcDirector.Core.Storage;
 using CcDirector.Core.Tests.Wingman; // BufferOnlyBackend (internal test stub)
@@ -386,5 +387,67 @@ public sealed class ConversationIngestorTests : IDisposable
         await ingestor.IngestAsync(session);
 
         Assert.True(Assert.Single(Pushed).TimestampFromAgent);
+    }
+
+    // ===== the watermark must survive a RESTART - the one case it exists for =====
+    //
+    // Every dedupe test above runs in a single process, which is precisely where the watermark cannot
+    // fail: .NET randomizes string.GetHashCode()'s seed per process, so a key built from it is stable
+    // for exactly as long as the process lives - and the file outlives the process. The two tests below
+    // are the only ones that cross that boundary, so they are the only ones that can catch it.
+    //
+    // The expected hashes here were computed OUTSIDE this codebase (python hashlib.sha256) so they
+    // anchor to the standard algorithm rather than recording whatever our own implementation emits - a
+    // golden that echoes the code it guards proves nothing.
+
+    /// <summary>SHA-256 of "restart must not re-push this", first 32 hex characters.</summary>
+    private const string HashOfRestartMessage = "835a674409124218ea244c65a37c8028";
+
+    /// <summary>SHA-256 of "an old reply", first 32 hex characters.</summary>
+    private const string HashOfOldReply = "69a9d10430492b3eba43929f72617200";
+
+    [Fact]
+    public async Task A_watermark_from_a_previous_process_still_dedupes_after_a_restart()
+    {
+        var session = NewSession();
+        var ts = new DateTime(2026, 7, 15, 12, 0, 0, DateTimeKind.Utc);
+        const string text = "restart must not re-push this";
+        WriteTranscript(session, UserLine(text, ts));
+
+        // A watermark file left behind by an EARLIER Director process - hand-written here with keys
+        // this process never computed, which is exactly what a real restart reads off disk.
+        var scope = SessionHistoryReader.ResolveTranscriptPath(session)!;
+        var key = $"{ts:O}|{(int)ConversationRole.User}|{HashOfRestartMessage}";
+        File.WriteAllText(
+            Path.Combine(_root, "prompt-ingest-state.json"),
+            JsonSerializer.Serialize(new Dictionary<string, HashSet<string>> { [scope] = new() { key } }));
+
+        // Constructing the ingestor loads that file: this IS the restart.
+        using var ingestor = NewIngestor();
+        await ingestor.IngestAsync(session);
+
+        // The message was already handed to the Gateway before the restart. Pushing it again means the
+        // Gateway's prompt log - which appends blindly and never dedupes - grows a duplicate copy of the
+        // whole conversation on every single Director restart.
+        Assert.Empty(Pushed);
+    }
+
+    [Fact]
+    public void The_persisted_key_is_a_content_hash_that_any_process_computes_identically()
+    {
+        var ts = new DateTime(2026, 7, 15, 12, 0, 0, DateTimeKind.Utc);
+
+        var state = new IngestState();
+        state.MarkWritten("some-scope", ts, ConversationRole.Assistant, "an old reply", tsFromAgent: true);
+        state.Save();
+
+        var written = JsonSerializer.Deserialize<Dictionary<string, HashSet<string>>>(
+            File.ReadAllText(Path.Combine(_root, "prompt-ingest-state.json")))!;
+
+        // The on-disk format is a contract with every FUTURE process that reads this file, so the key
+        // must be a pure function of the message's content. A per-process value - string.GetHashCode()
+        // being the obvious one - is unreadable by the process that comes next.
+        var expected = $"{ts:O}|{(int)ConversationRole.Assistant}|{HashOfOldReply}";
+        Assert.Equal(expected, Assert.Single(written["some-scope"]));
     }
 }

@@ -1,4 +1,6 @@
 using System.Collections.Concurrent;
+using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 using CcDirector.Core.Agents;
 using CcDirector.Core.Gemini;
@@ -300,6 +302,10 @@ public interface IPromptSink
 /// This is a watermark, not a log: it holds hashes and never text. The Director keeps no copy of the
 /// conversation; this only records what it has already handed to the Gateway, so a restart cannot
 /// re-push a whole history.
+///
+/// Because the file outlives the process, every key written into it must be computable identically by
+/// the NEXT process - see <see cref="ContentHash"/>. Anything seeded per process reads as a miss after
+/// a restart, which is the one failure this file exists to prevent.
 /// </summary>
 internal sealed class IngestState
 {
@@ -314,8 +320,21 @@ internal sealed class IngestState
         // so its key must not include the time or nothing would ever dedupe. Text + role is what we
         // genuinely have for those agents.
         var timePart = tsFromAgent ? ts.ToString("O") : "no-ts";
-        return $"{timePart}|{(int)role}|{text.GetHashCode()}";
+        return $"{timePart}|{(int)role}|{ContentHash(text)}";
     }
+
+    /// <summary>
+    /// A hash of the text that is the SAME in every process, forever. This MUST NOT be
+    /// <c>string.GetHashCode()</c>: .NET randomizes its seed per process, so keys built from it stop
+    /// matching the moment the Director restarts - every recomputed key misses, AlreadyWritten answers
+    /// false for everything, and the first turn end after startup re-pushes the entire conversation
+    /// history into a Gateway log that appends blindly and never dedupes.
+    ///
+    /// Truncated to 128 bits: this only needs to tell two messages apart within one source, and the key
+    /// already carries the timestamp and role.
+    /// </summary>
+    private static string ContentHash(string text)
+        => Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(text)))[..32].ToLowerInvariant();
 
     public bool AlreadyWritten(string scope, DateTime ts, ConversationRole role, string text, bool tsFromAgent)
     {
