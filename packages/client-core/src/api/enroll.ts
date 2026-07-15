@@ -9,6 +9,25 @@
 import { GatewayError } from "./client";
 
 /**
+ * The Gateway answers POST /m/enroll with 409 when THE GATEWAY ITSELF is not signed in to a DevThrottle
+ * account, so it has no account to enroll this device onto.
+ *
+ * This is not really a failure - on a fresh install it is the expected state - and it is the one
+ * enrollment outcome the person can fix themselves, by signing the Gateway in. Callers must therefore be
+ * able to tell it apart from a genuine error (403 wrong account, 502 cloud unreachable) and offer that
+ * action instead of a "try again" that would fail identically.
+ */
+export const GATEWAY_NOT_SIGNED_IN = 409;
+
+/**
+ * Whether an enrollment failure is "the GATEWAY is not signed in" (as opposed to the person not being
+ * signed in, which is a different thing entirely - see GATEWAY_NOT_SIGNED_IN).
+ */
+export function isGatewayNotSignedIn(err: unknown): err is GatewayError {
+  return err instanceof GatewayError && err.status === GATEWAY_NOT_SIGNED_IN;
+}
+
+/**
  * Exchange the cloud device key for a local Gateway device key.
  * @returns the local per-device key the app must store and send as its Bearer.
  * @throws GatewayError on any non-2xx, carrying the server's reason (403 = not on this Gateway's
