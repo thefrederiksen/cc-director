@@ -56,6 +56,79 @@ public sealed class GatewayTranscriptionServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task TranscribeAsync_Success_KEEPSTheAudio()
+    {
+        // THE regression. The old desktop net saved the clip then deleted it the moment the words were
+        // delivered, so it caught a transcription that FAILED but never one that LIED - a truncated
+        // transcript is a "success", and its audio was deleted seconds later. A real turn came back with
+        // 7 words out of a full 18-second recording and there was nothing left to play. Success is
+        // exactly the case that must keep the audio.
+        TranscriptionModeConfig.Set(TranscriptionMode.DevThrottle);
+        new KeyVault(_vaultPath).Set(TranscriptionEndpointResolver.DevThrottleKeyName, "dt_live_abc");
+
+        var archiveDir = Path.Combine(_root, "archive");
+        var service = new GatewayTranscriptionService(
+            new KeyVault(_vaultPath),
+            http: new HttpClient(new StatusHandler(HttpStatusCode.OK, "{\"text\":\"only the first sentence\"}")),
+            audioArchive: new TranscriptionAudioArchive(archiveDir));
+
+        var audio = Enumerable.Repeat((byte)0x42, 512).ToArray();
+        var result = await service.TranscribeAsync(audio, "clip.wav", "audio/wav", applyCorrection: false, default);
+
+        Assert.Equal(TranscriptionOutcome.Ok, result.Outcome);
+        var archived = Directory.GetFiles(archiveDir, "turn-*.wav");
+        var file = Assert.Single(archived);
+        Assert.Equal(audio, File.ReadAllBytes(file));
+    }
+
+    [Fact]
+    public async Task TranscribeAsync_ArchivedClipIsNamedForTheTelemetryTurnId()
+    {
+        // The clip is only useful if a suspicious transcript line leads to it. Both the telemetry record
+        // and the file are keyed by the same turn id, so the log IS the index.
+        TranscriptionModeConfig.Set(TranscriptionMode.DevThrottle);
+        new KeyVault(_vaultPath).Set(TranscriptionEndpointResolver.DevThrottleKeyName, "dt_live_abc");
+
+        var archiveDir = Path.Combine(_root, "archive");
+        var telemetryDir = Path.Combine(_root, "telemetry");
+        var service = new GatewayTranscriptionService(
+            new KeyVault(_vaultPath),
+            http: new HttpClient(new StatusHandler(HttpStatusCode.OK, "{\"text\":\"hello\"}")),
+            telemetry: new TranscriptionTelemetryLog(telemetryDir),
+            audioArchive: new TranscriptionAudioArchive(archiveDir));
+
+        await service.TranscribeAsync(
+            Enumerable.Repeat((byte)0x42, 512).ToArray(), "clip.wav", "audio/wav", applyCorrection: false, default);
+
+        var line = Assert.Single(File.ReadAllLines(Directory.GetFiles(telemetryDir, "*.jsonl").Single()));
+        using var doc = System.Text.Json.JsonDocument.Parse(line);
+        var loggedTurnId = doc.RootElement.GetProperty("turnId").GetString();
+        Assert.NotNull(loggedTurnId);
+        Assert.True(File.Exists(Path.Combine(archiveDir, $"turn-{loggedTurnId}.wav")));
+    }
+
+    [Fact]
+    public async Task TranscribeAsync_ProviderFails_StillKeepsTheAudio()
+    {
+        // The clip is archived BEFORE the attempt, so a provider failure cannot lose the only copy of
+        // what was said either.
+        TranscriptionModeConfig.Set(TranscriptionMode.DevThrottle);
+        new KeyVault(_vaultPath).Set(TranscriptionEndpointResolver.DevThrottleKeyName, "dt_live_abc");
+
+        var archiveDir = Path.Combine(_root, "archive");
+        var body = "{\"error\":{\"code\":\"insufficient_credits\",\"message\":\"no credits\"}}";
+        var service = new GatewayTranscriptionService(
+            new KeyVault(_vaultPath),
+            http: new HttpClient(new StatusHandler(HttpStatusCode.PaymentRequired, body)),
+            audioArchive: new TranscriptionAudioArchive(archiveDir));
+
+        var audio = Enumerable.Repeat((byte)0x42, 512).ToArray();
+        await service.TranscribeAsync(audio, "clip.wav", "audio/wav", applyCorrection: false, default);
+
+        Assert.Single(Directory.GetFiles(archiveDir, "turn-*.wav"));
+    }
+
+    [Fact]
     public async Task TranscribeAsync_ProviderReturns402_YieldsOutOfCreditsOutcome()
     {
         // Issue #885: a 402 insufficient_credits from the hosted service becomes a distinct

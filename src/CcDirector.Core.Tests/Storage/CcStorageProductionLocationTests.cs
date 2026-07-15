@@ -59,6 +59,7 @@ public sealed class CcStorageProductionLocationTests : IDisposable
             (CcStorage.Transcripts(), Local("transcripts"), nameof(CcStorage.Transcripts)),
             (CcStorage.PromptLog(), Local("prompt-log"), nameof(CcStorage.PromptLog)),
             (CcStorage.TranscriptionLog(), Local("transcription-log"), nameof(CcStorage.TranscriptionLog)),
+            (CcStorage.TranscriptionAudio(), Local("transcription-audio"), nameof(CcStorage.TranscriptionAudio)),
             (CcStorage.TerminalCaptures(), Local("terminal-captures"), nameof(CcStorage.TerminalCaptures)),
             (CcStorage.WebView2Card(), Local("webview2-card"), nameof(CcStorage.WebView2Card)),
             (CcStorage.Bin(), Local("bin"), nameof(CcStorage.Bin)),
