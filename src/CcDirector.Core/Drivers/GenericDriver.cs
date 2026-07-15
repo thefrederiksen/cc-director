@@ -22,21 +22,26 @@ public sealed class GenericDriver : IAgentDriver
     private static readonly byte[] CtrlC = [0x03];
 
     private readonly IReadOnlyList<AgentSlashCommand> _slashCommands;
+    private readonly Func<string, string?>? _currentModelReader;
 
     public GenericDriver(
         AgentKind kind,
         IReadOnlyList<AgentSlashCommand>? slashCommands = null,
-        bool emitsContinuousIdleOutput = false)
+        bool emitsContinuousIdleOutput = false,
+        Func<string, string?>? currentModelReader = null)
     {
         Kind = kind;
         _slashCommands = slashCommands ?? [];
         EmitsContinuousIdleOutput = emitsContinuousIdleOutput;
+        _currentModelReader = currentModelReader;
     }
 
     public AgentKind Kind { get; }
 
     public DriverCapabilities Capabilities =>
-        DriverCapabilities.Cancel | DriverCapabilities.Interrupt;
+        DriverCapabilities.Cancel
+        | DriverCapabilities.Interrupt
+        | (_currentModelReader is not null ? DriverCapabilities.ModelReport : DriverCapabilities.None);
 
     /// <summary>
     /// Set true for Grok: its idle terminal keeps repainting an animated footer (spinner +
@@ -96,4 +101,17 @@ public sealed class GenericDriver : IAgentDriver
 
     public List<(string AgentSessionId, DateTime LastWriteUtc)> ListTranscripts(string workingDirectory) =>
         throw new NotSupportedException($"[GenericDriver] {Kind} has no verified transcript format.");
+
+    /// <summary>The model the tool is currently using (capability
+    /// <see cref="DriverCapabilities.ModelReport"/>), via the per-kind reader wired in
+    /// <see cref="AgentDrivers"/> - a live-verified store read keyed by the working directory
+    /// (issue #1637). A kind without a wired reader does not declare the capability and throws,
+    /// same contract as every other undeclared verb here.</summary>
+    public string? ReadCurrentModel(string agentSessionId, string workingDirectory, string? launchArgs)
+    {
+        if (_currentModelReader is null)
+            throw new NotSupportedException(
+                $"[GenericDriver] {Kind} has no verified current-model store.");
+        return _currentModelReader(workingDirectory);
+    }
 }

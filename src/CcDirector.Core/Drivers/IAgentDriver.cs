@@ -48,6 +48,14 @@ public enum DriverCapabilities
     /// can answer the narrower question 'how full is the window right now'" - a driver may have one
     /// without the other.</summary>
     ContextUsage = 128,
+
+    /// <summary>The driver can report the model the tool is CURRENTLY using, read from the tool's
+    /// own records (transcript, rollout, event log, session store). Distinct from
+    /// <see cref="ModelSelection"/> (the tool takes a model flag at launch): the user can switch
+    /// models mid-session, so the launch flag goes stale - this capability answers "what model is
+    /// it really running right now", so the Director can log model usage per session (issue
+    /// #1637).</summary>
+    ModelReport = 256,
 }
 
 /// <summary>
@@ -147,6 +155,17 @@ public interface IAgentDriver
     ContextUsageDto? ReadContextUsage(string agentSessionId, string workingDirectory, string? launchArgs) =>
         throw new NotSupportedException(
             $"[{GetType().Name}] {Kind} does not declare DriverCapabilities.ContextUsage.");
+
+    /// <summary>The model the tool is currently using (capability
+    /// <see cref="DriverCapabilities.ModelReport"/>), read from the tool's own records - the LATEST
+    /// model the tool recorded, so a mid-session model switch is reflected. Null when it cannot be
+    /// determined yet (no turn has happened). <paramref name="launchArgs"/> is the session's launch
+    /// command line; a driver may use it as the pre-first-turn answer when its tool takes a model
+    /// flag. The default throws <see cref="NotSupportedException"/> so a driver that does not
+    /// declare the flag is honestly absent - never emulated.</summary>
+    string? ReadCurrentModel(string agentSessionId, string workingDirectory, string? launchArgs) =>
+        throw new NotSupportedException(
+            $"[{GetType().Name}] {Kind} does not declare DriverCapabilities.ModelReport.");
 
     /// <summary>The working directory's transcript files, newest first
     /// (capability TranscriptRead).</summary>

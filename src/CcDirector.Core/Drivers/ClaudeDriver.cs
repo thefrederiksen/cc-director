@@ -48,7 +48,8 @@ public sealed class ClaudeDriver : IAgentDriver
         | DriverCapabilities.TranscriptRead
         | DriverCapabilities.PreassignedSessionId
         | DriverCapabilities.ModelSelection
-        | DriverCapabilities.ContextUsage;
+        | DriverCapabilities.ContextUsage
+        | DriverCapabilities.ModelReport;
 
     public IReadOnlyList<AgentSlashCommand> SlashCommands => BuiltInSlashCommands.All
         .Select(command => new AgentSlashCommand(
@@ -242,6 +243,23 @@ public sealed class ClaudeDriver : IAgentDriver
             PercentUsed = percent,
             AsOfUtc = usage.LastMessageUtc,
         };
+    }
+
+    /// <summary>
+    /// The model this Claude session is currently using (capability
+    /// <see cref="DriverCapabilities.ModelReport"/>). The transcript is the truth: every assistant
+    /// line records <c>message.model</c> and the LATEST line wins, so a mid-session /model switch is
+    /// reflected. Before the first turn the transcript carries no model, so the <c>--model</c> value
+    /// from the launch arguments is the answer (it is the tool's real instruction until the first
+    /// turn proves the concrete id); null when neither exists (the tool's own default, id unknown
+    /// until the first turn).
+    /// </summary>
+    public string? ReadCurrentModel(string agentSessionId, string workingDirectory, string? launchArgs)
+    {
+        var usage = _transcripts.ReadUsage(agentSessionId, workingDirectory);
+        if (!string.IsNullOrWhiteSpace(usage?.ContextModel))
+            return usage.ContextModel;
+        return ExtractLaunchModelId(launchArgs);
     }
 
     /// <summary>Extracts the value passed after this driver's <see cref="ModelFlag"/> (<c>--model</c>)
