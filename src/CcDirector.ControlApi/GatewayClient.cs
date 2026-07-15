@@ -49,19 +49,9 @@ public sealed class GatewayClient : IGatewayHold, IDisposable
     // volatile: read by the fleet-relay one-off clients on other threads.
     private volatile string _activeUrl = "";
 
-    private Timer? _heartbeat;
     private CancellationTokenSource? _cts;
     private bool _registered;
     private bool _disposed;
-
-    // The endpoint the Gateway currently knows for this Director: set on every successful
-    // register POST ("" for a flagged no-endpoint registration), null while never registered.
-    // Issue #324: there is deliberately NO forever-cache of the MagicDNS name anymore - the
-    // identity is re-resolved on every register attempt and every heartbeat tick, so a
-    // Tailscale daemon that comes up (or goes away) after Director start heals/degrades the
-    // advertisement within one heartbeat cycle, no restart.
-    private volatile string? _advertisedEndpoint;
-    private int _reRegistering; // guard: never stack heartbeat-triggered re-registrations
 
     /// <summary>
     /// The plan-1A detection ladder (LocalAPI -> CLI -> config override). One instance per
@@ -707,8 +697,6 @@ public sealed class GatewayClient : IGatewayHold, IDisposable
 
         FileLog.Write($"[GatewayClient] StopAsync: directorId={_directorId}");
         try { _cts?.Cancel(); } catch { }
-        _heartbeat?.Dispose();
-        _heartbeat = null;
 
         if (_registered)
         {
@@ -730,7 +718,6 @@ public sealed class GatewayClient : IGatewayHold, IDisposable
         if (_disposed) return;
         _disposed = true;
         try { _cts?.Cancel(); } catch { }
-        _heartbeat?.Dispose();
         _cts?.Dispose();
         _http.Dispose();
     }
@@ -738,25 +725,12 @@ public sealed class GatewayClient : IGatewayHold, IDisposable
     // ===== Internals =====
 
     /// <summary>
-    /// Narrow the active gateway address to the first reachable candidate, then run the registration
-    /// loop (issue #1233). Selection only probes /healthz; a failure there is non-fatal - registration
-    /// still proceeds against the current active address and its backoff retries.
-    /// </summary>
-    private async Task SelectActiveUrlThenRegisterAsync(CancellationToken ct)
-    {
-        try { await SelectActiveUrlAsync(ct); }
-        catch (OperationCanceledException) { return; }
-        catch (Exception ex) { FileLog.Write($"[GatewayClient] candidate selection failed, using {_activeUrl}: {ex.Message}"); }
-        await RegisterLoop(ct);
-    }
-
-    /// <summary>
     /// Walk <see cref="GatewayConfig.CandidateUrls"/> in priority order (machine name, then Tailscale,
     /// then IP) and switch the active address to the first that answers GET /healthz (issue #1233).
-    /// Setting the shared client's base address here is safe: this runs before the first register
-    /// request. With a single candidate (older installs, or a manual override with no discovered
-    /// fallbacks) there is nothing to choose and the method is a no-op. When nothing answers yet, the
-    /// active address is left as-is so <see cref="RegisterLoop"/> still attempts it and retries.
+    /// Setting the shared client's base address here is safe: this runs before the first outbound call.
+    /// With a single candidate (older installs, or a manual override with no discovered fallbacks) there
+    /// is nothing to choose and the method is a no-op. When nothing answers yet the active address is
+    /// left as-is, so the on-demand Gateway calls still attempt it.
     /// Internal so the selection wiring is unit-tested through <see cref="ProbeGatewayCandidate"/>.
     /// </summary>
     internal async Task SelectActiveUrlAsync(CancellationToken ct)
@@ -797,131 +771,6 @@ public sealed class GatewayClient : IGatewayHold, IDisposable
         return await GatewayEndpointSelector.ProbeHealthzAsync(url, http, ct);
     }
 
-    private async Task RegisterLoop(CancellationToken ct)
-    {
-        var delay = TimeSpan.FromSeconds(2);
-        while (!ct.IsCancellationRequested && !_registered)
-        {
-            try
-            {
-                if (await TryRegisterAsync(ct))
-                {
-                    _registered = true;
-                    // The post-registration verify kick is gone with the handshake (tunnel-only): the
-                    // indicator's green is earned by the live tunnel, not by a callback the Gateway no
-                    // longer makes.
-                    return;
-                }
-            }
-            catch (Exception ex)
-            {
-                FileLog.Write($"[GatewayClient] Register attempt failed: {ex.Message}");
-                _monitor?.ReportRegistrationFailure($"Cannot reach the Gateway at {_activeUrl}: {ex.Message}");
-            }
-
-            try { await Task.Delay(delay, ct); }
-            catch (OperationCanceledException) { return; }
-
-            // Exponential backoff, capped at MaxBackoff - except while the tailnet identity
-            // itself is unresolved (issue #324): then the retry stays at heartbeat cadence so
-            // a Tailscale daemon that comes up is picked up within ~15s, not after a minute.
-            var capMs = _lastResolutionFailed ? HeartbeatInterval.TotalMilliseconds : MaxBackoff.TotalMilliseconds;
-            var nextMs = Math.Min(delay.TotalMilliseconds * 2, capMs);
-            delay = TimeSpan.FromMilliseconds(nextMs);
-        }
-    }
-
-    private async Task<bool> TryRegisterAsync(CancellationToken ct)
-    {
-        var req = BuildRegistrationRequest();
-        if (string.IsNullOrWhiteSpace(req.TailnetEndpoint))
-        {
-            // No tailnet identity resolved (issue #324). FAIL LOUDLY - an explicit monitor
-            // state (painted by the desktop indicator) plus a log line naming the fix - and
-            // still register, flagged unreachable, so the fleet can see this machine exists
-            // (an invisible Director is harder to diagnose remotely than a flagged one).
-            var reason = req.EndpointUnreachableReason
-                ?? "No tailnet identity resolved and no gateway.tailnetEndpoint override configured - start Tailscale on this machine or set the override.";
-            FileLog.Write($"[GatewayClient] TryRegisterAsync: NO TAILNET IDENTITY - {reason}");
-            _monitor?.ReportTailnetIdentityFailure(reason);
-
-            var flaggedResp = await _http.PostAsJsonAsync("directors/register", req, ct);
-            if (flaggedResp.IsSuccessStatusCode)
-            {
-                _advertisedEndpoint = "";
-                FileLog.Write($"[GatewayClient] Registered FLAGGED (no reachable endpoint): status={(int)flaggedResp.StatusCode}; heartbeat re-resolves identity every {HeartbeatInterval.TotalSeconds:F0}s");
-                return true;
-            }
-
-            // An old Gateway rejects the flagged shape (400 tailnetEndpoint required) - which
-            // truthfully preserves its old behavior. Keep the identity-failure state (the
-            // actionable, LOCAL truth) and let RegisterLoop retry at heartbeat cadence.
-            FileLog.Write($"[GatewayClient] Flagged register returned {(int)flaggedResp.StatusCode} {flaggedResp.ReasonPhrase} (Gateway predates issue #324 or refused); will retry");
-            return false;
-        }
-
-        FileLog.Write($"[GatewayClient] POST /directors/register: endpoint={req.TailnetEndpoint}");
-        var resp = await _http.PostAsJsonAsync("directors/register", req, ct);
-        if (resp.IsSuccessStatusCode)
-        {
-            _advertisedEndpoint = req.TailnetEndpoint;
-            FileLog.Write($"[GatewayClient] Registered: status={(int)resp.StatusCode}, endpoint={req.TailnetEndpoint}");
-            return true;
-        }
-
-        FileLog.Write($"[GatewayClient] Register returned {(int)resp.StatusCode} {resp.ReasonPhrase}");
-        _monitor?.ReportRegistrationFailure($"Gateway refused registration: HTTP {(int)resp.StatusCode} {resp.ReasonPhrase}");
-        return false;
-    }
-
-    private void HeartbeatTick()
-    {
-        if (_disposed || _cts is null || _cts.IsCancellationRequested) return;
-        _ = Task.Run(async () =>
-        {
-            try
-            {
-                if (!_registered)
-                {
-                    // Still trying to do the initial registration. Let RegisterLoop handle it.
-                    return;
-                }
-
-                // Issue #324: re-resolve the tailnet identity every cycle (no forever-cache).
-                // If the resolvable endpoint differs from what the Gateway knows - Tailscale
-                // came up after Director start, went away, or the MagicDNS name changed -
-                // re-register so the advertisement heals (or truthfully degrades) within one
-                // heartbeat, no restart.
-                MaybeReRegisterOnIdentityChange();
-
-                // The per-heartbeat verify kick is gone with the handshake (tunnel-only): the tunnel's
-                // own connected/reconnecting transitions drive the indicator now, within one cycle.
-
-                // The per-session state snapshot rides the heartbeat (issue #186): it lets
-                // the Gateway reconcile any doorbell ping it missed. Old Gateways ignore
-                // the body, so this is compatible in both directions.
-                var body = new DirectorHeartbeatRequest { Sessions = _sessionStates?.Invoke() ?? new List<SessionStateSnapshot>() };
-                var resp = await _http.PostAsJsonAsync($"directors/{_directorId}/heartbeat", body, _cts.Token);
-                if (resp.StatusCode == HttpStatusCode.Gone)
-                {
-                    // Gateway forgot about us (it restarted or swept us as stale).
-                    // Drop registered=false so the next call to RegisterLoop re-registers.
-                    FileLog.Write("[GatewayClient] Heartbeat returned 410 Gone, re-registering");
-                    _registered = false;
-                    _ = Task.Run(() => RegisterLoop(_cts.Token));
-                    return;
-                }
-                if (!resp.IsSuccessStatusCode)
-                    FileLog.Write($"[GatewayClient] Heartbeat returned {(int)resp.StatusCode} {resp.ReasonPhrase}");
-            }
-            catch (OperationCanceledException) { /* shutdown */ }
-            catch (Exception ex)
-            {
-                FileLog.Write($"[GatewayClient] Heartbeat FAILED: {ex.Message}");
-            }
-        });
-    }
-
     /// <summary>
     /// The turn-end doorbell (issue #186): announce THAT a session's mechanical state
     /// changed - {sessionId, newState}, nothing else. Issue #330 extends the same channel
@@ -954,40 +803,6 @@ public sealed class GatewayClient : IGatewayHold, IDisposable
             catch (Exception ex)
             {
                 FileLog.Write($"[GatewayClient] doorbell {sessionId} FAILED (dropped; heartbeat reconciles): {ex.Message}");
-            }
-        });
-    }
-
-    /// <summary>
-    /// Heartbeat-cycle identity re-resolution (issue #324): compare the freshly-resolved
-    /// endpoint against what the Gateway currently knows and re-register on any difference.
-    /// Runs the actual re-registration on a background task with a re-entrancy guard so a
-    /// slow verify-before-advertise never stacks registrations across ticks.
-    /// </summary>
-    private void MaybeReRegisterOnIdentityChange()
-    {
-        var resolution = ResolveAdvertisedEndpoint();
-        var current = resolution.IsResolved ? resolution.Endpoint : "";
-        if (string.Equals(current, _advertisedEndpoint, StringComparison.Ordinal)) return;
-
-        var cts = _cts;
-        if (cts is null || cts.IsCancellationRequested) return;
-        if (Interlocked.CompareExchange(ref _reRegistering, 1, 0) != 0) return;
-        _ = Task.Run(async () =>
-        {
-            try
-            {
-                FileLog.Write($"[GatewayClient] Tailnet identity changed: advertised='{_advertisedEndpoint}' resolved='{current}' - re-registering");
-                await TryRegisterAsync(cts.Token);
-            }
-            catch (OperationCanceledException) { /* shutdown */ }
-            catch (Exception ex)
-            {
-                FileLog.Write($"[GatewayClient] Identity-change re-register FAILED: {ex.Message}");
-            }
-            finally
-            {
-                Interlocked.Exchange(ref _reRegistering, 0);
             }
         });
     }
