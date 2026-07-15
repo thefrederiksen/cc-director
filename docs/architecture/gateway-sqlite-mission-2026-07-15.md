@@ -718,6 +718,34 @@ until the quality-assurance report.
   costs a schema change. What the mission delivers is that the change is a `PRAGMA user_version`
   migration that keeps the owner's numbers, instead of a shape change that quarantines the file and
   loses them. That is the whole point, and the model dimension will be its first real exercise.
+
+  **What the producer's own authors say about it, recorded here so the future phase inherits it
+  rather than rediscovering it.** Session 60ffd96b, who is building `SessionDto.CurrentModel`,
+  reports that the value is **free text** taken from each tool's own records - `claude-fable-5`,
+  `gpt-5.5`, `grok-4.5` - with unbounded cardinality over time and casing by convention only. They
+  recommend the `repo_id` / `agent_id` identity-table treatment, and for cardinality and casing
+  they are right.
+
+  **But the identity table does not solve the harder half they described, and the future phase must
+  not assume it does.** A Claude session can legitimately report its launch *alias* before its
+  first turn (`opus[1m]`, stamped from the `--model` flag) and the concrete id afterwards
+  (`claude-opus-4-8`, without the suffix). Those are two names for one model, and no
+  case-insensitive comparer maps one to the other - they are different strings by any equality
+  function, so an identity table faithfully records them as two distinct models and the page splits
+  one session across both. That is not a casing problem. It is **structurally the same problem as
+  the repository separator split** documented in Constraints: two spellings, one real thing, and a
+  merge rule that only a human can authorise because it silently rewrites what was recorded.
+
+  There is a plausible reason it may not bite - `stat_delta` rows are written only per *changed
+  bucket*, so a session with no turns yet writes no row, and the alias may never accompany a
+  non-zero delta. **Do not rely on that without checking it.** It depends on the ordering of
+  turn-end stamping against the roster poll that folds the delta, and a poll landing between turn
+  submission and turn-end stamping would attribute a real turn to the alias. That ordering is a
+  question to answer with evidence, not reasoning, when the phase starts.
+
+  So the model dimension needs its own design pass covering: the identity table, a since-stamp in
+  the `_agentsSinceUtc` mould, and an explicit owner decision on whether an alias and its concrete
+  id are one model or two. It is a phase, not a column.
 - **The Repos page splits the same repository across path-separator spellings.** Measured
   2026-07-15: `D:\ReposFred\devthrottle` (324 turns) and `D:/ReposFred/devthrottle` (21 turns) are
   two rows, as are two spellings each of `cc-consult` and `mw-enrich-facade-impl` - 20 rows where
