@@ -391,6 +391,46 @@ migration rather than a quarantine. Pull request #1376 reset the concurrency pea
 #1379 got the same class of change right by not reshaping the existing fields; this mission does
 not get to be the third data point.
 
+**Decision 6 - The in-memory mirror holds MEMBERSHIP, never a TALLY.** Raised by the Manager, who
+was right to refuse to guess at it, because it decides real behaviour on the hot path.
+
+`ObserveSnapshot` folds every session on every `GET /sessions`. Today an *idle* poll costs zero
+input-output: nothing changed, so nothing is written. That property must survive this mission, and
+one detail decides whether it does. The wingman set is added to **before** the empty-bucket early
+return (`GatewayInputStatsAggregator.cs:330-334`), so a voice-mode session with no input still
+registers every single poll:
+
+```
+if (s.VoiceMode && _wingmanSessions.Add(s.SessionId))
+    changed = true;
+
+if (s.InputStats?.Buckets is null || s.InputStats.Buckets.Count == 0)
+    return changed;
+```
+
+`HashSet.Add` returning `false` on a repeat is precisely what makes that free today. Without an
+in-memory membership mirror, the same code path becomes an `INSERT OR IGNORE` per voice-mode
+session per poll - bounded per fold, but a permanent write storm where there is currently silence.
+
+**So the rule, stated once and not open to reinterpretation:**
+
+> The mirror may hold **identity and membership** - the high-water map, the distinct-session id
+> sets, and the repository and agent identity maps. It answers exactly one kind of question: *have
+> I already recorded this?* It must **never** hold a **tally** - no total, no count, no sum. Every
+> aggregate stays a real query against the database. Cache an aggregate and you have rebuilt the
+> in-memory-dictionaries-plus-a-file design this mission exists to delete.
+
+This is not fallback programming, and the distinction matters enough to write down: a fallback
+hides a failure by quietly substituting a worse answer. A write-through mirror hides nothing.
+SQLite is the sole source of truth, the mirror is populated **from** it at startup and never the
+reverse, and a failed database write is a loud failure - never a silent mirror-only success.
+
+Note on cardinality, so nobody reports it as a regression: the distinct-id sets are deliberately
+never pruned (Decision 2), so their lifetime cardinality is unbounded. Mirroring them keeps exactly
+today's memory profile, because the running code already holds those same sets in memory. This
+mission's win is on the **write** path, not the memory footprint, and it is not obliged to change
+what it did not come to change.
+
 ## Phases
 
 Each phase is a self-contained increment that builds, tests green, and is reviewed by the Codex
@@ -468,6 +508,12 @@ fail is not a criterion.
    - **Pin that the mix is unchanged when the table already holds a large number of historical
      rows.** "Does not grow with history" is the actual claim being proven, and a test against an
      empty table proves nothing about it.
+3a. **An idle poll writes nothing.** A regression test observes a roster in which nothing has
+   changed - including at least one voice-mode session with no input, which is the case that
+   exercises `GatewayInputStatsAggregator.cs:330-334` - and asserts **zero** write statements reach
+   the database. This is a property the current code has and the port could silently lose
+   (Decision 6). It must be proven by watching it go red: remove the membership mirror, see the
+   writes appear, restore it.
 4. A new question that uses dimensions already carried on `stat_delta` is answered by a query with
    no schema change, for data recorded since the cutover. The Manager picks one the owner has not
    asked for yet and shows the query and its result.
