@@ -39,14 +39,13 @@ public sealed class NoCrossMachineLoopbackGuardTests
         // loopback-guarded HTTP reverse-proxy was deleted, it is a tunnel-dispatch-only file now) were
         // removed from this allowlist because they no longer carry a loopback literal.
         ["src/CcDirector.Gateway/GatewayHost.cs"] = "Local loopback bind / same-machine wiring.",
-        ["src/CcDirector.Gateway/GatewayWorker.cs"] = "Same-machine worker wiring.",
+        ["src/CcDirector.Gateway/GatewayService.cs"] = "Probes THIS process's own Gateway port on loopback to diagnose a failed start (is the port taken by our own gateway, another app, or nothing?). Same machine by definition - it is asking about its own bind - and it moved here unchanged from GatewayTrayController when the lifecycle left the tray app.",
         ["src/CcDirector.Gateway/Tailscale/TailscaleServeProvisioner.cs"] = "Maps the tailnet front door to local loopback backends.",
         ["src/CcDirector.Gateway/Api/RecordingEndpoints.cs"] = "Local recording paths.",
         ["src/CcDirector.Gateway/Api/MachineEndpoints.cs"] = "Same-machine relay/launcher wiring.",
         ["src/CcDirector.Gateway/Running/IDirectorLauncher.cs"] = "RelayDirectorLauncher posts to the local Gateway's own loopback port to relay a Director start request (same-machine self-call to the Gateway's own /machines/{machine}/director/start endpoint).",
         ["src/CcDirector.Gateway/CarMode/LoopbackCarModeFleet.cs"] = "The Car Mode brain's fleet tools call THIS Gateway's own endpoints over http://127.0.0.1:{port} (same-machine self-call), the same pattern the Web Push needs-you notifier uses to read its own /sessions - so the brain sees the identical aggregated roster every client sees with no re-implementation.",
         ["src/CcDirector.GatewayApp/Program.cs"] = "Local Gateway bootstrap.",
-        ["src/CcDirector.GatewayApp/GatewayTrayController.cs"] = "Probes its own Gateway port on loopback (same machine); the Cockpit is served in-process by that Gateway.",
         ["src/CcDirector.Launcher/DirectorSupervisor.cs"] = "Supervises a local Director over loopback.",
         ["src/CcDirector.Launcher/LauncherHost.cs"] = "Local launcher loopback bind.",
         ["src/CcDirector.Launcher/Program.cs"] = "Self-update helper POSTs /shutdown + probes /healthz on the launcher's own loopback (same machine).",

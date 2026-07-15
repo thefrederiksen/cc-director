@@ -28,6 +28,29 @@ namespace CcDirector.Gateway.Tests;
 /// </summary>
 public class HeadlessGatewayGuardTests
 {
+    // The lifecycle now LIVES in the library (GatewayService), rather than in the tray app with the
+    // library merely not referencing it. That is the difference between "the shim could be deleted" as a
+    // claim and as a fact: a host supplies a port, a mode and how to exit, and gets a complete Gateway.
+    //
+    // This constructs the service with NO host of any kind - no tray, no Avalonia, no desktop - which is
+    // exactly the situation a Windows service will be in. If the lifecycle ever drifts back into the shim,
+    // this stops compiling or stops passing.
+    [Fact]
+    public void TheGatewayLifecycleIsUsableWithNoHostAtAll()
+    {
+        using var service = new GatewayService(new GatewayServiceOptions
+        {
+            Port = 7999,
+            Managed = false,
+            RegisterAutostart = false,
+            ModeLabel = "dev",
+        });
+
+        Assert.Equal(7999, service.Port);
+        Assert.Equal(GatewayServiceState.Stopped, service.State);
+        Assert.Null(service.Host);
+    }
+
     private static Assembly GatewayLibrary => typeof(GatewayHost).Assembly;
 
     [Fact]
