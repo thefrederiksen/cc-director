@@ -1958,12 +1958,19 @@ public sealed class Session : IDisposable
         HoldState = HoldState.None;
         SetActivityState(ActivityState.Working);
         // DevThrottle Stats: a SendTextAsync is exactly one submitted turn. Count it (plus its character
-        // volume) for the tagged origin. Null origin = framework-internal (handover, queue drain) - not
-        // counted, even though it still submits a turn to the agent.
+        // volume) for the tagged origin. Null origin = not a human turn - either another agent (counted on
+        // its own lane below) or framework text (handover, queue drain), which carries nobody's decision
+        // and is not counted at all.
         if (origin is InputOrigin o)
         {
             InputStats.RecordTurn(o, text?.Length ?? 0);
             RecordOrigin(o, text?.Length ?? 0);
+        }
+        else if (source == SendSource.Agent)
+        {
+            // Issue #1636: one agent prompting another IS a real turn - the sending agent decided to send
+            // it - so it is counted, but never into the human buckets above.
+            InputStats.RecordAgentTurn(text?.Length ?? 0);
         }
     }
 

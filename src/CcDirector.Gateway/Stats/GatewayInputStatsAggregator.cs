@@ -99,11 +99,23 @@ public sealed class GatewayInputStatsAggregator
         public readonly HashSet<string> Sessions = new(StringComparer.Ordinal);
     }
 
+    // Agent-driven turns per session (issue #1636), high-watered exactly like the human buckets so a
+    // repeated snapshot never double-counts and a Director restart of the same session id is treated as
+    // fresh activity. Kept on its own lane: these never enter _totals, _hourly or the buckets, because the
+    // human voice-versus-typed numbers must stay about the human.
+    private readonly Dictionary<string, Counters> _agentDrivenHighWater = new(StringComparer.Ordinal);
+    private long _agentDrivenTurns;
+    private long _agentDrivenCharacters;
+
     private sealed class AgentTally
     {
         public long VoiceTurns;
         public long TypedTurns;
         public long Characters;
+        // Turns OTHER agents drove into the sessions running this agent (issue #1636) - "how much is this
+        // agent being driven by other agents", as opposed to by the human.
+        public long AgentDrivenTurns;
+        public long AgentDrivenCharacters;
         // The distinct session ids that drove counted input through this agent, so "sessions" is a true
         // distinct count across a re-push or a Gateway restart (the set is persisted; re-adding is a no-op).
         public readonly HashSet<string> Sessions = new(StringComparer.Ordinal);
@@ -177,6 +189,16 @@ public sealed class GatewayInputStatsAggregator
         {
             if (_highWater.Remove(sessionId)) Save();
         }
+    }
+
+    /// <summary>
+    /// All-time turns that agents drove into other agents' sessions (issue #1636), and their character
+    /// volume. NOT part of the human totals: this is the fleet driving itself, which is a different
+    /// question from how the owner drives.
+    /// </summary>
+    public (long Turns, long Characters) AgentDrivenUsage()
+    {
+        lock (_lock) { return (_agentDrivenTurns, _agentDrivenCharacters); }
     }
 
     /// <summary>An immutable snapshot of the all-time totals for the dashboard, buckets in a stable order.</summary>
@@ -271,6 +293,8 @@ public sealed class GatewayInputStatsAggregator
                     TypedTurns = t.TypedTurns,
                     Characters = t.Characters,
                     Sessions = t.Sessions.Count,
+                    AgentDrivenTurns = t.AgentDrivenTurns,
+                    AgentDrivenCharacters = t.AgentDrivenCharacters,
                 });
             }
             // Rank by turns (the headline metric), then characters, then name, so the order is stable.
@@ -344,6 +368,12 @@ public sealed class GatewayInputStatsAggregator
         // mode on - recorded even if it has no input this fold, so a voice-mode session that never typed a
         // turn still counts. The set is all-time, never pruned on removal (like the totals).
         if (s.VoiceMode && _wingmanSessions.Add(s.SessionId))
+            changed = true;
+
+        // Issue #1636: turns other agents drove into this session, on their own lane. Folded BEFORE the
+        // buckets guard below, because a session driven only by other agents has no human buckets at all -
+        // and those are exactly the sessions this tally is about.
+        if (FoldAgentDrivenLocked(s))
             changed = true;
 
         if (s.InputStats?.Buckets is null || s.InputStats.Buckets.Count == 0)
@@ -442,6 +472,43 @@ public sealed class GatewayInputStatsAggregator
         return changed;
     }
 
+    // Fold the turns OTHER agents drove into this session (issue #1636) via the same high-water increment
+    // the human buckets use: only the increase counts, and a reported count that DROPPED (a Director
+    // restarted this session id with a fresh tally) is treated as new activity from zero. Attributed to the
+    // RECEIVING session's agent - "how much is Codex being driven by other agents". Returns true when
+    // anything changed. Caller holds the lock.
+    private bool FoldAgentDrivenLocked(SessionDto s)
+    {
+        var turns = s.InputStats?.AgentDrivenTurns ?? 0;
+        var chars = s.InputStats?.AgentDrivenCharacters ?? 0;
+        if (turns == 0 && chars == 0) return false;
+
+        _agentDrivenHighWater.TryGetValue(s.SessionId, out var prev);
+        var prevTurns = prev?.Turns ?? 0;
+        var prevChars = prev?.Characters ?? 0;
+
+        var deltaTurns = turns >= prevTurns ? turns - prevTurns : turns;
+        var deltaChars = chars >= prevChars ? chars - prevChars : chars;
+
+        _agentDrivenHighWater[s.SessionId] = new Counters { Turns = turns, Characters = chars };
+        if (deltaTurns <= 0 && deltaChars <= 0) return false;
+
+        _agentDrivenTurns += deltaTurns;
+        _agentDrivenCharacters += deltaChars;
+
+        var agentKey = s.Agent ?? "";
+        if (!_agents.TryGetValue(agentKey, out var agent))
+        {
+            agent = new AgentTally();
+            _agents[agentKey] = agent;
+        }
+        agent.AgentDrivenTurns += deltaTurns;
+        agent.AgentDrivenCharacters += deltaChars;
+        if (!string.IsNullOrEmpty(s.SessionId))
+            agent.Sessions.Add(s.SessionId);
+        return true;
+    }
+
     // Attribute <paramref name="turns"/> and <paramref name="characters"/> to the agent CLI that session
     // drives (the private Agents page). Used by BOTH the ordinary delta path and the first-fold back-fill
     // (issue #1633), so the two can never drift apart.
@@ -498,6 +565,11 @@ public sealed class GatewayInputStatsAggregator
         public Dictionary<string, RepoTallyStore> Repos { get; set; } = new();
         public Dictionary<string, AgentTallyStore> Agents { get; set; } = new();
         public string AgentsSinceUtc { get; set; } = "";
+        // Issue #1636: the agent-to-agent lane. Absent in older stores, which is correct - no agent-driven
+        // turns had been counted then, so zero and an empty high-water are the truth, not a guess.
+        public long AgentDrivenTurns { get; set; }
+        public long AgentDrivenCharacters { get; set; }
+        public Dictionary<string, InputStatBucketDto> AgentDrivenHighWater { get; set; } = new();
         // Issue #1633. NULL (not empty) when the key is absent, which is how a store written before the
         // back-fill existed is recognised - see Load, which must rebuild such a store's agent tally rather
         // than add to it. Nullable on purpose: an empty list is a real value (a store with nothing folded
@@ -526,6 +598,8 @@ public sealed class GatewayInputStatsAggregator
         public long TypedTurns { get; set; }
         public long Characters { get; set; }
         public List<string> Sessions { get; set; } = new();
+        public long AgentDrivenTurns { get; set; }
+        public long AgentDrivenCharacters { get; set; }
     }
 
     private void Load()
@@ -574,10 +648,21 @@ public sealed class GatewayInputStatsAggregator
         }
         foreach (var (agentKey, at) in parsed.Agents)
         {
-            var tally = new AgentTally { VoiceTurns = at.VoiceTurns, TypedTurns = at.TypedTurns, Characters = at.Characters };
+            var tally = new AgentTally
+            {
+                VoiceTurns = at.VoiceTurns,
+                TypedTurns = at.TypedTurns,
+                Characters = at.Characters,
+                AgentDrivenTurns = at.AgentDrivenTurns,
+                AgentDrivenCharacters = at.AgentDrivenCharacters,
+            };
             foreach (var sid in at.Sessions) tally.Sessions.Add(sid);
             _agents[agentKey] = tally;
         }
+        _agentDrivenTurns = parsed.AgentDrivenTurns;
+        _agentDrivenCharacters = parsed.AgentDrivenCharacters;
+        foreach (var (sid, b) in parsed.AgentDrivenHighWater)
+            _agentDrivenHighWater[sid] = new Counters { Turns = b.Turns, Characters = b.Characters };
         _agentsSinceUtc = parsed.AgentsSinceUtc ?? "";
 
         // Issue #1633. A store written before the back-fill existed (no AgentsSeeded key) is a HYBRID: some
@@ -644,9 +729,15 @@ public sealed class GatewayInputStatsAggregator
                     TypedTurns = at.TypedTurns,
                     Characters = at.Characters,
                     Sessions = at.Sessions.ToList(),
+                    AgentDrivenTurns = at.AgentDrivenTurns,
+                    AgentDrivenCharacters = at.AgentDrivenCharacters,
                 };
             file.AgentsSinceUtc = _agentsSinceUtc;
             file.AgentsSeeded = _agentsSeeded.ToList();
+            file.AgentDrivenTurns = _agentDrivenTurns;
+            file.AgentDrivenCharacters = _agentDrivenCharacters;
+            foreach (var (sid, c) in _agentDrivenHighWater)
+                file.AgentDrivenHighWater[sid] = new InputStatBucketDto { Turns = c.Turns, Characters = c.Characters };
 
             var json = JsonSerializer.Serialize(file, FileJsonOptions);
             var tmp = _path + ".tmp";
@@ -736,4 +827,17 @@ public sealed class AgentStatBucketDto
 
     /// <summary>Distinct sessions that drove counted input through this agent.</summary>
     public int Sessions { get; set; }
+
+    /// <summary>
+    /// Turns OTHER AGENTS drove into the sessions running this agent (issue #1636) - "how much is this
+    /// agent being driven by other agents", as opposed to by the human.
+    ///
+    /// Deliberately NOT part of <see cref="Turns"/>: that stays the human's own driving. The two answer
+    /// different questions, and adding them together would drop the voice share overnight and break every
+    /// comparison with history.
+    /// </summary>
+    public long AgentDrivenTurns { get; set; }
+
+    /// <summary>Character volume of the <see cref="AgentDrivenTurns"/>.</summary>
+    public long AgentDrivenCharacters { get; set; }
 }

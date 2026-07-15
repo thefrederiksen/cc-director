@@ -21,6 +21,20 @@ public sealed class PromptRequest
     public int TimeoutMs { get; set; } = 120_000;
 
     /// <summary>
+    /// True when this prompt is one AGENT prompting another across the fleet (issue #1636), rather than a
+    /// person. Set by the fleet relay when a message is addressed to a session on ANOTHER Director: such a
+    /// message arrives here as an ordinary prompt, and without this marker it is indistinguishable from a
+    /// human one - so the same fleet message would count as agent-driven or not purely by the accident of
+    /// whether the two sessions happened to share a Director.
+    ///
+    /// Same trick as <see cref="DeliveryUploadId"/>, which marks a dictation delivery over the tunnel: the
+    /// DTO carries what an HTTP header used to.
+    ///
+    /// Never counted as a human turn, whatever Surface accompanies it.
+    /// </summary>
+    public bool AgentDriven { get; set; }
+
+    /// <summary>
     /// DevThrottle Stats surface tag: which surface this remote prompt came from - "phone", "cockpit",
     /// or null when unknown. GATEWAY-AUTHORITATIVE: the Gateway resolves it from the verified per-device
     /// key and OVERWRITES any client-supplied value before forwarding, so it cannot be forged from a

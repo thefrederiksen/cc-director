@@ -67,6 +67,12 @@ public static class StatsPageEndpoint
                 // turns ran under no agent.
                 agents = aggregator.AgentTotals(),
                 agentsSinceUtc = aggregator.AgentsSinceUtc,
+                // DevThrottle Stats (issue #1636): turns the fleet drove into ITSELF - one agent prompting
+                // another. Reported alongside the human tally but never inside it: "how do you drive" and
+                // "how much does the fleet drive itself" are different questions, and the ratio between
+                // them is the leverage the owner actually gets per turn they spend.
+                agentDrivenTurns = aggregator.AgentDrivenUsage().Turns,
+                agentDrivenCharacters = aggregator.AgentDrivenUsage().Characters,
                 notCaptured = NotCaptured,
             });
         });

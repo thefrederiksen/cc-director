@@ -391,6 +391,107 @@ public sealed class GatewayInputStatsAggregatorTests : IDisposable
         Assert.Equal(10, agentTurns);
     }
 
+    // ==================== Issue #1636: the agent-to-agent lane ====================
+
+    // A session being driven by other agents: the fleet prompting itself.
+    private static SessionDto AgentDrivenSession(string id, string agent, long turns, long chars,
+        params (string modality, string surface, long turns, long chars)[] humanBuckets)
+    {
+        var dto = SessionOnAgent(id, agent, humanBuckets);
+        dto.InputStats!.AgentDrivenTurns = turns;
+        dto.InputStats.AgentDrivenCharacters = chars;
+        return dto;
+    }
+
+    // THE TRAP this whole design exists to avoid. Agent turns are typed by definition, so folding them in
+    // with the human's would drop the voice share overnight and break every comparison with history - a
+    // number that moved because the definition moved, not because anything about the work did.
+    [Fact]
+    public void AgentDrivenTurns_NeverEnterTheHumanTotals()
+    {
+        var agg = new GatewayInputStatsAggregator(_path);
+
+        // 2 human voice turns, and 100 turns the fleet drove into the same session.
+        agg.Observe(AgentDrivenSession("s1", "Codex", 100, 10_000, ("voice", "desktop", 2, 200)));
+
+        // The human totals are untouched by the fleet's 100.
+        Assert.Equal(2, agg.CurrentTotals().Buckets.Sum(b => b.Turns));
+        Assert.Equal(2, Turns(agg.CurrentTotals(), "voice", "desktop"));
+        Assert.Equal(200, agg.CurrentTotals().Buckets.Sum(b => b.Characters));
+
+        // The voice share stays 100% of the human's driving, not 2%.
+        Assert.Equal(2, Agent(agg, "Codex")!.VoiceTurns);
+        Assert.Equal(2, Agent(agg, "Codex")!.Turns);
+
+        // And the fleet's driving is reported on its own lane.
+        Assert.Equal(100, Agent(agg, "Codex")!.AgentDrivenTurns);
+        Assert.Equal((100, 10_000), agg.AgentDrivenUsage());
+    }
+
+    // The hourly "working day" series is about when the HUMAN worked. A fleet that ran all night must not
+    // appear in it as the owner's hours.
+    [Fact]
+    public void AgentDrivenTurns_NeverEnterTheHourlySeries()
+    {
+        var agg = new GatewayInputStatsAggregator(_path);
+        agg.Observe(AgentDrivenSession("s1", "Codex", 50, 5_000));
+
+        Assert.DoesNotContain(agg.HourlyTurns(), h => h.Turns > 0);
+        Assert.Equal(50, agg.AgentDrivenUsage().Turns);
+    }
+
+    // A session driven ONLY by other agents has no human buckets at all - and those are exactly the
+    // sessions this tally is about, so it must not be skipped by the buckets guard.
+    [Fact]
+    public void AgentDrivenSession_WithNoHumanTurns_IsStillCounted()
+    {
+        var agg = new GatewayInputStatsAggregator(_path);
+        agg.Observe(AgentDrivenSession("worker-1", "Codex", 12, 1_200));
+
+        Assert.Equal(12, agg.AgentDrivenUsage().Turns);
+        Assert.Equal(12, Agent(agg, "Codex")!.AgentDrivenTurns);
+        Assert.Equal(0, Agent(agg, "Codex")!.Turns);
+    }
+
+    [Fact]
+    public void AgentDrivenTurns_RepeatedSnapshot_DoesNotDoubleCount()
+    {
+        var agg = new GatewayInputStatsAggregator(_path);
+        agg.Observe(AgentDrivenSession("s1", "Codex", 10, 1_000));
+        agg.Observe(AgentDrivenSession("s1", "Codex", 10, 1_000));
+        agg.Observe(AgentDrivenSession("s1", "Codex", 14, 1_400));
+
+        Assert.Equal(14, agg.AgentDrivenUsage().Turns);
+        Assert.Equal(1_400, agg.AgentDrivenUsage().Characters);
+    }
+
+    // A Director restarted this session id with a fresh tally, so the reported count DROPPED. The whole
+    // current count is new activity from zero - the same rule the human buckets follow.
+    [Fact]
+    public void AgentDrivenTurns_DroppedCount_IsTreatedAsFreshActivity()
+    {
+        var agg = new GatewayInputStatsAggregator(_path);
+        agg.Observe(AgentDrivenSession("s1", "Codex", 10, 1_000));
+        agg.Observe(AgentDrivenSession("s1", "Codex", 3, 300));
+
+        Assert.Equal(13, agg.AgentDrivenUsage().Turns);
+    }
+
+    [Fact]
+    public void AgentDrivenTurns_SurviveAGatewayRestart()
+    {
+        var first = new GatewayInputStatsAggregator(_path);
+        first.Observe(AgentDrivenSession("s1", "Codex", 10, 1_000));
+
+        var restarted = new GatewayInputStatsAggregator(_path);
+        Assert.Equal(10, restarted.AgentDrivenUsage().Turns);
+        Assert.Equal(10, Agent(restarted, "Codex")!.AgentDrivenTurns);
+
+        // The high-water survived too, so re-observing the same counts adds nothing.
+        restarted.Observe(AgentDrivenSession("s1", "Codex", 10, 1_000));
+        Assert.Equal(10, restarted.AgentDrivenUsage().Turns);
+    }
+
     // ==================== Issue #1633: the high-water lockout ====================
 
     // A store exactly as a build WITHOUT the agent tally left it: the session's turns are already consumed

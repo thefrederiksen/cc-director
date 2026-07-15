@@ -51,7 +51,9 @@ public sealed class TerminalPromptInjectionChokepointTests
         Assert.Contains("\"prompt\" => await SessionCommandExecutor.PromptAsync(sessionManager, command, context.Source),", writeExec);
         Assert.Contains("SessionCommandExecutor.DispatchAsync(_sessionManager, DirectorId, cmd,", host);
         // PromptAsync funnels submitted text through the session submit chokepoint.
-        Assert.Contains("await session.SendTextAsync(request.Text, source, origin);", executor);
+        // effectiveSource, not source: a relayed fleet prompt marks itself agent-driven in the DTO, and the
+        // executor resolves that before the send (issue #1636). Still the same one chokepoint.
+        Assert.Contains("await session.SendTextAsync(request.Text, effectiveSource, origin);", executor);
         // The queue-send and chat submit paths use the SAME chokepoint. (Fleet-message delivery is now
         // Gateway-native and rides the prompt verb above, so it funnels through the same chokepoint; the
         // VoiceTurn endpoint was retired at the cut.)

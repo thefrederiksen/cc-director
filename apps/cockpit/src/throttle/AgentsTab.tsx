@@ -93,12 +93,19 @@ function AgentRow({
 
   // The secondary facts depend on which metric is the headline, so the row never just repeats the big
   // number - it shows the other two honest measures alongside it.
+  // Turns other agents drove into this agent's sessions. Stated as its own fact next to the human turns,
+  // never added to them: "you drove 14, the fleet drove 300 into it" is the honest pair.
+  const agentDriven =
+    agent.agentDrivenTurns > 0
+      ? ` - ${agent.agentDrivenTurns.toLocaleString()} from agents`
+      : "";
+
   const meta =
     metric === "turns"
-      ? `${compactNumber(agent.characters)} chars - ${agent.sessions} session${agent.sessions === 1 ? "" : "s"} - ${voicePct}% voice`
+      ? `${compactNumber(agent.characters)} chars - ${agent.sessions} session${agent.sessions === 1 ? "" : "s"} - ${voicePct}% voice${agentDriven}`
       : metric === "characters"
-        ? `${agent.turns.toLocaleString()} turns - ${agent.sessions} session${agent.sessions === 1 ? "" : "s"}`
-        : `${agent.turns.toLocaleString()} turns - ${compactNumber(agent.characters)} chars`;
+        ? `${agent.turns.toLocaleString()} turns - ${agent.sessions} session${agent.sessions === 1 ? "" : "s"}${agentDriven}`
+        : `${agent.turns.toLocaleString()} turns - ${compactNumber(agent.characters)} chars${agentDriven}`;
 
   return (
     <div className="repo-row">
@@ -194,6 +201,16 @@ export function AgentsTab({ data }: { data: ThrottleData }) {
           value={formatShare(summary.totalTurns > 0 ? summary.voiceTurns / summary.totalTurns : null)}
           sub="of turns spoken, not typed"
         />
+        {/* Leverage (issue #1636): what the fleet did off the back of each turn the owner spent. Shown
+            only once the fleet has actually driven itself - a "0x" on a machine that has never run a
+            worker would be noise, not a fact. */}
+        {summary.agentDrivenTurns > 0 && (
+          <HeadlineCard
+            label="Leverage"
+            value={summary.leverage !== null ? `${summary.leverage.toFixed(1)}x` : "-"}
+            sub={`${summary.agentDrivenTurns.toLocaleString()} turns agents drove agents`}
+          />
+        )}
       </div>
 
       <div className="repos-controls">
@@ -245,6 +262,12 @@ export function AgentsTab({ data }: { data: ThrottleData }) {
           <li>
             Agents are grouped by the CLI the session runs. A session the Director reported no agent for is
             counted under &quot;(unknown)&quot; rather than dropped - the turns are real either way.
+          </li>
+          <li>
+            Turns you drove and turns agents drove into other agents are counted separately and never added
+            together. The ranked bars and the voice share are YOUR driving; &quot;from agents&quot; and
+            Leverage are the fleet driving itself. Text the product wrote itself - handover, queue drain -
+            is not a turn and is counted by neither.
           </li>
           <li>
             Tokens are not shown - the tally counts turns and characters, never tokens, and this tab never

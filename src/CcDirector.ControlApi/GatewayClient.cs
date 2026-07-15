@@ -241,7 +241,11 @@ public sealed class GatewayClient : IGatewayHold, IDisposable
             throw new ArgumentException("Target session id is required", nameof(toSessionId));
 
         FileLog.Write($"[GatewayClient] SendPromptToFleetAsync: POST /sessions/{toSessionId}/prompt");
-        var body = new PromptRequest { Text = text, AppendEnter = true, WaitForIdle = false };
+        // AgentDriven: this relay exists only to carry a FLEET message to a session on another Director, so
+        // it is by construction one agent prompting another (issue #1636). The target Director cannot tell
+        // that from the prompt alone - the marker is what stops the same message counting differently
+        // depending on which machine the target happened to be on.
+        var body = new PromptRequest { Text = text, AppendEnter = true, WaitForIdle = false, AgentDriven = true };
         using var resp = await _http.PostAsJsonAsync($"sessions/{toSessionId}/prompt", body, ct);
         if (!resp.IsSuccessStatusCode)
             throw await RelayFailureAsync(resp, $"prompt to {toSessionId}", ct);

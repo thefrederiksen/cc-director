@@ -199,19 +199,25 @@ internal static class SessionCommandExecutor
         // Gateway prompt handler and the dictation delivery) always set, stamping "unknown" when the device
         // key did not resolve. A phone/cockpit key maps to that surface; "unknown" maps to the Unknown
         // bucket the dashboard shows (decision 9: excluded volume is surfaced, never silently dropped).
+        // Issue #1636: a fleet message addressed to a session on ANOTHER Director arrives here as an
+        // ordinary prompt, so the relay marks it in the DTO - the same trick DeliveryUploadId uses for a
+        // dictation. Without it, the identical fleet message would be counted as agent-driven or not
+        // depending only on whether the two sessions happened to share a Director.
+        var effectiveSource = request.AgentDriven ? SendSource.Agent : source;
+
         // This origin is the HUMAN tally only. Neither a framework send nor an agent prompting another
         // agent is a person driving, so both are excluded here by name rather than by relying on their
-        // Surface being null (issue #1636 - agent-driven turns are counted on their own separate lane, and
-        // must never leak into the voice-versus-typed numbers).
-        var human = source is SendSource.UserInput or SendSource.Delivery;
+        // Surface being null (agent-driven turns are counted on their own separate lane, and must never
+        // leak into the voice-versus-typed numbers).
+        var human = effectiveSource is SendSource.UserInput or SendSource.Delivery;
         InputOrigin? origin = (human && request.Surface is not null)
             ? new InputOrigin(
-                source == SendSource.Delivery ? InputModality.Voice : InputModality.Typed,
+                effectiveSource == SendSource.Delivery ? InputModality.Voice : InputModality.Typed,
                 InputOrigin.RemoteSurfaceFromDeviceType(request.Surface))
             : null;
 
         if (request.AppendEnter)
-            await session.SendTextAsync(request.Text, source, origin);
+            await session.SendTextAsync(request.Text, effectiveSource, origin);
         else
             session.SendInput(Encoding.UTF8.GetBytes(request.Text), origin);
 

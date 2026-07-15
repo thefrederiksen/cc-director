@@ -29,6 +29,8 @@ function data(buckets: ThrottleData["buckets"]): ThrottleData {
     repos: [],
     agents: [],
     agentsSinceUtc: "",
+    agentDrivenTurns: 0,
+    agentDrivenCharacters: 0,
     notCaptured: [],
   };
 }
@@ -37,8 +39,12 @@ function repo(repoName: string, turns: number, voiceTurns: number, characters: n
   return { repo: `D:/${repoName}`, repoName, turns, voiceTurns, typedTurns: turns - voiceTurns, characters, sessions };
 }
 
-function agent(agentToken: string, agentName: string, turns: number, voiceTurns: number, characters: number, sessions: number): AgentStat {
-  return { agent: agentToken, agentName, turns, voiceTurns, typedTurns: turns - voiceTurns, characters, sessions };
+function agent(agentToken: string, agentName: string, turns: number, voiceTurns: number, characters: number, sessions: number,
+               agentDrivenTurns = 0): AgentStat {
+  return {
+    agent: agentToken, agentName, turns, voiceTurns, typedTurns: turns - voiceTurns, characters, sessions,
+    agentDrivenTurns, agentDrivenCharacters: agentDrivenTurns * 100,
+  };
 }
 
 describe("summarizeThrottle", () => {
@@ -120,6 +126,34 @@ describe("summarizeAgents", () => {
     expect(s.topAgentName).toBe("Claude Code");
     expect(s.topShare).toBeCloseTo(0.8);
     expect(s.hasData).toBe(true);
+  });
+
+  // Issue #1636. Leverage is what the fleet did off the back of each turn the owner spent.
+  it("computes leverage as agent-driven turns per turn you drove", () => {
+    const s = summarizeAgents([
+      agent("ClaudeCode", "Claude Code", 8, 6, 640, 2, 24),
+      agent("Codex", "Codex", 2, 0, 60, 1, 6),
+    ]);
+    expect(s.agentDrivenTurns).toBe(30);
+    expect(s.leverage).toBeCloseTo(3); // 30 agent turns off the back of 10 of yours
+  });
+
+  // The trap: agent-driven turns must never inflate the human's own numbers, or the voice share moves
+  // because the definition moved rather than because the behaviour did.
+  it("keeps agent-driven turns out of the human totals and the voice share", () => {
+    const s = summarizeAgents([agent("Codex", "Codex", 4, 4, 400, 1, 500)]);
+    expect(s.totalTurns).toBe(4);
+    expect(s.voiceTurns).toBe(4);
+    expect(s.agentDrivenTurns).toBe(500);
+    expect(s.topShare).toBeCloseTo(1); // still 100% of YOUR driving
+  });
+
+  // A ratio with nothing underneath it would be a fabricated number, not a big one.
+  it("reports a null leverage (not Infinity) when you have driven no turns", () => {
+    const s = summarizeAgents([agent("Codex", "Codex", 0, 0, 0, 1, 40)]);
+    expect(s.leverage).toBeNull();
+    expect(s.agentDrivenTurns).toBe(40);
+    expect(s.hasData).toBe(true); // a fleet driving itself is a real state, not an empty one
   });
 
   // The tally starts when the breakdown ships, so "nothing yet" is the normal first state - it must read
