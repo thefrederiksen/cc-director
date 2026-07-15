@@ -165,6 +165,57 @@ public sealed class SessionRailStateTests
         Assert.DoesNotContain("Needs you", vm.ActivityLabel, StringComparison.OrdinalIgnoreCase);
     }
 
+    /// <summary>
+    /// EVERY fold input must move the whole row, not just the one its author happened to think of.
+    ///
+    /// Each handler in SessionViewModel used to keep its own list of properties to raise, and they all
+    /// disagreed - hold raised seven, activity three, the cached explain two, the role stamp three. Each
+    /// list was a private chance to miss one, and missing one renders a HALF-updated row: the dot moves,
+    /// the text beside it does not. Three fold inputs (background task, dictation, auto-explain) had no
+    /// subscription at all, so they moved no part of the row.
+    ///
+    /// This drives each fold input through a REAL Session and REAL SessionViewModel and demands the same
+    /// invariant of all of them, so a future handler that re-grows its own list fails here rather than in
+    /// someone's rail. Found by review of pull request 1598 after two of these were fixed one at a time.
+    /// </summary>
+    [Theory]
+    [InlineData("role")]
+    [InlineData("activity")]
+    [InlineData("hold")]
+    [InlineData("dictation")]
+    [InlineData("background")]
+    [InlineData("explaining")]
+    public void EveryFoldInput_RaisesTheWholeProjection(string foldInput)
+    {
+        var session = RedAtTurnEnd();
+        session.SetCachedExplain("waiting on you", model: "test");
+        var vm = new SessionViewModel(session);
+
+        var changed = new List<string>();
+        vm.PropertyChanged += (_, e) => { if (e.PropertyName is not null) changed.Add(e.PropertyName); };
+
+        switch (foldInput)
+        {
+            case "role": session.SetGatewayResolvedRole("Worker"); break;
+            case "activity": session.ApplyTerminalActivityState(ActivityState.Working); break;
+            case "hold": session.RequestHold(true); break;
+            case "dictation": session.IsTranscribing = true; break;
+            case "background": session.SetBackgroundRunning(true, "running in background"); break;
+            case "explaining": session.IsExplaining = true; break;
+            default: throw new ArgumentOutOfRangeException(nameof(foldInput), foldInput, "unknown fold input");
+        }
+        Dispatcher.UIThread.RunJobs();
+
+        // Named individually and deliberately: asserting "something changed" would pass with the row text
+        // stale, which IS the defect. These are exactly the properties whose getters fold.
+        Assert.Contains(nameof(SessionViewModel.StatusColorBrush), changed);
+        Assert.Contains(nameof(SessionViewModel.StatusReason), changed);
+        Assert.Contains(nameof(SessionViewModel.ActivityLabel), changed);
+        Assert.Contains(nameof(SessionViewModel.NeedsYou), changed);
+        Assert.Contains(nameof(SessionViewModel.HasWaitingDuration), changed);
+        Assert.Contains(nameof(SessionViewModel.WaitingDurationLabel), changed);
+    }
+
     /// <summary>An inert backend: the Session needs one, these tests never run a process.</summary>
     private sealed class InertBackend : ISessionBackend
     {

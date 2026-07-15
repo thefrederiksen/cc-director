@@ -63,6 +63,15 @@ public class SessionViewModel : INotifyPropertyChanged
         session.OnNumberChanged += OnNumberChangedVm;
         session.OnPendingDeletionChanged += OnPendingDeletionChangedVm;
         session.OnGatewayResolvedRoleChanged += OnGatewayResolvedRoleChangedVm;
+        // THE THREE TRANSIENT OVERLAYS THE RAIL NEVER HEARD ABOUT. Map feeds IsBackgroundRunning,
+        // IsTranscribing and IsAutoExplaining into the fold, which renders them purple, orange and yellow -
+        // and nothing subscribed, so a desktop dictation or a background-task verdict reached the Gateway
+        // (correct on the phone) while this rail kept its old dot, label, count and timer until an
+        // unrelated event happened to repaint the row. Same class as the role-stamp bug, one layer earlier:
+        // a fold input with no invalidation path. Found by review of pull request 1598.
+        session.OnIsBackgroundRunningChanged += OnFoldInputChangedVm;
+        session.OnIsTranscribingChanged += OnFoldInputChangedVm;
+        session.OnIsExplainingChanged += OnFoldInputChangedVm;
 
         if (session.PromptQueue != null)
         {
@@ -71,15 +80,49 @@ public class SessionViewModel : INotifyPropertyChanged
         }
     }
 
+    /// <summary>
+    /// Re-read EVERYTHING the shared fold feeds. Every handler for a fold input calls exactly this, and
+    /// none of them keeps a list of its own.
+    ///
+    /// WHY THIS EXISTS RATHER THAN SIX HAND-WRITTEN LISTS. Each handler used to name the properties it
+    /// thought its fact touched, and they all disagreed: hold raised seven, activity three, the cached
+    /// explain two, the role stamp three. Every list was a private chance to miss one, and missing one
+    /// does not fail loudly - it renders a row that has HALF updated, where the dot reads "supporting" and
+    /// the text beside it still reads "Needs you" with a live timer. That is worse than a stale row: a
+    /// half-updated row looks deliberate, so the reader believes the wrong half.
+    ///
+    /// The lists were also wrong in a way no test caught: the fold's inputs GROW - role, dictation,
+    /// background and auto-explain all arrived over this mission - and a new input meant editing six lists
+    /// correctly. This asks the opposite question, "what does the fold feed?", once, in one place. Add a
+    /// fold input and every handler already tells the truth about it.
+    ///
+    /// These are exactly the properties whose getters run FoldInput through SessionOrdering: the dot
+    /// (StatusColorBrush), its tooltip (StatusReason), the row text (ActivityLabel), the triage verdict
+    /// behind the "N need you" count (NeedsYou), and the waiting timer, which gates on the folded colour
+    /// (HasWaitingDuration/WaitingDurationLabel). Raw flags that are NOT folded - IsOnHold, the number,
+    /// the deletion badge - stay with their own handlers, because they are not this question.
+    /// </summary>
+    private void RaiseFoldProjection()
+    {
+        OnPropertyChanged(nameof(StatusColorBrush));
+        OnPropertyChanged(nameof(StatusReason));
+        OnPropertyChanged(nameof(ActivityLabel));
+        OnPropertyChanged(nameof(NeedsYou));
+        OnPropertyChanged(nameof(HasWaitingDuration));
+        OnPropertyChanged(nameof(WaitingDurationLabel));
+    }
+
+    /// <summary>A fold input changed and carries nothing else - re-read the projection. Serves the three
+    /// transient overlays (background task, dictation, auto-explain).</summary>
+    private void OnFoldInputChangedVm(bool _) => Dispatcher.UIThread.Post(RaiseFoldProjection);
+
     // Issue #1181, Task 3b: the session started or stopped receiving a phone dictation - repaint the
     // rail strip (orange while receiving) and refresh its reason text.
     private void OnReceivingDictationChangedVm(bool receiving)
     {
         Dispatcher.UIThread.Post(() =>
         {
-            OnPropertyChanged(nameof(StatusColorBrush));
-            OnPropertyChanged(nameof(StatusReason));
-            OnPropertyChanged(nameof(NeedsYou));
+            RaiseFoldProjection();
         });
     }
 
@@ -87,11 +130,7 @@ public class SessionViewModel : INotifyPropertyChanged
     {
         Dispatcher.UIThread.Post(() =>
         {
-            OnPropertyChanged(nameof(StatusColorBrush));
-            OnPropertyChanged(nameof(StatusReason));
-            OnPropertyChanged(nameof(WaitingDurationLabel));
-            OnPropertyChanged(nameof(HasWaitingDuration));
-            OnPropertyChanged(nameof(NeedsYou));
+            RaiseFoldProjection();
         });
     }
 
@@ -200,12 +239,7 @@ public class SessionViewModel : INotifyPropertyChanged
     {
         Dispatcher.UIThread.Post(() =>
         {
-            OnPropertyChanged(nameof(StatusColorBrush));
-            OnPropertyChanged(nameof(StatusReason));
-            OnPropertyChanged(nameof(ActivityLabel));
-            OnPropertyChanged(nameof(WaitingDurationLabel));
-            OnPropertyChanged(nameof(HasWaitingDuration));
-            OnPropertyChanged(nameof(NeedsYou));
+            RaiseFoldProjection();
         });
     }
 
@@ -225,13 +259,10 @@ public class SessionViewModel : INotifyPropertyChanged
     {
         Dispatcher.UIThread.Post(() =>
         {
-            OnPropertyChanged(nameof(StatusColorBrush));
-            OnPropertyChanged(nameof(StatusReason));
+            RaiseFoldProjection();
+            // IsOnHold is a RAW flag the rail renders directly (the snooze glyph), not a fold output - so
+            // it is not RaiseFoldProjection's business and stays here.
             OnPropertyChanged(nameof(IsOnHold));
-            OnPropertyChanged(nameof(ActivityLabel));
-            OnPropertyChanged(nameof(NeedsYou));
-            OnPropertyChanged(nameof(HasWaitingDuration));
-            OnPropertyChanged(nameof(WaitingDurationLabel));
         });
     }
 
@@ -253,8 +284,7 @@ public class SessionViewModel : INotifyPropertyChanged
             // set. When a session is already red and its first briefing lands, HasWaitingDuration
             // flips false->true here; without raising it the "waiting Xm" list label would not
             // appear until the next 15s timer tick.
-            OnPropertyChanged(nameof(HasWaitingDuration));
-            OnPropertyChanged(nameof(WaitingDurationLabel));
+            RaiseFoldProjection();
         });
     }
 
@@ -610,9 +640,10 @@ public class SessionViewModel : INotifyPropertyChanged
     {
         Dispatcher.UIThread.Post(() =>
         {
-            OnPropertyChanged(nameof(ActivityLabel));
-            OnPropertyChanged(nameof(StatusColorBrush));
-            OnPropertyChanged(nameof(NeedsYou));
+            // Raised three and missed the waiting timer: ActivityState drives EffectiveColor through
+            // SessionOrdering.RawActivityColor, and HasWaitingDuration gates on that - so a red row with a
+            // cached explain could go blue/grey/error and keep a visible "waiting Xm" until the 15s tick.
+            RaiseFoldProjection();
         });
     }
 
