@@ -233,19 +233,24 @@ public sealed class GatewayClient : IGatewayHold, IDisposable
     /// POST /sessions/{sid}/prompt. Fire-and-forget (WaitForIdle=false). Throws when the
     /// Gateway is disabled or the call fails.
     /// </summary>
-    public async Task<PromptResponse> SendPromptToFleetAsync(string toSessionId, string text, CancellationToken ct = default)
+    /// <param name="appendEnter">Whether the target presses Enter after the text. Defaults to true,
+    /// which is what a fleet MESSAGE wants - it is a delivered message, not a draft. It MUST be carried
+    /// rather than assumed: `session prompt --no-submit` stages text in a composer for a human to read
+    /// and send, and this hardcoding true meant the same command submitted or did not depending only on
+    /// which machine the target session happened to be on - reporting success either way.</param>
+    public async Task<PromptResponse> SendPromptToFleetAsync(string toSessionId, string text, bool appendEnter = true, CancellationToken ct = default)
     {
         if (!_config.IsEnabled)
             throw new InvalidOperationException("Gateway is not configured; cannot reach a remote session.");
         if (string.IsNullOrWhiteSpace(toSessionId))
             throw new ArgumentException("Target session id is required", nameof(toSessionId));
 
-        FileLog.Write($"[GatewayClient] SendPromptToFleetAsync: POST /sessions/{toSessionId}/prompt");
+        FileLog.Write($"[GatewayClient] SendPromptToFleetAsync: POST /sessions/{toSessionId}/prompt appendEnter={appendEnter}");
         // AgentDriven: this relay exists only to carry a FLEET message to a session on another Director, so
         // it is by construction one agent prompting another (issue #1636). The target Director cannot tell
         // that from the prompt alone - the marker is what stops the same message counting differently
         // depending on which machine the target happened to be on.
-        var body = new PromptRequest { Text = text, AppendEnter = true, WaitForIdle = false, AgentDriven = true };
+        var body = new PromptRequest { Text = text, AppendEnter = appendEnter, WaitForIdle = false, AgentDriven = true };
         using var resp = await _http.PostAsJsonAsync($"sessions/{toSessionId}/prompt", body, ct);
         if (!resp.IsSuccessStatusCode)
             throw await RelayFailureAsync(resp, $"prompt to {toSessionId}", ct);
