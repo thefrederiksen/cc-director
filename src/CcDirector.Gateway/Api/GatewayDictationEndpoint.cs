@@ -266,16 +266,45 @@ internal static class GatewayDictationEndpoint
     }
 
     // Map a NON-Ok transcription result to the dictation outcome, or null when the result is Ok and the
-    // caller should continue to inject (issue #1185). This is where the permanent-failure classification
-    // lives, and the GUARD is exact: ONLY Outcome==PermanentError parks the record FAILED and returns the
-    // 422 stop; out-of-credits stays 402; every OTHER non-Ok outcome (provider error, no-key, no-audio,
-    // transient) keeps its existing retryable 502 behavior and is NOT reclassified as permanent.
+    // caller should continue to inject (issue #1185).
+    //
+    // TWO SEPARATE QUESTIONS, and conflating them is what wedged the orange (defect 19):
+    //
+    //   1. What does the CLIENT get told? Only PermanentError gets the 422 "stop forever" contract.
+    //      Out-of-credits stays 402 and every other non-Ok outcome stays a retryable 502, so the durable
+    //      queue keeps re-driving a failure that might yet succeed. That classification is CORRECT and is
+    //      deliberately unchanged here.
+    //
+    //   2. What state is the RECORD left in? EVERY non-Ok outcome now parks the record FAILED. This is the
+    //      defect-19 fix. Parking is NOT "giving up": FAILED keeps the staged chunk bytes, and the next
+    //      register/complete clears it back to PENDING and re-drives (see the FAILED re-entry at register
+    //      and complete). What it changes is that a record which is going nowhere RIGHT NOW stops claiming
+    //      the session is "Uploading from phone", because IsPending is false while FAILED.
+    //
+    // OBSERVED, not theorised (14 July 2026 log correlation): upload f13cb4b6d9d0 on 12 July stood PENDING
+    // for 1 hour 30 minutes - painting its session orange across four Gateway restarts - while complete
+    // returned 502 roughly fifteen times from THIS retryable arm, which returned without any terminal write.
+    // It then transcribed and delivered 362 characters at 07:40. Both halves matter: the durable record was
+    // right to keep the words (they landed), and the colour was lying for ninety minutes. Parking FAILED
+    // here keeps the words AND ends the lie - that upload would still have delivered at 07:40.
+    //
+    // The retryable arm used to return silently, which is why the log could say WHEN it wedged but never
+    // WHY. It logs now.
     internal static DictationOutcome? MapNonOkTranscription(
         GatewayTranscriptionResult result, string uploadId, VoiceUploadStore uploads)
     {
         if (result.Outcome == TranscriptionOutcome.Ok) return null;
         if (result.Outcome == TranscriptionOutcome.OutOfCredits)
+        {
+            // Park the record so the session stops reading "Uploading from phone" while there is no credit
+            // to transcribe it with; the client still gets 402, and adding credit + retrying re-enters
+            // PENDING and delivers. NOTE: never once observed to fire - zero OutOfCredits in any log on this
+            // machine, ever, across 846 terminal outcomes. The mechanism is real; the cause is not this.
+            uploads.MarkFailed(uploadId, "out_of_credits");
+            FileLog.Write($"[GatewayDictation] complete uploadId={uploadId}: out of credits " +
+                $"code={result.Code}; parked FAILED (chunks retained, retryable)");
             return DictationOutcome.OutOfCredits(HostedAiErrorMapper.MapCode(result.Code));
+        }
         // A genuinely-permanent failure (unsupported/undecodable format, or too large to reduce - issue
         // #1139) can NEVER transcribe, so returning the generic retryable 502 makes the durable queue
         // re-drive it forever. Instead park the record FAILED with the reason code (KEEPING the chunks so an
@@ -287,6 +316,11 @@ internal static class GatewayDictationEndpoint
                 $"code={result.Code}; parked FAILED");
             return DictationOutcome.Permanent(TranslatePermanentReason(result.Code));
         }
+        // The retryable arm - THE ONE THAT ACTUALLY WEDGED (see f13cb4b6d9d0 above). Still a 502 the client
+        // re-drives; now it parks the record so the colour tells the truth between attempts.
+        uploads.MarkFailed(uploadId, result.Code ?? "transcription_error");
+        FileLog.Write($"[GatewayDictation] complete uploadId={uploadId}: retryable transcription failure " +
+            $"code={result.Code} error={result.Error}; parked FAILED (chunks retained, retryable)");
         return DictationOutcome.Error(StatusCodes.Status502BadGateway, result.Error ?? "transcription failed");
     }
 
