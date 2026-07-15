@@ -1,6 +1,6 @@
 ---
 name: mission
-description: How a mission is RUN in this repository - the Architect, the Manager, the Workers, and the independent Inspector, plus the four standing laws (ask up front then run alone; commit to the branch, never merge to main; a different agent inspects before anything reaches main; the Architect is the only one who merges). Read this BEFORE starting or seeding any mission, and before writing any mission brief. Triggers on "/mission", "start a mission", "run a mission", "seed an architect", "write a mission brief", "mission brief", "who merges", "mission roles".
+description: How a mission is RUN in this repository - the Architect, the Manager, the Workers, and the independent Inspector, plus the four standing laws (ask up front then run alone, and NEVER guess - bring the owner in when something is genuinely undecidable; the mission branch holds the work and only the Architect lands it on main; a different agent family inspects before anything reaches main; merged to origin/main is the only done). Read this BEFORE starting or seeding any mission, and before writing any mission brief. Triggers on "/mission", "start a mission", "run a mission", "seed an architect", "write a mission brief", "mission brief", "who merges", "mission roles".
 ---
 
 # How a mission runs
@@ -13,12 +13,19 @@ the naming, and the attachment rules. Read that for the object. Read this for th
 > **THIS FILE IS THE ONLY PLACE THE RULES LIVE. A mission brief must never restate them, and must
 > never GRANT them.**
 >
-> Before this file existed, every brief wrote the rules out from memory. They drifted - one brief
-> said commit freely, another said never commit - and each one read like it was handing out
-> authority. Then a brief got merged to main, and the sentence "You have standing commit authority
-> for the whole mission" sat in a permanent architecture document, in imperative voice, with its
-> expiry in a different paragraph. Retrieval does not fetch the other paragraph. That is how a
-> mission-scoped grant becomes a standing one that nobody ever decided to give.
+> Before this file existed, every brief wrote the rules out from memory. They drifted - they
+> contradicted each other on whether a mission could commit at all - and each one read like it was
+> handing out authority. Then one got merged to main, and a sentence granting that mission open
+> authority to commit came to rest in a permanent architecture document: imperative voice, addressed
+> to the reader, with the words that limited it to one branch and one week sitting in a different
+> paragraph. Retrieval does not fetch the other paragraph. That is how a mission-scoped grant becomes
+> a standing one that nobody ever decided to give.
+>
+> *The offending sentence is deliberately paraphrased here and not quoted. Quoting it would leave the
+> exact imperative string in this file, searchable, one retrieval away from being read as live - the
+> very failure being described. It is in git history on `backup/session-state-truth-2026-07-15` if it
+> is ever needed. The same reasoning is why that brief had the text deleted rather than struck
+> through: strike-through is a visual convention, and it means nothing to a grep.*
 >
 > A brief describes the WORK. This file describes the CONDUCT. A brief that grants a permission is
 > a bug in the brief.
@@ -49,9 +56,11 @@ patch.
 
 ## THE FOUR LAWS
 
-### 1. Ask everything UP FRONT, then run alone
+### 1. Ask everything UP FRONT, then run alone - and NEVER guess
 
-**Get your questions answered before you start. Then run the whole mission without coming back.**
+**Get your questions answered before you start, then run the whole mission without coming back - but
+NEVER guess. If something genuinely undecidable turns up mid-run, bring the owner in. Running alone
+is not the goal; it is what you get for having asked properly first.**
 
 The owner is not a reviewer and must not be used as one. A mission that stops at every step to ask
 "shall I do the next bit?" has moved the work into his lap and made him read a novel to say yes. He
@@ -73,36 +82,50 @@ what you found."
 The test: *could I have known to ask this before I started?* If yes, you asked too late. If no,
 asking now is correct.
 
-### 2. Commit to the branch. NEVER merge to main.
+### 2. The mission branch holds the work. Only the Architect lands it.
 
-**The Manager and Workers commit freely, and often, to the mission branch. They never push to main,
-never merge a pull request, never touch `main` at all.**
+**A seated mission has exactly one branch, and it is where the work lives. Nothing but the Architect
+puts anything on `main`.**
 
-This is not a formality; it is what keeps the work alive. This repository has already lost a
-mission's worth of work to a machine crash - fourteen commits, complete and passing, stranded on one
-disk because they were never pushed anywhere. **Uncommitted work is work you are one crash away from
-losing.** Commit early, commit often, push the branch.
+*This section describes how a chartered mission operates. It is not a grant, and it authorises
+nothing. If you are not seated on a mission the owner has chartered, with a branch cut for it, none
+of this applies to you and the repository's ordinary rule stands unchanged: never commit without
+being asked, and having been asked once is not being asked again.*
 
-- Committing to the mission branch **needs no permission**. It is the safe act.
-- Merging to `main` is the irreversible one, and it belongs to the Architect alone.
-- The repository's standing rule - *never commit without being asked* - is about the owner's
-  repository, not your own branch. Inside a mission, on the mission's branch, committing IS the job.
-  Do not seek approval for it, and do not read that as licence anywhere else.
+**Why the branch matters.** This repository has already lost a mission's worth of work to a machine
+crash - fourteen commits, complete and passing, stranded on one disk because they were never pushed
+anywhere. Work that exists in one place is work you are one crash away from losing. Keeping the
+mission branch current and pushed is mission hygiene, in the same way that leaving the site tidy is
+part of building, not a favour to anyone.
+
+**The authority chain, stated once:**
+
+- Work accumulates on the mission branch. That is the ordinary operation of a mission and the
+  Architect who chartered it has already accounted for it.
+- Landing anything on `main` is the irreversible act, and it is the **Architect's alone** - not the
+  Manager's, not a Worker's, and not via a merged pull request opened by anyone else.
+- This section never reaches outside a seated mission branch. It cannot be read as covering the
+  shared checkout, another mission's branch, or `main`.
 
 ### 3. A DIFFERENT agent inspects before anything reaches main
 
 **No work reaches `main` un-inspected, and the inspector is not the one who wrote it.**
 
 Use a genuinely different agent family, not another instance of the same one - if the Manager is
-Claude Code, the Inspector is Codex. Different training, different blind spots. That is the whole
-mechanism, and it works:
+Claude Code, the Inspector is Codex. The operational requirement is simply *different family*: an
+agent reviewing its own family's work shares too much of its judgement to be a check on it. That is
+the whole mechanism, and it works:
 
-> On one 64-file pull request, an independent Codex inspector found **seven real defects across five
+> On pull request 1598, an independent Codex inspector found **seven real defects across five
 > passes**, and not one was a false alarm. It found that the mission's headline feature **did not
 > work at all** - the value was computed correctly and nothing told the screen to re-read it - and
 > then found that the *fix for that* was itself half-done, and then that the same fault existed in
 > five more places. The author had verified the code, revert-tested the fixes, and watched the tests
 > fail on purpose. All of it green. All of it would have shipped.
+>
+> That is not lore: the review-driven commits on 1598 record it, one per finding, and pull requests
+> 1584, 1585, 1588 and 1596 carry the same shape. Check the branch history rather than take the
+> number on trust - which is, after all, the point of this law.
 
 - **The Architect calls the inspection**, not the Manager. The builder does not book his own
   inspection, and does not get to mark his own work as passed.

@@ -20,8 +20,15 @@ He looks at those dots to decide where to spend his attention. A dot that says "
 working session is not a cosmetic bug. It is the product giving him bad information about his own
 fleet, in the one place he trusts it.
 
-**When this mission is done, every screen tells him the truth about every session, and the next agent
-cannot quietly restore a lie, because the tests and the specification both defend the law.**
+**THE OBJECTIVE - not yet achieved, and stated as an aim rather than an accomplishment:** every
+screen tells him the truth about every session, and the next agent cannot quietly restore a lie,
+because the tests and the specification both defend the law.
+
+**Today it is partly true.** The eight lies below are fixed and merged. Four named gaps remain open
+(see "Still open"), and until they close, there are still places where a screen can disagree with
+another. Whether this mission ends at slice 6 or runs until those gaps close is an open question for
+the owner, recorded there. Do not quote the objective as though it were the current state - that is
+the exact failure this mission exists to end.
 
 ---
 
@@ -32,7 +39,16 @@ cannot quietly restore a lie, because the tests and the specification both defen
 The Gateway owns every state and is the ONLY thing that picks a colour. The Director reports facts.
 Clients render and decide nothing.
 
-This is settled. Do not re-litigate it.
+This is settled as a **RULING, and it is the target architecture - it is NOT a description of the
+code today.** Two clients still decide things: `MainWindow.axaml.cs` stamps the role badge from the
+Director's own `ResolveLocalRole`, and `FifoWindow.axaml.cs` filters on the raw `StatusColor`. Both
+are on `main` right now, both carry a comment saying so, and both are in "Still open" below.
+
+Read it as the rule you build toward and measure against, never as a claim about what is already
+true. A law written in the present tense reads like a finished fact, and this whole mission is a
+story about true-sounding sentences that were not.
+
+Do not re-litigate the rule itself.
 
 ---
 
@@ -89,7 +105,10 @@ reordered without conflicts.
 
 Every slice was inspected by an independent **Codex** agent before it merged. It was not decoration.
 
-**On slice 5 alone it found seven real defects across five passes. Not one was a false alarm.**
+**On slice 5 alone it found seven real defects across five passes. Not one was a false alarm.** The
+review-driven commits on [#1598](https://github.com/thefrederiksen/devthrottle/pull/1598) record
+them, roughly one per finding; slices 1 to 4 carry the same shape. The number is checkable from the
+branch history rather than something you have to take on trust - which is the point.
 
 The one that matters most: **the mission's headline feature did not work.** The Gateway resolved a
 session's role and stamped it, the fold read it correctly and suppressed a controlled worker's red -
