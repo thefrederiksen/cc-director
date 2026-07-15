@@ -1251,9 +1251,25 @@ public sealed class GatewayHost : IAsyncDisposable
             // The colour is now bounded by the SAME idle rule the transcribing mark already uses
             // (TranscribingSessions.IdleTimeout): the phone refreshes the mark on every stored chunk and
             // every completion attempt, so a genuinely slow upload keeps its label and is never cut short,
-            // while one that goes quiet drops back to the session's true colour within the idle window. The
-            // durable record is untouched and still delivers whenever the phone returns - and the delivery
-            // submits text, which makes the agent work, which is blue. Nothing is lost except the lie.
+            // while one that goes quiet drops back to the session's true colour within the idle window.
+            //
+            // THAT "REFRESHES ON EVERY CHUNK" IS TRUE BY INSPECTION AND UNGUARDED BY ANY TEST. It is
+            // GatewayDictationEndpoint.cs: Begin on register, Refresh in the chunk route, Refresh on the
+            // completion attempt. The producer tests below drive TranscribingSessions directly, so they
+            // prove the RULE reads the mark - they do not prove the ROUTES still write it. Delete the
+            // Refresh in the chunk route and every test in this repository stays green while a slow real
+            // upload stops painting mid-flight. It is the milder cousin of defect 19 (a label that goes
+            // quiet too early, rather than one that never shuts up) and it loses no words, but it is
+            // written here as a known gap rather than left to read as covered: proving it needs an
+            // endpoint-level test that drives the real chunk route, and there is no host harness for these
+            // routes yet. Raised by review of pull request 1588; accepted deliberately, not overlooked.
+            //
+            // The user's AUDIO is retained either way and still delivers whenever the phone returns - the
+            // delivery submits text, which makes the agent work, which is blue. Note the precise claim:
+            // the CHUNKS are kept and the record is never discarded or expired. The record itself is NOT
+            // untouched - a retryable or out-of-credits transcription now parks it Pending -> Failed, and
+            // Failed is a resting state that keeps the audio and re-drives on the next register/complete,
+            // not a terminal one. Nothing is lost except the lie on the dot.
             //
             // The earlier comment here claimed this "never wedges because the marker clears only on
             // delivery/abandon". That was half-true and the half it left out WAS the bug: the marker does
