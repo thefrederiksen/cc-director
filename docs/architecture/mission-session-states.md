@@ -97,7 +97,8 @@ Every one of these was a place the product said something false about a session.
 | 3 | The orange dot that lied about the phone (defect 19) | [#1588](https://github.com/thefrederiksen/devthrottle/pull/1588) | **Merged** |
 | 4 | Deletion is a badge, never a colour (defect 23) | [#1596](https://github.com/thefrederiksen/devthrottle/pull/1596) | **Merged** |
 | 5 | One fold everywhere; the desktop stops guessing (defect 5) | [#1598](https://github.com/thefrederiksen/devthrottle/pull/1598) | **Merged** |
-| 6 | The agreement check and the QA report | - | **Not started** |
+| 6 | The agreement check and the QA report | [#1606](https://github.com/thefrederiksen/devthrottle/pull/1606) | **Inspection** |
+| 7 | The four gaps below - the mission does not end until they close | - | **Manager seated** |
 
 Slices are cut from `origin/main` in build order and cherry-picked - the fourteen commits are a
 stacked chain (three touch `SessionDto.cs`, three touch `GatewayHost.cs`), so they cannot be
@@ -150,8 +151,27 @@ just-expired snooze. The first three do not heal on their own. The recommendatio
 implies is that the desktop should stop working colours out and simply **ask**, as the phone does.
 That is a real piece of work and it is the owner's call.
 
-**Open question for the owner:** does this mission end at slice 6, or does it continue until these
-are closed?
+**ANSWERED by the owner, 15 July 2026: the mission does NOT end at slice 6. It runs until these four
+are closed.** A Manager is seated on them - brief at
+[`session-states-gaps-manager-brief.md`](session-states-gaps-manager-brief.md), branch
+`mission/session-states-gaps`.
+
+Two of the four are settled and being built:
+
+- **Gap 1's blocker is decided.** "What does the role badge show before the first Gateway stamp
+  arrives?" - **nothing**. No badge until the Gateway says. The law is that the Director resolves
+  nothing, and "no answer yet" is not a lie, whereas a local guess is.
+- **Gap 3 is scoped as a question, not an order.** `Session.StatusColor` has eight live readers. If
+  closing gap 2 removes the last *presentation* consumer that is progress, and the remaining
+  non-presentation reads are a different question from "a client decided a colour". Deleting a field
+  with live readers to make this document true would be the mission's own failure mode. If it cannot
+  close here, it stays a named gap - that is a fine outcome; a false claim is not.
+
+**Gap 4 still needs the owner, and will come back to him with a cost.** The desktop cannot see phone
+dictation, server transcription, voice preparation, or a just-expired snooze, because it folds the
+DIRECTOR's view and those are Gateway-side facts. The design's own recommendation is that the desktop
+should stop working colours out and ask, as the phone does. That is an architectural change, not a
+bug fix, so it is his call. The Manager investigates and sizes it; it does not build it.
 
 ---
 
