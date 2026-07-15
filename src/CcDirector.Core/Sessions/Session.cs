@@ -1053,6 +1053,44 @@ public sealed class Session : IDisposable
     /// writes it. Defaults to "blue" ("working/starting") at construction, which the
     /// wingman immediately confirms. The detector only ever drives blue (working) and
     /// red (needs you); "unknown" is used for an exited session.
+    ///
+    /// GAP 3 - SCOPED 15 JULY 2026, AND IT DOES NOT CLOSE. THIS FIELD STAYS. Here is the census, so the
+    /// next reader does not have to redo it and does not delete this on the strength of a document.
+    ///
+    /// The gap said "the Director's cooked colour is not deleted; it survives only because things still
+    /// read it", the implication being that once the last reader went, so would this. The census says
+    /// otherwise, and the distinction that matters is between A CLIENT DECIDING A COLOUR (which law 2
+    /// forbids) and THE WINGMAN REMEMBERING WHAT IT DECIDED (which is just a component's own record).
+    /// Every surviving reader is the second kind:
+    ///
+    ///  - WingmanContextBuilder -> WingmanAskContext.CurrentColor: the wingman's LLM prompt. Telling the
+    ///    wingman what it last concluded is not a client picking a colour; it is the wingman's own memory.
+    ///  - SessionReadExecutor -> WingmanViewDto.CurrentColor: the wingman's event view - "what did you say
+    ///    and why". Its subject IS the wingman's decision, so reading the decision is the feature.
+    ///  - TurnReviewLogger -> TurnReviewLog.StatusColor -> TurnReviewDialog: a HISTORICAL record of what the
+    ///    wingman decided at a past turn. The dialog renders the stored row, not this live field - a log of
+    ///    a decision, which is the opposite of a decision.
+    ///  - SessionLogWriter: subscribes OnStatusColorChanged to write a log line.
+    ///  - SetStatusColor itself: reads the old value for its precedence guard.
+    ///
+    /// Deleting the field would therefore delete the wingman's record of its own reasoning to make a
+    /// sentence in a document true. That is this mission's own failure mode wearing a cleanup costume.
+    ///
+    /// THE FOLD READS THIS FOR NOTHING - verified, not assumed: SessionOrdering mentions StatusColor only
+    /// in comments and tombstones, and folds from the raw ActivityState instead. No client renders it: the
+    /// rail, the Cockpit and the phone fold, and the FIFO queue window stopped reading it when gap 2 closed.
+    /// Two API surfaces still CARRY it (a /sessions query filter, and the Exes payload beside
+    /// effectiveColor/stateLabel) - carrying a fact is not deciding from it.
+    ///
+    /// ONE PRESENTATION READER IS LEFT, AND IT IS NOT THIS FIELD - it is the wire copy, SessionDto
+    /// .StatusColor, at LoopbackCarModeFleet.ToInfo: <c>StateLabel ?? (EffectiveColor ?? StatusColor)</c>,
+    /// which Car Mode SPEAKS. It is a fallback chain that ends at the Director's cooked colour, so on paper
+    /// a client still renders a Director decision. It appears unreachable - SessionOrdering.StateLabel
+    /// returns a non-empty literal on every arm, and the Gateway stamps it for every session in the fleet
+    /// pass - but "appears unreachable" is not a proof, and the one hole (a blank DictationStatus returns
+    /// blank) is real. NOT changed here: what Car Mode says when the fold's label is blank is a question
+    /// about Car Mode's spoken output, not about this field, and it is raised with the Architect rather
+    /// than guessed at.
     /// </summary>
     public string StatusColor { get; private set; } = "blue";
 
