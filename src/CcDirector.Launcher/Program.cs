@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Net.Http;
+using System.Net.Http.Headers;
 using Avalonia;
 using CcDirector.Core.Utilities;
 using CcDirector.Setup.Engine;
@@ -110,6 +111,38 @@ public static class Program
         }
     }
 
+    /// <summary>
+    /// Read the running Launcher's bearer token so the self-update helper can authenticate its
+    /// POST /shutdown (issue #1609). READ-ONLY on purpose: LoadOrCreateToken would MINT one when the file
+    /// is absent, and a freshly minted token is exactly the one the already-running Launcher does not
+    /// know - it would 401 just like sending none. Null means "no token to read", so the caller can say
+    /// that instead of blaming the exe lock.
+    /// </summary>
+    private static string? TryReadLauncherToken()
+    {
+        try
+        {
+            var path = LauncherAuth.TokenFile;
+            if (!File.Exists(path))
+            {
+                FileLog.Write($"[Program] launcher token file not found at {path}");
+                return null;
+            }
+            var token = File.ReadAllText(path).Trim();
+            if (token.Length == 0)
+            {
+                FileLog.Write($"[Program] launcher token file is empty at {path}");
+                return null;
+            }
+            return token;
+        }
+        catch (Exception ex)
+        {
+            FileLog.Write($"[Program] could not read the launcher token: {ex.Message}");
+            return null;
+        }
+    }
+
     private static int ApplyUpdate(string[] args)
     {
         string Arg(string name) { var i = Array.IndexOf(args, name); return i >= 0 && i + 1 < args.Length ? args[i + 1] : ""; }
@@ -129,14 +162,26 @@ public static class Program
             target, stagedSelf, version,
             stopLauncher: () =>
             {
-                // Best-effort graceful exit; LauncherSelfUpdate's exe-writability wait is the real
-                // exit barrier (a single-file exe unlocks only when its process has fully exited,
-                // which also releases the single-instance mutex for the relaunch).
+                // Issue #1609: /shutdown is behind LauncherHost's token gate, so this MUST authenticate.
+                // Sent token-less it was answered 401, the Launcher never exited, its exe never unlocked,
+                // and the self-update aborted with the misleading "exe still locked after stop". The
+                // exe-writability wait below is only a barrier if the process actually exits; it cannot
+                // substitute for it. Same defect, same fix, as the Gateway helper.
+                var request = new HttpRequestMessage(HttpMethod.Post, $"http://127.0.0.1:{port}/shutdown");
+                var token = TryReadLauncherToken();
+                if (token is null)
+                {
+                    FileLog.Write("[Program] /shutdown SKIPPED: no launcher token readable; cannot ask the Launcher to exit, so the swap will abort");
+                    return false;
+                }
+                request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
+
                 try
                 {
-                    using var resp = http.PostAsync($"http://127.0.0.1:{port}/shutdown", content: null)
-                        .GetAwaiter().GetResult();
+                    using var resp = http.SendAsync(request).GetAwaiter().GetResult();
                     FileLog.Write($"[Program] /shutdown -> {(int)resp.StatusCode}");
+                    if (!resp.IsSuccessStatusCode)
+                        FileLog.Write($"[Program] /shutdown REFUSED ({(int)resp.StatusCode}); the Launcher will not exit and the swap will abort on a locked exe");
                     return resp.IsSuccessStatusCode;
                 }
                 catch (Exception ex)

@@ -42,8 +42,8 @@ param(
 $ErrorActionPreference = 'Continue'
 $repo = Split-Path -Parent $PSScriptRoot
 $work = Join-Path $env:TEMP ("cc-gwsu-" + [Guid]::NewGuid().ToString('N'))
-$installed = Join-Path $work 'installed\cc-director-gateway.exe'
-$staged    = Join-Path $work 'staged\cc-director-gateway.exe'
+$installed = Join-Path $work 'installed\devthrottle-gateway.exe'
+$staged    = Join-Path $work 'staged\devthrottle-gateway.exe'
 $runArgs   = "--port $Port --no-autostart"
 
 # --- Isolation (issue #176): the self-update helper writes installed.json / update-pins.json into
@@ -76,7 +76,7 @@ $env:CC_GATEWAY_NO_TAILSCALE = '1'
 
 function Stop-Throwaway {
     # Only processes running from OUR temp dir - never the live Gateway.
-    Get-Process -Name cc-director-gateway -ErrorAction SilentlyContinue |
+    Get-Process -Name devthrottle-gateway -ErrorAction SilentlyContinue |
         Where-Object { $_.Path -like "$work*" } |
         ForEach-Object { try { $_.Kill() } catch {} }
 }
@@ -100,7 +100,7 @@ function Healthy([int]$p, [int]$tries = 15) {
 Write-Output "=== building Gateway tray app from current source ==="
 $pub = Join-Path $work 'publish'
 & dotnet publish "$repo\src\CcDirector.GatewayApp\CcDirector.GatewayApp.csproj" -c Release -r win-x64 --self-contained false -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -o $pub --nologo | Out-Null
-$built = Join-Path $pub 'cc-director-gateway.exe'
+$built = Join-Path $pub 'devthrottle-gateway.exe'
 if (-not (Test-Path $built)) { Write-Output "FAILED: gateway build not found at $built"; Cleanup; exit 1 }
 
 New-Item -ItemType Directory -Force (Split-Path $installed) | Out-Null
