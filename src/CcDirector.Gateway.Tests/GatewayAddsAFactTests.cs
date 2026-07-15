@@ -14,9 +14,14 @@ namespace CcDirector.Gateway.Tests;
 /// DISAGREE. Opposite verdicts, identical row - so the agreement check could only report "indeterminate"
 /// and refuse to grade it, which fixes the instrument rather than the product.
 ///
-/// The fold now reads the Gateway's own VoiceGenerating (which was always being stamped anyway) through
-/// <see cref="SessionOrdering.IsGatewayVoiceBriefing"/>, carrying the stamp's exact condition. Nothing is
-/// destroyed and no pixel moves.
+/// The overwrite is simply DELETED, and nothing replaces it: SessionOrdering.IsVoicePreparing already folds
+/// the Gateway's own VoiceGenerating fact, which is what "the Gateway adds a fact" was always supposed to
+/// mean. A first attempt added a second rule for that fact and the existing suite refuted it - correctly,
+/// because a second rule for one fact is a second answer.
+///
+/// Deleting the stamp also fixes a lie nobody had noticed: by hijacking BriefingState, the Gateway made a
+/// voice-generating session read "Wingman reading" when its own rule says the truer "Preparing voice". The
+/// dot is yellow either way.
 ///
 /// These assert BOTH halves - the colour is unchanged AND the Director's fact survives. Asserting only the
 /// colour would pass just as well against the overwrite, which is the whole point of the change.
@@ -49,8 +54,10 @@ public sealed class GatewayAddsAFactTests
     {
         var s = VoiceGenerating(directorBriefingState: "None");
 
+        // Still yellow - the dot never moved. But the words are now the Gateway's own honest rule
+        // ("Preparing voice") instead of the Director's field wearing the Gateway's meaning.
         Assert.Equal("yellow", SessionOrdering.EffectiveColor(s));
-        Assert.Equal("Wingman reading", SessionOrdering.StateLabel(s));
+        Assert.Equal("Preparing voice", SessionOrdering.StateLabel(s));
 
         // The fact the overwrite used to destroy. The fold READ it; it did not write it.
         Assert.Equal("None", s.BriefingState);
@@ -77,7 +84,8 @@ public sealed class GatewayAddsAFactTests
         Assert.Equal("Briefing", directorIsBriefing.BriefingState);
         Assert.Equal("None", onlyTheGatewayIsBriefing.BriefingState);
 
-        // Which is exactly what makes them gradeable: the Director's own fold differs between them.
+        // Which is exactly what makes them gradeable: the Director's own fold differs between them, so the
+        // check can tell "both screens agree" from "the desktop is about to disagree".
         Assert.True(SessionOrdering.IsBriefing(directorIsBriefing));
         Assert.False(SessionOrdering.IsBriefing(onlyTheGatewayIsBriefing));
     }
@@ -87,12 +95,14 @@ public sealed class GatewayAddsAFactTests
     /// <summary>The Director saying "Failed" kept the Gateway's window shut when the guard was a write
     /// condition, and still does now it is a read condition. Same rule, no destroyed field.</summary>
     [Fact]
-    public void ADirectorsFailedBriefing_KeepsTheGatewayWindowShut()
+    public void ADirectorsFailedBriefing_SurvivesUntouched()
     {
         var s = VoiceGenerating(directorBriefingState: "Failed");
 
-        Assert.False(SessionOrdering.IsGatewayVoiceBriefing(s));
+        // The Director said "Failed" and it still says "Failed" - the stamp's guard existed only because
+        // the stamp was a WRITE. With nothing writing, there is nothing to guard against.
         Assert.Equal("Failed", s.BriefingState);
+        Assert.False(SessionOrdering.IsBriefing(s));
     }
 
     /// <summary>The stamp required raw red; so does the read. A working session is BLUE - nothing
@@ -103,8 +113,8 @@ public sealed class GatewayAddsAFactTests
         var s = VoiceGenerating(directorBriefingState: "None");
         s.ActivityState = "Working";
 
-        Assert.False(SessionOrdering.IsGatewayVoiceBriefing(s));
         Assert.Equal("blue", SessionOrdering.EffectiveColor(s));
+        Assert.Equal("None", s.BriefingState);
     }
 
     /// <summary>No generation, no window. The control: if this ever goes yellow the fix has invented a
@@ -115,8 +125,8 @@ public sealed class GatewayAddsAFactTests
         var s = VoiceGenerating(directorBriefingState: "None");
         s.VoiceGenerating = false;
 
-        Assert.False(SessionOrdering.IsGatewayVoiceBriefing(s));
         Assert.Equal("red", SessionOrdering.EffectiveColor(s));
+        Assert.Equal("None", s.BriefingState);
     }
 
     /// <summary>The Director's OWN briefing is untouched by all of this - it folds yellow on its own

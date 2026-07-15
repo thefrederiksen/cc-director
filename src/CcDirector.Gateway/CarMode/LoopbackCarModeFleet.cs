@@ -374,7 +374,28 @@ public sealed class LoopbackCarModeFleet : ICarModeFleet
             Repo = RepoLeaf(s.RepoPath),
             MachineName = s.MachineName ?? "",
             MissionName = string.IsNullOrWhiteSpace(s.MissionName) ? null : s.MissionName,
-            State = string.IsNullOrWhiteSpace(s.StateLabel) ? (s.EffectiveColor ?? s.StatusColor) : s.StateLabel!,
+            // GAP 6: Car Mode SPEAKS the fold's label, and nothing else. This used to read
+            // `StateLabel ?? (EffectiveColor ?? StatusColor)` - a fallback chain that ended by speaking the
+            // DIRECTOR'S COOKED COLOUR out loud, which is illegal twice over: this repository forbids
+            // fallback programming outright, and law 2 forbids a client rendering a colour the Director
+            // decided. It was the last presentation reader of the cooked colour anywhere in the product.
+            //
+            // The chain is DELETED rather than reordered, because the hole it was catching is closed at the
+            // producer: SessionOrdering.StateLabel now returns a non-empty literal on every arm (the
+            // dictation arm treats a blank as absent - see DictationPhaseLabel), and the Gateway's fleet
+            // pass stamps it for every session before Car Mode ever deserializes one. So there is nothing
+            // left to fall back FROM, and no question about what to say when the label is blank.
+            //
+            // A missing label here is therefore a Gateway defect - the fold did not run - and it fails loud
+            // instead of being papered over. That is the whole lesson of the chain it replaces: the old code
+            // turned a Gateway bug into a plausible-sounding sentence in the owner's car, which is precisely
+            // how this mission's defects stayed invisible for months.
+            State = string.IsNullOrWhiteSpace(s.StateLabel)
+                ? throw new InvalidOperationException(
+                    $"Session {s.SessionId} reached Car Mode with no fold label. The Gateway stamps " +
+                    "SessionDto.StateLabel for every session in the fleet pass, so this means the fold did " +
+                    "not run - a Gateway defect. Car Mode will not invent a state or speak a raw colour.")
+                : s.StateLabel,
             NeedsYou = needsYou,
             WaitingMinutes = WaitingMinutes(s.NeedsYouSince),
             Summary = summary,
