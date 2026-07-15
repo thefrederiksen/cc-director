@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
+import { StatusPill } from "../components/StatusPill";
 import { classifyFile, formatFileSize } from "@devthrottle/client-core/history/fileTypes";
 import type { FileViewerType } from "@devthrottle/client-core/history/fileTypes";
 import {
@@ -81,6 +82,7 @@ export function FileView() {
         <header className="app-bar">
           <button type="button" className="file-view-back" onClick={goBack}>Back</button>
           <h1 className="term-title">File</h1>
+          <StatusPill inline />
         </header>
         <div className="file-view-body">
           <div className="file-view-error">No file path was provided.</div>
@@ -95,10 +97,16 @@ export function FileView() {
 
   return (
     <div className="terminal-screen">
+      {/* The pill is rendered here, inline, because this screen lives under /session/ and the globally
+          mounted fixed pill stands down for that whole subtree (GatedLayout). Every /session/ screen
+          therefore has to carry its own - Chat, Terminal and Voice get theirs from SessionAppBar; the
+          file viewer has its own header, so it renders its own. Without this the file viewer showed no
+          network status at all. */}
       <header className="app-bar">
         <button type="button" className="file-view-back" onClick={goBack}>Back</button>
         <h1 className="term-title" title={path}>{name}</h1>
         <DownloadButton url={url} name={name} />
+        <StatusPill inline />
       </header>
       <div className="file-view-body">
         <FileViewContent type={type} url={url} name={name} sessionId={sessionId} path={path} />
