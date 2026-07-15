@@ -96,7 +96,37 @@
     <CockpitWwwroot>$(MSBuildProjectDirectory)\wwwroot\c</CockpitWwwroot>
     <RunCockpitBuild Condition="'$(RunCockpitBuild)' == '' and ('$(Configuration)' == 'Release' or '$(BuildCockpit)' == 'true')">true</RunCockpitBuild>
     <RunCockpitBuild Condition="'$(RunCockpitBuild)' == ''">false</RunCockpitBuild>
+
+    <!-- Issue #1578: the strict workspace typecheck runs on EVERY configuration, not just Release.
+         It used to live inside BuildCockpitApp, which is release-only, so a Debug `dotnet build` -
+         what everyone actually runs locally - never type-checked the TypeScript. CI builds Release,
+         so a type error passed locally and failed on main: main was red for five straight commits
+         behind exactly that gap (#1573). Typechecking is fast (~25s cold, and incremental after);
+         bundling the app is slow. They were fused for no reason, so they are split here. -->
+    <RunWorkspaceTypecheck Condition="'$(RunWorkspaceTypecheck)' == ''">true</RunWorkspaceTypecheck>
+    <!-- BaseIntermediateOutputPath ("obj\"), NOT IntermediateOutputPath: the latter is set by the
+         SDK's bottom .targets import, so it is still EMPTY here and the stamp would land in the
+         project directory as an untracked junk file. obj\ is gitignored. The stamp is deliberately
+         not per-configuration - tsc does not care about Debug vs Release, so a Debug build having
+         checked these exact inputs is a real answer for Release too. -->
+    <WorkspaceTypecheckStamp>$(BaseIntermediateOutputPath)workspace-typecheck.stamp</WorkspaceTypecheckStamp>
   </PropertyGroup>
+
+  <!-- What the typecheck reads. If a file tsc looks at is not listed here, the stamp goes stale and
+       the gate reports a false green - so this must cover the sources, the tsconfigs and the
+       manifests (a dependency or script change alters the result too). node_modules is excluded:
+       it is enormous, and npm ci rewrites package-lock.json, which IS listed. -->
+  <ItemGroup>
+    <WorkspaceTypecheckInput Include="$(WorkspaceRoot)packages\**\*.ts;$(WorkspaceRoot)packages\**\*.tsx"
+                             Exclude="$(WorkspaceRoot)packages\**\node_modules\**;$(WorkspaceRoot)packages\**\dist\**" />
+    <WorkspaceTypecheckInput Include="$(WorkspaceRoot)apps\**\*.ts;$(WorkspaceRoot)apps\**\*.tsx"
+                             Exclude="$(WorkspaceRoot)apps\**\node_modules\**;$(WorkspaceRoot)apps\**\dist\**" />
+    <WorkspaceTypecheckInput Include="$(WorkspaceRoot)packages\**\tsconfig*.json;$(WorkspaceRoot)apps\**\tsconfig*.json"
+                             Exclude="$(WorkspaceRoot)packages\**\node_modules\**;$(WorkspaceRoot)apps\**\node_modules\**" />
+    <WorkspaceTypecheckInput Include="$(WorkspaceRoot)packages\**\package.json;$(WorkspaceRoot)apps\**\package.json"
+                             Exclude="$(WorkspaceRoot)packages\**\node_modules\**;$(WorkspaceRoot)apps\**\node_modules\**" />
+    <WorkspaceTypecheckInput Include="$(WorkspaceRoot)package.json;$(WorkspaceRoot)package-lock.json;$(WorkspaceRoot)tsconfig*.json" />
+  </ItemGroup>
 
   <Target Name="BuildMobileApp" BeforeTargets="AssignTargetPaths" Condition="'$(RunMobileBuild)' == 'true'">
     <Message Importance="high" Text="[BuildMobileApp] building the mobile PWA ($(Configuration)) from $(MobileDir) via the workspace at $(WorkspaceRoot)" />
@@ -124,15 +154,47 @@
        Content INSIDE the target so it flows to this project's output (and transitively to the tray
        exe that references this project).
        ============================================================================ -->
-  <Target Name="BuildCockpitApp" BeforeTargets="AssignTargetPaths" Condition="'$(RunCockpitBuild)' == 'true'">
+  <!-- ============================================================================
+       Issue #1578: the strict, test-inclusive workspace typecheck, as its own build gate.
+
+       Issue #1010 added this because the workspace build (vite / esbuild) does not type-check and
+       the per-package declaration build (tsconfig.build.json) excludes test files, so a strictly-
+       typed test file could regress unnoticed. But it was placed INSIDE BuildCockpitApp, which is
+       release-only - so the Debug build everyone runs locally never type-checked anything, and the
+       error surfaced only on CI (which builds Release). #1573 is what that costs: main red for five
+       commits over three object literals missing a cast.
+
+       It runs for every configuration now. Inputs/Outputs make it incremental: touch no TypeScript
+       and MSBuild skips the target outright, so a C# developer pays nothing after the first build.
+       Set -p:RunWorkspaceTypecheck=false to skip it deliberately (a machine with no Node.js, say);
+       that is an explicit choice, not a silent one.
+       ============================================================================ -->
+  <Target Name="TypecheckWorkspaces"
+          BeforeTargets="AssignTargetPaths"
+          Condition="'$(RunWorkspaceTypecheck)' == 'true'"
+          Inputs="@(WorkspaceTypecheckInput)"
+          Outputs="$(WorkspaceTypecheckStamp)">
+    <Error Condition="!Exists('$(WorkspaceRoot)package.json')"
+           Text="The npm workspace root was not found at $(WorkspaceRoot). The Gateway serves the Cockpit and mobile app from it, so this path must be right." />
+
+    <!-- No node_modules means tsc is not on the path and the typecheck would report a false green.
+         Install once, here, rather than skipping the gate. -->
+    <Message Importance="high" Condition="!Exists('$(WorkspaceRoot)node_modules')"
+             Text="[TypecheckWorkspaces] node_modules is missing - running npm ci once (this takes a minute; later builds reuse it)" />
+    <Exec Command="npm ci" WorkingDirectory="$(WorkspaceRoot)" Condition="!Exists('$(WorkspaceRoot)node_modules')" />
+
+    <Message Importance="high" Text="[TypecheckWorkspaces] strict test-inclusive typecheck across every workspace ($(Configuration))" />
+    <Exec Command="npm run typecheck --workspaces --if-present" WorkingDirectory="$(WorkspaceRoot)" />
+
+    <MakeDir Directories="$(BaseIntermediateOutputPath)" />
+    <Touch Files="$(WorkspaceTypecheckStamp)" AlwaysCreate="true" />
+  </Target>
+
+  <Target Name="BuildCockpitApp" BeforeTargets="AssignTargetPaths" DependsOnTargets="TypecheckWorkspaces" Condition="'$(RunCockpitBuild)' == 'true'">
     <Message Importance="high" Text="[BuildCockpitApp] building the React Cockpit ($(Configuration)) from $(CockpitDir) via the workspace at $(WorkspaceRoot)" />
     <Exec Command="npm ci" WorkingDirectory="$(WorkspaceRoot)" />
-    <!-- Issue #1010: the workspace build (vite / esbuild) does not type-check, and the per-package
-         declaration build (tsconfig.build.json) excludes the test files, so a strictly-typed test file
-         could regress unnoticed. Run the test-inclusive strict typecheck (tsc noEmit over every
-         workspace, whose tsconfig include of "src" covers test files) as a blocking build-gate step. -->
-    <Message Importance="high" Text="[BuildCockpitApp] running the strict test-inclusive typecheck (npm run typecheck) across all workspaces" />
-    <Exec Command="npm run typecheck --workspaces --if-present" WorkingDirectory="$(WorkspaceRoot)" />
+    <!-- The typecheck that used to live here is now the TypecheckWorkspaces gate above, which this
+         target depends on so the release path still type-checks before it bundles. -->
     <Exec Command="npm run build --workspace @devthrottle/cockpit" WorkingDirectory="$(WorkspaceRoot)" />
     <RemoveDir Directories="$(CockpitWwwroot)" />
     <ItemGroup>
