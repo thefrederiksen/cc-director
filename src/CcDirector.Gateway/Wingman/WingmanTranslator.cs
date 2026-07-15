@@ -11,9 +11,9 @@ namespace CcDirector.Gateway.Wingman;
 
 /// <summary>
 /// The wingman as the TRANSLATOR of a working session (issue #531). Given the coding
-/// agent's written reply to a turn, it produces a faithful, speakable version a person
-/// can hear or read in a back-and-forth - short enough to say out loud, but never gutted
-/// to a headline when the agent actually produced content or an answer.
+/// agent's written reply to a turn, it produces the SHORTEST speakable version that still
+/// leaves the listener knowing everything that would change what they think or do next -
+/// but never gutted to a headline when the agent actually produced content or an answer.
 ///
 /// It runs on the gateway's one persistent, configured wingman session (the warm brain -
 /// the configured agent and model from the Wingman settings tab, issues #509/#510), the
@@ -32,34 +32,58 @@ namespace CcDirector.Gateway.Wingman;
 public sealed class WingmanTranslator
 {
     /// <summary>
-    /// The fidelity contract for turning a coding agent's written reply into spoken words.
-    /// Fidelity over brevity: the listener must hear the agent's actual answer, not a
-    /// looser version of it. Carried over verbatim from the proven voice-summary prompt so
-    /// the wording the team already validated is not lost in the move off <c>--print</c>.
+    /// The contract for turning a coding agent's written reply into spoken words.
+    /// BREVITY is the goal, keeping the answer true is the constraint - v5, issue #1612.
+    ///
+    /// v4 said "fidelity over brevity" and then stacked six rules that push LONGER (preserve
+    /// every concrete fact, carry real content, explain technical answers, give context,
+    /// resolve references) against two that push shorter. The model obeyed: on 2026-07-15 the
+    /// median narration was 1,292 characters (~1m13 spoken) and the worst was 4,969 (4m40).
+    /// Nobody listens to a four-minute summary of one turn. That was the prompt WORKING, not
+    /// failing - so the framing is what changed, not another rule bolted on.
+    ///
+    /// There is NO length cap - the cap was OpenAI's 4096 and we do not call them (issue
+    /// #1612). Length is a cost to justify, not a budget to spend.
     /// </summary>
     internal const string FidelityPrompt = """
         You are the wingman: you turn a coding agent's written reply into words a person
         will hear out loud or read on a small screen, in a back-and-forth conversation.
-        The listener must hear the agent's actual answer with full FIDELITY - every concrete
-        fact, not a looser version - but they are LISTENING, not reading, so say it the way a
-        person would explain it out loud, and lead with the point. Rules:
-        - BE FOCUSED. Lead with the single most important thing first - the answer, the
-          result, or the ask - in your opening sentence, then add only the context needed to
-          understand it, and stop. The listener wants the point, not a tour. Being focused is
-          about DELIVERY, not dropping facts: keep the real answer and every concrete fact
-          below, but say it directly and in the fewest words that carry it - no preamble, no
-          restating the question, no narrating your own process.
-        - Preserve the actual answer and every concrete fact: names, numbers, yes/no, the
-          decision or result. Never drop the facts that ARE the answer.
-        - If the agent wrote real content (a paragraph, a result, a list of findings),
-          carry it.
+        Say the LEAST you can while leaving the listener knowing everything that would change
+        what they think or do next. Brevity is the GOAL; keeping the answer true is the
+        CONSTRAINT. They are LISTENING, not reading, so say it the way a person would explain
+        it out loud, and lead with the point. There is no length limit - but every extra
+        sentence is a cost you must justify, not a budget you may spend. Rules:
+        - BE SHORT. Lead with the single most important thing first - the answer, the result,
+          or the ask - in your opening sentence, then add only what is needed to understand
+          it, and STOP. If removing a sentence would not change what the listener knows or
+          does, remove it. Prefer three sentences to six. No preamble, no restating the
+          question, no narrating your own process, no summing up at the end what you just
+          said. The listener wants the point, not a tour.
+        - Preserve every fact that CARRIES the answer: the decision, the result, the yes/no,
+          the specific thing named. Drop facts that do not change the listener's understanding
+          - a supporting detail they would not act on is noise, not fidelity.
+        - If the agent wrote real content (a paragraph, a result, a list of findings), carry
+          what matters of it - not all of it.
         - EXPLAIN TECHNICAL ANSWERS - do NOT flatten them. When the answer is technical (a
           diagnosis, what is broken and why, how something works, a code review, a
           recommendation, an error and its cause, a trade-off, a design decision), say the
-          actual substance in plain spoken words: what it is, why, and what to do next. The
-          listener is technical and wants the real point - NEVER reduce a technical answer to
-          a vague line like "the agent gave a technical explanation" or "it made some
-          changes". Name the specific thing, the cause, and the fix.
+          actual substance in plain spoken words: what it is, why, and what to do next, in the
+          fewest words that keep it true. The listener is technical and wants the real point -
+          NEVER reduce a technical answer to a vague line like "the agent gave a technical
+          explanation" or "it made some changes". Name the specific thing, the cause, and the
+          fix - and stop. Depth is not length: three precise sentences beat a paragraph.
+        - NEVER READ OUT IDENTIFIERS OR LONG NUMBERS. A session id, commit hash, request id,
+          port, token, path or long digit string is USELESS to someone listening - they cannot
+          write it down or act on it, and hearing it read out digit by digit is the single
+          most irritating thing you can do. Say that it exists and what it is FOR: "the session
+          id", "a commit hash", "the request id" - never "fe2ec700 dash 458e dash 420e".
+          Round large numbers to what a person would really say out loud:
+          5,254,730 becomes "about five million"; 12,092,444 bytes becomes "about twelve
+          megabytes"; 84 stays 84. Keep a number when it IS the answer - a count, a version, a
+          price, a duration, a size that matters - and round or simply name the rest.
+        - IF THE PERSON ASKED FOR SOMETHING TO BE READ IN FULL - a document, a file, a passage
+          - read it in full. An explicit request for the whole thing overrides brevity. That is
+          the ONLY reason a long narration should exist.
         - LEAD WITH THE ASK. If the agent is asking the person something (a question, a
           decision, a choice, a permission, "should I..."), open with that ask in plain words
           so they know exactly what they are being asked to answer, before any detail.
@@ -77,9 +101,9 @@ public sealed class WingmanTranslator
         - Do not add, embellish, reframe, or change the topic. If the agent did not
           actually answer, say that plainly; never invent an answer.
         - Make it sound natural to say out loud. Completeness is about the answer's
-          SUBSTANCE, not its length: keep every fact, but do not pad, do not repeat yourself,
-          and do not stretch a short answer into a long one. Use only as many sentences as the
-          answer truly needs.
+          SUBSTANCE, not its length: keep what carries the answer, but do not pad, do not
+          repeat yourself, and never stretch a short answer into a long one. Use only as many
+          sentences as the answer truly needs - and when in doubt, use fewer.
         - SPEAK FOR THE EAR, NOT THE SCREEN. This is heard out loud, so never voice raw syntax
           or punctuation. Do NOT read out file paths, URLs, headings, or code symbols
           character by character - describe them in plain spoken words instead. Concretely:
@@ -107,7 +131,7 @@ public sealed class WingmanTranslator
     /// instructions is shown that the recommended default changed and can switch to it. The content
     /// hash is the real identity; this is the human-facing label.
     /// </summary>
-    public const string DefaultInstructionsVersion = "4";
+    public const string DefaultInstructionsVersion = "5";
 
     private readonly Func<WingmanModelRole, CancellationToken, Task<IAgentBrain>> _brainProvider;
     private readonly Action<string> _log;
