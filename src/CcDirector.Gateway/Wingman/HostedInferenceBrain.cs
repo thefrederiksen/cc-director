@@ -97,7 +97,7 @@ public sealed class HostedInferenceBrain : IAgentBrain
             if ((int)resp.StatusCode == 429)
                 throw new WingmanModelRateLimitedException(
                     $"The wingman model call failed: {(int)resp.StatusCode} {resp.StatusCode}. " + detail,
-                    ParseRetryAfter(resp.Headers.RetryAfter));
+                    CcDirector.Core.HostedAi.RetryAfterHeader.Parse(resp.Headers.RetryAfter));
             throw new InvalidOperationException(
                 $"The wingman model call failed: {(int)resp.StatusCode} {resp.StatusCode}. " + detail);
         }
@@ -111,22 +111,6 @@ public sealed class HostedInferenceBrain : IAgentBrain
         return new AskResult { Text = content, ReplySeconds = sw.Elapsed.TotalSeconds };
     }
 
-    /// <summary>
-    /// Read the provider's Retry-After header into a positive wait, or null when it gave none
-    /// (issue #1324). Accepts both header forms: a delta in seconds and an absolute HTTP date. A
-    /// past date or non-positive delta is treated as "no hint" so the caller falls back to its own backoff.
-    /// </summary>
-    private static TimeSpan? ParseRetryAfter(RetryConditionHeaderValue? header)
-    {
-        if (header is null) return null;
-        if (header.Delta is { } delta && delta > TimeSpan.Zero) return delta;
-        if (header.Date is { } when)
-        {
-            var wait = when - DateTimeOffset.UtcNow;
-            if (wait > TimeSpan.Zero) return wait;
-        }
-        return null;
-    }
 
     /// <summary>
     /// Pull the assistant message text out of a provider-compatible chat-completions response

@@ -59,6 +59,17 @@ public sealed class WingmanVoiceService
     private readonly ConcurrentDictionary<string, byte> _inFlight = new();   // sid -> a generation is running now
     private readonly WingmanRateLimitGate _rateGate = new();
 
+    //  * _ttsGate: the same cooldown, armed by a failing TEXT-TO-SPEECH leg rather than the model leg.
+    //    Without it, a speech outage costs real money for nothing: the idle sweep
+    //    (GatewayHost.SweepVoiceSessionsAsync, every 45s, 3 sessions a cycle) regenerates any session
+    //    missing voice, and each pass runs a full model TRANSLATION *before* it reaches the speech call
+    //    that is going to fail again. On 2026-07-15 speech was down ~45 minutes: that is ~60 sweeps
+    //    re-translating and re-failing, burning model spend the whole way, and none of it could ever
+    //    produce audio. Voice already comes back by itself when the service returns - the sweep is the
+    //    retry - so the gap was never "no retry", it was "retry with no brakes". Arming this gate on a
+    //    speech failure makes the fleet back off (5/10/20..120s) and honours a 429's Retry-After.
+    private readonly WingmanRateLimitGate _ttsGate = new();
+
     /// <summary>On-disk shape of one ready session's metadata (the audio bytes live next to it as
     /// an .mp3). Persisted so the play triangle / playability survives a gateway restart (issue #553).</summary>
     private sealed record PersistedVoice(string Spoken, string Reply, DateTime AtUtc, string? ContentType = null);
@@ -357,6 +368,16 @@ public sealed class WingmanVoiceService
             return;
         }
 
+        // Backpressure #1b - the SPEECH leg is down. This check must stay ABOVE the translation, because
+        // the whole point is to not pay for a model call whose audio cannot be made. Skipping leaves the
+        // recorded ServiceDown state untouched, so the phone keeps saying the true thing while we wait,
+        // and the sweep picks the session up again the moment the cooldown expires.
+        if (_ttsGate.InCooldown(out var ttsCooldownLeft))
+        {
+            FileLog.Write($"[WingmanVoiceService] GenerateAsync sid={sid} SKIPPED: speech service down, {ttsCooldownLeft.TotalSeconds:F0}s cooldown left");
+            return;
+        }
+
         // Backpressure #2 - coalesce. Never run two generations for the same session at once (a slow
         // turn overlapping the idle sweep would otherwise double the spend). First caller wins.
         if (!_inFlight.TryAdd(sid, 1))
@@ -475,14 +496,49 @@ public sealed class WingmanVoiceService
                 FileLog.Write($"[WingmanVoiceService] tts {mode.ToConfigString()} {(int)resp.StatusCode}");
                 // Out of credits / monthly cap (402): map by code to the shared state so the caller
                 // records the consistent unavailable state instead of a silent null (issue #939).
+                // 402 is the account, not the service: out of credits or over the cap. It is the user's
+                // to fix, so it must NOT arm the speech cooldown - backing off would only delay the
+                // moment they see the message telling them what to do.
                 if ((int)resp.StatusCode == HostedAiHttp.PaymentRequired)
                     return new TtsResult(null, null, HostedAiErrorMapper.Map402(body));
-                return new TtsResult(null, null, null);   // other provider error: logged, no shared state
+
+                // A 429 is the provider saying "stop calling", and it usually says for how long. We used
+                // to drop that header on the floor here and simply try again on the next sweep. Honour it.
+                if ((int)resp.StatusCode == 429)
+                {
+                    var retryAfter = RetryAfterHeader.Parse(resp.Headers);
+                    var backoff = _ttsGate.OnRateLimited(retryAfter);
+                    FileLog.Write($"[WingmanVoiceService] tts 429 - backing off {backoff.TotalSeconds:F0}s" +
+                                  $"{(retryAfter is null ? "" : $" (Retry-After {retryAfter.Value.TotalSeconds:F0}s)")}");
+                    return new TtsResult(null, null, HostedAiState.ServiceDown);
+                }
+
+                // Any other error status means the far end failed, and we KNOW it. This used to return a
+                // bare null ("other provider error: logged, no shared state") - the reason was written to
+                // a log nobody reads and thrown away three lines from where it was known, so the phone
+                // fell back to "the Gateway has not made one, or this session's computer is offline".
+                // Both false. On 2026-07-15 that cost ~45 minutes of the owner not being able to tell an
+                // outage from a bug. Say what actually happened, and back off so the sweep stops paying
+                // for a translation whose audio cannot be made.
+                _ttsGate.OnRateLimited(null);
+                return new TtsResult(null, null, HostedAiState.ServiceDown);
             }
             var contentType = resp.Content.Headers.ContentType?.MediaType;
+            _ttsGate.OnSuccess();   // reaching the service clears any cooldown/backoff ramp
             return new TtsResult(await resp.Content.ReadAsByteArrayAsync(ct), contentType, null);
         }
-        catch (Exception ex) { FileLog.Write($"[WingmanVoiceService] tts FAILED: {ex.Message}"); return new TtsResult(null, null, null); }
+        // A timeout (TtsSynthesis exhausted its attempts) or a transport failure is the same story from
+        // the user's side: the service did not answer. It is not their fault and there is nothing for
+        // them to fix, so it must reach them as ServiceDown rather than as silence.
+        catch (Exception ex) when (ex is not OperationCanceledException || !ct.IsCancellationRequested)
+        {
+            // A TimeoutException here is TtsSynthesis giving up after its attempts - the exact failure it
+            // exists to bound, and previously the one that stamped NOTHING. Same story for a transport
+            // failure: the service did not answer. Back off, and tell the truth.
+            FileLog.Write($"[WingmanVoiceService] tts FAILED: {ex.Message}");
+            _ttsGate.OnRateLimited(null);
+            return new TtsResult(null, null, HostedAiState.ServiceDown);
+        }
         finally { if (_ttsHttp is null) http.Dispose(); }
     }
 

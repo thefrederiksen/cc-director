@@ -39,6 +39,17 @@ public static class HostedAiMessages
             HostedAiCtaAction.OpenSettings,
             null),
 
+        // The far end is down. Nothing is wrong with the account, the setup, or this machine, so there
+        // is NO call to action - offering the user a button here would be a lie, because pressing it
+        // fails the same way. The surface retries on its own; the copy's job is to say what is true and
+        // that recovery is already happening, so the user stops hunting for a bug that is not theirs.
+        // Names no provider, per the copy rules above.
+        HostedAiState.ServiceDown => new HostedAiMessage(
+            "The voice service is not responding. Retrying automatically - this usually comes back on its own.",
+            "",
+            HostedAiCtaAction.None,
+            null),
+
         _ => throw new ArgumentOutOfRangeException(nameof(state), state, "Unknown hosted-AI state"),
     };
 }

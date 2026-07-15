@@ -25,4 +25,20 @@ public enum HostedAiState
 
     /// <summary>DevThrottle AI setup is incomplete for this machine.</summary>
     NeedsKey = 3,
+
+    /// <summary>
+    /// The hosted service itself is failing - it answered with an error, or did not answer at all.
+    /// Nothing is wrong with the account, the setup, or this machine: the far end is down.
+    ///
+    /// This state exists because we USED to throw this reason away. WingmanVoiceService mapped 402 and
+    /// NeedsKey and returned a bare null for everything else ("other provider error: logged, no shared
+    /// state"), so a real outage reached the phone as "the Gateway has not made one, or this session's
+    /// computer is offline" - both false, and neither actionable. On 2026-07-15 speech failed for ~45
+    /// minutes (84 failures / 55 successes) and the owner could not tell an outage from a bug, because
+    /// the one fact that explained it was discarded three lines from where it was known.
+    ///
+    /// It is NOT the user's fault and there is nothing for them to fix, so the surface must say so and
+    /// RETRY BY ITSELF rather than offering a button that fails the same way.
+    /// </summary>
+    ServiceDown = 4,
 }
