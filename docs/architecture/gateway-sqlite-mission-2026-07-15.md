@@ -229,7 +229,7 @@ For every delta observed **after** the cutover, store one narrow row carrying it
 columns:
 
 ```
-stat_delta(hour_utc, session_id, modality, surface, repo, agent, wingman, turns, chars)
+stat_delta(hour_utc, session_id, modality, surface, is_voice, repo, agent, wingman, turns, chars)
 ```
 
 **The `wingman` column is load-bearing and is not the same thing as `modality = 'voice'`.** It
@@ -253,6 +253,19 @@ Each dashboard number becomes a baseline value plus a query over the rows record
 
 Three honest qualifications, all raised by the Codex reviewer and all accepted:
 
+- **Equality must be decided in C#, not by SQLite's collation.** `_repos` and `_agents` are keyed
+  `OrdinalIgnoreCase` (`GatewayInputStatsAggregator.cs:55`, `:61`), while SQLite's default `BINARY`
+  collation is case-sensitive. A naive `GROUP BY repo` would therefore split buckets that are one
+  bucket today. The live store happens to contain no case collisions, which is what makes this
+  dangerous: parity would pass green and the split would appear later, silently, the first time a
+  path was reported with different casing. `COLLATE NOCASE` is not the answer either - it folds
+  only ASCII, so it agrees with `OrdinalIgnoreCase` right up until a non-ASCII repository path,
+  and then quietly disagrees. So: fold the key in C# and store the folded key for grouping
+  alongside a first-seen display value in an identity table. One layer decides equality, and it is
+  the same layer that decides it today. The same reasoning gives `stat_delta` an explicit
+  `is_voice` column computed in C# at fold time rather than re-derived from a string comparison in
+  SQL, because `_totals` is keyed case-sensitively while the voice test is not, and that mismatch
+  must not be reproduced in the query layer.
 - **A fold is not "one row write".** A correct post-cutover fold is one `INSERT` into `stat_delta`,
   one upsert into `session_highwater`, and possibly an `INSERT OR IGNORE` into each distinct-id
   table when a repository, agent, or wingman session is seen for the first time. That is bounded,
@@ -311,11 +324,46 @@ criterion 7 pins that too.
 is rewritten from revision 1, per the section "What the historical data cannot tell us".
 
 On first run against an existing JSON store, each historical projection is imported **as it stands**
-into its own baseline table - baseline totals by modality and surface, baseline hourly buckets,
-baseline per-repository tallies, baseline per-agent tallies, baseline wingman turns, and the
-distinct-session identifier tables. No historical `stat_delta` rows are synthesized, ever. Every
-reported number is then baseline plus post-cutover rows, which is exact by construction and matches
-the existing `_agentsSinceUtc` precedent for a dimension that starts partway through.
+into its own baseline table. No historical `stat_delta` rows are synthesized, ever. Every reported
+number is then baseline plus post-cutover rows, which is exact by construction and matches the
+existing `_agentsSinceUtc` precedent for a dimension that starts partway through.
+
+**Import all eight sections of `StoreFile`. Not six. This is stated as a count because the count is
+how the omission was caught.** The persisted document has exactly eight sections
+(`GatewayInputStatsAggregator.cs:448-457`): `Totals`, `HighWater`, `Hourly`, `WingmanTurns`,
+`WingmanSessions`, `Repos`, `Agents`, and `AgentsSinceUtc`. Revisions 1 through 3 of this brief
+listed six of them and silently dropped `HighWater` and `AgentsSinceUtc`. The Manager caught it
+before any code was written. What that omission would have cost, measured on the owner's real store
+on 2026-07-15:
+
+> All-time totals hold **1404** turns. `HighWater` holds **842** turns across **115** live
+> sessions. Start `session_highwater` empty and the very first `GET /sessions` poll refolds every
+> one of those sessions from zero - `FoldLocked` treats a missing high-water entry as
+> `prevTurns = 0` and folds the session's **entire** tally as fresh activity
+> (`GatewayInputStatsAggregator.cs:336-354`). The owner's totals become **2246**. A silent 60 per
+> cent inflation of every number this mission promised to preserve.
+>
+> (These counts are a snapshot of a live, moving store - see criterion 1 below. The exact figures
+> drift by the minute; the ratio is the point, and the ratio is roughly three fifths.)
+
+**`session_highwater` is not a baseline. It is live operational state, and it must be imported so
+that the fold's idempotency survives the cutover.** The high-water map is precisely what makes
+re-reading a roster safe (Decision 3). An import that restores the aggregates but not the
+high-water has not preserved the numbers - it has armed a bomb on the next poll.
+
+**This omission also proves the endpoint-field parity check is necessary but NOT sufficient**, and
+that is the more important lesson. `/stats/data` exposes no high-water field
+(`Stats/StatsPageEndpoint.cs:40-71`), so the parity check specified below would have read every
+exposed field, found every one of them correct, passed green, and renamed the JSON aside - and the
+damage would have landed on the *next* roster poll, after the only copy of the truth was already
+moved. **A parity check can only see what the endpoint exposes. State that a store's internal
+operational state is invisible to it, and check that separately.** Acceptance criterion 6 gains an
+idempotent-re-observe leg for exactly this reason.
+
+`AgentsSinceUtc` is the other dropped section. It is a single string, it is load-bearing for an
+honest page (`GatewayInputStatsAggregator.cs:63-66`), and losing it would silently re-stamp the
+agent breakdown as starting at the cutover - making the agent numbers look like they reconcile with
+the totals when they do not. Import it verbatim.
 
 The import sequence is fixed and is not open to a worker's interpretation:
 
@@ -380,6 +428,19 @@ fail is not a criterion.
    data on this machine. Captured before, captured after, compared field by field
    (`Stats/StatsPageEndpoint.cs:40-71` maps this response from the aggregator outputs). This is the
    primary proof and it is not negotiable.
+
+   **Run it with the Gateway STOPPED, against a frozen copy of the store.** The live store is a
+   moving target: the Manager observed it go from 1401 to 1404 turns while reading it twice, partly
+   because this mission's own sessions are generating turns into the very store it is porting. A
+   before-and-after comparison against a running Gateway will therefore differ for reasons that
+   have nothing to do with the port, and the tempting response - loosen the comparison until it
+   passes - would throw away the only real proof this phase has. An exact comparison against a
+   frozen snapshot is worth more than a fuzzy one against live data. If this criterion is ever
+   reported as passing with a tolerance, it did not pass.
+
+   The import's own parity check (Decision 5) is unaffected by this and stays exact: it compares
+   what SQLite reports against the same single in-memory load of the JSON document, so nothing can
+   move underneath it.
 2. The `/stats` page (`Stats/StatsPageEndpoint.cs:74-79`), the cockpit "Your Throttle" view
    (`apps/cockpit/src/throttle/YourThrottleView.tsx`), and the mobile "Your Throttle" view
    (`apps/mobile/src/pages/YourThrottle.tsx`) render unchanged. **Evidence, not opinion:** the
@@ -398,9 +459,23 @@ fail is not a criterion.
    asked for yet and shows the query and its result.
 5. Tests are green across all seven test projects in `cc-director.sln` (Avalonia, Core, Engine,
    Gateway, HostedAgent, Launcher, and Terminal.Avalonia), not only Core and Gateway.
-6. A regression test pins the baseline import: given a real JSON store as a fixture, every imported
-   baseline value matches the value the JSON store reported, and the import refuses to complete on
-   an induced mismatch. The refusal leg must be proven by watching it fail, not asserted.
+6. Regression tests pin the baseline import, on three legs:
+
+   (a) Given a real JSON store as a fixture, every imported value matches the value the JSON store
+   reported - across **all eight** `StoreFile` sections, not only the ones `/stats/data` exposes.
+
+   (b) **The idempotent re-observe leg.** After importing, observe the *same* roster the store was
+   already carrying high-water for, and assert every all-time number is **unchanged**. This is the
+   leg that catches a dropped or mis-imported `session_highwater`, and it exists because nothing
+   else can: `/stats/data` exposes no high-water field, so the endpoint parity check passes green
+   while the totals are one poll away from inflating by three fifths. A test that only compares
+   exposed endpoint fields is not sufficient and this criterion does not accept one.
+
+   (c) The import refuses to complete on an induced mismatch, leaving the JSON as the source of
+   truth.
+
+   Legs (b) and (c) must be proven by watching them go red - revert the fix, see the reported
+   symptom, restore it - not asserted. A test that has never failed on purpose is not evidence.
 7. Regression tests pin pruning, on both legs: given rows spanning the retention boundary, (a) every
    all-time answer - including wingman turns and every per-repository and per-agent tally - is
    identical before and after a prune runs, and (b) the working-day series contains exactly the
