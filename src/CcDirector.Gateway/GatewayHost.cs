@@ -358,6 +358,33 @@ public sealed class GatewayHost : IAsyncDisposable
     // terminal tombstone de-dupes the upload id forever until the client acknowledges it - so there is no
     // age sweep for dictation staging (only the unrelated voice-turn staging is age-swept).
     private readonly Voice.VoiceUploadStore _dictationUploads = new(CcDirector.Core.Storage.CcStorage.DictationUploads());
+
+    /// <summary>
+    /// THE PRODUCER of the dictation phase label - the three facts that decide whether a session paints
+    /// orange for a dictation. The roster's <c>dictationStatusFor</c> callback is exactly this method, so
+    /// what a test drives here is what production runs.
+    ///
+    /// WHY IT IS A NAMED METHOD AND NOT AN INLINE LAMBDA. The rule (<see cref="Transcription.DictationPhase.For"/>)
+    /// has regression tests; the WIRING that supplies its three facts had none - the callback appeared in
+    /// zero test files. You could wire <c>progressing: true</c> as a constant and the whole Gateway suite
+    /// stayed green while defect 19 returned in full, because a hard-true progress flag makes any
+    /// undelivered record paint forever, which IS the defect. An unbindable seam is an untestable one, and
+    /// this repository's signature failure is a live consumer with an unguarded producer - the rule pinned,
+    /// the wiring not. Extracting it changes no behaviour and makes the seam bindable;
+    /// <c>DictationOrangeProducerTests</c> binds it with the REAL collaborators and goes red if any of the
+    /// three facts is replaced by a constant.
+    ///
+    /// Read the three facts as the two questions they answer, because conflating them was the whole defect:
+    /// <paramref name="uploads"/> answers the DURABLE one ("are there undelivered words?" - must never
+    /// expire), and <paramref name="marks"/> answers the BOUNDED one ("is anything actually happening right
+    /// now?" - must always expire).
+    /// </summary>
+    internal static string? DictationStatusFor(
+        string sessionId, Transcription.TranscribingSessions marks, Voice.VoiceUploadStore uploads)
+        => Transcription.DictationPhase.For(
+            activelyTranscribing: marks.IsActivelyTranscribing(sessionId),
+            undelivered: uploads.IsSessionLocked(sessionId),
+            progressing: marks.IsTranscribing(sessionId));
     // Issue #629: the durable, bounded, restart-surviving retry queue behind the login-telemetry
     // relay. Constructed here (loads any events a previous run left on disk), wired into the relay
     // endpoint, started flushing in StartAsync, and disposed in StopAsync.
@@ -1234,14 +1261,10 @@ public sealed class GatewayHost : IAsyncDisposable
             // at all never clear it. Observed: upload f13cb4b6d9d0 stood PENDING 1h30m on 12 July 2026,
             // orange the whole time, across four Gateway restarts (so "it clears on restart" is false too -
             // the record is on disk), before finally delivering 362 characters.
-            // The rule itself lives in DictationPhase.For so it is testable without a running Gateway; this
-            // supplies the three facts. IsTranscribing() is the progress-idle read (it also drops a stale
-            // mark), and transcribingFor above already calls it for every session, so evaluating it here
-            // costs nothing new.
-            dictationStatusFor: sid => Transcription.DictationPhase.For(
-                activelyTranscribing: _transcribingSessions.IsActivelyTranscribing(sid),
-                undelivered: _dictationUploads.IsSessionLocked(sid),
-                progressing: _transcribingSessions.IsTranscribing(sid)),
+            // The rule itself lives in DictationPhase.For so it is testable without a running Gateway, and
+            // the WIRING that supplies its three facts lives in DictationStatusFor so it is testable too -
+            // see that method for why an inline lambda here was a hole rather than a style choice.
+            dictationStatusFor: sid => DictationStatusFor(sid, _transcribingSessions, _dictationUploads),
             // The mobile Speak flow marks/clears this via POST /sessions/{sid}/transcribing.
             transcribingSessions: _transcribingSessions,
             // Issue #212 W3: enrich the Interrupted sessions list from the durable brief store. Always
