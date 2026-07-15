@@ -276,42 +276,23 @@ public sealed class GatewayHostTests : IAsyncLifetime
         Assert.Equal(HttpStatusCode.Unauthorized, resp.StatusCode);
     }
 
-    // Issue #856 regression: re-framing Add-a-device to lead with account sign-in must leave the
-    // issue #469 4-digit pairing-code fallback working UNCHANGED. Mint a code on the host (as the
-    // Add-a-device window's "Show a pairing code" fallback does), POST it to /devices/register, and
-    // assert the device is enrolled with a per-device key issued (HTTP transcript proof).
+    // The 4-digit local pairing code and its POST /devices/register route were removed with the
+    // Gateway's user interface (the code was only ever shown on the Gateway host's own screen, which a
+    // headless Gateway does not have). The route must be GONE, not merely gated: a live-but-gated route
+    // answers 401, so only a 404 proves removal.
+    //
+    // The GET /devices control is what stops this passing for the wrong reason. A 404 alone would also
+    // appear if this client simply were not reaching the host - so the sibling route mapped by the same
+    // DeviceEnrollmentEndpoint.Map call is asserted to still answer, pinning the 404 to the removal.
     [Fact]
-    public async Task PairingFallback_mintCodeThenRegister_issuesPerDeviceKey()
+    public async Task PairingRegisterRoute_isRemoved_whileDeviceListingSurvives()
     {
-        var before = _gateway.Devices.Count;
+        var gone = await _http.PostAsJsonAsync("devices/register", new { deviceId = "d1", pairingCode = "1234" });
+        Assert.Equal(HttpStatusCode.NotFound, gone.StatusCode);
 
-        // The host mints the 4-digit code (shown only on the host screen) - the fallback grant.
-        var code = _gateway.Pairing.Mint();
-
-        var deviceId = Guid.NewGuid().ToString("N");
-        var resp = await _http.PostAsJsonAsync("devices/register", new DeviceRegistrationRequest
-        {
-            DeviceId = deviceId,
-            MachineName = "regression-test-device",
-            PairingCode = code.Code,
-        });
-
-        Assert.Equal(HttpStatusCode.Created, resp.StatusCode);
-        var body = await resp.Content.ReadFromJsonAsync<DeviceRegistrationResponse>();
-        Assert.NotNull(body);
-        Assert.False(string.IsNullOrWhiteSpace(body!.DeviceKey)); // a per-device key was issued
-        Assert.Equal(deviceId, body.DeviceId);
-        Assert.Equal("regression-test-device", body.MachineName);
-        Assert.Equal(before + 1, body.DeviceCount);
-
-        // The code is single-use: replaying it is rejected with no second key issued.
-        var replay = await _http.PostAsJsonAsync("devices/register", new DeviceRegistrationRequest
-        {
-            DeviceId = Guid.NewGuid().ToString("N"),
-            MachineName = "replay-device",
-            PairingCode = code.Code,
-        });
-        Assert.Equal(HttpStatusCode.Unauthorized, replay.StatusCode);
+        // Control: the sibling route is still mapped and reachable by this same client.
+        var alive = await _http.GetAsync("devices");
+        Assert.NotEqual(HttpStatusCode.NotFound, alive.StatusCode);
     }
 
     // ===== Issue #1292: the fleet-wide session-number endpoint over the wire =====

@@ -1,6 +1,3 @@
-using CcDirector.Core.Utilities;
-using CcDirector.Gateway.Account;
-using CcDirector.Gateway.Contracts;
 using CcDirector.Gateway.Pairing;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
@@ -9,60 +6,25 @@ using Microsoft.AspNetCore.Routing;
 namespace CcDirector.Gateway.Api;
 
 /// <summary>
-/// Device enrollment via local pairing code (issue #469). This is the ONLY way a new device
-/// obtains access to the Gateway in the per-device-key trust model.
+/// The Gateway device registry listing.
 ///
-///   POST /devices/register  -> verify the 4-digit pairing code (matches, not expired, not used),
-///                              issue a unique per-device key, record the device, consume the code.
-///                              4xx when the code is wrong, expired, or already used.
-///   GET  /devices           -> the host-readable registry listing (id, machine, issued-at,
-///                              status). The per-device key is NEVER returned.
+///   GET /devices -> the host-readable registry listing (id, machine, issued-at, status).
+///                   The per-device key is NEVER returned.
 ///
-/// The register route is deliberately NOT gated by the shared fleet token: a brand-new device has
-/// no credential yet, so the pairing code IS the authorization. This is what closes the old path -
-/// presenting only the legacy shared token (without a valid pairing code) no longer enrolls a new
-/// device. The code is shown only on the Gateway host's local window (Anchor B), so the grant is
-/// rooted in local presence, not in any network secret.
+/// Enrolling a NEW device is not served here. A device joins by signing in to the same DevThrottle
+/// account: <see cref="SignedInEnrollmentEndpoint"/> for a co-located Director, and the mobile/browser
+/// enrollment endpoints for a phone or browser.
+///
+/// The 4-digit local pairing code (issue #469) and its POST /devices/register route were removed with
+/// the Gateway's user interface. The code was shown only on the Gateway host's own screen, so it
+/// required a window a headless Gateway does not have; its only client-side caller had already been
+/// replaced by the sign-in flow (epic #1069) and was dead code by then.
 /// </summary>
 internal static class DeviceEnrollmentEndpoint
 {
-    public static void Map(IEndpointRouteBuilder app, PairingCodeService pairing, DeviceRegistry devices, ChildDeviceMirrorService? mirror = null)
+    public static void Map(IEndpointRouteBuilder app, DeviceRegistry devices)
     {
-        if (pairing is null) throw new ArgumentNullException(nameof(pairing));
         if (devices is null) throw new ArgumentNullException(nameof(devices));
-
-        app.MapPost("/devices/register", (DeviceRegistrationRequest req) =>
-        {
-            if (req is null || string.IsNullOrWhiteSpace(req.DeviceId))
-                return Results.BadRequest(new { error = "deviceId is required" });
-            if (string.IsNullOrWhiteSpace(req.PairingCode))
-                return Results.BadRequest(new { error = "pairingCode is required" });
-
-            FileLog.Write($"[DeviceEnrollment] POST /devices/register: deviceId={req.DeviceId}, machine={req.MachineName}, type={req.DeviceType}, platform={req.Platform}");
-
-            // Verify-and-consume is atomic: a valid code is burned here so it can never be reused
-            // (single-use), and a wrong/expired/already-used code is rejected with NO key issued.
-            if (!pairing.TryVerifyAndConsume(req.PairingCode))
-            {
-                FileLog.Write($"[DeviceEnrollment] POST /devices/register REJECTED: invalid/expired/used pairing code for deviceId={req.DeviceId}");
-                return Results.Json(
-                    new { error = "Pairing code is wrong, expired, or already used. Mint a new code on the gateway host and try again." },
-                    statusCode: StatusCodes.Status401Unauthorized);
-            }
-
-            var response = devices.Register(req.DeviceId, req.MachineName, req.Platform, req.DeviceType);
-            FileLog.Write($"[DeviceEnrollment] POST /devices/register: issued per-device key for deviceId={req.DeviceId}, machine={req.MachineName}, deviceCount={response.DeviceCount}");
-
-            // Path B (Diagram 2b): mirror this child up to the cloud account roster, best-effort and
-            // fire-and-forget. It NEVER blocks or fails enrollment - the child already holds its local
-            // pairing key (returned above) and works regardless; MirrorChildUpAsync owns its own boundary
-            // and the periodic reconcile sweep recovers any mirror that fails here. Null when the host has
-            // no credential service (nothing to mirror to).
-            if (mirror is not null)
-                _ = mirror.MirrorChildUpAsync(req.DeviceId);
-
-            return Results.Json(response, statusCode: StatusCodes.Status201Created);
-        });
 
         app.MapGet("/devices", () =>
         {

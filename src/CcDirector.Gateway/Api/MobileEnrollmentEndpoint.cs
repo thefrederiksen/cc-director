@@ -18,7 +18,8 @@ namespace CcDirector.Gateway.Api;
 /// (android/ios -> phone, "browser" -> browser; see MobileDeviceEnrollmentService.DeviceTypeForPlatform).
 ///
 /// The route lives under <c>/m/</c>, which the auth middleware lets through without the host-wide token
-/// (the sign-in screens must load before the device has any credential). Like <c>/devices/register</c>,
+/// (the sign-in screens must load before the device has any credential). Like
+/// <c>/devices/enroll-signed-in</c>,
 /// it carries its OWN authorization - the account-scoped device key - so opening the route does not
 /// weaken the trust model: a call with no valid device key on this account is answered 403 with no key
 /// issued.
