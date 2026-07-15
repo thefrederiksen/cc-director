@@ -152,7 +152,11 @@ public sealed class WingmanTranslatorTests
 
         var prompt = Assert.Single(brain.Asks);
         Assert.Contains(reply, prompt);
-        Assert.Contains("FIDELITY", prompt); // the fidelity contract is present
+        // v5 (issue #1612): the contract inverted - brevity is the GOAL, keeping the answer true is
+        // the CONSTRAINT. v4 said "fidelity over brevity" and produced 4m40 narrations. Pin the new
+        // framing, not the old word, so a drift back to "keep everything" fails here.
+        Assert.Contains("Brevity is the GOAL", prompt);
+        Assert.Contains("CONSTRAINT", prompt);
         Assert.Contains("what did you change?", prompt); // the person's message is present
     }
 
@@ -169,9 +173,41 @@ public sealed class WingmanTranslatorTests
         await translator.TranslateAsync("q", "I edited file:///D:/repo/x.html");
 
         var prompt = Assert.Single(brain.Asks);
-        Assert.Contains("BE FOCUSED", prompt);
+        Assert.Contains("BE SHORT", prompt);   // v5: was "BE FOCUSED" - focus is delivery, short is length
         Assert.Contains("SPEAK FOR THE EAR", prompt);
         Assert.Contains("colon slash slash", prompt); // the concrete "do not voice this" example
+    }
+
+    [Fact]
+    public async Task TranslateAsync_PromptForbidsReadingOutIdentifiersAndLongNumbers()
+    {
+        // Owner, 2026-07-15: "try not to read out loud large numbers... IDs don't make a lot of sense
+        // to a human when you listen. I can't use it for anything. You can say there is an ID."
+        // Hearing "fe2ec700 dash 458e dash 420e" read out digit by digit is useless - you cannot write
+        // it down or act on it. v4 had NO rule about this and told the wingman to preserve every
+        // number, so it did. Prompt-only, so pin it or it regresses silently.
+        var brain = new FakeBrain(_ => "ok");
+        var translator = BuildTranslator(brain);
+
+        await translator.TranslateAsync("q", "session fe2ec700-458e-420e used 5,254,730 bytes");
+
+        var prompt = Assert.Single(brain.Asks);
+        Assert.Contains("NEVER READ OUT IDENTIFIERS OR LONG NUMBERS", prompt);
+        Assert.Contains("about five million", prompt);   // the concrete rounding example
+    }
+
+    [Fact]
+    public async Task TranslateAsync_PromptKeepsTheReadItInFullEscapeHatch()
+    {
+        // The ONE legitimate reason a long narration exists: the person explicitly asked for a
+        // document or passage to be read out in full. Brevity must not eat that case.
+        var brain = new FakeBrain(_ => "ok");
+        var translator = BuildTranslator(brain);
+
+        await translator.TranslateAsync("read me the file", "…");
+
+        var prompt = Assert.Single(brain.Asks);
+        Assert.Contains("READ IN FULL", prompt);
     }
 
     [Fact]
