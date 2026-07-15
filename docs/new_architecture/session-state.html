@@ -391,15 +391,34 @@ different conversations</strong> - so they are separated here, and each one name
 
 <h4>2. Hold - the user's "not this one, not now". Owner: the Director; the timer, the Gateway.</h4>
 
-<p><span class="file">src/CcDirector.Core/Sessions/HoldState.cs</span>. Three values, and only one of them
-crosses the wire (as the boolean <code>OnHold</code>).</p>
+<p><span class="file">src/CcDirector.Core/Sessions/HoldState.cs</span>. Three values, and <strong>all three
+cross the wire</strong> on <code>SessionDto.HoldState</code> (<span class="file">HoldStates.cs</span>).
+The boolean <code>OnHold</code> is still there, still read by every client - but it is now
+<strong>derived</strong>, <code>OnHold == (HoldState == Held)</code>, so the two can never disagree.</p>
 
 <table>
-<tr><th>Value</th><th>On the wire</th><th>Means</th></tr>
-<tr><td><code>None</code></td><td><code>OnHold=false</code></td><td>Not held. The activity state is the whole story.</td></tr>
-<tr><td><code>Held</code></td><td><code>OnHold=true</code></td><td>Parked. Grey, sunk to the bottom, never "needs you". <strong>Left the instant the agent works again.</strong></td></tr>
-<tr><td><code>DeferredHold</code></td><td><code>OnHold=false</code></td><td>"Snooze me when this finishes." Still working, still blue, still reads as working. Parks when the work stops.</td></tr>
+<tr><th>Value</th><th>On the wire</th><th>Derived <code>OnHold</code></th><th>Means</th></tr>
+<tr><td><code>None</code></td><td><code>holdState="None"</code></td><td><code>false</code></td><td>Not held. The activity state is the whole story.</td></tr>
+<tr><td><code>Held</code></td><td><code>holdState="Held"</code></td><td><code>true</code></td><td>Parked. Grey, sunk to the bottom, never "needs you". <strong>Left the instant the agent works again</strong>, and <strong>cleared if the session exits</strong> (defect 21).</td></tr>
+<tr><td><code>DeferredHold</code></td><td><code>holdState="DeferredHold"</code></td><td><code>false</code></td><td>"Snooze me when this finishes." Still working, still blue, still reads as working. Parks when the work stops - and <strong>that landing is when its clock starts</strong> (defect 20).</td></tr>
 </table>
+
+<div class="callout ok">
+<p><strong>FIXED 14 July 2026 - defect 12, and it was the root cause of the next three.</strong> This
+table used to read "three values, and <em>only one of them crosses the wire</em> (as the boolean
+<code>OnHold</code>)". That was true, and it was the disease: <code>None</code> and
+<code>DeferredHold</code> were <strong>byte-identical</strong> on the wire - both <code>false</code> -
+so nothing downstream could tell "not held" from "about to be held". The Gateway's expiry sweep read
+that boolean and deleted a twelve-hour timer fifteen seconds after it was asked for (defect 20).</p>
+<p><strong>A lossy wire is not cosmetic. It is how the answer gets lost.</strong> The boolean survives
+for backward compatibility only, and it is derived rather than stored so it cannot drift from the
+tri-state. <strong>Anything that must distinguish a deferral from "no hold" reads
+<code>HoldState</code>. Nothing reads the boolean to make that decision - that is exactly the mistake.</strong></p>
+<p>The fact now reaches every screen. <strong>No client renders a distinct "snoozing when done" badge
+yet</strong> - that is client work, not done, and it is honestly recorded as such rather than claimed
+by a comment. Two comments <em>did</em> claim it, and they were the reason nobody noticed the state
+could not reach a screen at all.</p>
+</div>
 
 <h4>3. Briefing - what the wingman is doing with the finished turn. Owner: the Gateway.</h4>
 
@@ -468,17 +487,22 @@ That is why none of them can outrank blue: they are not competing with "working"
 </ol>
 </div>
 
-<p>Rules 1, 3 and 4 are implemented correctly. <strong class="bad">Rule 2 is broken for exactly the case
-rule 3 exists to serve</strong> - see the warning below the table. Verified against origin/main:</p>
+<p><strong class="good">All four rules are now implemented correctly (14 July 2026).</strong> Rule 2 used
+to be broken for exactly the case rule 3 exists to serve - see the callout below the table, which
+records what was wrong and why, because that is the part worth not repeating. Verified against this
+worktree:</p>
 
 <table>
 <tr><th>Rule</th><th>Where</th><th>How</th></tr>
-<tr><td>Working clears the hold</td><td><span class="file">Session.cs:1911-1915</span></td><td><code>if (IsWorking &amp;&amp; HoldState == Held) HoldState = None;</code> - unconditional, on the activity edge. The snooze timer dies with it.</td></tr>
-<tr><td>Snooze while working defers</td><td><span class="file">Session.cs:644-653</span></td><td>Snooze pressed while working sets <code>DeferredHold</code>, which reports <code>OnHold=false</code> - so the session stays blue and reads "Working" while it finishes.</td></tr>
-<tr><td>A deferral lands when work stops</td><td><span class="file">Session.cs:1931-1935</span></td><td>On settling to WaitingForInput, <code>DeferredHold &rarr; Held</code>. The snooze the agent asked for takes effect exactly when the turn ends.</td></tr>
-<tr><td>A deferral is dropped on exit</td><td><span class="file">Session.cs:1922-1923</span></td><td>A dead session has no turn to come back to; parking it would hide it behind "Snoozed" forever.</td></tr>
+<tr><td>Working clears the hold</td><td><span class="file">Session.cs</span> (the activity edge)</td><td><code>if (IsWorking &amp;&amp; HoldState == Held) HoldState = None;</code> - unconditional. The snooze timer dies with it.</td></tr>
+<tr><td>Snooze while working defers</td><td><span class="file">Session.cs</span> <code>RequestHold</code></td><td>Snooze pressed while working sets <code>DeferredHold</code> and returns <code>HoldOutcome.Pending</code> - so the session stays blue and reads "Working" while it finishes.</td></tr>
+<tr><td>The Gateway is TOLD it deferred</td><td><span class="file">HoldRequest.cs</span> <code>HoldResponse.Pending</code>; <span class="file">GatewayEndpoints.cs</span> (the hold endpoint)</td><td>The Director's answer carries <code>Pending</code>; the hold endpoint reads it and records a snooze with <strong>its length and no deadline</strong>. <strong>The clock is NOT started here.</strong> This field always existed and carried exactly this fact - until today nothing read it.</td></tr>
+<tr><td>A deferral lands when work stops</td><td><span class="file">Session.cs</span> (the settle edge)</td><td>On settling to WaitingForInput, <code>DeferredHold &rarr; Held</code>. The snooze the agent asked for takes effect exactly when the turn ends.</td></tr>
+<tr><td><strong>...and THAT starts the clock</strong></td><td><span class="file">SnoozeLandingObserver.cs</span> (push); <span class="file">SnoozeExpirySweep.cs</span> (backstop)</td><td><code>Session.HoldStateChanged</code> fires on the landing and the Control API pushes a delta, so <span class="file">DirectorHub</span> hears it within milliseconds and arms the clock at <em>now + the remembered length</em>. The sweep re-reads every Director every 15 seconds and lands anything the push missed. <code>Land</code> is idempotent, so a running clock is never restarted.</td></tr>
+<tr><td>A hold is dropped on exit</td><td><span class="file">Session.cs</span> (the exit edge)</td><td>A dead session has no turn to come back to; parking it would hide it behind "Snoozed" forever. <strong>Both</strong> a deferral and a landed hold (defect 21 - the landed case was missing).</td></tr>
 <tr><td>A fresh prompt supersedes</td><td><span class="file">Session.cs:1645, :1755</span></td><td>You typed at it, so you clearly want it.</td></tr>
-<tr><td>The timer expires</td><td><span class="file">GatewayEndpoints.cs:2347-2357</span></td><td>The Gateway owns the clock (it must survive a dead Director). An expired snooze is overlaid <code>OnHold=false</code> on every read <em>before</em> the fold, so it returns to red with no flicker and no new logic.</td></tr>
+<tr><td>The hold survives a restart</td><td><span class="file">SessionStateStore.cs</span>; <span class="file">Session.RestoreHoldState</span></td><td>Persisted per session (defect 22). On restore the deferral <strong>lands</strong> if the session is not working, is dropped if it exited, and a landed hold is lifted if it came back working.</td></tr>
+<tr><td>The timer expires</td><td><span class="file">GatewayEndpoints.cs</span> (the fleet overlay)</td><td>The Gateway owns the clock (it must survive a dead Director). An expired snooze is overlaid <code>OnHold=false</code> on every read <em>before</em> the fold, so it returns to red with no flicker and no new logic. A DEFERRED entry has no clock, so it can never expire.</td></tr>
 </table>
 
 <div class="callout ok">
@@ -491,25 +515,42 @@ Director that has gone dark still carries <code>OnHold=true</code> in the Gatewa
 today, that stale flag outranked everything. Now, if any fact says the session is working, it is blue.</p>
 </div>
 
-<div class="callout warn">
-<p><strong>But rule 2 fails on the deferred path - defect 20, and it is the worst thing in this
-document.</strong> The table above is true of the <em>Director</em>. The Gateway's timer does not survive
-the deferral.</p>
-<p>A deferred hold reports <code>OnHold=false</code> (correctly - it is not parked yet). The expiry sweep
-runs <strong>every 15 seconds</strong>, asks the Director "is it held?", hears <em>no</em>, and deletes
-the 12-hour timer. Minutes later the turn ends, the deferral lands, and the session is held
-<strong>with no clock</strong>. <strong>An agent-requested snooze never expires.</strong></p>
-<p>The two rules collide because the wire is lossy: three hold states are squeezed into one boolean
-(defect 12), so "not held" and "about to be held" are indistinguishable to the sweep. This is why defect
-12 is not cosmetic. <code>HoldResponse.Pending</code> already carries the missing bit and nothing reads
-it.</p>
-<p><strong class="good">DECIDED, 14 July 2026: the clock starts when the work ENDS.</strong> "Snooze me
-for 12 hours when this finishes" means twelve hours of quiet after it finishes. A clock started at
+<div class="callout ok">
+<p><strong>Rule 2 used to fail on the deferred path - defect 20, and it was the worst thing in this
+document. FIXED 14 July 2026.</strong> Keep reading: the mechanism is recorded because it is the shape
+of mistake this whole system keeps making, not because the bug is still there.</p>
+<p><strong>What went wrong.</strong> A deferred hold reports <code>OnHold=false</code> (correctly - it is
+not parked yet). The expiry sweep ran <strong>every 15 seconds</strong>, asked the Director "is it
+held?", heard <em>no</em>, and deleted the 12-hour timer. Minutes later the turn ended, the deferral
+landed, and the session was held <strong>with no clock</strong>. <strong>An agent-requested snooze never
+expired</strong> - and since an agent snoozing its own session is by definition working when it asks,
+that was <em>the</em> case, not an edge case.</p>
+<p>The two rules collided because the wire was lossy: three hold states squeezed into one boolean
+(defect 12), so "not held" and "about to be held" were indistinguishable to the sweep.</p>
+<p><strong class="good">THE RULING, 14 July 2026: the clock starts when the work ENDS.</strong> "Snooze
+me for 12 hours when this finishes" means twelve hours of quiet after it finishes. A clock started at
 request time could expire before the hold has even landed.</p>
-<p><strong>So the fix is:</strong> carry the hold state on the wire (three states, not a boolean - this
-is defect 12, and it is the root cause); start the Gateway's timer when the deferral <em>lands</em>, not
-when it is requested; and make the sweep clear a timer only on a true <code>None</code> - never on a
-<code>DeferredHold</code>, and never merely because <code>OnHold</code> reads false.</p>
+<p><strong>What shipped, in one sentence each:</strong></p>
+<ol style="margin-bottom:0">
+<li>All three hold states cross the wire on <code>SessionDto.HoldState</code>, and <code>OnHold</code> is
+derived from it (defect 12 - the root cause).</li>
+<li>The hold endpoint reads <code>HoldResponse.Pending</code> and, on a deferral, records the snooze's
+<strong>length with no deadline</strong> - it does not start a clock.</li>
+<li>The clock starts when the hold <strong>lands</strong>: <span class="file">SnoozeLandingObserver</span>
+on the Director's push (prompt), <span class="file">SnoozeExpirySweep</span> as the backstop (certain).</li>
+<li>The sweep clears a timer <strong>only on a true <code>None</code></strong> - never on a
+<code>DeferredHold</code>, and never merely because something reads "not held".</li>
+</ol>
+</div>
+
+<div class="callout warn">
+<p><strong>The rule this defect leaves behind, for whoever touches the snooze next.</strong> If you are
+about to make the sweep read a boolean again, or clear a snooze because a session "is not held" - stop.
+That is not a simplification, it is the defect, and it is written down here because it survived review,
+shipped, and was invisible for as long as the only thing anybody asked was "is it held?".</p>
+<p><strong>Three states exist because three things are true</strong>: nothing is held; something is held;
+something has been ASKED FOR and has not landed yet. Any encoding that cannot say the third one will lose
+it - silently, and only in production, and only for the feature's main use.</p>
 </div>
 
 <h3>The dictation lifecycle - and why orange wedges</h3>
@@ -607,7 +648,7 @@ shipped this morning.</p>
 <tr><th>Scenario</th><th>Before</th><th>Now</th></tr>
 <tr><td>A snoozed session's agent starts working again</td><td class="bad">Grey "Snoozed", sunk to the parked bucket, still snoozed</td><td class="good">Blue "Working", Active. The Director lifts the hold; the Gateway would say blue regardless.</td></tr>
 <tr><td>An agent asks to snooze its own session (so it is working when it asks)</td><td class="good">DeferredHold - stays blue, parks when the turn ends</td><td class="good">Unchanged, and correct. This is why DeferredHold exists.</td></tr>
-<tr><td>...and then that deferred snooze lands</td><td class="bad">Its 12-hour timer was deleted 15 seconds after it was asked for</td><td class="bad"><strong>Unchanged. Defect 20 - the snooze is permanent.</strong> The sweep reads one boolean and cannot tell "deferred" from "not held".</td></tr>
+<tr><td>...and then that deferred snooze lands</td><td class="bad">Its 12-hour timer was deleted 15 seconds after it was asked for, so the snooze was PERMANENT</td><td class="good"><strong>Fixed - defect 20.</strong> The deferral is recorded with its length and no clock; the landing (pushed by the Director within milliseconds) starts the twelve hours <em>from the turn ending</em>. The sweep now reads all three hold states and never clears a deferral.</td></tr>
 <tr><td>A 12-hour snooze on a session that was NOT working when you pressed it</td><td class="good">Gateway overlays OnHold=false at expiry, returns to red, "Snooze ended" badge</td><td class="good">Unchanged, and correct. The timer survives because the hold landed immediately.</td></tr>
 <tr><td>A snoozed session on a Director that has died</td><td class="bad">Stale OnHold=true in the roster keeps it grey</td><td class="good">The expiry overlay still fires (the Gateway owns the clock). If any fact says working, blue wins.</td></tr>
 <tr><td>You dictate into a session, and the text submits</td><td class="bad">Orange, and could stay orange over the working turn</td><td class="good">Orange while uploading &rarr; text submits &rarr; agent works &rarr; <strong>blue, automatically</strong>.</td></tr>
@@ -617,8 +658,8 @@ shipped this morning.</p>
 <tr><td>A controlled sub-agent is 20 minutes into real work</td><td class="bad">Slate "Sub-agent" - the work was discarded</td><td class="good">Blue "Working". Ownership travels on the role badge, not the colour.</td></tr>
 <tr><td>A controlled sub-agent finishes and needs its manager</td><td class="good">Slate - the need routes to the manager, not to you</td><td class="good">Unchanged. This is the rule's real job, and it still has it.</td></tr>
 <tr><td>A sub-agent needs someone but its controller has died</td><td class="good">Red - it surfaces to you (the escape hatch)</td><td class="good">Unchanged.</td></tr>
-<tr><td>A snoozed session exits</td><td class="bad">Reads "Snoozed" forever - the dead session hides behind the label</td><td class="bad">Unchanged. <strong>Defect 21, open.</strong> Exit clears a deferred hold but not a landed one.</td></tr>
-<tr><td>The Director restarts while sessions are snoozed</td><td class="bad">Every snooze is forgotten; every deferral is lost</td><td class="bad">Unchanged. <strong>Defect 22, open</strong> - hold state is runtime-only.</td></tr>
+<tr><td>A snoozed session exits</td><td class="bad">Reads "Snoozed" forever - the dead session hides behind the label</td><td class="good"><strong>Fixed - defect 21.</strong> The exit edge clears a LANDED hold too, not just a deferred one, so <code>OnHold</code> goes false and the fold falls through to grey <strong>"Exited"</strong>. A dead session never hides behind a Snoozed label.</td></tr>
+<tr><td>The Director restarts while sessions are snoozed</td><td class="bad">Every snooze is forgotten; every deferral is lost</td><td class="good"><strong>Fixed - defect 22.</strong> The hold state is persisted. On restore a <code>Held</code> comes back held; a <code>DeferredHold</code> <strong>lands</strong> (the restart ended the turn it was waiting for); a session that came back working is not held (working always wins); a session that exited drops the hold.</td></tr>
 <tr><td>A dictation reaches no terminal state (any cause)</td><td class="bad">Orange forever, reading "Uploading from phone"</td><td class="bad">Unchanged. <strong>Defect 19, open.</strong> The mechanism is known; which path fires in practice is undiagnosed.</td></tr>
 <tr><td>A session is flagged for deletion</td><td class="bad">Director paints it grey locally; Gateway clients still show red/blue</td><td class="bad">Unchanged. <strong>Defect 23, open</strong> - the fold ignores <code>PendingDeletion</code> and the Director writes a colour it is not allowed to write.</td></tr>
 <tr><td>A session crashes mid-turn</td><td class="bad">Looks identical to a clean exit</td><td class="bad">Unchanged. <strong>Defect 4, open</strong> - the fold cannot return "error".</td></tr>
@@ -667,7 +708,7 @@ or its own hold expiry, so it cannot compute its own colour. It must ask.</p>
 <tr><th>#</th><th>Defect</th><th>Evidence</th></tr>
 <tr><td>10</td><td><strong>The prompt queue never auto-drains.</strong> The drain is gated on <code>ActivityState.Idle</code>, and <code>Idle</code> is a state nothing ever writes. The "auto-send when Claude is ready" behaviour cannot occur. A Control API poll waits on the same dead state and always times out.</td><td><span class="file">Session.cs:1909, :1921</span>; <span class="file">ControlEndpoints.cs:246</span></td></tr>
 <tr><td>11</td><td><strong>"Explaining" orange cannot reach the roster.</strong> The rule requires <code>BriefingState == "Explaining"</code>, but the Director's enum has only None / Briefing / Briefed / Failed. The value is produced by a different endpoint family and never fed back. So issue #217's orange exists only in the brief pane - the exact cross-surface contradiction its own comment claims to have fixed.</td><td><span class="file">BriefingState.cs:9-22</span> vs <span class="file">SessionOrdering.cs:51</span></td></tr>
-<tr><td>12</td><td><strong>"Snoozing when done" cannot reach any screen.</strong> The hold machine has three states; the wire has one boolean. Two comments claim clients render the deferred state distinctly. They cannot - it is byte-identical on the wire.</td><td><span class="file">HoldState.cs</span> vs <span class="file">SessionDto.cs:255</span></td></tr>
+<tr><td>12</td><td><span class="good">FIXED 14 July 2026.</span> <strong>The wire carries the hold state, not a boolean.</strong> The hold machine has three states and the wire had one boolean, so <code>None</code> and <code>DeferredHold</code> were byte-identical and "snoozing when done" could not reach any screen - while two comments claimed clients rendered it distinctly. <strong>This was the root cause of defects 20, 21 and 22, which is why they landed together.</strong> All three states now ride <code>SessionDto.HoldState</code> (<span class="file">HoldStates.cs</span>); <code>OnHold</code> stays on the wire for older clients but is <strong>derived</strong> (<code>OnHold == (HoldState == Held)</code>) so the two cannot drift. <code>HoldResponse.Pending</code> is <strong>wired up, not superseded</strong>: it answers "did this hold land or defer?" for ONE command, which is what the hold endpoint needs at that instant; <code>HoldState</code> answers "where is this session now?" on EVERY read, which is what the sweep needs. Different questions at different moments - both are needed, neither replaces the other. The two lying comments are corrected: the fact now crosses the wire, and <strong>no client renders a distinct badge yet</strong> - which is now said plainly instead of claimed.</td><td><span class="file">HoldStates.cs</span>; <span class="file">SessionDto.cs</span> (HoldState + derived OnHold); <span class="file">ControlEndpoints.Map</span></td></tr>
 <tr><td>13</td><td><strong>A filtered roster call computes wrong roles.</strong> The query filters run before the fleet pass, so <code>?state=Working</code> can drop a waiting controller out of the liveness set - reclassifying its worker as Standalone and un-suppressing its red.</td><td><span class="file">GatewayEndpoints.cs:674-688</span> vs <span class="file">:2359</span></td></tr>
 <tr><td>14</td><td><strong>Three colour inputs are invisible to the Gateway until something else happens.</strong> Transcribing, background-running, and auto-explaining all raise Director events with no push subscriber. The Gateway folds orange, purple, and yellow from exactly those facts - so those colours can lag by up to one ten-second re-push.</td><td><span class="file">ControlApiHost.cs:724-773</span></td></tr>
 <tr><td>15</td><td><strong>Two endpoints violate the DTO's stated contract.</strong> <code>EffectiveColor</code> and <code>TriageBucket</code> are documented "Required on Gateway /sessions responses". <code>GET /sessions/{sid}</code> returns them null. So the roster says "Needs you" while the by-id route still says <code>onHold: true</code>.</td><td><span class="file">SessionDto.cs:158</span> vs <span class="file">GatewayEndpoints.cs:1002-1014</span></td></tr>
@@ -675,9 +716,9 @@ or its own hold expiry, so it cannot compute its own colour. It must ask.</p>
 <tr><td>17</td><td><strong>Four greys and a slate, indistinguishable in a rail dot.</strong> Snoozed <code>#9CA3AF</code>, exited <code>#6A6A6A</code>, unknown <code>#6B7280</code>, supporting <code>#64748B</code>. This is why you read a working session as "on hold".</td><td><span class="file">SessionViewModel.cs:43-54</span>; <span class="file">ordering.ts:116-127</span></td></tr>
 <tr><td>18</td><td><strong>Five palettes for the same colour names.</strong> "red" is <code>#EF4444</code> on the rail, <code>#E5484D</code> in the turn review, <code>#F44747</code> in the Director view - where it means Exited, not needs-you.</td><td>desktop, various</td></tr>
 <tr><td><strong>23</strong></td><td><strong>A session flagged for deletion is invisible to the fold, and the Director paints it anyway.</strong> <span class="file">SessionDto.cs:268-277</span> says a <code>PendingDeletion</code> row "paints as a winding-down grey". The Gateway's fold never reads the field, so on every Gateway-backed screen the session keeps its normal colour - red "Needs you", or blue "Working" (a pending-deletion session may still be working, <span class="file">SessionManager.cs:334-338</span>). Meanwhile <span class="file">Session.cs:1217-1227</span> implements deletion by calling <code>SetStatusColor(Unknown, ...)</code> - the Director deciding a colour, which law 2 forbids and which nothing that paints reads anyway. Two implementations, neither delivering what the DTO promises. <strong class="good">DECIDED 14 July 2026: pending deletion is a BADGE, never a colour.</strong> If the session is still working it is blue, with a badge. The Director's <code>SetStatusColor</code> call is deleted.</td><td><span class="file">SessionDto.cs:268-277</span>; <span class="file">Session.cs:1217-1227</span>; <span class="file">SessionOrdering.cs</span> (no <code>PendingDeletion</code> branch)</td></tr>
-<tr><td><strong>22</strong></td><td><strong>The hold state is not persisted, so a Director restart silently forgets every snooze.</strong> <code>HoldState</code> is runtime-only - <span class="file">SessionStateStore.cs</span> stores no hold at all. Restart the Director and every <code>Held</code> session comes back un-held, and every <code>DeferredHold</code> ("park me when this finishes") is forgotten - the work finishes and the session never parks. The Gateway's timer entry may still exist, now pointing at a session that is not held. Note this partially <em>masks</em> defect 20: a restart is currently the only thing that clears a timer-less permanent snooze.</td><td><span class="file">SessionStateStore.cs:10-102</span>; <span class="file">SessionManager.cs:1161-1182</span>; <span class="file">Session.cs:563-573</span></td></tr>
-<tr><td><strong>21</strong></td><td><strong>A snoozed session that exits reads "Snoozed" forever, not "Exited" - and the code that prevents this only covers the deferred case.</strong> On exit, <span class="file">Session.cs:1918-1923</span> clears a <code>DeferredHold</code> with the comment <em>"parking a dead session would just hide it behind a 'Snoozed' label forever"</em>. That reasoning is exactly right - and it is not applied to a session that is already <code>Held</code>. A held session that exits keeps <code>OnHold=true</code>, so the fold checks <code>OnHold</code> first and labels it "Snoozed". The dead session hides behind the Snoozed label forever, which is the outcome the neighbouring comment forbids. Either clear <code>Held</code> on exit, or let Exited/Crashed outrank <code>OnHold</code> in the fold. <strong class="good">DECIDED 14 July 2026: it reads Exited.</strong> A dead session must never hide behind a Snoozed label.</td><td><span class="file">Session.cs:1918-1923</span>; <span class="file">SessionOrdering.cs</span> (<code>OnHold</code> before <code>BaseColor</code>)</td></tr>
-<tr><td><strong>20</strong></td><td><strong class="bad">A deferred snooze loses its timer within 15 seconds, so an agent-requested snooze NEVER EXPIRES.</strong> The most serious open defect, and it breaks two of the owner's rules at once. Walk it: you (or the agent) press Snooze while the agent is working. The Director correctly enters <code>DeferredHold</code> - "park me when this turn ends" - and <code>DeferredHold</code> reports <code>OnHold=false</code>, because it is not parked yet. The Gateway records a 12-hour timer regardless. Fifteen seconds later the expiry sweep asks the Director "is this session held?", is told <em>no</em> (it is deferred, not held), concludes the snooze is over, and <strong>deletes the timer</strong>. The turn then ends, the Director lands <code>DeferredHold &rarr; Held</code>, and the session is now snoozed <strong>with no Gateway clock at all</strong>. It will never expire. It can only be cleared by the agent working again or by an explicit unsnooze. <strong>The root cause is defect 12</strong> - the hold machine has three states and the wire has one boolean, so the sweep cannot tell "not held" from "about to be held". Note that <code>HoldResponse.Pending</code> ALREADY carries exactly this fact and the hold endpoint already receives it; nothing reads it. <em>This is the very feature the owner described - an agent snoozing its own session, which by definition happens while it is working - so it is the case that fails, not an edge case.</em></td><td><span class="file">GatewayEndpoints.cs:1171-1180</span> (records the timer without inspecting <code>Pending</code>); <span class="file">SnoozeExpirySweep.cs:38</span> (<code>SweepInterval = 15s</code>), <span class="file">:120-128</span> (clears on <code>OnHold==false</code>); <span class="file">Session.cs:599</span> (<code>OnHold =&gt; _holdState == Held</code>); <span class="file">SessionDto.cs:255</span> (one boolean); <span class="file">HoldRequest.cs:27-35</span> (<code>Pending</code> exists, unread)</td></tr>
+<tr><td><strong>22</strong></td><td><span class="good">FIXED 14 July 2026.</span> <strong>The hold state is persisted, so a Director restart no longer silently forgets every snooze.</strong> <code>HoldState</code> was runtime-only - <span class="file">SessionStateStore.cs</span> stored no hold at all - so every <code>Held</code> session came back un-held and every <code>DeferredHold</code> ("park me when this finishes") was forgotten, while the Gateway timer entry lived on pointing at a session that was not held. <strong class="good">THE RULING: persist the hold state, and land the deferral on restart if the session is not working.</strong> That follows from the ruling that the clock starts when the work ends - a Director that died ended the work. If the session exited, the existing rule already applies: drop it, there is no turn to come back to. Restored through <code>Session.RestoreHoldState</code>, which applies the machine's EXISTING edges at restore rather than inventing new ones. <strong>This defect MASKED defect 20</strong> - a restart was the only thing that ever cleared a timer-less permanent snooze - so fixing 22 alone would have made the product WORSE. They landed together. <strong>Two persist sites, and they do not agree in shape:</strong> <span class="file">MainWindow.PersistSessionStateCore</span> is the one that actually runs and writes a SHORT record; <span class="file">SessionManager.BuildPersistedSessions</span> writes a much fuller one and <strong>has no production caller at all</strong> (tests only). The hold is written at BOTH - persisting it only in the fuller one would have been a silent no-op, and a call site is not a caller. That divergence is a real defect of its own; see "Still to do".</td><td><span class="file">SessionStateStore.cs</span> (<code>PersistedSession.HoldState</code>); <span class="file">Session.RestoreHoldState</span>; <span class="file">SessionManager.cs</span>; <span class="file">MainWindow.axaml.cs</span></td></tr>
+<tr><td><strong>21</strong></td><td><span class="good">FIXED 14 July 2026.</span> <strong>A snoozed session that exits now reads "Exited", never "Snoozed".</strong> On exit, <span class="file">Session.cs</span> cleared a <code>DeferredHold</code> with the comment <em>"parking a dead session would just hide it behind a 'Snoozed' label forever"</em> - and did not apply that reasoning to a session that was already <code>Held</code>, which then kept <code>OnHold=true</code>. The fold checks <code>OnHold</code> before the base colour, so the row read "Snoozed" forever: the exact outcome the neighbouring comment forbids. <strong class="good">THE RULING: it reads Exited.</strong> The fix is the one-line generalisation the comment already argued for - the exit edge clears the hold, whatever it is. Done on the DIRECTOR rather than in the fold, because the exit edge is only ever observed by a live Director, so there is no case it misses and the fold needs no new rule above <code>OnHold</code>.</td><td><span class="file">Session.cs</span> (the exit edge)</td></tr>
+<tr><td><strong>20</strong></td><td><span class="good">FIXED 14 July 2026.</span> <strong>A deferred snooze used to lose its timer within 15 seconds, so an agent-requested snooze NEVER EXPIRED.</strong> The most serious defect in this document, and it broke two of the owner's rules at once. Walk it: you (or the agent) press Snooze while the agent is working. The Director correctly enters <code>DeferredHold</code> - "park me when this turn ends" - and <code>DeferredHold</code> reports <code>OnHold=false</code>, because it is not parked yet. The Gateway recorded a 12-hour timer regardless. Fifteen seconds later the expiry sweep asked the Director "is this session held?", was told <em>no</em>, concluded the snooze was over, and <strong>deleted the timer</strong>. The turn then ended, the Director landed <code>DeferredHold &rarr; Held</code>, and the session was snoozed <strong>with no Gateway clock at all</strong>. <em>This is the very feature the owner described - an agent snoozing its own session, which by definition happens while it is working - so it was THE case that failed, not an edge case.</em> <strong>The root cause was defect 12</strong>, the lossy wire. <strong class="good">THE RULING: the clock starts when the work ENDS.</strong> THE FIX, in four parts: (1) the hold state crosses the wire (defect 12); (2) the hold endpoint reads <code>HoldResponse.Pending</code> - which ALWAYS carried this fact and which nothing read - and records a deferral as <strong>a length with no deadline</strong>; (3) the clock starts at the <strong>LANDING</strong>, seen on the Director's own push (<span class="file">SnoozeLandingObserver</span>, via <code>HoldStateChanged</code>, which already fired on <code>DeferredHold &rarr; Held</code>), with the 15-second sweep as the backstop; (4) the sweep clears an entry <strong>only on a true <code>None</code></strong>. <code>SnoozeRegistry.Land</code> is idempotent, so the two landing paths cannot corrupt each other and a running clock is never restarted.</td><td><span class="file">GatewayEndpoints.cs</span> (hold endpoint, reads <code>Pending</code>); <span class="file">SnoozeExpirySweep.cs</span> (tri-state, never clears a deferral); <span class="file">SnoozeRegistry.cs</span> (armed XOR deferred, <code>Land</code>); <span class="file">SnoozeLandingObserver.cs</span> + <span class="file">DirectorHub.cs</span> (the push seam); <span class="file">HoldRequest.cs</span> (<code>Pending</code>, now read)</td></tr>
 <tr><td>19</td><td><strong>A dictation that never reaches a terminal state wedges the session orange.</strong> The durable record paints orange while <code>Pending</code>, and <code>Pending</code> ends only at <code>Delivered</code> / <code>Abandoned</code> / <code>Failed</code>. Two paths never mark it: <strong>OutOfCredits</strong> and any <strong>retryable transcription error</strong> return to the client without a terminal write (only <code>PermanentError</code> parks the record). The session then reads "Uploading from phone" forever - about an upload that is not happening - because the active-transcription mark cleared in its <code>finally</code> and the label degraded back to the upload phase. A phone that dies mid-upload reaches no terminal state either. <strong>WHICH of these actually causes the orange anyone has seen is UNDIAGNOSED - read the pending records on the Gateway before claiming a cause.</strong> <em>One flag answers two questions: the durable record must never expire (correct - an age cut would make a phone out of signal lose its words), but the colour must always be bounded.</em> <strong>Today's fix removes the common case</strong> - a delivered dictation submits text, the agent works, and working is now blue no matter what any stale flag says - but a dictation that never delivers never makes the session work, so nothing knocks the orange off. See "The dictation lifecycle" above.</td><td><span class="file">GatewayDictationEndpoint.cs:277-290</span> (no terminal write on OutOfCredits / retryable), <span class="file">:429-433</span> (label degrades); <span class="file">GatewayHost.cs:1345-1351, :1212-1215</span>; <span class="file">VoiceUploadStore.cs:288-289</span></td></tr>
 </table>
 
@@ -726,15 +767,27 @@ render the Gateway's stamped answer. <span class="file">packages/client-core/src
 <h3>Still to do</h3>
 
 <p>Every item below is DECIDED - the rulings are in section 7 and are not to be re-opened. What remains
-is implementation. The first three are grouped because they are one change: <strong>the wire must carry
-the hold state instead of a boolean.</strong> That single lossy field (defect 12) is the root cause of
-defects 20, 21 and 22, which is why they land together or not at all.</p>
+is implementation.</p>
+
+<div class="callout ok">
+<p><strong>DONE 14 July 2026 - the wire tells the truth about hold (defects 12, 20, 21, 22).</strong>
+These four were one change and landed together, because the single lossy field (defect 12 - three hold
+states squeezed into one boolean) was the root cause of the other three. Fixing 22 without 20 would have
+made the product <em>worse</em>: a restart was the only thing that ever cleared a timer-less permanent
+snooze.</p>
+<ol style="margin-bottom:0">
+<li><strong>The hold state crosses the wire</strong> - three states on <code>SessionDto.HoldState</code>,
+with <code>OnHold</code> derived from it. Defect 12.</li>
+<li><strong>The snooze timer survives a deferral.</strong> The clock starts when the deferral LANDS, and
+the sweep clears a timer only on a true <code>None</code>. Defect 20.</li>
+<li><strong>The hold state is persisted, and a landed hold is cleared on exit.</strong> A restart no
+longer forgets a snooze (defect 22), and a dead session reads Exited (defect 21).</li>
+</ol>
+</div>
 
 <ol>
-<li><strong>Carry the hold state on the wire</strong> - three states, not one boolean. Defect 12, and the root cause of the next two.</li>
-<li><strong>Make the snooze timer survive a deferral.</strong> Start the Gateway clock when the deferral LANDS, and never let the sweep clear a timer just because <code>OnHold</code> reads false. Defect 20 - today an agent-requested snooze never expires.</li>
-<li><strong>Persist the hold state, and clear a landed hold on exit.</strong> A restart must not forget every snooze (defect 22), and a dead session must read Exited, never Snoozed (defect 21).</li>
 <li><strong>Bound the dictation colour without touching the durable record</strong>, and park the out-of-credits and retryable paths in a terminal state. Defect 19 - the wedged orange.</li>
+<li><strong>Make the two session-persistence records agree</strong>, and delete the one nothing calls. <span class="file">MainWindow.PersistSessionStateCore</span> is the site that actually runs and writes a SHORT record (id, repo, args, name, colour, agent session, activity, backend, pending prompt, wingman, sort order - plus the hold, as of today). <span class="file">SessionManager.BuildPersistedSessions</span> writes a MUCH fuller one - number, group, controller, explicit role, mission, queued prompts, history - and its two callers (<code>SaveCurrentState</code>, <code>SaveSessionState</code>) are <strong>called by tests and nothing else</strong>. So the fuller record is what the tests prove and the shorter record is what the user gets, and the gap between them is invisible in both. <strong>Found while fixing defect 22</strong>, which had to be written to both sites for the fix to exist at all. <em>Which fields this actually loses on a real restart is UNDIAGNOSED - nobody has read a sessions.json written by a live Director and diffed it against the fuller record. Do that before assuming the difference is only theoretical.</em></li>
 <li><strong>Make pending deletion a badge</strong>, and delete the Director's <code>SetStatusColor</code> call. Defect 23.</li>
 <li><strong>Send the session role down to the desktop</strong> so it stops being the one screen that cannot suppress a worker's red. Until then, desktop and phone disagree by construction.</li>
 <li><strong>Delete the Director's colour computation.</strong> Nothing that paints reads it. It exists only to be mistaken for the answer.</li>

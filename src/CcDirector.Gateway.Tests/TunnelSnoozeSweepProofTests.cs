@@ -1,5 +1,6 @@
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using CcDirector.Core.Sessions;
 using CcDirector.Gateway.Api;
 using CcDirector.Gateway.Contracts;
 using CcDirector.Gateway.Discovery;
@@ -12,7 +13,7 @@ namespace CcDirector.Gateway.Tests;
 /// Gateway Cleanup mission, Phase 2 (PR E-B3): the snooze watchdog's Director I/O now rides the tunnel
 /// through <see cref="SnoozeSweepDirectorClient"/>. These tests prove the tunnel-vs-HTTP decision and the
 /// per-verb marshaling directly, without a live Director:
-///  - the RAW OnHold read rides the "snapshot" read verb and maps SessionDto.OnHold;
+///  - the RAW hold read rides the "snapshot" read verb and maps the whole SessionDto.HoldState tri-state;
 ///  - the expiry nudge rides the "hold" write verb with OnHold=false;
 ///  - a failed tunnel read maps to null (keep the entry), exactly as the HTTP dial returned null on a non-200;
 ///  - reachability is true over a live stream even with no HTTP endpoint (the post-cut case) and false for a
@@ -49,32 +50,52 @@ public sealed class TunnelSnoozeSweepProofTests : IDisposable
     private SnoozeSweepDirectorClient TunnelClient(RecordingHub hub, PushedSessionStore? push = null) =>
         new(new DirectorRegistry(_dir), push, hub.Send);
 
+    // Defect 20: the read carries ALL THREE hold states, not a boolean. DeferredHold is the one that
+    // mattered - it used to arrive as OnHold=false, indistinguishable from None, and the sweep deleted the
+    // snooze on it. If this Theory ever loses its DeferredHold row, the defect is unguarded again.
     [Theory]
-    [InlineData(true)]
-    [InlineData(false)]
-    public async Task ReadOnHold_ridesTheSnapshotVerb_andMapsOnHold(bool held)
+    [InlineData(HoldStates.None, HoldState.None)]
+    [InlineData(HoldStates.Held, HoldState.Held)]
+    [InlineData(HoldStates.DeferredHold, HoldState.DeferredHold)]
+    public async Task ReadHoldState_ridesTheSnapshotVerb_andMapsTheWholeTriState(string wire, HoldState expected)
     {
         var hub = new RecordingHub
         {
-            Next = DirectorCommandResult.Success(JsonSerializer.Serialize(new SessionDto { OnHold = held }, Web)),
+            Next = DirectorCommandResult.Success(JsonSerializer.Serialize(new SessionDto { HoldState = wire }, Web)),
         };
 
-        var onHold = await TunnelClient(hub).ReadOnHoldAsync("dir-1", "sid-1", CancellationToken.None);
+        var holdState = await TunnelClient(hub).ReadHoldStateAsync("dir-1", "sid-1", CancellationToken.None);
 
-        Assert.Equal(held, onHold);
+        Assert.Equal(expected, holdState);
         Assert.Equal("snapshot", hub.Last!.Verb);
         Assert.Equal("sid-1", hub.Last.SessionId);
         Assert.Equal("dir-1", hub.LastDirectorId);
     }
 
     [Fact]
-    public async Task ReadOnHold_failedTunnelResult_returnsNull_soTheEntryIsKept()
+    public async Task ReadHoldState_failedTunnelResult_returnsNull_soTheEntryIsKept()
     {
         var hub = new RecordingHub { Next = DirectorCommandResult.Fail(DirectorCommandStatus.NotFound, "no such session") };
 
-        var onHold = await TunnelClient(hub).ReadOnHoldAsync("dir-1", "sid-1", CancellationToken.None);
+        var holdState = await TunnelClient(hub).ReadHoldStateAsync("dir-1", "sid-1", CancellationToken.None);
 
-        Assert.Null(onHold);
+        Assert.Null(holdState);
+    }
+
+    [Fact]
+    public async Task ReadHoldState_unknownHoldStateString_returnsNull_ratherThanGuessing()
+    {
+        // A Director speaking a hold state this Gateway does not know is "I do not know", never a guess.
+        // The sweep treats null as a missed read and changes nothing - the only safe answer, because both
+        // wrong guesses lose something: "None" deletes a live snooze, "Held" expires one that never landed.
+        var hub = new RecordingHub
+        {
+            Next = DirectorCommandResult.Success(JsonSerializer.Serialize(new SessionDto { HoldState = "Parked" }, Web)),
+        };
+
+        var holdState = await TunnelClient(hub).ReadHoldStateAsync("dir-1", "sid-1", CancellationToken.None);
+
+        Assert.Null(holdState);
     }
 
     [Fact]

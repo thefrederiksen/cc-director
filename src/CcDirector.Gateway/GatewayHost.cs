@@ -80,6 +80,12 @@ public sealed class GatewayHost : IAsyncDisposable
     public Stats.GatewayInputStatsAggregator InputStats { get; }
 
     /// <summary>
+    /// Defect 20: the observer that starts a deferred snooze's clock when the Director pushes up the hold
+    /// having LANDED. Shared with the DirectorHub through the container, like <see cref="InputStats"/>.
+    /// </summary>
+    internal Snooze.SnoozeLandingObserver SnoozeLandings { get; }
+
+    /// <summary>
     /// The durable fleet CONCURRENCY record (how many sessions run at once, and how many are actively
     /// working at once) that the private Gateway dashboard and the agent API read. Fed from the same
     /// assembled /sessions roster as <see cref="InputStats"/>, so it is fleet-wide with no per-Director
@@ -499,6 +505,10 @@ public sealed class GatewayHost : IAsyncDisposable
         // registry is bounded by dropping a removed Director's entries so they do not accumulate on disk.
         _snoozeRegistry = new Snooze.SnoozeRegistry(snoozePath ?? Path.Combine(CcStorage.Root(), "snooze.json"));
         Registry.OnDirectorRemoved += id => _snoozeRegistry.ClearForDirector(id);
+        // Defect 20: the push seam that starts a deferred snooze's clock the moment the hold lands. The
+        // DirectorHub (constructed per-invocation by SignalR) folds every pushed session through this one
+        // instance, exactly as it does the input-stats aggregator.
+        SnoozeLandings = new Snooze.SnoozeLandingObserver(_snoozeRegistry);
         // Mission Screen mission (Phase 1b, issue #1405): the mission-WHY store, at a Gateway-side file
         // (CcStorage.Root(), the same location the snooze and cron stores use). Loaded here so a Gateway
         // restart re-serves every WHY. Tests MUST pass an isolated path so they never touch the real store.
@@ -1033,6 +1043,9 @@ public sealed class GatewayHost : IAsyncDisposable
         // DevThrottle Stats: the hub (constructed per-invocation by SignalR) folds each pushed session's
         // tally into this one aggregator instance, which the /stats dashboard reads.
         builder.Services.AddSingleton(InputStats);
+        // Defect 20: the hub lands a deferred snooze's clock through this one observer instance the moment
+        // the Director pushes up "the hold landed".
+        builder.Services.AddSingleton(SnoozeLandings);
         builder.Services.AddSingleton(SessionConcurrency);
         builder.Services.AddSingleton(Registry);
         // launcher-persistent-join: the LauncherHub (constructed per-invocation by SignalR) and
@@ -1641,7 +1654,10 @@ public sealed class GatewayHost : IAsyncDisposable
         _snoozeSweep = new Snooze.SnoozeExpirySweep(
             _snoozeRegistry,
             isDirectorReachable: snoozeClient.IsReachable,
-            readOnHold: snoozeClient.ReadOnHoldAsync,
+            // Defect 20: the sweep reads the Director's FULL hold state, never the derived OnHold boolean -
+            // a DeferredHold reads false there, and clearing a snooze on that is what made an
+            // agent-requested snooze permanent.
+            readHoldState: snoozeClient.ReadHoldStateAsync,
             forwardUnhold: snoozeClient.NudgeUnholdAsync,
             utcNow: () => DateTime.UtcNow);
         _snoozeSweep.Start();

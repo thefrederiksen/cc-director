@@ -569,8 +569,11 @@ public sealed class Session : IDisposable
     /// has to answer - "should this hold be deferred?" and "may this hold lift?" - now read the same
     /// authoritative fact, <see cref="ActivityState"/>, so they cannot fall out of step with each other.
     ///
-    /// Runtime-only (not persisted across a Director restart): it tracks what the user is currently
-    /// choosing to defer, not durable session state.
+    /// DURABLE across a Director restart (defect 22, fixed 14 July 2026): persisted via
+    /// <see cref="PersistedSession.HoldState"/> and restored through <see cref="RestoreHoldState"/>. It
+    /// was runtime-only, on the reasoning that it tracked "what the user is currently choosing to defer,
+    /// not durable session state" - but a twelve-hour snooze IS durable state, and a restart silently
+    /// forgot every one of them.
     /// </summary>
     public HoldState HoldState
     {
@@ -583,8 +586,13 @@ public sealed class Session : IDisposable
             // OnHoldChanged is the "is it parked?" signal (rail strip, FIFO conductor), so it fires only
             // when that answer actually flips - None <-> DeferredHold does not park anything.
             if (OnHold != wasOnHold) OnHoldChanged?.Invoke(OnHold);
-            // HoldStateChanged fires on EVERY transition: a client's label distinguishes DeferredHold
-            // ("Working, snoozing when done") from None, so it must hear about that edge too.
+            // HoldStateChanged fires on EVERY transition, including None <-> DeferredHold, which leaves
+            // OnHold untouched. That edge matters to the Gateway: it is what tells it a deferred snooze
+            // has LANDED, which is when the snooze clock starts (defect 20). Until 14 July 2026 this
+            // comment claimed clients rendered a distinct "Working, snoozing when done" label off this
+            // edge - they could not, because the state was byte-identical to None on the wire (defect
+            // 12). It now crosses on SessionDto.HoldState; rendering a distinct badge is client work
+            // that has not been done yet, so do not claim it here again until it has.
             HoldStateChanged?.Invoke(value);
         }
     }
@@ -652,6 +660,47 @@ public sealed class Session : IDisposable
         }
         HoldState = HoldState.Held;
         return HoldOutcome.Held;
+    }
+
+    /// <summary>
+    /// Restore a hold that was persisted before a Director restart (defect 22). Called by the restore path
+    /// AFTER <see cref="ActivityState"/> has been set, because the rule below reads it.
+    ///
+    /// THE RULING (owner, 14 July 2026): persist the hold state, and LAND the deferral on restart if the
+    /// session is not working. It follows from the ruling that the snooze clock starts when the work ends -
+    /// the deferral was waiting for a turn to finish, and a Director that died finished it. There is no
+    /// turn still running to wait for, so a restored deferral has already got what it was waiting for.
+    ///
+    /// The three cases, which are the existing machine's rules applied at restore rather than new ones:
+    ///  * The session came back EXITED - drop the hold entirely, exactly as the exit edge does. There is no
+    ///    turn to come back to, and a dead session must never hide behind a "Snoozed" label.
+    ///  * The session came back WORKING - keep the deferral pending. It is still waiting for work to stop,
+    ///    which is what DeferredHold means; the settle edge lands it as usual. A restored <c>Held</c> is
+    ///    lifted, because working ALWAYS clears a hold - the load-bearing rule of the whole machine.
+    ///  * Otherwise (settled) - a deferral LANDS, and a landed hold stays landed.
+    /// </summary>
+    /// <param name="persisted">The hold state read back from the store.</param>
+    public void RestoreHoldState(HoldState persisted)
+    {
+        if (persisted == HoldState.None) return;
+
+        if (ActivityState is ActivityState.Exited)
+        {
+            FileLog.Write($"[Session] Restore: dropping persisted hold ({persisted}) on an exited session: session={Id}");
+            return;
+        }
+
+        if (IsWorking)
+        {
+            // Working always clears a landed hold; a deferral is still waiting for this work to stop.
+            var restored = persisted == HoldState.DeferredHold ? HoldState.DeferredHold : HoldState.None;
+            FileLog.Write($"[Session] Restore: persisted hold {persisted} on a working session -> {restored}: session={Id}");
+            HoldState = restored;
+            return;
+        }
+
+        FileLog.Write($"[Session] Restore: persisted hold {persisted} on a settled session -> Held: session={Id}");
+        HoldState = HoldState.Held;
     }
 
     /// <summary>
@@ -1913,10 +1962,25 @@ public sealed class Session : IDisposable
         }
         else if (newState is ActivityState.Exited)
         {
-            // Exited: a deferral can never land - there is no turn to come back to, and parking a dead
-            // session would just hide it behind a "Snoozed" label forever.
-            if (HoldState == HoldState.DeferredHold)
+            // Exited: THE RULING (owner, 14 July 2026) - a snoozed session that exits reads Exited. A dead
+            // session never hides behind a "Snoozed" label.
+            //
+            // This clears BOTH hold states, and the reason is the same for both: parking a dead session
+            // would just hide it behind a "Snoozed" label forever. A deferral can never land (there is no
+            // turn to come back to); a LANDED hold has nothing left to hold back (the thing it was
+            // silencing is over). Defect 21 was that this branch made that argument in its own comment and
+            // then applied it only to the deferred case - so a Held session that exited kept OnHold=true,
+            // the fold checked OnHold before the base colour, and the row read "Snoozed" forever.
+            //
+            // Clearing the hold HERE, on the Director, is what makes the fold say Exited without a new
+            // rule: OnHold goes false, so the ladder falls through to the base activity colour, which is
+            // grey "Exited". The exit edge is only ever observed by a live Director, so there is no case
+            // this misses.
+            if (HoldState != HoldState.None)
+            {
+                FileLog.Write($"[Session] Session exited - clearing hold ({HoldState}): session={Id}");
                 HoldState = HoldState.None;
+            }
         }
         else
         {
