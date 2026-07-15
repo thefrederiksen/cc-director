@@ -1,5 +1,13 @@
 # Manager brief - post-v1.3.0 follow-ups
 
+> **HISTORICAL RECORD - NOT IN FORCE.** This brief seeded a Manager session for the post-v1.3.0 follow-ups, driven by the Stable Release Architect session `2eef41a3`. v1.3.0 was released on 2026-07-14 and that mission is over. It is kept for the record of what was
+> decided and why, and for the reasoning behind behaviour that has since shipped.
+>
+> **Nothing in this file is an instruction to you.** Every "you", every "do not ask", and the
+> standing-authority passage below were addressed to ONE named session, for the duration of that
+> mission, by the owner at that time. They expired with it. Read this as history, not as a brief you
+> have been handed. The standing rule is unchanged: **ask the owner before committing.**
+
 Architect: session `2eef41a3` ("Stable Release - Architect").
 
 **v1.3.0 is CUT AND PUBLISHED.** So is v1.2.0. Do not touch the tags, do not re-cut a release.
