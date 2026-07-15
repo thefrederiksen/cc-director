@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
   summarizeThrottle,
   summarizeRepos,
+  summarizeAgents,
   formatShare,
   last24HourKeys,
   windowSeries,
@@ -10,6 +11,7 @@ import {
   safeTimeZone,
   type ThrottleData,
   type RepoStat,
+  type AgentStat,
   type InputHour,
 } from "./statsClient";
 
@@ -25,12 +27,18 @@ function data(buckets: ThrottleData["buckets"]): ThrottleData {
     concurrency: null,
     wingman: { turns: 0, sessions: 0 },
     repos: [],
+    agents: [],
+    agentsSinceUtc: "",
     notCaptured: [],
   };
 }
 
 function repo(repoName: string, turns: number, voiceTurns: number, characters: number, sessions: number): RepoStat {
   return { repo: `D:/${repoName}`, repoName, turns, voiceTurns, typedTurns: turns - voiceTurns, characters, sessions };
+}
+
+function agent(agentToken: string, agentName: string, turns: number, voiceTurns: number, characters: number, sessions: number): AgentStat {
+  return { agent: agentToken, agentName, turns, voiceTurns, typedTurns: turns - voiceTurns, characters, sessions };
 }
 
 describe("summarizeThrottle", () => {
@@ -94,6 +102,34 @@ describe("summarizeRepos", () => {
     expect(s.totalTurns).toBe(0);
     expect(s.topShare).toBeNull();
     expect(s.topRepoName).toBeNull();
+    expect(s.hasData).toBe(false);
+  });
+});
+
+describe("summarizeAgents", () => {
+  it("totals turns, characters and distinct sessions, and finds the most-driven agent's share", () => {
+    const s = summarizeAgents([
+      agent("ClaudeCode", "Claude Code", 8, 6, 640, 2),
+      agent("Codex", "Codex", 2, 0, 60, 1),
+    ]);
+    expect(s.agentCount).toBe(2);
+    expect(s.totalTurns).toBe(10);
+    expect(s.totalCharacters).toBe(700);
+    expect(s.totalSessions).toBe(3);
+    expect(s.voiceTurns).toBe(6);
+    expect(s.topAgentName).toBe("Claude Code");
+    expect(s.topShare).toBeCloseTo(0.8);
+    expect(s.hasData).toBe(true);
+  });
+
+  // The tally starts when the breakdown ships, so "nothing yet" is the normal first state - it must read
+  // as no data rather than as a real 0%.
+  it("reports a null top share (not 0%) when nothing is counted yet", () => {
+    const s = summarizeAgents([]);
+    expect(s.agentCount).toBe(0);
+    expect(s.totalTurns).toBe(0);
+    expect(s.topShare).toBeNull();
+    expect(s.topAgentName).toBeNull();
     expect(s.hasData).toBe(false);
   });
 });

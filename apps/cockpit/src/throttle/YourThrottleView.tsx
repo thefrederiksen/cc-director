@@ -20,6 +20,7 @@ import {
 } from "@devthrottle/client-core/stats/statsClient";
 import { gatewayErrorMessage } from "@devthrottle/client-core/api/client";
 import { ReposTab } from "./ReposTab";
+import { AgentsTab } from "./AgentsTab";
 import { TABS, DEFAULT_TAB, isThrottleTab, type ThrottleTab } from "./throttleTabs";
 
 // The "Your Throttle" page (devthrottle-stats mission): the in-Cockpit view of how the owner drives the
@@ -133,6 +134,7 @@ export function YourThrottleView() {
           {tab === "activity" && <ActivityTab data={data} />}
           {tab === "breakdown" && <BreakdownTab summary={summary} data={data} />}
           {tab === "repos" && <ReposTab data={data} />}
+          {tab === "agents" && <AgentsTab data={data} />}
         </>
       )}
     </div>

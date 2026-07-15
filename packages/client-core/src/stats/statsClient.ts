@@ -87,6 +87,26 @@ export interface RepoStat {
   sessions: number;
 }
 
+/** One agent CLI's all-time input tally for the private Agents page: how much development you drive
+ * through this agent, in submitted turns (total + voice/typed split), character volume, and distinct
+ * sessions. Mirrors the Gateway AgentStatBucketDto. Counts only - never any message text. */
+export interface AgentStat {
+  /** The agent token the Director reported ("ClaudeCode", "Codex", ...), or "" when none (the key). */
+  agent: string;
+  /** Display name of the agent, e.g. "Claude Code"; "(unknown)" when the session carried no agent. */
+  agentName: string;
+  /** Total submitted turns driven through this agent (voice + typed). */
+  turns: number;
+  /** Submitted turns driven by voice. */
+  voiceTurns: number;
+  /** Submitted turns driven by typing. */
+  typedTurns: number;
+  /** Total character volume of input driven through this agent. */
+  characters: number;
+  /** Distinct sessions that drove counted input through this agent. */
+  sessions: number;
+}
+
 /** The GET /stats/data body: the fleet-wide aggregated tally plus the honesty caveats. */
 export interface ThrottleData {
   /** When the Gateway generated this snapshot (ISO 8601 UTC), or "" when absent. */
@@ -103,6 +123,12 @@ export interface ThrottleData {
   wingman: WingmanUsage;
   /** Per-repository all-time tally, ranked most-driven first (the private Repos page). */
   repos: RepoStat[];
+  /** Per-agent all-time tally, ranked most-driven first (the private Agents page). */
+  agents: AgentStat[];
+  /** When the per-agent tally started counting (ISO 8601 UTC), or "" when it has never been stamped.
+   *  The other series predate it, so the Agents page states this window instead of implying the earlier
+   *  turns ran under no agent. */
+  agentsSinceUtc: string;
   /** Plain-English caveats about what the numbers do and do not include. */
   notCaptured: string[];
 }
@@ -182,11 +208,14 @@ export async function getThrottle(signal?: AbortSignal): Promise<ThrottleData> {
     concurrency?: unknown;
     wingman?: unknown;
     repos?: unknown;
+    agents?: unknown;
+    agentsSinceUtc?: unknown;
     notCaptured?: unknown;
   } | null;
   const buckets = Array.isArray(body?.buckets) ? body!.buckets.map(normalizeBucket) : [];
   const hourlyTurns = Array.isArray(body?.hourlyTurns) ? body!.hourlyTurns.map(normalizeInputHour) : [];
   const repos = Array.isArray(body?.repos) ? body!.repos.map(normalizeRepo) : [];
+  const agents = Array.isArray(body?.agents) ? body!.agents.map(normalizeAgent) : [];
   const notCaptured = Array.isArray(body?.notCaptured)
     ? body!.notCaptured.filter((x): x is string => typeof x === "string")
     : [];
@@ -198,6 +227,8 @@ export async function getThrottle(signal?: AbortSignal): Promise<ThrottleData> {
     concurrency: normalizeConcurrency(body?.concurrency),
     wingman: normalizeWingman(body?.wingman),
     repos,
+    agents,
+    agentsSinceUtc: typeof body?.agentsSinceUtc === "string" ? body.agentsSinceUtc : "",
     notCaptured,
   };
 }
@@ -205,6 +236,19 @@ export async function getThrottle(signal?: AbortSignal): Promise<ThrottleData> {
 function normalizeWingman(raw: unknown): WingmanUsage {
   const w = (raw ?? {}) as { turns?: unknown; sessions?: unknown };
   return { turns: num(w.turns), sessions: num(w.sessions) };
+}
+
+function normalizeAgent(raw: unknown): AgentStat {
+  const a = (raw ?? {}) as Partial<Record<keyof AgentStat, unknown>>;
+  return {
+    agent: String(a.agent ?? ""),
+    agentName: String(a.agentName ?? ""),
+    turns: num(a.turns),
+    voiceTurns: num(a.voiceTurns),
+    typedTurns: num(a.typedTurns),
+    characters: num(a.characters),
+    sessions: num(a.sessions),
+  };
 }
 
 function normalizeRepo(raw: unknown): RepoStat {
@@ -317,6 +361,56 @@ export interface RepoSummary {
   /** The most-driven repo's display name, or null when there is no data. */
   topRepoName: string | null;
   hasData: boolean;
+}
+
+/** The Agents-page headline summary: how much you drive each agent CLI. */
+export interface AgentSummary {
+  /** How many agents have any counted input. */
+  agentCount: number;
+  /** Total submitted turns across every agent. */
+  totalTurns: number;
+  /** Total character volume across every agent. */
+  totalCharacters: number;
+  /** Total distinct sessions across every agent (a session drives exactly one agent, so summing the
+   * per-agent distinct counts is itself a distinct total). */
+  totalSessions: number;
+  /** Total voice-driven turns across every agent. */
+  voiceTurns: number;
+  /** The most-driven agent's share of all turns, or null when no turns are counted yet. */
+  topShare: number | null;
+  /** The most-driven agent's display name, or null when there is no data. */
+  topAgentName: string | null;
+  hasData: boolean;
+}
+
+/** Derive the Agents-page headline summary from the per-agent tally. Shares are null (never a fabricated
+ * 0%) when there are no counted turns yet - the tally starts when the breakdown shipped, so an empty
+ * page is the honest state until the fleet has driven a turn under it. */
+export function summarizeAgents(agents: AgentStat[]): AgentSummary {
+  let totalTurns = 0;
+  let totalCharacters = 0;
+  let totalSessions = 0;
+  let voiceTurns = 0;
+  let top: AgentStat | null = null;
+
+  for (const a of agents) {
+    totalTurns += a.turns;
+    totalCharacters += a.characters;
+    totalSessions += a.sessions;
+    voiceTurns += a.voiceTurns;
+    if (top === null || a.turns > top.turns) top = a;
+  }
+
+  return {
+    agentCount: agents.length,
+    totalTurns,
+    totalCharacters,
+    totalSessions,
+    voiceTurns,
+    topShare: totalTurns > 0 && top !== null ? top.turns / totalTurns : null,
+    topAgentName: top !== null ? top.agentName : null,
+    hasData: totalTurns > 0 || totalCharacters > 0,
+  };
 }
 
 /** Derive the Repos-page headline summary from the per-repo tally. Shares are null (never a fabricated

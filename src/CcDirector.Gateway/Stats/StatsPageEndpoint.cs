@@ -60,6 +60,13 @@ public static class StatsPageEndpoint
                 // owner-only auth as the rest of this feed; rendered on a SEPARATE page from Your Throttle
                 // so it never rides along when the throttle is shared.
                 repos = aggregator.RepoTotals(),
+                // DevThrottle Stats (private Agents page): the per-agent all-time tally, ranked most-driven
+                // first, so the owner can see which agent CLI the work actually goes through. Unlike the
+                // other series this one starts at agentsSinceUtc - the breakdown was added after the totals
+                // had been accumulating - so the page states that window rather than implying the earlier
+                // turns ran under no agent.
+                agents = aggregator.AgentTotals(),
+                agentsSinceUtc = aggregator.AgentsSinceUtc,
                 notCaptured = NotCaptured,
             });
         });
