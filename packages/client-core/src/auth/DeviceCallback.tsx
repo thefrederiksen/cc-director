@@ -10,10 +10,20 @@ import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { getInstallId, setDeviceKey } from "./deviceKey";
 import { enrollmentProfile, takeEnrollState, takeEnrollNext } from "./enrollRequest";
-import { enrollDevice } from "../api/enroll";
+import { enrollDevice, isGatewayNotSignedIn } from "../api/enroll";
 import { ensureGatewayCookie } from "../api/client";
+import { beginSignIn } from "../account/accountClient";
 
-type Phase = "working" | "denied" | "error";
+// "gatewaySignedOut" is the Gateway itself not being signed in to a DevThrottle account (HTTP 409 from
+// /m/enroll). It is deliberately NOT an error phase: on a fresh install it is the EXPECTED state - the
+// Gateway has to join an account before it can enroll anything onto that account.
+//
+// It needs its own phase because the generic error phase strands the person. The Gateway's message says
+// "sign the Gateway in and try again", but the only action offered was "Try again", which returns to the
+// sign-in screen and fails again for exactly the same reason - a loop with no exit. The two sign-ins are
+// easy to conflate: the person HAS signed themselves in at devthrottle.com; it is the GATEWAY that has
+// not. So this phase says which one is missing and offers the action that fixes it.
+type Phase = "working" | "denied" | "error" | "gatewaySignedOut";
 
 export function DeviceCallback() {
   const navigate = useNavigate();
@@ -68,6 +78,11 @@ export function DeviceCallback() {
         navigate(landing, { replace: true });
       } catch (err) {
         if (cancelled) return;
+        if (isGatewayNotSignedIn(err)) {
+          setPhase("gatewaySignedOut");
+          setMessage(err.message);
+          return;
+        }
         setPhase("error");
         setMessage(err instanceof Error ? err.message : "Could not connect this device. Please try again.");
       }
@@ -79,6 +94,11 @@ export function DeviceCallback() {
 
   const container = { maxWidth: 420, margin: "0 auto", padding: "2.5rem 1.25rem", textAlign: "center" as const };
 
+  const button = {
+    padding: "0.8rem 1.25rem", fontSize: "1rem", fontWeight: 600,
+    borderRadius: 10, border: "none", cursor: "pointer",
+  } as const;
+
   if (phase === "working") {
     return (
       <div style={container}>
@@ -88,15 +108,31 @@ export function DeviceCallback() {
     );
   }
 
+  // The Gateway has no account yet. The person is signed in; the GATEWAY is not - so name that
+  // difference plainly and give them the one action that resolves it, rather than a "Try again" that
+  // would fail identically. beginSignIn navigates to the Gateway's public sign-in front door, which
+  // sends this browser to devthrottle.com and hands it back to the Gateway's own callback.
+  if (phase === "gatewaySignedOut") {
+    return (
+      <div style={container}>
+        <h1>This Gateway is not signed in yet</h1>
+        <p style={{ opacity: 0.8, marginBottom: "1.5rem" }}>{message}</p>
+        <button type="button" onClick={() => beginSignIn()} style={button}>
+          Sign the Gateway in
+        </button>
+        <p style={{ opacity: 0.7, marginTop: "1.25rem", fontSize: "0.9rem" }}>
+          You are signed in already - it is the Gateway that needs to join your account before it can
+          connect this {profile.deviceLabel}. Once it has, sign in here again.
+        </p>
+      </div>
+    );
+  }
+
   return (
     <div style={container}>
       <h1>{phase === "denied" ? "Sign-in declined" : "Something went wrong"}</h1>
       <p style={{ opacity: 0.8, marginBottom: "1.5rem" }}>{message}</p>
-      <button
-        type="button"
-        onClick={() => navigate(profile.signInPath, { replace: true })}
-        style={{ padding: "0.8rem 1.25rem", fontSize: "1rem", fontWeight: 600, borderRadius: 10, border: "none", cursor: "pointer" }}
-      >
+      <button type="button" onClick={() => navigate(profile.signInPath, { replace: true })} style={button}>
         Try again
       </button>
     </div>
