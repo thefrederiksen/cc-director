@@ -93,6 +93,22 @@ shipped both defects:
   live session and doubles the agent numbers - precisely what the `:80` comment warns about. It is
   live behaviour that happens to look like migration scaffolding.
 
+**THE MIGRATION MACHINERY IS NOT SCAFFOLDING. DO NOT DELETE IT.** `PRAGMA user_version`, the
+version check, and the migration path stay. The Manager flagged this as the next fast delete waiting
+to happen, and it is the most dangerous one left, because the sentence that kills it sounds
+*reasonable*: "the import is gone, so the migration machinery goes with it." It does not. **The
+migration machinery is the entire point of the mission.** The import was how old numbers were to be
+carried across once; the migration is how the *next* shape change keeps the owner's numbers instead
+of quarantining the file and losing them the way #1376 lost the concurrency peak of 35. Delete the
+import and the mission gets simpler. Delete `user_version` and the mission has no reason to exist -
+it becomes a lateral move from one store that loses data on a shape change to another one.
+
+**The general trap, one level up from the filter above:** the danger zone is anything whose *name*
+sounds like migration. "Import", "legacy", "baseline", "parity" and "migration" all read as
+scaffolding, and four of those five genuinely were. `user_version` is the one that is load-bearing
+product behaviour wearing the same word. Judge by what a thing *does*, never by what its name
+suggests it was for.
+
 **New cutover behaviour:** on first run, rename `gateway-input-stats.json` aside and start empty. No
 parse, no read, no import path. **Rename, never delete** - discarding the numbers is the owner's
 call, destroying the file irreversibly is not, and a rename costs nothing and keeps the door open.
