@@ -39,6 +39,7 @@ public sealed class GatewayTranscriptionService
     private readonly HttpClient? _http;
     private readonly string _cleanupModel;
     private readonly TranscriptionTelemetryLog _telemetry;
+    private readonly TranscriptionAudioArchive _audioArchive;
 
     /// <param name="vault">The Gateway key vault - the single store for the transcription key.</param>
     /// <param name="dictionaryProvider">Supplies the live dictation dictionary the corrector uses;
@@ -53,13 +54,17 @@ public sealed class GatewayTranscriptionService
     /// not a model). Defaults to the dictation default when blank.</param>
     /// <param name="telemetry">Local transcription telemetry sink. Defaults to the process-wide shared
     /// log (<see cref="TranscriptionTelemetryLog.Shared"/>); tests inject their own.</param>
+    /// <param name="audioArchive">Rolling archive of the audio behind each turn. Defaults to the
+    /// process-wide shared archive (<see cref="TranscriptionAudioArchive.Shared"/>); tests inject their
+    /// own so they never write into the real user's archive.</param>
     public GatewayTranscriptionService(
         KeyVault vault,
         Func<DictationDictionary>? dictionaryProvider = null,
         Func<TranscriptionMode>? modeProvider = null,
         HttpClient? http = null,
         string? cleanupModel = null,
-        TranscriptionTelemetryLog? telemetry = null)
+        TranscriptionTelemetryLog? telemetry = null,
+        TranscriptionAudioArchive? audioArchive = null)
     {
         _vault = vault ?? throw new ArgumentNullException(nameof(vault));
         _dictionaryProvider = dictionaryProvider ?? (() => DictionaryLoader.LoadFromDisk(DictionaryPath()));
@@ -67,6 +72,7 @@ public sealed class GatewayTranscriptionService
         _http = http;
         _cleanupModel = string.IsNullOrWhiteSpace(cleanupModel) ? CleanupOrchestrator.DefaultModel : cleanupModel;
         _telemetry = telemetry ?? TranscriptionTelemetryLog.Shared;
+        _audioArchive = audioArchive ?? TranscriptionAudioArchive.Shared;
     }
 
     /// <summary>
@@ -111,6 +117,14 @@ public sealed class GatewayTranscriptionService
             return GatewayTranscriptionResult.NoKey(mode, routing.Endpoint.Model);
 
         var turnId = Guid.NewGuid().ToString("N");
+
+        // Archive the clip BEFORE transcribing, keyed by the same turn id the telemetry log records.
+        // Before, so a crash or a hang cannot lose it; and kept afterwards WHATEVER the outcome, because
+        // the failure this exists for is a transcription that succeeds and silently drops half the
+        // speech. Only the audio can tell "the provider lost it" from "the microphone went quiet", and a
+        // net that deletes on success is exactly the net that is never there when that happens.
+        _audioArchive.TrySave(turnId, audio, contentType);
+
         var swTranscribe = Stopwatch.StartNew();
         string raw;
         try

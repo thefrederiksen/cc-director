@@ -217,6 +217,11 @@ public static class CcStorage
     /// <summary>Transcription telemetry: base/transcription-log/.</summary>
     public static string TranscriptionLog() => Path.Combine(Base(), "transcription-log");
 
+    /// <summary>Rolling archive of the audio behind each transcription, keyed by the telemetry turn id.
+    /// Bounded by age and count by its owner (TranscriptionAudioArchive); sits beside TranscriptionLog()
+    /// so a suspicious transcript line leads straight to the clip that produced it.</summary>
+    public static string TranscriptionAudio() => Path.Combine(Base(), "transcription-audio");
+
     /// <summary>Terminal screen captures: base/terminal-captures/.</summary>
     public static string TerminalCaptures() => Path.Combine(Base(), "terminal-captures");
 
