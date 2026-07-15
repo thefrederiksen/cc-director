@@ -10,6 +10,19 @@ role cardinality attached to it. It does NOT redefine role behavior or attention
 the role-behavior contract's lane. It adds ONE new idea: the Mission as a first-class object that
 sessions attach to.
 
+> **This is the OBJECT. For how a mission is RUN, read [`.claude/skills/mission/SKILL.md`](../../.claude/skills/mission/SKILL.md).**
+>
+> Two different questions, deliberately in two files. This one answers "what is a Mission, what
+> attaches to it, what is it called". The skill answers "how does an Architect conduct one" - the
+> four laws (ask up front then run alone; commit to the branch and never merge to main; a different
+> agent inspects before anything reaches main; only the Architect merges), and how to write a brief.
+>
+> The rules live THERE and only there. Before that file existed they lived nowhere, so every mission
+> brief restated them from memory - they drifted, and each brief read as though it were granting
+> authority. One such brief reached main carrying the sentence "You have standing commit authority
+> for the whole mission", in imperative voice, with its expiry in a different paragraph. A brief
+> describes the WORK; it must never grant a permission. If you are writing one, start at the skill.
+
 ## The idea in one line
 
 A **Mission** is the named unit of work a pod is collectively chartered to accomplish. Sessions
