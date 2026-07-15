@@ -761,11 +761,27 @@ internal static class GatewayEndpoints
                     // identical row. The agreement check could only call it "indeterminate" and refuse to
                     // grade it - which is a workaround for the instrument, not a fix for the product.
                     //
-                    // The Gateway ADDS its fact instead, the way VoiceGenerating below always has - and it
-                    // needed no new field, because VoiceGenerating IS the fact and is stamped two lines
-                    // down. The fold now asks for it directly (SessionOrdering.IsGatewayVoiceBriefing),
-                    // carrying the same condition this stamp had, so no pixel changes and nothing is
-                    // destroyed. Both facts ride the row; the check can grade it.
+                    // NOTHING REPLACED IT, and that is the fix - not a new rule somewhere else. The Gateway
+                    // already adds its fact: VoiceGenerating, stamped unconditionally two lines down, and
+                    // SessionOrdering.IsVoicePreparing already folds it to the same yellow. The stamp was
+                    // redundant as well as destructive.
+                    //
+                    // READ THIS BEFORE YOU "RESTORE THE MISSING RULE": IsVoicePreparing is NOT this stamp's
+                    // condition and is not meant to be. It is narrower - it requires VoiceMode and a session
+                    // actually WAITING, where the stamp fired on any raw-red session with voice generating.
+                    // A first attempt at this fix did add a rule carrying the stamp's exact condition, on
+                    // the theory that it preserved every pixel; the existing suite refuted it
+                    // (StateLabel_VoicePreparing_IsPreparingVoice and
+                    // EffectiveColor_NonVoiceWaiting_NoAudio_StaysRed both went red) and that attempt was
+                    // thrown away. Two rules for one fact is two answers, which is this mission's whole
+                    // defect class. If a row looks like it is missing a yellow, the question is whether
+                    // IsVoicePreparing is right - not whether this stamp should come back.
+                    //
+                    // The stamp also made the words wrong, which nobody noticed: hijacking BriefingState
+                    // sent a voice-generating session down the fold's IsBriefing arm, so it read "Wingman
+                    // reading" when the Gateway's own rule says the truer "Preparing voice". The dot was
+                    // yellow either way. Both facts now ride the row, nothing is destroyed, the check can
+                    // grade it, and the label is honest.
                     //
                     // If you need the Gateway to say something new about a session, add a Gateway-owned
                     // field. Never reach for a Director-owned one because it happens to be the shape you
