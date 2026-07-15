@@ -201,6 +201,17 @@ public static class CcStorage
         if (!string.IsNullOrWhiteSpace(configured))
             return Ensure(configured);
 
+        // No configured folder. When CC_DIRECTOR_ROOT is set the caller has pinned storage to a throwaway
+        // location (only tests do this - the product never sets it), so keep the screenshots folder inside
+        // that root rather than falling through to the user's REAL Pictures\Screenshots. Without this a test
+        // that redirects the root still wrote into the user's own screenshots folder, where the gallery listed
+        // the leftovers as undrawable date-only entries; the leak shipped because setting the root LOOKS like
+        // it sandboxes everything. Mirrors CC_DIRECTOR_INSTANCES_DIR (issue #322) in keeping test artefacts out
+        // of the user's real environment.
+        var overrideRoot = Environment.GetEnvironmentVariable("CC_DIRECTOR_ROOT");
+        if (!string.IsNullOrEmpty(overrideRoot))
+            return Ensure(Path.Combine(overrideRoot, "screenshots"));
+
         if (OperatingSystem.IsMacOS())
             return Ensure(Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory));
 
