@@ -15,7 +15,8 @@ namespace CcDirector.Gateway.Tests;
 /// the mechanical guarantees (faithful carry-through, context cleared every turn, fail-loud
 /// on a broken contract, speech cleanup, and that the only dependency is a real-session
 /// brain - never a <c>--print</c> process). Human judgement of summary quality comes from
-/// the HTML QA report this file also emits.
+/// the HTML QA report this file emits when <c>CC531_PROOF_DIR</c> names an output directory;
+/// a normal test run writes no files.
 /// </summary>
 public sealed class WingmanTranslatorTests
 {
@@ -504,21 +505,19 @@ public sealed class WingmanTranslatorTests
             Assert.False(string.IsNullOrWhiteSpace(r.Spoken)); // a non-empty reply yields a non-empty translation
         }
 
-        var outDir = Path.Combine(FindRepoRoot(), "docs", "proof", "issue-531");
+        // Proof generation is OPT-IN, like the sibling proof writers (CC274_PROOF_DIR,
+        // CC300_PROOF_DIR, CC1080_PROOF_DIR): a normal `dotnet test` writes nothing. This used
+        // to write docs/proof/issue-531/wingman-text-qa.html unconditionally, rewriting a
+        // git-tracked file on every Gateway run and leaving every worktree dirty. The
+        // assertions above are the test; the report is an artefact the proof run collects.
+        var outDir = Environment.GetEnvironmentVariable("CC531_PROOF_DIR");
+        if (string.IsNullOrWhiteSpace(outDir)) return;
+
         Directory.CreateDirectory(outDir);
         var outPath = Path.Combine(outDir, "wingman-text-qa.html");
         File.WriteAllText(outPath, WingmanQaReport.Render(rows, live: false), Encoding.UTF8);
 
         _out.WriteLine($"QA report written: {outPath}");
         Assert.True(File.Exists(outPath));
-    }
-
-    private static string FindRepoRoot()
-    {
-        var dir = new DirectoryInfo(AppContext.BaseDirectory);
-        while (dir is not null && !File.Exists(Path.Combine(dir.FullName, "CcDirector.sln"))
-               && !Directory.Exists(Path.Combine(dir.FullName, ".git")))
-            dir = dir.Parent;
-        return dir?.FullName ?? AppContext.BaseDirectory;
     }
 }

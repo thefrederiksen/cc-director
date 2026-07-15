@@ -1,5 +1,6 @@
 using System.Text;
 using System.Text.Json;
+using CcDirector.Core.Storage;
 using CcDirector.Core.Utilities;
 
 namespace CcDirector.Core.Wingman;
@@ -22,9 +23,11 @@ public static class StateChangeLog
 {
     private static readonly object Gate = new();
     private static readonly JsonSerializerOptions Json = new() { WriteIndented = false };
-    private static readonly string Root = Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-        "cc-director", "state-changes");
+
+    /// <summary>Resolved per access (not a static readonly field) so CC_DIRECTOR_ROOT redirects it: a
+    /// baked field is captured at type load, which no test can undo - and this class's own test wrote
+    /// into the real Director's data directory as a result. Same folder in production.</summary>
+    private static string Root => CcStorage.StateChanges();
 
     /// <summary>Disabled by setting <c>CC_DIRECTOR_STATE_LOG=0</c> at startup; the in-memory
     /// ring and the Wingman tab still work without the durable log.</summary>

@@ -78,6 +78,24 @@ public static class CcStorage
     public static string Logs() => Path.Combine(Base(), "logs");
 
     /// <summary>
+    /// Durable activity-state transition logs: base/state-changes/&lt;sessionId&gt;.jsonl. The caller creates
+    /// the directory, so this composes the path without touching disk. Resolved here rather than in
+    /// <see cref="Wingman.StateChangeLog"/> so it honors CC_DIRECTOR_ROOT like every other path: that class
+    /// baked %LOCALAPPDATA% into a static readonly field, which no test could redirect - so its test wrote
+    /// into the real running Director's data directory.
+    /// </summary>
+    public static string StateChanges() => Path.Combine(Base(), "state-changes");
+
+    /// <summary>
+    /// Per-utterance resumable voice-chunk staging: base/voice-utterances/&lt;uploadId&gt;/. Transient - the
+    /// service deletes each utterance directory after transcription, and creates them itself, so this
+    /// composes the path without touching disk. Resolved here for the same reason as
+    /// <see cref="StateChanges"/>: <see cref="Voice.VoiceUtteranceService"/> baked %LOCALAPPDATA% into a
+    /// static readonly field that no test could redirect.
+    /// </summary>
+    public static string VoiceUtterances() => Path.Combine(Base(), "voice-utterances");
+
+    /// <summary>
     /// Per-turn voice comparison logs (short retention, auto-purged): base/voice-turn-logs/.
     /// Holds the audio, user transcript, agent reply, and wingman spoken reply for
     /// each voice turn so a meaning divergence can be flagged and compared later.
