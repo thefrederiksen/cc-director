@@ -176,8 +176,9 @@ internal static class SessionCommandExecutor
     /// The prompt core, past the id/session guards: reject an exited session, capture the pre-send
     /// buffer cursor, then deliver the text. Shared by the verb handler and directly testable against
     /// a session. <paramref name="source"/> names who is sending - <see cref="SendSource.UserInput"/>
-    /// (the default), <see cref="SendSource.Delivery"/> (a dictation's own arrival) or
-    /// <see cref="SendSource.Internal"/> - for diagnostics only; no source is ever refused. The old
+    /// (the default), <see cref="SendSource.Delivery"/> (a dictation's own arrival),
+    /// <see cref="SendSource.Agent"/> (another agent) or <see cref="SendSource.Framework"/> - for
+    /// diagnostics and the tally; no source is ever refused. The old
     /// dictation-lock refusal was removed deliberately (single-operator tool; the operator may inject
     /// into their own sessions whenever they like).
     /// </summary>
@@ -198,16 +199,25 @@ internal static class SessionCommandExecutor
         // Gateway prompt handler and the dictation delivery) always set, stamping "unknown" when the device
         // key did not resolve. A phone/cockpit key maps to that surface; "unknown" maps to the Unknown
         // bucket the dashboard shows (decision 9: excluded volume is surfaced, never silently dropped).
-        // A framework send (SendSource.Internal) and machine-to-machine traffic (fanout/broadcast, which
-        // never sets Surface, so it is null) are correctly NOT counted.
-        InputOrigin? origin = (source != SendSource.Internal && request.Surface is not null)
+        // Issue #1636: a fleet message addressed to a session on ANOTHER Director arrives here as an
+        // ordinary prompt, so the relay marks it in the DTO - the same trick DeliveryUploadId uses for a
+        // dictation. Without it, the identical fleet message would be counted as agent-driven or not
+        // depending only on whether the two sessions happened to share a Director.
+        var effectiveSource = request.AgentDriven ? SendSource.Agent : source;
+
+        // This origin is the HUMAN tally only. Neither a framework send nor an agent prompting another
+        // agent is a person driving, so both are excluded here by name rather than by relying on their
+        // Surface being null (agent-driven turns are counted on their own separate lane, and must never
+        // leak into the voice-versus-typed numbers).
+        var human = effectiveSource is SendSource.UserInput or SendSource.Delivery;
+        InputOrigin? origin = (human && request.Surface is not null)
             ? new InputOrigin(
-                source == SendSource.Delivery ? InputModality.Voice : InputModality.Typed,
+                effectiveSource == SendSource.Delivery ? InputModality.Voice : InputModality.Typed,
                 InputOrigin.RemoteSurfaceFromDeviceType(request.Surface))
             : null;
 
         if (request.AppendEnter)
-            await session.SendTextAsync(request.Text, source, origin);
+            await session.SendTextAsync(request.Text, effectiveSource, origin);
         else
             session.SendInput(Encoding.UTF8.GetBytes(request.Text), origin);
 
@@ -584,7 +594,7 @@ internal static class SessionCommandExecutor
                     }
                     FileLog.Write($"[SessionCommandExecutor] PrePrompt: dispatching to sid={capturedSession.Id}, len={prePrompt.Length}");
                     // Framework pre-prompt (not a human racing the dictation): exempt (issue #1181, Task 3b).
-                    await capturedSession.SendTextAsync(prePrompt, SendSource.Internal);
+                    await capturedSession.SendTextAsync(prePrompt, SendSource.Framework);
                 }
                 catch (Exception ex)
                 {

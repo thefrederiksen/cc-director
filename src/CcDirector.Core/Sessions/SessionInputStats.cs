@@ -31,6 +31,10 @@ public sealed class SessionInputStats
 
     private readonly ConcurrentDictionary<(InputModality Modality, InputSurface Surface), Counters> _buckets = new();
 
+    // Turns this session was driven by ANOTHER AGENT (issue #1636), on their own lane - never in _buckets.
+    // See InputStatsDto.AgentDrivenTurns for why they are kept apart rather than given a modality.
+    private readonly Counters _agentDriven = new();
+
     /// <summary>Raised after any recorded change, so the host can persist and push a delta (debounced by
     /// the host - this fires per keystroke). Carries no data; readers call <see cref="Snapshot"/>.</summary>
     public event Action? Changed;
@@ -62,10 +66,30 @@ public sealed class SessionInputStats
         Changed?.Invoke();
     }
 
+    /// <summary>
+    /// Record one turn that ANOTHER AGENT drove into this session (issue #1636) - a fleet message, ask, or
+    /// broadcast. A real turn: the sending agent decided to send it. Counted on its own lane, never into
+    /// the human buckets, so the voice-versus-typed and phone-versus-desktop numbers stay about the human.
+    ///
+    /// Framework-authored text (handover, queue drain, pre-prompt) is NOT this: it carries nobody's
+    /// decision and is not counted at all, by anything.
+    /// </summary>
+    public void RecordAgentTurn(int characters)
+    {
+        Interlocked.Increment(ref _agentDriven.Turns);
+        if (characters > 0)
+            Interlocked.Add(ref _agentDriven.Characters, characters);
+        Changed?.Invoke();
+    }
+
     /// <summary>An immutable snapshot of the tally as the shared wire DTO, buckets in a stable order.</summary>
     public InputStatsDto Snapshot()
     {
-        var dto = new InputStatsDto();
+        var dto = new InputStatsDto
+        {
+            AgentDrivenTurns = Interlocked.Read(ref _agentDriven.Turns),
+            AgentDrivenCharacters = Interlocked.Read(ref _agentDriven.Characters),
+        };
         foreach (var kvp in _buckets
                      .OrderBy(b => b.Key.Modality)
                      .ThenBy(b => b.Key.Surface))
@@ -82,8 +106,10 @@ public sealed class SessionInputStats
         return dto;
     }
 
-    /// <summary>True when nothing has been counted yet (used to skip pushing an empty tally).</summary>
-    public bool IsEmpty => _buckets.IsEmpty;
+    /// <summary>True when nothing has been counted yet (used to skip pushing an empty tally). A session
+    /// driven ONLY by other agents has no buckets but is not empty - it must still reach the wire, or the
+    /// agent-to-agent tally would silently miss exactly the sessions it is about.</summary>
+    public bool IsEmpty => _buckets.IsEmpty && Interlocked.Read(ref _agentDriven.Turns) == 0;
 
     /// <summary>
     /// Replace the tally with a persisted snapshot (Director restart restore). Buckets not present in
@@ -93,6 +119,8 @@ public sealed class SessionInputStats
     public void Seed(InputStatsDto? dto)
     {
         _buckets.Clear();
+        Interlocked.Exchange(ref _agentDriven.Turns, dto?.AgentDrivenTurns ?? 0);
+        Interlocked.Exchange(ref _agentDriven.Characters, dto?.AgentDrivenCharacters ?? 0);
         if (dto?.Buckets is null) return;
         foreach (var b in dto.Buckets)
         {

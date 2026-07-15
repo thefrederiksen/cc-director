@@ -16,7 +16,8 @@ public record SessionData(
     string RepoPath,
     string? CustomName,
     string? CustomColor,
-    string? ClaudeArgs);
+    string? ClaudeArgs,
+    string? Agent);
 
 public partial class SaveWorkspaceDialog : Window
 {
@@ -39,6 +40,7 @@ public partial class SaveWorkspaceDialog : Window
             CustomName = s.CustomName,
             CustomColor = s.CustomColor,
             ClaudeArgs = s.ClaudeArgs,
+            Agent = s.Agent,
             SortOrder = i,
             HasColor = !string.IsNullOrWhiteSpace(s.CustomColor),
             ColorBrush = GetColorBrush(s.CustomColor)
@@ -127,7 +129,8 @@ public partial class SaveWorkspaceDialog : Window
                 CustomName = s.CustomName,
                 CustomColor = s.CustomColor,
                 SortOrder = s.SortOrder,
-                ClaudeArgs = s.ClaudeArgs
+                ClaudeArgs = s.ClaudeArgs,
+                Agent = s.Agent
             }).ToList()
         };
 
@@ -158,6 +161,7 @@ public partial class SaveWorkspaceDialog : Window
         public string? CustomName { get; set; }
         public string? CustomColor { get; set; }
         public string? ClaudeArgs { get; set; }
+        public string? Agent { get; set; }
         public int SortOrder { get; set; }
         public bool HasColor { get; set; }
         public ISolidColorBrush ColorBrush { get; set; } = new SolidColorBrush(Colors.Transparent);

@@ -1990,8 +1990,9 @@ public sealed class Session : IDisposable
     /// backend-specific whole-turn semantics.
     ///
     /// <paramref name="source"/> names who is sending: a human (<see cref="SendSource.UserInput"/>,
-    /// the default), an arriving dictation (<see cref="SendSource.Delivery"/>), or the framework
-    /// itself (<see cref="SendSource.Internal"/>). It is diagnostic only - sends are never refused
+    /// the default), an arriving dictation (<see cref="SendSource.Delivery"/>), another agent across
+    /// the fleet (<see cref="SendSource.Agent"/>), or the framework itself
+    /// (<see cref="SendSource.Framework"/>). It is diagnostic only - sends are never refused
     /// by source. The old dictation-lock rejection here was removed deliberately: this is a
     /// single-operator tool, and a collision between the operator's own phone dictation and their
     /// own typed send is theirs to make, not the Director's to police.
@@ -2022,12 +2023,19 @@ public sealed class Session : IDisposable
         HoldState = HoldState.None;
         SetActivityState(ActivityState.Working);
         // DevThrottle Stats: a SendTextAsync is exactly one submitted turn. Count it (plus its character
-        // volume) for the tagged origin. Null origin = framework-internal (handover, queue drain) - not
-        // counted, even though it still submits a turn to the agent.
+        // volume) for the tagged origin. Null origin = not a human turn - either another agent (counted on
+        // its own lane below) or framework text (handover, queue drain), which carries nobody's decision
+        // and is not counted at all.
         if (origin is InputOrigin o)
         {
             InputStats.RecordTurn(o, text?.Length ?? 0);
             RecordOrigin(o, text?.Length ?? 0);
+        }
+        else if (source == SendSource.Agent)
+        {
+            // Issue #1636: one agent prompting another IS a real turn - the sending agent decided to send
+            // it - so it is counted, but never into the human buckets above.
+            InputStats.RecordAgentTurn(text?.Length ?? 0);
         }
     }
 

@@ -105,6 +105,12 @@ export interface AgentStat {
   characters: number;
   /** Distinct sessions that drove counted input through this agent. */
   sessions: number;
+  /** Turns OTHER AGENTS drove into the sessions running this agent (issue #1636) - not the human.
+   *  NOT part of `turns`, which stays the human's own driving: the two answer different questions and
+   *  adding them would corrupt the voice share. Zero from a Gateway that predates the lane. */
+  agentDrivenTurns: number;
+  /** Character volume of the `agentDrivenTurns`. */
+  agentDrivenCharacters: number;
 }
 
 /** The GET /stats/data body: the fleet-wide aggregated tally plus the honesty caveats. */
@@ -129,6 +135,12 @@ export interface ThrottleData {
    *  The other series predate it, so the Agents page states this window instead of implying the earlier
    *  turns ran under no agent. */
   agentsSinceUtc: string;
+  /** Turns the fleet drove into ITSELF: one agent prompting another (issue #1636). Reported alongside the
+   *  human tally, never inside it. The ratio of this to your own turns is your leverage - what the fleet
+   *  did off the back of each turn you spent. Zero from a Gateway that predates the lane. */
+  agentDrivenTurns: number;
+  /** Character volume of the fleet's `agentDrivenTurns`. */
+  agentDrivenCharacters: number;
   /** Plain-English caveats about what the numbers do and do not include. */
   notCaptured: string[];
 }
@@ -210,6 +222,8 @@ export async function getThrottle(signal?: AbortSignal): Promise<ThrottleData> {
     repos?: unknown;
     agents?: unknown;
     agentsSinceUtc?: unknown;
+    agentDrivenTurns?: unknown;
+    agentDrivenCharacters?: unknown;
     notCaptured?: unknown;
   } | null;
   const buckets = Array.isArray(body?.buckets) ? body!.buckets.map(normalizeBucket) : [];
@@ -229,6 +243,8 @@ export async function getThrottle(signal?: AbortSignal): Promise<ThrottleData> {
     repos,
     agents,
     agentsSinceUtc: typeof body?.agentsSinceUtc === "string" ? body.agentsSinceUtc : "",
+    agentDrivenTurns: num(body?.agentDrivenTurns),
+    agentDrivenCharacters: num(body?.agentDrivenCharacters),
     notCaptured,
   };
 }
@@ -248,6 +264,8 @@ function normalizeAgent(raw: unknown): AgentStat {
     typedTurns: num(a.typedTurns),
     characters: num(a.characters),
     sessions: num(a.sessions),
+    agentDrivenTurns: num(a.agentDrivenTurns),
+    agentDrivenCharacters: num(a.agentDrivenCharacters),
   };
 }
 
@@ -380,6 +398,12 @@ export interface AgentSummary {
   topShare: number | null;
   /** The most-driven agent's display name, or null when there is no data. */
   topAgentName: string | null;
+  /** Turns the fleet drove into itself - one agent prompting another (issue #1636). */
+  agentDrivenTurns: number;
+  /** Leverage: agent-driven turns per turn YOU drove. 3 means the fleet spent three turns off the back of
+   *  each one of yours. Null when you have driven no turns - a ratio with nothing underneath it would be
+   *  a fabricated number, not a big one. */
+  leverage: number | null;
   hasData: boolean;
 }
 
@@ -391,6 +415,7 @@ export function summarizeAgents(agents: AgentStat[]): AgentSummary {
   let totalCharacters = 0;
   let totalSessions = 0;
   let voiceTurns = 0;
+  let agentDrivenTurns = 0;
   let top: AgentStat | null = null;
 
   for (const a of agents) {
@@ -398,6 +423,7 @@ export function summarizeAgents(agents: AgentStat[]): AgentSummary {
     totalCharacters += a.characters;
     totalSessions += a.sessions;
     voiceTurns += a.voiceTurns;
+    agentDrivenTurns += a.agentDrivenTurns;
     if (top === null || a.turns > top.turns) top = a;
   }
 
@@ -409,7 +435,11 @@ export function summarizeAgents(agents: AgentStat[]): AgentSummary {
     voiceTurns,
     topShare: totalTurns > 0 && top !== null ? top.turns / totalTurns : null,
     topAgentName: top !== null ? top.agentName : null,
-    hasData: totalTurns > 0 || totalCharacters > 0,
+    agentDrivenTurns,
+    leverage: totalTurns > 0 ? agentDrivenTurns / totalTurns : null,
+    // Agent-driven turns alone are data worth showing: a fleet driving itself while the owner has driven
+    // nothing this window is a real state, not an empty one.
+    hasData: totalTurns > 0 || totalCharacters > 0 || agentDrivenTurns > 0,
   };
 }
 

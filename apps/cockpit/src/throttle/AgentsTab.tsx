@@ -14,11 +14,12 @@ import {
 // envelope), so the tab reads its parent's snapshot rather than opening a second poll of the same feed.
 // Counts only - never any message text.
 //
-// This tab counts from agentsSinceUtc, NOT all-time. The turn totals had been accumulating long before the
-// per-agent breakdown existed, and nothing recorded which agent those earlier turns ran under - so the
-// numbers here do not reconcile with the Overview tab's totals, and the tab says so on its face rather
-// than letting the owner read a smaller number as a drop in usage. It reuses the Repos tab's row and
-// segmented-control styles so the two read as one page.
+// This tab does not reconcile with the Overview tab's totals, and says so on its face rather than letting
+// the owner read a smaller number as a drop in usage. A session the Gateway still knows about is attributed
+// in FULL, including the turns it had already driven before the breakdown existed (issue #1633). What is
+// missing is the sessions that had already finished by then: their turns are in the all-time totals, but
+// nothing ever recorded which agent they ran under, so they cannot honestly be split by agent.
+// It reuses the Repos tab's row and segmented-control styles so the two read as one page.
 
 // The three honest metrics the system actually measures per agent. Tokens are intentionally absent: the
 // tally counts turns and characters, never tokens, and this tab never fabricates a number.
@@ -92,12 +93,19 @@ function AgentRow({
 
   // The secondary facts depend on which metric is the headline, so the row never just repeats the big
   // number - it shows the other two honest measures alongside it.
+  // Turns other agents drove into this agent's sessions. Stated as its own fact next to the human turns,
+  // never added to them: "you drove 14, the fleet drove 300 into it" is the honest pair.
+  const agentDriven =
+    agent.agentDrivenTurns > 0
+      ? ` - ${agent.agentDrivenTurns.toLocaleString()} from agents`
+      : "";
+
   const meta =
     metric === "turns"
-      ? `${compactNumber(agent.characters)} chars - ${agent.sessions} session${agent.sessions === 1 ? "" : "s"} - ${voicePct}% voice`
+      ? `${compactNumber(agent.characters)} chars - ${agent.sessions} session${agent.sessions === 1 ? "" : "s"} - ${voicePct}% voice${agentDriven}`
       : metric === "characters"
-        ? `${agent.turns.toLocaleString()} turns - ${agent.sessions} session${agent.sessions === 1 ? "" : "s"}`
-        : `${agent.turns.toLocaleString()} turns - ${compactNumber(agent.characters)} chars`;
+        ? `${agent.turns.toLocaleString()} turns - ${agent.sessions} session${agent.sessions === 1 ? "" : "s"}${agentDriven}`
+        : `${agent.turns.toLocaleString()} turns - ${compactNumber(agent.characters)} chars${agentDriven}`;
 
   return (
     <div className="repo-row">
@@ -150,8 +158,9 @@ export function AgentsTab({ data }: { data: ThrottleData }) {
       <div className="thr-empty">
         No agent usage counted yet
         {since !== null ? ` since ${since}, when this breakdown started counting` : ""}. Drive a session -
-        Claude Code, Codex, or any other agent - and the split will appear here, ranked. Turns driven before
-        this breakdown existed are not included: nothing recorded which agent they ran under.
+        Claude Code, Codex, or any other agent - and the split will appear here, ranked. Turns from sessions
+        that had already finished before this breakdown existed are not included: nothing recorded which
+        agent they ran under.
       </div>
     );
   }
@@ -167,7 +176,7 @@ export function AgentsTab({ data }: { data: ThrottleData }) {
         Which agent you actually drive: how your driving splits across the agent CLIs you run, ranked by{" "}
         {METRIC_WORD[metric]}. Counted at the Director, so desktop typing is included.
         {since !== null
-          ? ` Counting since ${since}, when this breakdown was added - so these numbers are smaller than your all-time totals on the other tabs.`
+          ? ` Attributing since ${since}, when this breakdown was added - so these numbers can be smaller than your all-time totals on the other tabs.`
           : ""}
       </p>
 
@@ -192,6 +201,16 @@ export function AgentsTab({ data }: { data: ThrottleData }) {
           value={formatShare(summary.totalTurns > 0 ? summary.voiceTurns / summary.totalTurns : null)}
           sub="of turns spoken, not typed"
         />
+        {/* Leverage (issue #1636): what the fleet did off the back of each turn the owner spent. Shown
+            only once the fleet has actually driven itself - a "0x" on a machine that has never run a
+            worker would be noise, not a fact. */}
+        {summary.agentDrivenTurns > 0 && (
+          <HeadlineCard
+            label="Leverage"
+            value={summary.leverage !== null ? `${summary.leverage.toFixed(1)}x` : "-"}
+            sub={`${summary.agentDrivenTurns.toLocaleString()} turns agents drove agents`}
+          />
+        )}
       </div>
 
       <div className="repos-controls">
@@ -230,9 +249,10 @@ export function AgentsTab({ data }: { data: ThrottleData }) {
         <ul>
           {since !== null && (
             <li>
-              This tab counts from {since}, when the breakdown was added - not all-time. The turns on the
-              other tabs go back further, and nothing recorded which agent those earlier ones ran under, so
-              the two do not add up to the same number.
+              Attribution started {since}. A session still running then is counted in full, including the
+              turns it had already driven. Turns from sessions that had already finished by then are not
+              here at all - nothing recorded which agent they ran under - so this tab does not add up to the
+              all-time totals on the other tabs.
             </li>
           )}
           <li>
@@ -242,6 +262,12 @@ export function AgentsTab({ data }: { data: ThrottleData }) {
           <li>
             Agents are grouped by the CLI the session runs. A session the Director reported no agent for is
             counted under &quot;(unknown)&quot; rather than dropped - the turns are real either way.
+          </li>
+          <li>
+            Turns you drove and turns agents drove into other agents are counted separately and never added
+            together. The ranked bars and the voice share are YOUR driving; &quot;from agents&quot; and
+            Leverage are the fleet driving itself. Text the product wrote itself - handover, queue drain -
+            is not a turn and is counted by neither.
           </li>
           <li>
             Tokens are not shown - the tally counts turns and characters, never tokens, and this tab never

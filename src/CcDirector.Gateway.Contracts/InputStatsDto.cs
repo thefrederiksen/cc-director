@@ -32,4 +32,19 @@ public sealed class InputStatsDto
 {
     /// <summary>The per-bucket tallies. Empty when the session has taken no counted input yet.</summary>
     public List<InputStatBucketDto> Buckets { get; set; } = new();
+
+    /// <summary>
+    /// Turns this session was driven by ANOTHER AGENT rather than by the human (issue #1636): a fleet
+    /// message, ask, or broadcast that one agent decided to send. Real work - increasingly most of it - but
+    /// a different question from "how do you drive", so it rides its own lane.
+    ///
+    /// Deliberately NOT a bucket above. An agent has neither hands nor a mouth, so it has no modality and
+    /// no surface; and folding these into the buckets would drop the voice share overnight and break every
+    /// comparison with history - a number that moved because the definition moved, not because anything
+    /// about the work did. Kept apart so that cannot happen by accident.
+    /// </summary>
+    public long AgentDrivenTurns { get; set; }
+
+    /// <summary>Character volume of the <see cref="AgentDrivenTurns"/>.</summary>
+    public long AgentDrivenCharacters { get; set; }
 }

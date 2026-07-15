@@ -1426,7 +1426,10 @@ public partial class MainWindow : Window
 
                 progress.UpdateProgress(i + 1, total, entry.CustomName ?? entry.RepoPath);
 
-                var vm = CreateSession(entry.RepoPath, claudeArgs: entry.ClaudeArgs);
+                // Issue #1635: restore the agent the session was saved with. Before this the call passed no
+                // agentKind, so the overload default silently made every restored session ClaudeCode.
+                var vm = CreateSession(entry.RepoPath, claudeArgs: entry.ClaudeArgs,
+                    agentKind: entry.ResolveAgentKind());
                 if (vm != null)
                 {
                     vm.Rename(entry.CustomName, entry.CustomColor);
@@ -3509,7 +3512,10 @@ public partial class MainWindow : Window
             var app = AppRef();
             var sessionData = _sessions.Select(vm => new SessionData(
                 vm.DisplayName, vm.Session.RepoPath, vm.Session.CustomName,
-                vm.Session.CustomColor, vm.Session.ClaudeArgs));
+                vm.Session.CustomColor, vm.Session.ClaudeArgs,
+                // Issue #1635: record WHICH agent this session runs. Without it the agent is lost here, at
+                // save time, and the session can only come back as the CreateSession default.
+                vm.Session.AgentKind.ToString()));
             var dialog = new SaveWorkspaceDialog(app.WorkspaceStore, sessionData);
             await dialog.ShowDialog<bool?>(this);
         }));
@@ -4558,7 +4564,7 @@ public partial class MainWindow : Window
             return;
         }
 
-        await _activeSession.Session.SendTextAsync("/handover", SendSource.Internal);
+        await _activeSession.Session.SendTextAsync("/handover", SendSource.Framework);
         FileLog.Write($"[MainWindow] BtnHandover_Click: sent /handover to session {_activeSession.Session.Id}");
     }
 
@@ -5468,7 +5474,7 @@ public partial class MainWindow : Window
             + "and what you think we should work on next. Show the scope of remaining work "
             + "and suggest priorities.";
 
-        await session.SendTextAsync(prompt, SendSource.Internal);
+        await session.SendTextAsync(prompt, SendSource.Framework);
         FileLog.Write($"[MainWindow] InjectHandoverPromptAsync: sent handover prompt for session {session.Id}");
     }
 
