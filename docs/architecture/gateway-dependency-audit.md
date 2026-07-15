@@ -3,7 +3,7 @@
 **Status:** AUDIT ONLY. Nothing here is built, fixed, or changed. This is a findings document.
 **Written:** 15 July 2026, by the Gateway Audit Manager.
 **Brief:** [`gateway-dependency-audit-brief.md`](gateway-dependency-audit-brief.md). **Model:** [`gap-4-desktop-asks-recommendation.md`](gap-4-desktop-asks-recommendation.md).
-**Citations verified against `origin/main` at commit `81a06f2e`**, one file at a time, by opening
+**Citations verified against `origin/main` at commit `e0fb3515`**, one file at a time, by opening
 each. See [The citation audit](#the-citation-audit) - four were wrong and are corrected.
 
 ---
@@ -67,7 +67,15 @@ these two tags, and nothing carries a tag it has not earned:
 **[OBSERVED]:** the fleet directory returning 502 instead of the local list, and `session list`,
 `message send <a live local session>`, `message send all`, and `message ask <a live local session>`
 all failing - staged with a real Director holding **a genuinely live local session**, driven with
-the real installed tool, against a control that succeeded at every one.
+the real installed tool, against a control.
+
+**Precisely what the control showed, because "it worked" is not what happened:** with no Gateway
+configured, **all four reached the local session and none of them touched the Gateway.** Two ran to
+completion (`session list` listed the neighbour; `message send all` returned "Delivered to your
+team"). Two delivered into the session but never completed a turn (`message send`, `message ask`) -
+**because my stand-in agent was a plain shell with no composer to press Enter in. That is a limit of
+my harness, not a finding about the product.** The claim the control supports is *reached the local
+session without a Gateway* - not *worked perfectly*.
 
 *An earlier draft claimed [OBSERVED] for "messaging a LOCAL session" and for `message send all` when
 the transcript behind it showed neither: it was a Director with no sessions and a made-up target. The
@@ -176,7 +184,7 @@ neighbour; the only variable is whether `gateway.url` is set.
 | `session list` | **the neighbour is listed** (number 985, `WaitingForInput`) | `Cannot reach the Gateway: ...actively refused it.` |
 | `message send <live local id>` | **delivered - the text reached the session** | `Cannot reach the Gateway: ...actively refused it.` |
 | `message send all` (sender = the live session) | `Delivered to your team (0 session(s)). No other sessions on your team.` | `Cannot reach the Gateway: ...actively refused it.` |
-| `message ask <live local id>` | *(not run in control)* | `Cannot reach the Gateway: ...actively refused it.` |
+| `message ask <live local id>` | **reached the session and waited for a turn** (never touched the Gateway) | `Cannot reach the Gateway: ...actively refused it.` |
 
 **The control column is the whole proof.** With no Gateway configured, the Director found its
 neighbour, listed it, and **delivered a message into it** - no network involved, six inches away.
@@ -193,13 +201,12 @@ answered `Cannot reach the Gateway` (it never got that far). That still stands a
 - It used a **refused** connection, not a black-holed one. It says nothing about the timeout question
   below, and the 2051 ms is not a wait you would feel. **I did not diagnose why an instantly-refused
   connection takes two seconds** - I only measured that it does.
-- **`message send` in the control delivered the text but did not submit it** - the reply said the
-  prompt was "parked in the composer unsubmitted". That is my harness's fault, not a finding: the
-  stand-in agent was a plain shell with no composer to press Enter in. What it proves is what I
-  claim - the text reached a local session with no Gateway. It is not evidence about how a real
-  agent handles a delivered message.
-- **`message ask` was not run in the control**, so the ask row is one-sided: I watched it fail on
-  the treatment and did not watch it succeed without a Gateway.
+- **`message send` and `message ask` in the control delivered but never completed a turn** - both
+  replied that the prompt was "parked in the composer unsubmitted". That is my harness's fault, not
+  a finding: the stand-in agent was a plain shell with no composer to press Enter in. What it proves
+  is exactly what I claim - **the text reached a local session with no Gateway involved, where the
+  treatment refused before it could look.** It is not evidence about how a real agent handles a
+  delivered message, and I did not watch a local `ask` return an actual answer.
 - It proves nothing about voice, snooze, or any desktop button. Those remain **[CODE-READ]**.
 - **It ran against my stale tree** (see Rule Zero above). The routes it exercises are byte-identical
   on current `origin/main`, which I checked - but the harness itself could not have told me that.
@@ -716,9 +723,16 @@ one disconnected machine** - where nothing it needs is more than six inches away
 longer a theory: it was staged and watched, and the control proves the only variable is a typed URL.
 
 **Recommended, and it is genuinely your call:** treat the fleet-list question and the messaging
-cascade as **two separate decisions**, not one bug. The cascade - both routes - has no
-counter-argument and no defender: `message send all` is what your own briefing tells every agent to
-use. The 502 on a genuine fleet *query* does have an argument, and the interesting third option -
+cascade as **two separate decisions**, not one bug.
+
+**The messaging cascade has no counter-argument and no defender.** It is all three routes -
+`/fleet/sessions` blocks `message send` from resolving a neighbour, `/fleet/ask:459` blocks
+`message ask`, `/fleet/broadcast:954` blocks `message send all` - and `message send all` is what your
+own briefing tells every agent to use to reach its team. Nobody would defend a laptop where two
+sessions six inches apart cannot speak.
+
+**The 502 on a genuine fleet *query* is the one with an argument**, because answering "the fleet"
+with one machine's sessions and no warning is its own kind of lie. The interesting third option -
 answer locally, but say loudly that it is local-only - was never put on the table, so putting it
 there is the decision worth your attention rather than mine.
 
