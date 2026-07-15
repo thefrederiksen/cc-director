@@ -26,10 +26,21 @@ the cheapest place in this mission for it to happen.
 
 Every claim below carries a file and line citation. Revision 1 asserted that all of its citations
 had been verified against `origin/main`; the Codex review proved that claim was itself overstated -
-two citations did not resolve to what revision 1 said they did, and both are corrected here. Every
-citation in this revision was checked directly against the code in the mission worktree
-`D:\ReposFred\devthrottle-gateway-sqlite` (branch `feat/gateway-sqlite`, cut from `origin/main` at
-commit 8c64a049). Disk measurements were taken on SOREN_NORTH on 2026-07-15.
+two citations did not resolve to what revision 1 said they did, and both are corrected here.
+
+**Every citation in this document was re-checked, line by line, against `origin/main` at commit
+1c1fa17c, after rebasing this branch onto it on 2026-07-15.** This matters: the branch was cut at
+8c64a049 and `origin/main` moved six commits underneath it while this document was being reviewed.
+One of those commits (#1624) reshaped `GatewayEndpoints.cs`, which moved the two fold citations in
+point 3 below from lines 813 and 820 to 842 and 849. The mechanism was unchanged, but the line
+numbers had quietly become fiction - which is precisely the failure this repository has a standing
+rule against, and it happened to this document during its own review. It is recorded here rather
+than quietly fixed, because the next person to leave a branch sitting while it is reviewed should
+expect the same. Any future revision of this brief must re-verify against `origin/main` at the time
+of writing, not trust this line.
+
+Disk measurements were taken on SOREN_NORTH on 2026-07-15, independently by the Architect and the
+Codex reviewer.
 
 ## The why
 
@@ -64,7 +75,7 @@ specific ways:
    (`GatewayInputStatsAggregator.cs:123` and `:137` call `Save()`; `Save()` builds the full
    document, serializes it, writes a temporary file, and moves it over the original at `:555-583`),
    and the fold runs on **every** `GET /sessions` read
-   (`src/CcDirector.Gateway/Api/GatewayEndpoints.cs:813` for input stats, `:820` for concurrency).
+   (`src/CcDirector.Gateway/Api/GatewayEndpoints.cs:842` for input stats, `:849` for concurrency).
    That is O(all history) of synchronous work under a lock, per roster poll. It compounds with the
    deliberately unbounded distinct-session sets described below: the file grows forever *and* is
    rewritten constantly.
