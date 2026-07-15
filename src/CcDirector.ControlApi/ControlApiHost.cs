@@ -597,10 +597,13 @@ public sealed class ControlApiHost : IAsyncDisposable
         _turnReviewLogger = new Core.Storage.TurnReviewLogger(_sessionManager);
         _turnReviewLogger.Start();
 
-        // Durable prompt + reply record (issue #1551): on the same turn-end trigger, copy each
-        // session's conversation out of the agent's own transcript into our own log, with the origin
-        // of each prompt joined on from InputOriginLog. The foundation for the weekly review.
-        _conversationIngestor = new Core.Storage.ConversationIngestor(_sessionManager);
+        // The prompt record (issue #1551): on the same turn-end trigger, read each session's
+        // conversation out of the agent's own transcript, join on where each prompt came from, and PUSH
+        // it to the Gateway's log. The Director captures because it is the only thing that sees a prompt
+        // or knows its origin; the Gateway stores because it is what the whole fleet reports to and what
+        // moves to the server. The Director keeps no copy.
+        _conversationIngestor = new Core.Storage.ConversationIngestor(
+            _sessionManager, new GatewayPromptSink(() => _gatewayClient));
         _conversationIngestor.Start();
     }
 

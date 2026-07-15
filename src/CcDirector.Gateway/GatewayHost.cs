@@ -1571,6 +1571,12 @@ public sealed class GatewayHost : IAsyncDisposable
         // Mapped before the mobile/cockpit catch-alls so the explicit routes win.
         Stats.StatsPageEndpoint.Map(_app, InputStats, SessionConcurrency);
 
+        // The prompt log (issue #1551): Directors push what they captured to POST /prompts, and anyone
+        // wanting history reads GET /prompts. It lives here, not on a Director, because the Gateway is
+        // what the whole fleet reports to - so the history is already present rather than scattered
+        // across machines - and because the Gateway is what moves to the server.
+        Prompts.PromptEndpoints.Map(_app);
+
         Mobile.MobileApp.Map(_app, Token);
 
         // One URL (epic #967 cutover, issue #979): the React desktop Cockpit is the Gateway's
