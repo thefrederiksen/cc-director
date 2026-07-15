@@ -45,6 +45,31 @@ public sealed class ConversationIngestor : IDisposable
     private readonly IPromptSink _sink;
     private readonly ConcurrentDictionary<Guid, Action<ActivityState, ActivityState>> _handlers = new();
     private readonly IngestState _state = IngestState.Load();
+
+    /// <summary>
+    /// One gate per SOURCE, so only one ingest of a given source runs at a time.
+    ///
+    /// Without it the watermark check is a check-then-act race: an ingest reads AlreadyWritten, pushes
+    /// over HTTP, and only marks the messages afterwards - because it must not mark before the Gateway
+    /// accepts (the Director keeps no copy). Two ingests of one source that start inside that window
+    /// both see "not written", and BOTH push. Every message is duplicated in a Gateway log that appends
+    /// blindly and never dedupes. The trigger fires per turn end on a Task.Run, so two quick turn ends
+    /// are all it takes.
+    ///
+    /// Keyed by SOURCE and not by session, because the source is what the watermark itself is keyed by
+    /// (see <see cref="ScopeKey"/>). A per-session gate would still duplicate for exactly the agents the
+    /// scope key exists for: Copilot, OpenCode and Gemini resolve their conversation by REPOSITORY, so
+    /// two Director sessions on one repository read the same conversation and would hold different
+    /// gates. Locking the source locks the thing actually being read and written.
+    ///
+    /// Not cleaned up when a session goes: a source outlives any one session (that is the point of the
+    /// scope key), and an entry is a bare SemaphoreSlim keyed by a transcript path or repository. It
+    /// grows with the number of distinct sources one Director process has ever ingested, which is small
+    /// and bounded by real work. Removing entries would need refcounting against in-flight waiters, and
+    /// that risk is not worth the few bytes.
+    /// </summary>
+    private readonly ConcurrentDictionary<string, SemaphoreSlim> _gates = new();
+
     private bool _started;
     private int _disposed;
 
@@ -94,6 +119,9 @@ public sealed class ConversationIngestor : IDisposable
     /// <summary>
     /// Capture any not-yet-pushed messages for this session and send them to the Gateway. Public so a
     /// backfill can drive it directly. Never throws.
+    ///
+    /// Runs one at a time per SOURCE - see <see cref="_gates"/> for why that matters and why the lock is
+    /// on the source rather than the session.
     /// </summary>
     public async Task IngestAsync(Session session)
     {
@@ -101,74 +129,97 @@ public sealed class ConversationIngestor : IDisposable
         {
             if (!SessionHistoryReader.IsSupported(session)) return;
 
-            var history = ReadForRecord(session);
-            if (history.Messages.Count == 0) return;
-
             var scope = ScopeKey(session);
-            var origins = InputOriginBuffer.For(session.Id.ToString());
-            var toPush = new List<PromptRecord>();
-            var pushed = new List<(DateTime ts, ConversationRole role, string text, bool fromAgent)>();
-
-            foreach (var message in history.Messages)
+            var gate = _gates.GetOrAdd(scope, _ => new SemaphoreSlim(1, 1));
+            await gate.WaitAsync().ConfigureAwait(false);
+            try
             {
-                var text = TextOf(message);
-                if (string.IsNullOrWhiteSpace(text)) continue;
-
-                // Gemini carries no timestamps (its history is scraped from the terminal buffer), so
-                // there is nothing real to stamp with. Record capture time and mark it as ours, rather
-                // than letting an inferred time read as a measured one.
-                var fromAgent = message.Timestamp.HasValue;
-                var ts = message.Timestamp?.UtcDateTime ?? DateTime.UtcNow;
-
-                if (_state.AlreadyWritten(scope, ts, message.Role, text, fromAgent)) continue;
-
-                var isUser = message.Role == ConversationRole.User;
-                var origin = isUser ? MatchOrigin(origins, ts, fromAgent) : null;
-
-                toPush.Add(new PromptRecord
-                {
-                    TsUtc = ts,
-                    Machine = Environment.MachineName,
-                    SessionId = session.Id.ToString(),
-                    ContextId = ContextIdFor(session, message),
-                    SessionName = session.CustomName,
-                    RepoPath = session.RepoPath,
-                    Agent = session.AgentKind.ToString(),
-                    MissionName = session.MissionName,
-                    Role = isUser ? "user" : "assistant",
-                    Modality = origin?.Modality,
-                    // A user message we could not attribute is "unknown", never a guess. An assistant
-                    // reply has no origin at all, so it stays null.
-                    Surface = isUser ? (origin?.Surface ?? "unknown") : null,
-                    TimestampFromAgent = fromAgent,
-                    CharCount = text.Length,
-                    WordCount = text.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries).Length,
-                    Text = text,
-                });
-                pushed.Add((ts, message.Role, text, fromAgent));
+                await IngestOnceAsync(session, scope).ConfigureAwait(false);
             }
-
-            if (toPush.Count == 0) return;
-
-            // Only mark as recorded once the Gateway has actually accepted them. The Director keeps no
-            // copy, so marking before a failed push would lose the messages permanently - the next
-            // ingest would skip them as already-done.
-            var accepted = await _sink.PushAsync(toPush).ConfigureAwait(false);
-            if (!accepted)
+            finally
             {
-                FileLog.Write($"[ConversationIngestor] session={session.Id}: Gateway did not accept {toPush.Count} message(s); will retry on the next turn");
-                return;
+                gate.Release();
             }
-
-            foreach (var (ts, role, text, fromAgent) in pushed)
-                _state.MarkWritten(scope, ts, role, text, fromAgent);
-            _state.Save();
-            FileLog.Write($"[ConversationIngestor] session={session.Id} pushed {toPush.Count} message(s) to the Gateway");
         }
         catch (Exception ex)
         {
             FileLog.Write($"[ConversationIngestor] Ingest FAILED (swallowed) session={session.Id}: {ex.Message}");
         }
+    }
+
+    /// <summary>
+    /// One pass of capture-and-push for a source. The caller holds that source's gate, so the whole
+    /// read-check-push-mark sequence below is atomic with respect to any other ingest of the same
+    /// source - which is what makes the watermark check meaningful.
+    ///
+    /// The transcript is deliberately read INSIDE the gate: a caller that queued behind another must
+    /// re-read and re-check against the watermark the first one just wrote, or it would push what it
+    /// decided to push before waiting.
+    /// </summary>
+    private async Task IngestOnceAsync(Session session, string scope)
+    {
+        var history = ReadForRecord(session);
+        if (history.Messages.Count == 0) return;
+
+        var origins = InputOriginBuffer.For(session.Id.ToString());
+        var toPush = new List<PromptRecord>();
+        var pushed = new List<(DateTime ts, ConversationRole role, string text, bool fromAgent)>();
+
+        foreach (var message in history.Messages)
+        {
+            var text = TextOf(message);
+            if (string.IsNullOrWhiteSpace(text)) continue;
+
+            // Gemini carries no timestamps (its history is scraped from the terminal buffer), so
+            // there is nothing real to stamp with. Record capture time and mark it as ours, rather
+            // than letting an inferred time read as a measured one.
+            var fromAgent = message.Timestamp.HasValue;
+            var ts = message.Timestamp?.UtcDateTime ?? DateTime.UtcNow;
+
+            if (_state.AlreadyWritten(scope, ts, message.Role, text, fromAgent)) continue;
+
+            var isUser = message.Role == ConversationRole.User;
+            var origin = isUser ? MatchOrigin(origins, ts, fromAgent) : null;
+
+            toPush.Add(new PromptRecord
+            {
+                TsUtc = ts,
+                Machine = Environment.MachineName,
+                SessionId = session.Id.ToString(),
+                ContextId = ContextIdFor(session, message),
+                SessionName = session.CustomName,
+                RepoPath = session.RepoPath,
+                Agent = session.AgentKind.ToString(),
+                MissionName = session.MissionName,
+                Role = isUser ? "user" : "assistant",
+                Modality = origin?.Modality,
+                // A user message we could not attribute is "unknown", never a guess. An assistant
+                // reply has no origin at all, so it stays null.
+                Surface = isUser ? (origin?.Surface ?? "unknown") : null,
+                TimestampFromAgent = fromAgent,
+                CharCount = text.Length,
+                WordCount = text.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries).Length,
+                Text = text,
+            });
+            pushed.Add((ts, message.Role, text, fromAgent));
+        }
+
+        if (toPush.Count == 0) return;
+
+        // Only mark as recorded once the Gateway has actually accepted them. The Director keeps no
+        // copy, so marking before a failed push would lose the messages permanently - the next
+        // ingest would skip them as already-done.
+        var accepted = await _sink.PushAsync(toPush).ConfigureAwait(false);
+        if (!accepted)
+        {
+            FileLog.Write($"[ConversationIngestor] session={session.Id}: Gateway did not accept {toPush.Count} message(s); will retry on the next turn");
+            return;
+        }
+
+        foreach (var (ts, role, text, fromAgent) in pushed)
+            _state.MarkWritten(scope, ts, role, text, fromAgent);
+        _state.Save();
+        FileLog.Write($"[ConversationIngestor] session={session.Id} pushed {toPush.Count} message(s) to the Gateway");
     }
 
     /// <summary>
@@ -281,6 +332,9 @@ public sealed class ConversationIngestor : IDisposable
         foreach (var s in _sessionManager.ListSessions())
             UnwireSession(s);
         _handlers.Clear();
+        foreach (var gate in _gates.Values)
+            gate.Dispose();
+        _gates.Clear();
         _state.Save();
     }
 }

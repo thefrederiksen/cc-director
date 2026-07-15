@@ -47,9 +47,15 @@ public sealed class GatewayPromptSink : IPromptSink
             if (written is null) return false;
 
             if (written != records.Count)
-                FileLog.Write($"[GatewayPromptSink] Gateway wrote {written} of {records.Count} message(s)");
+                FileLog.Write($"[GatewayPromptSink] Gateway wrote {written} of {records.Count} message(s); NOT marking them done");
 
-            return true;
+            // Anything less than all of them is a failure. The Gateway's Append swallows per-record
+            // write failures and reports a truthful count of what it stored, so a short count means
+            // those messages exist nowhere: the Director keeps no copy. Saying true here would have
+            // ConversationIngestor mark them done and the next ingest skip them - silent, permanent
+            // loss. The false path re-sends at the next turn end, and a duplicate on failure recovery
+            // is a far better trade than a hole in the only record.
+            return written == records.Count;
         }
         catch (Exception ex)
         {
