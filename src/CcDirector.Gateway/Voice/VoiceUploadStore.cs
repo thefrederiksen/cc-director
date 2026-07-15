@@ -67,6 +67,37 @@ public sealed class VoiceUploadStore
     }
 
     /// <summary>
+    /// The bytes this upload currently occupies on disk, optionally IGNORING one chunk index.
+    ///
+    /// The caller uses this to enforce the total-upload ceiling before staging another chunk. The
+    /// exclusion is what makes that safe under the store's own idempotency: re-sending chunk 5 REPLACES
+    /// chunk 5, it does not add to the total, so counting the copy already on disk would push a
+    /// perfectly legal retry over the ceiling - and retries are the normal case on the mobile path this
+    /// serves, not the exception.
+    ///
+    /// Returns 0 for an unknown upload. Best-effort: a chunk that vanishes mid-enumeration (the sweeper)
+    /// is skipped rather than throwing, because this is a guard rail, not an accounting record.
+    /// </summary>
+    public long StagedBytes(string uploadId, int? excludeIndex = null)
+    {
+        var uid = NormalizeId(uploadId);
+        if (uid is null) return 0;
+        var dir = DirFor(uid);
+        if (!Directory.Exists(dir)) return 0;
+
+        var exclude = excludeIndex is { } i ? ChunkPath(dir, i) : null;
+        long total = 0;
+        foreach (var path in Directory.EnumerateFiles(dir))
+        {
+            if (exclude is not null && string.Equals(path, exclude, StringComparison.OrdinalIgnoreCase)) continue;
+            try { total += new FileInfo(path).Length; }
+            catch (FileNotFoundException) { /* swept mid-enumeration */ }
+            catch (DirectoryNotFoundException) { /* swept mid-enumeration */ }
+        }
+        return total;
+    }
+
+    /// <summary>
     /// Store one chunk. Idempotent on (index, bytes): a chunk already on disk with the same
     /// SHA256 is accepted without rewriting, so retries are free. A supplied SHA that does not
     /// match the bytes is rejected so corruption never enters the assembly.
