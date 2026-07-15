@@ -335,31 +335,9 @@
 }
 
 /* team cluster */
-.fmap-team {
-  border: 1px solid rgba(59, 130, 246, 0.35);
-  border-radius: 9px;
-  background: rgba(59, 130, 246, 0.05);
-  padding: 8px;
-  display: flex;
-  flex-direction: column;
-  gap: 9px;
-}
-
-.fmap-team-cap {
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  font-size: 10px;
-  letter-spacing: 0.1em;
-  text-transform: uppercase;
-  color: var(--accent);
-}
-
-.fmap-team-tag {
-  border: 1px solid rgba(59, 130, 246, 0.5);
-  border-radius: 4px;
-  padding: 1px 5px;
-}
+/* The .fmap-team / .fmap-team-cap / .fmap-team-tag rules are GONE (issue #1626): they styled the
+   groupId clustering, which was a consumer of a producer that does not exist (no call site ever sets a
+   groupId), so they never rendered. The controller spawn tree replaces that clustering. */
 
 /* session node card */
 .fmap-card {
@@ -388,12 +366,56 @@
   box-shadow: 0 0 0 1px rgba(241, 76, 76, 0.12);
 }
 
-.fmap-card.lead {
-  border-left: 2px solid var(--accent);
+/* Issue #1626: a card spawned by another session. The left-hand margin comes from the depth (inline,
+   computed from the tree), so this rule carries only what every child shares: the connector rail that
+   ties it back to its parent. Without the rail, an indented card reads as arbitrarily offset rather
+   than as belonging to the card above it - which matters most at the capped depths, where two levels
+   can share one indent. */
+.fmap-card-child {
+  position: relative;
 }
 
-.fmap-card.worker {
-  margin-left: 12px;
+.fmap-card-child::before {
+  content: "";
+  position: absolute;
+  left: -8px;
+  top: -5px;
+  bottom: 50%;
+  width: 7px;
+  border-left: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+  border-bottom-left-radius: 5px;
+  pointer-events: none;
+}
+
+/* The Gateway-resolved role (Architect / Manager / Worker). Standalone is not shown - it is the
+   default and a badge on every card would say nothing. */
+.fmap-role {
+  flex: 0 0 auto;
+  font-size: 9.5px;
+  letter-spacing: 0.04em;
+  padding: 2px 7px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text-dim);
+  font-weight: 600;
+  text-transform: uppercase;
+}
+
+.fmap-role.architect {
+  border-color: rgba(168, 85, 247, 0.5);
+  color: #c084fc;
+}
+
+.fmap-role.manager {
+  border-color: rgba(59, 130, 246, 0.5);
+  color: #60a5fa;
+}
+
+.fmap-role.worker {
+  border-color: rgba(148, 163, 184, 0.4);
+  color: #94a3b8;
 }
 
 /* Top-aligned, not centred: the title may now wrap to a second line (issue #1625), and a centred dot
