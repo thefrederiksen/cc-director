@@ -20,10 +20,12 @@ namespace CcDirector.Gateway.Running;
 public sealed class MachineSessionSpawner
 {
     /// <summary>
-    /// The create-session call. Production routes tunnel-first through
-    /// <see cref="SessionVerbClient.CreateSessionAsync"/> (the resolved Director id for the tunnel, its
-    /// control endpoint for the byte-identical HTTP fallback); tests inject a fake so the resolve-then-create
-    /// decision is verified without a live Director.
+    /// The create-session call. Production routes through <see cref="SessionVerbClient.CreateSessionAsync"/>,
+    /// which is TUNNEL-ONLY: a Director that is not connected yields an error, never an HTTP dial. Tests
+    /// inject a fake so the resolve-then-create decision is verified without a live Director.
+    ///
+    /// The <c>endpoint</c> parameter is vestigial - the production constructor accepts it and DISCARDS it,
+    /// because the tunnel addresses the Director by id. It survives only in this delegate's shape.
     /// </summary>
     public delegate Task<(bool ok, SessionDto? body, string? error)> CreateSessionDelegate(
         string directorId, string endpoint, NewSessionRequest req, CancellationToken ct);

@@ -552,8 +552,8 @@ public sealed class GatewayHost : IAsyncDisposable
             new Running.RelayDirectorLauncher(Port, Token));
         // The single resolve-then-create path shared by the cron firing engine and the interactive
         // POST /machines/{machine}/sessions relay ("start a session on another computer"). Gateway Cleanup
-        // Phase 2 (PR E-B2): both the spawner and the work-list drain driver ride the tunnel first under
-        // stream mode (sendCommand non-null), falling back to the HTTP dial otherwise.
+        // Phase 2 (PR E-B2): both the spawner and the work-list drain driver ride the tunnel. Tunnel-only:
+        // an unconnected Director yields an error, never an HTTP dial.
         Api.DirectorCommandRouter.SendDirectorCommandAsync? spawnSendCommand = SendCommandAsync;
         _machineSessionSpawner = new Running.MachineSessionSpawner(cronTargetResolver, spawnSendCommand);
         // A work-list cron job (#484) drains a named list via the shipped #274 runner on the resolved
@@ -829,8 +829,8 @@ public sealed class GatewayHost : IAsyncDisposable
         {
             if (Registry.ListDirectors().Count == 0) return;
             // Gateway Cleanup mission, Phase 2: locate each voice session's owner push-store-first (no HTTP
-            // fan-out) and reach it through the tunnel-first SessionVerbClient. sendCommand is non-null only
-            // under stream mode; when null the client falls back to the HTTP dial, byte-identical.
+            // fan-out) and reach it through the tunnel-only SessionVerbClient - an unconnected Director yields
+            // an error, never an HTTP dial.
             var stale = TimeSpan.FromSeconds(Core.Configuration.GatewayConfig.DefaultStreamStaleAfterSeconds);
             Api.DirectorCommandRouter.SendDirectorCommandAsync? sendCommand = SendCommandAsync;
             var generated = 0;
