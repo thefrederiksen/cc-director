@@ -43,29 +43,44 @@ export function VoiceTab({ sessionId }: { sessionId: string | undefined }) {
           </div>
         )}
 
+        {/* Render the reason the GATEWAY gave (v.unavailableReason), never a guess. This block used to
+            hardcode "the Gateway has not made one, or this session's computer is offline" - the exact
+            string the mobile screen had, duplicated character-for-character, and false on both counts
+            during the 2026-07-15 speech outage. Both views now read the shared hook, so they cannot
+            drift apart again; the fallback line is only for when the Gateway has said nothing. */}
         {v.audioUnavailable && (
           <>
             <div className="voice-statusbar">
-              <span className="voice-state voice-state-red">Voice unavailable</span>
+              <span className="voice-state voice-state-red">
+                {v.unavailableIsServiceDown ? "Voice service down" : "Voice unavailable"}
+              </span>
             </div>
             <div className="voice-narr">
-              <div className="voice-narr-title">No narration is ready to play.</div>
+              <div className="voice-narr-title">
+                {v.unavailableIsServiceDown ? "This is not your fault." : "No narration is ready to play."}
+              </div>
               <div className="voice-narr-body">
-                {v.clipPhase === "error"
-                  ? "The browser could not download the spoken audio for this turn. Click Generate narration to make it again."
-                  : v.narrative.length > 0
-                    ? v.narrative
-                    : "There is no spoken summary for this session's latest turn yet - the Gateway has not made one, or this session's computer is offline. Click Generate narration to make one now."}
+                {v.unavailableReason?.text
+                  ? v.unavailableReason.text
+                  : v.clipPhase === "error"
+                    ? "The browser could not download the spoken audio for this turn. Click Generate narration to make it again."
+                    : v.narrative.length > 0
+                      ? v.narrative
+                      : "There is no spoken summary for this session's latest turn yet. Click Generate narration to make one now."}
               </div>
             </div>
-            <button
-              type="button"
-              className="voice-switch"
-              onClick={() => void v.onGenerateNow()}
-              disabled={v.regenerating}
-            >
-              {v.regenerating ? "Generating narration..." : "Generate narration now"}
-            </button>
+            {/* No button while the service is down: it hits the same dead service and fails the same
+                way, and the Gateway is already backing off and retrying on its own. */}
+            {!v.unavailableIsServiceDown && (
+              <button
+                type="button"
+                className="voice-switch"
+                onClick={() => void v.onGenerateNow()}
+                disabled={v.regenerating}
+              >
+                {v.regenerating ? "Generating narration..." : "Generate narration now"}
+              </button>
+            )}
           </>
         )}
 

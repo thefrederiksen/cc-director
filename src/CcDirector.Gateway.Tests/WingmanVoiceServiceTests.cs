@@ -572,6 +572,80 @@ public sealed class WingmanVoiceServiceTests
         Assert.False(svc.HasVoice("sid-dead"));
     }
 
+    // ---- The 2026-07-15 outage: the service failed for ~45 minutes and the phone blamed the user's own
+    // machine ("the Gateway has not made one, or this session's computer is offline"). Both false. The
+    // reason was KNOWN here and discarded three lines from where it was known, because no state meant
+    // "the service is down". These pin the whole path: the failure must become ServiceDown, ServiceDown
+    // must carry copy the phone can render, and it must survive to the DTO the phone actually reads.
+
+    [Theory]
+    [InlineData(500)]   // provider blew up
+    [InlineData(502)]   // our cloud could not reach it
+    [InlineData(503)]   // upstream unavailable
+    [InlineData(504)]   // upstream timed out / fast-failed
+    public async Task StoreSpokenAsync_TtsFails_RecordsServiceDown_NotSilence(int status)
+    {
+        // Every one of these used to return a bare null ("other provider error: logged, no shared
+        // state"), so the session recorded NOTHING and the phone invented a cause.
+        var svc = ServiceWithTts((HttpStatusCode)status, "{\"error\":\"upstream\"}");
+        await svc.StoreSpokenAsync("sid-down", "spoken", "reply");
+
+        Assert.False(svc.HasVoice("sid-down"));
+        Assert.Equal(HostedAiState.ServiceDown, svc.VoiceUnavailableFor("sid-down"));
+    }
+
+    [Fact]
+    public async Task StoreSpokenAsync_TtsTimesOutEveryAttempt_RecordsServiceDown()
+    {
+        // The TimeoutException that TtsSynthesis exists to bound was the ONE failure that stamped
+        // nothing at all - swallowed by a bare catch. It is the most likely failure in a real outage.
+        var handler = new TtsTimeoutHandler(timeouts: int.MaxValue);
+        var svc = ServiceWithHandler(handler);
+        await svc.StoreSpokenAsync("sid-timeout", "spoken", "reply");
+
+        Assert.Equal(HostedAiState.ServiceDown, svc.VoiceUnavailableFor("sid-timeout"));
+    }
+
+    [Fact]
+    public async Task StoreSpokenAsync_TtsOutOfCredits_StillBlamesTheAccount_NotTheService()
+    {
+        // The control. 402 is the user's to fix, so it must NOT be swept into ServiceDown - telling
+        // someone "not your fault, retrying" when they are out of credit would strand them forever.
+        var svc = ServiceWithTts(HttpStatusCode.PaymentRequired, "{\"error\":{\"code\":\"insufficient_credits\"}}");
+        await svc.StoreSpokenAsync("sid-402", "spoken", "reply");
+
+        var state = svc.VoiceUnavailableFor("sid-402");
+        Assert.NotNull(state);
+        Assert.NotEqual(HostedAiState.ServiceDown, state);
+    }
+
+    [Fact]
+    public async Task ServiceDown_HasCopyThePhoneCanRender_WithNoButton()
+    {
+        // The field was DEAD ON ARRIVAL for months: stamped on every 3s poll with zero readers, while
+        // two views hardcoded a false string. Recording the state is only half - it has to arrive as
+        // something renderable. And it must offer NO call to action: during an outage a button hits the
+        // same dead service and fails the same way, which is what made the owner blame himself.
+        var dto = HostedAiHttp.Dto(HostedAiState.ServiceDown);
+
+        Assert.NotNull(dto);
+        Assert.False(string.IsNullOrWhiteSpace(dto!.Text));
+        Assert.True(string.IsNullOrEmpty(dto.CtaLabel), "a service outage must offer no button - it cannot work");
+        Assert.Equal(nameof(HostedAiState.ServiceDown), dto.State);
+    }
+
+    [Fact]
+    public async Task StoreSpokenAsync_TtsRecovers_ClearsServiceDown()
+    {
+        // Voice must come back BY ITSELF when the service returns (the idle sweep regenerates), so a
+        // success has to clear the state - otherwise the phone would keep saying "down" after recovery.
+        var svc = ServiceWithTts(HttpStatusCode.OK, "", audio: new byte[] { 1, 2, 3, 4 });
+        await svc.StoreSpokenAsync("sid-back", "spoken", "reply");
+
+        Assert.True(svc.HasVoice("sid-back"));
+        Assert.Null(svc.VoiceUnavailableFor("sid-back"));
+    }
+
     [Fact]
     public async Task OnSessionWorking_ClearsVoiceUnavailable()
     {
