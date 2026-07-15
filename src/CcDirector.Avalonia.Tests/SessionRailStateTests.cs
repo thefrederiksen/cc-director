@@ -185,10 +185,18 @@ public sealed class SessionRailStateTests
     [InlineData("dictation")]
     [InlineData("background")]
     [InlineData("explaining")]
+    [InlineData("wingman-gate")]
     public void EveryFoldInput_RaisesTheWholeProjection(string foldInput)
     {
         var session = RedAtTurnEnd();
         session.SetCachedExplain("waiting on you", model: "test");
+        // The gate case needs something for the gate to gate: parked on its own background task, which the
+        // fold answers purple ONLY while the Wingman is on. Turning it off must move the whole row to red.
+        if (foldInput == "wingman-gate")
+        {
+            session.WingmanEnabled = true;
+            session.SetBackgroundRunning(true, "running in background");
+        }
         var vm = new SessionViewModel(session);
 
         var changed = new List<string>();
@@ -202,6 +210,7 @@ public sealed class SessionRailStateTests
             case "dictation": session.IsTranscribing = true; break;
             case "background": session.SetBackgroundRunning(true, "running in background"); break;
             case "explaining": session.IsExplaining = true; break;
+            case "wingman-gate": session.WingmanEnabled = false; break;
             default: throw new ArgumentOutOfRangeException(nameof(foldInput), foldInput, "unknown fold input");
         }
         Dispatcher.UIThread.RunJobs();

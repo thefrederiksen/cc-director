@@ -768,7 +768,35 @@ public sealed class Session : IDisposable
     /// hide the Voice + Wingman tabs. Opt in per session via the context menu / new-session
     /// dialog. Durable per session (persisted via <see cref="PersistedSession.WingmanEnabled"/>).
     /// </summary>
-    public bool WingmanEnabled { get; set; } = false;
+    /// <remarks>
+    /// A FOLD INPUT, therefore change-notifying. It is not an overlay flag - it is the GATE on two of
+    /// them: SessionOrdering.ResolveActivity yields yellow only when WingmanEnabled AND IsAutoExplaining,
+    /// and purple only when WingmanEnabled AND IsBackgroundRunning. So turning the Wingman off on a session
+    /// parked on its own background task flips the correct answer from purple "Background" to red "Needs
+    /// you" WITHOUT any overlay flag changing.
+    ///
+    /// It was a bare auto-property, so nothing could hear that. The overlays it gates all raise; the gate
+    /// did not, and it was the last unwired fold input after three review passes fixed the obvious ones.
+    /// A gate is easier to miss than a flag precisely because it is not the thing being rendered - which is
+    /// why the rule is mechanical: if the fold reads it, it announces itself. Found by review of pull
+    /// request 1598.
+    /// </remarks>
+    public bool WingmanEnabled
+    {
+        get => _wingmanEnabled;
+        set
+        {
+            if (_wingmanEnabled == value) return;
+            _wingmanEnabled = value;
+            FileLog.Write($"[Session] WingmanEnabled: session={Id}, enabled={value}");
+            try { OnWingmanEnabledChanged?.Invoke(value); }
+            catch (Exception ex) { FileLog.Write($"[Session] {Id} OnWingmanEnabledChanged handler threw: {ex.Message}"); }
+        }
+    }
+    private bool _wingmanEnabled;
+
+    /// <summary>Raised when <see cref="WingmanEnabled"/> changes, so a view re-reads the fold it gates.</summary>
+    public event Action<bool>? OnWingmanEnabledChanged;
 
     /// <summary>
     /// Scheduled-run auto-dismiss (issue #1200): true when this session is an AUTOMATED run (a cron seed)

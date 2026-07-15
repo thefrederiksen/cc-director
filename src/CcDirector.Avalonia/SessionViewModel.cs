@@ -72,6 +72,10 @@ public class SessionViewModel : INotifyPropertyChanged
         session.OnIsBackgroundRunningChanged += OnFoldInputChangedVm;
         session.OnIsTranscribingChanged += OnFoldInputChangedVm;
         session.OnIsExplainingChanged += OnFoldInputChangedVm;
+        // The GATE on the purple and yellow overlays, not an overlay itself: turning the Wingman off on a
+        // session parked on its background task flips the fold from purple "Background" to red "Needs you"
+        // with no overlay flag changing. Easier to miss than a flag for exactly that reason.
+        session.OnWingmanEnabledChanged += OnFoldInputChangedVm;
 
         if (session.PromptQueue != null)
         {
