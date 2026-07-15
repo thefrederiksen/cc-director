@@ -242,6 +242,15 @@ a property of the session's mode, not of how any single turn was entered. Withou
 post-cutover wingman turns could not be derived from rows at all, and no `GROUP BY modality` would
 recover them. Wingman turns become `SUM(turns) WHERE wingman = 1`.
 
+**Capture `VoiceMode` once per fold and hand it to every row that fold emits.** Wingman is a
+property of the *session's mode* for the whole observation, not of any individual bucket, so it is
+constant across every row a single fold writes. Read it once into a local at the top of the fold
+and pass it as a required argument to the one function that emits rows. Then no row can carry a
+different flag than its siblings, and - the failure that actually matters - no row can have its
+flag *derived from its own modality*, because the emitting code never sees a path to compute it
+that way. This is the same move as the surrogate id: make the wrong answer unreachable rather than
+merely untaken.
+
 Each dashboard number becomes a baseline value plus a query over the rows recorded since:
 
 - all-time totals by modality and surface - baseline plus `SUM(...) GROUP BY modality, surface`
@@ -285,6 +294,15 @@ Three honest qualifications, all raised by the Codex reviewer and all accepted:
   where the mistake is impossible over the design where the mistake is merely avoided.** Codex's
   guardrail forbidding `ToLowerInvariant` was correct, but a rule you must remember is weaker than
   a schema that cannot express the error. This choice deletes the rule.
+
+  **And the limit on that principle, because it is not a licence to redesign everything.** Spend
+  structure on making a mistake impossible when the mistake would be **silent** and the cost of
+  being wrong is the owner's data. That is why it was worth a schema change here: a case-split
+  repository bucket would pass every check green and surface weeks later as numbers that quietly
+  stopped adding up. Where a mistake would instead fail **loudly**, or a cheap test catches it at
+  the moment it is made, a test is the proportionate answer and the elaborate design is waste. The
+  question to ask is not "could this be made impossible?" - almost anything could - but "if this
+  went wrong, would anyone find out?" Design against the silent ones. Test the loud ones.
 
   The same reasoning gives `stat_delta` an explicit `is_voice` column computed in C# at fold time
   rather than re-derived from a string comparison in SQL, because `_totals` is keyed
