@@ -7,11 +7,11 @@
 //
 // These are hand-drawn inline SVG rather than an icon package. The Cockpit has four dependencies
 // (react, react-dom, react-router-dom, client-core); adding a library and its build weight for
-// fifteen glyphs is not a trade worth making, and inline paths cannot go missing at runtime.
+// fourteen glyphs is not a trade worth making, and inline paths cannot go missing at runtime.
 //
 // Every icon is drawn on the same 24x24 grid with the same 2px stroke and round caps, and paints in
 // currentColor - so a row's icon takes the nav link's color for free, including the dim/hover/active
-// states, and the set reads as one family rather than fifteen separate drawings.
+// states, and the set reads as one family rather than fourteen separate drawings.
 
 export type NavIconName =
   | "fleet-map"
@@ -21,7 +21,6 @@ export type NavIconName =
   | "workflows"
   | "dictionary"
   | "voice-recorder"
-  | "executables"
   | "transcription"
   | "network"
   | "learning"
@@ -86,14 +85,6 @@ const PAINT: Record<NavIconName, JSX.Element> = {
       <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z" />
       <path d="M19 10v2a7 7 0 0 1-14 0v-2" />
       <path d="M12 19v3" />
-    </>
-  ),
-  // A package: the built binaries.
-  executables: (
-    <>
-      <path d="M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z" />
-      <path d="m3.3 7 8.7 5 8.7-5" />
-      <path d="M12 22V12" />
     </>
   ),
   // A waveform: speech turned into text.

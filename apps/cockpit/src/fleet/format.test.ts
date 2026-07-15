@@ -1,20 +1,26 @@
 import { describe, expect, it } from "vitest";
-import { portOf, repoBasename, shortId, uptime } from "./format";
+import { portLabel, repoBasename, shortId, uptime } from "./format";
 
-// These lock the shared formatting helpers that issue #1261 consolidated: the Exes, Wingman, and
-// Feedback pages deleted their local copies and now import exactly these, so a regression here would be
-// a regression on all four pages at once. portOf is newly exported for the Exes page's port cell.
+// These lock the shared formatting helpers that issue #1261 consolidated: the Wingman and Feedback pages
+// deleted their local copies and now import exactly these, so a regression here would be a regression on
+// every one of them at once.
+//
+// The port parser is covered through portLabel rather than directly: it was exported for the deleted
+// Exes page's port cell, and portLabel is now its only caller, so that is the surface to pin.
 
-describe("portOf", () => {
-  it("parses the port from an endpoint URL", () => {
-    expect(portOf("http://127.0.0.1:7879")).toBe("7879");
-    expect(portOf("http://buildbox.ts.net:7878/")).toBe("7878");
+describe("portLabel", () => {
+  it("parses the port from the control endpoint", () => {
+    expect(portLabel("http://127.0.0.1:7879", null, "a1b2c3d4e5")).toBe(":7879");
   });
 
-  it("returns null when there is no port (the Exes cell renders '?' from this)", () => {
-    expect(portOf("")).toBeNull();
-    expect(portOf(null)).toBeNull();
-    expect(portOf("not-a-url")).toBeNull();
+  it("falls back to the tailnet endpoint, trailing slash and all", () => {
+    expect(portLabel(null, "http://buildbox.ts.net:7878/", "a1b2c3d4e5")).toBe(":7878");
+  });
+
+  it("shows the short id when no port can be parsed - never blank (issue #237)", () => {
+    expect(portLabel("", null, "a1b2c3d4e5")).toBe("a1b2c3d4");
+    expect(portLabel(null, null, "a1b2c3d4e5")).toBe("a1b2c3d4");
+    expect(portLabel("not-a-url", "also-not-a-url", "a1b2c3d4e5")).toBe("a1b2c3d4");
   });
 });
 
@@ -53,7 +59,7 @@ describe("uptime", () => {
     expect(uptime(start, base + 5 * 60_000)).toBe("5m");
   });
 
-  it("renders hours and minutes (the Exes 'up 3h 20m' format)", () => {
+  it("renders hours and minutes (the 'up 3h 20m' format)", () => {
     expect(uptime(start, base + (3 * 3600 + 20 * 60) * 1000)).toBe("3h 20m");
   });
 
