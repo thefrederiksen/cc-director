@@ -73,6 +73,26 @@ rule and prune safety; and criteria 3, 3a, 5 and 7.
 and the back-fill are live *product behaviour*, not old data. "Throw away the data" is not
 permission to throw away a shipped bug fix.
 
+**The filter to apply, because the Architect's first delete list got it wrong twice.** The owner's
+ruling is about **data**, not about **behaviour**. The question for every table and rule is not "is
+this in the baseline neighbourhood?" but **"is this a stored historical number, or is this something
+the running product does?"** Two things sit next to the baseline and are emphatically behaviour. The
+Manager caught both before cutting, and a literal reading of the first delete list would have
+shipped both defects:
+
+- **`agents_since_utc` is NOT a baseline and must survive.** It is stamped at *runtime* by
+  `StampAgentsSinceLocked`, called on every observe (`:148` and `:163`), not loaded from history. It
+  needs a home - `meta(name, value)` is the natural one now that the import marker it was built for
+  is gone. Delete it with the rest of `baseline_scalar` and the Agents page silently starts claiming
+  its numbers reconcile with the totals, which is the exact lie that field exists to prevent.
+  (`wingman_turns` in the same table *is* a baseline and does go.)
+- **`agents_seeded` must survive, and this is not obvious under the new premise.** With a fresh
+  database the first-fold back-fill contributes nothing, because high-water starts empty - so it
+  looks redundant. But `session_highwater` **persists across Gateway restarts**, so once sessions
+  have accumulated high-water, a restart without `agents_seeded` re-runs the back-fill for every
+  live session and doubles the agent numbers - precisely what the `:80` comment warns about. It is
+  live behaviour that happens to look like migration scaffolding.
+
 **New cutover behaviour:** on first run, rename `gateway-input-stats.json` aside and start empty. No
 parse, no read, no import path. **Rename, never delete** - discarding the numbers is the owner's
 call, destroying the file irreversibly is not, and a rename costs nothing and keeps the door open.
