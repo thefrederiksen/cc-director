@@ -186,16 +186,22 @@ features:
     summary: Compose-and-preview surface for LinkedIn, Twitter/X, and Reddit with scheduling. Preview system present; full send pipeline still being completed.
 
   # --- Wingman and voice --------------------------------------------------
-  - id: wingman-tab
-    title: Wingman Briefing Tab
-    category: voice-wingman
-    status: implemented
-    screen: main-window
-    source:
-      - src/CcDirector.Avalonia/Controls/CleanView.axaml
-      - src/CcDirector.Avalonia/Controls/CleanView.axaml.cs
-    screenshot: wingman-tab.png
-    summary: Clean structured briefing of what Claude wants you to do next - verbatim validation, synthesized actions, tap-to-answer buttons, a voice preview, and the final reply rendered as markdown.
+  # THE WINGMAN BRIEFING TAB IS GONE, and this file said "status: implemented" about it for a month.
+  #
+  # Its view (Controls/CleanView.axaml + .axaml.cs) stopped being instantiated on 13 July 2026 when the
+  # desktop tabs were removed; the dead files were finally deleted on 15 July by pull request 1598. The
+  # entry described a screen the product does not have, in the document whose whole job is to say what the
+  # product has.
+  #
+  # THE DRIFT CHECK WAS GREEN THE WHOLE TIME, and that is the part worth keeping. It verifies that the
+  # listed FILES EXIST - not that the FEATURE does. So a feature could be ripped out, leave its corpse on
+  # disk, and this file could go on calling it "implemented" with the check nodding along. It went red only
+  # when someone deleted the corpse, which means the check reports the tidying-up and misses the removal.
+  # The check is not wrong, it is narrow: passing it means the paths resolve, and NOT that anything here is
+  # true. If you delete a feature, delete its entry - the check will not remind you.
+  #
+  # (Session States mission, 15 July 2026. Found because the check went red on an unrelated pull request,
+  # after the mission that deleted the corpse had merged without anyone noticing main had gone red.)
 
   - id: fifo-window
     title: FIFO Full-Screen Mode
