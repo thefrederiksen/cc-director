@@ -30,18 +30,34 @@
     </UserControl.Styles>
 
     <DockPanel>
-        <!-- Header: pivot switch + fleet tally -->
+        <!-- Header: scope toggle + pivot switch + tally -->
         <DockPanel DockPanel.Dock="Top" Margin="24,20,24,12">
             <StackPanel Orientation="Horizontal" Spacing="6" HorizontalAlignment="Right" DockPanel.Dock="Right">
                 <Button x:Name="BtnPivotRepo" Content="By repository"
                         Click="BtnPivotRepo_Click"
+                        AutomationProperties.Name="By repository"
                         Padding="12,4" FontSize="12"
                         BorderThickness="0" Cursor="Hand" />
                 <Button x:Name="BtnPivotAgent" Content="By agent"
                         Click="BtnPivotAgent_Click"
+                        AutomationProperties.Name="By agent"
                         Padding="12,4" FontSize="12"
                         BorderThickness="0" Cursor="Hand" />
             </StackPanel>
+
+            <!-- Off by default: this Director's own sessions are the ones a click here can open. Ticking
+                 this widens the map to every Director, whose sessions open in the Cockpit instead. The
+                 choice is remembered for THIS install (issue #1627). -->
+            <CheckBox x:Name="ChkWholeFleet"
+                      Content="Show the whole fleet"
+                      DockPanel.Dock="Right"
+                      Margin="0,0,18,0"
+                      FontSize="12"
+                      Foreground="#CCCCCC"
+                      AutomationProperties.Name="Show the whole fleet"
+                      ToolTip.Tip="Off: only the sessions this cc-director runs - the ones you can open here.&#x0a;On: every cc-director's sessions; the ones this cc-director does not run open in the Cockpit."
+                      IsCheckedChanged="ChkWholeFleet_Changed" />
+
             <TextBlock x:Name="StatsText"
                        Text="Loading..."
                        Foreground="#888888"

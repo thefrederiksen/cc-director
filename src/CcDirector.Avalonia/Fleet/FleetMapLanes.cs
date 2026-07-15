@@ -28,6 +28,27 @@ public sealed class FleetLane
 /// </summary>
 public static class FleetMapLanes
 {
+    /// <summary>
+    /// Issue #1627: narrow the roster to what the map should show.
+    ///
+    /// When <paramref name="showWholeFleet"/> is false - the default - only the sessions THIS Director runs
+    /// survive. That is not an arbitrary default: they are exactly the sessions a click here can open in
+    /// the rail. Everything else has to go out to the Cockpit, which is a different experience, so seeing
+    /// it is opt-in.
+    ///
+    /// The filter is by DIRECTOR, not by machine, and the distinction is real: a machine can run several
+    /// Directors, and this Director cannot open another one's sessions even though they sit on the same
+    /// box. Filtering by Director is what makes "visible" and "clickable" mean the same thing here, with
+    /// no exceptions to explain.
+    /// </summary>
+    public static List<SessionDto> Filter(IReadOnlyList<SessionDto> sessions, HashSet<string> localSessionIds, bool showWholeFleet)
+    {
+        ArgumentNullException.ThrowIfNull(sessions);
+        ArgumentNullException.ThrowIfNull(localSessionIds);
+        if (showWholeFleet) return sessions.ToList();
+        return sessions.Where(s => localSessionIds.Contains(s.SessionId ?? "")).ToList();
+    }
+
     /// <summary>The lane key for one session under a pivot. Blank values fall into a named bucket rather
     /// than vanishing - a session with no repository is a fact worth seeing, not a card to drop.</summary>
     public static string LaneKey(SessionDto s, FleetPivot pivot)

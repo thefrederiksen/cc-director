@@ -152,6 +152,12 @@ public partial class FleetMapView : UserControl
     private readonly ObservableCollection<FleetLaneItem> _lanes = new();
     private DispatcherTimer? _timer;
     private FleetPivot _pivot = FleetPivot.Repository;
+    private readonly FleetMapSettings _settings = new();
+    private bool _showWholeFleet;
+    // The checkbox raises its changed event while we are restoring the persisted value at startup; without
+    // this the restore would immediately write the value straight back and log a save that never happened
+    // for a user reason.
+    private bool _restoringSetting;
 
     /// <summary>Resolves the fleet roster. Set by the host so this control needs no Gateway knowledge.</summary>
     public Func<CancellationToken, Task<List<SessionDto>>?>? FleetSource { get; set; }
@@ -167,6 +173,23 @@ public partial class FleetMapView : UserControl
         InitializeComponent();
         LanesList.ItemsSource = _lanes;
         UpdatePivotButtons();
+
+        // Restore this install's remembered scope before the first read, so the map never flashes the
+        // whole fleet on its way to the setting the owner actually chose.
+        _restoringSetting = true;
+        _showWholeFleet = _settings.LoadShowWholeFleet();
+        ChkWholeFleet.IsChecked = _showWholeFleet;
+        _restoringSetting = false;
+        FileLog.Write($"[FleetMapView] scope restored: showWholeFleet={_showWholeFleet} from {_settings.FilePath}");
+    }
+
+    private void ChkWholeFleet_Changed(object? sender, RoutedEventArgs e)
+    {
+        if (_restoringSetting) return;
+        _showWholeFleet = ChkWholeFleet.IsChecked == true;
+        FileLog.Write($"[FleetMapView] scope changed by the owner: showWholeFleet={_showWholeFleet}");
+        _settings.SaveShowWholeFleet(_showWholeFleet);
+        _ = RefreshAsync();
     }
 
     /// <summary>Begin polling the fleet. Called when the overlay opens.</summary>
@@ -235,8 +258,11 @@ public partial class FleetMapView : UserControl
                 return;
             }
 
-            var sessions = await task;
+            var all = await task;
             var local = LocalSessionIds?.Invoke() ?? new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            // Issue #1627: by default the map is THIS cc-director's map - the sessions a click here can
+            // actually open. The whole fleet is opt-in and remembered per install.
+            var sessions = FleetMapLanes.Filter(all, local, _showWholeFleet);
             var lanes = FleetMapLanes.Build(sessions, _pivot, FleetMapLanes.DefaultSort);
 
             // Reconcile in place - do NOT rebuild. See FleetCardItem.UpdateFrom for why: a from-scratch
@@ -247,12 +273,36 @@ public partial class FleetMapView : UserControl
             var offset = MapScroll.Offset;
             Reconcile(lanes, local);
 
-            var machines = sessions.Select(s => (s.MachineName ?? "").Trim())
-                                   .Where(m => m.Length > 0)
-                                   .Distinct(StringComparer.OrdinalIgnoreCase).Count();
+            // The tally counts what is ON SCREEN. A "needs you" total that includes sessions the map is
+            // not showing would be a number the owner cannot act on or even find.
             var needsYou = sessions.Count(s => string.Equals(s.EffectiveColor, "red", StringComparison.OrdinalIgnoreCase));
-            StatsText.Text = $"{sessions.Count} sessions  |  {machines} machine{(machines == 1 ? "" : "s")}  |  " +
-                             $"{lanes.Count} {(_pivot == FleetPivot.Repository ? "repos" : "agents")}  |  {needsYou} needs you";
+            var scope = _showWholeFleet ? "whole fleet" : "this cc-director";
+            var lane = _pivot == FleetPivot.Repository
+                ? (lanes.Count == 1 ? "repo" : "repos")
+                : (lanes.Count == 1 ? "agent" : "agents");
+            var tally = $"{sessions.Count} session{(sessions.Count == 1 ? "" : "s")}  |  {lanes.Count} {lane}  |  {needsYou} needs you";
+            if (_showWholeFleet)
+            {
+                var machines = sessions.Select(s => (s.MachineName ?? "").Trim())
+                                       .Where(m => m.Length > 0)
+                                       .Distinct(StringComparer.OrdinalIgnoreCase).Count();
+                tally += $"  |  {machines} machine{(machines == 1 ? "" : "s")}";
+            }
+            StatsText.Text = $"{scope}:  {tally}";
+
+            // An empty map must say WHY it is empty. "This Director is running nothing" and "the whole
+            // fleet is idle" are different facts, and only one of them has a next step.
+            if (sessions.Count == 0 && !_showWholeFleet)
+            {
+                var elsewhere = all.Count;
+                Show(elsewhere > 0
+                        ? $"This cc-director is not running any sessions. There {(elsewhere == 1 ? "is 1 session" : $"are {elsewhere} sessions")} " +
+                          "elsewhere on the fleet - tick \"Show the whole fleet\" to see them. They open in the Cockpit, not here."
+                        : "This cc-director is not running any sessions, and neither is anything else on the fleet.",
+                    "this cc-director:  0 sessions");
+                return;
+            }
+
             MessageText.IsVisible = false;
 
             if (offset.Y > 0)
@@ -331,11 +381,16 @@ public partial class FleetMapView : UserControl
         IsLocal = local.Contains(n.Session.SessionId ?? ""),
     };
 
-    private void Show(string message)
+    /// <summary>
+    /// Put a message where the cards would be. <paramref name="tally"/> is what the header should say
+    /// instead of a count - "Fleet unavailable" when the Gateway could not be read, but NOT when the map
+    /// is simply empty, because an idle Director is not a broken one and saying so would be a lie.
+    /// </summary>
+    private void Show(string message, string tally = "Fleet unavailable")
     {
         MessageText.Text = message;
         MessageText.IsVisible = true;
-        StatsText.Text = "Fleet unavailable";
+        StatsText.Text = tally;
         _lanes.Clear();
     }
 }

@@ -181,6 +181,56 @@ public sealed class FleetMapLanesTests
     }
 
     [Fact]
+    public void Filter_ByDefault_KeepsOnlyThisDirectorsSessions()
+    {
+        // The default is this cc-director's map: the sessions a click here can actually open.
+        var fleet = new[] { S("mine", "r", "a"), S("theirs", "r", "a") };
+        var local = new HashSet<string>(new[] { "mine" }, StringComparer.OrdinalIgnoreCase);
+
+        var kept = FleetMapLanes.Filter(fleet, local, showWholeFleet: false);
+
+        Assert.Equal(new[] { "mine" }, kept.Select(s => s.SessionId).ToArray());
+    }
+
+    [Fact]
+    public void Filter_WhenShowingTheWholeFleet_KeepsEverything()
+    {
+        var fleet = new[] { S("mine", "r", "a"), S("theirs", "r", "a") };
+        var local = new HashSet<string>(new[] { "mine" }, StringComparer.OrdinalIgnoreCase);
+
+        var kept = FleetMapLanes.Filter(fleet, local, showWholeFleet: true);
+
+        Assert.Equal(2, kept.Count);
+    }
+
+    [Fact]
+    public void Filter_IsByDirector_NotByMachine()
+    {
+        // Two Directors on ONE machine. The other Director's session must NOT survive the default filter:
+        // this Director cannot open it, so "visible" and "clickable" would stop meaning the same thing.
+        var mine = S("mine", "r", "a");
+        mine.MachineName = "SOREN_NORTH";
+        mine.DirectorId = "director-1";
+        var sameBoxOtherDirector = S("theirs", "r", "a");
+        sameBoxOtherDirector.MachineName = "SOREN_NORTH";
+        sameBoxOtherDirector.DirectorId = "director-2";
+
+        var local = new HashSet<string>(new[] { "mine" }, StringComparer.OrdinalIgnoreCase);
+        var kept = FleetMapLanes.Filter(new[] { mine, sameBoxOtherDirector }, local, showWholeFleet: false);
+
+        Assert.Equal(new[] { "mine" }, kept.Select(s => s.SessionId).ToArray());
+    }
+
+    [Fact]
+    public void Filter_WithNoLocalSessions_KeepsNothing()
+    {
+        // An empty map, which the view explains rather than leaving blank.
+        var kept = FleetMapLanes.Filter(new[] { S("theirs", "r", "a") },
+            new HashSet<string>(StringComparer.OrdinalIgnoreCase), showWholeFleet: false);
+        Assert.Empty(kept);
+    }
+
+    [Fact]
     public void Build_LanesAreNameOrdered_SoTheMapDoesNotReshuffleBetweenPolls()
     {
         var lanes = FleetMapLanes.Build(
