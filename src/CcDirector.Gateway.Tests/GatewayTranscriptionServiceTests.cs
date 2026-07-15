@@ -40,7 +40,17 @@ public sealed class GatewayTranscriptionServiceTests : IDisposable
         try { if (Directory.Exists(_root)) Directory.Delete(_root, recursive: true); } catch { /* best effort */ }
     }
 
-    private GatewayTranscriptionService Service() => new(new KeyVault(_vaultPath));
+    /// <summary>
+    /// A scratch archive under this test's own root. EVERY service built here must be given one:
+    /// falling back to TranscriptionAudioArchive.Shared writes clips into the REAL user's
+    /// transcription-audio folder. CC_DIRECTOR_ROOT alone does NOT protect against that - it is
+    /// process-wide, and xUnit runs other collections in parallel that clear it mid-test, so Shared
+    /// resolves to the real location. Injection is the only isolation that holds.
+    /// </summary>
+    private TranscriptionAudioArchive ScratchArchive() => new(Path.Combine(_root, "archive-scratch"));
+
+    private GatewayTranscriptionService Service()
+        => new(new KeyVault(_vaultPath), audioArchive: ScratchArchive());
 
     /// <summary>Answers the transcription POST with a fixed status + body (issue #885).</summary>
     private sealed class StatusHandler : HttpMessageHandler
@@ -139,7 +149,9 @@ public sealed class GatewayTranscriptionServiceTests : IDisposable
 
         var body = "{\"error\":{\"code\":\"insufficient_credits\",\"message\":\"no credits\"}}";
         var service = new GatewayTranscriptionService(
-            new KeyVault(_vaultPath), http: new HttpClient(new StatusHandler(HttpStatusCode.PaymentRequired, body)));
+            new KeyVault(_vaultPath),
+            http: new HttpClient(new StatusHandler(HttpStatusCode.PaymentRequired, body)),
+            audioArchive: ScratchArchive());
 
         var result = await service.TranscribeAsync(new byte[] { 1, 2, 3 }, "clip.webm", "audio/webm", applyCorrection: false, CancellationToken.None);
 

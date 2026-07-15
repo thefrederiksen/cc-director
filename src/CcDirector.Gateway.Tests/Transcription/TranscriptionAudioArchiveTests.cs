@@ -11,6 +11,7 @@ namespace CcDirector.Gateway.Tests.Transcription;
 ///
 /// Every test writes to its own scratch directory - never the real user's archive.
 /// </summary>
+[Collection("DirectorRoot")] // serializes classes that mutate the process-wide CC_DIRECTOR_ROOT
 public sealed class TranscriptionAudioArchiveTests : IDisposable
 {
     private readonly string _dir = Path.Combine(
@@ -59,7 +60,11 @@ public sealed class TranscriptionAudioArchiveTests : IDisposable
     [InlineData("audio/webm", ".webm")]
     [InlineData("audio/ogg", ".ogg")]
     [InlineData("audio/mp4", ".m4a")]
-    [InlineData("application/octet-stream", ".bin")]
+    // What the browser and phone ACTUALLY send. A private exact-match copy of this mapping missed the
+    // ";codecs=" parameter and wrote real clips as unplayable .bin - caught only by watching the live
+    // archive, never by a test, because no test used the real MIME string.
+    [InlineData("audio/webm;codecs=opus", ".webm")]
+    [InlineData("audio/ogg; codecs=vorbis", ".ogg")]
     public void TrySave_NamesTheFileSoAPlayerCanOpenIt(string contentType, string expectedExtension)
     {
         var path = NewArchive().TrySave("turn1", Clip(), contentType);
@@ -142,6 +147,39 @@ public sealed class TranscriptionAudioArchiveTests : IDisposable
         Assert.Equal(TranscriptionAudioArchive.MaxClips, remaining.Length);
         Assert.False(File.Exists(archive.FileFor("turn0000", ".wav")));
         Assert.True(File.Exists(archive.FileFor($"turn{TranscriptionAudioArchive.MaxClips:D4}", ".wav")));
+    }
+
+    [Fact]
+    public void DefaultDirectory_FollowsCcDirectorRoot_ResolvedPerAccess()
+    {
+        // THE regression. Shared is a static field, so a path captured in the constructor is baked at
+        // TYPE LOAD - once, before any test sets CC_DIRECTOR_ROOT, and no test can undo it. That shipped:
+        // isolated tests that fell back to Shared wrote 3-byte clips into the REAL user's archive,
+        // because Shared's path had already been fixed to the real location. The tests were isolated
+        // correctly; the static defeated them. Resolving per access is what makes the override real.
+        var prev = Environment.GetEnvironmentVariable("CC_DIRECTOR_ROOT");
+        try
+        {
+            // An archive constructed with NO override, BEFORE the root is redirected - exactly Shared's
+            // situation. It must still follow a root set afterwards.
+            var archive = new TranscriptionAudioArchive();
+
+            var rootA = Path.Combine(_dir, "rootA");
+            Environment.SetEnvironmentVariable("CC_DIRECTOR_ROOT", rootA);
+            var underA = archive.FileFor("turn1", ".wav");
+
+            var rootB = Path.Combine(_dir, "rootB");
+            Environment.SetEnvironmentVariable("CC_DIRECTOR_ROOT", rootB);
+            var underB = archive.FileFor("turn1", ".wav");
+
+            Assert.StartsWith(rootA, underA);
+            Assert.StartsWith(rootB, underB);
+            Assert.NotEqual(underA, underB);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("CC_DIRECTOR_ROOT", prev);
+        }
     }
 
     [Fact]
