@@ -18,6 +18,7 @@ import {
 } from "@devthrottle/client-core/fleet/fleetClient";
 import type { SessionDto } from "@devthrottle/client-core/api/client";
 import { gatewayErrorMessage } from "@devthrottle/client-core/api/client";
+import { classify, dotColor, effectiveColor, stateLabel } from "@devthrottle/client-core/sessions/ordering";
 import { useVisiblePolling } from "@devthrottle/client-core/polling/useVisiblePolling";
 import { clockLabel, relativeTime, repoBasename } from "../fleet/format";
 import { Button, ConfirmDialog, DataTable, PageHeader, type DataTableColumn } from "../components";
@@ -927,7 +928,7 @@ export function ScheduleView() {
                     const machineSessions = sessions.filter(
                       (s) => (s.machineName ?? "").toLowerCase() === machine.toLowerCase(),
                     );
-                    const needs = machineSessions.filter((s) => s.needsYouSince != null).length;
+                    const needs = needsYouCount(machineSessions);
                     const shown = [...machineSessions]
                       .sort((a, b) => Number(a.sortOrder ?? 0) - Number(b.sortOrder ?? 0))
                       .slice(0, 3);
@@ -955,13 +956,16 @@ export function ScheduleView() {
                           <div className="sched-dsub dempty">idle - 0 sessions</div>
                         ) : (
                           <>
-                            {shown.map((s) => (
-                              <div className="sched-dsess" key={s.sessionId}>
-                                <span className={`sched-sdot ${sessClass(s)}`} />
-                                <span className="sched-sname">{sessName(s)}</span>
-                                <span className={`sched-sstate ${sessClass(s)}`}>{sessState(s)}</span>
-                              </div>
-                            ))}
+                            {shown.map((s) => {
+                              const p = pickerSession(s);
+                              return (
+                                <div className="sched-dsess" key={s.sessionId}>
+                                  <span className="sched-sdot" style={{ background: p.dot }} />
+                                  <span className="sched-sname">{sessName(s)}</span>
+                                  <span className="sched-sstate">{p.state}</span>
+                                </div>
+                              );
+                            })}
                             {machineSessions.length > 3 && (
                               <div className="sched-dsub dempty">+{machineSessions.length - 3} more</div>
                             )}
@@ -1119,13 +1123,29 @@ function sessName(s: SessionDto): string {
   return sid.length > 8 ? sid.slice(0, 8) : sid;
 }
 
-function sessState(s: SessionDto): string {
-  if (s.needsYouSince != null) return "needs you";
-  const state = s.activityState ?? "";
-  return state.trim().length === 0 ? "idle" : state.toLowerCase();
+// The Director picker's session preview, straight from the Gateway's stamped fold. Pure and exported
+// so the rule is testable without a DOM.
+//
+// sessState and sessClass are GONE, not corrected. They were an entire parallel triage fold living in
+// this picker: sessState derived "needs you" from the needsYouSince TIMESTAMP instead of the Gateway's
+// stamped triageBucket, so a snoozed session - which keeps its needsYouSince stamp - read "needs you"
+// here while every other screen showed it parked. sessClass folded the same question a second time, in
+// a different order, off the raw activityState.
+//
+// sessClass was also a LAW VIOLATION: it returned "run" for a working session, and .sched-sdot.run
+// painted --sched-green. A working session rendered GREEN. The law says working is BLUE, always. Worse
+// than a stray hex: in the shared vocabulary green MEANS "ready - brand-new, parked at its prompt", so
+// this screen used one colour to mean the opposite of what it means everywhere else.
+//
+// The picker reads the same /sessions envelope that stamps every other screen (getSessionsEnvelope),
+// so the fold's answers were available here all along. The client renders; it does not decide.
+export function pickerSession(s: SessionDto): { dot: string; state: string } {
+  return { dot: dotColor(effectiveColor(s)), state: stateLabel(s) };
 }
 
-function sessClass(s: SessionDto): string {
-  if (s.needsYouSince != null) return "needs";
-  return (s.activityState ?? "").toLowerCase() === "working" ? "run" : "idle";
+// How many of a machine's sessions actually need you: the Gateway's stamped bucket, never a count of
+// needsYouSince stamps. A snoozed session keeps its stamp - it needed you once - so counting stamps
+// put parked sessions in the "NEEDS YOU" chip.
+export function needsYouCount(sessions: SessionDto[]): number {
+  return sessions.filter((s) => classify(s) === "needsYou").length;
 }

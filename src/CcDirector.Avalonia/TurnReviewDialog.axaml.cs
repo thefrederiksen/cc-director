@@ -139,13 +139,16 @@ public partial class TurnReviewDialog : Window
 
         private static string Short(string id) => id.Length > 8 ? id[..8] : id;
 
-        private static IBrush DotFor(string color) => color?.ToLowerInvariant() switch
-        {
-            "red" => new SolidColorBrush(Color.Parse("#E5484D")),
-            "blue" => new SolidColorBrush(Color.Parse("#3B82F6")),
-            "green" => new SolidColorBrush(Color.Parse("#22C55E")),
-            "yellow" => new SolidColorBrush(Color.Parse("#F59E0B")),
-            _ => new SolidColorBrush(Color.Parse("#888888")),
-        };
+        /// <summary>
+        /// The recorded colour's dot, through the ONE palette (<see cref="StatusPalette"/>).
+        ///
+        /// This is the HISTORICAL surface: it renders the colour NAME a turn-review record captured
+        /// at the time, so it maps a name to a hex and folds nothing - there is no live session here
+        /// to fold. What it must not do is carry its own hexes, which it did: red was #E5484D here
+        /// and #EF4444 on the rail, so the same recorded "red" was two different pixels depending on
+        /// which window you opened. It also knew only four names, so a recorded orange, purple,
+        /// supporting, error, or grey silently fell through to a #888888 that is in no palette at all.
+        /// </summary>
+        private static IBrush DotFor(string color) => StatusPalette.BrushFor(color);
     }
 }

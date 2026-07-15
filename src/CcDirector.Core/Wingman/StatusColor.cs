@@ -3,36 +3,47 @@ using CcDirector.Gateway.Contracts;
 namespace CcDirector.Core.Wingman;
 
 /// <summary>
-/// String constants for the session status colors the SessionStatusWingman writes
-/// onto each <see cref="CcDirector.Core.Sessions.Session"/>. The UI renders these
-/// verbatim and never derives them from other fields.
+/// String constants for the session status colour NAMES. This is a vocabulary, not a machine: the names
+/// are shared with the Gateway's fold, which is the only thing that picks one.
 ///
-/// Live meaning (see SessionStatusWingman.ColorFor - the single source of truth):
-///   blue    = agent is working / a turn is in progress.
-///   green   = ready for the user - parked at the prompt with nothing needed. Currently set
-///             only on a brand-new session (before its first turn); the Wingman will reuse it
-///             for its own "ready" verdicts later.
-///   red     = needs the user (waiting for input/permission, idle at a turn-end).
-///   yellow  = the Wingman is reading the screen and narrating a briefing.
-///   purple  = the Wingman read the screen and determined the session is parked on its OWN
-///             background task (a long build, "N shell still running") and will resume on
-///             its own - so it does NOT need the user. An overlay on top of a red turn-end.
-///   supporting = this session is a controlled sub-agent (issue #815): another session spawned
-///             it and is driving it, so it recedes to a muted slate (#64748B) rather than
-///             demanding the operator's attention. Honored only while the controlling session is
-///             still alive; a red "needs you" still breaks through (red > supporting > the rest).
-///   unknown = process exited, or the data source is unreachable/unparseable.
-///             Rendered as gray. NOT a session state per se.
+/// WHAT THE WINGMAN ACTUALLY WRITES: blue, red, unknown. That is all, and it has been all since phase 2.3.
+/// This comment used to say these were "the session status colors the SessionStatusWingman writes onto each
+/// Session" and to describe green / yellow / purple / supporting as live wingman output, citing
+/// "SessionStatusWingman.ColorFor - the single source of truth". That method does not exist (renamed in
+/// phase 2.3), the wingman is not the single writer (two other paths write StatusColor), and every colour
+/// below except blue/red/unknown is folded at the GATEWAY from raw facts on the wire. The single source of
+/// truth is <c>SessionOrdering</c>, and the specification is docs/new_architecture/session-state.html.
 ///
-/// In practice the TerminalStateDetector only emits Working / WaitingForInput, so the
-/// activity-state badge is just blue or red; yellow and purple are Wingman overlays.
+/// The vocabulary, and who decides each one:
+///   blue    = the agent is WORKING. Written here by the wingman's activity map; folded at the Gateway
+///             from ActivityState. NOTHING OUTRANKS IT - see the law in the specification.
+///   red     = needs the user (silent past the quiet threshold). Written here; folded there.
+///   unknown = process exited, or the source is unreachable. Written here; the Gateway folds Exited to
+///             "grey" instead, deliberately - it is the single source of truth for the fold.
+///   green   = brand-new, never took a turn. GATEWAY ONLY, from SessionDto.IsBrandNew.
+///   yellow  = the wingman is reading the finished turn, or a voice summary is being prepared.
+///             GATEWAY ONLY.
+///   purple  = parked on its OWN background task. GATEWAY ONLY, from SessionDto.IsBackgroundRunning.
+///   supporting = a controlled sub-agent whose controller is STILL ALIVE (issue #815). GATEWAY ONLY - it
+///             needs the whole fleet to know the controller lives.
 ///
-/// On-hold is NOT one of these: it is a separate, user-driven override (Session.OnHold)
-/// painted by the UI (light gray), not a color the wingman writes here.
+/// READ THIS BEFORE YOU TRUST ANY OLDER DESCRIPTION OF "supporting". This comment used to end that entry
+/// with: "Honored only while the controlling session is still alive; a red 'needs you' still breaks through
+/// (red &gt; supporting &gt; the rest)." BOTH halves are wrong, in opposite directions, and it is the most
+/// dangerous sentence this file has carried:
+///   - Red does NOT break through. The suppression fires PRECISELY when the session is red - that is its
+///     whole job: a live-controlled Worker's need routes to its manager instead of nagging the human
+///     (SessionOrdering, the Worker arm). The escape hatch is the controller DYING, not the red.
+///   - It also implied slate outranks blue ("supporting > the rest"). It does not, and must not. The
+///     owner's law, 14 July 2026: IF A SESSION IS WORKING, IT IS BLUE. NO MATTER WHAT. The 2026-07-10
+///     decision that a controlled worker always recedes (#1286) is VOIDED and must not be restored or
+///     cited as precedent - it is what hid 23 minutes of real work behind a grey "Sub-agent" dot.
+/// A sentence describing a system that never existed, sitting next to the constants, is how that bug kept
+/// coming back. Ownership travels on the role badge; colour says what a session is DOING.
 ///
-/// NOTE: <see cref="Green"/> is emitted by <c>SessionStatusWingman.ColorFor</c> for a
-/// brand-new "ready" session (parked at its prompt, nothing needed). <see cref="From"/>
-/// is the older turn-summary mapping and is used only by tests now.
+/// On-hold is NOT one of these: it is a separate fact (Session.HoldState) the Gateway folds to grey.
+///
+/// NOTE: <see cref="From"/> is the older turn-summary mapping and is used only by tests now.
 /// </summary>
 public static class StatusColor
 {

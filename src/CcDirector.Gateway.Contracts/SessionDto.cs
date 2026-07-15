@@ -188,7 +188,9 @@ public sealed class SessionDto
     /// <summary>
     /// Gateway-owned human-readable state label after the same fold (issue #1177, Phase 2):
     /// e.g. "Needs you" | "Working" | "Ready" | "Wingman reading" | "Preparing voice" |
-    /// "Transcribing" | "Explaining" | "Sub-agent" | "Background" | "Snoozed" | "Exited".
+    /// "Transcribing" | "Sub-agent" | "Background" | "Snoozed" | "Exited".
+    /// ("Explaining" was in this list and was never once emitted - see the tombstone in
+    /// <see cref="SessionOrdering.EffectiveColor"/>.)
     /// Computed by <see cref="SessionOrdering.StateLabel"/> from the same raw facts + overlays as
     /// <see cref="EffectiveColor"/>, so every client renders ONE consistent label instead of each
     /// hand-rolling its own. Stamped by the Gateway aggregator; Director-local responses may leave it null.
@@ -351,8 +353,16 @@ public sealed class SessionDto
     /// This comment used to claim the row "paints as a winding-down grey". IT DID NOT, on any
     /// Gateway-backed screen. The fold has never read this field, so the row kept its normal colour;
     /// the only implementation was the Director calling <c>SetStatusColor(Unknown, ...)</c> on itself,
-    /// which nothing that paints reads and which law 2 forbids. That call is now deleted, and the
-    /// promise is gone with it - the fact travels here, as a fact.
+    /// which law 2 forbids. That call is now deleted, and the promise is gone with it - the fact travels
+    /// here, as a fact.
+    ///
+    /// This comment ALSO used to say that call was read by "nothing that paints". That was too strong:
+    /// <see cref="StatusColor"/> did gate a painted colour - the Gateway's voice-mode window stamped
+    /// <see cref="BriefingState"/> (which the fold paints yellow) only for a session whose COOKED colour
+    /// was red, so writing Unknown there would have suppressed that yellow. That Gateway gate now reads
+    /// the raw activity fact instead (<see cref="SessionOrdering.IsRawRed"/>), so no Gateway-decided
+    /// colour depends on a Director-decided colour any more. The cooked field still has desktop-side
+    /// consumers and is NOT dead - see <see cref="StatusColor"/>.
     ///
     /// THE REMAINDER, stated exactly: the fact crosses the wire, the DESKTOP RAIL RENDERS THE BADGE (see
     /// MainWindow.axaml), and the PHONE AND COCKPIT DO NOT YET. Rendering it there is outstanding - see
@@ -489,7 +499,12 @@ public sealed class SessionDto
     /// Standalone becomes a Manager when it gains a live worker and reverts when the last dies. The fold
     /// (<see cref="SessionOrdering.EffectiveColor"/>) SUPPRESSES a live Worker's red (it recedes and never
     /// nags the human); Manager/Standalone stay human-facing. Empty on a Director-local response (the role
-    /// needs the fleet view). One of "Standalone" / "Worker" / "Manager".
+    /// needs the fleet view).
+    ///
+    /// One of "Standalone" / "Worker" / "Manager" / "Architect" - FOUR, not the three this comment used to
+    /// list. Architect is never inferred from the spawn graph; it arrives only via <see cref="ExplicitRole"/>,
+    /// which wins over auto-derivation in the aggregation's role resolution (see <see cref="ExplicitRole"/>
+    /// eleven lines below, which said so all along, and the "A" glyph the desktop rail renders for it).
     /// </summary>
     public string? SessionRole { get; set; }
 
@@ -534,9 +549,14 @@ public sealed class SessionDto
     /// <summary>
     /// RAW FACT: the legacy auto-explain deep dive (<c>ProactiveExplainService</c>) is running for this
     /// session at a turn-end (mirrors <c>Session.IsExplaining</c>). While it runs, and the session is
-    /// WingmanEnabled and at a turn-end, the fold paints yellow ("wingman is reading"). This is DISTINCT
-    /// from the Gateway's user-initiated deep dive (<c>BriefingState == "Explaining"</c>, issue #217),
-    /// which the fold paints ORANGE - see <see cref="SessionOrdering.IsExplaining"/>.
+    /// WingmanEnabled and at a turn-end, the fold paints yellow ("wingman is reading"). THIS FEATURE
+    /// WORKS and this field is the one that carries it.
+    ///
+    /// It used to be described as "DISTINCT from the Gateway's user-initiated deep dive
+    /// (<c>BriefingState == "Explaining"</c>, issue #217), which the fold paints ORANGE". The distinction
+    /// was real but the other half was not: that orange never once fired, and the rule is gone - see the
+    /// tombstone in <see cref="SessionOrdering.EffectiveColor"/>. This yellow is what survived, because it
+    /// is what was actually reachable.
     /// </summary>
     public bool IsAutoExplaining { get; set; }
 

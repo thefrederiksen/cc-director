@@ -4,15 +4,30 @@ using Xunit;
 namespace CcDirector.Gateway.Tests;
 
 /// <summary>
-/// The regression that started this work: the desktop rail and the phone showed DIFFERENT states for the
-/// same session at the same instant - six of thirteen sessions disagreed when measured on the live fleet
-/// on 14 July 2026. The desktop hand-rolled three private folds, and two of them had never heard of the
-/// hold flag, so a snoozed session rendered a grey strip next to a red "Your Turn" and an hours-long
-/// nagging clock, while the phone correctly showed "Snoozed".
+/// WHAT THIS FILE ACTUALLY PROVES: that the shared fold is a FUNCTION - one set of inputs yields one
+/// answer, whoever calls it. Despite the name, it does NOT prove that the desktop and the Gateway agree,
+/// and it cannot: it lives in Gateway.Tests, imports only <c>CcDirector.Gateway.Contracts</c>, and never
+/// touches a line of desktop code. It builds its inputs by hand and asks the fold what it says.
 ///
-/// The rows below are the ACTUAL diverging sessions from that measurement. Both screens now call the SAME
-/// fold (<see cref="SessionOrdering"/>), so the only honest assertion is that one function yields one
-/// answer per session. Anything that re-introduces a second reading fails here.
+/// READ THAT AGAIN BEFORE CITING THIS FILE AS PROOF OF AGREEMENT. Two surfaces agree only if they call the
+/// same function AND feed it the same INPUTS. This file pins the first half. The second half is where every
+/// bug in this mission actually lived - <see cref="ALiveWorker_IsRecessive_NotRed_OnEveryScreen"/> hand-sets
+/// <c>SessionRole = Worker</c>, which is precisely the field the desktop's real producer did not populate
+/// (defect 5). So that test was GREEN while the desktop showed RED for the same session, and it had no way
+/// to notice: it supplied the missing input itself. A test that injects the value production forgets is the
+/// shape this codebase keeps shipping - see the auto-drain, green for fourteen months on an injected state.
+///
+/// The other half now exists, next door: <see cref="DesktopRoleStampWireProofTests"/> drives a real
+/// <c>Session</c> through the real <c>set-resolved-role</c> verb, the real <c>ControlEndpoints.Map</c> and
+/// this same fold, hand-setting nothing. Read the two as a pair: HERE is the answer the fold must give;
+/// THERE is the desktop actually reaching it through the real wire. Neither is sufficient alone.
+///
+/// The history that produced these rows: the desktop rail and the phone showed DIFFERENT states for the
+/// same session at the same instant - six of thirteen sessions disagreed when measured on the live fleet on
+/// 14 July 2026. The desktop hand-rolled three private folds, and two of them had never heard of the hold
+/// flag, so a snoozed session rendered a grey strip next to a red "Your Turn" and an hours-long nagging
+/// clock, while the phone correctly showed "Snoozed". The rows below are the ACTUAL diverging sessions from
+/// that measurement. Anything that re-introduces a second READING of these inputs fails here.
 ///
 /// Design: docs/new_architecture/session-state.html
 /// </summary>
@@ -56,6 +71,13 @@ public sealed class DesktopGatewayFoldAgreementTests
         // keeps Workers quiet so they surface to their manager rather than the human; the rail painted it
         // red because it cannot see the role. Phase 2b pushes the role down so the rail reaches this same
         // answer - this test pins what that answer must be.
+        //
+        // NOTE WHAT THIS TEST CANNOT SEE, because it is the whole of defect 5: SessionRole is HAND-SET
+        // below. That is the one field the desktop's real producer (ControlEndpoints.Map) did not carry, so
+        // this test was green while the rail rendered red for this very session. Supplying the missing input
+        // yourself proves the fold, never the pipeline. The pipeline is proved in
+        // DesktopRoleStampWireProofTests, which sets nothing by hand - if you change this test, change that
+        // one, or you are back to trusting an injected value.
         var codex = new SessionDto
         {
             SessionId = "codex",

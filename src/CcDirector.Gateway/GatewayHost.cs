@@ -86,6 +86,13 @@ public sealed class GatewayHost : IAsyncDisposable
     internal Snooze.SnoozeLandingObserver SnoozeLandings { get; }
 
     /// <summary>
+    /// Defect 5: the observer that stamps each session's Gateway-resolved role back DOWN to the Director
+    /// that owns it, so the desktop rail folds the same role the phone and the Cockpit fold. Shared with the
+    /// DirectorHub through the container, like <see cref="SnoozeLandings"/>.
+    /// </summary>
+    internal Fleet.FleetRoleObserver FleetRoles { get; }
+
+    /// <summary>
     /// The durable fleet CONCURRENCY record (how many sessions run at once, and how many are actively
     /// working at once) that the private Gateway dashboard and the agent API read. Fed from the same
     /// assembled /sessions roster as <see cref="InputStats"/>, so it is fleet-wide with no per-Director
@@ -527,6 +534,16 @@ public sealed class GatewayHost : IAsyncDisposable
         // DirectorHub (constructed per-invocation by SignalR) folds every pushed session through this one
         // instance, exactly as it does the input-stats aggregator.
         SnoozeLandings = new Snooze.SnoozeLandingObserver(_snoozeRegistry);
+        // Defect 5: the push seam that stamps each session's resolved role down to its owning Director, so
+        // the desktop stops being the one screen that cannot suppress a Worker's red. Reads the same fresh
+        // fleet snapshot the auto-dismiss sweeper reads (roles need the WHOLE fleet - a controller may be on
+        // another machine) and sends over the same down-channel. Like SnoozeLandings, the DirectorHub
+        // (constructed per-invocation by SignalR) folds every pushed session through this ONE instance -
+        // which matters here more than anywhere: the instance holds the change gate that stops the stamp
+        // echoing back up and re-triggering itself forever.
+        FleetRoles = new Fleet.FleetRoleObserver(
+            () => PushedSessions.SnapshotFresh(AutoDismissStaleAfter),
+            SendCommandAsync);
         // Mission Screen mission (Phase 1b, issue #1405): the mission-WHY store, at a Gateway-side file
         // (CcStorage.Root(), the same location the snooze and cron stores use). Loaded here so a Gateway
         // restart re-serves every WHY. Tests MUST pass an isolated path so they never touch the real store.
@@ -1064,6 +1081,7 @@ public sealed class GatewayHost : IAsyncDisposable
         // Defect 20: the hub lands a deferred snooze's clock through this one observer instance the moment
         // the Director pushes up "the hold landed".
         builder.Services.AddSingleton(SnoozeLandings);
+        builder.Services.AddSingleton(FleetRoles);
         builder.Services.AddSingleton(SessionConcurrency);
         builder.Services.AddSingleton(Registry);
         // launcher-persistent-join: the LauncherHub (constructed per-invocation by SignalR) and

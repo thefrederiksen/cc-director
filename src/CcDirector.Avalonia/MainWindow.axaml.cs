@@ -3210,6 +3210,18 @@ public partial class MainWindow : Window
             var vm = _sessions[i];
             // Stamp the non-color role glyph from the local fleet on every list rebuild (same place
             // the group first/last flags are stamped) so the rail badge tracks controller changes.
+            //
+            // KNOWN GAP, NAMED DELIBERATELY: this is still the DIRECTOR resolving a role locally, and the
+            // mission's own claim is that the Gateway is the only thing that computes a role. Both are
+            // true at once right now, which is the whole problem: the COLOUR fold reads the Gateway's
+            // stamp (Session.GatewayResolvedRole), while this GLYPH reads the Director's local guess, so
+            // one row can show a Gateway-resolved colour beside a Director-resolved badge and they can
+            // disagree. It only sees this Director's own sessions, so a controller on another machine is
+            // invisible to it - exactly the blind spot the down-channel exists to fix.
+            //
+            // Not fixed here because moving the glyph onto the stamp needs an answer to "what shows before
+            // the first stamp arrives", and guessing one is how this mission's defects were built. Raised
+            // by review of pull request 1598; recorded rather than quietly left to read as finished.
             vm.ResolvedRole = _sessionManager.ResolveLocalRole(vm.Session);
             if (!vm.IsGroupMember) { vm.IsGroupFirst = false; vm.IsGroupLast = false; continue; }
             var gid = vm.GroupId;
@@ -3780,15 +3792,22 @@ public partial class MainWindow : Window
         SwitchLeftTab("SourceControl");
     }
 
-    // Per-session status-color subscriptions so the needs-you count updates the instant any
-    // session flips red, not just on the 15s timer. Keyed by VM so we can unsubscribe on remove.
-    private readonly Dictionary<SessionViewModel, Action<string, string, string>> _needsYouHandlers = new();
+    // Per-session subscriptions so the needs-you count updates the instant any session's triage
+    // verdict moves, not just on the 15s timer. Keyed by VM so we can unsubscribe on remove.
+    //
+    // This listens to the VIEW-MODEL's NeedsYou property, NOT to the raw Session.OnStatusColorChanged
+    // event. The count is folded from hold + dictation + activity + overlays, and only ONE of those
+    // raises OnStatusColorChanged - so hooking that event alone left the header stale until the 15s
+    // git timer happened to fire. Snoozing a red session visibly left "1 need you" above a grey
+    // "Snoozed" row for up to fifteen seconds. SessionViewModel raises NeedsYou from every handler
+    // that can move the verdict, so subscribing to the property is what makes the count prompt.
+    private readonly Dictionary<SessionViewModel, global::System.ComponentModel.PropertyChangedEventHandler> _needsYouHandlers = new();
 
     private void OnSessionsCollectionChanged(object? sender, global::System.Collections.Specialized.NotifyCollectionChangedEventArgs e)
     {
         if (e.Action == global::System.Collections.Specialized.NotifyCollectionChangedAction.Reset)
         {
-            foreach (var kv in _needsYouHandlers) kv.Key.Session.OnStatusColorChanged -= kv.Value;
+            foreach (var kv in _needsYouHandlers) kv.Key.PropertyChanged -= kv.Value;
             _needsYouHandlers.Clear();
             foreach (var vm in _sessions) SubscribeNeedsYou(vm);
         }
@@ -3796,7 +3815,7 @@ public partial class MainWindow : Window
         {
             if (e.OldItems != null)
                 foreach (SessionViewModel vm in e.OldItems)
-                    if (_needsYouHandlers.TryGetValue(vm, out var h)) { vm.Session.OnStatusColorChanged -= h; _needsYouHandlers.Remove(vm); }
+                    if (_needsYouHandlers.TryGetValue(vm, out var h)) { vm.PropertyChanged -= h; _needsYouHandlers.Remove(vm); }
             if (e.NewItems != null)
                 foreach (SessionViewModel vm in e.NewItems) SubscribeNeedsYou(vm);
         }
@@ -3808,16 +3827,29 @@ public partial class MainWindow : Window
     private void SubscribeNeedsYou(SessionViewModel vm)
     {
         if (_needsYouHandlers.ContainsKey(vm)) return;
-        Action<string, string, string> h = (_, _, _) => Dispatcher.UIThread.Post(UpdateNeedsYouCount);
+        global::System.ComponentModel.PropertyChangedEventHandler h = (_, args) =>
+        {
+            if (args.PropertyName is not (null or nameof(SessionViewModel.NeedsYou))) return;
+            Dispatcher.UIThread.Post(UpdateNeedsYouCount);
+        };
         _needsYouHandlers[vm] = h;
-        vm.Session.OnStatusColorChanged += h;
+        vm.PropertyChanged += h;
     }
 
-    // Count of sessions that need you (red) shown beside the SESSIONS header, so you get a
-    // top-level "is anything waiting on me?" signal without scanning the list. Hidden at zero.
+    // Count of sessions that need you, shown beside the SESSIONS header, so you get a top-level
+    // "is anything waiting on me?" signal without scanning the list. Hidden at zero.
+    //
+    // Counts the SHARED FOLD's triage verdict (SessionViewModel.NeedsYou -> SessionOrdering.Classify),
+    // which is the same rule the phone's web-push badge counts by (WebPushNeedsYouNotifier) - so the
+    // header and the phone cannot disagree about how many sessions want you.
+    //
+    // This used to count the RAW cooked colour, `s.Session.StatusColor == "red"`, with no hold check,
+    // no role, and no overlays. A snoozed session is still genuinely at a turn end, so its raw colour
+    // stays "red" - which is why a session that rendered a grey dot labelled "Snoozed" was counted
+    // under a header reading "1 need you". Do not reach past the fold to the raw colour again.
     private void UpdateNeedsYouCount()
     {
-        var n = _sessions.Count(s => string.Equals(s.Session.StatusColor, "red", StringComparison.OrdinalIgnoreCase));
+        var n = _sessions.Count(s => s.NeedsYou);
         SessionsNeedYouText.Text = n > 0 ? $"{n} need you" : "";
         SessionsNeedYouText.IsVisible = n > 0;
     }

@@ -37,18 +37,24 @@ public static class SessionOrdering
     /// NEW turn is already running (blue) the stale in-flight brief is irrelevant - raw activity wins.
     /// </summary>
     public static bool IsBriefing(SessionDto s) =>
-        s.BriefingState == "Briefing" && RawActivityColor(s) == "red";
+        s.BriefingState == "Briefing" && IsRawRed(s);
 
     /// <summary>
-    /// True while a user-initiated "I am lost - explain" deep dive runs for the session
-    /// (issue #217). Unlike <see cref="IsBriefing"/> there is NO raw-activity gate: the
-    /// user pressed the button just now, so the orange must show regardless of whether
-    /// the session is working, quiet, or red - suppressing it (the original red-gated
-    /// implementation) left the rail blue while the brief pane said "explaining", the
-    /// exact cross-surface contradiction issue #196 forbids.
+    /// True when the session's RAW activity fact reads red - it is parked at a prompt, waiting on a
+    /// permission, or idle. THE fold-owned answer to "is this session red?", computed from
+    /// <see cref="SessionDto.ActivityState"/> and nothing else.
+    ///
+    /// Public because the Gateway's own enrichment pipeline must ask this question BEFORE the fold runs
+    /// (the voice-mode window stamps <see cref="SessionDto.BriefingState"/> only for a red session). That
+    /// stamp used to gate on the DIRECTOR's cooked <see cref="SessionDto.StatusColor"/>, which made a
+    /// Gateway-rendered colour depend on a Director-made decision - the one thing law 2 forbids. Exposing
+    /// the raw question here is what let that call site stop reading the cooked colour.
+    ///
+    /// Do NOT read this as "cooked red and raw red are the same thing". They are not, and the difference
+    /// is the whole reason this exists - see the note on <see cref="IsVoicePreparing"/>.
     /// </summary>
-    public static bool IsExplaining(SessionDto s) =>
-        s.BriefingState == "Explaining";
+    public static bool IsRawRed(SessionDto s) =>
+        string.Equals(RawActivityColor(s), "red", StringComparison.Ordinal);
 
     /// <summary>
     /// Issue #553: true while a VOICE-MODE waiting session is ACTIVELY generating its spoken summary,
@@ -70,8 +76,16 @@ public static class SessionOrdering
     {
         if (!s.VoiceMode) return false;
         // Issue #1177 (Phase 2): gate on the RAW activity color (from ActivityState), not the Director's
-        // cooked StatusColor. Equivalent today (StatusColor=="red" iff the raw activity is Waiting/Idle).
-        if (RawActivityColor(s) != "red") return false;
+        // cooked StatusColor.
+        //
+        // This comment used to add: "Equivalent today (StatusColor=="red" iff the raw activity is
+        // Waiting/Idle)". THAT IFF IS FALSE, and it was asserted rather than checked. The cooked colour has
+        // a SECOND writer that never goes through the activity mapping at all: TransientErrorAutoResume
+        // (Core/Wingman) writes StatusColor.Red with StatusColorSource.PositiveEvidence when auto-resume
+        // gives up, described in its own comment as "sticky over the detector's plain activity-state
+        // mapping until the user acts". So cooked-red can stand while the raw activity says otherwise.
+        // Raw is the authority here - not because the two agree, but because the fold says raw wins.
+        if (!IsRawRed(s)) return false;
         var state = s.AssessedState ?? s.ActivityState;
         var waiting = string.Equals(state, "WaitingForInput", StringComparison.OrdinalIgnoreCase)
                    || string.Equals(state, "WaitingForPerm", StringComparison.OrdinalIgnoreCase);
@@ -100,7 +114,7 @@ public static class SessionOrdering
     /// above it has been a defect, and each one cost the owner a day.
     ///
     /// Everything below the working check answers a single question: "why is this session NOT
-    /// working?" Grey = parked. Orange = its dictation is in flight, or a deep dive is running.
+    /// working?" Grey = parked. Orange = its dictation is in flight.
     /// Yellow = the wingman is reading the finished turn, or voice is generating. Those are all
     /// states of a session that has STOPPED. A working session has stopped being none of them,
     /// so they cannot apply to it - that is not a policy choice, it is what the words mean.
@@ -120,25 +134,48 @@ public static class SessionOrdering
         // It marks "a dictated utterance is in flight, do not grab this session" - which is only
         // meaningful at a prompt. Mid-turn it is invisible anyway: blue already won above.
         : (s.DictationStatus != null || s.Transcribing || s.IsTranscribing) ? "orange"
-        // The Gateway user-initiated deep dive (issue #217) is orange. It used to be UNGATED, which
-        // let it paint a WORKING session orange - a direct violation of the law, now impossible:
-        // the working check above returns first.
-        : IsExplaining(s) ? "orange"
+        // THERE IS NO "EXPLAINING" ORANGE ARM HERE, AND THERE NEVER WORKED ONE. This used to read
+        // `: IsExplaining(s) ? "orange"`, gated on BriefingState == "Explaining" (issue #217's
+        // user-initiated "I am lost - explain" deep dive). #217's roster orange has never once worked -
+        // it never fired, in any release, because no code path could produce the value it gates on:
+        //   * SessionDto.BriefingState is stamped ONLY from the Director's BriefingState enum
+        //     (ControlEndpoints.ToDto, `s.BriefingState.ToString()`), and that enum declares exactly
+        //     None / Briefing / Briefed / Failed. "Explaining" is not a member, so it is unreachable.
+        //   * The string exists only in the TurnBriefs pane's own response family, and even THERE it is
+        //     dead: the live wiring (GatewayHost, TurnBriefGatewayEndpoints.Map) passes a briefingStateFor
+        //     that returns only "Briefed" or "None", and passes requestExplainAsync: null - so the deep
+        //     dive's request route answers 503 and the state is switched off at the composition root.
+        // Do NOT "restore" this rule. Making it fire is not a bug fix, it is a feature: a request path, a
+        // state producer, and a new value on the wire, with a product decision behind it.
+        //
+        // The Director's LEGACY auto-explain is a SEPARATE, WORKING feature and is untouched: it rides on
+        // the raw fact SessionDto.IsAutoExplaining and folds to YELLOW in ResolveActivity below. Do not
+        // conflate the two - deleting this orange did not delete that yellow.
         : IsBriefing(s) ? "yellow"
         : IsVoicePreparing(s) ? "yellow"
-        // Issue #1177 (Phase 2): the base color is computed from RAW facts (the Gateway is the single
-        // fold and reads the Director's cooked StatusColor for NOTHING).
+        // Issue #1177 (Phase 2): the base color is computed from RAW facts. NO GATEWAY-DECIDED COLOUR READS
+        // THE DIRECTOR'S COOKED StatusColor - as of 2026-07-14 that is true of the pipeline as well as the
+        // fold. It was NOT true before: the Gateway's voice-mode window (GatewayEndpoints, issue #531) gated
+        // its BriefingState = "Briefing" stamp on s.StatusColor == "red", so a yellow rendered on the phone
+        // and the Cockpit depended on a decision the Director made. That was the last Gateway consumer of
+        // the cooked colour and it is now IsRawRed.
+        //
+        // Do NOT read that as "the cooked colour is dead" and delete the Director's colour computation. It
+        // is not, and it is not ours to delete: the cooked field still crosses the wire, the ?statusColor=
+        // query filter still selects on it, and several desktop surfaces still read it. What is now true is
+        // narrower and is the part law 2 cares about - the Gateway decides its colours from raw facts alone.
         : BaseColor(s);
 
     // ===== Issue #1177 (Phase 2): the raw-fact base color (a port of the Director's SessionStatusWingman
-    // ColorFor, computed from the wire's raw facts) =====
+    // ColorFromActivityState, computed from the wire's raw facts). The method named here used to be
+    // "ColorFor", which does not exist and never did - the fifth copy of that wrong name in the codebase. =====
 
     /// <summary>
     /// The base presentation color from raw facts: the activity color with the purple (background),
     /// green (brand-new), and Director auto-explain (yellow) turn-end overlays, plus the slate
-    /// "Supporting" overlay that suppresses a controlled Worker's RED. The briefing and Gateway
-    /// deep-dive overlays are applied by <see cref="EffectiveColor"/> above (they win before this is
-    /// reached), so they are intentionally not repeated here.
+    /// "Supporting" overlay that suppresses a controlled Worker's RED. The briefing overlay is applied
+    /// by <see cref="EffectiveColor"/> above (it wins before this is reached), so it is intentionally
+    /// not repeated here.
     ///
     /// A WORKING session is BLUE, always - nothing outranks working (owner's ruling, 2026-07-14). This
     /// used to open with a slate overlay that returned "supporting" for ANY controlled session that was
@@ -192,17 +229,29 @@ public static class SessionOrdering
     /// The crash arm reads <see cref="SessionDto.Crashed"/>, NOT the activity state: a crash was never
     /// modelled in ActivityState (a crashed session is "Exited" like any other), which is exactly how the
     /// deep red went missing for two releases - this fold reads raw facts, and the crash fact was not on
-    /// the wire to read.</summary>
-    private static string RawActivityColor(SessionDto s) => s.ActivityState switch
+    /// the wire to read.
+    ///
+    /// Case-INSENSITIVE, matching every other reader of <see cref="SessionDto.ActivityState"/> in this
+    /// file (<see cref="IsWorking"/>, <see cref="IsAtTurnEnd"/>, <see cref="IsVoicePreparing"/>, and the
+    /// role rule in <see cref="BaseColor"/>). This used to be a C# constant-pattern switch, which is
+    /// ORDINAL and case-SENSITIVE - so one file compared the same field both ways, six lines apart inside
+    /// <see cref="IsVoicePreparing"/>. It could not fire today: the sole producer of the field
+    /// (the Director's ToDto, `s.ActivityState.ToString()` over the ActivityState enum) emits exact
+    /// PascalCase. This change therefore fixes NO observed bug - it removes a trap. Had a second producer
+    /// ever emitted "waitingforinput", the failure would have been silent and would have eaten a red: the
+    /// turn-end overlays would fire (they are case-insensitive) while this returned "unknown", rendering a
+    /// session that needs the human as "Idle" with no red at all.</summary>
+    private static string RawActivityColor(SessionDto s)
     {
-        "Starting" => "blue",
-        "Working" => "blue",
-        "WaitingForInput" => "red",
-        "WaitingForPerm" => "red",
-        "Idle" => "red",
-        "Exited" => s.Crashed ? "error" : "grey",
-        _ => "unknown",
-    };
+        if (Is(s.ActivityState, "Starting") || Is(s.ActivityState, "Working")) return "blue";
+        if (Is(s.ActivityState, "WaitingForInput") || Is(s.ActivityState, "WaitingForPerm")
+            || Is(s.ActivityState, "Idle")) return "red";
+        if (Is(s.ActivityState, "Exited")) return s.Crashed ? "error" : "grey";
+        return "unknown";
+
+        static bool Is(string? value, string name) =>
+            string.Equals(value, name, StringComparison.OrdinalIgnoreCase);
+    }
 
     /// <summary>True when the session is parked at a turn-end (WaitingForInput / WaitingForPerm), the
     /// gate the Director uses for its purple/green/auto-explain overlays.</summary>
@@ -227,7 +276,9 @@ public static class SessionOrdering
         // "Transcribing" for the legacy flag / the desktop's own dictation.
         if (s.DictationStatus is { } dictationPhase) return dictationPhase;
         if (s.Transcribing || s.IsTranscribing) return "Transcribing";
-        if (IsExplaining(s)) return "Explaining";
+        // No "Explaining" arm: BriefingState can never be "Explaining" - see the tombstone in
+        // EffectiveColor above. The label and the dot are folded from the same inputs in the same
+        // order, so this deletion keeps them in lockstep.
         if (IsBriefing(s)) return "Wingman reading";
         if (IsVoicePreparing(s)) return "Preparing voice";
         return BaseColor(s) switch

@@ -14,7 +14,7 @@ import { useVisiblePolling } from "@devthrottle/client-core/polling/useVisiblePo
 import { useNow } from "@devthrottle/client-core/polling/useNow";
 import { isSettingsDirty, prettyPrintSettings } from "@devthrottle/client-core/fleet/settingsEditor";
 import { ConfirmDialog } from "../components";
-import { clockLabel, humanizeState, portLabel, relativeTime, repoBasename, uptime } from "./format";
+import { clockLabel, portLabel, relativeTime, repoBasename, uptime } from "./format";
 
 // The standalone Director page (issue #975) - the React port of the Blazor DirectorDetail.razor:
 // registration facts, health, the Director's live sessions, and the repositories it offers for new
@@ -24,6 +24,35 @@ import { clockLabel, humanizeState, portLabel, relativeTime, repoBasename, uptim
 // Gateway (client-core), never a Director address.
 const POLL_MS = 5000;
 const REPO_EVERY_TICKS = 6; // the repo list proxies to the Director itself - slower, every 30s.
+
+// Everything the Sessions table's row shows about a session's state, derived in ONE place from ONE
+// source: the Gateway's stamped fold. Pure and exported so the row's rule is testable without a DOM -
+// the row below renders exactly this and adds nothing of its own.
+//
+// This row used to carry THREE authorities: a Gateway-stamped dot, a State cell re-derived from raw
+// activity fields (humanizeState), and a SNOOZED tag read off the raw onHold boolean. A snoozed
+// session that woke up and started working therefore drew a BLUE dot beside the word SNOOZED, and a
+// State cell that agreed with neither. All three now come from the same fold, so they cannot
+// disagree - and it fails loudly (stateLabel / effectiveColor throw) when the Gateway did not stamp,
+// rather than guessing a colour or a word.
+export function directorSessionRow(s: SessionDto): {
+  dot: string;
+  state: string;
+  snoozed: boolean;
+  briefing: boolean;
+} {
+  const label = stateLabel(s);
+  return {
+    dot: dotColor(effectiveColor(s)),
+    state: label,
+    // "Snoozed" and "Wingman reading" are the fold's OWN words (SessionOrdering.StateLabel), so asking
+    // the label is asking the fold. Never re-read s.onHold here: that is a raw sensor fact the fold
+    // has already considered, and consulting it again is how the blue-dot-labelled-SNOOZED row
+    // happened.
+    snoozed: label === "Snoozed",
+    briefing: label === "Wingman reading",
+  };
+}
 
 export function DirectorDetailView() {
   const { directorId = "" } = useParams();
@@ -177,22 +206,26 @@ export function DirectorDetailView() {
                       // Issue #1177 (Phase 2.3): render the Gateway's fold, not a local re-derive from the
                       // raw statusColor. "Wingman reading" is the Gateway's label for a briefing/auto-explain
                       // read in flight (SessionOrdering.StateLabel), which is exactly when this sub-line shows.
-                      const briefing = stateLabel(s) === "Wingman reading";
+                      const row = directorSessionRow(s);
                       return (
                         <tr key={sid} className="dtbl-rowlink" title="Session details"
                             onClick={() => navigate(`/session/${encodeURIComponent(sid)}`)}>
                           <td>
-                            <span className="dcell-dot" style={{ background: dotColor(effectiveColor(s)) }} title={s.lastStatusReason ?? undefined} />
+                            <span className="dcell-dot" style={{ background: row.dot }} title={s.lastStatusReason ?? undefined} />
                             <span className="dcell-name">{(s.name ?? "").trim().length === 0 ? repoBasename(s.repoPath) : s.name}</span>
-                            {s.onHold && <span className="dtag dtag-hold">SNOOZED</span>}
-                            {briefing ? (
+                            {row.snoozed && <span className="dtag dtag-hold">SNOOZED</span>}
+                            {row.briefing ? (
                               <div className="dcell-sub dcell-briefing">wingman reading...</div>
                             ) : (s.railLine ?? "").trim().length > 0 ? (
                               <div className="dcell-sub">{s.railLine}</div>
                             ) : null}
                           </td>
                           <td className="dcell-ellipsis" title={s.repoPath ?? undefined}>{repoBasename(s.repoPath)}</td>
-                          <td className="ddim">{humanizeState(s.assessedState ?? s.activityState)}</td>
+                          {/* The Gateway's stamped label - the SAME fold that produced the dot two cells
+                              left, so the two cannot disagree. This used to be
+                              humanizeState(s.assessedState ?? s.activityState): a local re-derive from raw
+                              sensor fields, which made this one row carry two authorities. */}
+                          <td className="ddim">{row.state}</td>
                           <td className="ddim" title={s.lastActivityAt ?? undefined}>{relativeTime(s.lastActivityAt, { withAgo: true, now })}</td>
                           <td>
                             <Link className="ddet-link" to={`/session/${encodeURIComponent(sid)}`} onClick={(e) => e.stopPropagation()}>drive &rarr;</Link>

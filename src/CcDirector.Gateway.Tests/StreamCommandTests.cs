@@ -189,7 +189,7 @@ public sealed class StreamCommandTests : IAsyncLifetime
         // The spy sits ONLY on the stream down-channel. A count of 1 proves the endpoint delivered the
         // prompt over the stream; an HTTP fallback would have gone straight to the Director's own endpoint
         // and never touched this dispatcher.
-        Assert.Equal(1, spy.Count);
+        Assert.Equal(1, spy.CountOf("prompt"));
     }
 
     [Fact]
@@ -239,7 +239,7 @@ public sealed class StreamCommandTests : IAsyncLifetime
 
         Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
         Assert.Contains((byte)0x03, BufferRaw(session));
-        Assert.Equal(1, spy.Count); // delivered over the stream, not the Director's HTTP endpoint
+        Assert.Equal(1, spy.CountOf("interrupt")); // delivered over the stream, not the Director's HTTP endpoint
     }
 
     [Fact]
@@ -255,7 +255,7 @@ public sealed class StreamCommandTests : IAsyncLifetime
 
         Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
         Assert.Contains((byte)0x1B, BufferRaw(session));
-        Assert.Equal(1, spy.Count);
+        Assert.Equal(1, spy.CountOf("escape"));
     }
 
     [Fact]
@@ -316,7 +316,7 @@ public sealed class StreamCommandTests : IAsyncLifetime
         Assert.NotNull(body);
         Assert.True(body.OnHold);
         Assert.True(session.OnHold);
-        Assert.Equal(1, spy.Count);
+        Assert.Equal(1, spy.CountOf("hold"));
     }
 
     [Fact]
@@ -333,7 +333,7 @@ public sealed class StreamCommandTests : IAsyncLifetime
 
         Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
         Assert.Null(_directorSessions.GetSession(id)); // removed over the stream
-        Assert.Equal(1, spy.Count);
+        Assert.Equal(1, spy.CountOf("kill"));
     }
 
     [Fact]
@@ -378,7 +378,7 @@ public sealed class StreamCommandTests : IAsyncLifetime
         Assert.Equal("Endpoint-Rename", body.Name);       // the returned DTO carries the new name
         Assert.Equal(DirectorId, body.DirectorId);         // the Gateway stamped the DirectorId
         Assert.Equal("Endpoint-Rename", session.CustomName); // and it actually took effect on the Director
-        Assert.Equal(1, spy.Count);                        // delivered over the stream, not HTTP
+        Assert.Equal(1, spy.CountOf("patch"));               // delivered over the stream, not HTTP
     }
 
     [Fact]
@@ -454,7 +454,7 @@ public sealed class StreamCommandTests : IAsyncLifetime
         var text = await resp.Content.ReadAsStringAsync();
         Assert.Contains("endpoint-goal", text);
         Assert.Equal("endpoint-goal", session.WingmanGoal); // took effect on the Director
-        Assert.Equal(1, spy.Count);                          // delivered over the stream, not HTTP
+        Assert.Equal(1, spy.CountOf("wingman-goal"));        // delivered over the stream, not HTTP
     }
 
     [Fact]
@@ -528,7 +528,7 @@ public sealed class StreamCommandTests : IAsyncLifetime
         Assert.NotNull(body);
         Assert.True(body.Accepted);
         Assert.Contains("portless-stream", BufferText(session)); // took effect on the Director
-        Assert.Equal(1, spy.Count); // located from the pushed cache + delivered over the stream, zero HTTP
+        Assert.Equal(1, spy.CountOf("prompt")); // located from the pushed cache + delivered over the stream, zero HTTP
     }
 
     [Fact]
@@ -560,7 +560,7 @@ public sealed class StreamCommandTests : IAsyncLifetime
         Assert.NotNull(body);
         Assert.True(body.OnHold);
         Assert.True(session.OnHold);
-        Assert.Equal(1, spy.Count);
+        Assert.Equal(1, spy.CountOf("hold"));
     }
 
     [Fact]
@@ -616,7 +616,7 @@ public sealed class StreamCommandTests : IAsyncLifetime
         Assert.NotNull(dto);
         Assert.Equal("Architect", dto.ExplicitRole);      // the returned DTO carries the normalized role
         Assert.Equal("Architect", session.ExplicitRole);  // and it took effect on the Director
-        Assert.Equal(1, spy.Count);                        // delivered over the stream, not the HTTP endpoint
+        Assert.Equal(1, spy.CountOf("set-role"));          // delivered over the stream, not the HTTP endpoint
     }
 
     [Fact]
@@ -672,7 +672,7 @@ public sealed class StreamCommandTests : IAsyncLifetime
         Assert.Equal("RawCli", body.Agent);
         Assert.Equal("stream-create-test", body.Name);
         Assert.Equal(DirectorId, body.DirectorId);
-        Assert.Equal(1, spy.Count); // created over the stream, not the Director's HTTP endpoint
+        Assert.Equal(1, spy.CountOf("create")); // created over the stream, not the Director's HTTP endpoint
 
         // A real session now exists on the Director.
         Assert.Equal(before + 1, _directorSessions.ListSessions().Count);
@@ -831,16 +831,34 @@ public sealed class StreamCommandTests : IAsyncLifetime
     }
 
     // A dispatcher that counts how many commands the stream delivered, then runs the real shared executor.
+    /// <summary>
+    /// Records every command the Director received off the stream, BY VERB.
+    ///
+    /// It used to expose only a total <c>Count</c>, and each test asserted <c>Assert.Equal(1, spy.Count)</c>
+    /// to mean "this went down the STREAM, not the Director's HTTP endpoint" (their comments say exactly
+    /// that). The contract was right; the total was a weak proxy for it that happened to equal 1 only
+    /// because the protocol had exactly one command in flight at a time. Defect 5's FleetRoleObserver sends a
+    /// legitimate <c>set-resolved-role</c> down the same stream, so the proxy broke - the tests were
+    /// detecting their own shortcut expiring, not a defect.
+    ///
+    /// Counting totals was also a RACE, before defect 5 and worse after: the role stamp is fire-and-forget,
+    /// so a total is 1 or 2 depending on timing. <see cref="CountOf"/> removes the race AND states the real
+    /// claim - "the PROMPT went down the stream", not "some command did", which is strictly stronger and is
+    /// what the comments always said. This repo already carries one undiagnosed flaky test; it is not
+    /// getting a second.
+    /// </summary>
     private sealed class CountingDispatcher
     {
         private readonly SessionManager _sessions;
-        private int _count;
+        private readonly System.Collections.Concurrent.ConcurrentBag<string> _verbs = new();
         public CountingDispatcher(SessionManager sessions) => _sessions = sessions;
-        public int Count => _count;
+
+        /// <summary>How many commands with this exact verb the Director received off the stream.</summary>
+        public int CountOf(string verb) => _verbs.Count(v => string.Equals(v, verb, StringComparison.Ordinal));
 
         public Task<DirectorCommandResult> DispatchAsync(DirectorCommand command)
         {
-            Interlocked.Increment(ref _count);
+            _verbs.Add(command.Verb);
             return SessionCommandExecutor.DispatchAsync(_sessions, DirectorId, command);
         }
     }

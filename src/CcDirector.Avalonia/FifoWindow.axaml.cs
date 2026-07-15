@@ -42,10 +42,15 @@ namespace CcDirector.Avalonia;
 /// </summary>
 public partial class FifoWindow : Window
 {
-    private const string Green = "#5FD08A";
-    private const string Blue = "#2B6CB0";
-    private const string Yellow = "#DCDCAA";
-    private const string Red = "#F44747";
+    // The status-line colours, through the ONE palette (StatusPalette) rather than a fifth private
+    // copy. These style the status TEXT ("All caught up", "Snooze failed - ...") rather than a
+    // session dot, but they carried the same colour NAMES at different hexes - green was #5FD08A
+    // here and #22C55E on the rail, red was #F44747 here and #EF4444 there - which is precisely what
+    // "five palettes for the same colour names" meant. One name, one hex, everywhere.
+    private const string Green = StatusPalette.Green;
+    private const string Blue = StatusPalette.Blue;
+    private const string Yellow = StatusPalette.Yellow;
+    private const string Red = StatusPalette.Red;
 
     // Read-only briefing prompt for the right pane: the wingman summarizes the session
     // from its terminal, the same read-only path "Ask Wingman" uses. Shared with the
@@ -118,6 +123,19 @@ public partial class FifoWindow : Window
         SetCurrent(next, queue.Count(s => !_pass.Contains(s.Id)));
     }
 
+    // KNOWN GAP, NAMED DELIBERATELY: this reads the Director's RAW StatusColor and is therefore a second
+    // place the desktop decides state for itself, outside the shared fold (SessionOrdering.EffectiveColor)
+    // that the rail, the phone and the Cockpit now all run. It predates the fold and was not migrated with
+    // the rail.
+    //
+    // What it costs today: a controlled worker whose red the fold would suppress to "supporting" is still
+    // queued here as needs-you, and any other non-hold overlay the fold applies is ignored. So the FIFO
+    // queue can hand you a session the rail is not calling red - the same disagreement this mission exists
+    // to end, one window over.
+    //
+    // Not fixed here because this slice is already 64 files and the fold takes a SessionDto (it folds
+    // ControlEndpoints.Map(session)), so moving this over is a real change to the queue's shape, not a
+    // one-line swap. Raised by review of pull request 1598; recorded rather than left to read as covered.
     private List<Session> BuildQueue() =>
         _sm.ListSessions()
             .Where(s => s.StatusColor == "red"

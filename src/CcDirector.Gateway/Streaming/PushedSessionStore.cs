@@ -117,7 +117,10 @@ public sealed class PushedSessionStore
             foreach (var s in sessions)
             {
                 if (!string.IsNullOrEmpty(s.SessionId))
+                {
+                    DiscardInboundRole(s);
                     entry.Sessions[s.SessionId] = s;
+                }
             }
             entry.LastSequence = sequence;
             entry.ReceivedAtUtc = _utcNow();
@@ -141,12 +144,34 @@ public sealed class PushedSessionStore
             if (!IsAcceptable(entry, directorId, connectionId, sequence, "delta"))
                 return false;
 
+            DiscardInboundRole(session);
             entry.Sessions[session.SessionId] = session;
             entry.LastSequence = sequence;
             entry.ReceivedAtUtc = _utcNow();
         }
         return true;
     }
+
+    /// <summary>
+    /// Defect 5 - THE INGEST DISCARD. A Director's pushed session carries whatever
+    /// <see cref="SessionDto.SessionRole"/> the Gateway last stamped down onto it (the Director echoes the
+    /// role back up on its next delta, because it reports its whole session through one mapper). That echo
+    /// is NOT an authority and must never be mistaken for one, so it dies here, at the boundary, before it
+    /// can be read by anything.
+    ///
+    /// WHY THIS IS NOT BELT-AND-BRACES. Without it, "the Gateway is the only thing that computes the role"
+    /// is true only by luck of statement ordering - it holds today purely because
+    /// <see cref="Fleet.FleetRoleResolver.Stamp"/> assigns on every branch, so the echoed value happens to
+    /// be overwritten before anything reads it. That is an accident, not a design. The moment someone adds
+    /// a <c>?? s.SessionRole</c> to "preserve" a role the resolver could not determine, a Director's stale
+    /// echo becomes the answer, and the whole defect class re-opens - silently, because the value will look
+    /// correct almost always. Nulling it here makes the guarantee structural: a role that was not computed
+    /// by this Gateway, on this pass, does not exist.
+    ///
+    /// Note the read paths that skip the fleet pass (the Exes page, GET /sessions/{sid}) now correctly
+    /// report null rather than a stale echo - null means "nobody has resolved this", which is the truth.
+    /// </summary>
+    private static void DiscardInboundRole(SessionDto session) => session.SessionRole = null;
 
     /// <summary>Apply a remove/tombstone: drop one session from the Director's set.</summary>
     /// <returns>true if applied; false if rejected.</returns>

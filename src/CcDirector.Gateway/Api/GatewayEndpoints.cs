@@ -219,8 +219,10 @@ internal static class GatewayEndpoints
         // pending drafts remotely). Step 1 of centralizing the comm queue on the Gateway.
         CommQueueEndpoints.Map(app);
 
-        // Local-machine exe/slot management (the "Exes" page).
-        ExesEndpoints.Map(app, registry, pushedSessions, streamStaleResolved);
+        // Local-machine exe/slot management (the "Exes" page). Defect 6: it gets the snooze registry so its
+        // fleet pass applies the SAME expired-snooze override the roster applies - without it the page says
+        // "Snoozed" while the roster says "Needs you".
+        ExesEndpoints.Map(app, registry, pushedSessions, streamStaleResolved, snoozeRegistry);
 
         // ===== HTML pages =====
         // The Gateway serves NO UI pages anymore (docs/plans/one-url-cockpit.md): "/" and every
@@ -561,6 +563,16 @@ internal static class GatewayEndpoints
             }).ToList();
 
             var all = new List<SessionDto>();
+            // Defect 13: the UNFILTERED fleet - the role universe. `all` is the filtered response set and is
+            // drawn from these same instances, which is what lets one role pass serve both.
+            //
+            // KNOWN LIMITATION, deliberately not fixed here: this universe is already scoped by the
+            // `machine=` filter applied to the Director list at the top of this handler, so a Worker on
+            // MACHINE_A whose Manager runs on MACHINE_B still gets its red un-suppressed by
+            // `?machine=MACHINE_A`. Reordering cannot fix that one - the other Director is never read at all -
+            // and fixing it means pulling every Director on every filtered read, which is a cost change that
+            // needs its own decision. Recorded in docs/new_architecture/session-state.html.
+            var fleet = new List<SessionDto>();
             var machineErrors = new List<MachineErrorDto>();
             var reachability = new List<DirectorReachabilityDto>();
 
@@ -672,6 +684,17 @@ internal static class GatewayEndpoints
                 var gatewayBaseUrl = DeriveGatewayBaseUrl(ctx);
                 foreach (var s in sessions)
                 {
+                    // Defect 13: the ROLE UNIVERSE is the UNFILTERED fleet, and it is collected HERE -
+                    // before the filters below get a vote. A session the caller filtered out still exists,
+                    // and still keeps its worker's red suppressed. See StampFleetRolesAndFold.
+                    //
+                    // The filters deliberately stay where they are rather than moving below the fold. Moving
+                    // them would silently widen four unrelated things that read the FILTERED set today:
+                    // owners?.Remember (ownership records), inputStats?.ObserveSnapshot, concurrency?.Observe
+                    // and sessionNumbers.Adopt. Those are second-order effects of a "simple" reorder and none
+                    // of them is part of this defect.
+                    fleet.Add(s);
+
                     if (!string.IsNullOrEmpty(agent) && !string.Equals(s.Agent, agent, StringComparison.OrdinalIgnoreCase))
                         continue;
                     if (!string.IsNullOrEmpty(state) && !string.Equals(s.ActivityState, state, StringComparison.OrdinalIgnoreCase))
@@ -713,9 +736,24 @@ internal static class GatewayEndpoints
                     // session's spoken summary, present it through the yellow "wingman reading" window
                     // (red -> yellow -> red). Gated on raw red so a working (blue) session is
                     // untouched. Independent of any brief agent; never spawns a --print explain.
+                    //
+                    // "Gated on raw red" is what this comment ALWAYS said. The code did not do it: it gated
+                    // on s.StatusColor - the DIRECTOR's cooked colour - so a colour rendered on the phone and
+                    // the Cockpit depended on a decision the Director made. That is precisely what law 2
+                    // forbids (the Gateway is the only thing that picks a colour), and it was the last
+                    // Gateway consumer of the cooked field. The comment described the intended design and the
+                    // code never matched it; now it does.
+                    //
+                    // Safe BY CONSTRUCTION, not by an equivalence claim: the fold that CONSUMES this stamp
+                    // (SessionOrdering.IsBriefing) is `BriefingState == "Briefing" && IsRawRed(s)` - it
+                    // ALREADY requires raw red. So the rendered yellow's condition was (cooked red AND raw
+                    // red) and is now (raw red AND raw red). The cooked gate was redundant with respect to
+                    // every painted pixel. Where the two disagree, raw is the authority - and they DO
+                    // disagree: TransientErrorAutoResume writes a sticky cooked red that never goes through
+                    // the activity mapping at all.
                     if (voiceGeneratingFor is not null
                         && (s.BriefingState is null or "None" or "Briefed")
-                        && string.Equals(s.StatusColor, "red", StringComparison.OrdinalIgnoreCase)
+                        && SessionOrdering.IsRawRed(s)
                         && voiceGeneratingFor(s.SessionId))
                     {
                         s.BriefingState = "Briefing";
@@ -762,8 +800,9 @@ internal static class GatewayEndpoints
 
             // The whole fleet is now assembled: compute each session's automatic role from the roster and
             // stamp the presentation fold (which reads the role to suppress a live Worker's red toward the
-            // human). Done here, once, because the role needs the full fleet view.
-            StampFleetRolesAndFold(all, needsYouStampFor, snoozeRegistry);
+            // human). Done here, once, because the role needs the full fleet view - the UNFILTERED one
+            // (`fleet`), not the response set (`all`). See defect 13 in StampFleetRolesAndFold.
+            StampFleetRolesAndFold(fleet, all, needsYouStampFor, snoozeRegistry);
 
             // DevThrottle Stats: fold the assembled roster's per-session input tallies into the always-
             // available aggregate that backs "Your Throttle". This is the ONE path that carries
@@ -1001,15 +1040,41 @@ internal static class GatewayEndpoints
 
         app.MapGet("/sessions/{sid}", async (HttpContext ctx, string sid) =>
         {
-            var (director, session) = await LocateSessionAsync(registry, sid, pushedSessions, streamStaleResolved, owners);
-            if (session is null || director is null)
+            // LocateSessionAsync resolves the OWNING DIRECTOR (and refreshes the ownership record). It also
+            // hands back a session copy, which we deliberately drop: that copy is not part of the role
+            // universe assembled below, and stamping an instance the role pass never walked would leave
+            // SessionRole null and fold a colour from it. We take our instance from the fleet instead.
+            var (director, _) = await LocateSessionAsync(registry, sid, pushedSessions, streamStaleResolved, owners);
+            if (director is null)
                 return Results.NotFound(new { error = "session not found across any director" });
+
+            // Defect 15: this route returned EffectiveColor / StateLabel / TriageBucket as NULL and left the
+            // expired-snooze override unapplied, because it never ran the fold - StampFleetRolesAndFold was
+            // private to the roster handler and this route just serialized the raw cached DTO. SessionDto
+            // documents all three as "Required on Gateway /sessions responses", and this route violated it.
+            //
+            // HONEST SCOPE: that is a verified CODE fact, not an observed symptom. No shipped client fetches
+            // this route - the Cockpit and the phone read the roster and go through client-core, which throws
+            // if the fields are missing, and neither app calls this. The fix is justified by the contract the
+            // DTO documents, not by a user-visible bug, and no such bug is claimed.
+            var byDirector = FleetByDirector(registry, pushedSessions, streamStaleResolved);
+            var fleet = byDirector.Values.SelectMany(x => x).ToList();
+            var session = fleet.FirstOrDefault(x => string.Equals(x.SessionId, sid, StringComparison.Ordinal));
+            if (session is null)
+                return Results.NotFound(new { error = "session not found across any director" });
+
             var baseUrl = DeriveDirectorBaseUrl(ctx, director);
             session.DirectorId = director.DirectorId;
             session.MachineName = director.MachineName;
             session.User = director.User;
             session.TailnetEndpoint = baseUrl;
             session.ViewUrl = $"{baseUrl}/sessions/{session.SessionId}/view?gw={Uri.EscapeDataString(DeriveGatewayBaseUrl(ctx))}";
+
+            // needsYouStampFor is deliberately NOT passed: the needs-you clock has entry/exit semantics and
+            // is driven by the roster read. Letting a by-id read stamp it would drive that clock out of band
+            // and corrupt the roster's own waiting times. NeedsYouSince stays unstamped here, exactly as
+            // before - this fix does not claim it.
+            StampFleetRolesAndFold(fleet, new[] { session }, needsYouStampFor: null, snoozeRegistry: snoozeRegistry);
             return Results.Json(session);
         });
 
@@ -2407,8 +2472,65 @@ internal static class GatewayEndpoints
         ParentMissionId = m.ParentMissionId,
     };
 
-    private static void StampFleetRolesAndFold(List<SessionDto> all, Func<string, bool, DateTime?>? needsYouStampFor, Snooze.SnoozeRegistry? snoozeRegistry = null)
+    /// <summary>
+    /// The ROLE UNIVERSE for a fold that runs OUTSIDE the /sessions roster loop: every tunnel-connected
+    /// Director's pushed roster, grouped by Director.
+    ///
+    /// The roster handler builds its universe inline as it walks the Directors it already pulled. The two
+    /// other folding routes (/exes/list and GET /sessions/{sid}) have no such loop, and both need the whole
+    /// fleet for the same reason: a session's role depends on whether its controller is alive, and the
+    /// controller may live on a Director this route was never otherwise interested in. /exes/list is the
+    /// sharp case - it is a LOCAL-MACHINE page, but a local Worker's Manager can be on another machine
+    /// entirely, so the universe is deliberately the whole fleet and not the local Directors.
+    ///
+    /// Returns copies (the push store hands out deep copies), so stamping the result never writes through
+    /// to the cache.
+    /// </summary>
+    internal static Dictionary<string, IReadOnlyList<SessionDto>> FleetByDirector(
+        DirectorRegistry registry, Streaming.PushedSessionStore? pushedSessions, TimeSpan streamStale)
     {
+        var byDirector = new Dictionary<string, IReadOnlyList<SessionDto>>(StringComparer.Ordinal);
+        if (pushedSessions is null) return byDirector;
+        foreach (var d in registry.ListDirectors())
+        {
+            var cached = pushedSessions.TryGetFresh(d.DirectorId, streamStale);
+            if (cached is not null) byDirector[d.DirectorId] = cached;
+        }
+        return byDirector;
+    }
+
+    /// <summary>
+    /// THE fold. Resolve every session's role from the WHOLE fleet, then stamp the presentation fold
+    /// (EffectiveColor / StateLabel / TriageBucket / NeedsYouSince) onto the response set.
+    ///
+    /// TWO LISTS, AND THE DIFFERENCE IS THE WHOLE POINT (defect 13). <paramref name="roleUniverse"/> is the
+    /// UNFILTERED fleet - every session the Gateway can see. <paramref name="toStamp"/> is only what this
+    /// response will return. They differ whenever a caller filters, and the role MUST be resolved from the
+    /// universe: "is my controller alive?" is a question about sessions the caller may have filtered out.
+    /// Resolving it from the filtered set let `?statusColor=red` drop a WORKING controller out of the
+    /// liveness set, reclassify its Worker as Standalone, and un-suppress a red the human should never have
+    /// been shown - a worker nagging the human because of a query parameter.
+    ///
+    /// <paramref name="toStamp"/> entries must APPEAR IN <paramref name="roleUniverse"/> (matched by session
+    /// id); references or copies both work, and one that is absent fails loud. This used to require by-
+    /// REFERENCE entries, with a copy silently yielding a null SessionRole - see the note at the
+    /// FleetRoleResolver.Stamp call below for why that requirement was removed rather than documented.
+    ///
+    /// INTERNAL, not private, and called by exactly three routes - the roster, /exes/list and
+    /// GET /sessions/{sid}. Those three used to fold independently (or not at all), which is how they came
+    /// to disagree; there is one implementation because there must only ever be one answer.
+    /// </summary>
+    internal static void StampFleetRolesAndFold(
+        List<SessionDto> roleUniverse,
+        IReadOnlyList<SessionDto> toStamp,
+        Func<string, bool, DateTime?>? needsYouStampFor = null,
+        Snooze.SnoozeRegistry? snoozeRegistry = null)
+    {
+        if (roleUniverse is null) throw new ArgumentNullException(nameof(roleUniverse));
+        if (toStamp is null) throw new ArgumentNullException(nameof(toStamp));
+
+        var all = toStamp;
+
         // Snooze Length mission: an EXPIRED snooze must read as "needs you" again. The registry is the
         // source of truth for the timer; the cleanest fold (issue #1177 keeps the Gateway the single
         // fold, decision #6) is to override OnHold=false on this aggregated DTO copy BEFORE the color /
@@ -2429,33 +2551,25 @@ internal static class GatewayEndpoints
                     s.SnoozeExpired = true;
                 }
 
-        var liveIds = new HashSet<string>(StringComparer.Ordinal);
-        var controllersWithLiveChild = new HashSet<string>(StringComparer.Ordinal);
-        foreach (var s in all)
-        {
-            var alive = !string.Equals(s.ActivityState, "Exited", StringComparison.OrdinalIgnoreCase);
-            if (alive && !string.IsNullOrEmpty(s.SessionId))
-                liveIds.Add(s.SessionId);
-            if (alive && s.IsControlled && !string.IsNullOrEmpty(s.ControllerSessionId))
-                controllersWithLiveChild.Add(s.ControllerSessionId);
-        }
+        // Defect 5: the role resolution moved to Fleet.FleetRoleResolver so this roster read and the
+        // FleetRoleObserver (which pushes the role down to the owning Director's desktop) share ONE
+        // implementation. Two copies would be two authorities, and when they drifted the desktop and the
+        // phone would disagree again - which IS defect 5. Behaviour here is unchanged: every branch still
+        // assigns, so an inbound role never survives this pass.
+        //
+        // Defect 13: resolved across the ROLE UNIVERSE, never the filtered response set.
+        //
+        // This passes BOTH lists, so the resolver stamps toStamp by SESSION ID rather than relying on its
+        // entries being the same OBJECTS as the universe's. That by-reference requirement used to be a
+        // comment on this method, and a comment is exactly the wrong place for it: an equal-but-copied DTO
+        // satisfied the type system, returned a null SessionRole, and folded from it SILENTLY - this
+        // mission's own defect shape (a consumer reading a value production never put there), pre-loaded for
+        // the next caller. The overload makes it structurally impossible instead: references or copies both
+        // work, and a session absent from the universe fails loud.
+        Fleet.FleetRoleResolver.Stamp(roleUniverse, all);
 
         foreach (var s in all)
         {
-            // Resolution precedence (chunk 2.5): an EXPLICIT role wins (sticky - auto-derivation never
-            // overwrites it), and is the only way to be an Architect. Else Worker (controlled + controller
-            // alive), else Manager (controls a live session - and it is a non-worker, non-architect here
-            // because both of those were already resolved above), else Standalone.
-            var explicitRole = SessionRoles.Normalize(s.ExplicitRole);
-            if (explicitRole is not null)
-                s.SessionRole = explicitRole;
-            else if (s.IsControlled && !string.IsNullOrEmpty(s.ControllerSessionId) && liveIds.Contains(s.ControllerSessionId))
-                s.SessionRole = SessionRoles.Worker;
-            else if (!string.IsNullOrEmpty(s.SessionId) && controllersWithLiveChild.Contains(s.SessionId))
-                s.SessionRole = SessionRoles.Manager;
-            else
-                s.SessionRole = SessionRoles.Standalone;
-
             var effectiveColor = SessionOrdering.EffectiveColor(s);
             s.EffectiveColor = effectiveColor;
             s.StateLabel = SessionOrdering.StateLabel(s);

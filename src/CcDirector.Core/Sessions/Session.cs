@@ -176,6 +176,59 @@ public sealed class Session : IDisposable
     /// </summary>
     public string? ExplicitRole { get; internal set; }
 
+    /// <summary>
+    /// Defect 5: the RESOLVED role, as computed by the GATEWAY from the whole fleet and stamped down onto
+    /// this Director over the tunnel. Null until a Gateway has said otherwise.
+    ///
+    /// THE DIRECTOR CARRIES THIS; IT NEVER COMPUTES IT. This is a Gateway-owned fact being cached so the
+    /// desktop rail can fold the SAME role the phone and the Cockpit fold - nothing more. "Is this session's
+    /// controller still alive?" is unanswerable from one Director (the controller may be a session on
+    /// another machine), which is why the answer must arrive rather than be derived. Written ONLY by the
+    /// <c>set-resolved-role</c> verb; read back out by <c>ControlEndpoints.Map</c> onto
+    /// <c>SessionDto.SessionRole</c>.
+    ///
+    /// DO NOT assign this from <c>SessionManager.ResolveLocalRole</c>. That resolver sees only the local
+    /// roster, so it is wrong for exactly the cross-machine case this field exists to serve, and wiring it
+    /// in would make the Director decide a colour input - which law 2 forbids and which re-opens the whole
+    /// defect class. It is deliberately NOT persisted: a restarted Director has no business remembering a
+    /// fact it never owned, and the Gateway re-stamps within one push of reconnecting.
+    /// (docs/new_architecture/session-state.html, defect 5.)
+    /// </summary>
+    public string? GatewayResolvedRole { get; private set; }
+
+    /// <summary>
+    /// Store the role the Gateway resolved for this session (defect 5). A null/blank value clears the stamp
+    /// back to "no answer". This ONLY stores - it does not validate, adjust, or derive: the Gateway is the
+    /// authority and this is the cache.
+    /// </summary>
+    public void SetGatewayResolvedRole(string? role)
+    {
+        var normalized = string.IsNullOrWhiteSpace(role) ? null : role.Trim();
+        if (string.Equals(GatewayResolvedRole, normalized, StringComparison.Ordinal)) return;
+        FileLog.Write($"[Session] SetGatewayResolvedRole: session={Id}, role={normalized ?? "(cleared)"}");
+        GatewayResolvedRole = normalized;
+        // Fires only on a real change (the equality guard above returns first otherwise), so the Gateway
+        // re-stamping the same role every sweep does not churn the rail.
+        try { OnGatewayResolvedRoleChanged?.Invoke(normalized); }
+        catch (Exception ex) { FileLog.Write($"[Session] {Id} OnGatewayResolvedRoleChanged handler threw: {ex.Message}"); }
+    }
+
+    /// <summary>
+    /// Raised when <see cref="GatewayResolvedRole"/> changes, so a view can re-read the fold. Carries the
+    /// new value.
+    ///
+    /// WITHOUT THIS THE WHOLE DEFECT 5 DELIVERABLE DOES NOT WORK, and it shipped without it. The role
+    /// reaches the Director and the fold reads it correctly - but the desktop rail is only told to re-read
+    /// on activity, status, hold, dictation, number and pending-deletion changes. A role arriving is none
+    /// of those, so a controlled Worker stayed visibly RED and counted in "needs you" until some unrelated
+    /// event happened to fire, which is the exact disagreement this was built to end. The mapper tests
+    /// passed throughout: they read the fold, and reading is not rendering.
+    ///
+    /// Same shape as <see cref="OnPendingDeletionChanged"/>, added one commit earlier in this same mission
+    /// for the same reason - a new fact with no signal is invisible. Report what changed; decide nothing.
+    /// </summary>
+    public event Action<string?>? OnGatewayResolvedRoleChanged;
+
     /// <summary>Set (or clear, on a null/blank value) this session's sticky explicit role. The value is
     /// validated against the role set by the caller; this only stores it.</summary>
     public void SetExplicitRole(string? role)
@@ -299,8 +352,11 @@ public sealed class Session : IDisposable
     /// IsBrandNew guard in <c>TerminalStateDetector</c>, which suppresses the byte->Working flip
     /// while the startup splash is painting, so the session stays parked at its prompt from the
     /// moment the row appears until the user submits their first prompt. While
-    /// <see cref="IsBrandNew"/> holds, the wingman paints that parked state green ("ready") rather
-    /// than red ("needs you") - see <c>SessionStatusWingman.ColorFor</c>.
+    /// <see cref="IsBrandNew"/> holds, that parked state folds to green ("ready") rather than red
+    /// ("needs you") - at the GATEWAY, in <c>SessionOrdering.ResolveActivity</c>, which reads
+    /// <c>SessionDto.IsBrandNew</c> as a raw fact. This comment used to point at
+    /// <c>SessionStatusWingman.ColorFor</c> as the source of truth; that method has not existed since
+    /// phase 2.3, and the Director has not painted green since it either.
     /// </summary>
     public ActivityState ActivityState { get; private set; } = ActivityState.WaitingForInput;
 
@@ -712,7 +768,35 @@ public sealed class Session : IDisposable
     /// hide the Voice + Wingman tabs. Opt in per session via the context menu / new-session
     /// dialog. Durable per session (persisted via <see cref="PersistedSession.WingmanEnabled"/>).
     /// </summary>
-    public bool WingmanEnabled { get; set; } = false;
+    /// <remarks>
+    /// A FOLD INPUT, therefore change-notifying. It is not an overlay flag - it is the GATE on two of
+    /// them: SessionOrdering.ResolveActivity yields yellow only when WingmanEnabled AND IsAutoExplaining,
+    /// and purple only when WingmanEnabled AND IsBackgroundRunning. So turning the Wingman off on a session
+    /// parked on its own background task flips the correct answer from purple "Background" to red "Needs
+    /// you" WITHOUT any overlay flag changing.
+    ///
+    /// It was a bare auto-property, so nothing could hear that. The overlays it gates all raise; the gate
+    /// did not, and it was the last unwired fold input after three review passes fixed the obvious ones.
+    /// A gate is easier to miss than a flag precisely because it is not the thing being rendered - which is
+    /// why the rule is mechanical: if the fold reads it, it announces itself. Found by review of pull
+    /// request 1598.
+    /// </remarks>
+    public bool WingmanEnabled
+    {
+        get => _wingmanEnabled;
+        set
+        {
+            if (_wingmanEnabled == value) return;
+            _wingmanEnabled = value;
+            FileLog.Write($"[Session] WingmanEnabled: session={Id}, enabled={value}");
+            try { OnWingmanEnabledChanged?.Invoke(value); }
+            catch (Exception ex) { FileLog.Write($"[Session] {Id} OnWingmanEnabledChanged handler threw: {ex.Message}"); }
+        }
+    }
+    private bool _wingmanEnabled;
+
+    /// <summary>Raised when <see cref="WingmanEnabled"/> changes, so a view re-reads the fold it gates.</summary>
+    public event Action<bool>? OnWingmanEnabledChanged;
 
     /// <summary>
     /// Scheduled-run auto-dismiss (issue #1200): true when this session is an AUTOMATED run (a cron seed)
@@ -760,9 +844,16 @@ public sealed class Session : IDisposable
     /// <summary>
     /// True while <c>ProactiveExplainService</c> has a Wingman briefing in flight for
     /// this session. Set just before the call, cleared in <c>finally</c>. Transient
-    /// (in-memory only). The Yellow status is keyed off this flag together with
-    /// <see cref="WingmanEnabled"/>; <see cref="OnIsExplainingChanged"/> notifies the
-    /// SessionStatusWingman so it can repaint the dot.
+    /// (in-memory only).
+    ///
+    /// This is a RAW FACT. It is reported on <c>SessionDto.IsAutoExplaining</c> and the GATEWAY folds the
+    /// orange from it (with <see cref="WingmanEnabled"/>, at a turn end) - the Director does not paint it.
+    /// This comment used to say <see cref="OnIsExplainingChanged"/> "notifies the SessionStatusWingman so
+    /// it can repaint the dot". That was false: SessionStatusWingman subscribes to the activity state and
+    /// NOTHING else, and this event had ZERO subscribers of any kind. It was a comment describing a
+    /// listener that did not exist - which is how defect 14 stayed invisible, because the event looked
+    /// wired. It is now subscribed by <c>ControlApiHost.WireDoorbellPush</c>, which pushes the changed fact
+    /// up the stream so the Gateway can fold it promptly instead of up to ten seconds late.
     /// </summary>
     public bool IsExplaining
     {
@@ -786,10 +877,16 @@ public sealed class Session : IDisposable
     /// recorded audio is being transcribed off the UI thread (see the desktop background dictation
     /// send). A user-driven overlay ORTHOGONAL to <see cref="ActivityState"/>, exactly like
     /// <see cref="IsExplaining"/>: the underlying activity state is still reported truthfully, and this
-    /// flag sits on top so <c>SessionStatusWingman</c> paints the badge Orange ("Transcribing...") so
-    /// nobody else starts typing into the session mid-dictation. Set true when Send is pressed and
-    /// cleared when the background transcribe-and-submit finishes or fails. Transient (in-memory only);
-    /// <see cref="OnIsTranscribingChanged"/> notifies the SessionStatusWingman so it can repaint the dot.
+    /// flag rides on top. Set true when Send is pressed and cleared when the background
+    /// transcribe-and-submit finishes or fails. Transient (in-memory only).
+    ///
+    /// This is a RAW FACT. It is reported on <c>SessionDto.IsTranscribing</c> and the GATEWAY folds the
+    /// orange from it; <c>SessionStatusWingman</c> has not painted it since Phase 2.3, whatever this
+    /// comment used to claim ("paints the badge Orange", "notifies the SessionStatusWingman so it can
+    /// repaint the dot"). Nor did the wingman subscribe: this event's only subscriber was a desktop UI
+    /// handler, which pushes nothing - so the fact sat here until some unrelated change happened to push a
+    /// delta. That was defect 14. <c>ControlApiHost.WireDoorbellPush</c> now pushes on this event.
+    /// (Note the orange does NOT lock the session either - #1308 removed that; see the DTO.)
     /// </summary>
     public bool IsTranscribing
     {
@@ -802,8 +899,10 @@ public sealed class Session : IDisposable
         }
     }
 
-    /// <summary>Fires when <see cref="IsTranscribing"/> changes. Arg: new value. The
-    /// SessionStatusWingman subscribes so it can repaint the badge Orange/back.</summary>
+    /// <summary>Fires when <see cref="IsTranscribing"/> changes. Arg: new value. Subscribed by
+    /// <c>ControlApiHost.WireDoorbellPush</c> (which pushes the fact up so the Gateway can fold the orange
+    /// promptly - defect 14) and by the desktop's own UI. NOT by the SessionStatusWingman, which this
+    /// comment used to name and which has never subscribed to it.</summary>
     public event Action<bool>? OnIsTranscribingChanged;
 
     private bool _isBackgroundRunning;
@@ -815,12 +914,17 @@ public sealed class Session : IDisposable
     /// than on the user. A Wingman-owned overlay ORTHOGONAL to <see cref="ActivityState"/>,
     /// exactly like <see cref="IsExplaining"/>: the <c>TerminalStateDetector</c> still reports
     /// the true underlying <see cref="ActivityState.WaitingForInput"/> (the dumb 10s silence
-    /// timer cannot tell a background-wait apart from "your turn"), and this flag sits on top
-    /// so <c>SessionStatusWingman</c> can paint the badge Purple ("running in background")
-    /// instead of Red ("needs you"). Set by <c>ProactiveExplainService</c> from the explain
-    /// verdict via <see cref="SetBackgroundRunning"/>; auto-cleared the moment real output
-    /// resumes (the session transitions off WaitingForInput in <see cref="SetActivityState"/>).
-    /// Transient (in-memory only); it tracks a live read of the screen, not durable state.
+    /// timer cannot tell a background-wait apart from "your turn"), and this flag rides on top.
+    /// Set by <c>ProactiveExplainService</c> from the explain verdict via
+    /// <see cref="SetBackgroundRunning"/>; auto-cleared the moment real output resumes (the session
+    /// transitions off WaitingForInput in <see cref="SetActivityState"/>). Transient (in-memory only);
+    /// it tracks a live read of the screen, not durable state.
+    ///
+    /// This is a RAW FACT. It is reported on <c>SessionDto.IsBackgroundRunning</c> and the GATEWAY folds
+    /// the purple from it (with <see cref="WingmanEnabled"/>, at a turn end). <c>SessionStatusWingman</c>
+    /// does not "paint the badge Purple" and has not since Phase 2.3 - it emits blue, red and unknown only.
+    /// <see cref="OnIsBackgroundRunningChanged"/> had ZERO subscribers anywhere until defect 14 wired the
+    /// push, so the purple could lag a change by up to one ten-second re-push.
     /// </summary>
     public bool IsBackgroundRunning
     {
@@ -837,16 +941,21 @@ public sealed class Session : IDisposable
     /// e.g. "running in background". Set alongside <see cref="IsBackgroundRunning"/>.</summary>
     public string BackgroundReason => _backgroundReason;
 
-    /// <summary>Fires when <see cref="IsBackgroundRunning"/> changes. Arg: new value. The
-    /// SessionStatusWingman subscribes so it can repaint the badge Purple/Red.</summary>
+    /// <summary>Fires when <see cref="IsBackgroundRunning"/> changes. Arg: new value. Subscribed by
+    /// <c>ControlApiHost.WireDoorbellPush</c>, which pushes the fact up so the Gateway can fold the purple
+    /// promptly (defect 14). NOT by the SessionStatusWingman, which this comment used to name and which has
+    /// never subscribed to it - before defect 14 this event had no subscribers at all.</summary>
     public event Action<bool>? OnIsBackgroundRunningChanged;
 
     /// <summary>
     /// Set (or clear) the Wingman's "parked on a background task" verdict for this session.
     /// Sole caller is <c>ProactiveExplainService</c> after an explain briefing. Pass a short
     /// reason when <paramref name="running"/> is true (used as the badge tooltip); clearing
-    /// resets the reason to the default. The flag only affects the badge while the session is
-    /// parked at a turn-end (see <c>SessionStatusWingman.ColorFor</c>).
+    /// resets the reason to the default. The flag only affects the colour while the session is parked at a
+    /// turn-end - a rule the GATEWAY applies, in <c>SessionOrdering.ResolveActivity</c>, from the raw fact
+    /// on the wire. (This comment used to cite <c>SessionStatusWingman.ColorFor</c>, a method that has not
+    /// existed since phase 2.3.) Under the law the turn-end gate is what matters: a session that is WORKING
+    /// is blue, and no background verdict can outrank that.
     /// </summary>
     public void SetBackgroundRunning(bool running, string? reason = null)
     {
@@ -1220,9 +1329,20 @@ public sealed class Session : IDisposable
     }
 
     /// <summary>
-    /// Sole writer of <see cref="StatusColor"/>. Called by the
-    /// SessionStatusWingman. No other code path may set the color — that's
-    /// how we keep the UI a faithful mirror of the wingman's verdict.
+    /// Writes <see cref="StatusColor"/>. THIS IS NOT THE SOLE WRITER, and it never was - this comment used
+    /// to say "Sole writer... Called by the SessionStatusWingman. No other code path may set the color",
+    /// which was false at the time it was written.
+    ///
+    /// Verified 14 July 2026, the THREE production callers:
+    ///   1. <c>SessionStatusWingman</c> - the activity-state mapping (the one this comment described).
+    ///   2. This file's crash arm - <c>SetStatusColor(Error, ...)</c> when the process dies unexpectedly.
+    ///   3. <c>TransientErrorAutoResume</c> - a sticky PositiveEvidence red when auto-resume gives up.
+    /// (A fourth, <c>MarkForDeletion</c>'s <c>SetStatusColor(Unknown, ...)</c>, was deleted by defect 23.)
+    ///
+    /// Why the lie mattered: 2 and 3 are BOTH higher-precedence writes than 1 - the source rule below makes
+    /// a PositiveEvidence verdict sticky for a whole activity generation - so a reader who believed there
+    /// was one writer would conclude the colour always follows the activity state, and be wrong exactly
+    /// when it matters. If you are about to write "sole writer" here again, count the callers first.
     /// </summary>
     public void SetStatusColor(string color, string reason, bool llm = false,
         StatusColorSource source = StatusColorSource.ActivityState)
@@ -1279,8 +1399,13 @@ public sealed class Session : IDisposable
     ///
     /// This used to call <c>SetStatusColor(StatusColor.Unknown, ...)</c> with
     /// <see cref="StatusColorSource.PositiveEvidence"/> - the Director deciding a colour, which law 2
-    /// forbids, and which nothing that paints reads anyway (the Gateway is the single fold and reads
-    /// the Director's cooked StatusColor for NOTHING). Because that write was positive-evidence it was
+    /// forbids. (An earlier version of this comment went further and said "nothing that paints reads
+    /// anyway (the Gateway is the single fold and reads the Director's cooked StatusColor for NOTHING)".
+    /// That is FALSE and it is struck: the Gateway gates its voice-yellow briefing stamp on
+    /// <c>StatusColor == "red"</c>, and the desktop's needs-you count and FIFO filter read it directly. The
+    /// FOLD reads it for nothing, which is a much narrower claim. Deleting this ONE write was right because
+    /// the Director must not decide a colour - not because the colour is unread.) Because that write was
+    /// positive-evidence it was
     /// also STICKY: within one activity generation it blocked the wingman's activity mapping from
     /// repainting the row, so a flagged session that was working could not show blue until a genuine
     /// state change bumped the generation. Do not restore it. The fact crosses the wire on

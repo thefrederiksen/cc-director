@@ -15,10 +15,18 @@ namespace CcDirector.Gateway.Api;
 ///                                              replayable labeled example
 ///   GET  /turnbriefs/feedback                 - recent feedback corpus records
 ///   POST /sessions/{sid}/explain              - "I am lost - explain" deep dive (#217);
-///                                              202 + state "Explaining" while it runs
+///                                              DISABLED - answers 503, see below
 ///   GET  /sessions/{sid}/explain/latest       - the newest explain report (404 when none)
 /// Serves the GATEWAY's append-only store; never proxies to a Director. Consumers render
 /// the stored briefs verbatim - interpretation happened once, in the warm brain.
+///
+/// THE DEEP DIVE IS OFF AT THE COMPOSITION ROOT. The Gateway host maps this surface with
+/// <c>requestExplainAsync: null</c>, so POST /sessions/{sid}/explain answers 503 "briefing pipeline
+/// disabled" and never runs. The host also supplies a <c>briefingStateFor</c> that can return only
+/// "Briefed" or "None". This header used to advertise <c>202 + state "Explaining" while it runs</c>:
+/// no caller has ever received that, because neither the state nor the 202 is producible. The roster's
+/// matching orange rule has been deleted for the same reason - see the tombstone in
+/// <c>SessionOrdering.EffectiveColor</c>. Re-enabling the deep dive is a feature, not a repair.
 /// </summary>
 internal static class TurnBriefGatewayEndpoints
 {

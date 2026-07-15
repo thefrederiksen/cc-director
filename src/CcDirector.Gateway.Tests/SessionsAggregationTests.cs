@@ -200,6 +200,143 @@ public sealed class SessionsAggregationTests : IAsyncLifetime
         Assert.Equal("blue", Assert.Single(sessions, s => s.SessionId == "mgr").EffectiveColor);
     }
 
+    // ---------- defect 13: the role universe is the UNFILTERED fleet ----------
+
+    [Fact]
+    public async Task Filtered_read_resolves_roles_from_the_unfiltered_fleet_soAWorkersRedStaysSuppressed()
+    {
+        // DEFECT 13. The per-session filters run BEFORE the fleet pass, so a filter that drops a Worker's
+        // CONTROLLER used to drop it out of the liveness set too - the Worker then resolved Standalone, the
+        // red-suppression could not fire, and a worker nagged the human because of a query parameter.
+        //
+        // ?statusColor=red is the sharp case, and this is the same fleet as the role test above: the manager
+        // is blue (filtered OUT), the worker is red (kept). The worker's controller is alive the whole time;
+        // the caller simply asked a narrower question.
+        var mgr = Sample("mgr", "ClaudeCode", "repo", "Working", "blue");
+        var worker = Sample("wrk", "ClaudeCode", "repo", "WaitingForInput", "red");
+        worker.IsControlled = true;
+        worker.ControllerSessionId = "mgr";
+        var fake = await StartFake("M", "u", new[] { mgr, worker });
+        await Register(fake);
+
+        var sessions = await GetSessions("statusColor=red");
+
+        // The filter still narrows the RESPONSE - that contract is untouched.
+        var w = Assert.Single(sessions);
+        Assert.Equal("wrk", w.SessionId);
+
+        // ...but the ROLE was resolved from the whole fleet, so the suppression still fires.
+        // The SYMPTOM first - this is what the human saw: a worker's red breaking through, and the worker
+        // sitting in NEEDS YOU, purely because the caller passed ?statusColor=red.
+        Assert.Equal("supporting", w.EffectiveColor);
+        Assert.NotEqual("needsYou", w.TriageBucket);
+        // ...then the MECHANISM that produced it.
+        Assert.Equal("Worker", w.SessionRole);
+    }
+
+    [Fact]
+    public async Task Filtered_read_and_unfiltered_read_agree_about_the_same_session()
+    {
+        // The property the fix really buys: a session's presentation does not depend on the query that
+        // happened to surface it. Same fleet, two reads, one answer.
+        var mgr = Sample("mgr", "ClaudeCode", "repo", "Working", "blue");
+        var worker = Sample("wrk", "ClaudeCode", "repo", "WaitingForInput", "red");
+        worker.IsControlled = true;
+        worker.ControllerSessionId = "mgr";
+        var fake = await StartFake("M", "u", new[] { mgr, worker });
+        await Register(fake);
+
+        var unfiltered = Assert.Single(await GetSessions(), s => s.SessionId == "wrk");
+        var filtered = Assert.Single(await GetSessions("statusColor=red"));
+
+        Assert.Equal(unfiltered.SessionRole, filtered.SessionRole);
+        Assert.Equal(unfiltered.EffectiveColor, filtered.EffectiveColor);
+        Assert.Equal(unfiltered.StateLabel, filtered.StateLabel);
+        Assert.Equal(unfiltered.TriageBucket, filtered.TriageBucket);
+    }
+
+    // ---------- defect 15: GET /sessions/{sid} runs the same fold as the roster ----------
+
+    [Fact]
+    public async Task SessionById_stamps_the_same_fold_as_the_roster()
+    {
+        // DEFECT 15. This route never ran the fold - it serialized the raw cached DTO, so EffectiveColor,
+        // StateLabel and TriageBucket came back NULL while SessionDto documents all three as "Required on
+        // Gateway /sessions responses".
+        //
+        // Scope note, deliberately honest: no shipped client fetches this route today, so this pins a
+        // documented CONTRACT, not an observed user-visible bug. None is claimed.
+        var mgr = Sample("mgr", "ClaudeCode", "repo", "Working", "blue");
+        var worker = Sample("wrk", "ClaudeCode", "repo", "WaitingForInput", "red");
+        worker.IsControlled = true;
+        worker.ControllerSessionId = "mgr";
+        var fake = await StartFake("M", "u", new[] { mgr, worker });
+        await Register(fake);
+
+        var roster = Assert.Single(await GetSessions(), s => s.SessionId == "wrk");
+        var byId = await _http.GetFromJsonAsync<SessionDto>("sessions/wrk", JsonOpts);
+        Assert.NotNull(byId);
+
+        // Before the fix all three were null here.
+        Assert.NotNull(byId!.EffectiveColor);
+        Assert.NotNull(byId.StateLabel);
+        Assert.NotNull(byId.TriageBucket);
+
+        // And they agree with the roster - including the role, which needs the WHOLE fleet (this route only
+        // ever located ONE session, so a naive per-session fold would have resolved Standalone and answered
+        // "red" where the roster says "supporting").
+        Assert.Equal(roster.SessionRole, byId.SessionRole);
+        Assert.Equal(roster.EffectiveColor, byId.EffectiveColor);
+        Assert.Equal(roster.StateLabel, byId.StateLabel);
+        Assert.Equal(roster.TriageBucket, byId.TriageBucket);
+    }
+
+    // ---------- the voice-mode window no longer reads the Director's cooked colour ----------
+
+    [Fact]
+    public async Task VoiceWindow_yellow_survives_a_stale_or_absent_cooked_color()
+    {
+        // The Gateway's voice-mode window stamps BriefingState="Briefing" (which the fold paints yellow) for
+        // a session whose wingman is generating its spoken summary. That stamp used to gate on s.StatusColor
+        // - the DIRECTOR's cooked colour - which made a Gateway-rendered colour depend on a Director-made
+        // decision, the one thing law 2 forbids, and it was the last Gateway consumer of the field. It now
+        // gates on SessionOrdering.IsRawRed.
+        //
+        // READ THE SCOPE OF THIS TEST HONESTLY. It exercises the CONSUMER (IsBriefing) end-to-end with a
+        // stale/absent cooked colour, which is worth pinning. It does NOT exercise the converted STAMP, and
+        // it therefore does NOT fail if the conversion is reverted - IsBriefing already required raw red
+        // before this change. See the note below for why no test covers the stamp itself.
+        var s = Sample("v1", "ClaudeCode", "repo", "WaitingForInput", "");
+        s.BriefingState = "Briefing";
+        var fake = await StartFake("M", "u", new[] { s });
+        await Register(fake);
+
+        var outp = Assert.Single(await GetSessions());
+        Assert.Equal("yellow", outp.EffectiveColor);
+        Assert.Equal("active", outp.TriageBucket);
+    }
+
+    // NO TEST COVERS THE CONVERTED STAMP ITSELF, AND HERE IS WHY - stated rather than faked.
+    //
+    // The stamp's condition includes voiceGeneratingFor(sid), which GatewayHost wires to
+    // `_voiceService?.IsGenerating(sid)`. _voiceService is private, constructed lazily, and its _generating
+    // set is private with no test seam; no existing test drives it at the HTTP level. Making the stamp
+    // reachable from a test means adding a seam to production for a test's benefit, which is a product change
+    // and not this defect's business.
+    //
+    // What the conversion rests on instead is an argument from construction, not an equivalence claim: the
+    // fold that CONSUMES the stamp (SessionOrdering.IsBriefing) is `BriefingState == "Briefing" &&
+    // IsRawRed(s)` - it ALREADY requires raw red. So the rendered yellow's condition went from (cooked red
+    // AND raw red) to (raw red AND raw red); the cooked gate was redundant with respect to every painted
+    // pixel. The two halves of that argument ARE pinned: IsBriefing's raw-red requirement by the briefing
+    // tests in SessionOrderingTests, and IsRawRed's indifference to the cooked colour by
+    // IsRawRed_IsCaseInsensitive_AndIgnoresTheCookedColor.
+    //
+    // Residual risk, named: in the window where cooked-red is FALSE while raw-red is TRUE (a lagging or
+    // empty StatusColor), the stamp did not fire before and does now - so a voice session gains the yellow
+    // it should always have had. That is the intended repair, and it is the one behaviour no test here
+    // observes.
+
     [Fact]
     public async Task Aggregator_deadControllerWorker_isStandalone_andItsRedSurfaces()
     {

@@ -12,16 +12,6 @@ namespace CcDirector.Avalonia;
 
 public class SessionViewModel : INotifyPropertyChanged
 {
-    private static readonly Dictionary<ActivityState, ISolidColorBrush> ActivityBrushes = new()
-    {
-        { ActivityState.Starting, new SolidColorBrush(Color.FromRgb(0x88, 0x88, 0x88)) },
-        { ActivityState.Idle, new SolidColorBrush(Color.FromRgb(0x00, 0x7A, 0xCC)) },
-        { ActivityState.Working, new SolidColorBrush(Color.FromRgb(0x22, 0xC5, 0x5E)) },
-        { ActivityState.WaitingForInput, new SolidColorBrush(Color.FromRgb(0xF5, 0x9E, 0x0B)) },
-        { ActivityState.WaitingForPerm, new SolidColorBrush(Color.FromRgb(0xF5, 0x9E, 0x0B)) },
-        { ActivityState.Exited, new SolidColorBrush(Color.FromRgb(0x66, 0x66, 0x66)) },
-    };
-
     // The sidebar colour strip reads the SHARED FOLD - SessionOrdering.EffectiveColor (see
     // StatusColorBrush below) - which is what makes Desktop, Cockpit and phone agree. It does NOT read
     // the SessionStatusWingman's Session.StatusColor, and has not since issue #1177 Phase 2: the Gateway
@@ -39,43 +29,23 @@ public class SessionViewModel : INotifyPropertyChanged
     //   orange = dictation in flight, or a deep dive running
     //   grey   = parked (on hold) or exited      supporting = a live-controlled Worker's suppressed red
     //   error  = crashed (issue #959)
-    private static readonly ISolidColorBrush GreenStatusBrush   = new SolidColorBrush(Color.FromRgb(0x22, 0xC5, 0x5E));
-    private static readonly ISolidColorBrush BlueStatusBrush    = new SolidColorBrush(Color.FromRgb(0x3B, 0x82, 0xF6));
-    private static readonly ISolidColorBrush YellowStatusBrush  = new SolidColorBrush(Color.FromRgb(0xEA, 0xB3, 0x08));
-    private static readonly ISolidColorBrush RedStatusBrush     = new SolidColorBrush(Color.FromRgb(0xEF, 0x44, 0x44));
-    // Purple "running in background" - the Wingman determined the session is parked on its own
-    // background task, not on the user. Matches Web/directory.html --purple (#a855f7).
-    private static readonly ISolidColorBrush PurpleStatusBrush  = new SolidColorBrush(Color.FromRgb(0xA8, 0x55, 0xF7));
-    // Orange "Transcribing..." - a dictated utterance is being transcribed and submitted into this
-    // session in the background (the Speak dialog released the screen on Send). Matches the mobile /
-    // web roster orange (#F97316) so the busy state reads the same on every surface.
-    private static readonly ISolidColorBrush OrangeStatusBrush  = new SolidColorBrush(Color.FromRgb(0xF9, 0x73, 0x16));
-    // Slate "Supporting" (issue #815) - a controlled sub-agent another session is driving. Recessive
-    // like the grays so it does not nag the operator, but its cool-blue tint sets it apart from the
-    // exited gray (#6a6a6a) and the on-hold light gray (#9ca3af).
-    private static readonly ISolidColorBrush SupportingStatusBrush = new SolidColorBrush(Color.FromRgb(0x64, 0x74, 0x8B));
-    // Deep red "Crashed" (issue #959) - the agent process ended unexpectedly. Deliberately darker
-    // than the bright red "needs you" (#EF4444) so a dead/errored session reads as a distinct error
-    // state, not just another session waiting on the user.
-    private static readonly ISolidColorBrush ErrorStatusBrush   = new SolidColorBrush(Color.FromRgb(0xB9, 0x1C, 0x1C));
-    private static readonly ISolidColorBrush UnknownStatusBrush = new SolidColorBrush(Color.FromRgb(0x6A, 0x6A, 0x6A));
-
-    // Light gray shown when the user has manually parked a session on hold. Deliberately
-    // lighter than the exited/unknown gray (#6a6a6a) and distinct from every wingman color
-    // so held sessions recede and can be ignored at a glance. OnHold is an orthogonal user
-    // override (see Session.OnHold), so it sits on top of the wingman's StatusColor in the
-    // list strip rather than the wingman writing it.
-    private static readonly ISolidColorBrush OnHoldStatusBrush  = new SolidColorBrush(Color.FromRgb(0x9C, 0xA3, 0xAF));
-
-    private static readonly Dictionary<ActivityState, string> ActivityLabels = new()
-    {
-        { ActivityState.Starting, "Starting" },
-        { ActivityState.Idle, "Idle" },
-        { ActivityState.Working, "Working" },
-        { ActivityState.WaitingForInput, "Your Turn" },
-        { ActivityState.WaitingForPerm, "Permission" },
-        { ActivityState.Exited, "Exited" },
-    };
+    //
+    // The hexes are NOT here any more. They live in ONE table, StatusPalette, which the turn review
+    // and the FIFO window also call, and which the spec's palette table is the written source for.
+    // This class had its own private copy, and so did four other surfaces - that was defect 18.
+    //
+    // THE GREY IS ONE GREY. This strip used to pick between a light #9CA3AF and a #6A6A6A by
+    // re-reading the raw Session.OnHold flag - a CLIENT INVENTING A DISTINCTION THE GATEWAY
+    // DELIBERATELY DID NOT MAKE. The fold folds snoozed and exited to the same "grey" string
+    // precisely so clients render them identically (SessionOrdering.RawActivityColor,
+    // owner-approved). That split broke two closed laws at once: the client decided a colour, and
+    // the desktop showed two greys where the phone showed one, so the devices disagreed.
+    //
+    // The distinction is NOT lost - it travels on the fold's own StateLabel ("Snoozed" vs "Exited"),
+    // beside the dot. That is the Phase 3 precedent: lifecycle travels on badges and labels, never
+    // on colour. Only the DOT collides. Whether snoozed deserves its own dot colour is an OPEN
+    // PRODUCT QUESTION (see the spec's "Still open"); if the answer is ever yes it MUST arrive as a
+    // distinct NAME from the fold (e.g. "onhold"), never as a client re-reading a raw flag.
 
     public Session Session { get; }
 
@@ -92,6 +62,20 @@ public class SessionViewModel : INotifyPropertyChanged
         session.OnReceivingDictationChanged += OnReceivingDictationChangedVm;
         session.OnNumberChanged += OnNumberChangedVm;
         session.OnPendingDeletionChanged += OnPendingDeletionChangedVm;
+        session.OnGatewayResolvedRoleChanged += OnGatewayResolvedRoleChangedVm;
+        // THE THREE TRANSIENT OVERLAYS THE RAIL NEVER HEARD ABOUT. Map feeds IsBackgroundRunning,
+        // IsTranscribing and IsAutoExplaining into the fold, which renders them purple, orange and yellow -
+        // and nothing subscribed, so a desktop dictation or a background-task verdict reached the Gateway
+        // (correct on the phone) while this rail kept its old dot, label, count and timer until an
+        // unrelated event happened to repaint the row. Same class as the role-stamp bug, one layer earlier:
+        // a fold input with no invalidation path. Found by review of pull request 1598.
+        session.OnIsBackgroundRunningChanged += OnFoldInputChangedVm;
+        session.OnIsTranscribingChanged += OnFoldInputChangedVm;
+        session.OnIsExplainingChanged += OnFoldInputChangedVm;
+        // The GATE on the purple and yellow overlays, not an overlay itself: turning the Wingman off on a
+        // session parked on its background task flips the fold from purple "Background" to red "Needs you"
+        // with no overlay flag changing. Easier to miss than a flag for exactly that reason.
+        session.OnWingmanEnabledChanged += OnFoldInputChangedVm;
 
         if (session.PromptQueue != null)
         {
@@ -100,14 +84,49 @@ public class SessionViewModel : INotifyPropertyChanged
         }
     }
 
+    /// <summary>
+    /// Re-read EVERYTHING the shared fold feeds. Every handler for a fold input calls exactly this, and
+    /// none of them keeps a list of its own.
+    ///
+    /// WHY THIS EXISTS RATHER THAN SIX HAND-WRITTEN LISTS. Each handler used to name the properties it
+    /// thought its fact touched, and they all disagreed: hold raised seven, activity three, the cached
+    /// explain two, the role stamp three. Every list was a private chance to miss one, and missing one
+    /// does not fail loudly - it renders a row that has HALF updated, where the dot reads "supporting" and
+    /// the text beside it still reads "Needs you" with a live timer. That is worse than a stale row: a
+    /// half-updated row looks deliberate, so the reader believes the wrong half.
+    ///
+    /// The lists were also wrong in a way no test caught: the fold's inputs GROW - role, dictation,
+    /// background and auto-explain all arrived over this mission - and a new input meant editing six lists
+    /// correctly. This asks the opposite question, "what does the fold feed?", once, in one place. Add a
+    /// fold input and every handler already tells the truth about it.
+    ///
+    /// These are exactly the properties whose getters run FoldInput through SessionOrdering: the dot
+    /// (StatusColorBrush), its tooltip (StatusReason), the row text (ActivityLabel), the triage verdict
+    /// behind the "N need you" count (NeedsYou), and the waiting timer, which gates on the folded colour
+    /// (HasWaitingDuration/WaitingDurationLabel). Raw flags that are NOT folded - IsOnHold, the number,
+    /// the deletion badge - stay with their own handlers, because they are not this question.
+    /// </summary>
+    private void RaiseFoldProjection()
+    {
+        OnPropertyChanged(nameof(StatusColorBrush));
+        OnPropertyChanged(nameof(StatusReason));
+        OnPropertyChanged(nameof(ActivityLabel));
+        OnPropertyChanged(nameof(NeedsYou));
+        OnPropertyChanged(nameof(HasWaitingDuration));
+        OnPropertyChanged(nameof(WaitingDurationLabel));
+    }
+
+    /// <summary>A fold input changed and carries nothing else - re-read the projection. Serves the three
+    /// transient overlays (background task, dictation, auto-explain).</summary>
+    private void OnFoldInputChangedVm(bool _) => Dispatcher.UIThread.Post(RaiseFoldProjection);
+
     // Issue #1181, Task 3b: the session started or stopped receiving a phone dictation - repaint the
     // rail strip (orange while receiving) and refresh its reason text.
     private void OnReceivingDictationChangedVm(bool receiving)
     {
         Dispatcher.UIThread.Post(() =>
         {
-            OnPropertyChanged(nameof(StatusColorBrush));
-            OnPropertyChanged(nameof(StatusReason));
+            RaiseFoldProjection();
         });
     }
 
@@ -115,10 +134,7 @@ public class SessionViewModel : INotifyPropertyChanged
     {
         Dispatcher.UIThread.Post(() =>
         {
-            OnPropertyChanged(nameof(StatusColorBrush));
-            OnPropertyChanged(nameof(StatusReason));
-            OnPropertyChanged(nameof(WaitingDurationLabel));
-            OnPropertyChanged(nameof(HasWaitingDuration));
+            RaiseFoldProjection();
         });
     }
 
@@ -152,23 +168,29 @@ public class SessionViewModel : INotifyPropertyChanged
     private string EffectiveColor => SessionOrdering.EffectiveColor(FoldInput);
 
     /// <summary>
-    /// The sidebar colour strip's brush: the shared fold's colour, mapped to this app's palette. Hold,
-    /// dictation, briefing and the activity colour are all folded by <see cref="SessionOrdering"/> - this
-    /// only picks the brush.
+    /// The sidebar colour strip's brush: the shared fold's colour, mapped through the ONE palette.
+    /// Hold, dictation, briefing and the activity colour are all folded by
+    /// <see cref="SessionOrdering"/>, and the name-to-hex mapping is <see cref="StatusPalette"/> -
+    /// this property decides nothing at all, which is the point.
     /// </summary>
-    public ISolidColorBrush StatusColorBrush => EffectiveColor switch
+    public ISolidColorBrush StatusColorBrush
     {
-        "grey"       => Session.OnHold ? OnHoldStatusBrush : UnknownStatusBrush,
-        "green"      => GreenStatusBrush,
-        "blue"       => BlueStatusBrush,
-        "yellow"     => YellowStatusBrush,
-        "red"        => RedStatusBrush,
-        "purple"     => PurpleStatusBrush,
-        "orange"     => OrangeStatusBrush,
-        "supporting" => SupportingStatusBrush,
-        "error"      => ErrorStatusBrush,
-        _            => UnknownStatusBrush,
-    };
+        get
+        {
+            var color = EffectiveColor;
+            // The magenta sentinel is meant to be unmissable on the rail; this makes it diagnosable
+            // too, by naming the colour in the log. Logged only on the edge - a binding getter runs
+            // on every repaint, and a line per frame is not a diagnostic, it is a flood.
+            if (!StatusPalette.Knows(color) && color != _lastUnknownColorLogged)
+            {
+                _lastUnknownColorLogged = color;
+                StatusPalette.ReportUnknownColor(color, Session.Id.ToString());
+            }
+            return StatusPalette.BrushFor(color);
+        }
+    }
+
+    private string? _lastUnknownColorLogged;
 
     /// <summary>
     /// True when this session is flagged for deletion and awaiting the reaper - drives the rail's
@@ -205,6 +227,26 @@ public class SessionViewModel : INotifyPropertyChanged
         });
     }
 
+    // The Gateway stamped (or cleared) this session's role. That is a FOLD INPUT - SessionOrdering
+    // suppresses a controlled worker's red to "supporting" - so the rail must re-read exactly as it does
+    // for an activity or hold change. Nothing re-read on a role before this, so the stamp arrived, the
+    // fold was right, and the dot stayed red anyway.
+    //
+    // RAISE EVERY PROPERTY THE FOLD FEEDS, NOT JUST THE DOT. The first version of this handler raised
+    // only the brush, the reason and the count, and review caught it: ActivityLabel is
+    // SessionOrdering.StateLabel(FoldInput), and HasWaitingDuration/WaitingDurationLabel gate on
+    // EffectiveColor - all three read the role. So the dot repainted to "supporting" while the row text
+    // still said "Needs you" with a live waiting timer beside it. A half-re-read is its own lie: one row
+    // disagreeing with itself is worse than the stale row it replaced, because it looks deliberate.
+    // Match OnStatusColorChanged and OnActivityStateChanged between them - the same fold, the same reads.
+    private void OnGatewayResolvedRoleChangedVm(string? _)
+    {
+        Dispatcher.UIThread.Post(() =>
+        {
+            RaiseFoldProjection();
+        });
+    }
+
     /// <summary>True when the user has parked this session on hold. Drives the menu toggle
     /// label and the light-gray strip color.</summary>
     public bool IsOnHold => Session.OnHold;
@@ -221,8 +263,9 @@ public class SessionViewModel : INotifyPropertyChanged
     {
         Dispatcher.UIThread.Post(() =>
         {
-            OnPropertyChanged(nameof(StatusColorBrush));
-            OnPropertyChanged(nameof(StatusReason));
+            RaiseFoldProjection();
+            // IsOnHold is a RAW flag the rail renders directly (the snooze glyph), not a fold output - so
+            // it is not RaiseFoldProjection's business and stays here.
             OnPropertyChanged(nameof(IsOnHold));
         });
     }
@@ -245,8 +288,7 @@ public class SessionViewModel : INotifyPropertyChanged
             // set. When a session is already red and its first briefing lands, HasWaitingDuration
             // flips false->true here; without raising it the "waiting Xm" list label would not
             // appear until the next 15s timer tick.
-            OnPropertyChanged(nameof(HasWaitingDuration));
-            OnPropertyChanged(nameof(WaitingDurationLabel));
+            RaiseFoldProjection();
         });
     }
 
@@ -345,8 +387,22 @@ public class SessionViewModel : INotifyPropertyChanged
     /// </summary>
     public string ActivityLabel => SessionOrdering.StateLabel(FoldInput);
 
-    public ISolidColorBrush ActivityBrush =>
-        ActivityBrushes.TryGetValue(Session.ActivityState, out var brush) ? brush : Brushes.Gray;
+    /// <summary>
+    /// True when this session is waiting on YOU - the shared fold's triage verdict, not a colour.
+    /// Drives the "N need you" count beside the rail's SESSIONS header.
+    ///
+    /// Reads <see cref="SessionOrdering.Classify"/>, the SAME function the phone's web-push badge
+    /// counts by (WebPushNeedsYouNotifier), so the number on the header and the number on the phone
+    /// are folded by one rule. The header used to count the RAW cooked colour
+    /// (<c>Session.StatusColor == "red"</c>) with no hold check, no role, and no overlays - so a
+    /// snoozed session sat grey and labelled "Snoozed" underneath a header reading "1 need you".
+    /// Three readings of one session, and nothing reconciled them.
+    ///
+    /// Known gap (Phase 2b, defect 5 - NOT closed here): SessionRole is derived by the Gateway from
+    /// the WHOLE fleet, so it is absent from this Director-local fold input and a live Worker's red
+    /// still counts on this rail. It is correctly suppressed on the Cockpit and the phone.
+    /// </summary>
+    public bool NeedsYou => SessionOrdering.Classify(FoldInput) == SessionOrdering.TriageBucket.NeedsYou;
 
     // Agent badge for the session list. Colored pill shown next to the session name
     // so it's visually obvious which agent CLI this session is running.
@@ -588,8 +644,10 @@ public class SessionViewModel : INotifyPropertyChanged
     {
         Dispatcher.UIThread.Post(() =>
         {
-            OnPropertyChanged(nameof(ActivityLabel));
-            OnPropertyChanged(nameof(ActivityBrush));
+            // Raised three and missed the waiting timer: ActivityState drives EffectiveColor through
+            // SessionOrdering.RawActivityColor, and HasWaitingDuration gates on that - so a red row with a
+            // cached explain could go blue/grey/error and keep a visible "waiting Xm" until the 15s tick.
+            RaiseFoldProjection();
         });
     }
 

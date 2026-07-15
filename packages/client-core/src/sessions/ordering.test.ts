@@ -53,6 +53,41 @@ describe("Gateway-stamped session presentation state", () => {
     expect(dotColor("grey")).toBe("#6B7280");
   });
 
+  it("gives snoozed and exited the SAME grey - the dot draws no distinction the Gateway did not make", () => {
+    // The Gateway folds BOTH a parked session and an exited one to "grey": it has no snoozed colour and
+    // no exited colour. So the two must be the same pixel here. The difference between them is
+    // lifecycle, and lifecycle travels on the stamped label and a badge, never on the dot.
+    //
+    // This is what the desktop rail got wrong: it took the one name "grey" and split it into two hexes
+    // (#9CA3AF when the raw onHold flag was set, #6A6A6A otherwise), inventing a distinction the fold
+    // never emitted. Same name, two pixels, from a client re-reading a raw field.
+    expect(dotColor("grey")).toBe(dotColor("unknown"));
+  });
+
+  it("resolves every Gateway colour name to exactly one canonical hex", () => {
+    // THE CANONICAL PALETTE (law 7: every device shows the same thing, always). These exact values are
+    // the desktop rail's brushes too. A check that compares fold ANSWERS ("red" === "red") cannot see a
+    // surface rendering a different red, so the agreement has to be pinned to the PIXEL here.
+    expect(dotColor("red")).toBe("#EF4444");
+    expect(dotColor("yellow")).toBe("#EAB308");
+    expect(dotColor("orange")).toBe("#F97316");
+    expect(dotColor("green")).toBe("#22C55E");
+    expect(dotColor("blue")).toBe("#3B82F6");
+    expect(dotColor("purple")).toBe("#A855F7");
+    expect(dotColor("supporting")).toBe("#64748B");
+    expect(dotColor("error")).toBe("#B91C1C");
+    expect(dotColor("grey")).toBe("#6B7280");
+    expect(dotColor("unknown")).toBe("#6B7280");
+  });
+
+  it("never paints a working session anything but blue", () => {
+    // The law, as a pixel. The schedule picker used to render a working session GREEN (its own local
+    // fold returned "run", and .sched-sdot.run painted --sched-green) - while green means "ready,
+    // parked at its prompt" in the shared vocabulary. Same colour, opposite meaning.
+    expect(dotColor(effectiveColor(session({ effectiveColor: "blue" })))).toBe("#3B82F6");
+    expect(dotColor("blue")).not.toBe(dotColor("green"));
+  });
+
   it("stateLabel reads the Gateway-stamped label", () => {
     // stateLabel IS in the generated schema now that it has been regenerated from the C# DTOs, so the
     // cast is no longer load-bearing - kept only because `session()` takes Partial<SessionDto> and the

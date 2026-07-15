@@ -737,6 +737,39 @@ public sealed class ControlApiHost : IAsyncDisposable
             // OnHold untouched but does change the label clients render.
             session.HoldStateChanged += _ =>
                 _streamClient?.NotifyDelta(ControlEndpoints.Map(session, DirectorId));
+
+            // Defect 14: the three colour inputs that were invisible to the Gateway until something ELSE
+            // happened. The Gateway folds orange from IsTranscribing, orange from IsAutoExplaining, and
+            // purple from IsBackgroundRunning - reading them off the pushed SessionDto - but nothing pushed
+            // when they changed. Each raised its Director event to an empty room: OnIsBackgroundRunningChanged
+            // and OnIsExplainingChanged had ZERO subscribers anywhere in the codebase, and
+            // OnIsTranscribingChanged had exactly one (a desktop UI handler, which pushes nothing). So the
+            // fact sat on the Session until some unrelated activity change happened to push a delta, or the
+            // ten-second re-push came around - and those three colours lagged by up to that long.
+            //
+            // A colour input is a state change like any other, so it pushes like any other. This is the same
+            // one-line shape as the hold push above, for the same reason.
+            session.OnIsTranscribingChanged += _ =>
+                _streamClient?.NotifyDelta(ControlEndpoints.Map(session, DirectorId));
+            session.OnIsBackgroundRunningChanged += _ =>
+                _streamClient?.NotifyDelta(ControlEndpoints.Map(session, DirectorId));
+            session.OnIsExplainingChanged += _ =>
+                _streamClient?.NotifyDelta(ControlEndpoints.Map(session, DirectorId));
+
+            // THE GATE ON TWO OF THOSE THREE, and it was missing from the list above - which is the whole
+            // trap in miniature. The comment right there says "the three colour inputs", and the fold reads
+            // a FOURTH: yellow needs WingmanEnabled AND IsAutoExplaining, purple needs WingmanEnabled AND
+            // IsBackgroundRunning (SessionOrdering.ResolveActivity). So a wingman-enabled=false command on a
+            // session parked on its background task changes the right answer from purple "Background" to red
+            // "Needs you" while NONE of the three above fire - nothing pushes, and the phone and Cockpit
+            // keep the stale fold until the ten-second re-push.
+            //
+            // It hid because a gate is not the thing being rendered. Defect 14 went looking for "colour
+            // inputs", found the flags, and did not count the condition guarding them. The rule that
+            // actually holds: if the fold READS it, it pushes - no judgement about whether it feels like a
+            // colour. Found by review of pull request 1598, after three earlier passes hunting exactly this.
+            session.OnWingmanEnabledChanged += _ =>
+                _streamClient?.NotifyDelta(ControlEndpoints.Map(session, DirectorId));
         }
 
         _sessionManager.OnSessionCreated += session =>

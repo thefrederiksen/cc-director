@@ -875,23 +875,15 @@
   color: var(--text-dim);
 }
 
+/* The dot's colour is applied inline from the shared palette (dotColor), like every other session dot
+   in the Cockpit. There are deliberately no .run / .needs / .idle modifiers: they were a local palette
+   fed by a local fold, and .run painted a WORKING session --sched-green when the law says working is
+   blue - with green already meaning "ready, parked at its prompt" everywhere else. */
 .sched-sdot {
   width: 7px;
   height: 7px;
   border-radius: 50%;
   flex: none;
-}
-
-.sched-sdot.run {
-  background: var(--sched-green);
-}
-
-.sched-sdot.needs {
-  background: var(--attention);
-}
-
-.sched-sdot.idle {
-  background: var(--text-dim);
 }
 
 .sched-sname {
@@ -900,18 +892,13 @@
   white-space: nowrap;
 }
 
+/* Likewise no .needs / .run modifiers here: the row's dot carries the state colour, and the label is
+   the Gateway's stamped words. Recolouring the words from a second local fold is what let this picker
+   say "needs you" about a snoozed session in attention-red. */
 .sched-sstate {
   margin-left: auto;
   font-size: 9.5px;
   text-transform: uppercase;
   letter-spacing: 0.04em;
   color: var(--text-dim);
-}
-
-.sched-sstate.needs {
-  color: var(--attention);
-}
-
-.sched-sstate.run {
-  color: var(--sched-green);
 }

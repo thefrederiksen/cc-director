@@ -6,7 +6,6 @@ namespace CcDirector.Avalonia.Controls.CommManager;
 
 /// <summary>
 /// Routes ContentItem instances to the appropriate platform preview DataTemplate.
-/// Follows the same IDataTemplate pattern as WidgetTemplateSelector.
 /// </summary>
 public class PlatformPreviewSelector : IDataTemplate
 {

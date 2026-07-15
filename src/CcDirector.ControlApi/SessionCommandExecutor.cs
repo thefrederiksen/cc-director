@@ -84,6 +84,8 @@ internal static class SessionCommandExecutor
         new QueueGitExecutor(),
         new SessionByteExecutor(),
         new DirectorConfigExecutor(),
+        // Defect 5: the Gateway stamping a session's resolved role down onto this Director.
+        new FleetRoleExecutor(),
     };
 
     /// <summary>

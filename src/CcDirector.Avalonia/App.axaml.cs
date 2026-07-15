@@ -193,8 +193,8 @@ public partial class App : Application
 
         // Avalonia UI-thread exceptions are NOT caught by AppDomain.UnhandledException
         // when they originate in dispatcher-posted callbacks or binding/render paths.
-        // Without this, an exception in a Dispatcher.UIThread.Post lambda (e.g. the
-        // CleanView pending-question sync or wingman status callback) can vanish
+        // Without this, an exception in a Dispatcher.UIThread.Post lambda (e.g. a
+        // rail repaint or a wingman status callback) can vanish
         // the process with no log line. Marking Handled=true keeps the app alive so
         // the user sees the consequence in the UI instead of a silent disappearance.
         global::Avalonia.Threading.Dispatcher.UIThread.UnhandledException += (_, args) =>

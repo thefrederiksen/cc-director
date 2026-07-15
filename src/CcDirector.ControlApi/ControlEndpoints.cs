@@ -223,8 +223,43 @@ internal static class ControlEndpoints
                 : Results.Json(MapWithIdentity(session, turnSummaryCache), statusCode: 201);
         }
 
-        // Deliver a framed message to a LOCAL session, wait for it to settle back to Idle, and return its answer
+        // Deliver a framed message to a LOCAL session, wait for the turn to SETTLE, and return its answer
         // (transcript-first, buffer-scrape fallback). Used by the standalone branch of POST /fleet/ask.
+        //
+        // Defect 10, the surviving half. This used to wait on ActivityState.Idle - a state NOTHING has ever
+        // written. The auto-drain that Idle was invented for was deleted by #1564 (its own tests had passed
+        // for fourteen months by calling ApplyTerminalActivityState(Idle) directly, injecting a state
+        // production never emits), but THIS reader was left behind, still waiting for it. So the loop always
+        // ran the full timeout and `timedOut` was always true: the ask-and-wait verb - "ask a session and
+        // wait for its answer" - could never observe the answer it was waiting for, burned its whole timeout
+        // every single time, and always reported a timeout.
+        //
+        // THE LESSON, because it is the one this codebase keeps re-learning: #1564 fixed the half it could
+        // see and left a reader waiting on a state it had just finished proving dead. A DEAD STATE IS NOT
+        // DEAD UNTIL ITS LAST READER IS GONE.
+        //
+        // It now waits on what the sensor ACTUALLY emits (docs/new_architecture/session-state.html, the
+        // sensor's state machine): a turn ends by settling to WaitingForInput. Exited ends the wait too, and
+        // deliberately - a target that dies mid-answer never reaches WaitingForInput, so without it the loop
+        // would burn the full timeout again for exactly the same reason, which is this defect wearing a new
+        // state's name.
+        //
+        // THE WIRE WORD "idle" STAYS, and that is not an oversight. It is the established value of
+        // FleetAskResponse.Status ("idle (answered) | timeout | failed | not_found", FleetMessageRequest.cs)
+        // and the Gateway's own relayed ask already produces it - GatewayEndpoints maps
+        // `"Idle" or "WaitingForInput" => "idle"` and `"Exited" or "Failed" => "failed"`. So on the wire
+        // "idle" has always meant "the turn settled", NOT ActivityState.Idle, and the Gateway had already
+        // converged on WaitingForInput meaning exactly that. Renaming it here alone would make a local ask
+        // and a relayed ask answer differently for the same outcome - one more disagreement of the kind this
+        // whole mission exists to remove. The states below mirror that relay mapping deliberately.
+        static string WaitOutcome(Session s) => s.ActivityState switch
+        {
+            ActivityState.WaitingForInput => "idle",   // the turn settled; the answer is there to read
+            ActivityState.Exited => "failed",          // died before answering - matches the relay's mapping
+            _ => "timeout",                            // still working when the clock ran out
+        };
+        static bool Settled(Session s) => WaitOutcome(s) != "timeout";
+
         async Task<(string answer, string status)> AskLocalAsync(Session target, string framed, int timeoutMs, CancellationToken ct)
         {
             var cursor = target.Buffer?.TotalBytesWritten ?? 0;
@@ -240,17 +275,20 @@ internal static class ControlEndpoints
 
             await target.SendTextAsync(framed, SendSource.Internal);
 
-            // Give the target a moment to leave Idle, then wait for it to settle back to Idle.
+            // Give the target a moment to start working, then wait for the turn to settle. Both the loop and
+            // the verdict read the SAME predicate, so they cannot drift apart - which is how the old pair
+            // managed to disagree with reality in lockstep.
             var sw = System.Diagnostics.Stopwatch.StartNew();
             await Task.Delay(300, ct);
-            while (sw.ElapsedMilliseconds < timeoutMs && target.ActivityState != ActivityState.Idle)
+            while (sw.ElapsedMilliseconds < timeoutMs && !Settled(target))
                 await Task.Delay(250, ct);
 
-            var timedOut = target.ActivityState != ActivityState.Idle;
+            var outcome = WaitOutcome(target);
             var answer = "";
 
             // Prefer the transcript: a clean, parsed answer (the NEW assistant message) instead of a
-            // scrape of the repainting TUI buffer. A transcript can flush several seconds after Idle, so
+            // scrape of the repainting TUI buffer. A transcript can flush several seconds after the turn
+            // settles, so
             // poll for an assistant message BEYOND preAssistantCount for up to ~25 s; fall back to the
             // buffer scrape only if no new answer appears (e.g. a turn that produced only tool calls).
             if (supportsTranscript)
@@ -275,7 +313,7 @@ internal static class ControlEndpoints
                 answer = AnsiCleaner.Clean(data);
             }
 
-            return (answer, timedOut ? "timeout" : "idle");
+            return (answer, outcome);
         }
 
         // GET /fleet/sessions - the fleet directory. With a Gateway, relay its aggregated list;
@@ -471,6 +509,17 @@ internal static class ControlEndpoints
                         Answered = false, Status = "timeout",
                         Error = $"No answer from {req.ToSessionId} within {timeoutMs} ms.",
                     }, statusCode: StatusCodes.Status504GatewayTimeout);
+                // Defect 10: the wait can now END on a target that EXITED mid-answer - before the predicate
+                // was fixed it could only ever run out the clock, so this outcome was unreachable and the
+                // caller never had to consider it. It is not an answer, so it must not be reported as one:
+                // without this arm a dead target would return Answered=true carrying whatever the buffer
+                // scrape happened to catch. Mirrors the Gateway relay's "failed" for the same state.
+                if (status == "failed")
+                    return Results.Json(new FleetAskResponse
+                    {
+                        Answered = false, Status = "failed",
+                        Error = $"Session {req.ToSessionId} exited before answering.",
+                    }, statusCode: StatusCodes.Status500InternalServerError);
                 return Results.Json(new FleetAskResponse { Answered = true, Status = status, Answer = answer });
             }
             catch (Exception ex)
@@ -1236,6 +1285,22 @@ internal static class ControlEndpoints
             // Automatic session roles (chunk 2.5): the sticky explicit role, so the Gateway aggregation can
             // apply the explicit-wins precedence. The RESOLVED SessionRole is computed at the aggregation.
             ExplicitRole = s.ExplicitRole,
+            // Defect 5: the resolved role the GATEWAY computed from the whole fleet and stamped back down
+            // onto this Director (Session.GatewayResolvedRole, written only by the set-resolved-role verb).
+            // The Director carries it; it does NOT compute it - "is this session's controller still alive?"
+            // needs the whole fleet, and the controller may be on another machine.
+            //
+            // THIS LINE IS WHY THE DESKTOP AGREES WITH THE PHONE. The rail's fold input comes from this same
+            // mapper (SessionViewModel.FoldInput), so before this the field was always null on the desktop
+            // and SessionOrdering's red-suppression could never fire: a live Worker read slate "Sub-agent"
+            // on the phone and red "Needs you" on the rail at the same instant.
+            //
+            // Null when no Gateway has ever stamped one - the standalone-desktop floor, where a Worker's red
+            // surfaces because nothing authoritative has said otherwise. That is the honest answer; a local
+            // guess would be the defect. The value also rides back UP to the Gateway on the next delta,
+            // where PushedSessionStore DISCARDS it at ingest so this echo can never be mistaken for an
+            // authority. (docs/new_architecture/session-state.html, defect 5.)
+            SessionRole = s.GatewayResolvedRole,
             // Chunk 3: the auto-vs-explicit name marker (a future auto-rename gates on it).
             IsAutoNamed = s.IsAutoNamed,
             IsBackgroundRunning = s.IsBackgroundRunning,
