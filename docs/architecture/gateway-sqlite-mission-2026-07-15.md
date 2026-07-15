@@ -644,7 +644,8 @@ code that has never been asked a question.
    usage counts. Committing it as a fixture would publish all of that permanently into public git
    history, where deleting it later does not remove it.
 
-   Structurally faithful means: all eight sections present, the real shapes, and the awkward cases
+   Structurally faithful means: every `StoreFile` section present, the real shapes, and the awkward
+   cases
    deliberately included - a voice-mode session with no input buckets, a session with several
    changed buckets in one fold, a typed turn under voice mode, and a pair of repository keys
    differing only by case. A synthetic fixture is in fact **better** than the real store for this
