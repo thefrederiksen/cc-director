@@ -75,9 +75,10 @@ was not. We put the bug back on purpose and **all 2,307 tests passed while it wa
 suite was blind to the headline fix. It is now covered by tests we watched fail. If you take one number
 from this report, take that one: "the tests are green" is not evidence, and in this repository it never was.
 
-**2. One of our own fixes does not run at all.** We wrote code to remember your snoozes across a restart,
-tested it, and shipped it. The tests pass. The code **cannot execute** - nothing calls it, and every
-startup deletes the file it writes. It happens to be harmless (a restart does not restore your sessions
+**2. One of our own fixes cannot do its job.** We wrote code to remember your snoozes across a restart,
+tested it, and shipped it. The tests pass. The writing half genuinely runs - and then **every startup
+deletes the file it just wrote**, because saved sessions were replaced by workspaces long ago and nobody
+told this fix. So the half that reads it back can never fire. It happens to be harmless (a restart does not restore your sessions
 either, so there is no snooze to lose), but the document claimed a behaviour the product does not have.
 We caught this in our own work, in the same mission that wrote the rule against it.
 
