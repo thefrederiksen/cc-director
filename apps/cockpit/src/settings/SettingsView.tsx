@@ -276,11 +276,19 @@ function TelemetryCard() {
 // the controls disable and the message reads "Saving..." before the call goes out, the caller's returned
 // sentence replaces it on success, and a failure reports the Gateway's own error rather than a fabricated
 // value. The try/catch is here because this IS the event-handler entry point.
+//
+// It also refuses to start a second save while one is in flight. Every caller applies its result over the
+// settings snapshot its render captured, so two overlapping saves would let the slower one write back a
+// value the faster one had already superseded. Disabling the controls is not enough on its own - that
+// stops a click, not a keyboard repeat or a queued change event - so the invariant is enforced here, once,
+// for every caller. The guard reads a ref because this callback is created once and would otherwise close
+// over the first render's `busy`.
 function useGatewaySettings() {
   const [settings, setSettings] = useState<GatewaySettings | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState("");
+  const busyRef = useRef(false);
 
   const load = useCallback(async (signal?: AbortSignal) => {
     try {
@@ -299,6 +307,8 @@ function useGatewaySettings() {
   }, [load]);
 
   const runSave = useCallback(async (apply: () => Promise<string>) => {
+    if (busyRef.current) return;
+    busyRef.current = true;
     setBusy(true);
     setMsg("Saving...");
     try {
@@ -306,6 +316,7 @@ function useGatewaySettings() {
     } catch (e) {
       setMsg(errText(e));
     } finally {
+      busyRef.current = false;
       setBusy(false);
     }
   }, []);
