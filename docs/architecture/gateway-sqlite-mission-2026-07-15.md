@@ -1,49 +1,66 @@
 # Mission Brief: SQLite on the Gateway
 
-Status: PROPOSED - awaiting review by the Codex reviewer and approval by the owner. No code is
-written until both approve this document.
+Status: PROPOSED - revised after Codex review, awaiting the Codex reviewer's re-review and the
+owner's approval. No code is written until both approve this document.
 
-Written 2026-07-15 by the Architect session ("Gateway SQLite - Architect", session 0a4297a9,
+Written 2026-07-15 by the Architect session ("Gateway SQLite - Architect", session 8c17dc1c,
 machine SOREN_NORTH). This document is the Architect's handover to the Manager. The Manager owns
 execution from here; the Architect settles the design and then lets the Manager drive.
 
-Every claim below was verified against `origin/main` at commit 8c64a049 on 2026-07-15, in the
-mission worktree `D:\ReposFred\devthrottle-gateway-sqlite` (branch `feat/gateway-sqlite`), and
-carries file and line citations. Disk measurements were taken on SOREN_NORTH the same day.
+Revision 2 folds in the Codex reviewer's findings, recorded in full at
+`docs/architecture/gateway-sqlite-review-codex-2026-07-15.md`. That review returned CHANGES
+REQUIRED and was right to: it found that the original import design promised something the existing
+data cannot deliver. The design below is materially different as a result. The section "What the
+historical data cannot tell us" is new and is the most important section in this document.
+
+Every claim below carries a file and line citation. Revision 1 asserted that all of its citations
+had been verified against `origin/main`; the Codex review proved that claim was itself overstated -
+two citations did not resolve to what revision 1 said they did, and both are corrected here. Every
+citation in this revision was checked directly against the code in the mission worktree
+`D:\ReposFred\devthrottle-gateway-sqlite` (branch `feat/gateway-sqlite`, cut from `origin/main` at
+commit 8c64a049). Disk measurements were taken on SOREN_NORTH on 2026-07-15.
 
 ## The why
 
-The Gateway keeps its statistics in seven hand-rolled JSON files. That was the right call when
-there was one store. There are now seven, each with its own copy of the same load, serialize,
-atomic temp-write-and-rename, and quarantine-on-corrupt code, and the pattern has started to cost
-real money in three specific ways:
+The Gateway keeps its statistics in a set of hand-rolled JSON files. That was the right call when
+there was one store. There are several now, and the pattern has started to cost real money in three
+specific ways:
 
 1. **Every new question costs a schema change and a deploy.** `GatewayInputStatsAggregator` keeps a
    separate dictionary per question: `_totals`, `_highWater`, `_hourly`, `_wingmanSessions`,
-   `_repos`, `_agents` (`src/CcDirector.Gateway/Stats/GatewayInputStatsAggregator.cs:32-66`). Each
+   `_repos`, `_agents` (`src/CcDirector.Gateway/Stats/GatewayInputStatsAggregator.cs:31-66`). Each
    new dimension the owner asks for is a new dictionary, a new field on the store file, a new
    data-transfer object field, and a redeploy. Per-repository and per-agent tallies were both added
    this way after the Stats mission was declared finished, which is the evidence that the questions
    keep coming.
 
 2. **A shape change has already silently destroyed live data.** There is no schema versioning
-   anywhere in these stores. A store whose shape changed is treated as corrupt: it is renamed to
-   `.corrupt-{timestamp}` and the store restarts empty
-   (`GatewaySessionConcurrencyStats.cs:249-298`). That path is exactly how pull request #1376 wiped
-   the all-time fleet concurrency peak of 35 on deploy. It was noticed only because someone happened
-   to be looking.
+   anywhere in these stores. When the store file fails to deserialize, or deserializes to null, it
+   is renamed to `.corrupt-{timestamp}` and the store restarts empty (the load path is
+   `GatewaySessionConcurrencyStats.cs:205-227`; the quarantine method itself is `:249-254`). That
+   path is how pull request #1376 wiped the all-time fleet concurrency peak of 35 on deploy. It was
+   noticed only because someone happened to be looking.
 
-3. **The write is a whole-document rewrite on a request path.** Both stats stores re-serialize the
-   entire document and rewrite the file whenever any counter moves
-   (`GatewayInputStatsAggregator.cs:123` and `:137`, `Save()` at `:555-583`), and the fold runs on
-   **every** `GET /sessions` read (`src/CcDirector.Gateway/Api/GatewayEndpoints.cs:813` and `:820`).
+   The precise statement matters, because the reality is worse than "a shape change is treated as
+   corrupt". A shape change is quarantined only when deserialization *throws* or returns null. A
+   change that merely removes or renames a field does not throw - it deserializes to defaults, and
+   the store silently comes up with zeros where real numbers used to be, with no `.corrupt` file to
+   notice. Loud quarantine is the *detectable* failure mode; silent default-filling is the one that
+   could pass unremarked.
+
+3. **The write is a whole-document rewrite on a request path.** The input stats store re-serializes
+   the entire document and rewrites the file whenever any counter moves
+   (`GatewayInputStatsAggregator.cs:123` and `:137` call `Save()`; `Save()` builds the full
+   document, serializes it, writes a temporary file, and moves it over the original at `:555-583`),
+   and the fold runs on **every** `GET /sessions` read
+   (`src/CcDirector.Gateway/Api/GatewayEndpoints.cs:813` for input stats, `:820` for concurrency).
    That is O(all history) of synchronous work under a lock, per roster poll. It compounds with the
    deliberately unbounded distinct-session sets described below: the file grows forever *and* is
    rewritten constantly.
 
-SQLite makes all three go away: one narrow table of rows answers new questions with a `GROUP BY`
+SQLite makes all three go away: a narrow table of rows answers new questions with a `GROUP BY`
 instead of a deploy, `PRAGMA user_version` gives real migrations instead of quarantine-and-lose,
-and a counter move becomes an `UPDATE` of one row instead of a rewrite of the file.
+and a counter move becomes one row write instead of a rewrite of the file.
 
 The cost is near zero. `Microsoft.Data.Sqlite` 9.0.2 is already a package reference in
 `src/CcDirector.Core/CcDirector.Core.csproj:18`, the Gateway already references Core
@@ -58,21 +75,33 @@ a lot of statistics, so we need a database" has the wrong reason - see the next 
 
 ## What is actually stored today, and what is NOT in scope
 
-Measured on SOREN_NORTH, 2026-07-15. All paths resolve through `CcStorage.Root()`
-(`src/CcDirector.Core/Storage/CcStorage.cs:28-38`) to `%LOCALAPPDATA%\cc-director`.
+Measured on SOREN_NORTH, 2026-07-15, independently by both the Architect and the Codex reviewer
+(the two measurements agree to within a few hundred bytes; these are live files). All paths resolve
+through `CcStorage.Root()` (`src/CcDirector.Core/Storage/CcStorage.cs:28-38`) to
+`%LOCALAPPDATA%\cc-director`.
 
 | Store | Class | Size | Shape |
 |---|---|---|---|
-| `gateway-input-stats.json` | `Stats/GatewayInputStatsAggregator.cs:107` | 57 KB | Counters, hourly buckets, all-time sets |
-| `carmode-telemetry.json` | `CarMode/CarModeTelemetryStore.cs:46` | 32 KB | Per-turn events in a rewritten list |
-| `netdiag-rollup.json` | network diagnostics | 21 KB | Rollup |
+| `gateway-input-stats.json` | `Stats/GatewayInputStatsAggregator.cs:107` | 59 KB | Counters, hourly buckets, all-time sets |
+| `carmode-telemetry.json` | `CarMode/CarModeTelemetryStore.cs:45-47` | 32 KB | Per-turn events in a rewritten list |
+| `netdiag-rollup.json` | network diagnostics | 22 KB | Rollup |
 | `netdiag-devices.json` | network diagnostics | 20 KB | Rollup |
-| `gateway-concurrency-stats.json` | `Stats/GatewaySessionConcurrencyStats.cs:69` | 16 KB | Hourly buckets, all-time peaks |
-| `cronruns.json` | scheduler | 15 KB | Run history |
-| `voice-sessions.json` | voice | 13 KB | Session records |
+| `gateway-concurrency-stats.json` | `Stats/GatewaySessionConcurrencyStats.cs:68-70` | 16 KB | Hourly buckets, all-time peaks |
+| `cronruns.json` | scheduler | 16 KB | Run history |
+| `voice-sessions.json` | `Wingman/WingmanVoiceService.cs:105` | 13 KB | A flat array of session id strings |
 
-That is about 174 KB in total. **Size is not the problem and must not be used to argue this
+That is about 178 KB in total. **Size is not the problem and must not be used to argue this
 mission.** These are rolled-up aggregates, and aggregates stay small.
+
+**A premise from revision 1 that was wrong, corrected here.** Revision 1 said these were seven
+files "each with its own copy of the same load, serialize, atomic temp-write-and-rename, and
+quarantine-on-corrupt code". That is not true of all of them, and `voice-sessions.json` is the
+clearest counter-example: it is a flat `string[]` of session ids, loaded at
+`WingmanVoiceService.cs:113-122` and saved with a direct `File.WriteAllText` at `:125-128`. It has
+no atomic temporary-write-and-rename, no quarantine, and it is not a statistics rollup at all - it
+is an operational set of which sessions have voice mode on. It should never have been listed as one
+of the "same pattern" stores. It is dealt with under Phase 4 below on its own merit, and the honest
+default for it is "leave it alone".
 
 **Explicitly out of scope - the append-only logs stay exactly as they are.** Two stores are
 JSON Lines files rather than rewritten documents:
@@ -80,7 +109,8 @@ JSON Lines files rather than rewritten documents:
 - `prompt-log/conversation-yyyyMMdd.jsonl`, 3.3 MB across 5 days
   (`src/CcDirector.Gateway/Prompts/GatewayPromptLog.cs:51-55`)
 - `transcription-log/transcription-YYYYMMDD.jsonl`, 1.7 MB across 7 days
-  (`src/CcDirector.Gateway/Transcription/TranscriptionTelemetryLog.cs:50-54`)
+  (`src/CcDirector.Gateway/Transcription/TranscriptionTelemetryLog.cs:49-54`, appending one line at
+  `:67-70`)
 
 An earlier read of this ground called their lack of pruning a retention gap that should be fixed
 before this mission. **That was wrong, and the correction is recorded here so nobody re-opens it.**
@@ -100,9 +130,63 @@ Likewise, the all-time distinct-session sets in the input aggregator (`_repos[].
 They are not a bug to fix; they are a requirement to preserve. What is wrong is only *where* they
 live: inside a document that is fully rewritten on every roster read.
 
-**The scope line for this mission, stated once:** a store moves to SQLite if and only if it
-rewrites its whole document to record an incremental change. Append-only logs stay on disk as
-JSON Lines.
+**The scope line for this mission, stated once.** Revision 1 said "a store moves to SQLite if and
+only if it rewrites its whole document to record an incremental change". Read literally that sweeps
+in most of the Gateway - `WorkListStore`, `SnoozeRegistry`, `PushSubscriptionStore` and other
+operational stores all persist that way and have nothing to do with statistics. The rewrite test is
+necessary but not sufficient. The scope line is therefore narrowed to both conditions:
+
+> A store is in scope only if (a) it is one of the statistics, diagnostics, scheduler-history, or
+> Car Mode telemetry files named in the table above, **and** (b) it rewrites its whole document to
+> record an incremental change.
+
+Append-only JSON Lines logs stay on disk as JSON Lines. Operational stores outside the table are
+not touched by this mission, whatever their write pattern.
+
+## What the historical data cannot tell us
+
+**This section is new in revision 2 and it changes the design. It is the single most important
+thing in this document.**
+
+Revision 1 promised: import the existing JSON into `stat_delta` rows so that all-time totals,
+peaks, and distinct counts read identically before and after. The Codex reviewer showed that the
+first half of that promise cannot be kept, and reading the code confirms it.
+
+The existing store does not hold history. It holds **three independent projections of history,
+each already collapsed on a different dimension** (`GatewayInputStatsAggregator.cs:448-457` defines
+the persisted document; `:460-481` define the shapes):
+
+- `Hourly`: keyed by clock hour, holding `VoiceTurns`, `TypedTurns`, `Characters`. It does not know
+  which session, repository, or agent.
+- `Repos`: keyed by repository path, holding the same three counters plus a `Sessions` list. It
+  does not know which hour.
+- `Agents`: keyed by agent name, holding the same three counters plus a `Sessions` list. It does
+  not know which hour.
+- `Totals`: keyed by modality and surface (`:31-32`). It does not know hour, repository, or agent.
+
+A single past turn contributed to a bucket in each projection, but **which** hour goes with
+**which** repository with **which** agent was never written down. The cross-product does not exist
+on disk and cannot be recovered. Therefore a row of the form
+`(hour_utc, session_id, modality, surface, repo, agent, turns, chars)` **cannot be reconstructed
+for any historical turn.** Any attempt to synthesize such rows would be inventing data, and summing
+the synthetic rows across one dimension would disagree with the real totals in another.
+
+This is not a novel discovery about this codebase so much as a rediscovery. The code already hit
+exactly this wall and already answered it honestly. `_agentsSinceUtc` exists for this reason, and
+its comment (`GatewayInputStatsAggregator.cs:63-66`) says it plainly:
+
+> "When the per-agent tally started counting. The totals predate this breakdown, so the agent
+> numbers do NOT reconcile with them and the page must say so rather than imply the earlier turns
+> had no agent."
+
+That is the precedent, set by this repository, for the correct answer: when a dimension did not
+exist before a date, you record the date and you say so. You do not back-fill a guess.
+
+**The design consequence, stated plainly:** the past is a baseline, and only the future is rows.
+The mission still delivers its point - the next question the owner asks becomes a query rather than
+a deploy - but it delivers it **for data from the cutover forward**, not retroactively. Any brief,
+this one included, that implies otherwise is promising something the disk cannot supply. The owner
+should approve this mission knowing that.
 
 ## The design
 
@@ -115,47 +199,85 @@ Write-ahead logging mode. The Gateway is a single process and therefore a single
 cross-process write contention exists. The Gateway must gain its own explicit `PackageReference`
 rather than leaning on the transitive one through Core.
 
-**Decision 2 - Rows, not counters. This is the whole point of the mission.** Do NOT port the
-existing dictionaries into six tables; that would buy nothing but a new dependency. Store one
-narrow delta row per observed increase, carrying its dimensions as columns:
+**Decision 2 - Rows, not counters, from the cutover forward. This is the point of the mission.**
+Do NOT port the existing dictionaries into six tables; that would buy nothing but a new dependency.
+For every delta observed **after** the cutover, store one narrow row carrying its dimensions as
+columns:
 
 ```
 stat_delta(hour_utc, session_id, modality, surface, repo, agent, turns, chars)
 ```
 
-Every number the dashboard shows today is then a query, not a field:
+Each dashboard number becomes a baseline value plus a query over the rows recorded since:
 
-- all-time totals by modality and surface - `SUM(...) GROUP BY modality, surface`
-- the working-day series - `GROUP BY hour_utc`
-- the per-repository page - `GROUP BY repo`
-- the per-agent page - `GROUP BY agent`
-- distinct session counts - `COUNT(DISTINCT session_id)`, exact, with no HashSet to persist
+- all-time totals by modality and surface - baseline plus `SUM(...) GROUP BY modality, surface`
+- the working-day series - baseline hourly buckets, plus `GROUP BY hour_utc` for recent hours
+- the per-repository page - baseline plus `GROUP BY repo`
+- the per-agent page - baseline plus `GROUP BY agent`
 
-Six dictionaries collapse to one table, and the next question the owner asks is a query rather than
-a deploy. That is the deliverable.
+Two honest qualifications, both raised by the Codex reviewer and both accepted:
+
+- **"A new question is a query, not a deploy" holds only for dimensions already carried on the
+  row.** A question about a dimension `stat_delta` does not capture still needs a schema change and
+  a deploy - it is just that the migration is now a real migration instead of a quarantine. The
+  win is real but it is narrower than revision 1 implied.
+- **Distinct counts are not `COUNT(DISTINCT session_id)` over `stat_delta`.** That is exact only
+  while every contributing row is still present, so it stops being exact the moment pruning starts
+  (see Decision 4), and it cannot see pre-cutover sessions at all. The all-time distinct sets keep
+  their own narrow, never-pruned identifier tables, seeded from the existing `Sessions` lists and
+  `_wingmanSessions`, and extended with `INSERT OR IGNORE`. This preserves exactly the semantics
+  the code documents at `GatewayInputStatsAggregator.cs:45-61`.
 
 **Decision 3 - The high-water logic survives unchanged, because SQL does not replace it.** The
-idempotent fold (`FoldLocked`, `GatewayInputStatsAggregator.cs:320`) is what makes re-reading a
-roster safe and what lets counts survive a Director or Gateway restart without double-counting. It
-is the hard part of this code and it is correct. It moves to a `session_highwater` table
-(operational state for live sessions, cleared by `Forget`) and keeps its exact current semantics.
-**A worker who "simplifies" the high-water fold has broken the mission.**
+idempotent fold (`FoldLocked`, `GatewayInputStatsAggregator.cs:320`, comparing reported counters
+against previous high-water at `:336-354` and handling counter reset at `:350-354`) is what makes
+re-reading a roster safe and what lets counts survive a Director or Gateway restart without
+double-counting. It is the hard part of this code and it is correct. It moves to a
+`session_highwater` table (operational state for live sessions, cleared by `Forget`) and keeps its
+exact current semantics. **A worker who "simplifies" the high-water fold has broken the mission.**
 
 **Decision 4 - Pruning must not cost an all-time number.** Today `PruneLocked`
-(`GatewayInputStatsAggregator.cs:310-315`) prunes only the hourly buckets, at
-`RetentionDays = 90`, and the all-time totals live in a separate dictionary so they survive. With
-one delta table, naively deleting rows past the cutoff would silently shrink the all-time totals -
-the same class of failure as #1376. So: on prune, fold the departing rows into an archive row
-before deleting them, so all-time sums stay exact forever while the detailed rows stay bounded.
-The distinct-session sets keep their own narrow table (`INSERT OR IGNORE`), unpruned, as today.
+(`GatewayInputStatsAggregator.cs:310-315`) prunes only the hourly buckets, at `RetentionDays = 90`,
+and the all-time totals live in separate dictionaries so they survive. With a delta table, naively
+deleting rows past the cutoff would silently shrink the all-time totals - the same class of failure
+as #1376. So, on prune, departing rows are folded into archive rows before deletion.
 
-**Decision 5 - Migration preserves the numbers, and that is the acceptance test.** On first run
-against an existing JSON store, import it into the database, then rename the JSON aside rather than
-deleting it. The owner's all-time totals, peaks, and distinct counts must read **identically**
-before and after. Pull request #1376 reset the concurrency peak on deploy and #1379 got the same
-class of change right by not reshaping the existing fields; this mission does not get to be the
-third data point. `PRAGMA user_version` carries the schema version from day one, so the next shape
-change is a migration rather than a quarantine.
+Revision 1 said "an archive row", singular, which is not enough and would itself have lost data.
+The archive must **preserve every grouping dimension that any all-time answer is derived from** -
+at minimum modality, surface, repository, and agent, plus wingman-turn attribution for as long as
+that stays derived from rows. Concretely: pruning collapses the hour, and nothing else. An archive
+row is a `stat_delta` row with its `hour_utc` and `session_id` replaced by an archive marker, so
+that every existing `GROUP BY` over the remaining dimensions still returns the same sum. Distinct
+counts are unaffected because they never read `stat_delta` (Decision 2). Whether an all-time answer
+survives pruning is a testable property, and Acceptance criterion 7 pins it.
+
+**Decision 5 - The import is a baseline, not a reconstruction, and it is fail-loud.** This decision
+is rewritten from revision 1, per the section "What the historical data cannot tell us".
+
+On first run against an existing JSON store, each historical projection is imported **as it stands**
+into its own baseline table - baseline totals by modality and surface, baseline hourly buckets,
+baseline per-repository tallies, baseline per-agent tallies, baseline wingman turns, and the
+distinct-session identifier tables. No historical `stat_delta` rows are synthesized, ever. Every
+reported number is then baseline plus post-cutover rows, which is exact by construction and matches
+the existing `_agentsSinceUtc` precedent for a dimension that starts partway through.
+
+The import sequence is fixed and is not open to a worker's interpretation:
+
+1. Import inside a **single transaction**, and stamp an import marker plus `PRAGMA user_version` in
+   that same transaction, so a crash cannot double-import or strand a partial import.
+2. Read every affected endpoint field back **out of SQLite** and compare it field by field against
+   what the JSON store reported before the import.
+3. Only on a complete match, rename the JSON aside (never delete it).
+4. **On any mismatch, fail loudly**: leave the JSON in place as the source of truth, do not mark
+   the import done, and surface a clear error. Never come up empty, never come up with partial
+   numbers, never silently fall back. This follows the house rule against fallback programming, and
+   it is the direct antidote to the failure mode in point 2 of "The why": the existing code's
+   default-filling comes up quietly with zeros, and this must not.
+
+`PRAGMA user_version` carries the schema version from day one, so the next shape change is a
+migration rather than a quarantine. Pull request #1376 reset the concurrency peak on deploy and
+#1379 got the same class of change right by not reshaping the existing fields; this mission does
+not get to be the third data point.
 
 ## Phases
 
@@ -164,9 +286,10 @@ reviewer before it is committed. Per the owner's instruction for this mission, p
 `feat/gateway-sqlite` and are **not** merged to `origin/main` (see Constraints).
 
 - **Phase 1 - Foundation plus the input store.** The database file, the connection and migration
-  helper, `PRAGMA user_version`, the `stat_delta` and `session_highwater` tables, the one-time JSON
-  import, and `GatewayInputStatsAggregator` rewritten onto it. This is the proof: the largest,
-  worst-behaved store, ported with its numbers intact.
+  helper, `PRAGMA user_version`, the `stat_delta`, `session_highwater`, baseline, and distinct-id
+  tables, the one-time baseline import with its parity check, and `GatewayInputStatsAggregator`
+  rewritten onto it. This is the proof: the largest, worst-behaved store, ported with its numbers
+  intact.
 - **Phase 2 - The concurrency store.** `GatewaySessionConcurrencyStats` onto the same database,
   same import discipline. Restores the all-time peak that #1376 destroyed if the quarantined file
   is still on disk; if it is not, say so plainly rather than inventing a number.
@@ -177,28 +300,49 @@ reviewer before it is committed. Per the owner's instruction for this mission, p
   90-day volume (`CarModeTelemetryStore.cs:26-31`). Both carry over: retention becomes a
   `DELETE WHERE recorded_at < ...`, and the guard stays as the same cheap safety net it is today.
   What changes is only the shape - events belong in rows, appended one at a time, instead of a
-  document rewritten from scratch on every turn.
-- **Phase 4 - The remainder, only if Phases 1 to 3 prove out.** `netdiag-rollup`,
-  `netdiag-devices`, `cronruns`, `voice-sessions`. Each is judged against the scope line above on
-  its own merit. This phase may correctly end in "leave them alone."
+  document rewritten from scratch on every turn. Note this store genuinely does hold per-event
+  records, so unlike the input store its history ports across as real rows.
+- **Phase 4 - The remainder, only if Phases 1 to 3 prove out.** `netdiag-rollup`, `netdiag-devices`,
+  `cronruns`, and `voice-sessions`, each judged against the narrowed scope line on its own merit.
+  `voice-sessions` in particular is an operational set of identifiers, not statistics, and the
+  expected answer for it is "leave it alone" unless a specific reason appears. This phase may
+  correctly end in "leave them all alone."
 
 Phase 1 must be complete and verified before Phase 2 starts. A phase is not done because the code
 compiles; it is done when the numbers are proven unchanged.
 
+Phase 1 proves the input-store design, the baseline import discipline, and the migration mechanism.
+It does **not** prove concurrency-peak restoration or any Phase 4 store choice; those are proven in
+their own phases and must not be waved through on Phase 1's evidence.
+
 ## Acceptance
 
-The mission succeeds when all of the following hold:
+The mission succeeds when all of the following hold. Each is falsifiable; a criterion that cannot
+fail is not a criterion.
 
 1. `GET /stats/data` returns the same numbers after the port as before it, for the owner's real
-   data on this machine. Captured before, captured after, compared field by field. This is the
+   data on this machine. Captured before, captured after, compared field by field
+   (`Stats/StatsPageEndpoint.cs:40-71` maps this response from the aggregator outputs). This is the
    primary proof and it is not negotiable.
-2. The `/stats` page and the "Your Throttle" views in the cockpit and the mobile application render
-   unchanged. No user-visible change is a feature of this mission, not a shortfall.
-3. A counter move performs one row write, not a document rewrite. Demonstrated, not asserted.
-4. A new question can be answered with a query against `stat_delta` and no schema change. The
-   Manager picks one the owner has not asked for yet and shows the query.
-5. Tests are green across all seven test projects, not only Core and Gateway.
-6. A regression test pins the migration: given a real JSON store, the imported totals match.
+2. The `/stats` page (`Stats/StatsPageEndpoint.cs:74-79`), the cockpit "Your Throttle" view
+   (`apps/cockpit/src/throttle/YourThrottleView.tsx`), and the mobile "Your Throttle" view
+   (`apps/mobile/src/pages/YourThrottle.tsx`) render unchanged. **Evidence, not opinion:** the
+   captured `/stats/data` payload from criterion 1, plus a before-and-after screenshot of each of
+   the three surfaces, attached to the phase report. "Looks fine" is not acceptance.
+3. A counter move performs one row write, not a document rewrite. **Demonstrated by:** an
+   integration test that observes a single delta and asserts the exact count of `INSERT` and
+   `UPDATE` statements issued against the database, plus an assertion that no JSON store file's
+   last-write timestamp changes after the import has completed.
+4. A new question that uses dimensions already carried on `stat_delta` is answered by a query with
+   no schema change, for data recorded since the cutover. The Manager picks one the owner has not
+   asked for yet and shows the query and its result.
+5. Tests are green across all seven test projects in `cc-director.sln` (Avalonia, Core, Engine,
+   Gateway, HostedAgent, Launcher, and Terminal.Avalonia), not only Core and Gateway.
+6. A regression test pins the baseline import: given a real JSON store as a fixture, every imported
+   baseline value matches the value the JSON store reported, and the import refuses to complete on
+   an induced mismatch. The refusal leg must be proven by watching it fail, not asserted.
+7. A regression test pins pruning: given rows spanning the retention boundary, every all-time answer
+   is identical before and after a prune runs.
 
 ## Constraints
 
@@ -211,26 +355,29 @@ The mission succeeds when all of the following hold:
   `D:\ReposFred\devthrottle-gateway-sqlite`. The shared checkout `D:\ReposFred\devthrottle` is
   never used for this work and never holds uncommitted mission files.
 - **The Codex reviewer gates every commit.** No code is committed until the Codex reviewer has
-  reviewed it. See Roles.
+  reviewed it. Reviews are written to files under `docs/architecture/`, never left in a terminal -
+  the session terminal buffer captures only spinner redraw and the findings are unrecoverable from
+  it. See Roles.
 - **Do not touch the Director-side counting seam.** The honest count happens at
   `Session.SendInput` and `Session.SendTextAsync`, pinned by
   `src/CcDirector.Core.Tests/TerminalPromptInjectionChokepointTests.cs`. This mission changes
   where the Gateway *stores* what it is told, and nothing about what is counted or what it means.
 - **No fallback programming.** A database that fails to open is a loud failure with a clear
-  message, never a silent fall back to the JSON store.
+  message, never a silent fall back to the JSON store. An import that does not reconcile is a loud
+  failure, never a partial import.
 - **No Unicode characters anywhere** - plain ASCII in all code, comments, output, and documents.
 - **Plain English, no abbreviations** in all output.
 
 ## Roles
 
-- **Architect** - session 0a4297a9, "Gateway SQLite - Architect". Settles the design in this
+- **Architect** - session 8c17dc1c, "Gateway SQLite - Architect". Settles the design in this
   document, then lets the Manager drive without gating it. Does not implement.
 - **Manager** - one session, "Gateway SQLite - Manager", spawned once this document is approved.
   Owns execution and drives the phases. Reset per phase.
-- **Codex reviewer** - the `codex` command line tool, version 0.143.0, at
-  `C:\Users\soren\AppData\Local\Programs\OpenAI\Codex\bin\codex.exe`. Reviews this document before
-  work starts, and reviews every code change before it is committed. Its concerns are addressed or
-  explicitly answered - not ignored.
+- **Codex reviewer** - session 7068ec90, "Gateway SQLite - Codex Reviewer", running the `codex`
+  command line tool as a real DevThrottle session. Reviewed this document before work started, and
+  reviews every code change before it is committed. Its concerns are addressed or explicitly
+  answered - not ignored. Revision 2 of this document exists because it was right.
 - **Workers** - as many as the Manager needs, all in the one mission worktree.
 
 ## Gate
@@ -251,5 +398,7 @@ until the quality-assurance report.
   (`Stats/StatsPageEndpoint.cs:74-79`) rather than a cockpit route. Deliberate. Not touched here.
 - An agent-facing `cc-devthrottle throttle` verb was owed by the earlier Stats mission and never
   built. Unrelated to storage. Not picked up here.
-</content>
-</invoke>
+- The silent default-filling failure mode described in point 2 of "The why" affects every remaining
+  hand-rolled JSON store in the Gateway, not only the ones this mission ports. The stores this
+  mission moves are protected by `PRAGMA user_version`; the others are not. Worth an owner decision
+  once this mission proves the pattern.
