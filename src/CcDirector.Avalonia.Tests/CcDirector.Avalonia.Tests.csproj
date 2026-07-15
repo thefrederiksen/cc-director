@@ -17,6 +17,10 @@
 
   <ItemGroup>
     <ProjectReference Include="..\CcDirector.Avalonia\CcDirector.Avalonia.csproj" />
+    <!-- Mission "Session State Truth", phase 5: the cross-surface agreement check's comparison, so every
+         fault it claims to catch is injected and it is WATCHED reporting it. A check nobody has seen fail
+         is the thing this mission exists to end. -->
+    <ProjectReference Include="..\CcDirector.StateAgreementCheck\CcDirector.StateAgreementCheck.csproj" />
   </ItemGroup>
 
 </Project>

@@ -160,10 +160,24 @@ public class SessionViewModel : INotifyPropertyChanged
     /// nothing reconciled them. Calling the same function the other screens call makes agreement structural
     /// instead of something we re-verify every release.
     ///
-    /// Known gap (Phase 2b): SessionRole is derived by the Gateway from the WHOLE fleet - the Director
-    /// cannot know whether a controlled session's controller is alive on another machine - so it is absent
-    /// here until the Gateway pushes it down. Until then a live Worker's red is suppressed on the Cockpit
-    /// and the phone but still surfaces on this rail.
+    /// SessionRole IS here now, and this comment used to say it was not. It said: "Known gap (Phase 2b):
+    /// ... it is absent here until the Gateway pushes it down. Until then a live Worker's red is suppressed
+    /// on the Cockpit and the phone but still surfaces on this rail." That was defect 5, and it is FIXED -
+    /// the Gateway resolves the role from the whole fleet (only it can: the Director cannot know whether a
+    /// controlled session's controller is alive on another machine) and pushes it down over the
+    /// set-resolved-role verb; ControlEndpoints.Map reads it back off Session.GatewayResolvedRole, so this
+    /// fold input carries it and the rail reaches the same answer as the phone.
+    ///
+    /// The comment is corrected rather than deleted because a stale "known gap" is worse than no comment at
+    /// all: it invites the next agent to re-implement a fix that already shipped. That is not hypothetical -
+    /// the specification called defect 4 open for four paragraphs after it had merged, and the error ledger
+    /// records what it cost. Proved end to end, with nothing hand-set, by DesktopRoleStampWireProofTests.
+    ///
+    /// WHAT IS STILL TRUE, and is the real remaining gap (measured in phase 5): the role was ONE of FIVE
+    /// Gateway-only fold inputs. Map still does not carry DictationStatus, Transcribing or VoiceGenerating,
+    /// and nothing pushes them down - so for a session that is NOT working, this rail can still differ from
+    /// the phone (a phone dictation is orange there and red here). Blue outranks all of them, so it can
+    /// never affect a working session. See docs/new_architecture/session-state.html.
     /// </summary>
     private string EffectiveColor => SessionOrdering.EffectiveColor(FoldInput);
 
@@ -398,9 +412,10 @@ public class SessionViewModel : INotifyPropertyChanged
     /// snoozed session sat grey and labelled "Snoozed" underneath a header reading "1 need you".
     /// Three readings of one session, and nothing reconciled them.
     ///
-    /// Known gap (Phase 2b, defect 5 - NOT closed here): SessionRole is derived by the Gateway from
-    /// the WHOLE fleet, so it is absent from this Director-local fold input and a live Worker's red
-    /// still counts on this rail. It is correctly suppressed on the Cockpit and the phone.
+    /// Defect 5 IS closed here, and this comment used to say "NOT closed here" - that a live Worker's red
+    /// "still counts on this rail". It does not: the Gateway pushes the resolved role down and
+    /// ControlEndpoints.Map carries it onto this fold input, so a live Worker classifies Active here exactly
+    /// as it does on the phone, and its need routes to its manager rather than to this header.
     /// </summary>
     public bool NeedsYou => SessionOrdering.Classify(FoldInput) == SessionOrdering.TriageBucket.NeedsYou;
 
