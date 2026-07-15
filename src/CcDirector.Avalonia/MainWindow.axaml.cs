@@ -2404,6 +2404,11 @@ public partial class MainWindow : Window
                 CustomColor = vm.Session.CustomColor,
                 ClaudeSessionId = vm.Session.ClaudeSessionId,
                 ActivityState = vm.Session.ActivityState,
+                // Defect 22: a snooze must survive a Director restart. This site is the one that actually
+                // runs - SessionManager.BuildPersistedSessions writes a FULLER record but has no
+                // production caller (only tests), so persisting the hold there alone would have been a
+                // no-op. Both sites carry it; see docs/new_architecture/session-state.html.
+                HoldState = vm.Session.HoldState,
                 BackendType = vm.Session.BackendType,
                 PendingPromptText = vm.Session.PendingPromptText,
                 WingmanEnabled = vm.Session.WingmanEnabled,

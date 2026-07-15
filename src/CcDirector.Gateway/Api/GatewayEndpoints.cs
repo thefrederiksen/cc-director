@@ -1173,7 +1173,32 @@ internal static class GatewayEndpoints
                     // validated above); otherwise fall back to the per-user default (snooze_default_minutes),
                     // read now so a Settings change applies to the next snooze.
                     var minutes = holdReq.SnoozeMinutes ?? Core.Configuration.SnoozeDefaultConfig.Get();
-                    snoozeRegistry.Snooze(sid, DateTime.UtcNow.AddMinutes(minutes), director.DirectorId);
+
+                    // DEFECT 20: read the Director's answer instead of assuming the hold landed. The hold
+                    // verb reports back whether it PARKED the session or DEFERRED it (the agent was
+                    // working, so the hold lands when the turn ends). HoldResponse.Pending has always
+                    // carried exactly this fact and this endpoint has always received it - it simply
+                    // passed the body through and never deserialized it.
+                    //
+                    // THE RULING (owner, 14 July 2026): the clock starts when the work ENDS. So a deferred
+                    // hold records its LENGTH and no deadline; the clock starts when the hold lands
+                    // (SnoozeLandingObserver on the push, SnoozeExpirySweep as the backstop). Arming a
+                    // clock here, at request time, is what made an agent-requested snooze permanent: the
+                    // sweep read OnHold=false 15 seconds later and deleted the timer.
+                    var hold = DirectorCommandRouter.ReadBody<HoldResponse>(streamResult!);
+                    if (hold is null)
+                    {
+                        // The Director said Ok but did not answer with a hold state. Fail loudly rather
+                        // than guess which of "held" and "deferred" happened - guessing wrong either
+                        // strands the snooze without a clock or expires it before it lands.
+                        FileLog.Write($"[GatewayEndpoints] hold: sid={sid} director returned an unreadable HoldResponse; not arming a snooze");
+                        return Results.StatusCode(StatusCodes.Status502BadGateway);
+                    }
+
+                    if (hold.Pending)
+                        snoozeRegistry.SnoozeDeferred(sid, minutes, director.DirectorId);
+                    else
+                        snoozeRegistry.Snooze(sid, DateTime.UtcNow.AddMinutes(minutes), director.DirectorId);
                 }
                 else
                 {

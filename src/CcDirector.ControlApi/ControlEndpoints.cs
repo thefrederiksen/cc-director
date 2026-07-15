@@ -1216,7 +1216,10 @@ internal static class ControlEndpoints
             IdleSeconds = idleSeconds,
             QuietThresholdSeconds = CcDirector.Core.Wingman.TerminalStateDetector.QuietThreshold.TotalSeconds,
             VoiceMode = s.VoiceMode,
-            OnHold = s.OnHold,
+            // Defect 12: report the WHOLE hold machine, not just "is it parked". OnHold is derived from
+            // this on the DTO, so setting it here as well would be a second writer of one fact - exactly
+            // the shape that lost the deferred state in the first place.
+            HoldState = s.HoldState.ToString(),
             PendingDeletion = s.PendingDeletion,
             DeletionReason = s.DeletionReason,
             WingmanEnabled = s.WingmanEnabled,

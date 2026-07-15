@@ -31,13 +31,16 @@ public sealed class DirectorHub : Hub
     private readonly DirectorRegistry _registry;
     private readonly GatewayInputStatsAggregator _inputStats;
     private readonly GatewayStreamRegistry _streamRegistry;
+    private readonly Snooze.SnoozeLandingObserver? _snoozeLandings;
 
-    public DirectorHub(PushedSessionStore store, DirectorRegistry registry, GatewayInputStatsAggregator inputStats, GatewayStreamRegistry streamRegistry)
+    public DirectorHub(PushedSessionStore store, DirectorRegistry registry, GatewayInputStatsAggregator inputStats,
+        GatewayStreamRegistry streamRegistry, Snooze.SnoozeLandingObserver? snoozeLandings = null)
     {
         _store = store;
         _registry = registry;
         _inputStats = inputStats;
         _streamRegistry = streamRegistry;
+        _snoozeLandings = snoozeLandings;
     }
 
     /// <summary>
@@ -91,6 +94,10 @@ public sealed class DirectorHub : Hub
         _store.ApplySnapshot(directorId, Context.ConnectionId, sequence, set);
         // DevThrottle Stats: fold each session's input tally into the always-available aggregate.
         _inputStats.ObserveSnapshot(set);
+        // Defect 20: a deferred snooze whose hold landed while this Director was disconnected arrives in
+        // the reconnect snapshot, not as a delta - so the snapshot must be watched too, or the landing is
+        // missed until the sweep's backstop notices.
+        _snoozeLandings?.ObserveSnapshot(set);
     }
 
     /// <summary>A single-session delta: upserts one session for the bound Director.</summary>
@@ -105,6 +112,10 @@ public sealed class DirectorHub : Hub
         _store.ApplyDelta(directorId, Context.ConnectionId, sequence, session);
         // DevThrottle Stats: fold this session's tally into the always-available aggregate.
         _inputStats.Observe(session);
+        // Defect 20: THE landing seam. Session.HoldStateChanged fires on DeferredHold -> Held and the
+        // Control API pushes a delta for it, so "the snooze the agent asked for has just landed" arrives
+        // here within milliseconds of the turn ending - which is the exact moment its clock must start.
+        _snoozeLandings?.Observe(session);
     }
 
     /// <summary>A remove/tombstone: drops one session from the bound Director's set.</summary>

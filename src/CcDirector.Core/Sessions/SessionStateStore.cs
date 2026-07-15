@@ -23,6 +23,22 @@ public class PersistedSession
     [JsonConverter(typeof(JsonStringEnumConverter))]
     public ActivityState ActivityState { get; set; }
 
+    /// <summary>
+    /// Where the session sat in the hold ("Snooze") machine (defect 22, 14 July 2026). Persisted so a
+    /// Director restart does not silently forget every snooze: without it, every <c>Held</c> session came
+    /// back un-held and every <c>DeferredHold</c> ("park me when this finishes") was lost - the work
+    /// finished and the session never parked - while the Gateway's timer entry lived on, pointing at a
+    /// session that was not held.
+    ///
+    /// Defaults to <see cref="Sessions.HoldState.None"/> so sessions persisted before this field existed
+    /// restore un-held, which is what they did before. Applied on restore through
+    /// <c>Session.RestoreHoldState</c>, which lands a deferral when the session is not working - it does
+    /// NOT restore blindly, because a deferral whose turn ended during the restart has already got what
+    /// it was waiting for.
+    /// </summary>
+    [JsonConverter(typeof(JsonStringEnumConverter))]
+    public HoldState HoldState { get; set; } = HoldState.None;
+
     /// <summary>Backend type used by this session (defaults to ConPty for backward compatibility).</summary>
     [JsonConverter(typeof(JsonStringEnumConverter))]
     public SessionBackendType BackendType { get; set; } = SessionBackendType.ConPty;

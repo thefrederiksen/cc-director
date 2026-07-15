@@ -113,7 +113,9 @@ public sealed class SnoozeEndToEndTests : IAsyncLifetime
 
         var entry = Assert.Single(_gw.SnoozeRegistry.Entries());
         Assert.Equal("s1", entry.SessionId);
-        var minutesOut = entry.SnoozeUntilUtc - DateTime.UtcNow;
+        // The session was NOT working, so the hold landed at once and its clock is already running.
+        Assert.False(entry.IsDeferred);
+        var minutesOut = entry.SnoozeUntilUtc!.Value - DateTime.UtcNow;
         Assert.InRange(minutesOut.TotalSeconds, 45, 75); // one minute, generous tolerance
 
         // Still in the future -> the roster shows it parked (grey / onHold).
@@ -149,8 +151,65 @@ public sealed class SnoozeEndToEndTests : IAsyncLifetime
         Assert.True(fake.CurrentOnHold("s6"));
         var entry = Assert.Single(_gw.SnoozeRegistry.Entries());
         Assert.Equal("s6", entry.SessionId);
-        var until = entry.SnoozeUntilUtc - DateTime.UtcNow;
+        var until = entry.SnoozeUntilUtc!.Value - DateTime.UtcNow;
         Assert.InRange(until.TotalMinutes, 12 * 60 - 2, 12 * 60 + 1); // 12 hours, generous tolerance
+    }
+
+    [Fact]
+    public async Task An_agent_requested_snooze_survives_the_deferral_and_its_clock_starts_when_the_turn_ends()
+    {
+        // DEFECT 20, END TO END, THROUGH THE REAL GATEWAY. This is THE case the feature exists to serve:
+        // an agent snoozing its own session, which BY DEFINITION happens while it is working. It is not an
+        // edge case - it is the headline case, and it was the one that failed.
+        //
+        // Before the fix: the Gateway armed a 12-hour timer at request time, the sweep ran 15 seconds
+        // later, asked "is it held?", was told no (it was DEFERRED, which reports OnHold=false), concluded
+        // the snooze was over and DELETED the timer. The turn then ended, the hold landed, and the session
+        // was snoozed with NO CLOCK AT ALL - forever.
+        await SetDefaultMinutes(1);
+        var fake = await StartFakeAsync("s8", onHold: false, activityState: "Working");
+
+        // The agent asks for a 12-hour snooze while it is working.
+        var holdResp = await _http.PostAsJsonAsync(
+            "sessions/s8/hold", new HoldRequest { OnHold = true, SnoozeMinutes = 12 * 60 });
+        Assert.Equal(HttpStatusCode.OK, holdResp.StatusCode);
+
+        // The Director deferred it, and the Gateway read that fact off HoldResponse.Pending: the entry is
+        // recorded with its LENGTH and NO deadline, because the clock starts when the work ends.
+        Assert.Equal(HoldStates.DeferredHold, fake.CurrentHoldState("s8"));
+        var deferred = Assert.Single(_gw.SnoozeRegistry.Entries());
+        Assert.True(deferred.IsDeferred);
+        Assert.Null(deferred.SnoozeUntilUtc);
+        Assert.Equal(12 * 60, deferred.PendingMinutes);
+
+        // The session is still WORKING, so it is still blue and reads "Working" - the law.
+        var working = await GetSession("s8");
+        Assert.Equal("blue", working.EffectiveColor);
+        Assert.Equal("Working", working.StateLabel);
+        Assert.False(working.OnHold);
+
+        // The sweep runs (it used to run every 15 seconds and destroy the snooze here). It must not.
+        await _gw.RunSnoozeSweepOnceAsync();
+        Assert.True(_gw.SnoozeRegistry.Contains("s8"));           // THE REGRESSION: the snooze survives
+        Assert.True(_gw.SnoozeRegistry.Entries().Single().IsDeferred);
+
+        // The turn ends. The deferral lands on the Director and it pushes the new state up the stream -
+        // and THAT is what starts the clock (SnoozeLandingObserver, on the push).
+        await fake.EndTurnAsync("s8");
+        Assert.Equal(HoldStates.Held, fake.CurrentHoldState("s8"));
+
+        var armed = Assert.Single(_gw.SnoozeRegistry.Entries());
+        Assert.False(armed.IsDeferred);                            // the clock is running at last
+        Assert.NotNull(armed.SnoozeUntilUtc);
+        var runsFor = armed.SnoozeUntilUtc!.Value - DateTime.UtcNow;
+        Assert.InRange(runsFor.TotalMinutes, 12 * 60 - 2, 12 * 60 + 1); // 12 hours FROM THE TURN ENDING
+
+        // And now it is a perfectly ordinary armed snooze: when it expires, the session comes back on its
+        // own. Advance the clock by re-stamping the entry into the past.
+        _gw.SnoozeRegistry.Snooze("s8", DateTime.UtcNow.AddSeconds(-1), fake.DirectorId);
+        var returned = await GetSession("s8");
+        Assert.False(returned.OnHold);
+        Assert.Equal("needsYou", returned.TriageBucket);
     }
 
     [Fact]
@@ -273,9 +332,9 @@ public sealed class SnoozeEndToEndTests : IAsyncLifetime
         return Assert.Single(sessions, s => s.SessionId == sid);
     }
 
-    private async Task<SnoozeFake> StartFakeAsync(string sid, bool onHold)
+    private async Task<SnoozeFake> StartFakeAsync(string sid, bool onHold, string activityState = "WaitingForInput")
     {
-        var fake = new SnoozeFake(sid, onHold);
+        var fake = new SnoozeFake(sid, onHold, activityState);
         await fake.ConnectAsync(_gw, Token);
         _fakes.Add(fake);
         return fake;
@@ -292,10 +351,17 @@ public sealed class SnoozeEndToEndTests : IAsyncLifetime
     /// <summary>
     /// A tunnel-connected stand-in Director for the snooze flow: it registers UNREACHABLE, pushes its
     /// sessions into the roster, and answers the two verbs the flow touches - "snapshot" (the raw
-    /// per-session OnHold read the watchdog does) and "hold" (the park/un-park write) - with a MUTABLE
-    /// per-session OnHold the hold verb updates, so the Gateway's forward is observable. MachineName is
-    /// this machine so the sweep treats it as reachable. It can reconnect to a fresh Gateway after a
+    /// per-session hold read the watchdog does) and "hold" (the park/un-park write) - with a MUTABLE
+    /// per-session hold state the hold verb updates, so the Gateway's forward is observable. MachineName
+    /// is this machine so the sweep treats it as reachable. It can reconnect to a fresh Gateway after a
     /// restart under the SAME director id, so the persisted snooze still addresses it.
+    ///
+    /// IT RUNS THE REAL HOLD RULE (upgraded 14 July 2026). Its <c>hold</c> verb mirrors
+    /// <c>Session.RequestHold</c>: a hold asked for while the agent is WORKING is DEFERRED and answers
+    /// <c>Pending=true</c>; otherwise it parks immediately. Until this change the fake always parked and
+    /// never set <c>Pending</c> - so it could not produce a deferral at all, and defect 20 was invisible
+    /// to every test that used it. A unit fake that is politer than the real Director does not prove the
+    /// Gateway works; it proves the fake agrees with the Gateway.
     /// </summary>
     private sealed class SnoozeFake : IAsyncDisposable
     {
@@ -307,17 +373,17 @@ public sealed class SnoozeEndToEndTests : IAsyncLifetime
         private readonly Dictionary<string, List<bool>> _holdCalls = new(StringComparer.Ordinal);
         private FakeTunnelDirector? _director;
 
-        public SnoozeFake(string sid, bool onHold)
+        public SnoozeFake(string sid, bool onHold, string activityState = "WaitingForInput")
         {
             _sessions[sid] = new SessionDto
             {
                 SessionId = sid,
                 Agent = "ClaudeCode",
                 RepoPath = "repo",
-                ActivityState = "WaitingForInput",
+                ActivityState = activityState,
                 Status = "Running",
                 StatusColor = "red",
-                OnHold = onHold,
+                HoldState = onHold ? HoldStates.Held : HoldStates.None,
                 CreatedAt = DateTime.UtcNow,
                 LastActivityAt = DateTime.UtcNow,
             };
@@ -325,8 +391,29 @@ public sealed class SnoozeEndToEndTests : IAsyncLifetime
         }
 
         public bool CurrentOnHold(string sid) { lock (_gate) return _sessions[sid].OnHold; }
+        // Nullable since 15 July 2026: an absent holdState now reads null ("the Director did not say")
+        // rather than defaulting to None, so this fake Director's accessor has to admit that too.
+        public string? CurrentHoldState(string sid) { lock (_gate) return _sessions[sid].HoldState; }
         public IReadOnlyList<bool> HoldCalls(string sid) { lock (_gate) return _holdCalls[sid].ToList(); }
         public void SetOnHold(string sid, bool value) { lock (_gate) _sessions[sid].OnHold = value; }
+
+        /// <summary>
+        /// The turn ends: the agent stops working, so a deferred hold LANDS (Session.cs's settle edge).
+        /// This is the moment the owner's ruling names - the snooze clock starts HERE, not when the
+        /// snooze was asked for. Pushes the new state up the stream exactly as a real Director does on
+        /// HoldStateChanged.
+        /// </summary>
+        public Task EndTurnAsync(string sid)
+        {
+            lock (_gate)
+            {
+                var s = _sessions[sid];
+                s.ActivityState = "WaitingForInput";
+                if (HoldStates.IsDeferred(s.HoldState))
+                    s.HoldState = HoldStates.Held;
+            }
+            return PushAsync();
+        }
 
         // Register UNREACHABLE + connect the stream + push the current snapshot.
         public async Task ConnectAsync(GatewayHost gw, string token)
@@ -374,9 +461,23 @@ public sealed class SnoozeEndToEndTests : IAsyncLifetime
                     {
                         if (!_sessions.TryGetValue(cmd.SessionId, out var s))
                             return DirectorCommandResult.Fail(DirectorCommandStatus.NotFound, "no such session");
-                        s.OnHold = req.OnHold;
                         _holdCalls[cmd.SessionId].Add(req.OnHold);
-                        return FakeTunnelDirector.Ok(new HoldResponse { OnHold = s.OnHold });
+
+                        // Session.RequestHold's rule, faithfully: a hold asked for while the agent is
+                        // WORKING defers ("snooze me when this finishes") and reports Pending; an
+                        // un-hold clears everything; anything else parks now.
+                        var working = string.Equals(s.ActivityState, "Working", StringComparison.OrdinalIgnoreCase)
+                            || string.Equals(s.ActivityState, "Starting", StringComparison.OrdinalIgnoreCase);
+                        if (!req.OnHold)
+                            s.HoldState = HoldStates.None;
+                        else
+                            s.HoldState = working ? HoldStates.DeferredHold : HoldStates.Held;
+
+                        return FakeTunnelDirector.Ok(new HoldResponse
+                        {
+                            OnHold = s.OnHold,
+                            Pending = req.OnHold && working,
+                        });
                     }
                 }
                 default:
@@ -392,7 +493,9 @@ public sealed class SnoozeEndToEndTests : IAsyncLifetime
             ActivityState = s.ActivityState,
             Status = s.Status,
             StatusColor = s.StatusColor,
-            OnHold = s.OnHold,
+            // Defect 12: the WHOLE hold state crosses, not just "is it parked". Copying OnHold here
+            // instead would flatten a DeferredHold back to None - the exact loss this mission ended.
+            HoldState = s.HoldState,
             CreatedAt = s.CreatedAt,
             LastActivityAt = s.LastActivityAt,
         };

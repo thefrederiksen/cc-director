@@ -251,6 +251,108 @@ public sealed class SessionInteractiveTests
         Assert.Equal(HoldState.None, s.HoldState);
     }
 
+    // ---- Defect 21: a snoozed session that exits reads Exited, never "Snoozed" ----
+
+    [Fact]
+    public void RequestHold_Landed_IsAlsoClearedIfTheSessionExits()
+    {
+        // DEFECT 21. The rule above (drop a DEFERRED hold on exit) carried the reasoning in its own
+        // comment - "parking a dead session would just hide it behind a 'Snoozed' label forever" - and was
+        // then applied only to the deferred case. A session that was ALREADY Held kept OnHold=true on
+        // exit, the fold checks OnHold before the base activity colour, and so the row read "Snoozed"
+        // forever: the exact outcome the neighbouring comment forbids.
+        //
+        // THE RULING (owner, 14 July 2026): a snoozed session that exits reads Exited. A dead session
+        // never hides behind a Snoozed label.
+        var backend = new RecordingBackend();
+        using var s = NewSession(backend, ActivityState.WaitingForInput);
+        s.RequestHold(true);
+        Assert.Equal(HoldState.Held, s.HoldState);   // landed immediately - it was not working
+
+        s.ApplyTerminalActivityState(ActivityState.Exited);
+
+        Assert.Equal(HoldState.None, s.HoldState);
+        Assert.False(s.OnHold);   // -> the fold falls through to the base colour: grey "Exited"
+    }
+
+    // ---- Defect 22: the hold survives a Director restart ----
+
+    [Fact]
+    public void RestoreHoldState_Held_OnASettledSession_ComesBackHeld()
+    {
+        // DEFECT 22: before this, HoldState was runtime-only - a restart forgot every snooze, so a
+        // 12-hour snooze silently became no snooze at all while the Gateway's timer entry lived on,
+        // pointing at a session that was not held.
+        var backend = new RecordingBackend();
+        using var s = NewSession(backend, ActivityState.WaitingForInput);
+
+        s.RestoreHoldState(HoldState.Held);
+
+        Assert.Equal(HoldState.Held, s.HoldState);
+        Assert.True(s.OnHold);
+    }
+
+    [Fact]
+    public void RestoreHoldState_DeferredHold_OnASettledSession_Lands()
+    {
+        // THE RULING (owner, 14 July 2026): persist the hold state, and LAND the deferral on restart if
+        // the session is not working. It follows from the ruling that the clock starts when the work ends
+        // - the deferral was waiting for a turn to finish, and the Director that died finished it.
+        var backend = new RecordingBackend();
+        using var s = NewSession(backend, ActivityState.WaitingForInput);
+
+        s.RestoreHoldState(HoldState.DeferredHold);
+
+        Assert.Equal(HoldState.Held, s.HoldState);
+        Assert.True(s.OnHold);
+    }
+
+    [Fact]
+    public void RestoreHoldState_DeferredHold_OnAWorkingSession_StaysDeferred()
+    {
+        // Still working, so the deferral is still waiting for exactly what it was always waiting for.
+        // The settle edge lands it as usual, and meanwhile the session is blue and reads "Working".
+        var backend = new RecordingBackend();
+        using var s = NewSession(backend, ActivityState.Working);
+
+        s.RestoreHoldState(HoldState.DeferredHold);
+
+        Assert.Equal(HoldState.DeferredHold, s.HoldState);
+        Assert.False(s.OnHold);
+
+        s.ApplyTerminalActivityState(ActivityState.WaitingForInput);
+        Assert.Equal(HoldState.Held, s.HoldState);   // lands at the settle, as it would have done
+    }
+
+    [Fact]
+    public void RestoreHoldState_Held_OnAWorkingSession_IsLifted()
+    {
+        // Working ALWAYS clears a hold - the load-bearing rule of the whole machine. A restore is not an
+        // exception to it: a session that came back working is not parked, whatever the store said.
+        var backend = new RecordingBackend();
+        using var s = NewSession(backend, ActivityState.Working);
+
+        s.RestoreHoldState(HoldState.Held);
+
+        Assert.Equal(HoldState.None, s.HoldState);
+        Assert.False(s.OnHold);
+    }
+
+    [Fact]
+    public void RestoreHoldState_OnAnExitedSession_DropsTheHold()
+    {
+        // The exit rule, applied at restore: there is no turn to come back to, and a dead session must
+        // never hide behind a "Snoozed" label (defect 21's ruling).
+        var backend = new RecordingBackend();
+        using var s = NewSession(backend, ActivityState.Exited);
+
+        s.RestoreHoldState(HoldState.Held);
+        Assert.Equal(HoldState.None, s.HoldState);
+
+        s.RestoreHoldState(HoldState.DeferredHold);
+        Assert.Equal(HoldState.None, s.HoldState);
+    }
+
     [Fact]
     public void RequestHold_WhileWorking_DoesNotRaiseOnHoldChanged_ButDoesRaiseHoldStateChanged()
     {

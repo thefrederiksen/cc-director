@@ -157,6 +157,110 @@ public sealed class SnoozeRegistryTests : IDisposable
         Assert.True(reg2.IsExpired("s1", now));        // reads as expired -> the first sweep fires it
     }
 
+    // ---- Defect 20: a DEFERRED entry - the snooze was asked for, the clock has not started ----
+
+    [Fact]
+    public void SnoozeDeferred_records_the_length_and_no_deadline()
+    {
+        // THE RULING (owner, 14 July 2026): the clock starts when the work ENDS. So a hold asked for
+        // while the agent is working records what was ASKED FOR and nothing else - arming a clock at
+        // request time is what let it be deleted (or expire) before the hold had even landed.
+        var reg = new SnoozeRegistry(Path_);
+
+        reg.SnoozeDeferred("s1", 720, "dir-1");
+
+        var e = Assert.Single(reg.Entries());
+        Assert.True(e.IsDeferred);
+        Assert.Null(e.SnoozeUntilUtc);
+        Assert.Equal(720, e.PendingMinutes);
+    }
+
+    [Fact]
+    public void A_deferred_entry_is_never_expired_however_long_it_waits()
+    {
+        var reg = new SnoozeRegistry(Path_);
+        var now = new DateTime(2026, 7, 14, 12, 0, 0, DateTimeKind.Utc);
+        reg.SnoozeDeferred("s1", 1, "dir-1");   // a ONE-minute snooze...
+
+        Assert.False(reg.IsExpired("s1", now.AddYears(10)));  // ...still not expired a decade later
+    }
+
+    [Fact]
+    public void Land_starts_the_clock_from_the_landing_instant()
+    {
+        var reg = new SnoozeRegistry(Path_);
+        var landedAt = new DateTime(2026, 7, 14, 12, 0, 0, DateTimeKind.Utc);
+        reg.SnoozeDeferred("s1", 720, "dir-1");
+
+        Assert.True(reg.Land("s1", landedAt));
+
+        var e = Assert.Single(reg.Entries());
+        Assert.False(e.IsDeferred);
+        Assert.Equal(landedAt.AddMinutes(720), e.SnoozeUntilUtc);  // 12 hours AFTER the work ended
+        Assert.Null(e.PendingMinutes);
+        Assert.False(reg.IsExpired("s1", landedAt.AddMinutes(719)));
+        Assert.True(reg.IsExpired("s1", landedAt.AddMinutes(720)));
+    }
+
+    [Fact]
+    public void Land_is_idempotent_and_never_restarts_a_running_clock()
+    {
+        // Two callers land a deferral: the push seam and the sweep backstop. Whichever is first wins.
+        var reg = new SnoozeRegistry(Path_);
+        var landedAt = new DateTime(2026, 7, 14, 12, 0, 0, DateTimeKind.Utc);
+        reg.SnoozeDeferred("s1", 720, "dir-1");
+        reg.Land("s1", landedAt);
+
+        Assert.False(reg.Land("s1", landedAt.AddHours(5)));   // second landing: refused
+        Assert.Equal(landedAt.AddMinutes(720), Assert.Single(reg.Entries()).SnoozeUntilUtc);
+    }
+
+    [Fact]
+    public void Land_on_an_absent_session_is_a_no_op()
+    {
+        var reg = new SnoozeRegistry(Path_);
+        Assert.False(reg.Land("nobody", DateTime.UtcNow));
+    }
+
+    [Fact]
+    public void ClearIfUnchanged_refuses_when_a_deferral_landed_since_the_read()
+    {
+        // The sweep snapshots a DEFERRED entry, then the hold lands mid-pass and the clock starts. A
+        // decision taken against the old snapshot must not delete the freshly-armed snooze - which is
+        // defect 20 in miniature, one pass later.
+        var reg = new SnoozeRegistry(Path_);
+        reg.SnoozeDeferred("s1", 720, "dir-1");
+        reg.Land("s1", DateTime.UtcNow);
+
+        Assert.False(reg.ClearIfUnchanged("s1", null, 720));  // the snapshot's shape no longer matches
+        Assert.True(reg.Contains("s1"));
+    }
+
+    [Fact]
+    public void A_deferred_entry_survives_a_restart_with_its_length_intact()
+    {
+        var reg1 = new SnoozeRegistry(Path_);
+        reg1.SnoozeDeferred("s1", 720, "dir-1");
+
+        var reg2 = new SnoozeRegistry(Path_);   // restart
+        var e = Assert.Single(reg2.Entries());
+        Assert.True(e.IsDeferred);
+        Assert.Equal(720, e.PendingMinutes);
+    }
+
+    [Fact]
+    public void A_row_with_neither_a_deadline_nor_a_length_is_dropped_on_load()
+    {
+        // Such a row could never expire and never land - a snooze that would silently never return.
+        // Drop it loudly rather than keep a promise that cannot be kept.
+        Directory.CreateDirectory(_dir);
+        File.WriteAllText(Path_, """{"entries":[{"sessionId":"s1","snoozeUntilUtc":null,"directorId":"d","pendingMinutes":null}]}""");
+
+        var reg = new SnoozeRegistry(Path_);
+
+        Assert.Empty(reg.Entries());
+    }
+
     [Fact]
     public void A_corrupt_file_is_quarantined_and_the_registry_starts_empty()
     {

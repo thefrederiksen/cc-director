@@ -263,13 +263,65 @@ public sealed class SessionDto
     public bool VoiceMode { get; set; }
 
     /// <summary>
-    /// True when the user has parked this session in the FIFO voice queue ("deal with
-    /// this later"). A user override orthogonal to <see cref="ActivityState"/> and
-    /// <see cref="StatusColor"/>: the underlying state is still reported truthfully, but
-    /// the FIFO conductor skips held sessions. Mirrors <c>Session.OnHold</c> on the
-    /// owning Director. The UI renders this verbatim and never derives it.
+    /// Where this session sits in the hold ("Snooze") machine - one of the three
+    /// <see cref="HoldStates"/> values: <c>None</c>, <c>Held</c>, or <c>DeferredHold</c>. Mirrors
+    /// <c>Session.HoldState</c> on the owning Director, which is the only writer.
+    ///
+    /// THIS IS THE AUTHORITATIVE HOLD FIELD (defect 12, fixed 14 July 2026). It replaced the boolean
+    /// <see cref="OnHold"/>, which could not distinguish <c>None</c> from <c>DeferredHold</c> - both
+    /// reported false - and so lost the one fact the Gateway's expiry sweep needed. Anything deciding
+    /// what to DO about a hold reads this; see <see cref="OnHold"/> for the render-side boolean.
+    ///
+    /// NULL MEANS "THE DIRECTOR DID NOT SAY", AND THAT IS NOT THE SAME AS <c>None</c>. It defaulted to
+    /// <c>None</c> until 15 July 2026, which reintroduced defect 12 across a version skew: an old
+    /// Director does not send this field at all, so an absent value deserialized to <c>None</c> - and a
+    /// deferred snooze on that Director (which reports only <c>onHold=false</c>) was read by the sweep as
+    /// "genuinely not held" and cleared, fifteen seconds after it was asked for. The defect the tri-state
+    /// exists to kill, resurrected by a default. A Gateway is routinely newer than the Directors it
+    /// serves, so this is an ordinary running state, not a corner case.
+    ///
+    /// Absent now stays null, <see cref="HoldStates.Normalize"/> maps it to null, and the sweep treats
+    /// null as a missed read and changes nothing - which keeps the snooze. Never default this to a real
+    /// state: guessing <c>None</c> is what deletes the user's twelve-hour snooze.
     /// </summary>
-    public bool OnHold { get; set; }
+    public string? HoldState { get; set; }
+
+    /// <summary>
+    /// True when the user has parked this session in the FIFO voice queue ("deal with this later") -
+    /// i.e. it is parked RIGHT NOW. A user override orthogonal to <see cref="ActivityState"/> and
+    /// <see cref="StatusColor"/>: the underlying state is still reported truthfully, but the FIFO
+    /// conductor skips held sessions. The UI renders this verbatim and never derives it.
+    ///
+    /// DERIVED from <see cref="HoldState"/>, never stored (defect 12): it is exactly
+    /// <c>HoldState == Held</c>, so the boolean and the tri-state cannot disagree - which is what went
+    /// wrong when they were two independent fields. A <c>DeferredHold</c> reads FALSE here, correctly:
+    /// it is not parked yet. That is precisely why nothing that must tell "not held" from "about to be
+    /// held" may read this field - the snooze sweep reads <see cref="HoldState"/>.
+    ///
+    /// It stays on the wire, settable, for backward compatibility: a client that predates
+    /// <see cref="HoldState"/> still reads the boolean it always did, and a Director that predates it
+    /// sends only the boolean, which the setter maps onto the tri-state (true -&gt; Held, false -&gt;
+    /// None). The setter is deliberately idempotent, so a payload carrying BOTH fields lands on the same
+    /// state whichever order the deserializer assigns them in.
+    /// </summary>
+    public bool OnHold
+    {
+        get => HoldStates.IsHeld(HoldState);
+        set
+        {
+            if (value)
+            {
+                if (!OnHold) HoldState = HoldStates.Held;
+            }
+            else
+            {
+                // Only a LANDED hold is released here. A DeferredHold already reads OnHold=false, so
+                // "set false" is a no-op against it - it must not be silently destroyed by a writer
+                // that only knows about the boolean (the snooze expiry overlay is one such writer).
+                if (OnHold) HoldState = HoldStates.None;
+            }
+        }
+    }
 
     /// <summary>
     /// Snooze Length mission: display-only marker that this session has just RETURNED from an expired
