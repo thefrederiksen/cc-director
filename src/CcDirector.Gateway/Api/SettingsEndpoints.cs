@@ -79,6 +79,10 @@ internal static class SettingsEndpoints
                 // Snooze Length mission: the per-user default snooze length in minutes (default 60),
                 // so the one Settings page can render and edit it in Phase 3.
                 snoozeDefaultMinutes = Core.Configuration.SnoozeDefaultConfig.Get(),
+                // The lengths every Snooze menu offers beside that default, and the cap on how many
+                // there may be, so the Settings page can render the list and disable "Add" when full.
+                snoozePresets = Core.Configuration.SnoozePresetsConfig.Get(),
+                snoozeMaxPresets = Core.Configuration.SnoozePresetsConfig.MaxPresets,
                 // The display time zone (IANA id) the private dashboards' hourly charts read local hours
                 // in. Auto-defaults to this Gateway machine's own zone when unset; machineDefault lets the
                 // Settings page show what "automatic" resolves to.
@@ -240,8 +244,8 @@ internal static class SettingsEndpoints
         // docs/architecture/snooze-length-mission-2026-07-11.md). One value for the whole account:
         // because every device talks to this one Gateway, this Gateway-owned setting IS "the same
         // snooze length across all my devices". Read at snooze time, so a change applies to the next
-        // snooze with no Gateway restart. There is no per-snooze duration by design - this is the one
-        // length every Snooze button uses.
+        // snooze with no Gateway restart. This is the length the plain one-click Snooze uses; the other
+        // lengths a menu may offer beside it are /gateway/snooze-presets below.
         app.MapGet("/gateway/snooze-default", () =>
             Results.Json(new { minutes = Core.Configuration.SnoozeDefaultConfig.Get() }));
 
@@ -256,13 +260,66 @@ internal static class SettingsEndpoints
                 if (!Core.Configuration.SnoozeDefaultConfig.IsValid(minutes))
                     return Results.BadRequest(new { error = $"minutes must be between {Core.Configuration.SnoozeDefaultConfig.MinMinutes} and {Core.Configuration.SnoozeDefaultConfig.MaxMinutes}" });
 
-                Core.Configuration.SnoozeDefaultConfig.Set(minutes);
+                // Goes through SnoozePresetsConfig, not SnoozeDefaultConfig.Set, so the default can never
+                // end up being a length the Snooze menu does not offer: a length that is not on the menu
+                // is added to it. Throws (fail loud) when the menu is already full - only the user can say
+                // which length to drop.
+                Core.Configuration.SnoozePresetsConfig.SetDefault(minutes);
                 FileLog.Write($"[SettingsEndpoints] snooze_default_minutes set to {minutes}");
                 return Results.Json(new { minutes });
+            }
+            catch (InvalidOperationException ex)
+            {
+                FileLog.Write($"[SettingsEndpoints] PUT /gateway/snooze-default rejected: {ex.Message}");
+                return Results.BadRequest(new { error = ex.Message });
             }
             catch (JsonException ex)
             {
                 FileLog.Write($"[SettingsEndpoints] PUT /gateway/snooze-default bad JSON: {ex.Message}");
+                return Results.BadRequest(new { error = "invalid JSON" });
+            }
+        });
+
+        // The per-user list of snooze lengths every Snooze menu offers, and which of them is the
+        // default. Gateway-owned like the default above, so the same lengths appear on the desktop, the
+        // phone, and in the Cockpit. The list and its default are written together in ONE call because
+        // they have an invariant between them - the default must be one of the lengths - and separate
+        // writes would let a half-applied change break it.
+        app.MapGet("/gateway/snooze-presets", () =>
+            Results.Json(new
+            {
+                presets = Core.Configuration.SnoozePresetsConfig.Get(),
+                defaultMinutes = Core.Configuration.SnoozeDefaultConfig.Get(),
+                maxPresets = Core.Configuration.SnoozePresetsConfig.MaxPresets,
+            }));
+
+        app.MapPut("/gateway/snooze-presets", async (HttpContext ctx) =>
+        {
+            try
+            {
+                var body = await JsonSerializer.DeserializeAsync<SnoozePresetsBody>(
+                    ctx.Request.Body, JsonOpts, ctx.RequestAborted);
+                if (body?.Presets is not { } presets || body.DefaultMinutes is not int defaultMinutes)
+                    return Results.BadRequest(new
+                    {
+                        error = "body { \"presets\": [<whole minutes>], \"defaultMinutes\": <whole minutes> } is required",
+                    });
+
+                if (!Core.Configuration.SnoozePresetsConfig.IsValidSet(presets, defaultMinutes, out var invalid))
+                    return Results.BadRequest(new { error = invalid });
+
+                Core.Configuration.SnoozePresetsConfig.Set(presets, defaultMinutes);
+                FileLog.Write($"[SettingsEndpoints] snooze_presets set to [{string.Join(", ", presets)}], default {defaultMinutes}");
+                return Results.Json(new
+                {
+                    presets = Core.Configuration.SnoozePresetsConfig.Get(),
+                    defaultMinutes,
+                    maxPresets = Core.Configuration.SnoozePresetsConfig.MaxPresets,
+                });
+            }
+            catch (JsonException ex)
+            {
+                FileLog.Write($"[SettingsEndpoints] PUT /gateway/snooze-presets bad JSON: {ex.Message}");
                 return Results.BadRequest(new { error = "invalid JSON" });
             }
         });
@@ -544,6 +601,7 @@ internal static class SettingsEndpoints
     private sealed record TranscriptionModeBody(string? Mode);
     private sealed record AutostartBody(bool Enabled);
     private sealed record SnoozeDefaultBody(int? Minutes);
+    private sealed record SnoozePresetsBody(int[]? Presets, int? DefaultMinutes);
     private sealed record TimeZoneBody(string? TimeZone);
     private sealed record WingmanBody(bool Enabled);
     private sealed record BrainConfigBody(string? AgentId, string? Tool, string? Model);

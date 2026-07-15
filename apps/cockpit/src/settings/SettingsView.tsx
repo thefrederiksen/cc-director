@@ -10,12 +10,19 @@ import {
   getGatewaySettings,
   setAddressingMode,
   setAutostart,
-  setSnoozeDefaultMinutes,
+  setSnoozePresets,
   setTimeZone,
   setTrainingCapture,
   type AddressingMode,
   type GatewaySettings,
+  type SnoozePresets,
 } from "@devthrottle/client-core/settings/settingsClient";
+import {
+  formatSnoozeLength,
+  snoozeDraftFrom,
+  snoozeMinutesFrom,
+  type SnoozeUnit,
+} from "@devthrottle/client-core/settings/snoozeFormat";
 import {
   type AiModel,
   type AiProviderSnapshot,
@@ -502,16 +509,21 @@ function NotificationsTab() {
   );
 }
 
-// The default snooze length (Snooze Length mission). A Gateway setting, so it owns its own load of the
-// settings document (one fetch for this tab).
-function SnoozeCard() {
-  const { settings, setSettings, error, busy, msg, setMsg, runSave } = useGatewaySettings();
-  // A draft of the input, synced from the loaded settings.
-  const [snoozeDraft, setSnoozeDraft] = useState("");
-
-  useEffect(() => {
-    if (settings !== null) setSnoozeDraft(String(settings.snoozeDefaultMinutes));
-  }, [settings?.snoozeDefaultMinutes]);
+// The snooze lengths and which of them is the default (Snooze Length mission). A Gateway setting, so it
+// owns its own load of the settings document (one fetch for this tab).
+//
+// The list and its default are ONE form: the radio that marks the default is a row in the same list you
+// edit, so there is no separate "default" control that could name a length the list does not offer. Every
+// change writes both through setSnoozePresets in a single call, which is what holds that invariant.
+//
+// Exported ONLY so the browser proof harness
+// (packages/client-core/browser-tests/snooze-presets-proof) can mount this exact component against a fake
+// Gateway. Nothing else should import it - the card is reached through SettingsView's tabs.
+export function SnoozeCard() {
+  const { settings, setSettings, error, busy, msg, runSave } = useGatewaySettings();
+  // The row being added or edited: its index (null when adding) and the drafted number + unit. Null when
+  // the editor is closed.
+  const [editing, setEditing] = useState<{ index: number | null; count: string; unit: SnoozeUnit } | null>(null);
 
   if (error !== null) {
     return <div className="settings-error">Could not load the snooze setting: {error}</div>;
@@ -520,18 +532,51 @@ function SnoozeCard() {
     return <p className="settings-loading">Loading...</p>;
   }
 
-  const saveSnooze = () => {
+  const presets = settings.snoozePresets;
+  const max = settings.snoozeMaxPresets;
+  const isFull = presets.length >= max;
+
+  // Every edit goes through here: it writes the whole list plus the default in one call, so a
+  // half-applied change can never leave a default that is not on the menu.
+  const save = (next: number[], nextDefault: number, describe: (applied: SnoozePresets) => string) => {
     if (busy) return;
-    const minutes = Number(snoozeDraft);
-    if (!Number.isInteger(minutes) || minutes < 1 || minutes > 7 * 24 * 60) {
-      setMsg("Snooze length must be a whole number of minutes from 1 to 10080.");
-      return;
-    }
     void runSave(async () => {
-      const applied = await setSnoozeDefaultMinutes(minutes);
-      setSettings({ ...settings, snoozeDefaultMinutes: applied });
-      return `Snooze length set to ${applied} minute${applied === 1 ? "" : "s"}. Applies to the next snooze, on every device.`;
+      const applied = await setSnoozePresets(next, nextDefault);
+      setSettings({
+        ...settings,
+        snoozePresets: applied.presets,
+        snoozeDefaultMinutes: applied.defaultMinutes,
+        snoozeMaxPresets: applied.maxPresets,
+      });
+      setEditing(null);
+      return describe(applied);
     });
+  };
+
+  const makeDefault = (minutes: number) =>
+    save(presets, minutes, (a) => `One click on Snooze now holds a session for ${formatSnoozeLength(a.defaultMinutes)}.`);
+
+  const removeLength = (minutes: number) => {
+    const next = presets.filter((m) => m !== minutes);
+    // Deleting the default moves it to the shortest remaining length rather than refusing the delete:
+    // the list can never be empty (the last row's Remove is disabled) so there is always one to move to.
+    const nextDefault = minutes === settings.snoozeDefaultMinutes ? Math.min(...next) : settings.snoozeDefaultMinutes;
+    save(next, nextDefault, () =>
+      minutes === settings.snoozeDefaultMinutes
+        ? `Removed ${formatSnoozeLength(minutes)}. The default is now ${formatSnoozeLength(nextDefault)}.`
+        : `Removed ${formatSnoozeLength(minutes)}.`,
+    );
+  };
+
+  const commitEdit = () => {
+    if (editing === null) return;
+    const minutes = snoozeMinutesFrom(editing.count, editing.unit);
+    if (minutes === null) return;
+    const previous = editing.index === null ? null : presets[editing.index];
+    const next = previous === null ? [...presets, minutes] : presets.map((m) => (m === previous ? minutes : m));
+    // Editing the row that holds the default keeps the default on that row.
+    const nextDefault = previous !== null && previous === settings.snoozeDefaultMinutes ? minutes : settings.snoozeDefaultMinutes;
+    save(next, nextDefault, () => `Saved ${formatSnoozeLength(minutes)}.`);
   };
 
   return (
@@ -539,29 +584,102 @@ function SnoozeCard() {
       <CardHead title="Snooze" scope="whole fleet" />
       <p className="settings-hint">
         How long a snoozed session stays parked before it returns to &quot;needs you&quot; on its own - a
-        dead-man&apos;s switch, so a session you snooze can never be lost. One length for every snooze, the
-        same on every device. Read at snooze time, so a change applies to the next snooze.
+        dead-man&apos;s switch, so a session you snooze can never be lost. These are the lengths every Snooze
+        menu offers, the same on every device. Read at snooze time, so a change applies to the next snooze.
       </p>
-      <div className="settings-field">
-        <label htmlFor="settings-snooze">Default snooze length (minutes)</label>
-        <input
-          id="settings-snooze"
-          className="settings-input"
-          type="number"
-          min={1}
-          max={10080}
-          step={1}
-          value={snoozeDraft}
-          disabled={busy}
-          onChange={(e) => setSnoozeDraft(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Enter") saveSnooze();
-          }}
-        />
-        <button type="button" className="settings-btn" disabled={busy} onClick={() => saveSnooze()}>
-          Save
+
+      <ul className="snooze-list">
+        {presets.map((minutes, index) => (
+          <li key={minutes} className="snooze-row">
+            <label className="snooze-row-pick">
+              <input
+                type="radio"
+                name="snooze-default"
+                checked={minutes === settings.snoozeDefaultMinutes}
+                disabled={busy}
+                onChange={() => makeDefault(minutes)}
+              />
+              <span className="snooze-row-name">{formatSnoozeLength(minutes)}</span>
+            </label>
+            <button
+              type="button"
+              className="settings-btn"
+              disabled={busy}
+              onClick={() => setEditing({ index, ...snoozeDraftFrom(minutes) })}
+            >
+              Edit
+            </button>
+            <button
+              type="button"
+              className="settings-btn"
+              // The menu can never be empty, so the last remaining length cannot be removed.
+              disabled={busy || presets.length === 1}
+              title={presets.length === 1 ? "You need at least one snooze length." : undefined}
+              onClick={() => removeLength(minutes)}
+            >
+              Remove
+            </button>
+          </li>
+        ))}
+      </ul>
+
+      <p className="settings-hint">
+        The dot is the default: what one click on Snooze, the phone, and voice all use.{" "}
+        {presets.length} of {max} lengths used.
+      </p>
+
+      {editing !== null ? (
+        <div className="settings-field">
+          <label htmlFor="settings-snooze-count">Length</label>
+          <input
+            id="settings-snooze-count"
+            className="settings-input"
+            type="number"
+            min={1}
+            step={1}
+            value={editing.count}
+            disabled={busy}
+            onChange={(e) => setEditing({ ...editing, count: e.target.value })}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") commitEdit();
+              if (e.key === "Escape") setEditing(null);
+            }}
+          />
+          <select
+            className="settings-input"
+            aria-label="Unit"
+            value={editing.unit}
+            disabled={busy}
+            onChange={(e) => setEditing({ ...editing, unit: e.target.value as SnoozeUnit })}
+          >
+            <option value="minutes">minutes</option>
+            <option value="hours">hours</option>
+            <option value="days">days</option>
+          </select>
+          <button
+            type="button"
+            className="settings-btn"
+            disabled={busy || snoozeMinutesFrom(editing.count, editing.unit) === null}
+            onClick={() => commitEdit()}
+          >
+            Save
+          </button>
+          <button type="button" className="settings-btn" disabled={busy} onClick={() => setEditing(null)}>
+            Cancel
+          </button>
+        </div>
+      ) : (
+        <button
+          type="button"
+          className="settings-btn"
+          disabled={busy || isFull}
+          title={isFull ? `A snooze menu holds at most ${max} lengths. Remove one first.` : undefined}
+          onClick={() => setEditing({ index: null, count: "30", unit: "minutes" })}
+        >
+          Add a length
         </button>
-      </div>
+      )}
+
       {msg !== "" && <div className="settings-msg">{msg}</div>}
     </section>
   );

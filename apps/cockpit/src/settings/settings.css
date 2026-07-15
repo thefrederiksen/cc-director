@@ -414,3 +414,43 @@
 .carmode-log-row.match {
   color: #22c55e;
 }
+
+/* ---- Snooze lengths list -------------------------------------------------------------------------
+ * The up-to-five snooze lengths, each row a radio (which one is the default) plus its Edit and Remove.
+ * The radio lives IN the list rather than in a separate control, so the default can only ever be a
+ * length the list actually offers. */
+.snooze-list {
+  list-style: none;
+  margin: 0 0 8px;
+  padding: 0;
+}
+.snooze-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 6px 0;
+  border-bottom: 1px solid var(--border);
+}
+.snooze-row:last-child {
+  border-bottom: none;
+}
+.snooze-row-pick {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: 1;
+  min-width: 0;
+  cursor: pointer;
+}
+.snooze-row-pick input {
+  flex: 0 0 auto;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+.snooze-row-name {
+  color: var(--text);
+  font-size: 14px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

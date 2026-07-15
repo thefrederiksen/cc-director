@@ -40,8 +40,13 @@ export interface GatewaySettings {
   wingmanTrainingCapture: boolean;
   telemetryConsent: boolean;
   // Snooze Length mission: the per-user default snooze length in minutes (one value across every device,
-  // because they all talk to this one Gateway). Default 60.
+  // because they all talk to this one Gateway). Default 60. Always one of snoozePresets.
   snoozeDefaultMinutes: number;
+  // The lengths every Snooze menu offers, ascending. Shipped as [15, 60, 240, 480] until the user edits
+  // them. Gateway-owned like the default, so the same lengths appear on desktop, phone, and Cockpit.
+  snoozePresets: number[];
+  // The most lengths the list may hold, so the Settings page can disable "Add a length" when full.
+  snoozeMaxPresets: number;
   // The display time zone (IANA id) the private dashboards' hourly charts read local hours in. Auto-
   // defaults to the Gateway machine's own zone when unset; the owner can override it here.
   timeZone: string;
@@ -116,6 +121,10 @@ export async function getGatewaySettings(signal?: AbortSignal): Promise<GatewayS
     wingmanTrainingCapture: Boolean(body.wingmanTrainingCapture),
     telemetryConsent: Boolean(body.telemetryConsent),
     snoozeDefaultMinutes: Number(body.snoozeDefaultMinutes ?? 60),
+    snoozePresets: Array.isArray(body.snoozePresets)
+      ? body.snoozePresets.map(Number)
+      : [15, 60, 240, 480],
+    snoozeMaxPresets: Number(body.snoozeMaxPresets ?? 5),
     timeZone: typeof body.timeZone === "string" && body.timeZone.length > 0 ? body.timeZone : "UTC",
     timeZoneMachineDefault:
       typeof body.timeZoneMachineDefault === "string" && body.timeZoneMachineDefault.length > 0
@@ -138,6 +147,36 @@ export async function setTimeZone(timeZone: string, signal?: AbortSignal): Promi
 export async function setSnoozeDefaultMinutes(minutes: number, signal?: AbortSignal): Promise<number> {
   const body = await putJson<{ minutes?: number }>("/gateway/snooze-default", "PUT /gateway/snooze-default", { minutes }, signal);
   return Number(body.minutes ?? minutes);
+}
+
+// The snooze lengths and which of them is the default, as one value. They travel together because they
+// have an invariant between them: the default must be one of the lengths.
+export interface SnoozePresets {
+  presets: number[];
+  defaultMinutes: number;
+  maxPresets: number;
+}
+
+// PUT /gateway/snooze-presets { presets, defaultMinutes } - set the snooze lengths every Snooze menu
+// offers and which one the plain Snooze click uses. Written in ONE call so the list and its default can
+// never disagree. Read at snooze time, so a change applies to the next snooze with no restart, and it is
+// the same on every device (all talk to this one Gateway). Returns the applied list, ascending.
+export async function setSnoozePresets(
+  presets: number[],
+  defaultMinutes: number,
+  signal?: AbortSignal,
+): Promise<SnoozePresets> {
+  const body = await putJson<Partial<SnoozePresets>>(
+    "/gateway/snooze-presets",
+    "PUT /gateway/snooze-presets",
+    { presets, defaultMinutes },
+    signal,
+  );
+  return {
+    presets: Array.isArray(body.presets) ? body.presets.map(Number) : presets,
+    defaultMinutes: Number(body.defaultMinutes ?? defaultMinutes),
+    maxPresets: Number(body.maxPresets ?? 5),
+  };
 }
 
 // PUT /gateway/addressing-mode { mode } - set the fleet network addressing mode. Applies to this host's
