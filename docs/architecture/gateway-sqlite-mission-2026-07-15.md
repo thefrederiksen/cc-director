@@ -514,6 +514,29 @@ their own phases and must not be waved through on Phase 1's evidence.
 The mission succeeds when all of the following hold. Each is falsifiable; a criterion that cannot
 fail is not a criterion.
 
+**How to watch a test go red, stated once and binding on every criterion below that asks for it.**
+Several criteria say "proven by watching it go red". That instruction is necessary and, on its own,
+**not sufficient** - and the mission has already proved it. The Manager wrote a shape test, reverted
+the schema to watch it fail, saw red, and reported the test validated. The Codex reviewer found that
+the revert had *renamed* a column, so the test died on a `KeyNotFoundException` before ever
+evaluating the assertion it existed to make - and separately, that the assertion itself was an
+exact-element check that would have passed against `repo_raw`. It went red for a reason that does
+not generalise, so the red proved nothing about the invariant. **A hollow test passes a red-check
+too.**
+
+So a red-watch counts only when all three hold:
+
+1. **Induce the failure the test is FOR**, not merely some failure. Break the specific invariant
+   the test claims to protect, in the way it would actually break in production.
+2. **The failure MODE must be the reported symptom** - the assertion the test exists to make must
+   be the thing that fails. A test that dies on an exception before reaching its assertion has told
+   you nothing, and neither has one that fails on setup.
+3. **The other tests stay green** as controls. A revert that reddens everything has located
+   nothing.
+
+If you cannot make a test fail for the right reason, you do not have a test. You have a line of
+code that has never been asked a question.
+
 1. `GET /stats/data` returns the same numbers after the port as before it, for the owner's real
    data on this machine. Captured before, captured after, compared field by field
    (`Stats/StatsPageEndpoint.cs:40-71` maps this response from the aggregator outputs). This is the
