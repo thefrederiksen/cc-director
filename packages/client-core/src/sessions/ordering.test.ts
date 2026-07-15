@@ -54,8 +54,9 @@ describe("Gateway-stamped session presentation state", () => {
   });
 
   it("stateLabel reads the Gateway-stamped label", () => {
-    // stateLabel is a Gateway-stamped field not yet in the generated schema (like triageBucket above),
-    // so the literal is cast the same way; the accessor reads it through the GatewayStampedSession cast.
+    // stateLabel IS in the generated schema now that it has been regenerated from the C# DTOs, so the
+    // cast is no longer load-bearing - kept only because `session()` takes Partial<SessionDto> and the
+    // accessor still reads through the GatewayStampedSession cast.
     expect(stateLabel(session({ stateLabel: "Needs you" } as Partial<SessionDto>))).toBe("Needs you");
   });
 
