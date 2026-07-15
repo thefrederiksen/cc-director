@@ -100,11 +100,12 @@ public class DriverRegistryTests
     }
 
     [Fact]
-    public void PiDriver_DeclaresCancelClearContextAndContextUsage()
+    public void PiDriver_DeclaresCancelClearContextContextUsageAndModelReport()
     {
         var caps = new PiDriver().Capabilities;
         Assert.Equal(
-            DriverCapabilities.Cancel | DriverCapabilities.ClearContext | DriverCapabilities.ContextUsage,
+            DriverCapabilities.Cancel | DriverCapabilities.ClearContext | DriverCapabilities.ContextUsage
+            | DriverCapabilities.ModelReport,
             caps);
     }
 
@@ -135,13 +136,13 @@ public class DriverRegistryTests
     }
 
     [Fact]
-    public void CodexDriver_DeclaresCancelInterruptClearAndContextUsage()
+    public void CodexDriver_DeclaresCancelInterruptClearContextUsageAndModelReport()
     {
         var caps = new CodexDriver().Capabilities;
 
         Assert.Equal(
             DriverCapabilities.Cancel | DriverCapabilities.Interrupt | DriverCapabilities.ClearContext
-            | DriverCapabilities.ContextUsage,
+            | DriverCapabilities.ContextUsage | DriverCapabilities.ModelReport,
             caps);
     }
 

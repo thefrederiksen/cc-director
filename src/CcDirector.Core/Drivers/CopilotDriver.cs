@@ -48,7 +48,9 @@ public sealed class CopilotDriver : IAgentDriver
     /// live-verified.
     /// </summary>
     public DriverCapabilities Capabilities =>
-        DriverCapabilities.Interrupt | DriverCapabilities.PreassignedSessionId;
+        DriverCapabilities.Interrupt
+        | DriverCapabilities.PreassignedSessionId
+        | DriverCapabilities.ModelReport;
 
     public IReadOnlyList<AgentSlashCommand> SlashCommands => CopilotSlashCommands.All;
 
@@ -146,6 +148,13 @@ public sealed class CopilotDriver : IAgentDriver
     public List<(string AgentSessionId, DateTime LastWriteUtc)> ListTranscripts(string workingDirectory) =>
         throw new NotSupportedException(
             "[CopilotDriver] copilot's on-disk transcript location/format is not yet verified.");
+
+    /// <summary>The model this Copilot session is currently using (capability
+    /// <see cref="DriverCapabilities.ModelReport"/>): the LAST model-bearing event in the session's
+    /// events.jsonl, so a mid-session model switch is reflected. Addressed directly by the
+    /// Director-preassigned session id (issue #1637).</summary>
+    public string? ReadCurrentModel(string agentSessionId, string workingDirectory, string? launchArgs) =>
+        Copilot.CopilotCurrentModel.ReadForSession(agentSessionId);
 
     // ----------------------------------------------------------- --output-format json (JSONL)
 

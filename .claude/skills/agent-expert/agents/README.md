@@ -37,6 +37,24 @@ The window denominator is a driver-owned per-model table (200,000 tokens for the
 models, 1,000,000 for the `[1m]` Opus id); an unmapped model falls back to the raw used-token count
 with no percent.
 
+## Current-model reporting (capability `ModelReport`, issue #1637)
+
+Can the driver answer "what model is the tool CURRENTLY using", from the tool's own records, so the
+Director can log model usage per session? The LATEST record wins, so a mid-session model switch
+(Claude's /model, Codex /model, ...) is reflected. Every row below was live-verified against the
+installed binary and its real on-disk data on 2026-07-15.
+
+| Agent | Model reporting | Where the model is recorded | Our driver |
+|-------|-----------------|------------------------------|------------|
+| Claude Code (2.1.210) | Strong (implemented) | Transcript jsonl: every assistant line's `message.model`; already parsed as `SessionUsageDto.ContextModel`. Pre-first-turn the `--model` launch value answers. | ClaudeDriver |
+| Codex (0.143.0) | Strong (implemented) | Rollout jsonl: every `turn_context` event's `payload.model`; one per turn. Located by repo. | CodexDriver |
+| pi (0.79.4) | Strong (implemented) | Session jsonl: every assistant `message.model`. Located by repo. | PiDriver |
+| Copilot (1.0.70) | Strong (implemented) | `~/.copilot/session-state/<session-id>/events.jsonl`: `assistant.turn_start` / `assistant.message` `data.model`. Addressed by the preassigned session id. NOTE: Copilot's SQLite store has NO model column - the event log is the only source. | CopilotDriver |
+| Grok (0.2.93) | Strong (implemented) | `~/.grok/sessions/<percent-encoded-cwd>/<session-id>/chat_history.jsonl`: assistant lines' `model_id`. Located via GrokSessionLocator. | GenericDriver + wired reader |
+| opencode (1.15.12) | Strong (implemented) | SQLite `opencode.db` `session.model` column (JSON `{"id","providerID"}`), newest row matching `directory`. | GenericDriver + wired reader |
+| Gemini (0.1.11) | None | The installed binary records no model anywhere readable (`tmp/<hash>/logs.json` is user prompts only). Re-probe after upgrade. | GenericDriver (not declared) |
+| Cursor | None | Not installed here; unverifiable. | CursorDriver (not declared) |
+
 ## The four mechanism families
 
 - A - shell-command hook that injects context. A config file registers a command we own; it

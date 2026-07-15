@@ -21,9 +21,13 @@ public static class AgentDrivers
         AgentKind.Cursor => new CursorDriver(),
         AgentKind.Copilot => new CopilotDriver(),
         AgentKind.Codex => new CodexDriver(),
+        // Gemini wires NO current-model reader: the installed binary (0.1.11) records no model
+        // anywhere readable (issue #1637) - re-probe after it is upgraded.
         AgentKind.Gemini => new GenericDriver(k, GeminiSlashCommands.All),
-        AgentKind.OpenCode => new GenericDriver(k, OpenCodeSlashCommands.All),
-        AgentKind.Grok => new GenericDriver(k, GrokSlashCommands.All, emitsContinuousIdleOutput: true),
+        AgentKind.OpenCode => new GenericDriver(k, OpenCodeSlashCommands.All,
+            currentModelReader: OpenCode.OpenCodeCurrentModel.ReadForRepo),
+        AgentKind.Grok => new GenericDriver(k, GrokSlashCommands.All, emitsContinuousIdleOutput: true,
+            currentModelReader: Grok.GrokCurrentModel.ReadForRepo),
         _ => new GenericDriver(k),
     });
 }

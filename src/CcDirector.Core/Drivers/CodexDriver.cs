@@ -21,7 +21,8 @@ public sealed class CodexDriver : IAgentDriver
         DriverCapabilities.Cancel
         | DriverCapabilities.Interrupt
         | DriverCapabilities.ClearContext
-        | DriverCapabilities.ContextUsage;
+        | DriverCapabilities.ContextUsage
+        | DriverCapabilities.ModelReport;
 
     public IReadOnlyList<AgentSlashCommand> SlashCommands => CodexSlashCommands.All;
 
@@ -108,6 +109,13 @@ public sealed class CodexDriver : IAgentDriver
     /// launch args are not needed. Located by repo path (Codex has no Director-preassigned id).</summary>
     public ContextUsageDto? ReadContextUsage(string agentSessionId, string workingDirectory, string? launchArgs) =>
         Codex.CodexContextUsage.ReadForRepo(workingDirectory);
+
+    /// <summary>The model this Codex session is currently using (capability
+    /// <see cref="DriverCapabilities.ModelReport"/>): the LAST <c>turn_context</c> event's model in
+    /// the rollout, so a mid-session model switch is reflected. Located by repo path (Codex has no
+    /// Director-preassigned id).</summary>
+    public string? ReadCurrentModel(string agentSessionId, string workingDirectory, string? launchArgs) =>
+        Codex.CodexCurrentModel.ReadForRepo(workingDirectory);
 
     public List<(string AgentSessionId, DateTime LastWriteUtc)> ListTranscripts(string workingDirectory) =>
         throw new NotSupportedException(

@@ -30,7 +30,10 @@ public sealed class PiDriver : IAgentDriver
     public AgentKind Kind => AgentKind.Pi;
 
     public DriverCapabilities Capabilities =>
-        DriverCapabilities.Cancel | DriverCapabilities.ClearContext | DriverCapabilities.ContextUsage;
+        DriverCapabilities.Cancel
+        | DriverCapabilities.ClearContext
+        | DriverCapabilities.ContextUsage
+        | DriverCapabilities.ModelReport;
 
     public IReadOnlyList<AgentSlashCommand> SlashCommands => PiSlashCommands.All;
 
@@ -96,6 +99,13 @@ public sealed class PiDriver : IAgentDriver
     /// args are not used.</summary>
     public ContextUsageDto? ReadContextUsage(string agentSessionId, string workingDirectory, string? launchArgs) =>
         Pi.PiContextUsage.ReadForRepo(workingDirectory);
+
+    /// <summary>The model this pi session is currently using (capability
+    /// <see cref="DriverCapabilities.ModelReport"/>): the LAST assistant message's model in the
+    /// session file, so a mid-session model switch is reflected. Located by repo path (pi has no
+    /// Director-preassigned id).</summary>
+    public string? ReadCurrentModel(string agentSessionId, string workingDirectory, string? launchArgs) =>
+        Pi.PiCurrentModel.ReadForRepo(workingDirectory);
 
     public List<(string AgentSessionId, DateTime LastWriteUtc)> ListTranscripts(string workingDirectory) =>
         throw new NotSupportedException("[PiDriver] pi transcript listing is not implemented (v1).");
