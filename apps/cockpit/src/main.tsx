@@ -17,6 +17,7 @@ import { FleetMapView } from "./fleet/FleetMapView";
 import { DirectorsView } from "./fleet/DirectorsView";
 import { DirectorDetailView } from "./fleet/DirectorDetailView";
 import { ScheduleView } from "./schedule/ScheduleView";
+import { WorkflowsView } from "./workflows/WorkflowsView";
 import { DictionaryView } from "./dictionary/DictionaryView";
 import { TranscriptsView } from "./transcripts/TranscriptsView";
 import { ExesView } from "./exes/ExesView";
@@ -34,6 +35,7 @@ import "./fleet/fleet.css";
 import "./fleet/fleetmap.css";
 import "./missions/missions.css";
 import "./schedule/schedule.css";
+import "./workflows/workflows.css";
 import "./dictionary/dictionary.css";
 import "./transcripts/transcripts.css";
 import "./exes/exes.css";
@@ -150,6 +152,12 @@ const router = createBrowserRouter(
             // only ever rendered an idle "Disabled" snapshot. "Wingman" now means only the live voice
             // narration (the phone/Cockpit Voice mode), not a fleet pipeline surface.
             { path: "/schedule", element: <ScheduleView /> },
+            // The Workflows page (issue #1617): the shapes of work the fleet knows how to run - which
+            // agent starts a step, which reviews it, where the human is asked. Reads the Gateway's
+            // workflow catalog (GET /workflows) through client-core; the Gateway is the home for these,
+            // so the page renders what the Gateway serves rather than a list baked into this bundle.
+            // It sits beside Schedule in the rail: Schedule is what runs when, Workflows is how work runs.
+            { path: "/workflows", element: <WorkflowsView /> },
             // The tools + data pages (issue #977): one-to-one ports of the Blazor Dictionary.razor,
             // Transcripts.razor, Exes.razor, and Learning.razor over the same Gateway REST surface.
             // All four have a Data-section nav entry now (issue #1247, exposing Voice Recorder and

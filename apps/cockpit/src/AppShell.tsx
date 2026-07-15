@@ -12,11 +12,18 @@ import { CockpitStatusPill } from "./network/CockpitStatusPill";
 // clipping). Per-page detail regions (roster, dock, awareness) belong to the routed pages
 // themselves - see SessionsView - not to this frame.
 
-// The left-rail destinations, grouped into three labeled sections (issue #1247): Fleet (what is
-// running and how it is driven), Data (the corpora and tools the fleet reads and writes), and System
-// (this browser's account and the app's own settings). Every built page that is meant to be reachable
-// has an entry - the pages that used to be reachable only by typing their address (Voice Recorder,
-// Executables) are now in the menu.
+// The left-rail destinations. This was three LABELED sections - Fleet, Data, System (issue #1247) -
+// until the labels were removed (issue #1617). They were dim uppercase headers that lost to the item
+// labels beneath them, so instead of chunking the list they added three rows of noise you scanned
+// past. Raising their contrast was the obvious fix and the wrong one: it makes them louder without
+// making them useful, because the grouping was not earning its keep - "Dictionary, Voice Recorder,
+// Executables, Transcription, Network, Learning" under "DATA" is not a category anyone feels, it is a
+// category invented to justify a header. So the list is flat now, which is what comparable product
+// navigation does at this size.
+//
+// The one surviving grouping is positional, not labeled: the destinations about the app itself
+// (Account, Your Throttle, Settings, About) sit in a second list pinned to the BOTTOM of the rail,
+// away from the fleet work. That is a grouping you feel without being told.
 //
 // The Fleet Map is first and is the default landing (issue #1303): a fresh boot at "/" redirects to
 // it, so the Cockpit opens on the whole-fleet picture (main.tsx). Sessions lives at its own /sessions
@@ -31,36 +38,29 @@ interface NavItem {
   subtree?: string;
 }
 
-const NAV_SECTIONS: ReadonlyArray<{ title: string; items: ReadonlyArray<NavItem> }> = [
-  {
-    title: "Fleet",
-    items: [
-      { to: "/fleet-map", label: "Fleet Map" },
-      { to: "/sessions", label: "Sessions", subtree: "/session" },
-      { to: "/directors", label: "Directors" },
-      { to: "/schedule", label: "Schedule" },
-    ],
-  },
-  {
-    title: "Data",
-    items: [
-      { to: "/dictionary", label: "Dictionary" },
-      { to: "/transcripts", label: "Voice Recorder" },
-      { to: "/exes", label: "Executables" },
-      { to: "/transcription", label: "Transcription" },
-      { to: "/network", label: "Network" },
-      { to: "/learn", label: "Learning" },
-    ],
-  },
-  {
-    title: "System",
-    items: [
-      { to: "/account", label: "Account" },
-      { to: "/your-throttle", label: "Your Throttle" },
-      { to: "/settings", label: "Settings" },
-      { to: "/about", label: "About" },
-    ],
-  },
+// The fleet work: what is running, how it is driven, and the corpora and tools it reads and writes.
+// Workflows sits with Schedule on purpose - Schedule is what runs when, Workflows is how work runs,
+// and it is next to the place you start work rather than filed away under settings.
+const NAV_MAIN: ReadonlyArray<NavItem> = [
+  { to: "/fleet-map", label: "Fleet Map" },
+  { to: "/sessions", label: "Sessions", subtree: "/session" },
+  { to: "/directors", label: "Directors" },
+  { to: "/schedule", label: "Schedule" },
+  { to: "/workflows", label: "Workflows" },
+  { to: "/dictionary", label: "Dictionary" },
+  { to: "/transcripts", label: "Voice Recorder" },
+  { to: "/exes", label: "Executables" },
+  { to: "/transcription", label: "Transcription" },
+  { to: "/network", label: "Network" },
+  { to: "/learn", label: "Learning" },
+];
+
+// This browser's account and the app's own settings - pinned to the bottom of the rail.
+const NAV_FOOT: ReadonlyArray<NavItem> = [
+  { to: "/account", label: "Account" },
+  { to: "/your-throttle", label: "Your Throttle" },
+  { to: "/settings", label: "Settings" },
+  { to: "/about", label: "About" },
 ];
 
 export function AppShell() {
@@ -74,30 +74,8 @@ export function AppShell() {
         <div className="brand">DevThrottle</div>
         <CockpitStatusPill />
         <div className="nav">
-          {NAV_SECTIONS.map((section) => (
-            <div className="nav-section" key={section.title}>
-              <div className="nav-section-title">{section.title}</div>
-              <ul className="nav-list">
-                {section.items.map((item) => {
-                  const inSubtree =
-                    item.subtree !== undefined && location.pathname.startsWith(item.subtree);
-                  return (
-                    <li key={item.to}>
-                      <NavLink
-                        to={item.to}
-                        end={item.to === "/"}
-                        className={({ isActive }) =>
-                          isActive || inSubtree ? "nav-link nav-link-active" : "nav-link"
-                        }
-                      >
-                        {item.label}
-                      </NavLink>
-                    </li>
-                  );
-                })}
-              </ul>
-            </div>
-          ))}
+          <NavList items={NAV_MAIN} pathname={location.pathname} />
+          <NavList items={NAV_FOOT} pathname={location.pathname} className="nav-list-foot" />
         </div>
         <div className="rail-foot">Cockpit (React)</div>
       </nav>
@@ -106,5 +84,36 @@ export function AppShell() {
         <Outlet />
       </main>
     </div>
+  );
+}
+
+function NavList({
+  items,
+  pathname,
+  className,
+}: {
+  items: ReadonlyArray<NavItem>;
+  pathname: string;
+  className?: string;
+}) {
+  return (
+    <ul className={className === undefined ? "nav-list" : `nav-list ${className}`}>
+      {items.map((item) => {
+        const inSubtree = item.subtree !== undefined && pathname.startsWith(item.subtree);
+        return (
+          <li key={item.to}>
+            <NavLink
+              to={item.to}
+              end={item.to === "/"}
+              className={({ isActive }) =>
+                isActive || inSubtree ? "nav-link nav-link-active" : "nav-link"
+              }
+            >
+              {item.label}
+            </NavLink>
+          </li>
+        );
+      })}
+    </ul>
   );
 }

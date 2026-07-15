@@ -72,28 +72,16 @@ body {
   padding: 4px 8px 16px;
 }
 
-/* The rail body holds the labeled sections (issue #1247); it grows to fill the rail so the footer
-   sits at the bottom. */
+/* The rail body. It grows to fill the rail so the footer sits at the bottom.
+
+   The labeled sections (issue #1247) are gone (issue #1617): the rail is one flat list of fleet
+   destinations plus a second, unlabeled list pinned to the bottom for the app's own pages. See
+   AppShell for why the labels went. */
 .nav {
   display: flex;
   flex-direction: column;
   gap: 14px;
   flex: 1;
-}
-
-.nav-section {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-
-.nav-section-title {
-  padding: 4px 10px 4px;
-  font-size: 10.5px;
-  font-weight: 600;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  color: var(--text-dim);
 }
 
 .nav-list {
@@ -103,6 +91,13 @@ body {
   display: flex;
   flex-direction: column;
   gap: 2px;
+}
+
+/* The app's own destinations sit at the bottom of the rail, separated from the fleet work by
+   whitespace rather than a labeled header. margin-top:auto eats the free space above it, so the
+   grouping holds whether the rail is taller than the list or not. */
+.nav-list-foot {
+  margin-top: auto;
 }
 
 .nav-link {

@@ -1443,6 +1443,12 @@ public sealed class GatewayHost : IAsyncDisposable
         // models, test a chat model, save the chosen wingman/speech model). Uses the vault credential.
         Api.AiModelsEndpoint.Map(_app, _keyVault);
 
+        // The workflow catalog (issue #1617): the shapes of work the fleet knows how to run - Mission,
+        // Standalone, Standalone with review. The Gateway is the home for these; Directors and the
+        // Cockpit ask it rather than each carrying a private copy. Built in and read-only at this step.
+        // Inherits the host-wide token middleware above.
+        Api.WorkflowEndpoints.Map(_app);
+
         // Gateway Centralization Phase 1 (issue #628): the inbound login-telemetry RELAY. The Director
         // POSTs its login-telemetry event here (instead of the cloud) and the Gateway forwards it on,
         // so the Gateway becomes the single egress. Best-effort: a backend failure is logged and the
