@@ -744,20 +744,33 @@ internal static class GatewayEndpoints
                     // Gateway consumer of the cooked field. The comment described the intended design and the
                     // code never matched it; now it does.
                     //
-                    // Safe BY CONSTRUCTION, not by an equivalence claim: the fold that CONSUMES this stamp
-                    // (SessionOrdering.IsBriefing) is `BriefingState == "Briefing" && IsRawRed(s)` - it
-                    // ALREADY requires raw red. So the rendered yellow's condition was (cooked red AND raw
-                    // red) and is now (raw red AND raw red). The cooked gate was redundant with respect to
-                    // every painted pixel. Where the two disagree, raw is the authority - and they DO
-                    // disagree: TransientErrorAutoResume writes a sticky cooked red that never goes through
-                    // the activity mapping at all.
-                    if (voiceGeneratingFor is not null
-                        && (s.BriefingState is null or "None" or "Briefed")
-                        && SessionOrdering.IsRawRed(s)
-                        && voiceGeneratingFor(s.SessionId))
-                    {
-                        s.BriefingState = "Briefing";
-                    }
+                    // THE STAMP THAT WAS HERE IS DELETED, AND MUST NOT COME BACK (gap 5). It read:
+                    //
+                    //     if (voiceGeneratingFor is not null
+                    //         && (s.BriefingState is null or "None" or "Briefed")
+                    //         && SessionOrdering.IsRawRed(s)
+                    //         && voiceGeneratingFor(s.SessionId))
+                    //         s.BriefingState = "Briefing";
+                    //
+                    // THE GATEWAY MUST NOT OVERWRITE A FIELD THE DIRECTOR OWNS. BriefingState is the
+                    // Director's fact. Writing "Briefing" over it destroyed the Director's answer, and a
+                    // destroyed fact cannot be argued back: a row carrying BriefingState="Briefing" plus
+                    // VoiceGenerating=true could no longer say whether the Director genuinely was briefing
+                    // (the desktop folds yellow too - agreement) or the Gateway had overwritten a "None"
+                    // (the desktop folds red - a real disagreement). Those are opposite verdicts from an
+                    // identical row. The agreement check could only call it "indeterminate" and refuse to
+                    // grade it - which is a workaround for the instrument, not a fix for the product.
+                    //
+                    // The Gateway ADDS its fact instead, the way VoiceGenerating below always has - and it
+                    // needed no new field, because VoiceGenerating IS the fact and is stamped two lines
+                    // down. The fold now asks for it directly (SessionOrdering.IsGatewayVoiceBriefing),
+                    // carrying the same condition this stamp had, so no pixel changes and nothing is
+                    // destroyed. Both facts ride the row; the check can grade it.
+                    //
+                    // If you need the Gateway to say something new about a session, add a Gateway-owned
+                    // field. Never reach for a Director-owned one because it happens to be the shape you
+                    // want - that trade is a rendered pixel now for an unanswerable row forever.
+
                     // Issue #553: surface the two voice readiness booleans the color rule and the /m
                     // client read directly. VoiceGenerating = the wingman is producing this session's
                     // spoken summary now; VoiceAudioReady = the gateway has fetchable, playable audio

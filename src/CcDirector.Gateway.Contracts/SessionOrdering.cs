@@ -40,6 +40,37 @@ public static class SessionOrdering
         s.BriefingState == "Briefing" && IsRawRed(s);
 
     /// <summary>
+    /// True while the GATEWAY's warm-brain wingman is producing this session's spoken summary, so the
+    /// roster holds the yellow "wingman reading" window (red -> yellow -> red) instead of flashing red
+    /// mid-generation. Issue #531's voice-mode window, folded from the Gateway's OWN fact.
+    ///
+    /// GAP 5, CLOSED - WHY THIS EXISTS RATHER THAN A STAMP. The Gateway used to get this yellow by
+    /// WRITING <c>s.BriefingState = "Briefing"</c> onto the row during enrichment, gated on the Director's
+    /// value being null/"None"/"Briefed". That overwrite DESTROYED a field the Director owns: afterwards a
+    /// row carrying BriefingState="Briefing" could not say whether the Director genuinely was briefing or
+    /// the Gateway had overwritten a "None", and the two fold differently on the desktop (which has no
+    /// Gateway facts) - one is agreement, the other is a real disagreement. The agreement check could not
+    /// grade that row and reported it "indeterminate", which is a workaround for an instrument rather than
+    /// a fix for the product.
+    ///
+    /// So the Gateway ADDS a fact instead of overwriting one, exactly as <see cref="SessionDto
+    /// .VoiceGenerating"/> already did - and note it needed no new field at all, because VoiceGenerating IS
+    /// that fact and was already being stamped unconditionally two lines below the overwrite. The row now
+    /// carries BOTH facts, nothing is destroyed, and the check can grade it.
+    ///
+    /// THE CONDITION IS THE OVERWRITE'S, MOVED FROM A WRITE TO A READ, so no pixel changes: same
+    /// VoiceGenerating, same raw-red gate, and the same "the Director is not already saying something about
+    /// briefing" guard - which is why the BriefingState check survives here. It reads the Director's field
+    /// without harming it: if the Director says "Briefing" then <see cref="IsBriefing"/> answers first and
+    /// this is moot; if it says "Failed", the Gateway's window stays shut exactly as the guard used to make
+    /// it. The one thing that changed is that the Director's answer is still legible afterwards.
+    /// </summary>
+    public static bool IsGatewayVoiceBriefing(SessionDto s) =>
+        s.VoiceGenerating
+        && IsRawRed(s)
+        && s.BriefingState is null or "None" or "Briefed";
+
+    /// <summary>
     /// True when the session's RAW activity fact reads red - it is parked at a prompt, waiting on a
     /// permission, or idle. THE fold-owned answer to "is this session red?", computed from
     /// <see cref="SessionDto.ActivityState"/> and nothing else.
@@ -151,7 +182,12 @@ public static class SessionOrdering
         // The Director's LEGACY auto-explain is a SEPARATE, WORKING feature and is untouched: it rides on
         // the raw fact SessionDto.IsAutoExplaining and folds to YELLOW in ResolveActivity below. Do not
         // conflate the two - deleting this orange did not delete that yellow.
-        : IsBriefing(s) ? "yellow"
+        // Two ways to be "the wingman is reading the finished turn": the DIRECTOR says so (IsBriefing,
+        // its own BriefingState), or the GATEWAY is generating this session's voice (IsGatewayVoiceBriefing,
+        // its own VoiceGenerating). Both fold yellow, and they are asked separately because they are
+        // separate facts with separate owners - the Gateway used to get its yellow by overwriting the
+        // Director's field, which painted the same pixel while destroying the evidence (gap 5).
+        : IsBriefing(s) || IsGatewayVoiceBriefing(s) ? "yellow"
         : IsVoicePreparing(s) ? "yellow"
         // Issue #1177 (Phase 2): the base color is computed from RAW facts. NO GATEWAY-DECIDED COLOUR READS
         // THE DIRECTOR'S COOKED StatusColor - as of 2026-07-14 that is true of the pipeline as well as the
@@ -279,7 +315,11 @@ public static class SessionOrdering
         // No "Explaining" arm: BriefingState can never be "Explaining" - see the tombstone in
         // EffectiveColor above. The label and the dot are folded from the same inputs in the same
         // order, so this deletion keeps them in lockstep.
-        if (IsBriefing(s)) return "Wingman reading";
+        // Mirrors EffectiveColor's arm exactly, including the order: the Director's own briefing and the
+        // Gateway's voice-generation window both read "Wingman reading", and both are asked BEFORE
+        // "Preparing voice" - as they were when the Gateway stamped BriefingState to get here (gap 5).
+        // The label and the dot fold from the same inputs in the same order, so they cannot disagree.
+        if (IsBriefing(s) || IsGatewayVoiceBriefing(s)) return "Wingman reading";
         if (IsVoicePreparing(s)) return "Preparing voice";
         return BaseColor(s) switch
         {
