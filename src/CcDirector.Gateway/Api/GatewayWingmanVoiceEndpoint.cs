@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Text.Json;
@@ -55,6 +56,54 @@ internal static class GatewayWingmanVoiceEndpoint
     /// (<see cref="TtsVoiceConfig"/>).</summary>
     private const int TtsMaxChars = 4000;
 
+    /// <summary>
+    /// The one HTTP client for the speech leg (issue: hosted-AI client behaviour).
+    ///
+    /// This used to be <c>using var http = new HttpClient()</c> INSIDE the request handler - a fresh
+    /// client, and therefore a fresh connection pool, for every single synthesis. Disposing a client
+    /// leaves its socket in TIME_WAIT, so a burst of turns churns through ports and the pool never gets
+    /// to reuse a warm TLS connection to the proxy. One shared, never-disposed static is the pattern the
+    /// rest of this codebase already uses for hosted calls (AiModelsEndpoint, CarModeChat,
+    /// HostedInferenceBrain, ...), and it is safe here because the credential rides on the REQUEST
+    /// (TtsSynthesis sets a per-request Authorization header), never on the client's default headers -
+    /// so concurrent turns for different keys cannot bleed into each other.
+    ///
+    /// Timeout is INFINITE on purpose: <see cref="TtsSynthesis"/> owns the deadline (a 15-second
+    /// per-attempt cap on a linked CancellationTokenSource, plus one retry). Leaving the client's own
+    /// 100-second default in place would create a SECOND, slower deadline authority racing the first -
+    /// exactly the kind of ambiguity that made the 2026-07-15 stall so hard to read. One timeout, one
+    /// owner. Callers must go through TtsSynthesis, which always supplies the bound.
+    /// </summary>
+    private static readonly HttpClient SharedTtsHttp = new() { Timeout = Timeout.InfiniteTimeSpan };
+
+    /// <summary>413 with a reason the client can show and a support engineer can read.</summary>
+    private static IResult TooLarge(string error) =>
+        Results.Json(new { error }, statusCode: StatusCodes.Status413PayloadTooLarge);
+
+    /// <summary>
+    /// Read a request body into memory, giving up the moment it exceeds <paramref name="max"/>.
+    ///
+    /// The point is the giving up. <c>CopyToAsync(ms)</c> - what these routes used to do - is unbounded
+    /// by construction: it faithfully buffers whatever arrives, so the sender chooses how much of this
+    /// machine's memory to use. Here the ceiling is ours: nothing beyond <paramref name="max"/> is ever
+    /// retained, and the read stops rather than continuing to drain a body we have already refused.
+    ///
+    /// Returns null when the body is over the cap (the caller answers 413). Never trusts Content-Length -
+    /// that is the client's claim about the body, not the body.
+    /// </summary>
+    private static async Task<byte[]?> ReadBoundedAsync(Stream body, long max, CancellationToken ct)
+    {
+        using var ms = new MemoryStream();
+        var buffer = new byte[81920];
+        while (true)
+        {
+            var read = await body.ReadAsync(buffer, ct);
+            if (read == 0) return ms.ToArray();
+            if (ms.Length + read > max) return null;   // over: stop now, keep nothing
+            ms.Write(buffer, 0, read);
+        }
+    }
+
     public static void Map(
         IEndpointRouteBuilder app,
         DirectorRegistry registry,
@@ -65,8 +114,15 @@ internal static class GatewayWingmanVoiceEndpoint
         DirectorCommandRouter.SendDirectorCommandAsync? sendCommand = null,
         SessionOwnerCache? owners = null,
         TimeSpan? streamStale = null,
-        Func<string>? instructionsProvider = null)
+        Func<string>? instructionsProvider = null,
+        HttpClient? ttsHttpClient = null)
     {
+        // The speech transport: the shared static in production, an injected stub in a test. This is the
+        // same seam WingmanVoiceService already exposes for its narration leg (ttsHttpClient) and it
+        // exists for the same reason - the upstream base URL is a compile-time const, so without it the
+        // status mapping below could only be proven by calling the real provider over the internet.
+        var ttsHttp = ttsHttpClient ?? SharedTtsHttp;
+
         var translator = new WingmanTranslator(brainProvider, instructionsProvider: instructionsProvider);
 
         // Post-cut: resolve the owning Director once (from the push store) and reach its session verbs
@@ -143,10 +199,38 @@ internal static class GatewayWingmanVoiceEndpoint
         {
             if (!uploads.Exists(uploadId))
                 return Results.Json(new { error = "unknown upload id (register it first)" }, statusCode: StatusCodes.Status404NotFound);
+
+            // Refuse an oversized chunk BEFORE reading a byte of it, when the client declares its size.
+            // This is the cheap door: no allocation, no read, and the client learns immediately.
+            if (ctx.Request.ContentLength is { } declared && declared > VoiceUploadLimits.MaxChunkBytes)
+            {
+                FileLog.Write($"[GatewayWingmanVoice] chunk rejected: declared {declared} bytes > {VoiceUploadLimits.MaxChunkBytes} cap (upload={uploadId}, index={index})");
+                return TooLarge($"chunk is {declared} bytes; the limit is {VoiceUploadLimits.MaxChunkBytes}");
+            }
+
             var sha = ctx.Request.Headers["X-Chunk-Sha256"].ToString();
-            using var ms = new MemoryStream();
-            await ctx.Request.Body.CopyToAsync(ms, ct);
-            try { await uploads.StoreChunkAsync(uploadId, index, ms.ToArray(), string.IsNullOrEmpty(sha) ? null : sha, ct); return Results.Json(new { ok = true, index }); }
+
+            // Content-Length is the client's CLAIM. It can be absent (chunked transfer-encoding) and it
+            // can be wrong, so the read itself is bounded too: this stops the moment the body exceeds
+            // the cap instead of faithfully buffering however much someone chooses to send.
+            var bytes = await ReadBoundedAsync(ctx.Request.Body, VoiceUploadLimits.MaxChunkBytes, ct);
+            if (bytes is null)
+            {
+                FileLog.Write($"[GatewayWingmanVoice] chunk rejected: body exceeded the {VoiceUploadLimits.MaxChunkBytes}-byte cap (upload={uploadId}, index={index})");
+                return TooLarge($"chunk exceeded the {VoiceUploadLimits.MaxChunkBytes}-byte limit");
+            }
+
+            // Total across the whole upload. Excluding THIS index is what keeps a resend free: the
+            // client's retry replaces chunk N, it does not add a second copy of it, and retrying is the
+            // normal case on this path.
+            var staged = uploads.StagedBytes(uploadId, excludeIndex: index);
+            if (staged + bytes.Length > VoiceUploadLimits.MaxTotalUploadBytes)
+            {
+                FileLog.Write($"[GatewayWingmanVoice] chunk rejected: upload total would be {staged + bytes.Length} > {VoiceUploadLimits.MaxTotalUploadBytes} cap (upload={uploadId})");
+                return TooLarge($"upload would exceed the {VoiceUploadLimits.MaxTotalUploadBytes}-byte total limit");
+            }
+
+            try { await uploads.StoreChunkAsync(uploadId, index, bytes, string.IsNullOrEmpty(sha) ? null : sha, ct); return Results.Json(new { ok = true, index }); }
             catch (Exception ex) { return Results.Json(new { error = ex.Message }, statusCode: StatusCodes.Status400BadRequest); }
         });
 
@@ -208,7 +292,7 @@ internal static class GatewayWingmanVoiceEndpoint
         // page plays in an <audio> element. DevThrottle routes to the hosted proxy's
         // provider-compatible /audio/speech. The voice is the user's choice (TtsVoiceConfig); a
         // request Voice overrides it. The credential comes from the gateway key vault.
-        app.MapPost("/wingman/tts", async (WingmanTtsRequest? req, CancellationToken ct) =>
+        app.MapPost("/wingman/tts", async (WingmanTtsRequest? req, HttpContext ctx, CancellationToken ct) =>
         {
             if (req is null || string.IsNullOrWhiteSpace(req.Text))
                 return Results.Json(new { error = "text is required" }, statusCode: StatusCodes.Status400BadRequest);
@@ -228,17 +312,53 @@ internal static class GatewayWingmanVoiceEndpoint
             {
                 // Short per-attempt timeout + one retry (TtsSynthesis) so a stalled upstream voice
                 // worker fails fast and retries instead of freezing the caller for a flat 60 seconds.
-                using var http = new HttpClient();
-                using var resp = await TtsSynthesis.PostAsync(http, url, key, new { model, voice, input, response_format = "mp3" }, ct);
+                // The client is the shared static (see SharedTtsHttp) - never a per-call one.
+                using var resp = await TtsSynthesis.PostAsync(ttsHttp, url, key, new { model, voice, input, response_format = "mp3" }, ct);
                 if (!resp.IsSuccessStatusCode)
                 {
+                    var status = (int)resp.StatusCode;
                     var body = await resp.Content.ReadAsStringAsync(ct);
-                    FileLog.Write($"[GatewayWingmanVoice] tts {mode.ToConfigString()} {(int)resp.StatusCode}: {body[..Math.Min(200, body.Length)]}");
+                    FileLog.Write($"[GatewayWingmanVoice] tts {mode.ToConfigString()} {status}: {body[..Math.Min(200, body.Length)]}");
+
                     // Out of credits / monthly cap (issue #939): map to the shared 402 state by code
                     // instead of a generic "text-to-speech returned 402".
-                    if ((int)resp.StatusCode == HostedAiHttp.PaymentRequired)
+                    if (status == HostedAiHttp.PaymentRequired)
                         return HostedAiHttp.PaymentRequiredResult(HostedAiErrorMapper.Map402(body));
-                    return Results.Json(new { error = $"text-to-speech returned {(int)resp.StatusCode}" },
+
+                    // A 429 or a 503 is the far end telling the caller to come back later, and it often
+                    // says HOW MUCH later. Both used to be flattened into a bare 502 with the hint
+                    // dropped on the floor: the cloud proxy deliberately forwards the upstream status and
+                    // Retry-After verbatim (it was rewritten for exactly this on 2026-07-15), and this
+                    // endpoint then destroyed the evidence one hop later. A client cannot back off
+                    // correctly against a status that says "the gateway is broken" when the truth is
+                    // "wait four seconds" - it just retries into the same wall.
+                    //
+                    // This is not the Gateway inventing a policy: it does NOT sleep, retry, or decide
+                    // anything here. It passes the far end's own answer through, which is the only layer
+                    // that knows when to come back. WingmanVoiceService already honours this header on
+                    // the narration leg (via the same RetryAfterHeader); now the endpoint does too, so
+                    // the two legs cannot drift.
+                    //
+                    // KNOWN OVERLAP: this route already answers 503 for "no key in the vault" (above).
+                    // An upstream 503 now shares that status. They are distinguishable - the transient
+                    // one carries Retry-After and says "rate limited or unavailable", the setup one says
+                    // "sign in to DevThrottle" - and a client that reads the body cannot confuse them.
+                    // Left as-is deliberately: the setup case arguably wants a different status
+                    // entirely, but that is a client-visible contract change and does not belong in a
+                    // fix whose whole point is to stop DESTROYING information.
+                    if (status is 429 or StatusCodes.Status503ServiceUnavailable)
+                    {
+                        // Normalized to seconds: RetryAfterHeader accepts both wire forms (a delta and an
+                        // HTTP date) and a browser reading this should not have to.
+                        if (RetryAfterHeader.Parse(resp.Headers) is { } wait)
+                            ctx.Response.Headers.RetryAfter = ((int)Math.Ceiling(wait.TotalSeconds)).ToString(CultureInfo.InvariantCulture);
+                        FileLog.Write($"[GatewayWingmanVoice] tts {status} passed through" +
+                            $"{(ctx.Response.Headers.RetryAfter.Count > 0 ? $" (Retry-After {ctx.Response.Headers.RetryAfter})" : " (no Retry-After hint)")}");
+                        return Results.Json(new { error = $"text-to-speech is rate limited or unavailable ({status})" },
+                            statusCode: status);
+                    }
+
+                    return Results.Json(new { error = $"text-to-speech returned {status}" },
                         statusCode: StatusCodes.Status502BadGateway);
                 }
                 var bytes = await resp.Content.ReadAsByteArrayAsync(ct);
@@ -247,6 +367,17 @@ internal static class GatewayWingmanVoiceEndpoint
                 var contentType = resp.Content.Headers.ContentType?.MediaType ?? "audio/mpeg";
                 FileLog.Write($"[GatewayWingmanVoice] tts ok: provider={mode.ToConfigString()}, chars={input.Length}, bytes={bytes.Length}, model={model}, voice={voice}, type={contentType}");
                 return Results.Bytes(bytes, contentType);
+            }
+            // TtsSynthesis exhausted its attempts: the worker never answered inside the per-attempt cap.
+            // That is a GATEWAY TIMEOUT (504), not a bad gateway (502). The two used to be the same 502,
+            // which is the collapse that makes an outage unreadable from the outside: "the upstream
+            // returned an error" and "the upstream never answered" want different responses from a
+            // client and different answers from support, so they must not share a status.
+            catch (TimeoutException ex)
+            {
+                FileLog.Write($"[GatewayWingmanVoice] tts TIMED OUT: {ex.Message}");
+                return Results.Json(new { error = "text-to-speech timed out: " + ex.Message },
+                    statusCode: StatusCodes.Status504GatewayTimeout);
             }
             catch (Exception ex)
             {
@@ -356,6 +487,16 @@ internal static class GatewayWingmanVoiceEndpoint
             var file = form.Files.GetFile("audio") ?? form.Files.FirstOrDefault();
             if (file is null || file.Length == 0)
                 return Results.Json(new { error = "no audio in the upload" }, statusCode: StatusCodes.Status400BadRequest);
+
+            // Bound the clip before it is copied into memory below. This route has no resume and buffers
+            // the file whole, so it is the wrong door for a long recording - the resumable chunk path is
+            // the right one, and saying so beats quietly allocating whatever was sent.
+            if (file.Length > VoiceUploadLimits.MaxOneShotFileBytes)
+            {
+                FileLog.Write($"[GatewayWingmanVoice] transcribe rejected: {file.Length} bytes > {VoiceUploadLimits.MaxOneShotFileBytes} cap");
+                return TooLarge($"audio is {file.Length} bytes; the limit for this endpoint is " +
+                    $"{VoiceUploadLimits.MaxOneShotFileBytes}. Use the resumable upload for long recordings.");
+            }
 
             // Both modes (byo/devthrottle) require the configured key to be present in the vault
             // (issue #887). The single transcription owner resolves this and runs the right provider.

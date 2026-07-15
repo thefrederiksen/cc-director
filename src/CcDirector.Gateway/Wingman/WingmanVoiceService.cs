@@ -44,7 +44,21 @@ public sealed class WingmanVoiceService
     private readonly ConcurrentDictionary<string, HostedAiState> _voiceUnavailable = new();  // sid -> why voice is off (issue #939)
     private readonly string _persistPath;
     private readonly string _audioDir;
-    private readonly HttpClient? _ttsHttp;   // test seam for TtsAsync (issue #939); a per-call client when null
+    private readonly HttpClient? _ttsHttp;   // test seam for TtsAsync (issue #939); the shared static when null
+
+    /// <summary>
+    /// The one HTTP client for the narration speech leg, used whenever no test client is injected.
+    ///
+    /// Static and never disposed, matching the hosted-call pattern used across this codebase
+    /// (AiModelsEndpoint, CarModeChat, HostedInferenceBrain, ...) and the /wingman/tts endpoint's own
+    /// SharedTtsHttp. Safe to share because the credential goes on each REQUEST inside TtsSynthesis,
+    /// never on this client's default headers.
+    ///
+    /// Timeout is INFINITE deliberately: TtsSynthesis owns the deadline (a 15-second per-attempt cap on
+    /// a linked CancellationTokenSource, plus one retry). A second, slower client-level timeout racing
+    /// it would only make a stall harder to read. One timeout, one owner.
+    /// </summary>
+    private static readonly HttpClient SharedTtsHttp = new() { Timeout = Timeout.InfiniteTimeSpan };
 
     // Backpressure so a busy fleet cannot storm the hosted model into 429s (issue #1324). All
     // generation - the turn-end hook AND the idle sweep - funnels through GenerateAsync, so gating
@@ -482,11 +496,17 @@ public sealed class WingmanVoiceService
         var voice = TtsVoiceConfig.Resolve(mode);
         var model = TtsModelConfig.Resolve(mode);
         var url = tts.BaseUrl.TrimEnd('/') + "/audio/speech";
-        // Reuse the injected client (tests) or a per-call one; auth goes on the request, not the shared
-        // client's default headers, so a shared client is safe under concurrent turn-ends. The effective
-        // timeout is the short per-attempt cap inside TtsSynthesis, which also retries once when a
-        // stalled upstream worker never answers - so a flaky voice backend no longer freezes the turn.
-        var http = _ttsHttp ?? new HttpClient();
+        // The injected client (tests) or the shared static - never a per-call one. Auth goes on the
+        // REQUEST, not the client's default headers, so one shared client is safe under concurrent
+        // turn-ends. The effective timeout is the short per-attempt cap inside TtsSynthesis, which also
+        // retries once when a stalled upstream worker never answers - so a flaky voice backend no longer
+        // freezes the turn.
+        //
+        // This was `_ttsHttp ?? new HttpClient()`: in production _ttsHttp is null, so EVERY turn-end
+        // built and dropped a client, leaving a socket in TIME_WAIT and forfeiting the warm TLS
+        // connection to the proxy. The narration leg fires on a sweep, so that was the hottest speech
+        // path in the product paying the reconnect cost every time.
+        var http = _ttsHttp ?? SharedTtsHttp;
         try
         {
             using var resp = await TtsSynthesis.PostAsync(http, url, key, new { model, voice, input, response_format = "mp3" }, ct);
@@ -539,7 +559,9 @@ public sealed class WingmanVoiceService
             _ttsGate.OnRateLimited(null);
             return new TtsResult(null, null, HostedAiState.ServiceDown);
         }
-        finally { if (_ttsHttp is null) http.Dispose(); }
+        // NOTE: no `finally { http.Dispose(); }`. `http` is now either the caller's injected client or
+        // the shared static, and disposing EITHER would be wrong - the static must outlive every call
+        // (that is the entire point of sharing it) and the injected one belongs to the test that made it.
     }
 
     private static string? NormalizeContentType(string? contentType)
