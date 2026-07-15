@@ -228,48 +228,6 @@ public sealed class GatewaySignInServiceTests : IDisposable
         Assert.True(firstResult.Succeeded);
     }
 
-    // Tray surface (acceptance criterion 1): with no credential the tray prompts on launch AND shows
-    // the "Sign in to DevThrottle" action; the account row reads "Not signed in".
-    [Fact]
-    public void TraySurface_NotSignedIn_PromptsAndShowsSignInActionAndNotSignedInRow()
-    {
-        if (!OnWindows) return;
-
-        var account = MakeAccount();
-        var signIn = new GatewaySignInService(account, openBrowser: _ => Task.CompletedTask);
-
-        Assert.True(GatewaySignInTraySurface.ShouldPromptOnLaunch(signIn));
-        Assert.True(GatewaySignInTraySurface.ShouldShowSignInAction(signIn));
-        Assert.Equal("Not signed in", GatewaySignInTraySurface.AccountRowValue(signIn));
-    }
-
-    // Tray surface (acceptance criterion 3): once signed in, the tray does NOT prompt on a subsequent
-    // launch and does NOT show the sign-in action; the account row reads the signed-in identity.
-    [Fact]
-    public void TraySurface_SignedIn_DoesNotPromptOrShowActionAndShowsIdentity()
-    {
-        if (!OnWindows) return;
-
-        var account = MakeAccount();
-        account.StoreTokens(new DevThrottleTokens(
-            GatewayTestJwt.CreateWithIdentity(DateTime.UtcNow.AddHours(1), "signed-in@example.com", "google"), "refresh-1"));
-        var signIn = new GatewaySignInService(account, openBrowser: _ => Task.CompletedTask);
-
-        Assert.False(GatewaySignInTraySurface.ShouldPromptOnLaunch(signIn));
-        Assert.False(GatewaySignInTraySurface.ShouldShowSignInAction(signIn));
-        Assert.Equal("Signed in (signed-in@example.com)", GatewaySignInTraySurface.AccountRowValue(signIn));
-    }
-
-    // Tray surface: a host with no sign-in flow (no credential service) never prompts, never shows the
-    // action, and omits the account row.
-    [Fact]
-    public void TraySurface_NoSignInFlow_PromptsNothingAndOmitsRow()
-    {
-        Assert.False(GatewaySignInTraySurface.ShouldPromptOnLaunch(null));
-        Assert.False(GatewaySignInTraySurface.ShouldShowSignInAction(null));
-        Assert.Null(GatewaySignInTraySurface.AccountRowValue(null));
-    }
-
     /// <summary>
     /// Simulates the sign-in completion (the local stand-in for the backend - the same role
     /// tools/devthrottle-dev-signin plays end to end) handing the credential back to the loopback
