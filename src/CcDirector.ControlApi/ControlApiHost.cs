@@ -158,6 +158,7 @@ public sealed class ControlApiHost : IAsyncDisposable
     private TransientErrorAutoResume? _transientErrorAutoResume;
     private TerminalSessionRecorder? _sessionRecorder;
     private Core.Storage.TurnReviewLogger? _turnReviewLogger;
+    private Core.Sessions.SessionCurrentModelWatcher? _currentModelWatcher;
     private Core.Storage.ConversationIngestor? _conversationIngestor;
     private Core.Storage.SessionLogManager? _sessionLogManager;
     // Resolved lazily at request time: the scheduler is created AFTER the Control API host
@@ -597,6 +598,13 @@ public sealed class ControlApiHost : IAsyncDisposable
         _turnReviewLogger = new Core.Storage.TurnReviewLogger(_sessionManager);
         _turnReviewLogger.Start();
 
+        // The model producer (issue #1637): on the same turn-end trigger, ask each session's driver
+        // what model the agent is currently using and stamp Session.CurrentModel, which rides the
+        // snapshot/delta path to the Gateway (SessionDto.CurrentModel) for the model-usage
+        // statistics. Turn-end-driven so the records read never runs per roster poll.
+        _currentModelWatcher = new Core.Sessions.SessionCurrentModelWatcher(_sessionManager);
+        _currentModelWatcher.Start();
+
         // The prompt record (issue #1551): on the same turn-end trigger, read each session's
         // conversation out of the agent's own transcript, join on where each prompt came from, and PUSH
         // it to the Gateway's log. The Director captures because it is the only thing that sees a prompt
@@ -904,6 +912,8 @@ public sealed class ControlApiHost : IAsyncDisposable
         _transientErrorAutoResume = null;
         _turnReviewLogger?.Dispose();
         _turnReviewLogger = null;
+        _currentModelWatcher?.Dispose();
+        _currentModelWatcher = null;
         _conversationIngestor?.Dispose();
         _conversationIngestor = null;
         _sessionRecorder?.Dispose();
