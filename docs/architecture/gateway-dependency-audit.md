@@ -8,31 +8,49 @@ each. See [The citation audit](#the-citation-audit) - four were wrong and are co
 
 ---
 
-## Rule Zero caught me: origin/main moved while I read
+## Rule Zero caught us both, and it is the most important thing in this audit
 
 **I verified this worktree was current once, at the start, and then read against it for hours while
-`origin/main` moved three commits underneath me.** The repository's Rule Zero says a checkout behind
-`origin/main` is a lie; the freshness banner only fires at session start, and I treated a
-start-of-session check as a standing fact.
+`origin/main` moved three commits underneath me.** Rule Zero says a checkout behind `origin/main` is
+a lie. The freshness banner fires at session start, and **I treated a start-of-session check as a
+standing fact.** It is not one. Freshness is not a property you verify; it is a property that decays
+from the moment you verify it.
 
 Three commits landed mid-audit (`e84d3c3c`, `5cd05ff0`, `81a06f2e`) and **touched three of the files
-this document cites**: `MainWindow.axaml.cs`, `ControlEndpoints.cs`, `GatewayClient.cs`. It surfaced
-because the Architect said the Learn handler was at line 2540 and I had written 2543. Neither of us
-was right - it is **2546** on current `origin/main`. We were arguing from two different stale trees.
+this document cites**: `MainWindow.axaml.cs`, `ControlEndpoints.cs`, `GatewayClient.cs`.
 
-**What it cost, exactly - I checked rather than assumed:**
+### How it surfaced, which is the part worth keeping
+
+The Architect said the Learn handler was at line **2540**. I had written **2543**. Current
+`origin/main` says **2546**. **We were both wrong, and wrong by different amounts, because we were
+stale by different commits.**
+
+**It surfaced only because our two wrong numbers disagreed with each other.** Had we happened to be
+stale by the same three commits, we would have *agreed* - and two people confirming each other from
+the same dead tree is worse than one person guessing, because the agreement feels like verification.
+The disagreement was the entire alarm. Nothing else in the process was going to fire.
+
+### What it cost, checked rather than assumed
 
 - **The findings survive unchanged.** All three commits are `SendSource.Internal` -> `SendSource.Agent`
   attribution work. `GatewayConfig.IsEnabled` is byte-identical at `:121`. All four `IsEnabled` gates
   are byte-identical at `:324`, `:459`, `:954`, `:998`. `ControlEndpoints.cs` had **no line shift**
   (every hunk was an equal-size replacement), so every citation into it is still exact.
-- **`MainWindow.axaml.cs` gained three lines** at line 1426, so my three citations into it were all
-  three low. Corrected.
+- **`MainWindow.axaml.cs` gained three lines** at 1426, so all three citations into it were three
+  low. Corrected.
 
-**The uncomfortable part:** the findings survived by luck, not method. Had those commits touched
-`/fleet/sessions`, I would have written a confident audit of code that no longer existed - and the
-green tick on my own experiment would not have caught it, because the harness compiles against the
-same stale tree.
+### The two sentences I do not want softened
+
+**They survived by luck, not method.** Had those three commits touched `/fleet/sessions` instead of
+`SendSource`, I would have written a confident, well-cited, experimentally-verified audit of code
+that no longer existed - and every check in this document would still have passed.
+
+**An experiment cannot rescue a stale reading, because the experiment inherits the reader's
+staleness.** My harness compiled against the same tree I misread. It would have exercised the same
+dead code, gone green, and printed the same table - and I would have offered that green tick as
+proof. **Running it proves the code you have does what you say. It says nothing about whether the
+code you have is the code that ships.** The only defence is to re-check the tree at the moment you
+write the claim, not at the moment you start reading.
 
 ---
 
@@ -213,12 +231,29 @@ grep -oE '[A-Za-z0-9_.]+\.(cs|py):[0-9]+(-[0-9]+)?' <this file> | sort -u
 
 All four are corrected in place. Two further observations worth more than the count:
 
-- **The filename error had a trap in it.** `OpenAiKeyResolver.cs` contains `public class
-  HostedAiKeyResolver` at line 30; the class the file is *named* for is a deprecated shim at line
-  185. So the file is named after the obsolete class inside it. That is why my notes said
-  "HostedAiKeyResolver" and why neither of us caught it: **the Architect repeated the bad path back
-  to me and never opened it either.** A citation that two people have said out loud is not a
-  citation that anyone has checked.
+- **The filename is the liar, and it is this audit's own defect living in the filesystem.**
+  `OpenAiKeyResolver.cs` contains `public class HostedAiKeyResolver` at line 30. The class the file
+  is *named* for sits at line 185 and is marked:
+
+  ```csharp
+  /// <summary>Compatibility shim for older callers; use <see cref="HostedAiKeyResolver"/>.</summary>
+  [Obsolete("Use HostedAiKeyResolver.")]
+  public sealed class OpenAiKeyResolver : HostedAiKeyResolver
+  ```
+
+  **The file is named after the obsolete class inside it, whose own attribute tells you to go and
+  use the class the file actually contains.** So the citation was the reasonable one and the
+  *filename* is wrong: anybody who reads that code, sees `HostedAiKeyResolver`, and writes it down
+  will cite a file that does not exist. The next person will make this mistake too.
+
+  **This is the same defect as `IsEnabled`, one layer down.** `IsEnabled` is a name that promises
+  more than it checks; `OpenAiKeyResolver.cs` is a name that outlived the thing it names. Both are
+  read by everyone downstream as if the name were still true, and both are only wrong in the moment
+  somebody depends on them. This audit's subject is a naming failure, and it tripped over one while
+  being written.
+
+  It is also how it stayed hidden: **the Architect repeated the bad path back to me and never opened
+  it either.** A citation two people have said out loud is not a citation anyone has checked.
 - **Three of my citations are ambiguous even when correct.** `MainWindow.axaml.cs` matches three
   files in this repository and `GatewayClient.cs` matches two. Every such citation in this document
   means the `CcDirector.Avalonia` / `CcDirector.ControlApi` one, but the document never says so, and
@@ -505,6 +540,17 @@ the finding:
 
 **Is there a fourth defective route? No - there are three, and I counted rather than assumed.**
 
+**And the nine are the finding, not the three.** If all fourteen gates were wrong, this would be a
+*design* - a deliberate posture that the Director always defers to the Gateway, which you could
+argue about but not call a defect. Nine siblings in the same file, asking the right question,
+with `/fleet/prompt` sitting there as a working model of local-first, is what makes the three a
+**habit**: somebody knew the shape, and these three did not ask.
+
+**That is the sentence that matters to you, because it tells you the size of the repair.** This is
+not a hole where a capability should be. It is three routes that need to look like the nine beside
+them. The pattern already exists, is already correct, and is already in the same file - so the fix
+is copying something we have, not inventing something we do not.
+
 **The correction worth recording:** three independent code paths, written at different times, all
 reach for `IsEnabled`, all promise a local answer in a comment, and all withdraw it the moment an
 address is typed - while nine sibling routes in the same file get it right. That is what makes this
@@ -651,12 +697,19 @@ address." Read as "the Gateway will answer," it is wrong exactly when you are on
 when you are at your desk - so it is invisible in every test, at every desk, in every review, and it
 is only ever wrong for you, in the one situation you asked about.
 
-**And it is not one mistake, it is a habit.** Two unrelated routes - the fleet directory and the
-team broadcast - written at different times, both reached for the same wrong question, and both
-wrote a comment promising a local answer they then made unreachable. A third and fourth place
-(snooze, the mission spawn) asked the *right* question and got it right, and one of those has a
-comment naming this audit's exact distinction. **The knowledge is in the building. It just is not in
-those two routes.**
+**And it is not one mistake, it is a habit - which is good news.** Three unrelated routes (the fleet
+directory, the team broadcast, the ask) reached for the same wrong question and each wrote a comment
+promising a local answer they then made unreachable. But **nine sibling routes in that same file ask
+it correctly**, and snooze and the mission spawn get the distinction exactly right - one of them with
+a comment naming it outright. **The knowledge is in the building. It is simply not in those three
+routes, and the repair is to make them look like the nine.**
+
+**A last note on names, because this audit tripped over its own subject.** `IsEnabled` is a name that
+promises more than it checks. While writing this I cited `HostedAiKeyResolver.cs`, a file that does
+not exist - because the file is called `OpenAiKeyResolver.cs` and contains a class called
+`HostedAiKeyResolver`, the name on the tin having been marked obsolete and left there. A name that
+outlived its meaning, read by everyone downstream as though it were still true. **That is the same
+failure as the one this document is about, and it cost me an hour on the way to describing it.**
 
 **And the thing it takes from you is not a feature. It is your fleet's ability to talk to itself on
 one disconnected machine** - where nothing it needs is more than six inches away. That part is no
