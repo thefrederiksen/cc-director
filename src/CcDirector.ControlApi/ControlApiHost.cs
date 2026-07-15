@@ -141,6 +141,15 @@ public sealed class ControlApiHost : IAsyncDisposable
     public IGatewayHold? GatewayHold => _gatewayClient;
 
     /// <summary>
+    /// The desktop's last-known copy of the user's snooze lengths and default, read FROM the Gateway. The
+    /// session Snooze menu reads this because it must build without blocking, and because the setting
+    /// is Gateway-owned - this machine's own config.json is not the user's answer unless this machine
+    /// happens to be the Gateway's. Reads the GatewayHold property lazily, so it follows a GatewayClient
+    /// replaced on a settings change rather than pinning the one that existed at construction.
+    /// </summary>
+    public SnoozeOptionsCache SnoozeOptions { get; }
+
+    /// <summary>
     /// Fetch the latest Gateway turn brief for a session - the desktop Wingman tab's source.
     /// Null when no Gateway is configured/connected or none stamped yet; the caller then shows
     /// the local explain instead.
@@ -205,6 +214,11 @@ public sealed class ControlApiHost : IAsyncDisposable
         _sessionManager = sessionManager ?? throw new ArgumentNullException(nameof(sessionManager));
         _version = version ?? "0.0.0";
         _requestShutdownAsync = requestShutdownAsync ?? throw new ArgumentNullException(nameof(requestShutdownAsync));
+
+        // Warms itself the moment the Gateway connection goes green, so a menu opened later
+        // reads a list that is already there.
+        SnoozeOptions = new SnoozeOptionsCache(() => GatewayHold);
+        SnoozeOptions.AttachTo(GatewayMonitor);
         _useEphemeralPort = useEphemeralPort;
         _authEnabled = authEnabled;
         _repositoryRegistry = repositoryRegistry;

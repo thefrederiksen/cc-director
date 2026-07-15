@@ -581,18 +581,46 @@ public sealed class GatewayClient : IGatewayHold, IDisposable
     /// from HTTP to the tunnel. Fail-loud (no fallback): THROWS when the Gateway is disabled or the call
     /// does not confirm, so the desktop shows a clear error and sets no local hold.
     /// </summary>
-    public async Task RecordHoldAsync(string sessionId, bool onHold, CancellationToken ct = default)
+    public async Task RecordHoldAsync(string sessionId, bool onHold, int? snoozeMinutes = null, CancellationToken ct = default)
     {
         if (!_config.IsEnabled)
             throw new InvalidOperationException("The Gateway is not configured; snooze needs a Gateway connection.");
         if (string.IsNullOrWhiteSpace(sessionId))
             throw new ArgumentException("Session id is required", nameof(sessionId));
 
-        FileLog.Write($"[GatewayClient] RecordHoldAsync: POST /sessions/{sessionId}/hold onHold={onHold}");
-        var body = new HoldRequest { OnHold = onHold };
+        FileLog.Write(
+            $"[GatewayClient] RecordHoldAsync: POST /sessions/{sessionId}/hold onHold={onHold}, "
+            + $"snoozeMinutes={(snoozeMinutes is null ? "default" : snoozeMinutes.ToString())}");
+        // A null SnoozeMinutes is what the plain Snooze click sends: the Gateway then applies the user's
+        // default length. Only an explicit "Snooze for" choice carries a value.
+        var body = new HoldRequest { OnHold = onHold, SnoozeMinutes = onHold ? snoozeMinutes : null };
         using var resp = await _http.PostAsJsonAsync($"sessions/{sessionId}/hold", body, ct);
         if (!resp.IsSuccessStatusCode)
             throw await RelayFailureAsync(resp, $"hold for {sessionId}", ct);
+    }
+
+    /// <summary>
+    /// Read the user's snooze lengths and default from the Gateway (<c>GET /gateway/snooze-presets</c>).
+    /// Returns null when the Gateway is not configured. Throws when it is configured but the call fails -
+    /// the caller decides whether that is fatal; the desktop's cache treats it as "keep the last-known
+    /// list" so a right-click never waits on the network.
+    /// </summary>
+    public async Task<SnoozeOptionsResponse?> GetSnoozeOptionsAsync(CancellationToken ct = default)
+    {
+        if (!_config.IsEnabled) return null;
+
+        using var resp = await _http.GetAsync("gateway/snooze-presets", ct);
+        if (!resp.IsSuccessStatusCode)
+            throw await RelayFailureAsync(resp, "snooze lengths", ct);
+
+        var options = await resp.Content.ReadFromJsonAsync<SnoozeOptionsResponse>(ct);
+        if (options is null || options.Presets.Length == 0)
+            throw new InvalidOperationException("The Gateway returned no snooze lengths.");
+
+        FileLog.Write(
+            $"[GatewayClient] GetSnoozeOptionsAsync: presets=[{string.Join(", ", options.Presets)}], "
+            + $"default={options.DefaultMinutes}");
+        return options;
     }
 
     // ===== Fleet session numbers (issue #1292) =====

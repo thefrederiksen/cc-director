@@ -1,0 +1,43 @@
+{
+  "scenario": "cockpit snooze menu: default named, lengths offered, chosen length sent",
+  "steps": {
+    "presetFetchesForThreeMenus": 1,
+    "menuItems": [
+      "Rename",
+      "Snooze  (1 hour)",
+      "Snooze for›",
+      "Handover info",
+      "Close session"
+    ],
+    "submenuItems": [
+      "15 minutes",
+      "1 hour  (default)",
+      "4 hours",
+      "8 hours"
+    ],
+    "submenuBox": {
+      "left": 234,
+      "right": 394,
+      "top": 130,
+      "bottom": 266,
+      "w": 820,
+      "h": 520
+    },
+    "snoozeFor": {
+      "onHold": true,
+      "snoozeMinutes": 240
+    },
+    "snoozedMenuItems": [
+      "Rename",
+      "Unsnooze",
+      "Snooze for›",
+      "Handover info",
+      "Close session"
+    ],
+    "plainSnooze": {
+      "onHold": true
+    }
+  },
+  "generatedAtUtc": "2026-07-15T20:13:44.965Z",
+  "result": "PASS"
+}

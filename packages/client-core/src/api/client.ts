@@ -1237,16 +1237,22 @@ export async function createSession(
 // POST /sessions/{sid}/hold - toggle the session's on-hold state. The desired state is sent
 // explicitly ({ onHold }) so the call is idempotent; the Director echoes the applied { onHold }.
 // Reaches the Director through the Gateway catch-all session proxy with the injected Bearer.
+//
+// snoozeMinutes is how long to hold it. Omit it for "use my default length", which is what the plain
+// Snooze click means; pass a value for a specific "Snooze for" choice. Ignored on an unsnooze - there is
+// no length to un-hold for - so it is only ever sent alongside onHold=true.
 export async function holdSession(
   sessionId: string,
   onHold: boolean,
+  snoozeMinutes?: number,
   signal?: AbortSignal,
 ): Promise<boolean> {
   const sid = encodeURIComponent(sessionId);
+  const body = onHold && typeof snoozeMinutes === "number" ? { onHold, snoozeMinutes } : { onHold };
   const res = await gatewayFetch(`/sessions/${sid}/hold`, {
     method: "POST",
     headers: { "Content-Type": "application/json", Accept: "application/json", ...authHeaders() },
-    body: JSON.stringify({ onHold }),
+    body: JSON.stringify(body),
     signal,
   });
   if (!res.ok) {
