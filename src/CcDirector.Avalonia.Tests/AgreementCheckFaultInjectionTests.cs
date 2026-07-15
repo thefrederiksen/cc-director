@@ -364,6 +364,37 @@ public sealed class AgreementCheckFaultInjectionTests
     }
 
     /// <summary>
+    /// "I CANNOT READ THIS ROW" MUST NOT SWALLOW THE THINGS IT CAN READ.
+    ///
+    /// The refusal used to sit at the top of the loop and skip the whole row. But the destroyed
+    /// BriefingState only defeats the DESKTOP reconstruction - the stamp check, the fold check, the LAW
+    /// check and the palette check are all Gateway-side and certain whatever the Director's label had
+    /// been. So an ambiguous row could hide a definite stamp-not-fold, or a BROKEN LAW, behind a polite
+    /// "not graded".
+    ///
+    /// Refusing the question you cannot answer is honest. Refusing the four you can is just silence with
+    /// better manners - and it is the more dangerous shape, because the row still appears in the output
+    /// and looks handled. Found by inspection of pull request 1606.
+    /// </summary>
+    [Fact]
+    public void AnUnreadableRow_StillReportsTheDefectsThatAreCertain()
+    {
+        var row = Waiting("ambiguous-and-broken");
+        row.VoiceGenerating = true;
+        row.BriefingState = "Briefing";
+        AsGatewayServesIt(row);
+        Assert.True(AgreementCheck.IsIndeterminate(row), "precondition: this row must be the ambiguous shape");
+
+        // Now break something the destroyed label has NOTHING to do with: the Gateway's stamp no longer
+        // matches its own fold. That is certain, and it must be reported.
+        row.StateLabel = "Totally Made Up";
+
+        var findings = Run(row);
+        Assert.Contains(findings, f => f.Kind == "indeterminate");
+        Assert.Contains(findings, f => f.Kind == "stamp-not-fold");
+    }
+
+    /// <summary>
     /// The expired snooze. TRANSIENT rather than structural, and the difference matters: the Gateway owns
     /// the clock and overlays OnHold=false before the fold, so it says red "Needs you" while the Director
     /// still reads Held and the rail says grey "Snoozed" - but SnoozeExpirySweep nudges a LIVE Director off

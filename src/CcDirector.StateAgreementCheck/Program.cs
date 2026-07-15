@@ -125,9 +125,22 @@ public static class Program
                               "The number above says nothing about them.");
         Console.WriteLine("  (It was SIX out of THIRTEEN when the specification was written.)");
         Console.WriteLine();
-        Console.WriteLine("MEASURED: the stamp is present; the stamped answer IS the shared fold's answer; the law");
-        Console.WriteLine("  (working => blue) holds; the desktop's fold agrees with the Gateway's; and every colour");
-        Console.WriteLine("  resolves to the SAME HEX in the desktop palette and the shipped client palette.");
+        // EVERY CLAIM HERE IS SCOPED TO WHAT WAS ACTUALLY GRADED. This paragraph used to end "...the
+        // desktop's fold agrees with the Gateway's" full stop - printed verbatim on a run that had just
+        // said, two lines earlier, that it could not read one of the rows. The tool contradicted itself
+        // inside four lines, and the false half is the quotable half. Found by inspection of pull request
+        // 1606, which ran the tool and read what it PRINTED rather than what it meant.
+        var over = unreadable > 0 ? $"over the {graded} GRADED session(s)" : "over every live session";
+        Console.WriteLine($"MEASURED, {over}: the stamp is present; the stamped answer IS the shared fold's");
+        Console.WriteLine("  answer; the law (working => blue) holds; the desktop's fold agrees with the Gateway's;");
+        Console.WriteLine("  and every colour resolves to the SAME HEX in the desktop palette and the shipped");
+        Console.WriteLine("  client palette.");
+        if (unreadable > 0)
+        {
+            Console.WriteLine($"  This says NOTHING about the {unreadable} row(s) marked [indeterminate] above. On those, the");
+            Console.WriteLine("  stamp, fold, law and palette checks above DID run and stand - it is only the desktop");
+            Console.WriteLine("  comparison that could not be graded, because the Gateway overwrote the fact it needed.");
+        }
         Console.WriteLine("NOT MEASURED, and not to be claimed: the desktop's own SessionRole copy is not externally");
         Console.WriteLine("  observable (the Gateway's fleet pass overwrites the inbound role on every read), so a");
         Console.WriteLine("  STALE role on a Director cannot be seen from here. That push is proved in-process by");

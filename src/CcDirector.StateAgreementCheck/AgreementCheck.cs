@@ -51,23 +51,6 @@ public static class AgreementCheck
         {
             var name = row.Name ?? row.SessionId ?? "(unnamed)";
 
-            // ---- 0. CAN THIS ROW BE JUDGED AT ALL? Asked FIRST, because every check below assumes the
-            // row can be read, and a row that cannot be read must not be quietly counted as one that
-            // agrees. See IsIndeterminate: the Gateway overwrote the Director's BriefingState to carry
-            // its own fact, so the row no longer says what the desktop would have folded. Report and move
-            // on - grading it either way would be a guess, and the check exists precisely to stop guesses
-            // being published as measurements.
-            if (IsIndeterminate(row))
-            {
-                yield return new Finding(row.SessionId, name, "indeterminate",
-                    "VoiceGenerating with BriefingState=\"Briefing\": the Gateway stamps that label only " +
-                    "when the Director's own value was null/None/Briefed, but stamps VoiceGenerating " +
-                    "unconditionally - so this row cannot say whether the desktop would fold yellow " +
-                    "(the Director was briefing too) or red (the Gateway overwrote it). Not graded, " +
-                    "because guessing is what this check exists to catch.");
-                continue;
-            }
-
             // ---- 1. THE STAMP IS PRESENT. Defect 15: GET /sessions/{sid} used to return these null while
             // the DTO documents them "Required on Gateway /sessions responses". A client that cannot get a
             // stamped answer fails loudly (magenta on the rail, a blank page in the Cockpit), so a null
@@ -112,19 +95,41 @@ public static class AgreementCheck
                     $"activityState='{row.ActivityState}' but the fleet shows '{row.EffectiveColor}' " +
                     $"('{row.StateLabel}'). THE LAW: if a session is working it is BLUE, always.");
 
-            // ---- 4. THE DESKTOP'S ANSWER. The real fold over the reconstructed desktop input.
-            var desktopInput = ToDesktopInput(row);
-            var desktopColor = SessionOrdering.EffectiveColor(desktopInput);
-            var desktopLabel = SessionOrdering.StateLabel(desktopInput);
+            // ---- 4. THE DESKTOP'S ANSWER. The real fold over the reconstructed desktop input, and the
+            // ONLY check on this row that the destroyed BriefingState can defeat.
+            //
+            // THE REFUSAL LIVES HERE, NOT AT THE TOP OF THE LOOP. It used to sit above check 1 and
+            // `continue` - so an unreadable row skipped the stamp check, the fold check, the LAW check and
+            // the palette check as well, every one of which is Gateway-side and CERTAIN regardless of what
+            // the Director's briefing label had been. An ambiguous row could therefore hide a definite
+            // stamp-not-fold or a broken law behind "I cannot read this one". Refusing to answer the
+            // question you cannot answer is honest; refusing to answer the four you can is just silence
+            // with better manners. Found by inspection of pull request 1606.
+            if (IsIndeterminate(row))
+            {
+                yield return new Finding(row.SessionId, name, "indeterminate",
+                    "VoiceGenerating with BriefingState=\"Briefing\": the Gateway stamps that label only " +
+                    "when the Director's own value was null/None/Briefed, but stamps VoiceGenerating " +
+                    "unconditionally - so this row cannot say whether the desktop folds yellow (the " +
+                    "Director was briefing too) or red (the Gateway overwrote it), and those differ in " +
+                    "whether they agree. The desktop comparison is NOT graded for this row; every other " +
+                    "check above and below it is, and stands.");
+            }
+            else
+            {
+                var desktopInput = ToDesktopInput(row);
+                var desktopColor = SessionOrdering.EffectiveColor(desktopInput);
+                var desktopLabel = SessionOrdering.StateLabel(desktopInput);
 
-            if (!string.Equals(desktopColor, row.EffectiveColor, StringComparison.OrdinalIgnoreCase))
-                yield return new Finding(row.SessionId, name, "desktop-vs-gateway",
-                    $"the phone and the Cockpit show '{row.EffectiveColor}' ({row.StateLabel}); the desktop rail " +
-                    $"folds '{desktopColor}' ({desktopLabel}) from the facts it has. {WhyDesktopDiffers(row)}");
-            else if (!string.Equals(desktopLabel, row.StateLabel, StringComparison.Ordinal))
-                yield return new Finding(row.SessionId, name, "desktop-vs-gateway",
-                    $"same colour, different words: the phone reads '{row.StateLabel}', the desktop reads " +
-                    $"'{desktopLabel}'. {WhyDesktopDiffers(row)}");
+                if (!string.Equals(desktopColor, row.EffectiveColor, StringComparison.OrdinalIgnoreCase))
+                    yield return new Finding(row.SessionId, name, "desktop-vs-gateway",
+                        $"the phone and the Cockpit show '{row.EffectiveColor}' ({row.StateLabel}); the desktop rail " +
+                        $"folds '{desktopColor}' ({desktopLabel}) from the facts it has. {WhyDesktopDiffers(row)}");
+                else if (!string.Equals(desktopLabel, row.StateLabel, StringComparison.Ordinal))
+                    yield return new Finding(row.SessionId, name, "desktop-vs-gateway",
+                        $"same colour, different words: the phone reads '{row.StateLabel}', the desktop reads " +
+                        $"'{desktopLabel}'. {WhyDesktopDiffers(row)}");
+            }
 
             // ---- 5. THE RENDERED PIXEL. The hole the Phase 4 Manager found, and it would have made this
             // whole measurement worthless: comparing the fold's ANSWER reports ZERO while two screens paint
