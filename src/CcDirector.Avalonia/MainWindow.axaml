@@ -451,12 +451,20 @@
                                          TextTrimming actually engages and a long name
                                          can never run under the kebab menu. -->
                                     <Grid ColumnDefinitions="Auto,*,Auto,Auto">
-                                        <!-- Live wingman status indicator. Reads
-                                             Session.StatusColor (written by the
-                                             SessionStatusWingman) so the same
-                                             session shows the same color on Desktop
-                                             and Gateway. Doubles as the drag handle
-                                             for reordering the session list. -->
+                                        <!-- Live status indicator. Binds StatusColorBrush, which folds
+                                             ControlEndpoints.Map(Session) through
+                                             SessionOrdering.EffectiveColor - the SAME fold the phone and
+                                             Cockpit run - so every screen answers from one rule.
+
+                                             It used to say "reads Session.StatusColor (written by the
+                                             SessionStatusWingman) so the same session shows the same
+                                             color on Desktop and Gateway". Reading the Director's raw
+                                             colour is exactly WHY the desktop and the Gateway disagreed:
+                                             two independent deciders, one comment asserting they agreed.
+                                             The claim outlived the design by describing the intent
+                                             instead of the wiring.
+
+                                             Doubles as the drag handle for reordering the session list. -->
                                         <Border Grid.Column="0"
                                                 Width="14" Height="14"
                                                 CornerRadius="3"

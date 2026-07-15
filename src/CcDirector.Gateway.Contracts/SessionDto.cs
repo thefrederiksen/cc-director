@@ -354,8 +354,13 @@ public sealed class SessionDto
     /// which nothing that paints reads and which law 2 forbids. That call is now deleted, and the
     /// promise is gone with it - the fact travels here, as a fact.
     ///
-    /// THE REMAINDER: the fact crosses the wire, and NO CLIENT RENDERS A BADGE YET. Rendering it beside
-    /// the dot is outstanding - see "Still to do" in docs/new_architecture/session-state.html.
+    /// THE REMAINDER, stated exactly: the fact crosses the wire, the DESKTOP RAIL RENDERS THE BADGE (see
+    /// MainWindow.axaml), and the PHONE AND COCKPIT DO NOT YET. Rendering it there is outstanding - see
+    /// "Still to do" in docs/new_architecture/session-state.html.
+    ///
+    /// This paragraph said "no client renders a badge yet" in the same change that added the desktop
+    /// badge - false the moment it was written, and false in the direction that makes a reader stop
+    /// looking. Keep it exact: name the surfaces, not "no client".
     /// </summary>
     public bool PendingDeletion { get; set; }
 
