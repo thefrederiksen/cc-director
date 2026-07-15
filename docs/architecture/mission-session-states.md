@@ -1,6 +1,7 @@
 # Mission: Session States
 
-**Status:** ACTIVE. Opened 15 July 2026.
+**Status:** COMPLETE. Ran 15 July 2026. Every slice and every gap is merged to main; what remains open is
+named below and is the owner's to decide, not work anyone is waiting to do.
 **Architect:** the session named `Session States - Architect`.
 **How this mission is conducted:** [`.claude/skills/mission/SKILL.md`](../../.claude/skills/mission/SKILL.md) - the roles and the four laws. This document does not restate them and grants nothing.
 **The specification:** [`docs/new_architecture/session-state.html`](../new_architecture/session-state.html) - the only document that defines session state. Read it before writing a line.
@@ -97,8 +98,8 @@ Every one of these was a place the product said something false about a session.
 | 3 | The orange dot that lied about the phone (defect 19) | [#1588](https://github.com/thefrederiksen/devthrottle/pull/1588) | **Merged** |
 | 4 | Deletion is a badge, never a colour (defect 23) | [#1596](https://github.com/thefrederiksen/devthrottle/pull/1596) | **Merged** |
 | 5 | One fold everywhere; the desktop stops guessing (defect 5) | [#1598](https://github.com/thefrederiksen/devthrottle/pull/1598) | **Merged** |
-| 6 | The agreement check and the QA report | [#1606](https://github.com/thefrederiksen/devthrottle/pull/1606) | **Inspection** |
-| 7 | The four gaps below - the mission does not end until they close | - | **Manager seated** |
+| 6 | The agreement check and the QA report | [#1606](https://github.com/thefrederiksen/devthrottle/pull/1606) | **Merged** |
+| 7 | The gaps: 1, 2, 5, 6 closed; 3 refused with a census; 4 is a decision paper | [#1623](https://github.com/thefrederiksen/devthrottle/pull/1623) | **Merged** |
 
 Slices are cut from `origin/main` in build order and cherry-picked - the fourteen commits are a
 stacked chain (three touch `SessionDto.cs`, three touch `GatewayHost.cs`), so they cannot be
@@ -151,8 +152,12 @@ just-expired snooze. The first three do not heal on their own. The recommendatio
 implies is that the desktop should stop working colours out and simply **ask**, as the phone does.
 That is a real piece of work and it is the owner's call.
 
-**ANSWERED by the owner, 15 July 2026: the mission does NOT end at slice 6. It runs until these four
-are closed.** A Manager is seated on them - brief at
+**ANSWERED by the owner, 15 July 2026: the mission did NOT end at slice 6 - it ran until these were
+closed, and they are ([#1623](https://github.com/thefrederiksen/devthrottle/pull/1623)).**
+
+**Gaps 1, 2, 5 and 6 are fixed and merged.** Gap 3 is REFUSED on the evidence and stays open on purpose -
+see its census on `Session.StatusColor`. Gap 4 is a decision paper and is the ONE thing still waiting on
+the owner. A Manager is seated on them - brief at
 [`session-states-gaps-manager-brief.md`](session-states-gaps-manager-brief.md), branch
 `mission/session-states-gaps`.
 
