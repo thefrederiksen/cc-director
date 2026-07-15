@@ -266,11 +266,19 @@ Three honest qualifications, all raised by the Codex reviewer and all accepted:
   `is_voice` column computed in C# at fold time rather than re-derived from a string comparison in
   SQL, because `_totals` is keyed case-sensitively while the voice test is not, and that mismatch
   must not be reproduced in the query layer.
-- **A fold is not "one row write".** A correct post-cutover fold is one `INSERT` into `stat_delta`,
-  one upsert into `session_highwater`, and possibly an `INSERT OR IGNORE` into each distinct-id
-  table when a repository, agent, or wingman session is seen for the first time. That is bounded,
-  small, and independent of history length - which is the actual win over an O(all history)
-  document rewrite. It is not a single write, and the brief does not get to claim one.
+- **A fold is not "one row write", and it is not one row either.** A fold walks the session's input
+  buckets (`foreach (var b in s.InputStats.Buckets)`, `GatewayInputStatsAggregator.cs:343`), so a
+  correct post-cutover fold is one `INSERT` into `stat_delta` **per changed bucket** - a session
+  reporting movement on three modality-and-surface pairs writes three rows, not one - plus one
+  upsert into `session_highwater`, plus possibly an `INSERT OR IGNORE` into a distinct-id table
+  when a repository, agent, or wingman session is seen for the first time.
+
+  **The work is bounded by what changed, not by how much history exists**, and that - not any
+  particular statement count - is the actual win over an O(all history) document rewrite. Be
+  careful with the word "bounded": it describes the write cost of a fold. It does **not** describe
+  the distinct-id tables, which are deliberately never pruned (Decision 2,
+  `GatewayInputStatsAggregator.cs:45-61`) and grow forever by design. Both facts are true at once
+  and the brief means the first one.
 
 - **"A new question is a query, not a deploy" holds only for dimensions already carried on the
   row.** A question about a dimension `stat_delta` does not capture still needs a schema change and
@@ -446,14 +454,20 @@ fail is not a criterion.
    (`apps/mobile/src/pages/YourThrottle.tsx`) render unchanged. **Evidence, not opinion:** the
    captured `/stats/data` payload from criterion 1, plus a before-and-after screenshot of each of
    the three surfaces, attached to the phase report. "Looks fine" is not acceptance.
-3. A counter move costs bounded work that does not grow with history, rather than a whole-document
-   rewrite. **Demonstrated by:** an integration test that observes a single delta and asserts the
-   expected statement mix for the real schema - one `INSERT` into `stat_delta`, one upsert into
-   `session_highwater`, and at most one `INSERT OR IGNORE` per distinct-id table - plus an
-   assertion that no JSON store file's last-write timestamp changes after the import has completed.
-   The test must pin that this mix is **unchanged** when the table already holds a large number of
-   historical rows, since "does not grow with history" is the actual claim being proven. The
-   obsolete "one row write" phrasing is not what is tested, because it is not what the schema does.
+3. A counter move costs work bounded by what changed, and that cost does not grow with history,
+   rather than a whole-document rewrite. **Demonstrated by:** an integration test that observes a
+   delta and asserts the expected statement mix for the real schema - one `INSERT` into
+   `stat_delta` **per changed bucket**, one upsert into `session_highwater`, and at most one
+   `INSERT OR IGNORE` per distinct-id table - plus an assertion that no JSON store file's
+   last-write timestamp changes after the import has completed.
+
+   Two things this test must get right, both of which a careless version gets wrong:
+   - **Expect one row per changed bucket, not one per fold.** A session reporting movement on three
+     modality-and-surface pairs must write three rows. A test asserting "one row per fold" pins the
+     wrong behaviour and would go green against a fold that silently drops buckets.
+   - **Pin that the mix is unchanged when the table already holds a large number of historical
+     rows.** "Does not grow with history" is the actual claim being proven, and a test against an
+     empty table proves nothing about it.
 4. A new question that uses dimensions already carried on `stat_delta` is answered by a query with
    no schema change, for data recorded since the cutover. The Manager picks one the owner has not
    asked for yet and shows the query and its result.
