@@ -26,9 +26,9 @@ because the tests and the specification both defend the law.
 
 **Today it is partly true.** The eight lies below are fixed and merged. Four named gaps remain open
 (see "Still open"), and until they close, there are still places where a screen can disagree with
-another. Whether this mission ends at slice 6 or runs until those gaps close is an open question for
-the owner, recorded there. Do not quote the objective as though it were the current state - that is
-the exact failure this mission exists to end.
+another. **The owner has ruled that the mission does not end until they close** - so the objective
+above is what this mission is measured against, not a description of where it has got to. Do not
+quote it as though it were the current state; that is the exact failure this mission exists to end.
 
 ---
 
