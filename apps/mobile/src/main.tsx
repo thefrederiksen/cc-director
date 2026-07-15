@@ -21,6 +21,7 @@ import { ensureGatewayCookie, configureUnauthorizedRedirect, mobileSignInRedirec
 import { ensurePushSubscribed } from "@devthrottle/client-core/push/register";
 import { CreditsNotice } from "./components/CreditsNotice";
 import { ConnectionBanner } from "./components/ConnectionBanner";
+import { useVisibleViewportHeight } from "./hooks/useVisibleViewportHeight";
 import { useScreenWakeLock } from "./hooks/useScreenWakeLock";
 import { useKeepWarm } from "@devthrottle/client-core/net/useKeepWarm";
 import { resumePendingDictations } from "@devthrottle/client-core/dictation/backgroundSend";
@@ -42,6 +43,10 @@ function RequireDeviceKey() {
 // routes, the lock is acquired once (a single sentinel), not once per page.
 function GatedLayout() {
   useScreenWakeLock();
+  // THE viewport fit for the whole app: publishes the true visible height as --app-vh, which
+  // .terminal-screen and .car-screen size themselves from. Mounted ONCE here so no screen has to
+  // solve "does it fit?" privately again - that is why this bug kept coming back. See the hook.
+  useVisibleViewportHeight();
   // Keep-warm heartbeat (P2): hold the direct LAN path open during active use so it never idles back to the relay.
   useKeepWarm();
   // Resume any recorded-but-unsent dictation once the phone is enrolled (issue #1006): a clip whose

@@ -2,7 +2,8 @@ import { useLocation, useParams } from "react-router-dom";
 import { DictationDialog } from "@devthrottle/client-core/dictation/DictationDialog";
 import { formatClock, useVoiceMode } from "@devthrottle/client-core/voice/useVoiceMode";
 import { DictationStatusStrip } from "../components/DictationStatusStrip";
-import { SessionManageBar } from "../components/SessionManageBar";
+import { SessionAppBar } from "../components/SessionAppBar";
+import { useSessionManage } from "../components/useSessionManage";
 import { ViewTabs } from "../components/ViewTabs";
 
 // Session Voice mode (issue #850): the hands-free Wingman narration screen, the third session view
@@ -58,15 +59,45 @@ export function VoiceMode() {
     onRespondSendAudio,
   } = useVoiceMode(sessionId, { seededVoiceOn });
 
+  // Snooze and Remove share this one live held-state, so the bottom bar and the overflow menu can
+  // never disagree about it.
+  const manage = useSessionManage(sessionId);
+
   return (
     <div className="terminal-screen">
-      <header className="app-bar">
-        <h1 className="term-title">{title}</h1>
-      </header>
+      {/* Snooze is NOT in this menu - the bottom bar owns it on this screen (owner: "I press the
+          snooze button a lot"), and a verb in two places is a verb that disagrees with itself. */}
+      <SessionAppBar
+        title={title}
+        manage={manage}
+        extraMenuItems={
+          voiceOn ? (
+            <>
+              {!audioUnavailable && (
+                <button
+                  type="button"
+                  className="menu-item"
+                  role="menuitem"
+                  onClick={() => void onGenerateNow()}
+                  disabled={regenerating}
+                >
+                  {regenerating ? "Regenerating..." : "Regenerate response"}
+                </button>
+              )}
+              <button
+                type="button"
+                className="menu-item"
+                role="menuitem"
+                onClick={() => void onSwitchOff()}
+              >
+                Turn voice off
+              </button>
+            </>
+          ) : undefined
+        }
+      />
 
       <ViewTabs sessionId={sessionId} active="voice" />
-
-      <SessionManageBar sessionId={sessionId} />
 
       {/* Live dictation status so a spoken reply Send is never silent (#1139). */}
       <DictationStatusStrip sessionId={sessionId} />
@@ -203,9 +234,6 @@ export function VoiceMode() {
                 />
                 <span className="voice-ref voice-clock">{formatClock(pos)} / {formatClock(dur)}</span>
               </div>
-              <button type="button" className="voice-respond" onClick={() => setResponding(true)}>
-                Respond
-              </button>
             </div>
             <div className="voice-narr voice-narr-scroll">
               <div className="voice-narr-title">{narrative}</div>
@@ -216,28 +244,28 @@ export function VoiceMode() {
           </>
         )}
 
-        {/* Regenerate response: force a fresh narration of the session's CURRENT last reply, without
-            toggling voice off/on. Present in the on-states that already have (or are making) a clip -
-            NOT in the unavailable state, which shows its own "Generate narration now". This is the
-            manual override for the rare case the auto-narration is stale or you just want it re-read;
-            it hits the same force path (/wingman/explain) that overwrites the cached clip. */}
-        {voiceOn && !audioUnavailable && (
-          <button
-            type="button"
-            className="voice-regen-btn"
-            onClick={() => void onGenerateNow()}
-            disabled={regenerating}
-          >
-            {regenerating ? "Regenerating..." : "Regenerate response"}
-          </button>
-        )}
+        {/* Regenerate response and Turn voice off used to sit here as full-width buttons below the
+            text. Both are occasional, so they moved into the app bar's overflow menu (above) and the
+            bottom of the screen now belongs to the two controls actually used every turn. The verbs
+            themselves are unchanged: the same onGenerateNow (/wingman/explain force path) and
+            onSwitchOff (ViewMode -> Text) calls. */}
+      </div>
 
-        {/* Turn voice off: a low-emphasis control present in every on-state (working, speaking). It
-            tells the owning Director to leave voice mode (ViewMode -> Text), the same call the native
-            app makes, and the screen returns to the off state. */}
-        {voiceOn && (
-          <button type="button" className="voice-off-toggle" onClick={() => void onSwitchOff()}>
-            Turn voice off
+      {/* The bottom bar: the two controls the owner touches most, pinned in the thumb zone and in the
+          same place on every visit. Respond appears in the speaking state only - exactly the state it
+          appeared in before this layout change, so nothing about WHEN you can reply has moved. */}
+      <div className="voice-bottom-bar">
+        <button
+          type="button"
+          className="voice-snooze-btn"
+          onClick={() => void manage.toggleHold()}
+          disabled={manage.busy || manage.onHold === null}
+        >
+          {manage.held ? "Unsnooze" : "Snooze"}
+        </button>
+        {speaking && (
+          <button type="button" className="voice-respond" onClick={() => setResponding(true)}>
+            Respond
           </button>
         )}
       </div>

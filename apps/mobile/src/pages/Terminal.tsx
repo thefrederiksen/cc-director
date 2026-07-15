@@ -5,7 +5,8 @@ import { listSessions } from "@devthrottle/client-core/api/client";
 import { TerminalMirror, type TerminalStreamStatus } from "@devthrottle/client-core/terminal/stream";
 import { DictationStatusStrip } from "../components/DictationStatusStrip";
 import { SessionControls } from "../components/SessionControls";
-import { SessionManageBar } from "../components/SessionManageBar";
+import { SessionAppBar } from "../components/SessionAppBar";
+import { useSessionManage } from "../components/useSessionManage";
 import { ViewTabs } from "../components/ViewTabs";
 
 // Session Terminal mode (issue #817): a faithful 1:1 translation of the Android (MAUI) app's
@@ -48,6 +49,7 @@ export function Terminal() {
 
   const [name, setName] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const manage = useSessionManage(sessionId);
   const [status, setStatus] = useState<string>(STATUS_BASE);
   const [showKeys, setShowKeys] = useState(false); // controls hidden by default (Android parity)
   const [fitLabel, setFitLabel] = useState<"Fit" | "1:1">("1:1");
@@ -88,14 +90,11 @@ export function Terminal() {
 
   return (
     <div className="terminal-screen">
-      <header className="app-bar">
-        <h1 className="term-title">{name ?? "Session"}</h1>
-      </header>
+      {/* Snooze is in the overflow here: this screen's bottom belongs to the composer and the key
+          rows, so there is no thumb-zone room for it (Voice mode, which has room, keeps it one tap). */}
+      <SessionAppBar title={name ?? "Session"} manage={manage} showSnooze />
 
       <ViewTabs sessionId={sessionId} active="terminal" />
-
-      {/* Hold/Resume + Remove management buttons on the session screen (issue #812). */}
-      <SessionManageBar sessionId={sessionId} />
 
       <div className="term-statusbar">
         <span className="term-status" role="status">{status}</span>

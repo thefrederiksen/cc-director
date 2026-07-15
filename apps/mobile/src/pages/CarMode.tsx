@@ -33,33 +33,10 @@ export function CarMode() {
   // Phase 1: a standalone page under /m with a screen wake-lock).
   useScreenWakeLock();
 
-  // v5 - PIN THE SCREEN HEIGHT TO THE ACTUALLY-VISIBLE VIEWPORT. On the owner's Android PWA, CSS `dvh`
-  // proved unreliable: the fixed .car-screen stayed taller than the visible area, so the footer's primary
-  // button rendered BELOW the phone's bottom browser toolbar (cut off), in both idle and active states.
-  // window.visualViewport.height is the true visible height (it excludes the toolbars and the keyboard), so
-  // we publish it into the `--car-vh` CSS variable and the stylesheet sizes .car-screen to it (with a `dvh`
-  // fallback for the first paint / browsers without visualViewport). We refresh on every visualViewport
-  // resize/scroll and on orientation change, so it re-fits as the toolbars show and hide.
-  useEffect(() => {
-    const vv = window.visualViewport;
-    const root = document.documentElement;
-    const apply = () => {
-      const height = vv !== null ? vv.height : window.innerHeight;
-      root.style.setProperty("--car-vh", `${Math.round(height)}px`);
-    };
-    apply();
-    vv?.addEventListener("resize", apply);
-    vv?.addEventListener("scroll", apply);
-    window.addEventListener("resize", apply);
-    window.addEventListener("orientationchange", apply);
-    return () => {
-      vv?.removeEventListener("resize", apply);
-      vv?.removeEventListener("scroll", apply);
-      window.removeEventListener("resize", apply);
-      window.removeEventListener("orientationchange", apply);
-      root.style.removeProperty("--car-vh");
-    };
-  }, []);
+  // The screen height is pinned to the actually-visible viewport by the ONE shared hook mounted in
+  // the app shell (useVisibleViewportHeight -> --app-vh), which this page's .car-screen sizes from.
+  // This page used to own that effect privately (--car-vh, v5/#1408); it was the only fix that held
+  // on the real device, so it was promoted to the shell for every screen instead of living here.
 
   // The injected brain responder. Phase 2+: the real fleet brain. The stand-in (below) just echoes the
   // heard command so Phase 1's barge-in proof needs no server and no credits.
