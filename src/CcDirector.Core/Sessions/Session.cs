@@ -831,6 +831,32 @@ public sealed class Session : IDisposable
     }
 
     /// <summary>
+    /// The model this session's agent is CURRENTLY using (issue #1637), as reported by the driver's
+    /// <see cref="Drivers.IAgentDriver.ReadCurrentModel"/> from the tool's own records - e.g.
+    /// <c>claude-fable-5</c>, <c>gpt-5.5</c>, <c>grok-4.5</c>. Refreshed at every turn-end by
+    /// <see cref="SessionCurrentModelWatcher"/>, so a mid-session model switch is reflected. Null
+    /// until the first read succeeds (no turn yet, or an agent without the ModelReport capability).
+    /// Set via <see cref="SetCurrentModel"/>; flows to the Gateway on
+    /// <see cref="Gateway.Contracts.SessionDto.CurrentModel"/> for the model-usage statistics.
+    /// </summary>
+    public string? CurrentModel { get; private set; }
+
+    /// <summary>
+    /// Record the driver-reported current model (issue #1637). Idempotent per value: only logs on a
+    /// change. A null/blank argument is IGNORED rather than clearing: a read that cannot determine
+    /// the model (torn file, agent restarting) is a missed read, not evidence the session lost its
+    /// model - the last known model stands. This is the only writer of <see cref="CurrentModel"/>.
+    /// </summary>
+    public void SetCurrentModel(string? model)
+    {
+        var normalized = string.IsNullOrWhiteSpace(model) ? null : model.Trim();
+        if (normalized is null || string.Equals(normalized, CurrentModel, StringComparison.Ordinal))
+            return;
+        CurrentModel = normalized;
+        FileLog.Write($"[Session] SetCurrentModel: session={Id} model={normalized}");
+    }
+
+    /// <summary>
     /// The <see cref="WingmanEnabled"/> value captured just before voice mode was enabled
     /// for this session, so the prior state can be restored when voice mode ends. Null when
     /// voice mode is not active (the value is transient and is not persisted). Voice mode

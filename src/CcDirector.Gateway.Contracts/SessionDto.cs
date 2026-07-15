@@ -595,6 +595,23 @@ public sealed class SessionDto
     public InputStatsDto? InputStats { get; set; }
 
     /// <summary>
+    /// The model this session's agent is CURRENTLY using (issue #1637), reported by the owning
+    /// Director from the agent driver's own records (transcript / rollout / event log / session
+    /// store) - e.g. <c>claude-fable-5</c>, <c>gpt-5.5</c>, <c>grok-4.5</c>. Refreshed at every
+    /// turn-end, so a mid-session model switch (Claude's /model) is reflected; the launch flag alone
+    /// would go stale. RECORDS-ONLY: this never carries the launch ALIAS (<c>opus[1m]</c>), only
+    /// what the tool recorded producing - so a fold can never attribute a turn to an alias the
+    /// records will later contradict (see SessionCurrentModelWatcher.RefreshModel). Null when the
+    /// tool has recorded no model yet (fresh session before its first turn-end), the agent's driver
+    /// does not declare the ModelReport capability, or the Director predates this field. Free text
+    /// with unbounded cardinality, casing by convention only - consumers key it like RepoPath/Agent
+    /// (identity table, ordinal-ignore-case in C#), never by database collation. Passes through the
+    /// Gateway aggregation unchanged. This is the PRODUCER the Gateway statistics' model dimension
+    /// folds from (the gateway-sqlite mission brief names this field as its prerequisite).
+    /// </summary>
+    public string? CurrentModel { get; set; }
+
+    /// <summary>
     /// Issue #1176 (Phase 1a): a copy safe to hand out from the Gateway's pushed-session cache. The
     /// <c>/sessions</c> aggregation stamps scalar fields (EffectiveColor, DirectorId, MachineName,
     /// voice/transcription overlays, etc.) on the object it serves, so callers must never receive the

@@ -1312,6 +1312,9 @@ internal static class ControlEndpoints
             // DevThrottle Stats: the per-session input tally, taken at the choke point. Null when empty so a
             // fresh session does not bloat every snapshot; the Gateway aggregates the non-null tallies.
             InputStats = s.InputStats.IsEmpty ? null : s.InputStats.Snapshot(),
+            // The model producer (issue #1637): the driver-reported model this agent is currently
+            // using, stamped at turn-end by SessionCurrentModelWatcher. Null until a read succeeds.
+            CurrentModel = s.CurrentModel,
             RemoteRepo = s.RemoteRepo ?? "",
             RemoteThreadUrl = s.RemoteThreadUrl ?? "",
             RemoteRunUrl = s.RemoteRunUrl ?? "",
