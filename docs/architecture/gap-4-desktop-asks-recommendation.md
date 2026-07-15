@@ -64,10 +64,25 @@ The desktop stops folding and renders the Gateway's already-folded row (`Effecti
 
 - **Right by the law.** One owner, one answer, structurally - not by two copies of one function agreeing.
 - **The four facts stop being special.** Every future Gateway fact is free.
-- **Cost: large, and it is a mission, not a slice.** `SessionViewModel` is the rail's whole fold surface
-  and today it derives everything from an in-process `Session` with **15 change subscriptions**. All of
-  it becomes a projection of a pushed row. `MainWindow`, the FIFO queue window (which gap 2 just routed
-  through the local fold), and every rail test move with it.
+- **Cost: UNMEASURED. I do not know what this costs, and nobody should read a number into it.**
+  `SessionViewModel` is the rail's whole fold surface and derives everything from an in-process
+  `Session`; under Option A it becomes a projection of a pushed row, and `MainWindow`, the FIFO queue
+  window (which gap 2 just routed through the local fold) and the rail tests move with it. That is a
+  description of the SHAPE of the work, not its size.
+
+  **An earlier draft of this paper said "large, a mission not a slice" and cited "15 change
+  subscriptions" as the evidence. Both are withdrawn, and the second was worse than useless:**
+  - It counted grep lines, not work: those 15 subscriptions point at **12** distinct handlers (four
+    share one).
+  - **Five of the 15 are not fold inputs at all** - verification (twice), view mode, number, pending
+    deletion. They are badges and ordering. Option A does not touch them. The real fold coupling is
+    about ten lines collapsing to roughly seven handlers.
+  - **Under Option A most of those fold subscriptions GO AWAY**, because the row arrives pre-folded. The
+    number was therefore closer to a measure of what Option A **deletes** than of what it costs - it
+    argued the opposite of the case it was cited for.
+
+  If a number is wanted, it has to be earned: spike the transport, port one surface, and measure. Until
+  then the honest answer to "how big is Option A?" is **"we have not looked."**
 - **It needs a transport that does not exist yet.** There IS a Gateway-to-Director down-channel - the
   `set-resolved-role` verb, which is how the role stamp already arrives - so the direction is proven.
   But it carries one field for one session on change; pushing a folded row for every session on every
@@ -82,7 +97,10 @@ The desktop stops folding and renders the Gateway's already-folded row (`Effecti
 Extend the down-channel so the Gateway stamps `DictationStatus`, `Transcribing`, `VoiceGenerating`,
 `VoiceAudioReady` onto the Director, like `GatewayResolvedRole` already is. The desktop keeps folding.
 
-- **Small, and it reuses a proven pattern.** It would work.
+- **It reuses a proven pattern and it would work.** I am NOT calling it "small" - I have measured this
+  no more than I measured Option A, and "A is unknown, B is small" would tilt the comparison on exactly
+  the kind of unearned adjective this paper had to withdraw once already. What is genuinely known is its
+  SHAPE: four more stamps on a channel that already carries one.
 - **It treats the symptom, and the tax never stops.** Every Gateway-owned fact, forever, needs its own
   stamp, its own event, its own signal into `RaiseFoldProjection`, its own test - and the desktop's fold
   must stay byte-identical to the Gateway's for all time. The mission has already paid this bill once:
@@ -107,7 +125,8 @@ whole decision:
 > When the Gateway is unreachable, what should the desktop session rail show?
 
 If the answer is "the rail may go quiet/unknown - I use it with the Gateway up", Option A is
-straightforward in shape (if large in work) and I would start with the transport.
+straightforward in SHAPE, and the next step is not to build it but to measure it: spike the transport,
+port one surface, and come back with a real number. I do not have one.
 
 If the answer is "the desktop must always show me my sessions, Gateway or not", then Option A as stated
 is not acceptable, and the honest position is that **the desktop keeps a local fold and gap 4 does not
@@ -115,8 +134,53 @@ fully close** - because a local fold that is missing Gateway facts is what gap 4
 best available answer may be a bounded, explicit version of Option B, and it should be taken knowingly,
 with the tax written down, rather than drifted into.
 
-**Do not start this on my recommendation alone.** The cost is real, the offline question is the owner's,
-and guessing it wrong wastes the run.
+### The third choice: "go and measure it first"
+
+**This paper cannot tell you what Option A costs, so a perfectly good answer is "find out, then ask me
+again."** That is a real option and it is cheap to state, so here is what it would take:
+
+> **Spike the transport and port one surface.** Push the Gateway's already-folded row (`EffectiveColor`,
+> `StateLabel`, `TriageBucket`) down the existing `DirectorCommand` channel - the one the
+> `set-resolved-role` verb already uses - for one Director, and make the FIFO queue window (the smallest
+> rail surface, one predicate since gap 2) render the pushed row instead of folding. That answers the two
+> things nobody knows: **how much traffic** a folded row generates at real event rates, and **what a
+> ported surface actually looks like**. Then the rail is the same job at a known multiple.
+
+The FIFO window is the right guinea pig precisely because gap 2 just reduced it to a single call to
+`Classify` - it is the one surface where "does the pushed row work?" is a small question rather than a
+tangled one.
+
+**Do not start Option A on my recommendation alone.** The offline question is genuinely the owner's, and
+the cost is genuinely unknown - not "large", not "small", unknown. Guessing either wastes the run.
+
+## This paper's own defect, on the record
+
+**The first draft of this paper had the mission's exact defect in it, and it was about to reach the
+owner.** It is recorded here rather than quietly corrected, because a paper that hides its own
+correction is asking for the same trust as one that never needed it.
+
+The draft said Option A was **"large, a mission not a slice"** and offered **"15 change subscriptions"**
+as the evidence. The number was real - `grep` says 15 - and every inference drawn from it was wrong:
+
+- It counted **lines, not work**: the 15 point at 12 distinct handlers.
+- **Five are not fold inputs at all** (verification twice, view mode, number, pending deletion). Option A
+  never touches them.
+- **It argued the opposite of the case it was cited for.** Under Option A the fold subscriptions largely
+  GO AWAY, because the row arrives pre-folded. The number is closer to a measure of what Option A
+  *deletes* than of what it costs.
+
+**And the paper disagreed with itself.** The body leaned on that count, while "What I did NOT verify"
+below said the size judgement was "not from a count". Both were written by the same author in one
+sitting, and neither noticed the other - which is precisely how the row that reads "Needs you" beside a
+dot folded to "supporting" gets shipped by someone who checked both halves separately.
+
+**The shape is the mission's own.** Defect 19 was a fabricated CAUSE that survived review because it was
+written in the same voice as the true sentences around it. "15 change subscriptions" was a fabricated
+MEASUREMENT that would have survived for the same reason - it reads like a fact, it sits among facts, and
+catching it requires knowing what Option A does, which the reader making the decision does not. A number
+nobody can stand behind is worse than a blank space: a blank space at least tells you to ask.
+
+**If a number reappears in this paper, ask what was measured to get it.**
 
 ## What I did NOT verify
 
@@ -126,7 +190,11 @@ Said plainly, so nobody spends their scepticism in the wrong place:
   `DirectorCommand` down-channel can carry it. "The direction is proven" is not "the volume is proven".
 - **I did not confirm the snooze-expiry path end to end.** I am reading it as a propagation delay from
   the Gateway owning timed snooze; I did not watch it happen.
-- **I did not size Option A in files or hours.** "Large, a mission not a slice" is a judgement from the
-  15 subscriptions and the surfaces involved, not from a count.
+- **I did not size Option A. At all.** Not in files, not in hours, not in anything. An earlier draft
+  called it "large, a mission not a slice" on the strength of a subscription count that, read properly,
+  points the other way (see Option A above). That draft also said in this very section that the size
+  judgement was "not from a count" while the body leaned on exactly that count - the paper contradicted
+  itself, and I did not catch it because I wrote both halves. **If this paper still moves you toward
+  "Option A is expensive", that is rhetoric, not evidence.**
 - I did not investigate whether the Cockpit's rail has the same offline question. It probably does, and
   it may already have an answer worth copying.
