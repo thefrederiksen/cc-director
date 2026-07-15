@@ -1068,6 +1068,29 @@ until the quality-assurance report.
   "the same repository", but it silently rewrites history that was recorded as two. This mission
   deliberately preserves the split (see Constraints) because changing it would break the one proof
   Phase 1 has. Worth raising with the owner separately.
+- **The test suite writing into the owner's live storage is a REPEAT, not a first, and the repeat is
+  the finding.** On 2026-07-15 a full test run imported the owner's live `gateway-input-stats.json`
+  and renamed it aside. No data was lost - the running Gateway held its state in memory and rewrote
+  the file - but a Gateway restart in that window would have found no file, started empty, and saved
+  empty over it. The mechanism that saved it was timing, not a safeguard. Root cause:
+  `GatewayHost.cs:476-478` defaults its stores to `CcStorage.Root()`, and 26 of the 48 Gateway test
+  files that construct a `GatewayHost` never redirect `CC_DIRECTOR_ROOT`. That root holds
+  `missions.json`, `cronjobs.json`, and `keyvault.json` - live fleet state, not just statistics.
+
+  **This repository had already learned this exact lesson and fixed it too narrowly.** The
+  pre-existing `ModuleInitializer` in `TestEnvironment.cs` exists for issue #322, where a test wrote
+  an instance file into the real Director instances directory and the production Gateway's watcher
+  discovered it and painted a phantom Director in the owner's real Cockpit. The diagnosis was right
+  and the fix was scoped to the *one directory that had been noticed*, leaving the general hazard -
+  tests resolving to the real storage root - fully live. It bit again today, harder, because the
+  import added the first operation that **moves** a file rather than overwriting it with equivalent
+  state.
+
+  The lesson is not "add an initializer". It is that **a fix scoped to the instance you noticed
+  leaves the class alive**, and the class will return wearing a worse costume. #322's fix protected
+  one directory; the correct blast radius was the storage root. Worth an owner decision on whether
+  the other test assemblies - Core, Engine, Launcher - have the same exposure, since only the
+  Gateway suite is guarded now.
 - The silent default-filling failure mode described in point 2 of "The why" affects every remaining
   hand-rolled JSON store in the Gateway, not only the ones this mission ports. The stores this
   mission moves are protected by `PRAGMA user_version`; the others are not. Worth an owner decision
