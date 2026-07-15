@@ -14,6 +14,7 @@
 
 import { useEffect, useState } from "react";
 import { fetchWingmanVoiceAudio, getWingmanVoice, type SessionDto, type WingmanVoice } from "../api/client";
+import { type VoiceRowInputs } from "./voiceRowState";
 
 export type ClipPhase = "none" | "downloading" | "ready" | "error";
 
@@ -54,6 +55,34 @@ export function getClipState(sid: string): ClipState {
 export function isPhoneReady(sid: string, generatedAt: string): boolean {
   const s = _state.get(sid);
   return s !== undefined && s.phase === "ready" && s.generatedAt === generatedAt && s.url !== null;
+}
+
+/**
+ * The roster's voice verdict for a session, assembled from the two facts only this module can see (what
+ * THIS PHONE holds, and which turn it holds it for) plus the four the Gateway stamped on the session.
+ *
+ * It lives here, next to the clip store, so the roster cannot accidentally ask the weaker question that
+ * caused the reported bug - "do I hold any bytes?" instead of "do I hold THIS turn's bytes?". The rule
+ * itself is pure and tested in voiceRowState.ts; this is the one place that feeds it real state.
+ *
+ * The current turn's stamp comes from the voice metadata syncVoiceSessions caches on every poll. A
+ * session with no cached metadata has never had a narration this phone knows of, so it holds nothing
+ * current by definition.
+ */
+export function rowVoiceInputs(session: SessionDto, agentWorking: boolean): VoiceRowInputs {
+  const sid = session.sessionId ?? "";
+  const meta = getVoiceMeta(sid);
+  const currentGeneratedAt = meta?.ready ? (meta.generatedAt ?? "") : "";
+  return {
+    voiceMode: Boolean(session.voiceMode),
+    agentWorking,
+    voiceUnavailable: session.voiceUnavailable != null,
+    gatewayGenerating: Boolean(session.voiceGenerating),
+    gatewayHasAudio: Boolean(session.voiceAudioReady),
+    clipDownloading: getClipState(sid).phase === "downloading",
+    phoneReadyForCurrentTurn: currentGeneratedAt.length > 0 && isPhoneReady(sid, currentGeneratedAt),
+    hasSpokenText: (meta?.spoken?.length ?? 0) > 0,
+  };
 }
 
 // ----- Cache Storage durability layer (best-effort capability, not a fallback) -----
