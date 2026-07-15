@@ -1,7 +1,32 @@
 # Gap 4 - the desktop cannot see four things the phone can
 
-**Status:** INVESTIGATION AND RECOMMENDATION ONLY. Nothing here is built. This is a decision paper for
-the Architect and, on one question, for the owner.
+**Status:** DECIDED - **OPTION A IS REJECTED BY THE OWNER, 15 July 2026. It will not be built.** This
+paper stays as the record of why, and because its analysis of the mechanism is still correct and still
+useful. Nothing here was ever built.
+
+> ## THE OWNER'S ANSWER, and it settles it
+>
+> The question this paper called the whole decision was: *when the Gateway is unreachable, what should
+> the desktop session rail show?* His answer, in his words: **"it is good that it still works without the
+> gateway"** - and the case is a laptop that cannot reach the Gateway machine, which must still run his
+> sessions.
+>
+> That kills Option A outright, exactly as this paper said it would. A rail that renders only what the
+> Gateway folded has NOTHING to show when the Gateway is unreachable. There is no clever version of that.
+> **So the desktop keeps its local fold, and gap 4 does not fully close** - the three permanent blind
+> spots (phone dictation, server transcription, voice being prepared) stay, and the desktop keeps saying
+> "Needs you" about a session that is busy doing something he asked for.
+>
+> **That is the price of a laptop that works, and he has paid it deliberately rather than drifted into
+> it.** Which is what this paper was for.
+>
+> **Option B is NOT thereby approved.** This paper argues it treats the symptom and taxes us forever, and
+> nobody has decided to pay that. It is available, knowingly, if the nagging ever justifies it. The
+> default is Option C: the gap stays named.
+>
+> **What his answer started instead:** he asked what ELSE has quietly become Gateway-dependent, because
+> the laptop must run. That audit is the real work, and it is a bigger question than this paper's.
+> See the Gateway-dependency audit that follows from it.
 **Written:** 15 July 2026, by the Session States Manager.
 **Mission:** [`mission-session-states.md`](mission-session-states.md). **Brief:** [`session-states-gaps-manager-brief.md`](session-states-gaps-manager-brief.md).
 

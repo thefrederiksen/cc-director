@@ -156,10 +156,10 @@ That is a real piece of work and it is the owner's call.
 closed, and they are ([#1623](https://github.com/thefrederiksen/devthrottle/pull/1623)).**
 
 **Gaps 1, 2, 5 and 6 are fixed and merged.** Gap 3 is REFUSED on the evidence and stays open on purpose -
-see its census on `Session.StatusColor`. Gap 4 is a decision paper and is the ONE thing still waiting on
-the owner. A Manager is seated on them - brief at
-[`session-states-gaps-manager-brief.md`](session-states-gaps-manager-brief.md), branch
-`mission/session-states-gaps`.
+see its census on `Session.StatusColor`. **Gap 4 is DECIDED and REJECTED** - see below; nothing here is
+waiting on the owner any more. The Manager's brief is at
+[`session-states-gaps-manager-brief.md`](session-states-gaps-manager-brief.md); its work merged as
+[#1623](https://github.com/thefrederiksen/devthrottle/pull/1623) and the Manager has stood down.
 
 Two of the four are settled and being built:
 
@@ -172,7 +172,16 @@ Two of the four are settled and being built:
   with live readers to make this document true would be the mission's own failure mode. If it cannot
   close here, it stays a named gap - that is a fine outcome; a false claim is not.
 
-**Gap 4 still needs the owner, and will come back to him with a cost.** The desktop cannot see phone
+**Gap 4 is DECIDED and REJECTED (15 July 2026).** The owner was asked the one question the decision
+paper said was the whole decision - what the desktop rail shows when the Gateway is unreachable - and his
+answer was that it must still work without the Gateway, because he uses a laptop that cannot always reach
+the Gateway machine. That kills the "desktop asks" option outright: a rail that renders only what the
+Gateway folded has nothing to show when the Gateway is gone.
+
+**So gap 4 does not close, on purpose.** The desktop keeps its local fold and its three permanent blind
+spots. That is the price of a laptop that works, paid deliberately. See
+[`gap-4-desktop-asks-recommendation.md`](gap-4-desktop-asks-recommendation.md) for the reasoning and the
+rejection. His answer started a bigger question instead: what ELSE has quietly become Gateway-dependent. The desktop cannot see phone
 dictation, server transcription, voice preparation, or a just-expired snooze, because it folds the
 DIRECTOR's view and those are Gateway-side facts. The design's own recommendation is that the desktop
 should stop working colours out and ask, as the phone does. That is an architectural change, not a
