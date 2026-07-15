@@ -1,265 +1,138 @@
-# Mission: Headless Gateway
+# Mission: Headless Gateway - COMPLETE
 
 Mission id: f39c439c-3752-4631-9c0c-bb48290e507b
-Architect: Headless Gateway - Architect (session 6b58543b), SOREN_NORTH
-Written: 2026-07-14. Verified against origin/main at fe00dc25.
+Written: 2026-07-14. **Rewritten 2026-07-15 after delivery**, because the original plan was wrong in ways
+that matter to anyone reading this next. Verified against origin/main at e266fa0b.
 
-## The WHY
+Status: **delivered**. Seven pull requests, all merged, all green. Roughly 2,500 lines net removed.
 
-The Gateway has a user interface of its own - a tray application, a flyout, a pairing
-window, a consent window. Every one of those is a second place where Gateway state can be
-read and changed, and a second place for it to get out of sync. That split is the disease.
+## The WHY (unchanged, and it held up)
 
-Today it produced a provable, owner-visible failure: the Gateway cannot sign in to a
-DevThrottle account, so it cannot enroll any new browser or phone as a device. We fix that
-by deleting the Gateway's user interface and moving every human interaction to the Cockpit,
-which becomes the one and only user interface for the Gateway.
+The Gateway had a user interface of its own - a tray flyout, a pairing window, a consent window. Every one
+of those was a second place where Gateway state could be read and changed, and a second place for it to
+get out of sync. That split was the disease.
 
-Scope limit from the owner: we are NOT turning the Gateway into a Windows service. That is
-later. This mission is headless plus move-the-interaction-to-the-Cockpit, nothing more.
+Scope limit from the owner: we did NOT turn the Gateway into a Windows service. That is later. This
+mission was headless plus move-the-interaction-to-the-Cockpit, nothing more.
 
-## What I verified with my own eyes
+## What the original plan got wrong
 
-The shared checkout at D:\ReposFred\devthrottle was 55 commits behind origin/main. All code
-findings below come from a clean worktree off origin/main (fe00dc25), not that checkout.
+Read this before trusting any other plan document in this directory.
 
-### The live failure, confirmed and timed
+1. **It planned to DELETE `src/CcDirector.GatewayApp`** and move the `devthrottle-gateway` assembly name
+   onto the library. The owner ruled the opposite on 2026-07-15: the Gateway STAYS a tray app for now, and
+   the tray shrinks to a Start/Stop shim. Lower risk, and it makes the eventual service switch a deletion
+   rather than a rename.
 
-- `GET /account/status` on the running Gateway returns `{"signedIn":false}`.
-- The credential blob `config\gateway\devthrottle-credential.bin` does not exist.
-- `config\gateway\devthrottle-auth-events.jsonl` ends with
-  `{"Kind":"logout","At":"2026-07-14T11:40:38Z"}` = 07:40:38 local. The Gateway had been
-  signed in continuously since 2026-07-08.
-- The Gateway process (pid 27920) started at 07:51:09 local, AFTER that logout - so it
-  booted signed-out.
-- A loopback login callback is still live right now, over an hour later:
-  `netsh http show servicestate` reports request queue
-  `HTTP://127.0.0.1:57455:127.0.0.1/DEVTHROTTLE-LOGIN-CALLBACK/` State: Active.
-  (It shows as pid 4 in netstat because HttpListener registers with the kernel http.sys.)
+2. **It treated the tray controller as a screen.** It was not - it was the whole application: it owned the
+   host lifecycle, the self-update loop, autostart and the shutdown watchdog, tangled in with a flyout.
+   **That, not the existence of screens, was what actually blocked the Gateway from becoming a service.**
+   Deleting screens did not fix it; moving the lifecycle into the library did.
 
-That is the deadlock: boot signed-out -> auto-fire a sign-in -> open a loopback listener and
-wait with NO timeout -> hold the single-flight lock forever -> every later Sign in click is
-swallowed.
+3. **It deferred the pairing code as an open design question.** The owner settled it immediately ("a relic
+   of an old application"), and it turned out to be already dead: `GatewayEnrollmentClient.EnrollAsync` had
+   zero callers, and the Director's own panel already told users "there is no pairing code".
 
-### Corrections to the mission brief
+4. **It proposed a public "is the Gateway signed in" probe** so the Cockpit could discover a signed-out
+   Gateway. Unnecessary. The Gateway already answers `POST /m/enroll` with 409 and a clear message; the
+   defect was that the message was not ACTIONABLE, not that it was missing. No new public surface needed.
 
-The brief was right about the disease and the shape of the deadlock. Four details are wrong,
-and two of them change the plan materially.
+## The rule that now defines the shape
 
-1. **Port 57455 is not hardcoded.** `git grep 57455` over origin/main returns nothing.
-   `LoopbackLoginListener` asks the OS for an ephemeral free port
-   (`FindFreeLoopbackPort()`, binds TcpListener to port 0 and reads back the assignment).
-   57455 is just what this boot happened to get. The load-bearing fact is not the port - it
-   is that the wait has **no timeout at all**.
+**Delete `src/CcDirector.GatewayApp` and nothing breaks.**
 
-2. **`FirstRunLoginCoordinator` does not auto-fire and does not hold the lock.** It is a
-   passive class. The auto-fire is `GatewayTrayController.PromptSignInIfNeeded`
-   (src/CcDirector.GatewayApp/GatewayTrayController.cs:513, issue #637), called right after
-   `host.StartAsync()`. The single-flight lock is `GatewaySignInService._singleFlight`
-   (src/CcDirector.Gateway/Account/GatewaySignInService.cs:31), and the
-   "already in flight - ignoring" message is at GatewaySignInService.cs:106 and
-   GatewayTrayController.cs:593.
+`GatewayService` (in `CcDirector.Gateway`, headless) owns the host lifecycle, the managed self-update loop,
+autostart, the Cockpit's settings hooks, port diagnostics, and the issue #880 shutdown watchdog. A host
+supplies only what a service cannot know about its own process - the port, whether it is a managed install,
+what to write into the autostart Run key - and gets a complete Gateway.
 
-3. **The Gateway library is ALREADY headless.** There are two projects, and the brief treats
-   them as one:
-   - `src/CcDirector.Gateway` - the library plus a console host. `OutputType=Exe`,
-     `net10.0`, **zero UI packages**. Its `Program.cs` is already a clean generic-host
-     worker. Its csproj already says "The Gateway serves NO UI (one-URL plan)".
-   - `src/CcDirector.GatewayApp` - the shipped `devthrottle-gateway.exe`. `WinExe`,
-     `net10.0-windows`, Avalonia. This holds 100% of the UI.
-   The headless skeleton we are supposedly building already exists. This mission is mostly
-   "delete GatewayApp, move the shipped exe name onto CcDirector.Gateway, rehome the
-   lifecycle logic the tray controller happens to own."
+Two hosts drive it today, which is what makes the rule a fact rather than a claim:
 
-4. **The replacement is not half-built - it is built, merged, and LIVE right now.** The
-   brief calls the remote-vs-loopback redirect mechanics "the backbone" and "a separate
-   follow-up". They landed in `bd6119fc` (Fix #1080, pull request #1105) and are present in
-   the running build ff7a571a. I proved it against the live Gateway:
+- `CcDirector.GatewayApp` - the tray shim (161 lines: an icon, two menu items, a tooltip)
+- `GatewayWorker` - the dev console host, **no user interface at all**
 
-   ```
-   POST https://soren-north.taildb08ed.ts.net/account/sign-in-start
-   -> 302 Location: https://devthrottle.com/signin
-        ?redirect_uri=https%3A%2F%2Fsoren-north.taildb08ed.ts.net%2Faccount%2Fsign-in-callback
-   GET  /account/sign-in-callback -> 200 (public, no credential)
-   GET  /account/sign-in-start    -> 200, a real "Sign in with DevThrottle" page
-   ```
+A Windows service will be a third host, and nothing in the library will change.
 
-   A routable https callback, no loopback, no host browser. The doc comment in
-   `AccountSignInStartEndpoint` that calls this "a separate follow-up (epic #1069, issue 0b)"
-   is **stale** - the code beneath it already has the branch.
+`HeadlessGatewayGuardTests` pins it: the library must not reference a windowing toolkit, the shim, or
+TrayUi. **Known limit:** it reads the compiled assembly's references, and the compiler only emits a
+reference the code actually USES. A bare unused `PackageReference` does not trip it - confirmed by trying.
+Green means "no windowing code is reachable", not "no windowing package is listed".
 
-### The finding that reframes the mission
+## The tray is Start and Stop
 
-The Cockpit already has a "Sign in to DevThrottle" button
-(`apps/cockpit/src/account/AccountView.tsx:360`). It calls `POST /account/sign-in`
-(`packages/client-core/src/account/accountClient.ts:144`), and that endpoint
-(`src/CcDirector.Gateway/Api/AccountSignInEndpoint.cs:76`) fires
-`RunSignInAsync()` - **the dead loopback flow**.
+That is the whole menu, because start and stop are the only verbs a service - or a cloud Gateway - offers.
+The owner was explicit, twice, and rejected keeping "Open Cockpit" on exactly that reasoning.
 
-So the Cockpit's Sign in button is broken for exactly the same reason the tray's is: it
-opens a browser on the Gateway's desktop and waits on a loopback a remote browser can never
-reach, behind a lock that is currently held forever. The Cockpit shows
-"Waiting for your browser..." indefinitely.
+There is deliberately **no Quit item**: a service has no quit, only stop. `QuitAsync` survives as the
+self-update `/shutdown` handler only. Consequence: closing the tray app itself needs Task Manager.
 
-The single highest-value change in this mission is small: **repoint the Cockpit's existing
-Sign in button from `/account/sign-in` (loopback) to `/account/sign-in-start` (remote).**
-The working flow already exists; the only user interface that is supposed to survive is
-wired to the wrong one.
+The Gateway **never opens a browser and never draws a window**. A service has no desktop to draw on.
 
-## What the Cockpit already has (the capability gap is small)
+## What shipped
 
-| Tray surface | Cockpit home today | Gap |
-|---|---|---|
-| Open Cockpit | the Cockpit itself | none |
-| Sign in to DevThrottle | `/account` button exists | **wired to the dead flow** |
-| Settings | `/settings`, 4 tabs | none |
-| Start on login | `/settings` -> `PUT /gateway/autostart` | none |
-| Status (version, uptime, Directors, port) | `/about`, `/settings` machine tab | none |
-| Add a device | `/account` "Your devices"; `/signin` + `/device-callback` | verify vs PairingWindow |
-| Restart Gateway | nothing | **real gap** |
-| Logs folder / Config folder | nothing | **real gap, and local-only by nature** |
-| Consent window (#650) | nothing | **real gap** |
+| Pull request | What |
+|---|---|
+| #1586 | Remove the 4-digit pairing code and its window |
+| #1589 | Remove the first-run consent window |
+| #1597 | Point the Cockpit's Sign in at the front door that works from another machine |
+| #1599 | Cut the tray to Start and Stop |
+| #1600 | Give the signed-out Gateway a way out instead of a loop |
+| #1603 | Move the lifecycle out of the tray and into the service |
+| #1611 | Authenticate `POST /shutdown` so self-update can actually happen (#1609) |
 
-The Cockpit has **no onboarding wizard** of any kind. The only wizard in the repo is Avalonia
-desktop (`src/CcDirector.Avalonia/OnboardingWizardDialog.axaml`, issue #370), whose UI-free
-logic is already extracted to `src/CcDirector.Core/Onboarding/OnboardingModel.cs`. That
-extraction is the natural seam to reuse.
+### Where the screens went
 
-## The plan
+| Old Gateway surface | Home now |
+|---|---|
+| Flyout status rows | Cockpit `/settings`, `/about` |
+| Settings | Cockpit `/settings` (four tabs; it already had them) |
+| Start on login | Cockpit `/settings` -> `PUT /gateway/autostart` |
+| Add a device / pairing code | **Deleted.** Account sign-in enrollment replaced it |
+| First-run consent | **Deleted.** Installer Privacy step + Cockpit Telemetry tab already had it |
+| Sign in to DevThrottle | Cockpit `/account` -> `POST /account/sign-in-start` |
+| Restart | **Deleted.** Stop then Start |
+| Logs / Config folders | **Deleted.** A service cannot open Explorer |
 
-### Phase 0 - Unblock the owner today. No code.
+## Two sign-ins - the thing most likely to be conflated
 
-Open `https://soren-north.taildb08ed.ts.net/account/sign-in-start` in any browser and click
-Sign in. The Gateway signs in; device enrollment works again.
+1. **The PERSON signs in** at devthrottle.com.
+2. **The GATEWAY signs in** to a DevThrottle account.
 
-WHY: the owner is blocked right now and the fix is already deployed. It also proves the
-replacement flow end-to-end BEFORE we delete the thing it replaces, which de-risks every
-later phase. Nothing in this mission should be built on an unproven assumption that the
-remote flow works.
+A device cannot enroll until BOTH have happened, and a fresh install has only done (1). The Gateway reports
+that as 409 from `/m/enroll`. `DeviceCallback` now gives that its own screen naming the GATEWAY as the
+missing one, with an action that fixes it. Previously the only button was "Try again", which returned to
+the sign-in screen and failed identically, forever.
 
-### Phase 1 - Point the Cockpit at the working flow, and kill the deadlock.
+## Things found along the way that were NOT this mission
 
-Remove the GATEWAY's use of the loopback sign-in. Do NOT remove the mechanism itself - see
-"the loopback is not the villain" below.
+- **Self-update had never succeeded** (#1609, fixed in #1611). Both helpers posted `/shutdown` with no
+  token, got 401, so the process never exited, its exe never unlocked, and the swap aborted blaming the
+  lock. Pre-existing, and it meant **cutting a release delivered it to nobody**.
+- **The test that would have caught it was itself dead.** `scripts/test-gateway-selfupdate.ps1` looked for
+  `cc-director-gateway.exe`; the exe was renamed to `devthrottle-gateway.exe` in 4e606e29 and the harness
+  had not been touched since a commit predating that, so it failed at "build not found" before exercising
+  anything. Nobody saw the 401 because nobody could run the test. **That is the more useful lesson than
+  the missing header.**
+- **The Cockpit's Sign in button was wired to the dead loopback flow** (fixed in #1597). It had to be fixed
+  BEFORE the flyout was deleted, because the flyout's Sign in was the only one that worked.
 
-- Repoint the Cockpit Sign in button to `/account/sign-in-start`.
-- Delete the startup auto-fire (`PromptSignInIfNeeded`, #637).
-- Delete `GatewaySignInService.RunSignInAsync` and the single-flight lock that exists only to
-  guard it, `POST /account/sign-in`, and the same-machine loopback branch in
-  `/account/sign-in-start` (AccountSignInStartEndpoint.cs:221).
-- Extract `FirstRunLoginCoordinator`'s URL statics (`ResolveSignInBaseUrl`, `BuildSignInUrl`,
-  `DefaultSignInBaseUrl`) to a new home BEFORE touching the class. They are pure URL helpers
-  with nothing to do with loopback, and the flow we are KEEPING depends on them
-  (`RemoteSignInRouting.cs:85`), as do both installers.
+## Still open, none blocking
 
-WHY: this is precisely what broke today. The deadlock - no timeout, a permanent lock, a
-browser on the wrong desktop - dies here, in the smallest possible change, and it shrinks
-what Phase 3 has to delete. The Gateway's only sign-in becomes the one that already works
-from anywhere.
+- **No behavioural test of `GatewayService`.** The guard constructs it with no host, which pins the SHAPE,
+  not the behaviour. Starting a real one in a test would write the developer's live Director folder
+  (forbidden, #1580). Needs an injectable host seam - its own step.
+- **`Gateway/Pairing/` holds only `DeviceRegistry` and `DeviceSignInQrCode`**, neither of which is a
+  pairing code. Renaming touches many files.
+- **No Quit item** (see above). One line if the owner changes their mind.
+- **The first upgrade past #1611 cannot self-update itself** - installed Gateways still carry the old,
+  token-less helper. That hop needs the installer or a manual swap; self-update carries every hop after.
 
-#### The loopback is not the villain - the headless Gateway is the wrong host for it
+## Process notes that still apply
 
-The brief says `FirstRunLoginCoordinator`, `BrowserLauncher.OpenSystemDefault` and
-`LoopbackLoginListener` are "all on the chopping block". That is too broad, and following it
-literally would break two shipping things:
-
-- **The installer stands up its own `LoopbackLoginListener`.**
-  `tools\cc-director-setup\Services\SignInRunner.cs:73` and
-  `tools\cc-director-setup-engine\GatewayAccountEnrollRunner.cs:462` drive it directly, for
-  the installer's sign-in step and Gateway-connect step. That is a **legitimate** use: an
-  installer is a desktop program, running at the machine, with a human in front of it.
-  Opening the local browser and catching the callback on loopback is exactly right there.
-  Loopback is only wrong for a process with no desktop. Deleting the mechanism deletes the
-  installer's sign-in.
-- **`BrowserLauncher.OpenSystemDefault` has non-sign-in callers.** The terminal's link
-  context menu uses it (`LinkContextMenuBuilder.cs:237` and `:256`, including the explicit
-  "Open in system default browser" item). Remove only the sign-in caller
-  (`FirstRunLoginCoordinator.cs:84`); keep the method.
-- **`CredentialHandbackPage` survives.** It is shared with the remote front-door callback
-  (`AccountSignInCallbackEndpoint.cs:140/159`), which is the flow we are keeping. It exists
-  (issue #1082, absorbing security issue #877) precisely to be shared by both.
-
-Build-breaking landmine: `src\CcDirector.Core.Tests\NoCrossMachineLoopbackGuardTests.cs:53`
-allowlists `LoopbackLoginListener.cs`, and its `Allowlist_has_no_stale_entries` test fails if
-the file stops existing. Any commit that removes the file must remove that line too.
-
-Also note issue **#651** is the standing ticket to finish removing the account/credential
-types that #664 left behind - the Manager should read it before deleting anything in
-`CcDirector.Core/Account`.
-
-### Phase 2 - The Cockpit gains what the tray still owns.
-
-Close the three real gaps: Restart Gateway, logs and config access, first-run consent. Verify
-device-add parity against PairingWindow.
-
-WHY: no capability may be lost when the tray dies. This lands BEFORE deletion so there is
-never a window where the owner can do less than before.
-
-### Phase 3 - Delete the Gateway's user interface.
-
-Delete `src/CcDirector.GatewayApp` entirely (GatewayTrayController, PairingWindow,
-GatewayConsentWindow, App.axaml, Avalonia, the icons). Move the `devthrottle-gateway`
-assembly name onto `CcDirector.Gateway`. Rehome the non-UI logic the tray controller happens
-to own: GatewayHost lifecycle, the `/shutdown` self-update hook and its #880 watchdog,
-`SettingsHooks`, the `--managed` update loop, autostart registration, port-conflict
-diagnostics. Update the installer (`GatewayTrayInstaller`), scripts, and docs.
-
-Do NOT delete `CcDirector.TrayUi` - the Launcher shares it
-(src/CcDirector.Launcher/CcDirector.Launcher.csproj:44).
-
-WHY: the UI is the disease. The library is already headless and its Program.cs is already a
-generic-host worker, so this is a move, not a rewrite.
-
-### Phase 4 - The Cockpit onboarding wizard.
-
-Walk a fresh install through: reach the Gateway -> sign the GATEWAY in -> enroll THIS browser
-as a device -> confirm it actually works.
-
-WHY: the centerpiece. A fresh install has no guided path today, and the two sign-ins below
-are not something a new user can be expected to reason about unaided.
-
-## Things the Manager must not get wrong
-
-**There are TWO different sign-ins.** They are easy to conflate and the wizard depends on the
-order:
-1. **The Gateway signs in** to the cloud account (`/account/sign-in-start` ->
-   credential blob). This is the prerequisite.
-2. **A browser or phone enrolls** as a device (`/signin` -> devthrottle.com -> 
-   `/device-callback` -> `POST /m/enroll` -> device key in localStorage).
-A signed-out Gateway cannot do (2). That is exactly today's failure.
-
-**The bootstrap constraint.** The Cockpit is served BY the Gateway from `wwwroot/c`, and its
-whole router sits behind `RequireDeviceKey` except `/signin` and `/device-callback`. Anything
-the wizard must do before a device key exists has to be on the `AuthMiddleware` public
-allow-list, next to the existing `/account/sign-in-start`.
-
-**The Cockpit only builds in Release.** `RunCockpitBuild` is gated to
-`Configuration == Release` or `BuildCockpit == true`. On a Debug build `wwwroot/c` does not
-exist and the Cockpit answers 404.
-
-**Cross-repo dependency, flagged in-tree (#1081).** `packages/client-core/src/auth/
-enrollRequest.ts` notes that devthrottle.com pins `/m/device-callback` and hard-rejects any
-platform other than `android`/`ios`. Browser enrollment with `platform: "browser"` may need a
-site-side change. Phase 4 must confirm this before designing around it.
-
-**Seven test projects, not two.** Running only Core plus Gateway tests is a false green. The
-installer has its own tests (`tools\cc-director-setup.Tests\SignInRunnerTests.cs`, 290 lines,
-entirely about the loopback runner) and they are directly in this mission's blast radius.
-
-**Process rules.** Build from your own git worktree off origin/main - never switch branches in
-the shared checkout, never `git add -A` there. The shared checkout lags; verify against
-origin/main. Redeploy with `scripts\redeploy-gateway.ps1`. Never kill a cc-director process.
-
-## Open design questions for the owner
-
-1. **Who starts and restarts a headless Gateway?** With no tray and no service yet, if the
-   Gateway stops, nothing brings it back, and "Restart Gateway" has no home. The natural
-   answer is `cc-launcher` - it already exists, already has a tray, and already shares
-   `CcDirector.TrayUi`. Making the Launcher the Gateway's supervisor keeps the "no service
-   yet" limit intact. Needs the owner's call.
-
-2. **Logs and Config folders.** The tray opens local folders; a Cockpit on another machine
-   cannot. Drop them, serve logs in the Cockpit (`/about` already shows diagnostics), or
-   leave them to a CLI?
-
-3. **First-run consent (#650).** Into the Phase 4 wizard, or does it die?
+- Build from a worktree off origin/main. Never switch branches in the shared checkout.
+- **Launching a Gateway on a developer machine is dangerous without four guards** (proven 2026-07-15):
+  `CC_GATEWAY_NO_TAILSCALE=1`, or it re-points the tailnet front door 443 at your test instance;
+  `--no-autostart`, or it rewrites the user's Run key to your build (it defaults ON);
+  `CC_DIRECTOR_ROOT` at PROCESS scope only, or it writes the live `missions.json`/`devices.json`;
+  `--port <free>`, or it collides with 7878. `scripts/test-gateway-selfupdate.ps1` already does all four.
+- Never kill a cc-director process. Shut a test Gateway down with an authenticated `POST /shutdown`.
