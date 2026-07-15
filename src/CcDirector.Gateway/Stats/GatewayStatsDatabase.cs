@@ -53,7 +53,7 @@ public sealed class GatewayStatsDatabase : IDisposable
     /// <summary>The open connection. Callers hold the owning aggregator's lock.</summary>
     public SqliteConnection Connection => _connection;
 
-    /// <summary>The database file path, for logging and for the import's fail-loud message.</summary>
+    /// <summary>The database file path, for logging and for the fail-loud messages.</summary>
     public string Path => _path;
 
     /// <param name="path">The database file. Defaults to gateway-stats.db under the cc-director storage
@@ -137,13 +137,17 @@ public sealed class GatewayStatsDatabase : IDisposable
     {
         // One row per observed delta, recorded from the cutover FORWARD only.
         //
-        // Historical rows are NEVER synthesized here, and the reason is worth stating where the schema is
-        // defined. The old JSON held three independent projections of history - by hour, by repository, by
-        // agent - each already collapsed on a different dimension. Which hour went with which repository
-        // with which agent was never written down, so the cross-product cannot be recovered from the disk.
-        // The past is therefore a baseline (the baseline_* tables) and only the future is rows. Synthesizing
-        // rows would invent data, and summing the invented rows on one dimension would disagree with the
-        // real totals on another.
+        // Historical rows are NEVER synthesized here, and there is no history to synthesize them from.
+        // The owner ruled that the old numbers are not carried across, so gateway-input-stats.json is
+        // renamed aside UNREAD on first run and every number in this database starts at the cutover. There
+        // are no baseline tables and there is no import.
+        //
+        // Worth knowing why the import could not have been faithful even if it had been wanted: the old
+        // JSON held three independent projections of history - by hour, by repository, by agent - each
+        // already collapsed on a different dimension. Which hour went with which repository with which
+        // agent was never written down, so the cross-product could not be recovered from the disk at all.
+        // Synthesizing rows would have invented data, and summing the invented rows on one dimension would
+        // have disagreed with the real totals on another.
         //
         // repo_id and agent_id are SURROGATE INTEGERS. Not a repository or agent string in any form - not
         // raw, and not folded.
@@ -205,45 +209,6 @@ public sealed class GatewayStatsDatabase : IDisposable
                 PRIMARY KEY (session_id, modality, surface)
             )", tx);
 
-        // The past, imported as it stands from the JSON projections. Every reported number is its baseline
-        // plus the rows recorded since. Exact by construction, and the same honest answer the code already
-        // gives for the per-agent tally that started partway through (see _agentsSinceUtc at :63-66).
-        Execute(@"
-            CREATE TABLE IF NOT EXISTS baseline_total (
-                modality TEXT    NOT NULL,
-                surface  TEXT    NOT NULL,
-                turns    INTEGER NOT NULL,
-                chars    INTEGER NOT NULL,
-                PRIMARY KEY (modality, surface)
-            )", tx);
-        Execute(@"
-            CREATE TABLE IF NOT EXISTS baseline_hour (
-                hour_utc    TEXT    PRIMARY KEY,
-                voice_turns INTEGER NOT NULL,
-                typed_turns INTEGER NOT NULL,
-                chars       INTEGER NOT NULL
-            )", tx);
-        Execute(@"
-            CREATE TABLE IF NOT EXISTS baseline_repo (
-                repo_id     INTEGER PRIMARY KEY,
-                voice_turns INTEGER NOT NULL,
-                typed_turns INTEGER NOT NULL,
-                chars       INTEGER NOT NULL
-            )", tx);
-        Execute(@"
-            CREATE TABLE IF NOT EXISTS baseline_agent (
-                agent_id    INTEGER PRIMARY KEY,
-                voice_turns INTEGER NOT NULL,
-                typed_turns INTEGER NOT NULL,
-                chars       INTEGER NOT NULL
-            )", tx);
-        // Scalars that are not a projection: wingman_turns and agents_since_utc.
-        Execute(@"
-            CREATE TABLE IF NOT EXISTS baseline_scalar (
-                name  TEXT PRIMARY KEY,
-                value TEXT NOT NULL
-            )", tx);
-
         // The all-time distinct-session sets. These are DELIBERATELY never pruned - the code says so at
         // :45-47, :51-54, and :57-61 - and they are a requirement to preserve, not a bug to fix.
         //
@@ -287,8 +252,58 @@ public sealed class GatewayStatsDatabase : IDisposable
                 agent_display TEXT    NOT NULL
             )", tx);
 
-        // The import marker, stamped inside the import's own transaction so a crash can neither
-        // double-import nor strand a partial import.
+        // ---- The agent-to-agent lane (issue #1636). A SEPARATE TABLE, deliberately. ----
+        //
+        // These are turns OTHER AGENTS drove into a session, and the code is explicit that they "never enter
+        // _totals, _hourly or the buckets, because the human voice-versus-typed numbers must stay about the
+        // human" (GatewayInputStatsAggregator.cs:102-105). Putting them in stat_delta behind a lane flag
+        // would make that a RULE every human aggregate query has to remember - the archive-marker problem
+        // again, and this one fails SILENTLY: the owner's voice-versus-typed share would quietly start
+        // including agent traffic and nothing would look wrong. In their own table they CANNOT be summed
+        // into the human totals by accident.
+        //
+        // The shapes also disagree, which is the second reason: the agent-driven high-water is keyed by
+        // SESSION ALONE, while the human high-water is keyed by session AND modality AND surface. One table
+        // would force one of them to lie about its own key.
+        //
+        // No hour, no repository, no modality: this lane feeds only the per-agent tally and a global pair,
+        // so carrying columns nothing populates would be a dimension nothing emits.
+        Execute(@"
+            CREATE TABLE IF NOT EXISTS agent_driven_delta (
+                id       INTEGER PRIMARY KEY AUTOINCREMENT,
+                agent_id INTEGER NOT NULL,
+                turns    INTEGER NOT NULL,
+                chars    INTEGER NOT NULL
+            )", tx);
+
+        // High-watered exactly like the human buckets - only the increase counts, and a reported count that
+        // DROPPED (a Director restarted this session id) is fresh activity from zero.
+        Execute(@"
+            CREATE TABLE IF NOT EXISTS agent_driven_highwater (
+                session_id TEXT    PRIMARY KEY,
+                turns      INTEGER NOT NULL,
+                chars      INTEGER NOT NULL
+            )", tx);
+
+        // Sessions whose already-counted turns have been attributed to their agent (issue #1633).
+        //
+        // THIS IS LIVE BEHAVIOUR, NOT MIGRATION SCAFFOLDING, and the distinction nearly cost the owner's
+        // agent numbers. On a fresh database the first-fold back-fill contributes nothing, because a new
+        // session's high-water is empty - so this table looks like dead weight. But session_highwater
+        // PERSISTS across a Gateway restart, and without this set the first fold after a restart would
+        // back-fill every live session a SECOND time and double every agent's turns. The aggregator says so
+        // itself at GatewayInputStatsAggregator.cs:80-81. It survives because of what it DOES, not because
+        // of what its name suggests it was for.
+        Execute("CREATE TABLE IF NOT EXISTS agents_seeded (session_id TEXT PRIMARY KEY)", tx);
+
+
+        // Runtime scalars, keyed by name. Its only occupant today is agents_since_utc - when the per-agent
+        // breakdown started counting, stamped on the first observation by StampAgentsSinceLocked and never
+        // moved after that.
+        //
+        // It lives here rather than in a table of its own because it is not a statistic: it is a fact about
+        // when a statistic began. It is also NOT history - it is stamped at runtime by the running product -
+        // which is why it survived the deletion of everything that carried the old numbers across.
         Execute(@"
             CREATE TABLE IF NOT EXISTS meta (
                 name  TEXT PRIMARY KEY,

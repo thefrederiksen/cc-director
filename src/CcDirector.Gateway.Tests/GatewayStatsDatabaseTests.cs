@@ -64,12 +64,6 @@ public sealed class GatewayStatsDatabaseTests : IDisposable
         // The row table and the live operational state.
         Assert.True(TableExists(db, "stat_delta"));
         Assert.True(TableExists(db, "session_highwater"));
-        // The past, imported as it stands - one table per projection the JSON held.
-        Assert.True(TableExists(db, "baseline_total"));
-        Assert.True(TableExists(db, "baseline_hour"));
-        Assert.True(TableExists(db, "baseline_repo"));
-        Assert.True(TableExists(db, "baseline_agent"));
-        Assert.True(TableExists(db, "baseline_scalar"));
         // The all-time distinct sets, deliberately never pruned.
         Assert.True(TableExists(db, "wingman_session"));
         Assert.True(TableExists(db, "repo_session"));
@@ -77,8 +71,25 @@ public sealed class GatewayStatsDatabaseTests : IDisposable
         // Folded grouping key to first-seen display spelling.
         Assert.True(TableExists(db, "repo_identity"));
         Assert.True(TableExists(db, "agent_identity"));
-        // The import marker.
+        // The agent-to-agent lane (issue #1636) - its OWN tables, so these turns cannot be summed
+        // into the human voice-versus-typed totals by accident.
+        Assert.True(TableExists(db, "agent_driven_delta"));
+        Assert.True(TableExists(db, "agent_driven_highwater"));
+        // Sessions already back-filled to their agent (issue #1633).
+        Assert.True(TableExists(db, "agents_seeded"));
+        // Runtime scalars - agents_since_utc, stamped on first observation. NOT a baseline.
         Assert.True(TableExists(db, "meta"));
+
+        // NO baseline tables. The owner chose not to carry the old numbers across, so the past is not
+        // a baseline any more - it is simply gone, and gateway-input-stats.json is renamed aside
+        // unread. These assertions exist so that a reappearing baseline table is a test failure rather
+        // than a quietly rebuilt import nobody asked for.
+        Assert.False(TableExists(db, "baseline_total"));
+        Assert.False(TableExists(db, "baseline_hour"));
+        Assert.False(TableExists(db, "baseline_repo"));
+        Assert.False(TableExists(db, "baseline_agent"));
+        Assert.False(TableExists(db, "baseline_agent_driven"));
+        Assert.False(TableExists(db, "baseline_scalar"));
     }
 
     [Fact]
@@ -87,7 +98,7 @@ public sealed class GatewayStatsDatabaseTests : IDisposable
         using (var first = new GatewayStatsDatabase(_path))
         {
             using var cmd = first.Connection.CreateCommand();
-            cmd.CommandText = "INSERT INTO baseline_scalar(name, value) VALUES ('probe', '42')";
+            cmd.CommandText = "INSERT INTO meta(name, value) VALUES ('probe', '42')";
             cmd.ExecuteNonQuery();
         }
 
@@ -95,7 +106,7 @@ public sealed class GatewayStatsDatabaseTests : IDisposable
 
         Assert.Equal(GatewayStatsDatabase.SchemaVersion, UserVersion(second));
         using var read = second.Connection.CreateCommand();
-        read.CommandText = "SELECT value FROM baseline_scalar WHERE name='probe'";
+        read.CommandText = "SELECT value FROM meta WHERE name='probe'";
         // Re-opening must not re-run the migration over live data. CREATE TABLE IF NOT EXISTS is only half
         // of that promise; this is the half that would actually notice.
         Assert.Equal("42", read.ExecuteScalar() as string);
