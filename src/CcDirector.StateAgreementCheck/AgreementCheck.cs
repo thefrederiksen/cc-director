@@ -38,9 +38,39 @@ public static class AgreementCheck
     public sealed record Finding(string? SessionId, string Name, string Kind, string Detail);
 
     /// <summary>
-    /// The numbers the run publishes: how many real disagreements, over how many sessions, on how many
-    /// rows the desktop comparison could not be graded - and the verdict of EACH check, so the prose that
-    /// reports them cannot claim a check passed while a finding says it failed.
+    /// One check's verdict, and the ONLY honest way to state it: what it found, and how many rows it
+    /// never got to look at.
+    ///
+    /// "FOUND NOTHING" AND "PASSED" ARE DIFFERENT CLAIMS, and collapsing them is the defect this type
+    /// exists to make impossible. An unstamped row is terminal - Compare cannot compare a stamp that is
+    /// not there, so it stops and the fold, law, desktop and palette checks never run on that row. The
+    /// first version of this reported those four as PASS on such a fleet, because no finding came back
+    /// from checks that had not executed. Absence of evidence, printed as evidence.
+    ///
+    /// So a verdict carries <see cref="NotGraded"/> and cannot claim the fleet without it.
+    /// </summary>
+    public sealed record CheckVerdict(string Name, int Failures, int NotGraded, int LiveSessions)
+    {
+        /// <summary>Rows this check actually ran on.</summary>
+        public int Graded => LiveSessions - NotGraded;
+
+        /// <summary>Found nothing WHERE IT RAN. Not the same as "holds over the fleet" - see Line.</summary>
+        public bool Passed => Failures == 0;
+
+        /// <summary>Found nothing AND ran on every live session. The only basis for an unqualified pass.</summary>
+        public bool PassedEverywhere => Failures == 0 && NotGraded == 0;
+
+        /// <summary>The verdict as printed. It never says a bare PASS unless the check ran on everything.</summary>
+        public string Line =>
+            Failures > 0 ? $"FAIL ({Failures})"
+            : NotGraded > 0 ? $"pass on {Graded} of {LiveSessions} - NOT GRADED on {NotGraded}"
+            : "PASS";
+    }
+
+    /// <summary>
+    /// The numbers the run publishes: how many real disagreements, over how many sessions, and each
+    /// check's verdict - including the rows it never reached, so the prose reporting them cannot claim a
+    /// check passed where it did not run.
     /// </summary>
     public sealed record Summary(
         int Disagreements,
@@ -53,12 +83,23 @@ public static class AgreementCheck
         int TwoDifferentPixels,
         int PaletteMissing)
     {
-        /// <summary>True when this check found nothing - the ONLY basis for saying it passed.</summary>
-        public bool StampPresentPassed => Unstamped == 0;
-        public bool StampIsFoldPassed => StampNotFold == 0;
-        public bool LawHeld => LawBroken == 0;
-        public bool DesktopAgreedPassed => DesktopVsGateway == 0;
-        public bool SamePixelsPassed => TwoDifferentPixels == 0 && PaletteMissing == 0;
+        /// <summary>Check 1. It runs on every row - nothing can stop it, so it is never not-graded.</summary>
+        public CheckVerdict StampPresent => new("the stamp is present", Unstamped, 0, LiveSessions);
+
+        // Checks 2, 3 and 5 run on every row EXCEPT the ones check 1 stopped: an unstamped row has no
+        // stamped answer to compare a fold against, no colour to test the law on, and no colour to look
+        // up in a palette. They are not-graded there, never passed.
+        public CheckVerdict StampIsFold => new("the stamped answer IS the shared fold's", StampNotFold, Unstamped, LiveSessions);
+        public CheckVerdict Law => new("the LAW: working => blue", LawBroken, Unstamped, LiveSessions);
+        public CheckVerdict SamePixels => new("every colour is the SAME HEX on both palettes",
+            TwoDifferentPixels + PaletteMissing, Unstamped, LiveSessions);
+
+        // Check 4 is stopped by BOTH: an unstamped row (nothing to compare) and an indeterminate one (the
+        // Gateway destroyed the fact it needs). The only check with two ways to be ungradeable.
+        public CheckVerdict DesktopAgreed => new("the desktop's fold == the Gateway's",
+            DesktopVsGateway, Unstamped + DesktopNotGraded, LiveSessions);
+
+        public IReadOnlyList<CheckVerdict> AllChecks => new[] { StampPresent, StampIsFold, Law, SamePixels, DesktopAgreed };
     }
 
     /// <summary>

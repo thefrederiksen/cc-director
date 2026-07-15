@@ -48,11 +48,7 @@ public sealed class AgreementSummaryTests
         Assert.Equal(3, sum.LiveSessions);
         Assert.Equal(0, sum.DesktopNotGraded);
 
-        Assert.True(sum.StampPresentPassed);
-        Assert.True(sum.StampIsFoldPassed);
-        Assert.True(sum.LawHeld);
-        Assert.True(sum.DesktopAgreedPassed);
-        Assert.True(sum.SamePixelsPassed);
+        Assert.All(sum.AllChecks, c => Assert.True(c.PassedEverywhere));
     }
 
     /// <summary>
@@ -68,7 +64,6 @@ public sealed class AgreementSummaryTests
     /// the fault-injection suite already produces, so the two files cannot drift apart.
     /// </summary>
     [Theory]
-    [InlineData("unstamped")]
     [InlineData("stamp-not-fold")]
     [InlineData("law-broken")]
     [InlineData("desktop-vs-gateway")]
@@ -80,13 +75,71 @@ public sealed class AgreementSummaryTests
 
         Assert.Equal(1, sum.Disagreements);
 
-        Assert.Equal(kind != "unstamped", sum.StampPresentPassed);
-        Assert.Equal(kind != "stamp-not-fold", sum.StampIsFoldPassed);
-        Assert.Equal(kind != "law-broken", sum.LawHeld);
-        Assert.Equal(kind != "desktop-vs-gateway", sum.DesktopAgreedPassed);
+        Assert.Equal(kind != "stamp-not-fold", sum.StampIsFold.Passed);
+        Assert.Equal(kind != "law-broken", sum.Law.Passed);
+        Assert.Equal(kind != "desktop-vs-gateway", sum.DesktopAgreed.Passed);
         // One line covers both pixel faults: a colour the client cannot paint and a colour it paints
         // differently are the same promise broken - "every device shows the same thing".
-        Assert.Equal(kind is not ("two-different-pixels" or "palette-missing"), sum.SamePixelsPassed);
+        Assert.Equal(kind is not ("two-different-pixels" or "palette-missing"), sum.SamePixels.Passed);
+
+        // None of these is terminal, so every check still RAN on every row.
+        Assert.All(sum.AllChecks, c => Assert.Equal(0, c.NotGraded));
+    }
+
+    /// <summary>
+    /// AN UNSTAMPED ROW IS TERMINAL, AND THE CHECKS AFTER IT DID NOT PASS - THEY DID NOT RUN.
+    ///
+    /// Compare stops on an unstamped row because there is nothing to compare: no stamped answer to test
+    /// against the fold, no colour to test the law on, no colour to look up in a palette. So no findings
+    /// come back from those four checks - and the first version of this summary read that silence as PASS
+    /// and printed it. Absence of evidence, published as evidence, on the row where the tool KNOWS it was
+    /// blind.
+    ///
+    /// The theory above USED TO ASSERT THIS BUG. It had an [InlineData("unstamped")] case demanding that
+    /// every other check still read as passed - the defect, written down as the expected behaviour, by me,
+    /// in the file whose whole job is to stop exactly that. The third time in this mission that a test I
+    /// wrote defended the defect it was meant to catch. It is removed and replaced with this.
+    ///
+    /// Found by the ninth inspection pass of pull request 1606 - the same pattern as the fourth, fifth,
+    /// seventh and eighth, one check earlier each time.
+    /// </summary>
+    [Fact]
+    public void AnUnstampedRow_LeavesTheLaterChecksNOTGRADED_NeverPassed()
+    {
+        var sum = AgreementCheck.Summarize(new[] { Row("no-stamp") }, new[] { F("no-stamp", "unstamped") });
+
+        // Check 1 ran and failed. It is the only one that got to run at all.
+        Assert.False(sum.StampPresent.Passed);
+        Assert.Equal(0, sum.StampPresent.NotGraded);
+
+        // The other four found nothing - because they never looked.
+        foreach (var check in new[] { sum.StampIsFold, sum.Law, sum.SamePixels, sum.DesktopAgreed })
+        {
+            Assert.Equal(1, check.NotGraded);
+            Assert.Equal(0, check.Graded);
+            // The distinction the whole type exists for: it found nothing where it ran (vacuously true,
+            // it ran nowhere) and it emphatically did NOT pass over the fleet.
+            Assert.True(check.Passed);
+            Assert.False(check.PassedEverywhere);
+            Assert.Contains("NOT GRADED", check.Line);
+            Assert.DoesNotContain("PASS", check.Line); // never the unqualified word
+        }
+    }
+
+    /// <summary>
+    /// The control: a genuinely clean fleet is the ONLY thing that may print the unqualified word.
+    /// Without this, "never say PASS" would be trivially satisfiable by never saying it.
+    /// </summary>
+    [Fact]
+    public void OnlyACleanFleetEarnsTheUnqualifiedWord()
+    {
+        var sum = AgreementCheck.Summarize(new[] { Row("a"), Row("b") }, Array.Empty<AgreementCheck.Finding>());
+
+        Assert.All(sum.AllChecks, c =>
+        {
+            Assert.True(c.PassedEverywhere);
+            Assert.Equal("PASS", c.Line);
+        });
     }
 
     /// <summary>
@@ -103,7 +156,7 @@ public sealed class AgreementSummaryTests
             new[] { F("phone-dictation", "desktop-vs-gateway") });
 
         Assert.Equal(0, sum.DesktopNotGraded);
-        Assert.False(sum.DesktopAgreedPassed);
+        Assert.False(sum.DesktopAgreed.Passed);
         Assert.Equal(1, sum.Disagreements);
     }
 

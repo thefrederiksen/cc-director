@@ -148,18 +148,17 @@ public static class Program
         //
         // Now each line is derived from a counted kind, and PASS is the one thing that cannot be said
         // without evidence: it means "this check found nothing", and nothing else.
-        static string Verdict(bool passed, int n) => passed ? "PASS" : $"FAIL ({n})";
-
         Console.WriteLine($"CHECK RESULTS, over {sum.LiveSessions} live session(s):");
-        Console.WriteLine($"  the stamp is present ......................... {Verdict(sum.StampPresentPassed, sum.Unstamped)}");
-        Console.WriteLine($"  the stamped answer IS the shared fold's ...... {Verdict(sum.StampIsFoldPassed, sum.StampNotFold)}");
-        Console.WriteLine($"  the LAW: working => blue ..................... {Verdict(sum.LawHeld, sum.LawBroken)}");
-        Console.WriteLine($"  every colour is the SAME HEX on both palettes  {Verdict(sum.SamePixelsPassed, sum.TwoDifferentPixels + sum.PaletteMissing)}");
-        if (sum.DesktopNotGraded == 0)
-            Console.WriteLine($"  the desktop's fold == the Gateway's .......... {Verdict(sum.DesktopAgreedPassed, sum.DesktopVsGateway)}");
-        else
-            Console.WriteLine($"  the desktop's fold == the Gateway's .......... {Verdict(sum.DesktopAgreedPassed, sum.DesktopVsGateway)}" +
-                              $", NOT GRADED on {sum.DesktopNotGraded} row(s)");
+        foreach (var check in sum.AllChecks)
+            Console.WriteLine($"  {check.Name.PadRight(44, '.')} {check.Line}");
+        if (sum.AllChecks.Any(c => c.NotGraded > 0))
+        {
+            Console.WriteLine();
+            Console.WriteLine("  A lower-case 'pass on N of M' is NOT a pass over the fleet - it means the check ran on N");
+            Console.WriteLine("  rows and found nothing, and never reached the rest. An unstamped row stops every check");
+            Console.WriteLine("  after it (there is no stamped answer to compare); an indeterminate row stops only the");
+            Console.WriteLine("  desktop comparison. Absence of a finding from a check that did not run is not evidence.");
+        }
         Console.WriteLine("NOT MEASURED, and not to be claimed: the desktop's own SessionRole copy is not externally");
         Console.WriteLine("  observable (the Gateway's fleet pass overwrites the inbound role on every read), so a");
         Console.WriteLine("  STALE role on a Director cannot be seen from here. That push is proved in-process by");
