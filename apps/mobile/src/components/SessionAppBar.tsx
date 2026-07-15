@@ -89,8 +89,20 @@ export function SessionAppBar({ title, manage, showSnooze = false, showSwitchToV
           &larr; Sessions
         </button>
 
-        {/* Claims the middle of row 1, pushing the menu button into the corner it should have had all
-            along. It guesses nothing: it just takes whatever is left between the two controls. */}
+        {/* Two spacers, so the pill sits in the CENTRE of row 1 and the menu button still gets the
+            corner. Nothing guesses any widths - the spacers just split whatever is left over. */}
+        <div className="session-bar-spacer" />
+
+        {/* The network pill lives here, mid-row-1, because it is the only tappable thing on this screen
+            that nobody means to tap. It navigates to Diagnostics, and it spent a few hours parked at the
+            right end of the TITLE row - which put a small link directly above "Voice mode", the
+            right-hand tab and the most-pressed control on the screen. A tap a few pixels high landed on
+            it and threw you off the screen you were opening (owner, 2026-07-15: "several times when I
+            wanted to go to voice mode, I hit the fast by accident"). Mid-row-1 is a whole row clear of
+            the tabs and horizontally clear of both controls: an indicator you can still reach on purpose
+            and stop hitting by accident. */}
+        <StatusPill inline />
+
         <div className="session-bar-spacer" />
 
         <div className="session-menu-wrap" ref={menuRef}>
@@ -166,15 +178,13 @@ export function SessionAppBar({ title, manage, showSnooze = false, showSwitchToV
 
       </header>
 
-      {/* The session name gets its OWN row. It cannot share row one: between the back button and the
-          menu button there is not enough room left for a real session name ("102 Ghost Directors from
-          tests" collapsed to "102 M..."). The network pill rides HERE, at the end of this row, because
-          it is an indicator - it reads as the status of this session's connection, it can no longer
-          cover the name the way the fixed pill did, and it is out of the corner the menu needs. The
-          name still flexes and ellipsizes (.term-title), so the pill costs it only the pill's width. */}
+      {/* The session name gets its OWN row, and now the WHOLE row: it cannot share row one, where the
+          back button and the menu button leave no room for a real name ("102 Ghost Directors from tests"
+          collapsed to "102 M..."). The network pill used to ride the end of this row and has moved up to
+          the middle of row 1 - see the note there; in short, it was sitting directly above the Voice mode
+          tab and getting hit instead of it. */}
       <div className="session-title-row">
         <h1 className="term-title session-title">{title}</h1>
-        <StatusPill inline />
       </div>
 
       {manage.error !== null && <div className="banner banner-error" role="alert">{manage.error}</div>}
