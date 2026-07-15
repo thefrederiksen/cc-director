@@ -4,8 +4,6 @@ using System.IO;
 using System.Runtime.InteropServices;
 using System.Threading.Tasks;
 using Avalonia.Controls;
-using Avalonia.Input;
-using Avalonia.Interactivity;
 using CcDirector.Core.Browsers;
 using CcDirector.Core.Utilities;
 
@@ -41,8 +39,12 @@ public sealed class LinkMenuContext
 /// Builds the link context menu shared by the terminal and the History tab (GitHub #735). Both the
 /// terminal's <c>ShowLinkContextMenu</c> and the History bubbles call this single implementation, so
 /// a path or URL offers the exact same actions in either place - there is no divergent copy of the
-/// menu. For a file path: View File (when viewable), Open in Browser (when HTML), Copy Path, Open in
-/// File Manager. For a URL: Copy URL, Open in Browser (with the browser/profile submenu).
+/// menu. For a file path: View File (when viewable), Open in Browser + Choose Browser (when HTML),
+/// Copy Path, Open in File Manager. For a URL: Copy URL, Open in Browser, Choose Browser.
+///
+/// The menu is deliberately FLAT - every item does its thing on one press, and no item opens a
+/// submenu. Picking among browsers and profiles is a dialog (<see cref="BrowserPickerDialog"/>),
+/// not a hover-chain; see <see cref="AddOpenInBrowserItems"/> for why.
 /// </summary>
 public static class LinkContextMenuBuilder
 {
@@ -78,7 +80,7 @@ public static class LinkContextMenuBuilder
             if (FileExtensions.IsHtml(context.Link))
             {
                 string htmlTarget = ResolvePath(context, context.Link).Replace('/', '\\').TrimEnd('\\');
-                menu.Items.Add(BuildOpenInBrowserMenuItem(menu, context, htmlTarget));
+                AddOpenInBrowserItems(menu, context, htmlTarget);
                 addedViewerItem = true;
             }
 
@@ -99,7 +101,7 @@ public static class LinkContextMenuBuilder
             copyItem.Click += (_, _) => _ = CopyLinkToClipboardAsync(context);
             menu.Items.Add(copyItem);
 
-            menu.Items.Add(BuildOpenInBrowserMenuItem(menu, context, context.Link));
+            AddOpenInBrowserItems(menu, context, context.Link);
         }
     }
 
@@ -156,107 +158,131 @@ public static class LinkContextMenuBuilder
     }
 
     /// <summary>
-    /// Builds the "Open in Browser" menu item for <paramref name="target"/> (a URL or a local file
-    /// path). A plain click reopens the resolved default (this repository's default, then the
-    /// application-wide default, then the OS default); hovering expands a submenu of "System default"
-    /// plus each installed browser with its real profiles (re-read from each browser's Local State so
-    /// newly added profiles appear without a restart). Each profile in turn expands into explicit
-    /// intents - "Open once", "Set as default for this repository" (only when the link belongs to a
-    /// repository), and "Set as application-wide default" - so a click is never ambiguous about which
-    /// default, if any, it is setting.
+    /// Adds the two flat "Open in Browser" items for <paramref name="target"/> (a URL or a local
+    /// file path): one that opens the resolved default straight away, and one that opens the
+    /// <see cref="BrowserPickerDialog"/>.
+    ///
+    /// This replaces the cascading submenu that shipped with the per-repository default (#1533),
+    /// where every real action sat four popups deep - "Open in Browser" -&gt; browser -&gt; profile
+    /// -&gt; intent. Avalonia's MenuItem has no hover-intent safe area, so moving the pointer
+    /// diagonally toward a submenu crossed the sibling row and collapsed the chain: the actions were
+    /// unreachable in practice. The picker dialog holds the same three intents (open once, remember
+    /// for this repository, remember everywhere) as one list plus a checkbox, so no action needs a
+    /// submenu at all and every one is a single press.
+    ///
+    /// Both items are pure: neither touches the disk while the menu is being built, so the menu
+    /// pops instantly. Browser detection and default resolution happen inside the dialog, in the
+    /// background, after it is on screen.
     /// </summary>
-    private static MenuItem BuildOpenInBrowserMenuItem(ContextMenu menu, LinkMenuContext context, string target)
+    private static void AddOpenInBrowserItems(ContextMenu menu, LinkMenuContext context, string target)
     {
-        var parent = new MenuItem { Header = "Open in Browser" };
+        var openItem = new MenuItem { Header = "Open in Browser" };
+        openItem.Click += (_, _) => OpenInBrowserDefault(context, target);
+        menu.Items.Add(openItem);
 
-        // A submenu parent does NOT raise Click on its header - pressing the header just expands the
-        // submenu. To make a plain click on the parent reopen the remembered default (while HOVER
-        // still expands the submenu), intercept the header press in the tunnel phase. The tunnel
-        // route also passes through this parent for presses on its OWN submenu leaves (descendants),
-        // so launch the default ONLY when the press lands on the parent's own header rectangle.
-        parent.AddHandler(InputElement.PointerPressedEvent, (_, e) =>
+        var chooseItem = new MenuItem { Header = "Choose Browser..." };
+        chooseItem.Click += (_, _) => _ = ChooseBrowserAsync(context, target);
+        menu.Items.Add(chooseItem);
+    }
+
+    /// <summary>
+    /// Opens the browser picker and acts on what the user chose. Cancelling does nothing at all -
+    /// no launch, no remembered default.
+    /// </summary>
+    private static async Task ChooseBrowserAsync(LinkMenuContext context, string target)
+    {
+        try
         {
-            var pos = e.GetPosition(parent);
-            bool onHeader = pos.X >= 0 && pos.Y >= 0
-                && pos.X <= parent.Bounds.Width && pos.Y <= parent.Bounds.Height;
-            if (!onHeader)
+            if (TopLevel.GetTopLevel(context.Owner) is not Window owner)
+                throw new InvalidOperationException(
+                    "The link menu is not hosted in a window, so the browser picker cannot be opened.");
+
+            var choice = await BrowserPickerDialog.ShowAsync(owner, target, context.RepoPath);
+            if (choice is null)
+            {
+                FileLog.Write("[LinkContextMenuBuilder] ChooseBrowserAsync: cancelled");
+                return;
+            }
+
+            ApplyChoice(context, target, choice);
+        }
+        catch (Exception ex)
+        {
+            FileLog.Write($"[LinkContextMenuBuilder] ChooseBrowserAsync FAILED: {ex.Message}");
+            context.OnBrowserError?.Invoke($"Could not open the browser picker.\n\n{ex.Message}");
+        }
+    }
+
+    /// <summary>
+    /// Launches the picked browser and persists the picked scope. The launch happens FIRST: if the
+    /// browser will not start, we surface that and never write a default the user would then be
+    /// stuck with.
+    /// </summary>
+    private static void ApplyChoice(LinkMenuContext context, string target, BrowserChoice choice)
+    {
+        try
+        {
+            if (choice.Browser is null)
+                BrowserLauncher.OpenSystemDefault(target);
+            else
+                BrowserLauncher.OpenWithProfile(target, choice.Browser, RequireProfileFolder(choice));
+
+            RememberChoice(context, choice);
+
+            FileLog.Write($"[LinkContextMenuBuilder] ApplyChoice: opened {target} in "
+                + $"{choice.Browser?.DisplayName ?? "the system default browser"}, scope={choice.Scope}");
+        }
+        catch (Exception ex)
+        {
+            FileLog.Write($"[LinkContextMenuBuilder] ApplyChoice FAILED: {ex.Message}");
+            var where = choice.Browser?.DisplayName ?? "the system default browser";
+            context.OnBrowserError?.Invoke($"Could not open in {where}.\n\n{ex.Message}");
+        }
+    }
+
+    /// <summary>
+    /// Writes (or erases) the remembered default for the chosen scope. Choosing the system default
+    /// browser and asking to remember it ERASES the stored default for that scope - that is how a
+    /// default gets taken back, and the store then resolves through to the operating system again.
+    /// </summary>
+    private static void RememberChoice(LinkMenuContext context, BrowserChoice choice)
+    {
+        switch (choice.Scope)
+        {
+            case BrowserRememberScope.None:
                 return;
 
-            e.Handled = true;
-            menu.Close();
-            OpenInBrowserDefault(context, target);
-        }, RoutingStrategies.Tunnel);
+            case BrowserRememberScope.Repository:
+                if (string.IsNullOrWhiteSpace(context.RepoPath))
+                    throw new InvalidOperationException(
+                        "This link has no owning repository, so it has no repository default to set.");
 
-        var systemItem = new MenuItem { Header = "System default" };
-        systemItem.Click += (_, e) =>
-        {
-            e.Handled = true;
-            OpenInBrowserSystemDefault(context, target);
-        };
-        parent.Items.Add(systemItem);
+                if (choice.Browser is null)
+                    BrowserDefaultStore.ClearForRepo(context.RepoPath);
+                else
+                    BrowserDefaultStore.SaveForRepo(
+                        context.RepoPath, new BrowserDefault(choice.Browser.ExePath, RequireProfileFolder(choice)));
+                return;
 
-        foreach (var browser in BrowserLauncher.DetectBrowsers())
-        {
-            var browserItem = new MenuItem { Header = browser.DisplayName };
+            case BrowserRememberScope.Application:
+                if (choice.Browser is null)
+                    BrowserDefaultStore.Clear();
+                else
+                    BrowserDefaultStore.Save(
+                        new BrowserDefault(choice.Browser.ExePath, RequireProfileFolder(choice)));
+                return;
 
-            var profiles = BrowserLauncher.GetProfiles(browser);
-            if (profiles.Count == 0)
-            {
-                browserItem.Items.Add(new MenuItem { Header = "(no profiles found)", IsEnabled = false });
-            }
-            else
-            {
-                foreach (var profile in profiles)
-                {
-                    string header = profile.Account is null
-                        ? profile.DisplayName
-                        : $"{profile.DisplayName} ({profile.Account})";
-
-                    var capturedBrowser = browser;
-                    var capturedFolder = profile.FolderName;
-
-                    // Each profile expands into explicit intents so a click is never ambiguous about
-                    // WHAT it sets: open once (remember nothing), remember for THIS repository (the
-                    // common case, only when the link belongs to a repository), or remember as the
-                    // application-wide default.
-                    var profileItem = new MenuItem { Header = header };
-
-                    var openOnceItem = new MenuItem { Header = "Open once" };
-                    openOnceItem.Click += (_, e) =>
-                    {
-                        e.Handled = true;
-                        OpenInBrowserProfileOnce(context, target, capturedBrowser, capturedFolder);
-                    };
-                    profileItem.Items.Add(openOnceItem);
-
-                    if (!string.IsNullOrWhiteSpace(context.RepoPath))
-                    {
-                        var repoItem = new MenuItem { Header = "Set as default for this repository" };
-                        repoItem.Click += (_, e) =>
-                        {
-                            e.Handled = true;
-                            OpenInBrowserProfileForRepo(context, target, capturedBrowser, capturedFolder);
-                        };
-                        profileItem.Items.Add(repoItem);
-                    }
-
-                    var appWideItem = new MenuItem { Header = "Set as application-wide default" };
-                    appWideItem.Click += (_, e) =>
-                    {
-                        e.Handled = true;
-                        OpenInBrowserProfileAppWide(context, target, capturedBrowser, capturedFolder);
-                    };
-                    profileItem.Items.Add(appWideItem);
-
-                    browserItem.Items.Add(profileItem);
-                }
-            }
-
-            parent.Items.Add(browserItem);
+            default:
+                throw new InvalidOperationException($"Unknown remember scope: {choice.Scope}");
         }
-
-        return parent;
     }
+
+    /// <summary>A choice naming a browser must name the profile to launch it with.</summary>
+    private static string RequireProfileFolder(BrowserChoice choice)
+        => string.IsNullOrWhiteSpace(choice.ProfileFolder)
+            ? throw new InvalidOperationException(
+                $"The choice named {choice.Browser?.DisplayName} but no profile folder.")
+            : choice.ProfileFolder;
 
     private static void OpenInBrowserDefault(LinkMenuContext context, string target)
     {
@@ -280,70 +306,6 @@ public static class LinkContextMenuBuilder
         {
             FileLog.Write($"[LinkContextMenuBuilder] OpenInBrowserDefault FAILED: {ex.Message}");
             context.OnBrowserError?.Invoke($"Could not open in browser.\n\n{ex.Message}");
-        }
-    }
-
-    private static void OpenInBrowserSystemDefault(LinkMenuContext context, string target)
-    {
-        try
-        {
-            BrowserLauncher.OpenSystemDefault(target);
-            FileLog.Write($"[LinkContextMenuBuilder] OpenInBrowserSystemDefault: {target}");
-        }
-        catch (Exception ex)
-        {
-            FileLog.Write($"[LinkContextMenuBuilder] OpenInBrowserSystemDefault FAILED: {ex.Message}");
-            context.OnBrowserError?.Invoke($"Could not open in the system default browser.\n\n{ex.Message}");
-        }
-    }
-
-    /// <summary>Opens the link in a specific browser+profile once, remembering nothing.</summary>
-    private static void OpenInBrowserProfileOnce(LinkMenuContext context, string target, BrowserInfo browser, string profileFolder)
-    {
-        try
-        {
-            BrowserLauncher.OpenWithProfile(target, browser, profileFolder);
-            FileLog.Write($"[LinkContextMenuBuilder] OpenInBrowserProfileOnce: opened {target} in {browser.DisplayName}/{profileFolder}");
-        }
-        catch (Exception ex)
-        {
-            FileLog.Write($"[LinkContextMenuBuilder] OpenInBrowserProfileOnce FAILED: {ex.Message}");
-            context.OnBrowserError?.Invoke($"Could not open in {browser.DisplayName}.\n\n{ex.Message}");
-        }
-    }
-
-    /// <summary>Opens the link and remembers this browser+profile as the owning repository's default.</summary>
-    private static void OpenInBrowserProfileForRepo(LinkMenuContext context, string target, BrowserInfo browser, string profileFolder)
-    {
-        try
-        {
-            BrowserLauncher.OpenWithProfile(target, browser, profileFolder);
-            if (string.IsNullOrWhiteSpace(context.RepoPath))
-                throw new InvalidOperationException("This link has no owning repository, so it has no repository default to set.");
-
-            BrowserDefaultStore.SaveForRepo(context.RepoPath, new BrowserDefault(browser.ExePath, profileFolder));
-            FileLog.Write($"[LinkContextMenuBuilder] OpenInBrowserProfileForRepo: opened {target} in {browser.DisplayName}/{profileFolder}, repo={context.RepoPath}");
-        }
-        catch (Exception ex)
-        {
-            FileLog.Write($"[LinkContextMenuBuilder] OpenInBrowserProfileForRepo FAILED: {ex.Message}");
-            context.OnBrowserError?.Invoke($"Could not open in {browser.DisplayName}.\n\n{ex.Message}");
-        }
-    }
-
-    /// <summary>Opens the link and remembers this browser+profile as the application-wide default.</summary>
-    private static void OpenInBrowserProfileAppWide(LinkMenuContext context, string target, BrowserInfo browser, string profileFolder)
-    {
-        try
-        {
-            BrowserLauncher.OpenWithProfile(target, browser, profileFolder);
-            BrowserDefaultStore.Save(new BrowserDefault(browser.ExePath, profileFolder));
-            FileLog.Write($"[LinkContextMenuBuilder] OpenInBrowserProfileAppWide: opened {target} in {browser.DisplayName}/{profileFolder}");
-        }
-        catch (Exception ex)
-        {
-            FileLog.Write($"[LinkContextMenuBuilder] OpenInBrowserProfileAppWide FAILED: {ex.Message}");
-            context.OnBrowserError?.Invoke($"Could not open in {browser.DisplayName}.\n\n{ex.Message}");
         }
     }
 
