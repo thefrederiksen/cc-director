@@ -40,19 +40,46 @@ public sealed class ConversationIngestorTests : IDisposable
         try { if (Directory.Exists(_root)) Directory.Delete(_root, recursive: true); } catch { /* best effort */ }
     }
 
-    /// <summary>Stands in for the Gateway: remembers what was pushed, and can refuse.</summary>
+    /// <summary>Stands in for the Gateway: remembers what was pushed, can refuse, and can be held open
+    /// mid-push so a second ingest is guaranteed to overlap the first rather than racing it by luck.</summary>
     private sealed class FakeSink : IPromptSink
     {
-        public List<PromptRecord> Received { get; } = new();
+        private readonly object _gate = new();
+        private readonly List<PromptRecord> _received = new();
+        private readonly TaskCompletionSource _firstPushEntered = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly TaskCompletionSource _releaseFirstPush = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public IReadOnlyList<PromptRecord> Received { get { lock (_gate) return _received.ToList(); } }
         public int PushCalls { get; private set; }
         public bool Accept { get; set; } = true;
 
-        public Task<bool> PushAsync(IReadOnlyList<PromptRecord> records)
+        /// <summary>When set, the FIRST push blocks until <see cref="ReleaseFirstPush"/>, holding the
+        /// ingest inside the window between reading the watermark and marking it.</summary>
+        public bool HoldFirstPush { get; set; }
+
+        /// <summary>Completes once a push is inside that window.</summary>
+        public Task FirstPushEntered => _firstPushEntered.Task;
+
+        public void ReleaseFirstPush() => _releaseFirstPush.TrySetResult();
+
+        public async Task<bool> PushAsync(IReadOnlyList<PromptRecord> records)
         {
-            PushCalls++;
-            if (!Accept) return Task.FromResult(false);
-            Received.AddRange(records);
-            return Task.FromResult(true);
+            bool hold;
+            lock (_gate)
+            {
+                PushCalls++;
+                hold = HoldFirstPush && PushCalls == 1;
+            }
+
+            if (hold)
+            {
+                _firstPushEntered.TrySetResult();
+                await _releaseFirstPush.Task;
+            }
+
+            if (!Accept) return false;
+            lock (_gate) _received.AddRange(records);
+            return true;
         }
     }
 
@@ -387,6 +414,93 @@ public sealed class ConversationIngestorTests : IDisposable
         await ingestor.IngestAsync(session);
 
         Assert.True(Assert.Single(Pushed).TimestampFromAgent);
+    }
+
+    // ===== two ingests of one source must not both push =====
+    //
+    // The watermark is read, then the push is awaited, then the messages are marked - and they cannot be
+    // marked any earlier, because the Director keeps no copy and must not mark what the Gateway has not
+    // accepted. That leaves a window. The trigger fires per turn end on a Task.Run, so two quick turn
+    // ends put two ingests inside it, both see "not written", and both push.
+    //
+    // These hold the fake Gateway open mid-push to place the second ingest inside that window on purpose.
+    // Without the hold the race is real but rare, and a test that reproduces a race only sometimes is a
+    // test that certifies the bug most of the time.
+
+    [Fact]
+    public async Task Two_ingests_of_one_session_at_once_push_each_message_once()
+    {
+        var session = NewSession();
+        WriteTranscript(session, UserLine("say this once", DateTime.UtcNow));
+
+        using var ingestor = NewIngestor();
+        _sink.HoldFirstPush = true;
+
+        var first = Task.Run(() => ingestor.IngestAsync(session));
+        await _sink.FirstPushEntered;               // the first ingest is now mid-push, nothing marked yet
+
+        var second = Task.Run(() => ingestor.IngestAsync(session));
+        await Task.Delay(250);                     // room for the second to push, if nothing stops it
+
+        _sink.ReleaseFirstPush();
+        await Task.WhenAll(first, second);
+
+        Assert.Equal("say this once", Assert.Single(Pushed).Text);
+    }
+
+    [Fact]
+    public async Task Two_sessions_sharing_one_source_ingesting_at_once_push_each_message_once()
+    {
+        // Two Director sessions reading ONE transcript - the same overlap, across sessions. This is the
+        // case a per-session guard would miss: Copilot, OpenCode and Gemini resolve their conversation by
+        // repository, so two sessions on one repository genuinely read the same conversation. It is why
+        // the watermark is scoped to the source, and why the gate must be too.
+        var ts = DateTime.UtcNow;
+        var sessionA = NewSession();
+        var path = WriteTranscript(sessionA, UserLine("one shared conversation", ts));
+
+        var sessionB = NewSession();
+        sessionB.UpdateClaudeSessionPointer("claude-session-id", path, "test");
+
+        using var ingestor = NewIngestor();
+        _sink.HoldFirstPush = true;
+
+        var first = Task.Run(() => ingestor.IngestAsync(sessionA));
+        await _sink.FirstPushEntered;
+
+        var second = Task.Run(() => ingestor.IngestAsync(sessionB));
+        await Task.Delay(250);
+
+        _sink.ReleaseFirstPush();
+        await Task.WhenAll(first, second);
+
+        Assert.Equal("one shared conversation", Assert.Single(Pushed).Text);
+    }
+
+    [Fact]
+    public async Task Ingests_of_DIFFERENT_sources_are_not_serialized_behind_each_other()
+    {
+        // The control on the gate: it must not become a global lock. Two unrelated sessions ingest at the
+        // same time all day - a slow or hanging push to one source must not stall every other source's
+        // capture behind it.
+        var sessionA = NewSession();
+        WriteTranscript(sessionA, UserLine("from source A", DateTime.UtcNow));
+        var sessionB = NewSession();
+        WriteTranscript(sessionB, UserLine("from source B", DateTime.UtcNow));
+
+        using var ingestor = NewIngestor();
+        _sink.HoldFirstPush = true;
+
+        var first = Task.Run(() => ingestor.IngestAsync(sessionA));
+        await _sink.FirstPushEntered;              // A is parked mid-push and holding A's gate
+
+        // B must sail past: different source, different gate. If this hangs, the gate is too coarse.
+        await Task.Run(() => ingestor.IngestAsync(sessionB)).WaitAsync(TimeSpan.FromSeconds(10));
+        Assert.Equal("from source B", Assert.Single(Pushed).Text);
+
+        _sink.ReleaseFirstPush();
+        await first;
+        Assert.Equal(new[] { "from source B", "from source A" }, Pushed.Select(r => r.Text));
     }
 
     // ===== the watermark must survive a RESTART - the one case it exists for =====
