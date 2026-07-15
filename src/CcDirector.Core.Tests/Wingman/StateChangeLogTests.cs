@@ -1,5 +1,6 @@
 using CcDirector.Core.Configuration;
 using CcDirector.Core.Sessions;
+using CcDirector.Core.Storage;
 using CcDirector.Core.Wingman;
 using Xunit;
 
@@ -10,9 +11,30 @@ namespace CcDirector.Core.Tests.Wingman;
 /// <see cref="Session"/> (populated by <c>SetActivityState</c> when the detector calls
 /// <c>ApplyTerminalActivityState</c>) and the durable <see cref="StateChangeLog"/>. The
 /// detector's timer wiring itself is timing/async and exercised live, not faked here.
+///
+/// CC_DIRECTOR_ROOT is pinned to a temp dir so the durable log lands there: this test used to
+/// append into the REAL running Director's %LOCALAPPDATA%\cc-director\state-changes folder,
+/// because StateChangeLog baked that path into a static readonly field no redirect could reach.
 /// </summary>
-public sealed class StateChangeLogTests
+[Collection("CcStorageRoot")] // serializes all classes that mutate the process-wide CC_DIRECTOR_ROOT
+public sealed class StateChangeLogTests : IDisposable
 {
+    private readonly string _root;
+    private readonly string? _prevRoot;
+
+    public StateChangeLogTests()
+    {
+        _prevRoot = Environment.GetEnvironmentVariable("CC_DIRECTOR_ROOT");
+        _root = Path.Combine(Path.GetTempPath(), "ccd-statechange-test-" + Guid.NewGuid().ToString("N"));
+        Environment.SetEnvironmentVariable("CC_DIRECTOR_ROOT", _root);
+    }
+
+    public void Dispose()
+    {
+        Environment.SetEnvironmentVariable("CC_DIRECTOR_ROOT", _prevRoot);
+        try { if (Directory.Exists(_root)) Directory.Delete(_root, true); } catch { /* best-effort cleanup */ }
+    }
+
     [Fact]
     public void State_changes_are_recorded_newest_first()
     {
@@ -96,16 +118,20 @@ public sealed class StateChangeLogTests
     public void StateChangeLog_round_trips_a_record_to_jsonl()
     {
         var sessionId = Guid.NewGuid();
-        var root = Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-            "cc-director", "state-changes");
-        var path = Path.Combine(root, sessionId.ToString("N") + ".jsonl");
+        // Ask CcStorage where the log goes rather than re-deriving the path here: the old copy
+        // hardcoded %LOCALAPPDATA% and so silently followed the production class into the real
+        // Director's folder. Under the pinned root this resolves inside _root.
+        var path = Path.Combine(CcStorage.StateChanges(), sessionId.ToString("N") + ".jsonl");
         var wasEnabled = StateChangeLog.Enabled;
         try
         {
             StateChangeLog.Enabled = true;
             StateChangeLog.Append(sessionId, new StateChangeLog.Record(
                 DateTime.UtcNow.ToString("o"), "Working", "WaitingForInput", "red"));
+
+            // Asserted, not assumed: the append landed in this test's throwaway root, never the
+            // real Director's data directory.
+            Assert.StartsWith(_root, path, StringComparison.OrdinalIgnoreCase);
 
             Assert.True(File.Exists(path));
             var line = File.ReadAllText(path).Trim();

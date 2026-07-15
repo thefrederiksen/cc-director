@@ -1,6 +1,7 @@
 using System.Security.Cryptography;
 using CcDirector.Core.Configuration;
 using CcDirector.Core.Sessions;
+using CcDirector.Core.Storage;
 using CcDirector.Core.Utilities;
 using CcDirector.Gateway.Contracts;
 
@@ -11,7 +12,7 @@ namespace CcDirector.Core.Voice;
 ///
 /// The browser records with MediaRecorder timeslice, so the audio arrives as an
 /// ordered sequence of webm container fragments. We store each fragment to a
-/// per-utterance temp dir as it lands (SHA256-idempotent, so a retried chunk is a
+/// per-utterance staging dir as it lands (SHA256-idempotent, so a retried chunk is a
 /// no-op), then on <see cref="CompleteAsync"/> concatenate them IN ORDER back into
 /// one webm blob and transcribe it once. A fragment is NOT independently decodable
 /// (only fragment 0 carries the container header), so reassemble-then-transcribe is
@@ -20,13 +21,16 @@ namespace CcDirector.Core.Voice;
 /// Why this exists instead of the single-shot /voice/command: on spotty car LTE a
 /// whole-blob POST that fails near the end re-sends the entire clip. Here, every
 /// chunk that lands stays landed; a dropped connection resumes at the next missing
-/// chunk. Transient only: the temp dir is deleted after transcription. No vault.
+/// chunk. Transient only: the staging dir is deleted after transcription - it lives
+/// under the Director's own storage root, NOT the machine temp dir, whatever the
+/// wording here used to claim. No vault.
 /// </summary>
 public sealed class VoiceUtteranceService
 {
-    private static readonly string Root = Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-        "cc-director", "voice-utterances");
+    /// <summary>Resolved per access (not a static readonly field) so CC_DIRECTOR_ROOT redirects it: a
+    /// baked field is captured at type load, which no test can undo - and this class's gate test wrote
+    /// into the real Director's data directory as a result. Same folder in production.</summary>
+    private static string Root => CcStorage.VoiceUtterances();
 
     private readonly SessionManager _sessionManager;
     private readonly AgentOptions _options;

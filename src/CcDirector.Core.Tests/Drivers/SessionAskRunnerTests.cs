@@ -333,9 +333,13 @@ public class SessionAskRunnerTests : IDisposable
 
     private static void WriteProofLog(IReadOnlyList<string> logged, SessionAskResult result)
     {
-        var repoRoot = FindRepoRoot();
-        if (repoRoot is null) return; // running outside the repo tree (CI artifact dir) - skip the file write
-        var proofDir = Path.Combine(repoRoot, "docs", "cencon", "proof", "issue-509");
+        // Proof generation is OPT-IN, like the sibling proof writers (CC274_PROOF_DIR,
+        // CC300_PROOF_DIR, CC1080_PROOF_DIR): a normal `dotnet test` writes nothing. This used to
+        // locate the repo root and write docs/cencon/proof/issue-509/ask-sequence.log on every run,
+        // which left the file dirty in every worktree. The proof run sets CC509_PROOF_DIR and
+        // commits the artefact; the assertions in the test are what actually prove the behaviour.
+        var proofDir = Environment.GetEnvironmentVariable("CC509_PROOF_DIR");
+        if (string.IsNullOrWhiteSpace(proofDir)) return;
         Directory.CreateDirectory(proofDir);
 
         var sb = new StringBuilder();
@@ -357,18 +361,6 @@ public class SessionAskRunnerTests : IDisposable
     {
         var temp = Path.GetTempPath().TrimEnd(Path.DirectorySeparatorChar);
         return line.Replace(temp, "<TEMP>", StringComparison.OrdinalIgnoreCase);
-    }
-
-    private static string? FindRepoRoot()
-    {
-        var dir = new DirectoryInfo(AppContext.BaseDirectory);
-        while (dir is not null)
-        {
-            if (File.Exists(Path.Combine(dir.FullName, "cc-director.sln")))
-                return dir.FullName;
-            dir = dir.Parent;
-        }
-        return null;
     }
 
     private static string Delimited(string answer) =>
