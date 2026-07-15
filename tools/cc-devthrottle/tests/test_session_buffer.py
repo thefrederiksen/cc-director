@@ -18,6 +18,7 @@ import sys
 from pathlib import Path
 
 import pytest
+import typer
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
@@ -75,9 +76,30 @@ def test_a_style_shaped_token_is_not_eaten(buffer_text, capsys):
     assert capsys.readouterr().out == text + "\n"
 
 
-def test_terminal_content_survives_byte_for_byte(buffer_text, capsys):
+def test_the_error_branch_does_not_crash_on_the_servers_error_text(buffer_text, monkeypatch, capsys):
+    # The failure branch had the SAME defect as the success branch it reports on: the error text comes
+    # from the server and can quote a path or a fragment of the session's own output, and it was
+    # interpolated straight into Rich markup. A closing-tag-shaped token in it raised MarkupError - a
+    # traceback out of the code whose only job is to explain a failure.
+    monkeypatch.setenv("CC_SESSION_ID", SESSION_ID)
+
+    def boom(path):
+        raise session_ops.director.DirectorError("no session at [/tmp/x] on that Director")
+
+    monkeypatch.setattr(session_ops.director, "get_json", boom)
+
+    with pytest.raises(typer.Exit):
+        session_ops.read_session_buffer(None)
+
+    out = capsys.readouterr().out
+    assert "no session at [/tmp/x] on that Director" in out   # reported literally, not swallowed
+    assert "Error:" in out                                     # and still human-readable
+
+
+def test_terminal_content_survives_uninterpreted(buffer_text, capsys):
     # The whole contract in one: markup-shaped tokens, a closing-tag shape, a long line, and blank lines
-    # all come back exactly as the terminal held them.
+    # all come back as the terminal held them - unparsed, unwrapped, nothing added or removed in the
+    # middle. Not a byte-for-byte claim: print adds the trailing newline, and the platform translates it.
     text = "\n".join(
         [
             "$ ls [/tmp/x]",
