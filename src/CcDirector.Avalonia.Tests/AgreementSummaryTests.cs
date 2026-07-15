@@ -127,6 +127,43 @@ public sealed class AgreementSummaryTests
     }
 
     /// <summary>
+    /// FAILING SOMEWHERE AND NEVER LOOKING ELSEWHERE ARE BOTH TRUE AT ONCE, AND BOTH GET SAID.
+    ///
+    /// The gap that let the tenth bug live: every test here covered failure-only or not-graded-only, never
+    /// both. So Line could return early on a failure and silently drop NotGraded, and the whole suite
+    /// stayed green while a check that ran on one row of two printed a confident bare "FAIL (1)" under a
+    /// header saying "over 2 live session(s)".
+    ///
+    /// Not the bare PASS of the ninth bug - the same claim-without-evidence one step sideways. A partial
+    /// truth IS the failure mode here, not an acceptable summary of a complicated one. Every version of
+    /// this defect, in all ten passes, has been some true half printed without its qualifier.
+    ///
+    /// Found by the tenth inspection pass of pull request 1606.
+    /// </summary>
+    [Fact]
+    public void ACheckThatBothFailedAndDidNotRunEverywhere_SaysBoth()
+    {
+        // Row A has no stamp, so it stops every later check. Row B breaks the law. The law check therefore
+        // FAILED on B and NEVER RAN on A - and the reader must be told both, or "FAIL (1)" reads as a
+        // complete verdict over two sessions.
+        var sum = AgreementCheck.Summarize(
+            new[] { Row("a-no-stamp"), Row("b-law") },
+            new[] { F("a-no-stamp", "unstamped"), F("b-law", "law-broken") });
+
+        var law = sum.Law;
+        Assert.Equal(1, law.Failures);
+        Assert.Equal(1, law.NotGraded);
+        Assert.Equal(1, law.Graded);
+        Assert.False(law.Passed);
+        Assert.False(law.PassedEverywhere);
+
+        // BOTH halves, in the one line the report prints.
+        Assert.Contains("FAIL (1)", law.Line);
+        Assert.Contains("NOT GRADED on 1", law.Line);
+        Assert.Contains("1 of 2", law.Line);
+    }
+
+    /// <summary>
     /// The control: a genuinely clean fleet is the ONLY thing that may print the unqualified word.
     /// Without this, "never say PASS" would be trivially satisfiable by never saying it.
     /// </summary>

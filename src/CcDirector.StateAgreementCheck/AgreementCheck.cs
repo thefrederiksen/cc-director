@@ -60,11 +60,29 @@ public static class AgreementCheck
         /// <summary>Found nothing AND ran on every live session. The only basis for an unqualified pass.</summary>
         public bool PassedEverywhere => Failures == 0 && NotGraded == 0;
 
-        /// <summary>The verdict as printed. It never says a bare PASS unless the check ran on everything.</summary>
+        /// <summary>
+        /// The verdict as printed. It states BOTH halves, always: what the check found, and what it never
+        /// looked at. Neither half may be dropped because the other is interesting.
+        ///
+        /// The first version returned early on <c>Failures &gt; 0</c> and silently discarded
+        /// <see cref="NotGraded"/>. So a check that failed on one row AND never ran on another printed a
+        /// bare "FAIL (1)" beneath a header reading "over 2 live session(s)" - a complete-looking verdict
+        /// over a fleet it had only half examined. Not the bare PASS of the previous bug; the same
+        /// claim-without-evidence one step sideways, and it survived because the tests covered
+        /// failure-only and not-graded-only and never both at once.
+        ///
+        /// The lesson that finally stuck, on the tenth pass: A PARTIAL TRUTH IS THE FAILURE MODE, not an
+        /// acceptable summary of a complicated one. Every version of this bug has been some true half
+        /// printed without its qualifier.
+        /// </summary>
         public string Line =>
-            Failures > 0 ? $"FAIL ({Failures})"
-            : NotGraded > 0 ? $"pass on {Graded} of {LiveSessions} - NOT GRADED on {NotGraded}"
-            : "PASS";
+            (Failures, NotGraded) switch
+            {
+                (0, 0) => "PASS",
+                (0, _) => $"pass on {Graded} of {LiveSessions} - NOT GRADED on {NotGraded}",
+                (_, 0) => $"FAIL ({Failures})",
+                _ => $"FAIL ({Failures}) on {Graded} of {LiveSessions} - NOT GRADED on {NotGraded}",
+            };
     }
 
     /// <summary>
