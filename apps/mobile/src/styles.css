@@ -2115,8 +2115,14 @@ a.banner-btn {
 
    Layout, and why it is two rows:
 
-     row 1:  [<- Sessions] .................... [...]      navigation left, overflow menu right
-     row 2:  102 devthrottle / f9e7 ..... ( o Fast )       name flexes; the indicator rides the end
+     row 1:  [<- Sessions] ..... ( o Fast ) ..... [...]    navigation left, indicator centre, menu right
+     row 2:  102 devthrottle / f9e7                        the name gets the whole row
+
+   The pill is CENTRED in row 1 because it is the one tappable thing here that nobody means to tap - it
+   navigates to Diagnostics. It briefly sat at the right end of row 2, which put a small link directly
+   above "Voice mode": the right-hand tab, the most-pressed control on the screen, and a few pixels away.
+   It got hit instead of the tab. Centre of row 1 is a whole row clear of the tabs and horizontally clear
+   of both controls.
 
    The corner belongs to the CONTROL, not the indicator. This bar used to put the menu button on the
    LEFT because the network pill was position:fixed in the top-right and nothing wanted to guess how
@@ -2131,6 +2137,18 @@ a.banner-btn {
    costs it only the pill's width, and .term-title already flexes and ellipsizes. */
 .session-app-bar {
   gap: 8px;
+  position: relative;   /* the anchor the centred pill below positions against */
+}
+
+/* TRUE centre, not "whatever the flex spacers left over". Back ("<- Sessions") is much wider than the
+   menu button, so two equal spacers push the pill ~30px right of centre - which is 30px back toward the
+   Voice mode tab, the exact thing this move exists to get away from. Absolute centring is independent of
+   both controls' widths, so the pill cannot drift as their labels change. It stays out of the flex flow;
+   the spacers keep the row's own geometry unchanged. */
+.session-app-bar .net-pill-inline {
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%);
 }
 
 /* Claims the middle of row 1, so the menu button is pushed to the right edge. Guesses nothing - it
@@ -2140,11 +2158,10 @@ a.banner-btn {
   min-width: 0;
 }
 
-/* Row two: the session name, flexing, with the network pill parked at its end. */
+/* Row two: the session name, with the whole row to itself. */
 .session-title-row {
   display: flex;
   align-items: center;
-  gap: 10px;
   padding: 6px 2px 2px;
 }
 
