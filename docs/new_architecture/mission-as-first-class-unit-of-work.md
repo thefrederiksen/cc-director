@@ -19,9 +19,14 @@ sessions attach to.
 >
 > The rules live THERE and only there. Before that file existed they lived nowhere, so every mission
 > brief restated them from memory - they drifted, and each brief read as though it were granting
-> authority. One such brief reached main carrying the sentence "You have standing commit authority
-> for the whole mission", in imperative voice, with its expiry in a different paragraph. A brief
-> describes the WORK; it must never grant a permission. If you are writing one, start at the skill.
+> authority. One such brief reached main carrying a sentence that granted that mission open authority
+> to commit: imperative voice, addressed to the reader, with the words limiting it to one branch and
+> one week in a different paragraph. A brief describes the WORK; it must never grant a permission. If
+> you are writing one, start at the skill.
+>
+> *(Paraphrased on purpose. Quoting that sentence would leave the exact imperative string in a
+> permanent document, searchable, one retrieval away from being read as live - the failure it is
+> cited as an example of. It is in git history on `backup/session-state-truth-2026-07-15`.)*
 
 ## The idea in one line
 

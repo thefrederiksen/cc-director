@@ -36,11 +36,15 @@ the exact failure this mission exists to end.
 
 > **If a session is working, it is BLUE. Always. Nothing outranks working.**
 
-The Gateway owns every state and is the ONLY thing that picks a colour. The Director reports facts.
-Clients render and decide nothing.
+**The ruling we build toward - not a description of the code today:** the Gateway is to own every
+state and be the ONLY thing that picks a colour; the Director is to report facts; clients are to
+render and decide nothing.
 
-This is settled as a **RULING, and it is the target architecture - it is NOT a description of the
-code today.** Two clients still decide things: `MainWindow.axaml.cs` stamps the role badge from the
+Every sentence of that carries its own qualifier on purpose. An earlier draft stated it in the
+present tense and put the caveat in the paragraph below - and a paragraph below is not where a
+retrieved fragment brings its reader.
+
+**It is NOT true today.** Two clients still decide things: `MainWindow.axaml.cs` stamps the role badge from the
 Director's own `ResolveLocalRole`, and `FifoWindow.axaml.cs` filters on the raw `StatusColor`. Both
 are on `main` right now, both carry a comment saying so, and both are in "Still open" below.
 
@@ -80,7 +84,7 @@ Every one of these was a place the product said something false about a session.
 | A dictation that never finished wedged the dot orange - one stood **90 minutes** about an upload that was not uploading | Orange requires actual progress. The audio is retained and still delivered |
 | A crashed session looked exactly like one that finished cleanly | **Dark red "Crashed"**, distinct from grey "Exited" |
 | A session flagged for deletion got painted grey by the wrong component | The dot tells the truth about the **work**; deletion rides as a **badge** |
-| The desktop and the phone disagreed about the same session | **One fold** behind every screen |
+| The desktop rail and the phone disagreed about the same session | The rail, the phone and the Cockpit now share **one fold**. The FIFO queue window still does not - see "Still open" |
 
 ---
 
