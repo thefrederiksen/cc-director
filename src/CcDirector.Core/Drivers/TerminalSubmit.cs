@@ -357,6 +357,12 @@ public static class TerminalSubmit
         if (hay.Contains(needle, StringComparison.Ordinal))
             return true;
 
+        // The rendered screen has the same disease as the byte stream from the other end: rows are
+        // concatenated without separators and can be snapshotted mid-paint, so a footer hint lands
+        // inside the typed text here too (issue #1592). Same question, same answer.
+        if (IndexOfInterleaved(hay, needle) >= 0)
+            return true;
+
         return visibleTailNeedle is not null && hay.Contains(visibleTailNeedle, StringComparison.Ordinal);
     }
 
@@ -380,8 +386,17 @@ public static class TerminalSubmit
             var (bytes, _) = buffer.GetWrittenSince(cursor);
             var hay = NormalizeForEcho(StripAnsi(Encoding.UTF8.GetString(bytes)));
             var index = hay.LastIndexOf(needle, StringComparison.Ordinal);
+
+            // The contiguous run is the common case. When it misses, the echo may still be sitting in
+            // the composer with a footer repaint spliced through it (issue #1592) - so ask whether our
+            // characters are all present, in order, and densely packed before giving up on them.
+            if (index < 0)
+                index = IndexOfInterleaved(hay, needle);
+
             if (index >= 0)
             {
+                // A leading slash means the TUI read our text as a slash COMMAND, not as data.
+                // Pressing Enter there would execute it, so this is never an echo we accept.
                 if (index > 0 && hay[index - 1] == '/' && !needle.StartsWith('/'))
                 {
                     await Task.Delay(poll);
@@ -538,6 +553,60 @@ public static class TerminalSubmit
             }
         }
         return sb.ToString();
+    }
+
+    /// <summary>
+    /// Shortest needle we will match as an interleaved subsequence. Below this a coincidental
+    /// in-order match is plausible, so short prompts keep the strict contiguous rule.
+    /// </summary>
+    internal const int MinInterleavedNeedleLength = 40;
+
+    /// <summary>
+    /// How far the needle's characters may be spread before we stop believing they are OUR echo.
+    /// A repaint inserts a bounded amount of foreign text (a footer hint is tens of characters), so
+    /// a real interleaved echo stays dense. A coincidental in-order match is scattered across
+    /// thousands of unrelated characters and blows this budget.
+    /// </summary>
+    internal const int MaxInterleavedStretch = 3;
+
+    /// <summary>
+    /// Find <paramref name="needle"/> in <paramref name="hay"/> as an ORDERED, DENSE subsequence,
+    /// returning the start index or -1.
+    ///
+    /// WHY THIS EXISTS (issue #1592). A TUI paints its footer by moving the cursor out of the
+    /// composer, writing the hint, and moving back. <see cref="StripAnsi"/> then discards those
+    /// cursor moves - the only thing that said the hint belongs ELSEWHERE on screen - so the hint is
+    /// spliced into the middle of the typed text: "...and not grea[bypass permissions on shift+tab to
+    /// cycle]t for us...". A contiguous search over that flattened stream can never match, so the
+    /// echo check declared the composer dead and threw away two phone dictations on 2026-07-15.
+    ///
+    /// The insight is that a repaint only ever INSERTS characters. It never removes ours and never
+    /// reorders them. So "all my characters, in order, densely packed" is exactly a repaint-torn echo,
+    /// while genuinely partial text (the tail without the head) and a slash-corrupted echo are still
+    /// missing or misplacing characters and still fail - which is what keeps the safety properties
+    /// this class already had.
+    /// </summary>
+    internal static int IndexOfInterleaved(string hay, string needle)
+    {
+        if (needle.Length < MinInterleavedNeedleLength || hay.Length < needle.Length)
+            return -1;
+
+        var budget = needle.Length * MaxInterleavedStretch;
+        for (var start = 0; start + needle.Length <= hay.Length; start++)
+        {
+            if (hay[start] != needle[0])
+                continue;
+
+            var limit = Math.Min(hay.Length, start + budget);
+            var n = 0;
+            for (var i = start; i < limit && n < needle.Length; i++)
+                if (hay[i] == needle[n])
+                    n++;
+
+            if (n == needle.Length)
+                return start;
+        }
+        return -1;
     }
 
     /// <summary>Letters, digits and '/' only - the comparison alphabet for composer echo checks.</summary>
