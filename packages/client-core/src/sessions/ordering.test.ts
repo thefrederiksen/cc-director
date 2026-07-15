@@ -87,13 +87,15 @@ describe("Gateway-stamped session presentation state", () => {
 
   it("contextLine renders the Gateway's stamped label instead of re-deriving one", () => {
     // The row's words come from the same fold as its dot, so they cannot contradict it.
-    expect(contextLine(session({ effectiveColor: "blue", stateLabel: "Working", onHold: true })))
+    // stateLabel is Gateway-stamped and not in the generated schema, so each literal needs the same
+    // cast the stateLabel tests above use.
+    expect(contextLine(session({ effectiveColor: "blue", stateLabel: "Working", onHold: true } as Partial<SessionDto>)))
       .toBe("Working");
-    expect(contextLine(session({ effectiveColor: "grey", stateLabel: "Snoozed", onHold: true })))
+    expect(contextLine(session({ effectiveColor: "grey", stateLabel: "Snoozed", onHold: true } as Partial<SessionDto>)))
       .toBe("Snoozed");
     // A working session with dictation in flight reads "Working", not "Transcribing...": the local
     // ladder that produced a blue dot beside the word "Snoozed" is gone.
-    expect(contextLine(session({ effectiveColor: "blue", stateLabel: "Working", transcribing: true })))
+    expect(contextLine(session({ effectiveColor: "blue", stateLabel: "Working", transcribing: true } as Partial<SessionDto>)))
       .toBe("Working");
   });
 });
