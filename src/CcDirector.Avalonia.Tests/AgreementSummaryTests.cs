@@ -204,6 +204,63 @@ public sealed class AgreementSummaryTests
     }
 
     /// <summary>
+    /// ONE REASON IS NOT TWO REASONS - the twelfth finding, and the smallest of them all.
+    ///
+    /// The headline hard-coded "for two different reasons" and then listed the causes conditionally. So a
+    /// live run with a single indeterminate row printed: "NOT GRADED on 1 of 16 row(s), for two different
+    /// reasons", followed by exactly one reason. The count was right. The cause list was right. The
+    /// CONNECTIVE between them overstated - there is one reason on that run, drawn from a set of two
+    /// possible reasons, and those are different sentences.
+    ///
+    /// The inspector found it by RUNNING the tool, because no test could reach the sentence: it was a
+    /// Console.WriteLine, like every other prose defect on this pull request. That is why this is now a
+    /// function returning lines instead of a print, and why these tests exist at all.
+    /// </summary>
+    [Fact]
+    public void OneCauseIsNotTwoReasons()
+    {
+        var sum = AgreementCheck.Summarize(
+            new[] { Row("a"), Row("b-ambiguous") },
+            new[] { F("b-ambiguous", "indeterminate") });
+
+        var lines = sum.DesktopNotGradedLines();
+
+        Assert.Equal(2, lines.Count); // the headline plus exactly one cause
+        Assert.Contains("NOT GRADED on 1 of 2", lines[0]);
+        Assert.DoesNotContain("different reasons", lines[0]);
+        Assert.Contains("[indeterminate]", lines[1]);
+        Assert.DoesNotContain(lines, l => l.Contains("[unstamped]"));
+    }
+
+    [Fact]
+    public void TwoCausesEarnThePlural_AndNameThemseparately()
+    {
+        var sum = AgreementCheck.Summarize(
+            new[] { Row("a-no-stamp"), Row("b-ambiguous"), Row("c-fine") },
+            new[] { F("a-no-stamp", "unstamped"), F("b-ambiguous", "indeterminate") });
+
+        var lines = sum.DesktopNotGradedLines();
+
+        Assert.Equal(3, lines.Count); // headline plus BOTH causes
+        Assert.Contains("NOT GRADED on 2 of 3", lines[0]);
+        Assert.Contains("for 2 different reasons", lines[0]);
+        Assert.Contains(lines, l => l.Contains("[unstamped]"));
+        Assert.Contains(lines, l => l.Contains("[indeterminate]"));
+    }
+
+    /// <summary>
+    /// The control that stops "never overstate" being satisfied by never speaking: a check that ran on
+    /// everything says NOTHING about not being graded, because there is nothing to say.
+    /// </summary>
+    [Fact]
+    public void AFullyGradedDesktopCheck_SaysNothingAboutNotBeingGraded()
+    {
+        var sum = AgreementCheck.Summarize(new[] { Row("a"), Row("b") }, Array.Empty<AgreementCheck.Finding>());
+
+        Assert.Empty(sum.DesktopNotGradedLines());
+    }
+
+    /// <summary>
     /// The control: a genuinely clean fleet is the ONLY thing that may print the unqualified word.
     /// Without this, "never say PASS" would be trivially satisfiable by never saying it.
     /// </summary>

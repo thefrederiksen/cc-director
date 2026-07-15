@@ -139,17 +139,8 @@ public static class Program
         // added that every other check ran on them, which was true of one row and false of the other. The
         // check-result table below was right the whole time; this sentence was reading the narrow number
         // under the broad name. Found by the eleventh inspection pass of pull request 1606.
-        var desktop = sum.DesktopAgreed;
-        if (desktop.NotGraded > 0)
-        {
-            Console.WriteLine($"DESKTOP COMPARISON NOT GRADED on {desktop.NotGraded} of {sum.LiveSessions} row(s), for two " +
-                              "different reasons - see the rows above:");
-            if (sum.Unstamped > 0)
-                Console.WriteLine($"  {sum.Unstamped} [unstamped] - no answer arrived, so NOTHING downstream could be checked on them.");
-            if (sum.IndeterminateRows > 0)
-                Console.WriteLine($"  {sum.IndeterminateRows} [indeterminate] - the Gateway overwrote the fact the comparison needs. " +
-                                  "Every OTHER check ran on these and stands, and anything they found IS counted above.");
-        }
+        foreach (var line in sum.DesktopNotGradedLines())
+            Console.WriteLine(line);
         Console.WriteLine("  (It was SIX out of THIRTEEN when the specification was written.)");
         Console.WriteLine();
         // EVERY VERDICT HERE IS READ FROM THE FINDINGS, NEVER ASSERTED OVER THEM.

@@ -134,6 +134,45 @@ public static class AgreementCheck
             DesktopVsGateway, Unstamped + IndeterminateRows, LiveSessions);
 
         public IReadOnlyList<CheckVerdict> AllChecks => new[] { StampPresent, StampIsFold, Law, SamePixels, DesktopAgreed };
+
+        /// <summary>
+        /// The desktop check's not-graded explanation, as the exact lines the report prints - empty when
+        /// it ran on everything.
+        /// </summary>
+        /// <remarks>
+        /// THIS IS A FUNCTION BECAUSE THE PROSE KEPT BEING WRONG, and it kept being wrong because it was
+        /// Console.WriteLine and no test could reach it. Four separate defects on this pull request lived
+        /// in printed sentences: a paragraph claiming every check passed, a line claiming the desktop
+        /// agreed while a row was unread, a verdict dropping its own not-graded half, and a headline that
+        /// said "for two different reasons" while listing one. Each time the numbers underneath were
+        /// right. Each time the fix was to move the claim somewhere a test could hold it.
+        ///
+        /// So the sentence is derived from the causes actually present, never asserted over them: two
+        /// causes get "for 2 different reasons", one cause gets no such clause at all, because on that run
+        /// there is ONE reason drawn from a set of two - and saying otherwise is the same overstatement
+        /// this instrument exists to catch, committed by the instrument, in its own summary, on the
+        /// twelfth pass.
+        /// </remarks>
+        public IReadOnlyList<string> DesktopNotGradedLines()
+        {
+            if (DesktopAgreed.NotGraded == 0) return Array.Empty<string>();
+
+            var causes = new List<string>();
+            if (Unstamped > 0)
+                causes.Add($"{Unstamped} [unstamped] - no answer arrived, so NOTHING downstream could be checked on them.");
+            if (IndeterminateRows > 0)
+                causes.Add($"{IndeterminateRows} [indeterminate] - the Gateway overwrote the fact the comparison needs. " +
+                           "Every OTHER check ran on these and stands, and anything they found IS counted above.");
+
+            // Derived, never assumed. One cause is one reason; only more than one earns the plural.
+            var why = causes.Count > 1 ? $", for {causes.Count} different reasons" : "";
+            var lines = new List<string>
+            {
+                $"DESKTOP COMPARISON NOT GRADED on {DesktopAgreed.NotGraded} of {LiveSessions} row(s){why} - see the rows above:",
+            };
+            lines.AddRange(causes.Select(c => "  " + c));
+            return lines;
+        }
     }
 
     /// <summary>
