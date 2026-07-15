@@ -90,10 +90,26 @@ public static class AgreementCheck
     /// check's verdict - including the rows it never reached, so the prose reporting them cannot claim a
     /// check passed where it did not run.
     /// </summary>
+    /// <param name="IndeterminateRows">
+    /// A CAUSE, not a check's scope - the distinction that produced the eleventh finding on pull request
+    /// 1606. This counts rows the Gateway made unreadable. It is NOT "the rows the desktop check skipped":
+    /// that is <c>DesktopAgreed.NotGraded</c>, which is this PLUS the unstamped rows, because an unstamped
+    /// row stops the desktop comparison too.
+    ///
+    /// The two sat side by side under names close enough to swap, and the explanatory prose duly read the
+    /// narrow one under the broad one's meaning - announcing "the desktop comparison was not graded on 1
+    /// row" on a fleet where it had not been graded on two, and adding that every other check ran on them,
+    /// which was true of one and false of the other.
+    ///
+    /// THE RULE THIS ENCODES, and it is the eleventh instance of the same lesson: PROSE IS RENDERED FROM
+    /// <see cref="AllChecks"/> AND NOTHING ELSE. A cause count is an input to a verdict, never a thing to
+    /// narrate from. If you find yourself printing this number, you are about to describe a check's scope
+    /// using a cause's count, and they are not the same set.
+    /// </param>
     public sealed record Summary(
         int Disagreements,
         int LiveSessions,
-        int DesktopNotGraded,
+        int IndeterminateRows,
         int Unstamped,
         int StampNotFold,
         int LawBroken,
@@ -115,7 +131,7 @@ public static class AgreementCheck
         // Check 4 is stopped by BOTH: an unstamped row (nothing to compare) and an indeterminate one (the
         // Gateway destroyed the fact it needs). The only check with two ways to be ungradeable.
         public CheckVerdict DesktopAgreed => new("the desktop's fold == the Gateway's",
-            DesktopVsGateway, Unstamped + DesktopNotGraded, LiveSessions);
+            DesktopVsGateway, Unstamped + IndeterminateRows, LiveSessions);
 
         public IReadOnlyList<CheckVerdict> AllChecks => new[] { StampPresent, StampIsFold, Law, SamePixels, DesktopAgreed };
     }
@@ -144,11 +160,11 @@ public static class AgreementCheck
     public static Summary Summarize(IReadOnlyList<SessionDto> roster, IReadOnlyList<Finding> findings)
     {
         int Count(string kind) => findings.Count(f => f.Kind == kind);
-        var desktopNotGraded = Count("indeterminate");
+        var indeterminate = Count("indeterminate");
         return new Summary(
-            Disagreements: findings.Count - desktopNotGraded,
+            Disagreements: findings.Count - indeterminate,
             LiveSessions: roster.Count,
-            DesktopNotGraded: desktopNotGraded,
+            IndeterminateRows: indeterminate,
             Unstamped: Count("unstamped"),
             StampNotFold: Count("stamp-not-fold"),
             LawBroken: Count("law-broken"),

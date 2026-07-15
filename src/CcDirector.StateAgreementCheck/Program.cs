@@ -132,9 +132,24 @@ public static class Program
 
         Console.WriteLine(new string('=', 78));
         Console.WriteLine($"AGREEMENT NUMBER: {sum.Disagreements} disagreement(s) over {sum.LiveSessions} live session(s).");
-        if (sum.DesktopNotGraded > 0)
-            Console.WriteLine($"DESKTOP COMPARISON NOT GRADED on {sum.DesktopNotGraded} row(s) - see [indeterminate] above. " +
-                              "Every other check ran on them and stands, and any disagreement they turned up IS counted above.");
+        // THE SCOPE OF A CHECK COMES FROM THE CHECK, NEVER FROM A CAUSE COUNT SITTING NEXT TO IT.
+        // This line used to print Summary.DesktopNotGraded - which counts only INDETERMINATE rows - while
+        // saying "the desktop comparison was not graded on N". An unstamped row stops that comparison too,
+        // so on a fleet with one of each it announced "not graded on 1 row" where the truth was two, and
+        // added that every other check ran on them, which was true of one row and false of the other. The
+        // check-result table below was right the whole time; this sentence was reading the narrow number
+        // under the broad name. Found by the eleventh inspection pass of pull request 1606.
+        var desktop = sum.DesktopAgreed;
+        if (desktop.NotGraded > 0)
+        {
+            Console.WriteLine($"DESKTOP COMPARISON NOT GRADED on {desktop.NotGraded} of {sum.LiveSessions} row(s), for two " +
+                              "different reasons - see the rows above:");
+            if (sum.Unstamped > 0)
+                Console.WriteLine($"  {sum.Unstamped} [unstamped] - no answer arrived, so NOTHING downstream could be checked on them.");
+            if (sum.IndeterminateRows > 0)
+                Console.WriteLine($"  {sum.IndeterminateRows} [indeterminate] - the Gateway overwrote the fact the comparison needs. " +
+                                  "Every OTHER check ran on these and stands, and anything they found IS counted above.");
+        }
         Console.WriteLine("  (It was SIX out of THIRTEEN when the specification was written.)");
         Console.WriteLine();
         // EVERY VERDICT HERE IS READ FROM THE FINDINGS, NEVER ASSERTED OVER THEM.

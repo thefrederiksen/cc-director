@@ -46,7 +46,7 @@ public sealed class AgreementSummaryTests
 
         Assert.Equal(0, sum.Disagreements);
         Assert.Equal(3, sum.LiveSessions);
-        Assert.Equal(0, sum.DesktopNotGraded);
+        Assert.Equal(0, sum.IndeterminateRows);
 
         Assert.All(sum.AllChecks, c => Assert.True(c.PassedEverywhere));
     }
@@ -164,6 +164,46 @@ public sealed class AgreementSummaryTests
     }
 
     /// <summary>
+    /// TWO CAUSES, ONE CHECK - the shape that had no test, which is why the eleventh bug lived.
+    ///
+    /// The desktop comparison is stopped by TWO different things: an unstamped row (no answer arrived, so
+    /// nothing downstream can be checked) and an indeterminate row (the Gateway overwrote the fact it
+    /// needs). IndeterminateRows counts only the second. DesktopAgreed.NotGraded counts both.
+    ///
+    /// They sat side by side under names close enough to swap, and the report duly printed the narrow
+    /// count under the broad meaning: "the desktop comparison was not graded on 1 row" on a fleet where it
+    /// had not been graded on two - and then added that every other check ran on them, which was true of
+    /// the indeterminate row and false of the unstamped one. Two true sentences about different rows,
+    /// welded into one false one.
+    ///
+    /// Every test here covered one cause or the other. None covered a roster carrying both, so nothing
+    /// could ever see the two numbers disagree. Same gap, eleventh instance.
+    /// </summary>
+    [Fact]
+    public void TheDesktopCheckCountsBOTHReasonsItDidNotRun_NotJustTheInterestingOne()
+    {
+        var sum = AgreementCheck.Summarize(
+            new[] { Row("a-no-stamp"), Row("b-ambiguous"), Row("c-fine") },
+            new[] { F("a-no-stamp", "unstamped"), F("b-ambiguous", "indeterminate") });
+
+        // The CAUSE counts are each about their own cause, and neither is the check's scope.
+        Assert.Equal(1, sum.Unstamped);
+        Assert.Equal(1, sum.IndeterminateRows);
+
+        // The CHECK knows it was blocked twice, for two different reasons, and says so.
+        Assert.Equal(2, sum.DesktopAgreed.NotGraded);
+        Assert.Equal(1, sum.DesktopAgreed.Graded);
+        Assert.False(sum.DesktopAgreed.PassedEverywhere);
+        Assert.Contains("NOT GRADED on 2", sum.DesktopAgreed.Line);
+
+        // And the other checks are blocked ONLY by the unstamped row - the indeterminate one does not
+        // touch them. That asymmetry is exactly what the old sentence flattened.
+        Assert.Equal(1, sum.Law.NotGraded);
+        Assert.Equal(1, sum.StampIsFold.NotGraded);
+        Assert.Equal(1, sum.SamePixels.NotGraded);
+    }
+
+    /// <summary>
     /// The control: a genuinely clean fleet is the ONLY thing that may print the unqualified word.
     /// Without this, "never say PASS" would be trivially satisfiable by never saying it.
     /// </summary>
@@ -192,7 +232,7 @@ public sealed class AgreementSummaryTests
             new[] { Row("phone-dictation") },
             new[] { F("phone-dictation", "desktop-vs-gateway") });
 
-        Assert.Equal(0, sum.DesktopNotGraded);
+        Assert.Equal(0, sum.IndeterminateRows);
         Assert.False(sum.DesktopAgreed.Passed);
         Assert.Equal(1, sum.Disagreements);
     }
@@ -220,7 +260,7 @@ public sealed class AgreementSummaryTests
         // fleet that plainly had one session in it.
         Assert.Equal(1, sum.LiveSessions);
         // And the ONE check that could not run is reported separately, as itself.
-        Assert.Equal(1, sum.DesktopNotGraded);
+        Assert.Equal(1, sum.IndeterminateRows);
     }
 
     /// <summary>
@@ -237,7 +277,7 @@ public sealed class AgreementSummaryTests
 
         Assert.Equal(0, sum.Disagreements);
         Assert.Equal(2, sum.LiveSessions);
-        Assert.Equal(1, sum.DesktopNotGraded);
+        Assert.Equal(1, sum.IndeterminateRows);
     }
 
     /// <summary>
@@ -253,6 +293,6 @@ public sealed class AgreementSummaryTests
 
         Assert.Equal(3, sum.Disagreements);
         Assert.Equal(2, sum.LiveSessions);
-        Assert.Equal(0, sum.DesktopNotGraded);
+        Assert.Equal(0, sum.IndeterminateRows);
     }
 }
