@@ -416,6 +416,26 @@ One wrinkle to handle rather than inherit: `Load` quarantines its own file on a 
 import must not - it fails loudly and leaves the document untouched until parity passes. The legacy
 reader needs its quarantine path replaced, not copied.
 
+**The Architect's explicit authority for the one number the import deliberately does not preserve.**
+The Manager declined to assume this and was right to ask, so it is stated here rather than left to
+inference: **for the owner's current store, `baseline_agent` imports as ZERO**, and the agent tally
+the Agents page shows after cutover is rebuilt by the ordinary first-fold back-fill from the
+imported `session_highwater` - not carried across by the import. This is the only place in the
+mission where a number that exists on disk is deliberately not preserved, and it is correct
+precisely *because* it is what the running Gateway already does with that same file today: `Load`
+clears the tally, and the next fold rebuilds it. Preserving the on-disk tally would make the port
+disagree with the product it is replacing. **Sanctioned by the Architect, on the record.**
+
+Two consequences that follow, and both matter:
+
+- **The window where the Agents page reads zero already exists today**, between `Load` and the first
+  fold. The port reproduces it rather than introducing it. If it is ever reported as a regression,
+  the answer is to compare against the current build's behaviour, not against the document.
+- **This rule and the `HighWater` finding are interlocked.** The back-fill rebuilds the tally *from
+  the imported high-water*, so if the high-water import were ever dropped or damaged, the agent
+  tally would rebuild from nothing and read zero permanently. Two of this mission's largest findings
+  depend on each other, and criterion 6 legs (b) and (d) are what hold them together.
+
 **Import EVERY section of `StoreFile`. Do not trust any count - including one written in this
 document.**
 
@@ -562,10 +582,21 @@ reviewer before it is committed. Per the owner's instruction for this mission, p
     `StoreFile` section, and the field comment states "MUST be persisted: without it a Gateway
     restart would back-fill every live session a second time and double the agent numbers". #1647
     already decided this correctly; there is nothing here to choose, only something to preserve.
-    It needs a schema home in which **null and empty remain distinguishable**, because they mean
-    different things: absent means "discard the stored tally and rebuild", empty means "nothing has
-    been seeded yet". A bare distinct-id table cannot express that difference and would silently
-    collapse the two.
+    Revision 15 required it to have a schema home in which **null and empty remain
+    distinguishable**. **That requirement is withdrawn - the Manager showed the lift dissolves it.**
+    The null-versus-empty distinction is resolved *inside* `Load`: null gives `_agents.Clear()` plus
+    an empty seeded set, present gives the tally kept plus the set populated. Since the import
+    consumes `Load`'s **resolved in-memory state** and never the raw key, nothing downstream can
+    observe which it was, and `Save` writes the list unconditionally (`:736`), so null is a one-time
+    upgrade path that ends at the first save. The one case that would break the argument - an empty
+    seeded list alongside a non-empty tally, which `Load` would *keep* rather than clear - is
+    unreachable, because every folded session is added to the seeded set in the same pass that
+    populates the tally. So `agents_seeded` is a plain membership table and the schema never encodes
+    absent-versus-empty.
+
+    Worth naming the shape: the requirement did not need to be met, it needed to **stop existing** -
+    the same move as the surrogate id, arrived at by the Manager applying the principle back at the
+    Architect who wrote it. A requirement that dissolves is better than one that is satisfied.
 
   **Do not "fix" anything #1647 does, including anything that looks wrong.** Same rule as the path
   separators. A port that reverts a shipped bug fix is the worst outcome available to this mission -
@@ -720,6 +751,15 @@ code that has never been asked a question.
 
    (c) The import refuses to complete on an induced mismatch, leaving the JSON as the source of
    truth.
+
+   (d) **The pre-back-fill store rebuilds correctly.** Given a fixture shaped like the owner's real
+   store - an `Agents` tally present, `AgentsSeeded` absent - the import writes `baseline_agent` as
+   zero, and the first fold then rebuilds the tally to **exactly** what the current build's
+   `GatewayInputStatsAggregator` reports for the same fixture. Compare against the product's
+   behaviour, never against the document's bytes (Decision 5). This leg is what proves the one
+   number the import deliberately does not preserve is nevertheless correct, and it must be red-
+   watched by damaging the imported `session_highwater` and confirming the symptom is the agent
+   tally rebuilding to zero - which is also what pins the interlock between this rule and leg (b).
 
    Legs (b) and (c) must be proven by watching them go red - revert the fix, see the reported
    symptom, restore it - not asserted. A test that has never failed on purpose is not evidence.
