@@ -373,10 +373,48 @@ criterion 7 pins that too.
 **Decision 5 - The import is a baseline, not a reconstruction, and it is fail-loud.** This decision
 is rewritten from revision 1, per the section "What the historical data cannot tell us".
 
-On first run against an existing JSON store, each historical projection is imported **as it stands**
-into its own baseline table. No historical `stat_delta` rows are synthesized, ever. Every reported
-number is then baseline plus post-cutover rows, which is exact by construction and matches the
-existing `_agentsSinceUtc` precedent for a dimension that starts partway through.
+On first run against an existing JSON store, each historical projection is imported **as the store
+REPORTS it** into its own baseline table. No historical `stat_delta` rows are synthesized, ever.
+Every reported number is then baseline plus post-cutover rows, which is exact by construction and
+matches the existing `_agentsSinceUtc` precedent for a dimension that starts partway through.
+
+**"As the store reports it", NOT "as the bytes say" - and the difference is not academic, it is live
+on the owner's machine right now.** Revisions 1 through 14 said "as it stands", which reads as *the
+document's contents*. The Manager found that reading would corrupt this mission's central proof.
+
+The owner's real store contains an `Agents` section with real numbers. It does **not** contain
+`AgentsSeeded` - it has twelve sections' worth of schema and eight sections on disk, because it
+predates #1647. And `Load` treats a null `AgentsSeeded` as a signal that the stored agent tally is
+untrustworthy: it logs "discarding N partially-attributed agent tally/tallies and rebuilding from
+the high-water", calls `_agents.Clear()`, and lets the ordinary back-fill rebuild the tally from the
+persisted high-water on the next fold. **So the running Gateway already reports different agent
+numbers than the document contains.** The document is not the truth. It is an input to the truth.
+
+An import that copied the `Agents` section verbatim would therefore have faithfully preserved a
+tally the product had already decided was wrong and thrown away. Parity against a running Gateway
+would then have **failed** - and the tempting repair, comparing against the stored section instead
+of against what the Gateway reports, would have locked the rejected tally in permanently and called
+it success.
+
+So the rule: **the import must reproduce what the product does with the document, not what the
+document literally says.** Where `Load` discards, the import discards. Concretely, when
+`AgentsSeeded` is null the import writes `baseline_agent` as **zero** and lets the ordinary first
+fold rebuild it from the imported `session_highwater`, exactly as `Load` does today.
+
+**And do not re-implement that rule - inherit it.** Re-stating `Load`'s semantics inside a new
+importer means two implementations of "what does this document mean", which can drift, and the
+reflection test in criterion 6a cannot catch a drift because it checks that every *section* is
+handled, not that each is handled *correctly*. Instead lift the existing `Load` verbatim into a
+dedicated legacy reader used only by the import, and have the import consume its resulting in-memory
+state rather than parsing the document itself. Then "as the store reports it" holds by construction,
+and any quirk `Load` already has - including ones nobody has noticed - is inherited rather than
+mirrored. This is the surrogate-id move again, applied to semantics instead of to a column, and it
+earns its keep by the same test: a drifting importer fails **silently**, and the cost is the owner's
+data.
+
+One wrinkle to handle rather than inherit: `Load` quarantines its own file on a parse failure. The
+import must not - it fails loudly and leaves the document untouched until parity passes. The legacy
+reader needs its quarantine path replaced, not copied.
 
 **Import EVERY section of `StoreFile`. Do not trust any count - including one written in this
 document.**
@@ -507,16 +545,27 @@ reviewer before it is committed. Per the owner's instruction for this mission, p
   turns were locked out, restored sessions lied about their agent, and agent-to-agent turns were
   never counted. Three consequences the port must handle, none of which the original design covers:
 
-  - `AgentDrivenHighWater` is a **second high-water lane**. `session_highwater` needs a
-    discriminator or a second table. It is not the same lane as the human buckets and must not be
-    merged into one.
-  - `FoldAgentDrivenLocked` folds **before** the empty-buckets guard, because a session driven only
-    by other agents has no human buckets at all. Under the row design as written such a session
-    produces **no `stat_delta` row**, so its turns would vanish. The fold must emit rows for the
-    agent-driven lane too, or this design silently drops exactly what #1647 just fixed.
-  - `_agentsSeeded` is an in-memory back-fill attributing a session's prior high-water turns to its
-    agent. It is **not** in `StoreFile`, so whether the port persists it changes behaviour across a
-    restart. Answer that with evidence, not taste.
+  - **The agent-driven lane gets its OWN high-water and delta tables.** Not a discriminator column
+    on the shared ones. Two reasons, and the Manager established both against the code.
+    `AgentDrivenHighWater` is keyed by **session id alone**, while `session_highwater` is keyed by
+    session *and* bucket, so they cannot share a table without one of them lying about its own key.
+    And `:102` states these turns must **never** enter `_totals` or `_hourly` - which, on a shared
+    table, becomes a rule that every human-facing query must remember forever. That is the
+    archive-marker problem again, and forgetting it fails **silently** with the owner's numbers as
+    the cost, so by this brief's own calibration it earns structure rather than a convention.
+    Separate tables make the mistake unreachable.
+  - This also resolves the `FoldAgentDrivenLocked` ordering problem for free. It folds **before** the
+    empty-buckets guard because a session driven only by other agents has no human buckets at all;
+    with its own delta table, its rows no longer depend on a human bucket existing, so nothing
+    vanishes.
+  - **`AgentsSeeded` is persisted, and revision 14 was wrong to say otherwise.** It is the twelfth
+    `StoreFile` section, and the field comment states "MUST be persisted: without it a Gateway
+    restart would back-fill every live session a second time and double the agent numbers". #1647
+    already decided this correctly; there is nothing here to choose, only something to preserve.
+    It needs a schema home in which **null and empty remain distinguishable**, because they mean
+    different things: absent means "discard the stored tally and rebuild", empty means "nothing has
+    been seeded yet". A bare distinct-id table cannot express that difference and would silently
+    collapse the two.
 
   **Do not "fix" anything #1647 does, including anything that looks wrong.** Same rule as the path
   separators. A port that reverts a shipped bug fix is the worst outcome available to this mission -
@@ -579,6 +628,12 @@ code that has never been asked a question.
    data on this machine. Captured before, captured after, compared field by field
    (`Stats/StatsPageEndpoint.cs:40-71` maps this response from the aggregator outputs). This is the
    primary proof and it is not negotiable.
+
+   **The BEFORE capture must come from the current post-#1647 build.** Not from the snapshot taken
+   earlier in this mission. That snapshot's agent numbers are the pre-#1647 ones the current code
+   would *discard on load* (see Decision 5), so comparing an old-build BEFORE against a new-build
+   AFTER would compare two different products and prove nothing about the port. The snapshot remains
+   valid as the verified backup; it is not a criterion 1 baseline.
 
    **Run it with the Gateway STOPPED, against a frozen copy of the store.** The live store is a
    moving target: the Manager observed it go from 1401 to 1404 turns while reading it twice, partly
