@@ -492,15 +492,23 @@ public sealed class WingmanVoiceService
         if (string.IsNullOrWhiteSpace(key))
             return new TtsResult(null, null, HostedAiState.NeedsKey);
 
-        var input = text.Length > 4000 ? text[..4000] : text;
+        // The runaway guard, and it announces itself when it fires (issue #1612). This used to be a
+        // bare `text[..4000]`: a silent mid-word cut enforcing OpenAI's 4096 limit on a provider that
+        // has none, months after we stopped calling OpenAI. The real length control is now the
+        // wingman's own instructions (a ~30-second spoken budget) - a summary is short because we
+        // asked for a summary, not because we cut an essay in half.
+        var input = NarrationText.LimitForSpeech(text, out var wasCut);
+        if (wasCut)
+            FileLog.Write($"[WingmanVoiceService] narration EXCEEDED {NarrationText.MaxChars} chars " +
+                          $"({text.Length}) - spoken text cut and the listener told. The wingman is not summarising.");
         var voice = TtsVoiceConfig.Resolve(mode);
         var model = TtsModelConfig.Resolve(mode);
         var url = tts.BaseUrl.TrimEnd('/') + "/audio/speech";
         // The injected client (tests) or the shared static - never a per-call one. Auth goes on the
         // REQUEST, not the client's default headers, so one shared client is safe under concurrent
-        // turn-ends. The effective timeout is the short per-attempt cap inside TtsSynthesis, which also
-        // retries once when a stalled upstream worker never answers - so a flaky voice backend no longer
-        // freezes the turn.
+        // turn-ends. The effective timeout is the per-attempt deadline inside TtsSynthesis - derived
+        // from the text length, since synthesis scales linearly with it - which also retries once when
+        // a stalled upstream worker never answers, so a flaky voice backend no longer freezes the turn.
         //
         // This was `_ttsHttp ?? new HttpClient()`: in production _ttsHttp is null, so EVERY turn-end
         // built and dropped a client, leaving a socket in TIME_WAIT and forfeiting the warm TLS
@@ -509,7 +517,7 @@ public sealed class WingmanVoiceService
         var http = _ttsHttp ?? SharedTtsHttp;
         try
         {
-            using var resp = await TtsSynthesis.PostAsync(http, url, key, new { model, voice, input, response_format = "mp3" }, ct);
+            using var resp = await TtsSynthesis.PostAsync(http, url, key, new { model, voice, input, response_format = "mp3" }, input.Length, ct);
             if (!resp.IsSuccessStatusCode)
             {
                 var body = await resp.Content.ReadAsStringAsync(ct);

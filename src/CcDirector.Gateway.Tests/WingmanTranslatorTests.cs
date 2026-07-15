@@ -157,6 +157,11 @@ public sealed class WingmanTranslatorTests
         // framing, not the old word, so a drift back to "keep everything" fails here.
         Assert.Contains("Brevity is the GOAL", prompt);
         Assert.Contains("CONSTRAINT", prompt);
+        // v5.1: the framing needs a NUMBER next to it. v5 said "there is no length limit" - true of
+        // the provider, irrelevant to the listener - and measured ~1m42 on a long reply against ~48s
+        // once the budget was stated. If this assertion ever goes, the essays come back.
+        Assert.Contains("THIRTY SECONDS", prompt);
+        Assert.DoesNotContain("There is no length limit", prompt);
         Assert.Contains("what did you change?", prompt); // the person's message is present
     }
 

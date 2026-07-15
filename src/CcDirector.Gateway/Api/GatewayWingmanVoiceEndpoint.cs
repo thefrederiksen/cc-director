@@ -50,11 +50,11 @@ internal static class GatewayWingmanVoiceEndpoint
 
     private static readonly TimeSpan PollInterval = TimeSpan.FromMilliseconds(750);
 
-    /// <summary>Per-call input cap: hosted speech endpoints accept bounded input and
-    /// spoken summaries are short. The model + voice are no longer hardcoded here - they are resolved
-    /// through the hosted routing target (<see cref="TranscriptionEndpointResolver.ResolveTts"/>) and per user
-    /// (<see cref="TtsVoiceConfig"/>).</summary>
-    private const int TtsMaxChars = 4000;
+    // The old per-call TtsMaxChars = 4000 is gone (issue #1612). Its comment claimed "hosted speech
+    // endpoints accept bounded input and spoken summaries are short" - both halves are now disproved:
+    // the provider accepts 12,000+ characters (measured), our own metered API has no cap at all, and
+    // the wingman was writing four-minute essays that the cap was quietly hiding. The runaway guard
+    // now lives in Wingman.NarrationText, which tells the listener when it fires.
 
     /// <summary>
     /// The one HTTP client for the speech leg (issue: hosted-AI client behaviour).
@@ -304,16 +304,24 @@ internal static class GatewayWingmanVoiceEndpoint
                 return Results.Json(new { error = "no DevThrottle account key configured in the gateway vault - sign in to DevThrottle" },
                     statusCode: StatusCodes.Status503ServiceUnavailable);
 
-            var input = req.Text.Length > TtsMaxChars ? req.Text[..TtsMaxChars] : req.Text;
+            // Read-aloud of caller-supplied text. It is metered and the caller pays, so there is no
+            // product limit here - only the runaway guard, which announces itself when it fires
+            // (issue #1612). This used to cut at 4000 characters, silently and mid-word, to satisfy
+            // OpenAI's limit long after we stopped calling OpenAI.
+            var input = Wingman.NarrationText.LimitForSpeech(req.Text, out var wasCut);
+            if (wasCut)
+                FileLog.Write($"[GatewayWingmanVoice] tts text EXCEEDED {Wingman.NarrationText.MaxChars} chars " +
+                              $"({req.Text.Length}) - spoken text cut and the listener told");
             var voice = string.IsNullOrWhiteSpace(req.Voice) ? TtsVoiceConfig.Resolve(mode) : req.Voice.Trim();
             var model = string.IsNullOrWhiteSpace(req.Model) ? TtsModelConfig.Resolve(mode) : req.Model.Trim();
             var url = tts.BaseUrl.TrimEnd('/') + "/audio/speech";
             try
             {
-                // Short per-attempt timeout + one retry (TtsSynthesis) so a stalled upstream voice
-                // worker fails fast and retries instead of freezing the caller for a flat 60 seconds.
+                // Per-attempt deadline derived from the text length + one retry (TtsSynthesis), so a
+                // stalled upstream voice worker fails fast and retries instead of freezing the caller,
+                // while a legitimately long read still gets the time it actually needs.
                 // The client is the shared static (see SharedTtsHttp) - never a per-call one.
-                using var resp = await TtsSynthesis.PostAsync(ttsHttp, url, key, new { model, voice, input, response_format = "mp3" }, ct);
+                using var resp = await TtsSynthesis.PostAsync(ttsHttp, url, key, new { model, voice, input, response_format = "mp3" }, input.Length, ct);
                 if (!resp.IsSuccessStatusCode)
                 {
                     var status = (int)resp.StatusCode;

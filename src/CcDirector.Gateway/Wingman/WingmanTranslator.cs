@@ -42,8 +42,27 @@ public sealed class WingmanTranslator
     /// Nobody listens to a four-minute summary of one turn. That was the prompt WORKING, not
     /// failing - so the framing is what changed, not another rule bolted on.
     ///
-    /// There is NO length cap - the cap was OpenAI's 4096 and we do not call them (issue
-    /// #1612). Length is a cost to justify, not a budget to spend.
+    /// There is NO length CAP - that cap was OpenAI's 4096 and we do not call them (issue #1612).
+    /// But a cap and a TARGET are different things, and v5.1 exists because conflating them cost most
+    /// of the fix. v5 told the model "there is no length limit": true of the provider, and irrelevant
+    /// to the listener, whose patience is the actual constraint. The reframing was right and did real
+    /// work - what it lacked was a NUMBER. "Prefer three sentences to six" sitting next to "there is
+    /// no length limit" produced twelve. Models discount a principle and obey a budget.
+    ///
+    /// Measured against a real model, 3 runs per prompt (only same-batch numbers are compared - run
+    /// to run variance is real):
+    ///   A LONG, dense reply (3,652 chars) - the case that actually hurts:
+    ///     v4 ("fidelity over brevity")   -> 2,892 chars, ~2m42 spoken
+    ///     v5 (reframed, no number)       -> 1,810 chars, ~1m42 spoken
+    ///     v5.1 (v5 + the ~30s budget)    ->   854 chars, ~48s spoken   (2.1x better than v5)
+    ///   A TYPICAL reply (479 chars):
+    ///     v5 -> ~30s spoken;  v5.1 -> ~29s spoken   (no difference - both already fine)
+    ///
+    /// So the budget binds exactly where the defect lives: the long, complex turns, which are the
+    /// ones whose ending matters most and the ones the old 4000-char cut used to eat. v5.1 is not on
+    /// the ~30s target for the hardest replies (~48s) - it halves the worst case without making the
+    /// typical case vaguer, which is the trade we want. Tune further only with measurements; a prompt
+    /// change whose effect is asserted rather than measured is how this rule rotted in the first place.
     /// </summary>
     internal const string FidelityPrompt = """
         You are the wingman: you turn a coding agent's written reply into words a person
@@ -51,8 +70,11 @@ public sealed class WingmanTranslator
         Say the LEAST you can while leaving the listener knowing everything that would change
         what they think or do next. Brevity is the GOAL; keeping the answer true is the
         CONSTRAINT. They are LISTENING, not reading, so say it the way a person would explain
-        it out loud, and lead with the point. There is no length limit - but every extra
-        sentence is a cost you must justify, not a budget you may spend. Rules:
+        it out loud, and lead with the point. AIM FOR ABOUT THIRTY SECONDS OUT LOUD: two to
+        four sentences, roughly 500 characters. That is how long a person will actually listen
+        to a summary of one turn - it is not a technical limit, and going past it is the most
+        common way to fail this job. A short reply needs less; never stretch one to fill it.
+        Every extra sentence is a cost you must justify, not a budget you may spend. Rules:
         - BE SHORT. Lead with the single most important thing first - the answer, the result,
           or the ask - in your opening sentence, then add only what is needed to understand
           it, and STOP. If removing a sentence would not change what the listener knows or
@@ -131,7 +153,7 @@ public sealed class WingmanTranslator
     /// instructions is shown that the recommended default changed and can switch to it. The content
     /// hash is the real identity; this is the human-facing label.
     /// </summary>
-    public const string DefaultInstructionsVersion = "5";
+    public const string DefaultInstructionsVersion = "6";
 
     private readonly Func<WingmanModelRole, CancellationToken, Task<IAgentBrain>> _brainProvider;
     private readonly Action<string> _log;
