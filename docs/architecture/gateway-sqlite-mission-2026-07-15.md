@@ -465,6 +465,22 @@ until the quality-assurance report.
   (`Stats/StatsPageEndpoint.cs:74-79`) rather than a cockpit route. Deliberate. Not touched here.
 - An agent-facing `cc-devthrottle throttle` verb was owed by the earlier Stats mission and never
   built. Unrelated to storage. Not picked up here.
+- **The model dimension - the likely first new question, and deliberately NOT built here.** Pull
+  request #1637 landed drivers reporting the model each agent is currently using, and collecting
+  that into statistics is a known open follow-up. That makes "which model do you actually drive?"
+  the most likely next question asked of this schema, and it is tempting to add a `model` column to
+  `stat_delta` now to get ahead of it. **Do not.** Checked against `origin/main` on 2026-07-15:
+  `src/CcDirector.Gateway.Contracts/SessionDto.cs` carries no model field, so nothing the Gateway
+  folds would populate that column. It would be a column nothing emits, and the test proving it
+  would have to inject a value the product never produces - the exact shape of bug this repository
+  keeps finding. The model dimension needs its producer first: a field on `SessionDto`, fed from the
+  driver report, and only then a column and a migration.
+
+  This is worth stating because it is a fair test of the mission's honesty. The mission does not
+  claim that question becomes free - Decision 2 says plainly that a genuinely new dimension still
+  costs a schema change. What the mission delivers is that the change is a `PRAGMA user_version`
+  migration that keeps the owner's numbers, instead of a shape change that quarantines the file and
+  loses them. That is the whole point, and the model dimension will be its first real exercise.
 - The silent default-filling failure mode described in point 2 of "The why" affects every remaining
   hand-rolled JSON store in the Gateway, not only the ones this mission ports. The stores this
   mission moves are protected by `PRAGMA user_version`; the others are not. Worth an owner decision
