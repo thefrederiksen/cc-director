@@ -11,6 +11,7 @@ import {
 } from "@devthrottle/client-core/fleet/fleetClient";
 import { useSharedRoster } from "@devthrottle/client-core/fleet/rosterStore";
 import { repoBasename, relativeTime } from "./format";
+import { agentBadgeText } from "./fleetMapFormat";
 import { MissionsBoard, missionCounts } from "../missions/MissionsBoard";
 
 // Per-Director reachability for the Online / Wobbly / Offline node rendering (issue #1215), provided at
@@ -502,6 +503,11 @@ function NodeCard({ session: s, pivot, onOpen }: { session: SessionDto; pivot: P
 
   // The card tags carry the two hierarchy coordinates NOT already implied by the lane the card sits in.
   const tags = cardTags(s, pivot);
+  // Issue #1625: the agent rides the meta row WITH the tags, never the title row. On the title row it was
+  // rigid (flex: 0 0 auto) against a title that was the only flexible thing there, so the title was the
+  // only thing that could shrink and it was ellipsized to a few characters on every card. Null on the
+  // agent pivot, where the lane header already states the agent and a per-card badge only repeats it.
+  const agentBadge = agentBadgeText(s, pivot);
 
   return (
     <article
@@ -527,11 +533,11 @@ function NodeCard({ session: s, pivot, onOpen }: { session: SessionDto; pivot: P
         <span className={unnamed ? "fmap-card-name unnamed" : "fmap-card-name"}>
           {unnamed ? "(unnamed)" : s.name}
         </span>
-        <span className="fmap-agent">{(s.agent ?? "").trim().length === 0 ? "?" : s.agent}</span>
       </div>
 
-      {tags.length > 0 && (
+      {(agentBadge !== null || tags.length > 0) && (
         <div className="fmap-card-tags">
+          {agentBadge !== null && <span className="fmap-agent">{agentBadge}</span>}
           {tags.map((t) => (
             <span key={t.k} className="fmap-card-tag">
               <span className="fmap-card-tag-k">{t.k}</span>
@@ -685,6 +691,8 @@ function splitTeams(sessions: SessionDto[]): { teams: Team[]; loose: SessionDto[
 function roleRank(s: SessionDto): number {
   return (s.groupRole ?? "").toLowerCase() === "lead" ? 0 : 1;
 }
+
+// The agent badge text lives in fleetMapFormat.ts (pure, unit tested) - see the import at the top.
 
 // The two hierarchy coordinates to show on a card that the lane header does NOT already state.
 function cardTags(s: SessionDto, pivot: Pivot): Array<{ k: string; v: string }> {
