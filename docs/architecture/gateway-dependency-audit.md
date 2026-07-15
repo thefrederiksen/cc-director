@@ -3,7 +3,36 @@
 **Status:** AUDIT ONLY. Nothing here is built, fixed, or changed. This is a findings document.
 **Written:** 15 July 2026, by the Gateway Audit Manager.
 **Brief:** [`gateway-dependency-audit-brief.md`](gateway-dependency-audit-brief.md). **Model:** [`gap-4-desktop-asks-recommendation.md`](gap-4-desktop-asks-recommendation.md).
-**Everything below was read from `origin/main`** in a worktree verified as zero commits behind it.
+**Citations verified against `origin/main` at commit `81a06f2e`**, one file at a time, by opening
+each. See [The citation audit](#the-citation-audit) - four were wrong and are corrected.
+
+---
+
+## Rule Zero caught me: origin/main moved while I read
+
+**I verified this worktree was current once, at the start, and then read against it for hours while
+`origin/main` moved three commits underneath me.** The repository's Rule Zero says a checkout behind
+`origin/main` is a lie; the freshness banner only fires at session start, and I treated a
+start-of-session check as a standing fact.
+
+Three commits landed mid-audit (`e84d3c3c`, `5cd05ff0`, `81a06f2e`) and **touched three of the files
+this document cites**: `MainWindow.axaml.cs`, `ControlEndpoints.cs`, `GatewayClient.cs`. It surfaced
+because the Architect said the Learn handler was at line 2540 and I had written 2543. Neither of us
+was right - it is **2546** on current `origin/main`. We were arguing from two different stale trees.
+
+**What it cost, exactly - I checked rather than assumed:**
+
+- **The findings survive unchanged.** All three commits are `SendSource.Internal` -> `SendSource.Agent`
+  attribution work. `GatewayConfig.IsEnabled` is byte-identical at `:121`. All four `IsEnabled` gates
+  are byte-identical at `:324`, `:459`, `:954`, `:998`. `ControlEndpoints.cs` had **no line shift**
+  (every hunk was an equal-size replacement), so every citation into it is still exact.
+- **`MainWindow.axaml.cs` gained three lines** at line 1426, so my three citations into it were all
+  three low. Corrected.
+
+**The uncomfortable part:** the findings survived by luck, not method. Had those commits touched
+`/fleet/sessions`, I would have written a confident audit of code that no longer existed - and the
+green tick on my own experiment would not have caught it, because the harness compiles against the
+same stale tree.
 
 ---
 
@@ -17,9 +46,16 @@ these two tags, and nothing carries a tag it has not earned:
   [The experiment](#the-experiment-observed) below.
 - **[CODE-READ]** - traced call-by-call through cited code, **not run**. Believable, not proven.
 
-**[OBSERVED]:** the fleet directory returning 502 instead of the local list, and the entire
-cc-devthrottle command-line tool failing on a disconnected laptop - including messaging a local
-session. That was staged with a real Director and the real installed tool, against a control.
+**[OBSERVED]:** the fleet directory returning 502 instead of the local list, and `session list`,
+`message send <a live local session>`, `message send all`, and `message ask <a live local session>`
+all failing - staged with a real Director holding **a genuinely live local session**, driven with
+the real installed tool, against a control that succeeded at every one.
+
+*An earlier draft claimed [OBSERVED] for "messaging a LOCAL session" and for `message send all` when
+the transcript behind it showed neither: it was a Director with no sessions and a made-up target. The
+tag was spent past the evidence, in the document that names that defect. Both have since been run
+properly - see [The experiment](#the-experiment-observed) - and the tag is now earned rather than
+withdrawn.*
 
 **[CODE-READ]:** everything about voice, snooze, the buttons, the account, timings, and how any of
 it *feels*. **I have never run this product offline on a real laptop.** Where I write "you open the
@@ -47,7 +83,7 @@ is routed through the Gateway and refuses to answer without it. **I staged this 
 
 **[OBSERVED]** And it is worse than one route. `cc-devthrottle message send all` - the command the
 Director's own briefing tells every agent to use to reach its team - dies the same way through
-**completely different code** that never touches that lookup. Two independent paths, one defect.
+**completely different code** that never touches that lookup. THREE independent paths, one defect.
 
 **The distinction that runs through this entire document:** "no Gateway configured" and "Gateway
 configured but unreachable" are different states. Your laptop is the second one. Nearly everything
@@ -70,14 +106,16 @@ defects live, and it is the only one you are ever actually in.
 | Session numbers | **Yes** (falls back) [CODE-READ] | neither | `SessionManager.cs:180-206` - offline number on any failure |
 | Staying signed in | **Yes** [CODE-READ] | neither | `DevThrottleAccountService.IsLoggedIn()` - no network call |
 | Explain / Wingman brief | **Yes** (local explain) [CODE-READ] | neither | `GatewayClient.cs:154-158` - catches, returns null |
-| Cockpit button | No, says so clearly [CODE-READ] | both (correctly) | `MainWindow.axaml.cs:2476-2510` - modal naming the URL |
-| Learn button | No, says so clearly [CODE-READ] | both (correctly) | `MainWindow.axaml.cs:2543-2578` - same pattern as Cockpit |
-| **Snooze** | **No - by design, says so** [CODE-READ] | both (correctly) | `MainWindow.axaml.cs:2189` - requires `Connected` |
+| Cockpit button | No, says so clearly [CODE-READ] | both (correctly) | `MainWindow.axaml.cs:2479-2513` - modal naming the URL |
+| Learn button | No, says so clearly [CODE-READ] | both (correctly) | `MainWindow.axaml.cs:2546-2581` - same pattern as Cockpit |
+| **Snooze** | **No - by design, says so** [CODE-READ] | both (correctly) | `MainWindow.axaml.cs:2192` - requires `Connected` |
 | **Voice / transcription** | **No - by law** [CODE-READ] | both, *differently* | `GatewayTranscriptionClient.cs:40` vs `:55` |
 | Schedules, missions, owner email (command-line) | **No - Gateway-hosted** [CODE-READ] | both (by nature) | direct Gateway clients; handled `GatewayError` |
 | **Fleet list (`session list`)** | **No** **[OBSERVED]** | **unreachable only** | `ControlEndpoints.cs:321-344` |
 | **Messaging a LOCAL session** | **No** **[OBSERVED]** | **unreachable only** | `session_ops.py:96-97` via the above |
 | **`message send all` (your team)** | **No** **[OBSERVED]** | **unreachable only** | `ControlEndpoints.cs:954-965` - a *separate* route |
+| **`message ask` a LOCAL session** | **No** **[OBSERVED]** | **unreachable only** | `ControlEndpoints.cs:459` - a *third* route |
+| `rename`, `hold`, `interrupt`, `buffer`, `role`, `done` | endpoint is **fine**; the command-line tool still fails [CODE-READ] | **unreachable only** | endpoints local-first (`:695-702`); `session_ops.py:96-97` resolves first |
 
 ---
 
@@ -109,27 +147,82 @@ information it will ever have. It still refuses to answer.
  target machine actively refused it. (127.0.0.1:47113)"}
 ```
 
-### Leg 2 - the real command-line tool, same machine, same commands
+### Leg 2 - the real command-line tool, against a LIVE LOCAL SESSION
+
+The Director in this leg held **a real live local session** (`live_sessions=1`, a genuine ConPty
+session on the same box - the "neighbour" an agent would message). Same tool, same commands, same
+neighbour; the only variable is whether `gateway.url` is set.
 
 | Command | **Control** (no Gateway) | **Treatment** (configured, dead) |
 |---|---|---|
-| `session list` | `No sessions are running in the fleet.` | `Error: Cannot reach the Gateway: ...actively refused it.` |
-| `message send abc123 "hello"` | **`No session matches 'abc123'.`** | `Error: Cannot reach the Gateway: ...actively refused it.` |
+| `session list` | **the neighbour is listed** (number 985, `WaitingForInput`) | `Cannot reach the Gateway: ...actively refused it.` |
+| `message send <live local id>` | **delivered - the text reached the session** | `Cannot reach the Gateway: ...actively refused it.` |
+| `message send all` (sender = the live session) | `Delivered to your team (0 session(s)). No other sessions on your team.` | `Cannot reach the Gateway: ...actively refused it.` |
+| `message ask <live local id>` | *(not run in control)* | `Cannot reach the Gateway: ...actively refused it.` |
 
-**That control row is the whole proof.** In the control the resolver *ran*, looked for `abc123`, and
-correctly said it did not exist. In the treatment the same command on the same machine never got
-that far - it died at the directory lookup and reported the Gateway instead. **Same tool, same
-command, same target, same machine. The only difference is a URL typed into a file.**
+**The control column is the whole proof.** With no Gateway configured, the Director found its
+neighbour, listed it, and **delivered a message into it** - no network involved, six inches away.
+Configure a Gateway address that does not answer and every one of those refuses. **Same tool, same
+commands, same target, same machine. The only difference is a URL typed into a file.**
+
+An earlier, weaker run used a Director with no sessions and the made-up target `abc123`: the control
+answered **`No session matches 'abc123'`** (the resolver ran and searched) while the treatment
+answered `Cannot reach the Gateway` (it never got that far). That still stands as a clean read on
+*where* the failure happens, but it could not show a local delivery succeeding. This leg can.
 
 ### What the experiment did NOT settle
 
-- It used a **refused** connection, not a black-holed one. It therefore says nothing about the
-  timeout question below, and the 2051 ms is not a wait you would feel. **I did not diagnose why an
-  instantly-refused connection takes two seconds** - I only measured that it does.
-- It ran a Director with **no live sessions**. That is sufficient (the error arrives from the
-  lookup, before target matching, which is exactly what the control demonstrates) but it is not the
-  same as watching a real Manager fail to reach a real Architect.
+- It used a **refused** connection, not a black-holed one. It says nothing about the timeout question
+  below, and the 2051 ms is not a wait you would feel. **I did not diagnose why an instantly-refused
+  connection takes two seconds** - I only measured that it does.
+- **`message send` in the control delivered the text but did not submit it** - the reply said the
+  prompt was "parked in the composer unsubmitted". That is my harness's fault, not a finding: the
+  stand-in agent was a plain shell with no composer to press Enter in. What it proves is what I
+  claim - the text reached a local session with no Gateway. It is not evidence about how a real
+  agent handles a delivered message.
+- **`message ask` was not run in the control**, so the ask row is one-sided: I watched it fail on
+  the treatment and did not watch it succeed without a Gateway.
 - It proves nothing about voice, snooze, or any desktop button. Those remain **[CODE-READ]**.
+- **It ran against my stale tree** (see Rule Zero above). The routes it exercises are byte-identical
+  on current `origin/main`, which I checked - but the harness itself could not have told me that.
+
+---
+
+## The citation audit
+
+The Architect found `HostedAiKeyResolver.cs` in this document and pointed out that **no such file
+exists** - the behaviour was real, the line numbers were right, and the citation was uncheckable, in
+a document whose entire value is that every claim can be checked. He then asked how many others were
+wrong. So I opened every one.
+
+**Method** (reproducible, which is the point):
+
+```
+grep -oE '[A-Za-z0-9_.]+\.(cs|py):[0-9]+(-[0-9]+)?' <this file> | sort -u
+# then, for each: git show origin/main:<path> | sed -n '<line>p'
+```
+
+**Result: 14 distinct files, roughly 30 file-and-line citations, 4 wrong.**
+
+| Wrong citation | Truth | Root cause |
+|---|---|---|
+| `HostedAiKeyResolver.cs:172-178` | `OpenAiKeyResolver.cs:172-178` | I cited the **class** name as the **file** name |
+| `MainWindow.axaml.cs:2189` | `:2192` | stale tree - `origin/main` moved |
+| `MainWindow.axaml.cs:2476-2510` | `:2479-2513` | stale tree |
+| `MainWindow.axaml.cs:2543-2578` | `:2546-2581` | stale tree |
+
+All four are corrected in place. Two further observations worth more than the count:
+
+- **The filename error had a trap in it.** `OpenAiKeyResolver.cs` contains `public class
+  HostedAiKeyResolver` at line 30; the class the file is *named* for is a deprecated shim at line
+  185. So the file is named after the obsolete class inside it. That is why my notes said
+  "HostedAiKeyResolver" and why neither of us caught it: **the Architect repeated the bad path back
+  to me and never opened it either.** A citation that two people have said out loud is not a
+  citation that anyone has checked.
+- **Three of my citations are ambiguous even when correct.** `MainWindow.axaml.cs` matches three
+  files in this repository and `GatewayClient.cs` matches two. Every such citation in this document
+  means the `CcDirector.Avalonia` / `CcDirector.ControlApi` one, but the document never says so, and
+  a bare basename plus a line number is not a checkable reference. Left as-is and named here.
 
 ---
 
@@ -139,7 +232,7 @@ These are good decisions. The audit's job here is to say so, not to reopen them.
 
 ### Snooze - and it is the best-behaved code in this audit
 
-`MainWindow.axaml.cs:2189` refuses to snooze unless
+`MainWindow.axaml.cs:2192` refuses to snooze unless
 `GatewayMonitor.Status == GatewayConnectionStatus.Connected`. The comment says why: snooze needs a
 round trip (Director to Gateway to record the timer, Gateway back down to set the hold), so it
 requires a **verified** connection, which proves both legs.
@@ -160,7 +253,7 @@ the law and the law is worth it. *(The unreachable half of this is not so clean 
 
 ### Refusing to use a local key when a Gateway is configured
 
-`HostedAiKeyResolver.cs:172-178` catches an unreachable Gateway and returns null rather than
+`OpenAiKeyResolver.cs:172-178` (the class inside it is `HostedAiKeyResolver`) catches an unreachable Gateway and returns null rather than
 silently falling back to a local key. The comment names your exact state: *"Gateway configured but
 unreachable: dictation is unavailable for now. We do not silently use a local key here - on a
 Gateway, the Gateway is the source of truth."* Someone thought about the train and wrote it down.
@@ -174,11 +267,11 @@ On the train a new session is briefly numberless, then gets an offline number. M
 
 ### The Cockpit and Learn buttons - a model of good failure
 
-`MainWindow.axaml.cs:2476-2510`. Eight-second timeout, then a modal naming the URL it actually
+`MainWindow.axaml.cs:2479-2513`. Eight-second timeout, then a modal naming the URL it actually
 probed, with different wording for "no tailnet URL" versus "cannot reach it". Its comment:
 *"a toolbar button that silently does nothing is just confusing."* Correct.
 
-**Learn is the same** (`:2543-2578`) - I listed it as unchecked in the first draft while citing its
+**Learn is the same** (`:2546-2581`) - I listed it as unchecked in the first draft while citing its
 handler, which is not a caveat, it is a gap I could have closed in the time it took to write the
 sentence. Read now: identical eight-second probe, identical modal, *"never a silent no-op and never
 a loopback URL that only works on this machine"*. Both buttons behave well on the train.
@@ -378,11 +471,46 @@ to the in-team sessions this Director can see."*
 send all` is what the Director's own fleet briefing explicitly tells **every agent** to use to reach
 its team. It is not a corner. It is the documented default for the most common thing an agent does.
 
-**The correction worth recording:** two independent code paths, written at different times, both
-reach for `IsEnabled`, both promise a local answer in a comment, and both withdraw it the moment an
-address is typed. That is what makes this DRIFT rather than a bug - **one bug is a mistake; the same
-wrong question in two unrelated routes is a habit.** A reader who fixes only the path I found would
-leave the more important one standing, which is exactly what would have happened had this document
+### And a third route, whose comment states the excuse out loud
+
+The Architect then asked the obvious next question - *is there a fourth?* - and the answer required
+counting rather than guessing. **`POST /fleet/ask` is the third** (`ControlEndpoints.cs:459`): the
+same `gw is { IsEnabled: true }` gate, relaying to the Gateway **before** it ever checks whether the
+target is sitting on this very Director. Its own comment says why:
+
+> *"With a Gateway, relay to the Gateway's prompt-with-wait (**uniform for local and remote
+> targets**); standalone, only a local target can be asked."* - `ControlEndpoints.cs:423-425`
+
+**"Uniform for local and remote targets" is the excuse in its own words** - and it is a *good*
+instinct. Uniformity is a real engineering virtue. It is exactly how a habit forms: three times,
+someone reached for the one answer that handles both cases, and each time that meant sending a local
+question to a machine that is not there.
+
+### The count, done properly
+
+`ControlEndpoints.cs` has **fourteen** `IsEnabled` gates, in two distinct shapes, and the split is
+the finding:
+
+- **Nine use the RIGHT shape** (`gw is not { IsEnabled: true }`): try the local session **first**,
+  and consult the Gateway only when the target is genuinely elsewhere. `/fleet/prompt:695-702` is
+  the model - it dispatches locally, returns, and only then guards the remote fallback with *"Session
+  not found on this Director and no Gateway is configured."* `/fleet/send`, `rename`, `interrupt`,
+  `hold`, `buffer`, `role`, `done` all do this. **On a train these endpoints are fine.**
+- **Three use the WRONG shape** (`gw is { IsEnabled: true }`): relay first, local answer unreachable.
+  `/fleet/sessions:324`, `/fleet/ask:459`, `/fleet/broadcast:954`. *(A fourth instance at `:998` is
+  broadcast's own second gate, already unreachable because `:954` fired first - not a separate
+  route.)*
+- **One more uses the wrong shape correctly**: the mission-name lookup at `:567`, where the answer
+  genuinely only exists in the Gateway and failing loud is right.
+
+**Is there a fourth defective route? No - there are three, and I counted rather than assumed.**
+
+**The correction worth recording:** three independent code paths, written at different times, all
+reach for `IsEnabled`, all promise a local answer in a comment, and all withdraw it the moment an
+address is typed - while nine sibling routes in the same file get it right. That is what makes this
+DRIFT rather than a bug: **one bug is a mistake; the same wrong question in three unrelated routes,
+surrounded by nine that ask it correctly, is a habit.** A reader who fixed only the path I led with
+would have left the other two standing - which is exactly what would have happened had this document
 shipped as I first wrote it.
 
 ### A second, smaller one: the wait before the failure
@@ -543,7 +671,15 @@ there is the decision worth your attention rather than mine.
 
 **And the cheap test that should exist and does not:** one that configures a Gateway address,
 points it at nothing, and asserts what a Director does. I wrote a throwaway version of exactly that
-test in about twenty minutes, watched it catch the defect, and then deleted it, because a fix
-smuggled into an audit is a fix nobody reviewed. **Every defect in this document would have been
-caught by that test.** The reason none of them were is that the suite only ever asks what happens
-when nobody typed an address - which is the one thing that is never true on your laptop.
+test, watched it catch all three defective routes, and then deleted it, because a fix smuggled into
+an audit is a fix nobody reviewed.
+
+**What that test would catch, precisely:** the three `IsEnabled` fleet routes - `/fleet/sessions`,
+`/fleet/ask`, `/fleet/broadcast`. **That is all.** An earlier draft of this document said "every
+defect in this document would have been caught by that test", which was false and was exactly the
+completeness overclaim the rest of these pages exist to avoid: it would not catch the transcription
+wording, the buttons, the account, the background-dictation path, or anything else here, because
+none of those go through the Director's fleet routes. It catches the family it is shaped for.
+
+The reason that family went uncaught is still the point: the suite only ever asks what happens when
+nobody typed an address - which is the one thing that is never true on your laptop.
