@@ -279,6 +279,12 @@ public sealed class TunnelExplicitRouteProofTests : IAsyncLifetime
         var saved = await File.ReadAllBytesAsync(savedPath!);
         Assert.Equal(image, saved);
         Assert.EndsWith(".png", savedPath);
+
+        // The save landed INSIDE this test's throwaway root, not in the user's real Pictures\Screenshots.
+        // Asserted, not assumed: this test set CC_DIRECTOR_ROOT and trusted that to sandbox the write, but
+        // CcStorage.Screenshots() ignored the root and fell through to the user's own screenshots folder, so
+        // every run of this suite left a 50 KB undrawable "photo.png" in their gallery.
+        Assert.StartsWith(_root, savedPath!, StringComparison.OrdinalIgnoreCase);
     }
 
     // -------------------------------------------------------------------------------------- helpers ----
