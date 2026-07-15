@@ -574,6 +574,26 @@
                                                        FontSize="9"
                                                        FontWeight="SemiBold" />
                                         </Border>
+                                        <!-- Winding-down badge (defect 23): the session is flagged for
+                                             deletion and the reaper will remove it shortly. A BADGE,
+                                             NEVER A COLOUR (owner's ruling, 14 July 2026): pending
+                                             deletion says nothing about what the agent is DOING, and a
+                                             flagged session may still be working - so the status dot
+                                             keeps telling the truth (blue while it works) and this rides
+                                             beside it. Muted neutral gray like the role glyph, never a
+                                             status color; the tooltip carries the reason. -->
+                                        <Border Background="{DynamicResource ButtonBackground}"
+                                                CornerRadius="6"
+                                                Padding="6,1"
+                                                VerticalAlignment="Center"
+                                                Margin="0,0,6,0"
+                                                IsVisible="{Binding IsPendingDeletion}"
+                                                ToolTip.Tip="{Binding PendingDeletionTooltip}">
+                                            <TextBlock Text="WINDING DOWN"
+                                                       Foreground="#9CA3AF"
+                                                       FontSize="9"
+                                                       FontWeight="SemiBold" />
+                                        </Border>
                                         <!-- Agent badge: shows which CLI this session is running -->
                                         <Border Background="{Binding AgentBadgeBrush}"
                                                 CornerRadius="6"

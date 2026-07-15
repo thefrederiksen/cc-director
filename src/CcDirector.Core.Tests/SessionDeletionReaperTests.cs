@@ -24,20 +24,85 @@ public sealed class SessionDeletionReaperTests
         return session;
     }
 
+    /// <summary>
+    /// THIS TEST WAS THE BUG (defect 23, rewritten 14 July 2026). It used to be called
+    /// "MarkForDeletion_sets_the_flag_reason_and_a_winding_down_badge" and asserted
+    /// <c>Assert.Equal(StatusColor.Unknown, session.StatusColor)</c> - i.e. it asserted that the
+    /// DIRECTOR PAINTS A COLOUR, which law 2 forbids, and which nothing that paints has ever read (the
+    /// Gateway is the single fold and reads the Director's cooked StatusColor for NOTHING). A green test
+    /// is not proof: this one passed on every run while the behaviour it defended was a defect, and its
+    /// name called a colour a "badge", which is how the confusion survived review.
+    ///
+    /// The rule now: MarkForDeletion RECORDS A FACT AND DECIDES NOTHING. Pending deletion is a badge,
+    /// never a colour - the fact crosses the wire on SessionDto.PendingDeletion and the rail renders it
+    /// beside the dot.
+    /// </summary>
     [Fact]
-    public void MarkForDeletion_sets_the_flag_reason_and_a_winding_down_badge()
+    public void MarkForDeletion_records_the_fact_and_writes_no_colour()
     {
         using var backend = new ExitableBackend();
         using var session = NewSession(backend);
         session.ApplyTerminalActivityState(ActivityState.Idle);
+        var colourBefore = session.StatusColor;
+        var reasonBefore = session.LastStatusReason;
 
         session.MarkForDeletion("jobs-auto: nothing to report");
 
         Assert.True(session.PendingDeletion);
         Assert.NotNull(session.DeletionRequestedAt);
         Assert.Equal("jobs-auto: nothing to report", session.DeletionReason);
-        Assert.Equal(StatusColor.Unknown, session.StatusColor); // grey / winding down
-        Assert.Contains("Marked for deletion", session.LastStatusReason);
+        // The Director reports the fact and decides nothing: flagging touches no colour.
+        Assert.Equal(colourBefore, session.StatusColor);
+        Assert.Equal(reasonBefore, session.LastStatusReason);
+    }
+
+    /// <summary>
+    /// THE KEY TEST for defect 23 at the Director: a session flagged for deletion MAY STILL BE WORKING -
+    /// the reaper explicitly waits out a running final turn (see
+    /// <see cref="SessionManager.ReapPendingDeletions"/> and Reaper_leaves_a_working_session_alone below).
+    /// Under the law that session is BLUE. Flagging it must not touch the colour, and it must not stop
+    /// the wingman repainting it.
+    ///
+    /// The deleted <c>SetStatusColor(Unknown, ...)</c> call used StatusColorSource.PositiveEvidence,
+    /// which is STICKY: within one activity generation it blocked the activity-state mapping from
+    /// repainting the row (see Session.SetStatusColor). So a flagged session could not show blue for its
+    /// own work until a genuine state change bumped the generation.
+    /// </summary>
+    [Fact]
+    public void MarkForDeletion_leaves_a_working_session_blue()
+    {
+        using var backend = new ExitableBackend();
+        using var session = NewSession(backend);
+        session.ApplyTerminalActivityState(ActivityState.Working);
+        session.SetStatusColor(StatusColor.Blue, "working");
+
+        session.MarkForDeletion("jobs-auto: nothing to report");
+
+        Assert.True(session.PendingDeletion);
+        Assert.Equal(StatusColor.Blue, session.StatusColor);
+
+        // And the flag left no sticky positive-evidence write behind: the wingman can still repaint.
+        session.SetStatusColor(StatusColor.Blue, "still working");
+        Assert.Equal(StatusColor.Blue, session.StatusColor);
+    }
+
+    /// <summary>The fact travels as a fact: flagging and cancelling each raise
+    /// <see cref="Session.OnPendingDeletionChanged"/> so the rail can show/clear the badge. The rail used
+    /// to learn about deletion only as a side effect of the (now deleted) colour write, so without this
+    /// signal the badge would never appear.</summary>
+    [Fact]
+    public void MarkForDeletion_and_CancelDeletion_raise_the_fact_changed_event()
+    {
+        using var backend = new ExitableBackend();
+        using var session = NewSession(backend);
+        var observed = new List<bool>();
+        session.OnPendingDeletionChanged += v => observed.Add(v);
+
+        session.MarkForDeletion("done");
+        session.MarkForDeletion("done again"); // idempotent: not a transition, must not re-fire
+        session.CancelDeletion();
+
+        Assert.Equal(new[] { true, false }, observed);
     }
 
     [Fact]
