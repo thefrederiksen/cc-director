@@ -229,7 +229,7 @@ For every delta observed **after** the cutover, store one narrow row carrying it
 columns:
 
 ```
-stat_delta(hour_utc, session_id, modality, surface, is_voice, repo, agent, wingman, turns, chars)
+stat_delta(hour_utc, session_id, modality, surface, is_voice, repo_id, agent_id, wingman, turns, chars)
 ```
 
 **The `wingman` column is load-bearing and is not the same thing as `modality = 'voice'`.** It
@@ -253,19 +253,43 @@ Each dashboard number becomes a baseline value plus a query over the rows record
 
 Three honest qualifications, all raised by the Codex reviewer and all accepted:
 
-- **Equality must be decided in C#, not by SQLite's collation.** `_repos` and `_agents` are keyed
-  `OrdinalIgnoreCase` (`GatewayInputStatsAggregator.cs:55`, `:61`), while SQLite's default `BINARY`
-  collation is case-sensitive. A naive `GROUP BY repo` would therefore split buckets that are one
-  bucket today. The live store happens to contain no case collisions, which is what makes this
-  dangerous: parity would pass green and the split would appear later, silently, the first time a
-  path was reported with different casing. `COLLATE NOCASE` is not the answer either - it folds
-  only ASCII, so it agrees with `OrdinalIgnoreCase` right up until a non-ASCII repository path,
-  and then quietly disagrees. So: fold the key in C# and store the folded key for grouping
-  alongside a first-seen display value in an identity table. One layer decides equality, and it is
-  the same layer that decides it today. The same reasoning gives `stat_delta` an explicit
-  `is_voice` column computed in C# at fold time rather than re-derived from a string comparison in
-  SQL, because `_totals` is keyed case-sensitively while the voice test is not, and that mismatch
-  must not be reproduced in the query layer.
+- **Equality must be decided in C#, not by SQLite's collation - and the schema must make that
+  structural, not a discipline.** `_repos` and `_agents` are keyed `OrdinalIgnoreCase`
+  (`GatewayInputStatsAggregator.cs:55`, `:61`), while SQLite's default `BINARY` collation is
+  case-sensitive. A naive `GROUP BY repo` would split buckets that are one bucket today. The live
+  store happens to contain no case collisions, which is exactly what makes it dangerous: parity
+  passes green and the split appears later, silently, the first time a path is reported with
+  different casing. `COLLATE NOCASE` is not the answer either - it folds only ASCII, so it agrees
+  with `OrdinalIgnoreCase` right up until a non-ASCII repository path and then quietly disagrees.
+
+  **The repository and agent keys are surrogate integers, resolved in C#. `stat_delta` stores
+  `repo_id` and `agent_id`, never a repository or agent string in any form - not raw, not folded.**
+  An earlier draft of this decision said "fold the key in C# and store the folded key", and the
+  Manager implemented exactly that before raising a naming question that exposed the flaw
+  underneath it. A folded **string** column requires a normalizing function, and no such function
+  exists: `StringComparer.OrdinalIgnoreCase` is a *comparer*, not a normalizer. There is no
+  `Fold(x)` that is exactly equivalent to it. The candidates are `ToLowerInvariant`, which is
+  forbidden and can even change a string's length (`U+0130`), and `ToUpperInvariant`, which is
+  close enough that it would almost certainly never bite - and "almost certainly never" is the
+  standard this mission has rejected at every other turn.
+
+  With a surrogate id there is no normalizer, because there is no folded string. A
+  `Dictionary<string, long>` constructed with `StringComparer.OrdinalIgnoreCase` resolves a
+  display spelling to an id in memory (Decision 6 already permits exactly this - "the repository
+  and agent identity maps"). That dictionary **is** today's comparer, the same object with the same
+  semantics, so parity holds by construction rather than by care. SQLite never compares a
+  repository string, so its collation cannot be wrong about one. `repo_identity(repo_id, display)`
+  keeps the first-seen spelling, which is what a `Dictionary` with that comparer does today.
+
+  The general principle, worth stating because it generalises past this column: **prefer the design
+  where the mistake is impossible over the design where the mistake is merely avoided.** Codex's
+  guardrail forbidding `ToLowerInvariant` was correct, but a rule you must remember is weaker than
+  a schema that cannot express the error. This choice deletes the rule.
+
+  The same reasoning gives `stat_delta` an explicit `is_voice` column computed in C# at fold time
+  rather than re-derived from a string comparison in SQL, because `_totals` is keyed
+  case-sensitively (`:31-32`) while the voice test is not (`:366`), and that asymmetry must be
+  preserved rather than reproduced in the query layer.
 - **A fold is not "one row write", and it is not one row either.** A fold walks the session's input
   buckets (`foreach (var b in s.InputStats.Buckets)`, `GatewayInputStatsAggregator.cs:343`), so a
   correct post-cutover fold is one `INSERT` into `stat_delta` **per changed bucket** - a session

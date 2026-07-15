@@ -1,5 +1,12 @@
 # Phase 1 Plan: Foundation plus the input store
 
+**Built against brief revision 6 (`6327fcd7`).** This plan was written against revision 3. All four
+findings it raised were accepted by the Architect and are now in the brief itself: revision 4
+(`a4e74b76`) imports all eight sections and fixes the parity hole, revision 5 (`c89b9171`) fixes the
+one-row-per-fold defect, and revision 6 (`6327fcd7`) adds Decision 6, the membership mirror. Where
+this plan and the brief now differ, **the brief wins** - it is the authority and it has absorbed
+everything below.
+
 Written 2026-07-15 by the Manager session ("Gateway SQLite - Manager", session f3599eba, machine
 SOREN_NORTH). This is the Manager's execution plan for Phase 1 of the mission recorded in
 `docs/architecture/gateway-sqlite-mission-2026-07-15.md`. It is written to a file rather than held
@@ -350,8 +357,24 @@ It changes no design, only how criterion 1 is executed.
    subject to Guardrail A.
 3. **Finding 3** (the in-memory write-through mirror) - **SETTLED.** Codex reviewer finding 8: not
    fallback programming, subject to Guardrail C's correction on the word "bounded".
-4. **Finding 4** (the moving target, and criterion 1 executed against a stopped Gateway) - raised
-   with the Architect. It changes no design and blocks no code; it is executed at step 7, and the
-   frozen snapshot it depends on is already taken.
+4. **Finding 4** (the moving target, and criterion 1 executed against a stopped Gateway) -
+   **SETTLED.** Architect accepted; criterion 1 now says so in the brief, exactly and with no
+   tolerance: "If this criterion is ever reported as passing with a tolerance, it did not pass."
+
+All four were accepted by the Architect with none disputed, and each is now in the brief rather than
+only in this plan. The Architect measured Finding 1's cost on the live store and it was worse than
+the Manager estimated: `HighWater` holds 842 turns across 115 sessions against all-time totals of
+1404, so the first poll after a high-water-less import would have taken the owner's totals to 2246 -
+a silent 60 per cent inflation of every number this mission promised to preserve.
+
+**Decision 6 settled the one thing this plan deliberately refused to guess at.** The Architect's
+first statement of the mirror rule said "high-water only", which would have made every idle poll
+write one `INSERT OR IGNORE` per voice-mode session forever, because `:330` registers the wingman
+session *before* the `:333` empty-bucket early return. The Manager put the tension up rather than
+resolving it quietly, and the Architect adopted the recommendation verbatim: **the mirror holds
+identity and membership - never a tally.** The test to apply to any future case is the one that
+settled this one: *the count stays a query, so no aggregate is cached.* New acceptance criterion 3a
+pins it - an idle poll writes nothing, including for a voice-mode session with no input, proven by
+removing the mirror and watching the writes appear.
 
 Phase 1 proceeds to code from here.
