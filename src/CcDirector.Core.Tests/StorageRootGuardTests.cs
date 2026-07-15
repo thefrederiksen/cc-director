@@ -29,45 +29,28 @@ namespace CcDirector.Core.Tests;
 public sealed class StorageRootGuardTests
 {
     /// <summary>
-    /// Call sites that re-derived the storage root before this guard existed. BURN-DOWN LIST: delete
-    /// entries as they move to CcStorage; never add one. Every file here is latent in the same way the
-    /// two fixed in #1580 were - harmless only until a test touches it.
+    /// BURN-DOWN LIST: EMPTY, and it must stay that way. All 22 call sites that predated this guard have
+    /// been moved onto CcStorage. Adding an entry here is not a way to land code that re-derives the
+    /// root - it is the exception list for a debt that no longer exists. If a new call site needs a
+    /// folder CcStorage has no method for, add the method; that is the whole point.
     /// </summary>
-    private static readonly string[] KnownOffenders =
-    {
-        "src/CcDirector.AgentBrain/BrainLog.cs",
-        "src/CcDirector.Avalonia/App.axaml.cs",
-        "src/CcDirector.Avalonia/Controls/CommManager/CommManagerViewModel.cs",
-        "src/CcDirector.Avalonia/Controls/ConnectionsView.axaml.cs",
-        "src/CcDirector.Avalonia/Program.cs",
-        "src/CcDirector.Core/AgentPlugins/AgentPluginRegistry.cs",
-        "src/CcDirector.Core/Backends/GitHubCredentials.cs",
-        "src/CcDirector.Core/Claude/ClaudeHookInstaller.cs",
-        "src/CcDirector.Core/Codex/CodexHookInstaller.cs",
-        "src/CcDirector.Core/Configuration/AgentOptions.cs",
-        "src/CcDirector.Core/Dictation/DictationRecordingStore.cs",
-        "src/CcDirector.Core/Dictation/DictationSessionLog.cs",
-        "src/CcDirector.Core/Pi/PiPreambleWriter.cs",
-        "src/CcDirector.Core/Wingman/TerminalSessionRecorder.cs",
-        "src/CcDirector.Gateway/Api/GatewayEndpoints.cs",
-        "src/CcDirector.Gateway/Api/ItemStatusEndpoint.cs",
-        // Also hand-builds a VAULT path, so it bypasses CcStorage.Vault() and its CC_VAULT_PATH
-        // override too - worth taking early when this list is burned down.
-        "src/CcDirector.Gateway/Api/RecordingEndpoints.cs",
-        "src/CcDirector.Gateway/Prompts/GatewayPromptLog.cs",
-        "src/CcDirector.Gateway/Transcription/GatewayTranscriptionService.cs",
-        "src/CcDirector.Gateway/Transcription/TranscriptionTelemetryLog.cs",
-        "src/CcDirector.Terminal.Avalonia/TerminalControl.cs",
-        "src/CcDirector.Terminal/Rendering/CardView/CardWebView.xaml.cs",
-    };
+    private static readonly string[] KnownOffenders = Array.Empty<string>();
 
     /// <summary>CcStorage owns the root, so it is the one place allowed to resolve it from the OS.
     /// CcStorageMigration moves data between the old and new real locations, which it cannot do
-    /// through the very abstraction it is migrating.</summary>
+    /// through the very abstraction it is migrating.
+    ///
+    /// BrainLog is the one genuine exception: CcDirector.AgentBrain is a standalone library with NO
+    /// project references by design ("reused across many host programs, so it cannot depend on
+    /// CcDirector.Core's FileLog"), so it cannot call CcStorage without breaking that boundary. It
+    /// pays for the exemption by honoring CC_DIRECTOR_ROOT by hand, which is what actually matters -
+    /// the rule is "be redirectable", and using CcStorage is just the normal way to achieve it.
+    /// Anything added here must clear the same bar, and "it was easier" does not.</summary>
     private static readonly string[] RootOwners =
     {
         "src/CcDirector.Core/Storage/CcStorage.cs",
         "src/CcDirector.Core/Storage/CcStorageMigration.cs",
+        "src/CcDirector.AgentBrain/BrainLog.cs",
     };
 
     [Fact]
@@ -81,6 +64,22 @@ public sealed class StorageRootGuardTests
             + "into the user's REAL Director folders (see #1577 / #1580). Use CcStorage - add a method "
             + "there if the folder has none yet:\n  "
             + string.Join("\n  ", offenders));
+    }
+
+    [Fact]
+    public void BrainLog_pays_for_its_exemption_by_honoring_the_root()
+    {
+        // The exemption is conditional, so the condition is tested rather than trusted: AgentBrain may
+        // skip CcStorage (no project references by design), but it must still be redirectable. Without
+        // this, "cannot use CcStorage" would be a loophole that reintroduces the exact unredirectable
+        // path the guard exists to prevent.
+        var file = Path.Combine(GetRepoRoot(), "src", "CcDirector.AgentBrain", "BrainLog.cs");
+        var text = File.ReadAllText(file);
+
+        Assert.True(text.Contains("CC_DIRECTOR_ROOT", StringComparison.Ordinal),
+            "BrainLog is exempt from using CcStorage because CcDirector.AgentBrain has no project "
+            + "references by design - but it must still honor CC_DIRECTOR_ROOT by hand, or a test that "
+            + "pins the root writes into the real Director's log folder.");
     }
 
     [Fact]

@@ -1073,10 +1073,7 @@ public partial class CommManagerViewModel : ObservableObject, IDisposable
         FileLog.Write($"[CommManager.VM] LogToVaultAsync: ticket #{ticketNumber}");
         try
         {
-            var binDir = Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-                "cc-director", "bin");
-            var toolPath = Path.Combine(binDir, "cc-comm-queue.exe");
+            var toolPath = Path.Combine(CcStorage.Bin(), "cc-comm-queue.exe");
 
             if (!File.Exists(toolPath))
             {

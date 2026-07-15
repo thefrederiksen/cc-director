@@ -1,4 +1,5 @@
 using System.Text.Json;
+using CcDirector.Core.Storage;
 using CcDirector.Core.Utilities;
 
 namespace CcDirector.Core.Dictation;
@@ -44,11 +45,7 @@ public static class DictationSessionLog
         }
     }
 
-    private static string ResolveDir()
-    {
-        var localAppData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
-        return Path.Combine(localAppData, "cc-director", "dictation", "sessions");
-    }
+    private static string ResolveDir() => CcStorage.DictationSessions();
 }
 
 /// <summary>

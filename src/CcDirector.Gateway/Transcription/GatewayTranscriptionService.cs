@@ -3,6 +3,7 @@ using CcDirector.Core;
 using CcDirector.Core.Configuration;
 using CcDirector.Core.Dictation;
 using CcDirector.Core.Dictation.Models;
+using CcDirector.Core.Storage;
 using CcDirector.Core.Transcription;
 using CcDirector.Core.Utilities;
 
@@ -282,11 +283,9 @@ public sealed class GatewayTranscriptionService
     /// The single shared dictation glossary file used by both the recording transcriber and the
     /// dictionary editor endpoints, so the path is defined in exactly one place.
     /// </summary>
-    public static string DictionaryPath()
-    {
-        var localAppData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
-        return Path.Combine(localAppData, "cc-director", "dictation", "dictionary.yaml");
-    }
+    /// <remarks>The Director composes this same path via AgentOptions.ResolveDictationDictionaryPath;
+    /// both now go through CcStorage so the two cannot drift apart.</remarks>
+    public static string DictionaryPath() => CcStorage.DictationDictionary();
 
     /// <summary>The file extension (no dot) for an audio MIME type, used to name the upload so a
     /// remote provider decodes the bytes correctly. Defaults to <c>webm</c> (what browsers record).</summary>

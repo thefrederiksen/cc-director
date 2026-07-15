@@ -52,9 +52,7 @@ public partial class CardWebView : UserControl
         FileLog.Write("[CardWebView] Loaded, initializing WebView2");
         try
         {
-            var userDataFolder = Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-                "cc-director", "webview2-card");
+            var userDataFolder = CcDirector.Core.Storage.CcStorage.WebView2Card();
 
             var env = await CoreWebView2Environment.CreateAsync(null, userDataFolder);
             await WebView.EnsureCoreWebView2Async(env);

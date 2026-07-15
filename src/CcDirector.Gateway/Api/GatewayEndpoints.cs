@@ -2700,8 +2700,7 @@ internal static class GatewayEndpoints
         }
 
         // 3) Standard install location (only used when nothing better was found)
-        var localAppData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
-        var bin = Path.Combine(localAppData, "cc-director", "bin");
+        var bin = CcStorage.Bin();
         foreach (var name in names)
         {
             var candidate = Path.Combine(bin, name);

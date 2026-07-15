@@ -539,9 +539,7 @@ public partial class App : Application
     {
         try
         {
-            var dir = Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-                "cc-director", "logs", "director");
+            var dir = CcStorage.ToolLogs("director");
             Directory.CreateDirectory(dir);
             var path = Path.Combine(dir, $"crash-startup-{DateTime.Now:yyyyMMdd-HHmmss}-{Environment.ProcessId}.log");
             File.WriteAllText(path, $"[startup] {DateTime.Now:o}\n\n{ex}\n");

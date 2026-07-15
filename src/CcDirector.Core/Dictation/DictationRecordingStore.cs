@@ -1,3 +1,4 @@
+using CcDirector.Core.Storage;
 using CcDirector.Core.Utilities;
 
 namespace CcDirector.Core.Dictation;
@@ -13,10 +14,10 @@ namespace CcDirector.Core.Dictation;
 /// </summary>
 public static class DictationRecordingStore
 {
-    /// <summary>Where recordings are kept: %LOCALAPPDATA%\cc-director\dictation\recordings.</summary>
-    public static string DefaultDirectory { get; } = Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-        "cc-director", "dictation", "recordings");
+    /// <summary>Where recordings are kept: base/dictation/recordings. Resolved per access, not baked
+    /// into a get-only initializer, so CC_DIRECTOR_ROOT redirects it - an initializer runs once at type
+    /// load and no test can undo it.</summary>
+    public static string DefaultDirectory => CcStorage.DictationRecordings();
 
     /// <summary>
     /// Save one recorded WAV clip and return the full path of the saved file, or null when saving

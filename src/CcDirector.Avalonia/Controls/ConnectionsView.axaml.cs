@@ -352,8 +352,7 @@ public partial class ConnectionsView : UserControl
 
         FileLog.Write("[ConnectionsView] EnsureDaemonRunningAsync: daemon not running, starting...");
 
-        var localAppData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
-        var ccBrowserPath = Path.Combine(localAppData, "cc-director", "bin", "cc-browser.cmd");
+        var ccBrowserPath = Path.Combine(CcStorage.Bin(), "cc-browser.cmd");
 
         if (!File.Exists(ccBrowserPath))
         {

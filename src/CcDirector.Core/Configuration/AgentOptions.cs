@@ -1,3 +1,4 @@
+using CcDirector.Core.Storage;
 using CcDirector.Core.Utilities;
 
 namespace CcDirector.Core.Configuration;
@@ -178,8 +179,7 @@ public class AgentOptions
     {
         if (!string.IsNullOrWhiteSpace(DictationDictionaryPath))
             return DictationDictionaryPath;
-        var localAppData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
-        return Path.Combine(localAppData, "cc-director", "dictation", "dictionary.yaml");
+        return CcStorage.DictationDictionary();
     }
 
     /// <summary>

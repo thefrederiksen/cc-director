@@ -1,5 +1,6 @@
 using CcDirector.Core.Account;
 using CcDirector.Core.Sessions;
+using CcDirector.Core.Storage;
 using CcDirector.Core.Utilities;
 
 namespace CcDirector.Core.Pi;
@@ -43,8 +44,5 @@ public static class PiPreambleWriter
         return path;
     }
 
-    private static string DefaultDirectory()
-        => Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-            "cc-director", "pi-preamble");
+    private static string DefaultDirectory() => CcStorage.PiPreamble();
 }

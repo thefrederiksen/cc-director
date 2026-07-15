@@ -5,6 +5,7 @@ using CcDirector.Core.Dictation;
 using CcDirector.Core.Dictation.Models;
 using CcDirector.Core.Network;
 using CcDirector.Core.Recording;
+using CcDirector.Core.Storage;
 using CcDirector.Core.Utilities;
 using CcDirector.Gateway.Contracts;
 using CcDirector.Gateway.Transcription;
@@ -407,12 +408,13 @@ internal static class RecordingEndpoints
 
     private static RecordingIngestService BuildService()
     {
-        var localAppData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
         // Local transient store for transcripts (audio + markdown). Transcripts
         // are NOT auto-filed into the vault; the user promotes the keepers.
-        var root = Path.Combine(localAppData, "cc-director", "transcripts");
-        // Promotion target: the vault transcripts collection (permanent copy).
-        var collectionDir = Path.Combine(localAppData, "cc-director", "vault", "transcripts");
+        var root = CcStorage.Transcripts();
+        // Promotion target: the vault transcripts collection (permanent copy). Via CcStorage.Vault()
+        // so it honors CC_VAULT_PATH - the old hardcoded path would have promoted into the wrong
+        // place for anyone who relocated their vault.
+        var collectionDir = CcStorage.VaultTranscripts();
 
         FileLog.Write($"[RecordingEndpoints] BuildService: root={root}, collection={collectionDir}");
 
