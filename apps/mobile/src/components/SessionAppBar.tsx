@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useParams } from "react-router-dom";
+import { StatusPill } from "./StatusPill";
 import type { SessionManage } from "./useSessionManage";
 
 // The ONE app bar shared by every per-session screen: Chat, Terminal and Voice mode (owner design
@@ -18,9 +19,16 @@ import type { SessionManage } from "./useSessionManage";
 //     puts Snooze and Respond there. Screens with no bottom room for Snooze (Chat/Terminal, whose
 //     bottom is the message composer) pass showSnooze so it appears in this menu instead.
 //
-// The right edge is shared with the globally-mounted network StatusPill (.net-pill, position: fixed,
-// top-right). The app bar reserves space for it (--net-pill-reserve) so the overflow button sits
-// clear of it and the title no longer runs underneath it.
+// A CONTROL outranks an INDICATOR for the top-right corner. This bar used to put the overflow button
+// on the LEFT, because the globally-mounted network pill was fixed to the top-right and nothing wanted
+// to guess its width. The cost was a broken menu: .session-menu is anchored right:0 - correct for a
+// button on the right - so hanging it off a LEFT button opened it off the left edge of the screen,
+// cut in half and unreadable. The pill now rides the title row as an ordinary inline item (the fixed
+// one stands down on session screens, see GatedLayout), the button is back in the corner, and its menu
+// opens inward. Nothing guesses any widths: both rows are plain flex.
+//
+//   row 1:  [<- Sessions] ................... [...]     navigation left, menu right
+//   row 2:  102 devthrottle / f9e7 ....... ( o Fast )    name flexes, indicator rides along
 
 export interface SessionAppBarProps {
   title: string;
@@ -28,12 +36,17 @@ export interface SessionAppBarProps {
   /** Put Snooze/Unsnooze in the overflow menu. Screens that surface Snooze in their own bottom bar
    *  (Voice mode) leave this off, so the verb is never in two places at once. */
   showSnooze?: boolean;
+  /** Offer "Switch to voice mode" in the menu. The screens that are NOT voice (Chat/Terminal) pass
+   *  this so voice is reachable in one tap from where you already are, instead of making you open the
+   *  Voice mode tab first purely to find the button on it. */
+  showSwitchToVoice?: boolean;
   /** Screen-specific menu entries, rendered above Remove. Use <button className="menu-item">. */
   extraMenuItems?: ReactNode;
 }
 
-export function SessionAppBar({ title, manage, showSnooze = false, extraMenuItems }: SessionAppBarProps) {
+export function SessionAppBar({ title, manage, showSnooze = false, showSwitchToVoice = false, extraMenuItems }: SessionAppBarProps) {
   const navigate = useNavigate();
+  const { sessionId } = useParams<{ sessionId: string }>();
   const [open, setOpen] = useState(false);
   const [confirming, setConfirming] = useState(false);
   const menuRef = useRef<HTMLDivElement | null>(null);
@@ -76,6 +89,10 @@ export function SessionAppBar({ title, manage, showSnooze = false, extraMenuItem
           &larr; Sessions
         </button>
 
+        {/* Claims the middle of row 1, pushing the menu button into the corner it should have had all
+            along. It guesses nothing: it just takes whatever is left between the two controls. */}
+        <div className="session-bar-spacer" />
+
         <div className="session-menu-wrap" ref={menuRef}>
           <button
             type="button"
@@ -90,6 +107,26 @@ export function SessionAppBar({ title, manage, showSnooze = false, extraMenuItem
 
           {open && (
             <div className="session-menu" role="menu">
+              {showSwitchToVoice && (
+                <button
+                  type="button"
+                  className="menu-item"
+                  role="menuitem"
+                  onClick={() => {
+                    setOpen(false);
+                    // Hand the switch-on to the Voice screen rather than doing it here: useVoiceMode
+                    // already owns that verb (mark the session Voice on its Director, then explain on
+                    // the Gateway). Duplicating it here would be a second copy free to disagree with
+                    // the first. The screen reads this and runs its own onSwitchOn once, on arrival.
+                    navigate(`/session/${encodeURIComponent(sessionId ?? "")}/voice`, {
+                      state: { switchOn: true },
+                    });
+                  }}
+                >
+                  Switch to voice mode
+                </button>
+              )}
+
               {showSnooze && (
                 <button
                   type="button"
@@ -127,19 +164,18 @@ export function SessionAppBar({ title, manage, showSnooze = false, extraMenuItem
           )}
         </div>
 
-        {/* Row one ends here. The right of this row is left EMPTY on purpose: it is where the
-            globally-mounted network pill (.net-pill, position: fixed, top-right) lands, so it reads
-            as the status item of this bar instead of sitting on top of a control. Nothing here
-            needs to guess how wide that pill is. */}
-        <div className="session-bar-spacer" />
       </header>
 
-      {/* The session name gets its OWN row, at full width. It cannot share the bar: between the back
-          button, the menu button and the fixed network pill there is not enough room left for a real
-          session name ("102 Ghost Directors from tests" collapsed to "102 M..."). This row is also
-          what the name used to do WRONG - run underneath the pill and get covered by it. Even with
-          this extra row the screen is shorter than before, because the three-slab manage row is gone. */}
-      <h1 className="term-title session-title">{title}</h1>
+      {/* The session name gets its OWN row. It cannot share row one: between the back button and the
+          menu button there is not enough room left for a real session name ("102 Ghost Directors from
+          tests" collapsed to "102 M..."). The network pill rides HERE, at the end of this row, because
+          it is an indicator - it reads as the status of this session's connection, it can no longer
+          cover the name the way the fixed pill did, and it is out of the corner the menu needs. The
+          name still flexes and ellipsizes (.term-title), so the pill costs it only the pill's width. */}
+      <div className="session-title-row">
+        <h1 className="term-title session-title">{title}</h1>
+        <StatusPill inline />
+      </div>
 
       {manage.error !== null && <div className="banner banner-error" role="alert">{manage.error}</div>}
       {manage.held && <span className="manage-held-pill">Snoozed</span>}

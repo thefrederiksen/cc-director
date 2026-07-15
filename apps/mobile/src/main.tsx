@@ -1,6 +1,6 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
-import { createBrowserRouter, RouterProvider, Navigate, Outlet } from "react-router-dom";
+import { createBrowserRouter, RouterProvider, Navigate, Outlet, useLocation } from "react-router-dom";
 import { Home } from "./pages/Home";
 import { NewSession } from "./pages/NewSession";
 import { Terminal } from "./pages/Terminal";
@@ -57,10 +57,16 @@ function GatedLayout() {
   // The one global bad-connection banner (mobile-resilience mission): mounted once here so it pins to
   // the top of every gated screen and is the single voice for a bad connection. Hidden while the
   // connection is good; the pages keep their last-known content underneath either way.
+  // The network pill is fixed top-right on every screen that has no title row of its own to give it.
+  // The session screens DO have one, and they render their own inline pill on it (SessionAppBar), so
+  // the fixed one stands down there - otherwise both would show. The session screens need that corner
+  // back for their overflow menu button: while the pill held it, the button lived on the LEFT of the
+  // bar and its right-anchored menu opened off the left edge of the screen.
+  const onSessionScreen = useLocation().pathname.startsWith("/session/");
   return (
     <>
       <ConnectionBanner />
-      <StatusPill />
+      {!onSessionScreen && <StatusPill />}
       <Outlet />
     </>
   );
