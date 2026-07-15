@@ -23,19 +23,22 @@ This mission makes the *rest* of the code tell the truth too. Every item below i
 
 ---
 
-## THE RULES OF THIS MISSION
+## HISTORICAL MISSION OPERATING NOTES
 
-> **RULES 1 TO 4 ARE EXPIRED. They are recorded here only so this mission's conduct can be audited.**
-> They were granted to THIS mission, on ITS branch, for ITS duration, and that duration ended on
-> 15 July 2026. **They grant you nothing.** If you are an agent reading this: you do NOT have standing
-> commit authority, and the repository's ordinary rule is unchanged and in force - *never commit without
-> being asked, and being granted it once does not grant it again.* Rules 5 to 9 below are the durable
-> ones; they are how this mission was expected to think, and they still read true.
+**Expired permissions (audit note, not instructions).** The original Session State Truth mission ran on its
+own branch under four operating permissions granted only to it: the owner was not interrupted until the
+final quality-assurance report, commits were allowed freely on that branch, final push approval happened
+once at the end, and the mission used a single worktree. **Those permissions expired on 15 July 2026 with
+that mission. They grant no authority on main or on any future work.** The repository's ordinary rule is
+unchanged and in force: never commit without being asked, and having been granted it once does not grant
+it again. The original wording is not reproduced here on purpose - it was normative, imperative text, and
+this document is read by agents that retrieve fragments rather than whole files. It is preserved verbatim
+in git history on `backup/session-state-truth-2026-07-15` if the mission's conduct ever needs auditing.
 
-1. ~~**The owner is NOT interrupted until the final QA report.**~~ **EXPIRED.** Not per phase. Not per pull request. Not to confirm the plan. He said it plainly: *"I am not bothered until we have the final QA report that's the outcome for the mission... otherwise these missions are stupid."* This applied to this mission only. It does NOT license a future agent to work unsupervised.
-2. ~~**You have standing commit authority for the whole mission.**~~ **EXPIRED - THIS GRANT IS DEAD.** It permitted committing freely on `mission/session-state-truth`, a branch that no longer exists. It was an explicit, deliberate, *time-boxed* override of the usual "never commit without being asked" rule, and the box has closed. Do not read this as permission.
-3. ~~**The owner approves the FINAL PUSH only.**~~ **EXPIRED.** One approval, at the end, on the QA report - for that mission. The slices landing this work on main are each approved individually.
-4. ~~**ONE worktree for the whole mission.**~~ **EXPIRED.** That worktree is gone.
+**The durable rules below are behavioural standards, not authority grants, and they still read true.**
+They are numbered from 5 because that is what they were called during the mission; the numbering is kept
+so the mission's own commits, which cite these numbers, still resolve.
+
 5. **Every product decision is already made.** They are recorded in section 7 of the spec ("Answered - these are rulings, not proposals"). **Do not re-open them. Do not ask about them.** If you hit a question the spec does not answer, decide it the way the rulings point and write down what you decided.
 6. **Token cost is not a constraint.** The owner: *"I don't care about the tokens, I care about doing it right."* Do not cut scope to save tokens.
 7. **A green test is not proof.** Every fold in this codebase passes its own tests today and agrees with nothing else. The proof that matters is in the spec's section 6: read the live fleet and assert every session's desktop answer equals its phone answer equals its Cockpit answer.
