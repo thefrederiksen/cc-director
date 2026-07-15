@@ -308,6 +308,11 @@ export function useVoiceMode(
   // the agent is working again - that narration is stale (the same rule the roster triangle follows).
   useEffect(() => {
     if (agentWorking) return;
+    // NEVER speak while the listener is answering. This effect fires when a NEW clip finishes
+    // downloading, and it had no idea the Respond dialog was open - so a turn that landed mid-dictation
+    // played straight over the owner while their microphone was live, which is both maddening and an
+    // echo source. Answering is a conversation: the other party stops talking.
+    if (responding) return;
     if (!phoneReady || generatedAt.length === 0) return;
     if (typeof document !== "undefined" && document.hidden) return;
     // Only auto-play a genuinely NEW clip: one this device has not auto-played AND that has no
@@ -325,7 +330,22 @@ export function useVoiceMode(
         /* autoplay policy may require a gesture; the play-triangle covers it */
       });
     }
-  }, [phoneReady, generatedAt, agentWorking, sid]);
+  }, [phoneReady, generatedAt, agentWorking, sid, responding]);
+
+  // Tapping Respond SILENCES whatever is already speaking, at once. The guard above stops a new clip
+  // from starting, but a clip already mid-sentence when Respond is tapped would otherwise keep talking
+  // into the open microphone. Both halves are needed: one stops it starting, this one stops it
+  // continuing. Both audio sinks are stopped - this screen's element and the shared roster player -
+  // because either can be the one talking.
+  useEffect(() => {
+    if (!responding) return;
+    try {
+      audioRef.current?.pause();
+    } catch {
+      /* nothing playing */
+    }
+    stopPlayback();
+  }, [responding]);
 
   // A new turn's clip resets the per-mount resume guards so its saved position (0) restores cleanly.
   useEffect(() => {
@@ -410,7 +430,13 @@ export function useVoiceMode(
       // A 402 (out of credits / no key) already raised the shared app-level credits notice and its
       // message is the shared copy. An offline owning Director resolves to 404 here - say so plainly
       // instead of leaking the raw status, because it is the most common reason generation fails.
-      if (err instanceof GatewayError && err.status === 404) {
+      //
+      // 502 means the same thing and was NOT handled: the Gateway reaches a session's Director down its
+      // stream, and when that Director is not stream-connected the endpoint answers 502 (issue #1177).
+      // Measured across the live fleet on 2026-07-15: of 16 sessions, one answered 502 and two answered
+      // 404 - all three the same story, "that computer is not reachable" - but only the 404s got the
+      // plain-English line and the 502 leaked a raw message. Same cause, same sentence.
+      if (err instanceof GatewayError && (err.status === 404 || err.status === 502)) {
         setError("This session's computer looks offline. Voice can't be generated until it reconnects.");
       } else {
         setError(err instanceof Error ? err.message : "Could not generate narration");

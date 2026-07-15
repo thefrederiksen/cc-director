@@ -84,6 +84,20 @@ public sealed class WingmanVoiceService
     //    speech failure makes the fleet back off (5/10/20..120s) and honours a 429's Retry-After.
     private readonly WingmanRateLimitGate _ttsGate = new();
 
+    /// <summary>
+    /// Consecutive speech TIMEOUTS/transport failures, reset by any success. A timeout says nothing
+    /// certain about the service - it can just be one long narration or one stalled worker - so it must
+    /// not, on its own, arm the fleet-wide <see cref="_ttsGate"/> and skip every other session's voice.
+    /// A server that ANSWERS with a failure status (or a 429) is different: that is evidence about the
+    /// service, and arms the gate immediately.
+    /// </summary>
+    private int _consecutiveTtsFailures;
+
+    /// <summary>How many consecutive speech timeouts look like the SERVICE rather than one narration.
+    /// A real outage still trips the cooldown within three attempts, which preserves the money guard;
+    /// a single slow narration no longer silences the fleet.</summary>
+    private const int ConsecutiveTtsFailuresBeforeCooldown = 3;
+
     /// <summary>On-disk shape of one ready session's metadata (the audio bytes live next to it as
     /// an .mp3). Persisted so the play triangle / playability survives a gateway restart (issue #553).</summary>
     private sealed record PersistedVoice(string Spoken, string Reply, DateTime AtUtc, string? ContentType = null);
@@ -190,6 +204,14 @@ public sealed class WingmanVoiceService
 
     /// <summary>True when this session currently has a fresh, playable cached summary.</summary>
     public bool HasVoice(string sid) => _ready.ContainsKey(sid);
+
+    /// <summary>
+    /// Whether the FLEET-WIDE speech cooldown is currently armed - that is, whether GenerateAsync will
+    /// skip every session's voice right now. Exposed because this one flag decides whether the whole
+    /// fleet has narration or none of it does, and a bug in what arms it is invisible from the outside
+    /// (it looks exactly like "the speech service is down"). Tests assert on it directly.
+    /// </summary>
+    public bool SpeechCooldownArmed => _ttsGate.InCooldown(out _);
 
     /// <summary>
     /// Whether a turn-end should (re)generate the spoken narration for this session. True when there is
@@ -548,11 +570,16 @@ public sealed class WingmanVoiceService
                 // Both false. On 2026-07-15 that cost ~45 minutes of the owner not being able to tell an
                 // outage from a bug. Say what actually happened, and back off so the sweep stops paying
                 // for a translation whose audio cannot be made.
+                //
+                // The server ANSWERED with a failure status, so this is evidence about the service and
+                // not about one narration: arm the shared cooldown at once.
+                FileLog.Write($"[WingmanVoiceService] tts {(int)resp.StatusCode} - server answered with a failure; arming the shared speech cooldown");
                 _ttsGate.OnRateLimited(null);
                 return new TtsResult(null, null, HostedAiState.ServiceDown);
             }
             var contentType = resp.Content.Headers.ContentType?.MediaType;
             _ttsGate.OnSuccess();   // reaching the service clears any cooldown/backoff ramp
+            Interlocked.Exchange(ref _consecutiveTtsFailures, 0);  // ...and the timeout run that was building toward one
             return new TtsResult(await resp.Content.ReadAsByteArrayAsync(ct), contentType, null);
         }
         // A timeout (TtsSynthesis exhausted its attempts) or a transport failure is the same story from
@@ -562,9 +589,35 @@ public sealed class WingmanVoiceService
         {
             // A TimeoutException here is TtsSynthesis giving up after its attempts - the exact failure it
             // exists to bound, and previously the one that stamped NOTHING. Same story for a transport
-            // failure: the service did not answer. Back off, and tell the truth.
-            FileLog.Write($"[WingmanVoiceService] tts FAILED: {ex.Message}");
-            _ttsGate.OnRateLimited(null);
+            // failure: the service did not answer. Tell the truth.
+            //
+            // But a timeout is NOT evidence that the service is down, and this line used to treat it as
+            // if it were: one timeout armed the SHARED gate, and GenerateAsync then SKIPPED every other
+            // session with "speech service down" for up to 120 seconds. One slow narration silenced the
+            // whole fleet. Measured on 2026-07-15 with 9 voice sessions: the speech endpoint answered a
+            // 871-character narration in 1.7 seconds from this very machine, while the Gateway logged
+            // 1031 attempt-1 timeouts and 759 give-ups, and NOT ONE session held audio - yet asking for
+            // narration on demand produced real audio for 13 of 13 reachable sessions. The service was
+            // never down. The gate was, and it was armed by ambiguous evidence.
+            //
+            // So: count consecutive timeouts and only arm the shared gate once the failure looks like the
+            // SERVICE rather than one narration. A genuine outage still trips it within three attempts,
+            // which keeps the money guard the gate exists for (a sweep pays for a full model translation
+            // before it ever reaches the speech leg), while a single slow narration now costs only its
+            // own session's turn instead of everyone's.
+            var consecutive = Interlocked.Increment(ref _consecutiveTtsFailures);
+            if (consecutive >= ConsecutiveTtsFailuresBeforeCooldown)
+            {
+                var backoff = _ttsGate.OnRateLimited(null);
+                FileLog.Write($"[WingmanVoiceService] tts FAILED: {ex.Message} " +
+                              $"({consecutive} consecutive) - arming the shared speech cooldown {backoff.TotalSeconds:F0}s");
+            }
+            else
+            {
+                FileLog.Write($"[WingmanVoiceService] tts FAILED: {ex.Message} " +
+                              $"({consecutive}/{ConsecutiveTtsFailuresBeforeCooldown} consecutive) - NOT arming the shared cooldown; " +
+                              $"other sessions keep their turn at speech");
+            }
             return new TtsResult(null, null, HostedAiState.ServiceDown);
         }
         // NOTE: no `finally { http.Dispose(); }`. `http` is now either the caller's injected client or

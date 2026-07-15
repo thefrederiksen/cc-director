@@ -606,6 +606,59 @@ public sealed class WingmanVoiceServiceTests
         Assert.Equal(HostedAiState.ServiceDown, svc.VoiceUnavailableFor("sid-timeout"));
     }
 
+    // ONE SLOW NARRATION MUST NOT SILENCE THE FLEET.
+    //
+    // The speech cooldown (_ttsGate) is shared by every session, and GenerateAsync SKIPS a session
+    // outright while it is armed ("speech service down, 105s cooldown left"). A single TIMEOUT used to
+    // arm it, so one long narration blanked voice for every other session for up to 120 seconds.
+    //
+    // Measured against the live fleet on 2026-07-15: the speech endpoint answered an 871-character
+    // narration in 1.7 seconds from the Gateway's own machine, while the Gateway logged 1031 attempt-1
+    // timeouts and 759 give-ups and NOT ONE of 17 sessions held audio - yet asking on demand produced
+    // real audio for 13 of 13 reachable sessions. The service was never down; the shared gate was armed
+    // by evidence that never justified it.
+    [Fact]
+    public async Task StoreSpokenAsync_OneTimeout_DoesNotArmTheSharedCooldown()
+    {
+        // One timeout is not evidence about the SERVICE - it can be one long narration or one stalled
+        // worker. The session still reports ServiceDown (nothing to play, and it must say so), but the
+        // shared gate must stay open so every other session still gets its turn at speech.
+        var handler = new TtsTimeoutHandler(timeouts: TtsSynthesis.Attempts);
+        var svc = ServiceWithHandler(handler);
+
+        await svc.StoreSpokenAsync("sid-slow", "spoken", "reply");
+
+        Assert.Equal(HostedAiState.ServiceDown, svc.VoiceUnavailableFor("sid-slow"));
+        Assert.False(svc.SpeechCooldownArmed, "one timeout must not silence every other session's voice");
+    }
+
+    [Fact]
+    public async Task StoreSpokenAsync_ThreeConsecutiveTimeouts_ArmsTheSharedCooldown()
+    {
+        // The control, and the money guard the gate exists for: a genuine outage must still trip it
+        // quickly, so the idle sweep stops paying for a model translation whose audio cannot be made.
+        var handler = new TtsTimeoutHandler(timeouts: int.MaxValue);
+        var svc = ServiceWithHandler(handler);
+
+        await svc.StoreSpokenAsync("sid-a", "spoken", "reply");
+        await svc.StoreSpokenAsync("sid-b", "spoken", "reply");
+        await svc.StoreSpokenAsync("sid-c", "spoken", "reply");
+
+        Assert.True(svc.SpeechCooldownArmed, "a real outage must still back the fleet off within three attempts");
+    }
+
+    [Fact]
+    public async Task StoreSpokenAsync_ServerAnswersWithFailureStatus_ArmsTheSharedCooldownAtOnce()
+    {
+        // A server that ANSWERS 5xx is evidence about the service, not about one narration, so it does
+        // not wait for a run of three the way an ambiguous timeout does.
+        var svc = ServiceWithTts(HttpStatusCode.ServiceUnavailable, "{\"error\":\"upstream\"}");
+
+        await svc.StoreSpokenAsync("sid-5xx", "spoken", "reply");
+
+        Assert.True(svc.SpeechCooldownArmed);
+    }
+
     [Fact]
     public async Task StoreSpokenAsync_TtsOutOfCredits_StillBlamesTheAccount_NotTheService()
     {
