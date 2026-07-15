@@ -2525,7 +2525,16 @@ internal static class GatewayEndpoints
                 statusCode: StatusCodes.Status504GatewayTimeout),
             DirectorCommandStatus.TunnelDropped => Results.Json(new { error = sr.Error },
                 statusCode: StatusCodes.Status502BadGateway),
-            _ => Results.StatusCode(StatusCodes.Status502BadGateway),
+            // A DIRECTOR-SENT failure (BadRequest / NotFound / Conflict / Locked / a plain Failed). The
+            // Director computed a real explanation and this branch used to drop it on the floor, returning a
+            // bodyless 502 - the human got a bare status they could not act on, and the words that would have
+            // told them what to do were discarded one hop from being shown.
+            //
+            // The STATUS stays 502, byte-identical, for every one of these. That is deliberate: these legs
+            // ship a 502 for a Director BadRequest/NotFound today, and mapping them to 400/404 (what
+            // MapDirectorFailure does) would change a shipped contract. This carries the words and moves
+            // nothing else.
+            _ => Results.Json(new { error = sr.Error }, statusCode: StatusCodes.Status502BadGateway),
         };
     }
 

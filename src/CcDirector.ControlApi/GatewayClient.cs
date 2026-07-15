@@ -1,6 +1,7 @@
 using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
+using System.Text.Json;
 using CcDirector.Core.Configuration;
 using CcDirector.Core.Network;
 using CcDirector.Core.Utilities;
@@ -167,6 +168,45 @@ public sealed class GatewayClient : IGatewayHold, IDisposable
         }
     }
 
+    /// <summary>
+    /// Turn a failed Gateway relay response into the exception the /fleet/* endpoint will word for the human,
+    /// CARRYING the Gateway's own message instead of throwing it away.
+    ///
+    /// This is the second of two places the same explanation used to die. The Gateway's TunnelFailure dropped
+    /// a Director-sent failure into a bodyless 502; these relays then threw "returned HTTP 502 Bad Gateway"
+    /// without ever reading the body, so even once the Gateway carried the words, the Director discarded them
+    /// one hop before the person who typed the command. Fixing either alone lands nowhere - the CLI's own
+    /// error path already parses an "error" key and already tolerates an empty body, so with both legs carried
+    /// the Director's real explanation reaches the terminal with no client change at all.
+    ///
+    /// Falls back to the status line ONLY when there genuinely is no message to show - an empty or non-JSON
+    /// body. That is not papering over a failure; it is reporting the only fact available.
+    /// </summary>
+    private static async Task<InvalidOperationException> RelayFailureAsync(
+        HttpResponseMessage resp, string what, CancellationToken ct)
+    {
+        string? message = null;
+        try
+        {
+            var body = await resp.Content.ReadAsStringAsync(ct);
+            if (!string.IsNullOrWhiteSpace(body))
+            {
+                using var doc = JsonDocument.Parse(body);
+                if (doc.RootElement.ValueKind == JsonValueKind.Object
+                    && doc.RootElement.TryGetProperty("error", out var err)
+                    && err.ValueKind == JsonValueKind.String)
+                {
+                    message = err.GetString();
+                }
+            }
+        }
+        catch (JsonException) { /* not JSON - fall through to the status line below */ }
+
+        var statusLine = $"Gateway {what} returned HTTP {(int)resp.StatusCode} {resp.ReasonPhrase}".TrimEnd();
+        FileLog.Write($"[GatewayClient] {what} FAILED: {(string.IsNullOrWhiteSpace(message) ? statusLine : message)}");
+        return new InvalidOperationException(string.IsNullOrWhiteSpace(message) ? statusLine : message);
+    }
+
     // ===== Fleet relay (issue #705) =====
     // A session can only reach its OWN Director (it is given CC_DIRECTOR_API, never the
     // Gateway URL or the fleet token). These three methods let the Director relay a session's
@@ -188,7 +228,7 @@ public sealed class GatewayClient : IGatewayHold, IDisposable
         FileLog.Write("[GatewayClient] ListFleetSessionsAsync: GET /sessions");
         using var resp = await _http.GetAsync("sessions", ct);
         if (!resp.IsSuccessStatusCode)
-            throw new InvalidOperationException($"Gateway GET /sessions returned HTTP {(int)resp.StatusCode} {resp.ReasonPhrase}");
+            throw await RelayFailureAsync(resp, "GET /sessions", ct);
 
         var list = await resp.Content.ReadFromJsonAsync<List<SessionDto>>(ct);
         if (list is null)
@@ -214,7 +254,7 @@ public sealed class GatewayClient : IGatewayHold, IDisposable
         var body = new PromptRequest { Text = text, AppendEnter = true, WaitForIdle = false };
         using var resp = await _http.PostAsJsonAsync($"sessions/{toSessionId}/prompt", body, ct);
         if (!resp.IsSuccessStatusCode)
-            throw new InvalidOperationException($"Gateway prompt to {toSessionId} returned HTTP {(int)resp.StatusCode} {resp.ReasonPhrase}");
+            throw await RelayFailureAsync(resp, $"prompt to {toSessionId}", ct);
 
         var parsed = await resp.Content.ReadFromJsonAsync<PromptResponse>(ct);
         if (parsed is null)
@@ -239,7 +279,7 @@ public sealed class GatewayClient : IGatewayHold, IDisposable
         var body = new SessionUpdateRequest { Name = name };
         using var resp = await _http.PatchAsJsonAsync($"sessions/{toSessionId}", body, ct);
         if (!resp.IsSuccessStatusCode)
-            throw new InvalidOperationException($"Gateway rename of {toSessionId} returned HTTP {(int)resp.StatusCode} {resp.ReasonPhrase}");
+            throw await RelayFailureAsync(resp, $"rename of {toSessionId}", ct);
 
         var parsed = await resp.Content.ReadFromJsonAsync<SessionDto>(ct);
         if (parsed is null)
@@ -262,7 +302,7 @@ public sealed class GatewayClient : IGatewayHold, IDisposable
         FileLog.Write($"[GatewayClient] InterruptFleetAsync: POST /sessions/{toSessionId}/interrupt");
         using var resp = await _http.PostAsync($"sessions/{toSessionId}/interrupt", content: null, ct);
         if (!resp.IsSuccessStatusCode)
-            throw new InvalidOperationException($"Gateway interrupt of {toSessionId} returned HTTP {(int)resp.StatusCode} {resp.ReasonPhrase}");
+            throw await RelayFailureAsync(resp, $"interrupt of {toSessionId}", ct);
     }
 
     /// <summary>
@@ -281,7 +321,7 @@ public sealed class GatewayClient : IGatewayHold, IDisposable
         var body = new HoldRequest { OnHold = onHold, SnoozeMinutes = snoozeMinutes };
         using var resp = await _http.PostAsJsonAsync($"sessions/{toSessionId}/hold", body, ct);
         if (!resp.IsSuccessStatusCode)
-            throw new InvalidOperationException($"Gateway hold of {toSessionId} returned HTTP {(int)resp.StatusCode} {resp.ReasonPhrase}");
+            throw await RelayFailureAsync(resp, $"hold of {toSessionId}", ct);
 
         var parsed = await resp.Content.ReadFromJsonAsync<HoldResponse>(ct);
         if (parsed is null)
@@ -304,7 +344,7 @@ public sealed class GatewayClient : IGatewayHold, IDisposable
         FileLog.Write($"[GatewayClient] GetBufferFleetAsync: GET /sessions/{toSessionId}/buffer");
         using var resp = await _http.GetAsync($"sessions/{toSessionId}/buffer", ct);
         if (!resp.IsSuccessStatusCode)
-            throw new InvalidOperationException($"Gateway buffer read of {toSessionId} returned HTTP {(int)resp.StatusCode} {resp.ReasonPhrase}");
+            throw await RelayFailureAsync(resp, $"buffer read of {toSessionId}", ct);
         return await resp.Content.ReadAsStringAsync(ct);
     }
 
@@ -324,7 +364,7 @@ public sealed class GatewayClient : IGatewayHold, IDisposable
         var body = new SetRoleRequest { Role = role };
         using var resp = await _http.PostAsJsonAsync($"sessions/{toSessionId}/role", body, ct);
         if (!resp.IsSuccessStatusCode)
-            throw new InvalidOperationException($"Gateway set-role of {toSessionId} returned HTTP {(int)resp.StatusCode} {resp.ReasonPhrase}");
+            throw await RelayFailureAsync(resp, $"set-role of {toSessionId}", ct);
 
         var parsed = await resp.Content.ReadFromJsonAsync<SessionDto>(ct);
         if (parsed is null)
@@ -348,7 +388,7 @@ public sealed class GatewayClient : IGatewayHold, IDisposable
         var body = new SessionDeletionRequest { Reason = reason };
         using var resp = await _http.PostAsJsonAsync($"sessions/{toSessionId}/request-deletion", body, ct);
         if (!resp.IsSuccessStatusCode)
-            throw new InvalidOperationException($"Gateway deletion request for {toSessionId} returned HTTP {(int)resp.StatusCode} {resp.ReasonPhrase}");
+            throw await RelayFailureAsync(resp, $"deletion request for {toSessionId}", ct);
     }
 
     /// <summary>
@@ -379,7 +419,7 @@ public sealed class GatewayClient : IGatewayHold, IDisposable
         var body = new PromptRequest { Text = text, AppendEnter = true, WaitForIdle = true, TimeoutMs = timeoutMs };
         using var resp = await http.PostAsJsonAsync($"sessions/{toSessionId}/prompt", body, ct);
         if (!resp.IsSuccessStatusCode)
-            throw new InvalidOperationException($"Gateway ask to {toSessionId} returned HTTP {(int)resp.StatusCode} {resp.ReasonPhrase}");
+            throw await RelayFailureAsync(resp, $"ask to {toSessionId}", ct);
 
         var parsed = await resp.Content.ReadFromJsonAsync<PromptResponse>(ct);
         if (parsed is null)
@@ -415,7 +455,7 @@ public sealed class GatewayClient : IGatewayHold, IDisposable
         };
         using var resp = await _http.PostAsJsonAsync("fanout", body, ct);
         if (!resp.IsSuccessStatusCode)
-            throw new InvalidOperationException($"Gateway fanout returned HTTP {(int)resp.StatusCode} {resp.ReasonPhrase}");
+            throw await RelayFailureAsync(resp, "fanout", ct);
 
         var parsed = await resp.Content.ReadFromJsonAsync<FanoutResponse>(ct);
         if (parsed is null)
@@ -527,7 +567,7 @@ public sealed class GatewayClient : IGatewayHold, IDisposable
         var body = new HoldRequest { OnHold = onHold };
         using var resp = await _http.PostAsJsonAsync($"sessions/{sessionId}/hold", body, ct);
         if (!resp.IsSuccessStatusCode)
-            throw new InvalidOperationException($"Gateway hold for {sessionId} returned HTTP {(int)resp.StatusCode} {resp.ReasonPhrase}");
+            throw await RelayFailureAsync(resp, $"hold for {sessionId}", ct);
     }
 
     // ===== Fleet session numbers (issue #1292) =====
