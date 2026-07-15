@@ -760,6 +760,16 @@ until the quality-assurance report.
   keeps finding. The model dimension needs its producer first: a field on `SessionDto`, fed from the
   driver report, and only then a column and a migration.
 
+  **Update, 2026-07-15T18:59Z - the producer has merged.** `SessionDto.CurrentModel` is live on
+  `origin/main` via #1651: records-only, with the null floor described below. The
+  producer-does-not-exist objection is satisfied, and the paragraph above is now history rather
+  than instruction. **The hold on Phase 1 stands regardless, on the three grounds that were never
+  about the merge:** Phase 1's whole job is proving the owner's numbers survive the move and it must
+  not widen mid-proof; the dimension needs its own since-stamp design in the `_agentsSinceUtc`
+  mould; and the three-state null handling below must be settled first. The model dimension opens
+  *after* Phase 1 proves out, as this mission's first real migration. #1651 merging does not make it
+  a Phase 1 column - it only means the phase can start when Phase 1 is done.
+
   This is worth stating because it is a fair test of the mission's honesty. The mission does not
   claim that question becomes free - Decision 2 says plainly that a genuinely new dimension still
   costs a schema change. What the mission delivers is that the change is a `PRAGMA user_version`
