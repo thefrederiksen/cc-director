@@ -12,7 +12,7 @@ import { isVoiceReady, voiceRowState, type VoiceRowInputs } from "./voiceRowStat
 // the roster had in its hand and ignored, so an edit that goes back to "any bytes will do" fails here
 // rather than on a phone.
 
-/** The honest ready state: this turn's audio is on the phone, and nothing objects. */
+/** The honest ready state: this turn's audio is on the phone, it has words, and nothing objects. */
 const READY_FOR_THIS_TURN: VoiceRowInputs = {
   voiceMode: true,
   agentWorking: false,
@@ -21,6 +21,7 @@ const READY_FOR_THIS_TURN: VoiceRowInputs = {
   gatewayHasAudio: true,
   clipDownloading: false,
   phoneReadyForCurrentTurn: true,
+  hasSpokenText: true,
 };
 
 describe("voiceRowState", () => {
@@ -68,11 +69,26 @@ describe("voiceRowState", () => {
     expect(voiceRowState({ ...READY_FOR_THIS_TURN, gatewayGenerating: true })).toBe("preparing");
   });
 
-  // The Gateway's cache is NOT the gate on ready - the phone's is. Gating on the Gateway still holding
-  // the bytes is the mistake voiceAvailability.ts documents (its window 2): the phone can hold a
-  // perfectly playable clip for the current turn after the Gateway has dropped its copy.
-  it("still plays this turn's clip from the phone after the Gateway has dropped its copy", () => {
-    expect(voiceRowState({ ...READY_FOR_THIS_TURN, gatewayHasAudio: false })).toBe("ready");
+  // FOUND IN REVIEW, and it is the same bug hiding one level up. The roster's notion of "the current
+  // turn" comes from the cached voice metadata, which syncVoiceSessions only refreshes for sessions
+  // with voiceAudioReady. So when the Gateway stops advertising audio, the cached stamp AND the clip
+  // go stale together and agree with each other perfectly - phoneReadyForCurrentTurn stays true while
+  // describing last turn. A Gateway restart does exactly this (its voice cache is in memory) with no
+  // outage stamped, so voiceUnavailable does not save us here.
+  //
+  // The Voice screen is safe from this because it fetches the current stamp live; the roster cannot,
+  // so voiceAudioReady is its only live evidence that a current narration exists at all. This is the
+  // one place the roster deliberately DIVERGES from voiceAvailability.ts's advice - see the header.
+  it("does not offer a triangle once the Gateway stops advertising audio, however ready the phone looks", () => {
+    expect(voiceRowState({ ...READY_FOR_THIS_TURN, gatewayHasAudio: false })).not.toBe("ready");
+  });
+
+  // FOUND IN REVIEW. ready and spoken are independent fields on the WingmanVoice contract, so a
+  // ready-but-wordless narration is representable - and the Voice screen refuses to speak one
+  // (speaking requires voice.spoken.length > 0). A triangle here would point at exactly the state the
+  // screen declines to play, which is this bug wearing a different hat.
+  it("does not offer a triangle for a narration with no spoken words", () => {
+    expect(voiceRowState({ ...READY_FOR_THIS_TURN, hasSpokenText: false })).not.toBe("ready");
   });
 
   it("shows preparing while the Gateway holds audio this phone has not pulled down yet", () => {
@@ -132,5 +148,7 @@ describe("isVoiceReady", () => {
     expect(isVoiceReady({ ...READY_FOR_THIS_TURN, agentWorking: true })).toBe(false);
     expect(isVoiceReady({ ...READY_FOR_THIS_TURN, gatewayGenerating: true })).toBe(false);
     expect(isVoiceReady({ ...READY_FOR_THIS_TURN, phoneReadyForCurrentTurn: false })).toBe(false);
+    expect(isVoiceReady({ ...READY_FOR_THIS_TURN, gatewayHasAudio: false })).toBe(false);
+    expect(isVoiceReady({ ...READY_FOR_THIS_TURN, hasSpokenText: false })).toBe(false);
   });
 });

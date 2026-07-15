@@ -81,6 +81,7 @@ export function rowVoiceInputs(session: SessionDto, agentWorking: boolean): Voic
     gatewayHasAudio: Boolean(session.voiceAudioReady),
     clipDownloading: getClipState(sid).phase === "downloading",
     phoneReadyForCurrentTurn: currentGeneratedAt.length > 0 && isPhoneReady(sid, currentGeneratedAt),
+    hasSpokenText: (meta?.spoken?.length ?? 0) > 0,
   };
 }
 

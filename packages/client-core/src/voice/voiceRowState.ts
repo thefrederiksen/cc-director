@@ -35,10 +35,34 @@
 //   2. gatewayGenerating - a NEWER narration is being synthesized, which is a positive statement that
 //      the clip on the phone is last turn's. Held bytes are not offered while a replacement is coming.
 //
-// Note what is deliberately NOT a gate: the Gateway currently holding the audio (voiceAudioReady).
-// What plays is the clip in THIS PHONE's cache, and those are two different caches - gating "ready" on
-// the Gateway's copy is the exact mistake voiceAvailability.ts documents at length (its window 2). The
-// staleness fix is "the bytes must be for the CURRENT turn", not "the Gateway must still have them".
+//   3. gatewayHasAudio - the Gateway says it holds narration for this session's latest turn.
+//
+// Guard 3 deserves its own note, because voiceAvailability.ts argues the OPPOSITE for the Voice screen
+// and is right to: what plays is the clip in THIS PHONE's cache, so the screen must never withhold
+// playable audio just because the Gateway has since dropped its copy (that module's window 2).
+//
+// The reasoning does not carry over, because the two surfaces know different things. The Voice screen
+// fetches getWingmanVoice live, so it learns the CURRENT turn's stamp first-hand and can compare the
+// phone's clip against it. The roster has no such fetch - it reads the stamp from the same cached voice
+// metadata that syncVoiceSessions writes, and that sync only runs for sessions with voiceAudioReady.
+// So the moment the Gateway stops advertising audio, the roster's "current turn" and the clip it is
+// comparing go stale TOGETHER, and agree with each other perfectly while both describe last turn.
+// (A Gateway restart does exactly this: its voice cache is in memory, so voiceAudioReady drops across
+// the fleet with no outage stamped anywhere.) voiceAudioReady is the only LIVE evidence the roster has
+// that a current narration exists at all, so on this surface it is a gate. Found in review.
+//
+// The cost is a false NEGATIVE - a missing triangle where the phone could in fact have played - which
+// is the right way for this to fail. The roster promises out loud; a promise it cannot substantiate is
+// the bug being fixed here, and silence is not.
+//
+// RESIDUAL, known and accepted: between the poll that first sees voiceAudioReady for a NEW turn and the
+// getWingmanVoice that refreshes the cached stamp (one Gateway round trip later), the roster still
+// holds last turn's stamp and last turn's ready clip, which match - so a stale triangle can flash for
+// well under a second. It closes itself: ensureClip immediately re-stamps the clip store to the new
+// turn as "downloading", which flips the row to the spinner. Tapping inside that window lands on the
+// working card (the screen's own live fetch sees the mismatch), never the "Voice service down" screen
+// this fix is about. Closing it completely needs a per-turn narration id on SessionDto, which is not
+// worth a new contract field for a sub-second flash with a benign landing.
 
 /** The clip download phases, mirrored from clips.ts (kept structural so this module imports nothing). */
 export type VoiceClipPhase = "none" | "downloading" | "ready" | "error";
@@ -64,6 +88,14 @@ export interface VoiceRowInputs {
    * derive it with isPhoneReady(sid, currentGeneratedAt); a clip held for an older turn is false.
    */
   phoneReadyForCurrentTurn: boolean;
+  /**
+   * The narration has spoken TEXT (WingmanVoice.spoken is non-empty). `ready` and `spoken` are
+   * independent fields on the contract, so a ready-but-wordless narration is representable - and the
+   * Voice screen refuses to speak one (its `speaking` requires voice.spoken.length > 0). The roster
+   * must refuse it too, or it would draw a triangle onto exactly the state the screen declines to
+   * play, which is this bug wearing a different hat. Found in review.
+   */
+  hasSpokenText: boolean;
 }
 
 /**
@@ -91,8 +123,10 @@ export function voiceRowState(i: VoiceRowInputs): VoiceRowState {
   // A newer narration is on its way, which means anything held is last turn's. Not offered.
   if (i.gatewayGenerating) return "preparing";
 
-  // The promise the triangle makes: THIS turn's bytes, on this phone, playable with no wait.
-  if (i.phoneReadyForCurrentTurn) return "ready";
+  // The promise the triangle makes, in full: the Gateway confirms a narration exists for the latest
+  // turn, this phone holds THAT turn's bytes, and there are words in it. Every clause is load-bearing;
+  // dropping any one of them is a way this has already gone wrong.
+  if (i.gatewayHasAudio && i.phoneReadyForCurrentTurn && i.hasSpokenText) return "ready";
 
   // Audio exists or is arriving, but this phone cannot play it yet.
   if (i.gatewayHasAudio || i.clipDownloading) return "preparing";
