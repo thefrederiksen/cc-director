@@ -586,8 +586,28 @@ code that has never been asked a question.
    Gateway, HostedAgent, Launcher, and Terminal.Avalonia), not only Core and Gateway.
 6. Regression tests pin the baseline import, on three legs:
 
-   (a) Given a real JSON store as a fixture, every imported value matches the value the JSON store
-   reported - across **all eight** `StoreFile` sections, not only the ones `/stats/data` exposes.
+   (a) Given a **synthetic** fixture that is structurally faithful to a real store, every imported
+   value matches the value the fixture reported - across **all eight** `StoreFile` sections, not
+   only the ones `/stats/data` exposes.
+
+   **The fixture must be synthetic. Never commit the owner's real store.** Earlier revisions said
+   "a real JSON store as a fixture", which was dangerous and nearly shipped:
+   `thefrederiksen/devthrottle` is a **public** repository, and the real store holds 20 repository
+   paths - including client and employer project names like `ReposMindzie/mindzieWeb`,
+   `cc-consult`, and `mw-enrich-facade-impl` - plus session identifiers and the owner's personal
+   usage counts. Committing it as a fixture would publish all of that permanently into public git
+   history, where deleting it later does not remove it.
+
+   Structurally faithful means: all eight sections present, the real shapes, and the awkward cases
+   deliberately included - a voice-mode session with no input buckets, a session with several
+   changed buckets in one fold, a typed turn under voice mode, and a pair of repository keys
+   differing only by case. A synthetic fixture is in fact **better** than the real store for this
+   test, because the real store contains no case collision at all and therefore cannot exercise the
+   very folding the fixture is meant to pin.
+
+   The owner's real data is still used - by criterion 1, run locally against a frozen snapshot with
+   the Gateway stopped, with the result recorded in the phase report and the snapshot never
+   committed.
 
    (b) **The idempotent re-observe leg.** After importing, observe the *same* roster the store was
    already carrying high-water for, and assert every all-time number is **unchanged**. This is the
@@ -625,6 +645,23 @@ code that has never been asked a question.
   reviewed it. Reviews are written to files under `docs/architecture/`, never left in a terminal -
   the session terminal buffer captures only spinner redraw and the findings are unrecoverable from
   it. See Roles.
+- **Preserve the semantics, do not improve them. Specifically: do NOT normalize repository path
+  separators.** Measured on the owner's real store on 2026-07-15: three repositories are stored
+  **twice**, under both separator spellings - `D:\ReposFred\devthrottle` holds 324 turns while
+  `D:/ReposFred/devthrottle` holds 21, and the same split affects `cc-consult` (77 and 3) and
+  `mw-enrich-facade-impl` (7 and 2). There are 20 distinct repository keys today; normalizing
+  separators would collapse them to 17.
+
+  `OrdinalIgnoreCase` folds case but not `/` against `\`, so these are genuinely different keys
+  today and the Repos page already shows them as separate rows. **A worker who sees this and
+  "fixes" it has broken the mission**, because merging those buckets changes the owner's numbers -
+  and the only way to make criterion 1 pass afterwards is to loosen it until it no longer proves
+  anything. This mission moves where the numbers are stored and changes nothing about what they
+  mean, including the parts that look wrong. If the port ever produces 17 repository rows where
+  today there are 20, that is a defect, not a cleanup.
+
+  Whether the Repos page *should* merge separator variants is a real question and a good one. It is
+  the owner's to answer, it is recorded in the follow-ups, and it is not this mission.
 - **Do not touch the Director-side counting seam.** The honest count happens at
   `Session.SendInput` and `Session.SendTextAsync`, pinned by
   `src/CcDirector.Core.Tests/TerminalPromptInjectionChokepointTests.cs`. This mission changes
@@ -681,6 +718,14 @@ until the quality-assurance report.
   costs a schema change. What the mission delivers is that the change is a `PRAGMA user_version`
   migration that keeps the owner's numbers, instead of a shape change that quarantines the file and
   loses them. That is the whole point, and the model dimension will be its first real exercise.
+- **The Repos page splits the same repository across path-separator spellings.** Measured
+  2026-07-15: `D:\ReposFred\devthrottle` (324 turns) and `D:/ReposFred/devthrottle` (21 turns) are
+  two rows, as are two spellings each of `cc-consult` and `mw-enrich-facade-impl` - 20 rows where
+  17 repositories exist. `OrdinalIgnoreCase` folds case but not separators. Whether those rows
+  should merge is a genuine owner decision with a real trade-off: merging is what a human means by
+  "the same repository", but it silently rewrites history that was recorded as two. This mission
+  deliberately preserves the split (see Constraints) because changing it would break the one proof
+  Phase 1 has. Worth raising with the owner separately.
 - The silent default-filling failure mode described in point 2 of "The why" affects every remaining
   hand-rolled JSON store in the Gateway, not only the ones this mission ports. The stores this
   mission moves are protected by `PRAGMA user_version`; the others are not. Worth an owner decision
