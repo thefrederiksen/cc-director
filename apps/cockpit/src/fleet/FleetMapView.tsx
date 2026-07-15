@@ -11,7 +11,7 @@ import {
 } from "@devthrottle/client-core/fleet/fleetClient";
 import { useSharedRoster } from "@devthrottle/client-core/fleet/rosterStore";
 import { repoBasename, relativeTime } from "./format";
-import { agentBadgeText } from "./fleetMapFormat";
+import { agentBadgeText, buildControllerTree } from "./fleetMapFormat";
 import { MissionsBoard, missionCounts } from "../missions/MissionsBoard";
 
 // Per-Director reachability for the Online / Wobbly / Offline node rendering (issue #1215), provided at
@@ -72,12 +72,6 @@ function initialPivot(): Pivot {
     /* storage unavailable (private mode) - fall through to the default */
   }
   return "machine";
-}
-
-// A group of sessions that share a team (SessionDto.groupId), rendered as a lead/worker cluster.
-interface Team {
-  groupId: string;
-  sessions: SessionDto[];
 }
 
 // One column on the canvas for the active pivot: a header (the machine/repo/agent) plus its sessions,
@@ -458,36 +452,47 @@ function FleetList({ sessions, onOpen }: { sessions: SessionDto[]; onOpen: (sid:
   );
 }
 
+// Issue #1626: a lane's cards are ordered and indented as the spawn tree - a Manager's Workers sit
+// under it, not scattered through the lane. The tree itself is built in fleetMapFormat (pure, unit
+// tested); this only renders it.
 function LaneCards({ sessions, pivot, onOpen }: { sessions: SessionDto[]; pivot: Pivot; onOpen: (sid: string) => void }) {
-  const { teams, loose } = splitTeams(sessions);
+  const nodes = useMemo(() => buildControllerTree(sessions, sessionSort), [sessions]);
   return (
     <>
-      {teams.map((t) => (
-        <div key={t.groupId} className="fmap-team">
-          <div className="fmap-team-cap">
-            <span className="fmap-team-tag">Team</span>
-            {t.groupId}
-          </div>
-          {t.sessions.map((s) => (
-            <NodeCard key={s.sessionId ?? s.number} session={s} pivot={pivot} onOpen={onOpen} />
-          ))}
-        </div>
-      ))}
-      {loose.map((s) => (
-        <NodeCard key={s.sessionId ?? s.number} session={s} pivot={pivot} onOpen={onOpen} />
+      {nodes.map((n) => (
+        <NodeCard
+          key={n.session.sessionId ?? n.session.number}
+          session={n.session}
+          depth={n.depth}
+          pivot={pivot}
+          onOpen={onOpen}
+        />
       ))}
     </>
   );
 }
 
-function NodeCard({ session: s, pivot, onOpen }: { session: SessionDto; pivot: Pivot; onOpen: (sid: string) => void }) {
+function NodeCard({
+  session: s,
+  pivot,
+  onOpen,
+  depth = 0,
+}: {
+  session: SessionDto;
+  pivot: Pivot;
+  onOpen: (sid: string) => void;
+  depth?: number;
+}) {
   const directors = useContext(ReachabilityContext);
   const color = effectiveColor(s);
   const sid = s.sessionId ?? "";
   const unnamed = (s.name ?? "").trim().length === 0;
   const num = s.number;
   const hasNum = num !== null && num !== undefined && String(num).trim().length > 0;
-  const role = (s.groupRole ?? "").toLowerCase();
+  // The Gateway-resolved role (issue #1626). READ, never re-derived: only the Gateway can answer it
+  // (FleetRoleResolver), because a session's controller may live on another Director entirely.
+  const sessionRole = (s.sessionRole ?? "").trim();
+  const showRole = sessionRole.length > 0 && sessionRole.toLowerCase() !== "standalone";
   // Reachability of the owning Director (issue #1215): a Wobbly/Offline machine dims its cards in place.
   const reach = reachabilityFor(directors, s.directorId);
   const wobbly = reach?.state === REACHABILITY_WOBBLY;
@@ -496,8 +501,7 @@ function NodeCard({ session: s, pivot, onOpen }: { session: SessionDto; pivot: P
   const cls =
     "fmap-card" +
     (color === "red" ? " needs" : "") +
-    (role === "lead" ? " lead" : "") +
-    (role === "worker" ? " worker" : "") +
+    (depth > 0 ? " fmap-card-child" : "") +
     (wobbly ? " fmap-card-wobbly" : "") +
     (offline ? " fmap-card-offline" : "");
 
@@ -512,6 +516,10 @@ function NodeCard({ session: s, pivot, onOpen }: { session: SessionDto; pivot: P
   return (
     <article
       className={cls}
+      // Indent by tree depth (issue #1626). The depth itself is uncapped - nesting is real - but the
+      // INDENT is capped, so a deep chain leans right a little and then stops rather than squeezing the
+      // cards into a sliver. The connector rail (::before) is what keeps a capped level readable.
+      style={depth > 0 ? { marginLeft: `${Math.min(depth, 4) * 14}px` } : undefined}
       tabIndex={0}
       role="button"
       title={sid.length > 0 ? "Open session" : undefined}
@@ -535,8 +543,9 @@ function NodeCard({ session: s, pivot, onOpen }: { session: SessionDto; pivot: P
         </span>
       </div>
 
-      {(agentBadge !== null || tags.length > 0) && (
+      {(showRole || agentBadge !== null || tags.length > 0) && (
         <div className="fmap-card-tags">
+          {showRole && <span className={`fmap-role ${sessionRole.toLowerCase()}`}>{sessionRole}</span>}
           {agentBadge !== null && <span className="fmap-agent">{agentBadge}</span>}
           {tags.map((t) => (
             <span key={t.k} className="fmap-card-tag">
@@ -657,42 +666,19 @@ function shortDir(directorId: string): string {
   return tail.length > 8 ? tail.slice(0, 8) : tail;
 }
 
-// Split a lane's sessions into team clusters (2+ sharing a groupId) and loose singletons. A groupId
-// held by a single session is not a team - it renders as a normal card.
-function splitTeams(sessions: SessionDto[]): { teams: Team[]; loose: SessionDto[] } {
-  const byGroup = new Map<string, SessionDto[]>();
-  const loose: SessionDto[] = [];
-  for (const s of sessions) {
-    const g = (s.groupId ?? "").trim();
-    if (g.length === 0) {
-      loose.push(s);
-      continue;
-    }
-    const arr = byGroup.get(g);
-    if (arr === undefined) byGroup.set(g, [s]);
-    else arr.push(s);
-  }
-  const teams: Team[] = [];
-  for (const [groupId, arr] of byGroup.entries()) {
-    if (arr.length >= 2) {
-      // Lead first, then workers, each sub-sorted stably.
-      teams.push({
-        groupId,
-        sessions: [...arr].sort((a, b) => roleRank(a) - roleRank(b) || sessionSort(a, b)),
-      });
-    } else {
-      loose.push(arr[0]);
-    }
-  }
-  loose.sort(sessionSort);
-  return { teams, loose };
-}
+// The groupId "team" clustering that used to live here is GONE (issue #1626). It was a live consumer of
+// a producer that does not exist: SessionDto.groupId is only ever assigned from SessionManager's
+// `groupId` parameter, that parameter defaults to null, no call site passes it, and NewSessionRequest
+// has no group field at all - so no session created through the Gateway, the CLI, or the desktop can
+// ever carry one. The clustering therefore never rendered, for anyone. The controller spawn tree
+// (buildControllerTree) is the real relationship and replaces it, which also keeps ONE grouping
+// mechanism in this view instead of two competing ones.
+//
+// The DTO field and its C# plumbing are deliberately left alone here - removing them is a separate
+// decision with its own blast radius, and this issue is a Cockpit change.
 
-function roleRank(s: SessionDto): number {
-  return (s.groupRole ?? "").toLowerCase() === "lead" ? 0 : 1;
-}
-
-// The agent badge text lives in fleetMapFormat.ts (pure, unit tested) - see the import at the top.
+// The agent badge text and the controller tree live in fleetMapFormat.ts (pure, unit tested) - see the
+// import at the top.
 
 // The two hierarchy coordinates to show on a card that the lane header does NOT already state.
 function cardTags(s: SessionDto, pivot: Pivot): Array<{ k: string; v: string }> {
