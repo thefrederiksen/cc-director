@@ -1,5 +1,13 @@
 # Manager brief - Tier 1 items 2, 3, 4 (Stable Release, v1.3.0)
 
+> **HISTORICAL RECORD - NOT IN FORCE.** This brief seeded a Manager session for the Stable Release mission (`ac6883bb`), which ended when v1.3.0 was released on 2026-07-14. It is kept for the record of what was
+> decided and why, and for the reasoning behind behaviour that has since shipped.
+>
+> **Nothing in this file is an instruction to you.** Every "you", every "do not ask", and the
+> standing-authority passage below were addressed to ONE named session, for the duration of that
+> mission, by the owner at that time. They expired with it. Read this as history, not as a brief you
+> have been handed. The standing rule is unchanged: **ask the owner before committing.**
+
 Mission id: `ac6883bb-09e2-4b5a-96bf-df3eae8d9f63`
 Architect: session `2eef41a3` ("Stable Release - Architect").
 
