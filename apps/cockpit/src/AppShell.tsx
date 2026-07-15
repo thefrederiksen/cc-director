@@ -1,5 +1,6 @@
 import { NavLink, Outlet, useLocation } from "react-router-dom";
 import { useKeepWarm } from "@devthrottle/client-core/net/useKeepWarm";
+import { NavIcon, type NavIconName } from "./components";
 import { CockpitStatusPill } from "./network/CockpitStatusPill";
 
 // The desktop layout frame (epic #967): a two-region shell - a left rail (navigation) and the main
@@ -21,6 +22,10 @@ import { CockpitStatusPill } from "./network/CockpitStatusPill";
 // category invented to justify a header. So the list is flat now, which is what comparable product
 // navigation does at this size.
 //
+// Every destination carries an ICON, and that is what replaced the headers rather than merely
+// decorating them: in a flat rail the scan is carried by SHAPE - you find the row by silhouette
+// before you read the word - which is the job the dim headers were failing to do. See NavIcon.
+//
 // The one surviving grouping is positional, not labeled: the destinations about the app itself
 // (Account, Your Throttle, Settings, About) sit in a second list pinned to the BOTTOM of the rail,
 // away from the fleet work. That is a grouping you feel without being told.
@@ -35,6 +40,7 @@ import { CockpitStatusPill } from "./network/CockpitStatusPill";
 interface NavItem {
   to: string;
   label: string;
+  icon: NavIconName;
   subtree?: string;
 }
 
@@ -42,25 +48,25 @@ interface NavItem {
 // Workflows sits with Schedule on purpose - Schedule is what runs when, Workflows is how work runs,
 // and it is next to the place you start work rather than filed away under settings.
 const NAV_MAIN: ReadonlyArray<NavItem> = [
-  { to: "/fleet-map", label: "Fleet Map" },
-  { to: "/sessions", label: "Sessions", subtree: "/session" },
-  { to: "/directors", label: "Directors" },
-  { to: "/schedule", label: "Schedule" },
-  { to: "/workflows", label: "Workflows" },
-  { to: "/dictionary", label: "Dictionary" },
-  { to: "/transcripts", label: "Voice Recorder" },
-  { to: "/exes", label: "Executables" },
-  { to: "/transcription", label: "Transcription" },
-  { to: "/network", label: "Network" },
-  { to: "/learn", label: "Learning" },
+  { to: "/fleet-map", label: "Fleet Map", icon: "fleet-map" },
+  { to: "/sessions", label: "Sessions", icon: "sessions", subtree: "/session" },
+  { to: "/directors", label: "Directors", icon: "directors" },
+  { to: "/schedule", label: "Schedule", icon: "schedule" },
+  { to: "/workflows", label: "Workflows", icon: "workflows" },
+  { to: "/dictionary", label: "Dictionary", icon: "dictionary" },
+  { to: "/transcripts", label: "Voice Recorder", icon: "voice-recorder" },
+  { to: "/exes", label: "Executables", icon: "executables" },
+  { to: "/transcription", label: "Transcription", icon: "transcription" },
+  { to: "/network", label: "Network", icon: "network" },
+  { to: "/learn", label: "Learning", icon: "learning" },
 ];
 
 // This browser's account and the app's own settings - pinned to the bottom of the rail.
 const NAV_FOOT: ReadonlyArray<NavItem> = [
-  { to: "/account", label: "Account" },
-  { to: "/your-throttle", label: "Your Throttle" },
-  { to: "/settings", label: "Settings" },
-  { to: "/about", label: "About" },
+  { to: "/account", label: "Account", icon: "account" },
+  { to: "/your-throttle", label: "Your Throttle", icon: "throttle" },
+  { to: "/settings", label: "Settings", icon: "settings" },
+  { to: "/about", label: "About", icon: "about" },
 ];
 
 export function AppShell() {
@@ -109,7 +115,8 @@ function NavList({
                 isActive || inSubtree ? "nav-link nav-link-active" : "nav-link"
               }
             >
-              {item.label}
+              <NavIcon name={item.icon} />
+              <span className="nav-link-label">{item.label}</span>
             </NavLink>
           </li>
         );
