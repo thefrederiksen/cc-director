@@ -21,18 +21,20 @@ namespace CcDirector.Gateway.Api;
 ///   self-contained HTML front door with a single "Sign in with DevThrottle" action. Side-effect-free: it
 ///   never opens a browser, never reads a credential, and its response is identical whether or not the
 ///   caller supplies any token, so a stray credential cannot influence it.</item>
-/// <item><c>POST /account/sign-in-start</c> - the START action the front door submits. It kicks the
-///   EXISTING Gateway browser loopback sign-in (<see cref="GatewaySignInService"/>, issue #637) off as a
-///   detached background task, exactly like the authenticated <see cref="AccountSignInEndpoint"/> (#853),
-///   and returns a small status page. The captured token never leaves the Gateway.</item>
+/// <item><c>POST /account/sign-in-start</c> - the START action the front door submits. It BRANCHES on the
+///   caller (issue #1080). A REMOTE caller is answered <c>302</c> to devthrottle.com carrying a
+///   <c>redirect_uri</c> back to this Gateway's own routable <c>/account/sign-in-callback</c>, so the
+///   person completes sign-in in their OWN browser. Only a LOOPBACK caller falls to the host-local
+///   browser sign-in (<see cref="GatewaySignInService"/>, issue #637), where a browser on this host's
+///   desktop is actually reachable. The captured token never leaves the Gateway.</item>
 /// </list>
 ///
-/// Scope boundary (issue #1076): this endpoint makes the sign-in start REACHABLE without a credential. The
-/// remote-vs-loopback redirect mechanics of the flow itself are a separate follow-up (epic #1069, issue
-/// "0b"); here the start reuses the existing host-local loopback mechanism unchanged. Every <c>/account</c>
-/// DATA endpoint (<c>/account/status</c>, <c>/account/logout</c>, <c>/account/devices</c>,
-/// <c>/account/credits</c>) and the authenticated <c>POST /account/sign-in</c> stay gated exactly as before
-/// - the public allow-list is an exact-path set, so adding this path weakens none of them.
+/// This is the ONLY way to start a Gateway sign-in. The authenticated <c>POST /account/sign-in</c> that
+/// used to sit beside it was removed with the Gateway's user interface: it ran the loopback flow
+/// unconditionally, so the Cockpit's Sign in button hung forever on any machine but this one. Every
+/// <c>/account</c> DATA endpoint (<c>/account/status</c>, <c>/account/logout</c>, <c>/account/devices</c>,
+/// <c>/account/credits</c>) stays gated exactly as before - the public allow-list is an exact-path set, so
+/// adding this path weakens none of them.
 ///
 /// Security (carries DT-05): no access/refresh token is ever read from the request, written to the
 /// response, or written to the log on any path. The log records only that the credential-free start was

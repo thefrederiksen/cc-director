@@ -4,90 +4,54 @@ using System.Net.Sockets;
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Controls.ApplicationLifetimes;
-using Avalonia.Media;
-using Avalonia.Media.Imaging;
 using Avalonia.Platform;
 using Avalonia.Threading;
-using CcDirector.Core.Diagnostics;
-using CcDirector.Core.Network;
-using CcDirector.Core.Storage;
 using CcDirector.Core.Utilities;
 using CcDirector.Gateway;
-using CcDirector.Gateway.Tray;
 using CcDirector.HostedAgent;
 using CcDirector.Setup.Engine;
-using CcDirector.TrayUi;
 
 namespace CcDirector.GatewayApp;
 
 /// <summary>
-/// Owns the tray icon, the in-process <see cref="GatewayHost"/>, the Cockpit supervisor, and (in
-/// managed mode) the periodic self-update check. This is the whole app: no main window, just a
-/// notification-area icon whose menu drives the gateway. Closing nothing kills the process - only
-/// the Quit menu item (or a /shutdown request from the self-update helper) shuts it down.
+/// Hosts the in-process <see cref="GatewayHost"/> and puts a Start/Stop control in the notification area.
+///
+/// The Gateway is being reshaped to behave like a WINDOWS SERVICE, and this class is deliberately the only
+/// thing standing between it and that: it is a thin SHIM around the host, not the application. A service
+/// has exactly two verbs a person can use on it - start and stop - so that is all this tray offers. There
+/// is no flyout, no status panel, no settings, no sign-in, and no "open the Cockpit": every screen the
+/// Gateway used to own now lives in the Cockpit, which is reached by browsing to the Gateway's own URL.
+///
+/// The acceptance test for the shape: DELETE THIS CLASS AND NOTHING BREAKS. Anything that would break if
+/// this file vanished belongs in CcDirector.Gateway (the headless library), not here. When the Gateway
+/// becomes a real service, this shim is deleted and nothing else changes.
+///
+/// Consequently the Gateway NEVER opens a browser and never draws a window - a service has no desktop to
+/// draw on. Signing the Gateway in to its DevThrottle account is done from the Cockpit's Account page,
+/// which navigates to the public /account/sign-in-start front door (epic #1069).
 /// </summary>
 public sealed class GatewayTrayController : IDisposable
 {
     private enum HostState { Starting, Running, Stopped, Failed }
     private enum PortProbe { Nothing, OurGateway, OtherListener }
 
-    // Issue #855: how often the background heartbeats refresh the cached flyout values. The Director
-    // count read is cheap (an in-memory registry snapshot) so it refreshes often, keeping the flyout
-    // count within one interval of the registry. The front-door URL resolution shells the tailscale
-    // CLI (up to a ~5s blocking timeout) and the MagicDNS name almost never changes, so it refreshes
-    // far less often - and only ever on this background thread, never on the flyout-open path.
-    private static readonly TimeSpan DirectorCountHeartbeatInterval = TimeSpan.FromSeconds(2);
-    private static readonly TimeSpan FrontDoorHeartbeatInterval = TimeSpan.FromSeconds(15);
-    // The Cockpit reachability probe (loopback HTTP, 2s timeout) and the Brain health read (touches
-    // transcript files on disk): both are I/O, so like the others they only ever run on this
-    // background heartbeat and the flyout reads their cached one-liners.
-    private static readonly TimeSpan LocalStatusHeartbeatInterval = TimeSpan.FromSeconds(5);
-
-    /// <summary>Probes the local Cockpit for the flyout's "Cockpit" row (heartbeat-only, never on open).</summary>
-    private static readonly HttpClient CockpitProbeHttp = new() { Timeout = TimeSpan.FromSeconds(2) };
-
     // Issue #880: how long a /shutdown-initiated graceful quit gets before the watchdog hard-exits
     // the process. Must stay well under the self-update helper's 20-second wait for the exe to
     // unlock, so a wedged quit can never strand an update on the old build.
     private static readonly TimeSpan ShutdownWatchdogGrace = TimeSpan.FromSeconds(10);
 
-    // Issue #927: how long the distinct post-restart tooltip ("restarted OK - v... at ...") dwells
-    // before the tray reverts to its normal running tooltip. The persistent "Last restart" flyout row
-    // stays regardless, so this is only how long the tooltip itself stays distinct.
-    private static readonly TimeSpan RestartConfirmationDwell = TimeSpan.FromSeconds(8);
-
     private readonly IClassicDesktopStyleApplicationLifetime _desktop;
     private readonly int _port;
     private readonly CancellationTokenSource _lifetime = new();
 
-    // Issue #855: the cached values the flyout shows, refreshed by the background heartbeats below so
-    // BuildFlyoutModel and OpenCockpit never do a synchronous registry read or tailscale CLI probe on
-    // the open/click path (which previously delayed the flyout from painting).
-    private readonly GatewayTrayFlyoutCache _flyoutCache = new();
-
     private TrayIcon? _trayIcon;
-    private TrayFlyoutController? _flyout;
-    private Bitmap? _icon;
+    private NativeMenuItem? _startItem;
+    private NativeMenuItem? _stopItem;
     private string _statusText = "Gateway stopped";
     private GatewayHost? _host;
-
-    // The flyout's "Details" section: resolved once, off the UI thread, right after Start (they are
-    // small local file reads that never change within one run), so the flyout open stays I/O-free.
-    private volatile string _buildDateText = GatewayTrayFlyoutCache.Placeholder;
-    private volatile string _installRootText = GatewayTrayFlyoutCache.Placeholder;
-    private volatile string _installedText = GatewayTrayFlyoutCache.Placeholder;
     private HostState _state = HostState.Stopped;
     private bool _busy;
     private bool _disposed;
-    // Issue #927: the outcome of the most recent "Restart Gateway" click (success with the running
-    // version, or a failure reason), shown as a persistent "Last restart" row on the flyout so the
-    // user can always confirm a restart took effect - the PID never changes, so without this the
-    // in-process restart is invisible. Null until the first restart of this run. UI-thread only (both
-    // written from the restart continuation and read by BuildFlyoutModel run on the UI thread).
-    private string? _lastRestartStatus;
-    // Issue #637: cancels an in-flight browser loopback sign-in when the app quits, so a pending
-    // hand-off never outlives the process. A fresh source is created for each sign-in run.
-    private CancellationTokenSource? _signInCts;
 
     public GatewayTrayController(IClassicDesktopStyleApplicationLifetime desktop, int port)
     {
@@ -98,7 +62,7 @@ public sealed class GatewayTrayController : IDisposable
     /// <summary>The gateway's listen port.</summary>
     public int Port => _port;
 
-    /// <summary>When the tray app started (for the flyout's uptime row).</summary>
+    /// <summary>When the tray app started.</summary>
     public DateTime StartedAtUtc { get; } = DateTime.UtcNow;
 
     /// <summary>The running host, or null while stopped/starting.</summary>
@@ -107,15 +71,14 @@ public sealed class GatewayTrayController : IDisposable
     /// <summary>
     /// The Gateway's in-process brain (issue #184): a warm claude.exe this process hosts
     /// itself - no Director dependency. Owned by the <see cref="GatewayHost"/> (the brief
-    /// agent drives it, issue #185); null while the host is stopped/starting. Dormant until
-    /// first use (a turn brief, or a restart from the Cockpit Settings page).
+    /// agent drives it, issue #185); null while the host is stopped/starting.
     /// </summary>
     public BrainSupervisor? Brain => _host?.Brain;
 
     /// <summary>Human-readable host state ("Running", "Failed", ...).</summary>
     public string StateText => _state.ToString();
 
-    /// <summary>Build the tray icon, register autostart, and start the gateway + Cockpit supervisor.</summary>
+    /// <summary>Build the tray control, register autostart, and start the gateway.</summary>
     public void Start()
     {
         FileLog.Write($"[GatewayTrayController] Start (managed={GatewayAppOptions.Managed})");
@@ -126,40 +89,25 @@ public sealed class GatewayTrayController : IDisposable
         SetState(HostState.Starting);
         _ = StartHostAsync();
 
-        // Issue #855: keep the flyout's cached values warm on background heartbeats so the left-click
-        // flyout paints instantly from cache, never blocking the open on a synchronous registry read,
-        // a tailscale CLI probe, an HTTP probe, or a brain health read.
-        _ = RunHeartbeatAsync("registry", DirectorCountHeartbeatInterval, RefreshRegistryCache, _lifetime.Token);
-        _ = RunHeartbeatAsync("front-door", FrontDoorHeartbeatInterval, RefreshFrontDoorCache, _lifetime.Token);
-        _ = RunHeartbeatAsync("local-status", LocalStatusHeartbeatInterval, RefreshLocalStatusCacheAsync, _lifetime.Token);
-
-        // The Details section values (build date, install root, installed versions): read once, off
-        // the UI thread - they cannot change within one run.
-        _ = Task.Run(ResolveAboutInfo);
-
         if (GatewayAppOptions.Managed)
             _ = RunUpdateLoopAsync(_lifetime.Token);
-
-        if (GatewayAppOptions.OpenPanelOnStart)
-            _flyout?.Toggle();
     }
 
     private void BuildTrayIcon()
     {
-        // Modern interaction (consistent with the Launcher): LEFT-CLICK opens the OneDrive-style
-        // flyout - the Gateway's ONE local surface: live status, details, action buttons, the
-        // Start-on-login toggle, and a Settings link that goes straight to the Cockpit Settings
-        // page. Right-click is reduced to a single Quit escape hatch.
-        _icon = new Bitmap(AssetLoader.Open(new Uri("avares://devthrottle-gateway/Assets/icon.png")));
-        _flyout = new TrayFlyoutController(BuildFlyoutModel);
-        // Create + first-layout the panel window off-screen NOW, so the first left-click is
-        // instant instead of paying native window creation.
-        _flyout.WarmUp();
-
+        // Service semantics: the menu is Start and Stop, and nothing else. The Gateway's status, settings,
+        // account, devices and everything else are the Cockpit's, reached by browsing to this Gateway's
+        // URL - not by a panel hanging off this icon. The tooltip carries the one thing a person needs
+        // from the icon itself: whether it is running.
         var menu = new NativeMenu();
-        var quit = new NativeMenuItem("Quit");
-        quit.Click += (_, _) => _ = QuitAsync();
-        menu.Add(quit);
+
+        _startItem = new NativeMenuItem("Start");
+        _startItem.Click += (_, _) => _ = StartClickedAsync();
+        menu.Add(_startItem);
+
+        _stopItem = new NativeMenuItem("Stop");
+        _stopItem.Click += (_, _) => _ = StopClickedAsync();
+        menu.Add(_stopItem);
 
         _trayIcon = new TrayIcon
         {
@@ -168,283 +116,73 @@ public sealed class GatewayTrayController : IDisposable
             Menu = menu,
             IsVisible = true,
         };
-        _trayIcon.Clicked += (_, _) => _flyout?.Toggle();
 
         var icons = new TrayIcons { _trayIcon };
         TrayIcon.SetIcons(Application.Current!, icons);
-        FileLog.Write("[GatewayTrayController] Tray icon created");
+        ApplyMenuEnablement();
+        FileLog.Write("[GatewayTrayController] Tray icon created (Start/Stop only)");
     }
 
-    /// <summary>
-    /// Build the flyout's content from current state (called fresh on each open). Issue #855: the
-    /// Director count comes from the heartbeat-refreshed cache (<see cref="_flyoutCache"/>) - never a
-    /// synchronous registry read - so this method does no blocking I/O and the flyout paints instantly.
-    /// Uptime stays computed inline (it is a cheap subtraction, no I/O).
-    /// </summary>
-    private TrayFlyoutModel BuildFlyoutModel()
+    /// <summary>Start the gateway host (the service's Start verb). A no-op while it is already up.</summary>
+    private async Task StartClickedAsync()
     {
-        var up = DateTime.UtcNow - StartedAtUtc;
-        var uptime = up.TotalHours >= 1 ? $"{(int)up.TotalHours}h {up.Minutes:D2}m" : $"{up.Minutes}m {up.Seconds:D2}s";
-
-        // Issue #637: the Gateway's DevThrottle sign-in state, surfaced on the tray. The decision logic
-        // lives in GatewaySignInTraySurface (library, unit-tested) so this method stays a thin binding.
-        // Read locally from the cached credential (no network). A null sign-in flow (no credential
-        // service on this host) shows nothing rather than a misleading "signed out".
-        var signIn = _host?.SignIn;
-        var accountValue = CcDirector.Gateway.Account.GatewaySignInTraySurface.AccountRowValue(signIn);
-
-        // One row per fleet Director (machine + version + how recently it was seen). While the
-        // list has entries it REPLACES the bare "Directors: N" count row - the count is evident.
-        var fleet = _flyoutCache.FleetLines
-            .Select(l => new StatusRow(l.Label, l.Value))
-            .ToList();
-
-        var rows = new List<StatusRow>();
-        // Issue #927: keep the last "Restart Gateway" outcome visible at the top of the flyout. The
-        // tray tooltip confirmation is transient (it reverts to the normal running tooltip); this row
-        // is the durable record, so opening the flyout always shows whether the last restart worked.
-        if (_lastRestartStatus is { } restart)
-            rows.Add(new("Last restart", restart));
-        if (accountValue is not null)
-            rows.Add(new(CcDirector.Gateway.Account.GatewaySignInTraySurface.AccountRowLabel, accountValue));
-        if (fleet.Count == 0)
-            rows.Add(new("Directors", _flyoutCache.DirectorCountDisplay));
-        rows.Add(new("Machines", _flyoutCache.MachinesDisplay));
-        rows.Add(new("Devices", _flyoutCache.DevicesDisplay));
-        rows.Add(new("Cockpit", _flyoutCache.CockpitStatusDisplay));
-        rows.Add(new("Brain", _flyoutCache.BrainSummaryDisplay));
-        rows.Add(new("Uptime", uptime));
-        rows.Add(new("Version",
-            // Trim the +githash, matching the launcher; the run mode belongs to the build, so it
-            // rides along here instead of burning its own row.
-            $"{AppVersion.Full.Split('+')[0]} ({(GatewayAppOptions.Managed ? "managed" : "dev")})"));
-
-        var sections = fleet.Count > 0
-            ? new[] { new FlyoutSection { Title = "Directors", Rows = fleet } }
-            : Array.Empty<FlyoutSection>();
-
-        // The quieter diagnostics that used to hide in the (now removed) settings window: they live
-        // right here on the flyout, so the tray left-click is the Gateway's ONE local surface.
-        var details = new List<StatusRow>
+        if (_busy) return;
+        if (_host is not null)
         {
-            new("Cockpit URL", _flyoutCache.FrontDoorBaseUrl is { } front ? front + "/" : GatewayTrayFlyoutCache.Placeholder),
-            new("Build date", _buildDateText),
-            new("Install root", _installRootText),
-            new("Installed", _installedText),
-        };
-
-        // ONE URL (docs/plans/one-url-cockpit.md): Open Cockpit is the primary action.
-        var actions = new List<FlyoutAction>
-        {
-            new() { Text = "Open Cockpit", Primary = true, OnClick = OpenCockpit },
-            // The Gateway itself has no settings; this jumps straight to the Cockpit Settings page
-            // (docs/architecture/gateway/SETTINGS_OWNERSHIP.md). A real button, not a footer link.
-            new() { Text = "Settings", OnClick = OpenCockpitSettings },
-            new() { Text = "Restart Gateway", OnClick = () => _ = RestartAsync() },
-        };
-        // Issue #637: the "Sign in to DevThrottle" action starts (or retries) the browser loopback
-        // sign-in. Shown only while the Gateway is NOT signed in - and then it IS the call to
-        // action, so it renders as a second accented primary button.
-        if (CcDirector.Gateway.Account.GatewaySignInTraySurface.ShouldShowSignInAction(signIn))
-            actions.Insert(1, new() { Text = CcDirector.Gateway.Account.GatewaySignInTraySurface.SignInActionText, Primary = true, OnClick = StartSignIn });
-
-        // Quiet diagnostics in the footer; Settings sits above as a real button.
-        var footerLinks = new List<FlyoutAction>
-        {
-            new() { Text = "Logs", OnClick = OpenLogsFolder },
-            new() { Text = "Config", OnClick = OpenConfigFolder },
-        };
-
-        ToggleSpec? toggle = OperatingSystem.IsWindows()
-            ? new ToggleSpec { Label = "Start on login", IsOn = GatewayAutostart.IsRegistered(), OnChanged = SetAutostart }
-            : null;
-
-        return new TrayFlyoutModel
-        {
-            AppName = "DevThrottle Gateway",
-            Icon = _icon,
-            StatusTitle = _statusText,
-            StatusPillText = _state.ToString(),
-            Status = _state switch
-            {
-                HostState.Running => StatusLevel.Ok,
-                HostState.Starting => StatusLevel.Warn,
-                HostState.Stopped => StatusLevel.Warn,
-                _ => StatusLevel.Error,
-            },
-            Accent = Color.Parse("#007ACC"), // gateway blue (matches its existing UI)
-            Rows = rows,
-            Sections = sections,
-            DetailRows = details,
-            Actions = actions,
-            FooterLinks = footerLinks,
-            Toggle = toggle,
-            OnQuit = () => _ = QuitAsync(),
-        };
-    }
-
-    /// <summary>
-    /// Issue #855: a background heartbeat that periodically runs <paramref name="refresh"/> to keep a
-    /// cached flyout value warm. The refresh runs first (so the cache resolves as soon as possible),
-    /// then the loop waits <paramref name="interval"/> before the next refresh. A refresh failure only
-    /// logs and the heartbeat keeps running - a transient registry or tailscale hiccup must not stop
-    /// the cache from refreshing (the same long-running-loop boundary handling as RunUpdateLoopAsync).
-    ///
-    /// The refresh is dispatched through <see cref="Task.Run(Func{Task})"/> on every beat: this loop
-    /// is started from the UI thread, so a plain awaited call would resume ON the UI thread via the
-    /// Avalonia dispatcher - and the front-door refresh shells the tailscale CLI with a multi-second
-    /// blocking timeout, which would freeze the tray on every beat. Task.Run pins the work (and its
-    /// continuations) to the thread pool, keeping the UI thread untouched.
-    /// </summary>
-    private static Task RunHeartbeatAsync(string name, TimeSpan interval, Action refresh, CancellationToken ct)
-        => RunHeartbeatAsync(name, interval, () => { refresh(); return Task.CompletedTask; }, ct);
-
-    private static async Task RunHeartbeatAsync(string name, TimeSpan interval, Func<Task> refresh, CancellationToken ct)
-    {
-        FileLog.Write($"[GatewayTrayController] {name} heartbeat started (interval={interval.TotalSeconds}s)");
-        while (!ct.IsCancellationRequested)
-        {
-            try
-            {
-                await Task.Run(refresh, ct);
-            }
-            catch (OperationCanceledException)
-            {
-                break; // shutdown, not a refresh failure
-            }
-            catch (Exception ex)
-            {
-                FileLog.Write($"[GatewayTrayController] {name} heartbeat refresh FAILED: {ex.Message}");
-            }
-
-            try
-            {
-                await Task.Delay(interval, ct);
-            }
-            catch (OperationCanceledException)
-            {
-                break;
-            }
+            FileLog.Write("[GatewayTrayController] Start clicked: already running - ignoring");
+            return;
         }
-        FileLog.Write($"[GatewayTrayController] {name} heartbeat stopped");
-    }
-
-    /// <summary>
-    /// Issue #855: refresh the cached registry snapshots (off the UI thread) - the Director count,
-    /// the per-Director Fleet lines, the paired-device count, and the online launcher (machine)
-    /// count. All are cheap in-memory reads; they are cached so the flyout open path never calls
-    /// them synchronously. While the host is still starting there is no registry yet, so the cache
-    /// keeps its placeholders.
-    /// </summary>
-    private void RefreshRegistryCache()
-    {
-        var host = _host;
-        if (host is null)
-            return; // host not up yet - leave the cached "..." placeholders until it is
-
-        var directors = host.Registry.ListDirectors();
-        _flyoutCache.SetDirectorCount(directors.Count);
-
-        var now = DateTime.UtcNow;
-        _flyoutCache.SetFleet(directors
-            .OrderBy(d => d.MachineName, StringComparer.OrdinalIgnoreCase)
-            .ThenBy(d => d.Pid)
-            .Select(d => new FleetLine(
-                d.MachineName,
-                GatewayTrayFlyoutCache.DescribeDirector(d.Version, d.LastSeen, d.AdvertisedEndpointState, now)))
-            .ToList());
-
-        _flyoutCache.SetDeviceCount(host.Devices.Count);
-        _flyoutCache.SetMachineCount(host.Launchers.ListLaunchers().Count);
-    }
-
-    /// <summary>
-    /// Issue #855: refresh the cached Tailscale front-door base URL (off the UI thread). This is the
-    /// only caller that shells the tailscale CLI; the Open Cockpit click reads the cached value so it
-    /// never blocks. A null result (Tailscale unavailable) is cached as null so Open Cockpit refuses.
-    /// </summary>
-    private void RefreshFrontDoorCache()
-        => _flyoutCache.SetFrontDoorBaseUrl(TailscaleIdentity.TryGetFrontDoorBaseUrl());
-
-    /// <summary>
-    /// Refresh the flyout's cached Cockpit reachability line (a loopback HTTP probe) and one-line
-    /// Brain summary (a health read that touches transcript files) - both I/O, both heartbeat-only,
-    /// so the flyout open path just reads their cached strings.
-    /// </summary>
-    private async Task RefreshLocalStatusCacheAsync()
-    {
-        // The Cockpit is served in-process by the Gateway (issue #979 retired the separate Blazor
-        // Cockpit process), so its reachability is the Gateway's own: probe the Gateway health port.
-        var cockpitPort = GatewayAppOptions.Port;
-        bool cockpitUp;
+        _busy = true;
         try
         {
-            using var resp = await CockpitProbeHttp.GetAsync($"http://127.0.0.1:{cockpitPort}/healthz");
-            cockpitUp = resp.IsSuccessStatusCode;
+            FileLog.Write("[GatewayTrayController] Start clicked");
+            SetState(HostState.Starting);
+            // Issue #880: the start chain runs on the THREAD POOL, never inline from the click. Run
+            // inline, the awaits inside the host resume on the UI thread, where a synchronous dispose
+            // can block - freezing the tray and wedging the operation. SetState/ApplyStatus marshal to
+            // the UI thread themselves, so the tray stays responsive throughout.
+            await Task.Run(StartHostAsync);
         }
-        catch
+        finally
         {
-            cockpitUp = false;
-        }
-        _flyoutCache.SetCockpitStatus(cockpitUp, cockpitPort);
-
-        var brain = _host?.Brain;
-        if (brain is null)
-            return; // host not up yet - leave the cached placeholder until it is
-
-        var health = await brain.GetHealthAsync();
-        _flyoutCache.SetBrainSummary(health.Status == "NotStarted"
-            ? "not started (spawns on first use)"
-            : health.IsAlive
-                ? $"alive ({_host?.BrainModel ?? "-"}), idle {health.IdleSeconds:F0}s"
-                : $"DEAD ({health.Status}) - restart in the Cockpit");
-    }
-
-    /// <summary>
-    /// Resolve the flyout's Details values once (build date, install root, installed component
-    /// versions): small local file reads that never change within one run of this process.
-    /// </summary>
-    private void ResolveAboutInfo()
-    {
-        try
-        {
-            _buildDateText = AboutInfo.BuildDate()?.ToString("yyyy-MM-dd HH:mm") ?? "(unknown)";
-            _installRootText = AboutInfo.InstallRoot;
-            var installed = AboutInfo.InstalledComponents();
-            _installedText = installed.Count == 0
-                ? "(no installed.json - dev build?)"
-                : string.Join(", ", installed.OrderBy(k => k.Key, StringComparer.OrdinalIgnoreCase)
-                    .Select(kv => $"{kv.Key} {kv.Value}"));
-        }
-        catch (Exception ex)
-        {
-            FileLog.Write($"[GatewayTrayController] ResolveAboutInfo FAILED: {ex.Message}");
+            _busy = false;
+            ApplyMenuEnablement();
         }
     }
 
-    /// <summary>Enable/disable the Start-on-login autostart from the flyout toggle.</summary>
-    private void SetAutostart(bool enable)
+    /// <summary>Stop the gateway host (the service's Stop verb). The tray stays, so it can be started again.</summary>
+    private async Task StopClickedAsync()
     {
-        if (!OperatingSystem.IsWindows()) return;
+        if (_busy) return;
+        if (_host is null)
+        {
+            FileLog.Write("[GatewayTrayController] Stop clicked: already stopped - ignoring");
+            return;
+        }
+        _busy = true;
         try
         {
-            if (enable)
-            {
-                var exe = Environment.ProcessPath
-                          ?? throw new InvalidOperationException("Could not resolve own exe path");
-                GatewayAutostart.EnsureRegistered(exe, GatewayAppOptions.AutostartArguments());
-                FileLog.Write("[GatewayTrayController] Autostart enabled by user");
-            }
-            else
-            {
-                GatewayAutostart.Unregister();
-                FileLog.Write("[GatewayTrayController] Autostart disabled by user");
-            }
+            FileLog.Write("[GatewayTrayController] Stop clicked");
+            // Issue #880: off the UI thread - the host stop also gracefully stops the host-owned brain,
+            // whose synchronous dispose would otherwise block the UI thread and wedge the stop.
+            await Task.Run(StopHostAsync);
+            SetState(HostState.Stopped);
         }
-        catch (Exception ex)
+        finally
         {
-            FileLog.Write($"[GatewayTrayController] SetAutostart FAILED: {ex.Message}");
+            _busy = false;
+            ApplyMenuEnablement();
         }
+    }
+
+    /// <summary>Grey out the verb that does not apply, the way a service control does.</summary>
+    private void ApplyMenuEnablement()
+    {
+        Dispatcher.UIThread.Post(() =>
+        {
+            if (_startItem is not null) _startItem.IsEnabled = _host is null && !_busy;
+            if (_stopItem is not null) _stopItem.IsEnabled = _host is not null && !_busy;
+        });
     }
 
     private async Task StartHostAsync()
@@ -473,9 +211,11 @@ public sealed class GatewayTrayController : IDisposable
                 watchdog.Start();
                 _ = QuitAsync();
             };
-            // Back the Cockpit Settings page with the tray-owned bits (run mode + autostart Run-key):
-            // the host hosts the REST surface, but only the tray process knows its mode and owns the
-            // per-user autostart entry (which needs THIS exe path + the managed-launch arguments).
+            // Back the Cockpit Settings page with the bits only THIS process knows (run mode + the
+            // per-user autostart Run-key, which needs this exe's path and the managed-launch arguments).
+            // These hooks are optional by design - GatewaySettingsHooks degrades to
+            // "unknown"/"unsupported" when null - so a headless host without this shim still serves
+            // settings correctly. That is what keeps the delete-the-shim test honest.
             host.SettingsHooks = new CcDirector.Gateway.Api.GatewaySettingsHooks
             {
                 Mode = () => GatewayAppOptions.Managed ? "managed" : "dev",
@@ -498,79 +238,14 @@ public sealed class GatewayTrayController : IDisposable
             await host.StartAsync();
             _host = host;
             SetState(HostState.Running);
+            ApplyMenuEnablement();
             FileLog.Write($"[GatewayTrayController] Gateway running on :{_port}");
-
-            // Issue #637 (Gateway Centralization Phase 2): forced sign-in at the Gateway's first
-            // launch. When the Gateway has no stored credential, auto-prompt the browser loopback
-            // sign-in; when it already has one, do nothing (a subsequent launch never re-prompts).
-            PromptSignInIfNeeded();
         }
         catch (Exception ex)
         {
             FileLog.Write($"[GatewayTrayController] StartHostAsync FAILED: {ex.Message}");
             await DiagnoseStartFailureAsync();
         }
-    }
-
-    /// <summary>
-    /// Issue #637: on launch, prompt the browser loopback sign-in only when the Gateway has no stored
-    /// credential. Already signed in -> no prompt (acceptance criterion 3). Fire-and-forget so the
-    /// host-start path is never blocked by the browser hand-off.
-    /// </summary>
-    private void PromptSignInIfNeeded()
-    {
-        var signIn = _host?.SignIn;
-        if (!CcDirector.Gateway.Account.GatewaySignInTraySurface.ShouldPromptOnLaunch(signIn))
-        {
-            FileLog.Write(signIn is null
-                ? "[GatewayTrayController] PromptSignInIfNeeded: no sign-in flow on this host (no credential service) - skipping"
-                : "[GatewayTrayController] PromptSignInIfNeeded: Gateway already signed in - not prompting");
-            return;
-        }
-
-        FileLog.Write("[GatewayTrayController] PromptSignInIfNeeded: Gateway has no credential - prompting browser sign-in");
-        StartSignIn();
-    }
-
-    /// <summary>
-    /// Issue #637: start (or retry) the browser loopback sign-in. Detached and guarded so the tray
-    /// click returns immediately and a second click while one is running is a no-op (the service's
-    /// single-flight guard). A failed or cancelled sign-in only logs - the Gateway stays un-signed-in
-    /// and the tray "Sign in to DevThrottle" action remains, so it is retryable with no crash.
-    /// </summary>
-    private void StartSignIn()
-    {
-        var signIn = _host?.SignIn;
-        if (signIn is null)
-        {
-            FileLog.Write("[GatewayTrayController] StartSignIn: no sign-in flow on this host - ignoring");
-            return;
-        }
-        if (signIn.IsSignInRunning)
-        {
-            FileLog.Write("[GatewayTrayController] StartSignIn: a sign-in is already in flight - ignoring");
-            return;
-        }
-
-        _signInCts?.Dispose();
-        _signInCts = CancellationTokenSource.CreateLinkedTokenSource(_lifetime.Token);
-        var ct = _signInCts.Token;
-
-        _ = Task.Run(async () =>
-        {
-            try
-            {
-                var result = await signIn.RunSignInAsync(ct);
-                FileLog.Write(result.Succeeded
-                    ? "[GatewayTrayController] StartSignIn: signed in to DevThrottle"
-                    : $"[GatewayTrayController] StartSignIn: not signed in ({result.FailureReason}); retryable from the tray");
-            }
-            catch (Exception ex)
-            {
-                // Boundary swallow for the detached task: a sign-in failure must never crash the tray.
-                FileLog.Write($"[GatewayTrayController] StartSignIn FAILED: {ex.Message}; retryable from the tray");
-            }
-        });
     }
 
     /// <summary>
@@ -612,7 +287,7 @@ public sealed class GatewayTrayController : IDisposable
 
     // A bare "FAILED" on a tray icon Windows hides by default is a silent dead-end.
     // The overwhelmingly common cause is the port already being taken, so probe it and
-    // say what is actually there. The app stays alive either way, so Restart can retry.
+    // say what is actually there. The app stays alive either way, so Start can retry.
     private async Task DiagnoseStartFailureAsync()
     {
         var probe = await ProbePortAsync();
@@ -627,6 +302,7 @@ public sealed class GatewayTrayController : IDisposable
         FileLog.Write($"[GatewayTrayController] DiagnoseStartFailure: probe={probe}, status=\"{status}\"");
         _state = HostState.Failed;
         ApplyStatus(status, tip);
+        ApplyMenuEnablement();
     }
 
     // Distinguish "our own gateway is already there" (a benign double-start) from
@@ -683,191 +359,22 @@ public sealed class GatewayTrayController : IDisposable
         }
     }
 
-    private async Task RestartAsync()
-    {
-        if (_busy) return;
-        _busy = true;
-        try
-        {
-            FileLog.Write("[GatewayTrayController] RestartAsync");
-            SetState(HostState.Starting);
-            // Issue #880: the whole stop/start chain runs on the THREAD POOL, never inline.
-            // Run inline from the tray click, the awaits inside the host stop resumed on the
-            // UI thread, where the brain's synchronous dispose then blocked - freezing the
-            // entire tray and deadlocking the stop (its own continuations needed the blocked
-            // thread), which left a half-stopped host serving forever. Task.Run gives the
-            // chain a context-free thread; SetState/ApplyStatus marshal to the UI thread
-            // themselves, so the tray stays responsive throughout.
-            await Task.Run(async () =>
-            {
-                await StopHostAsync();
-                await StartHostAsync();
-            });
-
-            // Issue #927: surface the outcome so the user can tell the restart worked. The restart
-            // itself is UNCHANGED above; StartHostAsync sets HostState.Running on success or
-            // HostState.Failed (via DiagnoseStartFailureAsync) on failure, so the resulting state IS
-            // the outcome signal. This runs on the UI thread (the continuation of the awaited
-            // Task.Run), the same thread BuildFlyoutModel reads _lastRestartStatus on.
-            ShowRestartOutcome();
-        }
-        catch (Exception ex)
-        {
-            // Boundary catch (this method is the tray-click handler body): a restart that throws must
-            // never be a silent no-op - surface a distinct failure so the user knows it did not take.
-            FileLog.Write($"[GatewayTrayController] RestartAsync FAILED: {ex.Message}");
-            ApplyRestartFailure(ex.Message);
-        }
-        finally
-        {
-            _busy = false;
-        }
-    }
-
     /// <summary>
-    /// Issue #927: after the (unchanged) restart stop/start chain, show a distinct, visible
-    /// confirmation of the outcome. On success the tray tooltip briefly shows "restarted OK" with the
-    /// running version and the flyout keeps a persistent "Last restart" row; the tooltip then reverts
-    /// to the normal running tooltip. On failure a distinct failure tooltip + row is shown instead.
-    /// All UI updates go through <see cref="ApplyStatus"/> (which marshals to the UI thread) so nothing
-    /// blocks it.
+    /// End the process. NOT a menu item - a service has no "quit", only stop. This is reached solely by
+    /// the self-update helper's POST /shutdown (via <see cref="GatewayHost.OnShutdownRequested"/>), which
+    /// needs this process to exit so the exe unlocks and can be swapped.
     /// </summary>
-    private void ShowRestartOutcome()
-    {
-        if (_state == HostState.Running && _host is not null)
-        {
-            var version = AppVersion.Semver;
-            var now = DateTime.Now;
-            _lastRestartStatus = GatewayRestartFeedback.SuccessStatus(version, now);
-            FileLog.Write($"[GatewayTrayController] RestartAsync SUCCESS: v{version} on :{_port}");
-            ApplyStatus(_lastRestartStatus, GatewayRestartFeedback.SuccessTooltip(version, now));
-            _ = RevertTooltipAfterConfirmationAsync();
-            return;
-        }
-
-        // Restart did not reach Running: StartHostAsync failed and DiagnoseStartFailureAsync already
-        // resolved the reason into _statusText (e.g. "Port 7900 in use by another app").
-        ApplyRestartFailure(_statusText);
-    }
-
-    /// <summary>Issue #927: show the distinct restart-FAILURE confirmation (tooltip + persistent flyout row).</summary>
-    private void ApplyRestartFailure(string reason)
-    {
-        _lastRestartStatus = GatewayRestartFeedback.FailureStatus(reason);
-        FileLog.Write($"[GatewayTrayController] RestartAsync FAILURE surfaced: {reason}");
-        ApplyStatus(_lastRestartStatus, GatewayRestartFeedback.FailureTooltip(reason));
-    }
-
-    /// <summary>
-    /// Issue #927: after the success confirmation has dwelled, revert the tray tooltip to its normal
-    /// running tooltip (the flyout's "Last restart" row stays as the durable record). Fire-and-forget
-    /// so the restart click returns immediately; a state change in the meantime (a second restart, a
-    /// quit) is respected because the revert re-derives the tooltip from the current state.
-    /// </summary>
-    private async Task RevertTooltipAfterConfirmationAsync()
-    {
-        try
-        {
-            await Task.Delay(RestartConfirmationDwell, _lifetime.Token);
-        }
-        catch (OperationCanceledException)
-        {
-            return; // app shutting down - nothing to revert
-        }
-        // Only revert if the host is still the one we confirmed running; if it failed or restarted
-        // again since, that newer state owns the tooltip.
-        if (_state == HostState.Running)
-            SetState(HostState.Running);
-    }
-
     private async Task QuitAsync()
     {
         FileLog.Write("[GatewayTrayController] QuitAsync");
         _lifetime.Cancel();
-        // Issue #880: same as RestartAsync - the host stop (which also gracefully stops the
-        // host-owned brain) must never run with the UI thread's context captured, or a slow
-        // brain stop freezes the tray and wedges the quit.
+        // Issue #880: the host stop (which also gracefully stops the host-owned brain) must never run
+        // with the UI thread's context captured, or a slow brain stop freezes the tray and wedges the quit.
         await Task.Run(StopHostAsync);
         await Dispatcher.UIThread.InvokeAsync(() =>
         {
-            _flyout?.Close();
             if (_trayIcon is not null) _trayIcon.IsVisible = false;
             _desktop.Shutdown();
-        });
-    }
-
-    /// <summary>
-    /// Open the Cockpit Settings page in the browser. The Gateway itself has no settings - it is
-    /// the dumb always-on middle service; every setting (API keys, Brain, startup) lives in the
-    /// Cockpit (docs/architecture/gateway/SETTINGS_OWNERSHIP.md) - so the tray's Settings link goes
-    /// straight there through the same front door as Open Cockpit, with no intermediate window.
-    /// </summary>
-    private void OpenCockpitSettings()
-        => OpenTailnetUrl(_flyoutCache.FrontDoorBaseUrl is { } d ? d + "/settings" : null, "CockpitSettings");
-
-    private void OpenCockpit()
-        // ONE URL: the Cockpit is served through the gateway front door
-        // (https://<magicdns>/ -> :7878 -> the Gateway's in-process React Cockpit).
-        // Issue #855: read the front-door URL from the heartbeat-refreshed cache instead of shelling
-        // the tailscale CLI on the click. When it has not resolved yet (or Tailscale is unavailable)
-        // the cached value is null, so OpenTailnetUrl takes the existing refuse-with-clear-message
-        // path rather than hanging the click on a CLI probe.
-        => OpenTailnetUrl(_flyoutCache.FrontDoorBaseUrl is { } d ? d + "/" : null, "Cockpit");
-
-    // Open a Tailscale URL in the browser. There is NO localhost fallback by design: every
-    // cc-director URL must be the tailnet URL so it works from any node, and a loopback URL
-    // would only work on this machine. When Tailscale is unavailable the URL is null; we
-    // refuse and say why rather than open a URL that is wrong everywhere but here.
-    private void OpenTailnetUrl(string? url, string label)
-    {
-        // The URL is already resolved by the caller (issue #855: from the heartbeat cache, not a
-        // synchronous probe). Process.Start is still launched off the UI thread so the click returns
-        // immediately and any shell-launch latency never touches the UI.
-        _ = Task.Run(() =>
-        {
-            if (url is null)
-            {
-                FileLog.Write($"[GatewayTrayController] Open{label} REFUSED: Tailscale unavailable on this machine, so there is no tailnet URL to open. Bring Tailscale up and retry; cc-director never opens a localhost URL.");
-                return;
-            }
-            try
-            {
-                FileLog.Write($"[GatewayTrayController] Open{label}: {url}");
-                Process.Start(new ProcessStartInfo(url) { UseShellExecute = true });
-            }
-            catch (Exception ex)
-            {
-                FileLog.Write($"[GatewayTrayController] Open{label} FAILED: {ex.Message}");
-            }
-        });
-    }
-
-    private void OpenLogsFolder()
-        => OpenFolder(Path.GetDirectoryName(FileLog.CurrentLogPath), "OpenLogsFolder");
-
-    private void OpenConfigFolder()
-        => OpenFolder(Path.GetDirectoryName(InstallLayout.Default().ConfigPath), "OpenConfigFolder");
-
-    private static void OpenFolder(string? dir, string label)
-    {
-        if (string.IsNullOrEmpty(dir))
-        {
-            FileLog.Write($"[GatewayTrayController] {label} REFUSED: no folder path resolved");
-            return;
-        }
-        // Off the UI thread so the click returns immediately (shell launch latency).
-        _ = Task.Run(() =>
-        {
-            try
-            {
-                Directory.CreateDirectory(dir);
-                FileLog.Write($"[GatewayTrayController] {label}: {dir}");
-                Process.Start(new ProcessStartInfo(dir) { UseShellExecute = true });
-            }
-            catch (Exception ex)
-            {
-                FileLog.Write($"[GatewayTrayController] {label} FAILED: {ex.Message}");
-            }
         });
     }
 
@@ -910,7 +417,7 @@ public sealed class GatewayTrayController : IDisposable
 
     private void ApplyStatus(string status, string tip)
     {
-        _statusText = status; // the flyout reads this live on open
+        _statusText = status;
         Dispatcher.UIThread.Post(() =>
         {
             if (_trayIcon is not null) _trayIcon.ToolTipText = tip;
@@ -926,10 +433,6 @@ public sealed class GatewayTrayController : IDisposable
         try { _host?.StopAsync().GetAwaiter().GetResult(); } // also gracefully stops the host-owned brain
         catch (Exception ex) { FileLog.Write($"[GatewayTrayController] Dispose stop error: {ex.Message}"); }
         _host = null;
-        // Issue #637: _lifetime.Cancel() above already cancelled any in-flight sign-in (its token is
-        // linked); dispose the source so it does not leak.
-        try { _signInCts?.Dispose(); } catch (Exception ex) { FileLog.Write($"[GatewayTrayController] Dispose sign-in cts error: {ex.Message}"); }
-        _signInCts = null;
         if (_trayIcon is not null) _trayIcon.IsVisible = false;
         _lifetime.Dispose();
     }

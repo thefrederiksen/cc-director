@@ -1500,18 +1500,9 @@ public sealed class GatewayHost : IAsyncDisposable
         // host-wide token middleware above like the other /account routes.
         AccountEmailEndpoint.Map(_app, Account, new Core.Account.AccountNotifyClient(new HttpClient { Timeout = TimeSpan.FromSeconds(30) }));
 
-        // Start the browser loopback sign-in from a web request (issue #853): POST /account/sign-in. The
-        // Cockpit Account page's signed-out state needs a real "Sign in" action, but the loopback flow that
-        // captures the credential lives here on the Gateway (issue #637, GatewaySignInService = SignIn). So
-        // the Gateway exposes this trigger: the Cockpit POSTs here, the Gateway opens the system browser and
-        // runs the hand-off in the background, and the Cockpit polls GET /account/status to see the result.
-        // The captured token never leaves the Gateway (security rule DT-05). On a host with no sign-in flow
-        // (SignIn null) it reports an explicit "not available" result. Inherits the host-wide token
-        // middleware above, exactly like the other /account routes.
-        AccountSignInEndpoint.Map(_app, SignIn);
 
         // The credential-free cloud sign-in START front door (epic #1069, issue #1076): GET + POST
-        // /account/sign-in-start. Unlike POST /account/sign-in above, this pair is on the public-paths
+        // /account/sign-in-start. This pair is on the public-paths
         // allow-list (AuthMiddleware) so a SIGNED-OUT browser with no Gateway token can reach it to BEGIN
         // cloud sign-in - breaking the deadlock where cloud sign-in sat behind the raw gateway-token wall.
         // It reads/echoes no credential and returns no account data; the POST reuses the same host-local

@@ -295,6 +295,25 @@ public sealed class GatewayHostTests : IAsyncLifetime
         Assert.NotEqual(HttpStatusCode.NotFound, alive.StatusCode);
     }
 
+    // POST /account/sign-in was removed with the Gateway's user interface. It ran the browser LOOPBACK
+    // sign-in unconditionally - a browser on the GATEWAY HOST's desktop waiting on 127.0.0.1 - so the
+    // Cockpit's Sign in button hung forever on any machine but the host. /account/sign-in-start replaced
+    // it and branches on the caller, redirecting a remote browser to the cloud instead.
+    //
+    // Gone, not merely gated: this client authenticates, so a live route would answer something other
+    // than 404. The /account/sign-in-start control pins the 404 to the removal rather than to the client
+    // failing to reach the host - and asserts the REPLACEMENT is still mapped, so this can never pass by
+    // deleting both.
+    [Fact]
+    public async Task LoopbackSignInRoute_isRemoved_whileTheStartFrontDoorSurvives()
+    {
+        var gone = await _http.PostAsync("account/sign-in", content: null);
+        Assert.Equal(HttpStatusCode.NotFound, gone.StatusCode);
+
+        var alive = await _http.GetAsync("account/sign-in-start");
+        Assert.NotEqual(HttpStatusCode.NotFound, alive.StatusCode);
+    }
+
     // ===== Issue #1292: the fleet-wide session-number endpoint over the wire =====
 
     [Fact]
