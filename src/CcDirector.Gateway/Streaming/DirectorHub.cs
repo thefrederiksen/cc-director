@@ -143,6 +143,10 @@ public sealed class DirectorHub : Hub
         _store.ApplyRemove(directorId, Context.ConnectionId, sequence, sessionId);
         // DevThrottle Stats: its contribution stays in the totals; drop only its high-water entry.
         _inputStats.Forget(sessionId);
+        // A DEPARTURE RE-ROLES THE SURVIVORS, exactly as an arrival does: a controller leaving should stop
+        // its workers being Workers. Must run AFTER ApplyRemove so the sweep resolves the fleet that now
+        // exists rather than the one that just left.
+        _fleetRoles?.ObserveRemoval(sessionId);
     }
 
     public override Task OnConnectedAsync()

@@ -3210,6 +3210,18 @@ public partial class MainWindow : Window
             var vm = _sessions[i];
             // Stamp the non-color role glyph from the local fleet on every list rebuild (same place
             // the group first/last flags are stamped) so the rail badge tracks controller changes.
+            //
+            // KNOWN GAP, NAMED DELIBERATELY: this is still the DIRECTOR resolving a role locally, and the
+            // mission's own claim is that the Gateway is the only thing that computes a role. Both are
+            // true at once right now, which is the whole problem: the COLOUR fold reads the Gateway's
+            // stamp (Session.GatewayResolvedRole), while this GLYPH reads the Director's local guess, so
+            // one row can show a Gateway-resolved colour beside a Director-resolved badge and they can
+            // disagree. It only sees this Director's own sessions, so a controller on another machine is
+            // invisible to it - exactly the blind spot the down-channel exists to fix.
+            //
+            // Not fixed here because moving the glyph onto the stamp needs an answer to "what shows before
+            // the first stamp arrives", and guessing one is how this mission's defects were built. Raised
+            // by review of pull request 1598; recorded rather than quietly left to read as finished.
             vm.ResolvedRole = _sessionManager.ResolveLocalRole(vm.Session);
             if (!vm.IsGroupMember) { vm.IsGroupFirst = false; vm.IsGroupLast = false; continue; }
             var gid = vm.GroupId;

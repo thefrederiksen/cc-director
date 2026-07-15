@@ -62,6 +62,7 @@ public class SessionViewModel : INotifyPropertyChanged
         session.OnReceivingDictationChanged += OnReceivingDictationChangedVm;
         session.OnNumberChanged += OnNumberChangedVm;
         session.OnPendingDeletionChanged += OnPendingDeletionChangedVm;
+        session.OnGatewayResolvedRoleChanged += OnGatewayResolvedRoleChangedVm;
 
         if (session.PromptQueue != null)
         {
@@ -180,6 +181,20 @@ public class SessionViewModel : INotifyPropertyChanged
         {
             OnPropertyChanged(nameof(IsPendingDeletion));
             OnPropertyChanged(nameof(PendingDeletionTooltip));
+        });
+    }
+
+    // The Gateway stamped (or cleared) this session's role. That is a FOLD INPUT - SessionOrdering
+    // suppresses a controlled worker's red to "supporting" - so the rail must re-read exactly as it does
+    // for an activity or hold change. Nothing re-read on a role before this, so the stamp arrived, the
+    // fold was right, and the dot stayed red anyway.
+    private void OnGatewayResolvedRoleChangedVm(string? _)
+    {
+        Dispatcher.UIThread.Post(() =>
+        {
+            OnPropertyChanged(nameof(StatusColorBrush));
+            OnPropertyChanged(nameof(StatusReason));
+            OnPropertyChanged(nameof(NeedsYou));
         });
     }
 

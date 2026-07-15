@@ -83,6 +83,25 @@ public sealed class FleetRoleObserver
     }
 
     /// <summary>
+    /// Observe a session LEAVING the fleet. A departure changes other sessions' roles exactly as an arrival
+    /// does, and it was the case this observer missed: a controller's tombstone should stop its workers
+    /// being Workers, and the last worker's tombstone should stop its controller being a Manager.
+    ///
+    /// Nothing re-stamped on a remove, so the Gateway's own roster recomputed from the store on the next
+    /// read while the DIRECTOR kept the role it was last told - until some unrelated push happened to
+    /// trigger a sweep. That is a desktop-versus-phone disagreement window with no bound on it, which is
+    /// the thing this mission exists to close.
+    ///
+    /// Call AFTER the store has applied the removal: Sweep resolves from the snapshot, so the departing
+    /// session must already be gone from it or it resolves the fleet that no longer exists.
+    /// </summary>
+    public void ObserveRemoval(string? sessionId)
+    {
+        if (string.IsNullOrEmpty(sessionId)) return;
+        Sweep();
+    }
+
+    /// <summary>
     /// Re-resolve every session's role from the whole fleet and push down the ones that CHANGED.
     ///
     /// Fire-and-forget by design: this runs on the hub's push path, and a Director that is slow to answer a

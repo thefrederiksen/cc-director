@@ -207,7 +207,27 @@ public sealed class Session : IDisposable
         if (string.Equals(GatewayResolvedRole, normalized, StringComparison.Ordinal)) return;
         FileLog.Write($"[Session] SetGatewayResolvedRole: session={Id}, role={normalized ?? "(cleared)"}");
         GatewayResolvedRole = normalized;
+        // Fires only on a real change (the equality guard above returns first otherwise), so the Gateway
+        // re-stamping the same role every sweep does not churn the rail.
+        try { OnGatewayResolvedRoleChanged?.Invoke(normalized); }
+        catch (Exception ex) { FileLog.Write($"[Session] {Id} OnGatewayResolvedRoleChanged handler threw: {ex.Message}"); }
     }
+
+    /// <summary>
+    /// Raised when <see cref="GatewayResolvedRole"/> changes, so a view can re-read the fold. Carries the
+    /// new value.
+    ///
+    /// WITHOUT THIS THE WHOLE DEFECT 5 DELIVERABLE DOES NOT WORK, and it shipped without it. The role
+    /// reaches the Director and the fold reads it correctly - but the desktop rail is only told to re-read
+    /// on activity, status, hold, dictation, number and pending-deletion changes. A role arriving is none
+    /// of those, so a controlled Worker stayed visibly RED and counted in "needs you" until some unrelated
+    /// event happened to fire, which is the exact disagreement this was built to end. The mapper tests
+    /// passed throughout: they read the fold, and reading is not rendering.
+    ///
+    /// Same shape as <see cref="OnPendingDeletionChanged"/>, added one commit earlier in this same mission
+    /// for the same reason - a new fact with no signal is invisible. Report what changed; decide nothing.
+    /// </summary>
+    public event Action<string?>? OnGatewayResolvedRoleChanged;
 
     /// <summary>Set (or clear, on a null/blank value) this session's sticky explicit role. The value is
     /// validated against the role set by the caller; this only stores it.</summary>
