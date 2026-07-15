@@ -29,7 +29,11 @@ public static class AgreementCheck
     /// blue; <c>desktop-vs-gateway</c> - the rail's fold and the Gateway's answer differ (defect 5's
     /// family); <c>two-different-pixels</c> - both surfaces fold to the same NAME and paint different
     /// hexes (defect 18 - invisible to a check that compares the fold's answer);
-    /// <c>palette-missing</c> - a surface cannot paint the colour it was given.
+    /// <c>palette-missing</c> - a surface cannot paint the colour it was given;
+    /// <c>indeterminate</c> - the row does not carry enough to judge, so the check refuses to call it
+    /// either way (see <see cref="IsIndeterminate"/>). It is REPORTED, never skipped: a row the
+    /// instrument cannot read is not a row that agrees, and quietly counting it as agreement is how a
+    /// measurement turns into a lie.
     /// </param>
     public sealed record Finding(string? SessionId, string Name, string Kind, string Detail);
 
@@ -46,6 +50,23 @@ public static class AgreementCheck
         foreach (var row in roster)
         {
             var name = row.Name ?? row.SessionId ?? "(unnamed)";
+
+            // ---- 0. CAN THIS ROW BE JUDGED AT ALL? Asked FIRST, because every check below assumes the
+            // row can be read, and a row that cannot be read must not be quietly counted as one that
+            // agrees. See IsIndeterminate: the Gateway overwrote the Director's BriefingState to carry
+            // its own fact, so the row no longer says what the desktop would have folded. Report and move
+            // on - grading it either way would be a guess, and the check exists precisely to stop guesses
+            // being published as measurements.
+            if (IsIndeterminate(row))
+            {
+                yield return new Finding(row.SessionId, name, "indeterminate",
+                    "VoiceGenerating with BriefingState=\"Briefing\": the Gateway stamps that label only " +
+                    "when the Director's own value was null/None/Briefed, but stamps VoiceGenerating " +
+                    "unconditionally - so this row cannot say whether the desktop would fold yellow " +
+                    "(the Director was briefing too) or red (the Gateway overwrote it). Not graded, " +
+                    "because guessing is what this check exists to catch.");
+                continue;
+            }
 
             // ---- 1. THE STAMP IS PRESENT. Defect 15: GET /sessions/{sid} used to return these null while
             // the DTO documents them "Required on Gateway /sessions responses". A client that cannot get a
@@ -168,6 +189,45 @@ public static class AgreementCheck
     /// (FleetRoleResolver.Stamp - every branch assigns). So a role that is STALE on a Director cannot be
     /// seen from here. That push is proved in-process, with nothing hand-set, by DesktopRoleStampWireProofTests.
     /// </summary>
+    /// <summary>
+    /// TRUE when this row cannot be judged from what it carries, so the check must not call it either
+    /// way. Exactly one shape today, and it is the Gateway OVERWRITING a Director fact rather than
+    /// adding one:
+    ///
+    /// <c>VoiceGenerating == true &amp;&amp; BriefingState == "Briefing"</c> has two possible origins and
+    /// the row cannot tell them apart. GatewayEndpoints stamps <c>BriefingState = "Briefing"</c> ONLY
+    /// when the Director's own value was null/None/Briefed - but it stamps <c>VoiceGenerating</c>
+    /// UNCONDITIONALLY. So either:
+    ///
+    ///   (a) the Gateway overwrote a null/None/Briefed - the desktop never sees the stamp, folds RED,
+    ///       and this is a real disagreement; or
+    ///   (b) the Director genuinely WAS briefing, the guard was false, nothing was overwritten - the
+    ///       desktop has "Briefing" too, folds YELLOW, and this agrees.
+    ///
+    /// The overwrite destroyed the fact needed to tell (a) from (b). Reporting agreement would be a
+    /// guess, and so would reporting a disagreement. This mission's own law: never state what you have
+    /// not observed. So it is reported as indeterminate and the number of sessions the instrument could
+    /// not read is published beside the number that agreed.
+    ///
+    /// The DEEPER fix is not here: the Gateway should not overwrite a Director-owned field to carry its
+    /// own fact - it should add one, the way VoiceGenerating already does. That is a change to the
+    /// Gateway's enrichment, not to this instrument, and it is recorded as a gap rather than smuggled in
+    /// here. Until then this check refuses to grade what it cannot see.
+    ///
+    /// Found by independent inspection of pull request 1606: it ran the tool against the live fleet, saw
+    /// a zero with two Gateway-only fold inputs in play, and did not believe it.
+    ///
+    /// AND IT REQUIRES RAW RED, which is the law paying for itself a third time. The first cut of this
+    /// omitted that and an existing control caught it: a WORKING session with both facts is perfectly
+    /// readable, because blue outranks briefing and voice - BOTH possible origins fold blue, so the
+    /// ambiguity cannot change the answer and there is nothing to refuse. IsBriefing is
+    /// `BriefingState == "Briefing" && IsRawRed`, so the overwrite can only ever matter to a session that
+    /// has STOPPED. Reporting a working session as unreadable would have been the instrument crying wolf
+    /// about a row it could read perfectly well - which costs exactly as much trust as missing one.
+    /// </summary>
+    public static bool IsIndeterminate(SessionDto row) =>
+        row.VoiceGenerating && row.BriefingState == "Briefing" && SessionOrdering.IsRawRed(row);
+
     public static SessionDto ToDesktopInput(SessionDto row)
     {
         var copy = JsonSerializer.Deserialize<SessionDto>(JsonSerializer.Serialize(row, Json), Json)!;

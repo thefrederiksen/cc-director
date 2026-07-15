@@ -4,6 +4,39 @@
 
 ---
 
+> ## THIS IS TESTIMONY, NOT AUTHORITY. Read it as a historical record.
+>
+> **Written by the agents who did the work, about their own work.** It is preserved because the story
+> in it is worth keeping - not because anything in it is established fact. Nothing here is repository
+> truth unless it is backed by code, by a test that has been watched failing, or by a captured
+> artefact. Where it says "we proved", read "we said we proved".
+>
+> **That warning has already been earned.** Independent inspection of the very pull request that
+> landed this file found that the agreement check underneath its headline number had a hole in what it
+> compared - a Gateway-stamped field it never un-applied - so it could publish a clean fleet while a
+> real disagreement stood. It also found the report's central claim about the mission's biggest fix
+> was wrong: the feature did not work at all. This document said the mission was finished. It was not.
+>
+> **The numbers below are time-bound and are NOT checkable from this repository.** "Zero out of
+> thirteen" was a live-fleet reading at one instant on one machine. A rerun during inspection reported
+> a different denominator entirely - sixteen sessions, not thirteen - which does not disprove the old
+> reading and does prove you cannot verify it from here. There is no captured run artefact. Treat
+> every count in this file as history, and get today's answer by running
+> `src/CcDirector.StateAgreementCheck` yourself.
+>
+> **Specifically distrust these, all flagged during inspection:**
+> - *"We know the check works because we have watched it fail"* - true of several arms, and NOT of the
+>   real voice-generation row shape, which the check got wrong until after this report was written.
+> - *"We walked every promise in the specification's scenario table"* - self-testimony with no durable
+>   artefact making the walk reviewable.
+> - *"Right now, today, none of your thirteen sessions is affected"* - stale on arrival; the
+>   inspection's rerun found live sessions carrying Gateway-only fold inputs.
+>
+> The current state of this work is [`mission-session-states.md`](mission-session-states.md), which is
+> maintained. This file is not.
+
+---
+
 ## The short version
 
 Your screens were not broken. They were **plausible** - and that is why this went on for so long.

@@ -94,15 +94,35 @@ public static class Program
         var exposed = roster.Count(r => r.DictationStatus is not null || r.Transcribing || r.VoiceGenerating || r.SnoozeExpired);
         Console.WriteLine($"Sessions carrying a Gateway-only fold input right now: {exposed} of {roster.Count}.");
         if (exposed == 0)
+        {
             Console.WriteLine("  So the four inputs the desktop cannot see are NOT in play on this fleet at this instant,");
-        Console.WriteLine("  and this run therefore does NOT exercise those arms. See the fault-injection tests.");
+            Console.WriteLine("  and this run therefore does NOT exercise those arms. See the fault-injection tests.");
+        }
+        else
+        {
+            // This branch did not exist, and the sentence above printed unconditionally: the tool said
+            // "2 of 16" and then told the reader the run had not exercised those arms. False output from
+            // the instrument whose whole job is to be quotable. Found by inspection of pull request 1606,
+            // which ran it live and read what it printed rather than what it meant.
+            Console.WriteLine($"  So this run DID exercise those arms on {exposed} session(s) - they are live, not hypothetical.");
+            Console.WriteLine("  The fault-injection tests exercise them deliberately and are watched failing.");
+        }
         Console.WriteLine();
 
         foreach (var f in findings)
             Console.WriteLine($"DISAGREEMENT [{f.Kind}] {f.Name}\n    {f.Detail}\n");
 
+        // Rows the instrument could not READ are published beside the ones it graded, never folded into
+        // them. A check that quietly counts what it cannot see as agreement is not measuring - it is
+        // reassuring, which is the failure this whole mission is about.
+        var unreadable = findings.Count(f => f.Kind == "indeterminate");
+        var graded = roster.Count - unreadable;
+
         Console.WriteLine(new string('=', 78));
-        Console.WriteLine($"AGREEMENT NUMBER: {findings.Count} disagreement(s) over {roster.Count} live session(s).");
+        Console.WriteLine($"AGREEMENT NUMBER: {findings.Count - unreadable} disagreement(s) over {graded} graded session(s).");
+        if (unreadable > 0)
+            Console.WriteLine($"NOT GRADED: {unreadable} session(s) the check could not read - see [indeterminate] above. " +
+                              "The number above says nothing about them.");
         Console.WriteLine("  (It was SIX out of THIRTEEN when the specification was written.)");
         Console.WriteLine();
         Console.WriteLine("MEASURED: the stamp is present; the stamped answer IS the shared fold's answer; the law");

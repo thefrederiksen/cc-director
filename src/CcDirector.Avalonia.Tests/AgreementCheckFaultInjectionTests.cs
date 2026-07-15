@@ -247,6 +247,73 @@ public sealed class AgreementCheckFaultInjectionTests
     }
 
     /// <summary>
+    /// THE SAME CASE, BUILT THE WAY THE LIVE GATEWAY ACTUALLY BUILDS IT - and it is a different case.
+    ///
+    /// The test above sets VoiceGenerating and stops. The real Gateway does not: GatewayEndpoints stamps
+    /// BriefingState = "Briefing" in the SAME breath as VoiceGenerating (it is guarded on
+    /// voiceGeneratingFor). So a live voice-preparing row carries BOTH facts, and the check's
+    /// ToDesktopInput stripped only one of them - leaving "Briefing" in the reconstructed desktop row,
+    /// which folds yellow via IsBriefing, which reports AGREEMENT. The real desktop never receives the
+    /// Gateway's stamp and folds red. A genuine disagreement, reported as zero, by the tool whose entire
+    /// job is to find it.
+    ///
+    /// This is the mission's own signature failure, inside the mission's own measuring instrument: a test
+    /// asserting a row shape PRODUCTION NEVER EMITS. The helper is even called AsGatewayServesIt, and it
+    /// does not serve it the way the Gateway does - it only stamps the fold outputs. A test that builds
+    /// its own subject can only ever prove the model it already believed.
+    ///
+    /// Found by independent inspection of pull request 1606, which ran the tool against the live fleet,
+    /// saw a zero with two Gateway-only fold inputs in play, and distrusted it.
+    ///
+    /// THE VERDICT IS "CANNOT JUDGE", NOT "DISAGREES" - and that distinction is the honest part. The
+    /// Gateway stamps that label ONLY when the Director's own value was null/None/Briefed, but stamps
+    /// VoiceGenerating UNCONDITIONALLY. So this row has two possible origins: the Gateway overwrote a
+    /// null (the desktop folds red - a real disagreement), or the Director genuinely WAS briefing and the
+    /// guard was false (the desktop folds yellow - agreement). The overwrite destroyed the fact that
+    /// would tell them apart. Calling it a disagreement would be as much a guess as calling it agreement,
+    /// so the check reports that it cannot read the row and publishes that count beside the zero.
+    /// </summary>
+    [Fact]
+    public void VoiceBeingPrepared_AsTheLiveGatewayReallyStampsIt_IsNotSilentlyCountedAsAgreement()
+    {
+        var row = Waiting("voice-real");
+        row.VoiceMode = true;
+        row.VoiceGenerating = true;
+        // GatewayEndpoints: `if (voiceGeneratingFor(...) && BriefingState is null or "None" or "Briefed")
+        // -> BriefingState = "Briefing"`. Both facts, always, together. Omit this line and the test passes
+        // against a row the product does not produce - which is exactly what the test above it does.
+        row.BriefingState = "Briefing";
+        AsGatewayServesIt(row);
+        Assert.Equal("yellow", row.EffectiveColor);
+
+        // The defect this closes: Compare returned NOTHING here, so a genuine desktop-versus-Gateway
+        // divergence was published as agreement by the instrument built to find it.
+        var findings = Run(row);
+        Assert.NotEmpty(findings);
+        Assert.Contains(findings, f => f.Kind == "indeterminate");
+        Assert.True(AgreementCheck.IsIndeterminate(row));
+    }
+
+    /// <summary>
+    /// The control for the one above, and the reason it is not just "report everything with a briefing
+    /// label". A Director that is briefing with NO voice generation is perfectly readable: the Gateway
+    /// cannot have overwritten anything, because its guard requires voiceGeneratingFor. Both surfaces
+    /// have the same label, both fold yellow, and the check must stay quiet.
+    /// </summary>
+    [Fact]
+    public void ADirectorBriefingWithoutVoiceGeneration_IsReadable_AndAgrees()
+    {
+        var row = Waiting("briefing-only");
+        row.BriefingState = "Briefing";
+        AsGatewayServesIt(row);
+        Assert.Equal("yellow", row.EffectiveColor);
+
+        Assert.False(AgreementCheck.IsIndeterminate(row));
+        Assert.Empty(Run(row));
+        Assert.Equal("yellow", SessionOrdering.EffectiveColor(AgreementCheck.ToDesktopInput(row)));
+    }
+
+    /// <summary>
     /// The expired snooze. TRANSIENT rather than structural, and the difference matters: the Gateway owns
     /// the clock and overlays OnHold=false before the fold, so it says red "Needs you" while the Director
     /// still reads Held and the rail says grey "Snoozed" - but SnoozeExpirySweep nudges a LIVE Director off
