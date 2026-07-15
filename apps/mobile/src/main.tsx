@@ -57,11 +57,21 @@ function GatedLayout() {
   // The one global bad-connection banner (mobile-resilience mission): mounted once here so it pins to
   // the top of every gated screen and is the single voice for a bad connection. Hidden while the
   // connection is good; the pages keep their last-known content underneath either way.
-  // The network pill is fixed top-right on every screen that has no title row of its own to give it.
-  // The session screens DO have one, and they render their own inline pill on it (SessionAppBar), so
-  // the fixed one stands down there - otherwise both would show. The session screens need that corner
-  // back for their overflow menu button: while the pill held it, the button lived on the LEFT of the
-  // bar and its right-anchored menu opened off the left edge of the screen.
+  // The network pill is fixed top-right on every screen that has no header of its own to give it. The
+  // /session/ screens DO have one and render their own inline pill there, so the fixed one stands down
+  // for that whole subtree - otherwise both would show. They need that corner back for the overflow
+  // menu button: while the pill held it, the button lived on the LEFT of the bar and its right-anchored
+  // menu opened off the left edge of the screen.
+  //
+  // THIS SUPPRESSES THE PILL FOR THE ENTIRE /session/ SUBTREE, so every screen routed under /session/
+  // MUST render its own <StatusPill inline />, or it will show no network status at all. Today:
+  //
+  //   /session/:id, /chat, /terminal, /voice  -> SessionAppBar renders it
+  //   /session/:id/file                       -> FileView renders it in its own header
+  //
+  // The file viewer was missed when the pill was first moved inline (caught in review of #1631) - it is
+  // under /session/ but does not use SessionAppBar, so it silently lost its pill. Add a new /session/
+  // route and you own its pill too.
   const onSessionScreen = useLocation().pathname.startsWith("/session/");
   return (
     <>

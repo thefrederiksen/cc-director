@@ -1,4 +1,5 @@
-import { useLocation, useParams } from "react-router-dom";
+import { useEffect, useState } from "react";
+import { useLocation, useNavigate, useParams } from "react-router-dom";
 import { DictationDialog } from "@devthrottle/client-core/dictation/DictationDialog";
 import { formatClock, useVoiceMode } from "@devthrottle/client-core/voice/useVoiceMode";
 import { DictationStatusStrip } from "../components/DictationStatusStrip";
@@ -25,9 +26,32 @@ export function VoiceMode() {
   // that menu item navigates here and asks the hook to run its own onSwitchOn, so the one place that
   // knows how to enter voice mode stays the one place that does it.
   const location = useLocation();
+  const navigate = useNavigate();
   const navState = location.state as { voiceMode?: boolean; switchOn?: boolean } | null;
   const seededVoiceOn = navState?.voiceMode;
-  const autoSwitchOn = navState?.switchOn;
+
+  // switchOn is a ONE-SHOT COMMAND, so it is read once and then scrubbed off the history entry.
+  //
+  // It cannot be read straight from location.state on every render: router state is persisted in the
+  // history entry and survives a reload, while the hook's "already did it" guard is only a ref, which a
+  // remount resets. So the command would fire AGAIN on any remount of this history entry - turn voice
+  // on from the Chat menu, turn it off, let the service worker update reload the app (it does, on every
+  // deploy), and voice would switch itself back on against your explicit wish. Caught in review of
+  // #1631.
+  //
+  // useState's initializer captures the command exactly once, at mount; the effect then rewrites the
+  // entry with switchOn cleared, so any later remount reads a spent command and does nothing.
+  const [autoSwitchOn] = useState(() => navState?.switchOn === true);
+  useEffect(() => {
+    if (navState?.switchOn !== true) return;
+    navigate(location.pathname + location.search, {
+      replace: true,
+      state: { ...navState, switchOn: false },
+    });
+    // Mount-only: this consumes the arriving command. Re-running it on navState changes would fight
+    // the very rewrite it performs.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const {
     voiceOn,
