@@ -849,6 +849,22 @@ longer forgets a snooze (defect 22), and a dead session reads Exited (defect 21)
 <li><strong>Delete the six other desktop folds</strong> and the three client label folds. Every one is a future contradiction.</li>
 <li><strong>Separate the greys</strong>, or accept that snoozed, exited, unknown, and sub-agent are the same dot to the human eye.</li>
 <li><strong>Fix the traps.</strong> Every stale comment above, deleted or corrected in the same pass. They are not cosmetic; they are the delivery mechanism for the next regression.</li>
+<li><strong>A FLAKY Gateway test - <span class="file">MobileAuthServingTests.Mobile_shell_is_public_and_not_login_gated_when_auth_is_on</span>.</strong>
+Observed 14 July 2026 while running the suites for defect 23: it failed once in a full-suite run
+(2274/2275 passed) and then passed 2275/2275 twice on the <em>same</em> base and binary, and passed 10/10
+serial runs in isolation. <strong>Pre-existing and unrelated to defect 23</strong> - that phase's only
+change reachable from this test is a <em>comment-only</em> edit to <code>SessionDto</code>, which cannot
+alter runtime behaviour. <strong>CAUSE UNDIAGNOSED - the failure message was never captured, so nothing
+here is a diagnosis.</strong> The one CITED MECHANISM, from reading the code and nothing more:
+<span class="file">MobileAuthServingTests.cs:80-87</span> <code>FreePort()</code> asks the OS for a port,
+<em>closes the listener</em>, and only then does <code>GatewayHost</code> bind it - a time-of-check-to-use
+gap in which anything else can take the port. xunit builds a fresh fixture per test method, so a collision
+would fail exactly one test, which matches what was seen; that is consistent with the observation, NOT
+evidence for it. <em>How to find out:</em> run the FULL suite (it does not reproduce in isolation) with
+a trx logger and read the failed test's message - the assertion tolerates both 200 and 404, so the status
+it actually returned is the whole answer. Note the investigation itself produced a false green worth
+knowing about: force-killed test runs left orphaned <code>testhost.exe</code> holding the built assembly,
+so later "runs" silently failed to BUILD and reported nothing - which reads exactly like a pass.</li>
 </ol>
 
 <h2>6. How we prove it, and why a green test is not enough</h2>
