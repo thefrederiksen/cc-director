@@ -773,16 +773,42 @@ a.banner-btn {
    100dvh tracks the currently visible height, so the whole column - tabs, body, keys - fits on
    screen and only the middle body scrolls. The bottom padding also clears the iOS home indicator
    (the page is viewport-fit=cover). */
+/* The session-screen shell (Terminal, Chat, Voice mode). These screens behave like an APP: the whole
+   screen stays inside the window and the PAGE NEVER SCROLLS. The top chrome and the bottom bar stay
+   pinned; only the middle body scrolls, in its own window.
+
+   THIS RULE HAS BEEN BROKEN AND RE-FIXED AT LEAST FIVE TIMES (#1058, #1349, #1351, #1404, #1408).
+   Every earlier fix trusted a CSS viewport unit and every one of them came back, because on the
+   owner's Android PWA `100dvh` DOES NOT track the visible height: the box stays TALLER than the
+   screen, so the page gains a sliver of scroll and one swipe slides the top row away. Emulated
+   Chromium reports zero scroll here and hides the whole thing - it only reproduces on the device.
+
+   So the height does not come from CSS at all. It comes from --app-vh, published from
+   window.visualViewport.height by the shared useVisibleViewportHeight hook (mounted once in
+   main.tsx), which is the ONLY approach that has held on the real phone (#1408, Car Mode v5).
+   .car-screen sizes from the same variable - one mechanism for the whole app.
+
+   position: fixed with top/left/right ONLY - deliberately NOT `inset: 0`. `inset: 0` sets both top
+   and bottom, which OVER-CONSTRAINS the box: its height is then derived from top+bottom (the tall,
+   toolbar-hidden LAYOUT viewport) and the height below is IGNORED. Anchoring top-only lets the
+   height win. This exact mistake is what Car Mode v4 shipped and v5 had to undo.
+
+   Guarded by MobileViewportContractTests (C#), which runs in CI. Do not "simplify" this back to a
+   plain 100dvh box; that test will fail and tell you why. */
 .terminal-screen {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
   display: flex;
   flex-direction: column;
+  height: 100vh;
   height: 100dvh;
-  /* Clip to the viewport so the PAGE can never scroll - the session screens behave like an app: the
-     top chrome (title, tabs, manage bar, status) and the bottom input + key rows stay pinned on
-     screen, and only the terminal/chat body in the middle scrolls. Without this, anything that pushes
-     the column past 100dvh (a large device font scale, safe-area insets) spills out and the whole page
-     scrolls, hiding the bottom keys until you scroll the screen (issue: mobile session tabs). */
-  max-height: 100dvh;
+  height: var(--app-vh, 100dvh);
+  max-height: var(--app-vh, 100dvh);
+  min-height: 0;
+  /* Anything that still overflows the column (a large device font scale, safe-area insets) is
+     CLIPPED, never scrolled - the page must not move. */
   overflow: hidden;
   max-width: 680px;
   margin: 0 auto;
@@ -2851,17 +2877,19 @@ a.banner-btn {
   flex-direction: column;
   background: var(--bg);
   color: var(--text);
-  /* v5 - HEIGHT IS PINNED TO THE ACTUALLY-VISIBLE VIEWPORT via --car-vh (set from
-     window.visualViewport.height in CarMode.tsx). On the owner's Android PWA, `dvh` did NOT track the
-     visible height reliably, so the box stayed taller than the screen and the footer's primary button
-     rendered below the bottom browser toolbar (cut off), idle AND active. --car-vh is the real visible
-     height (excludes the toolbars/keyboard); the fallbacks (100dvh, then 100vh) cover the first paint
-     before the effect runs and browsers without visualViewport. */
+  /* HEIGHT IS PINNED TO THE ACTUALLY-VISIBLE VIEWPORT via --app-vh (published by the shared
+     useVisibleViewportHeight hook, mounted once in main.tsx). On the owner's Android PWA, `dvh` did
+     NOT track the visible height reliably, so the box stayed taller than the screen and the footer's
+     primary button rendered below the bottom browser toolbar (cut off), idle AND active. --app-vh is
+     the real visible height (excludes the toolbars/keyboard); the fallbacks (100dvh, then 100vh)
+     cover the first paint before the effect runs and browsers without visualViewport.
+     This was --car-vh, owned privately by Car Mode (v5, #1408). It is now the whole app's one
+     mechanism, shared with .terminal-screen - see the session-screen shell below. */
   height: 100vh;
   height: 100dvh;
-  height: var(--car-vh, 100dvh);
+  height: var(--app-vh, 100dvh);
   max-height: 100dvh;
-  max-height: var(--car-vh, 100dvh);
+  max-height: var(--app-vh, 100dvh);
   overflow: hidden;
 }
 /* The pin only works if the column lays out as: header (natural) -> middle (absorbs + scrolls) -> footer
