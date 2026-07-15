@@ -28,6 +28,8 @@ export function VoiceMode() {
     speaking,
     working,
     audioUnavailable,
+    unavailableReason,
+    unavailableIsServiceDown,
     agentWorking,
     pollDone,
     narrative,
@@ -136,31 +138,46 @@ export function VoiceMode() {
           </div>
         )}
 
+        {/* Voice is unavailable. The Gateway usually KNOWS why, and now says so (unavailableReason).
+            This screen used to hardcode a guess - "the Gateway has not made one, or this session's
+            computer is offline" - which during the 2026-07-15 speech outage was false on both counts,
+            and left the owner unable to tell an outage from a bug for 45 minutes. Never invent a cause
+            here; render what the Gateway reported, and only fall back to the generic line when it has
+            said nothing. */}
         {audioUnavailable && (
           <>
             <div className="voice-statusbar">
-              <span className="voice-state voice-state-red">Voice unavailable</span>
+              <span className="voice-state voice-state-red">
+                {unavailableIsServiceDown ? "Voice service down" : "Voice unavailable"}
+              </span>
             </div>
             <div className="voice-narr">
-              <div className="voice-narr-title">No narration is ready to play.</div>
+              <div className="voice-narr-title">
+                {unavailableIsServiceDown ? "This is not your fault." : "No narration is ready to play."}
+              </div>
               <div className="voice-narr-body">
-                {clipPhase === "error"
-                  ? "The phone could not download the spoken audio for this turn. Tap Generate narration to make it again."
-                  : narrative.length > 0
-                    ? narrative
-                    : "There is no spoken summary for this session's latest turn yet - the Gateway has not made one, or this session's computer is offline. Tap Generate narration to make one now."}
+                {unavailableReason?.text
+                  ? unavailableReason.text
+                  : clipPhase === "error"
+                    ? "The phone could not download the spoken audio for this turn. Tap Generate narration to make it again."
+                    : narrative.length > 0
+                      ? narrative
+                      : "There is no spoken summary for this session's latest turn yet. Tap Generate narration to make one now."}
               </div>
             </div>
-            {/* The minimum recovery: while voice is on but nothing was produced, let the person ask
-                the Gateway to generate the narration right now instead of being stuck. */}
-            <button
-              type="button"
-              className="voice-switch"
-              onClick={() => void onGenerateNow()}
-              disabled={regenerating}
-            >
-              {regenerating ? "Generating narration..." : "Generate narration now"}
-            </button>
+            {/* No button during a service outage: the Gateway is already backing off and retrying, and
+                pressing Generate would hit the same dead service and fail the same way. A button that
+                cannot work is worse than no button - it invites you to keep trying and blame yourself. */}
+            {!unavailableIsServiceDown && (
+              <button
+                type="button"
+                className="voice-switch"
+                onClick={() => void onGenerateNow()}
+                disabled={regenerating}
+              >
+                {regenerating ? "Generating narration..." : "Generate narration now"}
+              </button>
+            )}
           </>
         )}
 

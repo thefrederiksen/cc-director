@@ -49,6 +49,10 @@ function sameSessionForVoice(a: SessionDto | null, b: SessionDto | null): boolea
     && Boolean(a.onHold) === Boolean(b.onHold)
     && Boolean(a.voiceGenerating) === Boolean(b.voiceGenerating)
     && Boolean(a.voiceAudioReady) === Boolean(b.voiceAudioReady)
+    // The reason voice is unavailable is part of what the screen shows, so a CHANGE in it has to count
+    // as a change. Leaving it out meant the poll could carry a fresh reason every 3 seconds and this
+    // guard would declare the session identical, so the screen never re-rendered to show it.
+    && (a.voiceUnavailable?.state ?? null) === (b.voiceUnavailable?.state ?? null)
     && a.statusColor === b.statusColor
     && a.assessedState === b.assessedState
     && a.activityState === b.activityState;
@@ -78,6 +82,11 @@ export interface VoiceModeView {
   speaking: boolean;
   working: boolean;
   audioUnavailable: boolean;
+  /** WHY voice is unavailable, as the Gateway reported it (null when it has nothing to say). Render
+   *  this instead of guessing - the guess was wrong during a real outage. */
+  unavailableReason: { state?: string; text?: string; ctaLabel?: string; ctaAction?: string; ctaUrl?: string | null } | null;
+  /** The hosted service is down: not the user's fault, nothing for them to press, already retrying. */
+  unavailableIsServiceDown: boolean;
   gatewayPreparing: boolean;
   phoneDownloadPending: boolean;
   agentWorking: boolean;
@@ -545,11 +554,23 @@ export function useVoiceMode(sessionId: string | undefined, opts?: { seededVoice
   const narrative = voice?.spoken ?? "";
   const title = session?.number ? `${session.number} ${name ?? "Session"}` : name ?? "Session";
 
+  // WHY voice is unavailable, straight from the Gateway. This field has been arriving on every poll and
+  // being thrown away: it had ZERO readers, while the screens hardcoded a guess ("the Gateway has not
+  // made one, or this session's computer is offline") that was simply speculation - and during the
+  // 2026-07-15 speech outage it was flatly false on both counts. Surface the real reason, and let the
+  // views render it instead of inventing one. Null when the Gateway has nothing to say.
+  const unavailableReason = session?.voiceUnavailable ?? null;
+  // A service outage is not the user's fault and there is nothing for them to press: the Gateway is
+  // already backing off and retrying. Offering a "Generate narration now" button here would be a lie.
+  const unavailableIsServiceDown = unavailableReason?.state === "ServiceDown";
+
   return {
     voiceOn,
     speaking,
     working,
     audioUnavailable,
+    unavailableReason,
+    unavailableIsServiceDown,
     gatewayPreparing,
     phoneDownloadPending,
     agentWorking,
