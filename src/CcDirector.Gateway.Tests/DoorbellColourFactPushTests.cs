@@ -156,6 +156,39 @@ public sealed class DoorbellColourFactPushTests : IAsyncLifetime
             "purple from this fact. Before defect 14 this event had ZERO subscribers anywhere.");
     }
 
+    /// <summary>
+    /// THE FOURTH INPUT DEFECT 14 DID NOT COUNT: the GATE on the other three.
+    ///
+    /// This class says "three colour inputs" and the fold reads four - yellow needs WingmanEnabled AND
+    /// IsAutoExplaining, purple needs WingmanEnabled AND IsBackgroundRunning. So turning the Wingman OFF on
+    /// a session parked on its background task changes the right answer from purple "Background" to red
+    /// "Needs you" while none of the three flags move, nothing pushes, and the phone keeps the stale fold
+    /// until the ten-second re-push.
+    ///
+    /// It survived defect 14 and three later passes hunting exactly this, because a gate is not the thing
+    /// being rendered - it does not look like a colour input. Which is why the rule cannot be a judgement
+    /// call: if the fold READS it, it pushes.
+    /// </summary>
+    [Fact]
+    public async Task TurningTheWingmanOff_ReachesTheGateway_OnItsOwnPush()
+    {
+        var s = await ASessionTheGatewayCanSee();
+
+        // The state the gate actually gates: parked on its own background task, Wingman on -> purple.
+        s.WingmanEnabled = true;
+        s.SetBackgroundRunning(true, "running in background");
+        Assert.True(await WaitForPushed(s.Id.ToString(), d => d.WingmanEnabled && d.IsBackgroundRunning, PushWindow),
+            "the purple setup never reached the Gateway - the real assertion below cannot mean anything yet");
+
+        // Exactly what the wingman-enabled=false command does (SessionWriteExecutor).
+        s.WingmanEnabled = false;
+
+        Assert.True(await WaitForPushed(s.Id.ToString(), d => !d.WingmanEnabled, PushWindow),
+            "WingmanEnabled=false never reached the Gateway inside the push window - it GATES the purple " +
+            "and yellow the fold reads, so the phone would keep folding purple 'Background' for a session " +
+            "the desktop already calls red 'Needs you', until one ten-second re-push");
+    }
+
     [Fact]
     public async Task AutoExplaining_ReachesTheGateway_OnItsOwnPush()
     {

@@ -755,6 +755,21 @@ public sealed class ControlApiHost : IAsyncDisposable
                 _streamClient?.NotifyDelta(ControlEndpoints.Map(session, DirectorId));
             session.OnIsExplainingChanged += _ =>
                 _streamClient?.NotifyDelta(ControlEndpoints.Map(session, DirectorId));
+
+            // THE GATE ON TWO OF THOSE THREE, and it was missing from the list above - which is the whole
+            // trap in miniature. The comment right there says "the three colour inputs", and the fold reads
+            // a FOURTH: yellow needs WingmanEnabled AND IsAutoExplaining, purple needs WingmanEnabled AND
+            // IsBackgroundRunning (SessionOrdering.ResolveActivity). So a wingman-enabled=false command on a
+            // session parked on its background task changes the right answer from purple "Background" to red
+            // "Needs you" while NONE of the three above fire - nothing pushes, and the phone and Cockpit
+            // keep the stale fold until the ten-second re-push.
+            //
+            // It hid because a gate is not the thing being rendered. Defect 14 went looking for "colour
+            // inputs", found the flags, and did not count the condition guarding them. The rule that
+            // actually holds: if the fold READS it, it pushes - no judgement about whether it feels like a
+            // colour. Found by review of pull request 1598, after three earlier passes hunting exactly this.
+            session.OnWingmanEnabledChanged += _ =>
+                _streamClient?.NotifyDelta(ControlEndpoints.Map(session, DirectorId));
         }
 
         _sessionManager.OnSessionCreated += session =>
