@@ -65,6 +65,22 @@ public sealed class GatewayInputStatsAggregator
     // Stamped once, the first time a Gateway runs a build that has the tally, and persisted from then on.
     private string _agentsSinceUtc = "";
 
+    // Session ids whose already-counted turns have been attributed to their agent (issue #1633).
+    //
+    // The agent tally is YOUNGER than the high-water map. A session first seen before the tally existed had
+    // its turns consumed into the totals then, so its high-water already equals its current count and its
+    // delta is zero forever - which meant its real, known-agent turns could never be attributed, and the
+    // Agents page read "100% Claude Code" while live Codex sessions sat there with turns on them.
+    //
+    // So on the FIRST fold of a session, whatever its high-water already holds is attributed to that
+    // session's agent (a back-fill), and the id is recorded here. For a session first seen after this
+    // shipped the high-water is empty, the back-fill contributes nothing, and the ordinary delta path does
+    // all the work - the same code path either way, with no one-time migration to run.
+    //
+    // MUST be persisted: without it a Gateway restart would back-fill every live session a second time and
+    // double the agent numbers.
+    private readonly HashSet<string> _agentsSeeded = new(StringComparer.Ordinal);
+
     private sealed class HourTurns
     {
         public long VoiceTurns;
@@ -339,6 +355,17 @@ public sealed class GatewayInputStatsAggregator
             _highWater[s.SessionId] = hw;
         }
 
+        // Issue #1633: the first time this session is folded, attribute what it has ALREADY counted to its
+        // agent. Read before the loop below moves the high-water on, so this is exactly the turns consumed
+        // into the totals before the agent tally existed - real turns, whose agent we now know. Empty (and
+        // therefore a no-op) for any session first seen after this shipped.
+        if (_agentsSeeded.Add(s.SessionId))
+        {
+            foreach (var (key, prior) in hw)
+                if (AttributeToAgentLocked(s, key.Modality, prior.Turns, prior.Characters))
+                    changed = true;
+        }
+
         long sessionDeltaTurns = 0;
         foreach (var b in s.InputStats.Buckets)
         {
@@ -399,22 +426,8 @@ public sealed class GatewayInputStatsAggregator
                     repo.Sessions.Add(s.SessionId);
 
                 // Attribute the SAME increase to the agent CLI the session drives (the private Agents page):
-                // which agent the work went through. A session whose agent the Director did not report is
-                // counted under the empty key and shown as "(unknown)" - never silently dropped, and never
-                // guessed at from the command line.
-                var agentKey = s.Agent ?? "";
-                if (!_agents.TryGetValue(agentKey, out var agent))
-                {
-                    agent = new AgentTally();
-                    _agents[agentKey] = agent;
-                }
-                if (isVoice)
-                    agent.VoiceTurns += deltaTurns;
-                else
-                    agent.TypedTurns += deltaTurns;
-                agent.Characters += deltaChars;
-                if (!string.IsNullOrEmpty(s.SessionId))
-                    agent.Sessions.Add(s.SessionId);
+                // which agent the work went through.
+                AttributeToAgentLocked(s, key.Item1, deltaTurns, deltaChars);
 
                 changed = true;
             }
@@ -427,6 +440,36 @@ public sealed class GatewayInputStatsAggregator
             _wingmanTurns += sessionDeltaTurns;
 
         return changed;
+    }
+
+    // Attribute <paramref name="turns"/> and <paramref name="characters"/> to the agent CLI that session
+    // drives (the private Agents page). Used by BOTH the ordinary delta path and the first-fold back-fill
+    // (issue #1633), so the two can never drift apart.
+    //
+    // A session whose agent the Director did not report is counted under the empty key and shown as
+    // "(unknown)" - never silently dropped, and never guessed at from the command line.
+    //
+    // The session id is registered even when it brought no turns with it, so "Agents driven" and the
+    // per-agent session counts describe the agents actually being run rather than only the ones that
+    // happened to submit a turn in the observed window. Returns true when anything changed. Caller holds
+    // the lock.
+    private bool AttributeToAgentLocked(SessionDto s, string modality, long turns, long characters)
+    {
+        var agentKey = s.Agent ?? "";
+        if (!_agents.TryGetValue(agentKey, out var agent))
+        {
+            agent = new AgentTally();
+            _agents[agentKey] = agent;
+        }
+
+        if (string.Equals(modality, "voice", StringComparison.OrdinalIgnoreCase))
+            agent.VoiceTurns += turns;
+        else
+            agent.TypedTurns += turns;
+        agent.Characters += characters;
+
+        var registered = !string.IsNullOrEmpty(s.SessionId) && agent.Sessions.Add(s.SessionId);
+        return registered || turns > 0 || characters > 0;
     }
 
     private static InputStatsDto ToDtoLocked(Dictionary<(string Modality, string Surface), Counters> src)
@@ -455,6 +498,11 @@ public sealed class GatewayInputStatsAggregator
         public Dictionary<string, RepoTallyStore> Repos { get; set; } = new();
         public Dictionary<string, AgentTallyStore> Agents { get; set; } = new();
         public string AgentsSinceUtc { get; set; } = "";
+        // Issue #1633. NULL (not empty) when the key is absent, which is how a store written before the
+        // back-fill existed is recognised - see Load, which must rebuild such a store's agent tally rather
+        // than add to it. Nullable on purpose: an empty list is a real value (a store with nothing folded
+        // yet) and must not be confused with an absent one.
+        public List<string>? AgentsSeeded { get; set; }
     }
 
     private sealed class HourTurnsStore
@@ -531,7 +579,29 @@ public sealed class GatewayInputStatsAggregator
             _agents[agentKey] = tally;
         }
         _agentsSinceUtc = parsed.AgentsSinceUtc ?? "";
-        FileLog.Write($"[GatewayInputStatsAggregator] Load: restored {_totals.Count} total bucket(s), {_highWater.Count} live session(s), {_hourly.Count} hourly bucket(s), {_wingmanSessions.Count} wingman session(s)/{_wingmanTurns} wingman turn(s), {_repos.Count} repo(s), {_agents.Count} agent(s) since '{_agentsSinceUtc}' from {_path}");
+
+        // Issue #1633. A store written before the back-fill existed (no AgentsSeeded key) is a HYBRID: some
+        // sessions had turns attributed by the ordinary delta path while the tally was live, and the SAME
+        // turns are also sitting in those sessions' high-water. Nothing records which of the two applies to
+        // which session, so back-filling on top of it would count those turns twice.
+        //
+        // So the partial tally is DISCARDED and rebuilt from the high-water, which is the authoritative
+        // per-session count. What is lost is the contribution of sessions that both ran and ended inside
+        // that short window - their high-water is already pruned, so it cannot be recovered. That is a small
+        // honest loss, and far better than silently inflating every agent's numbers.
+        if (parsed.AgentsSeeded is null)
+        {
+            FileLog.Write($"[GatewayInputStatsAggregator] Load: store predates the agent back-fill (issue #1633); " +
+                          $"discarding {_agents.Count} partially-attributed agent tally/tallies and rebuilding from " +
+                          $"the high-water of {_highWater.Count} known session(s)");
+            _agents.Clear();
+        }
+        else
+        {
+            foreach (var id in parsed.AgentsSeeded)
+                if (!string.IsNullOrEmpty(id)) _agentsSeeded.Add(id);
+        }
+        FileLog.Write($"[GatewayInputStatsAggregator] Load: restored {_totals.Count} total bucket(s), {_highWater.Count} live session(s), {_hourly.Count} hourly bucket(s), {_wingmanSessions.Count} wingman session(s)/{_wingmanTurns} wingman turn(s), {_repos.Count} repo(s), {_agents.Count} agent(s) since '{_agentsSinceUtc}' ({_agentsSeeded.Count} attributed) from {_path}");
     }
 
     private void Quarantine(string reason)
@@ -576,6 +646,7 @@ public sealed class GatewayInputStatsAggregator
                     Sessions = at.Sessions.ToList(),
                 };
             file.AgentsSinceUtc = _agentsSinceUtc;
+            file.AgentsSeeded = _agentsSeeded.ToList();
 
             var json = JsonSerializer.Serialize(file, FileJsonOptions);
             var tmp = _path + ".tmp";

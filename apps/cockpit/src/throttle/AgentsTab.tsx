@@ -14,11 +14,12 @@ import {
 // envelope), so the tab reads its parent's snapshot rather than opening a second poll of the same feed.
 // Counts only - never any message text.
 //
-// This tab counts from agentsSinceUtc, NOT all-time. The turn totals had been accumulating long before the
-// per-agent breakdown existed, and nothing recorded which agent those earlier turns ran under - so the
-// numbers here do not reconcile with the Overview tab's totals, and the tab says so on its face rather
-// than letting the owner read a smaller number as a drop in usage. It reuses the Repos tab's row and
-// segmented-control styles so the two read as one page.
+// This tab does not reconcile with the Overview tab's totals, and says so on its face rather than letting
+// the owner read a smaller number as a drop in usage. A session the Gateway still knows about is attributed
+// in FULL, including the turns it had already driven before the breakdown existed (issue #1633). What is
+// missing is the sessions that had already finished by then: their turns are in the all-time totals, but
+// nothing ever recorded which agent they ran under, so they cannot honestly be split by agent.
+// It reuses the Repos tab's row and segmented-control styles so the two read as one page.
 
 // The three honest metrics the system actually measures per agent. Tokens are intentionally absent: the
 // tally counts turns and characters, never tokens, and this tab never fabricates a number.
@@ -150,8 +151,9 @@ export function AgentsTab({ data }: { data: ThrottleData }) {
       <div className="thr-empty">
         No agent usage counted yet
         {since !== null ? ` since ${since}, when this breakdown started counting` : ""}. Drive a session -
-        Claude Code, Codex, or any other agent - and the split will appear here, ranked. Turns driven before
-        this breakdown existed are not included: nothing recorded which agent they ran under.
+        Claude Code, Codex, or any other agent - and the split will appear here, ranked. Turns from sessions
+        that had already finished before this breakdown existed are not included: nothing recorded which
+        agent they ran under.
       </div>
     );
   }
@@ -167,7 +169,7 @@ export function AgentsTab({ data }: { data: ThrottleData }) {
         Which agent you actually drive: how your driving splits across the agent CLIs you run, ranked by{" "}
         {METRIC_WORD[metric]}. Counted at the Director, so desktop typing is included.
         {since !== null
-          ? ` Counting since ${since}, when this breakdown was added - so these numbers are smaller than your all-time totals on the other tabs.`
+          ? ` Attributing since ${since}, when this breakdown was added - so these numbers can be smaller than your all-time totals on the other tabs.`
           : ""}
       </p>
 
@@ -230,9 +232,10 @@ export function AgentsTab({ data }: { data: ThrottleData }) {
         <ul>
           {since !== null && (
             <li>
-              This tab counts from {since}, when the breakdown was added - not all-time. The turns on the
-              other tabs go back further, and nothing recorded which agent those earlier ones ran under, so
-              the two do not add up to the same number.
+              Attribution started {since}. A session still running then is counted in full, including the
+              turns it had already driven. Turns from sessions that had already finished by then are not
+              here at all - nothing recorded which agent they ran under - so this tab does not add up to the
+              all-time totals on the other tabs.
             </li>
           )}
           <li>
