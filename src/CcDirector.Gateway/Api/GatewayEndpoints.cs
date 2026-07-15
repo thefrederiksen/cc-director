@@ -70,8 +70,7 @@ internal static class GatewayEndpoints
         TimeSpan? streamStaleAfter = null,
         // Issue #1177 (Phase 1): when non-null, per-session commands are first tried DOWN the Director's
         // stream via this hook (GatewayHost.SendCommandAsync); a null return means the Director is not
-        // stream-connected, so the endpoint falls back to its existing HTTP call. Null here (stream mode
-        // off) keeps every command endpoint on the HTTP path, byte-identical to before.
+        // stream-connected, which the endpoint surfaces as a 502 - there is no HTTP call to fall back to.
         DirectorCommandRouter.SendDirectorCommandAsync? sendCommand = null,
         // Issue #1215 (Cockpit plan phase 6): the last-known-good roster cache. When non-null, a single
         // failed Director poll no longer drops that Director's sessions - the cache serves the last-known-good
@@ -817,8 +816,7 @@ internal static class GatewayEndpoints
             {
                 // Gateway Cleanup Phase 2 (PR D): ride the tunnel first (interrupted-list verb, director-level).
                 // A non-null stream result is authoritative for this Director - Ok carries its journals, a non-Ok
-                // is treated as no journals (skipped), exactly as a failed HTTP read returned null and was
-                // skipped below. A null return (no stream) falls back to the existing reachability-gated HTTP read.
+                // is treated as no journals (skipped).
                 var sr = await DirectorCommandRouter.TrySendAsync(sendCommand, d.DirectorId, "interrupted-list", "", null, ct, machineName: d.MachineName);
                 // Post-cut: tunnel-only. A null result means the Director is not connected, so no journals.
                 return (Director: d, Journals: sr is not null && sr.Ok ? DirectorCommandRouter.ReadBody<List<CrashJournalDto>>(sr) : null);
@@ -1041,10 +1039,8 @@ internal static class GatewayEndpoints
             var (director, session) = await LocateSessionAsync(registry, sid, pushedSessions, streamStaleResolved);
             if (session is null || director is null)
                 return Results.NotFound(new { error = "session not found across any director" });
-            // Gateway Cleanup (Phase 2, PR C): try the owning Director's tunnel first; a null return (stream
-            // mode off / Director not stream-connected) falls back to the HTTP dial below, byte-identical. The
-            // stream Ok result is success, so it synthesizes the same { pendingDeletion } body the HTTP path returns.
-            // Post-cut: tunnel-only. A null result (Director not connected) collapses to 502.
+            // Tunnel-only. The Ok result is success and synthesizes the { pendingDeletion } body; a null result
+            // (Director not connected) collapses to 502.
             var streamResult = await DirectorCommandRouter.TrySendAsync(sendCommand, director.DirectorId, "request-deletion", sid, body, ct, machineName: director.MachineName);
             return streamResult is not null && streamResult.Ok
                 ? Results.Json(new { pendingDeletion = true })
@@ -1072,8 +1068,7 @@ internal static class GatewayEndpoints
             var (director, session) = await LocateSessionAsync(registry, sid, pushedSessions, streamStaleResolved, owners);
             if (session is null || director is null)
                 return Results.NotFound(new { error = "session not found across any director" });
-            // Gateway Cleanup (Phase 2, PR C): tunnel-first; a null return falls back to the HTTP dial below,
-            // byte-identical. The Ok body IS the WingmanViewDto JSON, passed through exactly as the HTTP body.
+            // Tunnel-only. The Ok body IS the WingmanViewDto JSON, passed through exactly as the HTTP body.
             // Post-cut: tunnel-only. A null result (Director not connected) collapses to 502.
             var streamResult = await DirectorCommandRouter.TrySendAsync(sendCommand, director.DirectorId, "wingman-view", sid, null, ct, machineName: director.MachineName);
             return streamResult is not null && streamResult.Ok && !string.IsNullOrEmpty(streamResult.BodyJson)
@@ -1094,7 +1089,7 @@ internal static class GatewayEndpoints
             // Gateway Cleanup (Phase 2, PR C): tunnel-first. This is a SLOW LLM call - the request ct threads
             // straight into the SignalR invocation (which has no per-invocation timeout; keep-alive pings sustain
             // the long await), so the synchronous browser contract is byte-identical to the HTTP forward. A null
-            // return falls back to the HTTP dial below. The Ok body IS the WingmanAskResult JSON.
+            // The Ok body IS the WingmanAskResult JSON.
             // Post-cut: tunnel-only. A null result (Director not connected) collapses to 502.
             // Runs a language model on the Director before it can answer, so it gets the longer wait.
             var streamResult = await DirectorCommandRouter.TrySendAsync(sendCommand, director.DirectorId, "wingman-ask", sid, req, ct,
@@ -1316,8 +1311,7 @@ internal static class GatewayEndpoints
             while (DateTime.UtcNow < deadline)
             {
                 await Task.Delay(750);
-                // Gateway Cleanup Phase 2: the idle poll rides the tunnel too (snapshot verb, tunnel-first);
-                // a null return falls back to the byte-identical HTTP dial. Post-cut the HTTP arm is removed.
+                // The idle poll rides the tunnel too (snapshot verb). Tunnel-only: there is no HTTP arm.
                 var cur = await SnapshotTunnelFirstAsync(sendCommand, director, sid, CancellationToken.None);
                 if (cur is null) { finalState = "Exited"; break; }
                 finalState = cur.ActivityState;
@@ -1396,7 +1390,7 @@ internal static class GatewayEndpoints
             // Gateway Cleanup (Phase 2): upload the image DOWN the tunnel in bounded chunks - begin, then a
             // chunk per UploadChunkRawBytes, then complete - so a whole photo never rides as one large unary
             // message that would monopolize the shared tunnel (Architect ruling 2). A null begin means no
-            // stream (mode off / Director not stream-connected), so fall through to the HTTP dial below. A
+            // A null begin means the Director is not connected and collapses to 502 below. A
             // non-null-but-failed step is authoritative and collapses to 502 (a retryable upload failure).
             var uploadId = Guid.NewGuid().ToString("N");
             var begin = await DirectorCommandRouter.TrySendAsync(sendCommand, director.DirectorId, "upload-image-begin", sid,
@@ -1440,8 +1434,8 @@ internal static class GatewayEndpoints
             if (d is null) return Results.NotFound(new { error = "director not found" });
 
             // Gateway Cleanup Phase 2 (PR D): ride the tunnel first (repos-list verb, director-level so SessionId
-            // is ""); a null return means no stream, so fall back to the byte-identical HTTP dial. A non-Ok stream
-            // result collapses to 502, exactly as the HTTP path surfaced a null.
+            // is ""). Tunnel-only: a null return means the Director is not connected, and a non-Ok stream
+            // result collapses to 502.
             var sr = await DirectorCommandRouter.TrySendAsync(sendCommand, id, "repos-list", "", null, ct, machineName: d.MachineName);
             if (sr is not null)
             {
@@ -1561,9 +1555,9 @@ internal static class GatewayEndpoints
 
             FileLog.Write($"[GatewayEndpoints] POST /directors/{id}/sessions: repo={req.RepoPath}, agent={req.Agent}");
 
-            // Issue #1177 (Phase 1): try the target Director's stream first; on a null return (no stream)
-            // fall back to the HTTP create. A non-Ok stream result (validation/creation failure) collapses
-            // to 502, exactly as the HTTP path surfaces a Director 4xx/5xx.
+            // Issue #1177 (Phase 1): create rides the target Director's stream. Tunnel-only: a null return
+            // means the Director is not connected, and a non-Ok stream result (validation/creation failure)
+            // collapses to 502 - both surface as the error below.
             SessionDto? body;
             string? err;
             var streamResult = await DirectorCommandRouter.TrySendAsync(sendCommand, id, "create", "", req, CancellationToken.None);
@@ -1783,9 +1777,9 @@ internal static class GatewayEndpoints
 
             FileLog.Write($"[GatewayEndpoints] POST /directors/{id}/sessions/github: {req.Owner}/{req.Repo} mode={req.TriggerMode}");
 
-            // Gateway Cleanup Phase 2: ride the target Director's stream first (create-from-github verb,
-            // director-level so SessionId is ""); on a null return (no stream) fall back to the HTTP create. A
-            // non-Ok stream result collapses to 502, exactly as the HTTP path surfaced a Director 4xx/5xx.
+            // Gateway Cleanup Phase 2: create rides the target Director's stream (create-from-github verb,
+            // director-level so SessionId is ""). Tunnel-only: a null return means the Director is not
+            // connected, and a non-Ok stream result collapses to 502 - both surface as the error below.
             SessionDto? body;
             string? err;
             var streamResult = await DirectorCommandRouter.TrySendAsync(sendCommand, id, "create-from-github", "", req, CancellationToken.None);
@@ -1878,9 +1872,9 @@ internal static class GatewayEndpoints
             }
 
             // Gateway Cleanup Phase 2: the Gateway-initiated REMOTE stop rides the tunnel (shutdown verb,
-            // director-level so SessionId is ""), tunnel-first; a null return falls back to the byte-identical
-            // HTTP dial. POST /shutdown stays on the Director loopback floor for the local launcher; this tunnel
-            // verb triggers the same in-process self-shutdown. Post-cut the HTTP arm is removed.
+            // director-level so SessionId is ""). Tunnel-only: there is no HTTP arm. POST /shutdown stays on the
+            // Director loopback floor for the local launcher; this tunnel verb triggers the same in-process
+            // self-shutdown.
             var shutdownSr = await DirectorCommandRouter.TrySendAsync(sendCommand, director.DirectorId, "shutdown", "", null, CancellationToken.None, machineName: director.MachineName);
             var ok = shutdownSr is not null && shutdownSr.Ok;
             if (ok)
@@ -1916,8 +1910,7 @@ internal static class GatewayEndpoints
             var (director, session) = await LocateSessionAsync(registry, sid, pushedSessions, streamStaleResolved, owners);
             if (session is null)
                 return Results.NotFound(new { error = "session not found across any director" });
-            // Gateway Cleanup (Phase 2, PR C): tunnel-first; a null return falls back to the HTTP dial below,
-            // byte-identical. The Director's summary core sets DirectorId in its body, so the pass-through matches.
+            // Tunnel-only. The Director's summary core sets DirectorId in its body, so the pass-through matches.
             if (director is null)
                 return Results.NotFound(new { error = "session not found across any director" });
             // Post-cut: tunnel-only. A null result (Director not connected) collapses to 502.
@@ -1944,8 +1937,7 @@ internal static class GatewayEndpoints
             var (director, session) = await LocateSessionAsync(registry, sid, pushedSessions, streamStaleResolved, owners);
             if (session is null || director is null)
                 return Results.NotFound(new { error = "session not found across any director" });
-            // Gateway Cleanup (Phase 2, PR C): tunnel-first (verb "git-status"); a null return falls back to the
-            // HTTP dial below, byte-identical. The Ok body IS the GitSnapshot JSON, passed through unchanged.
+            // Tunnel-only (verb "git-status"). The Ok body IS the GitSnapshot JSON, passed through unchanged.
             // Post-cut: tunnel-only. A null result (Director not connected) collapses to 502.
             var streamResult = await DirectorCommandRouter.TrySendAsync(sendCommand, director.DirectorId, "git-status", sid, null, ctx.RequestAborted, machineName: director.MachineName);
             return streamResult is not null && streamResult.Ok && !string.IsNullOrEmpty(streamResult.BodyJson)
@@ -1966,8 +1958,7 @@ internal static class GatewayEndpoints
             var (director, session) = await LocateSessionAsync(registry, sid, pushedSessions, streamStaleResolved, owners);
             if (session is null || director is null)
                 return Results.NotFound(new { error = "session not found across any director" });
-            // Gateway Cleanup (Phase 2, PR C): tunnel-first; a null return falls back to the HTTP dial below,
-            // byte-identical. The Director's handover core sets DirectorId in its body, so the pass-through matches.
+            // Tunnel-only. The Director's handover core sets DirectorId in its body, so the pass-through matches.
             // Post-cut: tunnel-only. A null result (Director not connected) collapses to 502.
             var streamResult = await DirectorCommandRouter.TrySendAsync(sendCommand, director.DirectorId, "handover", sid, null, ct, machineName: director.MachineName);
             return streamResult is not null && streamResult.Ok && !string.IsNullOrEmpty(streamResult.BodyJson)
@@ -1983,8 +1974,7 @@ internal static class GatewayEndpoints
             var (director, session) = await LocateSessionAsync(registry, sid, pushedSessions, streamStaleResolved, owners);
             if (session is null || director is null)
                 return Results.NotFound(new { error = "session not found across any director" });
-            // Gateway Cleanup (Phase 2, PR C): tunnel-first (read the cached recap); a null return falls back to
-            // the HTTP dial below, byte-identical. This is the READ; the slow generate (POST) is handled separately.
+            // Tunnel-only (read the cached recap). This is the READ; the slow generate (POST) is handled separately.
             // Post-cut: tunnel-only. A null result (Director not connected) collapses to 502.
             var streamResult = await DirectorCommandRouter.TrySendAsync(sendCommand, director.DirectorId, "recap", sid, null, ct, machineName: director.MachineName);
             return streamResult is not null && streamResult.Ok && !string.IsNullOrEmpty(streamResult.BodyJson)
@@ -2002,7 +1992,7 @@ internal static class GatewayEndpoints
             // Gateway Cleanup (Phase 2, PR C): tunnel-first. Like wingman-ask this is a SLOW LLM call, so the
             // request ct (ctx.RequestAborted) threads into the SignalR invocation (no per-invocation timeout;
             // keep-alive pings sustain the long await) - synchronous browser contract byte-identical. A null
-            // return falls back to the HTTP dial below. The Ok body IS the RecapResponse JSON, returned 201 as before.
+            // The Ok body IS the RecapResponse JSON, returned 201 as before.
             // Post-cut: tunnel-only. A null result (Director not connected) collapses to 502.
             var streamResult = await DirectorCommandRouter.TrySendAsync(sendCommand, director.DirectorId, "recap-generate", sid,
                 new RecapGenerateRequest { Model = model }, ctx.RequestAborted,
@@ -2044,8 +2034,8 @@ internal static class GatewayEndpoints
             if (targetDirector is null)
             {
                 // Same-Director: proxy the entire request. Gateway Cleanup Phase 2: ride the tunnel first
-                // (handover-generate verb, director-level so SessionId is ""); a null return falls back to the
-                // byte-identical HTTP proxy. A non-Ok stream result collapses to 502 exactly as the HTTP null did.
+                // (handover-generate verb, director-level so SessionId is ""). Tunnel-only: a null return means
+                // the Director is not connected, and a non-Ok stream result collapses to 502.
                 HandoverResponse? body; string? err;
                 // Runs a language model on the Director before it can answer, so it gets the longer wait.
                 var hgSr = await DirectorCommandRouter.TrySendAsync(sendCommand, sourceDirector.DirectorId, "handover-generate", "", req, CancellationToken.None,
@@ -2212,8 +2202,7 @@ internal static class GatewayEndpoints
                 }
 
                 var promptReq = new PromptRequest { Text = req.Text, AppendEnter = req.AppendEnter };
-                // Gateway Cleanup Phase 2: fanout delivery rides the tunnel (prompt verb, tunnel-first);
-                // a null return falls back to the byte-identical HTTP dial. Post-cut the HTTP arm is removed.
+                // Fanout delivery rides the tunnel (prompt verb). Tunnel-only: there is no HTTP arm.
                 bool ok; PromptResponse? body; string? err;
                 var deliverSr = await DirectorCommandRouter.TrySendAsync(sendCommand, director.DirectorId, "prompt", sid, promptReq, CancellationToken.None, machineName: director.MachineName);
                 if (deliverSr is null)
@@ -2572,8 +2561,8 @@ internal static class GatewayEndpoints
     }
 
     // Gateway Cleanup mission, Phase 2: the idle-wait poll (single prompt AND fanout broadcast) reads the
-    // owning session snapshot / terminal buffer over the tunnel FIRST (snapshot / buffer verbs), falling back
-    // to the byte-identical HTTP dial only when the Director has no stream. Post-cut the HTTP arm is removed.
+    // owning session snapshot / terminal buffer over the tunnel (snapshot / buffer verbs). Tunnel-only: there
+    // is no HTTP arm.
     // Shared by both poll sites so there is one tunnel-branch to prove.
     private static async Task<SessionDto?> SnapshotTunnelFirstAsync(
         DirectorCommandRouter.SendDirectorCommandAsync? sendCommand,

@@ -203,7 +203,8 @@ public sealed class PushedSessionStore
     /// Issue #1177 (Phase 4a): find the Director that currently owns <paramref name="sessionId"/> in a FRESH
     /// pushed cache, without any HTTP pull. Scans each Director's cache (under its own lock) and returns the
     /// first fresh match as (directorId, deep-copied session). Returns null when no stream-connected Director's
-    /// fresh cache holds the session, so the caller falls back to the HTTP-pull location path.
+    /// fresh cache holds the session, which post-cut means the session cannot be located at all - the pushed
+    /// cache is the ONLY roster source, so the caller reports "not found" rather than dialling anything.
     ///
     /// This is the portless session-location primitive: a remotely-unreachable Director has an empty control
     /// endpoint, so an HTTP pull can never locate its sessions, but the pushed cache already records which
