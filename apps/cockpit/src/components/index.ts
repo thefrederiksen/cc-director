@@ -40,3 +40,6 @@ export type { SortDirection, SortState } from "./dataTableCore";
 
 export { useFlash } from "./useFlash";
 export type { Flash, FlashController } from "./useFlash";
+
+export { NavIcon } from "./NavIcon";
+export type { NavIconName, NavIconProps } from "./NavIcon";

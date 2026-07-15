@@ -100,13 +100,35 @@ body {
   margin-top: auto;
 }
 
+/* A rail row: icon then label. The icon is what carries the scan now that the section headers are
+   gone (issue #1617) - see NavIcon. */
 .nav-link {
-  display: block;
+  display: flex;
+  align-items: center;
+  gap: 10px;
   padding: 9px 10px;
   border-radius: 8px;
   color: var(--text-dim);
   text-decoration: none;
   font-size: 14px;
+}
+
+/* The icon paints in currentColor, so it inherits the link's dim/hover/active color for free and the
+   whole row lights up as one thing. flex-shrink:0 keeps every label starting on the same x - a
+   squashed icon on one row would break the vertical edge the eye follows down the rail. */
+.nav-icon {
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+}
+
+/* Long destinations ("Voice Recorder", "Your Throttle") ellipsize rather than wrapping to a second
+   line or pushing the rail wider. min-width:0 is what actually lets a flex child shrink. */
+.nav-link-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .nav-link:hover {
