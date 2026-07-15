@@ -42,13 +42,9 @@ export interface AccountDevicesResponse {
   devices?: AccountDevice[] | null;
 }
 
-/** The POST /account/sign-in result: whether a browser sign-in flow is now in flight, whether the
- *  Gateway was already signed in, and a user-safe reason when it could not start. Token-free. */
-export interface SignInStartResult {
-  started: boolean;
-  alreadySignedIn: boolean;
-  error?: string | null;
-}
+/** The Gateway's public sign-in START front door (epic #1069, issues #1076/#1080). Public on the
+ *  AuthMiddleware allow-list, so a browser with no Gateway credential can reach it. */
+export const SIGN_IN_START_PATH = "/account/sign-in-start";
 
 async function gatewayErrorFrom(res: Response, label: string): Promise<GatewayError> {
   let detail = `${res.status}`;
@@ -136,21 +132,27 @@ export async function removeAccountDevice(deviceId: string, signal?: AbortSignal
   if (!res.ok) throw await gatewayErrorFrom(res, `DELETE /account/devices/${deviceId}`);
 }
 
-// POST /account/sign-in - start the Gateway's browser loopback sign-in (the #637 flow). The sign-in
-// runs in the background on the Gateway; this returns as soon as it is kicked off (or reports it was
-// already signed in / not available). After a started result the caller polls getAccountStatus to
-// observe completion. Throws with the server error on transport failure.
-export async function startSignIn(signal?: AbortSignal): Promise<SignInStartResult> {
-  const res = await fetch("/account/sign-in", {
-    method: "POST",
-    headers: { Accept: "application/json", ...authHeaders() },
-    signal,
-  });
-  if (!res.ok) throw await gatewayErrorFrom(res, "POST /account/sign-in");
-  const body = (await res.json()) as Partial<SignInStartResult> | null;
-  return {
-    started: Boolean(body?.started),
-    alreadySignedIn: Boolean(body?.alreadySignedIn),
-    error: body?.error ?? null,
-  };
+// Begin signing the GATEWAY in to its DevThrottle account by NAVIGATING this browser to the Gateway's
+// public sign-in START front door.
+//
+// This must be a real form navigation, not a fetch. POST /account/sign-in-start answers a remote caller
+// with a 302 to devthrottle.com carrying a redirect_uri back to the Gateway's own /account/sign-in-callback
+// (AccountSignInStartEndpoint, epic #1069). Only a navigation lets the browser FOLLOW that redirect, sign
+// in on the cloud page, and be handed back - a fetch would follow it in the background, where the person
+// can never see or use the sign-in page.
+//
+// It deliberately does NOT use the old POST /account/sign-in: that endpoint always runs the Gateway's
+// browser LOOPBACK sign-in, which opens a browser on the GATEWAY HOST's desktop and waits on 127.0.0.1.
+// A Cockpit on any other machine can never reach that loopback, so the button appeared to hang forever.
+//
+// The browser leaves this page and returns via the callback, so there is nothing to poll and nothing to
+// await - this function does not return.
+//
+// `doc` exists only so a unit test can assert the method and target without a DOM; callers pass nothing.
+export function beginSignIn(doc: Document = document): void {
+  const form = doc.createElement("form");
+  form.method = "POST";
+  form.action = SIGN_IN_START_PATH;
+  doc.body.appendChild(form);
+  form.submit();
 }

@@ -4,7 +4,7 @@ import {
   logoutAccount,
   getAccountDevices,
   removeAccountDevice,
-  startSignIn,
+  beginSignIn,
   type AccountStatus,
   type AccountDevice,
   type AccountDevicesResponse,
@@ -15,18 +15,14 @@ import { ErrorBanner, LoadingState, PageHeader } from "../components";
 // The Account page (issue #978, epic #967) - the React port of the Blazor Cockpit Account.razor
 // (#853/#648/#854). A pure client of the Gateway account endpoints: the credential lives on the
 // Gateway and the raw token is NEVER fetched, stored, or displayed (security rule DT-05).
-//   - signed-out: a real "Sign in" action that starts the Gateway browser loopback sign-in via
-//     POST /account/sign-in, then polls GET /account/status for completion;
+//   - signed-out: a real "Sign in" action that NAVIGATES to the Gateway's public sign-in front door
+//     (POST /account/sign-in-start), which redirects a remote browser on to devthrottle.com and hands
+//     it back to the Gateway's own callback - so this page just leaves and is re-entered signed in;
 //   - signed-in: identity + Log out (POST /account/logout) AND a "Your devices" list from
 //     GET /account/devices with a per-device Remove (DELETE /account/devices/{id}).
 // Responsive (CodingStyle.md): the page renders immediately with a loading state and loads the status +
 // device list asynchronously. On any failure it shows an explicit error state, never a fabricated
 // signed-out or empty-devices view (the no-fallback rule).
-
-/** How long the page waits for the browser sign-in to complete before it stops polling. */
-const SIGN_IN_POLL_TIMEOUT_MS = 5 * 60 * 1000;
-/** How often the page re-reads the Gateway status while a sign-in is in flight. */
-const SIGN_IN_POLL_INTERVAL_MS = 2000;
 
 function Row({ label, value }: { label: string; value: string }) {
   return (
@@ -66,7 +62,6 @@ export function AccountView() {
   const [loggedOut, setLoggedOut] = useState(false);
 
   // Sign-in (signed-out state).
-  const [signInInProgress, setSignInInProgress] = useState(false);
   const [signInError, setSignInError] = useState<string | null>(null);
 
   // Devices (signed-in state).
@@ -166,64 +161,14 @@ export function AccountView() {
     }
   };
 
-  // Poll the Gateway status while the browser sign-in runs, until the Gateway reports signed-in or the
-  // poll window elapses. The token hand-back happens on the Gateway (#637); this page only observes the
-  // resulting status - it never sees the credential.
-  const pollUntilSignedIn = useCallback(async () => {
-    pollAbortRef.current?.abort();
-    const controller = new AbortController();
-    pollAbortRef.current = controller;
-    const signal = controller.signal;
-    const deadline = Date.now() + SIGN_IN_POLL_TIMEOUT_MS;
-
-    while (Date.now() < deadline) {
-      await new Promise((resolve) => setTimeout(resolve, SIGN_IN_POLL_INTERVAL_MS));
-      if (signal.aborted) return;
-      let next: AccountStatus;
-      try {
-        next = await getAccountStatus(signal);
-      } catch {
-        // A transient status read failure during sign-in is expected (the Gateway is busy with the
-        // hand-off); keep polling until the deadline rather than aborting the sign-in.
-        continue;
-      }
-      if (next.signedIn) {
-        setStatus(next);
-        setSignInInProgress(false);
-        await loadDevices(signal);
-        return;
-      }
-    }
-
-    // The poll window elapsed without a signed-in status: report it explicitly so the person can retry
-    // rather than leaving the button stuck on "waiting".
-    if (!signal.aborted) {
-      setSignInInProgress(false);
-      setSignInError("Sign-in did not complete. Finish it in your browser, then try again.");
-    }
-  }, [loadDevices]);
-
-  const startSignInFlow = async () => {
-    if (signInInProgress) return;
+  // Sign the GATEWAY in to its DevThrottle account. This NAVIGATES away to the Gateway's public
+  // sign-in front door, which redirects a remote browser on to devthrottle.com and hands it back to
+  // the Gateway's own callback - so there is nothing to await and nothing to poll here. The page is
+  // simply re-entered signed in.
+  const startSignInFlow = () => {
     setSignInError(null);
     setLoggedOut(false);
-    try {
-      const result = await startSignIn();
-      if (result.alreadySignedIn) {
-        await loadStatus();
-        return;
-      }
-      if (!result.started) {
-        setSignInError(result.error ?? "Sign-in could not be started.");
-        return;
-      }
-      // Show "waiting for your browser" immediately and poll in the background (responsive UI).
-      setSignInInProgress(true);
-      void pollUntilSignedIn();
-    } catch (err) {
-      setSignInInProgress(false);
-      setSignInError(gatewayErrorMessage(err));
-    }
+    beginSignIn();
   };
 
   return (
@@ -357,19 +302,13 @@ export function AccountView() {
             This Gateway is not signed in to DevThrottle. Sign in to register this device and manage your
             account.
           </p>
-          <button className="acct-btn signin" onClick={() => void startSignInFlow()} disabled={signInInProgress}>
-            {signInInProgress ? "Waiting for your browser..." : "Sign in to DevThrottle"}
+          <button className="acct-btn signin" onClick={startSignInFlow}>
+            Sign in to DevThrottle
           </button>
           <p className="acct-note acct-signin-note">
-            Opens your web browser to finish signing in with Google, GitHub, or email.
+            Takes you to DevThrottle to sign in with Google, GitHub, or email, then brings you back here.
           </p>
 
-          {signInInProgress && (
-            <div className="acct-signin-progress">
-              Finish signing in in the browser window that opened. This page updates automatically once
-              you are signed in.
-            </div>
-          )}
           {signInError !== null && <div className="acct-signin-error">{signInError}</div>}
         </div>
       )}
