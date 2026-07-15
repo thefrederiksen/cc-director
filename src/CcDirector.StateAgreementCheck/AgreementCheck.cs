@@ -38,10 +38,28 @@ public static class AgreementCheck
     public sealed record Finding(string? SessionId, string Name, string Kind, string Detail);
 
     /// <summary>
-    /// The numbers the run publishes: how many real disagreements, over how many sessions, and on how
-    /// many rows the desktop comparison could not be graded.
+    /// The numbers the run publishes: how many real disagreements, over how many sessions, on how many
+    /// rows the desktop comparison could not be graded - and the verdict of EACH check, so the prose that
+    /// reports them cannot claim a check passed while a finding says it failed.
     /// </summary>
-    public sealed record Summary(int Disagreements, int LiveSessions, int DesktopNotGraded);
+    public sealed record Summary(
+        int Disagreements,
+        int LiveSessions,
+        int DesktopNotGraded,
+        int Unstamped,
+        int StampNotFold,
+        int LawBroken,
+        int DesktopVsGateway,
+        int TwoDifferentPixels,
+        int PaletteMissing)
+    {
+        /// <summary>True when this check found nothing - the ONLY basis for saying it passed.</summary>
+        public bool StampPresentPassed => Unstamped == 0;
+        public bool StampIsFoldPassed => StampNotFold == 0;
+        public bool LawHeld => LawBroken == 0;
+        public bool DesktopAgreedPassed => DesktopVsGateway == 0;
+        public bool SamePixelsPassed => TwoDifferentPixels == 0 && PaletteMissing == 0;
+    }
 
     /// <summary>
     /// THE ARITHMETIC OF THE HEADLINE NUMBER, in a function, because it is the sentence people quote and
@@ -66,11 +84,18 @@ public static class AgreementCheck
     /// </summary>
     public static Summary Summarize(IReadOnlyList<SessionDto> roster, IReadOnlyList<Finding> findings)
     {
-        var desktopNotGraded = findings.Count(f => f.Kind == "indeterminate");
+        int Count(string kind) => findings.Count(f => f.Kind == kind);
+        var desktopNotGraded = Count("indeterminate");
         return new Summary(
             Disagreements: findings.Count - desktopNotGraded,
             LiveSessions: roster.Count,
-            DesktopNotGraded: desktopNotGraded);
+            DesktopNotGraded: desktopNotGraded,
+            Unstamped: Count("unstamped"),
+            StampNotFold: Count("stamp-not-fold"),
+            LawBroken: Count("law-broken"),
+            DesktopVsGateway: Count("desktop-vs-gateway"),
+            TwoDifferentPixels: Count("two-different-pixels"),
+            PaletteMissing: Count("palette-missing"));
     }
 
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);

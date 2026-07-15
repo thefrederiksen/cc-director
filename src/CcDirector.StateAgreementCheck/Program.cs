@@ -137,21 +137,29 @@ public static class Program
                               "Every other check ran on them and stands, and any disagreement they turned up IS counted above.");
         Console.WriteLine("  (It was SIX out of THIRTEEN when the specification was written.)");
         Console.WriteLine();
-        // EVERY CLAIM HERE IS SCOPED TO WHAT WAS ACTUALLY MEASURED. This paragraph once ended "...the
-        // desktop's fold agrees with the Gateway's" full stop, printed on a run that had just said it
-        // could not read one of the rows - the tool contradicting itself inside four lines, with the
-        // false half the quotable one.
-        Console.WriteLine("MEASURED, over every live session: the stamp is present; the stamped answer IS the shared");
-        Console.WriteLine("  fold's answer; the law (working => blue) holds; and every colour resolves to the SAME HEX");
-        Console.WriteLine("  in the desktop palette and the shipped client palette.");
+        // EVERY VERDICT HERE IS READ FROM THE FINDINGS, NEVER ASSERTED OVER THEM.
+        //
+        // This paragraph used to be a fixed block of prose claiming all five checks passed - printed
+        // AFTER the findings, unconditionally. So a run could list a broken law in detail and then tell
+        // the reader, four lines later, that the law holds over every live session. The arithmetic above
+        // it had already been made bindable and testable; the prose had not, so it stayed wrong in
+        // exactly the way the numbers had been. Found by the eighth inspection pass of pull request 1606,
+        // one level out from the seventh.
+        //
+        // Now each line is derived from a counted kind, and PASS is the one thing that cannot be said
+        // without evidence: it means "this check found nothing", and nothing else.
+        static string Verdict(bool passed, int n) => passed ? "PASS" : $"FAIL ({n})";
+
+        Console.WriteLine($"CHECK RESULTS, over {sum.LiveSessions} live session(s):");
+        Console.WriteLine($"  the stamp is present ......................... {Verdict(sum.StampPresentPassed, sum.Unstamped)}");
+        Console.WriteLine($"  the stamped answer IS the shared fold's ...... {Verdict(sum.StampIsFoldPassed, sum.StampNotFold)}");
+        Console.WriteLine($"  the LAW: working => blue ..................... {Verdict(sum.LawHeld, sum.LawBroken)}");
+        Console.WriteLine($"  every colour is the SAME HEX on both palettes  {Verdict(sum.SamePixelsPassed, sum.TwoDifferentPixels + sum.PaletteMissing)}");
         if (sum.DesktopNotGraded == 0)
-            Console.WriteLine("  And the desktop's fold agrees with the Gateway's on every one of them.");
+            Console.WriteLine($"  the desktop's fold == the Gateway's .......... {Verdict(sum.DesktopAgreedPassed, sum.DesktopVsGateway)}");
         else
-        {
-            Console.WriteLine($"  The desktop's fold agrees with the Gateway's on all but the {sum.DesktopNotGraded} row(s) marked");
-            Console.WriteLine("  [indeterminate], where that ONE check could not be graded because the Gateway overwrote");
-            Console.WriteLine("  the fact it needed. The other four checks stand on those rows too.");
-        }
+            Console.WriteLine($"  the desktop's fold == the Gateway's .......... {Verdict(sum.DesktopAgreedPassed, sum.DesktopVsGateway)}" +
+                              $", NOT GRADED on {sum.DesktopNotGraded} row(s)");
         Console.WriteLine("NOT MEASURED, and not to be claimed: the desktop's own SessionRole copy is not externally");
         Console.WriteLine("  observable (the Gateway's fleet pass overwrites the inbound role on every read), so a");
         Console.WriteLine("  STALE role on a Director cannot be seen from here. That push is proved in-process by");

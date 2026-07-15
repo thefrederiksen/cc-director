@@ -38,7 +38,7 @@ public sealed class AgreementSummaryTests
         new(id, id, kind, "detail");
 
     [Fact]
-    public void ACleanFleet_IsZeroOverEveryone()
+    public void ACleanFleet_IsZeroOverEveryone_AndEveryCheckPasses()
     {
         var sum = AgreementCheck.Summarize(
             new[] { Row("a"), Row("b"), Row("c") },
@@ -47,6 +47,64 @@ public sealed class AgreementSummaryTests
         Assert.Equal(0, sum.Disagreements);
         Assert.Equal(3, sum.LiveSessions);
         Assert.Equal(0, sum.DesktopNotGraded);
+
+        Assert.True(sum.StampPresentPassed);
+        Assert.True(sum.StampIsFoldPassed);
+        Assert.True(sum.LawHeld);
+        Assert.True(sum.DesktopAgreedPassed);
+        Assert.True(sum.SamePixelsPassed);
+    }
+
+    /// <summary>
+    /// A CHECK CANNOT PASS WHILE A FINDING SAYS IT FAILED - which the report used to claim, in prose,
+    /// four lines under the finding itself.
+    ///
+    /// The verdict paragraph was a fixed block asserting all five checks passed, printed unconditionally
+    /// AFTER the findings. So a run could describe a broken law in detail and then announce that the law
+    /// holds over every live session. The arithmetic above it had already been extracted and pinned; the
+    /// prose had not, so it stayed wrong in precisely the way the numbers had been - one level out.
+    ///
+    /// PASS now means "this check found nothing" and cannot mean anything else. Each of these is a shape
+    /// the fault-injection suite already produces, so the two files cannot drift apart.
+    /// </summary>
+    [Theory]
+    [InlineData("unstamped")]
+    [InlineData("stamp-not-fold")]
+    [InlineData("law-broken")]
+    [InlineData("desktop-vs-gateway")]
+    [InlineData("two-different-pixels")]
+    [InlineData("palette-missing")]
+    public void AFindingOfAnyKind_FailsExactlyItsOwnCheck_AndNoOther(string kind)
+    {
+        var sum = AgreementCheck.Summarize(new[] { Row("x") }, new[] { F("x", kind) });
+
+        Assert.Equal(1, sum.Disagreements);
+
+        Assert.Equal(kind != "unstamped", sum.StampPresentPassed);
+        Assert.Equal(kind != "stamp-not-fold", sum.StampIsFoldPassed);
+        Assert.Equal(kind != "law-broken", sum.LawHeld);
+        Assert.Equal(kind != "desktop-vs-gateway", sum.DesktopAgreedPassed);
+        // One line covers both pixel faults: a colour the client cannot paint and a colour it paints
+        // differently are the same promise broken - "every device shows the same thing".
+        Assert.Equal(kind is not ("two-different-pixels" or "palette-missing"), sum.SamePixelsPassed);
+    }
+
+    /// <summary>
+    /// The one the eighth inspection named specifically: a definite desktop disagreement with ZERO
+    /// unreadable rows. The old prose gated its "the desktop agrees on every one of them" line on
+    /// DesktopNotGraded == 0 - which is true here - and so printed it directly beneath the disagreement
+    /// it had just reported.
+    /// </summary>
+    [Fact]
+    public void ADesktopDisagreement_WithNothingUnreadable_StillFailsTheDesktopCheck()
+    {
+        var sum = AgreementCheck.Summarize(
+            new[] { Row("phone-dictation") },
+            new[] { F("phone-dictation", "desktop-vs-gateway") });
+
+        Assert.Equal(0, sum.DesktopNotGraded);
+        Assert.False(sum.DesktopAgreedPassed);
+        Assert.Equal(1, sum.Disagreements);
     }
 
     /// <summary>
