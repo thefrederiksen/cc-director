@@ -3208,21 +3208,21 @@ public partial class MainWindow : Window
         for (int i = 0; i < _sessions.Count; i++)
         {
             var vm = _sessions[i];
-            // Stamp the non-color role glyph from the local fleet on every list rebuild (same place
-            // the group first/last flags are stamped) so the rail badge tracks controller changes.
+            // GAP 1 CLOSED - THE ROLE GLYPH IS NO LONGER STAMPED FROM HERE, AND MUST NOT BE AGAIN.
             //
-            // KNOWN GAP, NAMED DELIBERATELY: this is still the DIRECTOR resolving a role locally, and the
-            // mission's own claim is that the Gateway is the only thing that computes a role. Both are
-            // true at once right now, which is the whole problem: the COLOUR fold reads the Gateway's
-            // stamp (Session.GatewayResolvedRole), while this GLYPH reads the Director's local guess, so
-            // one row can show a Gateway-resolved colour beside a Director-resolved badge and they can
-            // disagree. It only sees this Director's own sessions, so a controller on another machine is
-            // invisible to it - exactly the blind spot the down-channel exists to fix.
+            // This line used to read `vm.ResolvedRole = _sessionManager.ResolveLocalRole(vm.Session)` -
+            // the Director resolving a role for itself on every list rebuild. The colour read the
+            // Gateway's stamp while the glyph read that local guess, so one row could contradict itself;
+            // and the resolver saw only THIS Director's roster, so a controller on another machine was
+            // invisible to it. SessionViewModel.ResolvedRole now derives from Session.GatewayResolvedRole
+            // directly, which is the same fact the colour folds, so there is nothing left to stamp: the
+            // rail tracks the role through OnGatewayResolvedRoleChanged -> RaiseFoldProjection, exactly
+            // as it tracks every other Gateway-owned fact. ResolveLocalRole itself is deleted.
             //
-            // Not fixed here because moving the glyph onto the stamp needs an answer to "what shows before
-            // the first stamp arrives", and guessing one is how this mission's defects were built. Raised
-            // by review of pull request 1598; recorded rather than quietly left to read as finished.
-            vm.ResolvedRole = _sessionManager.ResolveLocalRole(vm.Session);
+            // THE DECISION, RECORDED WHERE IT WAS MADE: before the first stamp arrives, NOTHING shows. No
+            // badge until the Gateway says. That was the open question that deferred this fix, and the
+            // Architect settled it - the Director resolves nothing, and "no answer yet" is not a lie,
+            // whereas a local guess is. Do not reintroduce a default role here to fill the gap.
             if (!vm.IsGroupMember) { vm.IsGroupFirst = false; vm.IsGroupLast = false; continue; }
             var gid = vm.GroupId;
             vm.IsGroupFirst = i == 0 || _sessions[i - 1].GroupId != gid;
