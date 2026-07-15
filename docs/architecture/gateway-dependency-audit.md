@@ -7,22 +7,47 @@
 
 ---
 
+## What is OBSERVED and what is only READ - before anything else
+
+This audit is mostly a code reading. **One thing in it was actually run, and it is the headline.**
+Everything else is a prediction from cited code. The difference is marked at every claim below with
+these two tags, and nothing carries a tag it has not earned:
+
+- **[OBSERVED]** - I staged it and watched it happen. The transcript is in
+  [The experiment](#the-experiment-observed) below.
+- **[CODE-READ]** - traced call-by-call through cited code, **not run**. Believable, not proven.
+
+**[OBSERVED]:** the fleet directory returning 502 instead of the local list, and the entire
+cc-devthrottle command-line tool failing on a disconnected laptop - including messaging a local
+session. That was staged with a real Director and the real installed tool, against a control.
+
+**[CODE-READ]:** everything about voice, snooze, the buttons, the account, timings, and how any of
+it *feels*. **I have never run this product offline on a real laptop.** Where I write "you open the
+laptop on the train", that is a prediction from source, not a report from a train.
+
+---
+
 ## The one-line answer
 
 **Yes, you can work on that laptop - the desktop itself is almost entirely local and barely notices.
 You lose voice and you lose snooze, and both of those were deliberate choices we can defend. But
 your AGENTS lose the ability to talk to each other on your own laptop, and that one nobody chose.**
 
-What it feels like: you open the laptop on the train, your sessions are there, they run, you type at
-them, the rail shows the right colours, you can create new sessions and close them. Press Speak and
-it fails after a wait. Press Snooze and it tells you plainly that snooze needs a Gateway. Those are
-the two you would expect.
+**[CODE-READ]** What it should feel like, predicted from source and not watched: you open the laptop
+on the train, your sessions are there, they run, you type at them, the rail shows the right colours,
+you can create new sessions and close them. Press Speak and it fails after a wait. Press Snooze and
+it tells you plainly that snooze needs a Gateway. Those are the two you would expect. *Nobody has
+put a laptop on a train and checked any of this sentence.*
 
-Then an agent on that laptop runs `cc-devthrottle message send <other-session> "..."` to reach
-another session sitting six inches away on the same machine, and it fails with "Cannot reach the
-Gateway". Not because the message needs the Gateway - it does not, and the code that delivers it
-handles a local target without one - but because the **lookup that finds the session** is routed
-through the Gateway and refuses to answer without it.
+**[OBSERVED]** Then an agent on that laptop runs `cc-devthrottle message send <other-session> "..."`
+to reach another session sitting six inches away on the same machine, and it fails with **"Cannot
+reach the Gateway"**. Not because the message needs the Gateway - it does not, and the code that
+delivers it handles a local target without one - but because the **lookup that finds the session**
+is routed through the Gateway and refuses to answer without it. **I staged this and watched it.**
+
+**[OBSERVED]** And it is worse than one route. `cc-devthrottle message send all` - the command the
+Director's own briefing tells every agent to use to reach its team - dies the same way through
+**completely different code** that never touches that lookup. Two independent paths, one defect.
 
 **The distinction that runs through this entire document:** "no Gateway configured" and "Gateway
 configured but unreachable" are different states. Your laptop is the second one. Nearly everything
@@ -38,17 +63,73 @@ defects live, and it is the only one you are ever actually in.
 
 | Capability | Works on the train? | Which state breaks it | What decides it |
 |---|---|---|---|
-| Creating, running, closing sessions | **Yes** | neither | `SessionManager` has no Gateway call on the creation path |
-| The session rail's colours | **Yes** | neither | folds in-process from the local `Session` |
-| Typing at a session, Send, Queue | **Yes** | neither | in-process, no Gateway seam |
-| Session numbers | **Yes** (falls back) | neither | `SessionManager.cs:180-206` - offline number on any failure |
-| Staying signed in | **Yes** | neither | `DevThrottleAccountService.IsLoggedIn()` - no network call |
-| Explain / Wingman brief | **Yes** (local explain) | neither | `GatewayClient.cs:154-158` - catches, returns null |
-| Cockpit button | No, but says so clearly | both (correctly) | `MainWindow.axaml.cs:2476-2510` - modal naming the URL |
-| **Snooze** | **No - by design, says so** | both (correctly) | `MainWindow.axaml.cs:2189` - requires `Connected` |
-| **Voice / transcription** | **No - by law** | both, *differently* | `GatewayTranscriptionClient.cs:40` vs `:55` |
-| **Fleet list (`session list`)** | **No** | **unreachable only** | `ControlEndpoints.cs:321-344` |
-| **Messaging a LOCAL session** | **No** | **unreachable only** | `session_ops.py:96-97` via the above |
+| Creating a PLAIN session, running, closing | **Yes** [CODE-READ] | neither | `SessionManager` has no Gateway call on the creation path |
+| Creating a session **attached to a mission** | **No** [CODE-READ] | **unreachable** | `ControlEndpoints.cs:564-582` - 502s *before* it creates |
+| The session rail's colours | **Yes** [CODE-READ] | neither | folds in-process from the local `Session` |
+| Typing at a session, Send, Queue | **Yes** [CODE-READ] | neither | in-process, no Gateway seam |
+| Session numbers | **Yes** (falls back) [CODE-READ] | neither | `SessionManager.cs:180-206` - offline number on any failure |
+| Staying signed in | **Yes** [CODE-READ] | neither | `DevThrottleAccountService.IsLoggedIn()` - no network call |
+| Explain / Wingman brief | **Yes** (local explain) [CODE-READ] | neither | `GatewayClient.cs:154-158` - catches, returns null |
+| Cockpit button | No, says so clearly [CODE-READ] | both (correctly) | `MainWindow.axaml.cs:2476-2510` - modal naming the URL |
+| Learn button | No, says so clearly [CODE-READ] | both (correctly) | `MainWindow.axaml.cs:2543-2578` - same pattern as Cockpit |
+| **Snooze** | **No - by design, says so** [CODE-READ] | both (correctly) | `MainWindow.axaml.cs:2189` - requires `Connected` |
+| **Voice / transcription** | **No - by law** [CODE-READ] | both, *differently* | `GatewayTranscriptionClient.cs:40` vs `:55` |
+| Schedules, missions, owner email (command-line) | **No - Gateway-hosted** [CODE-READ] | both (by nature) | direct Gateway clients; handled `GatewayError` |
+| **Fleet list (`session list`)** | **No** **[OBSERVED]** | **unreachable only** | `ControlEndpoints.cs:321-344` |
+| **Messaging a LOCAL session** | **No** **[OBSERVED]** | **unreachable only** | `session_ops.py:96-97` via the above |
+| **`message send all` (your team)** | **No** **[OBSERVED]** | **unreachable only** | `ControlEndpoints.cs:954-965` - a *separate* route |
+
+---
+
+## The experiment [OBSERVED]
+
+The Architect ordered the headline proved or disproved by running it, because a behaviour claim
+resting on a code reading is the weakest strong sentence in a document. **It reproduces.**
+
+**How it was staged, safely.** No Director of yours was touched, and no real Gateway was contacted.
+`GatewayConfig.Load()` reads `config.json` under `CC_DIRECTOR_ROOT`, so a throwaway harness pointed
+that at a fresh temporary directory and started a **real `ControlApiHost`** on an ephemeral loopback
+port - the same class that serves your Director. Its `config.json` named a Gateway at
+`http://127.0.0.1:47113`, a port verified as having nothing listening. Then the **real installed
+`cc-devthrottle`** was driven at it. The harness was deleted afterwards; it is not in this branch.
+
+**Why a refused port is the strongest form of the test, not a weaker one:** a refused connection
+means the Director learns *instantly and definitively* that no Gateway is there. It has the best
+information it will ever have. It still refuses to answer.
+
+### Leg 1 - the Director's own fleet directory
+
+| State | `IsEnabled` | `GET /fleet/sessions` | Elapsed |
+|---|---|---|---|
+| **Control** - no `gateway.url` at all | `False` | **200 OK**, body `[]` | 18 ms |
+| **Treatment** - `gateway.url` set, nothing listening | `True` | **502 BadGateway** | 2051 ms |
+
+```
+{"error":"Cannot reach the Gateway: No connection could be made because the
+ target machine actively refused it. (127.0.0.1:47113)"}
+```
+
+### Leg 2 - the real command-line tool, same machine, same commands
+
+| Command | **Control** (no Gateway) | **Treatment** (configured, dead) |
+|---|---|---|
+| `session list` | `No sessions are running in the fleet.` | `Error: Cannot reach the Gateway: ...actively refused it.` |
+| `message send abc123 "hello"` | **`No session matches 'abc123'.`** | `Error: Cannot reach the Gateway: ...actively refused it.` |
+
+**That control row is the whole proof.** In the control the resolver *ran*, looked for `abc123`, and
+correctly said it did not exist. In the treatment the same command on the same machine never got
+that far - it died at the directory lookup and reported the Gateway instead. **Same tool, same
+command, same target, same machine. The only difference is a URL typed into a file.**
+
+### What the experiment did NOT settle
+
+- It used a **refused** connection, not a black-holed one. It therefore says nothing about the
+  timeout question below, and the 2051 ms is not a wait you would feel. **I did not diagnose why an
+  instantly-refused connection takes two seconds** - I only measured that it does.
+- It ran a Director with **no live sessions**. That is sufficient (the error arrives from the
+  lookup, before target matching, which is exactly what the control demonstrates) but it is not the
+  same as watching a real Manager fail to reach a real Architect.
+- It proves nothing about voice, snooze, or any desktop button. Those remain **[CODE-READ]**.
 
 ---
 
@@ -91,11 +172,44 @@ Gateway, the Gateway is the source of truth."* Someone thought about the train a
 unreachable, or pool exhausted - assigns a local offline number. The Architect's lead was correct.
 On the train a new session is briefly numberless, then gets an offline number. Minor and honest.
 
-### The Cockpit button - a model of good failure
+### The Cockpit and Learn buttons - a model of good failure
 
 `MainWindow.axaml.cs:2476-2510`. Eight-second timeout, then a modal naming the URL it actually
 probed, with different wording for "no tailnet URL" versus "cannot reach it". Its comment:
 *"a toolbar button that silently does nothing is just confusing."* Correct.
+
+**Learn is the same** (`:2543-2578`) - I listed it as unchecked in the first draft while citing its
+handler, which is not a caveat, it is a gap I could have closed in the time it took to write the
+sentence. Read now: identical eight-second probe, identical modal, *"never a silent no-op and never
+a loopback URL that only works on this machine"*. Both buttons behave well on the train.
+
+### A mission-attached spawn fails loud - and its comment names this audit's whole subject
+
+Creating a plain session never touches the Gateway. But a **local** spawn carrying a mission id and
+no mission name resolves that name against the Gateway's mission store first
+(`ControlEndpoints.cs:564-582`), and on the train returns 502 **before creating anything**:
+
+> *"Fail loud. An unreachable Gateway is NOT an unknown mission, and reporting it as one is the
+> exact lie this issue is about."* - `ControlEndpoints.cs:576-577`
+
+Somebody hit this audit's exact distinction, in this exact file, and got it exactly right. It is a
+deliberate, correct choice: mission names live in the Gateway, and inventing one locally would be
+the lie the comment refuses to tell. **It does mean my first draft's "creating sessions works
+offline" was overbroad** - plain creation works, mission-attached creation does not - and the table
+above now says so.
+
+### Schedules, missions, and owner email - Gateway-hosted by nature
+
+The command-line tool's `schedule`, `mission`, and `email` verbs are **direct Gateway clients**: they
+call the Gateway's own Control API rather than going through a Director, because the data lives
+there (schedules, mission records) or the relay is server-side (email). Each carries its own handled
+`GatewayError` - *"A handled, user-facing failure talking to the Gateway"* - so on the train they
+fail with a worded error rather than a crash.
+
+These are CHOSEN and belong in the same bucket as the phone and the Cockpit: needing the Gateway is
+what they *are*. **I flagged them as unchecked at the bottom of my first draft while printing a
+complete-feeling answer at the top. A caveat two hundred lines below the headline is not a caveat**,
+and they are classified here instead.
 
 ### Staying signed in
 
@@ -234,6 +348,43 @@ cannot ping its Architect. An Architect cannot reach its Manager. Missions on a 
 cannot coordinate at all, on a machine where every one of those sessions is local and needs no
 network whatsoever.
 
+### The same defect by a different road - and this one is worse
+
+**My first draft got the conclusion right and the mechanism incomplete, and the Architect caught
+it.** I found the targeted path (`_resolve_target`) and reported it as *the* cascade. It is not.
+**`message send all` never touches `_resolve_target` at all** - `send_message` posts straight to
+`fleet/broadcast` (`session_ops.py:409-417`). It dies anyway, in its own code:
+
+```csharp
+// ControlEndpoints.cs:954
+if (gw is { IsEnabled: true })
+{
+    try { fleet = await gw.ListFleetSessionsAsync(ct); }
+    catch (Exception ex)
+    {
+        return Results.Json(new FleetSendResponse { Accepted = false,
+            Error = $"Cannot reach the Gateway: {ex.Message}" },
+            statusCode: StatusCodes.Status502BadGateway);   // line 963
+    }
+}
+else            // line 967 - the local team list, unreachable whenever a URL is configured
+```
+
+Same `IsEnabled`. Same 502. **Entirely different route.** And the comment three lines above it
+(`:938-939`) makes the same promise the fleet-list route made: *"Standalone (no Gateway) it delivers
+to the in-team sessions this Director can see."*
+
+**This matters more than the defect I led with**, and the Architect is right about why: `message
+send all` is what the Director's own fleet briefing explicitly tells **every agent** to use to reach
+its team. It is not a corner. It is the documented default for the most common thing an agent does.
+
+**The correction worth recording:** two independent code paths, written at different times, both
+reach for `IsEnabled`, both promise a local answer in a comment, and both withdraw it the moment an
+address is typed. That is what makes this DRIFT rather than a bug - **one bug is a mistake; the same
+wrong question in two unrelated routes is a habit.** A reader who fixes only the path I found would
+leave the more important one standing, which is exactly what would have happened had this document
+shipped as I first wrote it.
+
 ### A second, smaller one: the wait before the failure
 
 Two paths have no reachability precheck and rely on a network timeout to discover what
@@ -258,16 +409,16 @@ Speak, and time it. That is a ten-minute experiment and it would replace this pa
 
 Named plainly, so nobody spends their scepticism in the wrong place.
 
-- **I never ran the product offline. Not once.** Every finding here is read from source. The chains
-  are traced call-by-call and I believe them, but "I read the code" is not "I watched it happen."
-  The `/fleet/sessions` 502 in particular deserves ten minutes of somebody disconnecting a laptop
-  and running `cc-devthrottle session list`. **I did not do it, so treat the CLI finding as
-  proven-by-reading, not proven-by-running.**
-- **I measured no timings.** See above. Every duration in this document is a constant read from a
-  source file, labelled as such.
-- **I did not check the Learn button** (`MainWindow.axaml.cs:2543`). It logs the same
-  "opening nothing" line as the Cockpit button and looks like the same pattern, but I read Cockpit
-  and inferred Learn, and inferring is what this document is supposed to catch. Undiagnosed.
+- **I never ran the DESKTOP offline, and I never put a laptop on a train.** The command-line finding
+  is now **[OBSERVED]** against a staged Director (see [The experiment](#the-experiment-observed)),
+  but **every claim about voice, snooze, the buttons, the rail and the account remains
+  [CODE-READ]** - traced through cited source, never watched. The whole "what it feels like"
+  paragraph is a prediction.
+- **The experiment used a REFUSED port, not a real disconnected network.** A laptop whose Gateway
+  sits behind a dead tailnet route may fail differently and much more slowly. What I proved is that
+  the refusal path 502s; I did not prove what a train's network does.
+- **I measured no timings other than the experiment's two.** Every other duration here is a constant
+  read from a source file, labelled as such.
 - **I did not trace where a failed BACKGROUND dictation surfaces, and it is the most promising
   undiagnosed lead in this document.** The transcription failure I describe above is the path
   through `FinalizeFromRecordingAsync` (`SpeakDialog.axaml.cs:581-597`), which I read: broad catch,
@@ -281,26 +432,63 @@ Named plainly, so nobody spends their scepticism in the wrong place.
 - **I did not check the launcher tray** (`LauncherTrayController.cs:158-159`), whose "Open Cockpit"
   and "Settings" items build URLs from the Gateway address. They plausibly open dead links on the
   train. Undiagnosed.
-- **I did not check scheduled runs, email, or the mission/spawn paths** in the CLI
-  (`schedule_ops.py`, `email_ops.py`, `mission_ops.py`). `spawn` is noted at `session_ops.py:548`
-  as spawning locally with no `--machine`, which suggests it survives, but I did not trace it.
-  Undiagnosed.
 - **I did not enumerate non-button affordances** - selection changes, drag-and-drop, terminal mouse
-  interaction. The surface walk covered all 79 interface files for buttons, menus, and shortcuts.
+  interaction. The surface walk covered the desktop's declarative buttons, menus, and keyboard
+  shortcuts. **It did not cover a reproducible count of files** - see the withdrawn "79" below.
+- **The surface walk was done by a subagent and I verified only the parts I cite.** Where this
+  document names a file and line for a button, I opened it. Where it says "the rest are local", that
+  rests on that inventory, and one number in it turned out to be unreproducible - which is a reason
+  to treat the unverified remainder as a lead, not a finding.
 - **I did not investigate whether the desktop rail would survive gap 4's Option A**, which asks the
   exact question this audit answers from the other side. Somebody should read these two together.
 
+## This paper's own defect, on the record - the withdrawn "79"
+
+**The first draft of this document said I walked "all 79 interface files". That number is
+withdrawn. It is not reproducible, I did not measure it, and I did not write it.**
+
+A subagent's inventory reported 79; I passed it into the document in my own voice, as my own count,
+and then - in the very section where I named my weakest number - **certified it as "a count of files
+walked".** It was not. It was a number I had accepted on trust and relabelled as evidence.
+
+Counted properly on `origin/main`, no rule produces 79:
+
+```
+git ls-tree -r --name-only origin/main -- src/CcDirector.Avalonia | grep -c '\.axaml$'   # 74
+git ls-tree -r --name-only origin/main -- src                     | grep -c '\.axaml$'   # 78
+```
+
+74 in the desktop project; 78 across every project. The Architect counted 74 independently; an
+inspector got 74, 152, or 197 depending on the rule. **Nobody lands on 79.** The honest statement is
+the one that needed no number: *I walked the desktop surfaces named in this document, and the
+inventory's stopping points are listed below.*
+
+**Why this is worth a section rather than a quiet correction.** This is the exact defect the gap 4
+paper had to withdraw - a fabricated *measurement*, sitting among facts, reading like a fact. I
+wrote a section called "the numbers in this document", declared no number was a measurement, named
+the five-minute figure as the one I least stood behind, **and inside that same section certified the
+one number that was actually false.** The five-minute figure I had hedged was fine, because I had
+hedged it. The 79 was dangerous *because it looked like the boring one*.
+
+The lesson is not "check your numbers". It is that **a number arriving from somewhere else, in a
+report you did not produce, becomes yours the moment you type it in your own voice** - and the audit
+of your own document does not scrutinise it, because by then it is already furniture. I asked myself
+which number I would refuse to believe and answered "5 minutes". I should have asked which number I
+had never personally produced.
+
 ## The numbers in this document
 
-There are four: 10 seconds, 5 minutes, 8 seconds, and 79 interface files. **Every one is a constant
-read from a named file or a count of files walked. None is a measurement of anything happening.**
+There are three: 10 seconds, 5 minutes, and 8 seconds. **Every one is a constant read from a named
+source file. None is a measurement of anything happening.** (A fourth, "79", is withdrawn above.)
 
-The paper this one is modelled on had to withdraw a fabricated "15" that argued against its own
-conclusion, and its author only caught it when asked which number he would refuse to believe. Mine
-is **5 minutes**: it is the most alarming figure here, it is the one a reader will quote, and it is
-the one I am least able to stand behind - because a five-minute ceiling is not a five-minute wait,
-and I never watched the clock. If it reappears anywhere as "dictation hangs for five minutes",
-that is my sentence being misread, and the fix is to go and time it.
+Separately, the experiment produced **two real measurements** - 18 ms and 2051 ms - and they are
+labelled **[OBSERVED]** because I watched a stopwatch print them. They are the only measured
+durations in this document.
+
+The figure I least stand behind remains **5 minutes**: it is the most alarming, the one a reader
+will quote, and a five-minute *ceiling* is not a five-minute *wait*. If it reappears anywhere as
+"dictation hangs for five minutes", that is my sentence being misread, and the fix is to go and
+time it.
 
 ## Answering the Architect's eight leads
 
@@ -335,16 +523,27 @@ address." Read as "the Gateway will answer," it is wrong exactly when you are on
 when you are at your desk - so it is invisible in every test, at every desk, in every review, and it
 is only ever wrong for you, in the one situation you asked about.
 
-**And the thing it takes from you is not a feature. It is your fleet's ability to talk to itself on
-one disconnected machine** - where nothing it needs is more than six inches away.
+**And it is not one mistake, it is a habit.** Two unrelated routes - the fleet directory and the
+team broadcast - written at different times, both reached for the same wrong question, and both
+wrote a comment promising a local answer they then made unreachable. A third and fourth place
+(snooze, the mission spawn) asked the *right* question and got it right, and one of those has a
+comment naming this audit's exact distinction. **The knowledge is in the building. It just is not in
+those two routes.**
 
-**Recommended, and it is genuinely your call:** treat the fleet-list question and the local-messaging
-cascade as **two separate decisions**, not one bug. The cascade has no counter-argument and no
-defender. The 502 does have an argument, and the interesting third option - answer locally, but say
-loudly that it is local-only - was never put on the table, so putting it there is the decision worth
-your attention rather than mine.
+**And the thing it takes from you is not a feature. It is your fleet's ability to talk to itself on
+one disconnected machine** - where nothing it needs is more than six inches away. That part is no
+longer a theory: it was staged and watched, and the control proves the only variable is a typed URL.
+
+**Recommended, and it is genuinely your call:** treat the fleet-list question and the messaging
+cascade as **two separate decisions**, not one bug. The cascade - both routes - has no
+counter-argument and no defender: `message send all` is what your own briefing tells every agent to
+use. The 502 on a genuine fleet *query* does have an argument, and the interesting third option -
+answer locally, but say loudly that it is local-only - was never put on the table, so putting it
+there is the decision worth your attention rather than mine.
 
 **And the cheap test that should exist and does not:** one that configures a Gateway address,
-points it at nothing, and asserts what a Director does. Every defect in this document would have
-been caught by it, and the reason none of them were is that the suite only ever asks what happens
-when nobody typed an address.
+points it at nothing, and asserts what a Director does. I wrote a throwaway version of exactly that
+test in about twenty minutes, watched it catch the defect, and then deleted it, because a fix
+smuggled into an audit is a fix nobody reviewed. **Every defect in this document would have been
+caught by that test.** The reason none of them were is that the suite only ever asks what happens
+when nobody typed an address - which is the one thing that is never true on your laptop.
