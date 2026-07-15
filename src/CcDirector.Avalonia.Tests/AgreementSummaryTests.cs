@@ -261,6 +261,61 @@ public sealed class AgreementSummaryTests
     }
 
     /// <summary>
+    /// THE EXIT CODE - the only claim here a MACHINE reads, and therefore the one that could do the most
+    /// damage, because a script cannot read the caveat on the next line.
+    ///
+    /// Main returned 1 whenever ANY finding existed. The contract says 1 means disagreements. The Summary
+    /// says an indeterminate row is NOT a disagreement. So an indeterminate-only run printed "AGREEMENT
+    /// NUMBER: 0 disagreement(s)" and exited 1 - the report table had learned the distinction and the
+    /// process contract had not.
+    ///
+    /// And 0 would have been no better: it claims a clean fleet the instrument never fully read. Both
+    /// available answers were false, which is the tell that a third was needed. 3 is "no disagreements AND
+    /// I could not grade everything" - the machine-readable version of the same honesty the prose spent
+    /// four passes learning.
+    ///
+    /// Thirteenth instance of one defect, and the first in an interface with no human in it.
+    /// </summary>
+    [Fact]
+    public void ACleanFullyGradedFleet_ExitsZero()
+    {
+        var sum = AgreementCheck.Summarize(new[] { Row("a"), Row("b") }, Array.Empty<AgreementCheck.Finding>());
+        Assert.Equal(0, sum.ExitCode);
+    }
+
+    [Fact]
+    public void RealDisagreements_ExitOne()
+    {
+        var sum = AgreementCheck.Summarize(new[] { Row("a") }, new[] { F("a", "law-broken") });
+        Assert.Equal(1, sum.ExitCode);
+    }
+
+    [Fact]
+    public void AnIndeterminateOnlyRun_ExitsThree_NeitherCleanNorADisagreement()
+    {
+        var sum = AgreementCheck.Summarize(
+            new[] { Row("a"), Row("b-ambiguous") },
+            new[] { F("b-ambiguous", "indeterminate") });
+
+        // The headline is honest...
+        Assert.Equal(0, sum.Disagreements);
+        // ...and the exit code must be too. NOT 1 (there is no disagreement) and NOT 0 (the check did not
+        // grade the whole fleet). Both of those are the false half this mission is made of.
+        Assert.Equal(3, sum.ExitCode);
+    }
+
+    [Fact]
+    public void AnUnstampedRow_AlsoExitsOne_BecauseItIsARealDefect_NotMerelyUngradeable()
+    {
+        // An unstamped row is a genuine finding in its own right - the Gateway sent no answer - AND it
+        // blocks the four checks below it. The disagreement wins: 1, not 3.
+        var sum = AgreementCheck.Summarize(new[] { Row("a") }, new[] { F("a", "unstamped") });
+
+        Assert.Equal(1, sum.Disagreements);
+        Assert.Equal(1, sum.ExitCode);
+    }
+
+    /// <summary>
     /// The control: a genuinely clean fleet is the ONLY thing that may print the unqualified word.
     /// Without this, "never say PASS" would be trivially satisfiable by never saying it.
     /// </summary>

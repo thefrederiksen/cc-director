@@ -12,7 +12,9 @@ namespace CcDirector.StateAgreementCheck;
 /// written. The comparison itself is <see cref="AgreementCheck"/>; this is the live harness around it.
 ///
 /// Run it:  dotnet run --project src/CcDirector.StateAgreementCheck -- [repoRoot]
-/// Exit code 0 = zero disagreements. 1 = disagreements. 2 = the check could not run (never a zero).
+/// Exit code 0 = every check ran on every session and found nothing. 1 = real disagreements. 2 = the
+/// harness could not run at all (never a zero). 3 = NO disagreements AND the check could not grade
+/// everything - see AgreementCheck.Summary.ExitCode for why that is its own code rather than a 0 or a 1.
 ///
 /// READ <see cref="AgreementCheck.ToDesktopInput"/> BEFORE QUOTING ANY NUMBER THIS PRINTS. It states what
 /// this check can and cannot see, and why the obvious HTTP-only version of it would have been a
@@ -60,7 +62,9 @@ public static class Program
 
             if (findings.Count > 0)
             {
-                Console.WriteLine($"{findings.Count} candidate disagreement(s) - re-reading in {ReReadDelaySeconds}s to " +
+                // "finding(s)", not "disagreement(s)": an indeterminate row is a finding and is NOT a
+                // disagreement, and this line runs before anything has worked out which is which.
+                Console.WriteLine($"{findings.Count} candidate finding(s) - re-reading in {ReReadDelaySeconds}s to " +
                                   "rule out a session that changed state between reads...");
                 await Task.Delay(TimeSpan.FromSeconds(ReReadDelaySeconds));
                 var second = await ReadRosterAsync(url, token);
@@ -79,7 +83,11 @@ public static class Program
             }
 
             Report(reportRoster, findings);
-            return findings.Count == 0 ? 0 : 1;
+            // The exit decision is AgreementCheck.Summary.ExitCode - bound, tested, and the only place
+            // that knows an indeterminate finding is not a disagreement. This used to be
+            // `findings.Count == 0 ? 0 : 1` right here, which returned "disagreements" for a row the
+            // check had merely been unable to read.
+            return AgreementCheck.Summarize(reportRoster, findings).ExitCode;
         }
         catch (Exception ex)
         {

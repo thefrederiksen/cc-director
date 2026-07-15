@@ -153,6 +153,33 @@ public static class AgreementCheck
         /// this instrument exists to catch, committed by the instrument, in its own summary, on the
         /// twelfth pass.
         /// </remarks>
+        /// <summary>
+        /// THE MACHINE-READABLE VERDICT, and the one that matters most, because a caller reading an exit
+        /// code cannot read the caveat underneath it.
+        ///
+        ///   0 - every check ran on every session and found nothing. The only clean answer.
+        ///   1 - real disagreements were found.
+        ///   3 - NO disagreements, and the check could not grade everything. Neither of the above is true
+        ///       and pretending otherwise is the whole defect: 0 would claim a clean fleet the instrument
+        ///       never fully read, and 1 would report a disagreement that does not exist.
+        ///
+        /// (2 is the harness's own failure - it could not run at all - and is raised by Main, not here.)
+        ///
+        /// Main used to return 1 whenever ANY finding existed, while the contract says 1 means
+        /// disagreements and the Summary correctly says an indeterminate row is NOT one. So an
+        /// indeterminate-only run printed "AGREEMENT NUMBER: 0 disagreement(s)" and then exited 1. The
+        /// report table had learned the distinction; the process contract had not, and a script does not
+        /// read the table.
+        ///
+        /// The thirteenth instance of one defect, and the first in a machine interface. Everything before
+        /// it mis-stated a claim to a human who could at least read the next line down. This one hands the
+        /// false half to something that cannot.
+        /// </summary>
+        public int ExitCode =>
+            Disagreements > 0 ? 1
+            : AllChecks.Any(c => c.NotGraded > 0) ? 3
+            : 0;
+
         public IReadOnlyList<string> DesktopNotGradedLines()
         {
             if (DesktopAgreed.NotGraded == 0) return Array.Empty<string>();
