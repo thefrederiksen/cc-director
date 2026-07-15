@@ -36,15 +36,19 @@ public sealed class SessionCurrentModelWatcherTests
     }
 
     [Fact]
-    public void RefreshModel_ClaudeNoTurnYet_StampsTheLaunchModel()
+    public void RefreshModel_ClaudeNoTurnYet_NeverStampsTheLaunchAlias()
     {
-        // A brand-new Claude session: no transcript exists (random ids), so the driver answers from
-        // the --model launch value - the pre-first-turn producer.
+        // A brand-new Claude session launched with an explicit --model: no transcript exists (random
+        // ids), and the launch value is an ALIAS (opus[1m]) whose concrete transcript id differs
+        // (claude-opus-4-8) - two names for one model that would split a statistics fold. The
+        // producer is records-only: it must stamp NOTHING here, not the alias, so an alias can never
+        // accompany a non-zero input-stats delta (the bucket increments at submission, before any
+        // turn-end stamp - the gateway-sqlite Architect's review finding on #1651).
         using var session = NewSession(claudeArgs: "--dangerously-skip-permissions --model opus[1m]");
 
         SessionCurrentModelWatcher.RefreshModel(session);
 
-        Assert.Equal("opus[1m]", session.CurrentModel);
+        Assert.Null(session.CurrentModel);
     }
 
     [Fact]

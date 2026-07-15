@@ -17,8 +17,9 @@ namespace CcDirector.Core.Sessions;
 /// on-disk records (transcript walk, rollout scan, SQLite query), and the mapper runs on every
 /// roster snapshot - exactly the per-poll O(history) work the Gateway statistics mission calls out
 /// as the anti-pattern. A turn-end read runs once per completed turn, off the detector's callback
-/// thread. It also stamps once at wire-up, so a session launched with an explicit model flag (the
-/// pre-first-turn answer for Claude) reports it before any turn completes.
+/// thread. It also stamps once at wire-up, which answers immediately for resumed/restored sessions
+/// whose records already exist; a genuinely fresh session honestly reports null until its first
+/// turn-end (records-only - see <see cref="RefreshModel"/> for why the launch alias is never used).
 ///
 /// A session whose driver does not declare ModelReport is never asked (no NotSupportedException as
 /// control flow); its CurrentModel honestly stays null. One instance per Director.
@@ -60,8 +61,9 @@ public sealed class SessionCurrentModelWatcher : IDisposable
         _handlers[session.Id] = handler;
         session.OnActivityStateChanged += handler;
 
-        // Initial stamp: pre-first-turn a driver may already know the model (Claude answers from the
-        // --model launch value; repo-located agents may find a prior session's records).
+        // Initial stamp for sessions that already HAVE records (a resume, a restore): their concrete
+        // model is known immediately. A genuinely fresh session stamps nothing here - records-only,
+        // see RefreshModel - and reports its model at its first turn-end.
         _ = Task.Run(() => RefreshModel(session));
     }
 
@@ -75,15 +77,26 @@ public sealed class SessionCurrentModelWatcher : IDisposable
     /// Ask the driver for the current model and stamp it. A boundary (fire-and-forget target): it
     /// owns its try/catch so a records-read fault never escapes onto a background thread. A null
     /// answer is a missed read and stamps nothing (<see cref="Session.SetCurrentModel"/> ignores it).
+    ///
+    /// RECORDS-ONLY, DELIBERATELY: launch args are NOT passed, so ClaudeDriver's pre-first-turn
+    /// launch-flag fallback never fires here. The launch value is an ALIAS (<c>opus[1m]</c>), and the
+    /// transcript later records the concrete id (<c>claude-opus-4-8</c>, no suffix) - two names for
+    /// one model that no equality function maps together, so a statistics fold would split one
+    /// session across two "models". Worse, the alias window is not hypothetical: the input-stats
+    /// bucket increments at turn SUBMISSION (Session.SendTextAsync -> InputStats.RecordTurn), so a
+    /// roster poll between submission and the turn-end stamp would pair the alias with a non-zero
+    /// delta and attribute a real turn to a model name that never produced anything (found by the
+    /// gateway-sqlite Architect's review of #1651). Records-only closes that entirely: CurrentModel
+    /// is null until the tool has RECORDED a model, and a mid-session model switch attributes with a
+    /// one-turn lag (the switch turn's rows land on the model that produced the previous turn-end
+    /// stamp) - honest-null and one-turn-late beat plausibly-wrong. The driver verb keeps its
+    /// launchArgs parameter for callers whose question really is "what was it told to use".
     /// </summary>
     internal static void RefreshModel(Session session)
     {
         try
         {
-            // EffectiveLaunchArgs (the merged launch line) carries the launched --model even when it
-            // came from the configured default; ClaudeArgs alone is null in that case (#803).
-            var launchArgs = session.EffectiveLaunchArgs ?? session.ClaudeArgs;
-            var model = session.Driver.ReadCurrentModel(session.ClaudeSessionId ?? "", session.RepoPath, launchArgs);
+            var model = session.Driver.ReadCurrentModel(session.ClaudeSessionId ?? "", session.RepoPath, launchArgs: null);
             session.SetCurrentModel(model);
         }
         catch (Exception ex)
