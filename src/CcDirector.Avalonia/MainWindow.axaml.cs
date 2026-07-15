@@ -3780,15 +3780,22 @@ public partial class MainWindow : Window
         SwitchLeftTab("SourceControl");
     }
 
-    // Per-session status-color subscriptions so the needs-you count updates the instant any
-    // session flips red, not just on the 15s timer. Keyed by VM so we can unsubscribe on remove.
-    private readonly Dictionary<SessionViewModel, Action<string, string, string>> _needsYouHandlers = new();
+    // Per-session subscriptions so the needs-you count updates the instant any session's triage
+    // verdict moves, not just on the 15s timer. Keyed by VM so we can unsubscribe on remove.
+    //
+    // This listens to the VIEW-MODEL's NeedsYou property, NOT to the raw Session.OnStatusColorChanged
+    // event. The count is folded from hold + dictation + activity + overlays, and only ONE of those
+    // raises OnStatusColorChanged - so hooking that event alone left the header stale until the 15s
+    // git timer happened to fire. Snoozing a red session visibly left "1 need you" above a grey
+    // "Snoozed" row for up to fifteen seconds. SessionViewModel raises NeedsYou from every handler
+    // that can move the verdict, so subscribing to the property is what makes the count prompt.
+    private readonly Dictionary<SessionViewModel, global::System.ComponentModel.PropertyChangedEventHandler> _needsYouHandlers = new();
 
     private void OnSessionsCollectionChanged(object? sender, global::System.Collections.Specialized.NotifyCollectionChangedEventArgs e)
     {
         if (e.Action == global::System.Collections.Specialized.NotifyCollectionChangedAction.Reset)
         {
-            foreach (var kv in _needsYouHandlers) kv.Key.Session.OnStatusColorChanged -= kv.Value;
+            foreach (var kv in _needsYouHandlers) kv.Key.PropertyChanged -= kv.Value;
             _needsYouHandlers.Clear();
             foreach (var vm in _sessions) SubscribeNeedsYou(vm);
         }
@@ -3796,7 +3803,7 @@ public partial class MainWindow : Window
         {
             if (e.OldItems != null)
                 foreach (SessionViewModel vm in e.OldItems)
-                    if (_needsYouHandlers.TryGetValue(vm, out var h)) { vm.Session.OnStatusColorChanged -= h; _needsYouHandlers.Remove(vm); }
+                    if (_needsYouHandlers.TryGetValue(vm, out var h)) { vm.PropertyChanged -= h; _needsYouHandlers.Remove(vm); }
             if (e.NewItems != null)
                 foreach (SessionViewModel vm in e.NewItems) SubscribeNeedsYou(vm);
         }
@@ -3808,16 +3815,29 @@ public partial class MainWindow : Window
     private void SubscribeNeedsYou(SessionViewModel vm)
     {
         if (_needsYouHandlers.ContainsKey(vm)) return;
-        Action<string, string, string> h = (_, _, _) => Dispatcher.UIThread.Post(UpdateNeedsYouCount);
+        global::System.ComponentModel.PropertyChangedEventHandler h = (_, args) =>
+        {
+            if (args.PropertyName is not (null or nameof(SessionViewModel.NeedsYou))) return;
+            Dispatcher.UIThread.Post(UpdateNeedsYouCount);
+        };
         _needsYouHandlers[vm] = h;
-        vm.Session.OnStatusColorChanged += h;
+        vm.PropertyChanged += h;
     }
 
-    // Count of sessions that need you (red) shown beside the SESSIONS header, so you get a
-    // top-level "is anything waiting on me?" signal without scanning the list. Hidden at zero.
+    // Count of sessions that need you, shown beside the SESSIONS header, so you get a top-level
+    // "is anything waiting on me?" signal without scanning the list. Hidden at zero.
+    //
+    // Counts the SHARED FOLD's triage verdict (SessionViewModel.NeedsYou -> SessionOrdering.Classify),
+    // which is the same rule the phone's web-push badge counts by (WebPushNeedsYouNotifier) - so the
+    // header and the phone cannot disagree about how many sessions want you.
+    //
+    // This used to count the RAW cooked colour, `s.Session.StatusColor == "red"`, with no hold check,
+    // no role, and no overlays. A snoozed session is still genuinely at a turn end, so its raw colour
+    // stays "red" - which is why a session that rendered a grey dot labelled "Snoozed" was counted
+    // under a header reading "1 need you". Do not reach past the fold to the raw colour again.
     private void UpdateNeedsYouCount()
     {
-        var n = _sessions.Count(s => string.Equals(s.Session.StatusColor, "red", StringComparison.OrdinalIgnoreCase));
+        var n = _sessions.Count(s => s.NeedsYou);
         SessionsNeedYouText.Text = n > 0 ? $"{n} need you" : "";
         SessionsNeedYouText.IsVisible = n > 0;
     }

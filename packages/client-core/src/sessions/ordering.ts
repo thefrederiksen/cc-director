@@ -26,7 +26,14 @@ export function inDesktopOrder(sessions: SessionDto[]): SessionDto[] {
   });
 }
 
-function requireGatewayField(value: string | null | undefined, field: string, sid: string | undefined): string {
+// The ONE rule for reading a Gateway-stamped presentation field: it is there, or we fail loudly. A
+// client that cannot get a stamped answer must never guess one - a guessed colour is indistinguishable
+// from a real one on screen, so it does not degrade gracefully, it lies quietly.
+//
+// Exported because not every stamped surface projects a SessionDto: /exes/list has its own narrower
+// row type carrying the same stamped fields, and it must fail by the same rule with the same message
+// rather than growing a second, drifting copy of this check.
+export function requireGatewayField(value: string | null | undefined, field: string, sid: string | undefined): string {
   const text = value?.trim();
   if (!text) {
     throw new Error(`Gateway /sessions missing ${field} for session ${sid ?? "(unknown)"}. Redeploy Gateway and mobile together.`);
@@ -112,17 +119,34 @@ function waitingSinceMs(s: SessionDto): number {
   return Number.isNaN(parsed) ? Number.POSITIVE_INFINITY : parsed;
 }
 
-// Map an effective color to its dot hex. Mirrors the m.js palette so the mobile roster's dots
-// match the existing prototype and the desktop rail.
+// Map an effective Gateway colour name to its dot hex. THE CANONICAL PALETTE: one name, one hex,
+// every surface. These exact values are also the desktop rail's brushes (SessionViewModel.cs), so a
+// session renders the same pixel on the phone, the Cockpit and the rail - which is the whole point of
+// law 7 ("every device shows the same thing, always"). A name that resolves to two hexes, or two
+// surfaces that resolve one name differently, IS the violation - comparing fold answers ("red" ===
+// "red") cannot see it, so keep this table and the rail's in step by hand when either moves.
+//
+// This comment used to say the table "mirrors the m.js palette so the mobile roster's dots match the
+// existing prototype and the desktop rail". Both halves were false: m.js does not exist anywhere in
+// the repository, and the table disagreed with the rail on red (#F14C4C here vs #EF4444 there) and
+// yellow (#F59E0B, which is amber-500, vs #EAB308). It named a deleted file as the source of truth
+// for a claim that was not true. Every name below is now Tailwind-500 for its own ramp - the two
+// strays were the two that disagreed - except `error`, which is deliberately red-700 so a crashed
+// session reads darker than a needs-you red.
 const COLORS: Record<string, string> = {
-  red: "#F14C4C",
-  yellow: "#F59E0B",
-  orange: "#F97316",
-  green: "#22C55E",
-  blue: "#3B82F6",
-  purple: "#A855F7",
+  red: "#EF4444", // needs you
+  yellow: "#EAB308", // wingman narrating / preparing voice
+  orange: "#F97316", // dictation in flight, or a deep dive running
+  green: "#22C55E", // ready - brand-new, parked at its prompt with nothing needed
+  blue: "#3B82F6", // working - always
+  purple: "#A855F7", // parked on its own background task
   supporting: "#64748B", // issue #815: controlled sub-agent, recessive slate
   error: "#B91C1C", // issue #959: the agent process crashed - deep red, distinct from needs-you red
+  // Parked: on hold or exited. ONE grey, on purpose. The Gateway folds both to "grey" and draws no
+  // distinction between them, so no client may invent one: the snoozed/exited difference is lifecycle,
+  // and lifecycle travels on the stamped label ("Snoozed" / "Exited") and a badge, never on the dot.
+  // The desktop used to split this one name into two hexes by re-reading the raw OnHold flag - a
+  // distinction the Gateway never made - and that re-derive is gone.
   grey: "#6B7280",
   unknown: "#6B7280", // indeterminate activity state (e.g. an unrecognized state) - rendered gray like grey
 };

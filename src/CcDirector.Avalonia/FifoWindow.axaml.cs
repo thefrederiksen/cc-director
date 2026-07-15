@@ -42,10 +42,15 @@ namespace CcDirector.Avalonia;
 /// </summary>
 public partial class FifoWindow : Window
 {
-    private const string Green = "#5FD08A";
-    private const string Blue = "#2B6CB0";
-    private const string Yellow = "#DCDCAA";
-    private const string Red = "#F44747";
+    // The status-line colours, through the ONE palette (StatusPalette) rather than a fifth private
+    // copy. These style the status TEXT ("All caught up", "Snooze failed - ...") rather than a
+    // session dot, but they carried the same colour NAMES at different hexes - green was #5FD08A
+    // here and #22C55E on the rail, red was #F44747 here and #EF4444 there - which is precisely what
+    // "five palettes for the same colour names" meant. One name, one hex, everywhere.
+    private const string Green = StatusPalette.Green;
+    private const string Blue = StatusPalette.Blue;
+    private const string Yellow = StatusPalette.Yellow;
+    private const string Red = StatusPalette.Red;
 
     // Read-only briefing prompt for the right pane: the wingman summarizes the session
     // from its terminal, the same read-only path "Ask Wingman" uses. Shared with the

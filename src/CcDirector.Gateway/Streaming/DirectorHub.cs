@@ -32,15 +32,18 @@ public sealed class DirectorHub : Hub
     private readonly GatewayInputStatsAggregator _inputStats;
     private readonly GatewayStreamRegistry _streamRegistry;
     private readonly Snooze.SnoozeLandingObserver? _snoozeLandings;
+    private readonly Fleet.FleetRoleObserver? _fleetRoles;
 
     public DirectorHub(PushedSessionStore store, DirectorRegistry registry, GatewayInputStatsAggregator inputStats,
-        GatewayStreamRegistry streamRegistry, Snooze.SnoozeLandingObserver? snoozeLandings = null)
+        GatewayStreamRegistry streamRegistry, Snooze.SnoozeLandingObserver? snoozeLandings = null,
+        Fleet.FleetRoleObserver? fleetRoles = null)
     {
         _store = store;
         _registry = registry;
         _inputStats = inputStats;
         _streamRegistry = streamRegistry;
         _snoozeLandings = snoozeLandings;
+        _fleetRoles = fleetRoles;
     }
 
     /// <summary>
@@ -98,6 +101,10 @@ public sealed class DirectorHub : Hub
         // the reconnect snapshot, not as a delta - so the snapshot must be watched too, or the landing is
         // missed until the sweep's backstop notices.
         _snoozeLandings?.ObserveSnapshot(set);
+        // Defect 5: a reconnecting Director's whole roster can change roles across the FLEET (its sessions
+        // re-enter the liveness set, so their controllers' and workers' roles move with them). Re-resolve
+        // and stamp down whatever changed, or the desktop keeps folding a role from before the reconnect.
+        _fleetRoles?.ObserveSnapshot(set);
     }
 
     /// <summary>A single-session delta: upserts one session for the bound Director.</summary>
@@ -116,6 +123,12 @@ public sealed class DirectorHub : Hub
         // Control API pushes a delta for it, so "the snooze the agent asked for has just landed" arrives
         // here within milliseconds of the turn ending - which is the exact moment its clock must start.
         _snoozeLandings?.Observe(session);
+        // Defect 5: THE ROLE SEAM. This session's own facts may have changed its role (it gained a
+        // controller), and its arrival may change ANOTHER session's role on ANOTHER Director (this session
+        // just exited, so the worker it controlled is no longer a Worker and its red must surface). Either
+        // way the resolution is fleet-wide, and the changed roles are stamped back down so every desktop
+        // folds the same answer the phone does.
+        _fleetRoles?.Observe(session);
     }
 
     /// <summary>A remove/tombstone: drops one session from the bound Director's set.</summary>

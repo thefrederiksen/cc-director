@@ -73,7 +73,6 @@ public sealed class NoCrossMachineLoopbackGuardTests
         ["src/CcDirector.Avalonia/Controls/GatewayConnectionPanel.axaml.cs"] = "Epic #1069 A: BuildLoopbackEnrollUrl dials the co-located Gateway's /devices/enroll-signed-in at the literal 127.0.0.1 BY DESIGN - the Gateway's guardrail 1 requires the enroll caller to be a proven SAME-machine loopback connection (IPAddress.IsLoopback), so a machine-name or tailnet address would 403. Same-machine only; the enrolled key then registers/heartbeats over the pick's real address.",
         ["src/CcDirector.Avalonia/MainWindow.axaml.cs"] = "Local-only labelled endpoint strings (handover/about).",
         ["src/CcDirector.Avalonia/Controls/ConnectionsView.axaml.cs"] = "Local connection references.",
-        ["src/CcDirector.Avalonia/Controls/DirectorView/DirectorView.axaml.cs"] = "Embedded local Director view.",
         ["src/CcDirector.Avalonia/ExpandedEditorDialog.axaml.cs"] = "Local references.",
         ["src/CcDirector.Avalonia/WorkflowRecorderWindow.axaml.cs"] = "Local browser-automation references.",
         ["src/CcDirector.Avalonia/HostedAi/DesktopHostedAiCta.cs"] = "Doc comments only: both loopback mentions state the desktop NEVER opens a localhost URL (it resolves the Cockpit front-door first), documenting the no-loopback policy.",

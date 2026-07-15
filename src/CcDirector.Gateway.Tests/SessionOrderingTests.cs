@@ -129,35 +129,87 @@ public sealed class SessionOrderingTests
     }
 
     // ----- effective color while a user-requested deep dive runs (issue #217) -----
+    //
+    // THESE TESTS ARE GONE, AND THE RULE THEY COVERED IS GONE (defect 11, 2026-07-14). There were three
+    // here: IsExplaining_AnyRawColor_TrueWhileExplaining, EffectiveColor_WhileExplaining_IsOrange_
+    // ONLYWhenNotWorking, and (further down) EffectiveColor_GatewayDeepDiveExplaining_IsOrange_NotYellow
+    // and StateLabel_GatewayDeepDive_IsExplaining. All of them fed BriefingState = "Explaining" to the fold
+    // by hand and asserted orange.
+    //
+    // #217's roster orange has never once worked. It never fired, in any release: SessionDto.BriefingState
+    // is stamped only from the Director's BriefingState enum (None / Briefing / Briefed / Failed), so
+    // "Explaining" is not a producible value - and the Gateway's deep-dive request route is switched off at
+    // the composition root (requestExplainAsync: null -> 503). The tests were green because they INJECTED a
+    // value production cannot emit. That is this mission's most common bug shape wearing a test's clothes:
+    // live consumer, no producer, a green test supplying the missing input.
+    //
+    // NOTE WHAT IS NOT GONE. The Director's LEGACY auto-explain yellow is a separate, WORKING feature on a
+    // different field (SessionDto.IsAutoExplaining), and its test
+    // (EffectiveColor_AutoExplainingAtTurnEnd_IsYellow_FromRawFact) is untouched below - it now also carries
+    // the "distinct from the deep dive" note that used to live on the deleted orange test.
+    //
+    // There is deliberately NO replacement regression test. A test cannot fail on purpose for an unreachable
+    // rule: there is no input that reaches it, which is the entire finding. The honest artefacts are this
+    // note, the deletion, and the two law theory rows below (OverlaysThatMustNotBeatWorking / the
+    // all-overlays-at-once case) which still pass "Explaining" as an inert input and still assert blue.
 
-    [Fact]
-    public void IsExplaining_AnyRawColor_TrueWhileExplaining()
+    // ---------- Defect 16: ActivityState is read case-INSENSITIVELY, everywhere in the fold ----------
+
+    [Theory]
+    [InlineData("working", "blue")]
+    [InlineData("WORKING", "blue")]
+    [InlineData("starting", "blue")]
+    [InlineData("waitingforinput", "red")]
+    [InlineData("WAITINGFORINPUT", "red")]
+    [InlineData("waitingforperm", "red")]
+    [InlineData("idle", "red")]
+    [InlineData("exited", "grey")]
+    public void EffectiveColor_ActivityState_IsCaseInsensitive(string activityState, string expected)
     {
-        // Explain is USER-initiated: the orange must show no matter what the session is
-        // doing underneath (the original red gate suppressed it on working sessions and
-        // left the rail contradicting the brief pane).
-        Assert.True(SessionOrdering.IsExplaining(S("x", color: "blue", briefingState: "Explaining")));
-        Assert.True(SessionOrdering.IsExplaining(S("x", color: "red", briefingState: "Explaining")));
-        Assert.True(SessionOrdering.IsExplaining(S("x", color: "green", briefingState: "Explaining")));
-        Assert.False(SessionOrdering.IsExplaining(S("x", color: "red", briefingState: "Briefing")));
-        Assert.False(SessionOrdering.IsExplaining(S("x", color: "blue", briefingState: "None")));
+        // Defect 16: RawActivityColor was a C# constant-pattern switch, which is ORDINAL and
+        // case-SENSITIVE, while IsWorking / IsAtTurnEnd / IsVoicePreparing / the role rule all compared the
+        // SAME field case-INSENSITIVELY - two readings of one field in one file, six lines apart inside
+        // IsVoicePreparing.
+        //
+        // HONEST SCOPE: this fixes no observed bug. The only producer of ActivityState is the Director's
+        // ToDto (`s.ActivityState.ToString()` over the enum), which emits exact PascalCase, so the
+        // divergence cannot fire today. This pins the trap shut rather than repairing a live failure.
+        //
+        // The "waitingforinput" -> "red" rows are the ones that matter: under the old switch they returned
+        // "unknown" (label "Idle"), silently EATING a red on a session that needs the human, while the
+        // case-insensitive turn-end overlays happily fired around it.
+        Assert.Equal(expected, SessionOrdering.EffectiveColor(new SessionDto
+        {
+            SessionId = "x",
+            ActivityState = activityState,
+        }));
     }
 
     [Fact]
-    public void EffectiveColor_WhileExplaining_IsOrange_ONLYWhenNotWorking()
+    public void IsRawRed_IsCaseInsensitive_AndIgnoresTheCookedColor()
     {
-        // Renamed and flipped, 2026-07-14. This test used to be called
-        // "..._IsOrange_EvenWhenWorking" and asserted that a deep dive paints a WORKING session
-        // orange. That is the old law, and the owner has voided it: working is BLUE, always.
-        //
-        // Keep reading, because this is the whole reason the bug kept coming back. The old
-        // assertion was not an accident - it was deliberate, named after its own intent, and
-        // green. An agent sent to make working blue would flip the code, watch THIS test fail,
-        // conclude it had misunderstood the requirement, and revert. The test defended the defect.
-        Assert.Equal("orange", SessionOrdering.EffectiveColor(S("x", color: "red", briefingState: "Explaining")));
+        // IsRawRed is THE fold-owned answer to "is this session red?", and it is public so the Gateway's
+        // enrichment pipeline can ask it BEFORE the fold runs (it replaced a gate on the Director's cooked
+        // StatusColor - see the voice-window test in the aggregation suite).
+        Assert.True(SessionOrdering.IsRawRed(new SessionDto { SessionId = "x", ActivityState = "waitingforinput" }));
+        Assert.True(SessionOrdering.IsRawRed(new SessionDto { SessionId = "x", ActivityState = "Idle" }));
+        Assert.False(SessionOrdering.IsRawRed(new SessionDto { SessionId = "x", ActivityState = "Working" }));
 
-        // ... and the working case, which is now the law:
-        Assert.Equal("blue", SessionOrdering.EffectiveColor(S("x", color: "blue", briefingState: "Explaining")));
+        // The cooked colour gets NO vote, in either direction. A working session whose Director cooked a
+        // sticky red (TransientErrorAutoResume does exactly this) is NOT raw red...
+        Assert.False(SessionOrdering.IsRawRed(new SessionDto
+        {
+            SessionId = "x",
+            ActivityState = "Working",
+            StatusColor = "red",
+        }));
+        // ...and a waiting session whose cooked colour is stale/absent still IS.
+        Assert.True(SessionOrdering.IsRawRed(new SessionDto
+        {
+            SessionId = "x",
+            ActivityState = "WaitingForInput",
+            StatusColor = "",
+        }));
     }
 
     // ---------- Transcribing "orange while a dictated utterance is being transcribed" ----------
@@ -261,14 +313,9 @@ public sealed class SessionOrderingTests
             Voice("red", "WaitingForInput", generating: false, audioReady: false)));
     }
 
-    [Fact]
-    public void Classify_RedWhileExplaining_IsActive_NotNeedsYou()
-    {
-        // Same #196 rule as briefing: while the deep dive runs the session must not sit
-        // in NEEDS YOU - red may only return after the report lands.
-        Assert.Equal(SessionOrdering.TriageBucket.Active,
-            SessionOrdering.Classify(S("x", color: "red", briefingState: "Explaining")));
-    }
+    // Classify_RedWhileExplaining_IsActive_NotNeedsYou lived here and is deleted with the rule it covered
+    // (defect 11) - it asserted a triage bucket for a BriefingState the wire cannot carry. The briefing twin
+    // below covers the same #196 rule for the state that IS producible.
 
     [Fact]
     public void Classify_RedWhileBriefing_IsActive_NotNeedsYou()
@@ -484,8 +531,15 @@ public sealed class SessionOrderingTests
     {
         // Newly covered (issue #1177 audit): the legacy auto-explain (ProactiveExplainService,
         // Session.IsExplaining) must paint yellow while WingmanEnabled and at a turn-end - previously this
-        // survived ONLY via the cooked StatusColor fall-through and was untested. Distinct from the Gateway
-        // deep-dive overlay (BriefingState=="Explaining"), which is ORANGE.
+        // survived ONLY via the cooked StatusColor fall-through and was untested.
+        //
+        // THIS IS THE AUTO-EXPLAIN THAT WORKS, and it is why the gating below matters. This note used to say
+        // "Distinct from the Gateway deep-dive overlay (BriefingState==\"Explaining\"), which is ORANGE",
+        // and it lived on a test asserting that orange. The distinction was real; the orange was not. That
+        // rule never fired in any release and is deleted (defect 11) - see the note at the top of this file.
+        // The distinction is preserved here because it explains the shape of THIS rule: the yellow rides on
+        // the RAW FACT SessionDto.IsAutoExplaining, which the Director actually stamps, and it is gated on
+        // WingmanEnabled + turn-end. Two different fields, and only one of them was ever populated.
         Assert.Equal("yellow", SessionOrdering.EffectiveColor(
             Raw("WaitingForInput", wingmanEnabled: true, autoExplaining: true)));
     }
@@ -498,13 +552,9 @@ public sealed class SessionOrderingTests
             Raw("WaitingForInput", wingmanEnabled: false, autoExplaining: true)));
     }
 
-    [Fact]
-    public void EffectiveColor_GatewayDeepDiveExplaining_IsOrange_NotYellow()
-    {
-        // The Gateway user-initiated deep dive (BriefingState=="Explaining", issue #217) stays ORANGE,
-        // distinct from the Director auto-explain yellow above.
-        Assert.Equal("orange", SessionOrdering.EffectiveColor(Raw("WaitingForInput", briefingState: "Explaining")));
-    }
+    // EffectiveColor_GatewayDeepDiveExplaining_IsOrange_NotYellow lived here. Deleted with the rule
+    // (defect 11); its surviving half - that the auto-explain yellow is a DIFFERENT feature on a DIFFERENT
+    // field - is now recorded on the yellow test above, which is the one that covers reachable behaviour.
 
     // ----- StateLabel: one per color / overlay (issue #1177, Phase 2) -----
 
@@ -530,11 +580,8 @@ public sealed class SessionOrderingTests
         Assert.Equal("Working", SessionOrdering.StateLabel(Raw("Working", transcribing: true)));
     }
 
-    [Fact]
-    public void StateLabel_GatewayDeepDive_IsExplaining()
-    {
-        Assert.Equal("Explaining", SessionOrdering.StateLabel(Raw("WaitingForInput", briefingState: "Explaining")));
-    }
+    // StateLabel_GatewayDeepDive_IsExplaining lived here. Deleted with the rule (defect 11): no session has
+    // ever read "Explaining", because nothing could produce the state that label was folded from.
 
     [Fact]
     public void StateLabel_Briefing_IsWingmanReading()

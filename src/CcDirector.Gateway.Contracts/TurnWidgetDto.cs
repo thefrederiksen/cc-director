@@ -2,7 +2,10 @@ namespace CcDirector.Gateway.Contracts;
 
 /// <summary>
 /// One card / "widget" in the structured Agent view, transport-friendly DTO.
-/// Mirrors the CleanWidgetViewModel in the Avalonia UI but with no UI types.
+/// Built by CcDirector.Core.Claude.WidgetBuilder, which is the ONLY widget builder.
+/// It used to have a desktop twin (CleanWidgetViewModel, built for the alpha
+/// Wingman panel); that panel was removed in commit 9e711eb6 and the twin was deleted with
+/// the rest of its cluster on 14 July 2026, so there is nothing to mirror or keep in step.
 /// Source: parsed from claude.exe's JSONL session log via StreamMessageParser.
 /// </summary>
 public sealed class TurnWidgetDto

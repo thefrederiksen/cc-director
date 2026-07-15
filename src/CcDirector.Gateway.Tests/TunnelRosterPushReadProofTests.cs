@@ -20,6 +20,12 @@ namespace CcDirector.Gateway.Tests;
 /// TUNNEL-BY-CONSTRUCTION: the Director is registered UNREACHABLE and its sessions are delivered ONLY via a
 /// stream PushSnapshot. So a result that reflects those sessions can ONLY have come from the push store - an
 /// HTTP pull to the unreachable Director would have returned nothing.
+///
+/// ALSO PINS THE /exes/list FOLD (defect 6). That page is here rather than in the aggregation suite because
+/// this is the fixture that already has what it needs: a Director registered on THIS machine (the page is
+/// local-machine only) delivering its roster over the tunnel. The fold assertions are about what the page
+/// RENDERS, not about where the rows came from - but they need the rows to come from somewhere, and this is
+/// where that setup lives.
 /// </summary>
 [Collection("DirectorRoot")]
 public sealed class TunnelRosterPushReadProofTests : IAsyncLifetime
@@ -118,6 +124,48 @@ public sealed class TunnelRosterPushReadProofTests : IAsyncLifetime
         Assert.Equal(1, sessions?.Count);
         Assert.Equal(sid, sessions?[0]?["sessionId"]?.GetValue<string>());
         Assert.Null(mine["sessionError"]?.GetValue<string?>()); // no pull error - it never pulled
+    }
+
+    // ---------- defect 6: /exes/list runs the SAME fleet pass as every other screen ----------
+
+    [Fact]
+    public async Task ExesList_runsTheFleetPass_soAWorkersRedIsSuppressedHereToo()
+    {
+        // DEFECT 6. This page folded each session on its own, straight out of the push store, with NO fleet
+        // pass. SessionRole is resolved ONLY by that pass (the Director never sends it - it cannot: "is my
+        // controller alive?" may be a question about another machine), so the role was null here, the Worker
+        // red-suppression could not fire, and a live Worker rendered RED on this page while every other
+        // screen showed it receded to "supporting" / "Sub-agent".
+        var mgr = Guid.NewGuid().ToString();
+        var wrk = Guid.NewGuid().ToString();
+        await PushAsync(1L,
+            new SessionDto
+            {
+                SessionId = mgr, Name = "the manager", Agent = "ClaudeCode",
+                Status = "Running", ActivityState = "Working", StatusColor = "blue", RepoPath = @"D:\repo",
+            },
+            new SessionDto
+            {
+                SessionId = wrk, Name = "the worker", Agent = "ClaudeCode",
+                Status = "Running", ActivityState = "WaitingForInput", StatusColor = "red", RepoPath = @"D:\repo",
+                IsControlled = true, ControllerSessionId = mgr,
+            });
+
+        var node = await _http.GetFromJsonAsync<JsonNode>("exes/list");
+        var mine = node?["directors"]?.AsArray()
+            .FirstOrDefault(d => d?["directorId"]?.GetValue<string>() == DirectorId);
+        Assert.NotNull(mine);
+        var sessions = mine!["sessions"]?.AsArray();
+
+        var workerOut = Assert.Single(sessions!, s => s?["sessionId"]?.GetValue<string>() == wrk);
+        // Before the fix: "red" / "Needs you" here, "supporting" / "Sub-agent" on the roster.
+        Assert.Equal("supporting", workerOut?["effectiveColor"]?.GetValue<string>());
+        Assert.Equal("Sub-agent", workerOut?["stateLabel"]?.GetValue<string>());
+
+        // The manager is untouched - its own working shows blue, and the law holds on this page too.
+        var mgrOut = Assert.Single(sessions!, s => s?["sessionId"]?.GetValue<string>() == mgr);
+        Assert.Equal("blue", mgrOut?["effectiveColor"]?.GetValue<string>());
+        Assert.Equal("Working", mgrOut?["stateLabel"]?.GetValue<string>());
     }
 
     [Fact]

@@ -12,29 +12,15 @@ export function repoBasename(path: string | null | undefined): string {
   return i >= 0 ? norm.slice(i + 1) : norm;
 }
 
-// Human-readable activity/assessed state, matching the Blazor HumanizeState vocabulary.
-export function humanizeState(state: string | null | undefined): string {
-  switch (state) {
-    case "WaitingForInput":
-      return "Waiting for input";
-    case "WaitingForPerm":
-      return "Waiting for permission";
-    case "Idle":
-      return "Idle";
-    case "Working":
-      return "Working";
-    case "Starting":
-      return "Starting";
-    case "Exited":
-      return "Exited";
-    case null:
-    case undefined:
-    case "":
-      return "-";
-    default:
-      return state;
-  }
-}
+// There is deliberately NO humanizeState here. It was a port of the Blazor HumanizeState vocabulary
+// that turned a raw activity/assessed state into words, and its last caller (the Director-detail
+// table's State cell) now renders the Gateway's stamped stateLabel instead - the same fold that picks
+// the row's dot colour. A helper that turns raw sensor fields into a state word IS the re-derive this
+// module's header forbids, so it is gone rather than left lying around for the next agent to reach
+// for. If you want a session's state in words, call stateLabel() from client-core/sessions/ordering.
+//
+// Note ActivityState.Idle is also a dead state - nothing in production has ever assigned it - so half
+// that switch was answering about a world that does not exist.
 
 // Seconds since an ISO timestamp, clamped at zero. Returns null when the input is absent/unparseable
 // so callers can render "-".

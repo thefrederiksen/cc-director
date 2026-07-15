@@ -33,7 +33,8 @@ internal static class ExesEndpoints
         new(@"cc-director(\d+)\.exe$", RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
     public static void Map(IEndpointRouteBuilder app, DirectorRegistry registry,
-        PushedSessionStore? pushedSessions = null, TimeSpan? streamStaleAfter = null)
+        PushedSessionStore? pushedSessions = null, TimeSpan? streamStaleAfter = null,
+        Snooze.SnoozeRegistry? snoozeRegistry = null)
     {
         // Gateway Cleanup Phase 2 (PR E, Group C): under streamMode the roster lives in the push store; resolve
         // the same freshness window the /sessions roster uses so a stream-connected Director's sessions are read
@@ -49,6 +50,23 @@ internal static class ExesEndpoints
                 var machine = Environment.MachineName;
                 var repoRoot = ResolveRepoRoot();
 
+                // Defect 6: this page used to fold each session on its own, straight out of the push store,
+                // with NO fleet pass - so it answered differently from every other screen. SessionRole is
+                // resolved ONLY by the fleet pass (the Director never sends it), so it was null here, the
+                // Worker red-suppression could not fire, and a live Worker showed RED on this page while the
+                // roster showed it receded. The expired-snooze override was missing for the same reason:
+                // "Snoozed" here, "Needs you" there.
+                //
+                // The universe is the WHOLE fleet, not the local Directors this page lists: a local Worker's
+                // Manager can be on another machine, and asking "is my controller alive?" of the local
+                // machine only would re-create defect 13 on a new page.
+                var byDirector = GatewayEndpoints.FleetByDirector(registry, pushedSessions, streamStale);
+                var fleet = byDirector.Values.SelectMany(x => x).ToList();
+
+                // needsYouStampFor is NOT passed: the needs-you clock is entry/exit and belongs to the roster
+                // read. A dev page must not drive it.
+                GatewayEndpoints.StampFleetRolesAndFold(fleet, fleet, needsYouStampFor: null, snoozeRegistry: snoozeRegistry);
+
                 var local = registry.ListDirectors()
                     .Where(d => string.Equals(d.MachineName, machine, StringComparison.OrdinalIgnoreCase))
                     .OrderBy(d => d.StartedAt)
@@ -59,9 +77,9 @@ internal static class ExesEndpoints
                 var directors = local.Select(d =>
                 {
                     var exePath = TryGetExePath(d.Pid);
-                    var cached = pushedSessions?.TryGetFresh(d.DirectorId, streamStale);
-                    IReadOnlyList<SessionDto>? sessions = cached;
-                    string? error = cached is null ? "director not connected to the tunnel" : null;
+                    IReadOnlyList<SessionDto>? sessions =
+                        byDirector.TryGetValue(d.DirectorId, out var cached) ? cached : null;
+                    string? error = sessions is null ? "director not connected to the tunnel" : null;
                     return new
                     {
                         directorId = d.DirectorId,
@@ -83,11 +101,13 @@ internal static class ExesEndpoints
                             agent = s.Agent,
                             activityState = s.ActivityState,
                             statusColor = s.StatusColor,
-                            // Issue #1177 (Phase 2.3): stamp the Gateway fold so the Exes page renders the same
+                            // Issue #1177 (Phase 2.3): render the Gateway fold so the Exes page shows the same
                             // effectiveColor + stateLabel as every other client, instead of the raw Director
                             // color (which is now just blue/red/gray after the Director overlay fold was retired).
-                            effectiveColor = SessionOrdering.EffectiveColor(s),
-                            stateLabel = SessionOrdering.StateLabel(s),
+                            // Defect 6: READ from the fleet pass above - never recomputed here. A second call to
+                            // the fold is a second answer, which is the whole defect.
+                            effectiveColor = s.EffectiveColor,
+                            stateLabel = s.StateLabel,
                             repoPath = s.RepoPath,
                         }).ToList(),
                     };

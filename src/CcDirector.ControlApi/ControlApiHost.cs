@@ -737,6 +737,24 @@ public sealed class ControlApiHost : IAsyncDisposable
             // OnHold untouched but does change the label clients render.
             session.HoldStateChanged += _ =>
                 _streamClient?.NotifyDelta(ControlEndpoints.Map(session, DirectorId));
+
+            // Defect 14: the three colour inputs that were invisible to the Gateway until something ELSE
+            // happened. The Gateway folds orange from IsTranscribing, orange from IsAutoExplaining, and
+            // purple from IsBackgroundRunning - reading them off the pushed SessionDto - but nothing pushed
+            // when they changed. Each raised its Director event to an empty room: OnIsBackgroundRunningChanged
+            // and OnIsExplainingChanged had ZERO subscribers anywhere in the codebase, and
+            // OnIsTranscribingChanged had exactly one (a desktop UI handler, which pushes nothing). So the
+            // fact sat on the Session until some unrelated activity change happened to push a delta, or the
+            // ten-second re-push came around - and those three colours lagged by up to that long.
+            //
+            // A colour input is a state change like any other, so it pushes like any other. This is the same
+            // one-line shape as the hold push above, for the same reason.
+            session.OnIsTranscribingChanged += _ =>
+                _streamClient?.NotifyDelta(ControlEndpoints.Map(session, DirectorId));
+            session.OnIsBackgroundRunningChanged += _ =>
+                _streamClient?.NotifyDelta(ControlEndpoints.Map(session, DirectorId));
+            session.OnIsExplainingChanged += _ =>
+                _streamClient?.NotifyDelta(ControlEndpoints.Map(session, DirectorId));
         }
 
         _sessionManager.OnSessionCreated += session =>

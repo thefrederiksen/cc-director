@@ -12,8 +12,7 @@ namespace CcDirector.Avalonia;
 public static class CockpitUrlResolver
 {
     /// <summary>
-    /// Loopback gateway base used only when no <c>gateway.url</c> is configured. Mirrors
-    /// <see cref="Controls.DirectorView.DirectorView.DefaultGatewayUrl"/>.
+    /// Loopback gateway base used only when no <c>gateway.url</c> is configured.
     /// </summary>
     public const string LocalhostDefault = "http://127.0.0.1:7878";
 

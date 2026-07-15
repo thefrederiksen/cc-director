@@ -3,7 +3,6 @@
         xmlns:terminal="clr-namespace:CcDirector.Terminal.Avalonia;assembly=CcDirector.Terminal.Avalonia"
         xmlns:controls="clr-namespace:CcDirector.Avalonia.Controls"
         xmlns:commMgr="clr-namespace:CcDirector.Avalonia.Controls.CommManager"
-        xmlns:mgr="clr-namespace:CcDirector.Avalonia.Controls.DirectorView"
         xmlns:md="https://github.com/whistyun/Markdown.Avalonia.Tight"
         x:Class="CcDirector.Avalonia.MainWindow"
         Title="Director"

@@ -7,10 +7,11 @@ import {
   killDirector,
   type ExesDirector,
   type ExesList,
+  type ExesSession,
 } from "@devthrottle/client-core/exes/exesClient";
 import { gatewayErrorMessage } from "@devthrottle/client-core/api/client";
 import { useVisiblePolling } from "@devthrottle/client-core/polling/useVisiblePolling";
-import { dotColor } from "@devthrottle/client-core/sessions/ordering";
+import { dotColor, requireGatewayField } from "@devthrottle/client-core/sessions/ordering";
 import { ConfirmDialog, EmptyState, ErrorBanner, LoadingState, StatusMessage, useFlash } from "../components";
 import { portOf, repoBasename, uptime } from "../fleet/format";
 
@@ -25,6 +26,21 @@ import { portOf, repoBasename, uptime } from "../fleet/format";
 // destructive action now asks through the shared ConfirmDialog instead of a blocking browser
 // window.confirm, and every action result is a StatusMessage instead of a browser window.alert.
 const REFRESH_MS = 3000;
+
+// What the Exes page's session row shows about a session's state: the Gateway's stamped fold, read by
+// the shared fail-loud rule with NO fallback on either field. Pure and exported so the rule is testable
+// without a DOM; the row below renders exactly this and adds nothing of its own.
+//
+// /exes/list projects its own narrower row type (ExesSession), not a SessionDto, which is why this
+// reads the stamped fields through requireGatewayField directly rather than through effectiveColor() /
+// stateLabel(). It is the same rule and the same error message - a different DTO shape is not a reason
+// to grow a second copy of the check, and it is certainly not a reason to guess.
+export function exesSessionRow(s: ExesSession): { dot: string; state: string } {
+  return {
+    dot: dotColor(requireGatewayField(s.effectiveColor, "effectiveColor", s.sessionId)),
+    state: requireGatewayField(s.stateLabel, "stateLabel", s.sessionId),
+  };
+}
 
 // The action awaiting confirmation. Exes has three heavy actions, so a discriminated union feeds the
 // single ConfirmDialog: killing a Director (destructive), deleting a slot build (destructive), and
@@ -173,22 +189,25 @@ export function ExesView() {
                     ) : dir.sessions.length === 0 ? (
                       <div className="ex-none">No sessions.</div>
                     ) : (
-                      dir.sessions.map((s) => (
-                        <div className="ex-sess" key={s.sessionId}>
-                          <span className="ex-dot" style={{ backgroundColor: dotColor(s.effectiveColor ?? "unknown") }} />
-                          {!s.name || s.name.trim().length === 0 ? (
-                            <span className="ex-sname ex-unnamed">(unnamed)</span>
-                          ) : (
-                            <span className="ex-sname">{s.name}</span>
-                          )}
-                          <span className="ex-agent-pill">
-                            {!s.agent || s.agent.trim().length === 0 ? "?" : s.agent}
-                          </span>
-                          <span className="ex-sstate">
-                            {repoBasename(s.repoPath)} &middot; {s.stateLabel ?? "-"}
-                          </span>
-                        </div>
-                      ))
+                      dir.sessions.map((s) => {
+                        const row = exesSessionRow(s);
+                        return (
+                          <div className="ex-sess" key={s.sessionId}>
+                            <span className="ex-dot" style={{ backgroundColor: row.dot }} />
+                            {!s.name || s.name.trim().length === 0 ? (
+                              <span className="ex-sname ex-unnamed">(unnamed)</span>
+                            ) : (
+                              <span className="ex-sname">{s.name}</span>
+                            )}
+                            <span className="ex-agent-pill">
+                              {!s.agent || s.agent.trim().length === 0 ? "?" : s.agent}
+                            </span>
+                            <span className="ex-sstate">
+                              {repoBasename(s.repoPath)} &middot; {row.state}
+                            </span>
+                          </div>
+                        );
+                      })
                     )}
                   </div>
                 </div>

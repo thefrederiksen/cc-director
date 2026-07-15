@@ -82,6 +82,37 @@ replaces all three, states the machine once, and lists every place that currentl
 
 <h2>1. Why this keeps happening</h2>
 
+<div class="callout warn">
+<p class="big">The failure mode was never "renders wrong". It was <strong>renders plausible</strong>.</p>
+<p><strong>That one sentence is why you kept being lied to by a system in which every single part passed
+its own checks</strong> - and it is the same failure three times over, in three different materials:</p>
+<ul>
+<li><strong>The CODE rendered plausible.</strong> A client that could not get a stamped answer guessed
+<code>?? "unknown"</code> - and <code>"unknown"</code> is a <em>real colour name</em>, so the palette accepted
+it and painted the <em>same grey as "parked or exited"</em>. Verified 14 July 2026: a session whose raw state
+said <strong>Working</strong> rendered <strong>parked grey</strong>. Not an error. Not a blank. A confident,
+ordinary-looking dot that meant the opposite of the truth.</li>
+<li><strong>The SPECIFICATION rendered plausible.</strong> The wedged orange was recorded as "almost certainly"
+the Gateway running out of credits. Nobody had run out of credits - it has never happened once in 846 outcomes.
+It survived review because <strong>it read exactly like a finding</strong>, in the same voice as the true
+paragraphs around it, and it pointed the next agent away from the real cause.</li>
+<li><strong>The TESTS rendered plausible.</strong> The auto-drain's tests passed for <strong>fourteen
+months</strong> by calling <code>ApplyTerminalActivityState(Idle)</code> directly - injecting a state
+production has never once emitted. Green, deliberate, and certifying a feature that could not fire.</li>
+</ul>
+<p><strong>A wrong answer gets caught. A plausible one ships.</strong> Every mechanism in this document is a
+variation on that: the fold that is internally consistent and consistent with nothing else; the comment that
+describes a design the code never had; the count that was true last week. None of them look like bugs. They
+look like the system working.</p>
+<p>The same inversion in miniature, and it is worth holding onto because it is so recognisable: the
+<code>/exes</code> row <strong>threw loudly on a blank colour and guessed silently on a null one</strong>. Its
+error handling was rigorous exactly where it did not matter, and absent in the case that actually happened.
+<strong>Rigour pointed at the wrong place reads as rigour.</strong></p>
+<p><strong>So the defence cannot be care, seniority, or review</strong> - all three were present for every
+failure above. It has to be mechanical, and it is: <a href="#">the five checks in section 8</a>, which are the
+only things that have ever caught one of these.</p>
+</div>
+
 <h3>Finding 1: the specification ranks ownership above working</h3>
 
 <p><span class="file">docs/new_architecture/state-and-color-architecture.html</span> - which
@@ -768,8 +799,22 @@ or its own hold expiry, so it cannot compute its own colour. It must ask.</p>
 <tr><td>14</td><td><strong>Three colour inputs are invisible to the Gateway until something else happens.</strong> Transcribing, background-running, and auto-explaining all raise Director events with no push subscriber. The Gateway folds orange, purple, and yellow from exactly those facts - so those colours can lag by up to one ten-second re-push.</td><td><span class="file">ControlApiHost.cs:724-773</span></td></tr>
 <tr><td>15</td><td><strong>Two endpoints violate the DTO's stated contract.</strong> <code>EffectiveColor</code> and <code>TriageBucket</code> are documented "Required on Gateway /sessions responses". <code>GET /sessions/{sid}</code> returns them null. So the roster says "Needs you" while the by-id route still says <code>onHold: true</code>.</td><td><span class="file">SessionDto.cs:158</span> vs <span class="file">GatewayEndpoints.cs:1002-1014</span></td></tr>
 <tr><td>16</td><td><strong>Case-sensitivity is inconsistent inside one file.</strong> <code>RawActivityColor</code> is a case-sensitive switch; <code>IsAtTurnEnd</code>, <code>IsVoicePreparing</code>, and the role rules all compare case-insensitively on the same field. A mis-cased state produces incoherent output.</td><td><span class="file">SessionOrdering.cs:163</span> vs <span class="file">:176</span></td></tr>
-<tr><td>17</td><td><strong>Four greys and a slate, indistinguishable in a rail dot.</strong> Snoozed <code>#9CA3AF</code>, exited <code>#6A6A6A</code>, unknown <code>#6B7280</code>, supporting <code>#64748B</code>. This is why you read a working session as "on hold".</td><td><span class="file">SessionViewModel.cs:43-54</span>; <span class="file">ordering.ts:116-127</span></td></tr>
-<tr><td>18</td><td><strong>Five palettes for the same colour names.</strong> "red" is <code>#EF4444</code> on the rail, <code>#E5484D</code> in the turn review, <code>#F44747</code> in the Director view - where it means Exited, not needs-you.</td><td>desktop, various</td></tr>
+<tr><td>17</td><td><strong>The greys - and this row was WRONG about where they live.</strong> It said: <em>"Four greys and a slate... Snoozed <code>#9CA3AF</code>, exited <code>#6A6A6A</code>, unknown <code>#6B7280</code>, supporting <code>#64748B</code>"</em>, cited to <span class="file">SessionViewModel.cs:43-54</span> and <span class="file">ordering.ts:116-127</span>. <strong>Verified 14 July 2026: <code>#9CA3AF</code> and <code>#6A6A6A</code> have never appeared in <code>ordering.ts</code></strong> (a whole-repo grep finds <code>#9CA3AF</code> in no TypeScript at all), <code>#6B7280</code> is not a desktop status colour, and both line ranges are stale (the desktop greys are at <span class="file">:56, :61, :68</span>; the client map is <span class="file">:117-128</span>). The row blended two surfaces into one list and cited each hex to the wrong one. <strong>The real defect is sharper and it is a LAW violation:</strong> the Gateway deliberately folds snoozed AND exited to the single name <code>"grey"</code> (<span class="file">SessionOrdering.cs:186-190</span>, owner-approved, <em>"so clients render it identically"</em>) - and <span class="file">SessionViewModel.cs:161</span> then reached around the fold, re-read the raw <code>Session.OnHold</code> flag, and split that one name into two brushes. <strong>A client inventing a distinction the Gateway never made</strong>: law 3 (clients decide nothing) and law 7 (every device shows the same thing). On the rail it was two greys and a slate; on the phone, one grey. <span class="good">FIXED 14 July 2026:</span> the split is deleted, <code>"grey"</code> is one brush, and the snoozed/exited distinction travels where Phase 3's precedent puts it - on the fold's own <code>StateLabel</code> ("Snoozed" / "Exited") and a badge, never the dot.</td><td><span class="file">SessionViewModel.cs:56, :61, :68, :161</span>; <span class="file">ordering.ts:117-128</span></td></tr>
+<tr><td>18</td><td><strong>Palettes for the same colour names - the count was FIVE and it is SEVEN.</strong> The three named here are correct: "red" is <code>#EF4444</code> on the rail, <code>#E5484D</code> in the turn review, <code>#F44747</code> in the Director view - where it means Exited, not needs-you. <strong>Two more, found 14 July 2026:</strong> <span class="file">FifoWindow.axaml.cs:45-48</span> (a fourth desktop palette, live, matching the rail on nothing), and <span class="file">schedule.css:885-919</span> - <strong class="bad">where a WORKING session renders GREEN</strong> (<span class="file">ScheduleView.tsx:1130</span> maps <code>working &rarr; .run</code> &rarr; <code>--sched-green #22c55e</code>). That last one is not a palette drift, it is <strong>the law broken on a rendered surface</strong>, and it is worse than a wrong hex: in the shared vocabulary <code>green</code> means <em>"ready - brand-new, parked at its prompt"</em>. Here it means <em>working</em>. <strong>Same colour, opposite meaning</strong> - the same shape as the Director view's red. <span class="good">FIXED 14 July 2026:</span> both retired onto the canonical table below; the schedule picker now renders <code>dotColor(effectiveColor(s))</code> and its parallel fold is deleted rather than recoloured.
+<p><strong>THE CANONICAL PALETTE - one name, one hex, everywhere. It is Tailwind's 500 ramp.</strong> That is not a preference; it is the rule the code was already 6/9 obeying, found by diffing the two surfaces: <em>every colour they AGREED on is a Tailwind-500 value, and every colour they DISAGREED on was exactly one ramp member against one stray.</em> <code>error</code> is deliberately red-700.</p>
+<table>
+<tr><th>Name</th><th>Hex</th><th>Ramp</th><th>Means</th></tr>
+<tr><td><span class="dot d-blue"></span>blue</td><td><code>#3B82F6</code></td><td>blue-500</td><td>working - ALWAYS</td></tr>
+<tr><td><span class="dot d-red"></span>red</td><td><code>#EF4444</code></td><td>red-500</td><td>needs you</td></tr>
+<tr><td><span class="dot d-yellow"></span>yellow</td><td><code>#EAB308</code></td><td>yellow-500</td><td>wingman narrating / preparing voice</td></tr>
+<tr><td><span class="dot d-orange"></span>orange</td><td><code>#F97316</code></td><td>orange-500</td><td>dictation in flight</td></tr>
+<tr><td><span class="dot d-green"></span>green</td><td><code>#22C55E</code></td><td>green-500</td><td>ready - brand-new, parked at its prompt. <strong>NOT working.</strong></td></tr>
+<tr><td><span class="dot d-purple"></span>purple</td><td><code>#A855F7</code></td><td>purple-500</td><td>parked on its own background task</td></tr>
+<tr><td><span class="dot d-slate"></span>supporting</td><td><code>#64748B</code></td><td>slate-500</td><td>controlled sub-agent's suppressed red</td></tr>
+<tr><td><span class="dot" style="background:#B91C1C"></span>error</td><td><code>#B91C1C</code></td><td>red-<strong>700</strong></td><td>crashed - deliberately darker than needs-you</td></tr>
+<tr><td><span class="dot" style="background:#6B7280"></span>grey / unknown</td><td><code>#6B7280</code></td><td>gray-500</td><td>parked (on hold) or exited / indeterminate</td></tr>
+</table>
+<p><strong>The strays that died:</strong> <code>#F14C4C</code> (VS Code red), <code>#F59E0B</code> (amber-500 - a real Tailwind colour, but the wrong ramp member for the NAME "yellow"), <code>#9CA3AF</code> (gray-400), <code>#6A6A6A</code> (not Tailwind at all). <em>Note what this table is FOR: the Phase 5 agreement check compares the RENDERED HEX, not the fold's answer - because two surfaces both saying <code>"red"</code> while painting different reds is law 7 broken, and a check that compares the word cannot see it.</em></p></td><td><span class="file">SessionViewModel.cs</span>; <span class="file">ordering.ts</span>; <span class="file">TurnReviewDialog.axaml.cs</span>; <span class="file">FifoWindow.axaml.cs</span>; <span class="file">schedule.css</span> + <span class="file">ScheduleView.tsx</span></td></tr>
 <tr><td><strong>23</strong></td><td><strong>A session flagged for deletion is invisible to the fold, and the Director paints it anyway.</strong> <span class="file">SessionDto.cs:268-277</span> says a <code>PendingDeletion</code> row "paints as a winding-down grey". The Gateway's fold never reads the field, so on every Gateway-backed screen the session keeps its normal colour - red "Needs you", or blue "Working" (a pending-deletion session may still be working, <span class="file">SessionManager.cs:334-338</span>). Meanwhile <span class="file">Session.cs:1217-1227</span> implements deletion by calling <code>SetStatusColor(Unknown, ...)</code> - the Director deciding a colour, which law 2 forbids and which nothing that paints reads anyway. Two implementations, neither delivering what the DTO promises. <strong class="good">FIXED 14 July 2026: pending deletion is a BADGE, never a colour.</strong> The Director's <code>SetStatusColor(Unknown, ...)</code> call is <strong>deleted</strong> - <code>MarkForDeletion</code> now records the fact and decides nothing. The fold gained <strong>no</strong> rule (a <code>PendingDeletion</code> branch would make it a colour): a flagged session that is working is <strong>blue + badge</strong>, one that is waiting is still red "Needs you" + badge. The lying DTO comment is gone. <strong>Two things worth carrying forward.</strong> (1) The deleted write was <code>StatusColorSource.PositiveEvidence</code>, i.e. <strong>sticky</strong>: within one activity generation it blocked the activity mapping from repainting the row, so a flagged session could not show blue for its own work until a genuine state change bumped the generation. (2) That colour write was also the rail's only <em>notification</em> that the flag had changed, so deleting it silently removed the signal - the fact now travels as a fact, on <code>Session.OnPendingDeletionChanged</code>. <span class="bad">Remainder: the desktop rail renders the badge; the phone and Cockpit carry the fact but render nothing yet</span> (see "Still to do" item 5).</td><td><span class="file">SessionDto.cs</span> (<code>PendingDeletion</code>); <span class="file">Session.cs</span> (<code>MarkForDeletion</code>, <code>OnPendingDeletionChanged</code>); <span class="file">SessionOrdering.cs</span> (no <code>PendingDeletion</code> branch - keep it that way); <span class="file">SessionViewModel.cs</span> + <span class="file">MainWindow.axaml</span> (the rail badge)</td></tr>
 <tr><td><strong>22</strong></td><td><span class="good">FIXED 14 July 2026.</span> <strong>The hold state is persisted, so a Director restart no longer silently forgets every snooze.</strong> <code>HoldState</code> was runtime-only - <span class="file">SessionStateStore.cs</span> stored no hold at all - so every <code>Held</code> session came back un-held and every <code>DeferredHold</code> ("park me when this finishes") was forgotten, while the Gateway timer entry lived on pointing at a session that was not held. <strong class="good">THE RULING: persist the hold state, and land the deferral on restart if the session is not working.</strong> That follows from the ruling that the clock starts when the work ends - a Director that died ended the work. If the session exited, the existing rule already applies: drop it, there is no turn to come back to. Restored through <code>Session.RestoreHoldState</code>, which applies the machine's EXISTING edges at restore rather than inventing new ones. <strong>This defect MASKED defect 20</strong> - a restart was the only thing that ever cleared a timer-less permanent snooze - so fixing 22 alone would have made the product WORSE. They landed together. <strong>Two persist sites, and they do not agree in shape:</strong> <span class="file">MainWindow.PersistSessionStateCore</span> is the one that actually runs and writes a SHORT record; <span class="file">SessionManager.BuildPersistedSessions</span> writes a much fuller one and <strong>has no production caller at all</strong> (tests only). The hold is written at BOTH - persisting it only in the fuller one would have been a silent no-op, and a call site is not a caller. That divergence is a real defect of its own; see "Still to do".</td><td><span class="file">SessionStateStore.cs</span> (<code>PersistedSession.HoldState</code>); <span class="file">Session.RestoreHoldState</span>; <span class="file">SessionManager.cs</span>; <span class="file">MainWindow.axaml.cs</span></td></tr>
 <tr><td><strong>21</strong></td><td><span class="good">FIXED 14 July 2026.</span> <strong>A snoozed session that exits now reads "Exited", never "Snoozed".</strong> On exit, <span class="file">Session.cs</span> cleared a <code>DeferredHold</code> with the comment <em>"parking a dead session would just hide it behind a 'Snoozed' label forever"</em> - and did not apply that reasoning to a session that was already <code>Held</code>, which then kept <code>OnHold=true</code>. The fold checks <code>OnHold</code> before the base colour, so the row read "Snoozed" forever: the exact outcome the neighbouring comment forbids. <strong class="good">THE RULING: it reads Exited.</strong> The fix is the one-line generalisation the comment already argued for - the exit edge clears the hold, whatever it is. Done on the DIRECTOR rather than in the fold, because the exit edge is only ever observed by a live Director, so there is no case it misses and the fold needs no new rule above <code>OnHold</code>.</td><td><span class="file">Session.cs</span> (the exit edge)</td></tr>
@@ -786,12 +831,24 @@ of them is on origin/main right now.</p>
 <li><strong>The specification itself is the biggest trap of all</strong> - it is wrong about blue and wrong about red, and it is the first thing any agent reads. See findings 1 and 1b.</li>
 <li><strong>Five comments</strong> name <code>SessionStatusWingman.ColorFor</code> as the source of truth. That method was renamed in phase 2.3 and <strong>does not exist</strong>.</li>
 <li><strong>Four comments</strong> describe green, yellow, purple, orange, and slate as colours "the wingman writes onto each Session". It has not since phase 2.3. It emits only blue, red, and unknown.</li>
-<li>The fold claims the Gateway "reads the Director's cooked StatusColor for NOTHING". <strong>Half true</strong> - the fold is clean, but the pipeline feeding it still gates a stamp on <code>StatusColor == "red"</code>.</li>
+<li>The fold claims the Gateway "reads the Director's cooked StatusColor for NOTHING". <strong>Half true</strong> - the fold is clean, but the pipeline feeding it still gates a stamp on <code>StatusColor == "red"</code>. <strong>This half-truth was load-bearing:</strong> section 5's item 5 believed the tidy half and told the next agent to delete a producer with five live consumers. The same sentence is repeated as fact at <span class="file">SessionOrdering.cs:129-130</span>, <span class="file">SessionDto.cs:341</span> and - freshly, by this mission - <span class="file">Session.cs:1281-1283</span>. <span class="good">The pipeline gate is fixed (14 July 2026)</span>, so the claim is now TRUE of the Gateway; the comments are corrected to say why rather than merely asserting it.</li>
 <li>A dead copy of the voice rule (<code>VoiceColorFor</code>) <strong>still carries the bug the Gateway fixed</strong> - the one that wedged a session orange forever when text-to-speech failed - and its comment claims the Gateway "applies the same rule". It does not.</li>
-<li><code>SessionStatusWingman</code> and <code>Session.cs</code> both claim to be the "single writer" of the status colour. <strong>Three other paths write it.</strong></li>
+<li><code>SessionStatusWingman</code> and <code>Session.cs</code> both claim to be the "single writer" of the status colour. <strong>TWO other paths write it</strong> - <span class="file">Session.cs:2437</span> (the crash edge) and <span class="file">TransientErrorAutoResume.cs:244</span> (auto-resume gave up). <em>This document said THREE. It counted against origin/main and the branch moved: the third was <code>MarkForDeletion</code>'s <code>SetStatusColor(Unknown, ...)</code>, deleted by defect 23 earlier in this same mission. A count is a fact with a shelf life - re-count it, do not inherit it.</em></li>
 <li>A dead desktop fold maps <code>Working</code> to <strong>green</strong> and <code>WaitingForInput</code> to <strong>amber</strong>. Unreferenced - but it is the corpse the next agent will read and copy.</li>
 <li>The role DTO documents three roles. The code produces four (it omits Architect).</li>
 <li><code>ProactiveExplainService</code> says the wingman defaults ON. It defaults OFF.</li>
+</ul>
+
+<h4>Found 14 July 2026 - four the list above did not contain, and two of them are ours</h4>
+
+<ul>
+<li><strong>The client palette claims a parity that does not exist.</strong> <span class="file">ordering.ts:115-116</span> said its <code>COLORS</code> map <em>"Mirrors the m.js palette so the mobile roster's dots match the existing prototype <strong>and the desktop rail</strong>."</em> <strong>It did not match the rail</strong> - <code>red</code> was <code>#F14C4C</code> against the rail's <code>#EF4444</code>, and <code>yellow</code> was <code>#F59E0B</code> against <code>#EAB308</code>. <strong><code>m.js</code> does not exist</strong> either; the comment cited a deleted file as its source of truth. This is the trap in its purest form: an agent reading it concludes cross-surface agreement is already handled and skips the check that proves it is not. <span class="good">Corrected 14 July 2026 - the client moved to the canonical values and the comment now states the rule instead of asserting a resemblance.</span></li>
+
+<li><strong>"Gated on raw red" - while gating on the cooked colour.</strong> <span class="file">GatewayEndpoints.cs:715</span> described the voice-yellow stamp as gated on raw red. The code three lines below gated on <code>StatusColor</code>, the Director's cooked answer. <em>The comment described the intended design and the code never matched it</em> - so the design was documented, believed, and absent, which is finding 1 in miniature. <span class="good">Fixed: the code now does what the comment always said.</span></li>
+
+<li><strong>An "equivalence" nobody proved - and the Architect handed it over as justification.</strong> <span class="file">SessionOrdering.cs:73-74</span> states <em>"Equivalent today (<code>StatusColor=="red"</code> iff the raw activity is Waiting/Idle)"</em>. <strong>The "iff" is asserted, not established.</strong> <span class="file">TransientErrorAutoResume.cs:244</span> writes a red whose own comment calls it <em>"sticky over the detector's plain activity-state mapping until the user acts"</em> - a second writer that bypasses the activity mapping entirely, which is the counter-example. <em>This one is worth reading twice: the claim was cited to the Phase 4 Manager BY THE ARCHITECT as the reason a change was safe. The change was safe - but for a different reason (the consuming fold already requires raw red, so the cooked gate was redundant). <strong>Always prefer the argument that does not depend on a comment:</strong> "safe by construction" survives the equivalence being false; "equivalent today" dies with it.</em></li>
+
+<li><strong>This mission wrote a fresh lie into the code while fixing one.</strong> Defect 23's fix left <span class="file">Session.cs:1281-1283</span> asserting the deleted colour write was one <em>"nothing that paints reads anyway (the Gateway is the single fold and reads the Director's cooked StatusColor for NOTHING)"</em>. <strong>That was false when it was written</strong> - <span class="file">GatewayEndpoints.cs:718</span> read exactly that field to stamp a yellow. The half-truth four lines up in this list was propagated into a brand-new comment, where it reads as a finding rather than an inheritance. <strong>The delivery mechanism is not old comments. It is comments written by agents who trusted this document</strong> - which is why every trap here is cited by file and line, and why a fix that only deletes a stale comment without checking what is TRUE just moves the lie.</li>
 </ul>
 
 <h2>5. What has to change</h2>
@@ -845,7 +902,16 @@ longer forgets a snooze (defect 22), and a dead session reads Exited (defect 21)
 <li><strong>Make the two session-persistence records agree</strong>, and delete the one nothing calls. <span class="file">MainWindow.PersistSessionStateCore</span> is the site that actually runs and writes a SHORT record (id, repo, args, name, colour, agent session, activity, backend, pending prompt, wingman, sort order - plus the hold, as of today). <span class="file">SessionManager.BuildPersistedSessions</span> writes a MUCH fuller one - number, group, controller, explicit role, mission, queued prompts, history - and its two callers (<code>SaveCurrentState</code>, <code>SaveSessionState</code>) are <strong>called by tests and nothing else</strong>. So the fuller record is what the tests prove and the shorter record is what the user gets, and the gap between them is invisible in both. <strong>Found while fixing defect 22</strong>, which had to be written to both sites for the fix to exist at all. <em>Which fields this actually loses on a real restart is UNDIAGNOSED - nobody has read a sessions.json written by a live Director and diffed it against the fuller record. Do that before assuming the difference is only theoretical.</em></li>
 <li><span class="good">DONE 14 July 2026.</span> <strong>Make pending deletion a badge</strong>, and delete the Director's <code>SetStatusColor</code> call. Defect 23. <strong>REMAINDER: the phone and the Cockpit render no badge.</strong> The fact crosses the wire on <code>SessionDto.PendingDeletion</code> (with <code>DeletionReason</code>) and the <strong>desktop rail</strong> renders it, but the Gateway-backed clients show a flagged session identically to an unflagged one - correct colour, no badge. That is honest but incomplete: it belongs with the client-fold work. <em>Note the fold must stay out of it - a <code>PendingDeletion</code> branch in <code>EffectiveColor</code> would make it a colour and re-open the defect.</em></li>
 <li><strong>Send the session role down to the desktop</strong> so it stops being the one screen that cannot suppress a worker's red. Until then, desktop and phone disagree by construction.</li>
-<li><strong>Delete the Director's colour computation.</strong> Nothing that paints reads it. It exists only to be mistaken for the answer.</li>
+<li><strong>Delete the Director's colour computation - NOT YET. This item was DESTRUCTIVE as written, and it is the most dangerous thing this document has ever said.</strong> It read: <em>"Nothing that paints reads it. It exists only to be mistaken for the answer."</em> <strong class="bad">The first sentence is FALSE.</strong> Verified 14 July 2026 by tracing the CONSUMER side rather than the call site, which is what the claim actually required:
+<ul>
+<li><strong>A Gateway colour reads it.</strong> <span class="file">GatewayEndpoints.cs:716-718</span> gated the voice-yellow stamp on <code>string.Equals(s.StatusColor, "red", ...)</code> &rarr; <code>s.BriefingState = "Briefing"</code> &rarr; the fold paints <strong>yellow on the phone and the Cockpit</strong>. So a Gateway-decided colour depended on a Director-decided colour - law 2 broken in the one place the document was certain it was not.</li>
+<li><strong>Four desktop consumers read it:</strong> <span class="file">MainWindow.axaml.cs</span> (the "N need you" header - defect 2), <span class="file">CleanView.axaml.cs</span> (defect 3), <span class="file">FifoWindow.axaml.cs:123</span>, and <span class="file">TurnReviewDialog</span> via <span class="file">TurnReviewLogger.cs:84</span>. Plus <span class="file">LoopbackCarModeFleet.cs:377</span> (Car Mode's fallback), the <code>?statusColor=</code> roster filter, <span class="file">SessionReadExecutor</span>/<span class="file">WingmanContextBuilder</span> (<code>CurrentColor</code> in the brief), and <span class="file">SessionLogWriter.cs:113</span>.</li>
+<li><strong>It is also a NOTIFICATION with four subscribers.</strong> <code>SetStatusColor</code> raises <code>OnStatusColorChanged</code>, which <span class="file">SessionViewModel.cs:88</span>, <span class="file">MainWindow.axaml.cs:3813</span> and <span class="file">SessionLogWriter.cs:113</span> depend on. <strong>Defect 23 already learned this exact lesson</strong> (<span class="file">Session.cs:1284-1287</span>) - deleting a colour write silently removed the only signal that the fact had changed.</li>
+</ul>
+<p><strong>Following this instruction would have deleted a producer with five live painting consumers</strong> - this repository's signature bug (live consumer, deleted producer), committed <em>deliberately</em>, by the mission that exists to end it. It was caught only because the brief also said "PROVE that before deleting" and the proof came out the other way. <strong>An instruction and its own safety check disagreed, and the safety check was right.</strong></p>
+<p><strong>This document CONTRADICTED ITSELF</strong>, which is why the error survived: the trap list below already graded the fold's "reads StatusColor for NOTHING" claim as <em>"Half true - the pipeline feeding it still gates a stamp on <code>StatusColor == "red"</code>"</em>. That is the exact fact this item denied, stated correctly, forty lines away. <strong>Instance six of this document lying about shipped code.</strong></p>
+<p><strong class="good">Done 14 July 2026 - the law-critical half.</strong> <span class="file">GatewayEndpoints.cs:716-718</span> now gates on <code>RawActivityColor(s) == "red"</code>, the same migration <code>IsVoicePreparing</code> made at <span class="file">:72-74</span>. <strong>Safe by construction, not by an equivalence claim:</strong> <code>IsBriefing</code> (<span class="file">SessionOrdering.cs:40</span>) ALREADY requires <code>RawActivityColor(s) == "red"</code>, so the rendered yellow was already gated on (cooked AND raw) and the cooked half was redundant. <strong>No Gateway-decided colour reads a Director-decided colour any more.</strong></p>
+<p><strong>What remains, and why it is TERMINAL:</strong> the Director-side deletion is reachable only after every desktop consumer is off <code>StatusColor</code> - i.e. after items 6 and 8 below. Defects 2 and 3 remove two of them this phase; <span class="file">FifoWindow</span>, the <code>TurnReviewLogger</code> snapshot, Car Mode's fallback and the durable log survive. <strong>Do not delete <code>ColorFromActivityState</code> until its LAST consumer is gone</strong> - which is defect 10's lesson, stated as an instruction instead of learned again.</p></li>
 <li><strong>Delete the six other desktop folds</strong> and the three client label folds. Every one is a future contradiction.</li>
 <li><strong>Separate the greys</strong>, or accept that snoozed, exited, unknown, and sub-agent are the same dot to the human eye.</li>
 <li><strong>Fix the traps.</strong> Every stale comment above, deleted or corrected in the same pass. They are not cosmetic; they are the delivery mechanism for the next regression.</li>
@@ -865,6 +931,31 @@ a trx logger and read the failed test's message - the assertion tolerates both 2
 it actually returned is the whole answer. Note the investigation itself produced a false green worth
 knowing about: force-killed test runs left orphaned <code>testhost.exe</code> holding the built assembly,
 so later "runs" silently failed to BUILD and reported nothing - which reads exactly like a pass.</li>
+
+<li><strong>The client's fail-loud is VERIFIED LOUD but DISPROPORTIONATE. Recommendation: magenta parity.</strong>
+<br>Both surfaces now refuse to guess an unknown fold colour, and both were <em>probed in their own runtime</em>
+rather than assumed (check 5). But they are not equivalent, and the gap is worth closing deliberately rather
+than by accident:
+<ul>
+<li><strong>Desktop:</strong> a throw is <strong>swallowed</strong> by Avalonia (observed - the bound property
+came back <code>null</code>, an invisible dot). So it renders magenta <code>#FF00FF</code> + logs + is proven
+unreachable by a test over the real fold. <strong>Blast radius: one dot. The roster stays usable and the
+magenta says WHICH session and WHAT went wrong.</strong></li>
+<li><strong>Cockpit:</strong> <code>dotColor</code> throws on the render path and there is <strong>no error
+boundary anywhere in the app</strong> (verified 14 July 2026). So React unmounts the tree and <strong>the page
+goes blank</strong>. Loud - the owner cannot miss it. <strong>But: one unstamped session denies you the other
+twelve</strong>, and a blank page is indistinguishable from a crash, an outage, or a bad deploy. It is loud
+without being <em>informative</em>, and it is the whole cockpit for one bad row.</li>
+</ul>
+<strong>Recommend magenta parity on the client</strong> - render the same unmistakable sentinel for the one
+dot, log the error, and keep the throw only where there is no pixel to paint. That preserves "never guess"
+while making the failure proportionate and diagnosable.
+<br><em>Two things to record honestly. (1) This document blessed the client's rule as the one that already
+"works" and told Phase 4 to extend it - <strong>while nobody had ever checked what a throw actually DOES
+there.</strong> The rule was right; its verification was assumed. That is check 5 catching the document, not
+the code. (2) A latent hazard rides on it: <strong>if anyone ever adds an error boundary to the cockpit, the
+client's throw silently becomes a swallowed one</strong> - the exact Avalonia trap - and nothing in the code
+would change. The mechanism would flip from loud to silent by an edit somewhere else entirely.</em></li>
 </ol>
 
 <h2>6. How we prove it, and why a green test is not enough</h2>
@@ -876,6 +967,39 @@ the job is done.</p>
 
 <p>That check is the only thing that would have caught defects 5, 6, 7, and 8 - every one of which passes
 its own unit tests today, because each fold is internally consistent and consistent with nothing else.</p>
+
+<div class="callout warn">
+<p><strong>The check must compare the RENDERED HEX, not the fold's answer.</strong> Found 14 July 2026, and it
+would have made the whole measurement worthless: the desktop and the client both said <code>"red"</code> while
+painting <code>#EF4444</code> and <code>#F14C4C</code> - two visibly different reds. <strong>A check comparing
+the WORD reports zero while the screens disagree.</strong> Law 7 is "every device shows the same thing,
+always"; the thing the owner sees is a pixel, not a string. The canonical table in defect 18 is what the check
+compares against.</p>
+</div>
+
+<h3>Three species of useless test. Know which one you are looking at.</h3>
+
+<p>This mission has now found all three, and they fail differently, so the fix is different each time.
+<strong>Deleting the test is the right answer for exactly one of them.</strong></p>
+
+<div class="scroll">
+<table>
+<tr><th>Species</th><th>What it does</th><th>How it reads when it breaks</th><th>The fix</th></tr>
+<tr><td><strong>1. Defends the defect</strong></td><td>Asserts the wrong behaviour outright. <code>EffectiveColor_WhileExplaining_IsOrange_EvenWhenWorking</code>; a client test reading "on-hold is never working, even if blue".</td><td>Green forever. It <em>is</em> the bug, in test form - an agent that fixes the code watches it fail and reverts.</td><td><strong>THE TEST IS THE BUG.</strong> Rewrite it and say so in its comment.</td></tr>
+<tr><td><strong>2. Injects what production never emits</strong></td><td>Hand-sets a value the real producer cannot supply, then asserts on it. The auto-drain's <code>ApplyTerminalActivityState(Idle)</code> - <strong>green for fourteen months</strong> over a state nothing has ever assigned. <code>DesktopGatewayFoldAgreementTests</code> assigning <code>SessionRole</code> onto its own DTO - green while the desktop rendered red, <em>both true at once</em>.</td><td>Green forever, and it certifies a feature that cannot fire. Its own name is a lie.</td><td>Drive it through the <strong>real producer, wire and fold</strong>. Not always deletion: the injected one may state the right target (this one did), in which case keep it and add the proof it could never contain.</td></tr>
+<tr><td><strong>3. Asserts the MECHANISM, not the CONTRACT</strong><br><span class="file">found 14 July 2026 - a new one</span></td><td>Pins an incidental implementation detail as if it were the promise. <code>StreamCommandTests</code> asserted <em>"delivered over the stream, not HTTP"</em> by counting <code>spy.Count == 1</code> - i.e. encoding "exactly these N calls happen", <strong>which is not a promise anyone made</strong>.</td><td><strong class="bad">RED - the moment someone adds a LEGITIMATE second call.</strong> This is the dangerous part: its red says <em>"you changed something"</em>, not <em>"you broke something"</em> - so it reads as a regression, and the honest fix looks like breaking a test.</td><td><strong>Assert the CONTRACT</strong> - the specific verb went down the stream. Do NOT delete it (the contract is real and live) and do NOT bump the count to 2 - that just re-arms the trap for the next person who adds a call. The rewrite is <em>stronger</em> than the original: "the RIGHT command went down the stream" beats "some command did".</td></tr>
+</table>
+</div>
+
+<div class="callout ok">
+<p><strong>Species 3 is the one that will bite an agent under time pressure</strong>, because it inverts the
+usual instinct. Species 1 and 2 are green when they should be red - you have to go looking. Species 3 is
+<em>red when nothing is wrong</em>, right in front of you, blocking your commit. The path of least resistance
+is to change the 1 to a 2 and move on, which preserves the trap perfectly for the next legitimate call.
+<strong>The tell: ask what the test's COMMENT promises, then ask whether the ASSERTION can only be satisfied
+by that promise.</strong> If the comment says "over the stream, not HTTP" and the assertion says "exactly one
+command", they are not the same sentence, and the gap between them is where the false red comes from.</p>
+</div>
 
 <h2>7. Decisions</h2>
 
@@ -966,6 +1090,90 @@ must be cited by file and line. <strong>A cause may only be stated from evidence
 observed</strong> - a log line, a record on disk, a reproduction. If you have not looked, the honest
 sentence is "this is undiagnosed; here is how to find out." Write that sentence. It is worth more than a
 confident guess, because it tells the reader the truth about what is known.</p>
+</div>
+
+<h3>The five checks. Run these before you believe anything above - including this sentence.</h3>
+
+<div class="callout law">
+<p><strong>This document has been wrong about shipped code NINE times</strong> (ledger below). Every one read
+exactly like a finding at the time - none of them looked like errors, they looked like <em>this document</em>.
+So "read carefully" is not a defence, and neither is seniority: <strong>three of the nine were made by the two
+agents actively enforcing this rule, mid-enforcement.</strong></p>
+<p>Only four things have ever actually caught one. They are mechanical on purpose. <strong>Do these to every
+claim in this document, and to every claim anyone hands you - including one from the Architect, including one
+you wrote yourself an hour ago.</strong></p>
+<ol style="margin-bottom:0">
+<li><strong>Try to REFUTE the claim, not confirm it - and by a DIFFERENT route than the one that produced
+it.</strong> Re-running someone's grep re-runs their mistake. <em>A grep that fails to match is not evidence of
+absence.</em> Ask what would have to be true for the claim to be FALSE, then go looking for that. <span class="file">Killed error 5: "nothing assigns Idle" was proven by enumerating the only two ActivitySink producers and reading what they emit - not by grepping again.</span></li>
+<li><strong>Prove the CONSUMER, never the call site.</strong> "Nothing calls it" and "nothing that PAINTS reads
+its output" are different claims and need different proofs. Before deleting anything, ask what ASSIGNS the
+value and what READS it - and "never assigned" does not mean "safe to delete", it may mean a live reader is
+already broken. <span class="file">Killed error 6, which would have deleted a producer with five live consumers.</span></li>
+<li><strong>Prefer the argument that does not depend on a comment.</strong> A change justified by "equivalent
+today" dies if the equivalence is false. The same change justified by "the consuming fold already requires raw
+red, so this gate is redundant" survives either way. If your only reason is something a comment told you, you
+have no reason. <span class="file">Killed error 7 - an unproven "iff" offered as justification, declined.</span></li>
+<li><strong>Re-count every count, re-read every line number, before you repeat it.</strong> A count is a fact
+with a shelf life; this branch rots them within hours. <span class="file">Errors 3, 7 and 8 are all inheritance - someone repeating a number nobody re-checked.</span></li>
+<li><strong>A principle is not verified until its IMPLEMENTATION is - in ITS runtime.</strong> Being right
+about the rule tells you nothing about whether the code you wrote obeys it. <strong>Probe the runtime; do not
+reason from the principle.</strong>
+<br><span class="file">Found 14 July 2026, and it is the sharpest one here because the PRINCIPLED FIX WAS THE WORST OPTION AVAILABLE.</span> The rule "a client that cannot get a stamped answer fails loudly rather than guessing" is correct, and the desktop's <code>_ =&gt; GreyBrush</code> plainly broke it. The obvious fix - throw, matching the client's <code>dotColor</code> - is what reasoning from the rule produces. <strong>It is silent.</strong> A probe showed that when a bound getter throws, Avalonia swallows it and leaves the property unset: <code>Background = null</code>, an <strong>invisible dot</strong> - strictly QUIETER than the grey it replaced. An agent reasoning from the principle alone ships that, reports it as a fix, and is wrong in the one direction the principle exists to prevent: the rule says "loud", the code says <code>throw</code>, and the runtime says nothing at all.
+<br><strong>"No fallback" is the principle most likely to be satisfied in name while failing in fact</strong>, because "I removed the fallback" feels like the whole job. It is half: you must then show that what replaced it is <em>observable to the owner</em>. A log line is not - the owner is looking at the rail, not the log.
+<br><em>What shipped instead, and the shape to copy:</em> a magenta <code>#FF00FF</code> sentinel (loud, and impossible to mistake for a real state - unlike grey, which MEANS "snoozed or exited", so it lies affirmatively), plus a logged error, plus <strong>a test that drives the REAL fold across every state it can emit and proves the branch is unreachable</strong>. That last part is what makes it a tripwire whose unreachability is <em>guaranteed rather than hoped for</em>, instead of a guess that fires silently in production.</li>
+</ol>
+</div>
+
+<h3>The error ledger - what nine failures actually looked like</h3>
+
+<p>Cited, and <strong>classified by KIND</strong>, because that is what makes it usable: <em>"an over-claim
+produced by a grep that answered a narrower question than the sentence it became"</em> is a pattern you can
+watch for tomorrow. <em>"We were wrong"</em> is not. A document that asks the code to be honest has no
+standing to hide its own record.</p>
+
+<div class="scroll">
+<table>
+<tr><th>#</th><th>What it said</th><th>What was true</th><th>Kind</th></tr>
+<tr><td>1</td><td>The wedged orange is "almost certainly" the Gateway running out of credits - "the everyday way in".</td><td><strong>Invented.</strong> Zero <code>OutOfCredits</code> in 846 terminal outcomes; the balance was healthy throughout the very wedge it was invented to explain. The real cause was the retryable arm - a path the guess mentioned in passing. <strong>It pointed AWAY from the cause.</strong></td><td>Fabricated cause</td></tr>
+<tr><td>2</td><td>"1005 <code>MarkPending</code> vs 846 terminal writes" &rarr; ~159 records that never resolved.</td><td><strong>An artefact.</strong> It counted log LINES, not upload ids. 824 distinct ids, every one terminal. The real gap was <strong>zero</strong>.</td><td>Inherited lead</td></tr>
+<tr><td>3</td><td>Defect 4 (crashed sessions) is open - "<span class="file">SessionViewModel.cs:158</span> still has the deep-red brush. Nothing can select it."</td><td><strong>False when written.</strong> #1562 had already merged, before this mission began. The document called it open in four places. <em>An under-claim is not the safe direction: a reader could have "fixed" it by re-implementing a shipped fix.</em></td><td>Under-claim</td></tr>
+<tr><td>4</td><td>A <code>Pending</code> dictation "locks the session (nobody else may type into it)".</td><td><strong>False.</strong> The #1188 lock was deliberately removed by #1308. <code>Session.IsDictationLocked</code> has <strong>zero consumers</strong> - it blocks nothing. <em>Load-bearing: it is why the wedge read as far worse than it was.</em></td><td>Over-claim</td></tr>
+<tr><td>5</td><td><span class="file">ControlEndpoints.cs:246/:249</span> are "the ONLY production references to <code>Idle</code> left in the repository".</td><td><strong>False - there are about twenty-five.</strong> A grep for <em>assignments</em> was reported as if it covered <em>references</em>. The defensible claim (verified by enumerating the only two <code>ActivitySink</code> producers and reading what they emit): <strong>nothing ASSIGNS <code>Idle</code>, and those two lines are the only code gating on it ALONE.</strong> The conclusion survived; the evidence did not. <em>Written by the Architect, in the same breath as a lecture about this exact failure.</em></td><td>Over-claim</td></tr>
+<tr><td>6</td><td>"Delete the Director's colour computation. <strong>Nothing that paints reads it.</strong>"</td><td><strong>False, and DESTRUCTIVE.</strong> Five live painting consumers - one of them a <em>Gateway</em> colour (<span class="file">GatewayEndpoints.cs:718</span>), plus four notification subscribers. <strong>The document contradicted itself:</strong> its own trap list graded this claim "half true" forty lines away. Following the instruction would have shipped live-consumer-deleted-producer <em>deliberately</em>.</td><td>Over-claim + self-contradiction</td></tr>
+<tr><td>7</td><td>Defect 17's greys: "Snoozed <code>#9CA3AF</code>, exited <code>#6A6A6A</code>, unknown <code>#6B7280</code>", cited to <span class="file">SessionViewModel.cs:43-54</span> and <span class="file">ordering.ts:116-127</span>.</td><td><strong>Mis-attributed.</strong> <code>#9CA3AF</code> and <code>#6A6A6A</code> have never appeared in <code>ordering.ts</code>; <code>#6B7280</code> is not a desktop status colour; both line ranges are stale. It blended two surfaces and cited each hex to the wrong one - which hid the actual defect (a client re-splitting one Gateway name into two brushes).</td><td>Mis-attribution</td></tr>
+<tr><td>8</td><td>"<strong>Three</strong> other paths write" the status colour.</td><td><strong>Two.</strong> The third was deleted by defect 23 - <em>earlier in this same mission.</em> The count was true against origin/main and rotted within hours. <strong>A count is a fact with a shelf life.</strong></td><td>Stale count</td></tr>
+<tr><td>9</td><td>Defect 13: <code>?state=Working</code> "drops a waiting controller out of the liveness set... un-suppressing its red".</td><td><strong>The example does not demonstrate the claim.</strong> Filter on Working and every survivor is working, so the fold returns <em>blue</em> at order 0 - there is no red to un-suppress. The defect is real; the sharp case is <code>?statusColor=red</code>. <em>A wrong example sends the next agent to write a test that cannot fail.</em></td><td>Wrong example</td></tr>
+</table>
+</div>
+
+<div class="callout warn">
+<p class="big">Three of the nine were written by the two agents enforcing this rule, while enforcing it.</p>
+<p><strong>This is the load-bearing finding of the whole mission, and it is not modesty - it is the reason the
+five checks above are mechanical rather than cultural.</strong> Read what actually happened:</p>
+<ul>
+<li><strong>Error 5 was written by the Architect in the same breath as a lecture about error 5.</strong> The
+sentence "never state a cause you have not observed" and the sentence "those are the ONLY production
+references" were authored by the same agent, in the same document, on the same day. Sincerity was not the
+problem. A grep that answered a narrower question than the sentence it became was the problem.</li>
+<li><strong>Error 6 was an instruction that contradicted its own safety check.</strong> The brief said "delete
+the Director's colour computation - nothing that paints reads it" AND "PROVE that before deleting". Those two
+sentences cannot both be followed. The check was right and the instruction was destructive - so an agent doing
+exactly as it was told, without the check, ships the bug.</li>
+<li><strong>Error 8 was created by THIS mission, hours earlier</strong> - defect 23's fix deleted the third
+writer and left the count saying three. Worse, the same fix wrote a <strong>brand-new</strong> version of error
+6's half-truth into <span class="file">Session.cs:1281-1283</span> while correcting a different lie. <em>The
+delivery mechanism for the next regression is not old comments. It is comments written by agents who trusted
+this document.</em></li>
+<li><strong>And the Manager wrote "<span class="good">FIXED 14 July 2026</span>" into three rows of the very
+corrections you are reading - for work that had not landed yet.</strong> Caught in its own draft, before it
+shipped, by check 4. That is the sin every earlier instance committed and did not notice.</li>
+</ul>
+<p><strong>So do not read the ledger as a list of people who were careless.</strong> Every one of them was
+careful, senior, and correct about the surrounding ninety percent. The document is at its most dangerous
+exactly when it is at its most confident, because <strong>a fabricated finding and a real one are written in
+the same voice</strong> - and the person best placed to catch it is the one who just wrote it, which is why
+they never do. Run the five checks. They are the only thing on this page that has ever worked.</p>
 </div>
 
 <footer>

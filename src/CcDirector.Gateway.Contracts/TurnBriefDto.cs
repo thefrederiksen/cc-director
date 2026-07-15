@@ -194,12 +194,28 @@ public sealed class ExplainReportDto
     public string WhatNext { get; set; } = "";
 }
 
-/// <summary>POST /sessions/{sid}/explain response.</summary>
+/// <summary>
+/// POST /sessions/{sid}/explain response.
+///
+/// NOT REACHABLE IN THE SHIPPED PRODUCT. The route that would return this is disabled at the composition
+/// root: the Gateway host maps the turn-brief endpoints with <c>requestExplainAsync: null</c>, and the
+/// route answers 503 ("briefing pipeline disabled") before it can construct this response. Kept as the
+/// contract the deep dive WOULD answer with, not as a description of live behaviour.
+/// </summary>
 public sealed class ExplainAcceptedResponse
 {
     public bool Accepted { get; set; }
 
-    /// <summary>"Explaining" when queued/in flight (paint the session orange).</summary>
+    /// <summary>
+    /// The briefing-pipeline state at the moment the request was accepted.
+    ///
+    /// This used to read: <c>"Explaining" when queued/in flight (paint the session orange)</c>. Both
+    /// halves were false. The value is produced by the host's <c>briefingStateFor</c> delegate, which
+    /// returns ONLY "Briefed" or "None" - it cannot emit "Explaining". And nothing paints a session
+    /// orange from it: the roster's orange rule was gated on <c>SessionDto.BriefingState</c>, a different
+    /// field this response is never fed into, and that rule is now deleted for never having fired
+    /// (see the tombstone in <see cref="SessionOrdering.EffectiveColor"/>).
+    /// </summary>
     public string State { get; set; } = "";
 }
 

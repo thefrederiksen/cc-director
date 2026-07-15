@@ -7,7 +7,10 @@ namespace CcDirector.ControlApi;
 
 /// <summary>
 /// Powers the auto-explain experience. For sessions with <see cref="Session.WingmanEnabled"/>
-/// (default ON), this regenerates the wingman "explain" briefing (strong model / Opus) in
+/// (default OFF - <c>Session.WingmanEnabled</c> initializes to <c>false</c>; this comment said "default ON"
+/// and was simply wrong, which matters because it makes this whole service look like it runs for everyone
+/// when it runs for nobody until the flag is turned on), this regenerates the wingman "explain" briefing
+/// (strong model / Opus) in
 /// the background at each decision-point turn-end - i.e. when the session transitions into
 /// <see cref="ActivityState.WaitingForInput"/> - and caches the result on the session via
 /// <see cref="Session.SetCachedExplain"/>.

@@ -6,11 +6,28 @@ using CcDirector.Core.Utilities;
 namespace CcDirector.Core.Wingman;
 
 /// <summary>
-/// Per-Director wingman that is the SINGLE WRITER of <see cref="Session.StatusColor"/>.
+/// Per-Director wingman that writes <see cref="Session.StatusColor"/> from the session's activity state.
 ///
-/// Phase 2.3 (issue #1177): the Director now computes ONLY the dumb standalone-desktop color map -
-/// the no-Gateway fallback. The badge is a direct, mechanical mapping from the session's
-/// <see cref="ActivityState"/> and nothing else:
+/// IT IS NOT THE SINGLE WRITER, whatever this comment used to say (and <c>Session.SetStatusColor</c> still
+/// says: "Sole writer... No other code path may set the color"). Verified 14 July 2026 - TWO other
+/// production paths write it: <c>Session.cs</c>'s crash arm (<c>SetStatusColor(Error, ...)</c> when the
+/// process dies) and <c>TransientErrorAutoResume</c> (a sticky PositiveEvidence red when auto-resume gives
+/// up). A third, <c>MarkForDeletion</c>'s <c>SetStatusColor(Unknown, ...)</c>, was deleted by defect 23.
+/// The claim mattered because it is why nobody looked: a reader who believes there is one writer does not
+/// go looking for the other two, and both of them are STICKY writes that outrank this class's mapping.
+///
+/// WHAT READS THIS COLOUR, because that is the other thing this comment got wrong for a long time. It is
+/// NOT merely a "standalone fallback" that nothing consumes. <c>StatusColor</c> rides the wire on
+/// <c>SessionDto</c> and is read by live consumers on BOTH sides, including a GATEWAY colour:
+/// <c>GatewayEndpoints</c> gates the voice-yellow briefing stamp on <c>StatusColor == "red"</c>, so yellow
+/// on the phone and the Cockpit depends on this mapping. The desktop's "N need you" header count and the
+/// FIFO window's red filter read it too, as does Car Mode's state fallback and the wingman brief's
+/// CurrentColor. Deleting this computation would strand every one of them - a deleted producer under live
+/// consumers, which is this repository's signature bug. It is retired only after those readers move to the
+/// Gateway's fold (docs/new_architecture/session-state.html, "Still to do").
+///
+/// Phase 2.3 (issue #1177): the Director computes ONLY the dumb color map here - no overlays. The badge is
+/// a direct, mechanical mapping from the session's <see cref="ActivityState"/> and nothing else:
 ///
 ///   Working / Starting            -> blue  ("working")
 ///   WaitingForInput / Perm / Idle -> red   ("needs you")
@@ -155,30 +172,20 @@ public sealed class SessionStatusWingman : IDisposable
         };
     }
 
-    /// <summary>
-    /// The voice-mode "yellow until audio ready" color rule (issue #553). A VOICE-MODE session that
-    /// is waiting for the user (WaitingForInput / WaitingForPerm) must NOT show red "needs you" while
-    /// its spoken audio is still being prepared: it stays YELLOW ("preparing voice / not ready yet")
-    /// while the wingman is still generating (<paramref name="voiceGenerating"/>) OR there is no
-    /// playable audio yet (<c>!</c><paramref name="voiceAudioReady"/>), and only turns RED once
-    /// playable audio exists. Non-voice sessions, and voice sessions that are not at a waiting
-    /// turn-end, are returned with their <paramref name="baseColor"/> unchanged.
-    ///
-    /// This is a shared, pure rule DEFINITION: the Director no longer applies it (Phase 2.3 removed the
-    /// Director overlays), but the Gateway's SessionOrdering.EffectiveColor and the /m client's effColor
-    /// apply the same rule on SessionDto.VoiceAudioReady / VoiceGenerating. Kept here so the rule is
-    /// defined and unit-tested once, next to the rest of the color mapping.
-    /// </summary>
-    internal static (string color, string reason) VoiceColorFor(
-        bool voiceMode, ActivityState state, bool voiceGenerating, bool voiceAudioReady,
-        (string color, string reason) baseColor)
-    {
-        var atTurnEnd = state is ActivityState.WaitingForInput or ActivityState.WaitingForPerm;
-        if (voiceMode && atTurnEnd && string.Equals(baseColor.color, StatusColor.Red, StringComparison.OrdinalIgnoreCase)
-            && (voiceGenerating || !voiceAudioReady))
-            return (StatusColor.Yellow, "preparing voice");
-        return baseColor;
-    }
+    // VoiceColorFor is DELETED (defect 5's phase, 14 July 2026). It was a "shared, pure rule DEFINITION"
+    // of the voice-mode "yellow until audio ready" rule, kept here so the rule was "defined and unit-tested
+    // once". It was shared with nothing: it had ZERO production callers - only its own five tests - and its
+    // comment's claim that "the Gateway's SessionOrdering.EffectiveColor and the /m client's effColor apply
+    // the same rule" was false in both halves. The /m client has no such rule at all, and the Gateway
+    // applies a strictly NARROWER one on purpose: this copy still held yellow while `!voiceAudioReady`, and
+    // a text-to-speech failure produces no audio, so voiceAudioReady stayed false and the session wedged
+    // YELLOW forever. SessionOrdering.IsVoicePreparing gates on VoiceGenerating ALONE precisely so the rule
+    // has a terminal exit - it says so in its own comment, and it has said so since 8 July.
+    //
+    // So this was a dead copy of a rule, carrying the bug the live one had already fixed, while claiming to
+    // agree with it. Its five tests asserted the wedge and were green. Deleted rather than corrected: a
+    // shared rule definition that nothing shares is just a corpse with a footnote, and the next agent to
+    // read it would have copied the bug back out. The live rule is SessionOrdering.IsVoicePreparing.
 
     public void Dispose()
     {
