@@ -3,6 +3,7 @@ using Avalonia.Threading;
 using CcDirector.Core.Backends;
 using CcDirector.Core.Memory;
 using CcDirector.Core.Sessions;
+using CcDirector.Gateway.Contracts;
 using Xunit;
 
 namespace CcDirector.Avalonia.Tests;
@@ -118,6 +119,111 @@ public sealed class SessionRailStateTests
         Assert.NotEqual(Color.Parse("#6A6A6A"), actual);
     }
 
+    // ===== Gap 1: the role BADGE reads the Gateway's stamp, never a local guess =====
+
+    /// <summary>
+    /// Before any Gateway has spoken, the badge has NO answer - not the answer "Standalone".
+    ///
+    /// This asserts the VALUE, not just the absence of a glyph, and that is deliberate. The old field
+    /// defaulted to Standalone, which also renders no glyph, so an "is the badge hidden?" assertion
+    /// passes just as happily against the defect and would prove nothing. The distinction that matters
+    /// is between "the Gateway has not classified this session yet" and "the Gateway classified this
+    /// session as Standalone": identical on screen, opposite in meaning, and the old default asserted
+    /// the second while knowing only the first.
+    /// </summary>
+    [Fact]
+    public void ResolvedRole_BeforeAnyGatewayStamp_IsUnknown_NotAssertedStandalone()
+    {
+        var vm = new SessionViewModel(RedAtTurnEnd());
+
+        Assert.Null(vm.ResolvedRole);
+        Assert.False(vm.HasRoleGlyph);
+        Assert.Equal("", vm.RoleGlyphText);
+        Assert.Equal("", vm.RoleTooltip);
+    }
+
+    /// <summary>
+    /// THE GAP 1 DEFECT ITSELF: the badge must follow the GATEWAY's stamp, on a session this Director
+    /// cannot classify for itself.
+    ///
+    /// The session below is controlled by a controller that is NOT in this Director's roster - the
+    /// ordinary cross-machine case, and the one the down-channel exists to serve. The deleted
+    /// SessionManager.ResolveLocalRole scored exactly this session "Standalone" with total confidence,
+    /// because it could only see the local roster and the controller was not in it. So the colour folded
+    /// the Gateway's "Worker" and suppressed the red, while the glyph beside it showed the Director's
+    /// local guess. One row, two authorities, and they disagreed.
+    ///
+    /// Watched failing on revert: with the stamped property restored, RoleGlyphText is "" here, because
+    /// nothing in the view model reads GatewayResolvedRole at all - the badge only ever moved when
+    /// MainWindow stamped it from the local fleet.
+    /// </summary>
+    [Fact]
+    public void ResolvedRole_FollowsTheGatewayStamp_EvenWhenTheLocalRosterCannotKnowIt()
+    {
+        var session = RedAtTurnEnd();
+        // No controller by this id exists on this Director - it is a session on another machine. The
+        // local resolver's answer for this shape was Standalone; the Gateway's is Worker.
+        session.ControllerSessionId = Guid.NewGuid();
+        var vm = new SessionViewModel(session);
+
+        session.SetGatewayResolvedRole(SessionRoles.Worker);
+        Dispatcher.UIThread.RunJobs();
+
+        Assert.Equal(SessionRoles.Worker, vm.ResolvedRole);
+        Assert.True(vm.HasRoleGlyph);
+        Assert.Equal("W", vm.RoleGlyphText);
+        Assert.Equal("Worker", vm.RoleTooltip);
+    }
+
+    /// <summary>
+    /// The badge and the dot must never contradict each other, because they now read the SAME fact.
+    ///
+    /// This is the invariant gap 1 was really about: not "the badge is wrong" but "the row disagrees with
+    /// itself". The Gateway names this session a Worker; the fold suppresses its red to supporting AND
+    /// the glyph says "W", in the same repaint. Before, the first happened without the second.
+    /// </summary>
+    [Fact]
+    public void AStampedWorker_MovesTheBadgeAndTheDotTogether_SoTheRowAgreesWithItself()
+    {
+        var session = RedAtTurnEnd();
+        session.ControllerSessionId = Guid.NewGuid();
+        var vm = new SessionViewModel(session);
+
+        // Before the stamp: an ordinary red session that wants you, and no badge to explain it.
+        Assert.True(vm.NeedsYou);
+        Assert.False(vm.HasRoleGlyph);
+
+        session.SetGatewayResolvedRole(SessionRoles.Worker);
+        Dispatcher.UIThread.RunJobs();
+
+        // After: the dot stops nagging and the glyph says why, together.
+        Assert.False(vm.NeedsYou);
+        Assert.Equal("W", vm.RoleGlyphText);
+    }
+
+    /// <summary>
+    /// Clearing the stamp returns the badge to "no answer" rather than stranding the last role on screen.
+    /// The Gateway clears a role by sending null (SetGatewayResolvedRole normalizes blank to null), and a
+    /// badge that kept saying "W" after the Gateway withdrew the claim is a stale lie of exactly the kind
+    /// this mission exists to end.
+    /// </summary>
+    [Fact]
+    public void ResolvedRole_WhenTheGatewayClearsTheStamp_ReturnsToUnknown()
+    {
+        var session = RedAtTurnEnd();
+        var vm = new SessionViewModel(session);
+        session.SetGatewayResolvedRole(SessionRoles.Worker);
+        Dispatcher.UIThread.RunJobs();
+        Assert.Equal("W", vm.RoleGlyphText);   // the precondition, so this cannot pass vacuously
+
+        session.SetGatewayResolvedRole(null);
+        Dispatcher.UIThread.RunJobs();
+
+        Assert.Null(vm.ResolvedRole);
+        Assert.False(vm.HasRoleGlyph);
+        Assert.Equal("", vm.RoleGlyphText);
+    }
+
     // ===== Defect 5: the role stamp must move the WHOLE row, not just the dot =====
 
     /// <summary>
@@ -223,6 +329,16 @@ public sealed class SessionRailStateTests
         Assert.Contains(nameof(SessionViewModel.NeedsYou), changed);
         Assert.Contains(nameof(SessionViewModel.HasWaitingDuration), changed);
         Assert.Contains(nameof(SessionViewModel.WaitingDurationLabel), changed);
+
+        // The role badge (gap 1). It reads Session.GatewayResolvedRole - the same Gateway-owned fact the
+        // colour folds - so it belongs to the row's projection and must move with it. Demanded of EVERY
+        // fold input, not just "role", for the reason this theory exists at all: the moment the badge is
+        // raised from one handler's private list, it is one edit away from being the field that gets
+        // missed, and a glyph contradicting the dot beside it is gap 1 returning.
+        Assert.Contains(nameof(SessionViewModel.ResolvedRole), changed);
+        Assert.Contains(nameof(SessionViewModel.HasRoleGlyph), changed);
+        Assert.Contains(nameof(SessionViewModel.RoleGlyphText), changed);
+        Assert.Contains(nameof(SessionViewModel.RoleTooltip), changed);
     }
 
     /// <summary>An inert backend: the Session needs one, these tests never run a process.</summary>

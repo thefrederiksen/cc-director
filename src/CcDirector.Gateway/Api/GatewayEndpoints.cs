@@ -744,20 +744,49 @@ internal static class GatewayEndpoints
                     // Gateway consumer of the cooked field. The comment described the intended design and the
                     // code never matched it; now it does.
                     //
-                    // Safe BY CONSTRUCTION, not by an equivalence claim: the fold that CONSUMES this stamp
-                    // (SessionOrdering.IsBriefing) is `BriefingState == "Briefing" && IsRawRed(s)` - it
-                    // ALREADY requires raw red. So the rendered yellow's condition was (cooked red AND raw
-                    // red) and is now (raw red AND raw red). The cooked gate was redundant with respect to
-                    // every painted pixel. Where the two disagree, raw is the authority - and they DO
-                    // disagree: TransientErrorAutoResume writes a sticky cooked red that never goes through
-                    // the activity mapping at all.
-                    if (voiceGeneratingFor is not null
-                        && (s.BriefingState is null or "None" or "Briefed")
-                        && SessionOrdering.IsRawRed(s)
-                        && voiceGeneratingFor(s.SessionId))
-                    {
-                        s.BriefingState = "Briefing";
-                    }
+                    // THE STAMP THAT WAS HERE IS DELETED, AND MUST NOT COME BACK (gap 5). It read:
+                    //
+                    //     if (voiceGeneratingFor is not null
+                    //         && (s.BriefingState is null or "None" or "Briefed")
+                    //         && SessionOrdering.IsRawRed(s)
+                    //         && voiceGeneratingFor(s.SessionId))
+                    //         s.BriefingState = "Briefing";
+                    //
+                    // THE GATEWAY MUST NOT OVERWRITE A FIELD THE DIRECTOR OWNS. BriefingState is the
+                    // Director's fact. Writing "Briefing" over it destroyed the Director's answer, and a
+                    // destroyed fact cannot be argued back: a row carrying BriefingState="Briefing" plus
+                    // VoiceGenerating=true could no longer say whether the Director genuinely was briefing
+                    // (the desktop folds yellow too - agreement) or the Gateway had overwritten a "None"
+                    // (the desktop folds red - a real disagreement). Those are opposite verdicts from an
+                    // identical row. The agreement check could only call it "indeterminate" and refuse to
+                    // grade it - which is a workaround for the instrument, not a fix for the product.
+                    //
+                    // NOTHING REPLACED IT, and that is the fix - not a new rule somewhere else. The Gateway
+                    // already adds its fact: VoiceGenerating, stamped unconditionally two lines down, and
+                    // SessionOrdering.IsVoicePreparing already folds it to the same yellow. The stamp was
+                    // redundant as well as destructive.
+                    //
+                    // READ THIS BEFORE YOU "RESTORE THE MISSING RULE": IsVoicePreparing is NOT this stamp's
+                    // condition and is not meant to be. It is narrower - it requires VoiceMode and a session
+                    // actually WAITING, where the stamp fired on any raw-red session with voice generating.
+                    // A first attempt at this fix did add a rule carrying the stamp's exact condition, on
+                    // the theory that it preserved every pixel; the existing suite refuted it
+                    // (StateLabel_VoicePreparing_IsPreparingVoice and
+                    // EffectiveColor_NonVoiceWaiting_NoAudio_StaysRed both went red) and that attempt was
+                    // thrown away. Two rules for one fact is two answers, which is this mission's whole
+                    // defect class. If a row looks like it is missing a yellow, the question is whether
+                    // IsVoicePreparing is right - not whether this stamp should come back.
+                    //
+                    // The stamp also made the words wrong, which nobody noticed: hijacking BriefingState
+                    // sent a voice-generating session down the fold's IsBriefing arm, so it read "Wingman
+                    // reading" when the Gateway's own rule says the truer "Preparing voice". The dot was
+                    // yellow either way. Both facts now ride the row, nothing is destroyed, the check can
+                    // grade it, and the label is honest.
+                    //
+                    // If you need the Gateway to say something new about a session, add a Gateway-owned
+                    // field. Never reach for a Director-owned one because it happens to be the shape you
+                    // want - that trade is a rendered pixel now for an unanswerable row forever.
+
                     // Issue #553: surface the two voice readiness booleans the color rule and the /m
                     // client read directly. VoiceGenerating = the wingman is producing this session's
                     // spoken summary now; VoiceAudioReady = the gateway has fetchable, playable audio

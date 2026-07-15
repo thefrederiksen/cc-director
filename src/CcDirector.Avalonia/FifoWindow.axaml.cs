@@ -18,6 +18,7 @@ using CcDirector.Core.HostedAi;
 using CcDirector.Core.Sessions;
 using CcDirector.Core.Transcription;
 using CcDirector.Core.Utilities;
+using CcDirector.Gateway.Contracts;
 
 namespace CcDirector.Avalonia;
 
@@ -123,24 +124,40 @@ public partial class FifoWindow : Window
         SetCurrent(next, queue.Count(s => !_pass.Contains(s.Id)));
     }
 
-    // KNOWN GAP, NAMED DELIBERATELY: this reads the Director's RAW StatusColor and is therefore a second
-    // place the desktop decides state for itself, outside the shared fold (SessionOrdering.EffectiveColor)
-    // that the rail, the phone and the Cockpit now all run. It predates the fold and was not migrated with
-    // the rail.
-    //
-    // What it costs today: a controlled worker whose red the fold would suppress to "supporting" is still
-    // queued here as needs-you, and any other non-hold overlay the fold applies is ignored. So the FIFO
-    // queue can hand you a session the rail is not calling red - the same disagreement this mission exists
-    // to end, one window over.
-    //
-    // Not fixed here because this slice is already 64 files and the fold takes a SessionDto (it folds
-    // ControlEndpoints.Map(session)), so moving this over is a real change to the queue's shape, not a
-    // one-line swap. Raised by review of pull request 1598; recorded rather than left to read as covered.
-    private List<Session> BuildQueue() =>
-        _sm.ListSessions()
-            .Where(s => s.StatusColor == "red"
-                        && !s.OnHold
-                        && s.Status is not (SessionStatus.Exited or SessionStatus.Failed))
+    private List<Session> BuildQueue() => BuildQueue(_sm.ListSessions());
+
+    /// <summary>
+    /// The sessions this takeover will walk, in order: the ones the SHARED FOLD says are waiting on you.
+    ///
+    /// GAP 2, CLOSED. This used to filter on the Director's raw cooked colour -
+    /// <c>s.StatusColor == "red" &amp;&amp; !s.OnHold &amp;&amp; not exited/failed</c> - which made it a
+    /// second place the desktop decided state for itself, outside the fold the rail, the phone and the
+    /// Cockpit all run. It predated the fold and was not migrated with the rail. What that cost: a
+    /// controlled worker whose red the fold suppresses to "supporting" was still queued here as needs-you,
+    /// and every other overlay the fold applies - dictation, background task, briefing, a crashed session -
+    /// was ignored. So this window could hand you a session the rail was not calling red: the same
+    /// disagreement the mission exists to end, one window over.
+    ///
+    /// It now asks <see cref="SessionOrdering.Classify"/> for the triage verdict - the SAME function the
+    /// rail's "N need you" count and the phone's web-push badge read, folding the SAME
+    /// <c>ControlEndpoints.Map</c> input. Not <c>EffectiveColor == "red"</c>, which would have been the
+    /// nearer-looking swap: Classify IS the "is this waiting on you?" question, it already answers Active
+    /// for a working session and OnHold for a parked one, and asking the shared question means this queue
+    /// cannot drift from the count beside it.
+    ///
+    /// The three hand-rolled conditions are gone rather than kept alongside as a safety net, and that is
+    /// deliberate: the fold subsumes all three (a held session classifies OnHold; an exited one folds grey
+    /// and a crashed one folds error, so neither is NeedsYou), and a second predicate ANDed onto a shared
+    /// one is just a private fold that disagrees more quietly.
+    ///
+    /// Static and taking the roster as a parameter so the queue's shape can be tested without standing up
+    /// a Window - see FifoQueueFoldTests. The ORDER is unchanged (repo path, then id): this closes a
+    /// disagreement about membership, and re-ordering the owner's queue is not in scope.
+    /// </summary>
+    internal static List<Session> BuildQueue(IEnumerable<Session> sessions) =>
+        sessions
+            .Where(s => SessionOrdering.Classify(ControlEndpoints.Map(s, directorId: ""))
+                        == SessionOrdering.TriageBucket.NeedsYou)
             .OrderBy(s => s.RepoPath, StringComparer.OrdinalIgnoreCase)
             .ThenBy(s => s.Id)
             .ToList();

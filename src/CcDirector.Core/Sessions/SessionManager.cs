@@ -749,42 +749,22 @@ public sealed class SessionManager : IDisposable
     /// <summary>List all sessions.</summary>
     public IReadOnlyCollection<Session> ListSessions() => _sessions.Values.ToList().AsReadOnly();
 
-    /// <summary>
-    /// Resolve a session's automatic role from THIS Director's local fleet, returning one of the
-    /// <see cref="SessionRoles"/> constants. This mirrors the Gateway's fleet resolver
-    /// (StampFleetRolesAndFold) but sees only the local roster, so it is a best-effort desktop badge.
-    /// Precedence: an explicit role wins (the only path to Architect); else Worker when the session is
-    /// controlled by a controller that is still alive; else Manager when it controls at least one live
-    /// session; else Standalone.
-    /// </summary>
-    public string ResolveLocalRole(Session session)
-    {
-        FileLog.Write($"[SessionManager] ResolveLocalRole: session={session.Id}");
-
-        var explicitRole = SessionRoles.Normalize(session.ExplicitRole);
-        if (explicitRole is not null)
-            return explicitRole;
-
-        if (session.IsControlled && session.ControllerSessionId is Guid controllerId)
-        {
-            var controller = GetSession(controllerId);
-            if (controller is not null &&
-                controller.Status != SessionStatus.Exited &&
-                controller.Status != SessionStatus.Failed)
-            {
-                return SessionRoles.Worker;
-            }
-        }
-
-        foreach (var candidate in ListSessions())
-        {
-            if (candidate.Status is SessionStatus.Exited or SessionStatus.Failed) continue;
-            if (candidate.ControllerSessionId == session.Id)
-                return SessionRoles.Manager;
-        }
-
-        return SessionRoles.Standalone;
-    }
+    // ResolveLocalRole WAS HERE, AND IS DELETED - DO NOT BRING IT BACK (gap 1).
+    //
+    // It resolved a session's role from THIS Director's local roster, mirroring the Gateway's fleet
+    // resolver. Its single caller was MainWindow.RecomputeGroupPositions, which stamped the rail's role
+    // glyph from it; that caller is gone, because the glyph now derives from Session.GatewayResolvedRole
+    // like the colour always did.
+    //
+    // It is deleted rather than left for a future caller because it was WRONG BY CONSTRUCTION, not merely
+    // unused. "Is this session's controller still alive?" cannot be answered from one Director - the
+    // controller is frequently a session on another machine, and this method scored those sessions
+    // Standalone with total confidence. That is why the Gateway resolves the role across the whole fleet
+    // and stamps it down (Session.GatewayResolvedRole, set-resolved-role verb); a local mirror of a
+    // fleet-wide question is a second answer that disagrees, which is this mission's entire defect class.
+    // Session.cs already carries the standing instruction not to assign the stamp from this resolver.
+    //
+    // Nothing needs it now: no caller, no reflective use, and the compiler is the proof.
 
     /// <summary>
     /// Kill a session by ID. <paramref name="gracefulTimeoutMsOverride"/> (issue: faster STOP) lets the

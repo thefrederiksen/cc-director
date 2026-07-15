@@ -1053,6 +1053,71 @@ public sealed class Session : IDisposable
     /// writes it. Defaults to "blue" ("working/starting") at construction, which the
     /// wingman immediately confirms. The detector only ever drives blue (working) and
     /// red (needs you); "unknown" is used for an exited session.
+    ///
+    /// GAP 3 - SCOPED 15 JULY 2026, AND IT DOES NOT CLOSE. THIS FIELD STAYS. Here is the census, so the
+    /// next reader does not have to redo it and does not delete this on the strength of a document.
+    ///
+    /// The gap said "the Director's cooked colour is not deleted; it survives only because things still
+    /// read it", the implication being that once the last reader went, so would this. The census says
+    /// otherwise, and the distinction that matters is between A CLIENT DECIDING A COLOUR (which law 2
+    /// forbids) and THE WINGMAN REMEMBERING WHAT IT DECIDED (which is just a component's own record).
+    ///
+    /// The readers that KEEP THIS FIELD ALIVE are all the second kind, and they are the reason it stays.
+    /// They are not, however, the only readers - the <c>?statusColor=</c> filter below is neither kind,
+    /// and an earlier draft of this census claimed "every surviving reader" was wingman-memory, which was
+    /// false. It is listed where it belongs rather than inside this list, because a census that quietly
+    /// widens one category to swallow an awkward member is not a census.
+    ///
+    /// THE READERS THAT JUSTIFY KEEPING IT:
+    ///
+    ///  - WingmanContextBuilder -> WingmanAskContext.CurrentColor: the wingman's LLM prompt. Telling the
+    ///    wingman what it last concluded is not a client picking a colour; it is the wingman's own memory.
+    ///  - SessionReadExecutor -> WingmanViewDto.CurrentColor: the wingman's event view - "what did you say
+    ///    and why". Its subject IS the wingman's decision, so reading the decision is the feature.
+    ///  - TurnReviewLogger -> TurnReviewLog.StatusColor -> TurnReviewDialog: a HISTORICAL record of what the
+    ///    wingman decided at a past turn. The dialog renders the stored row, not this live field - a log of
+    ///    a decision, which is the opposite of a decision.
+    ///  - SessionLogWriter: subscribes OnStatusColorChanged to write a log line.
+    ///  - SetStatusColor itself: reads the old value for its precedence guard.
+    ///
+    /// Deleting the field would therefore delete the wingman's record of its own reasoning to make a
+    /// sentence in a document true. That is this mission's own failure mode wearing a cleanup costume.
+    ///
+    /// THE FOLD READS THIS FOR NOTHING - verified, not assumed: SessionOrdering mentions StatusColor only
+    /// in comments and tombstones, and folds from the raw ActivityState instead.
+    ///
+    /// NO LIVE CLIENT RENDERS IT. The rail, the Cockpit and the /m progressive web app all fold, and the
+    /// FIFO queue window stopped reading it when gap 2 closed. Read that sentence as narrowly as it is
+    /// written - the qualifier is load-bearing:
+    ///
+    ///  - THE RETIRED MAUI CLIENT STILL RENDERS AND FILTERS ON IT, and an earlier draft of this census
+    ///    said "no client renders it" full stop, which is false in a repository that contains that code.
+    ///    phone/CcDirectorClient: TalkPage.xaml.cs (DotFor(s.StatusColor)), ExesPage.xaml.cs (same), and
+    ///    Voice/SessionFilter.cs, which decides "needs attention" from StatusColor == "red" - a client
+    ///    both rendering AND triaging on the Director's cooked colour, which is exactly what law 2 forbids.
+    ///    It does NOT count as a live reader and it is NOT a defect to fix: that project is the
+    ///    discontinued native Android app (net10.0-android, UseMaui), it is NOT in cc-director.sln so it
+    ///    neither builds nor tests with us, and it was retired in favour of the /m web app - native-only
+    ///    bugs there are closed, not fixed. Found by independent inspection, which called it a live defect
+    ///    because nothing in the code says it is dead. If that app is ever revived, this is a real defect
+    ///    on its first day.
+    ///  - THE GATEWAY'S <c>?statusColor=</c> QUERY FILTER SELECTS ON IT, server-side: GatewayEndpoints
+    ///    compares s.StatusColor and `continue`s, so the cooked colour decides which sessions a caller
+    ///    SEES. The same earlier draft filed this under "carrying a fact is not deciding from it", which
+    ///    was wrong twice over - it is not carrying, and selecting IS deciding. It is the Director's colour
+    ///    choosing a caller's roster.
+    ///  - The Exes payload does carry it (ExesEndpoints, beside effectiveColor/stateLabel), and that one
+    ///    genuinely is carrying: the live page renders the fold.
+    ///
+    /// ONE PRESENTATION READER IS LEFT, AND IT IS NOT THIS FIELD - it is the wire copy, SessionDto
+    /// .StatusColor, at LoopbackCarModeFleet.ToInfo: <c>StateLabel ?? (EffectiveColor ?? StatusColor)</c>,
+    /// which Car Mode SPEAKS. It is a fallback chain that ends at the Director's cooked colour, so on paper
+    /// a client still renders a Director decision. It appears unreachable - SessionOrdering.StateLabel
+    /// returns a non-empty literal on every arm, and the Gateway stamps it for every session in the fleet
+    /// pass - but "appears unreachable" is not a proof, and the one hole (a blank DictationStatus returns
+    /// blank) is real. NOT changed here: what Car Mode says when the fold's label is blank is a question
+    /// about Car Mode's spoken output, not about this field, and it is raised with the Architect rather
+    /// than guessed at.
     /// </summary>
     public string StatusColor { get; private set; } = "blue";
 

@@ -236,6 +236,11 @@ public sealed class AgreementCheckFaultInjectionTests
     [Fact]
     public void VoiceBeingPrepared_IsYellowOnTheGatewayAndRedOnTheDesktop_AndIsReported()
     {
+        // THIS IS NOW THE ROW THE LIVE GATEWAY ACTUALLY SERVES, which it was not when this was written.
+        // A companion test used to sit below this one arguing that the real Gateway stamps BriefingState
+        // ="Briefing" in the same breath as VoiceGenerating, so this row was a shape production never
+        // emitted. That stamp is deleted (gap 5) - the Gateway adds VoiceGenerating and nothing else - so
+        // this row is exactly what the fleet serves, and the companion went with the stamp it described.
         var row = Waiting("voice");
         row.VoiceMode = true;
         row.VoiceGenerating = true;
@@ -245,60 +250,11 @@ public sealed class AgreementCheckFaultInjectionTests
         Assert.Contains(Run(row), f => f.Kind == "desktop-vs-gateway");
         Assert.Equal("red", SessionOrdering.EffectiveColor(AgreementCheck.ToDesktopInput(row)));
     }
-
-    /// <summary>
-    /// THE SAME CASE, BUILT THE WAY THE LIVE GATEWAY ACTUALLY BUILDS IT - and it is a different case.
-    ///
-    /// The test above sets VoiceGenerating and stops. The real Gateway does not: GatewayEndpoints stamps
-    /// BriefingState = "Briefing" in the SAME breath as VoiceGenerating (it is guarded on
-    /// voiceGeneratingFor). So a live voice-preparing row carries BOTH facts, and the check's
-    /// ToDesktopInput stripped only one of them - leaving "Briefing" in the reconstructed desktop row,
-    /// which folds yellow via IsBriefing, which reports AGREEMENT. The real desktop never receives the
-    /// Gateway's stamp and folds red. A genuine disagreement, reported as zero, by the tool whose entire
-    /// job is to find it.
-    ///
-    /// This is the mission's own signature failure, inside the mission's own measuring instrument: a test
-    /// asserting a row shape PRODUCTION NEVER EMITS. The helper is even called AsGatewayServesIt, and it
-    /// does not serve it the way the Gateway does - it only stamps the fold outputs. A test that builds
-    /// its own subject can only ever prove the model it already believed.
-    ///
-    /// Found by independent inspection of pull request 1606, which ran the tool against the live fleet,
-    /// saw a zero with two Gateway-only fold inputs in play, and distrusted it.
-    ///
-    /// THE VERDICT IS "CANNOT JUDGE", NOT "DISAGREES" - and that distinction is the honest part. The
-    /// Gateway stamps that label ONLY when the Director's own value was null/None/Briefed, but stamps
-    /// VoiceGenerating UNCONDITIONALLY. So this row has two possible origins: the Gateway overwrote a
-    /// null (the desktop folds red - a real disagreement), or the Director genuinely WAS briefing and the
-    /// guard was false (the desktop folds yellow - agreement). The overwrite destroyed the fact that
-    /// would tell them apart. Calling it a disagreement would be as much a guess as calling it agreement,
-    /// so the check reports that it cannot read the row and publishes that count beside the zero.
-    /// </summary>
-    [Fact]
-    public void VoiceBeingPrepared_AsTheLiveGatewayReallyStampsIt_IsNotSilentlyCountedAsAgreement()
-    {
-        var row = Waiting("voice-real");
-        row.VoiceMode = true;
-        row.VoiceGenerating = true;
-        // GatewayEndpoints: `if (voiceGeneratingFor(...) && BriefingState is null or "None" or "Briefed")
-        // -> BriefingState = "Briefing"`. Both facts, always, together. Omit this line and the test passes
-        // against a row the product does not produce - which is exactly what the test above it does.
-        row.BriefingState = "Briefing";
-        AsGatewayServesIt(row);
-        Assert.Equal("yellow", row.EffectiveColor);
-
-        // The defect this closes: Compare returned NOTHING here, so a genuine desktop-versus-Gateway
-        // divergence was published as agreement by the instrument built to find it.
-        var findings = Run(row);
-        Assert.NotEmpty(findings);
-        Assert.Contains(findings, f => f.Kind == "indeterminate");
-        Assert.True(AgreementCheck.IsIndeterminate(row));
-    }
-
     /// <summary>
     /// The control for the one above, and the reason it is not just "report everything with a briefing
     /// label". A Director that is briefing with NO voice generation is perfectly readable: the Gateway
-    /// cannot have overwritten anything, because its guard requires voiceGeneratingFor. Both surfaces
-    /// have the same label, both fold yellow, and the check must stay quiet.
+    /// cannot have overwritten anything - it does not write that field at all any more (gap 5). Both
+    /// surfaces have the same label, both fold yellow, and the check must stay quiet.
     /// </summary>
     [Fact]
     public void ADirectorBriefingWithoutVoiceGeneration_IsReadable_AndAgrees()
@@ -308,90 +264,44 @@ public sealed class AgreementCheckFaultInjectionTests
         AsGatewayServesIt(row);
         Assert.Equal("yellow", row.EffectiveColor);
 
-        Assert.False(AgreementCheck.IsIndeterminate(row));
         Assert.Empty(Run(row));
         Assert.Equal("yellow", SessionOrdering.EffectiveColor(AgreementCheck.ToDesktopInput(row)));
     }
 
     /// <summary>
-    /// THE NEGATIVE CONTROLS FOR "CANNOT READ", and they are the half that keeps the number useful.
+    /// THE ROW THE CHECK USED TO REFUSE, AND NOW GRADES. This is the test that earns the deletion of
+    /// IsIndeterminate, so read it before restoring that predicate.
     ///
-    /// Every one of these carries the ambiguous pair - VoiceGenerating with BriefingState="Briefing", the
-    /// shape where the Gateway destroyed a Director fact - and every one is still perfectly GRADEABLE,
-    /// because a rung ABOVE briefing has already decided the colour. Hold folds grey; any dictation folds
-    /// orange. Both possible origins of the destroyed label land on the same answer, so it cannot matter
-    /// which was real, so there is nothing to refuse.
+    /// A Director genuinely briefing a session whose voice the Gateway is generating carries BOTH facts at
+    /// once - VoiceGenerating=true AND BriefingState="Briefing" - and that is an ordinary row, not a
+    /// contrived one. It is exactly the shape IsIndeterminate gated on, and THE SHAPE IS STILL REACHABLE:
+    /// deleting the Gateway's overwrite killed the AMBIGUITY, not the shape. That distinction is the whole
+    /// reason the predicate had to go rather than be left as harmless dead code - it would have kept firing
+    /// here, on a row whose desktop answer is now perfectly readable, and refused to grade it.
     ///
-    /// Two earlier cuts of IsIndeterminate got this wrong one rung apart - the first refused working
-    /// sessions, the second refused these. Both were lists of conditions, and a list is a chance to be
-    /// wrong. The predicate now folds both plausible rows and compares them, so it cannot drift out of
-    /// step with a ladder it does not describe.
-    ///
-    /// An instrument that refuses to read what it can read gets ignored exactly as fast as one that reads
-    /// it wrong. These tests are what stop this one crying wolf.
-    /// </summary>
-    [Theory]
-    [InlineData("hold")]
-    [InlineData("phone-dictation")]
-    [InlineData("gateway-transcribing")]
-    [InlineData("desktop-dictation")]
-    public void TheAmbiguousPair_WhereAHigherRungAlreadyDecided_IsStillGraded(string higherRung)
-    {
-        var row = Waiting($"gradeable-{higherRung}");
-        row.VoiceGenerating = true;
-        row.BriefingState = "Briefing";
-        switch (higherRung)
-        {
-            case "hold": row.HoldState = HoldStates.Held; break;
-            case "phone-dictation": row.DictationStatus = "Uploading from phone"; break;
-            case "gateway-transcribing": row.Transcribing = true; break;
-            case "desktop-dictation": row.IsTranscribing = true; break;
-            default: throw new ArgumentOutOfRangeException(nameof(higherRung), higherRung, "unknown rung");
-        }
-        AsGatewayServesIt(row);
-
-        // The destroyed label cannot change the VERDICT here, so the row is graded either way.
-        Assert.False(AgreementCheck.IsIndeterminate(row));
-        Assert.DoesNotContain(Run(row), f => f.Kind == "indeterminate");
-
-        // AND GRADED IS NOT THE SAME AS SILENT. The two phone-side rungs are Gateway-only facts the
-        // desktop never receives, so those rows are real desktop-versus-Gateway divergences and must
-        // still be REPORTED - just reported as the disagreements they certainly are, rather than refused
-        // as unreadable. Without this half, "gradeable" could quietly mean "dropped", which is the
-        // failure the indeterminate kind exists to prevent, arrived at from the other side.
-        if (higherRung is "phone-dictation" or "gateway-transcribing")
-            Assert.Contains(Run(row), f => f.Kind == "desktop-vs-gateway");
-    }
-
-    /// <summary>
-    /// "I CANNOT READ THIS ROW" MUST NOT SWALLOW THE THINGS IT CAN READ.
-    ///
-    /// The refusal used to sit at the top of the loop and skip the whole row. But the destroyed
-    /// BriefingState only defeats the DESKTOP reconstruction - the stamp check, the fold check, the LAW
-    /// check and the palette check are all Gateway-side and certain whatever the Director's label had
-    /// been. So an ambiguous row could hide a definite stamp-not-fold, or a BROKEN LAW, behind a polite
-    /// "not graded".
-    ///
-    /// Refusing the question you cannot answer is honest. Refusing the four you can is just silence with
-    /// better manners - and it is the more dangerous shape, because the row still appears in the output
-    /// and looks handled. Found by inspection of pull request 1606.
+    /// Readable because BriefingState has exactly one writer again (ControlEndpoints.Map, from the
+    /// Director's own enum), so "Briefing" means the Director said "Briefing" - there is no second origin
+    /// to weigh. The desktop has that label too and folds yellow; the Gateway folds yellow; they agree; the
+    /// check says nothing. Under the old code this row produced an "indeterminate" finding - verified by
+    /// probe against the real Compare before the deletion, not assumed.
     /// </summary>
     [Fact]
-    public void AnUnreadableRow_StillReportsTheDefectsThatAreCertain()
+    public void ADirectorBriefingWhileTheGatewayPreparesVoice_IsGraded_AndAgrees()
     {
-        var row = Waiting("ambiguous-and-broken");
-        row.VoiceGenerating = true;
-        row.BriefingState = "Briefing";
+        var row = Waiting("briefing-and-voice");
+        row.VoiceMode = true;
+        row.VoiceGenerating = true;   // the GATEWAY's own fact, added
+        row.BriefingState = "Briefing";  // the DIRECTOR's own fact, carried - not a hijack
         AsGatewayServesIt(row);
-        Assert.True(AgreementCheck.IsIndeterminate(row), "precondition: this row must be the ambiguous shape");
 
-        // Now break something the destroyed label has NOTHING to do with: the Gateway's stamp no longer
-        // matches its own fold. That is certain, and it must be reported.
-        row.StateLabel = "Totally Made Up";
+        // The Director's briefing wins the fold's first arm, so both surfaces read "Wingman reading".
+        Assert.Equal("yellow", row.EffectiveColor);
+        Assert.Equal("Wingman reading", row.StateLabel);
 
-        var findings = Run(row);
-        Assert.Contains(findings, f => f.Kind == "indeterminate");
-        Assert.Contains(findings, f => f.Kind == "stamp-not-fold");
+        // The desktop cannot see VoiceGenerating - and here it does not need to: it has the Director's own
+        // label, which is the same fact the Gateway folded. So they agree, and this is GRADED, not refused.
+        Assert.Equal("yellow", SessionOrdering.EffectiveColor(AgreementCheck.ToDesktopInput(row)));
+        Assert.Empty(Run(row));
     }
 
     /// <summary>

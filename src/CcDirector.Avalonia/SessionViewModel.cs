@@ -105,6 +105,15 @@ public class SessionViewModel : INotifyPropertyChanged
     /// behind the "N need you" count (NeedsYou), and the waiting timer, which gates on the folded colour
     /// (HasWaitingDuration/WaitingDurationLabel). Raw flags that are NOT folded - IsOnHold, the number,
     /// the deletion badge - stay with their own handlers, because they are not this question.
+    ///
+    /// THE ROLE BADGE IS HERE ON PURPOSE, THOUGH ITS GETTER DOES NOT FOLD. ResolvedRole reads
+    /// Session.GatewayResolvedRole, which is the SAME Gateway-owned fact the colour folds through
+    /// SessionOrdering. The two must therefore move together or the row disagrees with itself - a dot
+    /// folded to "supporting" beside a glyph that has not caught up is the gap 1 defect wearing a new
+    /// coat. The alternative, raising the badge from the role handler alone, rebuilds the private
+    /// per-handler list this method exists to abolish; six of those all disagreeing is what caused four
+    /// of the seven defects review found on pull request 1598. Raising four extra cheap getters on an
+    /// unrelated input costs nothing measurable; a list that can be missed costs a row that lies.
     /// </summary>
     private void RaiseFoldProjection()
     {
@@ -114,6 +123,10 @@ public class SessionViewModel : INotifyPropertyChanged
         OnPropertyChanged(nameof(NeedsYou));
         OnPropertyChanged(nameof(HasWaitingDuration));
         OnPropertyChanged(nameof(WaitingDurationLabel));
+        OnPropertyChanged(nameof(ResolvedRole));
+        OnPropertyChanged(nameof(HasRoleGlyph));
+        OnPropertyChanged(nameof(RoleGlyphText));
+        OnPropertyChanged(nameof(RoleTooltip));
     }
 
     /// <summary>A fold input changed and carries nothing else - re-read the projection. Serves the three
@@ -469,38 +482,43 @@ public class SessionViewModel : INotifyPropertyChanged
 
     // ===== Automatic session role (non-color rail glyph) =====
 
-    private string _resolvedRole = SessionRoles.Standalone;
-
     /// <summary>
-    /// This session's resolved automatic role - one of the <see cref="SessionRoles"/> constants.
-    /// Stamped by MainWindow after construction (and on every list rebuild) from the local fleet,
-    /// following the same stamped-property pattern as <see cref="IsGroupFirst"/>. Setting it raises
-    /// change notification for the derived badge properties so the rail glyph refreshes.
+    /// This session's resolved automatic role, or NULL when no Gateway has said yet.
+    ///
+    /// GAP 1, CLOSED: this used to be STAMPED by MainWindow on every list rebuild from
+    /// SessionManager.ResolveLocalRole - the Director resolving a role for itself, which law 2 forbids.
+    /// The colour already read the Gateway's stamp while this glyph read the Director's local guess, so
+    /// one row could show a Gateway-resolved colour beside a Director-resolved badge that contradicted
+    /// it. Worse, the local resolver only ever saw THIS Director's roster, so a controller on another
+    /// machine was invisible to it - the exact cross-machine blind spot the down-channel exists to fix.
+    /// It now reads Session.GatewayResolvedRole, the same fact the colour folds. One source, one answer.
+    ///
+    /// BEFORE THE FIRST STAMP ARRIVES, NOTHING SHOWS - decided by the Architect, and it is why this is
+    /// nullable rather than defaulting to Standalone. The old default asserted "Standalone" about a
+    /// session nobody had classified yet, which is a guess wearing the costume of an answer; a session
+    /// the Gateway has not spoken about is not standalone, it is unknown. "No answer yet" renders as no
+    /// badge, and no badge is not a lie. RoleGlyphFor(null) already returns "" via its catch-all arm,
+    /// so an unstamped session and a Standalone one look identical on the rail - the badge only ever
+    /// appears when the Gateway has named a Manager, Worker or Architect.
     /// </summary>
-    public string ResolvedRole
-    {
-        get => _resolvedRole;
-        set
-        {
-            var normalized = string.IsNullOrWhiteSpace(value) ? SessionRoles.Standalone : value;
-            if (_resolvedRole == normalized) return;
-            _resolvedRole = normalized;
-            OnPropertyChanged();
-            OnPropertyChanged(nameof(HasRoleGlyph));
-            OnPropertyChanged(nameof(RoleGlyphText));
-            OnPropertyChanged(nameof(RoleTooltip));
-        }
-    }
+    public string? ResolvedRole => Session.GatewayResolvedRole;
 
-    /// <summary>True when the role warrants a rail glyph (Manager, Worker, or Architect). Standalone
-    /// and any unknown value show nothing, so the badge stays out of the way for the common case.</summary>
+    /// <summary>True when the role warrants a rail glyph (Manager, Worker, or Architect). Standalone,
+    /// an unknown value, and "no stamp yet" (null) all show nothing, so the badge stays out of the way
+    /// for the common case and stays silent until the Gateway has actually answered.</summary>
     public bool HasRoleGlyph => RoleGlyphFor(ResolvedRole).Length > 0;
 
     /// <summary>The single-letter, non-color role glyph ("M"/"W"/"A") or "" for Standalone/unknown.</summary>
     public string RoleGlyphText => RoleGlyphFor(ResolvedRole);
 
-    /// <summary>The full role name for the badge tooltip ("Manager"/"Worker"/"Architect") or "".</summary>
-    public string RoleTooltip => HasRoleGlyph ? ResolvedRole : string.Empty;
+    /// <summary>The full role name for the badge tooltip ("Manager"/"Worker"/"Architect"), or "" when
+    /// there is no glyph to explain - Standalone, an unknown role, or no Gateway stamp yet. Written as a
+    /// pattern match rather than gating on <see cref="HasRoleGlyph"/> and silencing the nullable warning:
+    /// the two read the same source, so this states the "a glyph implies a role to name" invariant in a
+    /// form the compiler checks, instead of asserting it with a null-forgiving operator.</summary>
+    public string RoleTooltip => ResolvedRole is { } role && RoleGlyphFor(role).Length > 0
+        ? role
+        : string.Empty;
 
     /// <summary>Pure role -> single-letter glyph mapping. Static so it can be unit-tested without a
     /// live <see cref="Session"/>, mirroring <see cref="LabelFor"/> / <see cref="BadgeBrushFor"/>.
