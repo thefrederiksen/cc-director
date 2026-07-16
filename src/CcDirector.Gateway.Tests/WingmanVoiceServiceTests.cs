@@ -568,11 +568,12 @@ public sealed class WingmanVoiceServiceTests
         var handler = new TtsTimeoutHandler(timeouts: 1);
         var svc = ServiceWithHandler(handler);
 
-        // The stalled call fails - one attempt, bounded, and it says so honestly.
+        // The stalled call fails - one attempt, bounded, and it says so honestly. A timeout is the
+        // absence of an answer, so it is Retrying ("audio on its way, trying again"), NOT ServiceDown.
         await svc.StoreSpokenAsync("sid-retry", "spoken", "reply");
         Assert.Equal(1, handler.Calls);                                        // exactly one attempt: no in-call retry
         Assert.False(svc.HasVoice("sid-retry"));                               // nothing to play
-        Assert.Equal(HostedAiState.ServiceDown, svc.VoiceUnavailableFor("sid-retry"));
+        Assert.Equal(HostedAiState.Retrying, svc.VoiceUnavailableFor("sid-retry"));
         Assert.False(svc.SpeechCooldownArmed, "and it did not drag the rest of the fleet down with it");
 
         // The session tries again - the provider is fine now, and it just works.
@@ -598,8 +599,9 @@ public sealed class WingmanVoiceServiceTests
     // ---- The 2026-07-15 outage: the service failed for ~45 minutes and the phone blamed the user's own
     // machine ("the Gateway has not made one, or this session's computer is offline"). Both false. The
     // reason was KNOWN here and discarded three lines from where it was known, because no state meant
-    // "the service is down". These pin the whole path: the failure must become ServiceDown, ServiceDown
-    // must carry copy the phone can render, and it must survive to the DTO the phone actually reads.
+    // "the service is down". These pin the whole path: an ANSWERED failure becomes ServiceDown, that
+    // state carries copy the phone can render, and it survives to the DTO the phone actually reads. A
+    // call that never answered (a timeout) is Retrying, not ServiceDown - the split proven below.
 
     [Theory]
     [InlineData(500)]   // provider blew up
@@ -618,15 +620,20 @@ public sealed class WingmanVoiceServiceTests
     }
 
     [Fact]
-    public async Task StoreSpokenAsync_TtsTimesOutEveryAttempt_RecordsServiceDown()
+    public async Task StoreSpokenAsync_TtsTimesOutEveryAttempt_RecordsRetrying_NotServiceDown()
     {
         // The TimeoutException that TtsSynthesis exists to bound was the ONE failure that stamped
-        // nothing at all - swallowed by a bare catch. It is the most likely failure in a real outage.
+        // nothing at all - swallowed by a bare catch. It must stamp SOMETHING (so the phone is not left
+        // guessing), but that something is Retrying, NOT ServiceDown: a call that never answered is the
+        // absence of evidence about the service. Stamping ServiceDown here made the phone say "Voice
+        // service down" on a single slow call - a claim we cannot support - which is the wording bug
+        // this test now guards against.
         var handler = new TtsTimeoutHandler(timeouts: int.MaxValue);
         var svc = ServiceWithHandler(handler);
         await svc.StoreSpokenAsync("sid-timeout", "spoken", "reply");
 
-        Assert.Equal(HostedAiState.ServiceDown, svc.VoiceUnavailableFor("sid-timeout"));
+        Assert.Equal(HostedAiState.Retrying, svc.VoiceUnavailableFor("sid-timeout"));
+        Assert.NotEqual(HostedAiState.ServiceDown, svc.VoiceUnavailableFor("sid-timeout"));
     }
 
     // ONE SLOW NARRATION MUST NOT SILENCE THE FLEET.
@@ -644,14 +651,14 @@ public sealed class WingmanVoiceServiceTests
     public async Task StoreSpokenAsync_OneTimeout_DoesNotArmTheSharedCooldown()
     {
         // One timeout is not evidence about the SERVICE - it can be one long narration or one stalled
-        // worker. The session still reports ServiceDown (nothing to play, and it must say so), but the
-        // shared gate must stay open so every other session still gets its turn at speech.
+        // worker. The session still reports its own state (Retrying - nothing to play yet, trying
+        // again), but the shared gate must stay open so every other session still gets its turn.
         var handler = new TtsTimeoutHandler(timeouts: TtsSynthesis.Attempts);
         var svc = ServiceWithHandler(handler);
 
         await svc.StoreSpokenAsync("sid-slow", "spoken", "reply");
 
-        Assert.Equal(HostedAiState.ServiceDown, svc.VoiceUnavailableFor("sid-slow"));
+        Assert.Equal(HostedAiState.Retrying, svc.VoiceUnavailableFor("sid-slow"));
         Assert.False(svc.SpeechCooldownArmed, "one timeout must not silence every other session's voice");
     }
 
@@ -684,8 +691,9 @@ public sealed class WingmanVoiceServiceTests
 
         Assert.False(svc.SpeechCooldownArmed,
             "no number of timeouts may silence the fleet - the service never answered, so they say nothing about it");
-        // Each session still tells the truth about ITSELF: there is nothing to play.
-        Assert.Equal(HostedAiState.ServiceDown, svc.VoiceUnavailableFor("sid-e"));
+        // Each session still tells the truth about ITSELF: nothing to play yet, retrying - Retrying,
+        // never ServiceDown, because none of these calls got an answer from the service.
+        Assert.Equal(HostedAiState.Retrying, svc.VoiceUnavailableFor("sid-e"));
     }
 
     [Fact]

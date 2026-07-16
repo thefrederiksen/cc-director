@@ -50,14 +50,25 @@ export function VoiceTab({ sessionId }: { sessionId: string | undefined }) {
             drift apart again; the fallback line is only for when the Gateway has said nothing. */}
         {v.audioUnavailable && (
           <>
+            {/* A timeout (Retrying) is not an outage: the audio is on its way and the Gateway is trying
+                again. Calm yellow "on its way", never the red "Voice service down" - that red panel is
+                right for an answered outage (ServiceDown) and a lie for a single slow call. */}
             <div className="voice-statusbar">
-              <span className="voice-state voice-state-red">
-                {v.unavailableIsServiceDown ? "Voice service down" : "Voice unavailable"}
+              <span className={"voice-state " + (v.unavailableIsRetrying ? "voice-state-yellow" : "voice-state-red")}>
+                {v.unavailableIsRetrying
+                  ? "Voice on its way"
+                  : v.unavailableIsServiceDown
+                    ? "Voice service down"
+                    : "Voice unavailable"}
               </span>
             </div>
             <div className="voice-narr">
               <div className="voice-narr-title">
-                {v.unavailableIsServiceDown ? "This is not your fault." : "No narration is ready to play."}
+                {v.unavailableIsRetrying
+                  ? "Taking a moment - still trying."
+                  : v.unavailableIsServiceDown
+                    ? "This is not your fault."
+                    : "No narration is ready to play."}
               </div>
               <div className="voice-narr-body">
                 {v.unavailableReason?.text
@@ -69,9 +80,9 @@ export function VoiceTab({ sessionId }: { sessionId: string | undefined }) {
                       : "There is no spoken summary for this session's latest turn yet. Click Generate narration to make one now."}
               </div>
             </div>
-            {/* No button while the service is down: it hits the same dead service and fails the same
-                way, and the Gateway is already backing off and retrying on its own. */}
-            {!v.unavailableIsServiceDown && (
+            {/* No button while the service is down OR a timeout is retrying: it races the same slow or
+                failing call, and the Gateway is already backing off and retrying on its own. */}
+            {!v.unavailableIsServiceDown && !v.unavailableIsRetrying && (
               <button
                 type="button"
                 className="voice-switch"

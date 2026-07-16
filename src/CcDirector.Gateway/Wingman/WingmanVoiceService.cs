@@ -666,8 +666,7 @@ public sealed class WingmanVoiceService
             // about. A timeout is the absence of evidence: the service said nothing, so we know nothing
             // about the service. Ten narrations timing out on a slow provider are ten sessions having a
             // slow turn, and the honest response is for each of them to try again on its own - the voice
-            // sweep already does exactly that for any session without audio, and the fleet-wide semaphore
-            // already caps the load at two concurrent calls whatever we decide here.
+            // sweep already does exactly that for any session without audio.
             //
             // Only an ANSWER is evidence about the service, and the two answers that are get handled
             // above, where they belong: a 429 with its Retry-After, and a failure status. Those arm the
@@ -677,10 +676,16 @@ public sealed class WingmanVoiceService
             // stops paying for translations whose audio cannot be made" - and paid for it by silencing
             // every session on every machine, on evidence that turned out to be our own doing. Cheap
             // narrations are not the failure mode; a mute fleet is.
-            FileLog.Write($"[WingmanVoiceService] tts FAILED for this narration: {ex.Message} - " +
-                          "not evidence about the service (it did not answer), so the fleet keeps its " +
-                          "turn at speech and this session retries on its own");
-            return new TtsResult(null, null, HostedAiState.ServiceDown);
+            //
+            // And because a timeout is the absence of evidence, it is reported as Retrying, NOT
+            // ServiceDown. ServiceDown makes the phone say "Voice service down" - a claim about the
+            // service that a non-answer cannot support. Retrying tells the honest truth: the audio is
+            // not ready yet and this session is trying again. An ANSWERED failure (the 429/5xx branches
+            // above) keeps ServiceDown, because there the service really did tell us it is failing.
+            FileLog.Write($"[WingmanVoiceService] tts did not answer for this narration: {ex.Message} - " +
+                          "absence of evidence about the service, so this is Retrying (not down); the " +
+                          "fleet keeps its turn at speech and this session retries on its own");
+            return new TtsResult(null, null, HostedAiState.Retrying);
         }
         // NOTE: no `finally { http.Dispose(); }`. `http` is now either the caller's injected client or
         // the shared static, and disposing EITHER would be wrong - the static must outlive every call
