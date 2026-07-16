@@ -46,6 +46,10 @@ interface NavItem {
   label: string;
   icon: NavIconName;
   subtree?: string;
+  // When set, the item is an EXTERNAL link opened in a new tab rather than an in-app route: it renders
+  // a plain anchor to this absolute URL instead of a NavLink, and `to` is ignored. Used for Help, which
+  // leaves the app for the public documentation site.
+  href?: string;
 }
 
 // The fleet work: what is running, how it is driven, and the corpora and tools it reads and writes.
@@ -61,15 +65,22 @@ const NAV_MAIN: ReadonlyArray<NavItem> = [
   { to: "/transcripts", label: "Voice Recorder", icon: "voice-recorder" },
   { to: "/transcription", label: "Transcription", icon: "transcription" },
   { to: "/network", label: "Network", icon: "network" },
-  { to: "/learn", label: "Learning", icon: "learning" },
 ];
 
-// This browser's account and the app's own settings - pinned to the bottom of the rail.
+// The public documentation site. devthrottle.com is a PUBLIC website (NOT a Director), so this external
+// link does not violate the Gateway-only-ingress rule; it is the same intended absolute-URL exception the
+// sign-in redirect and the desktop app's own Documentation menu item carry.
+// eslint-disable-next-line no-restricted-syntax -- documented Gateway-only-ingress exception (#967/#968): public docs site, not a Director
+const DOCS_URL = "https://devthrottle.com/docs";
+
+// This browser's account and the app's own settings - pinned to the bottom of the rail. Help sits last:
+// it is the only item that leaves the app, opening the public documentation site in a new tab.
 const NAV_FOOT: ReadonlyArray<NavItem> = [
   { to: "/account", label: "Account", icon: "account" },
   { to: "/your-throttle", label: "Your Throttle", icon: "throttle" },
   { to: "/settings", label: "Settings", icon: "settings" },
   { to: "/about", label: "About", icon: "about" },
+  { to: DOCS_URL, label: "Help", icon: "help", href: DOCS_URL },
 ];
 
 export function AppShell() {
@@ -111,16 +122,31 @@ function NavList({
         const inSubtree = item.subtree !== undefined && pathname.startsWith(item.subtree);
         return (
           <li key={item.to}>
-            <NavLink
-              to={item.to}
-              end={item.to === "/"}
-              className={({ isActive }) =>
-                isActive || inSubtree ? "nav-link nav-link-active" : "nav-link"
-              }
-            >
-              <NavIcon name={item.icon} />
-              <span className="nav-link-label">{item.label}</span>
-            </NavLink>
+            {item.href !== undefined ? (
+              // External destination (Help): a plain anchor that opens the public docs in a new tab. It
+              // is never "active" - it does not correspond to an in-app route - so it takes the resting
+              // nav-link style only.
+              <a
+                className="nav-link"
+                href={item.href}
+                target="_blank"
+                rel="noopener noreferrer"
+              >
+                <NavIcon name={item.icon} />
+                <span className="nav-link-label">{item.label}</span>
+              </a>
+            ) : (
+              <NavLink
+                to={item.to}
+                end={item.to === "/"}
+                className={({ isActive }) =>
+                  isActive || inSubtree ? "nav-link nav-link-active" : "nav-link"
+                }
+              >
+                <NavIcon name={item.icon} />
+                <span className="nav-link-label">{item.label}</span>
+              </NavLink>
+            )}
           </li>
         );
       })}

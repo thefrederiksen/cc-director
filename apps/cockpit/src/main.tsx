@@ -20,7 +20,6 @@ import { ScheduleView } from "./schedule/ScheduleView";
 import { WorkflowsView } from "./workflows/WorkflowsView";
 import { DictionaryView } from "./dictionary/DictionaryView";
 import { TranscriptsView } from "./transcripts/TranscriptsView";
-import { LearningView } from "./learning/LearningView";
 import { YourThrottleView } from "./throttle/YourThrottleView";
 import { TranscriptionHealthView } from "./transcription/TranscriptionHealthView";
 import { NetworkDiagnosticsView } from "./network/NetworkDiagnosticsView";
@@ -37,7 +36,6 @@ import "./schedule/schedule.css";
 import "./workflows/workflows.css";
 import "./dictionary/dictionary.css";
 import "./transcripts/transcripts.css";
-import "./learning/learning.css";
 import "./throttle/throttle.css";
 import "./transcription/transcriptionhealth.css";
 import "./account/account.css";
@@ -156,17 +154,16 @@ const router = createBrowserRouter(
             // so the page renders what the Gateway serves rather than a list baked into this bundle.
             // It sits beside Schedule in the rail: Schedule is what runs when, Workflows is how work runs.
             { path: "/workflows", element: <WorkflowsView /> },
-            // The tools + data pages (issue #977): one-to-one ports of the Blazor Dictionary.razor,
-            // Transcripts.razor and Learning.razor over the same Gateway REST surface. Each has a
-            // Data-section nav entry (issue #1247, which exposed Voice Recorder by address only before).
-            // Two pages were deleted rather than left as dead surface: Lists (issue #1247 - work lists
-            // are retired, GitHub issues are the queue), and Executables. Executables was a DEVELOPER
-            // page - it listed the Director processes on the Gateway's own machine and drove the
-            // local_builds slots - that issue #1247 put in the end-user rail by mistake. Its /exes
-            // route is gone from the Cockpit; the Gateway endpoints stay (see ExesEndpoints.cs).
+            // The tools + data pages (issue #977): one-to-one ports of the Blazor Dictionary.razor and
+            // Transcripts.razor over the same Gateway REST surface. Each has a nav entry (issue #1247,
+            // which exposed Voice Recorder by address only before). Pages deleted rather than left as
+            // dead surface: Lists (issue #1247 - work lists are retired, GitHub issues are the queue);
+            // Executables (a DEVELOPER page - the Director processes on the Gateway's own machine and the
+            // local_builds slots - that issue #1247 put in the end-user rail by mistake, its /exes route
+            // gone but the Gateway endpoints kept, see ExesEndpoints.cs); and Learning, which was never
+            // finished - Help now points straight at the public documentation site (see AppShell).
             { path: "/dictionary", element: <DictionaryView /> },
             { path: "/transcripts", element: <TranscriptsView /> },
-            { path: "/learn", element: <LearningView /> },
             // The settings/misc + account pages (issue #978, the last page-port): one-to-one ports of the
             // Blazor Account.razor (identity + Log out + Your devices), About.razor (Gateway diagnostics),
             // and Feedback.razor (the Wingman feedback corpus), each over the same Gateway REST surface.
