@@ -24,11 +24,13 @@ now return **404** and MUST NOT be used:
 - `PATCH {director}/sessions/{id}` (rename)
 - `POST {director}/sessions/{id}/hold`, `.../prompt`, `.../context`
 
-The Director loopback still answers only a minimal floor (`/healthz`) plus the
-agent-facing `/fleet/*` verbs. Everything this move needs lives on the **Gateway**
-(`http://127.0.0.1:7878`) and on the **`cc-devthrottle`** CLI. If a step here tells
-you to curl a Director port for a session route, the step is stale - stop and
-re-read this section.
+The move/session-control routes you need are NOT on the Director floor. The Director
+loopback still serves `/healthz`, the agent-facing `/fleet/*` verbs, and some agent
+hook routes (e.g. `/sessions/{sid}/claude-hook`, `/sessions/{sid}/fleet-preamble`),
+but not the session-control REST the move needs. Everything this move needs lives on
+the **Gateway** (`http://127.0.0.1:7878`) and on the **`cc-devthrottle`** CLI. If a
+step here tells you to curl a Director port for a session route, the step is stale -
+stop and re-read this section.
 
 Two surfaces, and when to use each:
 
@@ -69,19 +71,23 @@ Two hard consequences:
    already full. That defeats the purpose. The resume route is a clearly-warned
    opt-in only (see "Resume route"), never the default.
 
-### The target comes up on Opus + 1M by default
+### The target comes up on the configured default agent
 
-The fresh session launches on the configured default agent, which is Opus 4.8 with
-the 1-million-token window (`opus[1m]`). The Gateway `toRepoPath` handover carries
-that default through - both same-Director and cross-Director (field-verified
-2026-07-08: a cross-Director handover landed with `windowTokens: 1,000,000`). You do
-NOT force the model and you do NOT warn about a 200K downgrade - there is none.
+The handover does not force a model. The fresh session launches on whatever the
+target Director has configured as its default agent - the code creates the target
+with no model arguments (same-Director `CreateSession` with `userArgs: null`,
+cross-Director `NewSessionRequest` with no `Args`), so the model and window are the
+Director's configured defaults, not a value this skill sets. In the current
+deployment that default is Opus 4.8 with the 1-million-token window (`opus[1m]`), and
+a cross-Director handover was observed landing at `windowTokens: 1,000,000`
+(2026-07-08) - but that is the deployment's configured default, NOT a guarantee the
+handover makes. Do not promise Opus+1M or tell the user to disregard a smaller
+window; if the Director's default ever changes, the target follows it.
 
-(If you ever need to CONFIRM the window, do it in the desktop app's session context
-readout - the Gateway does not expose a `/context` route, and the old
-`GET {director}/sessions/{id}/context` check is gone with the rest of the Director
-session floor. In practice the default is reliable; do not build the move around
-verifying it.)
+(There is no programmatic way for this skill to CONFIRM the window: the Gateway
+exposes no `/context` route, and the old `GET {director}/sessions/{id}/context` check
+is gone with the rest of the Director session floor. If you must verify, read the
+window in the desktop app's session context readout.)
 
 ## Session naming convention (applies to EVERY name this skill writes)
 
@@ -119,8 +125,8 @@ All Gateway calls use base `http://127.0.0.1:7878` with `Authorization: Bearer <
 | Action | How |
 |--------|-----|
 | List / number sessions | `cc-devthrottle session list` (fleet-wide) or `GET {gateway}/sessions` (JSON, each entry carries `directorId`, `activityState`, `onHold`) |
-| DEFAULT move (context relief) | `POST {gateway}/handover` with `fromSessionId` + `toRepoPath` (+ `toDirectorId` to pin a specific Director). Fresh target, summary seed, Opus+1M. |
-| Move into an existing empty slot | `toSessionId` instead of `toRepoPath` (send exactly one) |
+| DEFAULT move (context relief) | `POST {gateway}/handover` with `fromSessionId` + `toRepoPath`. Fresh target, summary seed, Director's default agent. Without `toDirectorId` the target is created on the SOURCE's Director; add `toDirectorId` to place it on a different Director. |
+| Move into an existing empty slot | `toSessionId` instead of `toRepoPath` (send exactly one). SAME Director as the source only - cross-Director `toSessionId` is rejected; use `toRepoPath` + `toDirectorId` instead. |
 | Add a "continue by doing X" note | `extraContext` on the request (MUST open with the moved-session statement) |
 | Name the TARGET (retain the name) | `cc-devthrottle session rename <target-id> "<source's original name>"` right after the handover |
 | Verify target picked up | `cc-devthrottle session list` (state flips to Working) or `GET {gateway}/sessions/{tid}/buffer` (bytes grow) |
@@ -193,12 +199,15 @@ The target reuses the source's repo and agent by default.
 
 ### Step 3: Identify the target
 
-- **Fresh slot, let the Gateway place it (simplest):** set `toRepoPath` only. The
-  Gateway spawns on the Director with the fewest active sessions.
-- **Fresh slot on a SPECIFIC Director:** `toRepoPath` + `toDirectorId` (the target
+- **Fresh slot on the SOURCE's Director (simplest):** set `toRepoPath` only. With no
+  `toDirectorId`, the Gateway creates the target on the source session's own Director
+  (it does NOT load-balance across Directors).
+- **Fresh slot on a DIFFERENT Director:** `toRepoPath` + `toDirectorId` (the target
   Director's id from the roster).
 - **An existing empty session:** `toSessionId` instead of `toRepoPath` (mutually
-  exclusive - send exactly one).
+  exclusive - send exactly one). SAME Director as the source only: a cross-Director
+  `toSessionId` is rejected (`not supported in v1`) - to reach another Director, use
+  `toRepoPath` + `toDirectorId`.
 
 Set `toAgent` to the source's agent (e.g. `ClaudeCode`).
 
@@ -250,7 +259,7 @@ body = {
     'toRepoPath': r'D:\ReposFred\cc-consult',
     'toAgent': 'ClaudeCode',
     'archiveToVault': True,
-    # 'toDirectorId': 'TARGET-DIRECTOR-GUID',  # pin a specific Director; omit to let the Gateway place it
+    # 'toDirectorId': 'TARGET-DIRECTOR-GUID',  # a DIFFERENT Director; omit -> target lands on the source's Director
     # 'toSessionId': 'GUID',                   # instead of toRepoPath for an existing empty slot
     # 'extraContext': 'This is a MOVED session: it continues ...  then: continue by ...',
 }
@@ -378,12 +387,12 @@ Request body (`HandoverRequest`, camelCase):
 | Field | Required | Notes |
 |-------|----------|-------|
 | `fromSessionId` | yes | Source session GUID |
-| `toSessionId` | one of two | Existing target session; mutually exclusive with `toRepoPath` |
+| `toSessionId` | one of two | Existing target session; mutually exclusive with `toRepoPath`. SAME Director as the source only - cross-Director `toSessionId` returns 400 (`not supported in v1`) |
 | `toRepoPath` | one of two | Repo for a brand-new target session |
-| `toDirectorId` | no | Pin the target Director; omit and the Gateway picks the Director with the fewest active sessions |
+| `toDirectorId` | no | Target Director for a new session. Omit -> the target is created on the SOURCE's Director (no load-balancing). Set it to place the target on a different Director |
 | `toAgent` | when `toRepoPath` | `ClaudeCode` (default), `Pi`, `Codex`, `Gemini`, `OpenCode`, `Grok`, `Copilot` |
 | `extraContext` | no | Free text appended to the auto-generated context; MUST open with the moved-session statement |
-| `archiveToVault` | no | Default true; may return `archivedAt: null` anyway |
+| `archiveToVault` | no | Default true. The same-Director path writes the archive and returns its path; the cross-Director path skips it and returns `archivedAt: null` |
 
 Response (`HandoverResponse`): `accepted`, `targetSession` (read `sessionId`),
 `contextSent`, `archivedAt`, `error`.
@@ -462,8 +471,20 @@ Gotchas:
 
 ---
 
-**Skill Version:** 3.0
+**Skill Version:** 3.1
 **Last Updated:** 2026-07-16
+**Changes in 3.1:** Corrected four claims that the Gateway code does not back (independent
+review of #1720). (1) Target PLACEMENT: `toRepoPath` with no `toDirectorId` creates the
+target on the SOURCE's Director - the Gateway does NOT load-balance across Directors
+(`GatewayEndpoints.cs` same-Director proxy). (2) `toSessionId` (existing target) is
+SAME-Director only; cross-Director `toSessionId` is rejected with `not supported in v1`
+- use `toRepoPath` + `toDirectorId`. (3) The target comes up on the target Director's
+CONFIGURED DEFAULT agent (the handover passes no model args); Opus+1M is this
+deployment's default, not a guarantee the handover makes - dropped the "do not warn
+about a 200K downgrade" instruction. (4) `archivedAt` is written on the same-Director
+path and null on the cross-Director path (not a generic "may be null"). Also narrowed
+the Director-floor wording (it also serves agent hook routes, not only `/healthz` +
+`/fleet/*`).
 **Changes in 3.0:** Retargeted to the tunnel-only reality (the whole reason the v2.x
 skill broke). The Director loopback no longer serves `/handover`, `GET/PATCH
 /sessions`, `/hold`, or `/prompt` - those moved to the GATEWAY (`:7878`) at the
@@ -473,7 +494,8 @@ now driven through the Gateway (Bearer token from `gateway-token.txt`) and the
 the per-Director base URLs, the port-scan topology step, the `GET
 {director}/sessions/{id}/context` window check (no Gateway route; the desktop app shows
 the window), and the force-the-model `POST {director}/sessions {args:"--model"}`
-fallback (depended on removed Director routes; the default is Opus+1M anyway). Rename
+fallback (depended on removed Director routes; the target follows the Director's default
+agent regardless). Rename
 and hold now use `cc-devthrottle session rename` / `session hold` (issue #1514 - the
 rename 404 - was a wrong-route/stale-Director problem, closed 2026-07-14; the CLI
 verbs work). Added the "control surface is the GATEWAY" preamble and a Gateway health
