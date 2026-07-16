@@ -169,6 +169,18 @@ public sealed class SessionDto
     public DateTime? NeedsYouSince { get; set; }
 
     /// <summary>
+    /// The absolute UTC time an ARMED snooze returns this session to "needs you" - the snooze clock's
+    /// deadline, so a client can show "wakes in 3h 48m". Gateway-owned: the snooze registry
+    /// (<c>SnoozeRegistry.SnoozeEntry.SnoozeUntilUtc</c>) is the sole source of the timer, stamped by the
+    /// Gateway during the /sessions aggregation and pushed DOWN to the owning Director's display mirror so
+    /// the desktop rail can render the hold time without owning the clock. Null when the session carries no
+    /// armed snooze: no hold at all, OR a DEFERRED hold that has not landed yet (there is no deadline until
+    /// the work ends - defect 20). Always null in Director-local responses that predate the display-state
+    /// push. Pairs with <see cref="HoldState"/> = "Held": the state says it is parked, this says until when.
+    /// </summary>
+    public DateTime? SnoozeUntil { get; set; }
+
+    /// <summary>
     /// When the OWNER last drove a turn on this session - a person typing or speaking - or null if they
     /// never have. Reported by the owning Director; null from a Director too old to send it.
     ///

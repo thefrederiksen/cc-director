@@ -617,6 +617,25 @@
                                                        FontSize="9"
                                                        FontWeight="SemiBold" />
                                         </Border>
+                                        <!-- Snooze-ended badge: this session came back ON ITS OWN because its
+                                             snooze timer fired (SessionDto.SnoozeExpired, folded by the
+                                             Gateway and stamped down). The dot is already red "Needs you" -
+                                             the fold puts an expired snooze straight back into needs-you - so
+                                             this badge only annotates WHY it returned: a "go see why it went
+                                             quiet" item, not a fresh turn-end. Neutral gray like the other
+                                             badges, never a status colour; it never competes with the dot. -->
+                                        <Border Background="{DynamicResource ButtonBackground}"
+                                                CornerRadius="6"
+                                                Padding="6,1"
+                                                VerticalAlignment="Center"
+                                                Margin="0,0,6,0"
+                                                IsVisible="{Binding IsSnoozeEnded}"
+                                                ToolTip.Tip="Snooze ended - this session came back on its own and is still waiting on you">
+                                            <TextBlock Text="SNOOZE ENDED"
+                                                       Foreground="#9CA3AF"
+                                                       FontSize="9"
+                                                       FontWeight="SemiBold" />
+                                        </Border>
                                         <!-- Agent badge: shows which CLI this session is running -->
                                         <Border Background="{Binding AgentBadgeBrush}"
                                                 CornerRadius="6"
@@ -645,6 +664,16 @@
                                             <TextBlock Text="{Binding WaitingDurationLabel}"
                                                        IsVisible="{Binding HasWaitingDuration}"
                                                        Foreground="#E0883C"
+                                                       FontSize="11"
+                                                       Margin="6,0,0,0"
+                                                       VerticalAlignment="Center" />
+                                            <!-- How long until an armed snooze wakes this session ("wakes in
+                                                 3h 48m"), shown beside the "Snoozed" label. The Gateway owns
+                                                 the clock (SessionDto.SnoozeUntil, stamped down); the rail
+                                                 only renders the countdown. Muted, never a status colour. -->
+                                            <TextBlock Text="{Binding HoldTimeLabel}"
+                                                       IsVisible="{Binding HasHoldTime}"
+                                                       Foreground="#888888"
                                                        FontSize="11"
                                                        Margin="6,0,0,0"
                                                        VerticalAlignment="Center" />

@@ -2656,6 +2656,11 @@ internal static class GatewayEndpoints
                 var isRed = string.Equals(effectiveColor, "red", StringComparison.OrdinalIgnoreCase);
                 s.NeedsYouSince = needsYouStampFor(s.SessionId, isRed);
             }
+            // The armed-snooze deadline, so a client can show "Snoozed - wakes in Xh". Read straight from the
+            // registry (the sole timer owner) alongside HoldState above; null when there is no running clock
+            // (no snooze, or a deferred one that has not landed). Folded HERE so the roster, the observer that
+            // pushes this down to the desktop, and the single-session read all emit the same deadline.
+            s.SnoozeUntil = snoozeRegistry?.SnoozeUntilFor(s.SessionId);
         }
     }
 

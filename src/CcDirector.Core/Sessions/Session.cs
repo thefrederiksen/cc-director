@@ -229,6 +229,87 @@ public sealed class Session : IDisposable
     /// </summary>
     public event Action<string?>? OnGatewayResolvedRoleChanged;
 
+    // ===== Gateway-pushed DISPLAY STATE (the fold answer), cached so the desktop rail renders exactly what
+    // the Gateway decided instead of re-folding from local facts it cannot see (dictation, transcription,
+    // voice generation, the snooze clock). THE GATEWAY DECIDES; THE DIRECTOR CARRIES. Written only by the
+    // set-display-state verb, read back out through ControlEndpoints.Map onto the SessionDto. Deliberately
+    // NOT persisted - a restarted Director has no business remembering a fold it never owned, and the
+    // Gateway re-stamps within one push of reconnecting (same rule as GatewayResolvedRole).
+    // (docs/new_architecture/session-state.html - "the desktop must ask".) =====
+
+    /// <summary>The Gateway's folded effective color (<see cref="SessionOrdering.EffectiveColor"/>), or null
+    /// until a Gateway has stamped one. The rail renders this verbatim - it does not compute a colour.</summary>
+    public string? GatewayEffectiveColor { get; private set; }
+
+    /// <summary>The Gateway's folded human-readable state label ("Working" / "Needs you" / "Snoozed" / ...),
+    /// or null until stamped. The rail renders this verbatim.</summary>
+    public string? GatewayStateLabel { get; private set; }
+
+    /// <summary>The Gateway's folded triage bucket ("needsYou" / "active" / "onHold"), or null until stamped.
+    /// The rail's "needs you" count and ordering read this, never a local classification.</summary>
+    public string? GatewayTriageBucket { get; private set; }
+
+    /// <summary>The Gateway-owned instant this session entered red (<see cref="SessionDto.NeedsYouSince"/>),
+    /// so the rail's "waiting 11m" matches every other surface. Null when not red.</summary>
+    public DateTime? GatewayNeedsYouSince { get; private set; }
+
+    /// <summary>The Gateway-owned armed-snooze deadline (<see cref="SessionDto.SnoozeUntil"/>), so the rail
+    /// can show "Snoozed - wakes in 3h 48m". Null when there is no running snooze clock.</summary>
+    public DateTime? GatewaySnoozeUntil { get; private set; }
+
+    /// <summary>The Gateway's "this session JUST came back from an expired snooze" marker
+    /// (<see cref="SessionDto.SnoozeExpired"/>), rendered as a distinct "Snooze ended" badge.</summary>
+    public bool GatewaySnoozeExpired { get; private set; }
+
+    /// <summary>
+    /// Raised when any pushed display-state field changes, so the desktop rail re-reads the fold. Same shape
+    /// and same reason as <see cref="OnGatewayResolvedRoleChanged"/>: a new fact with no signal is invisible -
+    /// the rail is only told to re-read on activity/status/hold/dictation/number/role changes, and a fold
+    /// answer arriving over the wire is none of those.
+    /// </summary>
+    public event Action? OnGatewayDisplayStateChanged;
+
+    /// <summary>
+    /// Store the display state the Gateway folded for this session. This ONLY caches values it was told - it
+    /// does not compute, validate, or adjust the fold; the Gateway is the authority. Fires
+    /// <see cref="OnGatewayDisplayStateChanged"/> only on a real change, so the Gateway re-stamping the same
+    /// answer every sweep does not churn the rail. A null <paramref name="effectiveColor"/> clears the stamp
+    /// back to "no answer" (the desktop then shows its neutral waiting-for-gateway placeholder).
+    /// </summary>
+    public void ApplyGatewayDisplayState(
+        string? effectiveColor,
+        string? stateLabel,
+        string? triageBucket,
+        DateTime? needsYouSince,
+        DateTime? snoozeUntil,
+        bool snoozeExpired)
+    {
+        var color = string.IsNullOrWhiteSpace(effectiveColor) ? null : effectiveColor.Trim();
+        var label = string.IsNullOrWhiteSpace(stateLabel) ? null : stateLabel.Trim();
+        var bucket = string.IsNullOrWhiteSpace(triageBucket) ? null : triageBucket.Trim();
+
+        var changed =
+            !string.Equals(GatewayEffectiveColor, color, StringComparison.Ordinal)
+            || !string.Equals(GatewayStateLabel, label, StringComparison.Ordinal)
+            || !string.Equals(GatewayTriageBucket, bucket, StringComparison.Ordinal)
+            || GatewayNeedsYouSince != needsYouSince
+            || GatewaySnoozeUntil != snoozeUntil
+            || GatewaySnoozeExpired != snoozeExpired;
+
+        if (!changed) return;
+
+        GatewayEffectiveColor = color;
+        GatewayStateLabel = label;
+        GatewayTriageBucket = bucket;
+        GatewayNeedsYouSince = needsYouSince;
+        GatewaySnoozeUntil = snoozeUntil;
+        GatewaySnoozeExpired = snoozeExpired;
+
+        FileLog.Write($"[Session] ApplyGatewayDisplayState: session={Id}, color={color ?? "(cleared)"}, label={label ?? "(none)"}, bucket={bucket ?? "(none)"}, snoozeUntil={snoozeUntil?.ToString("O") ?? "(none)"}, snoozeExpired={snoozeExpired}");
+        try { OnGatewayDisplayStateChanged?.Invoke(); }
+        catch (Exception ex) { FileLog.Write($"[Session] {Id} OnGatewayDisplayStateChanged handler threw: {ex.Message}"); }
+    }
+
     /// <summary>Set (or clear, on a null/blank value) this session's sticky explicit role. The value is
     /// validated against the role set by the caller; this only stores it.</summary>
     public void SetExplicitRole(string? role)

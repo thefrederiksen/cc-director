@@ -44,6 +44,37 @@ public sealed class SnoozeRegistryTests : IDisposable
     }
 
     [Fact]
+    public void SnoozeUntilFor_returns_the_armed_deadline()
+    {
+        var reg = new SnoozeRegistry(Path_);
+        var now = new DateTime(2026, 7, 16, 12, 0, 0, DateTimeKind.Utc);
+        var until = now.AddHours(4);
+        reg.Snooze("s1", until, "dir-1");
+
+        Assert.Equal(until, reg.SnoozeUntilFor("s1"));
+        // Returns the real deadline even once it is in the past - "is it over?" is IsExpired's ruling.
+        reg.Snooze("s2", now.AddMinutes(-1), "dir-1");
+        Assert.Equal(now.AddMinutes(-1), reg.SnoozeUntilFor("s2"));
+    }
+
+    [Fact]
+    public void SnoozeUntilFor_is_null_for_a_deferred_snooze()
+    {
+        var reg = new SnoozeRegistry(Path_);
+        // A deferral has no clock yet - it starts when the work ends - so there is no deadline to show.
+        reg.SnoozeDeferred("s1", 720, "dir-1");
+
+        Assert.Null(reg.SnoozeUntilFor("s1"));
+    }
+
+    [Fact]
+    public void SnoozeUntilFor_is_null_for_a_session_with_no_entry()
+    {
+        var reg = new SnoozeRegistry(Path_);
+        Assert.Null(reg.SnoozeUntilFor("nobody"));
+    }
+
+    [Fact]
     public void Snooze_again_overwrites_the_prior_time_no_escalation()
     {
         var reg = new SnoozeRegistry(Path_);

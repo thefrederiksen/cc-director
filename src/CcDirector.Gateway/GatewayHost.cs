@@ -93,6 +93,16 @@ public sealed class GatewayHost : IAsyncDisposable
     internal Fleet.FleetRoleObserver FleetRoles { get; }
 
     /// <summary>
+    /// The observer that stamps each session's FOLDED display state (effective color, label, triage bucket,
+    /// needs-you-since, the snooze clock, the snooze-ended marker) back DOWN to the Director that owns it, so
+    /// the desktop rail renders the Gateway's answer instead of re-folding from local facts it cannot see.
+    /// Shared with the DirectorHub through the container, like <see cref="FleetRoles"/>; also driven by a
+    /// periodic sweep (<see cref="_displayStateSweepTimer"/>) as the backstop for Gateway-only overlay
+    /// changes that arrive on no Director push.
+    /// </summary>
+    internal Fleet.FleetDisplayStateObserver FleetDisplayState { get; }
+
+    /// <summary>
     /// The durable fleet CONCURRENCY record (how many sessions run at once, and how many are actively
     /// working at once) that the private Gateway dashboard and the agent API read. Fed from the same
     /// assembled /sessions roster as <see cref="InputStats"/>, so it is fleet-wide with no per-Director
@@ -329,6 +339,14 @@ public sealed class GatewayHost : IAsyncDisposable
     private Running.AutoDismissSweeper? _autoDismissSweeper;
     private static readonly TimeSpan AutoDismissSweepInterval = TimeSpan.FromSeconds(15);
     private static readonly TimeSpan AutoDismissStaleAfter = TimeSpan.FromSeconds(30);
+    // The fold push backstop: the DirectorHub seam re-folds immediately on every Director push, which covers
+    // every Director-driven change (activity, hold, desktop dictation). This periodic sweep catches the
+    // GATEWAY-ONLY overlay changes that arrive on no push - voice generation, the Gateway's own
+    // transcription, a phone dictation, a snooze expiring - so the desktop rail is never more than one
+    // interval behind them. The observer's change gate keeps it quiet when nothing changed. Disposed in
+    // StopAsync.
+    private System.Threading.Timer? _displayStateSweepTimer;
+    private static readonly TimeSpan DisplayStateSweepInterval = TimeSpan.FromSeconds(5);
     private readonly Running.WorkListRunnerManager _runnerManager = new();
     // Issue #218: Gateway-owned clock for when each session entered the red / NEEDS-YOU state.
     private readonly NeedsYouClock _needsYouClock = new();
@@ -587,6 +605,19 @@ public sealed class GatewayHost : IAsyncDisposable
         // echoing back up and re-triggering itself forever.
         FleetRoles = new Fleet.FleetRoleObserver(
             () => PushedSessions.SnapshotFresh(AutoDismissStaleAfter),
+            SendCommandAsync);
+        // The fold push seam: stamps each session's folded display state down to its owning Director, so the
+        // desktop rail stops re-folding from local facts it cannot see. Folds through the SAME method the
+        // roster serves from (StampFleetRolesAndFold with THIS host's NeedsYouClock and snooze registry), so
+        // the answer pushed to the desktop is byte-identical to the answer every browser gets - one fold, one
+        // authority. Like FleetRoles it holds the change gate that stops the stamp echoing back up forever.
+        FleetDisplayState = new Fleet.FleetDisplayStateObserver(
+            () => PushedSessions.SnapshotFresh(AutoDismissStaleAfter),
+            sessions => Api.GatewayEndpoints.StampFleetRolesAndFold(
+                sessions,
+                sessions,
+                needsYouStampFor: (sid, isRed) => _needsYouClock.Stamp(sid, isRed),
+                snoozeRegistry: _snoozeRegistry),
             SendCommandAsync);
         // Mission Screen mission (Phase 1b, issue #1405): the mission-WHY store, at a Gateway-side file
         // (CcStorage.Root(), the same location the snooze and cron stores use). Loaded here so a Gateway
@@ -1150,6 +1181,7 @@ public sealed class GatewayHost : IAsyncDisposable
         // the Director pushes up "the hold landed".
         builder.Services.AddSingleton(SnoozeLandings);
         builder.Services.AddSingleton(FleetRoles);
+        builder.Services.AddSingleton(FleetDisplayState);
         builder.Services.AddSingleton(SessionConcurrency);
         builder.Services.AddSingleton(Registry);
         // launcher-persistent-join: the LauncherHub (constructed per-invocation by SignalR) and
@@ -1757,6 +1789,14 @@ public sealed class GatewayHost : IAsyncDisposable
         _autoDismissTimer = new System.Threading.Timer(_ => SweepAutoDismiss(), null, AutoDismissSweepInterval, AutoDismissSweepInterval);
         FileLog.Write($"[GatewayHost] auto-dismiss sweep started: every {AutoDismissSweepInterval.TotalSeconds:0}s");
 
+        // The fold push backstop: re-fold the fleet and stamp changed answers down, catching the Gateway-only
+        // overlays (voice, transcription, dictation, snooze expiry) that arrive on no Director push. Never
+        // throws into the timer.
+        _displayStateSweepTimer = new System.Threading.Timer(
+            _ => { try { FleetDisplayState.Sweep(); } catch (Exception ex) { FileLog.Write($"[GatewayHost] display-state sweep error: {ex.Message}"); } },
+            null, DisplayStateSweepInterval, DisplayStateSweepInterval);
+        FileLog.Write($"[GatewayHost] display-state sweep started: every {DisplayStateSweepInterval.TotalSeconds:0}s");
+
         // Issue #629: start the durable telemetry retry-queue flusher. It drains any events restored
         // from disk on construction (so a backend outage that spanned the previous run's lifetime now
         // delivers) and every event the relay enqueues going forward, in FIFO order, retrying with
@@ -1962,6 +2002,8 @@ public sealed class GatewayHost : IAsyncDisposable
         _cronTimer = null;
         try { _autoDismissTimer?.Dispose(); } catch (Exception ex) { FileLog.Write($"[GatewayHost] auto-dismiss timer dispose error: {ex.Message}"); }
         _autoDismissTimer = null;
+        try { _displayStateSweepTimer?.Dispose(); } catch (Exception ex) { FileLog.Write($"[GatewayHost] display-state sweep timer dispose error: {ex.Message}"); }
+        _displayStateSweepTimer = null;
 
 
         // Issue #640: stop the background token refresh timer.

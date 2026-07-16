@@ -63,6 +63,12 @@ public class SessionViewModel : INotifyPropertyChanged
         session.OnNumberChanged += OnNumberChangedVm;
         session.OnPendingDeletionChanged += OnPendingDeletionChangedVm;
         session.OnGatewayResolvedRoleChanged += OnGatewayResolvedRoleChangedVm;
+        // THE FOLD ITSELF, arriving over the wire. The Gateway stamps this session's folded display state
+        // (colour, label, triage, needs-you-since, the snooze clock, the snooze-ended marker) down onto the
+        // Session, and the rail renders it VERBATIM instead of re-folding from local facts it cannot see.
+        // Like the role stamp, a fold answer arriving is none of the activity/hold/dictation events the rail
+        // already hears, so without this the row keeps its last answer until an unrelated event repaints it.
+        session.OnGatewayDisplayStateChanged += OnGatewayDisplayStateChangedVm;
         // THE THREE TRANSIENT OVERLAYS THE RAIL NEVER HEARD ABOUT. Map feeds IsBackgroundRunning,
         // IsTranscribing and IsAutoExplaining into the fold, which renders them purple, orange and yellow -
         // and nothing subscribed, so a desktop dictation or a background-task verdict reached the Gateway
@@ -123,6 +129,9 @@ public class SessionViewModel : INotifyPropertyChanged
         OnPropertyChanged(nameof(NeedsYou));
         OnPropertyChanged(nameof(HasWaitingDuration));
         OnPropertyChanged(nameof(WaitingDurationLabel));
+        OnPropertyChanged(nameof(HasHoldTime));
+        OnPropertyChanged(nameof(HoldTimeLabel));
+        OnPropertyChanged(nameof(IsSnoozeEnded));
         OnPropertyChanged(nameof(ResolvedRole));
         OnPropertyChanged(nameof(HasRoleGlyph));
         OnPropertyChanged(nameof(RoleGlyphText));
@@ -163,36 +172,25 @@ public class SessionViewModel : INotifyPropertyChanged
     private SessionDto FoldInput => ControlEndpoints.Map(Session, directorId: "");
 
     /// <summary>
-    /// The ONE presentation fold, shared with the Gateway and therefore with the Cockpit and the phone
-    /// (<see cref="SessionOrdering"/> lives in CcDirector.Gateway.Contracts, which this app references).
+    /// The presentation colour the rail renders - the GATEWAY'S folded answer, stamped down onto this
+    /// Session and read back through <see cref="FoldInput"/> (<c>SessionDto.EffectiveColor</c>, sourced from
+    /// <c>Session.GatewayEffectiveColor</c>). The rail RENDERS it and computes nothing.
     ///
-    /// The desktop used to hand-roll three separate folds of its own - the strip read the hold flag, while
-    /// the label and the "waiting" clock read the activity state and the wingman colour and had never heard
-    /// of hold. That is why a snoozed session showed a grey strip next to a red "Your Turn" and a nagging
-    /// hours-long clock, while the phone correctly showed "Snoozed": four readings of the same session, and
-    /// nothing reconciled them. Calling the same function the other screens call makes agreement structural
-    /// instead of something we re-verify every release.
+    /// This used to be <c>SessionOrdering.EffectiveColor(FoldInput)</c> - the rail re-running the shared fold
+    /// over its own LOCAL facts. That was the disease, not the cure: the fold reads inputs only the Gateway
+    /// has (a phone dictation, the Gateway's transcription, a voice summary being prepared, and the snooze
+    /// clock and its expiry), so the desktop's copy diverged for every session that had stopped - a snoozed
+    /// session read red "Needs you" here while the phone and the Cockpit read "Snoozed". Pushing four more
+    /// inputs down would have narrowed the gap; the fix is that the desktop does not fold at all. The Gateway
+    /// is the single fold; this seam carries its answer down to the one screen that cannot poll for itself.
     ///
-    /// SessionRole IS here now, and this comment used to say it was not. It said: "Known gap (Phase 2b):
-    /// ... it is absent here until the Gateway pushes it down. Until then a live Worker's red is suppressed
-    /// on the Cockpit and the phone but still surfaces on this rail." That was defect 5, and it is FIXED -
-    /// the Gateway resolves the role from the whole fleet (only it can: the Director cannot know whether a
-    /// controlled session's controller is alive on another machine) and pushes it down over the
-    /// set-resolved-role verb; ControlEndpoints.Map reads it back off Session.GatewayResolvedRole, so this
-    /// fold input carries it and the rail reaches the same answer as the phone.
-    ///
-    /// The comment is corrected rather than deleted because a stale "known gap" is worse than no comment at
-    /// all: it invites the next agent to re-implement a fix that already shipped. That is not hypothetical -
-    /// the specification called defect 4 open for four paragraphs after it had merged, and the error ledger
-    /// records what it cost. Proved end to end, with nothing hand-set, by DesktopRoleStampWireProofTests.
-    ///
-    /// WHAT IS STILL TRUE, and is the real remaining gap (measured in phase 5): the role was ONE of FIVE
-    /// Gateway-only fold inputs. Map still does not carry DictationStatus, Transcribing or VoiceGenerating,
-    /// and nothing pushes them down - so for a session that is NOT working, this rail can still differ from
-    /// the phone (a phone dictation is orange there and red here). Blue outranks all of them, so it can
-    /// never affect a working session. See docs/new_architecture/session-state.html.
+    /// NO STAMP YET -&gt; "unknown" (a neutral grey), NOT magenta. Until a Gateway has stamped a fold (a fresh
+    /// session before its first push, or a Director with no tunnel - the "no Gateway, no fold" floor) the
+    /// value is null, and the rail shows a neutral placeholder rather than guessing a colour. A genuinely
+    /// unrecognised stamp value still falls through to the magenta sentinel in <see cref="StatusColorBrush"/>,
+    /// which is the real fail-loud. (docs/new_architecture/session-state.html.)
     /// </summary>
-    private string EffectiveColor => SessionOrdering.EffectiveColor(FoldInput);
+    private string EffectiveColor => FoldInput.EffectiveColor ?? "unknown";
 
     /// <summary>
     /// The sidebar colour strip's brush: the shared fold's colour, mapped through the ONE palette.
@@ -274,6 +272,21 @@ public class SessionViewModel : INotifyPropertyChanged
         });
     }
 
+    /// <summary>
+    /// The Gateway stamped this session's folded display state down (colour, label, triage, needs-you-since,
+    /// snooze clock, snooze-ended). That IS what the rail renders now - the dot, the row text, the "N need
+    /// you" verdict, the waiting timer, the snooze countdown and the snooze-ended badge all read it - so a
+    /// stamp arriving must repaint the whole projection. RaiseFoldProjection covers the fold outputs; the
+    /// countdown/timer labels ride along because HoldTimeLabel/WaitingDurationLabel are in it.
+    /// </summary>
+    private void OnGatewayDisplayStateChangedVm()
+    {
+        Dispatcher.UIThread.Post(() =>
+        {
+            RaiseFoldProjection();
+        });
+    }
+
     /// <summary>True when the user has parked this session on hold. Drives the menu toggle
     /// label and the light-gray strip color.</summary>
     public bool IsOnHold => Session.OnHold;
@@ -319,33 +332,67 @@ public class SessionViewModel : INotifyPropertyChanged
         });
     }
 
-    /// <summary>How long this session has been waiting on you, shown in the list only when red,
-    /// so you can see at a glance WHICH needs-you session is the most stale and triage it first.
-    /// Proxied from the last briefing time (generated at turn-end, when the session goes red).
-    /// Reads the shared fold, NOT the raw wingman colour: a snoozed session is not red and must not nag
-    /// with an hours-long clock - that mismatch is exactly what this change removes.</summary>
+    /// <summary>How long this session has been waiting on you, shown in the list only when red, so you can
+    /// see at a glance WHICH needs-you session is the most stale and triage it first. Reads the GATEWAY-owned
+    /// clock (<c>SessionDto.NeedsYouSince</c>, stamped down from <c>Session.GatewayNeedsYouSince</c>) so the
+    /// "waiting 11m" here matches every other surface exactly. It used to proxy the local last-briefing time,
+    /// which drifted from the Gateway's. Gated on the folded colour being red, so a snoozed session (grey)
+    /// never nags with a clock.</summary>
     public bool HasWaitingDuration =>
         string.Equals(EffectiveColor, "red", StringComparison.OrdinalIgnoreCase)
-        && Session.CachedExplainAt is not null;
+        && FoldInput.NeedsYouSince is not null;
 
     public string WaitingDurationLabel
     {
         get
         {
-            if (!HasWaitingDuration) return "";
-            var d = DateTime.UtcNow - Session.CachedExplainAt!.Value;
+            if (FoldInput.NeedsYouSince is not { } since || !HasWaitingDuration) return "";
+            var d = DateTime.UtcNow - since.ToUniversalTime();
             if (d.TotalMinutes < 1) return "waiting <1m";
             if (d.TotalMinutes < 60) return $"waiting {(int)d.TotalMinutes}m";
             return $"waiting {(int)d.TotalHours}h";
         }
     }
 
-    /// <summary>Re-raise time-derived list labels; called periodically so the waiting duration
-    /// ticks up without an event.</summary>
+    /// <summary>True when this session is snoozed with a running clock, so the rail can show WHEN it comes
+    /// back. Reads the GATEWAY-owned snooze deadline (<c>SessionDto.SnoozeUntil</c>, stamped down from
+    /// <c>Session.GatewaySnoozeUntil</c>) - the Director never owns the snooze clock. Null for a deferred
+    /// snooze that has not landed (no deadline yet) and for anything not snoozed.</summary>
+    public bool HasHoldTime => FoldInput.SnoozeUntil is not null;
+
+    /// <summary>"wakes in 3h 48m" - how long until an armed snooze returns the session to needs-you. Shown
+    /// beside the "Snoozed" label so a snoozed row says not just that it is parked but until when. Reads the
+    /// Gateway's deadline; the Director renders the countdown but owns no clock. Empty when there is no
+    /// running snooze.</summary>
+    public string HoldTimeLabel
+    {
+        get
+        {
+            if (FoldInput.SnoozeUntil is not { } until) return "";
+            var remaining = until.ToUniversalTime() - DateTime.UtcNow;
+            if (remaining <= TimeSpan.Zero) return "waking up";
+            if (remaining.TotalMinutes < 1) return "wakes in <1m";
+            if (remaining.TotalMinutes < 60) return $"wakes in {(int)remaining.TotalMinutes}m";
+            var hours = (int)remaining.TotalHours;
+            var mins = remaining.Minutes;
+            return mins > 0 ? $"wakes in {hours}h {mins}m" : $"wakes in {hours}h";
+        }
+    }
+
+    /// <summary>True when this session JUST came back on its own because its snooze timer fired - the
+    /// Gateway's <c>SessionDto.SnoozeExpired</c> marker (stamped down from <c>Session.GatewaySnoozeExpired</c>).
+    /// Drives the rail's distinct "SNOOZE ENDED" badge so the owner knows this is a "go see why it went
+    /// quiet" item, not a fresh turn-end.</summary>
+    public bool IsSnoozeEnded => FoldInput.SnoozeExpired;
+
+    /// <summary>Re-raise time-derived list labels; called periodically so the waiting duration and the
+    /// snooze countdown tick without an event.</summary>
     public void RefreshTimeLabels()
     {
         OnPropertyChanged(nameof(WaitingDurationLabel));
         OnPropertyChanged(nameof(HasWaitingDuration));
+        OnPropertyChanged(nameof(HoldTimeLabel));
+        OnPropertyChanged(nameof(HasHoldTime));
     }
 
     public string DisplayName => Session.CustomName
@@ -408,11 +455,13 @@ public class SessionViewModel : INotifyPropertyChanged
     }
 
     /// <summary>
-    /// The session's state in words. The shared fold's label - the SAME string the Cockpit and the phone
-    /// render - so a session cannot read "Your Turn" here and "Snoozed" there. This used to read the raw
-    /// activity state and therefore had no idea the session was held.
+    /// The session's state in words - the GATEWAY'S folded label (<c>SessionDto.StateLabel</c>, stamped down
+    /// from <c>Session.GatewayStateLabel</c>), the SAME string the Cockpit and the phone render, so a session
+    /// cannot read "Needs you" here and "Snoozed" there. Rendered VERBATIM; the rail does not label anything
+    /// itself. This used to be <c>SessionOrdering.StateLabel(FoldInput)</c> - the rail re-folding locally -
+    /// which is exactly why it disagreed. Empty until a Gateway stamps one (the no-Gateway floor).
     /// </summary>
-    public string ActivityLabel => SessionOrdering.StateLabel(FoldInput);
+    public string ActivityLabel => FoldInput.StateLabel ?? "";
 
     /// <summary>
     /// True when this session is waiting on YOU - the shared fold's triage verdict, not a colour.
@@ -425,12 +474,13 @@ public class SessionViewModel : INotifyPropertyChanged
     /// snoozed session sat grey and labelled "Snoozed" underneath a header reading "1 need you".
     /// Three readings of one session, and nothing reconciled them.
     ///
-    /// Defect 5 IS closed here, and this comment used to say "NOT closed here" - that a live Worker's red
-    /// "still counts on this rail". It does not: the Gateway pushes the resolved role down and
-    /// ControlEndpoints.Map carries it onto this fold input, so a live Worker classifies Active here exactly
-    /// as it does on the phone, and its need routes to its manager rather than to this header.
+    /// This reads the GATEWAY'S folded triage bucket (<c>SessionDto.TriageBucket</c>, stamped down from
+    /// <c>Session.GatewayTriageBucket</c>), the SAME verdict the phone's web-push badge counts by, rendered
+    /// VERBATIM. It used to be <c>SessionOrdering.Classify(FoldInput)</c> - the rail re-classifying locally,
+    /// so a session the Gateway had bucketed onHold (dictation, voice, a snooze) still counted here. Absent
+    /// stamp counts as not-needing-you (the no-Gateway floor never nags).
     /// </summary>
-    public bool NeedsYou => SessionOrdering.Classify(FoldInput) == SessionOrdering.TriageBucket.NeedsYou;
+    public bool NeedsYou => string.Equals(FoldInput.TriageBucket, "needsYou", StringComparison.Ordinal);
 
     // Agent badge for the session list. Colored pill shown next to the session name
     // so it's visually obvious which agent CLI this session is running.
