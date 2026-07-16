@@ -1,10 +1,22 @@
 # Mission: Lost Dictations
 
-**Status: ACTIVE** (opened 2026-07-15)
+**Status: FINISHED** (opened 2026-07-15, closed 2026-07-15 - both fixes landed on origin/main)
 **Mission id:** `00d27b9e-7fc4-43b6-a297-f86d1a33dc4e`
-**Mission worktree:** `D:\ReposFred\devthrottle-lost-dictations`
-**Mission branch:** `mission/lost-dictations` (cut from origin/main at `dd34a6a9`)
-**Issues:** #1593 (the drop), #1590 (the silence). #1595 is related and OUT of scope.
+**Mission worktree:** was `D:\ReposFred\devthrottle-lost-dictations` (removed at close)
+**Mission branch:** was `mission/lost-dictations`, cut from origin/main at `dd34a6a9` (deleted at
+close)
+**Issues:** #1593 and #1590, both CLOSED by this mission. #1595 remains open and out of scope.
+
+**How it ended:** item 1 (#1593) merged as `5b0fdf31` (pull request 1687) after THREE inspection
+rounds - Codex first forced the re-baseline write to be atomic, then found that the added gate
+covered only one writer, so a slow re-baseline could resurrect a delivered tombstone; the final
+shape serializes every record write for an upload id under one refcounted, canonicalized per-
+directory gate. The pre-existing buffer-epoch blindness it also surfaced is issue #1688. Item 2
+(#1590) merged as `f4c615ad` (pull request 1690) after two rounds - Codex caught Send-anyway
+double-submitting and silently dropping the typed before/after context; the landed shape composes
+the full message exactly as the Gateway does and shares the delivery driver's in-flight gate. The
+inspector found real, confirmed defects in every first pass of this mission; none were false
+alarms.
 **Conduct:** this brief describes the WORK only. How a mission is run - roles, authority, landing,
 inspection, the report - lives in `.claude/skills/mission/SKILL.md` and is not restated here.
 
