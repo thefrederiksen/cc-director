@@ -130,6 +130,14 @@ public sealed class ControlApiHost : IAsyncDisposable
     /// </summary>
     public GatewayConnectionMonitor GatewayMonitor { get; } = new();
 
+    // Cancels the injected-text refresh poll (started in StartAsync) when the host stops.
+    private readonly CancellationTokenSource _injectedTextRefreshCts = new();
+
+    // How often a connected Director re-downloads the Gateway-owned injected text, so a Cockpit save
+    // reaches its next session launch without a reconnect or restart. The connect-triggered refresh gives
+    // immediacy on reconnect; this bounds staleness while already connected.
+    private static readonly TimeSpan InjectedTextRefreshInterval = TimeSpan.FromSeconds(60);
+
     /// <summary>
     /// Snooze Length mission (Phase 3): the seam the desktop drives to record/clear a Gateway-owned
     /// snooze THROUGH the Gateway (so a desktop snooze gets the same timer the phone/cockpit get),
@@ -219,6 +227,16 @@ public sealed class ControlApiHost : IAsyncDisposable
         // reads a list that is already there.
         SnoozeOptions = new SnoozeOptionsCache(() => GatewayHold);
         SnoozeOptions.AttachTo(GatewayMonitor);
+
+        // The injected text is Gateway-owned too (Cockpit -> Injected text): download it when the
+        // Gateway connection goes green so a session launched later injects the user's current choice
+        // without waiting on the network at launch. Fire-and-forget - a failed refresh keeps the
+        // last-known cache, which the launch path reads synchronously.
+        GatewayMonitor.Changed += () =>
+        {
+            if (GatewayMonitor.Status == GatewayConnectionStatus.Connected)
+                _ = RefreshInjectedTextAsync();
+        };
         _useEphemeralPort = useEphemeralPort;
         _authEnabled = authEnabled;
         _repositoryRegistry = repositoryRegistry;
@@ -233,6 +251,44 @@ public sealed class ControlApiHost : IAsyncDisposable
         DirectorId = directorId ?? (useEphemeralPort
             ? Guid.NewGuid().ToString()
             : DirectorIdStore.LoadOrCreate());
+    }
+
+    /// <summary>
+    /// Download the Gateway-owned injected text into the Director's on-disk cache. Swallows failure on
+    /// purpose - an unreachable Gateway must not crash the host, and a failed refresh leaves the
+    /// last-known cache in place for the launch path to read.
+    /// </summary>
+    private static async Task RefreshInjectedTextAsync()
+    {
+        try
+        {
+            await new InjectedTextStore().RefreshAsync().ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            FileLog.Write($"[ControlApiHost] injected-text refresh FAILED (keeping the last-known cache): {ex.Message}");
+        }
+    }
+
+    /// <summary>
+    /// Re-download the Gateway-owned injected text on a slow timer for as long as the host runs. The
+    /// connect-triggered refresh only fires when the connection state changes, so an already-connected
+    /// Director would otherwise never see a Cockpit edit until it reconnected; this closes that gap so the
+    /// setting has the same "no restart" guarantee the snooze lengths have. Best-effort - each tick keeps
+    /// the last-known cache on failure - and stops cleanly when the host cancels the token.
+    /// </summary>
+    private async Task PollInjectedTextAsync(CancellationToken ct)
+    {
+        using var timer = new PeriodicTimer(InjectedTextRefreshInterval);
+        try
+        {
+            while (await timer.WaitForNextTickAsync(ct).ConfigureAwait(false))
+                await RefreshInjectedTextAsync().ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+            // The host is stopping - a clean end, not a failure.
+        }
     }
 
     /// <summary>Start Kestrel and write the instance registration file. Returns the chosen port.</summary>
@@ -503,6 +559,15 @@ public sealed class ControlApiHost : IAsyncDisposable
             try { await signedInUserProvider.ResolveAsync(CancellationToken.None); }
             catch (Exception ex) { FileLog.Write($"[ControlApiHost] signed-in user warm-up failed (best-effort): {ex.Message}"); }
         });
+
+        // Keep the Director's cache of the Gateway-owned injected text current while it runs, so a Cockpit
+        // edit reaches the next session launch without a restart. Only when a Gateway is configured - with
+        // none, RefreshAsync is a no-op and polling would just log every tick.
+        if (gatewayConfig.IsEnabled)
+        {
+            FileLog.Write($"[ControlApiHost] starting injected-text refresh poll every {InjectedTextRefreshInterval.TotalSeconds:0}s");
+            _ = Task.Run(() => PollInjectedTextAsync(_injectedTextRefreshCts.Token));
+        }
 
         // Issue #1292: the Gateway is the authority for the fleet-unique session number. Wire the
         // SessionManager to ask the CURRENT GatewayClient (read the FIELD lazily so a settings change
@@ -924,6 +989,10 @@ public sealed class ControlApiHost : IAsyncDisposable
         if (_stopped) return;
         _stopped = true;
         FileLog.Write($"[ControlApiHost] StopAsync");
+
+        // Stop the injected-text refresh poll first so it does not tick against a tearing-down host.
+        try { _injectedTextRefreshCts.Cancel(); _injectedTextRefreshCts.Dispose(); }
+        catch (Exception ex) { FileLog.Write($"[ControlApiHost] injected-text poll cancel error: {ex.Message}"); }
 
         if (_gatewayClient is not null)
         {

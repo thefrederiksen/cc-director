@@ -1,3 +1,7 @@
+using System.Net.Http.Headers;
+using System.Net.Http.Json;
+using System.Text.Json;
+using System.Text.Json.Serialization;
 using CcDirector.Core.Configuration;
 using CcDirector.Core.Storage;
 using CcDirector.Core.Utilities;
@@ -15,192 +19,217 @@ public enum InjectedTextSource
 }
 
 /// <summary>
-/// Owns the text DevThrottle injects into agents at launch: which version is live, where both live
-/// on disk, and how the user's version is saved and withdrawn.
+/// One cached injected-text value: the choice and the user's text the Gateway last reported, and when
+/// the Director cached it. Persisted to <see cref="CcStorage.InjectedTextCache"/> so a Director can
+/// inject the last-known choice while the Gateway is unreachable.
+/// </summary>
+/// <param name="UseYours">Whether the user's own text was live at the last refresh.</param>
+/// <param name="Yours">The user's own text, or null when they have not written one.</param>
+/// <param name="CachedAtUtc">When the Director last refreshed this value from the Gateway (UTC).</param>
+public sealed record InjectedTextCacheEntry(
+    [property: JsonPropertyName("useYours")] bool UseYours,
+    [property: JsonPropertyName("yours")] string? Yours,
+    [property: JsonPropertyName("cachedAtUtc")] DateTime CachedAtUtc);
+
+/// <summary>
+/// The Director-side reader of the GATEWAY-OWNED injected text. The authoritative value - whose text is
+/// live, and the user's own text - lives on the Gateway (<c>GET /gateway/injected-text</c>, owned by
+/// <see cref="InjectedTextConfig"/>). The Director never owns this setting; it downloads it and injects
+/// what it last downloaded.
 ///
-/// TWO FILES, BOTH ALWAYS PRESENT:
-///   ours.txt  - the shipped default, rewritten from the application on every launch. It is here
-///               even when the user is running their own text, so they can always read the current
-///               default and adopt it. This is the owner's requirement that our updates are always
-///               there, just not necessarily used.
-///   yours.txt - the user's version. Exists only once they write one.
+/// The read is split so a synchronous launch never blocks on the network, exactly like
+/// <see cref="Account.GatewayTelemetryConsent"/>:
+///   - <see cref="RefreshAsync"/> fetches the authoritative value off the launch path and writes the
+///     on-disk cache. The host calls it when the Gateway connection goes green and on a refresh timer.
+///   - <see cref="ActiveTemplate"/> / <see cref="ActiveSource"/> read that cache synchronously at
+///     session launch - no network call, safe on the hot path.
 ///
-/// YOURS OR OURS, NEVER A MERGE. Deliberately: a three-way reconciliation of prose nobody asked for
-/// is how you end up injecting a sentence neither party wrote.
+/// Degraded behaviour (no hidden fallback): the synchronous read is always the LAST-KNOWN cached value.
+/// When nothing has ever been cached it uses the documented default (OURS), which is correct: a fresh
+/// Director that has never reached the Gateway injects the standard preamble, the same thing it did
+/// before this setting existed. It never silently swaps a user's chosen text for ours once a real value
+/// has been seen - if the cache says "yours" but carries no text, that is a loud failure, not a quiet
+/// reversal (see <see cref="ActiveTemplate"/>).
 ///
-/// ours.txt IS A COPY, NOT THE SOURCE. The shipped default's source of truth is
-/// <see cref="FleetPreambleTemplate.Default"/>, in the application. The file exists so the text is
-/// visible on disk and diffable; if it is edited by hand it is overwritten on the next launch. This
-/// is what stops the Settings tab showing one default while sessions launch with another.
+/// OURS IS THE APPLICATION'S, NOT THE CACHE'S. <see cref="Ours"/> comes straight from
+/// <see cref="FleetPreambleTemplate.Default"/> in the binary, so it is always the current shipped
+/// default regardless of what was last downloaded.
 /// </summary>
 public sealed class InjectedTextStore
 {
-    private readonly string _directory;
-    private readonly Func<InjectedTextConfig> _readConfig;
-    private readonly Action<bool> _writeUseYours;
+    private static readonly JsonSerializerOptions JsonOpts = new() { PropertyNameCaseInsensitive = true };
 
-    /// <summary>The store over the real per-user Director data directory and the real config.json.</summary>
-    public InjectedTextStore() : this(CcStorage.InjectedText()) { }
+    // One shared client (best practice - avoids socket exhaustion). The short timeout keeps a refresh
+    // from lingering when the Gateway is slow or down; a failed refresh keeps the last-known cache.
+    private static readonly HttpClient SharedClient = new() { Timeout = TimeSpan.FromSeconds(10) };
 
-    /// <summary>Testable constructor over an explicit directory, using the real config.json.</summary>
-    public InjectedTextStore(string directory)
-        : this(directory, InjectedTextConfig.Get, InjectedTextConfig.SetUseYours) { }
+    /// <summary>The Gateway path the injected text is read from, appended to <c>gateway.url</c>.</summary>
+    public const string GatewayPath = "/gateway/injected-text";
+
+    private readonly string _cachePath;
+    private readonly HttpClient _client;
+    private readonly string? _gatewayUrlOverride;
+    private readonly string? _tokenOverride;
+
+    /// <summary>The store over the real Director cache file and the real <c>gateway.url</c>.</summary>
+    public InjectedTextStore() : this(null) { }
 
     /// <summary>
-    /// Testable constructor over an explicit directory AND an explicit choice of whose text is live.
-    ///
-    /// The choice is a dependency rather than a global read because it is not incidental: a test that
-    /// reaches into the real config.json passes or fails depending on how the developer running it has
-    /// their own machine set up, which is not a test, it is a coin toss. It also made unrelated tests -
-    /// the Pi preamble writer's - quietly depend on this setting the moment the writer started honouring
-    /// it.
+    /// Creates the store. <paramref name="cachePath"/> defaults to the Director's injected-text cache
+    /// file; tests inject a temporary path. <paramref name="client"/> defaults to a shared
+    /// <see cref="HttpClient"/>; tests point one at a stub Gateway. <paramref name="gatewayUrl"/> and
+    /// <paramref name="token"/> default to <c>gateway.url</c> / <c>gateway.token</c> from config.json,
+    /// read lazily inside <see cref="RefreshAsync"/> so the synchronous read path never touches config.
+    /// When <paramref name="gatewayUrl"/> is supplied (tests), config is not read and
+    /// <paramref name="token"/> is used verbatim, so a test is hermetic.
     /// </summary>
-    public InjectedTextStore(string directory, Func<InjectedTextConfig> readConfig, Action<bool> writeUseYours)
+    public InjectedTextStore(string? cachePath = null, HttpClient? client = null, string? gatewayUrl = null, string? token = null)
     {
-        _directory = directory;
-        _readConfig = readConfig;
-        _writeUseYours = writeUseYours;
+        _cachePath = string.IsNullOrWhiteSpace(cachePath) ? CcStorage.InjectedTextCache() : cachePath;
+        _client = client ?? SharedClient;
+        _gatewayUrlOverride = gatewayUrl;
+        _tokenOverride = token;
     }
 
     /// <summary>
-    /// A store whose text is definitely the DevThrottle default, over a throwaway directory. For tests
-    /// that need a preamble rendered and do not care whose it is - they must not become sensitive to
-    /// the developer's own choice.
+    /// A store that is definitely on the DevThrottle default, over a throwaway cache path. For tests that
+    /// need a preamble rendered and do not care whose it is - they must not become sensitive to a cache
+    /// left on the developer's machine.
     /// </summary>
     public static InjectedTextStore AlwaysOurs(string directory)
-        => new(directory, () => new InjectedTextConfig(UseYours: false), _ => { });
-
-    /// <summary>Where the shipped default is written for the user to read.</summary>
-    public string OursPath => Path.Combine(_directory, "ours.txt");
-
-    /// <summary>Where the user's own text lives, if they have written one.</summary>
-    public string YoursPath => Path.Combine(_directory, "yours.txt");
+        => new(Path.Combine(directory, "injected-text-cache.json"));
 
     /// <summary>The text DevThrottle ships, straight from the application - never from disk.</summary>
     public static string Ours => FleetPreambleTemplate.Default;
 
-    /// <summary>True when the user has written their own text, whether or not it is live.</summary>
-    public bool HasYours => File.Exists(YoursPath);
-
     /// <summary>
-    /// Write the shipped default to disk so it is always readable, even when the user's text is live.
-    /// Called at launch. Best-effort: failing to write this COPY must never stop a session starting,
-    /// because the real default is in the application and rendering does not depend on this file.
-    /// </summary>
-    public void EnsureOursWritten()
-    {
-        try
-        {
-            Directory.CreateDirectory(_directory);
-            var path = OursPath;
-
-            // Only write when it differs, so the file's timestamp means "our text changed" rather
-            // than "the application started".
-            if (File.Exists(path) && File.ReadAllText(path) == Ours)
-                return;
-
-            File.WriteAllText(path, Ours);
-            FileLog.Write($"[InjectedTextStore] wrote the shipped injected text to {path}");
-        }
-        catch (Exception ex)
-        {
-            FileLog.Write($"[InjectedTextStore] EnsureOursWritten failed for '{_directory}': {ex.Message}");
-        }
-    }
-
-    /// <summary>
-    /// Which version is live. This is the user's CHOICE, and nothing else - deliberately NOT
-    /// "their choice, if their file happens to be readable".
-    ///
-    /// An earlier version of this method returned Ours when the user had chosen theirs but the file
-    /// was missing. That reads like sensible defensiveness and is the exact bug this whole feature
-    /// exists to prevent: someone declines our text, their file later goes missing, and we silently
-    /// resume injecting our text - including our policy - into their agents, with the Settings tab
-    /// still saying theirs is live. A missing file is now a loud failure in
-    /// <see cref="ActiveTemplate"/>, never a quiet reversal of their decision.
+    /// Which version is live RIGHT NOW, read synchronously from the last-known cache. OURS when nothing
+    /// has ever been cached (the documented default). Never a network call.
     /// </summary>
     public InjectedTextSource ActiveSource()
-        => _readConfig().UseYours ? InjectedTextSource.Yours : InjectedTextSource.Ours;
+        => (ReadCache()?.UseYours ?? false) ? InjectedTextSource.Yours : InjectedTextSource.Ours;
 
     /// <summary>
-    /// The template that will actually be injected into the next session.
+    /// The template that will actually be injected into the next session, read synchronously from the
+    /// last-known cache.
     /// </summary>
     /// <exception cref="InjectedTextUnavailableException">
-    /// The user's text is live but cannot be read. This does NOT fall back to ours, and the reason is
-    /// the whole point of the feature: the user declined our text, so injecting it anyway because we
-    /// hit a file error would be the exact thing they opted out of - silently, and with our policy in
-    /// it. The caller fails loudly instead. See the callers for what a session does with that.
+    /// The cache says the user's text is live but carries no text. This does NOT fall back to ours, and
+    /// the reason is the whole point of the feature: the user turned ours off, so injecting it anyway
+    /// because the cached text is missing would be the exact thing they opted out of - silently, and
+    /// with our policy in it. The caller fails loudly instead.
     /// </exception>
     public string ActiveTemplate()
     {
-        if (ActiveSource() == InjectedTextSource.Ours)
+        var cached = ReadCache();
+        if (cached is null)
+        {
+            FileLog.Write("[InjectedTextStore] ActiveTemplate: nothing cached -> DevThrottle text");
+            return Ours;
+        }
+
+        if (!cached.UseYours)
             return Ours;
 
-        try
-        {
-            // File.ReadAllText on a missing path throws, which is the behaviour wanted here: chosen
-            // but absent is a failure, not a reason to reach for our text.
-            return File.ReadAllText(YoursPath);
-        }
-        catch (Exception ex)
-        {
-            FileLog.Write($"[InjectedTextStore] ActiveTemplate FAILED reading '{YoursPath}': {ex.Message}");
+        // ABSENT is a broken cache and fails loudly; EMPTY is the user's deliberate "inject nothing"
+        // and is honoured. Never substitute ours for either - they turned ours off.
+        if (cached.Yours is null)
             throw new InjectedTextUnavailableException(
-                $"Your injected text could not be read from {YoursPath} ({ex.Message}). " +
-                "DevThrottle has not substituted its own text, because you turned that off. " +
-                "Fix or restore the file, or switch back to the DevThrottle version in " +
-                "Settings, Injected text.", ex);
+                "Your injected text is live but its cached copy is missing. DevThrottle has not " +
+                "substituted its own text, because you turned that off. This clears the moment the " +
+                "Director reaches the Gateway again, or when you set the text in the Cockpit.");
+
+        return cached.Yours;
+    }
+
+    /// <summary>
+    /// Refresh the Director's last-known injected text from the Gateway: fetch the authoritative value
+    /// (<c>GET /gateway/injected-text</c>) and write it to the on-disk cache. This is the ASYNC, network
+    /// path - the host calls it off the launch path (on Gateway-connect and on a timer). When no Gateway
+    /// is configured this is a logged no-op that keeps the current cache.
+    /// </summary>
+    public async Task RefreshAsync(CancellationToken ct = default)
+    {
+        // A supplied url means a test drove this hermetically (no config read); otherwise read both the
+        // url and the fleet token from config.json once.
+        string? gatewayUrl;
+        string? token;
+        if (_gatewayUrlOverride is not null)
+        {
+            gatewayUrl = _gatewayUrlOverride.Trim();
+            token = _tokenOverride;
         }
+        else
+        {
+            var config = GatewayConfig.Load();
+            gatewayUrl = config.Url?.Trim();
+            token = config.Token;
+        }
+
+        if (string.IsNullOrWhiteSpace(gatewayUrl))
+        {
+            FileLog.Write("[InjectedTextStore] RefreshAsync: no gateway.url configured -> keeping the last-known cache");
+            return;
+        }
+
+        var endpoint = $"{gatewayUrl.TrimEnd('/')}{GatewayPath}";
+        using var request = new HttpRequestMessage(HttpMethod.Get, endpoint);
+        request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
+        // The Gateway auth gate requires the fleet token on every /gateway/* route (AuthMiddleware). Attach
+        // it the same way GatewayClient does - per REQUEST, so the shared HttpClient's headers are never
+        // mutated. Without this a secured Gateway 401s the refresh and the cache never warms.
+        if (!string.IsNullOrEmpty(token))
+            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
+
+        FileLog.Write($"[InjectedTextStore] RefreshAsync: GET {endpoint}");
+        using var response = await _client.SendAsync(request, ct).ConfigureAwait(false);
+        response.EnsureSuccessStatusCode();
+        var payload = await response.Content.ReadFromJsonAsync<InjectedTextResponse>(JsonOpts, ct).ConfigureAwait(false);
+        if (payload is null)
+            throw new InvalidOperationException($"Gateway returned an empty body from {endpoint}");
+
+        WriteCache(new InjectedTextCacheEntry(payload.UseYours, payload.Yours, DateTime.UtcNow));
+        FileLog.Write($"[InjectedTextStore] RefreshAsync: gateway use_yours={payload.UseYours}, has_yours={payload.Yours is not null} (cached)");
     }
 
-    /// <summary>Read the user's text, or null when they have not written one.</summary>
-    public string? ReadYours() => HasYours ? File.ReadAllText(YoursPath) : null;
+    /// <summary>The last-known cached value on disk, or null when nothing has been cached yet.</summary>
+    public InjectedTextCacheEntry? ReadCache()
+    {
+        if (!File.Exists(_cachePath))
+            return null;
+
+        var json = File.ReadAllText(_cachePath);
+        if (string.IsNullOrWhiteSpace(json))
+            return null;
+
+        return JsonSerializer.Deserialize<InjectedTextCacheEntry>(json, JsonOpts);
+    }
 
     /// <summary>
-    /// Save the user's text and make it live. Rejects a template that cannot render, so the failure
-    /// lands on the person editing it rather than on seven agents at launch.
+    /// Write the cache. Used by <see cref="RefreshAsync"/> after a successful fetch, and by tests to seed
+    /// a known state. Does NOT validate the template - the Gateway already validated it before storing,
+    /// and the Director trusts the value it downloaded.
     /// </summary>
-    /// <exception cref="FleetPreambleTemplateException">The text is not a renderable template.</exception>
-    public void SaveYours(string text)
+    public void WriteCache(InjectedTextCacheEntry entry)
     {
-        var problem = FleetPreambleRenderer.Validate(text);
-        if (problem is not null)
-            throw new FleetPreambleTemplateException(problem);
-
-        Directory.CreateDirectory(_directory);
-        File.WriteAllText(YoursPath, text);
-        _writeUseYours(true);
-        FileLog.Write($"[InjectedTextStore] saved the user's injected text to {YoursPath}; it is now live");
+        var dir = Path.GetDirectoryName(_cachePath)
+            ?? throw new InvalidOperationException($"Cannot determine directory for path: {_cachePath}");
+        Directory.CreateDirectory(dir);
+        File.WriteAllText(_cachePath, JsonSerializer.Serialize(entry, JsonOpts));
     }
 
-    /// <summary>
-    /// Go back to the DevThrottle version. The user's text is KEPT on disk, not deleted - switching
-    /// back to ours is a reversible choice, and silently destroying the paragraphs they wrote because
-    /// they wanted to compare against the default would be unforgivable.
-    /// </summary>
-    public void UseOurs()
-    {
-        _writeUseYours(false);
-        FileLog.Write("[InjectedTextStore] the DevThrottle injected text is now live; the user's version is kept");
-    }
-
-    /// <summary>Make the user's text live again, if they have one.</summary>
-    public void UseYours()
-    {
-        if (!HasYours)
-            throw new InvalidOperationException(
-                "There is no custom injected text to switch to. Write one first.");
-
-        _writeUseYours(true);
-        FileLog.Write("[InjectedTextStore] the user's injected text is now live");
-    }
+    /// <summary>The <c>GET /gateway/injected-text</c> response shape (only the fields the cache needs).</summary>
+    private sealed record InjectedTextResponse(
+        [property: JsonPropertyName("use_yours")] bool UseYours,
+        [property: JsonPropertyName("yours")] string? Yours);
 }
 
 /// <summary>
-/// Thrown when the user's injected text is live but unreadable. Deliberately NOT recoverable by
-/// substituting the DevThrottle default - see <see cref="InjectedTextStore.ActiveTemplate"/>.
+/// Thrown when the user's injected text is live but its cached copy is missing. Deliberately NOT
+/// recoverable by substituting the DevThrottle default - see <see cref="InjectedTextStore.ActiveTemplate"/>.
 /// </summary>
 public class InjectedTextUnavailableException : Exception
 {
+    public InjectedTextUnavailableException(string message) : base(message) { }
     public InjectedTextUnavailableException(string message, Exception inner) : base(message, inner) { }
 }

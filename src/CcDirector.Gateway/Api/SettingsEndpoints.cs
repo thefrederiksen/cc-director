@@ -1,6 +1,7 @@
 using System.Net;
 using System.Net.Sockets;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using CcDirector.AgentBrain;
 using CcDirector.Core.Configuration;
 using CcDirector.Core.Network;
@@ -31,6 +32,8 @@ namespace CcDirector.Gateway.Api;
 ///   PUT  /gateway/tts-voice       body { "voice": "nova"|... } -> { voice }
 ///   GET  /gateway/telemetry-consent  -> { enabled } (fleet-wide richer-usage consent, default ON, issue #649)
 ///   PUT  /gateway/telemetry-consent  body { "enabled": bool } -> { enabled }
+///   GET  /gateway/injected-text   -> { use_yours, yours, ours, placeholders[] } (what agents get at launch)
+///   PUT  /gateway/injected-text   body { "use_yours": bool, "yours": string|null } -> same shape
 /// </summary>
 internal static class SettingsEndpoints
 {
@@ -276,6 +279,84 @@ internal static class SettingsEndpoints
             catch (JsonException ex)
             {
                 FileLog.Write($"[SettingsEndpoints] PUT /gateway/snooze-default bad JSON: {ex.Message}");
+                return Results.BadRequest(new { error = "invalid JSON" });
+            }
+        });
+
+        // The injected text: the whole of what DevThrottle puts in front of an agent at the start of a
+        // session, and the user's choice to run their own words instead of ours. Gateway-owned so the
+        // choice is the same on every machine the user runs a Director on; each Director downloads and
+        // caches it (Sessions.InjectedTextStore) and injects it at launch. The GET carries "ours" (the
+        // shipped default, always current) so the Cockpit can show the default even while a custom
+        // version is live, and the placeholder tokens so the page can list what stays editable.
+        app.MapGet("/gateway/injected-text", () =>
+        {
+            var s = Core.Configuration.InjectedTextConfig.Get();
+            return Results.Json(new
+            {
+                use_yours = s.UseYours,
+                yours = s.Yours,
+                ours = Core.Configuration.InjectedTextConfig.Ours,
+                placeholders = Core.Sessions.FleetPreamblePlaceholders.All,
+            });
+        });
+
+        app.MapPut("/gateway/injected-text", async (HttpContext ctx) =>
+        {
+            try
+            {
+                var node = await JsonNode.ParseAsync(ctx.Request.Body, cancellationToken: ctx.RequestAborted);
+                if (node is not JsonObject obj)
+                    return Results.BadRequest(new { error = "body { \"use_yours\": bool, \"yours\": string|null } is required" });
+
+                // Both fields are REQUIRED, and absent carries a different meaning from present-but-null for
+                // this feature, so a partial body is rejected rather than defaulted. Defaulting a missing
+                // use_yours to false would flip whose text is live; defaulting a missing yours to null would
+                // erase the user's saved text. The client always sends the full desired state.
+                if (!obj.ContainsKey("use_yours"))
+                    return Results.BadRequest(new { error = "use_yours is required (true or false)" });
+                if (!obj.ContainsKey("yours"))
+                    return Results.BadRequest(new { error = "yours is required (a string, or null to clear it - not absent)" });
+
+                if (obj["use_yours"] is not JsonValue uv
+                    || uv.GetValueKind() is not (JsonValueKind.True or JsonValueKind.False))
+                    return Results.BadRequest(new { error = "use_yours must be true or false" });
+                var useYours = uv.GetValue<bool>();
+
+                string? yours;
+                var yoursNode = obj["yours"];
+                if (yoursNode is null)
+                    yours = null;
+                else if (yoursNode is JsonValue yv && yv.GetValueKind() == JsonValueKind.String)
+                    yours = yv.GetValue<string>();
+                else
+                    return Results.BadRequest(new { error = "yours must be a string or null" });
+
+                var settings = new Core.Configuration.InjectedTextSettings(useYours, yours);
+
+                // Validate before writing, and reject rather than store: a template that cannot render
+                // must never reach a Director, because the failure would land on agents at launch instead
+                // of on the person editing it here.
+                var problem = Core.Configuration.InjectedTextConfig.Validate(settings);
+                if (problem is not null)
+                {
+                    FileLog.Write($"[SettingsEndpoints] PUT /gateway/injected-text rejected: {problem}");
+                    return Results.BadRequest(new { error = problem });
+                }
+
+                Core.Configuration.InjectedTextConfig.Set(settings);
+                FileLog.Write($"[SettingsEndpoints] injected_text set: use_yours={settings.UseYours}, has_yours={settings.Yours is not null}");
+                return Results.Json(new
+                {
+                    use_yours = settings.UseYours,
+                    yours = settings.Yours,
+                    ours = Core.Configuration.InjectedTextConfig.Ours,
+                    placeholders = Core.Sessions.FleetPreamblePlaceholders.All,
+                });
+            }
+            catch (JsonException ex)
+            {
+                FileLog.Write($"[SettingsEndpoints] PUT /gateway/injected-text bad JSON: {ex.Message}");
                 return Results.BadRequest(new { error = "invalid JSON" });
             }
         });

@@ -79,6 +79,7 @@ const NAV_FOOT: ReadonlyArray<NavItem> = [
   { to: "/account", label: "Account", icon: "account" },
   { to: "/your-throttle", label: "Your Throttle", icon: "throttle" },
   { to: "/settings", label: "Settings", icon: "settings" },
+  { to: "/injected-text", label: "Injected text", icon: "injected-text" },
   { to: "/about", label: "About", icon: "about" },
   { to: DOCS_URL, label: "Help", icon: "help", href: DOCS_URL },
 ];

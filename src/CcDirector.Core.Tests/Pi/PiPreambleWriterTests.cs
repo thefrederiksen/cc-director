@@ -1,5 +1,4 @@
 using CcDirector.Core.Account;
-using CcDirector.Core.Configuration;
 using CcDirector.Core.Pi;
 using CcDirector.Core.Sessions;
 using Xunit;
@@ -14,8 +13,16 @@ public class PiPreambleWriterTests
     // their own injected text. A test whose result depends on the tester is not a test.
     private static InjectedTextStore OursStore(string dir) => InjectedTextStore.AlwaysOurs(dir);
 
-    private static InjectedTextStore TheirsStore(string dir, bool useYours = true)
-        => new(dir, () => new InjectedTextConfig(useYours), _ => { });
+    // The user's text is chosen, but its cached copy is absent (a broken/partial cache). ActiveTemplate
+    // throws; the writer must swallow that and inject NOTHING, never ours.
+    private static InjectedTextStore TheirsStore(string dir) => SeedStore(dir, useYours: true, yours: null);
+
+    private static InjectedTextStore SeedStore(string dir, bool useYours, string? yours)
+    {
+        var store = new InjectedTextStore(Path.Combine(dir, "injected-text-cache.json"));
+        store.WriteCache(new InjectedTextCacheEntry(useYours, yours, DateTime.UtcNow));
+        return store;
+    }
 
     // Issue #1357: when a signed-in user is supplied, the Pi preamble file names that user.
     [Fact]
@@ -117,10 +124,7 @@ public class PiPreambleWriterTests
         var dir = NewDir();
         try
         {
-            var useYours = false;
-            var store = new InjectedTextStore(
-                dir, () => new InjectedTextConfig(useYours), v => useYours = v);
-            store.SaveYours("   \n  \n");
+            var store = SeedStore(dir, useYours: true, yours: "   \n  \n");
 
             var path = PiPreambleWriter.WriteForSession(
                 "abc12345-1111-2222-3333-444455556666", "myrepo", "MACHINE_A", @"D:\repo\myrepo",
@@ -138,10 +142,7 @@ public class PiPreambleWriterTests
         var dir = NewDir();
         try
         {
-            var useYours = false;
-            var store = new InjectedTextStore(
-                dir, () => new InjectedTextConfig(useYours), v => useYours = v);
-            store.SaveYours("only my words. you are [SESSION_SHORT_ID].");
+            var store = SeedStore(dir, useYours: true, yours: "only my words. you are [SESSION_SHORT_ID].");
 
             var path = PiPreambleWriter.WriteForSession(
                 "abc12345-1111-2222-3333-444455556666", "myrepo", "MACHINE_A", @"D:\repo\myrepo",

@@ -187,10 +187,13 @@ public static class CcStorage
     /// <summary>Codex hook scripts the Director installs: base/codex-hooks/.</summary>
     public static string CodexHooks() => Path.Combine(Base(), "codex-hooks");
 
-    /// <summary>The text DevThrottle injects into agents at launch: base/injected-text/. Holds
-    /// ours.txt (the shipped default, rewritten every launch) and yours.txt (the user's version,
-    /// present only if they wrote one).</summary>
-    public static string InjectedText() => Path.Combine(Base(), "injected-text");
+    /// <summary>The Director's cache of the GATEWAY-OWNED injected text:
+    /// config/director/injected-text-cache.json. The authoritative value lives on the Gateway
+    /// (GET /gateway/injected-text); this file is the last-known copy the Director reads synchronously at
+    /// session launch so a launch never waits on - or fails without - the network. Mirrors the
+    /// telemetry-consent cache next to it (<see cref="TelemetryConsentCache"/>).</summary>
+    public static string InjectedTextCache() =>
+        Path.Combine(ToolConfig("director"), "injected-text-cache.json");
 
     /// <summary>Dictation root: base/dictation/. Holds the user dictionary plus the
     /// recordings/ and sessions/ subfolders.</summary>

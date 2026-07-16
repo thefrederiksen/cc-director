@@ -559,12 +559,6 @@ public sealed class SessionManager : IDisposable
                 envVars["OPENCODE_DISABLE_AUTO_UPDATE"] = "1";
             }
 
-            // Keep the copy of OUR injected text on disk current, whatever the user is running. It is
-            // what the Settings tab offers them to read and adopt, so a user on their own version can
-            // always see the default they are declining. Best-effort by design: the real default is in
-            // the application, so a failure to write this copy must never stop a session starting.
-            new InjectedTextStore().EnsureOursWritten();
-
             // For Claude, install the session-pointer hooks and pass them via --settings so the
             // Director learns the current Claude session id + transcript path across /clear and
             // auto-compaction (Claude mints a new id + transcript file on each). --settings MERGES
