@@ -47,6 +47,73 @@ public class GitHubUrlsTests
         Assert.Throws<ArgumentException>(() => GitHubUrls.ParseNewIssueUrl(originUrl));
     }
 
+    // ---------- ParseSlug (pure owner/repo extraction) ----------
+
+    [Theory]
+    [InlineData("https://github.com/example-org/devthrottle.git")]
+    [InlineData("https://github.com/example-org/devthrottle")]
+    [InlineData("git@github.com:example-org/devthrottle.git")]
+    [InlineData("ssh://git@github.com/example-org/devthrottle.git")]
+    public void ParseSlug_KnownRemoteShapes_ReturnsOwnerRepo(string originUrl)
+    {
+        Assert.Equal("example-org/devthrottle", GitHubUrls.ParseSlug(originUrl));
+    }
+
+    [Theory]
+    [InlineData("https://gitlab.com/owner/repo.git")]
+    [InlineData("git@bitbucket.org:owner/repo.git")]
+    public void ParseSlug_NonGitHubRemote_Throws(string originUrl)
+    {
+        Assert.Throws<InvalidOperationException>(() => GitHubUrls.ParseSlug(originUrl));
+    }
+
+    // ---------- ResolveSlugCached (best-effort, never throws) ----------
+
+    [Fact]
+    public void ResolveSlugCached_RepoWithGitHubOrigin_ReturnsSlug()
+    {
+        var repoDir = CreateTempGitRepo("https://github.com/someowner/somerepo.git");
+        try
+        {
+            Assert.Equal("someowner/somerepo", GitHubUrls.ResolveSlugCached(repoDir));
+        }
+        finally
+        {
+            Directory.Delete(repoDir, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void ResolveSlugCached_RepoWithoutOrigin_ReturnsEmpty_NeverThrows()
+    {
+        var repoDir = CreateTempGitRepo(originUrl: null);
+        try
+        {
+            Assert.Equal("", GitHubUrls.ResolveSlugCached(repoDir));
+        }
+        finally
+        {
+            Directory.Delete(repoDir, recursive: true);
+        }
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("   ")]
+    public void ResolveSlugCached_NullOrBlankPath_ReturnsEmpty(string? repoPath)
+    {
+        Assert.Equal("", GitHubUrls.ResolveSlugCached(repoPath));
+    }
+
+    [Fact]
+    public void ResolveSlugCached_MissingDirectory_ReturnsEmpty_NeverThrows()
+    {
+        var missing = Path.Combine(Path.GetTempPath(), $"cc-director-missing-{Guid.NewGuid():N}");
+
+        Assert.Equal("", GitHubUrls.ResolveSlugCached(missing));
+    }
+
     // ---------- BuildNewIssueUrl (against real temp git repos) ----------
 
     [Fact]

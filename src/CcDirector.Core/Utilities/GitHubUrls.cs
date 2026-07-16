@@ -10,6 +10,14 @@ public static class GitHubUrls
 {
     private static readonly TimeSpan RemoteUrlRegexTimeout = TimeSpan.FromMilliseconds(50);
 
+    // repoPath -> resolved "owner/repo" slug, or "" when the checkout has no github.com origin. A local
+    // clone's origin does not change over a process lifetime, and resolving it spawns a git subprocess, so
+    // this is cached: ResolveSlugCached runs on the Director's roster path (every session, every poll) and
+    // must not fork git each time. Misses ("" - no origin, not a git repo, non-github remote) are cached
+    // too, so a checkout without a GitHub origin is probed once, not on every poll.
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, string> SlugCache =
+        new(StringComparer.Ordinal);
+
     /// <summary>
     /// Resolves the repo's origin remote via git and converts it to the GitHub
     /// "new issue" URL. Throws with a clear message when the directory is not a
@@ -28,6 +36,39 @@ public static class GitHubUrls
     }
 
     /// <summary>
+    /// The GitHub "owner/repo" slug for a local checkout, or "" when the checkout has no github.com origin
+    /// (no origin remote, not a git repo, or a non-GitHub remote). Best-effort and NEVER throws: an empty
+    /// result is a legitimate answer - not every checkout is on GitHub - and the caller (the DevThrottle
+    /// Stats repo grouping) falls back to the local path for those. Cached by path; see <see cref="SlugCache"/>.
+    ///
+    /// This is the key that makes every worktree and every per-machine clone of one repository roll up into
+    /// a single row on the Repos page: they all share one origin remote, so they all resolve to one slug.
+    /// </summary>
+    public static string ResolveSlugCached(string? repoPath)
+    {
+        if (string.IsNullOrWhiteSpace(repoPath)) return "";
+        return SlugCache.GetOrAdd(repoPath, ResolveSlugUncached);
+    }
+
+    private static string ResolveSlugUncached(string repoPath)
+    {
+        try
+        {
+            if (!Directory.Exists(repoPath)) return "";
+            var slug = ParseSlug(GetOriginRemoteUrl(repoPath));
+            FileLog.Write($"[GitHubUrls] ResolveSlugCached: {repoPath} -> {slug}");
+            return slug;
+        }
+        catch (Exception ex)
+        {
+            // A checkout with no origin, or one whose origin is not on github.com, is an expected state, not
+            // a failure to hide: it simply has no slug and groups by its path instead. Recorded, then "".
+            FileLog.Write($"[GitHubUrls] ResolveSlugCached: {repoPath} has no GitHub slug: {ex.Message}");
+            return "";
+        }
+    }
+
+    /// <summary>
     /// Converts an origin remote URL to the GitHub "new issue" URL. Pure string
     /// logic so it is unit-testable without git. Accepts the three remote shapes:
     ///   git@github.com:owner/repo.git
@@ -36,6 +77,14 @@ public static class GitHubUrls
     /// Throws when the remote is not on github.com.
     /// </summary>
     internal static string ParseNewIssueUrl(string originUrl)
+        => $"https://github.com/{ParseSlug(originUrl)}/issues/new";
+
+    /// <summary>
+    /// Extracts the "owner/repo" slug from an origin remote URL. Pure string logic so it is unit-testable
+    /// without git; accepts the same three remote shapes as <see cref="ParseNewIssueUrl"/>. Throws when the
+    /// remote is empty or not on github.com.
+    /// </summary>
+    internal static string ParseSlug(string originUrl)
     {
         if (string.IsNullOrWhiteSpace(originUrl))
             throw new ArgumentException("Origin remote URL is required", nameof(originUrl));
@@ -46,7 +95,7 @@ public static class GitHubUrls
         if (!match.Success)
             throw new InvalidOperationException($"Origin is not a GitHub remote: {originUrl}");
 
-        return $"https://github.com/{match.Groups["owner"].Value}/{match.Groups["repo"].Value}/issues/new";
+        return $"{match.Groups["owner"].Value}/{match.Groups["repo"].Value}";
     }
 
     /// <summary>

@@ -72,6 +72,8 @@ public sealed class GatewayStatsDatabaseTests : IDisposable
         Assert.True(TableExists(db, "repo_identity"));
         Assert.True(TableExists(db, "agent_identity"));
         Assert.True(TableExists(db, "model_identity"));
+        // The checkout dimension (schema v4): the local working directory retained beside the repository slug.
+        Assert.True(TableExists(db, "checkout_identity"));
         // Token spend (issue #1637) - the delta lane and its per-session high-water.
         Assert.True(TableExists(db, "token_delta"));
         Assert.True(TableExists(db, "token_highwater"));
@@ -181,7 +183,7 @@ public sealed class GatewayStatsDatabaseTests : IDisposable
         var expected = new[]
         {
             "id", "hour_utc", "session_id", "modality", "surface",
-            "is_voice", "repo_id", "model_id", "wingman", "turns", "chars",
+            "is_voice", "repo_id", "checkout_id", "model_id", "wingman", "turns", "chars",
         };
         Assert.Equal(expected.OrderBy(c => c, StringComparer.Ordinal),
                      columns.Keys.OrderBy(c => c, StringComparer.Ordinal));
@@ -193,6 +195,9 @@ public sealed class GatewayStatsDatabaseTests : IDisposable
         // OrdinalIgnoreCase map must be the only thing that ever decides two model names are one model.
         Assert.Equal("INTEGER", columns["repo_id"]);
         Assert.Equal("INTEGER", columns["model_id"]);
+        // checkout_id is a surrogate id too, for the same reason: the local path is free text and only the
+        // in-memory OrdinalIgnoreCase map may decide two paths are one checkout.
+        Assert.Equal("INTEGER", columns["checkout_id"]);
 
         // Ruling B: agent_id is NOT on stat_delta. The agent tally is not derivable from these rows -
         // the first-fold back-fill attributes turns that are already in the totals, so a row here would
@@ -259,17 +264,15 @@ public sealed class GatewayStatsDatabaseTests : IDisposable
         Assert.Contains("will not fall back", ex.Message);
     }
 
-    // ---- Schema version 2: the model dimension. THE FIRST REAL MIGRATION. ----
+    // ---- A hand-built PRE-SLUG store, used to exercise the schema v4 reset. ----
     //
-    // These tests are why the mission exists. Version 1 shipped the migration MACHINERY against a single
-    // version, where nothing exercised it - a green suite proved only that the machinery compiled. The
-    // claim being made now is the one the owner is actually owed: his database, holding real turns, gains
-    // a dimension and does not lose a number.
-    //
-    // A hand-built version 1 file, not a downgraded current one. It is the shape the PREVIOUS BUILD wrote,
-    // reproduced from its migration: stat_delta without model_id, no model_identity, user_version=1. That
-    // is what is on the owner's disk right now, and a test that starts from the current schema and pretends
-    // would prove nothing about it.
+    // This writes the exact shape a PREVIOUS BUILD wrote: stat_delta without model_id or checkout_id, no
+    // model_identity, repo_id keyed by a local PATH, user_version=1. Until v4 the contract was that such a
+    // file migrated forward and kept every row; at v4 the repository dimension changed meaning (path became
+    // GitHub slug) and a path-keyed row can no longer be re-keyed, so the owner ruled it is not carried
+    // across - the file is retired aside unread and the store starts empty. These rows are therefore what a
+    // real pre-slug store looks like on disk, so the retire tests can prove it is retired (not migrated) and
+    // that the retired copy stays intact.
     private void WriteVersion1Database(params (string Hour, long Turns, long Chars)[] rows)
     {
         using var connection = new SqliteConnection($"Data Source={_path}");
@@ -329,46 +332,68 @@ public sealed class GatewayStatsDatabaseTests : IDisposable
     }
 
     [Fact]
-    public void Migrate_Version1File_UpgradesToCurrentVersionAndKeepsEveryRow()
+    public void Open_PreSlugStore_IsRetiredAsideUnread_AndStartsEmpty()
     {
+        // The repository dimension changed meaning at schema v4: repo_id was the session's local path and is
+        // now its GitHub slug. A stored path-keyed row cannot be re-keyed to a slug (the Gateway has no
+        // filesystem to resolve the path), so - as with the legacy JSON store, and by the same owner ruling -
+        // a pre-slug store (any version 1..3) is not migrated forward. It is renamed aside UNREAD and this
+        // store starts empty. This is the reset the owner approved ("we're not really live yet").
         WriteVersion1Database(("2026-07-16T09", 40, 400), ("2026-07-16T10", 27, 270));
 
         using var db = new GatewayStatsDatabase(_path);
 
-        // A version-1 file on disk migrates through EVERY step to the current version - the whole chain, not
-        // one hop. The owner's real database is version 1, so this is the path his numbers actually take.
+        // The fresh store is at the current version and carries NONE of the pre-slug rows.
         Assert.Equal(GatewayStatsDatabase.SchemaVersion, UserVersion(db));
+        Assert.Equal(0, ScalarLong(db, "SELECT COUNT(*) FROM stat_delta"));
+        Assert.Equal(0, ScalarLong(db, "SELECT COUNT(*) FROM repo_identity"));
+        // The new dimension is present on the fresh store.
+        Assert.True(TableExists(db, "checkout_identity"));
+        Assert.Contains("checkout_id", ColumnsOf(db, "stat_delta"));
 
-        // The version stamp ALONE proves nothing, and these assertions are here because the first draft of
-        // this test proved nothing: Migrate writes PRAGMA user_version unconditionally, after the steps, so
-        // the current-version stamp appears whether or not the steps ran. With a step disabled this test
-        // still passed, green and useless, exactly the "dead test that looks like coverage" this mission
-        // keeps finding. Reading back what each step ADDS is what makes the name true.
-        Assert.Contains("model_id", ColumnsOf(db, "stat_delta")); // version 2
-        Assert.True(TableExists(db, "token_delta"));              // version 3
-        Assert.True(TableExists(db, "token_highwater"));          // version 3
-
-        // The numbers are the promise. A migration that loses turns is the failure this whole mission
-        // exists to prevent, so it is asserted on the totals and not merely on the row count.
-        Assert.Equal(2, ScalarLong(db, "SELECT COUNT(*) FROM stat_delta"));
-        Assert.Equal(67, ScalarLong(db, "SELECT SUM(turns) FROM stat_delta"));
-        Assert.Equal(670, ScalarLong(db, "SELECT SUM(chars) FROM stat_delta"));
+        // Renamed, never deleted - the old numbers are recoverable, which was the owner's line on the JSON
+        // store too. Exactly one retired copy sits beside the fresh database.
+        var retired = Directory.GetFiles(_dir, "gateway-stats.db.pre-slug-*");
+        Assert.Single(retired);
     }
 
     [Fact]
-    public void Migrate_Version1File_AddsTheTokenDimensionEmpty()
+    public void Open_PreSlugStore_LeavesTheRetiredCopyIntactAndReadable()
     {
-        // The token tables are created by the version 3 step and start EMPTY - there was no token history to
-        // carry across (nothing recorded tokens before this), so every number begins at the cutover, exactly
-        // like the model dimension. Not a bug that they are empty; the honest starting state.
-        WriteVersion1Database(("2026-07-16T09", 40, 400));
+        // "Renamed aside UNREAD" must mean the bytes are untouched: the retired file still holds the old rows,
+        // so the reset is recoverable rather than a destructive wipe.
+        WriteVersion1Database(("2026-07-16T09", 40, 400), ("2026-07-16T10", 27, 270));
 
-        using var db = new GatewayStatsDatabase(_path);
+        using (var db = new GatewayStatsDatabase(_path)) { /* triggers the retire */ }
+        SqliteConnection.ClearAllPools();
 
-        Assert.True(TableExists(db, "token_delta"));
-        Assert.True(TableExists(db, "token_highwater"));
-        Assert.Equal(0, ScalarLong(db, "SELECT COUNT(*) FROM token_delta"));
-        Assert.Equal(0, ScalarLong(db, "SELECT COUNT(*) FROM token_highwater"));
+        var retired = Directory.GetFiles(_dir, "gateway-stats.db.pre-slug-*").Single();
+        using var old = new SqliteConnection($"Data Source={retired}");
+        old.Open();
+        using var cmd = old.CreateCommand();
+        cmd.CommandText = "SELECT SUM(turns) FROM stat_delta";
+        Assert.Equal(67L, Convert.ToInt64(cmd.ExecuteScalar()));
+    }
+
+    [Fact]
+    public void Open_CurrentVersionStore_IsNotRetired()
+    {
+        // The retire is one-time and version-gated: a store already at the current version is current, so a
+        // reopen must leave it exactly in place and mint no retired copy. This is what makes the retire
+        // self-idempotent - the fresh v4 store this build writes is never retired on the next startup.
+        using (var first = new GatewayStatsDatabase(_path))
+        {
+            using var cmd = first.Connection.CreateCommand();
+            cmd.CommandText = "INSERT INTO meta(name, value) VALUES ('probe', 'kept')";
+            cmd.ExecuteNonQuery();
+        }
+        SqliteConnection.ClearAllPools();
+
+        using var second = new GatewayStatsDatabase(_path);
+        Assert.Empty(Directory.GetFiles(_dir, "gateway-stats.db.pre-slug-*"));
+        using var read = second.Connection.CreateCommand();
+        read.CommandText = "SELECT value FROM meta WHERE name='probe'";
+        Assert.Equal("kept", read.ExecuteScalar() as string);
     }
 
     [Fact]
@@ -407,24 +432,13 @@ public sealed class GatewayStatsDatabaseTests : IDisposable
     }
 
     [Fact]
-    public void Migrate_Version1File_AddsTheModelDimensionAndReadsNullOnPreExistingRows()
+    public void Open_FreshStore_StampsWhenTheModelDimensionBegan()
     {
-        WriteVersion1Database(("2026-07-16T09", 40, 400));
-
-        using var db = new GatewayStatsDatabase(_path);
-
-        Assert.True(TableExists(db, "model_identity"));
-        // Every row folded before the dimension existed reads NULL, which is the true thing to say about
-        // them: they were recorded when no model was being observed at all. Not zero, not a placeholder id.
-        Assert.Equal(1, ScalarLong(db, "SELECT COUNT(*) FROM stat_delta WHERE model_id IS NULL"));
-        Assert.Equal(0, ScalarLong(db, "SELECT COUNT(*) FROM stat_delta WHERE model_id IS NOT NULL"));
-    }
-
-    [Fact]
-    public void Migrate_Version1File_StampsWhenTheModelDimensionBegan()
-    {
+        // The model dimension's since-stamp is written by the version 2 migration, which runs as part of
+        // building even a FRESH store (0 -> current), so a brand-new database carries it. A null model_id is
+        // unreadable without it: a row that predates the dimension and one whose session had recorded no model
+        // yet both store NULL, and only this stamp separates them.
         var before = DateTime.UtcNow.AddSeconds(-1);
-        WriteVersion1Database(("2026-07-16T09", 40, 400));
 
         using var db = new GatewayStatsDatabase(_path);
 
@@ -433,35 +447,9 @@ public sealed class GatewayStatsDatabaseTests : IDisposable
         cmd.Parameters.AddWithValue("$n", GatewayStatsDatabase.ModelsSinceKey);
         var stamped = cmd.ExecuteScalar() as string;
 
-        // Without this stamp a null model_id is unreadable: a row that predates the dimension and a row
-        // whose session had recorded no model yet both store NULL, and only the stamp separates them.
         Assert.False(string.IsNullOrEmpty(stamped));
         Assert.True(DateTime.TryParse(stamped, System.Globalization.CultureInfo.InvariantCulture,
             System.Globalization.DateTimeStyles.RoundtripKind, out var since));
-        Assert.True(since >= before, $"models_since_utc '{stamped}' predates the migration.");
-    }
-
-    [Fact]
-    public void Migrate_AlreadyMigratedFile_DoesNotMoveTheModelSinceStamp()
-    {
-        // The stamp records when the dimension BEGAN. Re-stamping it on a later open would push it past
-        // rows that already carry real models and silently reclassify them as predating the dimension -
-        // a re-run that quietly rewrites history is precisely the failure mode the version guard exists for.
-        WriteVersion1Database(("2026-07-16T09", 40, 400));
-
-        string? first;
-        using (var db = new GatewayStatsDatabase(_path))
-        {
-            using var cmd = db.Connection.CreateCommand();
-            cmd.CommandText = $"SELECT value FROM meta WHERE name='{GatewayStatsDatabase.ModelsSinceKey}'";
-            first = cmd.ExecuteScalar() as string;
-        }
-        SqliteConnection.ClearAllPools();
-
-        using var reopened = new GatewayStatsDatabase(_path);
-        using var read = reopened.Connection.CreateCommand();
-        read.CommandText = $"SELECT value FROM meta WHERE name='{GatewayStatsDatabase.ModelsSinceKey}'";
-
-        Assert.Equal(first, read.ExecuteScalar() as string);
+        Assert.True(since >= before, $"models_since_utc '{stamped}' predates the store's creation.");
     }
 }

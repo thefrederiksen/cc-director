@@ -602,6 +602,17 @@
   margin-bottom: 7px;
   font-variant-numeric: tabular-nums;
 }
+.repo-checkouts {
+  font-size: 11px;
+  color: var(--text-dim);
+  opacity: 0.75;
+  margin-top: -3px;
+  margin-bottom: 7px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 100%;
+}
 .repo-bar-track {
   height: 10px;
   background: var(--surface-2);

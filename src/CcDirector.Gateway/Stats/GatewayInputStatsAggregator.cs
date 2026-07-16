@@ -71,9 +71,15 @@ public sealed class GatewayInputStatsAggregator : IDisposable
     private readonly Dictionary<string, long> _repoIds = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, long> _agentIds = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, long> _modelIds = new(StringComparer.OrdinalIgnoreCase);
+    // The checkout (local working directory) dimension retained beside the repository (issue: group the
+    // Repos page by GitHub repository). repo_id is now the GitHub slug, so worktrees and per-machine clones
+    // of one repository share a repo_id; checkout_id keeps the path each turn actually ran in so it is not
+    // lost. Same first-seen-wins OrdinalIgnoreCase identity as the others.
+    private readonly Dictionary<string, long> _checkoutIds = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<long, string> _repoDisplay = new();
     private readonly Dictionary<long, string> _agentDisplay = new();
     private readonly Dictionary<long, string> _modelDisplay = new();
+    private readonly Dictionary<long, string> _checkoutDisplay = new();
 
     private readonly HashSet<(long Id, string SessionId)> _repoSessions = new();
     private readonly HashSet<(long Id, string SessionId)> _agentSessions = new();
@@ -111,14 +117,20 @@ public sealed class GatewayInputStatsAggregator : IDisposable
     /// <see cref="Model"/> is a first-class kind here but has NO distinct-session set: nothing asks how many
     /// sessions ran a model, so <see cref="SessionsFor"/> refuses it rather than carrying a set nothing
     /// populates. It is also the only kind that can be ABSENT - see <see cref="FoldLocked"/>.
+    ///
+    /// <see cref="Checkout"/> is the local working-directory path retained beside the repository slug. Like
+    /// <see cref="Model"/> it keeps no distinct-session set (the session count the Repos page shows is per
+    /// repository, not per checkout), so <see cref="SessionsFor"/> refuses it too. Unlike Model it is never
+    /// absent - a session always has a working directory.
     /// </summary>
-    private enum IdentityKind { Repo, Agent, Model }
+    private enum IdentityKind { Repo, Agent, Model, Checkout }
 
     private Dictionary<string, long> IdsFor(IdentityKind kind) => kind switch
     {
         IdentityKind.Repo => _repoIds,
         IdentityKind.Agent => _agentIds,
         IdentityKind.Model => _modelIds,
+        IdentityKind.Checkout => _checkoutIds,
         _ => throw new ArgumentOutOfRangeException(nameof(kind), kind, "Unknown identity kind."),
     };
 
@@ -127,11 +139,12 @@ public sealed class GatewayInputStatsAggregator : IDisposable
         IdentityKind.Repo => _repoDisplay,
         IdentityKind.Agent => _agentDisplay,
         IdentityKind.Model => _modelDisplay,
+        IdentityKind.Checkout => _checkoutDisplay,
         _ => throw new ArgumentOutOfRangeException(nameof(kind), kind, "Unknown identity kind."),
     };
 
-    // The distinct-session sets exist for repositories and agents only. A model has none, deliberately, so
-    // asking for one is a programming error and says so rather than inventing an empty answer.
+    // The distinct-session sets exist for repositories and agents only. A model and a checkout have none,
+    // deliberately, so asking for one is a programming error and says so rather than inventing an empty answer.
     private HashSet<(long Id, string SessionId)> SessionsFor(IdentityKind kind) => kind switch
     {
         IdentityKind.Repo => _repoSessions,
@@ -145,6 +158,7 @@ public sealed class GatewayInputStatsAggregator : IDisposable
         IdentityKind.Repo => ("repo_identity", "repo_display"),
         IdentityKind.Agent => ("agent_identity", "agent_display"),
         IdentityKind.Model => ("model_identity", "model_display"),
+        IdentityKind.Checkout => ("checkout_identity", "checkout_display"),
         _ => throw new ArgumentOutOfRangeException(nameof(kind), kind, "Unknown identity kind."),
     };
 
@@ -226,6 +240,11 @@ public sealed class GatewayInputStatsAggregator : IDisposable
                 var id = r.GetInt64(0); var d = r.GetString(1);
                 _modelIds[d] = id; _modelDisplay[id] = d;
             });
+            Read("SELECT checkout_id, checkout_display FROM checkout_identity", r =>
+            {
+                var id = r.GetInt64(0); var d = r.GetString(1);
+                _checkoutIds[d] = id; _checkoutDisplay[id] = d;
+            });
             Read("SELECT repo_id, session_id FROM repo_session", r => _repoSessions.Add((r.GetInt64(0), r.GetString(1))));
             Read("SELECT agent_id, session_id FROM agent_session", r => _agentSessions.Add((r.GetInt64(0), r.GetString(1))));
             _agentsSinceUtc = ReadScalarString("SELECT value FROM meta WHERE name=$n", ("$n", AgentsSinceKey)) ?? "";
@@ -238,7 +257,7 @@ public sealed class GatewayInputStatsAggregator : IDisposable
 
             FileLog.Write($"[GatewayInputStatsAggregator] LoadMirror: {_highWater.Count} live session(s), " +
                           $"{_wingmanSessions.Count} wingman session(s), {_repoIds.Count} repo(s), {_agentIds.Count} agent(s), " +
-                          $"{_modelIds.Count} model(s), {_agentsSeeded.Count} seeded, agentsSince='{_agentsSinceUtc}', " +
+                          $"{_modelIds.Count} model(s), {_checkoutIds.Count} checkout(s), {_agentsSeeded.Count} seeded, agentsSince='{_agentsSinceUtc}', " +
                           $"modelsSince='{_modelsSinceUtc}' from {_db.Path}");
         }
     }
@@ -285,7 +304,9 @@ public sealed class GatewayInputStatsAggregator : IDisposable
 
         // Model is the only nullable member of a row: null means the owning Director had recorded no model
         // for that session when the turn folded, which is the honest state and never a lookup failure.
-        public readonly List<(string Hour, string SessionId, string Modality, string Surface, bool IsVoice, string Repo, string? Model, bool Wingman, long Turns, long Chars)> Rows = new();
+        // Repo is the GitHub slug (the grouping key); Checkout is the local working directory the turn ran in,
+        // retained beside it so the path is not lost when worktrees and clones collapse into one repo row.
+        public readonly List<(string Hour, string SessionId, string Modality, string Surface, bool IsVoice, string Repo, string Checkout, string? Model, bool Wingman, long Turns, long Chars)> Rows = new();
         public readonly List<(string Agent, bool IsVoice, long Turns, long Chars)> AgentRows = new();
         public readonly List<(string Agent, long Turns, long Chars)> AgentDrivenRows = new();
         public readonly List<(string SessionId, string Modality, string Surface, long Turns, long Chars)> HighWater = new();
@@ -366,13 +387,18 @@ public sealed class GatewayInputStatsAggregator : IDisposable
                     AttributeToAgentLocked(s, key.Modality, prior.Turns, prior.Characters, batch);
         }
 
-        // Path separators are deliberately NOT normalized. OrdinalIgnoreCase folds case but not '/' against
-        // '\', so "D:/ReposFred/devthrottle" and "D:\ReposFred\devthrottle" are genuinely different keys and
-        // the Repos page already shows them separately - measured on the owner's real store, three
-        // repositories are stored under both spellings and normalizing would collapse 20 rows to 17. It
-        // looks like a bug; fixing it would CHANGE THE OWNER'S NUMBERS. Whether the page should merge them
-        // is his question, not this mission's.
-        var repoKey = s.RepoPath ?? "";
+        // The repository grouping key is the GitHub "owner/repo" slug the owning Director resolved for this
+        // checkout, so every worktree and every per-machine clone of one repository folds into a single row.
+        // A checkout with no github.com origin (RepoSlug empty) falls back to its path, which still groups
+        // that repo sensibly and never drops its turns.
+        //
+        // The checkout key is the raw working-directory path, retained as its own dimension so the store
+        // still records exactly which checkout each turn ran in - the path is not lost when the slug collapses
+        // the worktrees together. Path separators are deliberately NOT normalized on either key: a slug never
+        // carries a separator to disagree on, and for a path the old behaviour (OrdinalIgnoreCase folds case
+        // but not '/' against '\') is preserved, so a fallback path row reads exactly as it did before.
+        var checkoutKey = s.RepoPath ?? "";
+        var repoKey = !string.IsNullOrWhiteSpace(s.RepoSlug) ? s.RepoSlug! : checkoutKey;
 
         // The model this session's agent was last RECORDED using (issue #1637). Unlike the repository and
         // the agent, an unknown model is stored as SQL NULL rather than folded into an empty-string
@@ -405,10 +431,15 @@ public sealed class GatewayInputStatsAggregator : IDisposable
                 // the flag keeps it out of the query layer.
                 var isVoice = string.Equals(key.Item1, "voice", StringComparison.OrdinalIgnoreCase);
 
-                batch.Rows.Add((batch.HourKey, s.SessionId, key.Item1, key.Item2, isVoice, repoKey, modelKey, wingman, deltaTurns, deltaChars));
+                batch.Rows.Add((batch.HourKey, s.SessionId, key.Item1, key.Item2, isVoice, repoKey, checkoutKey, modelKey, wingman, deltaTurns, deltaChars));
                 NeedIdentity(repoKey, IdentityKind.Repo, batch);
                 if (!KnownIdentitySession(repoKey, s.SessionId, IdentityKind.Repo, batch))
                     batch.NewIdentitySessions.Add((repoKey, s.SessionId, IdentityKind.Repo));
+
+                // The checkout the turn ran in earns an identity, retained beside the repository. No
+                // distinct-session set (the Repos page counts sessions per repository, not per checkout), so
+                // it is never queued into NewIdentitySessions - SessionsFor(Checkout) would refuse it.
+                NeedIdentity(checkoutKey, IdentityKind.Checkout, batch);
 
                 // Only a model the Director actually named earns an identity. An absent model writes a null
                 // model_id and creates nothing, so model_identity never grows a row for "not said".
@@ -560,6 +591,7 @@ public sealed class GatewayInputStatsAggregator : IDisposable
             [IdentityKind.Repo] = new(StringComparer.OrdinalIgnoreCase),
             [IdentityKind.Agent] = new(StringComparer.OrdinalIgnoreCase),
             [IdentityKind.Model] = new(StringComparer.OrdinalIgnoreCase),
+            [IdentityKind.Checkout] = new(StringComparer.OrdinalIgnoreCase),
         };
         foreach (var (display, kind) in batch.NewIdentities)
         {
@@ -580,10 +612,11 @@ public sealed class GatewayInputStatsAggregator : IDisposable
             display is null ? DBNull.Value : Resolve(display, IdentityKind.Model);
 
         foreach (var r in batch.Rows)
-            Execute(@"INSERT INTO stat_delta(hour_utc, session_id, modality, surface, is_voice, repo_id, model_id, wingman, turns, chars)
-                      VALUES ($h, $s, $m, $u, $v, $r, $d, $w, $t, $c)", tx,
+            Execute(@"INSERT INTO stat_delta(hour_utc, session_id, modality, surface, is_voice, repo_id, checkout_id, model_id, wingman, turns, chars)
+                      VALUES ($h, $s, $m, $u, $v, $r, $k, $d, $w, $t, $c)", tx,
                 ("$h", r.Hour), ("$s", r.SessionId), ("$m", r.Modality), ("$u", r.Surface),
                 ("$v", r.IsVoice ? 1 : 0), ("$r", Resolve(r.Repo, IdentityKind.Repo)),
+                ("$k", Resolve(r.Checkout, IdentityKind.Checkout)),
                 ("$d", ResolveModel(r.Model)), ("$w", r.Wingman ? 1 : 0),
                 ("$t", r.Turns), ("$c", r.Chars));
 
@@ -697,19 +730,21 @@ public sealed class GatewayInputStatsAggregator : IDisposable
     private void PruneLocked(DateTime nowUtc, SqliteTransaction tx)
     {
         var cutoff = HourKey(nowUtc.AddDays(-RetentionDays));
-        // model_id is carried through the archive fold, and it MUST be in BOTH lists. Left out of the SELECT
-        // the archive row would read NULL and every pruned turn would silently become "model unknown"; left
-        // out of the GROUP BY it would collapse different models into one row and take an arbitrary model
+        // model_id and checkout_id are carried through the archive fold, and each MUST be in BOTH lists. Left
+        // out of the SELECT the archive row would read NULL and every pruned turn would silently lose that
+        // dimension (model_id would become "model unknown"; checkout_id would forget which checkout it ran
+        // in); left out of the GROUP BY it would collapse different values into one row and take an arbitrary
         // id with it. Adding a dimension to this table means adding it here, in both places, or pruning
         // quietly destroys it ninety days later - long after the change that caused it.
         //
         // SQLite groups NULLs together, so every unknown-model row of a bucket archives into ONE row that is
-        // still honestly NULL. That is the wanted behaviour: absence aggregates as absence.
-        Execute(@"INSERT INTO stat_delta(hour_utc, session_id, modality, surface, is_voice, repo_id, model_id, wingman, turns, chars)
-                  SELECT $marker, $marker, modality, surface, is_voice, repo_id, model_id, wingman, SUM(turns), SUM(chars)
+        // still honestly NULL. That is the wanted behaviour: absence aggregates as absence. (checkout_id is
+        // never NULL on a row this build wrote, but it rides the same fold for the same reason.)
+        Execute(@"INSERT INTO stat_delta(hour_utc, session_id, modality, surface, is_voice, repo_id, checkout_id, model_id, wingman, turns, chars)
+                  SELECT $marker, $marker, modality, surface, is_voice, repo_id, checkout_id, model_id, wingman, SUM(turns), SUM(chars)
                     FROM stat_delta
                    WHERE hour_utc <> $marker AND hour_utc < $cutoff
-                   GROUP BY modality, surface, is_voice, repo_id, model_id, wingman", tx,
+                   GROUP BY modality, surface, is_voice, repo_id, checkout_id, model_id, wingman", tx,
             ("$marker", GatewayStatsDatabase.ArchiveMarker), ("$cutoff", cutoff));
         Execute("DELETE FROM stat_delta WHERE hour_utc <> $marker AND hour_utc < $cutoff", tx,
             ("$marker", GatewayStatsDatabase.ArchiveMarker), ("$cutoff", cutoff));
@@ -824,6 +859,24 @@ public sealed class GatewayInputStatsAggregator : IDisposable
         lock (_lock)
         {
             var sessions = SessionCounts("repo_session", "repo_id");
+
+            // The local checkouts (worktrees, per-machine clones) that rolled up into each repository, kept so
+            // the page can still show which working directories a repo's turns came from - the path is not
+            // lost when the slug collapses them. Display spellings come from the identity mirror, never from a
+            // SQL join; sorted here so the retained list is stable rather than in row-insert order.
+            var checkoutsByRepo = new Dictionary<long, List<string>>();
+            Read("SELECT DISTINCT repo_id, checkout_id FROM stat_delta WHERE checkout_id IS NOT NULL", r =>
+            {
+                var repoId = r.GetInt64(0);
+                var checkoutId = r.GetInt64(1);
+                if (!_checkoutDisplay.TryGetValue(checkoutId, out var path)) return;
+                if (!checkoutsByRepo.TryGetValue(repoId, out var paths))
+                    checkoutsByRepo[repoId] = paths = new List<string>();
+                paths.Add(path);
+            });
+            foreach (var paths in checkoutsByRepo.Values)
+                paths.Sort(StringComparer.OrdinalIgnoreCase);
+
             var list = new List<RepoStatBucketDto>();
             Read(@"SELECT repo_id,
                           COALESCE(SUM(CASE WHEN is_voice = 1 THEN turns ELSE 0 END), 0),
@@ -846,6 +899,7 @@ public sealed class GatewayInputStatsAggregator : IDisposable
                     TypedTurns = typed,
                     Characters = r.GetInt64(3),
                     Sessions = sessions.TryGetValue(id, out var n) ? n : 0,
+                    Checkouts = checkoutsByRepo.TryGetValue(id, out var cks) ? cks : new List<string>(),
                 });
             });
             // Ranked in C#, matching the original ordering exactly.
@@ -1091,6 +1145,10 @@ public sealed class GatewayInputStatsAggregator : IDisposable
         _ => agent,
     };
 
+    // The last segment of the grouping key, used as the row's short name. For a GitHub slug
+    // ("thefrederiksen/devthrottle") this is the repository name ("devthrottle"); for a fallback path
+    // ("D:\ReposFred\devthrottle") it is the folder name. The same split serves both because '/' and '\' are
+    // both segment separators here.
     private static string RepoLeaf(string path)
     {
         if (string.IsNullOrWhiteSpace(path)) return "(unknown)";
@@ -1175,10 +1233,14 @@ public sealed class WingmanUsageDto
 /// <summary>One repository's all-time input tally for the private Repos page.</summary>
 public sealed class RepoStatBucketDto
 {
-    /// <summary>The full repository / working-directory path the sessions ran in (the grouping key).</summary>
+    /// <summary>The grouping key: the GitHub "owner/repo" slug the sessions' checkouts belong to
+    /// (e.g. "thefrederiksen/devthrottle"), so every worktree and every per-machine clone of one repository
+    /// is one row. Falls back to the local working-directory path for a checkout that has no github.com
+    /// origin.</summary>
     public string Repo { get; set; } = "";
 
-    /// <summary>The display leaf of <see cref="Repo"/> (its last path segment), e.g. "devthrottle".</summary>
+    /// <summary>The display leaf of <see cref="Repo"/> (its last segment): the repository name for a slug,
+    /// e.g. "devthrottle", or the folder name for a fallback path.</summary>
     public string RepoName { get; set; } = "";
 
     public long Turns { get; set; }
@@ -1188,6 +1250,11 @@ public sealed class RepoStatBucketDto
 
     /// <summary>Distinct sessions that drove counted input into this repo.</summary>
     public int Sessions { get; set; }
+
+    /// <summary>The local checkout paths (worktrees, per-machine clones) whose turns rolled up into this
+    /// repository, sorted. Retained so the page can still show which working directories a repo's work came
+    /// from; empty only for a legacy row written before the checkout dimension existed.</summary>
+    public List<string> Checkouts { get; set; } = new();
 }
 
 /// <summary>

@@ -36,7 +36,7 @@ function data(buckets: ThrottleData["buckets"]): ThrottleData {
 }
 
 function repo(repoName: string, turns: number, voiceTurns: number, characters: number, sessions: number): RepoStat {
-  return { repo: `D:/${repoName}`, repoName, turns, voiceTurns, typedTurns: turns - voiceTurns, characters, sessions };
+  return { repo: `owner/${repoName}`, repoName, turns, voiceTurns, typedTurns: turns - voiceTurns, characters, sessions, checkouts: [`D:/${repoName}`] };
 }
 
 function agent(agentToken: string, agentName: string, turns: number, voiceTurns: number, characters: number, sessions: number,

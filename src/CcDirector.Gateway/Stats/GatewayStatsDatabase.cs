@@ -35,7 +35,7 @@ public sealed class GatewayStatsDatabase : IDisposable
 {
     /// <summary>The schema version this build understands. Bump it and add a migration step; never reshape
     /// an existing table in place without one.</summary>
-    public const int SchemaVersion = 3;
+    public const int SchemaVersion = 4;
 
     /// <summary>The meta key holding when the model dimension started recording - an ISO-8601 UTC stamp
     /// written once, by the migration that added the dimension. See <see cref="MigrateToVersion2"/> for why
@@ -75,6 +75,8 @@ public sealed class GatewayStatsDatabase : IDisposable
             var dir = System.IO.Path.GetDirectoryName(_path);
             if (!string.IsNullOrEmpty(dir))
                 Directory.CreateDirectory(dir);
+
+            RetirePreSlugStore();
 
             _connection = new SqliteConnection($"Data Source={_path}");
             _connection.Open();
@@ -131,6 +133,9 @@ public sealed class GatewayStatsDatabase : IDisposable
 
         if (current < 3)
             MigrateToVersion3(tx);
+
+        if (current < 4)
+            MigrateToVersion4(tx);
 
         Execute($"PRAGMA user_version={SchemaVersion}", tx);
         tx.Commit();
@@ -459,6 +464,101 @@ public sealed class GatewayStatsDatabase : IDisposable
                 cache_read_tokens     INTEGER NOT NULL,
                 cache_creation_tokens INTEGER NOT NULL
             )", tx);
+    }
+
+    // Version 4: the checkout dimension - the LOCAL working directory each turn was driven in - landing
+    // together with a meaning change to the repository dimension it sits beside.
+    //
+    // repo_id USED to be keyed by the session's local working-directory path; from this version it is keyed
+    // by the session's GitHub "owner/repo" slug (SessionDto.RepoSlug), so one repository's worktrees and its
+    // per-machine clones collapse into a single row on the Repos page instead of one row each. The path is
+    // NOT thrown away in the process - it becomes its own dimension here, so the store still records exactly
+    // which checkout every turn ran in (the owner's ask: keep the checkout AND the repo name). Grouping and
+    // ranking are by repo_id (the slug); checkout_id is retained detail, read back as the set of checkouts
+    // that rolled into a repo.
+    //
+    // Because the meaning of an EXISTING repo_id row changed and the Gateway cannot re-key a stored path to a
+    // slug (it has no filesystem to resolve it, and the path may be another machine's), a pre-version-4 store
+    // is not migrated forward at all: it is retired aside UNREAD before this database is opened
+    // (RetirePreSlugStore), and this store starts empty. So this step only ever runs as part of building a
+    // FRESH database (0 -> 4); it is written as a proper migration all the same, so the schema machinery
+    // stays honest and a fresh build lands the column and table exactly once.
+    //
+    // checkout_id is added by ALTER TABLE and is therefore nullable at the column level (SQLite reads NULL
+    // for any row written before the column existed). No live fold ever writes a NULL: every stat_delta row
+    // is written by this build, which always carries a checkout (RepoPath is always set), and every pre-v4
+    // row was retired aside. The nullable column is the honest shape for an ALTER, not a state the fold
+    // produces - the same as model_id in version 2.
+    private void MigrateToVersion4(SqliteTransaction tx)
+    {
+        Execute("ALTER TABLE stat_delta ADD COLUMN checkout_id INTEGER", tx);
+
+        // Surrogate id to first-seen display spelling, exactly as repo_identity, agent_identity and
+        // model_identity: the in-memory OrdinalIgnoreCase map decides identity and SQLite is never asked to
+        // compare a path string. The full reasoning - most of all why no folded string is stored, because
+        // there is no normalizer equivalent to the comparer - is written out on repo_identity in
+        // MigrateToVersion1 and is not repeated here.
+        Execute(@"
+            CREATE TABLE IF NOT EXISTS checkout_identity (
+                checkout_id      INTEGER PRIMARY KEY AUTOINCREMENT,
+                checkout_display TEXT    NOT NULL
+            )", tx);
+    }
+
+    // Retire a pre-version-4 statistics store aside UNREAD, exactly as the legacy JSON store was retired
+    // (GatewayInputStatsAggregator.RetireLegacyJsonStore). Runs once, before the database is opened.
+    //
+    // Why the old numbers are not carried across: version 4 changed what repo_id MEANS - the session's local
+    // working-directory path became its GitHub "owner/repo" slug. An existing row is keyed by a path, and the
+    // Gateway cannot re-key it to a slug: it has no filesystem to resolve the path against, and the path may
+    // belong to another machine entirely. There is no faithful forward migration, so - as with the JSON store
+    // and by the same owner ruling - the file is renamed aside (never deleted) and this store starts empty.
+    //
+    // The schema version is read straight from the SQLite header (a 4-byte big-endian integer at offset 60)
+    // rather than by opening the file: no connection, no file lock, nothing to release before the rename.
+    // Self-idempotent - the fresh database this build then creates is stamped version 4, so the next startup
+    // reads 4 from the header and retires nothing.
+    private void RetirePreSlugStore()
+    {
+        if (!File.Exists(_path)) return;
+
+        int version;
+        try
+        {
+            Span<byte> header = stackalloc byte[64];
+            int read;
+            using (var fs = new FileStream(_path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
+                read = fs.Read(header);
+            // Too small to be a real database, or not a SQLite file at all: leave it in place and let the
+            // normal open path either build the schema (empty file) or fail loudly (a genuinely bad file).
+            if (read < 64) return;
+            if (System.Text.Encoding.ASCII.GetString(header.Slice(0, 16)) != "SQLite format 3\0") return;
+            version = (header[60] << 24) | (header[61] << 16) | (header[62] << 8) | header[63];
+        }
+        catch (Exception ex)
+        {
+            FileLog.Write($"[GatewayStatsDatabase] RetirePreSlugStore: could not read header of {_path}: " +
+                          $"{ex.Message}; leaving it in place for the normal open path");
+            return;
+        }
+
+        // A valid store already at version 4 (or, defensively, beyond it) is current; version 0 is not a real
+        // stamped store. Only a genuine version 1..3 file is the pre-slug store this retires.
+        if (version <= 0 || version >= SchemaVersion) return;
+
+        var aside = _path + ".pre-slug-" +
+            DateTime.UtcNow.ToString("yyyyMMdd-HHmmss", System.Globalization.CultureInfo.InvariantCulture);
+        MoveAsideIfExists(_path, aside);
+        MoveAsideIfExists(_path + "-wal", aside + "-wal");
+        MoveAsideIfExists(_path + "-shm", aside + "-shm");
+        FileLog.Write($"[GatewayStatsDatabase] RetirePreSlugStore: the repository dimension changed from local " +
+                      $"path to GitHub slug at schema v{SchemaVersion}; renamed the pre-slug store (v{version}) " +
+                      $"to {aside} UNREAD; starting empty");
+    }
+
+    private static void MoveAsideIfExists(string from, string to)
+    {
+        if (File.Exists(from)) File.Move(from, to);
     }
 
     private int QueryUserVersion()
