@@ -2820,6 +2820,13 @@ public partial class MainWindow : Window
         }
     }
 
+    // True while a SpeakDialog is on screen. The dialog is modal, but BtnSpeak_Click is async void
+    // and there is a window between this handler firing and the modal actually appearing; without this
+    // guard a second Ctrl+H (or Speak click) in that window opens a SECOND dictation box. Set
+    // synchronously before the first await and cleared when the dialog closes, so exactly one box can
+    // ever be open.
+    private bool _speakDialogOpen;
+
     private async void BtnSpeak_Click(object? sender, RoutedEventArgs e)
     {
         // Locked out while the active session is still transcribing a previous dictation in the
@@ -2829,6 +2836,14 @@ public partial class MainWindow : Window
             FileLog.Write("[MainWindow] BtnSpeak_Click ignored: session transcribing");
             return;
         }
+        // Never a second dictation box: refuse to open one while one is already open (guards the click
+        // AND Ctrl+H, which both route through here).
+        if (_speakDialogOpen)
+        {
+            FileLog.Write("[MainWindow] BtnSpeak_Click ignored: Speak dialog already open");
+            return;
+        }
+        _speakDialogOpen = true;
         // Desktop dictation. Opens SpeakDialog which captures audio via NAudio
         // (BatchDictationRecorder), sends the completed audio to the Gateway transcription owner, then
         // returns the corrected transcript which we insert into PromptInput.
@@ -2842,8 +2857,10 @@ public partial class MainWindow : Window
                 ShowNotification("Dictation not available: AgentOptions not loaded.");
                 return;
             }
-            if (!await global::CcDirector.Avalonia.HostedAi.DesktopHostedAiGate.EnsureReadyAsync(this))
-                return;
+            // The box appears IMMEDIATELY: no pre-show network wait. SpeakDialog gates hosted-AI
+            // readiness itself from its "GETTING READY" state (OnDialogOpenedAsync runs the same
+            // DesktopHostedAiGate check), so a pre-show EnsureReadyAsync here would only duplicate that
+            // 2-second credit read and delay the dialog appearing.
             FileLog.Write("[MainWindow] BtnSpeak_Click: opening SpeakDialog");
             // Snapshot the caret BEFORE opening the dialog. Focus moves to the
             // dialog, and on some controls CaretIndex can be reset to 0 after
@@ -2915,6 +2932,11 @@ public partial class MainWindow : Window
         {
             FileLog.Write($"[MainWindow] BtnSpeak_Click FAILED: {ex.Message}");
             ShowNotification($"Dictation failed: {ex.Message}");
+        }
+        finally
+        {
+            // The dialog has closed (ShowDialog has returned); allow the next one to open.
+            _speakDialogOpen = false;
         }
     }
 
