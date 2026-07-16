@@ -81,15 +81,23 @@ internal static class TtsSynthesis
     /// the service was answering perfectly the whole time. Three warm-up calls by hand took it to
     /// 6/8 with no code change. Nothing had broken; it had fallen into the hole and the hole was ours.
     ///
-    /// 30 is chosen to clear the WORST observed cold start (16.9s) with the same kind of headroom the
-    /// slope gets, so a cold provider costs a slow narration instead of a silent fleet. It remains
-    /// strictly looser than the flat 15s at every length - the floor below still holds.
+    /// 30 was the first attempt at this and it was STILL too tight - measured against 16.9s, when the
+    /// same provider was later seen taking 39.9s for a SIXTEEN character call. Hours later the live log
+    /// read "attempt 1/2 timed out after 31s (168 chars)": a 168-character narration, dead, because the
+    /// deadline was a guess dressed as arithmetic. Twice now this number has been set to just above the
+    /// worst thing seen so far, and twice the provider has gone slower than that.
     ///
-    /// If you are tempted to lower this: a deadline is not a performance target. Being under it costs
-    /// nothing; being over it silences every session on every machine for two minutes and makes the
-    /// next call cold. The failure is not symmetric, so neither is the number.
+    /// 60 stops chasing it. It clears the worst observed cold start (39.9s) with real headroom rather
+    /// than a shave, and the cost of being generous is now nearly nothing: a timeout no longer touches
+    /// any other session (see WingmanVoiceService.TtsAsync), so an over-long deadline costs ONE session
+    /// a slow turn, while an under-long one costs that session its voice entirely and buys nothing.
+    ///
+    /// If you are tempted to lower this: a deadline is not a performance target, and this one is not
+    /// protecting the user from waiting - the narration is already made or not made by then. It exists
+    /// only to stop a truly hung call from holding a slot forever. Being generous costs a slot; being
+    /// tight costs the feature. The failure is not symmetric, so neither is the number.
     /// </summary>
-    private static readonly TimeSpan DeadlineBase = TimeSpan.FromSeconds(30);
+    private static readonly TimeSpan DeadlineBase = TimeSpan.FromSeconds(60);
 
     /// <summary>Allowance per character of input. Synthesis measures ~1.7 ms/char, so 4 ms/char is
     /// roughly 2.4x headroom at every length - enough for a slow-but-working worker, short enough
@@ -138,8 +146,30 @@ internal static class TtsSynthesis
     public static TimeSpan DeadlineFor(int inputChars)
         => DeadlineBase + TimeSpan.FromMilliseconds(DeadlineMsPerChar * Math.Max(0, inputChars));
 
-    /// <summary>Total attempts (that is, one retry). The retry targets the transient stalled-worker case.</summary>
-    public const int Attempts = 2;
+    /// <summary>
+    /// Total attempts. ONE - there is no retry, and removing it is a fix, not a regression.
+    ///
+    /// It was 2, "targeting the transient stalled-worker case", on the theory that attempt 1 eats a
+    /// cold start and attempt 2 lands on a warm worker. Production disagreed, repeatedly and in plain
+    /// text:
+    ///
+    ///   [TtsSynthesis] attempt 1/2 timed out after 33s (709 chars); retrying
+    ///   [TtsSynthesis] attempt 2/2 timed out after 33s (709 chars); giving up
+    ///
+    /// The retry never landed warm. That is not bad luck, it is mechanism: cancelling attempt 1 very
+    /// plausibly cancels the provider-side work that was loading the model, so attempt 2 starts the
+    /// same cold start over rather than arriving after it. Two attempts bought a doubled wait, a
+    /// doubled load on an already-struggling provider, and the same failure.
+    ///
+    /// So: one attempt, with a deadline long enough for the cold start to actually finish (see
+    /// DeadlineBase). Waiting through a slow call is what gets the audio; racing it and starting again
+    /// is what loses it. Recovery is per-session retry at a higher level, seconds later, not a second
+    /// attempt seconds into the same stall.
+    ///
+    /// This also halves the worst-case wait on the INTERACTIVE path (/wingman/tts, where a human is
+    /// listening for it): a never-answering upstream now costs one deadline, not two.
+    /// </summary>
+    public const int Attempts = 1;
 
     /// <summary>
     /// POST <c>{ model, voice, input, response_format }</c> to <paramref name="url"/> with bearer
