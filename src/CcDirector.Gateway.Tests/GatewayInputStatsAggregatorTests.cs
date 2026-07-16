@@ -668,6 +668,53 @@ public sealed class GatewayInputStatsAggregatorTests : IDisposable
     }
 
     [Fact]
+    public void Prune_ArchivingOldRows_KeepsEveryModelsTurnsWhereTheyWere()
+    {
+        // The ninety-day fold is where this dimension would die quietly. PruneLocked collapses detail rows
+        // into one archive row per grouping key, so model_id must be in BOTH its select and its group by:
+        // missing from the select, every archived turn silently becomes "model unknown"; missing from the
+        // group by, different models collapse into one row under an arbitrary id. Either way the loss lands
+        // ninety days after the change that caused it, against real data, with nothing to point at.
+        //
+        // The aggregator's own comment claims this works. This test is what makes the claim checkable.
+        var agg = new GatewayInputStatsAggregator(_path);
+        var old = new DateTime(2026, 1, 1, 9, 0, 0, DateTimeKind.Utc);
+        var now = old.AddDays(200); // Comfortably past the ninety-day retention window.
+
+        agg.Observe(SessionOnModel("old-1", "claude-opus-4-8", ("typed", "desktop", 5, 50)), old);
+        agg.Observe(SessionOnModel("old-2", "gpt-5.5", ("voice", "phone", 3, 30)), old);
+        agg.Observe(SessionOnModel("old-3", null, ("typed", "desktop", 2, 20)), old);
+
+        // Two rows for one model, so the archive fold has something to actually merge rather than just
+        // copy - a per-model SUM that never adds two rows together would not notice a broken group by.
+        agg.Observe(SessionOnModel("old-4", "claude-opus-4-8", ("typed", "desktop", 4, 40)), old);
+
+        var beforePrune = agg.ModelTotals().ToDictionary(m => m.Model ?? "(null)", m => m.Turns);
+
+        // This fold carries a row, which is what triggers the prune.
+        agg.Observe(SessionOnModel("new-1", "claude-sonnet-5", ("typed", "desktop", 1, 10)), now);
+
+        // FIRST: prove the prune actually fired. Without this the test could pass by doing nothing at all -
+        // an assertion that cannot fail is not coverage. HourlyTurns excludes the archive marker, so the old
+        // hour disappearing from it IS the archiving having happened.
+        Assert.DoesNotContain(agg.HourlyTurns(), h => h.Hour == "2026-01-01T09");
+
+        // THEN: the numbers are untouched. An all-time tally must not shrink or move between models because
+        // detail was pruned - that is the entire point of archiving rather than deleting.
+        var afterPrune = agg.ModelTotals().ToDictionary(m => m.Model ?? "(null)", m => m.Turns);
+
+        Assert.Equal(9, beforePrune["claude-opus-4-8"]);
+        Assert.Equal(9, afterPrune["claude-opus-4-8"]);
+        Assert.Equal(3, afterPrune["gpt-5.5"]);
+        Assert.Equal(2, afterPrune["(null)"]);
+        Assert.Equal(1, afterPrune["claude-sonnet-5"]);
+
+        // And nothing leaked between buckets: every pruned turn is still exactly where it was earned.
+        // 9 opus + 3 gpt + 2 unknown = 14, the whole of what was folded before the cutoff.
+        Assert.Equal(14, afterPrune.Where(kv => kv.Key != "claude-sonnet-5").Sum(kv => kv.Value));
+    }
+
+    [Fact]
     public void ModelsSinceUtc_IsStampedByTheMigration_SoANullModelCanBeRead()
     {
         var agg = new GatewayInputStatsAggregator(_path);
