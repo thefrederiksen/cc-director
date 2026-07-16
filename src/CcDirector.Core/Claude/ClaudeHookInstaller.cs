@@ -84,7 +84,12 @@ public static class ClaudeHookInstaller
         "    printf '%s' \"$raw\" | curl -s -m 3 -X POST -H \"Content-Type: application/json\" \\\n" +
         "        --data-binary @- \"$api/sessions/$sid/claude-hook\" >/dev/null 2>&1 || true\n" +
         "fi\n" +
-        "curl -s -m 3 \"$api/sessions/$sid/fleet-preamble-hook-output\" 2>/dev/null || true\n" +
+        // -f (--fail) so an HTTP error prints NOTHING. Without it curl writes the error body to
+        // stdout, and this script's stdout IS the hook output - so a server error page would be
+        // handed to Claude dressed as the preamble. The Director is careful to return an empty body
+        // rather than an error, and this is the belt to that pair of braces: the cost of being wrong
+        // here is arbitrary text entering the user's session as instructions.
+        "curl -sf -m 3 \"$api/sessions/$sid/fleet-preamble-hook-output\" 2>/dev/null || true\n" +
         "exit 0\n";
 
     /// <summary>The hook event sources we register a SessionStart hook for. These are the

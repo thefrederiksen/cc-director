@@ -508,8 +508,21 @@ public sealed class SessionManager : IDisposable
             // Issue #705: make session-to-session messaging discoverable to the agent. This is a
             // one-line reminder, NOT a credential - the tools reach the fleet through CC_DIRECTOR_API
             // above (the Director relays to the Gateway), so the fleet token never enters the session.
-            envVars["CC_FLEET_TOOLS"] =
-                "cc-devthrottle actions --json (list DevThrottle actions); cc-devthrottle session list; cc-devthrottle session whoami; cc-devthrottle session rename \"name\"; cc-devthrottle message send <id|all> \"message\"; cc-devthrottle message ask <id> \"question\"; cc-devthrottle schedule list; cc-devthrottle setup status";
+            //
+            // It is ALSO injected text, and it is OURS: nothing in the product reads this variable, so
+            // its only reader is the agent. That makes it prose we put in front of an agent without
+            // being asked, exactly like the preamble - and it reaches every agent, including the ones
+            // with no preamble at all.
+            //
+            // So it follows the same choice. A user running their own text has declined our words, and
+            // continuing to whisper our command list through the environment would make the Settings
+            // tab a liar: they could delete the fleet commands from their text and we would put them
+            // back through a channel the tab never mentions.
+            if (new InjectedTextStore().ActiveSource() == InjectedTextSource.Ours)
+            {
+                envVars["CC_FLEET_TOOLS"] =
+                    "cc-devthrottle actions --json (list DevThrottle actions); cc-devthrottle session list; cc-devthrottle session whoami; cc-devthrottle session rename \"name\"; cc-devthrottle message send <id|all> \"message\"; cc-devthrottle message ask <id> \"question\"; cc-devthrottle schedule list; cc-devthrottle setup status";
+            }
 
             // Cursor authenticates via CURSOR_API_KEY (issue #517, assumption A5). Inject the
             // configured key into the session environment so cursor-agent picks it up. The key
@@ -545,6 +558,12 @@ public sealed class SessionManager : IDisposable
                 envVars["OPENCODE_DISABLE_UPDATE_CHECK"] = "1";
                 envVars["OPENCODE_DISABLE_AUTO_UPDATE"] = "1";
             }
+
+            // Keep the copy of OUR injected text on disk current, whatever the user is running. It is
+            // what the Settings tab offers them to read and adopt, so a user on their own version can
+            // always see the default they are declining. Best-effort by design: the real default is in
+            // the application, so a failure to write this copy must never stop a session starting.
+            new InjectedTextStore().EnsureOursWritten();
 
             // For Claude, install the session-pointer hooks and pass them via --settings so the
             // Director learns the current Claude session id + transcript path across /clear and

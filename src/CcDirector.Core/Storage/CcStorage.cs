@@ -187,6 +187,11 @@ public static class CcStorage
     /// <summary>Codex hook scripts the Director installs: base/codex-hooks/.</summary>
     public static string CodexHooks() => Path.Combine(Base(), "codex-hooks");
 
+    /// <summary>The text DevThrottle injects into agents at launch: base/injected-text/. Holds
+    /// ours.txt (the shipped default, rewritten every launch) and yours.txt (the user's version,
+    /// present only if they wrote one).</summary>
+    public static string InjectedText() => Path.Combine(Base(), "injected-text");
+
     /// <summary>Dictation root: base/dictation/. Holds the user dictionary plus the
     /// recordings/ and sessions/ subfolders.</summary>
     public static string Dictation() => Path.Combine(Base(), "dictation");

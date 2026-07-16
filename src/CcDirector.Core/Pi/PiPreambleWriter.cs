@@ -35,12 +35,41 @@ public static class PiPreambleWriter
 
     /// <summary>Testable overload that writes under an explicit directory and names the signed-in user.</summary>
     public static string WriteForSession(string sessionId, string? name, string machine, string repoPath, string directory, SignedInUser? user)
+        => WriteForSession(sessionId, name, machine, repoPath, directory, user, store: null);
+
+    /// <summary>Testable overload that also pins the injected-text store.</summary>
+    public static string WriteForSession(
+        string sessionId, string? name, string machine, string repoPath, string directory,
+        SignedInUser? user, InjectedTextStore? store)
     {
         Directory.CreateDirectory(directory);
-        var text = FleetPreamble.Build(sessionId, name, machine, repoPath, user);
+
+        // BuildForSession, not Build: Pi is a live delivery path, so it injects the user's own text
+        // when they are running one.
+        string text;
+        try
+        {
+            text = FleetPreamble.BuildForSession(sessionId, name, machine, repoPath, user, store);
+        }
+        catch (Exception ex) when (ex is InjectedTextUnavailableException or FleetPreambleTemplateException)
+        {
+            // The user's text is live but unreadable or unrenderable. Write an EMPTY file: Pi is
+            // launched with --append-system-prompt pointing at it, so empty means nothing is injected.
+            //
+            // This mirrors what the hook endpoints do for Claude and Codex, and it is the behaviour the
+            // documentation promises: DevThrottle injects nothing and says so. Letting the exception
+            // escape here would abort the Pi session's launch instead - a different, undocumented, and
+            // much ruder answer to the same situation. Note what is NOT done: substituting our text.
+            // They turned ours off, and a file error is not consent to turn it back on.
+            FileLog.Write(
+                $"[PiPreambleWriter] the user's injected text is unavailable for {sessionId}, so NOTHING " +
+                $"is injected (the DevThrottle text is deliberately not substituted): {ex.Message}");
+            text = "";
+        }
+
         var path = Path.Combine(directory, $"{sessionId}.txt");
         File.WriteAllText(path, text);
-        FileLog.Write($"[PiPreambleWriter] wrote fleet preamble for {sessionId} to {path}");
+        FileLog.Write($"[PiPreambleWriter] wrote fleet preamble for {sessionId} to {path} ({text.Length} characters)");
         return path;
     }
 
