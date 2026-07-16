@@ -1,7 +1,7 @@
-using System.Text.Json;
 using CcDirector.Core.Storage;
 using CcDirector.Core.Utilities;
 using CcDirector.Gateway.Contracts;
+using Microsoft.Data.Sqlite;
 
 namespace CcDirector.Gateway.Stats;
 
@@ -13,113 +13,70 @@ namespace CcDirector.Gateway.Stats;
 ///
 /// Correct across BOTH a Director restart and a Gateway restart, with no double-counting, via a high-water
 /// increment: for each live session it remembers the last per-bucket counts it saw, and adds only the
-/// increase to the totals. A session that ends (RemoveSession) leaves its contribution in the totals and
-/// its high-water entry is pruned. A session whose reported counts DROP (a Director restarted and the
-/// session began a fresh tally) is treated as new activity from zero. Both the totals and the high-water
-/// map are persisted (atomic temp-write + rename, corrupt file quarantined) so a Gateway restart neither
-/// loses the totals nor re-adds live sessions' current counts.
+/// increase. A session that ends (Forget) leaves its contribution in the totals and its high-water entry is
+/// dropped. A session whose reported counts DROP (a Director restarted and the session began a fresh tally)
+/// is treated as new activity from zero.
 ///
 /// Only counts ever pass through here - never the text of anything typed or said (mission decision 5).
+///
+/// STORAGE (mission "SQLite on the Gateway", Phase 1). This used to be six in-memory dictionaries persisted
+/// by rewriting one JSON document in full on every counter move, on the GET /sessions request path. It is
+/// now rows in gateway-stats.db. Three things follow:
+///
+///   1. THE OLD NUMBERS ARE NOT CARRIED ACROSS. The owner ruled it: on first run
+///      gateway-input-stats.json is renamed aside UNREAD and this store starts empty. There is no import,
+///      no baseline and no parity check. Renamed, never deleted - throwing the data away was his call;
+///      destroying it irreversibly was not. Consequence he accepted: session_highwater starts empty, so the
+///      first roster poll folds each live session's whole current tally as fresh activity and day one lands
+///      with a lump rather than at zero. Then it counts normally.
+///   2. AGGREGATES ARE QUERIES, NEVER CACHED. Every total, count and sum below is a real query. Caching one
+///      would rebuild the in-memory-dictionaries-plus-a-file design this mission exists to delete.
+///   3. THE MIRROR HOLDS MEMBERSHIP AND IDENTITY, NEVER A TALLY (Decision 6). The high-water maps, the
+///      distinct-session sets and the repository/agent identity maps are mirrored in memory, populated FROM
+///      the database at startup and never the reverse. They answer exactly one question - "have I already
+///      recorded this?" - which is what keeps an IDLE roster poll at zero writes, exactly as it is today.
+///      The mirror only advances AFTER the write commits, so a failed write is a loud failure retried on the
+///      next poll, never a silent mirror-only success.
 /// </summary>
-public sealed class GatewayInputStatsAggregator
+public sealed class GatewayInputStatsAggregator : IDisposable
 {
-    private static readonly JsonSerializerOptions FileJsonOptions = new() { WriteIndented = true };
-
-    private readonly string _path;
-    private readonly object _lock = new();
-
-    // All-time totals, keyed by (modality token, surface token).
-    private readonly Dictionary<(string Modality, string Surface), Counters> _totals = new();
-
-    // Per-live-session last-seen counts, so only the INCREASE is folded into the totals.
-    private readonly Dictionary<string, Dictionary<(string Modality, string Surface), Counters>> _highWater = new();
-
-    // Per UTC clock hour: the turns (by modality) and characters SUBMITTED in that hour - the "working day"
-    // series. Accumulated from the same high-water deltas as the totals, attributed to the hour the delta
-    // was observed. Pruned past the retention window so the store stays bounded.
     private const string HourFormat = "yyyy-MM-ddTHH";
     private const int RetentionDays = 90;
-    private readonly Dictionary<string, HourTurns> _hourly = new(StringComparer.Ordinal);
+    private const string AgentsSinceKey = "agents_since_utc";
 
-    // Wingman usage (owner's definition: a session "uses the wingman" when it has voice mode on).
-    // _wingmanSessions is the all-time set of session ids ever seen with voice mode on (never pruned on
-    // removal, like the totals); _wingmanTurns is the count of submitted turns folded while a session had
-    // voice mode on (a subset of the all-time turn total). Both persist across restarts.
-    private long _wingmanTurns;
+    private readonly GatewayStatsDatabase _db;
+    private readonly bool _ownsDatabase;
+    private readonly object _lock = new();
+
+    // ---- The mirror. Membership and identity ONLY - never a tally (Decision 6). ----
+
+    private readonly Dictionary<string, Dictionary<(string Modality, string Surface), Counters>> _highWater = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, Counters> _agentDrivenHighWater = new(StringComparer.Ordinal);
     private readonly HashSet<string> _wingmanSessions = new(StringComparer.Ordinal);
 
-    // Per-repository all-time tally, keyed by the session's RepoPath (working directory). Accumulated from
-    // the SAME high-water deltas as the totals: when a session's counted input grows, that increase is also
-    // attributed to the session's repo. Feeds the private Repos page ("where your development actually
-    // happens"). All-time, like the totals - never pruned. Only counts travel; never any message text.
-    private readonly Dictionary<string, RepoTally> _repos = new(StringComparer.OrdinalIgnoreCase);
-
-    // Per-agent all-time tally, keyed by the session's Agent token (the AgentKind name: "ClaudeCode",
-    // "Codex", ...). Accumulated from the SAME high-water deltas as the totals: when a session's counted
-    // input grows, that increase is also attributed to the agent CLI that session drives. Feeds the private
-    // Agents page ("which agent you actually drive"). All-time, like the totals - never pruned.
-    private readonly Dictionary<string, AgentTally> _agents = new(StringComparer.OrdinalIgnoreCase);
-
-    // When the per-agent tally started counting. The totals predate this breakdown, so the agent numbers do
-    // NOT reconcile with them and the page must say so rather than imply the earlier turns had no agent.
-    // Stamped once, the first time a Gateway runs a build that has the tally, and persisted from then on.
-    private string _agentsSinceUtc = "";
-
-    // Session ids whose already-counted turns have been attributed to their agent (issue #1633).
-    //
-    // The agent tally is YOUNGER than the high-water map. A session first seen before the tally existed had
-    // its turns consumed into the totals then, so its high-water already equals its current count and its
-    // delta is zero forever - which meant its real, known-agent turns could never be attributed, and the
-    // Agents page read "100% Claude Code" while live Codex sessions sat there with turns on them.
-    //
-    // So on the FIRST fold of a session, whatever its high-water already holds is attributed to that
-    // session's agent (a back-fill), and the id is recorded here. For a session first seen after this
-    // shipped the high-water is empty, the back-fill contributes nothing, and the ordinary delta path does
-    // all the work - the same code path either way, with no one-time migration to run.
-    //
-    // MUST be persisted: without it a Gateway restart would back-fill every live session a second time and
-    // double the agent numbers.
+    // Sessions whose already-counted turns have been attributed to their agent (issue #1633). MUST persist:
+    // session_highwater survives a restart, so without this the back-fill would run a second time against a
+    // non-empty high-water and double every agent's numbers.
     private readonly HashSet<string> _agentsSeeded = new(StringComparer.Ordinal);
 
-    private sealed class HourTurns
-    {
-        public long VoiceTurns;
-        public long TypedTurns;
-        public long Characters;
-    }
+    // Display spelling -> surrogate id. THE COMPARER HERE IS THE WHOLE REASON THE SCHEMA USES SURROGATE IDS:
+    // it is the same StringComparer.OrdinalIgnoreCase the old dictionaries used, so grouping is decided by
+    // the identical object with identical semantics and SQLite is never asked to compare a repository or
+    // agent string. First-seen-wins on the display spelling, which is what a Dictionary does.
+    private readonly Dictionary<string, long> _repoIds = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, long> _agentIds = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<long, string> _repoDisplay = new();
+    private readonly Dictionary<long, string> _agentDisplay = new();
 
-    private sealed class RepoTally
-    {
-        public long VoiceTurns;
-        public long TypedTurns;
-        public long Characters;
-        // The distinct session ids that drove counted input into this repo, so "sessions" is a true
-        // distinct count that never double-counts across a re-push or a Gateway restart (the set is
-        // persisted and re-adding a known id is a no-op).
-        public readonly HashSet<string> Sessions = new(StringComparer.Ordinal);
-    }
+    private readonly HashSet<(long Id, string SessionId)> _repoSessions = new();
+    private readonly HashSet<(long Id, string SessionId)> _agentSessions = new();
 
-    // Agent-driven turns per session (issue #1636), high-watered exactly like the human buckets so a
-    // repeated snapshot never double-counts and a Director restart of the same session id is treated as
-    // fresh activity. Kept on its own lane: these never enter _totals, _hourly or the buckets, because the
-    // human voice-versus-typed numbers must stay about the human.
-    private readonly Dictionary<string, Counters> _agentDrivenHighWater = new(StringComparer.Ordinal);
-    private long _agentDrivenTurns;
-    private long _agentDrivenCharacters;
+    private string _agentsSinceUtc = "";
 
-    private sealed class AgentTally
-    {
-        public long VoiceTurns;
-        public long TypedTurns;
-        public long Characters;
-        // Turns OTHER agents drove into the sessions running this agent (issue #1636) - "how much is this
-        // agent being driven by other agents", as opposed to by the human.
-        public long AgentDrivenTurns;
-        public long AgentDrivenCharacters;
-        // The distinct session ids that drove counted input through this agent, so "sessions" is a true
-        // distinct count across a re-push or a Gateway restart (the set is persisted; re-adding is a no-op).
-        public readonly HashSet<string> Sessions = new(StringComparer.Ordinal);
-    }
+    /// <summary>Every statement executed against the database. The seam acceptance criterion 3 measures: an
+    /// IDLE poll must not move this at all, and a fold must move it by an amount bounded by what CHANGED,
+    /// never by how much history is stored.</summary>
+    internal long StatementsExecuted { get; private set; }
 
     private sealed class Counters
     {
@@ -127,14 +84,82 @@ public sealed class GatewayInputStatsAggregator
         public long Characters { get; set; }
     }
 
-    /// <param name="path">The durable store file. Defaults to gateway-input-stats.json under the cc-director
-    /// storage root, beside the other Gateway stores.</param>
+    /// <param name="path">The statistics database. Defaults to gateway-stats.db under the cc-director
+    /// storage root, beside the store it replaces.</param>
     public GatewayInputStatsAggregator(string? path = null)
+        : this(new GatewayStatsDatabase(path), ownsDatabase: true)
     {
-        _path = string.IsNullOrWhiteSpace(path)
-            ? Path.Combine(CcStorage.Root(), "gateway-input-stats.json")
-            : path!;
-        Load();
+    }
+
+    /// <param name="database">An already-open database. The caller keeps ownership - Phase 2 puts the
+    /// concurrency store on this same file.</param>
+    public GatewayInputStatsAggregator(GatewayStatsDatabase database)
+        : this(database, ownsDatabase: false)
+    {
+    }
+
+    private GatewayInputStatsAggregator(GatewayStatsDatabase database, bool ownsDatabase)
+    {
+        _db = database;
+        _ownsDatabase = ownsDatabase;
+        RetireLegacyJsonStore();
+        LoadMirror();
+    }
+
+    // The owner's ruling: the old numbers are not carried across. The document is renamed aside WITHOUT
+    // being read - no parse, no import, no parity. Renamed and never deleted: throwing the data away was his
+    // call, destroying it irreversibly was not, and a rename costs nothing and keeps the door open.
+    //
+    // Self-idempotent by nature: after the rename the file is gone, so there is nothing to mark done and no
+    // marker to strand.
+    private void RetireLegacyJsonStore()
+    {
+        var legacy = Path.Combine(Path.GetDirectoryName(_db.Path) ?? CcStorage.Root(), "gateway-input-stats.json");
+        if (!File.Exists(legacy)) return;
+
+        var aside = legacy + ".retired-" + DateTime.UtcNow.ToString("yyyyMMdd-HHmmss", System.Globalization.CultureInfo.InvariantCulture);
+        File.Move(legacy, aside);
+        FileLog.Write($"[GatewayInputStatsAggregator] RetireLegacyJsonStore: the old numbers are not carried " +
+                      $"across (owner ruling); renamed {legacy} to {aside} UNREAD; starting empty");
+    }
+
+    // Populate the mirror FROM the database - never the reverse. Once, at startup.
+    private void LoadMirror()
+    {
+        lock (_lock)
+        {
+            Read("SELECT session_id, modality, surface, turns, chars FROM session_highwater", r =>
+            {
+                var sid = r.GetString(0);
+                if (!_highWater.TryGetValue(sid, out var hw))
+                {
+                    hw = new Dictionary<(string, string), Counters>();
+                    _highWater[sid] = hw;
+                }
+                hw[(r.GetString(1), r.GetString(2))] = new Counters { Turns = r.GetInt64(3), Characters = r.GetInt64(4) };
+            });
+            Read("SELECT session_id, turns, chars FROM agent_driven_highwater",
+                r => _agentDrivenHighWater[r.GetString(0)] = new Counters { Turns = r.GetInt64(1), Characters = r.GetInt64(2) });
+            Read("SELECT session_id FROM wingman_session", r => _wingmanSessions.Add(r.GetString(0)));
+            Read("SELECT session_id FROM agents_seeded", r => _agentsSeeded.Add(r.GetString(0)));
+            Read("SELECT repo_id, repo_display FROM repo_identity", r =>
+            {
+                var id = r.GetInt64(0); var d = r.GetString(1);
+                _repoIds[d] = id; _repoDisplay[id] = d;
+            });
+            Read("SELECT agent_id, agent_display FROM agent_identity", r =>
+            {
+                var id = r.GetInt64(0); var d = r.GetString(1);
+                _agentIds[d] = id; _agentDisplay[id] = d;
+            });
+            Read("SELECT repo_id, session_id FROM repo_session", r => _repoSessions.Add((r.GetInt64(0), r.GetString(1))));
+            Read("SELECT agent_id, session_id FROM agent_session", r => _agentSessions.Add((r.GetInt64(0), r.GetString(1))));
+            _agentsSinceUtc = ReadScalarString("SELECT value FROM meta WHERE name=$n", ("$n", AgentsSinceKey)) ?? "";
+
+            FileLog.Write($"[GatewayInputStatsAggregator] LoadMirror: {_highWater.Count} live session(s), " +
+                          $"{_wingmanSessions.Count} wingman session(s), {_repoIds.Count} repo(s), {_agentIds.Count} agent(s), " +
+                          $"{_agentsSeeded.Count} seeded, agentsSince='{_agentsSinceUtc}' from {_db.Path}");
+        }
     }
 
     /// <summary>Fold every session in a full snapshot into the totals and the per-hour turn log.</summary>
@@ -142,13 +167,12 @@ public sealed class GatewayInputStatsAggregator
     {
         if (sessions is null) return;
         var now = nowUtc ?? DateTime.UtcNow;
-        var hourKey = HourKey(now);
         lock (_lock)
         {
-            var changed = StampAgentsSinceLocked(now);
-            foreach (var s in sessions)
-                changed |= FoldLocked(s, hourKey);
-            if (changed) { PruneLocked(now); Save(); }
+            var batch = new FoldBatch(now, HourKey(now));
+            StampAgentsSinceLocked(batch);
+            foreach (var s in sessions) FoldLocked(s, batch);
+            CommitLocked(batch);
         }
     }
 
@@ -157,25 +181,314 @@ public sealed class GatewayInputStatsAggregator
     {
         if (session is null) return;
         var now = nowUtc ?? DateTime.UtcNow;
-        var hourKey = HourKey(now);
         lock (_lock)
         {
-            var changed = StampAgentsSinceLocked(now);
-            changed |= FoldLocked(session, hourKey);
-            if (changed) { PruneLocked(now); Save(); }
+            var batch = new FoldBatch(now, HourKey(now));
+            StampAgentsSinceLocked(batch);
+            FoldLocked(session, batch);
+            CommitLocked(batch);
         }
     }
 
-    // Stamp when the per-agent tally started counting, the first time a Gateway with the tally observes
-    // anything - from either entry point, so the date does not depend on which one fired first. The all-time
-    // totals predate the breakdown, so this is what lets the Agents page state which window its numbers
-    // cover instead of implying the earlier turns ran under no agent. Returns true when it stamped (the
-    // caller must persist it). Caller holds the lock.
-    private bool StampAgentsSinceLocked(DateTime nowUtc)
+    /// <summary>
+    /// Everything one observation wants to write, collected before ANY of it is written, so the mirror is
+    /// advanced only after the commit succeeds. Mutating the mirror as we go would mean a failed write
+    /// leaves the mirror believing a delta was recorded that is not on disk - it would never be folded
+    /// again, and the loss would be silent.
+    /// </summary>
+    private sealed class FoldBatch
     {
-        if (_agentsSinceUtc.Length > 0) return false;
-        _agentsSinceUtc = nowUtc.ToUniversalTime().ToString("o", System.Globalization.CultureInfo.InvariantCulture);
-        return true;
+        public FoldBatch(DateTime nowUtc, string hourKey) { NowUtc = nowUtc; HourKey = hourKey; }
+        public DateTime NowUtc { get; }
+        public string HourKey { get; }
+
+        public readonly List<(string Hour, string SessionId, string Modality, string Surface, bool IsVoice, string Repo, bool Wingman, long Turns, long Chars)> Rows = new();
+        public readonly List<(string Agent, bool IsVoice, long Turns, long Chars)> AgentRows = new();
+        public readonly List<(string Agent, long Turns, long Chars)> AgentDrivenRows = new();
+        public readonly List<(string SessionId, string Modality, string Surface, long Turns, long Chars)> HighWater = new();
+        public readonly List<(string SessionId, long Turns, long Chars)> AgentDrivenHighWater = new();
+        public readonly List<string> NewWingmanSessions = new();
+        public readonly List<string> NewSeeded = new();
+        public readonly List<(string Display, bool IsRepo)> NewIdentities = new();
+        public readonly List<(string Display, string SessionId, bool IsRepo)> NewIdentitySessions = new();
+        public string? StampAgentsSince;
+
+        public bool IsEmpty => Rows.Count == 0 && AgentRows.Count == 0 && AgentDrivenRows.Count == 0
+            && HighWater.Count == 0 && AgentDrivenHighWater.Count == 0 && NewWingmanSessions.Count == 0
+            && NewSeeded.Count == 0 && NewIdentities.Count == 0 && NewIdentitySessions.Count == 0
+            && StampAgentsSince is null;
+    }
+
+    private void StampAgentsSinceLocked(FoldBatch batch)
+    {
+        if (_agentsSinceUtc.Length > 0) return;
+        batch.StampAgentsSince = batch.NowUtc.ToUniversalTime()
+            .ToString("o", System.Globalization.CultureInfo.InvariantCulture);
+    }
+
+    // Fold one session's tally via the high-water increment. Caller holds the lock.
+    //
+    // THE CORRECTNESS CORE OF THE MISSION, SEMANTICS UNCHANGED from GatewayInputStatsAggregator on
+    // origin/main. It is what makes re-reading a roster safe and what lets counts survive a restart without
+    // double-counting. Simplifying it breaks the mission. The ORDER below matters and mirrors the original
+    // exactly - in particular the wingman registration and the agent-driven fold both happen BEFORE the
+    // empty-buckets return.
+    private void FoldLocked(SessionDto s, FoldBatch batch)
+    {
+        if (string.IsNullOrEmpty(s.SessionId)) return;
+
+        // Read VoiceMode ONCE and pass it down. Wingman is a property of the session's MODE for this whole
+        // observation, not of any bucket, so it is constant across every row this fold writes. Reading it
+        // once means no row can carry a different flag than its siblings and - the failure that actually
+        // matters - the emitting code has no path to derive the flag from a bucket's own modality. A turn
+        // TYPED while voice mode is on IS a wingman turn.
+        var wingman = s.VoiceMode;
+
+        // A session "uses the wingman" the moment it is seen with voice mode on - recorded even with no
+        // input this fold. BEFORE the empty-buckets return, deliberately; the membership mirror is what
+        // keeps it free on an idle poll.
+        if (wingman && !_wingmanSessions.Contains(s.SessionId) && !batch.NewWingmanSessions.Contains(s.SessionId))
+            batch.NewWingmanSessions.Add(s.SessionId);
+
+        // Issue #1636: turns other agents drove into this session, on their own lane. Folded BEFORE the
+        // buckets guard, because a session driven only by other agents has no human buckets at all - and
+        // those are exactly the sessions this tally is about.
+        FoldAgentDrivenLocked(s, batch);
+
+        if (s.InputStats?.Buckets is null || s.InputStats.Buckets.Count == 0) return;
+
+        _highWater.TryGetValue(s.SessionId, out var hw);
+
+        // Issue #1633: the first time this session is folded, attribute what it has ALREADY counted to its
+        // agent. Read before the loop below moves the high-water on. On a fresh database this contributes
+        // nothing (the high-water is empty); after a RESTART it would contribute real turns, which is why
+        // agents_seeded is persisted.
+        if (!_agentsSeeded.Contains(s.SessionId))
+        {
+            batch.NewSeeded.Add(s.SessionId);
+            if (hw is not null)
+                foreach (var (key, prior) in hw)
+                    AttributeToAgentLocked(s, key.Modality, prior.Turns, prior.Characters, batch);
+        }
+
+        // Path separators are deliberately NOT normalized. OrdinalIgnoreCase folds case but not '/' against
+        // '\', so "D:/ReposFred/devthrottle" and "D:\ReposFred\devthrottle" are genuinely different keys and
+        // the Repos page already shows them separately - measured on the owner's real store, three
+        // repositories are stored under both spellings and normalizing would collapse 20 rows to 17. It
+        // looks like a bug; fixing it would CHANGE THE OWNER'S NUMBERS. Whether the page should merge them
+        // is his question, not this mission's.
+        var repoKey = s.RepoPath ?? "";
+
+        foreach (var b in s.InputStats.Buckets)
+        {
+            var key = (b.Modality ?? "", b.Surface ?? "");
+            Counters? prev = null;
+            hw?.TryGetValue(key, out prev);
+            var prevTurns = prev?.Turns ?? 0;
+            var prevChars = prev?.Characters ?? 0;
+
+            // Normal case: counts only grow, so add the increase. Reset case (a Director restarted this
+            // session id with a fresh tally): the reported count is LOWER than last seen, so the whole
+            // current count is new activity from zero.
+            var deltaTurns = b.Turns >= prevTurns ? b.Turns - prevTurns : b.Turns;
+            var deltaChars = b.Characters >= prevChars ? b.Characters - prevChars : b.Characters;
+
+            if (deltaTurns > 0 || deltaChars > 0)
+            {
+                // Decided HERE, in C#, with the same case-INSENSITIVE test the original uses - while the
+                // totals bucket key stays case-SENSITIVE. That asymmetry is current behaviour and storing
+                // the flag keeps it out of the query layer.
+                var isVoice = string.Equals(key.Item1, "voice", StringComparison.OrdinalIgnoreCase);
+
+                batch.Rows.Add((batch.HourKey, s.SessionId, key.Item1, key.Item2, isVoice, repoKey, wingman, deltaTurns, deltaChars));
+                NeedIdentity(repoKey, isRepo: true, batch);
+                if (!KnownIdentitySession(repoKey, s.SessionId, isRepo: true, batch))
+                    batch.NewIdentitySessions.Add((repoKey, s.SessionId, true));
+
+                AttributeToAgentLocked(s, key.Item1, deltaTurns, deltaChars, batch);
+            }
+
+            if (prev is null || prev.Turns != b.Turns || prev.Characters != b.Characters)
+                batch.HighWater.Add((s.SessionId, key.Item1, key.Item2, b.Turns, b.Characters));
+        }
+    }
+
+    // Attribute turns/characters to the agent CLI the session drives. Used by BOTH the ordinary delta path
+    // and the first-fold back-fill, so the two can never drift apart - which is exactly why the agent tally
+    // has its OWN table rather than being derived from stat_delta (the back-fill has no stat_delta
+    // counterpart, so deriving it would either inflate the totals or lose the attribution).
+    //
+    // The session id is registered even when it brought no turns, so the per-agent session counts describe
+    // the agents actually being run rather than only the ones that submitted a turn in the observed window.
+    // An agent the Director did not report is counted under the empty key and shown as "(unknown)".
+    private void AttributeToAgentLocked(SessionDto s, string modality, long turns, long characters, FoldBatch batch)
+    {
+        var agentKey = s.Agent ?? "";
+        NeedIdentity(agentKey, isRepo: false, batch);
+
+        if (turns > 0 || characters > 0)
+        {
+            var isVoice = string.Equals(modality, "voice", StringComparison.OrdinalIgnoreCase);
+            batch.AgentRows.Add((agentKey, isVoice, turns, characters));
+        }
+
+        if (!string.IsNullOrEmpty(s.SessionId) && !KnownIdentitySession(agentKey, s.SessionId, isRepo: false, batch))
+            batch.NewIdentitySessions.Add((agentKey, s.SessionId, false));
+    }
+
+    // Fold the turns OTHER agents drove into this session (issue #1636) via the same high-water increment
+    // the human buckets use. Attributed to the RECEIVING session's agent. These never enter the totals, the
+    // hourly log or the buckets, because the human voice-versus-typed numbers must stay about the human -
+    // which is why they live in their own table where they CANNOT be summed in by accident.
+    private void FoldAgentDrivenLocked(SessionDto s, FoldBatch batch)
+    {
+        var turns = s.InputStats?.AgentDrivenTurns ?? 0;
+        var chars = s.InputStats?.AgentDrivenCharacters ?? 0;
+        if (turns == 0 && chars == 0) return;
+
+        _agentDrivenHighWater.TryGetValue(s.SessionId, out var prev);
+        var prevTurns = prev?.Turns ?? 0;
+        var prevChars = prev?.Characters ?? 0;
+
+        var deltaTurns = turns >= prevTurns ? turns - prevTurns : turns;
+        var deltaChars = chars >= prevChars ? chars - prevChars : chars;
+
+        // The watermark moves whether or not the delta did - matching the original, which assigns it before
+        // the delta check. But only queue a WRITE when the value actually changed: the original's assignment
+        // is a free in-memory store, whereas here it would be a database upsert on every poll of a session
+        // whose agent-driven counts are steady - a permanent write where there should be silence, which is
+        // the same idle-poll property the human high-water above protects. The mirror lands on the same
+        // value either way. (Codex non-blocking finding on the fold review.)
+        if (prev is null || prev.Turns != turns || prev.Characters != chars)
+            batch.AgentDrivenHighWater.Add((s.SessionId, turns, chars));
+        if (deltaTurns <= 0 && deltaChars <= 0) return;
+
+        var agentKey = s.Agent ?? "";
+        NeedIdentity(agentKey, isRepo: false, batch);
+        batch.AgentDrivenRows.Add((agentKey, deltaTurns, deltaChars));
+        if (!string.IsNullOrEmpty(s.SessionId) && !KnownIdentitySession(agentKey, s.SessionId, isRepo: false, batch))
+            batch.NewIdentitySessions.Add((agentKey, s.SessionId, false));
+    }
+
+    private void NeedIdentity(string display, bool isRepo, FoldBatch batch)
+    {
+        var known = isRepo ? _repoIds : _agentIds;
+        if (known.ContainsKey(display)) return;
+        // The pending list is compared with the SAME comparer, so two spellings differing only by case
+        // inside one batch resolve to one identity, exactly as the dictionary would.
+        foreach (var (d, r) in batch.NewIdentities)
+            if (r == isRepo && StringComparer.OrdinalIgnoreCase.Equals(d, display)) return;
+        batch.NewIdentities.Add((display, isRepo));
+    }
+
+    private bool KnownIdentitySession(string display, string sessionId, bool isRepo, FoldBatch batch)
+    {
+        var ids = isRepo ? _repoIds : _agentIds;
+        if (ids.TryGetValue(display, out var id))
+        {
+            var set = isRepo ? _repoSessions : _agentSessions;
+            if (set.Contains((id, sessionId))) return true;
+        }
+        foreach (var (d, sid, r) in batch.NewIdentitySessions)
+            if (r == isRepo && sid == sessionId && StringComparer.OrdinalIgnoreCase.Equals(d, display)) return true;
+        return false;
+    }
+
+    // Write everything the batch collected, in ONE transaction, then advance the mirror. An empty batch - an
+    // IDLE poll - writes NOTHING and does not even open a transaction.
+    private void CommitLocked(FoldBatch batch)
+    {
+        if (batch.IsEmpty) return;
+
+        using var tx = _db.Connection.BeginTransaction();
+
+        if (batch.StampAgentsSince is not null)
+            Execute("INSERT OR REPLACE INTO meta(name, value) VALUES ($n, $v)", tx,
+                ("$n", AgentsSinceKey), ("$v", batch.StampAgentsSince));
+
+        var newRepoIds = new Dictionary<string, long>(StringComparer.OrdinalIgnoreCase);
+        var newAgentIds = new Dictionary<string, long>(StringComparer.OrdinalIgnoreCase);
+        foreach (var (display, isRepo) in batch.NewIdentities)
+        {
+            var table = isRepo ? "repo_identity" : "agent_identity";
+            var column = isRepo ? "repo_display" : "agent_display";
+            var id = ExecuteScalarLong($"INSERT INTO {table}({column}) VALUES ($d); SELECT last_insert_rowid()", tx, ("$d", display));
+            (isRepo ? newRepoIds : newAgentIds)[display] = id;
+        }
+
+        long Resolve(string display, bool isRepo)
+        {
+            var pending = isRepo ? newRepoIds : newAgentIds;
+            if (pending.TryGetValue(display, out var fresh)) return fresh;
+            return (isRepo ? _repoIds : _agentIds)[display];
+        }
+
+        foreach (var r in batch.Rows)
+            Execute(@"INSERT INTO stat_delta(hour_utc, session_id, modality, surface, is_voice, repo_id, wingman, turns, chars)
+                      VALUES ($h, $s, $m, $u, $v, $r, $w, $t, $c)", tx,
+                ("$h", r.Hour), ("$s", r.SessionId), ("$m", r.Modality), ("$u", r.Surface),
+                ("$v", r.IsVoice ? 1 : 0), ("$r", Resolve(r.Repo, true)), ("$w", r.Wingman ? 1 : 0),
+                ("$t", r.Turns), ("$c", r.Chars));
+
+        foreach (var a in batch.AgentRows)
+            Execute("INSERT INTO agent_delta(agent_id, is_voice, turns, chars) VALUES ($a, $v, $t, $c)", tx,
+                ("$a", Resolve(a.Agent, false)), ("$v", a.IsVoice ? 1 : 0), ("$t", a.Turns), ("$c", a.Chars));
+
+        foreach (var a in batch.AgentDrivenRows)
+            Execute("INSERT INTO agent_driven_delta(agent_id, turns, chars) VALUES ($a, $t, $c)", tx,
+                ("$a", Resolve(a.Agent, false)), ("$t", a.Turns), ("$c", a.Chars));
+
+        foreach (var h in batch.HighWater)
+            Execute(@"INSERT INTO session_highwater(session_id, modality, surface, turns, chars)
+                      VALUES ($s, $m, $u, $t, $c)
+                      ON CONFLICT(session_id, modality, surface) DO UPDATE SET turns=$t, chars=$c", tx,
+                ("$s", h.SessionId), ("$m", h.Modality), ("$u", h.Surface), ("$t", h.Turns), ("$c", h.Chars));
+
+        foreach (var h in batch.AgentDrivenHighWater)
+            Execute(@"INSERT INTO agent_driven_highwater(session_id, turns, chars) VALUES ($s, $t, $c)
+                      ON CONFLICT(session_id) DO UPDATE SET turns=$t, chars=$c", tx,
+                ("$s", h.SessionId), ("$t", h.Turns), ("$c", h.Chars));
+
+        foreach (var sid in batch.NewWingmanSessions)
+            Execute("INSERT OR IGNORE INTO wingman_session(session_id) VALUES ($s)", tx, ("$s", sid));
+
+        foreach (var sid in batch.NewSeeded)
+            Execute("INSERT OR IGNORE INTO agents_seeded(session_id) VALUES ($s)", tx, ("$s", sid));
+
+        foreach (var (display, sessionId, isRepo) in batch.NewIdentitySessions)
+        {
+            var table = isRepo ? "repo_session" : "agent_session";
+            var column = isRepo ? "repo_id" : "agent_id";
+            Execute($"INSERT OR IGNORE INTO {table}({column}, session_id) VALUES ($i, $s)", tx,
+                ("$i", Resolve(display, isRepo)), ("$s", sessionId));
+        }
+
+        if (batch.Rows.Count > 0) PruneLocked(batch.NowUtc, tx);
+
+        tx.Commit();
+
+        // ---- Committed. Only now does the mirror move. ----
+        if (batch.StampAgentsSince is not null) _agentsSinceUtc = batch.StampAgentsSince;
+        foreach (var (d, id) in newRepoIds) { _repoIds[d] = id; _repoDisplay[id] = d; }
+        foreach (var (d, id) in newAgentIds) { _agentIds[d] = id; _agentDisplay[id] = d; }
+        foreach (var h in batch.HighWater)
+        {
+            if (!_highWater.TryGetValue(h.SessionId, out var hw))
+            {
+                hw = new Dictionary<(string, string), Counters>();
+                _highWater[h.SessionId] = hw;
+            }
+            hw[(h.Modality, h.Surface)] = new Counters { Turns = h.Turns, Characters = h.Chars };
+        }
+        foreach (var h in batch.AgentDrivenHighWater)
+            _agentDrivenHighWater[h.SessionId] = new Counters { Turns = h.Turns, Characters = h.Chars };
+        foreach (var sid in batch.NewWingmanSessions) _wingmanSessions.Add(sid);
+        foreach (var sid in batch.NewSeeded) _agentsSeeded.Add(sid);
+        foreach (var (display, sessionId, isRepo) in batch.NewIdentitySessions)
+        {
+            var id = isRepo ? _repoIds[display] : _agentIds[display];
+            (isRepo ? _repoSessions : _agentSessions).Add((id, sessionId));
+        }
     }
 
     /// <summary>
@@ -187,8 +500,31 @@ public sealed class GatewayInputStatsAggregator
         if (string.IsNullOrEmpty(sessionId)) return;
         lock (_lock)
         {
-            if (_highWater.Remove(sessionId)) Save();
+            if (!_highWater.ContainsKey(sessionId)) return;
+            Execute("DELETE FROM session_highwater WHERE session_id=$s", null, ("$s", sessionId));
+            _highWater.Remove(sessionId);
         }
+    }
+
+    // Prune the working-day detail past the retention window. Caller holds the lock.
+    //
+    // The original prunes only the hourly buckets and the all-time totals survive because they live in
+    // separate dictionaries. Here ONE row feeds both, so deleting it would silently shrink the all-time
+    // totals - the #1376 class of failure. Departing rows are therefore folded into ARCHIVE rows first,
+    // preserving every dimension any all-time answer groups by: modality, surface, is_voice, repository and
+    // the wingman flag. Pruning collapses the hour and the session id, and nothing else. agent_delta and
+    // agent_driven_delta carry no hour and are never pruned, matching the all-time agent tally.
+    private void PruneLocked(DateTime nowUtc, SqliteTransaction tx)
+    {
+        var cutoff = HourKey(nowUtc.AddDays(-RetentionDays));
+        Execute(@"INSERT INTO stat_delta(hour_utc, session_id, modality, surface, is_voice, repo_id, wingman, turns, chars)
+                  SELECT $marker, $marker, modality, surface, is_voice, repo_id, wingman, SUM(turns), SUM(chars)
+                    FROM stat_delta
+                   WHERE hour_utc <> $marker AND hour_utc < $cutoff
+                   GROUP BY modality, surface, is_voice, repo_id, wingman", tx,
+            ("$marker", GatewayStatsDatabase.ArchiveMarker), ("$cutoff", cutoff));
+        Execute("DELETE FROM stat_delta WHERE hour_utc <> $marker AND hour_utc < $cutoff", tx,
+            ("$marker", GatewayStatsDatabase.ArchiveMarker), ("$cutoff", cutoff));
     }
 
     /// <summary>
@@ -198,7 +534,13 @@ public sealed class GatewayInputStatsAggregator
     /// </summary>
     public (long Turns, long Characters) AgentDrivenUsage()
     {
-        lock (_lock) { return (_agentDrivenTurns, _agentDrivenCharacters); }
+        lock (_lock)
+        {
+            long turns = 0, chars = 0;
+            Read("SELECT COALESCE(SUM(turns),0), COALESCE(SUM(chars),0) FROM agent_driven_delta",
+                r => { turns = r.GetInt64(0); chars = r.GetInt64(1); });
+            return (turns, chars);
+        }
     }
 
     /// <summary>An immutable snapshot of the all-time totals for the dashboard, buckets in a stable order.</summary>
@@ -206,7 +548,24 @@ public sealed class GatewayInputStatsAggregator
     {
         lock (_lock)
         {
-            return ToDtoLocked(_totals);
+            var rows = new List<InputStatBucketDto>();
+            // ARCHIVE rows are INCLUDED - that is the point of archiving: an all-time total must not shrink
+            // when the hourly detail behind it is pruned.
+            Read(@"SELECT modality, surface, SUM(turns), SUM(chars) FROM stat_delta GROUP BY modality, surface", r =>
+                rows.Add(new InputStatBucketDto
+                {
+                    Modality = r.GetString(0),
+                    Surface = r.GetString(1),
+                    Turns = r.GetInt64(2),
+                    Characters = r.GetInt64(3),
+                }));
+
+            var dto = new InputStatsDto();
+            // Ordered in C#, ordinal - the comparer the original projection used.
+            foreach (var b in rows.OrderBy(b => b.Modality, StringComparer.Ordinal)
+                                  .ThenBy(b => b.Surface, StringComparer.Ordinal))
+                dto.Buckets.Add(b);
+            return dto;
         }
     }
 
@@ -216,7 +575,11 @@ public sealed class GatewayInputStatsAggregator
     {
         lock (_lock)
         {
-            return new WingmanUsageDto { Turns = _wingmanTurns, Sessions = _wingmanSessions.Count };
+            // SUM(turns) WHERE wingman=1 - never anything keyed on modality. A turn TYPED while voice mode
+            // was on is a wingman turn.
+            var turns = ScalarLong("SELECT COALESCE(SUM(turns),0) FROM stat_delta WHERE wingman=1");
+            var sessions = ScalarLong("SELECT COUNT(*) FROM wingman_session");
+            return new WingmanUsageDto { Turns = turns, Sessions = (int)sessions };
         }
     }
 
@@ -226,16 +589,28 @@ public sealed class GatewayInputStatsAggregator
     {
         lock (_lock)
         {
-            var list = new List<InputHourDto>(_hourly.Count);
-            foreach (var kvp in _hourly)
+            var list = new List<InputHourDto>();
+            // ARCHIVE rows are EXCLUDED: they are real all-time data with no real hour, so letting them
+            // through would invent a bucket in this series that was never an hour of the working day.
+            Read(@"SELECT hour_utc,
+                          COALESCE(SUM(CASE WHEN is_voice = 1 THEN turns ELSE 0 END), 0),
+                          COALESCE(SUM(CASE WHEN is_voice = 0 THEN turns ELSE 0 END), 0),
+                          SUM(chars)
+                     FROM stat_delta
+                    WHERE hour_utc <> $marker
+                    GROUP BY hour_utc", r =>
+            {
+                var voice = r.GetInt64(1);
+                var typed = r.GetInt64(2);
                 list.Add(new InputHourDto
                 {
-                    Hour = kvp.Key,
-                    VoiceTurns = kvp.Value.VoiceTurns,
-                    TypedTurns = kvp.Value.TypedTurns,
-                    Turns = kvp.Value.VoiceTurns + kvp.Value.TypedTurns,
-                    Characters = kvp.Value.Characters,
+                    Hour = r.GetString(0),
+                    VoiceTurns = voice,
+                    TypedTurns = typed,
+                    Turns = voice + typed,
+                    Characters = r.GetInt64(3),
                 });
+            }, ("$marker", GatewayStatsDatabase.ArchiveMarker));
             list.Sort((a, b) => string.CompareOrdinal(a.Hour, b.Hour));
             return list;
         }
@@ -247,22 +622,32 @@ public sealed class GatewayInputStatsAggregator
     {
         lock (_lock)
         {
-            var list = new List<RepoStatBucketDto>(_repos.Count);
-            foreach (var kvp in _repos)
+            var sessions = SessionCounts("repo_session", "repo_id");
+            var list = new List<RepoStatBucketDto>();
+            Read(@"SELECT repo_id,
+                          COALESCE(SUM(CASE WHEN is_voice = 1 THEN turns ELSE 0 END), 0),
+                          COALESCE(SUM(CASE WHEN is_voice = 0 THEN turns ELSE 0 END), 0),
+                          SUM(chars)
+                     FROM stat_delta GROUP BY repo_id", r =>
             {
-                var t = kvp.Value;
+                var id = r.GetInt64(0);
+                var voice = r.GetInt64(1);
+                var typed = r.GetInt64(2);
+                // The display spelling comes from the identity mirror, never from a SQL join that might be
+                // tempted to group or order by the string.
+                var display = _repoDisplay.TryGetValue(id, out var d) ? d : "";
                 list.Add(new RepoStatBucketDto
                 {
-                    Repo = kvp.Key,
-                    RepoName = RepoLeaf(kvp.Key),
-                    Turns = t.VoiceTurns + t.TypedTurns,
-                    VoiceTurns = t.VoiceTurns,
-                    TypedTurns = t.TypedTurns,
-                    Characters = t.Characters,
-                    Sessions = t.Sessions.Count,
+                    Repo = display,
+                    RepoName = RepoLeaf(display),
+                    Turns = voice + typed,
+                    VoiceTurns = voice,
+                    TypedTurns = typed,
+                    Characters = r.GetInt64(3),
+                    Sessions = sessions.TryGetValue(id, out var n) ? n : 0,
                 });
-            }
-            // Rank by turns (the headline metric), then characters, then name, so the order is stable.
+            });
+            // Ranked in C#, matching the original ordering exactly.
             list.Sort((a, b) =>
             {
                 var byTurns = b.Turns.CompareTo(a.Turns);
@@ -275,29 +660,46 @@ public sealed class GatewayInputStatsAggregator
     }
 
     /// <summary>The per-agent all-time tally (turns by modality, character volume, distinct sessions),
-    /// ranked most-driven first, for the private Agents page. Agents with no counted turns are omitted.</summary>
+    /// ranked most-driven first, for the private Agents page.</summary>
     public IReadOnlyList<AgentStatBucketDto> AgentTotals()
     {
         lock (_lock)
         {
-            var list = new List<AgentStatBucketDto>(_agents.Count);
-            foreach (var kvp in _agents)
+            var sessions = SessionCounts("agent_session", "agent_id");
+
+            var human = new Dictionary<long, (long Voice, long Typed, long Chars)>();
+            Read(@"SELECT agent_id,
+                          COALESCE(SUM(CASE WHEN is_voice = 1 THEN turns ELSE 0 END), 0),
+                          COALESCE(SUM(CASE WHEN is_voice = 0 THEN turns ELSE 0 END), 0),
+                          SUM(chars)
+                     FROM agent_delta GROUP BY agent_id",
+                r => human[r.GetInt64(0)] = (r.GetInt64(1), r.GetInt64(2), r.GetInt64(3)));
+
+            var driven = new Dictionary<long, (long Turns, long Chars)>();
+            Read("SELECT agent_id, SUM(turns), SUM(chars) FROM agent_driven_delta GROUP BY agent_id",
+                r => driven[r.GetInt64(0)] = (r.GetInt64(1), r.GetInt64(2)));
+
+            // Every agent EVER attributed appears, including one registered with no turns - the original
+            // creates the tally entry on attribution regardless, so the page describes the agents actually
+            // being run rather than only those that submitted a turn in the window.
+            var list = new List<AgentStatBucketDto>();
+            foreach (var (id, display) in _agentDisplay)
             {
-                var t = kvp.Value;
+                human.TryGetValue(id, out var h);
+                driven.TryGetValue(id, out var d);
                 list.Add(new AgentStatBucketDto
                 {
-                    Agent = kvp.Key,
-                    AgentName = AgentDisplayName(kvp.Key),
-                    Turns = t.VoiceTurns + t.TypedTurns,
-                    VoiceTurns = t.VoiceTurns,
-                    TypedTurns = t.TypedTurns,
-                    Characters = t.Characters,
-                    Sessions = t.Sessions.Count,
-                    AgentDrivenTurns = t.AgentDrivenTurns,
-                    AgentDrivenCharacters = t.AgentDrivenCharacters,
+                    Agent = display,
+                    AgentName = AgentDisplayName(display),
+                    Turns = h.Voice + h.Typed,
+                    VoiceTurns = h.Voice,
+                    TypedTurns = h.Typed,
+                    Characters = h.Chars,
+                    AgentDrivenTurns = d.Turns,
+                    AgentDrivenCharacters = d.Chars,
+                    Sessions = sessions.TryGetValue(id, out var n) ? n : 0,
                 });
             }
-            // Rank by turns (the headline metric), then characters, then name, so the order is stable.
             list.Sort((a, b) =>
             {
                 var byTurns = b.Turns.CompareTo(a.Turns);
@@ -309,18 +711,22 @@ public sealed class GatewayInputStatsAggregator
         }
     }
 
-    /// <summary>When the per-agent tally started counting (round-trip UTC), or "" if it has never been
-    /// stamped. The all-time totals predate it, so the Agents page states this rather than implying the
-    /// earlier turns ran under no agent.</summary>
+    private Dictionary<long, int> SessionCounts(string table, string column)
+    {
+        var counts = new Dictionary<long, int>();
+        Read($"SELECT {column}, COUNT(*) FROM {table} GROUP BY {column}", r => counts[r.GetInt64(0)] = r.GetInt32(1));
+        return counts;
+    }
+
+    /// <summary>When the per-agent tally started counting (round-trip UTC), or "" if never stamped.</summary>
     public string AgentsSinceUtc
     {
         get { lock (_lock) { return _agentsSinceUtc; } }
     }
 
-    // The display name of an agent token (the AgentKind enum name the Director reports). An explicit map,
-    // not a PascalCase splitter: "OpenCode" is the product's own spelling and must not become "Open Code".
-    // An unrecognised token is shown verbatim - it is a real value we simply do not have a nicer name for,
-    // so showing it is honest where hiding it behind "Other" would not be.
+    // An explicit map, not a PascalCase splitter: "OpenCode" is the product's own spelling and must not
+    // become "Open Code". An unrecognised token is shown verbatim - it is a real value we simply do not have
+    // a nicer name for, so showing it is honest where hiding it behind "Other" would not be.
     private static string AgentDisplayName(string agent) => agent switch
     {
         "" => "(unknown)",
@@ -329,9 +735,6 @@ public sealed class GatewayInputStatsAggregator
         _ => agent,
     };
 
-    // The display leaf of a repository path: the last path segment of the working directory, so
-    // "D:\ReposFred\devthrottle" reads as "devthrottle". Handles both slash styles across machines (the
-    // Gateway aggregates repos from Windows and Unix Directors alike). Empty path reads as "(unknown)".
     private static string RepoLeaf(string path)
     {
         if (string.IsNullOrWhiteSpace(path)) return "(unknown)";
@@ -343,412 +746,53 @@ public sealed class GatewayInputStatsAggregator
     private static string HourKey(DateTime utc) =>
         utc.ToUniversalTime().ToString(HourFormat, System.Globalization.CultureInfo.InvariantCulture);
 
-    private static bool TryParseHour(string key, out DateTime utc) =>
-        DateTime.TryParseExact(key, HourFormat, System.Globalization.CultureInfo.InvariantCulture,
-            System.Globalization.DateTimeStyles.AssumeUniversal | System.Globalization.DateTimeStyles.AdjustToUniversal, out utc);
+    // ---- Plumbing. Every statement passes through here so StatementsExecuted is honest. ----
 
-    private void PruneLocked(DateTime nowUtc)
+    private void Execute(string sql, SqliteTransaction? tx, params (string Name, object Value)[] args)
     {
-        var cutoff = nowUtc.AddDays(-RetentionDays);
-        var stale = _hourly.Keys.Where(k => TryParseHour(k, out var dt) && dt < cutoff).ToList();
-        foreach (var k in stale) _hourly.Remove(k);
+        using var cmd = _db.Connection.CreateCommand();
+        if (tx is not null) cmd.Transaction = tx;
+        cmd.CommandText = sql;
+        foreach (var (n, v) in args) cmd.Parameters.AddWithValue(n, v);
+        cmd.ExecuteNonQuery();
+        StatementsExecuted++;
     }
 
-    // Fold one session's tally into the totals via the high-water increment, attributing each increase to
-    // <paramref name="hourKey"/> in the per-hour turn log. Returns true when the totals changed. Caller
-    // holds the lock.
-    private bool FoldLocked(SessionDto s, string hourKey)
+    private long ExecuteScalarLong(string sql, SqliteTransaction? tx, params (string Name, object Value)[] args)
     {
-        if (string.IsNullOrEmpty(s.SessionId))
-            return false;
-
-        var changed = false;
-
-        // Wingman usage (owner's definition): a session "uses the wingman" the moment it is seen with voice
-        // mode on - recorded even if it has no input this fold, so a voice-mode session that never typed a
-        // turn still counts. The set is all-time, never pruned on removal (like the totals).
-        if (s.VoiceMode && _wingmanSessions.Add(s.SessionId))
-            changed = true;
-
-        // Issue #1636: turns other agents drove into this session, on their own lane. Folded BEFORE the
-        // buckets guard below, because a session driven only by other agents has no human buckets at all -
-        // and those are exactly the sessions this tally is about.
-        if (FoldAgentDrivenLocked(s))
-            changed = true;
-
-        if (s.InputStats?.Buckets is null || s.InputStats.Buckets.Count == 0)
-            return changed;
-
-        if (!_highWater.TryGetValue(s.SessionId, out var hw))
-        {
-            hw = new Dictionary<(string, string), Counters>();
-            _highWater[s.SessionId] = hw;
-        }
-
-        // Issue #1633: the first time this session is folded, attribute what it has ALREADY counted to its
-        // agent. Read before the loop below moves the high-water on, so this is exactly the turns consumed
-        // into the totals before the agent tally existed - real turns, whose agent we now know. Empty (and
-        // therefore a no-op) for any session first seen after this shipped.
-        if (_agentsSeeded.Add(s.SessionId))
-        {
-            foreach (var (key, prior) in hw)
-                if (AttributeToAgentLocked(s, key.Modality, prior.Turns, prior.Characters))
-                    changed = true;
-        }
-
-        long sessionDeltaTurns = 0;
-        foreach (var b in s.InputStats.Buckets)
-        {
-            var key = (b.Modality ?? "", b.Surface ?? "");
-            hw.TryGetValue(key, out var prev);
-            var prevTurns = prev?.Turns ?? 0;
-            var prevChars = prev?.Characters ?? 0;
-
-            // Normal case: counts only grow, so add the increase. Reset case (a Director restarted this
-            // session id with a fresh tally): the reported count is LOWER than last seen, so the whole
-            // current count is new activity from zero.
-            var deltaTurns = b.Turns >= prevTurns ? b.Turns - prevTurns : b.Turns;
-            var deltaChars = b.Characters >= prevChars ? b.Characters - prevChars : b.Characters;
-
-            if (deltaTurns > 0 || deltaChars > 0)
-            {
-                if (!_totals.TryGetValue(key, out var total))
-                {
-                    total = new Counters();
-                    _totals[key] = total;
-                }
-                total.Turns += deltaTurns;
-                total.Characters += deltaChars;
-
-                var isVoice = string.Equals(key.Item1, "voice", StringComparison.OrdinalIgnoreCase);
-
-                // Attribute this increase to the hour it was observed (the "working day" series). Turns are
-                // split by modality; characters are summed. Surface is not split here - the hourly log is
-                // about WHEN work happened, not from where.
-                if (!_hourly.TryGetValue(hourKey, out var hour))
-                {
-                    hour = new HourTurns();
-                    _hourly[hourKey] = hour;
-                }
-                if (isVoice)
-                    hour.VoiceTurns += deltaTurns;
-                else
-                    hour.TypedTurns += deltaTurns;
-                hour.Characters += deltaChars;
-
-                sessionDeltaTurns += deltaTurns;
-
-                // Attribute the SAME increase to the session's repository (the private Repos page): which
-                // codebase the work landed in. Turns split by modality, characters summed, and the session
-                // id remembered so a repo's distinct-session count is honest.
-                var repoKey = s.RepoPath ?? "";
-                if (!_repos.TryGetValue(repoKey, out var repo))
-                {
-                    repo = new RepoTally();
-                    _repos[repoKey] = repo;
-                }
-                if (isVoice)
-                    repo.VoiceTurns += deltaTurns;
-                else
-                    repo.TypedTurns += deltaTurns;
-                repo.Characters += deltaChars;
-                if (!string.IsNullOrEmpty(s.SessionId))
-                    repo.Sessions.Add(s.SessionId);
-
-                // Attribute the SAME increase to the agent CLI the session drives (the private Agents page):
-                // which agent the work went through.
-                AttributeToAgentLocked(s, key.Item1, deltaTurns, deltaChars);
-
-                changed = true;
-            }
-
-            hw[key] = new Counters { Turns = b.Turns, Characters = b.Characters };
-        }
-
-        // Turns submitted while this session had voice mode on are wingman turns (a subset of the totals).
-        if (s.VoiceMode && sessionDeltaTurns > 0)
-            _wingmanTurns += sessionDeltaTurns;
-
-        return changed;
+        using var cmd = _db.Connection.CreateCommand();
+        if (tx is not null) cmd.Transaction = tx;
+        cmd.CommandText = sql;
+        foreach (var (n, v) in args) cmd.Parameters.AddWithValue(n, v);
+        var result = cmd.ExecuteScalar();
+        StatementsExecuted++;
+        return result is null or DBNull ? 0 : Convert.ToInt64(result);
     }
 
-    // Fold the turns OTHER agents drove into this session (issue #1636) via the same high-water increment
-    // the human buckets use: only the increase counts, and a reported count that DROPPED (a Director
-    // restarted this session id with a fresh tally) is treated as new activity from zero. Attributed to the
-    // RECEIVING session's agent - "how much is Codex being driven by other agents". Returns true when
-    // anything changed. Caller holds the lock.
-    private bool FoldAgentDrivenLocked(SessionDto s)
+    private void Read(string sql, Action<SqliteDataReader> onRow, params (string Name, object Value)[] args)
     {
-        var turns = s.InputStats?.AgentDrivenTurns ?? 0;
-        var chars = s.InputStats?.AgentDrivenCharacters ?? 0;
-        if (turns == 0 && chars == 0) return false;
-
-        _agentDrivenHighWater.TryGetValue(s.SessionId, out var prev);
-        var prevTurns = prev?.Turns ?? 0;
-        var prevChars = prev?.Characters ?? 0;
-
-        var deltaTurns = turns >= prevTurns ? turns - prevTurns : turns;
-        var deltaChars = chars >= prevChars ? chars - prevChars : chars;
-
-        _agentDrivenHighWater[s.SessionId] = new Counters { Turns = turns, Characters = chars };
-        if (deltaTurns <= 0 && deltaChars <= 0) return false;
-
-        _agentDrivenTurns += deltaTurns;
-        _agentDrivenCharacters += deltaChars;
-
-        var agentKey = s.Agent ?? "";
-        if (!_agents.TryGetValue(agentKey, out var agent))
-        {
-            agent = new AgentTally();
-            _agents[agentKey] = agent;
-        }
-        agent.AgentDrivenTurns += deltaTurns;
-        agent.AgentDrivenCharacters += deltaChars;
-        if (!string.IsNullOrEmpty(s.SessionId))
-            agent.Sessions.Add(s.SessionId);
-        return true;
+        using var cmd = _db.Connection.CreateCommand();
+        cmd.CommandText = sql;
+        foreach (var (n, v) in args) cmd.Parameters.AddWithValue(n, v);
+        using var reader = cmd.ExecuteReader();
+        StatementsExecuted++;
+        while (reader.Read()) onRow(reader);
     }
 
-    // Attribute <paramref name="turns"/> and <paramref name="characters"/> to the agent CLI that session
-    // drives (the private Agents page). Used by BOTH the ordinary delta path and the first-fold back-fill
-    // (issue #1633), so the two can never drift apart.
-    //
-    // A session whose agent the Director did not report is counted under the empty key and shown as
-    // "(unknown)" - never silently dropped, and never guessed at from the command line.
-    //
-    // The session id is registered even when it brought no turns with it, so "Agents driven" and the
-    // per-agent session counts describe the agents actually being run rather than only the ones that
-    // happened to submit a turn in the observed window. Returns true when anything changed. Caller holds
-    // the lock.
-    private bool AttributeToAgentLocked(SessionDto s, string modality, long turns, long characters)
+    private long ScalarLong(string sql) => ExecuteScalarLong(sql, null);
+
+    private string? ReadScalarString(string sql, params (string Name, object Value)[] args)
     {
-        var agentKey = s.Agent ?? "";
-        if (!_agents.TryGetValue(agentKey, out var agent))
-        {
-            agent = new AgentTally();
-            _agents[agentKey] = agent;
-        }
-
-        if (string.Equals(modality, "voice", StringComparison.OrdinalIgnoreCase))
-            agent.VoiceTurns += turns;
-        else
-            agent.TypedTurns += turns;
-        agent.Characters += characters;
-
-        var registered = !string.IsNullOrEmpty(s.SessionId) && agent.Sessions.Add(s.SessionId);
-        return registered || turns > 0 || characters > 0;
+        using var cmd = _db.Connection.CreateCommand();
+        cmd.CommandText = sql;
+        foreach (var (n, v) in args) cmd.Parameters.AddWithValue(n, v);
+        StatementsExecuted++;
+        return cmd.ExecuteScalar() as string;
     }
 
-    private static InputStatsDto ToDtoLocked(Dictionary<(string Modality, string Surface), Counters> src)
+    public void Dispose()
     {
-        var dto = new InputStatsDto();
-        foreach (var kvp in src.OrderBy(k => k.Key.Modality, StringComparer.Ordinal).ThenBy(k => k.Key.Surface, StringComparer.Ordinal))
-        {
-            dto.Buckets.Add(new InputStatBucketDto
-            {
-                Modality = kvp.Key.Modality,
-                Surface = kvp.Key.Surface,
-                Turns = kvp.Value.Turns,
-                Characters = kvp.Value.Characters,
-            });
-        }
-        return dto;
-    }
-
-    private sealed class StoreFile
-    {
-        public List<InputStatBucketDto> Totals { get; set; } = new();
-        public Dictionary<string, List<InputStatBucketDto>> HighWater { get; set; } = new();
-        public Dictionary<string, HourTurnsStore> Hourly { get; set; } = new();
-        public long WingmanTurns { get; set; }
-        public List<string> WingmanSessions { get; set; } = new();
-        public Dictionary<string, RepoTallyStore> Repos { get; set; } = new();
-        public Dictionary<string, AgentTallyStore> Agents { get; set; } = new();
-        public string AgentsSinceUtc { get; set; } = "";
-        // Issue #1636: the agent-to-agent lane. Absent in older stores, which is correct - no agent-driven
-        // turns had been counted then, so zero and an empty high-water are the truth, not a guess.
-        public long AgentDrivenTurns { get; set; }
-        public long AgentDrivenCharacters { get; set; }
-        public Dictionary<string, InputStatBucketDto> AgentDrivenHighWater { get; set; } = new();
-        // Issue #1633. NULL (not empty) when the key is absent, which is how a store written before the
-        // back-fill existed is recognised - see Load, which must rebuild such a store's agent tally rather
-        // than add to it. Nullable on purpose: an empty list is a real value (a store with nothing folded
-        // yet) and must not be confused with an absent one.
-        public List<string>? AgentsSeeded { get; set; }
-    }
-
-    private sealed class HourTurnsStore
-    {
-        public long VoiceTurns { get; set; }
-        public long TypedTurns { get; set; }
-        public long Characters { get; set; }
-    }
-
-    private sealed class RepoTallyStore
-    {
-        public long VoiceTurns { get; set; }
-        public long TypedTurns { get; set; }
-        public long Characters { get; set; }
-        public List<string> Sessions { get; set; } = new();
-    }
-
-    private sealed class AgentTallyStore
-    {
-        public long VoiceTurns { get; set; }
-        public long TypedTurns { get; set; }
-        public long Characters { get; set; }
-        public List<string> Sessions { get; set; } = new();
-        public long AgentDrivenTurns { get; set; }
-        public long AgentDrivenCharacters { get; set; }
-    }
-
-    private void Load()
-    {
-        if (!File.Exists(_path))
-        {
-            FileLog.Write($"[GatewayInputStatsAggregator] Load: no store file at {_path}; starting empty");
-            return;
-        }
-
-        StoreFile? parsed;
-        try
-        {
-            parsed = JsonSerializer.Deserialize<StoreFile>(File.ReadAllText(_path), FileJsonOptions);
-        }
-        catch (JsonException ex)
-        {
-            Quarantine(ex.Message);
-            return;
-        }
-        if (parsed is null)
-        {
-            Quarantine("file deserialized to null (no store document)");
-            return;
-        }
-
-        foreach (var b in parsed.Totals)
-            _totals[(b.Modality ?? "", b.Surface ?? "")] = new Counters { Turns = b.Turns, Characters = b.Characters };
-        foreach (var (sid, buckets) in parsed.HighWater)
-        {
-            var hw = new Dictionary<(string, string), Counters>();
-            foreach (var b in buckets)
-                hw[(b.Modality ?? "", b.Surface ?? "")] = new Counters { Turns = b.Turns, Characters = b.Characters };
-            _highWater[sid] = hw;
-        }
-        foreach (var (hour, ht) in parsed.Hourly)
-            _hourly[hour] = new HourTurns { VoiceTurns = ht.VoiceTurns, TypedTurns = ht.TypedTurns, Characters = ht.Characters };
-        _wingmanTurns = parsed.WingmanTurns;
-        foreach (var id in parsed.WingmanSessions)
-            if (!string.IsNullOrEmpty(id)) _wingmanSessions.Add(id);
-        foreach (var (repoKey, rt) in parsed.Repos)
-        {
-            var tally = new RepoTally { VoiceTurns = rt.VoiceTurns, TypedTurns = rt.TypedTurns, Characters = rt.Characters };
-            foreach (var sid in rt.Sessions) tally.Sessions.Add(sid);
-            _repos[repoKey] = tally;
-        }
-        foreach (var (agentKey, at) in parsed.Agents)
-        {
-            var tally = new AgentTally
-            {
-                VoiceTurns = at.VoiceTurns,
-                TypedTurns = at.TypedTurns,
-                Characters = at.Characters,
-                AgentDrivenTurns = at.AgentDrivenTurns,
-                AgentDrivenCharacters = at.AgentDrivenCharacters,
-            };
-            foreach (var sid in at.Sessions) tally.Sessions.Add(sid);
-            _agents[agentKey] = tally;
-        }
-        _agentDrivenTurns = parsed.AgentDrivenTurns;
-        _agentDrivenCharacters = parsed.AgentDrivenCharacters;
-        foreach (var (sid, b) in parsed.AgentDrivenHighWater)
-            _agentDrivenHighWater[sid] = new Counters { Turns = b.Turns, Characters = b.Characters };
-        _agentsSinceUtc = parsed.AgentsSinceUtc ?? "";
-
-        // Issue #1633. A store written before the back-fill existed (no AgentsSeeded key) is a HYBRID: some
-        // sessions had turns attributed by the ordinary delta path while the tally was live, and the SAME
-        // turns are also sitting in those sessions' high-water. Nothing records which of the two applies to
-        // which session, so back-filling on top of it would count those turns twice.
-        //
-        // So the partial tally is DISCARDED and rebuilt from the high-water, which is the authoritative
-        // per-session count. What is lost is the contribution of sessions that both ran and ended inside
-        // that short window - their high-water is already pruned, so it cannot be recovered. That is a small
-        // honest loss, and far better than silently inflating every agent's numbers.
-        if (parsed.AgentsSeeded is null)
-        {
-            FileLog.Write($"[GatewayInputStatsAggregator] Load: store predates the agent back-fill (issue #1633); " +
-                          $"discarding {_agents.Count} partially-attributed agent tally/tallies and rebuilding from " +
-                          $"the high-water of {_highWater.Count} known session(s)");
-            _agents.Clear();
-        }
-        else
-        {
-            foreach (var id in parsed.AgentsSeeded)
-                if (!string.IsNullOrEmpty(id)) _agentsSeeded.Add(id);
-        }
-        FileLog.Write($"[GatewayInputStatsAggregator] Load: restored {_totals.Count} total bucket(s), {_highWater.Count} live session(s), {_hourly.Count} hourly bucket(s), {_wingmanSessions.Count} wingman session(s)/{_wingmanTurns} wingman turn(s), {_repos.Count} repo(s), {_agents.Count} agent(s) since '{_agentsSinceUtc}' ({_agentsSeeded.Count} attributed) from {_path}");
-    }
-
-    private void Quarantine(string reason)
-    {
-        var quarantinePath = $"{_path}.corrupt-{DateTime.UtcNow:yyyyMMdd-HHmmss-fff}";
-        File.Move(_path, quarantinePath);
-        FileLog.Write($"[GatewayInputStatsAggregator] Load FAILED: store file at {_path} is corrupt ({reason}); quarantined to {quarantinePath}; starting empty.");
-    }
-
-    // Write-through under the lock: serialize the whole store and atomically replace the file (temp +
-    // rename) so a concurrent reader or a crash mid-write never sees a half-written store. A failed save is
-    // a LOGGED error that propagates - never a silent skip.
-    private void Save()
-    {
-        try
-        {
-            var dir = Path.GetDirectoryName(_path);
-            if (!string.IsNullOrEmpty(dir))
-                Directory.CreateDirectory(dir);
-
-            var file = new StoreFile { Totals = ToDtoLocked(_totals).Buckets };
-            foreach (var (sid, hw) in _highWater)
-                file.HighWater[sid] = ToDtoLocked(hw).Buckets;
-            foreach (var (hour, ht) in _hourly)
-                file.Hourly[hour] = new HourTurnsStore { VoiceTurns = ht.VoiceTurns, TypedTurns = ht.TypedTurns, Characters = ht.Characters };
-            file.WingmanTurns = _wingmanTurns;
-            file.WingmanSessions = _wingmanSessions.ToList();
-            foreach (var (repoKey, rt) in _repos)
-                file.Repos[repoKey] = new RepoTallyStore
-                {
-                    VoiceTurns = rt.VoiceTurns,
-                    TypedTurns = rt.TypedTurns,
-                    Characters = rt.Characters,
-                    Sessions = rt.Sessions.ToList(),
-                };
-            foreach (var (agentKey, at) in _agents)
-                file.Agents[agentKey] = new AgentTallyStore
-                {
-                    VoiceTurns = at.VoiceTurns,
-                    TypedTurns = at.TypedTurns,
-                    Characters = at.Characters,
-                    Sessions = at.Sessions.ToList(),
-                    AgentDrivenTurns = at.AgentDrivenTurns,
-                    AgentDrivenCharacters = at.AgentDrivenCharacters,
-                };
-            file.AgentsSinceUtc = _agentsSinceUtc;
-            file.AgentsSeeded = _agentsSeeded.ToList();
-            file.AgentDrivenTurns = _agentDrivenTurns;
-            file.AgentDrivenCharacters = _agentDrivenCharacters;
-            foreach (var (sid, c) in _agentDrivenHighWater)
-                file.AgentDrivenHighWater[sid] = new InputStatBucketDto { Turns = c.Turns, Characters = c.Characters };
-
-            var json = JsonSerializer.Serialize(file, FileJsonOptions);
-            var tmp = _path + ".tmp";
-            File.WriteAllText(tmp, json);
-            File.Move(tmp, _path, overwrite: true);
-        }
-        catch (Exception ex)
-        {
-            FileLog.Write($"[GatewayInputStatsAggregator] Save FAILED: path={_path}: {ex.Message}");
-            throw;
-        }
+        if (_ownsDatabase) _db.Dispose();
     }
 }
 
@@ -772,9 +816,7 @@ public sealed class WingmanUsageDto
     public int Sessions { get; set; }
 }
 
-/// <summary>One repository's all-time input tally for the private Repos page: how much development landed
-/// in this codebase, measured in submitted TURNS (total and split voice vs typed), CHARACTER volume, and
-/// the count of distinct SESSIONS that drove input into it. Only counts ever travel - never message text.</summary>
+/// <summary>One repository's all-time input tally for the private Repos page.</summary>
 public sealed class RepoStatBucketDto
 {
     /// <summary>The full repository / working-directory path the sessions ran in (the grouping key).</summary>
@@ -783,61 +825,35 @@ public sealed class RepoStatBucketDto
     /// <summary>The display leaf of <see cref="Repo"/> (its last path segment), e.g. "devthrottle".</summary>
     public string RepoName { get; set; } = "";
 
-    /// <summary>Total submitted turns into this repo (voice + typed).</summary>
     public long Turns { get; set; }
-
-    /// <summary>Submitted turns driven by voice.</summary>
     public long VoiceTurns { get; set; }
-
-    /// <summary>Submitted turns driven by typing.</summary>
     public long TypedTurns { get; set; }
-
-    /// <summary>Total character volume of input into this repo.</summary>
     public long Characters { get; set; }
 
     /// <summary>Distinct sessions that drove counted input into this repo.</summary>
     public int Sessions { get; set; }
 }
 
-/// <summary>One agent CLI's all-time input tally for the private Agents page: how much development you
-/// drive through this agent, measured in submitted TURNS (total and split voice vs typed), CHARACTER
-/// volume, and the count of distinct SESSIONS that drove input through it. Only counts ever travel - never
-/// message text. The tally starts when the breakdown shipped, so it does not reconcile with the all-time
-/// totals; see <see cref="GatewayInputStatsAggregator.AgentsSinceUtc"/>.</summary>
+/// <summary>One agent CLI's all-time input tally for the private Agents page.</summary>
 public sealed class AgentStatBucketDto
 {
-    /// <summary>The agent token the Director reported (the AgentKind name: "ClaudeCode", "Codex", ...),
-    /// or "" when the session carried no agent (the grouping key).</summary>
+    /// <summary>The agent token the Director reported (the AgentKind name), or "" when none.</summary>
     public string Agent { get; set; } = "";
 
-    /// <summary>The display name of <see cref="Agent"/>, e.g. "Claude Code"; "(unknown)" when empty.</summary>
+    /// <summary>The display name of <see cref="Agent"/>; "(unknown)" when empty.</summary>
     public string AgentName { get; set; } = "";
 
-    /// <summary>Total submitted turns driven through this agent (voice + typed).</summary>
     public long Turns { get; set; }
-
-    /// <summary>Submitted turns driven by voice.</summary>
     public long VoiceTurns { get; set; }
-
-    /// <summary>Submitted turns driven by typing.</summary>
     public long TypedTurns { get; set; }
-
-    /// <summary>Total character volume of input driven through this agent.</summary>
     public long Characters { get; set; }
+
+    /// <summary>Turns OTHER agents drove into the sessions running this agent (issue #1636).</summary>
+    public long AgentDrivenTurns { get; set; }
+
+    /// <summary>Character volume other agents drove into the sessions running this agent.</summary>
+    public long AgentDrivenCharacters { get; set; }
 
     /// <summary>Distinct sessions that drove counted input through this agent.</summary>
     public int Sessions { get; set; }
-
-    /// <summary>
-    /// Turns OTHER AGENTS drove into the sessions running this agent (issue #1636) - "how much is this
-    /// agent being driven by other agents", as opposed to by the human.
-    ///
-    /// Deliberately NOT part of <see cref="Turns"/>: that stays the human's own driving. The two answer
-    /// different questions, and adding them together would drop the voice share overnight and break every
-    /// comparison with history.
-    /// </summary>
-    public long AgentDrivenTurns { get; set; }
-
-    /// <summary>Character volume of the <see cref="AgentDrivenTurns"/>.</summary>
-    public long AgentDrivenCharacters { get; set; }
 }

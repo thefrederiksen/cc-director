@@ -29,7 +29,7 @@ public sealed class DirectorHubTests : IDisposable
         Directory.CreateDirectory(_tempDir);
         _registry = new DirectorRegistry(_tempDir);
         _store = new PushedSessionStore(() => _now);
-        _inputStats = new GatewayInputStatsAggregator(Path.Combine(_tempDir, "input-stats.json"));
+        _inputStats = new GatewayInputStatsAggregator(Path.Combine(_tempDir, "gateway-stats.db"));
     }
 
     public void Dispose()

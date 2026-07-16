@@ -42,6 +42,12 @@
          dot. On net5+ it uses built-in .NET crypto (no BouncyCastle); its only transitive dependency
          is Lib.Net.Http.EncryptedContentEncoding. -->
     <PackageReference Include="Lib.Net.Http.WebPush" Version="3.3.1" />
+    <!-- Mission "SQLite on the Gateway": the Gateway statistics database (gateway-stats.db). Core already
+         references this package and the Gateway references Core, so this reference is not what makes the
+         type resolve - it is here because the Gateway now uses SQLite DIRECTLY, and a project that depends
+         on a package states so rather than leaning on a transitive reference that Core is free to drop.
+         Version-matched to Core's (9.0.2) so there is no package downgrade under TreatWarningsAsErrors. -->
+    <PackageReference Include="Microsoft.Data.Sqlite" Version="9.0.2" />
   </ItemGroup>
 
   <ItemGroup>
