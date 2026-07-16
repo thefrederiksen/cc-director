@@ -97,7 +97,9 @@ export function DictationStatusStrip({ sessionId }: { sessionId: string | undefi
   // Dropped as stale (issue #1590). Sticky by construction: there is no timer on this arm, and nothing but
   // an explicit user action removes it. role="alert" because the user's words were NOT delivered.
   if (status.phase === "dropped") {
-    const words = (status.transcript ?? "").trim();
+    // The FULL message that would have been delivered (typed text included), which is exactly what "Send
+    // anyway" sends. Quoting anything else would show the user one thing and send another.
+    const words = (status.recoverableText ?? "").trim();
     const onSendAnyway = async () => {
       setUploadingNow(true);
       try {

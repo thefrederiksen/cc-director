@@ -72,11 +72,13 @@ export interface DictationStatus {
    *  non-recoverable failure that no retry can fix, and for a `dropped` clip that HAS a transcript - there
    *  the action is "Send anyway", not a retry, because re-driving that upload id can only be dropped again. */
   retryable?: boolean;
-  /** The words the server heard, carried on a `dropped` status so the UI can offer them back ("Send anyway",
-   *  issue #1590). Present only when the clip was dropped as stale AND had been transcribed - the whole point
-   *  of the dropped state is that the user's words are not thrown away silently. Empty/absent on the rare
-   *  drop before transcription, where the audio is kept for a fresh-id Retry instead. */
-  transcript?: string;
+  /** The full message a `dropped` dictation would have delivered, carried so the UI can offer it back
+   *  ("Send anyway", issue #1590). NOT just the transcript: it is the typed text the caret split the dictation
+   *  around plus any earlier paused segments plus the words the server heard, composed exactly as the delivery
+   *  path composes them. This is precisely what "Send anyway" sends, which is why the UI must show THIS and
+   *  nothing else - a strip that quotes one thing and sends another is its own small lie. Empty/absent on the
+   *  rare drop before transcription with no typed text, where the audio is kept for a fresh-id Retry instead. */
+  recoverableText?: string;
   /** Epoch milliseconds of the last update (newest-first ordering, and the done auto-clear timer). */
   updatedAt: number;
 }

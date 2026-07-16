@@ -328,7 +328,7 @@ describe("a terminal outcome that did NOT submit is never silent (#1590)", () =>
     expect(status).toBeDefined();
     expect(status?.phase).toBe("dropped");
     // The words are handed back so the UI can offer "Send anyway".
-    expect(status?.transcript).toBe("the words the user actually said");
+    expect(status?.recoverableText).toBe("the words the user actually said");
     // Honest about what happened - it says the recording was NOT sent, never a success.
     expect(status?.error).toContain("moved on");
     expect(status?.error).toContain("wasn't sent");
@@ -369,7 +369,7 @@ describe("a terminal outcome that did NOT submit is never silent (#1590)", () =>
     expect(deletePending).not.toHaveBeenCalled();
     const status = statusFor("id-dropped");
     expect(status?.phase).toBe("dropped");
-    expect(status?.transcript).toBe("words from before the reload");
+    expect(status?.recoverableText).toBe("words from before the reload");
   });
 
   it("a drop BEFORE transcription keeps the audio and offers a retry instead of words", async () => {
@@ -380,7 +380,7 @@ describe("a terminal outcome that did NOT submit is never silent (#1590)", () =>
     const savedId = vi.mocked(savePending).mock.calls[0][0].id;
     const status = statusFor(savedId);
     expect(status?.phase).toBe("dropped");
-    expect(status?.transcript).toBe("");
+    expect(status?.recoverableText).toBe("");
     // No words to hand back, so the recording itself is the recovery: kept, and explicitly retryable.
     expect(status?.retryable).toBe(true);
     expect(status?.error).toContain("saved on your device");
@@ -445,6 +445,113 @@ describe("recovering a dropped dictation (#1590)", () => {
     expect(statusFor("id-send")?.phase).toBe("done");
   });
 
+  it("Send anyway is guarded: two rapid taps submit the user's words exactly ONCE", async () => {
+    // There is NO server-side idempotency behind this send - it is an ordinary prompt, so the durable upload
+    // id that de-duplicates a dictation (#1183) protects nothing here. Unguarded, two taps (or two mounted
+    // strips, each with its own button state) both read the record before either deletes it, and the user
+    // gets their words twice.
+    vi.mocked(getPending).mockResolvedValue(droppedRecord("id-race", "say this once"));
+    let resolveSend!: () => void;
+    vi.mocked(sendPrompt).mockImplementation(() => new Promise<void>((res) => { resolveSend = () => res(); }));
+
+    const first = sendDroppedDictationAnyway("id-race");
+    const second = sendDroppedDictationAnyway("id-race");
+    await flush();
+
+    expect(sendPrompt).toHaveBeenCalledTimes(1); // the second tap found the first still in flight
+
+    resolveSend();
+    await Promise.all([first, second]);
+    expect(sendPrompt).toHaveBeenCalledTimes(1);
+    expect(deletePending).toHaveBeenCalledTimes(1);
+  });
+
+  it("Retry is guarded: two rapid taps stage and drive exactly ONE fresh clip", async () => {
+    // Each tap mints a NEW upload id, so nothing downstream would de-duplicate two of them - the guard is
+    // the only thing standing between an impatient double-tap and the same recording injected twice.
+    vi.mocked(getPending).mockResolvedValue(droppedRecord("id-retry-race", ""));
+    let resolveUpload!: (r: DictationSubmitResult) => void;
+    vi.mocked(uploadDictationToSession).mockImplementation(
+      () => new Promise<DictationSubmitResult>((res) => { resolveUpload = res; }),
+    );
+
+    const first = retryDroppedDictation("id-retry-race");
+    const second = retryDroppedDictation("id-retry-race");
+    await flush();
+
+    const freshSaves = vi.mocked(savePending).mock.calls.filter((c) => c[0].id !== "id-retry-race");
+    expect(freshSaves).toHaveLength(1);
+    expect(uploadDictationToSession).toHaveBeenCalledTimes(1);
+
+    resolveUpload(SUBMITTED);
+    await Promise.all([first, second]);
+    expect(uploadDictationToSession).toHaveBeenCalledTimes(1);
+  });
+
+  it("Send anyway sends the WHOLE message - typed text included - not just the transcribed words", async () => {
+    // A Terminal Speak dictation composes the transcript with the typed text the caret split it around. The
+    // Gateway's delivery path joins before + prefix + transcript + after, skipping empties; the recovery of
+    // that same turn must send the same message, or it silently throws the typed text away - the very
+    // vanishing this item exists to end, just smaller and harder to notice.
+    const composed: PendingDictation = {
+      ...makeRecord("id-compose"),
+      staleDropped: true,
+      droppedTranscript: "the spoken words",
+      before: "typed before",
+      prefix: "an earlier paused segment",
+      after: "typed after",
+    };
+    vi.mocked(getPending).mockResolvedValue(composed);
+
+    await sendDroppedDictationAnyway("id-compose");
+
+    expect(sendPrompt).toHaveBeenCalledWith(
+      "sid",
+      "typed before an earlier paused segment the spoken words typed after",
+      true,
+    );
+  });
+
+  it("shows the user exactly what it will send (the quote and the send are one string)", async () => {
+    // The strip quotes recoverableText and Send anyway sends the composed message; if those two ever drift
+    // apart the strip shows one thing and sends another.
+    const composed: PendingDictation = {
+      ...makeRecord("id-quote"),
+      staleDropped: true,
+      droppedTranscript: "spoken",
+      before: "typed",
+      after: "",
+      prefix: "",
+    };
+    vi.mocked(listPending).mockResolvedValue([composed]);
+
+    await resumePendingDictations();
+    const shown = statusFor("id-quote")?.recoverableText;
+
+    vi.mocked(getPending).mockResolvedValue(composed);
+    await sendDroppedDictationAnyway("id-quote");
+
+    expect(shown).toBe("typed spoken");
+    expect(sendPrompt).toHaveBeenCalledWith("sid", shown, true);
+  });
+
+  it("a drop with typed text but no transcript still offers the typed words back", async () => {
+    // "No transcript" is not the same as "nothing to recover": the typed text is the user's too.
+    const typedOnly: PendingDictation = {
+      ...makeRecord("id-typed-only"),
+      staleDropped: true,
+      droppedTranscript: "",
+      before: "please run the tests",
+    };
+    vi.mocked(listPending).mockResolvedValue([typedOnly]);
+
+    await resumePendingDictations();
+
+    const status = statusFor("id-typed-only");
+    expect(status?.recoverableText).toBe("please run the tests");
+    expect(status?.retryable).toBe(false); // it has words, so the action is Send anyway, not Retry
+  });
+
   it("Send anyway that fails KEEPS the words and stays sticky - a bad moment must not lose them", async () => {
     vi.mocked(getPending).mockResolvedValue(droppedRecord("id-send-fail", "precious words"));
     vi.mocked(sendPrompt).mockRejectedValue(new Error("network died"));
@@ -454,7 +561,7 @@ describe("recovering a dropped dictation (#1590)", () => {
     expect(deletePending).not.toHaveBeenCalled();
     const status = statusFor("id-send-fail");
     expect(status?.phase).toBe("dropped");
-    expect(status?.transcript).toBe("precious words"); // still on screen, still recoverable
+    expect(status?.recoverableText).toBe("precious words"); // still on screen, still recoverable
     expect(status?.error).toContain("still here");
   });
 

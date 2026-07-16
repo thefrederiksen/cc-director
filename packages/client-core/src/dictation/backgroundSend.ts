@@ -63,6 +63,25 @@ const UNHEARD_MESSAGE = "Nothing was heard in that recording, so nothing was sen
 const SEND_ANYWAY_FAILED_MESSAGE =
   "Couldn't send that just now. Your words are still here - try again.";
 
+// The full message a dropped dictation would have delivered (issue #1590), composed EXACTLY as the Gateway's
+// complete path composes it before injecting: the typed text the caret split the dictation around (before /
+// after), any earlier paused segments already turned to text (prefix), and the words the server heard -
+// space-joined, skipping empties.
+//
+// It must match the server's rule (GatewayDictationEndpoint.RunCompleteCoreAsync) because this IS the
+// recovery of that same turn: sending the transcript alone would silently throw away the typed text the user
+// composed around it, which is the very "your words vanished" defect this whole item exists to end - just
+// smaller and harder to notice. Every part is already on the durable record, so nothing extra is stored.
+//
+// The common voice case is the transcript alone, and this returns exactly that.
+function composeDroppedMessage(rec: PendingDictation): string {
+  return [rec.before, rec.prefix, rec.droppedTranscript ?? "", rec.after]
+    .filter((p) => (p ?? "").trim().length > 0)
+    .map((p) => p.trim())
+    .join(" ")
+    .trim();
+}
+
 /** The audio buffer + context the dialog hands up when Send is pressed. */
 export interface CapturedUtterance {
   /** The raw recorded audio exactly as the microphone produced it (WebM/Opus etc.). */
@@ -252,39 +271,53 @@ export async function abandonPendingDictation(uploadId: string): Promise<void> {
 // away, but it told us what they were. Send them as a NORMAL prompt - a fresh turn, deliberately NOT a
 // re-drive of the dictation upload id, which by design (#1183) can only ever return the same drop again.
 //
-// The words are read from the DURABLE record, not the in-memory status, so this still works after a reload.
-// On success the clip is finally done with: the record goes and the status clears. On failure NOTHING is
-// discarded - the status stays sticky with the words still in it, so a bad moment cannot lose them.
+// GUARDED by the same in-flight set the delivery driver uses. This send has NO server-side idempotency behind
+// it: it is an ordinary prompt, so the durable upload id that de-duplicates a dictation (#1183) protects
+// nothing here. Two rapid taps - or two mounted strips for one session, each with its own button state -
+// would both read the record before either deleted it, and the user would get their words twice. The button's
+// disabled state is a courtesy; THIS is the guarantee.
+//
+// The words are read from the DURABLE record, not the in-memory status, so this still works after a reload,
+// and they are composed exactly as the delivery path composes them - the typed text goes with them.
+// The record is deleted only AFTER the send is confirmed: on failure nothing is discarded, and the status
+// stays sticky with the words still in it, so a bad moment cannot lose them.
 export async function sendDroppedDictationAnyway(uploadId: string): Promise<void> {
-  let rec: PendingDictation | null;
+  if (_inFlight.has(uploadId)) return; // already sending this exact clip
+  _inFlight.add(uploadId);
   try {
-    rec = await getPending(uploadId);
-  } catch {
-    return;
-  }
-  if (rec === null) {
-    clearDictationStatus(uploadId); // already dealt with; do not leave a dead strip behind
-    return;
-  }
-  const text = (rec.droppedTranscript ?? "").trim();
-  if (text.length === 0) return; // nothing to send; this clip's action is Retry, not Send anyway
+    let rec: PendingDictation | null;
+    try {
+      rec = await getPending(uploadId);
+    } catch {
+      return;
+    }
+    if (rec === null) {
+      clearDictationStatus(uploadId); // already dealt with; do not leave a dead strip behind
+      return;
+    }
+    const text = composeDroppedMessage(rec);
+    if (text.length === 0) return; // nothing to send; this clip's action is Retry, not Send anyway
 
-  try {
-    await sendPrompt(rec.sessionId, text, true);
-  } catch {
-    // Keep the record AND the sticky status - the words are still on the device and still on screen.
-    publishDictationStatus({
-      sessionId: rec.sessionId,
-      uploadId: rec.id,
-      phase: "dropped",
-      retryable: false,
-      transcript: text,
-      error: SEND_ANYWAY_FAILED_MESSAGE,
-    });
-    return;
+    try {
+      await sendPrompt(rec.sessionId, text, true);
+    } catch {
+      // Keep the record AND the sticky status - the words are still on the device and still on screen.
+      publishDictationStatus({
+        sessionId: rec.sessionId,
+        uploadId: rec.id,
+        phase: "dropped",
+        retryable: false,
+        recoverableText: text,
+        error: SEND_ANYWAY_FAILED_MESSAGE,
+      });
+      return;
+    }
+    // Confirmed sent: only now is the durable copy safe to drop.
+    await deletePending(rec.id);
+    publishDictationStatus({ sessionId: rec.sessionId, uploadId: rec.id, phase: "done" });
+  } finally {
+    _inFlight.delete(uploadId);
   }
-  await deletePending(rec.id);
-  publishDictationStatus({ sessionId: rec.sessionId, uploadId: rec.id, phase: "done" });
 }
 
 // Retry a dropped dictation whose words we never got (the rare drop before transcription, issue #1590).
@@ -292,35 +325,47 @@ export async function sendDroppedDictationAnyway(uploadId: string): Promise<void
 // re-driven under a FRESH upload id - a genuinely new dictation carrying the same recording. The baseline
 // is cleared to zero: the recorded-at baseline describes a terminal that has long since moved on, and
 // re-sending it would simply invite the same drop. The user asked for this send now, deliberately.
+// Guarded on the OLD id by the same in-flight set: each tap mints a NEW upload id, so without this two rapid
+// taps would stage two fresh clips and inject the same recording twice - and being different ids, nothing
+// downstream would de-duplicate them.
 export async function retryDroppedDictation(uploadId: string): Promise<void> {
-  let rec: PendingDictation | null;
+  if (_inFlight.has(uploadId)) return; // already retrying this exact clip
+  _inFlight.add(uploadId);
+  let fresh: PendingDictation;
   try {
-    rec = await getPending(uploadId);
-  } catch {
-    return;
-  }
-  if (rec === null) {
-    clearDictationStatus(uploadId);
-    return;
-  }
+    let rec: PendingDictation | null;
+    try {
+      rec = await getPending(uploadId);
+    } catch {
+      return;
+    }
+    if (rec === null) {
+      clearDictationStatus(uploadId);
+      return;
+    }
 
-  const fresh: PendingDictation = {
-    ...rec,
-    id: crypto.randomUUID(),
-    staleDropped: undefined,
-    droppedTranscript: undefined,
-    baselineBufferBytes: 0,
-    createdAt: Date.now(),
-  };
-  try {
-    await savePending(fresh);
-  } catch {
-    return; // could not stage the fresh copy; leave the dropped record and its sticky status exactly as they are
+    fresh = {
+      ...rec,
+      id: crypto.randomUUID(),
+      staleDropped: undefined,
+      droppedTranscript: undefined,
+      baselineBufferBytes: 0,
+      createdAt: Date.now(),
+    };
+    try {
+      await savePending(fresh);
+    } catch {
+      return; // could not stage the fresh copy; leave the dropped record and its sticky status exactly as they are
+    }
+    // The old id is finished with only once the fresh copy is safely on disk, so a failure here can never
+    // leave the user with neither.
+    await deletePending(rec.id);
+    clearDictationStatus(rec.id);
+  } finally {
+    _inFlight.delete(uploadId);
   }
-  // The old id is finished with only once the fresh copy is safely on disk, so a failure here can never
-  // leave the user with neither.
-  await deletePending(rec.id);
-  clearDictationStatus(rec.id);
+  // Outside the old id's guard: this drives the FRESH id, which takes its own in-flight entry. Holding both
+  // would be harmless but pointless - the old id no longer exists by this point.
   await driveRecord(fresh, { resumed: false, attempt: 0 });
 }
 
@@ -575,15 +620,19 @@ function publishParked(rec: PendingDictation, reason: string): void {
 // back when we have them. With a transcript the action is "Send anyway" (a fresh turn, so NOT retryable -
 // re-driving the tombstoned upload id could only be dropped again); without one, the audio is still on the
 // device, so it is retryable under a fresh upload id instead.
+// The "do we have words to hand back" question is asked of the COMPOSED message, not of the transcript
+// alone: a Terminal Speak clip that was dropped before transcription still has the typed text the user
+// composed around it, and that text is theirs and is recoverable. Only when the whole composed message is
+// empty is there genuinely nothing to offer, and the recording itself becomes the recovery.
 function publishDropped(rec: PendingDictation): void {
-  const transcript = rec.droppedTranscript ?? "";
+  const words = composeDroppedMessage(rec);
   publishDictationStatus({
     sessionId: rec.sessionId,
     uploadId: rec.id,
     phase: "dropped",
-    retryable: transcript.length === 0,
-    transcript,
-    error: transcript.length > 0 ? DROPPED_WITH_TRANSCRIPT_MESSAGE : DROPPED_NO_TRANSCRIPT_MESSAGE,
+    retryable: words.length === 0,
+    recoverableText: words,
+    error: words.length > 0 ? DROPPED_WITH_TRANSCRIPT_MESSAGE : DROPPED_NO_TRANSCRIPT_MESSAGE,
   });
 }
 
