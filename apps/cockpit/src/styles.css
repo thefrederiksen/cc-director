@@ -265,7 +265,9 @@ body {
   height: calc(100% + 48px);
   min-height: 0;
   display: grid;
-  grid-template-columns: 264px 1fr;
+  /* Wider rail (was 264px): the roster now stacks each session's facts onto their own line, so it needs
+     the room to show a full name, status, and computer:port without truncating to "Wor..." / "SORE...". */
+  grid-template-columns: 340px 1fr;
 }
 
 /* ---- the roster rail (left) ---- */
@@ -359,7 +361,9 @@ body {
 }
 
 .newsess-modal {
-  width: 480px;
+  /* Wider (was 480px) so it reads like the desktop New Session dialog: the machine picker lays out
+     2-up and the repo paths get room to breathe. */
+  width: 680px;
   max-width: 92vw;
   max-height: 88vh;
   background: var(--surface);
@@ -418,6 +422,87 @@ body {
   gap: 3px;
   max-height: 200px;
   overflow-y: auto;
+}
+
+/* The machine picker: a 2-up grid of cards (each cc-director), so several Directors do not stack into a
+   tall thin column and same-named machines sit side by side to compare. */
+.newsess-machines {
+  list-style: none;
+  margin: 0 0 4px;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 8px;
+  max-height: 220px;
+  overflow-y: auto;
+}
+
+.newsess-machine {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  text-align: left;
+  padding: 9px 11px;
+  background: var(--surface-2);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.newsess-machine:hover {
+  border-color: var(--accent);
+}
+
+.newsess-machine.sel {
+  border-color: var(--accent);
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
+
+/* Top line: machine name + its Control API port (the disambiguator). */
+.newsess-machine-top {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+}
+
+.newsess-machine-name {
+  font-size: 13px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.newsess-machine-port {
+  flex: 0 0 auto;
+  font-family: "Cascadia Mono", Consolas, Menlo, monospace;
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
+/* Subtitle: uptime + version on the left, the "selected" marker on the right. */
+.newsess-machine-sub {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 6px;
+}
+
+.newsess-machine-meta {
+  font-size: 11.5px;
+  color: var(--text-dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.newsess-machine-check {
+  flex: 0 0 auto;
+  font-size: 11px;
+  color: var(--accent);
 }
 
 .newsess-pick {
@@ -687,17 +772,11 @@ body {
   line-height: 1.35;
 }
 
-/* Reserve EXACTLY two lines for the title so every card is the same height regardless of title length;
-   a longer title wraps onto the second line and then clips with an ellipsis (issue #1211). */
+/* The name wraps freely to as many lines as it needs - the whole point of the roomier rail is that a
+   long session name reads in full instead of clipping. (The old 2-line -webkit-line-clamp is gone.) */
 .roster-name-text {
   flex: 1 1 auto;
   min-width: 0;
-  display: -webkit-box;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
-  line-clamp: 2;
-  overflow: hidden;
-  min-height: calc(2 * 1.35em);
   word-break: break-word;
 }
 
@@ -716,25 +795,24 @@ body {
   padding: 0 5px;
 }
 
-/* One line, clipped - so the meta never wraps to a second row and cards keep a uniform height. */
-.roster-meta {
+/* The tag row (voice / snoozed / snooze-ended / last-seen / waiting): small chips on their own line so
+   they never fight the status for space. It may wrap if several are present rather than clip. */
+.roster-tags {
   display: flex;
-  flex-wrap: nowrap;
+  flex-wrap: wrap;
   align-items: center;
   gap: 6px;
   font-size: 11.5px;
   color: var(--text-dim);
-  overflow: hidden;
 }
 
-/* The state fills the meta line and, being the primary signal, keeps priority: it truncates only after
-   the machine name yields (the machine has the higher shrink priority below). */
+/* The Gateway-stamped status on its own line, shown in FULL - it wraps rather than truncating, so it
+   never reads as "Wor..." again. */
 .roster-state {
-  flex: 1 1 auto;
   min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  font-size: 11.5px;
+  color: var(--text-dim);
+  word-break: break-word;
 }
 
 .roster-tag {
@@ -757,16 +835,46 @@ body {
   color: #d99120;
 }
 
-/* The machine name yields FIRST when the meta line is tight (it truncates before the state does). */
+/* The "computer:port" line on a card (Attention view only - in My order the group header carries it).
+   Its own line, shown in full so a long machine name never clips. */
 .roster-machine {
-  flex: 0 1 auto;
   min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
   color: var(--text-dim);
   font-family: "Cascadia Mono", Consolas, Menlo, monospace;
   font-size: 10.5px;
+  word-break: break-word;
+}
+
+/* ---- the "computer:port" group (My order view) ---- */
+/* Each cc-director's sessions sit under one header. A little top margin sets the groups apart; the
+   first group hugs the toggle above it. */
+.roster-group + .roster-group {
+  margin-top: 10px;
+}
+
+.roster-group-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 2px 4px 4px;
+}
+
+/* The header text: COMPUTER:PORT, mono so the port reads as an address, with a rule trailing off to the
+   right to bracket the group. */
+.roster-group-name {
+  font-family: "Cascadia Mono", Consolas, Menlo, monospace;
+  font-size: 11.5px;
+  font-weight: 700;
+  letter-spacing: 0.3px;
+  color: var(--text);
+  white-space: nowrap;
+}
+
+.roster-group-head::after {
+  content: "";
+  flex: 1 1 auto;
+  height: 1px;
+  background: var(--border);
 }
 
 .roster-waiting {

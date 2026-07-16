@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { SessionDto } from "../api/client";
-import { classify, contextLine, dotColor, effectiveColor, inBucket, inWaitingOrder, isWorking, stateLabel } from "./ordering";
+import { classify, contextLine, dotColor, effectiveColor, groupByDirector, inBucket, inWaitingOrder, isWorking, stateLabel } from "./ordering";
 
 function session(fields: Partial<SessionDto> & { sessionId?: string } = {}): SessionDto {
   return {
@@ -167,5 +167,52 @@ describe("needs-you waiting-line order", () => {
     ];
 
     expect(inWaitingOrder(sessions).map((s) => s.sessionId)).toEqual(["has-stamp", "no-stamp"]);
+  });
+});
+
+describe("groupByDirector", () => {
+  it("groups sessions by their owning Director and labels each with its port", () => {
+    const sessions = [
+      session({ sessionId: "a", directorId: "d1", machineName: "SOREN_NORTH", sortOrder: 1 }),
+      session({ sessionId: "b", directorId: "d2", machineName: "Sorens-Mac-mini", sortOrder: 0 }),
+      session({ sessionId: "c", directorId: "d1", machineName: "SOREN_NORTH", sortOrder: 0 }),
+    ];
+    const ports = new Map([
+      ["d1", "7880"],
+      ["d2", "7880"],
+    ]);
+
+    const groups = groupByDirector(sessions, ports);
+
+    expect(groups.map((g) => `${g.machineName}:${g.port}`)).toEqual([
+      "SOREN_NORTH:7880",
+      "Sorens-Mac-mini:7880",
+    ]);
+    // Within the first Director, sessions come back in desktop (sortOrder) order.
+    expect(groups[0].sessions.map((s) => s.sessionId)).toEqual(["c", "a"]);
+  });
+
+  it("keeps two Directors on the same machine as separate groups, ordered by port", () => {
+    const sessions = [
+      session({ sessionId: "a", directorId: "hi", machineName: "SOREN_NORTH" }),
+      session({ sessionId: "b", directorId: "lo", machineName: "SOREN_NORTH" }),
+    ];
+    const ports = new Map([
+      ["hi", "7885"],
+      ["lo", "7880"],
+    ]);
+
+    const groups = groupByDirector(sessions, ports);
+
+    expect(groups.map((g) => g.port)).toEqual(["7880", "7885"]);
+  });
+
+  it("degrades to the bare machine name when the port is unknown", () => {
+    const sessions = [session({ sessionId: "a", directorId: "d1", machineName: "SOREN_NORTH" })];
+
+    const groups = groupByDirector(sessions, new Map());
+
+    expect(groups[0].port).toBe("");
+    expect(groups[0].machineName).toBe("SOREN_NORTH");
   });
 });
