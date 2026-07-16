@@ -47,6 +47,8 @@ public static class Program
                 "plan" => await Commands.PlanAsync(args, layout, json),
                 "update" => await Commands.UpdateAsync(args, layout, json, installMode: false),
                 "install" => await Commands.UpdateAsync(args, layout, json, installMode: true),
+                "signin" => await Commands.SignInAsync(args, json),
+                "enroll" => await Commands.EnrollAsync(args, json),
                 "uninstall" => Commands.Uninstall(args, layout, json),
                 "rollback" => Commands.Rollback(args, layout, json),
                 "version" or "--version" => VersionCommand(json),
@@ -132,12 +134,15 @@ public static class Program
               plan                       Show what an update/install would change
               update                     Download, verify, and apply updates
               install --role <r>         Install/update all components for a role
+              signin                     Sign in (or create a free account); store it for the Gateway (Windows)
+              enroll [--gateway <url>]   Join this workstation to its gateway (sign in, then enroll)
               uninstall --role <r>       Remove install-owned files (preserves your data)
               rollback <component>       Restore the previous build and pin away from current
               version                    Print this CLI's product version
 
             Options:
               --role workstation|gateway     Install type (default workstation)
+              --gateway <url>                Gateway to enroll against (enroll; else auto-discover)
               --manifest <path|latest>       Release source (default latest)
               --release-dir <dir>            Use a local directory as the release (offline)
               --component <id|all>           Limit update to one component (default all)
