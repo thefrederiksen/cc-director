@@ -60,11 +60,34 @@ public class GitHubUrlsTests
     }
 
     [Theory]
+    // Modern HTTPS (with and without the user@ prefix the tooling adds), modern SSH, and legacy
+    // visualstudio.com. All resolve to org/repo, dropping the project segment - so the mindzieWeb repo and
+    // its "mw-filter-everywhere" worktree, which share this origin, fold into one row.
+    [InlineData("https://mindzie@dev.azure.com/mindzie/mindzieStudio1/_git/mindzieWeb")]
+    [InlineData("https://dev.azure.com/mindzie/mindzieStudio1/_git/mindzieWeb")]
+    [InlineData("git@ssh.dev.azure.com:v3/mindzie/mindzieStudio1/mindzieWeb")]
+    [InlineData("https://mindzie.visualstudio.com/mindzieStudio1/_git/mindzieWeb")]
+    public void ParseSlug_AzureDevOpsRemoteShapes_ReturnsOrgRepo(string originUrl)
+    {
+        Assert.Equal("mindzie/mindzieWeb", GitHubUrls.ParseSlug(originUrl));
+    }
+
+    [Theory]
     [InlineData("https://gitlab.com/owner/repo.git")]
     [InlineData("git@bitbucket.org:owner/repo.git")]
-    public void ParseSlug_NonGitHubRemote_Throws(string originUrl)
+    public void ParseSlug_UnrecognizedRemote_Throws(string originUrl)
     {
         Assert.Throws<InvalidOperationException>(() => GitHubUrls.ParseSlug(originUrl));
+    }
+
+    [Fact]
+    public void ParseNewIssueUrl_AzureDevOpsRemote_StillThrows()
+    {
+        // "New issue" is a GitHub concept; ParseSlug understanding Azure DevOps must NOT make the issue-URL
+        // helper accept it and build a bogus github.com URL.
+        var ex = Assert.Throws<InvalidOperationException>(() =>
+            GitHubUrls.ParseNewIssueUrl("https://dev.azure.com/mindzie/mindzieStudio1/_git/mindzieWeb"));
+        Assert.Contains("not a GitHub remote", ex.Message);
     }
 
     // ---------- ResolveSlugCached (best-effort, never throws) ----------
@@ -76,6 +99,20 @@ public class GitHubUrlsTests
         try
         {
             Assert.Equal("someowner/somerepo", GitHubUrls.ResolveSlugCached(repoDir));
+        }
+        finally
+        {
+            Directory.Delete(repoDir, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void ResolveSlugCached_RepoWithAzureDevOpsOrigin_ReturnsOrgRepo()
+    {
+        var repoDir = CreateTempGitRepo("https://mindzie@dev.azure.com/mindzie/mindzieStudio1/_git/mindzieWeb");
+        try
+        {
+            Assert.Equal("mindzie/mindzieWeb", GitHubUrls.ResolveSlugCached(repoDir));
         }
         finally
         {
