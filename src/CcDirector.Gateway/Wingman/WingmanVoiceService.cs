@@ -395,59 +395,88 @@ public sealed class WingmanVoiceService
         // The idle sweep still guards on HasVoice at its own call site, so it never reaches here for a
         // cached session; only the turn-end path does, and it pays one cheap /turns read to compare.
 
-        // Backpressure #1 (issue #1324) - respect a provider rate-limit cooldown. A 429 means "stop
-        // calling", so while the cooldown is in effect we skip the model call entirely. Both callers
-        // funnel through here, so one cooldown stops the WHOLE fleet from hammering a throttled provider.
-        if (_rateGate.InCooldown(out var cooldownLeft))
+        // Backpressure #1 (issue #1324) - respect a provider rate-limit cooldown. A 429 means "slow
+        // down", so while the cooldown is in effect all but ONE caller skip the model call. Both callers
+        // funnel through here, so one cooldown calms the WHOLE fleet at once.
+        //
+        // The one caller that gets through is the half-open probe. A gate that lets NOBODY through can
+        // never discover the provider recovered - it can only wait out the clock and then release the
+        // whole fleet at once. See WingmanRateLimitGate for why that is not merely inelegant but the
+        // mechanism by which a transient outage became a permanent one.
+        if (!_rateGate.TryEnter(out var rateProbe, out var cooldownLeft))
         {
-            FileLog.Write($"[WingmanVoiceService] GenerateAsync sid={sid} SKIPPED: provider throttled, {cooldownLeft.TotalSeconds:F0}s cooldown left");
+            FileLog.Write($"[WingmanVoiceService] GenerateAsync sid={sid} SKIPPED: provider throttled, {cooldownLeft.TotalSeconds:F0}s cooldown left (another session is probing)");
             return;
         }
+        if (rateProbe)
+            FileLog.Write($"[WingmanVoiceService] GenerateAsync sid={sid} PROBING the throttled provider ({cooldownLeft.TotalSeconds:F0}s cooldown left) - one call through to test recovery");
 
         // Backpressure #1b - the SPEECH leg is down. This check must stay ABOVE the translation, because
         // the whole point is to not pay for a model call whose audio cannot be made. Skipping leaves the
-        // recorded ServiceDown state untouched, so the phone keeps saying the true thing while we wait,
-        // and the sweep picks the session up again the moment the cooldown expires.
-        if (_ttsGate.InCooldown(out var ttsCooldownLeft))
+        // recorded ServiceDown state untouched, so the phone keeps saying the true thing while we wait.
+        //
+        // Same probe rule, and this is the gate that actually trapped the fleet on 2026-07-15: its 120s
+        // of total silence let the speech model go cold, and a cold model is what produced the timeout
+        // that armed it. One real narration goes through to test AND to keep the model warm.
+        if (!_ttsGate.TryEnter(out var ttsProbe, out var ttsCooldownLeft))
         {
-            FileLog.Write($"[WingmanVoiceService] GenerateAsync sid={sid} SKIPPED: speech service down, {ttsCooldownLeft.TotalSeconds:F0}s cooldown left");
+            if (rateProbe) _rateGate.EndProbe();   // never leave the outer probe slot held
+            FileLog.Write($"[WingmanVoiceService] GenerateAsync sid={sid} SKIPPED: speech service down, {ttsCooldownLeft.TotalSeconds:F0}s cooldown left (another session is probing)");
             return;
         }
+        if (ttsProbe)
+            FileLog.Write($"[WingmanVoiceService] GenerateAsync sid={sid} PROBING the speech service ({ttsCooldownLeft.TotalSeconds:F0}s cooldown left) - one narration through to test recovery and keep the model warm");
 
-        // Backpressure #2 - coalesce. Never run two generations for the same session at once (a slow
-        // turn overlapping the idle sweep would otherwise double the spend). First caller wins.
-        if (!_inFlight.TryAdd(sid, 1))
-            return;
+        // Everything below may return or throw on a dozen paths (coalesced, capped, nothing to say,
+        // cancelled, provider blew up). If ANY of them leaves a probe slot held, that gate is wedged
+        // half-open forever: one probe permanently out, every other session permanently gated - the
+        // exact fleet-wide silence this whole change exists to end, arrived by a new road. So releasing
+        // is unconditional and lives in a finally, not sprinkled on the paths someone remembered.
+        //
+        // EndProbe only frees the slot; it never clears a cooldown. OnSuccess/OnRateLimited have already
+        // freed it by the time we get here, so this is idempotent and cannot undo their verdict.
         try
         {
-            // Backpressure #3 - cap fleet-wide concurrency so a burst of simultaneous turn-ends does
-            // not fire a burst of simultaneous model calls. Bounded wait: if the gate stays saturated
-            // we DROP this cycle rather than queue unboundedly - the idle sweep or the next turn-end
-            // regenerates it.
-            if (!await _genGate.WaitAsync(GateAcquireTimeout, ct))
-            {
-                FileLog.Write($"[WingmanVoiceService] GenerateAsync sid={sid} SKIPPED: {MaxConcurrentGenerations} generations already in flight");
+            // Backpressure #2 - coalesce. Never run two generations for the same session at once (a slow
+            // turn overlapping the idle sweep would otherwise double the spend). First caller wins.
+            if (!_inFlight.TryAdd(sid, 1))
                 return;
-            }
             try
             {
-                await GenerateOnceAsync(sid, route, ct, showReadingWindow);
-                _rateGate.OnSuccess();   // reaching the provider clears any cooldown/backoff ramp
+                // Backpressure #3 - cap fleet-wide concurrency so a burst of simultaneous turn-ends does
+                // not fire a burst of simultaneous model calls. Bounded wait: if the gate stays saturated
+                // we DROP this cycle rather than queue unboundedly - the idle sweep or the next turn-end
+                // regenerates it.
+                if (!await _genGate.WaitAsync(GateAcquireTimeout, ct))
+                {
+                    FileLog.Write($"[WingmanVoiceService] GenerateAsync sid={sid} SKIPPED: {MaxConcurrentGenerations} generations already in flight");
+                    return;
+                }
+                try
+                {
+                    await GenerateOnceAsync(sid, route, ct, showReadingWindow);
+                    _rateGate.OnSuccess();   // reaching the provider clears any cooldown/backoff ramp
+                }
+                finally { _genGate.Release(); }
             }
-            finally { _genGate.Release(); }
+            catch (WingmanModelRateLimitedException rl)
+            {
+                // The provider rate limited us - arm the cooldown so the next turn-end/sweep backs off
+                // instead of piling on. Honors its Retry-After when it sent one (issue #1324).
+                var backoff = _rateGate.OnRateLimited(rl.RetryAfter);
+                FileLog.Write($"[WingmanVoiceService] GenerateAsync sid={sid} rate limited (429); backing off {backoff.TotalSeconds:F0}s before the next generation");
+            }
+            catch (Exception ex)
+            {
+                FileLog.Write($"[WingmanVoiceService] GenerateAsync sid={sid} FAILED: {ex.Message}");
+            }
+            finally { _inFlight.TryRemove(sid, out _); }
         }
-        catch (WingmanModelRateLimitedException rl)
+        finally
         {
-            // The provider rate limited us - arm the cooldown so the next turn-end/sweep backs off
-            // instead of piling on. Honors its Retry-After when it sent one (issue #1324).
-            var backoff = _rateGate.OnRateLimited(rl.RetryAfter);
-            FileLog.Write($"[WingmanVoiceService] GenerateAsync sid={sid} rate limited (429); backing off {backoff.TotalSeconds:F0}s before the next generation");
+            if (rateProbe) _rateGate.EndProbe();
+            if (ttsProbe) _ttsGate.EndProbe();
         }
-        catch (Exception ex)
-        {
-            FileLog.Write($"[WingmanVoiceService] GenerateAsync sid={sid} FAILED: {ex.Message}");
-        }
-        finally { _inFlight.TryRemove(sid, out _); }
     }
 
     /// <summary>
