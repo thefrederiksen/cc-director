@@ -190,7 +190,7 @@ export function Repos() {
         <ul>
           <li>
             A turn is one submitted message; the amber part of each bar is the share driven by voice.
-            Repos are grouped by the session's working directory.
+            Repos are grouped by their GitHub repository, so every worktree and machine rolls up into one row.
           </li>
           <li>
             Time is not shown (an idle hour looks like a busy one), and tokens are not shown - the tally

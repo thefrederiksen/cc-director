@@ -71,9 +71,12 @@ export interface InputHour {
  * codebase, in submitted turns (total + voice/typed split), character volume, and distinct sessions.
  * Mirrors the Gateway RepoStatBucketDto. Counts only - never any message text. */
 export interface RepoStat {
-  /** Full repository / working-directory path the sessions ran in (the grouping key). */
+  /** Grouping key: the GitHub "owner/repo" slug the sessions' checkouts belong to
+   * (e.g. "thefrederiksen/devthrottle"), so worktrees and per-machine clones are one row. Falls back to the
+   * local working-directory path for a checkout with no github.com origin. */
   repo: string;
-  /** Display leaf of the path (its last segment), e.g. "devthrottle". */
+  /** Display leaf of the key: the repository name for a slug (e.g. "devthrottle"), or the folder name for a
+   * fallback path. */
   repoName: string;
   /** Total submitted turns into this repo (voice + typed). */
   turns: number;
@@ -85,6 +88,9 @@ export interface RepoStat {
   characters: number;
   /** Distinct sessions that drove counted input into this repo. */
   sessions: number;
+  /** Local checkout paths (worktrees, per-machine clones) whose turns rolled up into this repo, sorted.
+   * Retained so the page can show which working directories the work came from. */
+  checkouts: string[];
 }
 
 /** One agent CLI's all-time input tally for the private Agents page: how much development you drive
@@ -279,6 +285,7 @@ function normalizeRepo(raw: unknown): RepoStat {
     typedTurns: num(r.typedTurns),
     characters: num(r.characters),
     sessions: num(r.sessions),
+    checkouts: Array.isArray(r.checkouts) ? r.checkouts.map((c) => String(c)) : [],
   };
 }
 

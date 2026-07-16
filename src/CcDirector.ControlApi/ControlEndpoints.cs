@@ -1376,6 +1376,11 @@ internal static class ControlEndpoints
             RemoteThreadUrl = s.RemoteThreadUrl ?? "",
             RemoteRunUrl = s.RemoteRunUrl ?? "",
             RemoteRunStatus = s.RemoteRunStatus ?? "",
+            // DevThrottle Stats: the GitHub "owner/repo" of this local checkout, resolved here on the
+            // Director because the git repo lives on this machine. Cached per path so this roster mapper
+            // never forks git twice for the same checkout; "" when the checkout has no github.com origin,
+            // in which case the Gateway groups it by RepoPath instead.
+            RepoSlug = GitHubUrls.ResolveSlugCached(s.RepoPath),
             // Issue #335: identity fields populated by the Director (not patched by the Gateway).
             MachineName = machineName,
             User = user,

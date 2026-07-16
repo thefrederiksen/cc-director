@@ -102,6 +102,11 @@ function RepoRow({
           {repo.repo && repo.repo !== repo.repoName && <span className="repo-path">{repo.repo}</span>}
         </div>
         <div className="repo-meta">{meta}</div>
+        {repo.checkouts.length > 1 && (
+          <div className="repo-checkouts" title={repo.checkouts.join("\n")}>
+            {repo.checkouts.length} checkouts: {repo.checkouts.join(" - ")}
+          </div>
+        )}
         <div className="repo-bar-track" title={`${formatValue(value, metric)} ${METRIC_WORD[metric]}`}>
           {showSplit ? (
             <>
@@ -219,9 +224,11 @@ export function ReposTab({ data }: { data: ThrottleData }) {
             spoke, the grey part is the share you typed.
           </li>
           <li>
-            Repos are grouped by the session&apos;s working directory. Time is deliberately not shown: an
-            idle hour looks the same as a heads-down hour, so it would lie. Turns and characters track what
-            you actually pushed through.
+            Repos are grouped by their GitHub repository, so every worktree and every machine you check a
+            repo out on rolls up into one row (the working directories that fed it are listed under the
+            name). A checkout with no GitHub remote falls back to its folder path. Time is deliberately not
+            shown: an idle hour looks the same as a heads-down hour, so it would lie. Turns and characters
+            track what you actually pushed through.
           </li>
           <li>
             Tokens are not shown - the tally counts turns and characters, never tokens, and this tab never

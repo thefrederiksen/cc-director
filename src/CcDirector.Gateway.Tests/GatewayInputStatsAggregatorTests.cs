@@ -51,6 +51,15 @@ public sealed class GatewayInputStatsAggregatorTests : IDisposable
         return dto;
     }
 
+    // A session whose Director resolved a GitHub slug for its checkout - the grouping key the Repos page uses.
+    private static SessionDto SessionInSlug(string id, string slug, string repoPath, params (string modality, string surface, long turns, long chars)[] buckets)
+    {
+        var dto = Session(id, buckets);
+        dto.RepoSlug = slug;
+        dto.RepoPath = repoPath;
+        return dto;
+    }
+
     private static RepoStatBucketDto? Repo(GatewayInputStatsAggregator agg, string repoName) =>
         agg.RepoTotals().FirstOrDefault(r => r.RepoName == repoName);
 
@@ -295,6 +304,61 @@ public sealed class GatewayInputStatsAggregatorTests : IDisposable
         Assert.Equal(5, app2!.Turns);
         Assert.Equal(200, app2.Characters);
         Assert.Equal(1, app2.Sessions);
+    }
+
+    [Fact]
+    public void RepoTotals_GroupsByGitHubSlug_CollapsingWorktreesAndClones_RetainingCheckouts()
+    {
+        var agg = new GatewayInputStatsAggregator(_path);
+        // The same GitHub repo, driven from three different checkouts: the main clone, a worktree, and a
+        // second machine's clone (a forward-slash path). All must roll up into ONE row keyed by the slug.
+        agg.Observe(SessionInSlug("s1", "thefrederiksen/devthrottle", @"D:\ReposFred\devthrottle", ("voice", "phone", 6, 600)));
+        agg.Observe(SessionInSlug("s2", "thefrederiksen/devthrottle", @"D:\ReposFred\devthrottle-gateway-sqlite", ("typed", "desktop", 2, 40)));
+        agg.Observe(SessionInSlug("s3", "thefrederiksen/devthrottle", "/Users/soren/ReposFred/devthrottle", ("typed", "cockpit", 1, 10)));
+
+        var repos = agg.RepoTotals();
+        Assert.Single(repos);                                    // three checkouts, one repository row
+        var dt = repos[0];
+        Assert.Equal("thefrederiksen/devthrottle", dt.Repo);     // grouped by the slug
+        Assert.Equal("devthrottle", dt.RepoName);                // leaf of the slug is the repo name
+        Assert.Equal(9, dt.Turns);                               // 6 + 2 + 1 folded together
+        Assert.Equal(3, dt.Sessions);                            // three distinct sessions
+
+        // The checkout paths are retained, not lost when the worktrees collapsed together.
+        Assert.Equal(3, dt.Checkouts.Count);
+        Assert.Contains(@"D:\ReposFred\devthrottle", dt.Checkouts);
+        Assert.Contains(@"D:\ReposFred\devthrottle-gateway-sqlite", dt.Checkouts);
+        Assert.Contains("/Users/soren/ReposFred/devthrottle", dt.Checkouts);
+    }
+
+    [Fact]
+    public void RepoTotals_NoGitHubSlug_FallsBackToPath()
+    {
+        var agg = new GatewayInputStatsAggregator(_path);
+        // A checkout with no github.com origin reports an empty slug; it must still appear, keyed by its path.
+        agg.Observe(SessionInRepo("s1", @"D:\repos\local-only", ("typed", "desktop", 4, 80)));
+
+        var repo = Repo(agg, "local-only");
+        Assert.NotNull(repo);
+        Assert.Equal(@"D:\repos\local-only", repo!.Repo);        // fell back to the path as the key
+        Assert.Equal(4, repo.Turns);
+        Assert.Equal(new[] { @"D:\repos\local-only" }, repo.Checkouts);
+    }
+
+    [Fact]
+    public void RepoTotals_SlugGrouping_SurvivesGatewayRestart()
+    {
+        var agg = new GatewayInputStatsAggregator(_path);
+        agg.Observe(SessionInSlug("s1", "owner/app", @"D:\a\app", ("voice", "phone", 3, 120)));
+        agg.Observe(SessionInSlug("s2", "owner/app", @"D:\b\app", ("typed", "desktop", 2, 40)));
+
+        // The identity mirror (repo + checkout) must reload from disk and still group by slug.
+        var reloaded = new GatewayInputStatsAggregator(_path);
+        var repos = reloaded.RepoTotals();
+        Assert.Single(repos);
+        Assert.Equal("owner/app", repos[0].Repo);
+        Assert.Equal(5, repos[0].Turns);
+        Assert.Equal(2, repos[0].Checkouts.Count);
     }
 
     [Fact]
