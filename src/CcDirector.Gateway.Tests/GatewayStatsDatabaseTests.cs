@@ -72,6 +72,9 @@ public sealed class GatewayStatsDatabaseTests : IDisposable
         Assert.True(TableExists(db, "repo_identity"));
         Assert.True(TableExists(db, "agent_identity"));
         Assert.True(TableExists(db, "model_identity"));
+        // Token spend (issue #1637) - the delta lane and its per-session high-water.
+        Assert.True(TableExists(db, "token_delta"));
+        Assert.True(TableExists(db, "token_highwater"));
         // The agent-to-agent lane (issue #1636) - its OWN tables, so these turns cannot be summed
         // into the human voice-versus-typed totals by accident.
         Assert.True(TableExists(db, "agent_driven_delta"));
@@ -326,26 +329,71 @@ public sealed class GatewayStatsDatabaseTests : IDisposable
     }
 
     [Fact]
-    public void Migrate_Version1File_UpgradesToVersion2AndKeepsEveryRow()
+    public void Migrate_Version1File_UpgradesToCurrentVersionAndKeepsEveryRow()
     {
         WriteVersion1Database(("2026-07-16T09", 40, 400), ("2026-07-16T10", 27, 270));
 
         using var db = new GatewayStatsDatabase(_path);
 
-        Assert.Equal(2, UserVersion(db));
+        // A version-1 file on disk migrates through EVERY step to the current version - the whole chain, not
+        // one hop. The owner's real database is version 1, so this is the path his numbers actually take.
+        Assert.Equal(GatewayStatsDatabase.SchemaVersion, UserVersion(db));
 
-        // The version stamp ALONE proves nothing, and this assertion is here because the first draft of
+        // The version stamp ALONE proves nothing, and these assertions are here because the first draft of
         // this test proved nothing: Migrate writes PRAGMA user_version unconditionally, after the steps, so
-        // a version 2 stamp appears whether or not the version 2 step ran. With MigrateToVersion2 disabled
-        // this test still passed, green and useless, exactly the "dead test that looks like coverage" this
-        // mission keeps finding. Reading back the column the step ADDS is what makes the name true.
-        Assert.Contains("model_id", ColumnsOf(db, "stat_delta"));
+        // the current-version stamp appears whether or not the steps ran. With a step disabled this test
+        // still passed, green and useless, exactly the "dead test that looks like coverage" this mission
+        // keeps finding. Reading back what each step ADDS is what makes the name true.
+        Assert.Contains("model_id", ColumnsOf(db, "stat_delta")); // version 2
+        Assert.True(TableExists(db, "token_delta"));              // version 3
+        Assert.True(TableExists(db, "token_highwater"));          // version 3
 
         // The numbers are the promise. A migration that loses turns is the failure this whole mission
         // exists to prevent, so it is asserted on the totals and not merely on the row count.
         Assert.Equal(2, ScalarLong(db, "SELECT COUNT(*) FROM stat_delta"));
         Assert.Equal(67, ScalarLong(db, "SELECT SUM(turns) FROM stat_delta"));
         Assert.Equal(670, ScalarLong(db, "SELECT SUM(chars) FROM stat_delta"));
+    }
+
+    [Fact]
+    public void Migrate_Version1File_AddsTheTokenDimensionEmpty()
+    {
+        // The token tables are created by the version 3 step and start EMPTY - there was no token history to
+        // carry across (nothing recorded tokens before this), so every number begins at the cutover, exactly
+        // like the model dimension. Not a bug that they are empty; the honest starting state.
+        WriteVersion1Database(("2026-07-16T09", 40, 400));
+
+        using var db = new GatewayStatsDatabase(_path);
+
+        Assert.True(TableExists(db, "token_delta"));
+        Assert.True(TableExists(db, "token_highwater"));
+        Assert.Equal(0, ScalarLong(db, "SELECT COUNT(*) FROM token_delta"));
+        Assert.Equal(0, ScalarLong(db, "SELECT COUNT(*) FROM token_highwater"));
+    }
+
+    [Fact]
+    public void TokenDelta_CarriesSpendScalarsAndModel_ButNeverContextOccupancy()
+    {
+        // The schema itself enforces spend-not-occupancy: the four columns are the cumulative, additive token
+        // counts plus the nullable model, and NOTHING else. A context-occupancy column here would be a gauge
+        // that lies the moment a SUM is taken over it, so its absence is the design. An exhaustive whitelist,
+        // not a forbidden-name list, so any new column fails here until stated deliberately.
+        using var db = new GatewayStatsDatabase(_path);
+
+        var columns = ColumnsOf(db, "token_delta");
+        var expected = new[]
+        {
+            "id", "hour_utc", "model_id",
+            "input_tokens", "output_tokens", "cache_read_tokens", "cache_creation_tokens",
+        };
+        Assert.Equal(expected.OrderBy(c => c, StringComparer.Ordinal),
+                     columns.OrderBy(c => c, StringComparer.Ordinal));
+
+        // No modality, no surface: tokens are the model's work, not the human's input channel.
+        Assert.DoesNotContain("modality", columns);
+        Assert.DoesNotContain("surface", columns);
+        // The one gauge on the wire must not have leaked into the summable table.
+        Assert.DoesNotContain("context_tokens", columns);
     }
 
     private static List<string> ColumnsOf(GatewayStatsDatabase db, string table)

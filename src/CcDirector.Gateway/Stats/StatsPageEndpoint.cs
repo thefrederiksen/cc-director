@@ -74,6 +74,14 @@ public static class StatsPageEndpoint
                 // "the agent had not recorded one yet" bucket, not a missing value to hide.
                 models = aggregator.ModelTotals(),
                 modelsSinceUtc = aggregator.ModelsSinceUtc,
+                // DevThrottle Stats (issue #1637): TOKEN SPEND - what the work actually cost. Three views of
+                // one number: the all-time total, the per-hour series for "what did I spend today / this
+                // week / this month", and the per-model split for "which model cost what". Cumulative,
+                // additive tokens only (input / output / cache) - never context-window occupancy, which is a
+                // gauge and cannot be summed. Claude-only until other agents' drivers report cumulative spend.
+                tokenSpend = aggregator.TokenSpend(),
+                tokenSpendByHour = aggregator.TokenSpendByHour(),
+                tokenSpendByModel = aggregator.TokenSpendByModel(),
                 // DevThrottle Stats (issue #1636): turns the fleet drove into ITSELF - one agent prompting
                 // another. Reported alongside the human tally but never inside it: "how do you drive" and
                 // "how much does the fleet drive itself" are different questions, and the ratio between
