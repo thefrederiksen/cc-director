@@ -51,9 +51,15 @@ quarantined. It downloads the setup app, verifies its SHA-256 against the manife
 Then complete the short setup app. macOS is workstation-only (no Gateway).
 
 == BOTH ==
-5. Launch DevThrottle once and SIGN IN. It opens devthrottle.com in the browser; the user enters a
-   password there (or creates a free account) and the app captures the session automatically. That
-   browser sign-in is the ONLY step a human has to do - everything else the agent runs unattended.
+5. SIGN IN - the ONLY step that needs a human. On WINDOWS, do it from the command line:
+      devthrottle-setup-cli-win-x64.exe signin
+   It opens devthrottle.com in the browser; the user signs in (or creates a free account) and it
+   captures the session automatically. If this machine is instead joining a DevThrottle gateway you
+   already run on another machine, use `enroll` (it signs in AND connects this machine to that
+   gateway - add --gateway <url> to name it, or omit to auto-discover it from your account):
+      devthrottle-setup-cli-win-x64.exe enroll
+   On macOS the setup app you opened in the previous step handles sign-in. Everything else the agent
+   runs unattended.
 6. Confirm the running version matches the release tag (Windows: the newest log under
    %LOCALAPPDATA%\cc-director\logs\director\; macOS: the app's log dir). Report: the release tag
    installed, the install path, and the SHA-256 you verified.
@@ -71,7 +77,8 @@ admin/sudo, build from source, place files in Program Files or /Applications, or
 
 - **Command-line installer, not the wizard** - the CLI front-end (`devthrottle-setup-cli`) drives the
   same install engine as the graphical wizard, so there is nothing to click through. An AI agent can
-  run the whole install unattended; the one human step is the browser sign-in.
+  run the whole install unattended - install, then `signin` (or `enroll`); the one human step is the
+  browser sign-in those commands open.
 - **Per-user, user-writable target** (`%LOCALAPPDATA%\cc-director` / `~/Applications`) - the
   auto-updater overwrites the running app's own path, so a user-writable location means updates need
   **no admin/sudo**. `Program Files` / `/Applications` would force elevation on every update or fail.
