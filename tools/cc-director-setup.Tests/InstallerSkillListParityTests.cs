@@ -41,14 +41,16 @@ public sealed class InstallerSkillListParityTests
         var path = Path.Combine(repoRoot, "tools", "cc-director-setup-avalonia", "Services", "ToolInstaller.cs");
         Assert.True(File.Exists(path), $"ToolInstaller.cs not found at {path}");
 
-        // Isolate the `public static readonly string[] SkillNames = [ ... ];` initializer, strip any
-        // // line comments inside it (so a quoted word in a comment cannot masquerade as a skill entry),
-        // then pull out the quoted skill names.
+        // Isolate the `SkillNames = [ ... ];` (or `= new[] { ... };`) initializer, strip both block and
+        // line comments inside it - so a quoted word in a /* ... */ or // comment cannot masquerade as a
+        // skill entry - then pull out the quoted skill names.
         var source = File.ReadAllText(path);
-        var block = Regex.Match(source, @"SkillNames\s*=\s*\[(?<body>.*?)\]\s*;", RegexOptions.Singleline);
-        Assert.True(block.Success, $"Could not find the SkillNames array in {path}");
+        var block = Regex.Match(source, @"SkillNames\s*=\s*(?:\[|new\[\]\s*\{)(?<body>.*?)(?:\]|\})\s*;", RegexOptions.Singleline);
+        Assert.True(block.Success, $"Could not find the SkillNames initializer in {path}");
 
-        var body = Regex.Replace(block.Groups["body"].Value, @"//[^\n]*", "");
+        var body = block.Groups["body"].Value;
+        body = Regex.Replace(body, @"/\*.*?\*/", "", RegexOptions.Singleline); // block comments
+        body = Regex.Replace(body, @"//[^\n]*", "");                          // line comments
         return Regex.Matches(body, "\"(?<name>[^\"]+)\"")
             .Select(m => m.Groups["name"].Value)
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
