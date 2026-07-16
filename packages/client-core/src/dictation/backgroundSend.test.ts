@@ -15,7 +15,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 //   - a genuinely permanent failure PARKS the clip (keeps the audio, stops the auto-loop) and only an
 //     explicit Retry re-drives it, while transient failures still auto-retry (issue #1184).
 
-vi.mock("../api/client", () => ({ uploadDictationToSession: vi.fn(), abandonDictation: vi.fn() }));
+vi.mock("../api/client", () => ({ uploadDictationToSession: vi.fn(), abandonDictation: vi.fn(), sendPrompt: vi.fn() }));
 vi.mock("./pendingStore", () => ({
   savePending: vi.fn(),
   deletePending: vi.fn(),
@@ -23,12 +23,15 @@ vi.mock("./pendingStore", () => ({
   listPending: vi.fn(),
 }));
 
-import { abandonDictation, uploadDictationToSession, type DictationSubmitResult } from "../api/client";
+import { abandonDictation, sendPrompt, uploadDictationToSession, type DictationSubmitResult } from "../api/client";
 import {
   abandonPendingDictation,
   backgroundTranscribeAndSend,
+  dismissDictationStatus,
   resumePendingDictations,
+  retryDroppedDictation,
   retryPendingDictation,
+  sendDroppedDictationAnyway,
   type CapturedUtterance,
 } from "./backgroundSend";
 import { deletePending, getPending, listPending, savePending, type PendingDictation } from "./pendingStore";
@@ -51,6 +54,27 @@ const PERMANENT: DictationSubmitResult = {
   transcript: "",
   permanent: true,
   permanentReason: "audio-too-large",
+};
+// The four terminal-not-submitted shapes (issue #1590). Only ABANDONED is silent.
+const MOVED_ON: DictationSubmitResult = {
+  terminal: true,
+  submitted: false,
+  movedOn: true,
+  transcript: "the words the user actually said",
+};
+const MOVED_ON_NO_TRANSCRIPT: DictationSubmitResult = {
+  terminal: true,
+  submitted: false,
+  movedOn: true,
+  transcript: "",
+};
+const EMPTY_CLIP: DictationSubmitResult = { terminal: true, submitted: false, movedOn: false, transcript: "" };
+const ABANDONED: DictationSubmitResult = {
+  terminal: true,
+  submitted: false,
+  movedOn: false,
+  abandoned: true,
+  transcript: "",
 };
 
 function statusFor(uploadId: string) {
@@ -84,6 +108,7 @@ beforeEach(() => {
   vi.mocked(getPending).mockResolvedValue(null);
   vi.mocked(listPending).mockResolvedValue([]);
   vi.mocked(abandonDictation).mockResolvedValue(true);
+  vi.mocked(sendPrompt).mockResolvedValue(undefined);
 });
 
 afterEach(() => {
@@ -283,6 +308,305 @@ describe("parking permanently-failed clips (#1184)", () => {
     // A transient outcome never parks the record.
     const parkedSave = vi.mocked(savePending).mock.calls.find((c) => c[0].parkedReason);
     expect(parkedSave).toBeUndefined();
+  });
+});
+
+// Issue #1590: a dropped dictation must be LOUD and must give the words back.
+//
+// Every one of these outcomes used to land in a single arm - deletePending + clearDictationStatus. Audio
+// gone, banner gone, no trace, and the user was never told their words had been thrown away. "It worked and
+// then nothing happened." Only the abandon is genuinely nothing to say.
+describe("a terminal outcome that did NOT submit is never silent (#1590)", () => {
+  it("a moved-on drop stays VISIBLE, carries the transcript back, and never auto-clears", async () => {
+    vi.mocked(uploadDictationToSession).mockResolvedValue(MOVED_ON);
+
+    await backgroundTranscribeAndSend("sid", captured);
+
+    const savedId = vi.mocked(savePending).mock.calls[0][0].id;
+    const status = statusFor(savedId);
+    // The defect was that this was undefined: the words vanished with no banner at all.
+    expect(status).toBeDefined();
+    expect(status?.phase).toBe("dropped");
+    // The words are handed back so the UI can offer "Send anyway".
+    expect(status?.recoverableText).toBe("the words the user actually said");
+    // Honest about what happened - it says the recording was NOT sent, never a success.
+    expect(status?.error).toContain("moved on");
+    expect(status?.error).toContain("wasn't sent");
+    // "Send anyway" is a fresh turn, not a retry of a tombstoned upload id.
+    expect(status?.retryable).toBe(false);
+
+    // Sticky: no timer clears it. Advancing well past every cadence leaves it exactly where it was.
+    await vi.advanceTimersByTimeAsync(10 * 60 * 1000);
+    expect(statusFor(savedId)?.phase).toBe("dropped");
+    // And nothing auto-re-drives it - re-driving a moved-on upload id could only be dropped again.
+    expect(vi.mocked(uploadDictationToSession).mock.calls.length).toBe(1);
+  });
+
+  it("a moved-on drop persists the words durably so they survive a reload", async () => {
+    vi.mocked(uploadDictationToSession).mockResolvedValue(MOVED_ON);
+
+    await backgroundTranscribeAndSend("sid", captured);
+
+    // The record is KEPT (not deleted) and marked, so no automatic trigger re-drives it...
+    expect(deletePending).not.toHaveBeenCalled();
+    const droppedSave = vi.mocked(savePending).mock.calls.find((c) => c[0].staleDropped);
+    expect(droppedSave?.[0].staleDropped).toBe(true);
+    // ...and the words are on disk, or "Send anyway" would quietly stop working after a reload.
+    expect(droppedSave?.[0].droppedTranscript).toBe("the words the user actually said");
+  });
+
+  it("re-publishes a dropped clip on app load instead of re-driving it (the words are still there)", async () => {
+    const dropped: PendingDictation = {
+      ...makeRecord("id-dropped"),
+      staleDropped: true,
+      droppedTranscript: "words from before the reload",
+    };
+    vi.mocked(listPending).mockResolvedValue([dropped]);
+
+    await resumePendingDictations();
+
+    expect(uploadDictationToSession).not.toHaveBeenCalled(); // never re-drive a tombstoned upload id
+    expect(deletePending).not.toHaveBeenCalled();
+    const status = statusFor("id-dropped");
+    expect(status?.phase).toBe("dropped");
+    expect(status?.recoverableText).toBe("words from before the reload");
+  });
+
+  it("a drop BEFORE transcription keeps the audio and offers a retry instead of words", async () => {
+    vi.mocked(uploadDictationToSession).mockResolvedValue(MOVED_ON_NO_TRANSCRIPT);
+
+    await backgroundTranscribeAndSend("sid", captured);
+
+    const savedId = vi.mocked(savePending).mock.calls[0][0].id;
+    const status = statusFor(savedId);
+    expect(status?.phase).toBe("dropped");
+    expect(status?.recoverableText).toBe("");
+    // No words to hand back, so the recording itself is the recovery: kept, and explicitly retryable.
+    expect(status?.retryable).toBe(true);
+    expect(status?.error).toContain("saved on your device");
+    expect(deletePending).not.toHaveBeenCalled();
+  });
+
+  it("an empty clip says nothing was heard, visibly and dismissibly, with nothing to retry", async () => {
+    vi.mocked(uploadDictationToSession).mockResolvedValue(EMPTY_CLIP);
+
+    await backgroundTranscribeAndSend("sid", captured);
+
+    const savedId = vi.mocked(savePending).mock.calls[0][0].id;
+    const status = statusFor(savedId);
+    expect(status).toBeDefined(); // it used to be silent
+    expect(status?.phase).toBe("unheard");
+    expect(status?.retryable).toBe(false); // there is nothing to retry
+    expect(status?.error).toContain("Nothing was heard");
+    expect(deletePending).toHaveBeenCalledWith(savedId); // the audio is of no further use
+  });
+
+  // The control. The fix must not turn into "never clear anything": an abandon is the one terminal
+  // not-submitted outcome the user caused on purpose, and it stays silent.
+  it("an ABANDONED outcome stays silent - the user did that on purpose", async () => {
+    vi.mocked(uploadDictationToSession).mockResolvedValue(ABANDONED);
+
+    await backgroundTranscribeAndSend("sid", captured);
+
+    const savedId = vi.mocked(savePending).mock.calls[0][0].id;
+    expect(statusFor(savedId)).toBeUndefined();
+    expect(deletePending).toHaveBeenCalledWith(savedId);
+  });
+
+  // The other control: a delivered turn is unaffected.
+  it("a delivered turn still shows done and drops the audio (no regression)", async () => {
+    vi.mocked(uploadDictationToSession).mockResolvedValue(SUBMITTED);
+
+    await backgroundTranscribeAndSend("sid", captured);
+
+    const savedId = vi.mocked(savePending).mock.calls[0][0].id;
+    expect(statusFor(savedId)?.phase).toBe("done");
+    expect(deletePending).toHaveBeenCalledWith(savedId);
+  });
+});
+
+describe("recovering a dropped dictation (#1590)", () => {
+  const droppedRecord = (id: string, transcript: string): PendingDictation => ({
+    ...makeRecord(id),
+    staleDropped: true,
+    droppedTranscript: transcript,
+  });
+
+  it("Send anyway sends the words as a NORMAL prompt - a fresh turn, not a re-drive of the dead upload id", async () => {
+    vi.mocked(getPending).mockResolvedValue(droppedRecord("id-send", "send me please"));
+
+    await sendDroppedDictationAnyway("id-send");
+
+    expect(sendPrompt).toHaveBeenCalledWith("sid", "send me please", true);
+    // Never re-drives the dictation: that upload id carries a permanent moved-on tombstone.
+    expect(uploadDictationToSession).not.toHaveBeenCalled();
+    // Done with: the record goes and the strip acknowledges the send.
+    expect(deletePending).toHaveBeenCalledWith("id-send");
+    expect(statusFor("id-send")?.phase).toBe("done");
+  });
+
+  it("Send anyway is guarded: two rapid taps submit the user's words exactly ONCE", async () => {
+    // There is NO server-side idempotency behind this send - it is an ordinary prompt, so the durable upload
+    // id that de-duplicates a dictation (#1183) protects nothing here. Unguarded, two taps (or two mounted
+    // strips, each with its own button state) both read the record before either deletes it, and the user
+    // gets their words twice.
+    vi.mocked(getPending).mockResolvedValue(droppedRecord("id-race", "say this once"));
+    let resolveSend!: () => void;
+    vi.mocked(sendPrompt).mockImplementation(() => new Promise<void>((res) => { resolveSend = () => res(); }));
+
+    const first = sendDroppedDictationAnyway("id-race");
+    const second = sendDroppedDictationAnyway("id-race");
+    await flush();
+
+    expect(sendPrompt).toHaveBeenCalledTimes(1); // the second tap found the first still in flight
+
+    resolveSend();
+    await Promise.all([first, second]);
+    expect(sendPrompt).toHaveBeenCalledTimes(1);
+    expect(deletePending).toHaveBeenCalledTimes(1);
+  });
+
+  it("Retry is guarded: two rapid taps stage and drive exactly ONE fresh clip", async () => {
+    // Each tap mints a NEW upload id, so nothing downstream would de-duplicate two of them - the guard is
+    // the only thing standing between an impatient double-tap and the same recording injected twice.
+    vi.mocked(getPending).mockResolvedValue(droppedRecord("id-retry-race", ""));
+    let resolveUpload!: (r: DictationSubmitResult) => void;
+    vi.mocked(uploadDictationToSession).mockImplementation(
+      () => new Promise<DictationSubmitResult>((res) => { resolveUpload = res; }),
+    );
+
+    const first = retryDroppedDictation("id-retry-race");
+    const second = retryDroppedDictation("id-retry-race");
+    await flush();
+
+    const freshSaves = vi.mocked(savePending).mock.calls.filter((c) => c[0].id !== "id-retry-race");
+    expect(freshSaves).toHaveLength(1);
+    expect(uploadDictationToSession).toHaveBeenCalledTimes(1);
+
+    resolveUpload(SUBMITTED);
+    await Promise.all([first, second]);
+    expect(uploadDictationToSession).toHaveBeenCalledTimes(1);
+  });
+
+  it("Send anyway sends the WHOLE message - typed text included - not just the transcribed words", async () => {
+    // A Terminal Speak dictation composes the transcript with the typed text the caret split it around. The
+    // Gateway's delivery path joins before + prefix + transcript + after, skipping empties; the recovery of
+    // that same turn must send the same message, or it silently throws the typed text away - the very
+    // vanishing this item exists to end, just smaller and harder to notice.
+    const composed: PendingDictation = {
+      ...makeRecord("id-compose"),
+      staleDropped: true,
+      droppedTranscript: "the spoken words",
+      before: "typed before",
+      prefix: "an earlier paused segment",
+      after: "typed after",
+    };
+    vi.mocked(getPending).mockResolvedValue(composed);
+
+    await sendDroppedDictationAnyway("id-compose");
+
+    expect(sendPrompt).toHaveBeenCalledWith(
+      "sid",
+      "typed before an earlier paused segment the spoken words typed after",
+      true,
+    );
+  });
+
+  it("shows the user exactly what it will send (the quote and the send are one string)", async () => {
+    // The strip quotes recoverableText and Send anyway sends the composed message; if those two ever drift
+    // apart the strip shows one thing and sends another.
+    const composed: PendingDictation = {
+      ...makeRecord("id-quote"),
+      staleDropped: true,
+      droppedTranscript: "spoken",
+      before: "typed",
+      after: "",
+      prefix: "",
+    };
+    vi.mocked(listPending).mockResolvedValue([composed]);
+
+    await resumePendingDictations();
+    const shown = statusFor("id-quote")?.recoverableText;
+
+    vi.mocked(getPending).mockResolvedValue(composed);
+    await sendDroppedDictationAnyway("id-quote");
+
+    expect(shown).toBe("typed spoken");
+    expect(sendPrompt).toHaveBeenCalledWith("sid", shown, true);
+  });
+
+  it("a drop with typed text but no transcript still offers the typed words back", async () => {
+    // "No transcript" is not the same as "nothing to recover": the typed text is the user's too.
+    const typedOnly: PendingDictation = {
+      ...makeRecord("id-typed-only"),
+      staleDropped: true,
+      droppedTranscript: "",
+      before: "please run the tests",
+    };
+    vi.mocked(listPending).mockResolvedValue([typedOnly]);
+
+    await resumePendingDictations();
+
+    const status = statusFor("id-typed-only");
+    expect(status?.recoverableText).toBe("please run the tests");
+    expect(status?.retryable).toBe(false); // it has words, so the action is Send anyway, not Retry
+  });
+
+  it("Send anyway that fails KEEPS the words and stays sticky - a bad moment must not lose them", async () => {
+    vi.mocked(getPending).mockResolvedValue(droppedRecord("id-send-fail", "precious words"));
+    vi.mocked(sendPrompt).mockRejectedValue(new Error("network died"));
+
+    await sendDroppedDictationAnyway("id-send-fail");
+
+    expect(deletePending).not.toHaveBeenCalled();
+    const status = statusFor("id-send-fail");
+    expect(status?.phase).toBe("dropped");
+    expect(status?.recoverableText).toBe("precious words"); // still on screen, still recoverable
+    expect(status?.error).toContain("still here");
+  });
+
+  it("Retry re-drives the recording under a FRESH upload id, with the stale baseline cleared", async () => {
+    const old = droppedRecord("id-old", "");
+    vi.mocked(getPending).mockResolvedValue(old);
+    vi.mocked(uploadDictationToSession).mockResolvedValue(SUBMITTED);
+
+    await retryDroppedDictation("id-old");
+
+    // A brand-new id: the old one is tombstoned moved-on and could only ever be dropped again.
+    const fresh = vi.mocked(savePending).mock.calls.find((c) => c[0].id !== "id-old")?.[0];
+    expect(fresh).toBeDefined();
+    expect(fresh?.id).not.toBe("id-old");
+    expect(fresh?.blob).toBe(old.blob); // the SAME recording, under a new id - the audio is what we are retrying
+    expect(fresh?.staleDropped).toBeUndefined();
+    // The record-time baseline describes a terminal that has long since moved on; re-sending it would just
+    // invite the same drop. The user asked for this send now.
+    expect(fresh?.baselineBufferBytes).toBe(0);
+    // The fresh clip really was driven, and the old id is retired.
+    expect(vi.mocked(uploadDictationToSession).mock.calls[0][0].uploadId).toBe(fresh?.id);
+    expect(deletePending).toHaveBeenCalledWith("id-old");
+    expect(statusFor("id-old")).toBeUndefined();
+  });
+
+  it("Upload now on a dropped clip hands over to the fresh-id retry rather than re-driving a dead id", async () => {
+    // Defensive wiring: whatever calls the generic retry must not silently do nothing (or re-drop).
+    vi.mocked(getPending).mockResolvedValue(droppedRecord("id-generic", ""));
+    vi.mocked(uploadDictationToSession).mockResolvedValue(SUBMITTED);
+
+    await retryPendingDictation("id-generic");
+
+    const fresh = vi.mocked(savePending).mock.calls.find((c) => c[0].id !== "id-generic")?.[0];
+    expect(fresh).toBeDefined();
+    expect(vi.mocked(uploadDictationToSession).mock.calls[0][0].uploadId).toBe(fresh?.id);
+  });
+
+  it("Dismiss is the ONLY thing that throws the words away, and it is always deliberate", async () => {
+    vi.mocked(getPending).mockResolvedValue(droppedRecord("id-dismiss", "unwanted words"));
+
+    await dismissDictationStatus("id-dismiss");
+
+    expect(statusFor("id-dismiss")).toBeUndefined();
+    expect(deletePending).toHaveBeenCalledWith("id-dismiss");
+    expect(sendPrompt).not.toHaveBeenCalled();
   });
 });
 

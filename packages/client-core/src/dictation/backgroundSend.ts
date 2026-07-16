@@ -1,4 +1,4 @@
-import { abandonDictation, uploadDictationToSession } from "../api/client";
+import { abandonDictation, sendPrompt, uploadDictationToSession } from "../api/client";
 import { deletePending, getPending, listPending, savePending, type PendingDictation } from "./pendingStore";
 import { clearDictationStatus, publishDictationStatus } from "./status";
 
@@ -51,6 +51,35 @@ const PARKED_UNSUPPORTED_FORMAT_MESSAGE =
 // The plain saved-and-retryable line for a parked clip, chosen by the allow-listed reason on the record.
 function parkMessage(reason: string | undefined): string {
   return reason === "unsupported-format" ? PARKED_UNSUPPORTED_FORMAT_MESSAGE : PARKED_TOO_LARGE_MESSAGE;
+}
+
+// The dropped-as-stale lines (issue #1590). Plain English, and honest about what happened: the session moved
+// on, so the words were NOT delivered. Never soft-pedalled into sounding like a success, and never silent.
+const DROPPED_WITH_TRANSCRIPT_MESSAGE =
+  "The session moved on before this recording arrived, so it wasn't sent. Here is what you said - send it?";
+const DROPPED_NO_TRANSCRIPT_MESSAGE =
+  "The session moved on before this recording arrived, so it wasn't sent. Your recording is saved on your device and you can try again.";
+const UNHEARD_MESSAGE = "Nothing was heard in that recording, so nothing was sent.";
+const SEND_ANYWAY_FAILED_MESSAGE =
+  "Couldn't send that just now. Your words are still here - try again.";
+
+// The full message a dropped dictation would have delivered (issue #1590), composed EXACTLY as the Gateway's
+// complete path composes it before injecting: the typed text the caret split the dictation around (before /
+// after), any earlier paused segments already turned to text (prefix), and the words the server heard -
+// space-joined, skipping empties.
+//
+// It must match the server's rule (GatewayDictationEndpoint.RunCompleteCoreAsync) because this IS the
+// recovery of that same turn: sending the transcript alone would silently throw away the typed text the user
+// composed around it, which is the very "your words vanished" defect this whole item exists to end - just
+// smaller and harder to notice. Every part is already on the durable record, so nothing extra is stored.
+//
+// The common voice case is the transcript alone, and this returns exactly that.
+function composeDroppedMessage(rec: PendingDictation): string {
+  return [rec.before, rec.prefix, rec.droppedTranscript ?? "", rec.after]
+    .filter((p) => (p ?? "").trim().length > 0)
+    .map((p) => p.trim())
+    .join(" ")
+    .trim();
 }
 
 /** The audio buffer + context the dialog hands up when Send is pressed. */
@@ -156,10 +185,16 @@ export async function resumePendingDictations(): Promise<void> {
   } catch {
     return; // no durable store; nothing to resume
   }
-  // A parked clip (permanent failure, issue #1184) is NOT auto-driven: re-publish its saved-and-retryable
-  // status so the strip and roster show it after a reopen, but never re-drive it. Everything else resumes.
+  // A parked clip (permanent failure, issue #1184) and a stale-DROPPED clip (issue #1590) are NOT auto-driven:
+  // re-publish their status so the strip and roster still show them after a reopen, but never re-drive them. A
+  // dropped clip especially - its upload id carries a permanent moved-on tombstone, so re-driving it could only
+  // be dropped again, and re-publishing is what keeps a lost dictation visible instead of vanishing on reload.
   await Promise.all(
     all.map((rec) => {
+      if (rec.staleDropped) {
+        publishDropped(rec);
+        return Promise.resolve();
+      }
       if (rec.parkedReason) {
         publishParked(rec, rec.parkedReason);
         return Promise.resolve();
@@ -181,6 +216,14 @@ export async function retryPendingDictation(uploadId: string): Promise<void> {
   }
   if (rec === null) {
     clearDictationStatus(uploadId);
+    return;
+  }
+  // A stale-DROPPED clip (issue #1590) cannot be re-driven under its own id - the server holds a permanent
+  // moved-on tombstone for it, so this exact upload id can only ever be dropped again. "Retry this clip"
+  // genuinely means "send the recording as a new dictation", so hand over to the fresh-id path rather than
+  // re-driving into a guaranteed re-drop (or, worse, quietly doing nothing).
+  if (rec.staleDropped) {
+    await retryDroppedDictation(uploadId);
     return;
   }
   // If it was PARKED after a permanent failure (issue #1184), this explicit Retry moves it back to active:
@@ -222,6 +265,121 @@ export async function abandonPendingDictation(uploadId: string): Promise<void> {
     // Could not persist the flag: still drive the in-memory abandoning record below.
   }
   await driveRecord(abandoning, { resumed: true, attempt: 0 });
+}
+
+// "Send anyway" on a dropped dictation (issue #1590): the session moved on and the server threw the words
+// away, but it told us what they were. Send them as a NORMAL prompt - a fresh turn, deliberately NOT a
+// re-drive of the dictation upload id, which by design (#1183) can only ever return the same drop again.
+//
+// GUARDED by the same in-flight set the delivery driver uses. This send has NO server-side idempotency behind
+// it: it is an ordinary prompt, so the durable upload id that de-duplicates a dictation (#1183) protects
+// nothing here. Two rapid taps - or two mounted strips for one session, each with its own button state -
+// would both read the record before either deleted it, and the user would get their words twice. The button's
+// disabled state is a courtesy; THIS is the guarantee.
+//
+// The words are read from the DURABLE record, not the in-memory status, so this still works after a reload,
+// and they are composed exactly as the delivery path composes them - the typed text goes with them.
+// The record is deleted only AFTER the send is confirmed: on failure nothing is discarded, and the status
+// stays sticky with the words still in it, so a bad moment cannot lose them.
+export async function sendDroppedDictationAnyway(uploadId: string): Promise<void> {
+  if (_inFlight.has(uploadId)) return; // already sending this exact clip
+  _inFlight.add(uploadId);
+  try {
+    let rec: PendingDictation | null;
+    try {
+      rec = await getPending(uploadId);
+    } catch {
+      return;
+    }
+    if (rec === null) {
+      clearDictationStatus(uploadId); // already dealt with; do not leave a dead strip behind
+      return;
+    }
+    const text = composeDroppedMessage(rec);
+    if (text.length === 0) return; // nothing to send; this clip's action is Retry, not Send anyway
+
+    try {
+      await sendPrompt(rec.sessionId, text, true);
+    } catch {
+      // Keep the record AND the sticky status - the words are still on the device and still on screen.
+      publishDictationStatus({
+        sessionId: rec.sessionId,
+        uploadId: rec.id,
+        phase: "dropped",
+        retryable: false,
+        recoverableText: text,
+        error: SEND_ANYWAY_FAILED_MESSAGE,
+      });
+      return;
+    }
+    // Confirmed sent: only now is the durable copy safe to drop.
+    await deletePending(rec.id);
+    publishDictationStatus({ sessionId: rec.sessionId, uploadId: rec.id, phase: "done" });
+  } finally {
+    _inFlight.delete(uploadId);
+  }
+}
+
+// Retry a dropped dictation whose words we never got (the rare drop before transcription, issue #1590).
+// The audio is still on the device, but its upload id is tombstoned moved-on for good (#1183), so it is
+// re-driven under a FRESH upload id - a genuinely new dictation carrying the same recording. The baseline
+// is cleared to zero: the recorded-at baseline describes a terminal that has long since moved on, and
+// re-sending it would simply invite the same drop. The user asked for this send now, deliberately.
+// Guarded on the OLD id by the same in-flight set: each tap mints a NEW upload id, so without this two rapid
+// taps would stage two fresh clips and inject the same recording twice - and being different ids, nothing
+// downstream would de-duplicate them.
+export async function retryDroppedDictation(uploadId: string): Promise<void> {
+  if (_inFlight.has(uploadId)) return; // already retrying this exact clip
+  _inFlight.add(uploadId);
+  let fresh: PendingDictation;
+  try {
+    let rec: PendingDictation | null;
+    try {
+      rec = await getPending(uploadId);
+    } catch {
+      return;
+    }
+    if (rec === null) {
+      clearDictationStatus(uploadId);
+      return;
+    }
+
+    fresh = {
+      ...rec,
+      id: crypto.randomUUID(),
+      staleDropped: undefined,
+      droppedTranscript: undefined,
+      baselineBufferBytes: 0,
+      createdAt: Date.now(),
+    };
+    try {
+      await savePending(fresh);
+    } catch {
+      return; // could not stage the fresh copy; leave the dropped record and its sticky status exactly as they are
+    }
+    // The old id is finished with only once the fresh copy is safely on disk, so a failure here can never
+    // leave the user with neither.
+    await deletePending(rec.id);
+    clearDictationStatus(rec.id);
+  } finally {
+    _inFlight.delete(uploadId);
+  }
+  // Outside the old id's guard: this drives the FRESH id, which takes its own in-flight entry. Holding both
+  // would be harmless but pointless - the old id no longer exists by this point.
+  await driveRecord(fresh, { resumed: false, attempt: 0 });
+}
+
+// Dismiss a dropped / unheard dictation (issue #1590): the user has read it and does not want the words.
+// This is the ONLY thing that discards a dropped clip without sending it, and it is always a deliberate act -
+// nothing here ever fires on its own.
+export async function dismissDictationStatus(uploadId: string): Promise<void> {
+  clearScheduled(uploadId);
+  clearDictationStatus(uploadId);
+  try {
+    await deletePending(uploadId);
+  } catch {
+    /* the status is already gone from screen; a leftover record is re-published only if it is re-driven */
+  }
 }
 
 // ---- internals -------------------------------------------------------------------------------------
@@ -275,19 +433,54 @@ async function driveRecord(rec: PendingDictation, opts: DriveOptions): Promise<v
     });
 
     if (outcome.terminal) {
-      // The server owns the turn. This covers a fresh delivery, a server that DEDUPED a delivery it had
-      // already made (a cached-delivered outcome from the durable record, issue #1183 - treated identically
-      // to a fresh success), a deliberately dropped stale/empty clip, and an ABANDONED upload id. In every
-      // case the on-device copy is dropped so the queue does not accumulate and the clip is never re-driven;
-      // the client already acknowledged the outcome to the Gateway (in uploadDictationToSession). Publish
-      // the terminal status: a brief "done" for a delivered turn, or a quiet clear when nothing was injected
-      // (moved-on, empty, or abandoned - there is nothing to acknowledge on screen).
-      await deletePending(rec.id);
+      // The server owns the turn: a fresh delivery, a server that DEDUPED a delivery it had already made (a
+      // cached-delivered outcome from the durable record, issue #1183 - treated identically to a fresh
+      // success), a deliberately dropped stale clip, an empty clip, or an ABANDONED upload id. The client
+      // already acknowledged the outcome to the Gateway (in uploadDictationToSession).
+      //
+      // These are NOT one arm (issue #1590). Every terminal-not-submitted outcome used to fall into a single
+      // deletePending + clearDictationStatus - audio gone, banner gone, no trace, and the user was never told
+      // that the words they spoke had been thrown away. "It worked and then nothing happened." Only ONE of
+      // these outcomes is genuinely nothing to say: an abandon, which the user did on purpose.
       if (outcome.submitted) {
+        await deletePending(rec.id);
         publishDictationStatus({ sessionId: rec.sessionId, uploadId: rec.id, phase: "done" });
-      } else {
-        clearDictationStatus(rec.id);
+        return;
       }
+
+      if (outcome.abandoned) {
+        // The user gave this clip up themselves. They already know; saying it again would be noise. This is
+        // the ONLY silent terminal arm, and it stays silent deliberately (the issue rules it out of scope).
+        await deletePending(rec.id);
+        clearDictationStatus(rec.id);
+        return;
+      }
+
+      if (outcome.movedOn) {
+        // The session moved on while the clip was in flight, so the server dropped the user's words. Re-driving
+        // this upload id is useless BY DESIGN - the drop wrote a permanent moved-on tombstone (#1183), so every
+        // future complete returns the same drop. The recovery is therefore a fresh turn, not a retry.
+        //
+        // Keep the record durably (marked stale-dropped, so no automatic trigger ever re-drives it) rather than
+        // deleting it: the words must survive a reload, or "Send anyway" would quietly stop working the moment
+        // the user backgrounds the app - which is the same silent loss in a new costume.
+        const transcript = (outcome.transcript ?? "").trim();
+        const dropped: PendingDictation = { ...rec, staleDropped: true, droppedTranscript: transcript };
+        try {
+          await savePending(dropped);
+        } catch {
+          // The durable store hiccuped. The in-memory status below is still published, so this drive stays
+          // loud; it just may not survive a reload. Never fall through to a silent clear.
+        }
+        publishDropped(dropped);
+        return;
+      }
+
+      // Nothing was heard: the clip reached the server, which found no speech and no typed text in it, so
+      // there was no turn to make. Nothing was lost and there is nothing to retry - but it is still an answer,
+      // and a Send that ends in silence is the defect. The audio is of no further use, so it goes.
+      await deletePending(rec.id);
+      publishUnheard(rec);
       return;
     }
 
@@ -333,6 +526,14 @@ async function driveById(id: string, opts: DriveOptions): Promise<void> {
     clearScheduled(id); // delivered or abandoned; nothing left to drive
     return;
   }
+  if (rec.staleDropped) {
+    // Dropped as stale between scheduling and firing (issue #1590): never auto-drive it - the upload id is
+    // tombstoned moved-on, so a re-drive could only be dropped again. Defensive; a dropped clip is never
+    // given a timer.
+    clearScheduled(id);
+    publishDropped(rec);
+    return;
+  }
   if (rec.parkedReason) {
     // Parked between scheduling and firing (issue #1184): never auto-drive it. Defensive - a parked clip is
     // never given a timer, so this should not normally be reached.
@@ -344,8 +545,10 @@ async function driveById(id: string, opts: DriveOptions): Promise<void> {
 }
 
 // Resume every pending clip immediately at full speed - the connectivity/foreground kick and what the
-// `online`/`visibilitychange` listeners call. A parked clip (permanent failure, issue #1184) is skipped:
-// it never auto-drives, only an explicit user Retry re-enters the active flow.
+// `online`/`visibilitychange` listeners call. A parked clip (permanent failure, issue #1184) and a
+// stale-dropped clip (issue #1590) are skipped: neither ever auto-drives, and only an explicit user action
+// moves them. Re-driving a dropped clip would be worse than pointless - its moved-on tombstone is permanent,
+// so every kick would re-drop it.
 async function kickAll(): Promise<void> {
   let all: PendingDictation[];
   try {
@@ -354,7 +557,7 @@ async function kickAll(): Promise<void> {
     return;
   }
   for (const rec of all) {
-    if (rec.parkedReason) continue;
+    if (rec.parkedReason || rec.staleDropped) continue;
     void driveRecord(rec, { resumed: true, attempt: 0 });
   }
 }
@@ -410,6 +613,37 @@ function publishParked(rec: PendingDictation, reason: string): void {
     phase: "parked",
     retryable: true,
     error: parkMessage(reason),
+  });
+}
+
+// Publish the dropped-as-stale status (issue #1590): sticky, never auto-clearing, and carrying the words
+// back when we have them. With a transcript the action is "Send anyway" (a fresh turn, so NOT retryable -
+// re-driving the tombstoned upload id could only be dropped again); without one, the audio is still on the
+// device, so it is retryable under a fresh upload id instead.
+// The "do we have words to hand back" question is asked of the COMPOSED message, not of the transcript
+// alone: a Terminal Speak clip that was dropped before transcription still has the typed text the user
+// composed around it, and that text is theirs and is recoverable. Only when the whole composed message is
+// empty is there genuinely nothing to offer, and the recording itself becomes the recovery.
+function publishDropped(rec: PendingDictation): void {
+  const words = composeDroppedMessage(rec);
+  publishDictationStatus({
+    sessionId: rec.sessionId,
+    uploadId: rec.id,
+    phase: "dropped",
+    retryable: words.length === 0,
+    recoverableText: words,
+    error: words.length > 0 ? DROPPED_WITH_TRANSCRIPT_MESSAGE : DROPPED_NO_TRANSCRIPT_MESSAGE,
+  });
+}
+
+// Publish the nothing-was-heard notice (issue #1590): visible and dismissible, with nothing to retry.
+function publishUnheard(rec: PendingDictation): void {
+  publishDictationStatus({
+    sessionId: rec.sessionId,
+    uploadId: rec.id,
+    phase: "unheard",
+    retryable: false,
+    error: UNHEARD_MESSAGE,
   });
 }
 
