@@ -71,6 +71,7 @@ public sealed class GatewayStatsDatabaseTests : IDisposable
         // Folded grouping key to first-seen display spelling.
         Assert.True(TableExists(db, "repo_identity"));
         Assert.True(TableExists(db, "agent_identity"));
+        Assert.True(TableExists(db, "model_identity"));
         // The agent-to-agent lane (issue #1636) - its OWN tables, so these turns cannot be summed
         // into the human voice-versus-typed totals by accident.
         Assert.True(TableExists(db, "agent_driven_delta"));
@@ -177,14 +178,18 @@ public sealed class GatewayStatsDatabaseTests : IDisposable
         var expected = new[]
         {
             "id", "hour_utc", "session_id", "modality", "surface",
-            "is_voice", "repo_id", "wingman", "turns", "chars",
+            "is_voice", "repo_id", "model_id", "wingman", "turns", "chars",
         };
         Assert.Equal(expected.OrderBy(c => c, StringComparer.Ordinal),
                      columns.Keys.OrderBy(c => c, StringComparer.Ordinal));
 
-        // The repository and agent dimensions are integers, so SQLite cannot be asked to compare a
-        // repository or agent string here even by accident.
+        // The repository and model dimensions are integers, so SQLite cannot be asked to compare a
+        // repository or model string here even by accident. model_id is stated here deliberately, which is
+        // what this whitelist exists to force: it is a surrogate id for the SAME reason repo_id is - the
+        // model is free text with unbounded cardinality and casing by convention only, so the in-memory
+        // OrdinalIgnoreCase map must be the only thing that ever decides two model names are one model.
         Assert.Equal("INTEGER", columns["repo_id"]);
+        Assert.Equal("INTEGER", columns["model_id"]);
 
         // Ruling B: agent_id is NOT on stat_delta. The agent tally is not derivable from these rows -
         // the first-fold back-fill attributes turns that are already in the totals, so a row here would
@@ -249,5 +254,166 @@ public sealed class GatewayStatsDatabaseTests : IDisposable
 
         Assert.Contains(blocked, ex.Message);
         Assert.Contains("will not fall back", ex.Message);
+    }
+
+    // ---- Schema version 2: the model dimension. THE FIRST REAL MIGRATION. ----
+    //
+    // These tests are why the mission exists. Version 1 shipped the migration MACHINERY against a single
+    // version, where nothing exercised it - a green suite proved only that the machinery compiled. The
+    // claim being made now is the one the owner is actually owed: his database, holding real turns, gains
+    // a dimension and does not lose a number.
+    //
+    // A hand-built version 1 file, not a downgraded current one. It is the shape the PREVIOUS BUILD wrote,
+    // reproduced from its migration: stat_delta without model_id, no model_identity, user_version=1. That
+    // is what is on the owner's disk right now, and a test that starts from the current schema and pretends
+    // would prove nothing about it.
+    private void WriteVersion1Database(params (string Hour, long Turns, long Chars)[] rows)
+    {
+        using var connection = new SqliteConnection($"Data Source={_path}");
+        connection.Open();
+        void Run(string sql)
+        {
+            using var cmd = connection.CreateCommand();
+            cmd.CommandText = sql;
+            cmd.ExecuteNonQuery();
+        }
+
+        Run(@"CREATE TABLE stat_delta (
+                  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                  hour_utc   TEXT    NOT NULL,
+                  session_id TEXT    NOT NULL,
+                  modality   TEXT    NOT NULL,
+                  surface    TEXT    NOT NULL,
+                  is_voice   INTEGER NOT NULL,
+                  repo_id    INTEGER NOT NULL,
+                  wingman    INTEGER NOT NULL,
+                  turns      INTEGER NOT NULL,
+                  chars      INTEGER NOT NULL)");
+        Run("CREATE TABLE session_highwater (session_id TEXT NOT NULL, modality TEXT NOT NULL, surface TEXT NOT NULL, turns INTEGER NOT NULL, chars INTEGER NOT NULL, PRIMARY KEY (session_id, modality, surface))");
+        Run("CREATE TABLE wingman_session (session_id TEXT PRIMARY KEY)");
+        Run("CREATE TABLE repo_session (repo_id INTEGER NOT NULL, session_id TEXT NOT NULL, PRIMARY KEY (repo_id, session_id))");
+        Run("CREATE TABLE agent_session (agent_id INTEGER NOT NULL, session_id TEXT NOT NULL, PRIMARY KEY (agent_id, session_id))");
+        Run("CREATE TABLE repo_identity (repo_id INTEGER PRIMARY KEY AUTOINCREMENT, repo_display TEXT NOT NULL)");
+        Run("CREATE TABLE agent_identity (agent_id INTEGER PRIMARY KEY AUTOINCREMENT, agent_display TEXT NOT NULL)");
+        Run("CREATE TABLE agent_delta (id INTEGER PRIMARY KEY AUTOINCREMENT, agent_id INTEGER NOT NULL, is_voice INTEGER NOT NULL, turns INTEGER NOT NULL, chars INTEGER NOT NULL)");
+        Run("CREATE TABLE agent_driven_delta (id INTEGER PRIMARY KEY AUTOINCREMENT, agent_id INTEGER NOT NULL, turns INTEGER NOT NULL, chars INTEGER NOT NULL)");
+        Run("CREATE TABLE agent_driven_highwater (session_id TEXT PRIMARY KEY, turns INTEGER NOT NULL, chars INTEGER NOT NULL)");
+        Run("CREATE TABLE agents_seeded (session_id TEXT PRIMARY KEY)");
+        Run("CREATE TABLE meta (name TEXT PRIMARY KEY, value TEXT NOT NULL)");
+        Run("INSERT INTO repo_identity(repo_display) VALUES ('D:\\ReposFred\\devthrottle')");
+
+        foreach (var (hour, turns, chars) in rows)
+        {
+            using var cmd = connection.CreateCommand();
+            cmd.CommandText = @"INSERT INTO stat_delta(hour_utc, session_id, modality, surface, is_voice, repo_id, wingman, turns, chars)
+                                VALUES ($h, 'sess-1', 'typed', 'desktop', 0, 1, 0, $t, $c)";
+            cmd.Parameters.AddWithValue("$h", hour);
+            cmd.Parameters.AddWithValue("$t", turns);
+            cmd.Parameters.AddWithValue("$c", chars);
+            cmd.ExecuteNonQuery();
+        }
+
+        Run("PRAGMA user_version=1");
+        connection.Close();
+        SqliteConnection.ClearAllPools();
+    }
+
+    private static long ScalarLong(GatewayStatsDatabase db, string sql)
+    {
+        using var cmd = db.Connection.CreateCommand();
+        cmd.CommandText = sql;
+        return Convert.ToInt64(cmd.ExecuteScalar());
+    }
+
+    [Fact]
+    public void Migrate_Version1File_UpgradesToVersion2AndKeepsEveryRow()
+    {
+        WriteVersion1Database(("2026-07-16T09", 40, 400), ("2026-07-16T10", 27, 270));
+
+        using var db = new GatewayStatsDatabase(_path);
+
+        Assert.Equal(2, UserVersion(db));
+
+        // The version stamp ALONE proves nothing, and this assertion is here because the first draft of
+        // this test proved nothing: Migrate writes PRAGMA user_version unconditionally, after the steps, so
+        // a version 2 stamp appears whether or not the version 2 step ran. With MigrateToVersion2 disabled
+        // this test still passed, green and useless, exactly the "dead test that looks like coverage" this
+        // mission keeps finding. Reading back the column the step ADDS is what makes the name true.
+        Assert.Contains("model_id", ColumnsOf(db, "stat_delta"));
+
+        // The numbers are the promise. A migration that loses turns is the failure this whole mission
+        // exists to prevent, so it is asserted on the totals and not merely on the row count.
+        Assert.Equal(2, ScalarLong(db, "SELECT COUNT(*) FROM stat_delta"));
+        Assert.Equal(67, ScalarLong(db, "SELECT SUM(turns) FROM stat_delta"));
+        Assert.Equal(670, ScalarLong(db, "SELECT SUM(chars) FROM stat_delta"));
+    }
+
+    private static List<string> ColumnsOf(GatewayStatsDatabase db, string table)
+    {
+        var names = new List<string>();
+        using var cmd = db.Connection.CreateCommand();
+        cmd.CommandText = $"SELECT name FROM pragma_table_info('{table}')";
+        using var reader = cmd.ExecuteReader();
+        while (reader.Read()) names.Add(reader.GetString(0));
+        return names;
+    }
+
+    [Fact]
+    public void Migrate_Version1File_AddsTheModelDimensionAndReadsNullOnPreExistingRows()
+    {
+        WriteVersion1Database(("2026-07-16T09", 40, 400));
+
+        using var db = new GatewayStatsDatabase(_path);
+
+        Assert.True(TableExists(db, "model_identity"));
+        // Every row folded before the dimension existed reads NULL, which is the true thing to say about
+        // them: they were recorded when no model was being observed at all. Not zero, not a placeholder id.
+        Assert.Equal(1, ScalarLong(db, "SELECT COUNT(*) FROM stat_delta WHERE model_id IS NULL"));
+        Assert.Equal(0, ScalarLong(db, "SELECT COUNT(*) FROM stat_delta WHERE model_id IS NOT NULL"));
+    }
+
+    [Fact]
+    public void Migrate_Version1File_StampsWhenTheModelDimensionBegan()
+    {
+        var before = DateTime.UtcNow.AddSeconds(-1);
+        WriteVersion1Database(("2026-07-16T09", 40, 400));
+
+        using var db = new GatewayStatsDatabase(_path);
+
+        using var cmd = db.Connection.CreateCommand();
+        cmd.CommandText = "SELECT value FROM meta WHERE name=$n";
+        cmd.Parameters.AddWithValue("$n", GatewayStatsDatabase.ModelsSinceKey);
+        var stamped = cmd.ExecuteScalar() as string;
+
+        // Without this stamp a null model_id is unreadable: a row that predates the dimension and a row
+        // whose session had recorded no model yet both store NULL, and only the stamp separates them.
+        Assert.False(string.IsNullOrEmpty(stamped));
+        Assert.True(DateTime.TryParse(stamped, System.Globalization.CultureInfo.InvariantCulture,
+            System.Globalization.DateTimeStyles.RoundtripKind, out var since));
+        Assert.True(since >= before, $"models_since_utc '{stamped}' predates the migration.");
+    }
+
+    [Fact]
+    public void Migrate_AlreadyMigratedFile_DoesNotMoveTheModelSinceStamp()
+    {
+        // The stamp records when the dimension BEGAN. Re-stamping it on a later open would push it past
+        // rows that already carry real models and silently reclassify them as predating the dimension -
+        // a re-run that quietly rewrites history is precisely the failure mode the version guard exists for.
+        WriteVersion1Database(("2026-07-16T09", 40, 400));
+
+        string? first;
+        using (var db = new GatewayStatsDatabase(_path))
+        {
+            using var cmd = db.Connection.CreateCommand();
+            cmd.CommandText = $"SELECT value FROM meta WHERE name='{GatewayStatsDatabase.ModelsSinceKey}'";
+            first = cmd.ExecuteScalar() as string;
+        }
+        SqliteConnection.ClearAllPools();
+
+        using var reopened = new GatewayStatsDatabase(_path);
+        using var read = reopened.Connection.CreateCommand();
+        read.CommandText = $"SELECT value FROM meta WHERE name='{GatewayStatsDatabase.ModelsSinceKey}'";
+
+        Assert.Equal(first, read.ExecuteScalar() as string);
     }
 }

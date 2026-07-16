@@ -553,4 +553,129 @@ public sealed class GatewayInputStatsAggregatorTests : IDisposable
         agg.Observe(SessionOnAgent("new-1", "Codex", ("typed", "desktop", 2, 20)));
         Assert.Equal(2, Agent(agg, "Codex")!.Turns);
     }
+
+    // ---- The model dimension (issue #1637): which model actually did the work. ----
+
+    private static SessionDto SessionOnModel(string id, string? model, params (string modality, string surface, long turns, long chars)[] buckets)
+    {
+        var dto = Session(id, buckets);
+        dto.CurrentModel = model;
+        return dto;
+    }
+
+    private static ModelStatBucketDto? Model(GatewayInputStatsAggregator agg, string? model) =>
+        agg.ModelTotals().FirstOrDefault(m => m.Model == model);
+
+    [Fact]
+    public void Model_ReportedByTheDirector_IsAttributedToThatModel()
+    {
+        var agg = new GatewayInputStatsAggregator(_path);
+
+        agg.Observe(SessionOnModel("s-1", "claude-opus-4-8", ("typed", "desktop", 3, 30)));
+        agg.Observe(SessionOnModel("s-2", "gpt-5.5", ("voice", "phone", 2, 20)));
+
+        Assert.Equal(3, Model(agg, "claude-opus-4-8")!.Turns);
+        Assert.Equal(3, Model(agg, "claude-opus-4-8")!.TypedTurns);
+        Assert.Equal(30, Model(agg, "claude-opus-4-8")!.Characters);
+        Assert.Equal(2, Model(agg, "gpt-5.5")!.VoiceTurns);
+    }
+
+    [Fact]
+    public void Model_NotYetRecordedByTheAgent_FoldsAsNullAndIsNotAModelNamedNothing()
+    {
+        // The permanent state, not a corner case: CurrentModel is records-only, so EVERY session's first
+        // turn folds before its agent has recorded a model, and it stays that way - this store records
+        // forward and never revisits a written row. The null bucket is therefore a real, honest answer.
+        var agg = new GatewayInputStatsAggregator(_path);
+
+        agg.Observe(SessionOnModel("s-1", null, ("typed", "desktop", 4, 40)));
+
+        Assert.Equal(4, Model(agg, null)!.Turns);
+        // It must NOT become an identity spelled "" - that would rank among the models and render as a
+        // model named nothing, which is the empty-string trap repo_id lives with and this column avoids.
+        Assert.DoesNotContain(agg.ModelTotals(), m => m.Model == "");
+    }
+
+    [Fact]
+    public void Model_SwitchedMidSession_AttributesEachTurnToTheModelThatProducedIt()
+    {
+        // The reason the producer re-reads the model at every turn-end rather than trusting the launch
+        // flag: the owner switches model mid-session (Claude's /model). The turns before the switch belong
+        // to the old model and the turns after belong to the new one, and neither may be restated.
+        var agg = new GatewayInputStatsAggregator(_path);
+
+        agg.Observe(SessionOnModel("s-1", "claude-opus-4-8", ("typed", "desktop", 5, 50)));
+        agg.Observe(SessionOnModel("s-1", "claude-sonnet-5", ("typed", "desktop", 8, 80)));
+
+        // Only the INCREASE is folded, so the switch moves 3 turns to the new model and leaves the first 5
+        // where they were earned. A design that stamped the session's current model over its history would
+        // report 8 and 0 here.
+        Assert.Equal(5, Model(agg, "claude-opus-4-8")!.Turns);
+        Assert.Equal(3, Model(agg, "claude-sonnet-5")!.Turns);
+    }
+
+    [Fact]
+    public void Model_DifferingOnlyByCase_IsOneModel_DecidedInCSharpAndNeverBySqliteCollation()
+    {
+        // The same rule as the repository dimension, and the reason the column is a surrogate id: SQLite's
+        // default BINARY collation would answer case-SENSITIVELY and split one model into two. Identity is
+        // decided by the in-memory OrdinalIgnoreCase map, so it cannot.
+        var agg = new GatewayInputStatsAggregator(_path);
+
+        agg.Observe(SessionOnModel("s-1", "claude-opus-4-8", ("typed", "desktop", 2, 20)));
+        agg.Observe(SessionOnModel("s-2", "Claude-Opus-4-8", ("typed", "desktop", 3, 30)));
+
+        var models = agg.ModelTotals().Where(m => m.Model is not null).ToList();
+        Assert.Single(models);
+        Assert.Equal(5, models[0].Turns);
+        // First-seen spelling wins, exactly as a Dictionary keeps the key it was first given.
+        Assert.Equal("claude-opus-4-8", models[0].Model);
+    }
+
+    [Fact]
+    public void Model_SurvivesAGatewayRestart_WithItsIdentityAndItsTurnsIntact()
+    {
+        using (var first = new GatewayInputStatsAggregator(_path))
+            first.Observe(SessionOnModel("s-1", "claude-opus-4-8", ("typed", "desktop", 6, 60)));
+
+        // A restart rebuilds the identity mirror FROM the database. If model_identity were not loaded, the
+        // next fold would mint a SECOND id for the same model and split its turns in two.
+        using var reopened = new GatewayInputStatsAggregator(_path);
+        reopened.Observe(SessionOnModel("s-2", "claude-opus-4-8", ("typed", "desktop", 4, 40)));
+
+        var models = reopened.ModelTotals().Where(m => m.Model is not null).ToList();
+        Assert.Single(models);
+        Assert.Equal(10, models[0].Turns);
+    }
+
+    [Fact]
+    public void ModelTurns_SumToTheTotalTurns_IncludingTheNullBucket()
+    {
+        // The property that makes the page trustworthy: every counted turn is in exactly one model bucket.
+        // If the null bucket were ever dropped or filtered, this would break - and a reader would see model
+        // turns that quietly fail to add up to the totals.
+        var agg = new GatewayInputStatsAggregator(_path);
+
+        agg.Observe(SessionOnModel("s-1", "claude-opus-4-8", ("typed", "desktop", 3, 30)));
+        agg.Observe(SessionOnModel("s-2", null, ("typed", "desktop", 4, 40)));
+        agg.Observe(SessionOnModel("s-3", "gpt-5.5", ("voice", "phone", 5, 50)));
+
+        var totals = agg.CurrentTotals();
+        var modelTurns = agg.ModelTotals().Sum(m => m.Turns);
+
+        Assert.Equal(totals.Buckets.Sum(b => b.Turns), modelTurns);
+        Assert.Equal(12, modelTurns);
+    }
+
+    [Fact]
+    public void ModelsSinceUtc_IsStampedByTheMigration_SoANullModelCanBeRead()
+    {
+        var agg = new GatewayInputStatsAggregator(_path);
+
+        // A page cannot interpret a null model without this: it separates "folded before the dimension
+        // existed" from "the agent had not recorded a model yet". Both store null.
+        Assert.False(string.IsNullOrEmpty(agg.ModelsSinceUtc));
+        Assert.True(DateTime.TryParse(agg.ModelsSinceUtc, System.Globalization.CultureInfo.InvariantCulture,
+            System.Globalization.DateTimeStyles.RoundtripKind, out _));
+    }
 }
