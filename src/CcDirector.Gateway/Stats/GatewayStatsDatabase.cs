@@ -76,7 +76,7 @@ public sealed class GatewayStatsDatabase : IDisposable
             if (!string.IsNullOrEmpty(dir))
                 Directory.CreateDirectory(dir);
 
-            RetirePreSlugStore();
+            RetireIncompatibleStore();
 
             _connection = new SqliteConnection($"Data Source={_path}");
             _connection.Open();
@@ -470,18 +470,18 @@ public sealed class GatewayStatsDatabase : IDisposable
     // together with a meaning change to the repository dimension it sits beside.
     //
     // repo_id USED to be keyed by the session's local working-directory path; from this version it is keyed
-    // by the session's GitHub "owner/repo" slug (SessionDto.RepoSlug), so one repository's worktrees and its
+    // by the session's "owner/repo" repo name (SessionDto.RepoName), so one repository's worktrees and its
     // per-machine clones collapse into a single row on the Repos page instead of one row each. The path is
     // NOT thrown away in the process - it becomes its own dimension here, so the store still records exactly
     // which checkout every turn ran in (the owner's ask: keep the checkout AND the repo name). Grouping and
-    // ranking are by repo_id (the slug); checkout_id is retained detail, read back as the set of checkouts
-    // that rolled into a repo.
+    // ranking are by repo_id (the repo name); checkout_id is retained detail, read back as the set of
+    // checkouts that rolled into a repo.
     //
     // Because the meaning of an EXISTING repo_id row changed and the Gateway cannot re-key a stored path to a
-    // slug (it has no filesystem to resolve it, and the path may be another machine's), a pre-version-4 store
-    // is not migrated forward at all: it is retired aside UNREAD before this database is opened
-    // (RetirePreSlugStore), and this store starts empty. So this step only ever runs as part of building a
-    // FRESH database (0 -> 4); it is written as a proper migration all the same, so the schema machinery
+    // repo name (it has no filesystem to resolve it, and the path may be another machine's), a pre-version-4
+    // store is not migrated forward at all: it is retired aside UNREAD before this database is opened
+    // (RetireIncompatibleStore), and this store starts empty. So this step only ever runs as part of building
+    // a FRESH database (0 -> 4); it is written as a proper migration all the same, so the schema machinery
     // stays honest and a fresh build lands the column and table exactly once.
     //
     // checkout_id is added by ALTER TABLE and is therefore nullable at the column level (SQLite reads NULL
@@ -505,20 +505,20 @@ public sealed class GatewayStatsDatabase : IDisposable
             )", tx);
     }
 
-    // Retire a pre-version-4 statistics store aside UNREAD, exactly as the legacy JSON store was retired
-    // (GatewayInputStatsAggregator.RetireLegacyJsonStore). Runs once, before the database is opened.
+    // Retire an incompatible pre-version-4 statistics store aside UNREAD, exactly as the legacy JSON store was
+    // retired (GatewayInputStatsAggregator.RetireLegacyJsonStore). Runs once, before the database is opened.
     //
     // Why the old numbers are not carried across: version 4 changed what repo_id MEANS - the session's local
-    // working-directory path became its GitHub "owner/repo" slug. An existing row is keyed by a path, and the
-    // Gateway cannot re-key it to a slug: it has no filesystem to resolve the path against, and the path may
-    // belong to another machine entirely. There is no faithful forward migration, so - as with the JSON store
-    // and by the same owner ruling - the file is renamed aside (never deleted) and this store starts empty.
+    // working-directory path became its "owner/repo" repo name. An existing row is keyed by a path, and the
+    // Gateway cannot re-key it to a repo name: it has no filesystem to resolve the path against, and the path
+    // may belong to another machine entirely. There is no faithful forward migration, so - as with the JSON
+    // store and by the same owner ruling - the file is renamed aside (never deleted) and this store starts empty.
     //
     // The schema version is read straight from the SQLite header (a 4-byte big-endian integer at offset 60)
     // rather than by opening the file: no connection, no file lock, nothing to release before the rename.
     // Self-idempotent - the fresh database this build then creates is stamped version 4, so the next startup
     // reads 4 from the header and retires nothing.
-    private void RetirePreSlugStore()
+    private void RetireIncompatibleStore()
     {
         if (!File.Exists(_path)) return;
 
@@ -537,23 +537,23 @@ public sealed class GatewayStatsDatabase : IDisposable
         }
         catch (Exception ex)
         {
-            FileLog.Write($"[GatewayStatsDatabase] RetirePreSlugStore: could not read header of {_path}: " +
+            FileLog.Write($"[GatewayStatsDatabase] RetireIncompatibleStore: could not read header of {_path}: " +
                           $"{ex.Message}; leaving it in place for the normal open path");
             return;
         }
 
         // A valid store already at version 4 (or, defensively, beyond it) is current; version 0 is not a real
-        // stamped store. Only a genuine version 1..3 file is the pre-slug store this retires.
+        // stamped store. Only a genuine version 1..3 file is the incompatible store this retires.
         if (version <= 0 || version >= SchemaVersion) return;
 
-        var aside = _path + ".pre-slug-" +
+        var aside = _path + ".superseded-" +
             DateTime.UtcNow.ToString("yyyyMMdd-HHmmss", System.Globalization.CultureInfo.InvariantCulture);
         MoveAsideIfExists(_path, aside);
         MoveAsideIfExists(_path + "-wal", aside + "-wal");
         MoveAsideIfExists(_path + "-shm", aside + "-shm");
-        FileLog.Write($"[GatewayStatsDatabase] RetirePreSlugStore: the repository dimension changed from local " +
-                      $"path to GitHub slug at schema v{SchemaVersion}; renamed the pre-slug store (v{version}) " +
-                      $"to {aside} UNREAD; starting empty");
+        FileLog.Write($"[GatewayStatsDatabase] RetireIncompatibleStore: the repository dimension changed from " +
+                      $"local path to repo name at schema v{SchemaVersion}; renamed the superseded store " +
+                      $"(v{version}) to {aside} UNREAD; starting empty");
     }
 
     private static void MoveAsideIfExists(string from, string to)
