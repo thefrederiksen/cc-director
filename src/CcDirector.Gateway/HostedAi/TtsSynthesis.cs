@@ -42,9 +42,10 @@ namespace CcDirector.Gateway.HostedAi;
 internal static class TtsSynthesis
 {
     /// <summary>
-    /// Fixed cost allowed for everything that is NOT synthesis: TLS, auth, the credit pre-flight, and
-    /// the network both ways. It does not scale with the text - and it is not small or steady, which
-    /// is the whole reason this number is 15 and not 5.
+    /// Fixed cost allowed for everything that is NOT synthesis: TLS, auth, the credit pre-flight, the
+    /// network both ways, and - the part that actually sets this number - the provider's COLD START.
+    /// It does not scale with the text, and it is neither small nor steady, which is why this is 30
+    /// and not 5, and no longer the 15 that still was not enough.
     ///
     /// It shipped as 5s and that was a REGRESSION (fixed same day). 5s + 4ms/char is TIGHTER than the
     /// flat 15s it replaced for anything under ~2,500 characters - which is almost every real
@@ -59,11 +60,36 @@ internal static class TtsSynthesis
     /// 20-character call exactly as hard as on a 4,000-character one. A base of 5 gave it nowhere to
     /// go. The base must absorb the fixed overhead INCLUDING its outliers; the slope absorbs synthesis.
     ///
-    /// 15 is chosen so the derived deadline is NEVER tighter than the constant it replaced, at any
-    /// length. That is the floor this must always clear (pinned by a test) - deriving a deadline is
-    /// only an improvement if it cannot be worse than the number it replaced.
+    /// THAT VARIANCE HAS A NAME, AND 15 WAS STILL TOO SMALL FOR IT. It is a COLD START. The provider
+    /// scales the speech model down when nobody is calling, and the first call after an idle period
+    /// pays the model load. The "0.7s, 1.3s, 13.3s" spread above is not noise to be averaged - it is
+    /// warm, warm, cold. Measured direct to the provider on 2026-07-15, from a fleet that had been
+    /// silent, 720-character call repeated:
+    ///
+    ///     COLD:  16.9s   12.4s   11.3s      <- first calls after idle; all returned HTTP 200 + real audio
+    ///     WARM:   1.8s    1.9s    3.8s      <- same call, same length, moments later
+    ///
+    /// 16.9s against the 17.9s this formula allowed a 720-char call. One second of margin. At 47
+    /// characters the deadline was 15.2s and the cold start was LONGER than the entire deadline - a
+    /// short narration on a cold provider could not succeed at all.
+    ///
+    /// This is what made it a trap rather than a slow day. A timeout arms the fleet-wide speech
+    /// cooldown (WingmanVoiceService._ttsGate) for 120 seconds. 120 seconds of nobody calling the
+    /// provider is exactly how the provider goes cold. So the cooldown MANUFACTURES the cold start
+    /// that causes the next timeout that re-arms the cooldown. The fleet observed on 2026-07-15 went
+    /// 0/8 sessions with audio, every one reporting ServiceDown, and could not climb out on its own -
+    /// the service was answering perfectly the whole time. Three warm-up calls by hand took it to
+    /// 6/8 with no code change. Nothing had broken; it had fallen into the hole and the hole was ours.
+    ///
+    /// 30 is chosen to clear the WORST observed cold start (16.9s) with the same kind of headroom the
+    /// slope gets, so a cold provider costs a slow narration instead of a silent fleet. It remains
+    /// strictly looser than the flat 15s at every length - the floor below still holds.
+    ///
+    /// If you are tempted to lower this: a deadline is not a performance target. Being under it costs
+    /// nothing; being over it silences every session on every machine for two minutes and makes the
+    /// next call cold. The failure is not symmetric, so neither is the number.
     /// </summary>
-    private static readonly TimeSpan DeadlineBase = TimeSpan.FromSeconds(15);
+    private static readonly TimeSpan DeadlineBase = TimeSpan.FromSeconds(30);
 
     /// <summary>Allowance per character of input. Synthesis measures ~1.7 ms/char, so 4 ms/char is
     /// roughly 2.4x headroom at every length - enough for a slow-but-working worker, short enough
@@ -92,11 +118,19 @@ internal static class TtsSynthesis
     ///   72 ms of GPU in all three. So ~13 s of the wall time had nothing to do with the text, and a
     ///   short call is exposed to it just as much as a long one.
     ///
+    ///   COLD START - the same overhead, named. Re-measured 2026-07-15 against a provider left idle
+    ///   by the very cooldown a timeout arms. 720-char call, four runs, cold then warm:
+    ///     COLD: 16.9 s  12.4 s  11.3 s     WARM: 1.8 s  1.9 s  3.8 s
+    ///   All six returned HTTP 200 with real audio. 16.9 s is the number the base must clear; the old
+    ///   base of 15 did not, and at 47 chars the whole deadline (15.2 s) was shorter than the cold
+    ///   start. Warm latency by length, same session: 47 -> 1.8 s, 469 -> 2.8 s, 720 -> 3.8 s,
+    ///   1,292 -> 9.6 s (worst of four each).
+    ///
     /// Deadlines that follow, against the worst case at each length:
-    ///     20 chars    -> 15.1 s   (vs ~13.3 s of observed overhead alone)
-    ///     1,292 chars -> 20.2 s   (today's median narration)
-    ///     4,000 chars -> 31.0 s   (7.3 s synthesis + room for the overhead outlier)
-    ///     12,000 chars-> 63.0 s   (21.1 s synthesis + the same)
+    ///     20 chars    -> 30.1 s   (vs the 16.9 s cold start that used to beat the old 15.1 s outright)
+    ///     1,292 chars -> 35.2 s   (today's median narration; 9.6 s observed warm, 16.9 s cold)
+    ///     4,000 chars -> 46.0 s   (7.3 s synthesis + room for the cold start)
+    ///     12,000 chars-> 78.0 s   (21.1 s synthesis + the same)
     ///
     /// Never tighter than the flat 15 s this replaced, at ANY length - that is the floor, and
     /// <c>NarrationLengthTests</c> pins it so the short end cannot be regressed again.

@@ -144,9 +144,40 @@ public class NarrationLengthTests
         // The 47-char call that took 13.3s of wall time for 72ms of GPU. A deadline that only budgets
         // for synthesis kills this call every time. Whatever the formula becomes, a short narration
         // must survive the worst overhead we have actually observed.
-        const double worstObservedOverheadSeconds = 13.3;
+        //
+        // 13.3 was the worst we had SEEN, not the worst there is, and this test passed at 15.2s while
+        // the fleet went silent - the constant had rotted. Re-measured 2026-07-15 against a genuinely
+        // cold provider: 16.9s, HTTP 200, real audio. So the old base of 15 failed this test's own
+        // premise; it just did not know it yet. Raised to what was actually observed.
+        const double worstObservedOverheadSeconds = 16.9;
         Assert.True(TtsSynthesis.DeadlineFor(47).TotalSeconds > worstObservedOverheadSeconds,
             "a short call must outlive the worst fixed overhead we have measured, not just its own synthesis");
+    }
+
+    [Fact]
+    public void DeadlineFor_ClearsAColdStart_AtEveryLength()
+    {
+        // THE DEFECT, 2026-07-15. The provider scales the speech model down when idle, so the first
+        // call after a quiet spell pays the model load. Measured direct, 720 chars, cold then warm:
+        //   COLD: 16.9s 12.4s 11.3s    WARM: 1.8s 1.9s 3.8s   (all HTTP 200, all real audio)
+        //
+        // This is not a slow-provider inconvenience, it is a trap: a timeout arms the FLEET-WIDE speech
+        // cooldown for 120s, and 120s of nobody calling is precisely how the provider goes cold again.
+        // The cooldown manufactures the cold start that causes the next timeout. The fleet sat at 0/8
+        // sessions with audio, all reporting ServiceDown, while the service answered every hand-made
+        // call perfectly - three warm-up calls took it to 6/8 with no code change.
+        //
+        // A cold start must therefore cost a SLOW narration, never a failed one - at any length, since
+        // the cold start does not scale with the text. The old base of 15 gave a 47-char narration a
+        // 15.2s deadline against a 16.9s cold start: it could not succeed at all.
+        const double observedColdStartSeconds = 16.9;
+        foreach (var chars in new[] { 20, 47, 469, 720, 1292, 4000, NarrationText.MaxChars })
+        {
+            Assert.True(TtsSynthesis.DeadlineFor(chars).TotalSeconds > observedColdStartSeconds,
+                $"a {chars}-char narration must survive a cold start ({observedColdStartSeconds}s observed), " +
+                $"but its deadline is only {TtsSynthesis.DeadlineFor(chars).TotalSeconds:F1}s - a cold provider " +
+                "would time out, arm the fleet-wide cooldown, and guarantee the next call is cold too");
+        }
     }
 
     [Fact]
