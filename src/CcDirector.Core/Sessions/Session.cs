@@ -748,10 +748,13 @@ public sealed class Session : IDisposable
 
         if (IsWorking)
         {
-            // Working always clears a landed hold; a deferral is still waiting for this work to stop.
-            var restored = persisted == HoldState.DeferredHold ? HoldState.DeferredHold : HoldState.None;
-            FileLog.Write($"[Session] Restore: persisted hold {persisted} on a working session -> {restored}: session={Id}");
-            HoldState = restored;
+            // A working session keeps whatever was persisted: a Held stays Held (work does not lift a hold
+            // - only the owner does), and a deferral stays deferred, still waiting for this work to stop.
+            // This branch used to downgrade a restored Held to None on the "working always clears a hold"
+            // rule; that rule is gone, and honouring it here threw away a hold across every restart that
+            // happened to catch the session mid-turn.
+            FileLog.Write($"[Session] Restore: persisted hold {persisted} on a working session -> {persisted}: session={Id}");
+            HoldState = persisted;
             return;
         }
 
@@ -1932,10 +1935,13 @@ public sealed class Session : IDisposable
                 RecordOrigin(so, _pendingOriginChars);
             _pendingOriginChars = 0;
             IsBrandNew = false;
-            // A real submission means the user is driving this session again, so neither a hold nor a
-            // not-yet-landed deferral reflects intent any more - both are superseded (issue #470).
-            // The HoldState setter no-ops when already None.
-            HoldState = HoldState.None;
+            // A submission supersedes a hold only when the OWNER made it. SendInput carries no SendSource,
+            // so the origin IS the whole signal here: non-null means a person typed this (the desktop
+            // terminal tags every keystroke DesktopTyped). A null origin reaches here from the Gateway
+            // prompt path when an AGENT sends text with AppendEnter=false, and that must not un-snooze a
+            // session the owner parked. See IsOwnerDriven for the same rule on the text path.
+            if (origin is not null)
+                HoldState = HoldState.None;
             SetActivityState(ActivityState.Working);
         }
     }
@@ -2023,6 +2029,28 @@ public sealed class Session : IDisposable
     /// single-operator tool, and a collision between the operator's own phone dictation and their
     /// own typed send is theirs to make, not the Director's to police.
     /// </summary>
+    /// <summary>
+    /// Did the OWNER drive this send - a person typing or speaking - as opposed to an agent or the
+    /// framework? This is the ONLY thing allowed to lift a hold, because a hold is the owner's statement
+    /// "do not bother me with this session", and only the owner can withdraw it.
+    ///
+    /// Two independent signals, either of which suffices:
+    ///  * A non-null <see cref="InputOrigin"/>. Its contract is exactly this question: "a null origin at a
+    ///    choke point means the caller is framework-internal ... it carries no human keystrokes and no
+    ///    spoken words". It is the intent axis, which is what we need - the desktop dictation path sends
+    ///    the owner's OWN transcribed voice tagged <see cref="SendSource.Framework"/> (the transport is
+    ///    framework, the actor is the human), and only the origin tells those apart.
+    ///  * <see cref="SendSource.UserInput"/> / <see cref="SendSource.Delivery"/> - a human typing, or the
+    ///    human's own dictation landing. Kept as a second signal because UserInput is the enum's
+    ///    fail-closed default: an untagged call site reads as a human, which errs toward LIFTING a hold
+    ///    the owner can re-apply, rather than stranding a session the owner is actively typing into.
+    ///
+    /// A new framework or agent call site MUST tag its source (and pass no origin), or it will silently
+    /// eat holds. Every call site was audited when this rule landed.
+    /// </summary>
+    private static bool IsOwnerDriven(SendSource source, InputOrigin? origin)
+        => origin is not null || source is SendSource.UserInput or SendSource.Delivery;
+
     public async Task SendTextAsync(string text, SendSource source = SendSource.UserInput, InputOrigin? origin = null)
     {
         if (_disposed || Status is SessionStatus.Exited or SessionStatus.Failed) return;
@@ -2043,10 +2071,13 @@ public sealed class Session : IDisposable
             await _backend.SendTextAsync(text);
         }
         IsBrandNew = false;
-        // A SendTextAsync is always a submitted turn -- the user is driving this session again, so both a
-        // hold and a not-yet-landed deferral are superseded (issue #470). The HoldState setter no-ops when
-        // already None.
-        HoldState = HoldState.None;
+        // A submitted turn supersedes a hold ONLY when the OWNER submitted it (issue #470 refined). Not
+        // every send is the owner coming back: a fleet message from another agent (SendSource.Agent) and
+        // framework plumbing (handover text, a queue drain, a pre-prompt) also land here, and clearing the
+        // hold for those un-snoozed a session the owner had explicitly parked. That is what made a 12-hour
+        // hold die 90 seconds later when another agent messaged it. See IsOwnerDriven.
+        if (IsOwnerDriven(source, origin))
+            HoldState = HoldState.None;
         SetActivityState(ActivityState.Working);
         // DevThrottle Stats: a SendTextAsync is exactly one submitted turn. Count it (plus its character
         // volume) for the tagged origin. Null origin = not a human turn - either another agent (counted on
@@ -2195,22 +2226,23 @@ public sealed class Session : IDisposable
         // ActivityState has already been assigned above, so IsWorking below reads the NEW state.
         if (IsWorking)
         {
-            // THE RULE: a held session that starts working takes itself off hold, every time, with no
-            // condition attached. A session cannot be both held and working - the user would see a parked
-            // session quietly doing work, which is exactly the lie this machine exists to make impossible.
+            // A hold SURVIVES work. Activity is not consent: a held session starting to work says nothing
+            // about whether the owner wants it back, so it must not lift the hold. Only the owner lifts a
+            // hold - by un-holding it, by typing/speaking into it (see IsOwnerDriven), or by letting the
+            // snooze timer expire.
             //
-            // This is safe against cosmetic repaints - the concern the old turn-latch was built to handle -
-            // because the detector no longer reports cosmetic Working. Both of its paths filter noise before
-            // they get here: for a byte-silent-idle agent a byte IS real output, and for an agent with an
-            // animated idle footer the continuous-idle path diffs the screen BODY and stays silent on
-            // footer-only repaints (see TerminalStateDetector). The GitHubActions backend's ActivitySink is
-            // authoritative run status. So reaching Working means real work, on every path.
-            if (HoldState == HoldState.Held)
-            {
-                FileLog.Write($"[Session] Session started working - lifting hold: session={Id}");
-                HoldState = HoldState.None;
-            }
-            // A DeferredHold deliberately survives here: it is WAITING for this work to stop.
+            // This edge used to read "a held session that starts working takes itself off hold, every time"
+            // and justified itself with "reaching Working means real work, on every path". Both halves were
+            // wrong, and the log proved it: 16 of 16 holds set on 15 July 2026 died here within 1-21
+            // minutes, none reaching even 1% of a 12-hour hold.
+            //  * Work is not always the owner. Another agent's fleet message is real work, driven by an
+            //    agent. Session 8c17dc1c was held at 13:20:16 and un-held at 13:21:49 by a fleet message
+            //    from a reviewer session. The owner never touched it.
+            //  * Work is not always real. The detector's rule is "a byte out of the ConPTY means working",
+            //    which fires on a spontaneous repaint. Session 7ed715c7 landed a 12-hour hold at 21:35:30
+            //    and lost it at 21:42:46 to a lone byte, with nothing delivered in the 7 minutes between.
+            //
+            // A DeferredHold also survives here: it is WAITING for this work to stop.
         }
         else if (newState is ActivityState.Exited)
         {

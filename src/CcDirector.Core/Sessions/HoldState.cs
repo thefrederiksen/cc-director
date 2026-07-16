@@ -8,20 +8,33 @@ namespace CcDirector.Core.Sessions;
 /// (<see cref="ActivityState"/>, the authoritative live fact - never a latch):
 ///
 /// <code>
-///                      +---------------- it starts working ----------------+
-///                      v                                                   |
 ///   [None] --- Snooze pressed while settled -------------------------> [Held]
 ///     ^                                                                    ^
 ///     |--- Unsnooze pressed ---------------------------------------------- |
+///     |--- the OWNER types or speaks into it (supersedes) ---------------- |
+///     |--- the snooze timer expires (Gateway sweep) ---------------------- |
+///     |--- it exits ------------------------------------------------------ |
 ///     |                                                                    |
-///     |--- you send a prompt (supersedes) ---+                             |
-///     |                                      |                             |
 ///     +--- Snooze pressed while working -> [DeferredHold] --- it stops ----+
 /// </code>
 ///
-/// The load-bearing edge is Held + it starts working -> None: a held session that comes back to life
-/// takes itself off hold, every time, and its snooze timer is cancelled with it. A session can never be
-/// simultaneously held and working - that combination is unreachable by construction, which is the point.
+/// The load-bearing rule is: ONLY THE OWNER LIFTS A HOLD. A hold is the owner saying "do not bother me
+/// with this session", so only the owner withdraws it - by un-snoozing, by typing or speaking into it
+/// (Session.IsOwnerDriven), or by letting the snooze timer run out. An exited session drops its hold too,
+/// because a dead session must never hide behind a "Snoozed" label.
+///
+/// ACTIVITY IS NOT CONSENT, and this is the correction that defines this machine. Until 15 July 2026 the
+/// load-bearing edge was the opposite - "Held + it starts working -> None", justified by the claim that a
+/// session can never be simultaneously held and working. That invariant WAS the bug. Work is not the
+/// owner: another agent's fleet message is real work driven by an agent, and the terminal detector's rule
+/// ("a byte out of the ConPTY means working") fires on a bare repaint. So every hold was destroyed by
+/// something that was not the owner - all 16 set on 15 July 2026 died within 1-21 minutes, and a 12-hour
+/// hold was unreachable.
+///
+/// So <see cref="Held"/> + working IS now reachable, deliberately: a parked session can do background work
+/// for another agent and stay parked. That is not a lie - it is exactly what the owner asked for. The
+/// roster keeps rendering it as Snoozed; hold wins over the activity colour, because suppressing attention
+/// is the entire purpose of a hold.
 /// </summary>
 public enum HoldState
 {

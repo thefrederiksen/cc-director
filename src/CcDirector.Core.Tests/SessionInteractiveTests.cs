@@ -57,27 +57,33 @@ public sealed class SessionInteractiveTests
     // ---- THE RULE: a held session that starts working comes off hold, every time ----
 
     [Fact]
-    public void HeldSession_ThatStartsWorking_LiftsTheHold()
+    public void HeldSession_ThatStartsWorking_KeepsTheHold()
     {
+        // ACTIVITY IS NOT CONSENT. This test used to assert the OPPOSITE - that work lifts the hold - and
+        // that rule is what killed all 16 holds set on 15 July 2026 within 1-21 minutes. The terminal
+        // detector flips a session to Working on a single byte out of the ConPTY, so a bare repaint of an
+        // idle session reached here and destroyed a 12-hour hold (session 7ed715c7, 21:42:46, with nothing
+        // delivered to it in the preceding 7 minutes).
         var backend = new RecordingBackend();
         using var s = NewSession(backend, ActivityState.Idle);
         s.RequestHold(true);
         Assert.True(s.OnHold);
 
-        // The agent comes back to life on its own - a background task landed, a sub-agent reported,
-        // the model resumed. Nobody submitted anything.
+        // The session starts working with nobody having submitted anything - a repaint, a background task
+        // landing, a sub-agent reporting. None of that is the owner asking for the session back.
         s.ApplyTerminalActivityState(ActivityState.Working);
 
-        Assert.False(s.OnHold);                       // it cannot be parked and working at once
-        Assert.Equal(HoldState.None, s.HoldState);
+        Assert.True(s.OnHold);                        // held AND working: reachable, and correct
+        Assert.Equal(HoldState.Held, s.HoldState);
     }
 
     [Fact]
-    public void HeldSession_ThatStartsWorking_LiftsEvenWithNoSubmissionBehindIt()
+    public void DeferredHold_ThatLanded_SurvivesTheSessionWakingUpAgain()
     {
-        // THE REGRESSION THIS MACHINE EXISTS TO KILL. Before, the lift was gated on a turn latch that
-        // was armed only by Enter and destroyed by any 10 seconds of terminal quiet - so an ordinary
-        // slow command mid-turn left the session able to work forever while still reading "Snoozed".
+        // The end-to-end shape of the owner's 12-hour hold, and the exact sequence that failed on session
+        // 7ed715c7: hold asked for mid-turn -> deferred -> lands when the turn settles -> the session
+        // stirs again. It must still be held. This test previously asserted the hold came back off "every
+        // time", which is the defect.
         var backend = new RecordingBackend();
         using var s = NewSession(backend, ActivityState.Working);
 
@@ -87,8 +93,9 @@ public sealed class SessionInteractiveTests
         s.ApplyTerminalActivityState(ActivityState.WaitingForInput); // the turn really ends -> parks
         Assert.True(s.OnHold);
 
-        s.ApplyTerminalActivityState(ActivityState.Working);         // it wakes up again
-        Assert.False(s.OnHold);                                      // and comes back. Every time.
+        s.ApplyTerminalActivityState(ActivityState.Working);         // it stirs again (byte / repaint)
+        Assert.True(s.OnHold);                                       // and STAYS parked. Every time.
+        Assert.Equal(HoldState.Held, s.HoldState);
     }
 
     [Fact]
@@ -122,15 +129,110 @@ public sealed class SessionInteractiveTests
     }
 
     [Fact]
-    public void SendInput_WithSubmitByte_ClearsOnHold()
+    public void SendInput_WithSubmitByte_FromTheOwner_ClearsOnHold()
     {
         var backend = new RecordingBackend();
         using var s = NewSession(backend, ActivityState.Idle);
         s.RequestHold(true);
 
-        s.SendInput(new byte[] { (byte)'h', (byte)'i', 0x0D }); // text + CR (Enter)
+        // The owner typing at the desktop terminal - every keystroke is tagged DesktopTyped.
+        s.SendInput(new byte[] { (byte)'h', (byte)'i', 0x0D }, InputOrigin.DesktopTyped);
 
-        Assert.False(s.OnHold);
+        Assert.False(s.OnHold); // the owner is back, so the hold goes
+    }
+
+    [Fact]
+    public void SendInput_WithSubmitByte_ButNoHumanOrigin_LeavesOnHold()
+    {
+        // A null origin at this choke point means nobody typed it - it is an agent's prompt arriving with
+        // AppendEnter=false. An agent must not un-snooze a session the owner parked.
+        var backend = new RecordingBackend();
+        using var s = NewSession(backend, ActivityState.Idle);
+        s.RequestHold(true);
+
+        s.SendInput(new byte[] { (byte)'h', (byte)'i', 0x0D }); // submit, but no human behind it
+
+        Assert.True(s.OnHold);
+        Assert.Equal(HoldState.Held, s.HoldState);
+    }
+
+    [Fact]
+    public async Task SendTextAsync_FromAnotherAgent_LeavesOnHold()
+    {
+        // THE REGRESSION. Session 8c17dc1c was held at 13:20:16 on 15 July 2026 and un-held 93 seconds
+        // later by a fleet message from a reviewer session ("Message [message from Gateway SQLite - Codex
+        // Reviewer ...]"). One agent messaging another is real work, but it is not the OWNER, and it must
+        // not cancel the owner's snooze.
+        var backend = new RecordingBackend();
+        using var s = NewSession(backend, ActivityState.Idle);
+        s.RequestHold(true);
+        Assert.True(s.OnHold);
+
+        await s.SendTextAsync("a fleet message from another agent", SendSource.Agent);
+
+        Assert.True(s.OnHold);
+        Assert.Equal(HoldState.Held, s.HoldState);
+    }
+
+    [Fact]
+    public async Task SendTextAsync_FrameworkPlumbing_LeavesOnHold()
+    {
+        // Handover text, a queue drain, a pre-prompt: the product talking to itself. No human, no hold lift.
+        var backend = new RecordingBackend();
+        using var s = NewSession(backend, ActivityState.Idle);
+        s.RequestHold(true);
+
+        await s.SendTextAsync("/handover", SendSource.Framework);
+
+        Assert.True(s.OnHold);
+    }
+
+    [Fact]
+    public async Task SendTextAsync_CarryingTheOwnersOwnVoice_ClearsOnHold()
+    {
+        // The desktop dictation path sends the owner's transcribed voice tagged Framework - the TRANSPORT
+        // is framework, the ACTOR is the human. Only the non-null InputOrigin tells them apart, which is
+        // why the origin, not the source, is the primary owner-intent signal.
+        var backend = new RecordingBackend();
+        using var s = NewSession(backend, ActivityState.Idle);
+        s.RequestHold(true);
+
+        await s.SendTextAsync("what is the status", SendSource.Framework, InputOrigin.DesktopVoice);
+
+        Assert.False(s.OnHold); // the owner spoke, so the hold goes
+    }
+
+    [Fact]
+    public async Task SendTextAsync_FromTheOwner_SupersedesADeferredHold()
+    {
+        // The owner's rule, in his words: "if you type into a turn and the hold had already been set, it's
+        // not the same turn, it's a new turn, so no it should not hold."
+        var backend = new RecordingBackend();
+        using var s = NewSession(backend, ActivityState.Working);
+        s.RequestHold(true);
+        Assert.Equal(HoldState.DeferredHold, s.HoldState);
+
+        await s.SendTextAsync("actually, keep going", SendSource.UserInput, InputOrigin.DesktopTyped);
+
+        Assert.Equal(HoldState.None, s.HoldState); // the armed hold is discarded, not deferred onward
+    }
+
+    [Fact]
+    public async Task SendTextAsync_FromAnotherAgent_DoesNotSupersedeADeferredHold()
+    {
+        // An agent poking a working session must not cancel the owner's pending hold - it still lands when
+        // the session settles.
+        var backend = new RecordingBackend();
+        using var s = NewSession(backend, ActivityState.Working);
+        s.RequestHold(true);
+        Assert.Equal(HoldState.DeferredHold, s.HoldState);
+
+        await s.SendTextAsync("a fleet message", SendSource.Agent);
+        Assert.Equal(HoldState.DeferredHold, s.HoldState); // still armed
+
+        s.ApplyTerminalActivityState(ActivityState.WaitingForInput);
+        Assert.Equal(HoldState.Held, s.HoldState);         // and it lands
+        Assert.True(s.OnHold);
     }
 
     [Fact]
@@ -325,17 +427,18 @@ public sealed class SessionInteractiveTests
     }
 
     [Fact]
-    public void RestoreHoldState_Held_OnAWorkingSession_IsLifted()
+    public void RestoreHoldState_Held_OnAWorkingSession_IsKept()
     {
-        // Working ALWAYS clears a hold - the load-bearing rule of the whole machine. A restore is not an
-        // exception to it: a session that came back working is not parked, whatever the store said.
+        // A restart that happens to catch the session mid-turn must not throw the owner's hold away. This
+        // test asserted the opposite on the old "working ALWAYS clears a hold" rule, which is gone: only
+        // the owner lifts a hold, and a Director restarting is not the owner.
         var backend = new RecordingBackend();
         using var s = NewSession(backend, ActivityState.Working);
 
         s.RestoreHoldState(HoldState.Held);
 
-        Assert.Equal(HoldState.None, s.HoldState);
-        Assert.False(s.OnHold);
+        Assert.Equal(HoldState.Held, s.HoldState);
+        Assert.True(s.OnHold);
     }
 
     [Fact]
