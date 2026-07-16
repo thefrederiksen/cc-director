@@ -51,6 +51,24 @@ public static class BrainToolConfig
     }
 
     /// <summary>
+    /// Returns <paramref name="tool"/> when it can be hosted as the warm brain, or throws a clear,
+    /// actionable error when it cannot. This is the up-front gate the Gateway host uses at construction
+    /// so a non-hostable configured brain tool fails loudly at startup, not silently later at the
+    /// brain's first spawn. No-fallback rule: a tool nobody can host is a configuration error to fix,
+    /// never a silent downgrade to the default.
+    /// </summary>
+    public static AgentKind EnsureHostable(AgentKind tool)
+    {
+        if (IsHostable(tool))
+            return tool;
+
+        throw new InvalidOperationException(
+            $"Brain tool '{tool}' cannot be hosted as the Gateway warm brain. " +
+            $"Hostable tools: {string.Join(", ", BrainHostableTools)}. " +
+            $"Set 'brain_tool' in config.json to a hostable tool (default \"{Default}\") or remove the key.");
+    }
+
+    /// <summary>
     /// Resolve the brain tool: config.json "brain_tool" when set, else <see cref="Default"/>.
     ///
     /// As of issue #510 the wingman agent is chosen from the machine's registered agents (any

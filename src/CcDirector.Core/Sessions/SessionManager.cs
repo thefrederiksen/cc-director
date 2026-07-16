@@ -455,11 +455,9 @@ public sealed class SessionManager : IDisposable
 
         ISessionBackend backend = backendType switch
         {
-            // ConPty on Windows, UnixPty on macOS/Linux
-            SessionBackendType.ConPty when RuntimeInformation.IsOSPlatform(OSPlatform.Windows)
-                => new ConPtyBackend(_options.DefaultBufferSizeBytes),
+            // ConPty on Windows, UnixPty on macOS/Linux - one selection, in PlatformSessionBackend.
             SessionBackendType.ConPty
-                => new UnixPtyBackend(_options.DefaultBufferSizeBytes),
+                => PlatformSessionBackend.CreateDefault(_options.DefaultBufferSizeBytes),
             SessionBackendType.Pipe => new PipeBackend(_options.DefaultBufferSizeBytes),
             SessionBackendType.Studio => new StudioBackend(),
             SessionBackendType.Embedded when RuntimeInformation.IsOSPlatform(OSPlatform.Windows)

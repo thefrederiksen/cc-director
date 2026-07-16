@@ -220,10 +220,25 @@ public sealed class GatewayUpdater
         return p;
     }
 
-    /// <summary>Convenience: if an update is available, stage it and launch the detached helper. Returns the staged version, or null.</summary>
-    [SupportedOSPlatform("windows")]
+    /// <summary>
+    /// Convenience: if an update is available, stage it and launch the detached helper. Returns the
+    /// staged version, or null. A no-op that returns null off Windows - the swap it drives is a
+    /// Windows-only operation, so the method is safe to call on any platform (it simply does nothing
+    /// off Windows) rather than being marked Windows-only and throwing at the call site.
+    /// </summary>
     public async Task<string?> CheckStageAndLaunchAsync(ResolvedRelease release, ReleaseSource source, CancellationToken ct = default)
     {
+        // Belt and suspenders: the Gateway self-update swap is a Windows-only operation (File.Replace
+        // dance, detached helper exe). The update loop already only calls this when Managed and on
+        // Windows; this guard makes the method itself a no-op off Windows so no future caller can
+        // ever trigger a swap on macOS or Linux. The analyzer reads this negated-guard-then-return as
+        // proof the Windows-only LaunchDetachedUpdater call below is reached only on Windows.
+        if (!OperatingSystem.IsWindows())
+        {
+            EngineLog.Write("[GatewayUpdater] CheckStageAndLaunchAsync is a no-op off Windows");
+            return null;
+        }
+
         var staged = await StageAsync(release, source, ct);
         if (staged is null) return null;
         LaunchDetachedUpdater(staged.Value.StagedPath, staged.Value.Version);

@@ -57,6 +57,23 @@ public static class GatewayAccountFactory
     }
 
     /// <summary>
+    /// Creates the Gateway-hosted credential service on macOS, using the login Keychain as the
+    /// credential store (through the <c>security</c> command-line tool). Same contract and same
+    /// environment seams as <see cref="CreateForWindows"/> - only the store binding differs, which is
+    /// the whole point of the shared <see cref="IProtectedTokenStore"/> interface.
+    /// </summary>
+    [SupportedOSPlatform("macos")]
+    public static DevThrottleAccountService CreateForMac()
+    {
+        FileLog.Write("[GatewayAccountFactory] CreateForMac: building the Gateway-hosted credential service");
+
+        var store = new MacKeychainProtectedTokenStore();
+        var service = Build(store, CcStorage.GatewayDevThrottleAuthEventsLog());
+        SeedTestCredentialIfRequested(service);
+        return service;
+    }
+
+    /// <summary>
     /// Creates the Gateway-hosted credential service over an explicit credential store and an explicit
     /// authentication-event log path. Used by tests (which supply an in-memory or temp-directory store)
     /// and by non-Windows hosts that supply their own <see cref="IProtectedTokenStore"/>. Does NOT seed

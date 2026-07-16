@@ -110,23 +110,20 @@ public sealed class ClaudeDriver : IAgentDriver
 
     public string ResolveExecutable(string? configuredPath)
     {
-        if (!string.IsNullOrWhiteSpace(configuredPath))
-        {
-            if (!File.Exists(configuredPath))
-                throw new FileNotFoundException(
-                    $"[ClaudeDriver] claude executable not found at the configured path: {configuredPath}");
-            return configuredPath;
-        }
+        // Resolve through the shared, platform-aware ExecutableResolver (the same helper Codex and
+        // Copilot use): on macOS and Linux it matches the extensionless "claude"; on Windows it applies
+        // PATHEXT to find claude.exe. This is what lets the warm brain spawn its agent off Windows - a
+        // hand-rolled claude.exe-only search could not. An explicit configured path is resolved directly.
+        var configured = string.IsNullOrWhiteSpace(configuredPath) ? "claude" : configuredPath.Trim();
+        var resolved = ExecutableResolver.Resolve(configured);
+        if (resolved is not null)
+            return resolved;
 
-        var pathVar = Environment.GetEnvironmentVariable("PATH") ?? "";
-        foreach (var dir in pathVar.Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries))
-        {
-            var candidate = Path.Combine(dir.Trim(), "claude.exe");
-            if (File.Exists(candidate))
-                return candidate;
-        }
+        // Keep FileNotFoundException: HostedAgent.StartAsync catches exactly this type to report a
+        // clean "agent not installed" startup error.
         throw new FileNotFoundException(
-            "[ClaudeDriver] claude.exe not found on PATH. Install Claude Code or configure an explicit path.");
+            $"[ClaudeDriver] Could not resolve the Claude Code CLI from '{configured}'. " +
+            "Install Claude Code or configure an explicit path.");
     }
 
     public AgentLaunchSpec BuildLaunchSpec(string? baseArgs, string? resumeSessionId)
