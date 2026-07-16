@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Security.Cryptography;
 using System.Text.Json;
 using System.Text.Json.Serialization;
@@ -409,23 +410,32 @@ public sealed class VoiceUploadStore
     {
         var uid = NormalizeId(uploadId);
         if (uid is null) return false;
-        if (ReadRecord(uid) is not { } record) return false;
-        if (record.State is DictationDeliveryState.Delivered or DictationDeliveryState.Abandoned) return false;
 
-        var merged = Math.Max(record.RebaselineBufferBytes ?? 0, bufferBytes);
-        if (merged <= (record.RebaselineBufferBytes ?? -1)) return false; // already at least this honest
-        try
+        // Read-modify-write under the per-upload gate. Without it the max-and-write is not atomic: two
+        // writers can both read the old value, and the one that computed the SMALLER max can land last and
+        // overwrite the larger - handing a retry a baseline lower than one we had already proven honest,
+        // which is exactly the drop this whole field exists to stop. The monotonic rule has to hold at the
+        // WRITE, not just in the arithmetic.
+        lock (GateFor(DirFor(uid)))
         {
-            // Marker only - the chunk bytes stay put, because this upload is still going to be delivered.
-            WriteRecordMarker(DirFor(uid), record with { RebaselineBufferBytes = merged });
-            FileLog.Write($"[VoiceUploadStore] RecordFailedDeliveryBaseline: uploadId={uid} rebaseline={merged} " +
-                $"(state={record.State}, chunks retained)");
-            return true;
-        }
-        catch (Exception ex)
-        {
-            FileLog.Write($"[VoiceUploadStore] RecordFailedDeliveryBaseline uploadId={uid} failed: {ex.Message}");
-            return false;
+            if (ReadRecord(uid) is not { } record) return false;
+            if (record.State is DictationDeliveryState.Delivered or DictationDeliveryState.Abandoned) return false;
+
+            var merged = Math.Max(record.RebaselineBufferBytes ?? 0, bufferBytes);
+            if (merged <= (record.RebaselineBufferBytes ?? -1)) return false; // already at least this honest
+            try
+            {
+                // Marker only - the chunk bytes stay put, because this upload is still going to be delivered.
+                WriteRecordMarker(DirFor(uid), record with { RebaselineBufferBytes = merged });
+                FileLog.Write($"[VoiceUploadStore] RecordFailedDeliveryBaseline: uploadId={uid} rebaseline={merged} " +
+                    $"(state={record.State}, chunks retained)");
+                return true;
+            }
+            catch (Exception ex)
+            {
+                FileLog.Write($"[VoiceUploadStore] RecordFailedDeliveryBaseline uploadId={uid} failed: {ex.Message}");
+                return false;
+            }
         }
     }
 
@@ -492,6 +502,23 @@ public sealed class VoiceUploadStore
     }
 
     // ====== internals ===============================================================
+
+    // Per-upload write gates, keyed by the upload's staging DIRECTORY - the resource itself, not the store
+    // object - so the gate holds even though callers construct their own VoiceUploadStore instances over the
+    // same root (the endpoint, the tests, and the aggregator all do). Static for the same reason: two store
+    // instances over one directory must contend for one gate, or the gate protects nothing.
+    //
+    // In-process only, and deliberately so: this guards the read-modify-write in RecordFailedDeliveryBaseline,
+    // whose writers are all inside this Gateway. It is NOT a cross-process file lock and does not claim to be;
+    // the individual marker write is already atomic (temp + move), so the worst a second process could do is
+    // land a stale value, which no deployment we run can produce (one Gateway owns a staging root).
+    //
+    // One small object per upload id that has had a failed delivery attempt. Never pruned; bounded by real
+    // failed-delivery volume, the same shape as the endpoint's own uploadId->sessionId map.
+    private static readonly ConcurrentDictionary<string, object> _recordGates =
+        new(StringComparer.OrdinalIgnoreCase);
+
+    private static object GateFor(string dir) => _recordGates.GetOrAdd(dir, _ => new object());
 
     private string DirFor(string uid) => Path.Combine(_root, uid);
     private static string ChunkPath(string dir, int index) => Path.Combine(dir, $"{index:D5}.part");
