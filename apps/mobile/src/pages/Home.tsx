@@ -109,7 +109,14 @@ export function Home() {
   // isVoiceReady IS "voiceRowState === ready", so the tab and the triangle can never disagree about
   // what "ready with voice" means. In waiting order, longest-waiting first, so it can be worked top to
   // bottom by ear.
-  const voiceReady = filtered ? inWaitingOrder(filtered.filter((s) => isVoiceReady(rowVoiceInputs(s, isWorking(s))))) : [];
+  //
+  // The reachability mark is fed in for the same reason the row feeds it: a retained session from an
+  // unreachable machine keeps its last-known voiceAudioReady and its already-downloaded clip, so it
+  // would otherwise sit in this tab claiming it can speak. This tab is the hands-free lens - the one
+  // place a false "ready" is read out loud rather than looked at - so it must not list a dead machine.
+  const voiceReady = filtered
+    ? inWaitingOrder(filtered.filter((s) => isVoiceReady(rowVoiceInputs(s, isWorking(s), !marks.has(s.sessionId ?? "")))))
+    : [];
   // The "Needs you" group is a waiting line: the session that has been waiting for you the longest
   // sits at the top, and a session that only just started needing you drops in at the bottom
   // (inWaitingOrder). This keeps the list from reshuffling under you as sessions change state, and
@@ -201,12 +208,11 @@ export function Home() {
         </Link>
       )}
 
-      {/* Car Mode (Car Mode mission): the hands-free, eyes-free voice channel to the whole fleet. Its
-          own full-screen page; one tap in, then just talk. */}
-      <Link className="car-entry" to="/car">
-        <span className="car-entry-icon" aria-hidden="true">&#9679;</span>
-        Car Mode - drive the fleet by voice
-      </Link>
+      {/* Car Mode's entry point is the nav drawer (top-left), NOT a banner here. It used to be both.
+          The roster is a list of sessions that need you; a permanent full-width call-to-action for a
+          different screen sat above that list drawing attention it had not earned - loudest element on
+          a page it is not about, and shown just as insistently on an empty roster. It is one line in
+          the drawer alongside every other destination, which is what it is. */}
 
       {sessions === null && error === null && <p className="status-line">Loading sessions...</p>}
 
@@ -381,7 +387,11 @@ function SessionRow({ session, mark }: { session: SessionDto; mark?: RosterSessi
               failed - so a dropped transcription is visible from the list, never silent. */}
           <DictationRowBadge sessionId={session.sessionId} />
         </span>
-        <VoiceIndicator session={session} />
+        {/* The voice control reads reachability for the same reason the dot, the attention state and
+            the waiting timer above it do: on a retained card from an unreachable machine every one of
+            those facts is last-known, and voice is no exception - it kept its clip and its
+            last-known voiceAudioReady, so it was the one element still promising something live. */}
+        <VoiceIndicator session={session} reachable={!unreachable} />
       </Link>
     </li>
   );
@@ -400,10 +410,10 @@ function SessionRow({ session, mark }: { session: SessionDto; mark?: RosterSessi
 // Tapping the triangle plays the locally-stored clip with no download wait; preventDefault and
 // stopPropagation keep the tap from also following the row's link. If this session's clip is playing
 // when the agent resumes, it is stopped - a stale clip must not keep talking.
-function VoiceIndicator({ session }: { session: SessionDto }) {
+function VoiceIndicator({ session, reachable }: { session: SessionDto; reachable: boolean }) {
   const sid = session.sessionId ?? "";
   const working = isWorking(session);
-  const state = voiceRowState(rowVoiceInputs(session, working));
+  const state = voiceRowState(rowVoiceInputs(session, working, reachable));
 
   useEffect(() => {
     if (working && playingSid() === sid) stopPlayback();

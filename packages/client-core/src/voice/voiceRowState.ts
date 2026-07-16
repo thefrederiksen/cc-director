@@ -57,12 +57,25 @@
 //
 // RESIDUAL, known and accepted: between the poll that first sees voiceAudioReady for a NEW turn and the
 // getWingmanVoice that refreshes the cached stamp (one Gateway round trip later), the roster still
-// holds last turn's stamp and last turn's ready clip, which match - so a stale triangle can flash for
-// well under a second. It closes itself: ensureClip immediately re-stamps the clip store to the new
-// turn as "downloading", which flips the row to the spinner. Tapping inside that window lands on the
-// working card (the screen's own live fetch sees the mismatch), never the "Voice service down" screen
-// this fix is about. Closing it completely needs a per-turn narration id on SessionDto, which is not
-// worth a new contract field for a sub-second flash with a benign landing.
+// holds last turn's stamp and last turn's ready clip, which match - so a stale triangle can flash.
+// It normally closes itself within one Gateway round trip: syncVoiceSessions re-stamps the cached
+// metadata to the new turn, phoneReadyForCurrentTurn goes false against it, and the row flips to the
+// spinner. Tapping inside that window lands on the working card (the screen's own live fetch sees the
+// mismatch), never the "Voice service down" screen this fix is about.
+//
+// That window is NOT bounded, and an earlier version of this comment claimed it was ("well under a
+// second"). Two independent reviews (Claude and Codex, 2026-07-15) landed on the same correction:
+// syncVoiceSessions is fire-and-forget and SWALLOWS a failed getWingmanVoice, so the re-stamp that
+// closes the window is not guaranteed to happen at all. While the fetch keeps failing, the cached
+// stamp and the clip stay stale TOGETHER and agree with each other perfectly - which is the exact
+// shape of the original bug. Closing it properly needs a per-turn narration stamp on SessionDto
+// (the Gateway already holds it as WingmanVoiceService.VoiceReady.AtUtc, right next to the HasVoice
+// it already stamps), so the roster can compare against a LIVE turn id instead of a cached one.
+// That is a Gateway contract change and is tracked separately.
+//
+// The unbounded case that DOES have a local answer is an unreachable machine, and `reachable` below
+// closes it: no polling means no re-stamp, ever, so a retained row would hold a green triangle for
+// as long as the machine stays down.
 
 /** The clip download phases, mirrored from clips.ts (kept structural so this module imports nothing). */
 export type VoiceClipPhase = "none" | "downloading" | "ready" | "error";
@@ -70,6 +83,20 @@ export type VoiceClipPhase = "none" | "downloading" | "ready" | "error";
 export interface VoiceRowInputs {
   /** This session is in voice mode (SessionDto.voiceMode). */
   voiceMode: boolean;
+  /**
+   * This session's owning machine is answering. False for a row the keep-and-mark merge RETAINED
+   * because its Director went wobbly/offline (rosterRetention.ts): the card stays on the roster,
+   * grayed and marked, holding its last-known SessionDto.
+   *
+   * That retained DTO carries last-known voiceAudioReady=true, and syncVoiceSessions cannot refresh
+   * the cached stamp for it (getWingmanVoice fails against a machine that is not answering, and the
+   * failure is swallowed). So the stamp and the clip go stale together and agree - the roster's own
+   * "is this the current turn?" test passes while describing a turn from before the outage, and the
+   * triangle sits there for as long as the machine is down. Every other stale-suppressing element on
+   * the row already reads this fact (SessionRow suppresses the attention state and the waiting timer
+   * on an unreachable card); the voice control was the one that did not. Found in review.
+   */
+  reachable: boolean;
   /** The agent has resumed (blue): the finished-turn narration is stale and is not offered. */
   agentWorking: boolean;
   /**
@@ -110,6 +137,14 @@ export type VoiceRowState = "none" | "down" | "preparing" | "ready";
 export function voiceRowState(i: VoiceRowInputs): VoiceRowState {
   // Not a voice session: the roster says nothing about voice.
   if (!i.voiceMode) return "none";
+
+  // The owning machine is not answering, so nothing on this row is live: the DTO is last-known, and
+  // the cached stamp this function would compare the clip against cannot be refreshed while the
+  // machine is down. There is no evidence here that any narration is current, and no round trip
+  // coming to supply some. Silence, not "down": the card is already grayed and already says
+  // "Unreachable - <machine>", so a voice-down pill would restate it and imply a voice-specific
+  // outage that is not what happened. Same reasoning as the agentWorking gate below.
+  if (!i.reachable) return "none";
 
   // The agent has resumed, so the finished-turn narration is stale. This is checked BEFORE
   // voiceUnavailable: a working session's row already says "working", and stacking a voice-down pill

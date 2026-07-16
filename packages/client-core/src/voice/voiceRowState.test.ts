@@ -15,6 +15,7 @@ import { isVoiceReady, voiceRowState, type VoiceRowInputs } from "./voiceRowStat
 /** The honest ready state: this turn's audio is on the phone, it has words, and nothing objects. */
 const READY_FOR_THIS_TURN: VoiceRowInputs = {
   voiceMode: true,
+  reachable: true,
   agentWorking: false,
   voiceUnavailable: false,
   gatewayGenerating: false,
@@ -79,16 +80,48 @@ describe("voiceRowState", () => {
   // The Voice screen is safe from this because it fetches the current stamp live; the roster cannot,
   // so voiceAudioReady is its only live evidence that a current narration exists at all. This is the
   // one place the roster deliberately DIVERGES from voiceAvailability.ts's advice - see the header.
+  // Asserted as an EXACT state, not `not.toBe("ready")`. A negative assertion here passes for "down"
+  // and "none" too, so it would keep passing through a rewrite that silently changed what the reader
+  // sees - it only pins that the bug is absent, not that the replacement is right. Found in review.
   it("does not offer a triangle once the Gateway stops advertising audio, however ready the phone looks", () => {
-    expect(voiceRowState({ ...READY_FOR_THIS_TURN, gatewayHasAudio: false })).not.toBe("ready");
+    expect(voiceRowState({ ...READY_FOR_THIS_TURN, gatewayHasAudio: false })).toBe("none");
   });
 
   // FOUND IN REVIEW. ready and spoken are independent fields on the WingmanVoice contract, so a
   // ready-but-wordless narration is representable - and the Voice screen refuses to speak one
   // (speaking requires voice.spoken.length > 0). A triangle here would point at exactly the state the
   // screen declines to play, which is this bug wearing a different hat.
+  // Exact state, for the reason given above: this lands on "preparing" (the Gateway holds audio, this
+  // phone just has nothing playable to offer from it), and that is worth pinning rather than merely
+  // asserting the triangle is gone.
   it("does not offer a triangle for a narration with no spoken words", () => {
-    expect(voiceRowState({ ...READY_FOR_THIS_TURN, hasSpokenText: false })).not.toBe("ready");
+    expect(voiceRowState({ ...READY_FOR_THIS_TURN, hasSpokenText: false })).toBe("preparing");
+  });
+
+  // FOUND IN REVIEW (Claude and Codex, independently). The unbounded stale triangle, and the reason
+  // `reachable` exists. The keep-and-mark merge RETAINS a session whose Director went offline, holding
+  // its last-known DTO - which says voiceAudioReady: true - and the phone still holds that turn's clip.
+  // syncVoiceSessions cannot refresh the cached stamp (getWingmanVoice cannot reach a dead machine,
+  // and the failure is swallowed), so the stamp and the clip stay stale TOGETHER and agree with each
+  // other perfectly. Every input below is therefore exactly what the honest ready state looks like -
+  // that is the whole point: last-known health is indistinguishable from health. Without this gate the
+  // row shows a green triangle for as long as the machine stays down, and the Voice tab reads it out.
+  it("shows nothing on a retained session whose machine is unreachable, however ready its last-known state looks", () => {
+    expect(voiceRowState({ ...READY_FOR_THIS_TURN, reachable: false })).toBe("none");
+  });
+
+  // Unreachable beats every arrival signal too. A spinner would promise an arrival that cannot come:
+  // nothing is being downloaded from a machine that is not answering.
+  it("stays quiet on an unreachable session even with audio and a download apparently in flight", () => {
+    expect(
+      voiceRowState({
+        ...READY_FOR_THIS_TURN,
+        reachable: false,
+        gatewayGenerating: true,
+        clipDownloading: true,
+        phoneReadyForCurrentTurn: false,
+      }),
+    ).toBe("none");
   });
 
   it("shows preparing while the Gateway holds audio this phone has not pulled down yet", () => {
@@ -150,5 +183,6 @@ describe("isVoiceReady", () => {
     expect(isVoiceReady({ ...READY_FOR_THIS_TURN, phoneReadyForCurrentTurn: false })).toBe(false);
     expect(isVoiceReady({ ...READY_FOR_THIS_TURN, gatewayHasAudio: false })).toBe(false);
     expect(isVoiceReady({ ...READY_FOR_THIS_TURN, hasSpokenText: false })).toBe(false);
+    expect(isVoiceReady({ ...READY_FOR_THIS_TURN, reachable: false })).toBe(false);
   });
 });

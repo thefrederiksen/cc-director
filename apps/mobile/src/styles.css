@@ -2896,25 +2896,9 @@ a.banner-btn {
 }
 
 /* ===== Car Mode (Car Mode mission) ============================================================ */
-/* The roster entry point to Car Mode - a big, unmistakable tap target above the session groups. */
-.car-entry {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  margin: 0 0 14px;
-  padding: 14px 16px;
-  border-radius: 12px;
-  border: 1px solid var(--accent);
-  background: linear-gradient(180deg, var(--surface-2), var(--surface));
-  color: var(--text);
-  font-size: 16px;
-  font-weight: 600;
-  text-decoration: none;
-}
-.car-entry-icon {
-  color: var(--accent);
-  font-size: 14px;
-}
+/* Car Mode is reached from the nav drawer. The roster used to ALSO carry a bordered, accent-tinted
+   full-width banner above the session groups (.car-entry) - deleted, along with these rules, because
+   it was the loudest thing on a page that is not about it. */
 
 /* The full-screen Car Mode page. Chrome-less, high-contrast, thumb-reachable controls at the bottom. It
    fills exactly one viewport and never page-scrolls: the header and the control footer are pinned, and only
