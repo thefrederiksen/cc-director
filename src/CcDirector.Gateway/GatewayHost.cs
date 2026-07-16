@@ -876,6 +876,23 @@ public sealed class GatewayHost : IAsyncDisposable
     }
 
     /// <summary>
+    /// The title of a session, for the wingman to speak first (WingmanTranslator.FidelityPrompt
+    /// v5.2). Reads the pushed-session store, so it costs no round trip and stays inside the same
+    /// stream-freshness window as every other stream-mode read.
+    ///
+    /// Returns null when the session is unknown or has no name, and that is deliberate rather than
+    /// a placeholder: the prompt rule no-ops on a missing title, so the listener gets an untitled
+    /// narration - whereas inventing something ("unknown session", the raw id) would either mislead
+    /// or read out an identifier, which the same instructions explicitly forbid.
+    /// </summary>
+    private string? ResolveSessionTitle(string sessionId)
+    {
+        var located = PushedSessions.TryLocate(sessionId, _streamStaleAfter);
+        var name = located?.Session.Name;
+        return string.IsNullOrWhiteSpace(name) ? null : name;
+    }
+
+    /// <summary>
     /// Pre-build voice for voice sessions that are idle and missing it, so the session list shows
     /// them "voice ready" BEFORE the person enters - including after a gateway restart (the voice-
     /// session set is persisted). Gentle: at most a few per cycle, idle sessions only (a working
@@ -999,7 +1016,10 @@ public sealed class GatewayHost : IAsyncDisposable
         // #186 by Director doorbell pings and heartbeat snapshots (wired into the endpoints below);
         // the only pull left is the one-time startup catch-up sweep.
         FileLog.Write("[GatewayHost] StartAsync: starting the turn-end watcher (voice auto-refresh only; turn-brief pipeline retired in #549)");
-        _voiceService ??= new Wingman.WingmanVoiceService(WingmanBrainAsync, _keyVault, training: _trainingStore, instructionsProvider: () => _instructionsStore.ActiveContent);
+        // sessionTitleResolver: the wingman opens every narration with the session's title, so a
+        // listener with the phone in a pocket knows WHICH session is talking before anything else
+        // (WingmanTranslator.FidelityPrompt v5.2). Push-store read - no dial. See ResolveSessionTitle.
+        _voiceService ??= new Wingman.WingmanVoiceService(WingmanBrainAsync, _keyVault, training: _trainingStore, instructionsProvider: () => _instructionsStore.ActiveContent, sessionTitleResolver: ResolveSessionTitle);
         _turnEndWatcher = new TurnEndWatcher(
             onTurnEnd: signal =>
             {
@@ -1394,7 +1414,10 @@ public sealed class GatewayHost : IAsyncDisposable
         // Wingman-voice surface for the Cockpit's Voice tab (issue #531): drive one turn of a
         // session and have the persistent wingman brain translate the reply into speakable form,
         // plus the direct-to-wingman path. Backed by the same warm Brain the brief agent uses.
-        _voiceService ??= new Wingman.WingmanVoiceService(WingmanBrainAsync, _keyVault, training: _trainingStore, instructionsProvider: () => _instructionsStore.ActiveContent);
+        // sessionTitleResolver: the wingman opens every narration with the session's title, so a
+        // listener with the phone in a pocket knows WHICH session is talking before anything else
+        // (WingmanTranslator.FidelityPrompt v5.2). Push-store read - no dial. See ResolveSessionTitle.
+        _voiceService ??= new Wingman.WingmanVoiceService(WingmanBrainAsync, _keyVault, training: _trainingStore, instructionsProvider: () => _instructionsStore.ActiveContent, sessionTitleResolver: ResolveSessionTitle);
         GatewayWingmanVoiceEndpoint.Map(_app, Registry, WingmanBrainAsync, _keyVault, _voiceService,
             pushedSessions: PushedSessions,
             sendCommand: SendCommandAsync,

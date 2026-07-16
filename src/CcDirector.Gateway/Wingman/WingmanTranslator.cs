@@ -63,6 +63,14 @@ public sealed class WingmanTranslator
     /// the ~30s target for the hardest replies (~48s) - it halves the worst case without making the
     /// typical case vaguer, which is the trade we want. Tune further only with measurements; a prompt
     /// change whose effect is asserted rather than measured is how this rule rotted in the first place.
+    ///
+    /// v5.2 opens every narration with the SESSION TITLE. Someone listening with the phone in a pocket
+    /// hears a summary with no idea which of a dozen sessions produced it - the one fact the screen was
+    /// carrying for free, and the one the audio dropped. The title is spoken, not glued on in code,
+    /// because real session names carry punctuation ("Athene / Stephanie #2624") and a literal
+    /// prepend would read it out as "slash" and "hashtag" - exactly what SPEAK FOR THE EAR forbids.
+    /// The model naturalizes it; code cannot. It costs a few words against the ~30s budget, which is
+    /// why the rule says the title and nothing else about the session.
     /// </summary>
     internal const string FidelityPrompt = """
         You are the wingman: you turn a coding agent's written reply into words a person
@@ -75,6 +83,16 @@ public sealed class WingmanTranslator
         to a summary of one turn - it is not a technical limit, and going past it is the most
         common way to fail this job. A short reply needs less; never stretch one to fill it.
         Every extra sentence is a cost you must justify, not a budget you may spend. Rules:
+        - OPEN WITH THE SESSION TITLE, then go straight into the summary. The session's title
+          is given below. Your first words are that title - the listener usually cannot see
+          the screen, so they need to know WHICH session is talking before they hear anything
+          else. The title is the ONE thing allowed before the point; it is not preamble. Say
+          ONLY the title: do not describe the session, do not say what it is working on, and
+          do not wrap it in words like "the session ... says". Speak it for the ear like any
+          other text - drop the punctuation instead of voicing it, so "devthrottle - mobile"
+          becomes "devthrottle mobile" and "Banya/Yibo - WebSocket voice mode (architect)"
+          becomes "Banya Yibo, WebSocket voice mode, architect". If no session title is given
+          below, skip this rule and lead with the point.
         - BE SHORT. Lead with the single most important thing first - the answer, the result,
           or the ask - in your opening sentence, then add only what is needed to understand
           it, and STOP. If removing a sentence would not change what the listener knows or
@@ -153,7 +171,7 @@ public sealed class WingmanTranslator
     /// instructions is shown that the recommended default changed and can switch to it. The content
     /// hash is the real identity; this is the human-facing label.
     /// </summary>
-    public const string DefaultInstructionsVersion = "6";
+    public const string DefaultInstructionsVersion = "7";
 
     private readonly Func<WingmanModelRole, CancellationToken, Task<IAgentBrain>> _brainProvider;
     private readonly Action<string> _log;
@@ -216,25 +234,29 @@ public sealed class WingmanTranslator
     /// the recent conversation BEFORE that reply (oldest first) - the wingman uses it to add just
     /// enough context when the latest reply is too short to stand on its own (e.g. "Done", "Yes").
     /// <paramref name="latestReply"/> is the agent's latest written reply, the thing to translate.
+    /// <paramref name="sessionTitle"/> is the name of the session the reply came from - the wingman
+    /// opens the narration with it so a listener who cannot see the screen knows who is talking.
+    /// Pass null ONLY when there is genuinely no session behind the reply (the draft-prompt A/B
+    /// path); the rule then no-ops rather than inventing a title.
     /// </summary>
     /// <returns>The faithful, speakable translation and how long the brain took.</returns>
     /// <exception cref="ArgumentException">The latest reply is empty - there is nothing to translate.</exception>
-    public Task<WingmanTranslation> TranslateAsync(string recentContext, string latestReply, CancellationToken ct = default)
-        => TranslateWithAsync(_instructions(), recentContext, latestReply, ct);
+    public Task<WingmanTranslation> TranslateAsync(string recentContext, string latestReply, string? sessionTitle, CancellationToken ct = default)
+        => TranslateWithAsync(_instructions(), recentContext, latestReply, sessionTitle, ct);
 
     /// <summary>
     /// Same as <see cref="TranslateAsync"/> but with caller-supplied instructions instead of the
     /// active ones (issue #537 A/B testing): re-run a DRAFT prompt over a captured reply to compare
     /// its spoken output against what the wingman said before, without changing the live instructions.
     /// </summary>
-    public async Task<WingmanTranslation> TranslateWithAsync(string instructions, string recentContext, string latestReply, CancellationToken ct = default)
+    public async Task<WingmanTranslation> TranslateWithAsync(string instructions, string recentContext, string latestReply, string? sessionTitle, CancellationToken ct = default)
     {
         if (string.IsNullOrWhiteSpace(latestReply))
             throw new ArgumentException("Latest reply is required - there is nothing to translate.", nameof(latestReply));
 
-        _log($"[WingmanTranslator] TranslateWithAsync: instrLen={instructions?.Length ?? 0}, contextLen={recentContext?.Length ?? 0}, replyLen={latestReply.Length}");
+        _log($"[WingmanTranslator] TranslateWithAsync: instrLen={instructions?.Length ?? 0}, contextLen={recentContext?.Length ?? 0}, replyLen={latestReply.Length}, title={(string.IsNullOrWhiteSpace(sessionTitle) ? "(none)" : sessionTitle)}");
 
-        var prompt = BuildPrompt(instructions ?? FidelityPrompt, recentContext ?? "", latestReply);
+        var prompt = BuildPrompt(instructions ?? FidelityPrompt, recentContext ?? "", latestReply, sessionTitle);
 
         var brain = await _brainProvider(WingmanModelRole.Fast, ct);
         AskResult ask;
@@ -543,22 +565,31 @@ public sealed class WingmanTranslator
     }
 
     /// <summary>
-    /// Wrap the agent reply in the fidelity contract and the shared answer markers. Public
-    /// so a test can assert the exact contract text and that the reply is carried verbatim.
+    /// Wrap the agent reply in the fidelity contract and the shared answer markers, with
+    /// caller-supplied instructions (issue #537: the user's active, possibly-edited wingman
+    /// instructions; pass <see cref="FidelityPrompt"/> for the deployed default). Public so a test
+    /// can assert the exact contract text and that the reply is carried verbatim.
+    ///
+    /// <paramref name="sessionTitle"/> is the name of the session the reply came from, which the
+    /// OPEN WITH THE SESSION TITLE rule speaks first. It is a REQUIRED parameter and not an
+    /// optional one on purpose: every caller that has a session must be made to pass it, and the
+    /// compiler is the only thing that reliably enforces that. Null/blank is the honest "there is
+    /// no session here" case (the draft-prompt A/B path) and omits the block entirely, which the
+    /// rule's own escape clause covers - the model is never handed an empty title to voice.
     /// </summary>
-    public static string BuildPrompt(string recentContext, string latestReply)
-        => BuildPrompt(FidelityPrompt, recentContext, latestReply);
-
-    /// <summary>
-    /// Same as <see cref="BuildPrompt(string,string)"/> but with caller-supplied instructions
-    /// (issue #537: the user's active, possibly-edited wingman instructions) instead of the
-    /// embedded default. Public so a test can assert the active instructions are what gets used.
-    /// </summary>
-    public static string BuildPrompt(string instructions, string recentContext, string latestReply)
+    public static string BuildPrompt(string instructions, string recentContext, string latestReply, string? sessionTitle)
     {
         var sb = new StringBuilder();
         sb.Append(string.IsNullOrWhiteSpace(instructions) ? FidelityPrompt : instructions);
         sb.Append("\n\n");
+        if (!string.IsNullOrWhiteSpace(sessionTitle))
+        {
+            sb.Append("The title of the session this reply came from. Open the narration by saying ");
+            sb.Append("this, in words, before anything else:\n");
+            sb.Append("---\n");
+            sb.Append(sessionTitle.Trim());
+            sb.Append("\n---\n\n");
+        }
         if (!string.IsNullOrWhiteSpace(recentContext))
         {
             sb.Append("Recent conversation for context, oldest first. Use ONLY as much of this as the ");

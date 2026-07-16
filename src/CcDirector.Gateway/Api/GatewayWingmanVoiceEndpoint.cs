@@ -132,6 +132,16 @@ internal static class GatewayWingmanVoiceEndpoint
         Task<SessionVerbClient?> ResolveRouteAsync(string sid) =>
             SessionVerbClient.ResolveAsync(sid, registry, pushedSessions, stale, owners, sendCommand);
 
+        // The session's title, which the wingman speaks before the summary so a listener who cannot
+        // see the screen knows which session is talking (WingmanTranslator.FidelityPrompt v5.2). Same
+        // push-store read as ResolveRouteAsync above - no dial. Null (unknown session, or no name) is
+        // the honest answer and simply means no title is spoken; see GatewayHost.ResolveSessionTitle.
+        string? SessionTitle(string sid)
+        {
+            var name = pushedSessions?.TryLocate(sid, stale)?.Session.Name;
+            return string.IsNullOrWhiteSpace(name) ? null : name;
+        }
+
         // The single Gateway owner of speech-to-text (issue #839): both batch transcribe paths below
         // (the resumable /wingman/utterance/complete and the one-shot /wingman/transcribe) go through
         // it, so they resolve the mode + key and pick the hosted endpoint exactly the same way every
@@ -420,7 +430,7 @@ internal static class GatewayWingmanVoiceEndpoint
                     var opt = menu.Options[idx];
                     var submit = string.Equals(menu.SelectionMode, "multiple", StringComparison.OrdinalIgnoreCase) ? menu.Submit : "";
                     FileLog.Write($"[GatewayWingmanVoice] voice-turn sid={sid}: menu choice -> option {idx + 1}");
-                    return await PressAndSummarizeAsync(route, translator, voice, sid, opt.Send, submit, $"Selecting option {idx + 1}. ", "voice-menu", ct);
+                    return await PressAndSummarizeAsync(route, translator, voice, sid, SessionTitle(sid), opt.Send, submit, $"Selecting option {idx + 1}. ", "voice-menu", ct);
                 }
                 // Heard them, but no confident option: re-read the menu and send NOTHING (don't burn the turn).
                 FileLog.Write($"[GatewayWingmanVoice] voice-turn sid={sid}: menu present, choice unclear");
@@ -462,7 +472,7 @@ internal static class GatewayWingmanVoiceEndpoint
                 var recentContext = string.IsNullOrWhiteSpace(priorContext)
                     ? "You: " + req.Text.Trim()
                     : priorContext + "\n\nYou: " + req.Text.Trim();
-                var t = await translator.TranslateAsync(recentContext, reply, CancellationToken.None);
+                var t = await translator.TranslateAsync(recentContext, reply, SessionTitle(sid), CancellationToken.None);
                 await voice.StoreSpokenAsync(sid, t.Spoken, reply, CancellationToken.None);   // make it a voice session + cache audio
                 FileLog.Write($"[GatewayWingmanVoice] voice-turn sid={sid}: replyLen={reply.Length}, spokenLen={t.Spoken.Length}");
                 // Training capture (no-op unless the setting is on); fire-and-forget so it adds no latency.
@@ -573,7 +583,7 @@ internal static class GatewayWingmanVoiceEndpoint
             voice.BeginGenerating(sid);
             try
             {
-                var t = await translator.TranslateAsync(recentContext, lastReply, CancellationToken.None);
+                var t = await translator.TranslateAsync(recentContext, lastReply, SessionTitle(sid), CancellationToken.None);
                 await voice.StoreSpokenAsync(sid, t.Spoken, lastReply, CancellationToken.None);   // cache spoken + audio, ready to play
                 FileLog.Write($"[GatewayWingmanVoice] explain sid={sid}: replyLen={lastReply.Length}, spokenLen={t.Spoken.Length}");
                 // Training capture (no-op unless the setting is on); fire-and-forget so it adds no latency.
@@ -655,7 +665,7 @@ internal static class GatewayWingmanVoiceEndpoint
             var route = await ResolveRouteAsync(sid);
             if (route is null)
                 return Results.Json(new { error = "session not found on any director" }, statusCode: StatusCodes.Status404NotFound);
-            return await PressAndSummarizeAsync(route, translator, voice, sid, req.Send, req.Submit, null, "menu-press", ct);
+            return await PressAndSummarizeAsync(route, translator, voice, sid, SessionTitle(sid), req.Send, req.Submit, null, "menu-press", ct);
         });
     }
 
@@ -677,7 +687,7 @@ internal static class GatewayWingmanVoiceEndpoint
     /// option-button tap (menu-press) and the spoken-choice path (voice-turn).</summary>
     private static async Task<IResult> PressAndSummarizeAsync(
         SessionVerbClient route, WingmanTranslator translator, WingmanVoiceService voice,
-        string sid, string send, string? submit, string? confirmPrefix, string source, CancellationToken ct)
+        string sid, string? sessionTitle, string send, string? submit, string? confirmPrefix, string source, CancellationToken ct)
     {
         voice.OnSessionWorking(sid);   // a new turn is coming; drop the stale cached summary
         var before = await CountTextWidgetsAsync(route, sid, ct);
@@ -700,7 +710,7 @@ internal static class GatewayWingmanVoiceEndpoint
         voice.BeginGenerating(sid);
         try
         {
-            var t = await translator.TranslateAsync("(you picked a menu option)", reply, CancellationToken.None);
+            var t = await translator.TranslateAsync("(you picked a menu option)", reply, sessionTitle, CancellationToken.None);
             var spoken = prefix + t.Spoken;
             await voice.StoreSpokenAsync(sid, spoken, reply, CancellationToken.None);
             _ = voice.CaptureTrainingAsync(route, sid, source, reply, "(menu pick)", spoken, t.ReplySeconds, CancellationToken.None);

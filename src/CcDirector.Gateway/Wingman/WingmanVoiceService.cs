@@ -45,6 +45,7 @@ public sealed class WingmanVoiceService
     private readonly string _persistPath;
     private readonly string _audioDir;
     private readonly HttpClient? _ttsHttp;   // test seam for TtsAsync (issue #939); the shared static when null
+    private readonly Func<string, string?>? _sessionTitleResolver;   // sid -> session title, spoken first
 
     /// <summary>
     /// The one HTTP client for the narration speech leg, used whenever no test client is injected.
@@ -99,10 +100,15 @@ public sealed class WingmanVoiceService
 
     /// <param name="ttsHttpClient">Optional HTTP client for the text-to-speech call (tests inject a stub
     /// over a fake handler, issue #939). A per-call 60-second client is created when null.</param>
-    public WingmanVoiceService(Func<Core.Configuration.WingmanModelRole, CancellationToken, Task<IAgentBrain>> brainProvider, KeyVault vault, string? persistPath = null, WingmanTrainingStore? training = null, Func<string>? instructionsProvider = null, HttpClient? ttsHttpClient = null)
+    /// <param name="sessionTitleResolver">Resolves a session id to its title, which the wingman speaks
+    /// first so a listener knows which session is talking. The host wires this to the pushed-session
+    /// store; a null resolver (or one returning null for an unknown session) simply means no title is
+    /// spoken, which is the correct degrade - a narration with no title is worth far more than none.</param>
+    public WingmanVoiceService(Func<Core.Configuration.WingmanModelRole, CancellationToken, Task<IAgentBrain>> brainProvider, KeyVault vault, string? persistPath = null, WingmanTrainingStore? training = null, Func<string>? instructionsProvider = null, HttpClient? ttsHttpClient = null, Func<string, string?>? sessionTitleResolver = null)
     {
         _translator = new WingmanTranslator(brainProvider, instructionsProvider: instructionsProvider);
         _vault = vault;
+        _sessionTitleResolver = sessionTitleResolver;
         // Post-cut: the owning Director is reached through the tunnel-only SessionVerbClient the callers pass
         // into GenerateAsync, so this service holds no Director client.
         _ttsHttp = ttsHttpClient;
@@ -518,7 +524,7 @@ public sealed class WingmanVoiceService
         if (showReadingWindow) BeginGenerating(sid);
         try
         {
-            var t = await _translator.TranslateAsync(recentContext, lastReply, ct);
+            var t = await _translator.TranslateAsync(recentContext, lastReply, _sessionTitleResolver?.Invoke(sid), ct);
             await StoreSpokenAsync(sid, t.Spoken, lastReply, ct);
             // Log the TRUE outcome: StoreSpokenAsync only makes the session playable when the
             // text-to-speech synthesis actually returned audio. Logging "voice ready"

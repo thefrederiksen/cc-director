@@ -134,7 +134,13 @@ internal static class WingmanInstructionsEndpoint
                 if (string.IsNullOrWhiteSpace(rec.Reply)) { results.Add(new { id, error = "record has no agent reply to translate" }); continue; }
                 try
                 {
-                    var t = await translator.TranslateWithAsync(req.Content, rec.RecentContext, rec.Reply, ct);
+                    // No session title: a training record stores only the session ID, and the session it
+                    // was captured from may be long gone, so there is no name to resolve. Null makes the
+                    // OPEN WITH THE SESSION TITLE rule no-op for this comparison (passing the ID instead
+                    // would make the wingman read out an identifier, which the same prompt forbids). The
+                    // draft-vs-live diff this endpoint shows is therefore title-less on both sides, which
+                    // is the honest comparison - both were produced without one.
+                    var t = await translator.TranslateWithAsync(req.Content, rec.RecentContext, rec.Reply, sessionTitle: null, ct);
                     results.Add(new { id, source = rec.Source, reply = rec.Reply, oldSpoken = rec.Spoken, newSpoken = t.Spoken, replySeconds = t.ReplySeconds });
                 }
                 catch (Exception ex)
