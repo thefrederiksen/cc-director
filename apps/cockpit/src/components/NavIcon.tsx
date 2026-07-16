@@ -23,11 +23,11 @@ export type NavIconName =
   | "voice-recorder"
   | "transcription"
   | "network"
-  | "learning"
   | "account"
   | "throttle"
   | "settings"
-  | "about";
+  | "about"
+  | "help";
 
 // The shapes, keyed by name. Each value is the icon's paint - the <svg> wrapper (grid, stroke, size)
 // is applied once below, so no glyph can drift off the shared geometry.
@@ -106,13 +106,6 @@ const PAINT: Record<NavIconName, JSX.Element> = {
       <path d="M2 12h20" />
     </>
   ),
-  // A graduation cap.
-  learning: (
-    <>
-      <path d="M22 10 12 5 2 10l10 5z" />
-      <path d="M6 12v5c0 1.66 2.69 3 6 3s6-1.34 6-3v-5" />
-    </>
-  ),
   // A person.
   account: (
     <>
@@ -140,6 +133,15 @@ const PAINT: Record<NavIconName, JSX.Element> = {
       <circle cx="12" cy="12" r="10" />
       <path d="M12 16v-4" />
       <path d="M12 8h.01" />
+    </>
+  ),
+  // A question mark: help / documentation. A curl rather than the "i" stroke keeps it distinct in
+  // silhouette from the About info mark that sits beside it in the bottom list.
+  help: (
+    <>
+      <circle cx="12" cy="12" r="10" />
+      <path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3" />
+      <path d="M12 17h.01" />
     </>
   ),
 };
