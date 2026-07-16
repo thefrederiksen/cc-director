@@ -387,18 +387,29 @@ public sealed class GatewayInputStatsAggregator : IDisposable
                     AttributeToAgentLocked(s, key.Modality, prior.Turns, prior.Characters, batch);
         }
 
-        // The repository grouping key is the GitHub "owner/repo" slug the owning Director resolved for this
-        // checkout, so every worktree and every per-machine clone of one repository folds into a single row.
-        // A checkout with no github.com origin (RepoSlug empty) falls back to its path, which still groups
-        // that repo sensibly and never drops its turns.
+        // The repository grouping key is a two-tier identity:
         //
-        // The checkout key is the raw working-directory path, retained as its own dimension so the store
-        // still records exactly which checkout each turn ran in - the path is not lost when the slug collapses
-        // the worktrees together. Path separators are deliberately NOT normalized on either key: a slug never
-        // carries a separator to disagree on, and for a path the old behaviour (OrdinalIgnoreCase folds case
-        // but not '/' against '\') is preserved, so a fallback path row reads exactly as it did before.
+        //   1. The GitHub "owner/repo" slug the owning Director resolved for this checkout, when it sent one.
+        //      This is the ideal key: it folds every worktree AND every per-machine clone of one repository
+        //      into a single row, and it never collides two genuinely different repos that share a folder name.
+        //
+        //   2. Otherwise the checkout's FOLDER NAME (the last path segment), not its full path. A Director on
+        //      an older build sends no slug, so the Gateway - which has no filesystem to resolve the origin,
+        //      and may be on a different machine than the checkout entirely - only has the path. Grouping by
+        //      the folder name still collapses the SAME repository worked in from several machines
+        //      ("D:\ReposFred\devthrottle", "/Users/soren/ReposFred/devthrottle" and "C:\ReposFred\devthrottle"
+        //      are one "devthrottle" row), which is the owner's rule: the same repo is the same repo, whichever
+        //      machine drove it. The trade-off is deliberate and bounded to the no-slug case: it does NOT fold
+        //      a differently-named worktree (only the slug can, since it reads the shared origin), and two
+        //      unrelated repositories that happen to share a folder name would merge. Once the Directors are on
+        //      a slug-emitting build, tier 1 takes over and both limitations go away.
+        //
+        // The checkout key stays the raw working-directory path, retained as its own dimension so the store
+        // still records exactly which checkout each turn ran in - the individual paths are listed under the
+        // merged row, not lost. Separators are not normalized: RepoLeaf treats both '/' and '\' as segment
+        // separators, so a Windows and a POSIX checkout of one repo yield the identical folder-name key.
         var checkoutKey = s.RepoPath ?? "";
-        var repoKey = !string.IsNullOrWhiteSpace(s.RepoSlug) ? s.RepoSlug! : checkoutKey;
+        var repoKey = !string.IsNullOrWhiteSpace(s.RepoSlug) ? s.RepoSlug! : RepoLeaf(checkoutKey);
 
         // The model this session's agent was last RECORDED using (issue #1637). Unlike the repository and
         // the agent, an unknown model is stored as SQL NULL rather than folded into an empty-string
@@ -1234,13 +1245,14 @@ public sealed class WingmanUsageDto
 public sealed class RepoStatBucketDto
 {
     /// <summary>The grouping key: the GitHub "owner/repo" slug the sessions' checkouts belong to
-    /// (e.g. "thefrederiksen/devthrottle"), so every worktree and every per-machine clone of one repository
-    /// is one row. Falls back to the local working-directory path for a checkout that has no github.com
-    /// origin.</summary>
+    /// (e.g. "thefrederiksen/devthrottle") when a Director resolved one, so every worktree and every
+    /// per-machine clone of one repository is one row. Falls back to the checkout's FOLDER NAME (not its full
+    /// path) for a checkout with no slug, so the same repository worked in from several machines still folds
+    /// into one row.</summary>
     public string Repo { get; set; } = "";
 
     /// <summary>The display leaf of <see cref="Repo"/> (its last segment): the repository name for a slug,
-    /// e.g. "devthrottle", or the folder name for a fallback path.</summary>
+    /// e.g. "devthrottle". For the folder-name fallback this equals <see cref="Repo"/>.</summary>
     public string RepoName { get; set; } = "";
 
     public long Turns { get; set; }

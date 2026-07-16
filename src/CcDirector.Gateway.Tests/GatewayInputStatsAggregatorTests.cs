@@ -281,7 +281,7 @@ public sealed class GatewayInputStatsAggregatorTests : IDisposable
         Assert.Equal(2, dt.TypedTurns);
         Assert.Equal(640, dt.Characters);
         Assert.Equal(2, dt.Sessions);                         // two distinct sessions drove it
-        Assert.Equal(@"D:\ReposFred\devthrottle", dt.Repo);   // full path preserved
+        Assert.Equal("devthrottle", dt.Repo);                 // no slug -> grouped by folder name
     }
 
     [Fact]
@@ -332,17 +332,41 @@ public sealed class GatewayInputStatsAggregatorTests : IDisposable
     }
 
     [Fact]
-    public void RepoTotals_NoGitHubSlug_FallsBackToPath()
+    public void RepoTotals_NoGitHubSlug_FallsBackToFolderName()
     {
         var agg = new GatewayInputStatsAggregator(_path);
-        // A checkout with no github.com origin reports an empty slug; it must still appear, keyed by its path.
+        // A checkout with no github.com origin reports an empty slug; it appears keyed by its FOLDER NAME
+        // (not its full path), so a display shows the repo, not the machine-specific directory.
         agg.Observe(SessionInRepo("s1", @"D:\repos\local-only", ("typed", "desktop", 4, 80)));
 
         var repo = Repo(agg, "local-only");
         Assert.NotNull(repo);
-        Assert.Equal(@"D:\repos\local-only", repo!.Repo);        // fell back to the path as the key
+        Assert.Equal("local-only", repo!.Repo);                 // grouped by folder name
         Assert.Equal(4, repo.Turns);
-        Assert.Equal(new[] { @"D:\repos\local-only" }, repo.Checkouts);
+        Assert.Equal(new[] { @"D:\repos\local-only" }, repo.Checkouts);  // the full path is still retained
+    }
+
+    [Fact]
+    public void RepoTotals_NoSlug_SameFolderNameAcrossMachines_CollapsesToOneRow()
+    {
+        var agg = new GatewayInputStatsAggregator(_path);
+        // The owner's case: the SAME repository worked in from three machines - a Windows box, a Mac, and a
+        // second Windows box - with no slug (older Directors). All three share the folder name "devthrottle",
+        // so they must fold into ONE row, with the three machine paths retained as its checkouts.
+        agg.Observe(SessionInRepo("s1", @"D:\ReposFred\devthrottle", ("typed", "desktop", 6, 600)));
+        agg.Observe(SessionInRepo("s2", "/Users/soren/ReposFred/devthrottle", ("voice", "phone", 2, 40)));
+        agg.Observe(SessionInRepo("s3", @"C:\ReposFred\devthrottle", ("typed", "desktop", 1, 10)));
+
+        var repos = agg.RepoTotals();
+        Assert.Single(repos);                                   // three machines, one repository row
+        var dt = repos[0];
+        Assert.Equal("devthrottle", dt.Repo);
+        Assert.Equal(9, dt.Turns);                              // 6 + 2 + 1 folded together
+        Assert.Equal(3, dt.Sessions);
+        Assert.Equal(3, dt.Checkouts.Count);                    // the three machine paths, retained
+        Assert.Contains(@"D:\ReposFred\devthrottle", dt.Checkouts);
+        Assert.Contains("/Users/soren/ReposFred/devthrottle", dt.Checkouts);
+        Assert.Contains(@"C:\ReposFred\devthrottle", dt.Checkouts);
     }
 
     [Fact]
