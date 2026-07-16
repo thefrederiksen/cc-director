@@ -9,6 +9,8 @@ import {
   type DirectorInfo,
   type RepoInfo,
 } from "@devthrottle/client-core/api/client";
+import { directorPort } from "@devthrottle/client-core/fleet/directorEndpoint";
+import { durationLabel, useNow } from "@devthrottle/client-core/sessions/waiting";
 
 // The desktop Cockpit "New session" dialog (issue #1023, QA sweep epic #967). The React Cockpit had
 // no way to start a session; this is the dedicated picker dialog the roster rail's "+ New session"
@@ -74,6 +76,19 @@ function directorLabel(d: DirectorInfo): string {
   return d.directorId || "director";
 }
 
+// The Director to default-select: the NEWEST-started one (the freshest cc-director launch), which is
+// also how the newest slot wins when a machine runs several. startedAt is ISO 8601 UTC, so a lexical
+// max is chronological; a Director with no startedAt sorts oldest. Falls back to the first entry when
+// nothing carries a startedAt.
+function newestDirector(list: DirectorInfo[]): DirectorInfo | null {
+  if (list.length === 0) return null;
+  let best = list[0];
+  for (const d of list) {
+    if ((d.startedAt || "").localeCompare(best.startedAt || "") > 0) best = d;
+  }
+  return best;
+}
+
 function repoLabel(r: RepoInfo): string {
   if (r.name.trim()) return r.name.trim();
   const parts = r.path.replace(/[\\/]+$/, "").split(/[\\/]/).filter(Boolean);
@@ -117,19 +132,25 @@ export function NewSessionDialog({ onClose, onCreated }: NewSessionDialogProps) 
 
   const selectedAgent = agents?.find((a) => a.type === selectedAgentType) ?? null;
 
+  // A slow tick (30s) so each machine's "up <uptime>" subtitle stays roughly current while the dialog
+  // is open, without a per-second re-render this picker does not need.
+  const now = useNow(30000);
+
   // Guards against a stale repo/agent response landing after the user switched machines.
   const reposReqRef = useRef(0);
   const agentsReqRef = useRef(0);
 
-  // Step 1: load the machines once, default-selecting the most-recently-seen (directors[0]) so the
-  // repos and agents load immediately (desktop New Session parity).
+  // Step 1: load the machines once, default-selecting the NEWEST-started Director so the repos and
+  // agents load immediately (desktop New Session parity) and, when a machine runs several cc-director
+  // slots, the freshest one is picked.
   useEffect(() => {
     const controller = new AbortController();
     getDirectors(controller.signal)
       .then((list) => {
         setDirectors(list);
         setDirectorsError(null);
-        if (list.length > 0) setSelectedId(list[0].directorId);
+        const pick = newestDirector(list);
+        if (pick) setSelectedId(pick.directorId);
       })
       .catch((err) => {
         if (controller.signal.aborted) return;
@@ -273,23 +294,39 @@ export function NewSessionDialog({ onClose, onCreated }: NewSessionDialogProps) 
               <div className="newsess-status">No machines found on this Gateway.</div>
             )}
             {directors !== null && directors.length > 0 && (
-              <ul className="newsess-list">
-                {directors.map((d) => (
-                  <li key={d.directorId}>
-                    <button
-                      type="button"
-                      className={`newsess-pick${d.directorId === selectedId ? " sel" : ""}`}
-                      onClick={() => setSelectedId(d.directorId)}
-                    >
-                      <span className="newsess-pick-name">{directorLabel(d)}</span>
-                      {d.directorId === selectedId && (
-                        <span className="newsess-pick-check" aria-hidden="true">
-                          selected
+              <ul className="newsess-machines">
+                {directors.map((d) => {
+                  const port = directorPort(d.controlEndpoint);
+                  const uptime = durationLabel(d.startedAt, now);
+                  const version = d.version.trim();
+                  // The subtitle tells two same-named Directors apart: how long each has been up, and its
+                  // version. Either part is omitted when absent, never faked.
+                  const subtitle = [uptime ? `up ${uptime}` : "", version ? `v${version}` : ""]
+                    .filter((part) => part.length > 0)
+                    .join("   ");
+                  return (
+                    <li key={d.directorId}>
+                      <button
+                        type="button"
+                        className={`newsess-machine${d.directorId === selectedId ? " sel" : ""}`}
+                        onClick={() => setSelectedId(d.directorId)}
+                      >
+                        <span className="newsess-machine-top">
+                          <span className="newsess-machine-name">{directorLabel(d)}</span>
+                          {port && <span className="newsess-machine-port">:{port}</span>}
                         </span>
-                      )}
-                    </button>
-                  </li>
-                ))}
+                        <span className="newsess-machine-sub">
+                          <span className="newsess-machine-meta">{subtitle}</span>
+                          {d.directorId === selectedId && (
+                            <span className="newsess-machine-check" aria-hidden="true">
+                              selected
+                            </span>
+                          )}
+                        </span>
+                      </button>
+                    </li>
+                  );
+                })}
               </ul>
             )}
           </div>

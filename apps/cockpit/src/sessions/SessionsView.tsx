@@ -1,7 +1,8 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { Outlet, useMatch, useNavigate } from "react-router-dom";
-import { type SessionDto } from "@devthrottle/client-core/api/client";
+import { getDirectors, type SessionDto } from "@devthrottle/client-core/api/client";
 import { type DirectorReachability } from "@devthrottle/client-core/fleet/fleetClient";
+import { directorPort } from "@devthrottle/client-core/fleet/directorEndpoint";
 import { useSharedRoster } from "@devthrottle/client-core/fleet/rosterStore";
 import { inBucket } from "@devthrottle/client-core/sessions/ordering";
 import { reconcileBadge } from "@devthrottle/client-core/push/register";
@@ -42,6 +43,31 @@ export function SessionsView() {
   const [view, setView] = useState<RosterView>(initialView);
   const [showNew, setShowNew] = useState(false);
   const navigate = useNavigate();
+
+  // The roster's per-Director reachability (from GET /sessions?envelope=true) carries the machine name
+  // but NOT the Control API port, and the port is what tells apart several cc-directors on one machine.
+  // So we read GET /directors here (which carries controlEndpoint) and hand the roster a directorId ->
+  // port map for its "computer:port" group headers. Refetched whenever the set of live Directors
+  // changes (a new slot/machine appears), not on every roster tick.
+  const [portByDirector, setPortByDirector] = useState<Map<string, string>>(new Map());
+  const directorKey = useMemo(
+    () => directors.map((d) => d.directorId).sort().join("|"),
+    [directors],
+  );
+  useEffect(() => {
+    const controller = new AbortController();
+    getDirectors(controller.signal)
+      .then((list) => {
+        const map = new Map<string, string>();
+        for (const d of list) map.set(d.directorId, directorPort(d.controlEndpoint));
+        setPortByDirector(map);
+      })
+      .catch(() => {
+        // A failed /directors read just means the headers fall back to the bare machine name; the
+        // roster itself still renders from the reachability it already has.
+      });
+    return () => controller.abort();
+  }, [directorKey]);
 
   // The selected session id comes from the child route (/session/:sessionId). This layout route is an
   // ancestor of that route, so it reads the id with useMatch rather than useParams (which only exposes
@@ -86,6 +112,7 @@ export function SessionsView() {
       <SessionRoster
         sessions={sessions}
         directors={directors}
+        portByDirector={portByDirector}
         selectedId={selectedId}
         view={view}
         onView={onView}

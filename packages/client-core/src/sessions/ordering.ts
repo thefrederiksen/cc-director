@@ -26,6 +26,58 @@ export function inDesktopOrder(sessions: SessionDto[]): SessionDto[] {
   });
 }
 
+// One cc-director's group in the roster's "My order" view: the sessions of a single Director, under a
+// "computer:port" header. sortOrder is the OWNING Director's per-Director drag order, so it only orders
+// sessions WITHIN a Director - which is exactly why the roster groups by Director and sorts each group
+// by inDesktopOrder, rather than trying to interleave sortOrders that mean different things on different
+// machines.
+export interface DirectorGroup {
+  /** The owning Director's id - the group key, unique per running cc-director. */
+  directorId: string;
+  /** The machine the Director runs on (from the sessions' machineName), for the header. */
+  machineName: string;
+  /** The Director's Control API port, or "" when unknown - the header's disambiguator. */
+  port: string;
+  /** This Director's sessions, in desktop (drag) order. */
+  sessions: SessionDto[];
+}
+
+// Group sessions into their owning cc-director, ordered for the roster's "My order" view: each group's
+// sessions are in desktop order, and the groups themselves are ordered by machine name then port so the
+// list is stable (sortOrder cannot order ACROSS Directors, since it is per-Director). `portByDirector`
+// maps a directorId to its Control API port (from GET /directors); a missing entry yields an empty port
+// and the header degrades to the bare machine name.
+export function groupByDirector(
+  sessions: SessionDto[],
+  portByDirector: Map<string, string>,
+): DirectorGroup[] {
+  const byDirector = new Map<string, DirectorGroup>();
+  for (const s of sessions) {
+    const directorId = (s.directorId ?? "").trim();
+    // A session with no directorId cannot be attributed to a cc-director; bucket it under a stable empty
+    // key so it still shows (rather than vanishing) instead of guessing an owner.
+    const group = byDirector.get(directorId);
+    if (group) {
+      group.sessions.push(s);
+    } else {
+      byDirector.set(directorId, {
+        directorId,
+        machineName: (s.machineName ?? "").trim(),
+        port: portByDirector.get(directorId) ?? "",
+        sessions: [s],
+      });
+    }
+  }
+  const groups = [...byDirector.values()];
+  for (const g of groups) g.sessions = inDesktopOrder(g.sessions);
+  groups.sort((a, b) => {
+    const byMachine = a.machineName.localeCompare(b.machineName);
+    if (byMachine !== 0) return byMachine;
+    return a.port.localeCompare(b.port, undefined, { numeric: true });
+  });
+  return groups;
+}
+
 // The ONE rule for reading a Gateway-stamped presentation field: it is there, or we fail loudly. A
 // client that cannot get a stamped answer must never guess one - a guessed colour is indistinguishable
 // from a real one on screen, so it does not degrade gracefully, it lies quietly.
