@@ -149,7 +149,7 @@ public class NarrationLengthTests
         // the fleet went silent - the constant had rotted. Re-measured 2026-07-15 against a genuinely
         // cold provider: 16.9s, HTTP 200, real audio. So the old base of 15 failed this test's own
         // premise; it just did not know it yet. Raised to what was actually observed.
-        const double worstObservedOverheadSeconds = 16.9;
+        const double worstObservedOverheadSeconds = 39.9;
         Assert.True(TtsSynthesis.DeadlineFor(47).TotalSeconds > worstObservedOverheadSeconds,
             "a short call must outlive the worst fixed overhead we have measured, not just its own synthesis");
     }
@@ -170,7 +170,12 @@ public class NarrationLengthTests
         // A cold start must therefore cost a SLOW narration, never a failed one - at any length, since
         // the cold start does not scale with the text. The old base of 15 gave a 47-char narration a
         // 15.2s deadline against a 16.9s cold start: it could not succeed at all.
-        const double observedColdStartSeconds = 16.9;
+        // 16.9 was the worst seen when this test was written. HOURS later the same provider took
+        // 39.9s for a SIXTEEN character call, and the live log showed a 168-char narration timing out
+        // at 31s. Twice this constant has been set just above the worst-so-far and twice the provider
+        // has gone slower. Pinned to the real worst; the deadline must clear it at EVERY length,
+        // because a cold start does not scale with the text.
+        const double observedColdStartSeconds = 39.9;
         foreach (var chars in new[] { 20, 47, 469, 720, 1292, 4000, NarrationText.MaxChars })
         {
             Assert.True(TtsSynthesis.DeadlineFor(chars).TotalSeconds > observedColdStartSeconds,
@@ -198,8 +203,15 @@ public class NarrationLengthTests
         // someone raises MaxChars without thinking about what it does to the worst-case wait, they
         // will see it here. The ceiling only binds for a runaway that should never occur - a real
         // narration is ~550 chars - but it must stay a bounded wait rather than an open-ended one.
+        //
+        // Upper bound raised 90 -> 130 when the base went 30 -> 60 to clear a 39.9s cold start. This is
+        // a deliberate re-justification, not a widen-until-green: what this bound protects changed. A
+        // long deadline used to hold the fleet-wide gate's fate - one slow call could silence everyone -
+        // so 90 was rightly stingy. A timeout now costs ONLY its own session (WingmanVoiceService.TtsAsync
+        // no longer arms the shared gate on a timeout), so the worst case here is one runaway narration
+        // occupying one of two slots for 108s. That is a bounded wait, which is all this test is for.
         var atCap = TtsSynthesis.DeadlineFor(NarrationText.MaxChars);
-        Assert.InRange(atCap.TotalSeconds, 30, 90);
+        Assert.InRange(atCap.TotalSeconds, 30, 130);
     }
 
     [Fact]

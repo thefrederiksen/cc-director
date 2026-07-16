@@ -546,16 +546,39 @@ public sealed class WingmanVoiceServiceTests
     }
 
     [Fact]
-    public async Task StoreSpokenAsync_TtsTimesOutOnceThenSucceeds_RetriesAndMarksReady()
+    public async Task StoreSpokenAsync_AStalledCall_RecoversOnTheSessionsNextAttempt_NotByRetryingInside()
     {
-        // Regression: a single stalled upstream voice call must be retried, not surfaced as a freeze
-        // or failure. The first attempt times out; the retry returns audio, so the session is ready.
+        // This test used to assert the IN-CALL retry (attempt 1 stalls, attempt 2 returns audio, one
+        // call to StoreSpokenAsync produces voice). That retry is gone, deliberately, and this now pins
+        // the recovery that actually works.
+        //
+        // The in-call retry never did its job in production. It assumed attempt 1 eats the cold start
+        // and attempt 2 lands warm; the live log says otherwise, every time:
+        //     attempt 1/2 timed out after 33s (709 chars); retrying
+        //     attempt 2/2 timed out after 33s (709 chars); giving up
+        // Cancelling attempt 1 plausibly cancels the model load it just triggered, so attempt 2 starts
+        // the cold start again rather than arriving after it. It bought a doubled wait and a doubled
+        // load on a struggling provider, for the same failure - and on /wingman/tts, where a human is
+        // waiting, it doubled the worst case to two minutes.
+        //
+        // Recovery belongs one level up, and this is the owner's design in one line: the call either
+        // works or it does not; if it does not, THAT SESSION waits and tries again, and nobody else is
+        // affected. The voice sweep re-attempts any session without audio, so the second attempt here is
+        // what the sweep does seconds later.
         var handler = new TtsTimeoutHandler(timeouts: 1);
         var svc = ServiceWithHandler(handler);
-        await svc.StoreSpokenAsync("sid-retry", "spoken", "reply");
 
-        Assert.Equal(2, handler.Calls);                        // the retry actually fired
-        Assert.True(svc.HasVoice("sid-retry"));                // and produced audio
+        // The stalled call fails - one attempt, bounded, and it says so honestly.
+        await svc.StoreSpokenAsync("sid-retry", "spoken", "reply");
+        Assert.Equal(1, handler.Calls);                                        // exactly one attempt: no in-call retry
+        Assert.False(svc.HasVoice("sid-retry"));                               // nothing to play
+        Assert.Equal(HostedAiState.ServiceDown, svc.VoiceUnavailableFor("sid-retry"));
+        Assert.False(svc.SpeechCooldownArmed, "and it did not drag the rest of the fleet down with it");
+
+        // The session tries again - the provider is fine now, and it just works.
+        await svc.StoreSpokenAsync("sid-retry", "spoken", "reply");
+        Assert.Equal(2, handler.Calls);
+        Assert.True(svc.HasVoice("sid-retry"));
         Assert.Null(svc.VoiceUnavailableFor("sid-retry"));
     }
 
@@ -633,18 +656,35 @@ public sealed class WingmanVoiceServiceTests
     }
 
     [Fact]
-    public async Task StoreSpokenAsync_ThreeConsecutiveTimeouts_ArmsTheSharedCooldown()
+    public async Task StoreSpokenAsync_NoRunOfTimeoutsEverArmsTheSharedCooldown()
     {
-        // The control, and the money guard the gate exists for: a genuine outage must still trip it
-        // quickly, so the idle sweep stops paying for a model translation whose audio cannot be made.
+        // THIS TEST USED TO ASSERT THE OPPOSITE, and that is the point of it (2026-07-15).
+        //
+        // It was called ThreeConsecutiveTimeouts_ArmsTheSharedCooldown and it defended the defect: it
+        // encoded the belief that a RUN of timeouts is evidence stacking toward "the service is down".
+        // It is not. The timeouts were not independent - they were the same cold provider, and the
+        // cooldown they armed produced the next one, because 120 seconds of nobody calling is exactly
+        // how the provider goes cold. Counting to three did not make the inference sound; it just made
+        // the fleet take three steps before falling silent. It went 0/8 with audio again on the day
+        // that rule shipped, while the service answered every hand-made call perfectly.
+        //
+        // A timeout is the ABSENCE of evidence: the service said nothing, so we learned nothing about
+        // it. Ten sessions timing out on a slow provider are ten slow turns, and each retries on its
+        // own (the voice sweep revisits any session without audio). The fleet-wide semaphore already
+        // caps the load at two concurrent calls, whatever we decide here.
         var handler = new TtsTimeoutHandler(timeouts: int.MaxValue);
         var svc = ServiceWithHandler(handler);
 
         await svc.StoreSpokenAsync("sid-a", "spoken", "reply");
         await svc.StoreSpokenAsync("sid-b", "spoken", "reply");
         await svc.StoreSpokenAsync("sid-c", "spoken", "reply");
+        await svc.StoreSpokenAsync("sid-d", "spoken", "reply");
+        await svc.StoreSpokenAsync("sid-e", "spoken", "reply");
 
-        Assert.True(svc.SpeechCooldownArmed, "a real outage must still back the fleet off within three attempts");
+        Assert.False(svc.SpeechCooldownArmed,
+            "no number of timeouts may silence the fleet - the service never answered, so they say nothing about it");
+        // Each session still tells the truth about ITSELF: there is nothing to play.
+        Assert.Equal(HostedAiState.ServiceDown, svc.VoiceUnavailableFor("sid-e"));
     }
 
     [Fact]
