@@ -54,6 +54,11 @@ public sealed class GatewayInputStatsAggregator : IDisposable
     private readonly Dictionary<string, Counters> _agentDrivenHighWater = new(StringComparer.Ordinal);
     private readonly HashSet<string> _wingmanSessions = new(StringComparer.Ordinal);
 
+    // The last cumulative token spend seen per session (issue #1637), so only the INCREASE folds - the same
+    // high-water discipline as _highWater, one dimension over. A dropped count is a restart and folds fresh
+    // from zero.
+    private readonly Dictionary<string, TokenCounters> _tokenHighWater = new(StringComparer.Ordinal);
+
     // Sessions whose already-counted turns have been attributed to their agent (issue #1633). MUST persist:
     // session_highwater survives a restart, so without this the back-fill would run a second time against a
     // non-empty high-water and double every agent's numbers.
@@ -85,6 +90,16 @@ public sealed class GatewayInputStatsAggregator : IDisposable
     {
         public long Turns { get; set; }
         public long Characters { get; set; }
+    }
+
+    /// <summary>The four CUMULATIVE, additive token spend counts a session carries. Context occupancy is not
+    /// here: it is a gauge, not spend, and never enters this arithmetic.</summary>
+    private sealed class TokenCounters
+    {
+        public long Input { get; set; }
+        public long Output { get; set; }
+        public long CacheRead { get; set; }
+        public long CacheCreation { get; set; }
     }
 
     /// <summary>
@@ -189,6 +204,11 @@ public sealed class GatewayInputStatsAggregator : IDisposable
             });
             Read("SELECT session_id, turns, chars FROM agent_driven_highwater",
                 r => _agentDrivenHighWater[r.GetString(0)] = new Counters { Turns = r.GetInt64(1), Characters = r.GetInt64(2) });
+            Read("SELECT session_id, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens FROM token_highwater",
+                r => _tokenHighWater[r.GetString(0)] = new TokenCounters
+                {
+                    Input = r.GetInt64(1), Output = r.GetInt64(2), CacheRead = r.GetInt64(3), CacheCreation = r.GetInt64(4),
+                });
             Read("SELECT session_id FROM wingman_session", r => _wingmanSessions.Add(r.GetString(0)));
             Read("SELECT session_id FROM agents_seeded", r => _agentsSeeded.Add(r.GetString(0)));
             Read("SELECT repo_id, repo_display FROM repo_identity", r =>
@@ -276,9 +296,15 @@ public sealed class GatewayInputStatsAggregator : IDisposable
         public readonly List<(string Display, string SessionId, IdentityKind Kind)> NewIdentitySessions = new();
         public string? StampAgentsSince;
 
+        // Token spend (issue #1637). Model is nullable for the same reason it is on Rows: the spend
+        // attributes to the model the session was recorded running, which is null until its records name one.
+        public readonly List<(string Hour, string? Model, long Input, long Output, long CacheRead, long CacheCreation)> TokenRows = new();
+        public readonly List<(string SessionId, long Input, long Output, long CacheRead, long CacheCreation)> TokenHighWater = new();
+
         public bool IsEmpty => Rows.Count == 0 && AgentRows.Count == 0 && AgentDrivenRows.Count == 0
             && HighWater.Count == 0 && AgentDrivenHighWater.Count == 0 && NewWingmanSessions.Count == 0
             && NewSeeded.Count == 0 && NewIdentities.Count == 0 && NewIdentitySessions.Count == 0
+            && TokenRows.Count == 0 && TokenHighWater.Count == 0
             && StampAgentsSince is null;
     }
 
@@ -317,6 +343,12 @@ public sealed class GatewayInputStatsAggregator : IDisposable
         // buckets guard, because a session driven only by other agents has no human buckets at all - and
         // those are exactly the sessions this tally is about.
         FoldAgentDrivenLocked(s, batch);
+
+        // Issue #1637: token spend, on its own lane. Folded BEFORE the buckets guard too, and for a reason
+        // that is not obvious: tokens grow at turn-END while the input buckets grow at turn SUBMISSION, so a
+        // poll can see this session's spend rise with no NEW bucket delta this interval (the turn was counted
+        // last poll). Gating the token fold on a bucket delta would drop exactly those increases.
+        FoldTokensLocked(s, batch);
 
         if (s.InputStats?.Buckets is null || s.InputStats.Buckets.Count == 0) return;
 
@@ -448,6 +480,49 @@ public sealed class GatewayInputStatsAggregator : IDisposable
             batch.NewIdentitySessions.Add((agentKey, s.SessionId, IdentityKind.Agent));
     }
 
+    // Fold this session's cumulative token spend (issue #1637) via the same high-water increment the human
+    // buckets use: store only the GROWTH since the last poll, and treat a DROP - a Director that restarted
+    // the session with a fresh conversation - as fresh spend from zero, never a negative. Attributed to the
+    // hour and to the model the session was recorded running, on token_delta's own lane. NO modality or
+    // surface: tokens are the model's work, not the human's input channel (see MigrateToVersion3).
+    private void FoldTokensLocked(SessionDto s, FoldBatch batch)
+    {
+        var t = s.TokenTotals;
+        if (t is null) return;
+
+        _tokenHighWater.TryGetValue(s.SessionId, out var prev);
+        var prevIn = prev?.Input ?? 0;
+        var prevOut = prev?.Output ?? 0;
+        var prevCacheR = prev?.CacheRead ?? 0;
+        var prevCacheC = prev?.CacheCreation ?? 0;
+
+        // Per-scalar reset test, exactly as the turns/characters fold: a value below the last seen is a fresh
+        // conversation counting from zero, so the whole current value is new spend. All four are running sums
+        // over the same transcript, so on a real restart they drop together; testing each independently is
+        // simply the same safe rule applied per column.
+        var dIn = t.InputTokens >= prevIn ? t.InputTokens - prevIn : t.InputTokens;
+        var dOut = t.OutputTokens >= prevOut ? t.OutputTokens - prevOut : t.OutputTokens;
+        var dCacheR = t.CacheReadTokens >= prevCacheR ? t.CacheReadTokens - prevCacheR : t.CacheReadTokens;
+        var dCacheC = t.CacheCreationTokens >= prevCacheC ? t.CacheCreationTokens - prevCacheC : t.CacheCreationTokens;
+
+        // Advance the high-water whenever the reported totals moved, even if nothing is folded this poll -
+        // but only queue the upsert when they actually changed, so an idle re-poll of a steady session writes
+        // nothing (the same idle-poll silence the other high-waters protect).
+        if (prev is null || prev.Input != t.InputTokens || prev.Output != t.OutputTokens
+            || prev.CacheRead != t.CacheReadTokens || prev.CacheCreation != t.CacheCreationTokens)
+            batch.TokenHighWater.Add((s.SessionId, t.InputTokens, t.OutputTokens, t.CacheReadTokens, t.CacheCreationTokens));
+
+        if (dIn <= 0 && dOut <= 0 && dCacheR <= 0 && dCacheC <= 0) return;
+
+        // Attribute to the model the session was RECORDED running, null until its records name one - the same
+        // records-only nullability as stat_delta.model_id. Only a named model earns an identity row.
+        var modelKey = string.IsNullOrWhiteSpace(s.CurrentModel) ? null : s.CurrentModel;
+        if (modelKey is not null)
+            NeedIdentity(modelKey, IdentityKind.Model, batch);
+
+        batch.TokenRows.Add((batch.HourKey, modelKey, dIn, dOut, dCacheR, dCacheC));
+    }
+
     private void NeedIdentity(string display, IdentityKind kind, FoldBatch batch)
     {
         if (IdsFor(kind).ContainsKey(display)) return;
@@ -531,6 +606,18 @@ public sealed class GatewayInputStatsAggregator : IDisposable
                       ON CONFLICT(session_id) DO UPDATE SET turns=$t, chars=$c", tx,
                 ("$s", h.SessionId), ("$t", h.Turns), ("$c", h.Chars));
 
+        foreach (var r in batch.TokenRows)
+            Execute(@"INSERT INTO token_delta(hour_utc, model_id, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens)
+                      VALUES ($h, $d, $i, $o, $cr, $cc)", tx,
+                ("$h", r.Hour), ("$d", ResolveModel(r.Model)),
+                ("$i", r.Input), ("$o", r.Output), ("$cr", r.CacheRead), ("$cc", r.CacheCreation));
+
+        foreach (var h in batch.TokenHighWater)
+            Execute(@"INSERT INTO token_highwater(session_id, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens)
+                      VALUES ($s, $i, $o, $cr, $cc)
+                      ON CONFLICT(session_id) DO UPDATE SET input_tokens=$i, output_tokens=$o, cache_read_tokens=$cr, cache_creation_tokens=$cc", tx,
+                ("$s", h.SessionId), ("$i", h.Input), ("$o", h.Output), ("$cr", h.CacheRead), ("$cc", h.CacheCreation));
+
         foreach (var sid in batch.NewWingmanSessions)
             Execute("INSERT OR IGNORE INTO wingman_session(session_id) VALUES ($s)", tx, ("$s", sid));
 
@@ -550,7 +637,7 @@ public sealed class GatewayInputStatsAggregator : IDisposable
                 ("$i", Resolve(display, kind)), ("$s", sessionId));
         }
 
-        if (batch.Rows.Count > 0) PruneLocked(batch.NowUtc, tx);
+        if (batch.Rows.Count > 0 || batch.TokenRows.Count > 0) PruneLocked(batch.NowUtc, tx);
 
         tx.Commit();
 
@@ -569,6 +656,11 @@ public sealed class GatewayInputStatsAggregator : IDisposable
         }
         foreach (var h in batch.AgentDrivenHighWater)
             _agentDrivenHighWater[h.SessionId] = new Counters { Turns = h.Turns, Characters = h.Chars };
+        foreach (var h in batch.TokenHighWater)
+            _tokenHighWater[h.SessionId] = new TokenCounters
+            {
+                Input = h.Input, Output = h.Output, CacheRead = h.CacheRead, CacheCreation = h.CacheCreation,
+            };
         foreach (var sid in batch.NewWingmanSessions) _wingmanSessions.Add(sid);
         foreach (var sid in batch.NewSeeded) _agentsSeeded.Add(sid);
         foreach (var (display, sessionId, kind) in batch.NewIdentitySessions)
@@ -584,9 +676,13 @@ public sealed class GatewayInputStatsAggregator : IDisposable
         if (string.IsNullOrEmpty(sessionId)) return;
         lock (_lock)
         {
-            if (!_highWater.ContainsKey(sessionId)) return;
-            Execute("DELETE FROM session_highwater WHERE session_id=$s", null, ("$s", sessionId));
-            _highWater.Remove(sessionId);
+            // The token high-water is cleaned up on its own, not under the session_highwater guard: a session
+            // has both, and dropping only one would leave the other's map growing without bound. Each is
+            // removed only if present, so forgetting a session that never spent a token is still a no-op.
+            if (_highWater.Remove(sessionId))
+                Execute("DELETE FROM session_highwater WHERE session_id=$s", null, ("$s", sessionId));
+            if (_tokenHighWater.Remove(sessionId))
+                Execute("DELETE FROM token_highwater WHERE session_id=$s", null, ("$s", sessionId));
         }
     }
 
@@ -616,6 +712,19 @@ public sealed class GatewayInputStatsAggregator : IDisposable
                    GROUP BY modality, surface, is_voice, repo_id, model_id, wingman", tx,
             ("$marker", GatewayStatsDatabase.ArchiveMarker), ("$cutoff", cutoff));
         Execute("DELETE FROM stat_delta WHERE hour_utc <> $marker AND hour_utc < $cutoff", tx,
+            ("$marker", GatewayStatsDatabase.ArchiveMarker), ("$cutoff", cutoff));
+
+        // token_delta prunes on the SAME rule and the same care: its one dimension, model_id, is carried in
+        // both the SELECT and the GROUP BY, or the ninety-day fold turns every archived model's spend into
+        // "model unknown". Its all-time totals INCLUDE archive rows (that is the point of archiving), so the
+        // spend must not shrink when detail is pruned.
+        Execute(@"INSERT INTO token_delta(hour_utc, model_id, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens)
+                  SELECT $marker, model_id, SUM(input_tokens), SUM(output_tokens), SUM(cache_read_tokens), SUM(cache_creation_tokens)
+                    FROM token_delta
+                   WHERE hour_utc <> $marker AND hour_utc < $cutoff
+                   GROUP BY model_id", tx,
+            ("$marker", GatewayStatsDatabase.ArchiveMarker), ("$cutoff", cutoff));
+        Execute("DELETE FROM token_delta WHERE hour_utc <> $marker AND hour_utc < $cutoff", tx,
             ("$marker", GatewayStatsDatabase.ArchiveMarker), ("$cutoff", cutoff));
     }
 
@@ -881,6 +990,96 @@ public sealed class GatewayInputStatsAggregator : IDisposable
         }
     }
 
+    /// <summary>
+    /// All-time token spend (issue #1637): the running sums of input, output, cache-read and cache-creation
+    /// tokens across the whole record. INCLUDES archive rows - the same reason the model tally does: an
+    /// all-time figure that dropped them would shrink as history is pruned. No context occupancy here; it is
+    /// not spend and was never stored.
+    /// </summary>
+    public TokenSpendDto TokenSpend()
+    {
+        lock (_lock)
+        {
+            var dto = new TokenSpendDto();
+            Read(@"SELECT COALESCE(SUM(input_tokens),0), COALESCE(SUM(output_tokens),0),
+                          COALESCE(SUM(cache_read_tokens),0), COALESCE(SUM(cache_creation_tokens),0)
+                     FROM token_delta", r =>
+            {
+                dto.InputTokens = r.GetInt64(0);
+                dto.OutputTokens = r.GetInt64(1);
+                dto.CacheReadTokens = r.GetInt64(2);
+                dto.CacheCreationTokens = r.GetInt64(3);
+            });
+            return dto;
+        }
+    }
+
+    /// <summary>
+    /// Token spend per UTC hour (issue #1637), for the working-day "what did I spend" series. EXCLUDES the
+    /// archive marker, exactly as the hourly turn series does: an archive row is not a real hour and would
+    /// grow a phantom bucket. Ordered by hour.
+    /// </summary>
+    public IReadOnlyList<TokenHourDto> TokenSpendByHour()
+    {
+        lock (_lock)
+        {
+            var list = new List<TokenHourDto>();
+            Read(@"SELECT hour_utc,
+                          COALESCE(SUM(input_tokens),0), COALESCE(SUM(output_tokens),0),
+                          COALESCE(SUM(cache_read_tokens),0), COALESCE(SUM(cache_creation_tokens),0)
+                     FROM token_delta
+                    WHERE hour_utc <> $marker
+                    GROUP BY hour_utc", r => list.Add(new TokenHourDto
+            {
+                Hour = r.GetString(0),
+                InputTokens = r.GetInt64(1),
+                OutputTokens = r.GetInt64(2),
+                CacheReadTokens = r.GetInt64(3),
+                CacheCreationTokens = r.GetInt64(4),
+            }), ("$marker", GatewayStatsDatabase.ArchiveMarker));
+            list.Sort((a, b) => string.CompareOrdinal(a.Hour, b.Hour));
+            return list;
+        }
+    }
+
+    /// <summary>
+    /// Token spend per model (issue #1637), ranked most-spent first, for "which model cost what". INCLUDES
+    /// archive rows. The null-model bucket is a REAL bucket - spend folded before the session's model was
+    /// recorded - and is reported, not filtered, so the per-model spend sums to the all-time total.
+    /// </summary>
+    public IReadOnlyList<ModelSpendDto> TokenSpendByModel()
+    {
+        lock (_lock)
+        {
+            var list = new List<ModelSpendDto>();
+            Read(@"SELECT model_id,
+                          COALESCE(SUM(input_tokens),0), COALESCE(SUM(output_tokens),0),
+                          COALESCE(SUM(cache_read_tokens),0), COALESCE(SUM(cache_creation_tokens),0)
+                     FROM token_delta GROUP BY model_id", r =>
+            {
+                // A null model_id is the "not recorded" bucket and stays null to the page; the display
+                // spelling comes from the identity mirror, never a SQL join over the string.
+                string? display = r.IsDBNull(0)
+                    ? null
+                    : (_modelDisplay.TryGetValue(r.GetInt64(0), out var d) ? d : "");
+                list.Add(new ModelSpendDto
+                {
+                    Model = display,
+                    InputTokens = r.GetInt64(1),
+                    OutputTokens = r.GetInt64(2),
+                    CacheReadTokens = r.GetInt64(3),
+                    CacheCreationTokens = r.GetInt64(4),
+                });
+            });
+            list.Sort((a, b) =>
+            {
+                var byTotal = b.TotalTokens.CompareTo(a.TotalTokens);
+                return byTotal != 0 ? byTotal : string.CompareOrdinal(a.Model ?? "", b.Model ?? "");
+            });
+            return list;
+        }
+    }
+
     // An explicit map, not a PascalCase splitter: "OpenCode" is the product's own spelling and must not
     // become "Open Code". An unrecognised token is shown verbatim - it is a real value we simply do not have
     // a nicer name for, so showing it is honest where hiding it behind "Other" would not be.
@@ -1009,6 +1208,49 @@ public sealed class ModelStatBucketDto
     public long VoiceTurns { get; set; }
     public long TypedTurns { get; set; }
     public long Characters { get; set; }
+}
+
+/// <summary>All-time token spend (issue #1637): the four cumulative, additive counts. No context occupancy -
+/// that is a gauge, not spend, and is never summed.</summary>
+public sealed class TokenSpendDto
+{
+    public long InputTokens { get; set; }
+    public long OutputTokens { get; set; }
+    public long CacheReadTokens { get; set; }
+    public long CacheCreationTokens { get; set; }
+
+    /// <summary>Every token the work cost, cached or not - the single "how much did I spend" figure.</summary>
+    public long TotalTokens => InputTokens + OutputTokens + CacheReadTokens + CacheCreationTokens;
+}
+
+/// <summary>Token spend in one UTC hour (issue #1637), for the working-day series.</summary>
+public sealed class TokenHourDto
+{
+    /// <summary>The hour key, "yyyy-MM-ddTHH".</summary>
+    public string Hour { get; set; } = "";
+
+    public long InputTokens { get; set; }
+    public long OutputTokens { get; set; }
+    public long CacheReadTokens { get; set; }
+    public long CacheCreationTokens { get; set; }
+
+    public long TotalTokens => InputTokens + OutputTokens + CacheReadTokens + CacheCreationTokens;
+}
+
+/// <summary>One model's all-time token spend (issue #1637), for "which model cost what". The null-model
+/// bucket is a real answer - spend folded before the session's model was recorded - not an omission.</summary>
+public sealed class ModelSpendDto
+{
+    /// <summary>The model the owning Director recorded, or null for spend folded when no model had been
+    /// recorded. Never an empty string: absence is null.</summary>
+    public string? Model { get; set; }
+
+    public long InputTokens { get; set; }
+    public long OutputTokens { get; set; }
+    public long CacheReadTokens { get; set; }
+    public long CacheCreationTokens { get; set; }
+
+    public long TotalTokens => InputTokens + OutputTokens + CacheReadTokens + CacheCreationTokens;
 }
 
 /// <summary>One agent CLI's all-time input tally for the private Agents page.</summary>

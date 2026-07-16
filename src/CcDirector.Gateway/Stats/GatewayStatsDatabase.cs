@@ -35,7 +35,7 @@ public sealed class GatewayStatsDatabase : IDisposable
 {
     /// <summary>The schema version this build understands. Bump it and add a migration step; never reshape
     /// an existing table in place without one.</summary>
-    public const int SchemaVersion = 2;
+    public const int SchemaVersion = 3;
 
     /// <summary>The meta key holding when the model dimension started recording - an ISO-8601 UTC stamp
     /// written once, by the migration that added the dimension. See <see cref="MigrateToVersion2"/> for why
@@ -128,6 +128,9 @@ public sealed class GatewayStatsDatabase : IDisposable
 
         if (current < 2)
             MigrateToVersion2(tx);
+
+        if (current < 3)
+            MigrateToVersion3(tx);
 
         Execute($"PRAGMA user_version={SchemaVersion}", tx);
         tx.Commit();
@@ -401,6 +404,61 @@ public sealed class GatewayStatsDatabase : IDisposable
         Execute("INSERT OR IGNORE INTO meta(name, value) VALUES ($n, $v)", tx,
             ("$n", ModelsSinceKey),
             ("$v", DateTime.UtcNow.ToString("o", System.Globalization.CultureInfo.InvariantCulture)));
+    }
+
+    // Version 3: the token dimension - how many tokens the work actually cost.
+    //
+    // SPEND, NOT OCCUPANCY, ENFORCED BY THE SCHEMA. Four columns and every one is a cumulative, additive
+    // count: input, output, cache-read and cache-creation tokens. Context-window occupancy is deliberately
+    // absent - it is a gauge (how full the window is at a point in time), it goes up AND down, and summing
+    // it is meaningless. The wire carries it (SessionDto.TokenTotals.ContextTokens) for the live gauge, but
+    // it MUST NOT enter a delta table where a SUM would be taken, so it is not here. A future hand tempted
+    // to "just add context too" would be adding a number that lies the moment it is aggregated.
+    //
+    // No modality and no surface, unlike stat_delta. Tokens are the model's WORK, not the human's input
+    // channel: a turn costs the same tokens whether the human typed it or spoke it, and the token total
+    // arrives per session as one cumulative figure that cannot be split across voice/typed buckets. Adding
+    // those columns would advertise a division the data cannot make - the agent_id-on-stat_delta mistake in
+    // a new shape.
+    //
+    // model_id is carried and NULLABLE, exactly as on stat_delta and for the same reason: the spend
+    // attributes to the model the session was RECORDED running at fold time, and that is null until the
+    // agent's records name one. Unlike stat_delta, a token row's null model has ONLY ONE meaning - "not
+    // recorded yet" - because every token row is written after this migration, so none can predate the model
+    // dimension (version 2, already applied by the time this runs). No since-stamp is needed to read it.
+    private void MigrateToVersion3(SqliteTransaction tx)
+    {
+        // One row per observed token increase, attributed to the hour and the session's current model. High-
+        // watered per session (see token_highwater) so only the GROWTH since the last poll is folded, never
+        // the running total - the same increment discipline as stat_delta's turns and characters.
+        Execute(@"
+            CREATE TABLE IF NOT EXISTS token_delta (
+                id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+                hour_utc              TEXT    NOT NULL,
+                model_id              INTEGER,
+                input_tokens          INTEGER NOT NULL,
+                output_tokens         INTEGER NOT NULL,
+                cache_read_tokens     INTEGER NOT NULL,
+                cache_creation_tokens INTEGER NOT NULL
+            )", tx);
+        Execute("CREATE INDEX IF NOT EXISTS ix_token_delta_hour ON token_delta(hour_utc)", tx);
+
+        // The last cumulative token counts seen for each live session, so only the INCREASE folds. Mirrors
+        // session_highwater exactly: a reported count that DROPPED (a Director restarted the session with a
+        // fresh conversation) is fresh spend from zero, not a negative. Cleared for one session by Forget.
+        //
+        // All four counts are running sums over the whole transcript (SessionUsageDto sums them across every
+        // assistant line), so they only grow within one conversation - which is what makes the high-water
+        // increment correct. Context occupancy is NOT here: it is not cumulative and high-watering it would
+        // be meaningless.
+        Execute(@"
+            CREATE TABLE IF NOT EXISTS token_highwater (
+                session_id            TEXT    PRIMARY KEY,
+                input_tokens          INTEGER NOT NULL,
+                output_tokens         INTEGER NOT NULL,
+                cache_read_tokens     INTEGER NOT NULL,
+                cache_creation_tokens INTEGER NOT NULL
+            )", tx);
     }
 
     private int QueryUserVersion()

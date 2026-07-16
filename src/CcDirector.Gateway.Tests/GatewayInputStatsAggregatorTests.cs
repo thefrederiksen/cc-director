@@ -725,4 +725,175 @@ public sealed class GatewayInputStatsAggregatorTests : IDisposable
         Assert.True(DateTime.TryParse(agg.ModelsSinceUtc, System.Globalization.CultureInfo.InvariantCulture,
             System.Globalization.DateTimeStyles.RoundtripKind, out _));
     }
+
+    // ---- The token dimension (issue #1637): what the work actually cost. ----
+
+    // A session carrying both a model and a cumulative token snapshot. Tokens are (input, output, cacheRead,
+    // cacheCreation); a bucket is added so the session looks like a real one that took a turn.
+    private static SessionDto SessionWithTokens(string id, string? model,
+        (long In, long Out, long CacheRead, long CacheCreation) tokens,
+        params (string modality, string surface, long turns, long chars)[] buckets)
+    {
+        var dto = Session(id, buckets.Length == 0 ? new[] { ("typed", "desktop", 1L, 10L) } : buckets);
+        dto.CurrentModel = model;
+        dto.TokenTotals = new TokenTotalsDto
+        {
+            InputTokens = tokens.In,
+            OutputTokens = tokens.Out,
+            CacheReadTokens = tokens.CacheRead,
+            CacheCreationTokens = tokens.CacheCreation,
+            ContextTokens = tokens.In + tokens.CacheRead + tokens.CacheCreation,
+        };
+        return dto;
+    }
+
+    [Fact]
+    public void TokenSpend_FoldsTheIncrementOnly_NotTheRunningTotal()
+    {
+        var agg = new GatewayInputStatsAggregator(_path);
+
+        // Cumulative snapshots, like the wire delivers: 100 in / 50 out, then 130 / 70. Only the GROWTH
+        // folds - the same high-water discipline as turns and characters - so the store holds 130/70, not
+        // 100+130.
+        agg.Observe(SessionWithTokens("s-1", "claude-opus-4-8", (100, 50, 900, 40)));
+        agg.Observe(SessionWithTokens("s-1", "claude-opus-4-8", (130, 70, 1200, 55)));
+
+        var spend = agg.TokenSpend();
+        Assert.Equal(130, spend.InputTokens);
+        Assert.Equal(70, spend.OutputTokens);
+        Assert.Equal(1200, spend.CacheReadTokens);
+        Assert.Equal(55, spend.CacheCreationTokens);
+        Assert.Equal(130 + 70 + 1200 + 55, spend.TotalTokens);
+    }
+
+    [Fact]
+    public void TokenSpend_RepeatedIdenticalSnapshot_DoesNotDoubleCount()
+    {
+        var agg = new GatewayInputStatsAggregator(_path);
+
+        var s = SessionWithTokens("s-1", "claude-opus-4-8", (100, 50, 900, 40));
+        agg.Observe(s);
+        agg.Observe(s); // a periodic re-push of the same totals - must add nothing
+        agg.Observe(s);
+
+        Assert.Equal(100, agg.TokenSpend().InputTokens);
+        Assert.Equal(50, agg.TokenSpend().OutputTokens);
+    }
+
+    [Fact]
+    public void TokenSpend_DroppedSnapshot_CountsAsFreshSpend()
+    {
+        // A Director restarts the session with a fresh conversation: the reported totals DROP. The new
+        // conversation's spend is fresh from zero, added on top of what was already banked - never a negative.
+        var agg = new GatewayInputStatsAggregator(_path);
+        agg.Observe(SessionWithTokens("s-1", "claude-opus-4-8", (1000, 500, 9000, 400)));
+        agg.Observe(SessionWithTokens("s-1", "claude-opus-4-8", (120, 60, 1100, 45)));
+
+        var spend = agg.TokenSpend();
+        Assert.Equal(1120, spend.InputTokens);
+        Assert.Equal(560, spend.OutputTokens);
+    }
+
+    [Fact]
+    public void TokenSpend_AttributesToTheModelThatWasRunning_NullWhenUnrecorded()
+    {
+        var agg = new GatewayInputStatsAggregator(_path);
+        agg.Observe(SessionWithTokens("s-1", "claude-opus-4-8", (100, 50, 900, 40)));
+        agg.Observe(SessionWithTokens("s-2", null, (200, 80, 1500, 60)));
+
+        var byModel = agg.TokenSpendByModel();
+        Assert.Equal(100, byModel.First(m => m.Model == "claude-opus-4-8").InputTokens);
+        // The null-model bucket is a REAL bucket - spend folded before the model was recorded - and must be
+        // present, never an empty-string model and never filtered out.
+        Assert.Equal(200, byModel.First(m => m.Model is null).InputTokens);
+        Assert.DoesNotContain(byModel, m => m.Model == "");
+    }
+
+    [Fact]
+    public void TokenSpendByModel_SumsToTheAllTimeTotal_IncludingTheNullBucket()
+    {
+        var agg = new GatewayInputStatsAggregator(_path);
+        agg.Observe(SessionWithTokens("s-1", "claude-opus-4-8", (100, 50, 900, 40)));
+        agg.Observe(SessionWithTokens("s-2", null, (200, 80, 1500, 60)));
+
+        var total = agg.TokenSpend().TotalTokens;
+        var byModelSum = agg.TokenSpendByModel().Sum(m => m.TotalTokens);
+        Assert.Equal(total, byModelSum);
+    }
+
+    [Fact]
+    public void TokenSpend_SurvivesAGatewayRestart_WithoutDoubleCountingALiveSession()
+    {
+        using (var first = new GatewayInputStatsAggregator(_path))
+            first.Observe(SessionWithTokens("s-1", "claude-opus-4-8", (100, 50, 900, 40)));
+
+        // The restart rebuilds the token high-water FROM the database. Without it, the same still-live
+        // session re-pushing its snapshot would look like fresh spend and double the numbers.
+        using var reopened = new GatewayInputStatsAggregator(_path);
+        Assert.Equal(100, reopened.TokenSpend().InputTokens);
+
+        reopened.Observe(SessionWithTokens("s-1", "claude-opus-4-8", (100, 50, 900, 40)));
+        Assert.Equal(100, reopened.TokenSpend().InputTokens);
+
+        reopened.Observe(SessionWithTokens("s-1", "claude-opus-4-8", (130, 70, 1200, 55)));
+        Assert.Equal(130, reopened.TokenSpend().InputTokens);
+    }
+
+    [Fact]
+    public void TokenSpend_SessionWithoutTokenTotals_FoldsNothing()
+    {
+        // A driver that reports no token spend (no TokenUsage capability) leaves TokenTotals null. Its turns
+        // still count; its token spend is simply absent, not zero-stamped.
+        var agg = new GatewayInputStatsAggregator(_path);
+        agg.Observe(Session("s-1", ("typed", "desktop", 3, 30)));
+
+        Assert.Equal(0, agg.TokenSpend().TotalTokens);
+        Assert.Empty(agg.TokenSpendByModel());
+    }
+
+    [Fact]
+    public void TokenSpendByHour_LogsSpendPerHour_AndSumsToTheTotal()
+    {
+        var agg = new GatewayInputStatsAggregator(_path);
+        var h9 = new DateTime(2026, 7, 16, 9, 0, 0, DateTimeKind.Utc);
+        var h10 = new DateTime(2026, 7, 16, 10, 0, 0, DateTimeKind.Utc);
+
+        agg.Observe(SessionWithTokens("s-1", "claude-opus-4-8", (100, 50, 900, 40)), h9);
+        agg.Observe(SessionWithTokens("s-1", "claude-opus-4-8", (130, 70, 1200, 55)), h10); // +30/+20/... in h10
+
+        var hours = agg.TokenSpendByHour();
+        Assert.Equal(2, hours.Count);
+        Assert.Equal(100, hours.First(h => h.Hour == "2026-07-16T09").InputTokens);
+        Assert.Equal(30, hours.First(h => h.Hour == "2026-07-16T10").InputTokens);
+        Assert.Equal(agg.TokenSpend().TotalTokens, hours.Sum(h => h.TotalTokens));
+    }
+
+    [Fact]
+    public void TokenSpend_PruningOldRows_KeepsEveryModelsSpend()
+    {
+        // The ninety-day fold for tokens: token_delta archives by model_id, so a model's spend must survive
+        // pruning unchanged. Asserts the prune FIRED (the old hour leaves the hourly series) before asserting
+        // what it preserved, so an archive that never ran cannot pass this green.
+        var agg = new GatewayInputStatsAggregator(_path);
+        var old = new DateTime(2026, 1, 1, 9, 0, 0, DateTimeKind.Utc);
+        var now = old.AddDays(200);
+
+        agg.Observe(SessionWithTokens("old-1", "claude-opus-4-8", (500, 200, 4000, 150)), old);
+        agg.Observe(SessionWithTokens("old-2", null, (300, 90, 2000, 80)), old);
+        // A second poll of old-1 so the archive has two rows of one model to MERGE, not just copy.
+        agg.Observe(SessionWithTokens("old-1", "claude-opus-4-8", (900, 400, 7000, 250)), old);
+
+        var beforeInput = agg.TokenSpend().InputTokens;
+
+        agg.Observe(SessionWithTokens("new-1", "claude-sonnet-5", (10, 5, 90, 4)), now); // triggers prune
+
+        Assert.DoesNotContain(agg.TokenSpendByHour(), h => h.Hour == "2026-01-01T09");
+
+        var byModel = agg.TokenSpendByModel();
+        Assert.Equal(900, byModel.First(m => m.Model == "claude-opus-4-8").InputTokens);
+        Assert.Equal(300, byModel.First(m => m.Model is null).InputTokens);
+        Assert.Equal(10, byModel.First(m => m.Model == "claude-sonnet-5").InputTokens);
+        // The all-time total did not shrink because detail was pruned.
+        Assert.Equal(beforeInput + 10, agg.TokenSpend().InputTokens);
+    }
 }
