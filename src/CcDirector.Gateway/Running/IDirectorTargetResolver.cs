@@ -5,10 +5,13 @@ using CcDirector.Gateway.Discovery;
 namespace CcDirector.Gateway.Running;
 
 /// <summary>The outcome of resolving a cron job's target machine to a runnable Director (#503).</summary>
-/// <param name="Endpoint">The chosen Director's control endpoint (no trailing slash), or null if none.</param>
-/// <param name="DirectorId">The chosen Director's id (for the run record), or null.</param>
+/// <param name="DirectorId">The chosen Director's id, or null when none could be resolved/launched. In
+/// tunnel-only mode a resolved DirectorId is the WHOLE result: the Director is reached over its tunnel
+/// by id, not by dialing a control endpoint. There used to be an Endpoint field here carrying the
+/// Director's ControlEndpoint; it was always blank in tunnel-only mode and a stale guard rejected the
+/// spawn on it, so it has been retired (issue #1727).</param>
 /// <param name="Error">A human-readable reason when no Director could be resolved/launched, else null.</param>
-public sealed record DirectorTargetResult(string? Endpoint, string? DirectorId, string? Error);
+public sealed record DirectorTargetResult(string? DirectorId, string? Error);
 
 /// <summary>
 /// Resolves a cron job's target MACHINE to a runnable Director (epic #479, #503): picks the first
@@ -50,16 +53,16 @@ public sealed class RegistryDirectorTargetResolver : IDirectorTargetResolver
     public async Task<DirectorTargetResult> ResolveAsync(string machine, CancellationToken ct)
     {
         if (string.IsNullOrWhiteSpace(machine))
-            return new DirectorTargetResult(null, null, "no target machine");
+            return new DirectorTargetResult(null, "no target machine");
 
         var d = PickReachable(machine);
         if (d is not null)
-            return new DirectorTargetResult(d.ControlEndpoint.TrimEnd('/'), d.DirectorId, null);
+            return new DirectorTargetResult(d.DirectorId, null);
 
         // No Director running on the machine: ask its launcher to start one, then wait for it to register.
         FileLog.Write($"[RegistryDirectorTargetResolver] no Director on machine={machine}; asking launcher to start one");
         if (!await _launcher.StartAsync(machine, ct))
-            return new DirectorTargetResult(null, null, $"no Director on '{machine}' and the launcher could not start one");
+            return new DirectorTargetResult(null, $"no Director on '{machine}' and the launcher could not start one");
 
         var deadline = DateTime.UtcNow + _launchTimeout;
         while (DateTime.UtcNow < deadline)
@@ -69,10 +72,10 @@ public sealed class RegistryDirectorTargetResolver : IDirectorTargetResolver
             if (d is not null)
             {
                 FileLog.Write($"[RegistryDirectorTargetResolver] launched Director registered on machine={machine}: {d.DirectorId}");
-                return new DirectorTargetResult(d.ControlEndpoint.TrimEnd('/'), d.DirectorId, null);
+                return new DirectorTargetResult(d.DirectorId, null);
             }
         }
-        return new DirectorTargetResult(null, null, $"launched a Director on '{machine}' but none registered within {_launchTimeout.TotalSeconds:0}s");
+        return new DirectorTargetResult(null, $"launched a Director on '{machine}' but none registered within {_launchTimeout.TotalSeconds:0}s");
     }
 
     /// <summary>

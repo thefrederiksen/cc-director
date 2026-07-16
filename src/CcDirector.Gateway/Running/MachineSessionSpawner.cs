@@ -22,13 +22,12 @@ public sealed class MachineSessionSpawner
     /// <summary>
     /// The create-session call. Production routes through <see cref="SessionVerbClient.CreateSessionAsync"/>,
     /// which is TUNNEL-ONLY: a Director that is not connected yields an error, never an HTTP dial. Tests
-    /// inject a fake so the resolve-then-create decision is verified without a live Director.
-    ///
-    /// The <c>endpoint</c> parameter is vestigial - the production constructor accepts it and DISCARDS it,
-    /// because the tunnel addresses the Director by id. It survives only in this delegate's shape.
+    /// inject a fake so the resolve-then-create decision is verified without a live Director. Delivery is by
+    /// DirectorId over the tunnel; there is no endpoint (the old vestigial endpoint parameter, always blank
+    /// in tunnel-only mode, was retired with issue #1727).
     /// </summary>
     public delegate Task<(bool ok, SessionDto? body, string? error)> CreateSessionDelegate(
-        string directorId, string endpoint, NewSessionRequest req, CancellationToken ct);
+        string directorId, NewSessionRequest req, CancellationToken ct);
 
     private readonly IDirectorTargetResolver _resolver;
     private readonly CreateSessionDelegate _create;
@@ -37,7 +36,7 @@ public sealed class MachineSessionSpawner
     /// <param name="sendCommand">The send-a-command-down-the-stream hook.</param>
     internal MachineSessionSpawner(IDirectorTargetResolver resolver,
         DirectorCommandRouter.SendDirectorCommandAsync? sendCommand)
-        : this(resolver, (directorId, endpoint, req, ct) =>
+        : this(resolver, (directorId, req, ct) =>
             SessionVerbClient.ForDirector(directorId, sendCommand).CreateSessionAsync(req, ct))
     {
     }
@@ -63,15 +62,20 @@ public sealed class MachineSessionSpawner
             throw new ArgumentNullException(nameof(req));
 
         var target = await _resolver.ResolveAsync(machine, ct);
-        if (string.IsNullOrEmpty(target.Endpoint))
+        // Tunnel-only: a resolved DirectorId IS the target - delivery is by id over the tunnel, so a
+        // Director with a blank control endpoint is perfectly reachable. Fail only when the resolver
+        // reported an error (machine off / unreachable / launch failed) or resolved no Director at all;
+        // do NOT reject on an endpoint (that stale REST-era guard is what issue #1727 removed).
+        if (!string.IsNullOrEmpty(target.Error) || string.IsNullOrEmpty(target.DirectorId))
         {
-            FileLog.Write($"[MachineSessionSpawner] SpawnOnMachineAsync FAILED: machine={machine}, {target.Error}");
-            return (false, null, target.Error ?? "could not resolve a director on the target machine", target.DirectorId);
+            var reason = target.Error ?? "the target machine has no registered director";
+            FileLog.Write($"[MachineSessionSpawner] SpawnOnMachineAsync FAILED: machine={machine}, {reason}");
+            return (false, null, reason, target.DirectorId);
         }
 
-        FileLog.Write($"[MachineSessionSpawner] SpawnOnMachineAsync: machine={machine}, director={target.DirectorId}, endpoint={target.Endpoint}, repo={req.RepoPath}");
+        FileLog.Write($"[MachineSessionSpawner] SpawnOnMachineAsync: machine={machine}, director={target.DirectorId}, repo={req.RepoPath}");
 
-        var (ok, body, error) = await _create(target.DirectorId ?? "", target.Endpoint, req, ct);
+        var (ok, body, error) = await _create(target.DirectorId, req, ct);
         if (!ok || body is null || string.IsNullOrEmpty(body.SessionId))
         {
             FileLog.Write($"[MachineSessionSpawner] SpawnOnMachineAsync FAILED: machine={machine}, error={error}");

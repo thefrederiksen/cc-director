@@ -13,18 +13,14 @@ namespace CcDirector.Gateway.Tests;
 /// now create sessions and read their buffers DOWN the tunnel, via the director-level
 /// <see cref="SessionVerbClient.CreateSessionAsync"/> and the session-level buffer verb.
 ///
-/// Proof by CONSTRUCTION: each caller is bound to a Director whose control endpoint would refuse a
-/// TCP connection (a dead loopback port), so a call that SUCCEEDS could only have gone down the tunnel -
-/// the HTTP fallback would have thrown. The recording hook stands in for the Director stream and asserts
-/// the exact verb + payload marshaling. This is the same trick the other Phase 2 proofs use
-/// (TunnelDirectorReadProofTests / SessionVerbClientTests).
+/// Proof by CONSTRUCTION: these callers have NO HTTP dial path at all - they are bound to a Director by
+/// id and deliver through the stream hub, so a call that SUCCEEDS could only have gone down the tunnel.
+/// The recording hook stands in for the Director stream and asserts the exact verb + payload marshaling.
+/// This is the same trick the other Phase 2 proofs use (TunnelDirectorReadProofTests / SessionVerbClientTests).
 /// </summary>
 public sealed class TunnelSpawnerDriverProofTests
 {
     private static readonly JsonSerializerOptions Web = new(JsonSerializerDefaults.Web);
-
-    // A control endpoint on a dead loopback port: an HTTP dial here throws, so a success proves the tunnel ran.
-    private const string UnreachableEndpoint = "http://127.0.0.1:59923/";
 
     private sealed class RecordingHub
     {
@@ -54,13 +50,13 @@ public sealed class TunnelSpawnerDriverProofTests
         {
             Next = DirectorCommandResult.Success(JsonSerializer.Serialize(new SessionDto { SessionId = "sid-42" }, Web)),
         };
-        var resolver = new StubResolver(new DirectorTargetResult(UnreachableEndpoint, "dir-7", null));
+        var resolver = new StubResolver(new DirectorTargetResult("dir-7", null));
         var spawner = new MachineSessionSpawner(resolver, hub.Send);
 
         var (ok, dto, error, directorId) = await spawner.SpawnOnMachineAsync(
             "MACHINE_A", new NewSessionRequest { RepoPath = @"C:\repo", Agent = "ClaudeCode" }, CancellationToken.None);
 
-        Assert.True(ok);            // success against a dead endpoint => it went down the tunnel
+        Assert.True(ok);            // the spawner has no HTTP path; the create verb went down the tunnel hub
         Assert.Equal("sid-42", dto?.SessionId);
         Assert.Null(error);
         Assert.Equal("dir-7", directorId);

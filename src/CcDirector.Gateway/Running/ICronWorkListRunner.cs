@@ -17,7 +17,9 @@ public enum CronWorkListOutcome
     /// <summary>The list already has an active draining consumer (#273) - not re-claimed.</summary>
     AlreadyClaimed,
 
-    /// <summary>The job's target Director is not registered / has no control endpoint.</summary>
+    /// <summary>The job's target machine has no registered Director and none could be launched. In
+    /// tunnel-only mode a registered Director is reached over its tunnel by id, so a blank control
+    /// endpoint is valid and never causes this outcome (issue #1727).</summary>
     NoSuchDirector,
 
     /// <summary>The target machine is already draining another list (#274 single-machine guard).</summary>

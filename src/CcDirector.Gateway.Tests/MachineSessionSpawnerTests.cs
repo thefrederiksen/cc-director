@@ -9,9 +9,10 @@ namespace CcDirector.Gateway.Tests;
 /// the cron firing engine and the interactive POST /machines/{machine}/sessions relay ("start a session
 /// on another computer"). A stub resolver stands in for the live registry/launcher and a fake create
 /// delegate stands in for the Director's session-create call, so the resolve-then-create DECISION is
-/// verified without a live Director. Covers the good path (resolver returns an endpoint -> create ->
-/// success) and the fail-loud path (resolver returns an offline Error -> failure, and the create is
-/// NEVER attempted, i.e. no local fallback).
+/// verified without a live Director. Covers the good path (resolver returns a DirectorId -> create ->
+/// success), the fail-loud path (resolver returns an offline Error -> failure, and the create is NEVER
+/// attempted, i.e. no local fallback), and - through the REAL resolver - the tunnel-only case of a
+/// Director with a blank control endpoint (issue #1727).
 /// </summary>
 public sealed class MachineSessionSpawnerTests
 {
@@ -32,17 +33,22 @@ public sealed class MachineSessionSpawnerTests
         }
     }
 
-    [Fact]
-    public async Task Spawn_ResolverReturnsEndpoint_CreatesSession_ReturnsIt()
+    /// <summary>A launcher that must never be called: the Director is already registered on the machine.</summary>
+    private sealed class ThrowingLauncher : IDirectorLauncher
     {
-        var resolver = new StubResolver(new DirectorTargetResult("http://127.0.0.1:7900", "d-new", null));
+        public Task<bool> StartAsync(string machine, CancellationToken ct) =>
+            throw new InvalidOperationException("launcher must not be called: the Director is already registered");
+    }
+
+    [Fact]
+    public async Task Spawn_ResolverReturnsDirectorId_CreatesSession_ReturnsIt()
+    {
+        var resolver = new StubResolver(new DirectorTargetResult("d-new", null));
         string? seenDirectorId = null;
-        string? seenEndpoint = null;
         NewSessionRequest? seenReq = null;
-        var spawner = new MachineSessionSpawner(resolver, (directorId, endpoint, req, ct) =>
+        var spawner = new MachineSessionSpawner(resolver, (directorId, req, ct) =>
         {
             seenDirectorId = directorId;
-            seenEndpoint = endpoint;
             seenReq = req;
             return Task.FromResult<(bool, SessionDto?, string?)>((true, new SessionDto { SessionId = "sid-123" }, null));
         });
@@ -55,10 +61,8 @@ public sealed class MachineSessionSpawnerTests
         Assert.Equal("sid-123", dto!.SessionId);
         Assert.Null(error);
         Assert.Equal("d-new", directorId);
-        // The create was made against the resolved Director id (the tunnel leg) and endpoint (the fallback leg)
-        // with the same request.
+        // The create was made against the resolved Director id (the tunnel leg) with the same request.
         Assert.Equal("d-new", seenDirectorId);
-        Assert.Equal("http://127.0.0.1:7900", seenEndpoint);
         Assert.Same(request, seenReq);
         Assert.Equal("MACHINE_A", resolver.LastMachine);
     }
@@ -67,9 +71,9 @@ public sealed class MachineSessionSpawnerTests
     public async Task Spawn_ResolverReturnsOfflineError_FailsLoud_DoesNotCreateLocally()
     {
         var resolver = new StubResolver(
-            new DirectorTargetResult(null, null, "no Director on 'MACHINE_B' and the launcher could not start one"));
+            new DirectorTargetResult(null, "no Director on 'MACHINE_B' and the launcher could not start one"));
         var createCalled = false;
-        var spawner = new MachineSessionSpawner(resolver, (directorId, endpoint, req, ct) =>
+        var spawner = new MachineSessionSpawner(resolver, (directorId, req, ct) =>
         {
             createCalled = true;
             return Task.FromResult<(bool, SessionDto?, string?)>((true, new SessionDto { SessionId = "must-not-happen" }, null));
@@ -89,8 +93,8 @@ public sealed class MachineSessionSpawnerTests
     [Fact]
     public async Task Spawn_CreateFails_ReportsTheCreateError_KeepsResolvedDirectorId()
     {
-        var resolver = new StubResolver(new DirectorTargetResult("http://127.0.0.1:7901", "d-live", null));
-        var spawner = new MachineSessionSpawner(resolver, (directorId, endpoint, req, ct) =>
+        var resolver = new StubResolver(new DirectorTargetResult("d-live", null));
+        var spawner = new MachineSessionSpawner(resolver, (directorId, req, ct) =>
             Task.FromResult<(bool, SessionDto?, string?)>((false, null, "director returned 500: boom")));
 
         var (ok, dto, error, directorId) = await spawner.SpawnOnMachineAsync(
@@ -100,5 +104,42 @@ public sealed class MachineSessionSpawnerTests
         Assert.Null(dto);
         Assert.Equal("director returned 500: boom", error);
         Assert.Equal("d-live", directorId);   // still carries the resolved Director for the run record
+    }
+
+    // Issue #1727 regression: a genuinely remote, tunnel-only Director registers with a BLANK
+    // ControlEndpoint. Resolving it through the REAL RegistryDirectorTargetResolver (not a stub that
+    // injects a fake endpoint the production resolver never emits) and spawning must SUCCEED - delivery
+    // is by DirectorId over the tunnel. The old guard rejected on the blank endpoint with a 502-style
+    // "could not resolve a director" error; this test fails against that code and passes with the fix.
+    [Fact]
+    public async Task Spawn_RealResolver_DirectorWithBlankControlEndpoint_CreatesSession()
+    {
+        var director = new DirectorDto
+        {
+            DirectorId = "d-remote",
+            MachineName = "Sorens-Mac-mini",
+            ControlEndpoint = "",       // tunnel-only mode: always blank
+            Source = "stream",
+        };
+        var resolver = new RegistryDirectorTargetResolver(
+            listDirectors: () => new[] { director },
+            launcher: new ThrowingLauncher());
+
+        string? seenDirectorId = null;
+        var spawner = new MachineSessionSpawner(resolver, (directorId, req, ct) =>
+        {
+            seenDirectorId = directorId;
+            return Task.FromResult<(bool, SessionDto?, string?)>((true, new SessionDto { SessionId = "sid-remote" }, null));
+        });
+
+        var (ok, dto, error, directorId) = await spawner.SpawnOnMachineAsync(
+            "Sorens-Mac-mini", new NewSessionRequest { RepoPath = "/repo" }, CancellationToken.None);
+
+        Assert.True(ok);
+        Assert.NotNull(dto);
+        Assert.Equal("sid-remote", dto!.SessionId);
+        Assert.Null(error);
+        Assert.Equal("d-remote", directorId);
+        Assert.Equal("d-remote", seenDirectorId);   // create invoked with the resolved DirectorId
     }
 }
