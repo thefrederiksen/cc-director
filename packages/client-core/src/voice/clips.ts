@@ -68,13 +68,38 @@ export function isPhoneReady(sid: string, generatedAt: string): boolean {
  * The current turn's stamp comes from the voice metadata syncVoiceSessions caches on every poll. A
  * session with no cached metadata has never had a narration this phone knows of, so it holds nothing
  * current by definition.
+ *
+ * `reachable` must be false for a row the roster RETAINED from an unreachable Director (the caller
+ * knows this: it is exactly "this session has a RosterSessionMark"). It cannot be derived here -
+ * a retained SessionDto looks perfectly healthy, because it IS the last healthy one - which is why
+ * the roster kept drawing triangles on dead machines. It is a required parameter rather than an
+ * optional one so a new caller has to answer the question instead of defaulting to the bug.
  */
-export function rowVoiceInputs(session: SessionDto, agentWorking: boolean): VoiceRowInputs {
+export function rowVoiceInputs(session: SessionDto, agentWorking: boolean, reachable: boolean): VoiceRowInputs {
   const sid = session.sessionId ?? "";
+  // An id-less session is not addressable: it cannot be fetched, downloaded for, or navigated to. Every
+  // per-session lookup below keys off the id, and "" is a REAL key in those stores - so without this it
+  // would read whatever happens to sit under "", i.e. another session's narration, and could describe a
+  // row using text that is not its own. Nothing can be true about this row's voice; say exactly that.
+  // Found in review.
+  if (sid.length === 0) {
+    return {
+      voiceMode: Boolean(session.voiceMode),
+      reachable,
+      agentWorking,
+      voiceUnavailable: session.voiceUnavailable != null,
+      gatewayGenerating: false,
+      gatewayHasAudio: false,
+      clipDownloading: false,
+      phoneReadyForCurrentTurn: false,
+      hasSpokenText: false,
+    };
+  }
   const meta = getVoiceMeta(sid);
   const currentGeneratedAt = meta?.ready ? (meta.generatedAt ?? "") : "";
   return {
     voiceMode: Boolean(session.voiceMode),
+    reachable,
     agentWorking,
     voiceUnavailable: session.voiceUnavailable != null,
     gatewayGenerating: Boolean(session.voiceGenerating),
