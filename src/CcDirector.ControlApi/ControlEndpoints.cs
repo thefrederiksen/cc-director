@@ -1394,6 +1394,21 @@ internal static class ControlEndpoints
             // where PushedSessionStore DISCARDS it at ingest so this echo can never be mistaken for an
             // authority. (docs/new_architecture/session-state.html, defect 5.)
             SessionRole = s.GatewayResolvedRole,
+            // The Gateway's folded DISPLAY STATE, stamped back down onto this Director (Session.Gateway*,
+            // written only by the set-display-state verb) and echoed here for the loopback reader that
+            // cannot ask upstream: the desktop rail. The rail renders these VERBATIM instead of re-folding
+            // from local facts it cannot see (dictation, transcription, voice generation, the snooze clock) -
+            // which is exactly why a snoozed session read red "Needs you" on the desktop while the phone and
+            // the Cockpit read "Snoozed". Null until a Gateway stamps them (the standalone-desktop floor);
+            // the rail shows a neutral waiting-for-gateway placeholder rather than guessing. Like SessionRole
+            // these ride back UP on the next delta, where the Gateway OVERWRITES them from its own fold, so
+            // the echo can never be mistaken for an authority. (docs/new_architecture/session-state.html.)
+            EffectiveColor = s.GatewayEffectiveColor,
+            StateLabel = s.GatewayStateLabel,
+            TriageBucket = s.GatewayTriageBucket,
+            NeedsYouSince = s.GatewayNeedsYouSince,
+            SnoozeUntil = s.GatewaySnoozeUntil,
+            SnoozeExpired = s.GatewaySnoozeExpired,
             // Chunk 3: the auto-vs-explicit name marker (a future auto-rename gates on it).
             IsAutoNamed = s.IsAutoNamed,
             IsBackgroundRunning = s.IsBackgroundRunning,

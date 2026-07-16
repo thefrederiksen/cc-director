@@ -86,6 +86,9 @@ internal static class SessionCommandExecutor
         new DirectorConfigExecutor(),
         // Defect 5: the Gateway stamping a session's resolved role down onto this Director.
         new FleetRoleExecutor(),
+        // The Gateway stamping a session's FOLDED display state down onto this Director, so the desktop
+        // rail renders the Gateway's answer instead of re-folding from local facts it cannot see.
+        new FleetDisplayStateExecutor(),
     };
 
     /// <summary>

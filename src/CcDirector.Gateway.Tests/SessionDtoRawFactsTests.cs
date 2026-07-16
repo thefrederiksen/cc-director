@@ -39,6 +39,48 @@ public sealed class SessionDtoRawFactsTests
     }
 
     [Fact]
+    public void Map_EchoesTheGatewayStampedDisplayStateBackOntoTheDto()
+    {
+        var (sm, session) = NewSession();
+        try
+        {
+            // The Gateway folded this session and stamped its answer down onto the Director. Map must echo
+            // every field back onto the DTO the desktop rail reads, or the rail has no fold to render.
+            var since = new DateTime(2026, 7, 16, 12, 0, 0, DateTimeKind.Utc);
+            var until = since.AddHours(4);
+            session.ApplyGatewayDisplayState("grey", "Snoozed", "onHold", since, until, snoozeExpired: true);
+
+            var dto = ControlEndpoints.Map(session, "dir-A");
+
+            Assert.Equal("grey", dto.EffectiveColor);
+            Assert.Equal("Snoozed", dto.StateLabel);
+            Assert.Equal("onHold", dto.TriageBucket);
+            Assert.Equal(since, dto.NeedsYouSince);
+            Assert.Equal(until, dto.SnoozeUntil);
+            Assert.True(dto.SnoozeExpired);
+        }
+        finally { sm.Dispose(); }
+    }
+
+    [Fact]
+    public void Map_WithNoGatewayStamp_LeavesTheDisplayStateNull()
+    {
+        var (sm, session) = NewSession();
+        try
+        {
+            // No Gateway has stamped a fold - the "no Gateway, no fold" floor. Map must not invent one.
+            var dto = ControlEndpoints.Map(session, "dir-A");
+
+            Assert.Null(dto.EffectiveColor);
+            Assert.Null(dto.StateLabel);
+            Assert.Null(dto.TriageBucket);
+            Assert.Null(dto.SnoozeUntil);
+            Assert.False(dto.SnoozeExpired);
+        }
+        finally { sm.Dispose(); }
+    }
+
+    [Fact]
     public void Map_ControlledSubAgent_EmitsIsControlledAndControllerId()
     {
         var (sm, session) = NewSession();

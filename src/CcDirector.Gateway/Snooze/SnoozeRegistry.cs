@@ -339,6 +339,21 @@ public sealed class SnoozeRegistry
     }
 
     /// <summary>
+    /// The absolute UTC deadline an ARMED snooze returns at (<see cref="SessionDto.SnoozeUntil"/>), or null
+    /// when there is no clock to show: no entry, or a DEFERRED entry whose clock has not started (the work
+    /// it waits on has not ended - defect 20). Deliberately returns the deadline even once it is in the past
+    /// - an elapsed armed entry still has a real <c>SnoozeUntilUtc</c>; whether that reads as "over" is
+    /// <see cref="HoldStateFor"/>'s and <see cref="IsExpired"/>'s ruling, not this getter's. Pure, so it is
+    /// safe on the fold's read path alongside <see cref="HoldStateFor"/>.
+    /// </summary>
+    public DateTime? SnoozeUntilFor(string sessionId)
+    {
+        if (string.IsNullOrWhiteSpace(sessionId)) return null;
+        lock (_gate)
+            return _entries.TryGetValue(sessionId, out var e) ? e.SnoozeUntilUtc : null;
+    }
+
+    /// <summary>
     /// The owner came back: if they drove a turn on this session after the hold was asked for, drop it.
     /// Returns true only when an entry was actually removed.
     ///

@@ -33,10 +33,11 @@ public sealed class DirectorHub : Hub
     private readonly GatewayStreamRegistry _streamRegistry;
     private readonly Snooze.SnoozeLandingObserver? _snoozeLandings;
     private readonly Fleet.FleetRoleObserver? _fleetRoles;
+    private readonly Fleet.FleetDisplayStateObserver? _fleetDisplayState;
 
     public DirectorHub(PushedSessionStore store, DirectorRegistry registry, GatewayInputStatsAggregator inputStats,
         GatewayStreamRegistry streamRegistry, Snooze.SnoozeLandingObserver? snoozeLandings = null,
-        Fleet.FleetRoleObserver? fleetRoles = null)
+        Fleet.FleetRoleObserver? fleetRoles = null, Fleet.FleetDisplayStateObserver? fleetDisplayState = null)
     {
         _store = store;
         _registry = registry;
@@ -44,6 +45,7 @@ public sealed class DirectorHub : Hub
         _streamRegistry = streamRegistry;
         _snoozeLandings = snoozeLandings;
         _fleetRoles = fleetRoles;
+        _fleetDisplayState = fleetDisplayState;
     }
 
     /// <summary>
@@ -105,6 +107,10 @@ public sealed class DirectorHub : Hub
         // re-enter the liveness set, so their controllers' and workers' roles move with them). Re-resolve
         // and stamp down whatever changed, or the desktop keeps folding a role from before the reconnect.
         _fleetRoles?.ObserveSnapshot(set);
+        // The fold seam: a reconnecting Director's whole roster can change any session's folded display state
+        // (its own, and others' across the fleet). Re-fold and stamp down whatever changed, so the desktop
+        // rail renders the Gateway's answer rather than one from before the reconnect.
+        _fleetDisplayState?.ObserveSnapshot(set);
     }
 
     /// <summary>A single-session delta: upserts one session for the bound Director.</summary>
@@ -129,6 +135,10 @@ public sealed class DirectorHub : Hub
         // way the resolution is fleet-wide, and the changed roles are stamped back down so every desktop
         // folds the same answer the phone does.
         _fleetRoles?.Observe(session);
+        // THE FOLD SEAM. This delta changed this session's raw facts (activity, hold, dictation) and may
+        // change another session's fold across the fleet. Re-fold and stamp the changed answers down, so the
+        // desktop rail shows the Gateway's colour/label/triage within milliseconds of the change.
+        _fleetDisplayState?.Observe(session);
     }
 
     /// <summary>A remove/tombstone: drops one session from the bound Director's set.</summary>
@@ -147,6 +157,8 @@ public sealed class DirectorHub : Hub
         // its workers being Workers. Must run AFTER ApplyRemove so the sweep resolves the fleet that now
         // exists rather than the one that just left.
         _fleetRoles?.ObserveRemoval(sessionId);
+        // A departure re-folds the survivors too (a controller leaving un-suppresses its workers' red).
+        _fleetDisplayState?.ObserveRemoval(sessionId);
     }
 
     public override Task OnConnectedAsync()
