@@ -61,16 +61,31 @@ public sealed class WingmanVoiceService
     /// </summary>
     private static readonly HttpClient SharedTtsHttp = new() { Timeout = Timeout.InfiniteTimeSpan };
 
-    // Backpressure so a busy fleet cannot storm the hosted model into 429s (issue #1324). All
-    // generation - the turn-end hook AND the idle sweep - funnels through GenerateAsync, so gating
-    // it here bounds the whole fleet at once:
+    // Backpressure so a busy fleet does not storm the hosted model when the provider genuinely pushes
+    // back (issue #1324). All generation - the turn-end hook AND the idle sweep - funnels through
+    // GenerateAsync, so gating it here bounds the whole fleet at once:
     //  * _rateGate: a shared cooldown that skips the model call while the provider is rate limiting us.
-    //  * _genGate: caps how many generations run at once (ten sessions finishing together must not
-    //    fire ten simultaneous model calls).
     //  * _inFlight: coalesces - never two generations for the same session at the same time.
-    private const int MaxConcurrentGenerations = 2;
-    private static readonly TimeSpan GateAcquireTimeout = TimeSpan.FromSeconds(15);
-    private readonly SemaphoreSlim _genGate = new(MaxConcurrentGenerations, MaxConcurrentGenerations);
+    //
+    // THERE IS DELIBERATELY NO FIXED FLEET-WIDE CONCURRENCY CAP (removed 2026-07-16, owner's call).
+    //
+    // There used to be one: a SemaphoreSlim (_genGate) fixed at two, so at most two sessions could
+    // have their narration made at once across the whole machine, and a third dropped its cycle with
+    // "SKIPPED: 2 generations already in flight". It was invented here, not required by anything: the
+    // hosted speech/model provider allows 200 concurrent calls per model before it answers 429, and
+    // the real spend control is the account's MONTHLY CREDIT LIMIT, not a made-up concurrency number.
+    //
+    // It was also actively harmful. The cap wrapped the WHOLE generation - the model translation AND
+    // the speech synthesis - in one slot. When the speech leg stalled (a slow network minute on
+    // 2026-07-15/16), each stuck job held one of only two slots for up to a full deadline, so two
+    // slow jobs froze narration for EVERY other session, and a 25-minute blip read as the whole fleet
+    // losing its voice. A fixed cap that a single slow call can saturate is a chokepoint, not a brake.
+    //
+    // The principle: we are a RELAY of the hosted service, so the only throttle we honour is the one
+    // the SERVICE tells us about - a 429, handled by _rateGate/_ttsGate below, which back off exactly
+    // as long as the provider asks and no longer. We do not invent our own ceiling on top of that.
+    // If the provider ever needs us to slow down, it says so; until then, every session that has
+    // something to say gets its narration made immediately. Do NOT reintroduce a constant cap here.
     private readonly ConcurrentDictionary<string, byte> _inFlight = new();   // sid -> a generation is running now
     private readonly WingmanRateLimitGate _rateGate = new();
 
@@ -438,31 +453,22 @@ public sealed class WingmanVoiceService
         // freed it by the time we get here, so this is idempotent and cannot undo their verdict.
         try
         {
-            // Backpressure #2 - coalesce. Never run two generations for the same session at once (a slow
-            // turn overlapping the idle sweep would otherwise double the spend). First caller wins.
+            // Coalesce. Never run two generations for the same session at once (a slow turn overlapping
+            // the idle sweep would otherwise double the spend). First caller wins. This is the ONLY
+            // concurrency guard left, and it is per-session dedup, not a fleet-wide ceiling: it never
+            // makes one session wait on another. The fixed two-at-a-time fleet cap that used to sit here
+            // was removed 2026-07-16 (see the field comments above) - the provider's own 429 is the only
+            // throttle we honour, so a burst of simultaneous turn-ends now all generate at once.
             if (!_inFlight.TryAdd(sid, 1))
                 return;
             try
             {
-                // Backpressure #3 - cap fleet-wide concurrency so a burst of simultaneous turn-ends does
-                // not fire a burst of simultaneous model calls. Bounded wait: if the gate stays saturated
-                // we DROP this cycle rather than queue unboundedly - the idle sweep or the next turn-end
-                // regenerates it.
-                if (!await _genGate.WaitAsync(GateAcquireTimeout, ct))
-                {
-                    FileLog.Write($"[WingmanVoiceService] GenerateAsync sid={sid} SKIPPED: {MaxConcurrentGenerations} generations already in flight");
-                    return;
-                }
-                try
-                {
-                    // ONLY a generation that actually reached the model may clear the model's cooldown.
-                    // This was unconditional, so a session with nothing to say cleared the gate without
-                    // calling the provider - during a 429 storm that released the fleet back onto a
-                    // service still throttling us, on the word of a session that never spoke to it.
-                    if (await GenerateOnceAsync(sid, route, ct, showReadingWindow))
-                        _rateGate.OnSuccess();
-                }
-                finally { _genGate.Release(); }
+                // ONLY a generation that actually reached the model may clear the model's cooldown.
+                // This was unconditional, so a session with nothing to say cleared the gate without
+                // calling the provider - during a 429 storm that released the fleet back onto a
+                // service still throttling us, on the word of a session that never spoke to it.
+                if (await GenerateOnceAsync(sid, route, ct, showReadingWindow))
+                    _rateGate.OnSuccess();
             }
             catch (WingmanModelRateLimitedException rl)
             {

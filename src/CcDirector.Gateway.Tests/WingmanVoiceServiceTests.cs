@@ -670,8 +670,9 @@ public sealed class WingmanVoiceServiceTests
         //
         // A timeout is the ABSENCE of evidence: the service said nothing, so we learned nothing about
         // it. Ten sessions timing out on a slow provider are ten slow turns, and each retries on its
-        // own (the voice sweep revisits any session without audio). The fleet-wide semaphore already
-        // caps the load at two concurrent calls, whatever we decide here.
+        // own (the voice sweep revisits any session without audio). Load is bounded only by the
+        // provider's own 429 backoff (there is no fixed fleet-wide concurrency cap), whatever we
+        // decide here.
         var handler = new TtsTimeoutHandler(timeouts: int.MaxValue);
         var svc = ServiceWithHandler(handler);
 
