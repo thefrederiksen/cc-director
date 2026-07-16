@@ -188,7 +188,6 @@ public sealed class GatewayStatsDatabase : IDisposable
                 surface      TEXT    NOT NULL,
                 is_voice     INTEGER NOT NULL,
                 repo_id      INTEGER NOT NULL,
-                agent_id     INTEGER NOT NULL,
                 wingman      INTEGER NOT NULL,
                 turns        INTEGER NOT NULL,
                 chars        INTEGER NOT NULL
@@ -250,6 +249,32 @@ public sealed class GatewayStatsDatabase : IDisposable
             CREATE TABLE IF NOT EXISTS agent_identity (
                 agent_id      INTEGER PRIMARY KEY AUTOINCREMENT,
                 agent_display TEXT    NOT NULL
+            )", tx);
+
+        // ---- The per-agent tally. Its OWN table, and this is not a stylistic choice. ----
+        //
+        // The agent tally is NOT derivable from stat_delta, because AttributeToAgentLocked has two callers
+        // and only one of them feeds the totals. The ordinary delta path attributes the same delta the
+        // totals get (GatewayInputStatsAggregator.cs:460), but the first-fold back-fill attributes a
+        // session's PRIOR high-water (:395) - turns that are ALREADY in the totals from before the agent
+        // tally existed.
+        //
+        // So carrying agent_id on stat_delta has NO correct behaviour once the back-fill fires: writing a
+        // row for a back-fill inflates the totals, because those turns are already counted there, and not
+        // writing one leaves the agent tally short. Two wrong answers and no right one is not a trade-off,
+        // it is a schema that cannot express the situation.
+        //
+        // The cost is real and was accepted deliberately: stat_delta cannot answer turns-by-agent-by-hour.
+        // Carrying agent_id would ADVERTISE a cross-product the code does not maintain, and answering that
+        // question from it would silently omit every back-fill attribution - which is "what the historical
+        // data cannot tell us" written fresh into a brand new schema.
+        Execute(@"
+            CREATE TABLE IF NOT EXISTS agent_delta (
+                id       INTEGER PRIMARY KEY AUTOINCREMENT,
+                agent_id INTEGER NOT NULL,
+                is_voice INTEGER NOT NULL,
+                turns    INTEGER NOT NULL,
+                chars    INTEGER NOT NULL
             )", tx);
 
         // ---- The agent-to-agent lane (issue #1636). A SEPARATE TABLE, deliberately. ----

@@ -67,7 +67,7 @@ public sealed class StatsPageEndpointTests : IDisposable
     [Fact]
     public async Task StatsPage_Serves_SelfContainedHtml()
     {
-        var agg = new GatewayInputStatsAggregator(Path.Combine(_dir, "s.json"));
+        var agg = new GatewayInputStatsAggregator(Path.Combine(_dir, "s.db"));
         var (app, http) = await StartAsync(agg, authEnabled: false);
         try
         {
@@ -88,7 +88,7 @@ public sealed class StatsPageEndpointTests : IDisposable
     [Fact]
     public async Task StatsData_ReturnsAggregatedTotals_AndCaveats()
     {
-        var agg = new GatewayInputStatsAggregator(Path.Combine(_dir, "s.json"));
+        var agg = new GatewayInputStatsAggregator(Path.Combine(_dir, "s.db"));
         agg.Observe(Session("s1", ("voice", "phone", 3, 300)));
         agg.Observe(Session("s2", ("typed", "desktop", 1, 20)));
 
@@ -126,7 +126,7 @@ public sealed class StatsPageEndpointTests : IDisposable
     [Fact]
     public async Task StatsData_RanksRepos_ByTurns()
     {
-        var agg = new GatewayInputStatsAggregator(Path.Combine(_dir, "s.json"));
+        var agg = new GatewayInputStatsAggregator(Path.Combine(_dir, "s.db"));
         agg.Observe(new SessionDto
         {
             SessionId = "s1",
@@ -160,7 +160,7 @@ public sealed class StatsPageEndpointTests : IDisposable
     [Fact]
     public async Task StatsData_RanksAgents_ByTurns_AndCarriesTheSinceStamp()
     {
-        var agg = new GatewayInputStatsAggregator(Path.Combine(_dir, "s.json"));
+        var agg = new GatewayInputStatsAggregator(Path.Combine(_dir, "s.db"));
         agg.Observe(new SessionDto
         {
             SessionId = "s1",
@@ -198,7 +198,7 @@ public sealed class StatsPageEndpointTests : IDisposable
     [Fact]
     public async Task AuthEnabled_NoToken_Returns401_AndWithToken_Returns200()
     {
-        var agg = new GatewayInputStatsAggregator(Path.Combine(_dir, "s.json"));
+        var agg = new GatewayInputStatsAggregator(Path.Combine(_dir, "s.db"));
         var (app, http) = await StartAsync(agg, authEnabled: true);
         try
         {

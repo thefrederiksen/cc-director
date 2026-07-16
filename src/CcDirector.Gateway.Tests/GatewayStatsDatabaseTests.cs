@@ -177,7 +177,7 @@ public sealed class GatewayStatsDatabaseTests : IDisposable
         var expected = new[]
         {
             "id", "hour_utc", "session_id", "modality", "surface",
-            "is_voice", "repo_id", "agent_id", "wingman", "turns", "chars",
+            "is_voice", "repo_id", "wingman", "turns", "chars",
         };
         Assert.Equal(expected.OrderBy(c => c, StringComparer.Ordinal),
                      columns.Keys.OrderBy(c => c, StringComparer.Ordinal));
@@ -185,7 +185,12 @@ public sealed class GatewayStatsDatabaseTests : IDisposable
         // The repository and agent dimensions are integers, so SQLite cannot be asked to compare a
         // repository or agent string here even by accident.
         Assert.Equal("INTEGER", columns["repo_id"]);
-        Assert.Equal("INTEGER", columns["agent_id"]);
+
+        // Ruling B: agent_id is NOT on stat_delta. The agent tally is not derivable from these rows -
+        // the first-fold back-fill attributes turns that are already in the totals, so a row here would
+        // inflate them and no row would lose the attribution. It has its own table.
+        Assert.DoesNotContain("agent_id", columns.Keys);
+        Assert.True(TableExists(db, "agent_delta"));
     }
 
     [Fact]
