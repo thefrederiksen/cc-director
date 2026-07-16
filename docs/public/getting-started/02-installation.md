@@ -134,7 +134,10 @@ auto-updates in place. On **Windows**, install it one of two ways:
 
   This installs the Director app, the `cc-*` tools (added to your `PATH`), and the launcher -
   per-user, no admin. The Director is a .NET 10 app, so also ensure the runtime is present:
-  `winget install Microsoft.DotNet.AspNetCore.10`. Full agent walkthrough:
+  `winget install Microsoft.DotNet.AspNetCore.10`. Then sign in from the command line - the only
+  step that needs you - with `devthrottle-setup-cli-win-x64.exe signin` (or, to join a gateway you
+  already run on another machine, `devthrottle-setup-cli-win-x64.exe enroll`); it opens the browser
+  to sign in or create a free account. Full agent walkthrough:
   [Installing with an AI coding agent](https://devthrottle.com/docs/install#install-agent).
 
 - **Graphical wizard:** download **DevThrottle Setup** from your [account page](https://devthrottle.com/signup)
