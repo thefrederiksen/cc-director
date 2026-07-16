@@ -95,7 +95,19 @@ This downloads all tools from GitHub releases, places them in `%LOCALAPPDATA%\cc
 
 ### macOS
 
-On macOS, use the **DevThrottle Setup** app instead: download `devthrottle-setup-mac-arm64.zip` from the [latest release](https://github.com/example-org/devthrottle/releases/latest), unzip it, and right-click -> Open (it is ad-hoc-signed, so Gatekeeper asks once). The wizard installs the Director to `~/Applications`, installs every `cc-*` tool into one shared Python environment under `~/Library/Application Support/cc-director`, and symlinks the tools into `~/.local/bin` (added to your shell `PATH`). Apple Silicon only; Workstation-only (no Gateway on macOS).
+On macOS, use the **DevThrottle Setup** app instead. Install and open it with one command in Terminal:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/example-org/devthrottle/main/scripts/install-mac.sh | bash
+```
+
+The command downloads the wizard from the [latest release](https://github.com/example-org/devthrottle/releases/latest), verifies its SHA-256 hash against the release manifest, places **DevThrottle Setup** in `~/Applications`, and opens it.
+
+It uses `curl` on purpose. The wizard is ad-hoc-signed, not notarized by Apple, so a **browser** download of it is blocked by Gatekeeper — "Apple could not verify 'DevThrottle Setup' is free of malware" — and on macOS 15 (Sequoia) and later that dialog offers no way to open the app (the old right-click -> Open bypass was removed). Downloads made with `curl` are never quarantined, so the wizard opens normally.
+
+If you already downloaded the zip with a browser and hit that block, either run the command above (recommended), or open **System Settings -> Privacy & Security**, scroll down to the message about "DevThrottle Setup", and choose **Open Anyway**. Removing the quarantine flag with `xattr -dr com.apple.quarantine "DevThrottle Setup.app"` also works, but only on a freshly unzipped copy that has never been launched — macOS remembers a copy it has already blocked.
+
+The wizard installs the Director to `~/Applications`, installs every `cc-*` tool into one shared Python environment under `~/Library/Application Support/cc-director`, and symlinks the tools into `~/.local/bin` (added to your shell `PATH`). Apple Silicon only; Workstation-only (no Gateway on macOS).
 
 ### Verify installation
 
