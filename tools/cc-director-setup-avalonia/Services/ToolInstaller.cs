@@ -23,6 +23,10 @@ public class ToolInstaller
     [
         // dev-throttle: the product's main skill (renamed from cc-director).
         "dev-throttle",
+        // fleet-comms (issue #723): teaches an agent the cc-devthrottle session/message verbs
+        // so every machine's agents know the capability, not just the CC_FLEET_TOOLS env hint.
+        // Kept in sync with SkillInstaller.SkillNames in tools/cc-director-setup.
+        "fleet-comms",
         // move-session: relocate a live session to another slot/Director via the Gateway handover,
         // with an approval gate and a verify-before-mark lifecycle.
         "move-session",
