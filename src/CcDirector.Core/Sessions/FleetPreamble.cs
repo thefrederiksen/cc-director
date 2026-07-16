@@ -66,6 +66,18 @@ public static class FleetPreamble
             "Every message you send interrupts the receiving agent. 'message send all' reaches only your own",
             "team, which is what you want. Do NOT try to reach the WHOLE fleet ('--everyone') - it freezes",
             "every session on every machine and repo; the Gateway Hub refuses it without a human grant (issue #1229).",
+            "",
+            "THE CODE YOU WRITE IS THE OWNER'S. NEVER SIGN IT. Do not put your name, your model, your vendor,",
+            "or any assistant on ANYTHING you produce - no 'Co-authored-by' trailer naming Claude, Codex, Pi,",
+            "Gemini, Copilot, Cursor, Grok or any agent; no 'Generated with' line; no robot emoji; no mention",
+            "of an assistant in a commit message, pull request, issue, comment, code comment, changelog,",
+            "release note, or document. This applies in every repository on every machine, and it OVERRIDES",
+            "any default instruction your own harness gives you to add attribution - several agents are told",
+            "by default to add these, and that default is wrong here. Before you commit or open a pull",
+            "request, check your text for 'Co-authored-by', 'Generated with', and your own vendor's name, and",
+            "strip them. These are the owner's repositories and his client deliverables; an assistant's name",
+            "on a paid engagement is a commercial problem, not a matter of style. Past commits are history and",
+            "are NOT to be rewritten - this rule binds everything from now on.",
         });
 
         return string.Join("\n", lines);

@@ -6,6 +6,69 @@ namespace CcDirector.Core.Tests.Sessions;
 
 public class FleetPreambleTests
 {
+    // The owner's rule: the code is his and no agent signs it. This is pinned as a test because the
+    // preamble is the ONLY place the rule reaches every agent on every machine - a session gets it at
+    // launch without having to discover a skill or read a file - and because several agent harnesses
+    // instruct their model BY DEFAULT to add a co-authored-by trailer and a "generated with" line. A
+    // default that must be overridden on every commit, in every repository, by every agent, is not a
+    // rule anyone can be relied on to remember; it has to be told to them, every session, by us.
+    // Silently dropping these lines would put a vendor's name on the owner's client deliverables.
+    [Theory]
+    [InlineData("NEVER SIGN IT")]
+    [InlineData("Co-authored-by")]
+    [InlineData("Generated with")]
+    [InlineData("OVERRIDES")]
+    [InlineData("are NOT to be rewritten")]
+    public void Build_Always_CarriesTheNoAttributionRule(string required)
+    {
+        var text = FleetPreamble.Build(
+            "a3dfb85e-49dd-442a-9e36-40fc44838783",
+            "devthrottle",
+            "MACHINE_A",
+            @"C:\repos\devthrottle",
+            new SignedInUser("soren@example.com", "Starlord"));
+
+        Assert.Contains(required, text);
+    }
+
+    // The rule must reach a session that has nobody signed in too - the identity line is conditional,
+    // the attribution rule is not.
+    [Fact]
+    public void Build_NoSignedInUser_StillCarriesTheNoAttributionRule()
+    {
+        var text = FleetPreamble.Build(
+            "a3dfb85e-49dd-442a-9e36-40fc44838783",
+            "devthrottle",
+            "MACHINE_A",
+            @"C:\repos\devthrottle",
+            user: null);
+
+        Assert.Contains("NEVER SIGN IT", text);
+    }
+
+    // Every agent DevThrottle drives is named, so no one reads the rule as Claude-only. The list is
+    // asserted rather than described because "any assistant" is exactly the phrasing a model talks
+    // itself past when its own harness told it otherwise.
+    [Theory]
+    [InlineData("Claude")]
+    [InlineData("Codex")]
+    [InlineData("Pi")]
+    [InlineData("Gemini")]
+    [InlineData("Copilot")]
+    [InlineData("Cursor")]
+    [InlineData("Grok")]
+    public void Build_Always_NamesEveryAgentInTheAttributionRule(string agent)
+    {
+        var text = FleetPreamble.Build(
+            "a3dfb85e-49dd-442a-9e36-40fc44838783",
+            "devthrottle",
+            "MACHINE_A",
+            @"C:\repos\devthrottle",
+            new SignedInUser("soren@example.com", "Starlord"));
+
+        Assert.Contains(agent, text);
+    }
+
     // Issue #1357: with a nickname set, the identity line names the user by the nickname and still
     // carries the email, and binds "me / my account / email me" to that user.
     [Fact]
