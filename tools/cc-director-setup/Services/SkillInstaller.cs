@@ -21,6 +21,10 @@ public sealed class SkillInstaller
         // fleet-comms (issue #723): teaches an agent the cc-devthrottle session/message verbs
         // so every machine's agents know the capability, not just the CC_FLEET_TOOLS env hint.
         "fleet-comms",
+        // move-session: relocate a live session to another slot/Director via the Gateway handover,
+        // with an approval gate and a verify-before-mark lifecycle. Drives the Gateway and the
+        // cc-devthrottle CLI, not the removed per-Director REST surface.
+        "move-session",
     ];
 
     private static readonly HttpClient Http = CreateClient();
