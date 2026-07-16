@@ -277,8 +277,11 @@ public sealed class VoiceUploadStore
         var uid = NormalizeId(uploadId) ?? throw new InvalidOperationException("invalid upload id");
         var dir = DirFor(uid);
         Directory.CreateDirectory(dir);
+        // Carry the #1593 re-baseline forward: a phone that never saw our 502 simply RE-REGISTERS its upload
+        // id and retries. That path lands here, so dropping the value would hand the retry back the very
+        // baseline our own failed attempt invalidated - the exact drop this field exists to stop.
         WriteRecordMarker(dir, new DictationDeliveryRecord(
-            DictationDeliveryState.Pending, false, false, "", null, sessionId ?? ""));
+            DictationDeliveryState.Pending, false, false, "", null, sessionId ?? "", ExistingRebaseline(uid)));
         FileLog.Write($"[VoiceUploadStore] MarkPending: uploadId={uid} sessionId={sessionId}");
     }
 
@@ -352,9 +355,12 @@ public sealed class VoiceUploadStore
         var dir = DirFor(uid);
         Directory.CreateDirectory(dir);
         // Write ONLY the marker - keep the chunk bytes (the retry re-drives them), the opposite of a tombstone.
-        // Preserve the owning session id so a later ClearFailed can restore a PENDING marker that re-locks it.
+        // Preserve the owning session id so a later ClearFailed can restore a PENDING marker that re-locks it,
+        // and the #1593 re-baseline so a transcription failure on a retry cannot erase what an earlier failed
+        // DELIVERY attempt already learned about the buffer.
         WriteRecordMarker(dir, new DictationDeliveryRecord(
-            DictationDeliveryState.Failed, false, false, "", reasonCode ?? "", ExistingSessionId(uid)));
+            DictationDeliveryState.Failed, false, false, "", reasonCode ?? "", ExistingSessionId(uid),
+            ExistingRebaseline(uid)));
         FileLog.Write($"[VoiceUploadStore] MarkFailed: uploadId={uid} reason={reasonCode} (chunks retained)");
     }
 
@@ -373,13 +379,52 @@ public sealed class VoiceUploadStore
         try
         {
             WriteRecordMarker(DirFor(uid), new DictationDeliveryRecord(
-                DictationDeliveryState.Pending, false, false, "", null, failed.SessionId));
+                DictationDeliveryState.Pending, false, false, "", null, failed.SessionId,
+                failed.RebaselineBufferBytes));
             FileLog.Write($"[VoiceUploadStore] ClearFailed: uploadId={uid} back to PENDING (chunks retained)");
             return true;
         }
         catch (Exception ex)
         {
             FileLog.Write($"[VoiceUploadStore] ClearFailed uploadId={uid} failed: {ex.Message}");
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Record the honest moved-on baseline for this upload id after one of OUR OWN delivery attempts failed
+    /// (Lost Dictations mission, issue #1593). The record stays exactly where it was - this is NOT a state
+    /// transition and NOT a tombstone: a PENDING record stays PENDING with its chunks intact, so the client's
+    /// retry re-drives normally. Only <see cref="DictationDeliveryRecord.RebaselineBufferBytes"/> moves.
+    ///
+    /// MONOTONIC: the stored value only ever grows (each failed attempt adds more of its own noise, and a
+    /// later fresh read is at least as honest as an earlier one), so repeated failures can never lower the
+    /// baseline back into a range where our own noise reads as a real turn.
+    ///
+    /// A no-op returning false when there is no record yet, or when the record is already terminal
+    /// (DELIVERED / ABANDONED): those are resolved and their guard has already run, so re-baselining them
+    /// would move a number nothing will read again.
+    /// </summary>
+    public bool RecordFailedDeliveryBaseline(string uploadId, long bufferBytes)
+    {
+        var uid = NormalizeId(uploadId);
+        if (uid is null) return false;
+        if (ReadRecord(uid) is not { } record) return false;
+        if (record.State is DictationDeliveryState.Delivered or DictationDeliveryState.Abandoned) return false;
+
+        var merged = Math.Max(record.RebaselineBufferBytes ?? 0, bufferBytes);
+        if (merged <= (record.RebaselineBufferBytes ?? -1)) return false; // already at least this honest
+        try
+        {
+            // Marker only - the chunk bytes stay put, because this upload is still going to be delivered.
+            WriteRecordMarker(DirFor(uid), record with { RebaselineBufferBytes = merged });
+            FileLog.Write($"[VoiceUploadStore] RecordFailedDeliveryBaseline: uploadId={uid} rebaseline={merged} " +
+                $"(state={record.State}, chunks retained)");
+            return true;
+        }
+        catch (Exception ex)
+        {
+            FileLog.Write($"[VoiceUploadStore] RecordFailedDeliveryBaseline uploadId={uid} failed: {ex.Message}");
             return false;
         }
     }
@@ -412,6 +457,11 @@ public sealed class VoiceUploadStore
     // The owning session id already recorded for this upload id (empty when there is no record yet), so a
     // state transition preserves the session id first written by MarkPending at register (issue #1188).
     private string ExistingSessionId(string uploadId) => ReadRecord(uploadId)?.SessionId ?? "";
+
+    // The re-baseline already recorded for this upload id (null when there is no record, or no attempt has
+    // failed), so a NON-TERMINAL state transition preserves what a failed delivery attempt learned (#1593).
+    // The terminal tombstones deliberately do NOT carry it: their guard has already run for the last time.
+    private long? ExistingRebaseline(string uploadId) => ReadRecord(uploadId)?.RebaselineBufferBytes;
 
     // Write the small durable marker first (atomic temp+move), THEN discard the heavy chunk bytes, so a
     // crash between the two leaves a valid tombstone rather than orphaned chunks with no marker. Used by the
@@ -492,10 +542,21 @@ public enum DictationDeliveryState { Pending, Delivered, Abandoned, Failed }
 /// retry. Every state carries the <see cref="SessionId"/> so a transition (e.g. FAILED back to PENDING)
 /// preserves the owning session.
 /// </summary>
+/// <param name="RebaselineBufferBytes">
+/// The honest moved-on baseline for this upload id after one of OUR OWN delivery attempts failed (Lost
+/// Dictations mission, issue #1593), or null when no attempt has failed. A failed submit types the text into
+/// the terminal and clears it again, growing the session buffer by thousands of bytes that the moved-on guard
+/// cannot tell apart from real turns - so a retry judged against the phone's record-time baseline gets dropped
+/// as stale by noise the failure itself made. The guard therefore judges a retry against the LARGER of the
+/// request's baseline and this value. It lives on the SERVER record, not in the phone's request, so a phone
+/// that never saw the 502 still retries against the honest baseline. Null (absent) in every record written
+/// before this field existed, which reads back as "no attempt has failed" - the correct meaning.
+/// </param>
 public sealed record DictationDeliveryRecord(
     DictationDeliveryState State,
     bool Submitted,
     bool MovedOn,
     string Transcript,
     string? Reason,
-    string SessionId = "");
+    string SessionId = "",
+    long? RebaselineBufferBytes = null);

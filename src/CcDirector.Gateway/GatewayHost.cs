@@ -293,6 +293,11 @@ public sealed class GatewayHost : IAsyncDisposable
     private readonly TailscaleServeProvisioner _serveProvisioner;
     private readonly GatewayTurnBriefStore _turnBriefStore;
     private readonly KeyVault _keyVault;
+
+    // Lost Dictations mission (#1593): the transcription owner the dictation endpoint uses. Null in
+    // production - StartAsync then builds the real one over _keyVault. Only a test injects a stub, because
+    // the dictation delivery arm sits BEHIND a successful transcribe and the hosted URL is a constant.
+    private readonly Transcription.GatewayTranscriptionService? _dictationTranscription;
     // Issue #881: mints/ensures the DevThrottle inference key after sign-in and at startup. Null on a
     // host with no credential service (nothing to sign in to).
     private readonly Account.TranscriptionKeyAutoProvisioner? _transcriptionKeyProvisioner;
@@ -460,7 +465,16 @@ public sealed class GatewayHost : IAsyncDisposable
     /// isolated temp path; production omits it for the shared default at
     /// <c>CcStorage.Root()\mission-notes.json</c>.
     /// </param>
-    public GatewayHost(int port = DefaultPort, string? token = null, bool? authEnabled = null, string? instancesDirectory = null, string? turnBriefDirectory = null, string? keyVaultPath = null, string? workListsPath = null, string? cronJobsPath = null, string? cronRunsPath = null, string? devicesPath = null, string? telemetryQueuePath = null, int? telemetryQueueMaxSize = null, TimeSpan? telemetryRetryInterval = null, Core.Account.DevThrottleAccountService? account = null, bool? streamMode = null, string? inputStatsPath = null, string? snoozePath = null, string? missionsPath = null, string? missionNotesPath = null)
+    /// <param name="dictationTranscription">
+    /// Override the transcription owner the DICTATION endpoint uses (Lost Dictations mission, issue #1593).
+    /// The dictation complete path transcribes BEFORE it delivers, so an end-to-end test of the delivery
+    /// arm cannot reach that arm at all without a transcription that succeeds - and the hosted base URL is a
+    /// compile-time constant, so there is no way to point it at a local stub. Tests pass a service built over
+    /// a stub HttpClient (and their own telemetry + audio archive, which otherwise default to process-wide
+    /// Shared instances that write to the real user's directories). Production omits it and the host builds
+    /// the service over its own key vault, exactly as before.
+    /// </param>
+    public GatewayHost(int port = DefaultPort, string? token = null, bool? authEnabled = null, string? instancesDirectory = null, string? turnBriefDirectory = null, string? keyVaultPath = null, string? workListsPath = null, string? cronJobsPath = null, string? cronRunsPath = null, string? devicesPath = null, string? telemetryQueuePath = null, int? telemetryQueueMaxSize = null, TimeSpan? telemetryRetryInterval = null, Core.Account.DevThrottleAccountService? account = null, bool? streamMode = null, string? inputStatsPath = null, string? snoozePath = null, string? missionsPath = null, string? missionNotesPath = null, Transcription.GatewayTranscriptionService? dictationTranscription = null)
     {
         Port = port;
         Token = token ?? GatewayAuth.LoadOrCreate();
@@ -520,6 +534,7 @@ public sealed class GatewayHost : IAsyncDisposable
         // Production omits keyVaultPath for the shared default; tests pass an isolated path so
         // they never touch the real %LOCALAPPDATA% key store.
         _keyVault = new KeyVault(keyVaultPath);
+        _dictationTranscription = dictationTranscription;
         // Named work lists persist across a Gateway restart (issue #301): one JSON file in the
         // Gateway data dir, loaded here (stale claims released) and written through on every
         // mutation. Tests MUST pass an isolated path so they never touch the real store.
@@ -1421,7 +1436,7 @@ public sealed class GatewayHost : IAsyncDisposable
         // in resumable chunks and the Gateway assembles → transcribes → injects the turn into the
         // owning session itself, so a refresh / dropped connection cannot lose a recorded utterance.
         GatewayDictationEndpoint.Map(_app, Registry, SessionOwners, Token,
-            new Transcription.GatewayTranscriptionService(_keyVault), _transcribingSessions, _dictationUploads, Devices,
+            _dictationTranscription ?? new Transcription.GatewayTranscriptionService(_keyVault), _transcribingSessions, _dictationUploads, Devices,
             pushedSessions: PushedSessions,
             sendCommand: SendCommandAsync);
         // Durable per-upload-id dictation record (issue #1183): a PENDING upload's chunks are retained
