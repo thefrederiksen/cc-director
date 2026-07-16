@@ -795,6 +795,16 @@ internal static class ControlEndpoints
         // POST /fleet/hold - park a session, or release it (the old POST /sessions/{sid}/hold). A hold asked
         // for mid-turn is DEFERRED and applies when the turn settles (see HoldState) - the response's pending
         // flag says so, which is why it is surfaced rather than swallowed.
+        //
+        // THE GATEWAY OWNS HOLD. When one is configured, EVERY hold - a session holding ITSELF (always a
+        // local session), a manager holding a worker, local or remote - is routed to the Gateway, because
+        // only the Gateway's SnoozeRegistry records the hold, defers it while the turn runs, lands it when
+        // the work settles, and expires it on the clock. A hold that stops at this Director only tints the
+        // local rail mirror, which the Gateway's roster fold then overwrites back to "not held" - so it
+        // evaporates within a poll. That was the agent-self-hold defect: `cc-devthrottle session hold` on a
+        // LOCAL session short-circuited to a mirror-only write and never reached the registry, so it never
+        // landed and never held. Only when there is NO Gateway does the local mirror become the sole owner
+        // worth writing, and only then do we dispatch the hold verb here.
         app.MapPost("/fleet/hold", async (FleetHoldRequest req, CancellationToken ct) =>
         {
             if (req is null || string.IsNullOrWhiteSpace(req.ToSessionId))
@@ -802,7 +812,25 @@ internal static class ControlEndpoints
             if (!Guid.TryParse(req.ToSessionId, out var toGuid))
                 return Results.BadRequest(new { error = "invalid toSessionId format" });
 
-            if (sessionManager.GetSession(toGuid) is not null)
+            var gw = gatewayClientProvider?.Invoke();
+            var route = ChooseHoldRoute(gw is { IsEnabled: true }, sessionManager.GetSession(toGuid) is not null);
+
+            if (route == HoldRoute.Gateway)
+            {
+                try
+                {
+                    var held = await gw!.HoldFleetAsync(req.ToSessionId, req.OnHold, req.SnoozeMinutes, ct);
+                    return Results.Json(held);
+                }
+                catch (Exception ex)
+                {
+                    FileLog.Write($"[ControlEndpoints] /fleet/hold relay to {toGuid} FAILED: {ex.Message}");
+                    return Results.Json(new { error = $"Cannot hold the target via the Gateway: {ex.Message}" },
+                        statusCode: StatusCodes.Status502BadGateway);
+                }
+            }
+
+            if (route == HoldRoute.LocalMirror)
             {
                 var command = new DirectorCommand
                 {
@@ -814,21 +842,8 @@ internal static class ControlEndpoints
                 return CommandResultToHttp(result);
             }
 
-            var gw = gatewayClientProvider?.Invoke();
-            if (gw is not { IsEnabled: true })
-                return Results.Json(new { error = "Session not found on this Director and no Gateway is configured." },
-                    statusCode: StatusCodes.Status404NotFound);
-            try
-            {
-                var held = await gw.HoldFleetAsync(req.ToSessionId, req.OnHold, req.SnoozeMinutes, ct);
-                return Results.Json(held);
-            }
-            catch (Exception ex)
-            {
-                FileLog.Write($"[ControlEndpoints] /fleet/hold relay to {toGuid} FAILED: {ex.Message}");
-                return Results.Json(new { error = $"Cannot hold the target via the Gateway: {ex.Message}" },
-                    statusCode: StatusCodes.Status502BadGateway);
-            }
+            return Results.Json(new { error = "Session not found on this Director and no Gateway is configured." },
+                statusCode: StatusCodes.Status404NotFound);
         });
 
         // GET /fleet/buffer?sessionId=... - read what a session's terminal is showing (the old GET
@@ -1113,6 +1128,32 @@ internal static class ControlEndpoints
         var tailnetEndpoint = resolution.IsResolved ? resolution.Endpoint : "";
         return (machineName, user, tailnetEndpoint);
     }
+
+    /// <summary>
+    /// Where a hold on <c>POST /fleet/hold</c> is decided. Extracted from the endpoint so the one rule
+    /// that broke agent self-hold is unit-testable without an HTTP round trip.
+    /// </summary>
+    internal enum HoldRoute
+    {
+        /// <summary>Record it in the Gateway's SnoozeRegistry - the only place a hold is enforced.</summary>
+        Gateway,
+        /// <summary>No Gateway: write the local rail mirror, the only owner standalone has.</summary>
+        LocalMirror,
+        /// <summary>Unknown session and no Gateway to ask - 404.</summary>
+        NotFound,
+    }
+
+    /// <summary>
+    /// The hold routing rule. The Gateway owns hold, so whenever one is configured EVERY hold goes to it -
+    /// including a session holding ITSELF, which is always local. Short-circuiting a local session to the
+    /// mirror-only local path (the pre-fix behaviour) never reached the SnoozeRegistry, so the hold never
+    /// landed and evaporated on the next roster fold. The local mirror is written only when there is no
+    /// Gateway to own the hold.
+    /// </summary>
+    internal static HoldRoute ChooseHoldRoute(bool gatewayEnabled, bool sessionIsLocal)
+        => gatewayEnabled ? HoldRoute.Gateway
+         : sessionIsLocal ? HoldRoute.LocalMirror
+         : HoldRoute.NotFound;
 
     /// <summary>Folder name of a repo path, for display fallback. Empty path -> "Unknown Project".</summary>
     // Gateway Cleanup Phase 0 (Worker R2): widened to internal so CatalogReadExecutor's claude-sessions core
