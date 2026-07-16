@@ -442,17 +442,28 @@ function VoiceIndicator({ session }: { session: SessionDto }) {
   return null;
 }
 
-// The per-row dictation status pill (#1139 follow-up, honest states for #1182/#1184). Reads the same shared
-// store the on-screen status strip reads, so a Speak Send shows on the roster too: a muted progress label
-// while it is in flight, a calm amber "saved - still sending" while it is held on a bad connection, a
-// "saved - tap to retry" while it is parked after a permanent failure, and a red "Dictation failed" for the
+// The per-row dictation status pill (#1139 follow-up, honest states for #1182/#1184, the dropped states for
+// #1590). Reads the same shared store the on-screen status strip reads, so a Speak Send shows on the roster
+// too: a muted progress label while it is in flight, a calm amber "saved - still sending" while it is held on
+// a bad connection, a "saved - tap to retry" while it is parked after a permanent failure, a red "Not sent -
+// tap to open" when the session moved on and the words were dropped, and a red "Dictation failed" for the
 // rare hard failure. A just-"done" send shows nothing here; the brief "Sent" acknowledgement belongs on the
 // session screen, not as roster noise.
+//
+// Every non-busy phase is named EXPLICITLY, because the fallback below is a spinner: a phase that falls
+// through would sit on the roster spinning forever, claiming a finished dictation is still working.
 function DictationRowBadge({ sessionId }: { sessionId: string | undefined }) {
   const status = useDictationStatusFor(sessionId);
   if (!status || status.phase === "done") return null;
   if (status.phase === "failed") {
     return <span className="row-dictate row-dictate-failed">Dictation failed</span>;
+  }
+  if (status.phase === "dropped") {
+    // The words were NOT delivered and are waiting on the session screen to be sent or dismissed.
+    return <span className="row-dictate row-dictate-failed">Not sent - tap to open</span>;
+  }
+  if (status.phase === "unheard") {
+    return <span className="row-dictate row-dictate-parked">Nothing heard</span>;
   }
   if (status.phase === "held") {
     return <span className="row-dictate row-dictate-held">Saved - still sending</span>;

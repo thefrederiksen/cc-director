@@ -38,6 +38,17 @@ export interface PendingDictation {
    *  timer) - the forever-loop stops. It is cleared only by an explicit user Retry, which moves the record
    *  back to active. Absent for a normal, still-auto-retrying clip. */
   parkedReason?: string;
+  /** Set when the server deliberately DROPPED this clip as stale - the session moved on while it was in
+   *  flight (issue #1590). Like `parkedReason` it EXCLUDES the record from every automatic retry trigger,
+   *  and for a stronger reason: the drop wrote a permanent moved-on tombstone against this upload id (issue
+   *  #1183), so re-driving it could only ever be dropped again. The record is kept so the drop stays visible
+   *  across a reload (nothing about a lost dictation may be silent) and so the words can be offered back.
+   *  It leaves only by an explicit user action - Send anyway, Retry, or Dismiss. Absent for a normal clip. */
+  staleDropped?: boolean;
+  /** The words the server heard before it dropped the clip as stale (issue #1590), stored durably so
+   *  "Send anyway" still works after a reload. Empty on the rare drop before transcription, where the audio
+   *  is what gets retried instead. Only meaningful alongside `staleDropped`. */
+  droppedTranscript?: string;
   /** Set when the user ABANDONED this clip (issue #1181, Task 5). The record is kept ONLY to carry the
    *  abandon through to the Gateway: while set, the retry loop no longer uploads it - it calls
    *  /dictation/{id}/abandon instead, and deletes the on-device copy once the Gateway confirms (retrying

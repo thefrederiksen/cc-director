@@ -2592,6 +2592,45 @@ a.banner-btn {
   background: rgba(148, 163, 184, 0.12);
   border-color: rgba(148, 163, 184, 0.4);
 }
+/* Dropped as stale (#1590): the session moved on and the user's words were NOT delivered. Red, like the
+   other failure, because from the user's side that is exactly what it is - and unlike every other strip it
+   wraps, because it quotes the words back so they can be sent with one tap. */
+.dictate-strip-dropped {
+  color: #ffb4b4;
+  background: rgba(241, 76, 76, 0.12);
+  border-color: rgba(241, 76, 76, 0.45);
+  flex-wrap: wrap;
+  align-items: flex-start;
+}
+/* Nothing was heard (#1590): a muted notice. Nothing was lost, so it must not read as an alarm - but it is
+   still shown, because a Send that ends in silence is the whole defect. */
+.dictate-strip-unheard {
+  color: #cbd5e1;
+  background: rgba(148, 163, 184, 0.12);
+  border-color: rgba(148, 163, 184, 0.4);
+}
+
+/* The dropped strip's stacked message + quoted words. flex-basis keeps the buttons beside it on a wide
+   screen and drops them below on a narrow phone. */
+.dictate-strip-body {
+  flex: 1 1 200px;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+/* The words handed back. Long dictations must wrap rather than push the strip sideways - the page body
+   never scrolls horizontally. */
+.dictate-strip-quote {
+  margin: 0;
+  padding: 6px 10px;
+  border-left: 3px solid rgba(241, 76, 76, 0.5);
+  border-radius: 4px;
+  background: rgba(0, 0, 0, 0.18);
+  color: var(--text);
+  font-style: italic;
+  overflow-wrap: anywhere;
+}
 
 .dictate-strip-icon {
   flex: 0 0 auto;
@@ -2607,6 +2646,8 @@ a.banner-btn {
 .dictate-strip-failed .dictate-strip-icon { background: rgba(241, 76, 76, 0.3); }
 .dictate-strip-held .dictate-strip-icon { background: rgba(217, 164, 65, 0.3); }
 .dictate-strip-parked .dictate-strip-icon { background: rgba(148, 163, 184, 0.3); }
+.dictate-strip-dropped .dictate-strip-icon { background: rgba(241, 76, 76, 0.3); }
+.dictate-strip-unheard .dictate-strip-icon { background: rgba(148, 163, 184, 0.3); }
 
 /* Small inline spinner for the strip's in-flight state (reuses the voice-spin keyframes). */
 .dictate-strip-spin {

@@ -30,7 +30,26 @@ import { useMemo, useSyncExternalStore } from "react";
 // done        - the server confirmed it owns the turn (delivered). Brief, then auto-clears.
 // failed      - a genuine, non-recoverable failure (durable storage unavailable, so the clip could not
 //               be saved at all). Distinct from held: nothing is retrying.
-export type DictationPhase = "saving" | "uploading" | "transcribing" | "held" | "parked" | "done" | "failed";
+// dropped     - the server deliberately DROPPED this clip as stale: the session moved on while it was in
+//               flight, so the words were never delivered (issue #1590). Nothing is retrying and re-driving
+//               the same upload id is useless by design (its moved-on tombstone is permanent, issue #1183) -
+//               so this is a STICKY state that must never clear itself. It carries `transcript` when the
+//               server heard something, and the UI offers "Send anyway" (a fresh turn) plus Dismiss. On the
+//               rare drop before transcription the transcript is empty, retryable is true, and the audio is
+//               kept for an explicit Retry under a FRESH upload id.
+// unheard     - the clip was delivered to the server, which heard NOTHING in it (silence, no typed text), so
+//               there was no turn to submit (issue #1590). Nothing was lost and there is nothing to retry;
+//               this is a visible, dismissible notice so a Send never ends in silence.
+export type DictationPhase =
+  | "saving"
+  | "uploading"
+  | "transcribing"
+  | "held"
+  | "parked"
+  | "done"
+  | "failed"
+  | "dropped"
+  | "unheard";
 
 export interface DictationStatus {
   /** The session the dictation is being sent into. */
@@ -47,10 +66,17 @@ export interface DictationStatus {
    *  failed, the non-recoverable reason. */
   error?: string;
   /** True when the clip is saved durably and the UI should offer a retry control: the held phase (an
-   *  "Upload now" that kicks a waiting or throttled retry to full speed) and the parked phase (an explicit
-   *  "Retry" that re-enters the active drive after a permanent failure stopped the auto-loop). False for a
-   *  genuine, non-recoverable failure that no retry can fix. */
+   *  "Upload now" that kicks a waiting or throttled retry to full speed), the parked phase (an explicit
+   *  "Retry" that re-enters the active drive after a permanent failure stopped the auto-loop), and a
+   *  `dropped` clip with no transcript (an explicit Retry under a FRESH upload id). False for a genuine,
+   *  non-recoverable failure that no retry can fix, and for a `dropped` clip that HAS a transcript - there
+   *  the action is "Send anyway", not a retry, because re-driving that upload id can only be dropped again. */
   retryable?: boolean;
+  /** The words the server heard, carried on a `dropped` status so the UI can offer them back ("Send anyway",
+   *  issue #1590). Present only when the clip was dropped as stale AND had been transcribed - the whole point
+   *  of the dropped state is that the user's words are not thrown away silently. Empty/absent on the rare
+   *  drop before transcription, where the audio is kept for a fresh-id Retry instead. */
+  transcript?: string;
   /** Epoch milliseconds of the last update (newest-first ordering, and the done auto-clear timer). */
   updatedAt: number;
 }
