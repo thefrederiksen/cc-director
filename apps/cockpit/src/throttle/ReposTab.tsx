@@ -226,9 +226,10 @@ export function ReposTab({ data }: { data: ThrottleData }) {
           <li>
             Repos are grouped by their GitHub repository, so every worktree and every machine you check a
             repo out on rolls up into one row (the working directories that fed it are listed under the
-            name). A checkout with no GitHub remote falls back to its folder path. Time is deliberately not
-            shown: an idle hour looks the same as a heads-down hour, so it would lie. Turns and characters
-            track what you actually pushed through.
+            name). A checkout whose Director has not reported a GitHub remote is grouped by its folder name
+            instead, so the same repo across machines still merges. Time is deliberately not shown: an idle
+            hour looks the same as a heads-down hour, so it would lie. Turns and characters track what you
+            actually pushed through.
           </li>
           <li>
             Tokens are not shown - the tally counts turns and characters, never tokens, and this tab never
