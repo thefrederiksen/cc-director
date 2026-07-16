@@ -52,7 +52,8 @@ public sealed class HostedAgent : IAgentBrain
 
     /// <summary>
     /// Create a hosted agent. The optional parameters are seams: driver defaults to
-    /// <see cref="ClaudeDriver"/>, backend to a real ConPty; tests substitute fakes.
+    /// <see cref="ClaudeDriver"/>, backend to the platform pseudo-console (ConPty on Windows,
+    /// UnixPty on macOS and Linux); tests substitute fakes.
     /// </summary>
     public HostedAgent(
         HostedAgentOptions options,
@@ -61,7 +62,7 @@ public sealed class HostedAgent : IAgentBrain
     {
         _options = options ?? throw new ArgumentNullException(nameof(options));
         _driver = driver ?? new ClaudeDriver();
-        _backendFactory = backendFactory ?? (() => new ConPtyBackend());
+        _backendFactory = backendFactory ?? (() => PlatformSessionBackend.CreateDefault());
         _log = options.Log ?? BrainLog.Write;
     }
 

@@ -197,7 +197,11 @@ public class ClaudeDriverTests
     {
         var ex = Assert.Throws<FileNotFoundException>(
             () => new ClaudeDriver().ResolveExecutable(@"Q:\nope\claude.exe"));
-        Assert.Contains("not found", ex.Message);
+        // ClaudeDriver now resolves through the shared ExecutableResolver, so a missing configured path
+        // fails with the unified "could not resolve" message that names the path - still a
+        // FileNotFoundException, which HostedAgent.StartAsync catches.
+        Assert.Contains("Could not resolve", ex.Message);
+        Assert.Contains(@"Q:\nope\claude.exe", ex.Message);
     }
 
     [Fact]

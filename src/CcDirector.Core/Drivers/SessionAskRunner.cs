@@ -73,7 +73,7 @@ public sealed class SessionAskRunner
         double replyStableSeconds = 1.5)
     {
         _driverFactory = driverFactory ?? AgentDrivers.For;
-        _backendFactory = backendFactory ?? (() => new ConPtyBackend());
+        _backendFactory = backendFactory ?? (() => PlatformSessionBackend.CreateDefault());
         _log = log ?? FileLog.Write;
         _quietSeconds = quietSeconds;
         _startTimeoutSeconds = startTimeoutSeconds;

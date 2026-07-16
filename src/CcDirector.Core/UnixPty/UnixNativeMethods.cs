@@ -147,8 +147,16 @@ internal static class UnixNativeMethods
 
     public const int O_RDWR = 0x0002;
 
-    /// <summary>POSIX_SPAWN_SETSID: child becomes a new session leader (macOS 10.15+).</summary>
-    public const short POSIX_SPAWN_SETSID = 0x0400;
+    // POSIX_SPAWN_SETSID (child becomes a new session leader) has a DIFFERENT numeric value on each
+    // platform: 0x0400 on macOS (Darwin) and 0x0080 on Linux glibc. Passing the wrong platform's value
+    // to posix_spawnattr_setflags fails with EINVAL (rc=22), which is exactly what a macOS-only 0x0400
+    // did on Linux. Select the right one at run time.
+    public const short POSIX_SPAWN_SETSID_MACOS = 0x0400;
+    public const short POSIX_SPAWN_SETSID_LINUX = 0x0080;
+
+    /// <summary>POSIX_SPAWN_SETSID for the current platform (macOS 0x0400, Linux glibc 0x0080).</summary>
+    public static short POSIX_SPAWN_SETSID =>
+        OperatingSystem.IsMacOS() ? POSIX_SPAWN_SETSID_MACOS : POSIX_SPAWN_SETSID_LINUX;
 
     [DllImport(LibC, SetLastError = true)]
     public static extern int posix_spawnp(

@@ -1,0 +1,11 @@
+# Keep the Docker build context lean and deterministic. None of these are needed to publish the
+# headless Gateway; excluding them speeds the build and avoids copying host-only build output.
+.git
+.temp
+**/bin
+**/obj
+**/node_modules
+local_builds
+**/*.user
+**/TestResults
+artifacts

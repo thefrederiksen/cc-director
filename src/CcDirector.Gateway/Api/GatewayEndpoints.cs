@@ -222,7 +222,11 @@ internal static class GatewayEndpoints
         // Local-machine exe/slot management (the "Exes" page). Defect 6: it gets the snooze registry so its
         // fleet pass applies the SAME expired-snooze override the roster applies - without it the page says
         // "Snoozed" while the roster says "Needs you".
-        ExesEndpoints.Map(app, registry, pushedSessions, streamStaleResolved, snoozeRegistry);
+        // Windows-only: the whole surface builds developer slot exes by shelling out to
+        // powershell.exe scripts/local-build-avalonia.ps1 against a local_builds directory, which
+        // exists only on a Windows dev box. Off Windows the routes are simply not mapped.
+        if (OperatingSystem.IsWindows())
+            ExesEndpoints.Map(app, registry, pushedSessions, streamStaleResolved, snoozeRegistry);
 
         // ===== HTML pages =====
         // The Gateway serves NO UI pages anymore (docs/plans/one-url-cockpit.md): "/" and every
@@ -2458,6 +2462,9 @@ internal static class GatewayEndpoints
             }
         });
 
+        // Windows-only: this launches the Windows desktop cc-director.exe via ShellExecute, which
+        // only exists on a Windows install. Off Windows the route is not mapped.
+        if (OperatingSystem.IsWindows())
         app.MapPost("/directors", async (LaunchDirectorRequest? body) =>
         {
             body ??= new LaunchDirectorRequest();

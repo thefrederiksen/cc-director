@@ -596,17 +596,21 @@ public sealed class GatewayHost : IAsyncDisposable
         _cronRuns = new CronRunHistoryStore(cronRunsPath ?? Path.Combine(CcStorage.Root(), "cronruns.json"));
         // The Gateway-hosted DevThrottle credential service (issue #636, Gateway Centralization Phase 2
         // foundation). Tests inject their own service over an isolated store; production builds the
-        // Windows Data Protection-backed service rooted under the Gateway config directory. The
-        // operating-system credential store is Windows-only for now (the issue's assumption), so on a
-        // non-Windows host Account stays null until the macOS Keychain store is added - the platform
-        // guard also satisfies the platform-compatibility analyzer. Resolved BEFORE the telemetry queue
-        // so the queue can attach the Gateway's own account token when forwarding (issue #639).
+        // service over the operating system credential store rooted under the Gateway config directory:
+        // Windows Data Protection on Windows, the login Keychain on macOS. Linux has no local credential
+        // store here (a headless container has no Keychain and no secret service), so on Linux Account
+        // stays null - an explicit, logged null, not a silent fallback; a local install keeps its data
+        // local and the hosted Supabase story owns Linux durable credentials later. The platform guards
+        // also satisfy the platform-compatibility analyzer. Resolved BEFORE the telemetry queue so the
+        // queue can attach the Gateway's own account token when forwarding (issue #639).
         if (account is not null)
             Account = account;
         else if (OperatingSystem.IsWindows())
             Account = CcDirector.Gateway.Account.GatewayAccountFactory.CreateForWindows();
+        else if (OperatingSystem.IsMacOS())
+            Account = CcDirector.Gateway.Account.GatewayAccountFactory.CreateForMac();
         else
-            FileLog.Write("[GatewayHost] DevThrottle credential service not built: operating-system credential store is Windows-only for now");
+            FileLog.Write("[GatewayHost] DevThrottle credential service not built: no local operating-system credential store on this platform (Linux); Account stays null");
 
         // Durable telemetry retry queue (issue #629): one JSON file under the Gateway config directory
         // (the DeviceRegistry / gateway-token precedent), loaded here so events a previous run left
