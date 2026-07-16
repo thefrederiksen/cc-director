@@ -617,19 +617,16 @@ public sealed class Session : IDisposable
     public bool VoiceMode => ViewMode == MobileViewMode.Voice;
 
     /// <summary>
-    /// Where this session sits in the hold state machine: the user's "I do not want to deal with this one
-    /// right now". Design and diagram: docs/new_architecture/session-state.html.
+    /// A DISPLAY MIRROR of the hold the GATEWAY has decided for this session, so the local desktop rail
+    /// can render it. Not state this session owns, and not a state machine: the only writer is
+    /// <see cref="ApplyGatewayHold"/>, which the Gateway calls down the tunnel.
     ///
-    /// This ONE field replaces what used to be three that could disagree (a public OnHold flag, a private
-    /// turn-in-flight latch gating the auto-lift, and a private pending-hold flag). Both questions the hold
-    /// has to answer - "should this hold be deferred?" and "may this hold lift?" - now read the same
-    /// authoritative fact, <see cref="ActivityState"/>, so they cannot fall out of step with each other.
+    /// This session does not decide hold and does not persist it. The Gateway holds the state
+    /// (SnoozeRegistry), owns the clock, and makes every ruling about both; this Director contributes two
+    /// facts and no opinions - <see cref="ActivityState"/> and <see cref="LastOwnerTurnAtUtc"/>.
     ///
-    /// DURABLE across a Director restart (defect 22, fixed 14 July 2026): persisted via
-    /// <see cref="PersistedSession.HoldState"/> and restored through <see cref="RestoreHoldState"/>. It
-    /// was runtime-only, on the reasoning that it tracked "what the user is currently choosing to defer,
-    /// not durable session state" - but a twelve-hour snooze IS durable state, and a restart silently
-    /// forgot every one of them.
+    /// It is a mirror rather than a read of the Gateway roster only because the desktop rail folds from
+    /// this in-process Session. Every other surface reads the truth from the fold.
     /// </summary>
     public HoldState HoldState
     {
@@ -655,15 +652,14 @@ public sealed class Session : IDisposable
     private HoldState _holdState;
 
     /// <summary>
-    /// True when the session is parked right now. Derived from <see cref="HoldState"/>; a DeferredHold is
-    /// NOT parked yet - the user asked for it while the agent was working and it lands when the work stops.
-    /// Read-only: every transition goes through <see cref="RequestHold"/> or the machine in
-    /// <see cref="SetActivityState"/>, so no caller can put the state machine into a state it cannot reach.
+    /// True when the session is parked right now, per the Gateway's last ruling. Derived from
+    /// <see cref="HoldState"/>; a DeferredHold is NOT parked yet - it was asked for while the agent was
+    /// working and lands when the work stops, which the GATEWAY decides.
     /// </summary>
     public bool OnHold => _holdState == HoldState.Held;
 
-    /// <summary>True when the agent is producing output right now. The single authoritative input to the
-    /// hold machine: it decides both whether an incoming hold defers and whether a held session lifts.
+    /// <summary>True when the agent is producing output right now. No longer an input to any hold
+    /// decision - it is REPORTED upward (ActivityState on the wire) and the Gateway rules on it.
     /// Starting counts as working - a session that has not settled yet has a turn ahead of it.</summary>
     private bool IsWorking => ActivityState is ActivityState.Working or ActivityState.Starting;
 
@@ -678,16 +674,6 @@ public sealed class Session : IDisposable
     /// without it, a hold toggle is invisible to every other screen until the next 10-second heartbeat.</summary>
     public event Action<HoldState>? HoldStateChanged;
 
-    /// <summary>Outcome of a <see cref="RequestHold"/> call.</summary>
-    public enum HoldOutcome
-    {
-        /// <summary>The hold was applied immediately (the session was not working).</summary>
-        Held,
-        /// <summary>The session was working, so the hold was DEFERRED and lands when the work stops.</summary>
-        Pending,
-        /// <summary>The session was taken OFF hold, clearing any pending deferral too.</summary>
-        Released,
-    }
 
     /// <summary>
     /// Write down what the GATEWAY has decided this session's hold is, so the desktop can render it.
