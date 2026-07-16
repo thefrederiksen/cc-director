@@ -48,7 +48,23 @@ public sealed class InstalledStateReader
         // Prefer the version we recorded when we placed it (reliable for every component, incl. tools
         // that carry no file-version stamp); fall back to the on-disk file version for installs that
         // predate the manifest.
-        var version = _installed.Get(component.Id) ?? fileVersion;
+        var recorded = _installed.Get(component.Id);
+        var version = recorded ?? fileVersion;
+
+        // Self-update staleness (issue #1740): the Director updates itself in place without touching
+        // installed.json, so on any machine that has ever self-updated the recorded version is older
+        // than the binary actually on disk. A readable on-disk version STRICTLY newer than the record
+        // can only mean the record is stale - trust the binary. (Equal versions that merely differ in
+        // formatting, e.g. "1.4.0" versus "1.4.0+sha", compare equal and keep the recorded form.)
+        if (recorded is not null && VersionUtil.IsNewer(fileVersion, recorded))
+        {
+            EngineLog.Write(
+                $"[InstalledStateReader] recorded version '{recorded}' for '{component.Id}' is OLDER than " +
+                $"the on-disk version '{fileVersion}' (the component self-updated without updating " +
+                $"installed.json); reporting the on-disk version.");
+            version = fileVersion;
+        }
+
         return new InstalledComponent(component.Id, Present: true, Version: version, Path: path, FileVersion: fileVersion);
     }
 

@@ -1,54 +1,25 @@
-using System.Diagnostics;
-using System.Runtime.InteropServices;
+using CcDirector.Setup.Engine;
 
 namespace CcDirectorSetup.Services;
 
+/// <summary>
+/// The wizard's view of "is DevThrottle already installed on this machine?".
+/// Delegates to the shared engine (InstallLayout + InstalledStateReader) - the same
+/// source of truth the command-line installer uses - so the wizard and the engine can
+/// never disagree about the machine. The wizard previously kept its own File.Exists
+/// check on &lt;root&gt;/bin/cc-director, a path that does not exist in the macOS layout
+/// (the Director there is the "~/Applications/CC Director.app" bundle), so every Mac
+/// opened in fresh-install mode with update and repair unreachable (issue #1736).
+/// </summary>
 public static class InstallDetector
 {
-    private static readonly string ExePath = GetExePath();
+    public static bool IsInstalled() => ReadDirector().Present;
 
-    private static string GetExePath()
+    public static string? GetInstalledVersion() => ReadDirector().Version;
+
+    private static InstalledComponent ReadDirector()
     {
-        var localAppData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
-        var binName = RuntimeInformation.IsOSPlatform(OSPlatform.Windows)
-            ? "cc-director.exe"
-            : "cc-director";
-        return Path.Combine(localAppData, "cc-director", "bin", binName);
-    }
-
-    public static bool IsInstalled() => File.Exists(ExePath);
-
-    public static string? GetInstalledVersion()
-    {
-        if (!File.Exists(ExePath))
-            return null;
-
-        if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
-        {
-            var info = FileVersionInfo.GetVersionInfo(ExePath);
-            return info.ProductVersion;
-        }
-
-        // On macOS, try running --version to get the version
-        try
-        {
-            var psi = new ProcessStartInfo
-            {
-                FileName = ExePath,
-                Arguments = "--version",
-                RedirectStandardOutput = true,
-                UseShellExecute = false,
-                CreateNoWindow = true,
-            };
-            using var process = Process.Start(psi);
-            if (process == null) return null;
-            var output = process.StandardOutput.ReadToEnd();
-            process.WaitForExit(5000);
-            return output.Trim();
-        }
-        catch
-        {
-            return null;
-        }
+        var layout = InstallLayout.Default();
+        return new InstalledStateReader(layout).Read(ComponentRegistry.Director);
     }
 }

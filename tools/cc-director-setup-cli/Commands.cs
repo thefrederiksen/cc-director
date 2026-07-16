@@ -61,7 +61,10 @@ internal static class Commands
 
         Console.WriteLine($"Components for role '{Role(args)}':");
         foreach (var c in components)
-            Console.WriteLine($"  {c.Id,-14} {c.Kind,-9} {c.AssetFor(macOs) ?? "(no macOS build)"}");
+            // A Tool with no per-file macOS asset is not "missing on macOS" - every cc-* tool ships on
+            // both platforms inside the Python tools bundle; only the standalone per-exe delivery is
+            // Windows-only. Say so, instead of implying Mac users get no tools (#1711 audit, defect 5).
+            Console.WriteLine($"  {c.Id,-14} {c.Kind,-9} {c.AssetFor(macOs) ?? "(ships in the Python tools bundle)"}");
         return Ok;
     }
 
