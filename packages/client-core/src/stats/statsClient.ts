@@ -71,12 +71,12 @@ export interface InputHour {
  * codebase, in submitted turns (total + voice/typed split), character volume, and distinct sessions.
  * Mirrors the Gateway RepoStatBucketDto. Counts only - never any message text. */
 export interface RepoStat {
-  /** Grouping key: the GitHub "owner/repo" slug the sessions' checkouts belong to
+  /** Grouping key: the "owner/repo" repo name the sessions' checkouts belong to
    * (e.g. "thefrederiksen/devthrottle"), so worktrees and per-machine clones are one row. Falls back to the
-   * local working-directory path for a checkout with no github.com origin. */
+   * checkout's folder name for a checkout whose Director reported no repo name. */
   repo: string;
-  /** Display leaf of the key: the repository name for a slug (e.g. "devthrottle"), or the folder name for a
-   * fallback path. */
+  /** Display leaf of the key: the short repository name from an "owner/repo" key (e.g. "devthrottle"), or the
+   * folder name for a fallback. */
   repoName: string;
   /** Total submitted turns into this repo (voice + typed). */
   turns: number;

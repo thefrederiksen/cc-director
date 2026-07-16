@@ -1,23 +1,23 @@
 namespace CcDirector.Core.Utilities;
 
 /// <summary>
-/// Resolves a local repository's origin remote to a host slug and to GitHub web URLs. The GitHub
+/// Resolves a local repository's origin remote to its repo name and to GitHub web URLs. The GitHub
 /// "new issue" helpers (used by the desktop "New GitHub Issue" menu item, the screenshot Issue button, and
-/// the Director's GET /sessions/{sid}/github-urls endpoint) are GitHub-only. The slug helpers
-/// (<see cref="ResolveSlugCached"/> / <see cref="ParseSlug"/>, used by the DevThrottle Stats repo grouping)
-/// understand BOTH github.com and Azure DevOps (dev.azure.com and the legacy visualstudio.com), so a repo on
-/// either host folds its worktrees and per-machine clones into one Repos row.
+/// the Director's GET /sessions/{sid}/github-urls endpoint) are GitHub-only. The repo-name helpers
+/// (<see cref="ResolveRepoNameCached"/> / <see cref="ParseRepoName"/>, used by the DevThrottle Stats repo
+/// grouping) understand BOTH github.com and Azure DevOps (dev.azure.com and the legacy visualstudio.com), so
+/// a repo on either host folds its worktrees and per-machine clones into one Repos row.
 /// </summary>
 public static class GitHubUrls
 {
     private static readonly TimeSpan RemoteUrlRegexTimeout = TimeSpan.FromMilliseconds(50);
 
-    // repoPath -> resolved "owner/repo" slug, or "" when the checkout has no github.com origin. A local
-    // clone's origin does not change over a process lifetime, and resolving it spawns a git subprocess, so
-    // this is cached: ResolveSlugCached runs on the Director's roster path (every session, every poll) and
-    // must not fork git each time. Misses ("" - no origin, not a git repo, non-github remote) are cached
-    // too, so a checkout without a GitHub origin is probed once, not on every poll.
-    private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, string> SlugCache =
+    // repoPath -> resolved "owner/repo" repo name, or "" when the checkout is on no host we recognize. A
+    // local clone's origin does not change over a process lifetime, and resolving it spawns a git subprocess,
+    // so this is cached: ResolveRepoNameCached runs on the Director's roster path (every session, every poll)
+    // and must not fork git each time. Misses ("" - no origin, not a git repo, unrecognized remote) are
+    // cached too, so a checkout with no recognized remote is probed once, not on every poll.
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, string> RepoNameCache =
         new(StringComparer.Ordinal);
 
     /// <summary>
@@ -38,35 +38,35 @@ public static class GitHubUrls
     }
 
     /// <summary>
-    /// The "owner/repo" (GitHub) or "org/repo" (Azure DevOps) slug for a local checkout, or "" when the
+    /// The "owner/repo" (GitHub) or "org/repo" (Azure DevOps) repo name for a local checkout, or "" when the
     /// checkout's origin is on neither host (no origin remote, not a git repo, or an unrecognized remote).
     /// Best-effort and NEVER throws: an empty result is a legitimate answer - not every checkout is on a host
     /// we recognize - and the caller (the DevThrottle Stats repo grouping) falls back to the folder name for
-    /// those. Cached by path; see <see cref="SlugCache"/>.
+    /// those. Cached by path; see <see cref="RepoNameCache"/>.
     ///
     /// This is the key that makes every worktree and every per-machine clone of one repository roll up into
-    /// a single row on the Repos page: they all share one origin remote, so they all resolve to one slug.
+    /// a single row on the Repos page: they all share one origin remote, so they all resolve to one repo name.
     /// </summary>
-    public static string ResolveSlugCached(string? repoPath)
+    public static string ResolveRepoNameCached(string? repoPath)
     {
         if (string.IsNullOrWhiteSpace(repoPath)) return "";
-        return SlugCache.GetOrAdd(repoPath, ResolveSlugUncached);
+        return RepoNameCache.GetOrAdd(repoPath, ResolveRepoNameUncached);
     }
 
-    private static string ResolveSlugUncached(string repoPath)
+    private static string ResolveRepoNameUncached(string repoPath)
     {
         try
         {
             if (!Directory.Exists(repoPath)) return "";
-            var slug = ParseSlug(GetOriginRemoteUrl(repoPath));
-            FileLog.Write($"[GitHubUrls] ResolveSlugCached: {repoPath} -> {slug}");
-            return slug;
+            var repoName = ParseRepoName(GetOriginRemoteUrl(repoPath));
+            FileLog.Write($"[GitHubUrls] ResolveRepoNameCached: {repoPath} -> {repoName}");
+            return repoName;
         }
         catch (Exception ex)
         {
             // A checkout with no origin, or one on a host we do not recognize, is an expected state, not a
-            // failure to hide: it simply has no slug and groups by its folder name instead. Recorded, then "".
-            FileLog.Write($"[GitHubUrls] ResolveSlugCached: {repoPath} has no recognized remote slug: {ex.Message}");
+            // failure to hide: it simply has no repo name and groups by its folder name instead. Recorded, "".
+            FileLog.Write($"[GitHubUrls] ResolveRepoNameCached: {repoPath} has no recognized remote repo name: {ex.Message}");
             return "";
         }
     }
@@ -78,7 +78,7 @@ public static class GitHubUrls
     ///   ssh://git@github.com/owner/repo.git
     ///   https://github.com/owner/repo(.git)
     /// Throws when the remote is not on github.com - "new issue" is a GitHub concept, so this stays
-    /// GitHub-only even though <see cref="ParseSlug"/> also understands Azure DevOps.
+    /// GitHub-only even though <see cref="ParseRepoName"/> also understands Azure DevOps.
     /// </summary>
     internal static string ParseNewIssueUrl(string originUrl)
     {
@@ -91,16 +91,16 @@ public static class GitHubUrls
     }
 
     /// <summary>
-    /// Extracts the "owner/repo" (GitHub) or "org/repo" (Azure DevOps) slug from an origin remote URL. Pure
-    /// string logic so it is unit-testable without git. The slug is host-neutral on purpose: every worktree
-    /// and every per-machine clone of one repository shares one origin, so they all resolve to the identical
-    /// slug and fold into a single Repos row. Throws when the remote is empty or on neither host.
+    /// Extracts the "owner/repo" (GitHub) or "org/repo" (Azure DevOps) repo name from an origin remote URL.
+    /// Pure string logic so it is unit-testable without git. The repo name is host-neutral on purpose: every
+    /// worktree and every per-machine clone of one repository shares one origin, so they all resolve to the
+    /// identical repo name and fold into a single Repos row. Throws when the remote is empty or on neither host.
     ///
-    /// Azure DevOps identifies a repo as org/project/repo; the slug keeps org/repo (dropping the project) to
-    /// match GitHub's two-part shape and how the owner refers to it. The bounded cost: two repos of the same
-    /// name in different projects of one org would share a slug - accepted, and vanishingly rare here.
+    /// Azure DevOps identifies a repo as org/project/repo; the repo name keeps org/repo (dropping the project)
+    /// to match GitHub's two-part shape and how the owner refers to it. The bounded cost: two repos of the
+    /// same name in different projects of one org would share a repo name - accepted, and vanishingly rare here.
     /// </summary>
-    internal static string ParseSlug(string originUrl)
+    internal static string ParseRepoName(string originUrl)
     {
         if (string.IsNullOrWhiteSpace(originUrl))
             throw new ArgumentException("Origin remote URL is required", nameof(originUrl));
@@ -131,7 +131,7 @@ public static class GitHubUrls
     //   https://[user@]dev.azure.com/{org}/{project}/_git/{repo}   (modern HTTPS)
     //   git@ssh.dev.azure.com:v3/{org}/{project}/{repo}            (modern SSH)
     //   https://{org}.visualstudio.com/[collection/]{project}/_git/{repo}  (legacy)
-    // The project segment is matched but discarded; the slug is org/repo. The ".git" suffix is optional.
+    // The project segment is matched but discarded; the repo name is org/repo. The ".git" suffix is optional.
     private static (string org, string repo)? TryMatchAzureDevOps(string url)
     {
         var https = System.Text.RegularExpressions.Regex.Match(

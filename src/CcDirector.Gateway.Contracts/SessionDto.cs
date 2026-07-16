@@ -599,19 +599,20 @@ public sealed class SessionDto
     public string RemoteRunStatus { get; set; } = "";
 
     /// <summary>
-    /// DevThrottle Stats: the "owner/repo" GitHub slug of this session's LOCAL checkout, resolved by the
-    /// owning Director from the checkout's origin remote (the git repo lives on the Director's machine, so
-    /// only it can resolve this). Empty when the checkout has no github.com origin. This is the grouping key
-    /// the Repos page uses so every worktree and every per-machine clone of one repository rolls up into a
-    /// single row - <see cref="RepoPath"/> alone splits them, because each checkout is a different path.
+    /// DevThrottle Stats: the "owner/repo" repo name of this session's LOCAL checkout (GitHub or Azure
+    /// DevOps), resolved by the owning Director from the checkout's origin remote (the git repo lives on the
+    /// Director's machine, so only it can resolve this). Empty when the checkout is on no host we recognize.
+    /// This is the grouping key the Repos page uses so every worktree and every per-machine clone of one
+    /// repository rolls up into a single row - <see cref="RepoPath"/> alone splits them, because each checkout
+    /// is a different path.
     ///
     /// DISTINCT from <see cref="RemoteRepo"/>: that is populated only for GitHub Actions CLOUD sessions and
     /// names the repo the cloud run executes against; this is populated for ordinary LOCAL sessions and names
-    /// the GitHub repo their working directory is a checkout of. A session has one or the other, not both.
+    /// the repo their working directory is a checkout of. A session has one or the other, not both.
     /// Passes through the Gateway aggregation unchanged; the aggregator folds it as the repository identity
     /// and retains <see cref="RepoPath"/> alongside as the checkout identity.
     /// </summary>
-    public string RepoSlug { get; set; } = "";
+    public string RepoName { get; set; } = "";
 
     /// <summary>
     /// DevThrottle Stats: this session's input tally (submitted turns + character volume by modality and

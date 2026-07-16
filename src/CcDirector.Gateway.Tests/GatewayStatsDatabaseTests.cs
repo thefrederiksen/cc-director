@@ -72,7 +72,7 @@ public sealed class GatewayStatsDatabaseTests : IDisposable
         Assert.True(TableExists(db, "repo_identity"));
         Assert.True(TableExists(db, "agent_identity"));
         Assert.True(TableExists(db, "model_identity"));
-        // The checkout dimension (schema v4): the local working directory retained beside the repository slug.
+        // The checkout dimension (schema v4): the local working directory retained beside the repo name.
         Assert.True(TableExists(db, "checkout_identity"));
         // Token spend (issue #1637) - the delta lane and its per-session high-water.
         Assert.True(TableExists(db, "token_delta"));
@@ -264,15 +264,15 @@ public sealed class GatewayStatsDatabaseTests : IDisposable
         Assert.Contains("will not fall back", ex.Message);
     }
 
-    // ---- A hand-built PRE-SLUG store, used to exercise the schema v4 reset. ----
+    // ---- A hand-built INCOMPATIBLE (pre-repo-name) store, used to exercise the schema v4 reset. ----
     //
     // This writes the exact shape a PREVIOUS BUILD wrote: stat_delta without model_id or checkout_id, no
     // model_identity, repo_id keyed by a local PATH, user_version=1. Until v4 the contract was that such a
     // file migrated forward and kept every row; at v4 the repository dimension changed meaning (path became
-    // GitHub slug) and a path-keyed row can no longer be re-keyed, so the owner ruled it is not carried
+    // repo name) and a path-keyed row can no longer be re-keyed, so the owner ruled it is not carried
     // across - the file is retired aside unread and the store starts empty. These rows are therefore what a
-    // real pre-slug store looks like on disk, so the retire tests can prove it is retired (not migrated) and
-    // that the retired copy stays intact.
+    // real incompatible store looks like on disk, so the retire tests can prove it is retired (not migrated)
+    // and that the retired copy stays intact.
     private void WriteVersion1Database(params (string Hour, long Turns, long Chars)[] rows)
     {
         using var connection = new SqliteConnection($"Data Source={_path}");
@@ -332,18 +332,18 @@ public sealed class GatewayStatsDatabaseTests : IDisposable
     }
 
     [Fact]
-    public void Open_PreSlugStore_IsRetiredAsideUnread_AndStartsEmpty()
+    public void Open_IncompatibleStore_IsRetiredAsideUnread_AndStartsEmpty()
     {
         // The repository dimension changed meaning at schema v4: repo_id was the session's local path and is
-        // now its GitHub slug. A stored path-keyed row cannot be re-keyed to a slug (the Gateway has no
+        // now its repo name. A stored path-keyed row cannot be re-keyed to a repo name (the Gateway has no
         // filesystem to resolve the path), so - as with the legacy JSON store, and by the same owner ruling -
-        // a pre-slug store (any version 1..3) is not migrated forward. It is renamed aside UNREAD and this
+        // an incompatible store (any version 1..3) is not migrated forward. It is renamed aside UNREAD and this
         // store starts empty. This is the reset the owner approved ("we're not really live yet").
         WriteVersion1Database(("2026-07-16T09", 40, 400), ("2026-07-16T10", 27, 270));
 
         using var db = new GatewayStatsDatabase(_path);
 
-        // The fresh store is at the current version and carries NONE of the pre-slug rows.
+        // The fresh store is at the current version and carries NONE of the old rows.
         Assert.Equal(GatewayStatsDatabase.SchemaVersion, UserVersion(db));
         Assert.Equal(0, ScalarLong(db, "SELECT COUNT(*) FROM stat_delta"));
         Assert.Equal(0, ScalarLong(db, "SELECT COUNT(*) FROM repo_identity"));
@@ -353,12 +353,12 @@ public sealed class GatewayStatsDatabaseTests : IDisposable
 
         // Renamed, never deleted - the old numbers are recoverable, which was the owner's line on the JSON
         // store too. Exactly one retired copy sits beside the fresh database.
-        var retired = Directory.GetFiles(_dir, "gateway-stats.db.pre-slug-*");
+        var retired = Directory.GetFiles(_dir, "gateway-stats.db.superseded-*");
         Assert.Single(retired);
     }
 
     [Fact]
-    public void Open_PreSlugStore_LeavesTheRetiredCopyIntactAndReadable()
+    public void Open_IncompatibleStore_LeavesTheRetiredCopyIntactAndReadable()
     {
         // "Renamed aside UNREAD" must mean the bytes are untouched: the retired file still holds the old rows,
         // so the reset is recoverable rather than a destructive wipe.
@@ -367,7 +367,7 @@ public sealed class GatewayStatsDatabaseTests : IDisposable
         using (var db = new GatewayStatsDatabase(_path)) { /* triggers the retire */ }
         SqliteConnection.ClearAllPools();
 
-        var retired = Directory.GetFiles(_dir, "gateway-stats.db.pre-slug-*").Single();
+        var retired = Directory.GetFiles(_dir, "gateway-stats.db.superseded-*").Single();
         using var old = new SqliteConnection($"Data Source={retired}");
         old.Open();
         using var cmd = old.CreateCommand();
@@ -390,7 +390,7 @@ public sealed class GatewayStatsDatabaseTests : IDisposable
         SqliteConnection.ClearAllPools();
 
         using var second = new GatewayStatsDatabase(_path);
-        Assert.Empty(Directory.GetFiles(_dir, "gateway-stats.db.pre-slug-*"));
+        Assert.Empty(Directory.GetFiles(_dir, "gateway-stats.db.superseded-*"));
         using var read = second.Connection.CreateCommand();
         read.CommandText = "SELECT value FROM meta WHERE name='probe'";
         Assert.Equal("kept", read.ExecuteScalar() as string);

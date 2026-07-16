@@ -47,16 +47,16 @@ public class GitHubUrlsTests
         Assert.Throws<ArgumentException>(() => GitHubUrls.ParseNewIssueUrl(originUrl));
     }
 
-    // ---------- ParseSlug (pure owner/repo extraction) ----------
+    // ---------- ParseRepoName (pure owner/repo extraction) ----------
 
     [Theory]
     [InlineData("https://github.com/example-org/devthrottle.git")]
     [InlineData("https://github.com/example-org/devthrottle")]
     [InlineData("git@github.com:example-org/devthrottle.git")]
     [InlineData("ssh://git@github.com/example-org/devthrottle.git")]
-    public void ParseSlug_KnownRemoteShapes_ReturnsOwnerRepo(string originUrl)
+    public void ParseRepoName_KnownRemoteShapes_ReturnsOwnerRepo(string originUrl)
     {
-        Assert.Equal("example-org/devthrottle", GitHubUrls.ParseSlug(originUrl));
+        Assert.Equal("example-org/devthrottle", GitHubUrls.ParseRepoName(originUrl));
     }
 
     [Theory]
@@ -67,38 +67,38 @@ public class GitHubUrlsTests
     [InlineData("https://dev.azure.com/mindzie/mindzieStudio1/_git/mindzieWeb")]
     [InlineData("git@ssh.dev.azure.com:v3/mindzie/mindzieStudio1/mindzieWeb")]
     [InlineData("https://mindzie.visualstudio.com/mindzieStudio1/_git/mindzieWeb")]
-    public void ParseSlug_AzureDevOpsRemoteShapes_ReturnsOrgRepo(string originUrl)
+    public void ParseRepoName_AzureDevOpsRemoteShapes_ReturnsOrgRepo(string originUrl)
     {
-        Assert.Equal("mindzie/mindzieWeb", GitHubUrls.ParseSlug(originUrl));
+        Assert.Equal("mindzie/mindzieWeb", GitHubUrls.ParseRepoName(originUrl));
     }
 
     [Theory]
     [InlineData("https://gitlab.com/owner/repo.git")]
     [InlineData("git@bitbucket.org:owner/repo.git")]
-    public void ParseSlug_UnrecognizedRemote_Throws(string originUrl)
+    public void ParseRepoName_UnrecognizedRemote_Throws(string originUrl)
     {
-        Assert.Throws<InvalidOperationException>(() => GitHubUrls.ParseSlug(originUrl));
+        Assert.Throws<InvalidOperationException>(() => GitHubUrls.ParseRepoName(originUrl));
     }
 
     [Fact]
     public void ParseNewIssueUrl_AzureDevOpsRemote_StillThrows()
     {
-        // "New issue" is a GitHub concept; ParseSlug understanding Azure DevOps must NOT make the issue-URL
+        // "New issue" is a GitHub concept; ParseRepoName understanding Azure DevOps must NOT make the issue-URL
         // helper accept it and build a bogus github.com URL.
         var ex = Assert.Throws<InvalidOperationException>(() =>
             GitHubUrls.ParseNewIssueUrl("https://dev.azure.com/mindzie/mindzieStudio1/_git/mindzieWeb"));
         Assert.Contains("not a GitHub remote", ex.Message);
     }
 
-    // ---------- ResolveSlugCached (best-effort, never throws) ----------
+    // ---------- ResolveRepoNameCached (best-effort, never throws) ----------
 
     [Fact]
-    public void ResolveSlugCached_RepoWithGitHubOrigin_ReturnsSlug()
+    public void ResolveRepoNameCached_RepoWithGitHubOrigin_ReturnsRepoName()
     {
         var repoDir = CreateTempGitRepo("https://github.com/someowner/somerepo.git");
         try
         {
-            Assert.Equal("someowner/somerepo", GitHubUrls.ResolveSlugCached(repoDir));
+            Assert.Equal("someowner/somerepo", GitHubUrls.ResolveRepoNameCached(repoDir));
         }
         finally
         {
@@ -107,12 +107,12 @@ public class GitHubUrlsTests
     }
 
     [Fact]
-    public void ResolveSlugCached_RepoWithAzureDevOpsOrigin_ReturnsOrgRepo()
+    public void ResolveRepoNameCached_RepoWithAzureDevOpsOrigin_ReturnsOrgRepo()
     {
         var repoDir = CreateTempGitRepo("https://mindzie@dev.azure.com/mindzie/mindzieStudio1/_git/mindzieWeb");
         try
         {
-            Assert.Equal("mindzie/mindzieWeb", GitHubUrls.ResolveSlugCached(repoDir));
+            Assert.Equal("mindzie/mindzieWeb", GitHubUrls.ResolveRepoNameCached(repoDir));
         }
         finally
         {
@@ -121,12 +121,12 @@ public class GitHubUrlsTests
     }
 
     [Fact]
-    public void ResolveSlugCached_RepoWithoutOrigin_ReturnsEmpty_NeverThrows()
+    public void ResolveRepoNameCached_RepoWithoutOrigin_ReturnsEmpty_NeverThrows()
     {
         var repoDir = CreateTempGitRepo(originUrl: null);
         try
         {
-            Assert.Equal("", GitHubUrls.ResolveSlugCached(repoDir));
+            Assert.Equal("", GitHubUrls.ResolveRepoNameCached(repoDir));
         }
         finally
         {
@@ -138,17 +138,17 @@ public class GitHubUrlsTests
     [InlineData(null)]
     [InlineData("")]
     [InlineData("   ")]
-    public void ResolveSlugCached_NullOrBlankPath_ReturnsEmpty(string? repoPath)
+    public void ResolveRepoNameCached_NullOrBlankPath_ReturnsEmpty(string? repoPath)
     {
-        Assert.Equal("", GitHubUrls.ResolveSlugCached(repoPath));
+        Assert.Equal("", GitHubUrls.ResolveRepoNameCached(repoPath));
     }
 
     [Fact]
-    public void ResolveSlugCached_MissingDirectory_ReturnsEmpty_NeverThrows()
+    public void ResolveRepoNameCached_MissingDirectory_ReturnsEmpty_NeverThrows()
     {
         var missing = Path.Combine(Path.GetTempPath(), $"cc-director-missing-{Guid.NewGuid():N}");
 
-        Assert.Equal("", GitHubUrls.ResolveSlugCached(missing));
+        Assert.Equal("", GitHubUrls.ResolveRepoNameCached(missing));
     }
 
     // ---------- BuildNewIssueUrl (against real temp git repos) ----------
