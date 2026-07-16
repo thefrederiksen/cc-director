@@ -13,6 +13,11 @@
     <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.*" />
     <PackageReference Include="xunit" Version="2.*" />
     <PackageReference Include="xunit.runner.visualstudio" Version="2.*" />
+    <!-- Renders real controls with no window, so a XAML mistake fails a test rather than waiting to
+         crash in front of the user. XAML is loaded at RUNTIME: a compiling build proves nothing about
+         whether a view opens. -->
+    <PackageReference Include="Avalonia.Headless" Version="11.*" />
+    <PackageReference Include="Avalonia.Headless.XUnit" Version="11.*" />
   </ItemGroup>
 
   <ItemGroup>

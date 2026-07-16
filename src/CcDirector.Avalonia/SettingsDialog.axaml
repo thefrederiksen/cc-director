@@ -286,6 +286,13 @@
                 </ScrollViewer>
             </TabItem>
 
+            <!-- What DevThrottle puts into an agent before the user's first message, and the controls
+                 to read it, replace it, or go back to ours. Its own view because it owns real state
+                 (two files plus a choice), not just a form field. -->
+            <TabItem Header="Injected text">
+                <controls:InjectedTextView />
+            </TabItem>
+
             <TabItem Header="Advanced">
                 <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" Padding="0,0,14,0">
                     <StackPanel Spacing="12" Margin="0,4,0,0">

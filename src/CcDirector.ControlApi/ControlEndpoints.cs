@@ -70,8 +70,30 @@ internal static class ControlEndpoints
 
             // A session only ever calls its OWN Director, so this Director's machine name is the
             // session's machine.
-            var text = FleetPreamble.Build(session.Id.ToString(), name, Environment.MachineName, session.RepoPath, user);
-            return Results.Text(text, "text/plain");
+            //
+            // BuildForSession, not Build: this is a live launch, so it must honour the user's choice
+            // of whose text is injected. Build renders the DevThrottle default regardless, which is
+            // only correct for previewing ours.
+            try
+            {
+                var text = FleetPreamble.BuildForSession(
+                    session.Id.ToString(), name, Environment.MachineName, session.RepoPath, user);
+                return Results.Text(text, "text/plain");
+            }
+            catch (Exception ex) when (ex is InjectedTextUnavailableException or FleetPreambleTemplateException)
+            {
+                // The user's text is live but unreadable, or was edited on disk into something that
+                // cannot render. Do NOT substitute ours - they turned ours off. An empty body means the
+                // hook injects nothing, so the session still starts and the agent simply has no
+                // preamble, rather than silently receiving the text (and the policy) they declined.
+                //
+                // This catches the render failure too, not just the read failure: an uncaught one would
+                // become a 500 WITH A BODY, and the macOS/Linux hook pipes this response straight to
+                // stdout - so an error page would arrive in the agent's context dressed as the
+                // preamble. An empty body is the only thing that reliably means "nothing".
+                FileLog.Write($"[ControlEndpoints] fleet-preamble unavailable for {sid}: {ex.Message}");
+                return Results.Text("", "text/plain");
+            }
         });
 
         // The fleet preamble pre-wrapped as ready-to-print SessionStart hook output. The
@@ -79,7 +101,7 @@ internal static class ControlEndpoints
         // POSIX shell), so the Director serializes the whole hookSpecificOutput envelope and the
         // script just prints this response body to stdout. Empty body when there is no preamble,
         // so the hook emits nothing rather than an empty envelope.
-        app.MapGet("/sessions/{sid}/fleet-preamble-hook-output", (string sid) =>
+        app.MapGet("/sessions/{sid}/fleet-preamble-hook-output", async (string sid, CancellationToken ct) =>
         {
             if (!Guid.TryParse(sid, out var guid))
                 return Results.BadRequest(new { error = "invalid session id format" });
@@ -92,8 +114,31 @@ internal static class ControlEndpoints
                 SessionName.FolderName(session.RepoPath),
                 SessionName.Disambiguator(session.Id));
 
-            var text = FleetPreamble.Build(session.Id.ToString(), name, Environment.MachineName, session.RepoPath);
-            if (string.IsNullOrWhiteSpace(text))
+            // Issue #1357: this path silently omitted the signed-in user, so Claude on macOS and Linux
+            // never got the identity line that Windows got - the same text built two ways, one of them
+            // wrong. Resolving the user here (which is why this handler is now async) makes the two
+            // platforms agree.
+            SignedInUser? user = signedInUserResolver is null ? null : await signedInUserResolver(ct);
+
+            string text;
+            try
+            {
+                text = FleetPreamble.BuildForSession(
+                    session.Id.ToString(), name, Environment.MachineName, session.RepoPath, user);
+            }
+            catch (Exception ex) when (ex is InjectedTextUnavailableException or FleetPreambleTemplateException)
+            {
+                // See the sibling endpoint: the user's text is live but unreadable or unrenderable, so
+                // we inject nothing rather than substituting the text they declined - and an empty body
+                // rather than an error body, because this response is piped straight to the hook's
+                // stdout.
+                FileLog.Write($"[ControlEndpoints] fleet-preamble-hook-output unavailable for {sid}: {ex.Message}");
+                return Results.Text("", "text/plain");
+            }
+
+            // BuildForSession already collapses whitespace-only text to empty, so this agrees with the
+            // sibling endpoint and with Pi by construction rather than by coincidence.
+            if (string.IsNullOrEmpty(text))
                 return Results.Text("", "text/plain");
 
             return Results.Json(new
