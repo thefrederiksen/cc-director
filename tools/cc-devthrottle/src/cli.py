@@ -112,6 +112,29 @@ _ACTIONS = [
         "args": [{"name": "repo", "required": True}],
     },
     {
+        "id": "session-hold",
+        "description": (
+            "Park a session so it stops asking for attention, for a set number of minutes. Defaults "
+            "to THIS session. A session holding ITSELF is always mid-turn, so the hold is deferred "
+            "automatically and lands when the turn ends - there is no separate verb for that, and the "
+            "reply says 'pending' when it deferred. Only the owner lifts a hold: releasing it, typing "
+            "or speaking into the session, or the timer expiring. Another agent's message does not."
+        ),
+        "command": "cc-devthrottle session hold [target] --minutes <n>",
+        "mutatesState": True,
+        "args": [
+            {"name": "target", "required": False},
+            {"name": "minutes", "required": False},
+        ],
+    },
+    {
+        "id": "session-hold-release",
+        "description": "Release a hold, bringing a parked session back into the normal roster.",
+        "command": "cc-devthrottle session hold [target] --release",
+        "mutatesState": True,
+        "args": [{"name": "target", "required": False}],
+    },
+    {
         "id": "message-send",
         "description": "Send a one-way message to a session, or broadcast to all sessions.",
         "command": 'cc-devthrottle message send <target|all> "<message>"',
@@ -396,9 +419,15 @@ def hold(
 ) -> None:
     """Park a session so it stops asking for you, or release it.
 
-    A hold asked for while the session is still working is DEFERRED - it applies when the turn
-    finishes, and you are told so. A held session that starts working again always takes itself
-    off hold.
+    Hold THIS session when you have nothing left to report and do not want to keep asking for
+    attention: `cc-devthrottle session hold --minutes 720`. You do not need a special verb for
+    that. A hold asked for while the session is still working - which is always the case when a
+    session holds ITSELF, since it is mid-turn - is DEFERRED automatically: it applies the moment
+    the turn finishes, and the reply tells you so with `pending`.
+
+    ONLY THE OWNER LIFTS A HOLD - by releasing it, by typing or speaking into the session, or by
+    the --minutes timer running out. Another agent messaging the session, or the terminal simply
+    repainting, no longer un-holds it, so a hold you set actually lasts as long as you asked for.
     """
     hold_session(target, release=release, minutes=minutes)
 
