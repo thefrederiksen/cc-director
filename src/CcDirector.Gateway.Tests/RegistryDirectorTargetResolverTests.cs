@@ -10,6 +10,10 @@ namespace CcDirector.Gateway.Tests;
 /// running (no launch), none is running so the launcher starts one and it registers (launch + poll),
 /// and the launcher cannot start one (clean error). A fake launcher and a mutable Director list stand
 /// in for the live registry, with tiny wall-clock waits so the poll terminates instantly.
+///
+/// The resolver's result is a DirectorId (or an error) - not an endpoint. In tunnel-only mode a
+/// registered Director is reached over its tunnel by id, so resolving must succeed even when the
+/// Director's control endpoint is blank, which every tunnel-only Director's is (issue #1727).
 /// </summary>
 public sealed class RegistryDirectorTargetResolverTests
 {
@@ -38,12 +42,14 @@ public sealed class RegistryDirectorTargetResolverTests
     }
 
     [Fact]
-    public async Task Resolve_DirectorAlreadyRunning_ReturnsItsEndpoint_DoesNotLaunch()
+    public async Task Resolve_DirectorAlreadyRunning_WithBlankControlEndpoint_ReturnsItsId_DoesNotLaunch()
     {
+        // Tunnel-only shape: the registered Director's control endpoint is blank. Resolving must still
+        // succeed and return its id - the id is the whole result (issue #1727).
         var directors = new List<DirectorDto>
         {
-            Director("d-7882", "MACHINE_A", "http://127.0.0.1:7882/"),
-            Director("d-7879", "MACHINE_B", "http://127.0.0.1:7879"),
+            Director("d-7882", "MACHINE_A", ""),
+            Director("d-7879", "MACHINE_B", ""),
         };
         var launcher = new FakeLauncher(_ => throw new InvalidOperationException("must not launch when one is running"));
         var resolver = new RegistryDirectorTargetResolver(() => directors, launcher, FastTimeout, FastPoll);
@@ -51,7 +57,6 @@ public sealed class RegistryDirectorTargetResolverTests
         var result = await resolver.ResolveAsync("MACHINE_A", CancellationToken.None);
 
         Assert.Null(result.Error);
-        Assert.Equal("http://127.0.0.1:7882", result.Endpoint);   // trailing slash trimmed
         Assert.Equal("d-7882", result.DirectorId);
         Assert.Equal(0, launcher.StartCount);                      // a running Director means no launch
     }
@@ -59,11 +64,11 @@ public sealed class RegistryDirectorTargetResolverTests
     [Fact]
     public async Task Resolve_NoDirector_LauncherStartsOne_RegistersAfterLaunch_Resolves()
     {
-        var directors = new List<DirectorDto> { Director("d-7879", "MACHINE_B", "http://127.0.0.1:7879") };
+        var directors = new List<DirectorDto> { Director("d-7879", "MACHINE_B", "") };
         // The launcher "starts" a Director on MACHINE_A: it registers in the list and the next poll finds it.
         var launcher = new FakeLauncher(machine =>
         {
-            directors.Add(Director("d-new", machine, "http://127.0.0.1:7900"));
+            directors.Add(Director("d-new", machine, ""));
             return true;
         });
         var resolver = new RegistryDirectorTargetResolver(() => directors, launcher, FastTimeout, FastPoll);
@@ -71,7 +76,6 @@ public sealed class RegistryDirectorTargetResolverTests
         var result = await resolver.ResolveAsync("MACHINE_A", CancellationToken.None);
 
         Assert.Null(result.Error);
-        Assert.Equal("http://127.0.0.1:7900", result.Endpoint);
         Assert.Equal("d-new", result.DirectorId);
         Assert.Equal(1, launcher.StartCount);
         Assert.Equal("MACHINE_A", launcher.LastMachine);
@@ -86,7 +90,6 @@ public sealed class RegistryDirectorTargetResolverTests
 
         var result = await resolver.ResolveAsync("MACHINE_A", CancellationToken.None);
 
-        Assert.Null(result.Endpoint);
         Assert.Null(result.DirectorId);
         Assert.NotNull(result.Error);
         Assert.Equal(1, launcher.StartCount);
@@ -102,7 +105,7 @@ public sealed class RegistryDirectorTargetResolverTests
 
         var result = await resolver.ResolveAsync("MACHINE_A", CancellationToken.None);
 
-        Assert.Null(result.Endpoint);
+        Assert.Null(result.DirectorId);
         Assert.NotNull(result.Error);
         Assert.Contains("registered", result.Error!);
     }
@@ -115,7 +118,7 @@ public sealed class RegistryDirectorTargetResolverTests
 
         var result = await resolver.ResolveAsync("   ", CancellationToken.None);
 
-        Assert.Null(result.Endpoint);
+        Assert.Null(result.DirectorId);
         Assert.NotNull(result.Error);
         Assert.Equal(0, launcher.StartCount);
     }

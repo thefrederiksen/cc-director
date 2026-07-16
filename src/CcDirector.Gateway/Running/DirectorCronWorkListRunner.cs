@@ -59,15 +59,17 @@ public sealed class DirectorCronWorkListRunner : ICronWorkListRunner
         // Resolve the target MACHINE to a Director (launching one if none is running, #503).
         var machine = job.Target.Machine;
         var target = await _resolver.ResolveAsync(machine, ct);
-        if (string.IsNullOrEmpty(target.Endpoint))
+        // Tunnel-only: a resolved DirectorId is the target; a blank control endpoint is still reachable
+        // over the tunnel. Fail only on the resolver's error or a missing DirectorId, NOT on an endpoint
+        // (the same stale REST-era guard issue #1727 removed from the machine-session spawn path).
+        if (!string.IsNullOrEmpty(target.Error) || string.IsNullOrEmpty(target.DirectorId))
         {
             FileLog.Write($"[DirectorCronWorkListRunner] job={job.Id}: no director on machine={machine}: {target.Error}");
             return CronWorkListOutcome.NoSuchDirector;
         }
-        var endpoint = target.Endpoint;
-        var directorId = target.DirectorId ?? "";
+        var directorId = target.DirectorId;
 
-        var machineKey = string.IsNullOrWhiteSpace(machine) ? endpoint : machine;
+        var machineKey = string.IsNullOrWhiteSpace(machine) ? directorId : machine;
         if (_manager.TryAdmit(machineKey, listName) == WorkListRunnerManager.AdmitResult.RefusedMachineBusy)
         {
             FileLog.Write($"[DirectorCronWorkListRunner] job={job.Id}: machine={machineKey} busy (active={_manager.ActiveList(machineKey)})");
@@ -86,7 +88,10 @@ public sealed class DirectorCronWorkListRunner : ICronWorkListRunner
             // unobserved, and the machine slot is always released.
             try
             {
-                await _launcher.LaunchAsync(directorId, endpoint, repoPath, listName, consumer, ct);
+                // The launcher's endpoint parameter is a separate pre-existing vestige, ignored post-cut
+                // (tunnel-only): delivery is by directorId. Pass empty; retiring that parameter chain is a
+                // follow-up beyond issue #1727's scope.
+                await _launcher.LaunchAsync(directorId, string.Empty, repoPath, listName, consumer, ct);
                 FileLog.Write($"[DirectorCronWorkListRunner] job={job.Id}: drain complete list={listName}");
             }
             catch (Exception ex)

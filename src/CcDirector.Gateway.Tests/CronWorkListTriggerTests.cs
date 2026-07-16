@@ -43,7 +43,7 @@ public sealed class CronWorkListTriggerTests : IDisposable
     public async Task Trigger_NoSuchList_ReturnsNoSuchList()
     {
         var store = NewListStore();
-        var t = Trigger(store, new FakeResolver("http://d", "machineA"), new WorkListRunnerManager(), new FakeLauncher());
+        var t = Trigger(store, new FakeResolver("machineA"), new WorkListRunnerManager(), new FakeLauncher());
         Assert.Equal(CronWorkListOutcome.NoSuchList, await t.TriggerAsync(WorkListJob(), CancellationToken.None));
     }
 
@@ -52,7 +52,7 @@ public sealed class CronWorkListTriggerTests : IDisposable
     {
         var store = NewListStore();
         store.Create("Tonight"); // exists but no items
-        var t = Trigger(store, new FakeResolver("http://d", "machineA"), new WorkListRunnerManager(), new FakeLauncher());
+        var t = Trigger(store, new FakeResolver("machineA"), new WorkListRunnerManager(), new FakeLauncher());
         Assert.Equal(CronWorkListOutcome.EmptyList, await t.TriggerAsync(WorkListJob(), CancellationToken.None));
     }
 
@@ -65,7 +65,7 @@ public sealed class CronWorkListTriggerTests : IDisposable
         Assert.Equal(WorkListStore.ClaimResult.Granted, store.Claim("Tonight", "someone-else"));
 
         var launcher = new FakeLauncher();
-        var t = Trigger(store, new FakeResolver("http://d", "machineA"), new WorkListRunnerManager(), launcher);
+        var t = Trigger(store, new FakeResolver("machineA"), new WorkListRunnerManager(), launcher);
 
         Assert.Equal(CronWorkListOutcome.AlreadyClaimed, await t.TriggerAsync(WorkListJob(), CancellationToken.None));
         Assert.Equal(0, launcher.LaunchCount);                 // never launched -> no duplicate claim
@@ -78,7 +78,7 @@ public sealed class CronWorkListTriggerTests : IDisposable
         var store = NewListStore();
         store.Create("Tonight");
         store.AppendItem("Tonight", new WorkListItemRef { Source = "github", Id = "312" });
-        var t = Trigger(store, new FakeResolver(null, null), new WorkListRunnerManager(), new FakeLauncher());
+        var t = Trigger(store, new FakeResolver(null), new WorkListRunnerManager(), new FakeLauncher());
         Assert.Equal(CronWorkListOutcome.NoSuchDirector, await t.TriggerAsync(WorkListJob(), CancellationToken.None));
     }
 
@@ -91,7 +91,7 @@ public sealed class CronWorkListTriggerTests : IDisposable
         var manager = new WorkListRunnerManager();
         Assert.Equal(WorkListRunnerManager.AdmitResult.Admitted, manager.TryAdmit("workstation-A", "OtherList"));
 
-        var t = Trigger(store, new FakeResolver("http://d", "machineA"), manager, new FakeLauncher());
+        var t = Trigger(store, new FakeResolver("machineA"), manager, new FakeLauncher());
         Assert.Equal(CronWorkListOutcome.MachineBusy, await t.TriggerAsync(WorkListJob(), CancellationToken.None));
     }
 
@@ -103,7 +103,7 @@ public sealed class CronWorkListTriggerTests : IDisposable
         store.AppendItem("Tonight", new WorkListItemRef { Source = "github", Id = "312" });
         var manager = new WorkListRunnerManager();
         var launcher = new FakeLauncher();
-        var t = Trigger(store, new FakeResolver("http://d", "machineA"), manager, launcher);
+        var t = Trigger(store, new FakeResolver("machineA"), manager, launcher);
 
         var outcome = await t.TriggerAsync(WorkListJob(), CancellationToken.None);
         Assert.Equal(CronWorkListOutcome.Started, outcome);
@@ -156,13 +156,12 @@ public sealed class CronWorkListTriggerTests : IDisposable
 
     private sealed class FakeResolver : IDirectorTargetResolver
     {
-        private readonly string? _endpoint;
         private readonly string? _directorId;
-        public FakeResolver(string? endpoint, string? directorId) { _endpoint = endpoint; _directorId = directorId; }
+        public FakeResolver(string? directorId) { _directorId = directorId; }
         public Task<DirectorTargetResult> ResolveAsync(string machine, CancellationToken ct) =>
-            Task.FromResult(string.IsNullOrEmpty(_endpoint)
-                ? new DirectorTargetResult(null, null, "no director on machine")
-                : new DirectorTargetResult(_endpoint, _directorId, null));
+            Task.FromResult(string.IsNullOrEmpty(_directorId)
+                ? new DirectorTargetResult(null, "no director on machine")
+                : new DirectorTargetResult(_directorId, null));
     }
 
     private sealed class FakeLauncher : ICronWorkListDrainLauncher
