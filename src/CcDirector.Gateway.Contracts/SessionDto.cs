@@ -169,6 +169,20 @@ public sealed class SessionDto
     public DateTime? NeedsYouSince { get; set; }
 
     /// <summary>
+    /// When the OWNER last drove a turn on this session - a person typing or speaking - or null if they
+    /// never have. Reported by the owning Director; null from a Director too old to send it.
+    ///
+    /// This is one of exactly TWO facts a Director contributes to the hold machine, the other being
+    /// <see cref="ActivityState"/>. The Gateway owns hold and makes every ruling about it, but it cannot
+    /// see this one for itself: desktop typing never leaves the Director's machine, and whether a human or
+    /// an agent drove a turn is only knowable at the Director's input choke points.
+    ///
+    /// The Gateway clears a hold when this moves past the moment the hold was asked for. That ruling is
+    /// the Gateway's; this field is only the observation it rules on.
+    /// </summary>
+    public DateTime? LastOwnerTurnAtUtc { get; set; }
+
+    /// <summary>
     /// Gateway-owned presentation color after all overlays are folded in
     /// (<see cref="SessionOrdering.EffectiveColor"/>): on-hold, transcribing, explaining,
     /// briefing, and voice-generation state. Stamped by the Gateway aggregator so browser

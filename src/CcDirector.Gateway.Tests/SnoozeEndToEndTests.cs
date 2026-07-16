@@ -193,10 +193,9 @@ public sealed class SnoozeEndToEndTests : IAsyncLifetime
         Assert.True(_gw.SnoozeRegistry.Contains("s8"));           // THE REGRESSION: the snooze survives
         Assert.True(_gw.SnoozeRegistry.Entries().Single().IsDeferred);
 
-        // The turn ends. The deferral lands on the Director and it pushes the new state up the stream -
-        // and THAT is what starts the clock (SnoozeLandingObserver, on the push).
+        // The turn ends. The Director reports ONLY that it stopped working; the Gateway sees that on the
+        // push seam and lands the deferral, which is what starts the clock (SnoozeLandingObserver).
         await fake.EndTurnAsync("s8");
-        Assert.Equal(HoldStates.Held, fake.CurrentHoldState("s8"));
 
         var armed = Assert.Single(_gw.SnoozeRegistry.Entries());
         Assert.False(armed.IsDeferred);                            // the clock is running at last
@@ -234,37 +233,77 @@ public sealed class SnoozeEndToEndTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task Watchdog_nudges_the_live_director_off_hold_and_clears_once_confirmed()
+    public async Task An_expired_snooze_returns_the_session_with_no_director_conversation_at_all()
     {
+        // This replaces "Watchdog_nudges_the_live_director_off_hold_and_clears_once_confirmed", which
+        // asserted a two-round-trip handshake: sweep sees expired -> nudge the Director off hold -> keep
+        // the entry -> next sweep sees the Director agree -> clear. That protocol is deleted. The Gateway
+        // owns the hold and the clock, so an expired snooze IS returned, immediately, by the fold - no
+        // nudge, no confirmation, no second sweep.
         await SetDefaultMinutes(1);
-        var fake = await StartFakeAsync("s2", onHold: true); // already held on the Director
-        // Arm an already-expired snooze directly (the record path is covered by the test above).
+        var fake = await StartFakeAsync("s2", onHold: true); // the Director's own claim, which counts for nothing
         _gw.SnoozeRegistry.Snooze("s2", DateTime.UtcNow.AddSeconds(-1), fake.DirectorId);
 
-        // First sweep: sees the Director still holding + expired -> nudges it off hold, keeps the entry.
-        // ReadOnHold rides the "snapshot" verb; the nudge rides the "hold" verb with OnHold=false.
-        await _gw.RunSnoozeSweepOnceAsync();
-        Assert.Contains(false, fake.HoldCalls("s2"));   // a hold=false was forwarded over the tunnel
-        Assert.False(fake.CurrentOnHold("s2"));         // the Director applied it
-        Assert.True(_gw.SnoozeRegistry.Contains("s2")); // entry KEPT until the Director confirms
+        var returned = await GetSession("s2");
+        Assert.False(returned.OnHold);                  // already back, before any sweep has run
+        Assert.Equal("needsYou", returned.TriageBucket);
+        Assert.DoesNotContain(false, fake.HoldCalls("s2")); // nobody was nudged
 
-        // Second sweep: the Director now reports not-held -> the entry is cleared.
         await _gw.RunSnoozeSweepOnceAsync();
-        Assert.False(_gw.SnoozeRegistry.Contains("s2"));
+        Assert.False(_gw.SnoozeRegistry.Contains("s2")); // the sweep only retires the spent entry
     }
 
     [Fact]
-    public async Task Early_return_before_expiry_clears_the_snooze_when_the_director_reports_not_held()
+    public async Task A_director_cannot_make_a_session_look_snoozed_by_claiming_to_be_held()
     {
+        // The inverse of the whole bug, and the property that makes the rest hold: hold is not something a
+        // Director gets an opinion about. This fake Director reports OnHold=true and there is no entry in
+        // the registry, so the session is NOT held - its claim is overwritten in the fold, unread.
+        await StartFakeAsync("s6", onHold: true);
+
+        var session = await GetSession("s6");
+
+        Assert.False(session.OnHold);
+        Assert.Equal(HoldStates.None, session.HoldState);
+    }
+
+    [Fact]
+    public async Task The_owner_driving_a_turn_clears_the_snooze()
+    {
+        // This replaces "Early_return_before_expiry_clears_the_snooze_when_the_director_reports_not_held".
+        // Same intent (issue #470: the session came back, so the snooze is over), correct trigger. The old
+        // test believed a Director that said "not held" - and a Director said exactly that when a stray
+        // terminal byte flipped it to Working, which is how a 12-hour snooze died in 90 seconds.
+        //
+        // The Director now reports only the FACT - the owner typed at this instant - and the Gateway rules.
         await SetDefaultMinutes(1);
         var fake = await StartFakeAsync("s3", onHold: true);
         _gw.SnoozeRegistry.Snooze("s3", DateTime.UtcNow.AddMinutes(30), fake.DirectorId); // NOT expired
+        Assert.True((await GetSession("s3")).OnHold);
 
-        // The user drove the session again (issue #470): the Director reports it no longer held.
-        fake.SetOnHold("s3", false);
+        // The owner comes back and drives a turn.
+        fake.SetLastOwnerTurn("s3", DateTime.UtcNow.AddSeconds(1));
+        await fake.RePushAsync();
 
-        await _gw.RunSnoozeSweepOnceAsync();
-        Assert.False(_gw.SnoozeRegistry.Contains("s3")); // the snooze just clears
+        Assert.False(_gw.SnoozeRegistry.Contains("s3"));
+        Assert.False((await GetSession("s3")).OnHold);
+    }
+
+    [Fact]
+    public async Task Another_agents_message_does_NOT_clear_the_snooze()
+    {
+        // The 15 July 2026 defect, end to end. Session 8c17dc1c was held at 13:20:16 and un-held 93
+        // seconds later by a fleet message from a reviewer session. An agent poking a held session makes it
+        // work - and work is not consent. No owner turn is reported, so the hold stands.
+        await SetDefaultMinutes(1);
+        var fake = await StartFakeAsync("s8", onHold: true);
+        _gw.SnoozeRegistry.Snooze("s8", DateTime.UtcNow.AddHours(12), fake.DirectorId);
+
+        fake.SetActivity("s8", "Working"); // an agent's message woke it
+        await fake.RePushAsync();
+
+        Assert.True(_gw.SnoozeRegistry.Contains("s8"));
+        Assert.True((await GetSession("s8")).OnHold); // still snoozed, still working. Both true, and correct.
     }
 
     [Fact]
@@ -301,11 +340,13 @@ public sealed class SnoozeEndToEndTests : IAsyncLifetime
         await SetDefaultMinutes(1);
         var fake = await StartFakeAsync("s5", onHold: true); // held on the Director
 
-        // Prime the last-known-good roster while the Director is still alive.
+        // Prime the last-known-good roster while the Director is still alive, with a REAL hold - one this
+        // Gateway owns. (The fake's own onHold claim is ignored now, so it cannot prime anything.)
+        _gw.SnoozeRegistry.Snooze("s5", DateTime.UtcNow.AddHours(1), fake.DirectorId);
         var alive = await GetSession("s5");
-        Assert.True(alive.OnHold); // shown as snoozed while held (no expiry entry yet)
+        Assert.True(alive.OnHold);
 
-        // Arm an already-expired snooze, then the Director DIES (its stream drops).
+        // Wind the snooze back so it is already up, then the Director DIES (its stream drops).
         _gw.SnoozeRegistry.Snooze("s5", DateTime.UtcNow.AddSeconds(-1), fake.DirectorId);
         await fake.DisconnectAsync();
         _fakes.Remove(fake);
@@ -397,6 +438,16 @@ public sealed class SnoozeEndToEndTests : IAsyncLifetime
         public IReadOnlyList<bool> HoldCalls(string sid) { lock (_gate) return _holdCalls[sid].ToList(); }
         public void SetOnHold(string sid, bool value) { lock (_gate) _sessions[sid].OnHold = value; }
 
+        /// <summary>The owner typed or spoke into this session at this instant - the FACT a real Director
+        /// stamps at its input choke points and reports upward. The Gateway rules on what it means.</summary>
+        public void SetLastOwnerTurn(string sid, DateTime atUtc) { lock (_gate) _sessions[sid].LastOwnerTurnAtUtc = atUtc; }
+
+        /// <summary>The other fact a Director reports: what it is doing.</summary>
+        public void SetActivity(string sid, string activityState) { lock (_gate) _sessions[sid].ActivityState = activityState; }
+
+        /// <summary>Push the current state up the stream, as a real Director does on any change.</summary>
+        public Task RePushAsync() => PushAsync();
+
         /// <summary>
         /// The turn ends: the agent stops working, so a deferred hold LANDS (Session.cs's settle edge).
         /// This is the moment the owner's ruling names - the snooze clock starts HERE, not when the
@@ -407,10 +458,9 @@ public sealed class SnoozeEndToEndTests : IAsyncLifetime
         {
             lock (_gate)
             {
-                var s = _sessions[sid];
-                s.ActivityState = "WaitingForInput";
-                if (HoldStates.IsDeferred(s.HoldState))
-                    s.HoldState = HoldStates.Held;
+                // Only the fact. A real Director no longer lands a deferral - it reports that the work
+                // stopped, and the Gateway's SnoozeLandingObserver starts the clock.
+                _sessions[sid].ActivityState = "WaitingForInput";
             }
             return PushAsync();
         }
@@ -493,9 +543,13 @@ public sealed class SnoozeEndToEndTests : IAsyncLifetime
             ActivityState = s.ActivityState,
             Status = s.Status,
             StatusColor = s.StatusColor,
-            // Defect 12: the WHOLE hold state crosses, not just "is it parked". Copying OnHold here
-            // instead would flatten a DeferredHold back to None - the exact loss this mission ended.
+            // The Director's hold claim still crosses the wire, and the Gateway still ignores it - it is
+            // overwritten in the fold from the registry. Kept here only so these tests can prove that.
             HoldState = s.HoldState,
+            // The owner-turn fact. A Director that does not report this cannot have its holds cleared by
+            // the owner typing - so a Clone that drops it makes a real behaviour untestable while looking
+            // fine. This hand-written field list has no compiler to catch that; add new fields here.
+            LastOwnerTurnAtUtc = s.LastOwnerTurnAtUtc,
             CreatedAt = s.CreatedAt,
             LastActivityAt = s.LastActivityAt,
         };

@@ -57,424 +57,125 @@ public sealed class SessionInteractiveTests
     // ---- THE RULE: a held session that starts working comes off hold, every time ----
 
     [Fact]
-    public void HeldSession_ThatStartsWorking_KeepsTheHold()
+    public void ApplyGatewayHold_IsADumbMirror_ThatNoActivityCanChange()
     {
-        // ACTIVITY IS NOT CONSENT. This test used to assert the OPPOSITE - that work lifts the hold - and
-        // that rule is what killed all 16 holds set on 15 July 2026 within 1-21 minutes. The terminal
-        // detector flips a session to Working on a single byte out of the ConPTY, so a bare repaint of an
-        // idle session reached here and destroyed a 12-hour hold (session 7ed715c7, 21:42:46, with nothing
-        // delivered to it in the preceding 7 minutes).
+        // THE DIRECTOR'S ENTIRE HOLD CONTRACT, IN ONE TEST: it writes down what the Gateway decided, and
+        // then nothing that happens in this process changes it. Every hold rule that used to live here -
+        // work lifts it, exit clears it, settle lands a deferral - is now the Gateway's, driven by the
+        // facts this session reports upward.
+        //
+        // The block of tests this replaces (RequestHold_*, RestoreHoldState_*, ~20 of them) tested a state
+        // machine that no longer exists on this side. Their subject moved to SnoozeRegistry and
+        // SnoozeLandingObserver on the Gateway, and so did they.
         var backend = new RecordingBackend();
         using var s = NewSession(backend, ActivityState.Idle);
-        s.RequestHold(true);
+
+        s.ApplyGatewayHold(HoldState.Held);
         Assert.True(s.OnHold);
 
-        // The session starts working with nobody having submitted anything - a repaint, a background task
-        // landing, a sub-agent reporting. None of that is the owner asking for the session back.
-        s.ApplyTerminalActivityState(ActivityState.Working);
+        s.ApplyTerminalActivityState(ActivityState.Working);          // a byte, a repaint, an agent's poke
+        Assert.Equal(HoldState.Held, s.HoldState);                    // still exactly what the Gateway said
 
-        Assert.True(s.OnHold);                        // held AND working: reachable, and correct
+        s.ApplyTerminalActivityState(ActivityState.WaitingForInput);  // the turn ends
         Assert.Equal(HoldState.Held, s.HoldState);
-    }
 
-    [Fact]
-    public void DeferredHold_ThatLanded_SurvivesTheSessionWakingUpAgain()
-    {
-        // The end-to-end shape of the owner's 12-hour hold, and the exact sequence that failed on session
-        // 7ed715c7: hold asked for mid-turn -> deferred -> lands when the turn settles -> the session
-        // stirs again. It must still be held. This test previously asserted the hold came back off "every
-        // time", which is the defect.
-        var backend = new RecordingBackend();
-        using var s = NewSession(backend, ActivityState.Working);
-
-        s.ApplyTerminalActivityState(ActivityState.WaitingForInput); // a 10s quiet gap MID-turn
-        s.ApplyTerminalActivityState(ActivityState.Working);         // output resumes
-        s.RequestHold(true);                                         // user snoozes it -> deferred
-        s.ApplyTerminalActivityState(ActivityState.WaitingForInput); // the turn really ends -> parks
-        Assert.True(s.OnHold);
-
-        s.ApplyTerminalActivityState(ActivityState.Working);         // it stirs again (byte / repaint)
-        Assert.True(s.OnHold);                                       // and STAYS parked. Every time.
-        Assert.Equal(HoldState.Held, s.HoldState);
-    }
-
-    [Fact]
-    public void HeldSession_LeftAlone_StaysHeld()
-    {
-        // The other half of the rule: silence is not work. A held session with no output sits held -
-        // measured on the live fleet, an idle Claude Code session is byte-silent for tens of minutes,
-        // so it never reaches Working and never lifts.
-        var backend = new RecordingBackend();
-        using var s = NewSession(backend, ActivityState.WaitingForInput);
-        s.RequestHold(true);
-
-        s.ApplyTerminalActivityState(ActivityState.Idle); // settling around, no work
-        Assert.True(s.OnHold);
-        s.ApplyTerminalActivityState(ActivityState.WaitingForInput);
-        Assert.True(s.OnHold);
-    }
-
-    // ---- #470: a fresh submission supersedes any hold ----
-
-    [Fact]
-    public async Task SendTextAsync_OnHeldSession_ClearsOnHold()
-    {
-        var backend = new RecordingBackend();
-        using var s = NewSession(backend, ActivityState.Idle);
-        s.RequestHold(true);
-
-        await s.SendTextAsync("hello");
-
+        s.ApplyGatewayHold(HoldState.None);                           // only the Gateway changes it
         Assert.False(s.OnHold);
     }
 
     [Fact]
-    public void SendInput_WithSubmitByte_FromTheOwner_ClearsOnHold()
+    public void ApplyGatewayHold_DeferredHold_IsNotLandedHere_EvenWhenTheWorkEnds()
     {
+        // Landing a deferral is a RULING - it starts a twelve-hour clock - so it belongs to the owner of
+        // the clock. This session reports that the work ended (ActivityState, which the Gateway reads via
+        // SnoozeLandingObserver) and does nothing else about it.
         var backend = new RecordingBackend();
-        using var s = NewSession(backend, ActivityState.Idle);
-        s.RequestHold(true);
+        using var s = NewSession(backend, ActivityState.Working);
 
-        // The owner typing at the desktop terminal - every keystroke is tagged DesktopTyped.
-        s.SendInput(new byte[] { (byte)'h', (byte)'i', 0x0D }, InputOrigin.DesktopTyped);
+        s.ApplyGatewayHold(HoldState.DeferredHold);
+        s.ApplyTerminalActivityState(ActivityState.WaitingForInput);
 
-        Assert.False(s.OnHold); // the owner is back, so the hold goes
+        Assert.Equal(HoldState.DeferredHold, s.HoldState); // untouched; the Gateway lands it
     }
 
     [Fact]
-    public void SendInput_WithSubmitByte_ButNoHumanOrigin_LeavesOnHold()
+    public void ExitedSession_DoesNotClearItsOwnHold()
     {
-        // A null origin at this choke point means nobody typed it - it is an agent's prompt arriving with
-        // AppendEnter=false. An agent must not un-snooze a session the owner parked.
+        // Even exit. A dead session must not hide behind a "Snoozed" label - but that rule is enforced by
+        // the Gateway, which sees the exit reported on the push seam and drops the hold there.
         var backend = new RecordingBackend();
-        using var s = NewSession(backend, ActivityState.Idle);
-        s.RequestHold(true);
+        using var s = NewSession(backend, ActivityState.Working);
 
-        s.SendInput(new byte[] { (byte)'h', (byte)'i', 0x0D }); // submit, but no human behind it
+        s.ApplyGatewayHold(HoldState.Held);
+        s.ApplyTerminalActivityState(ActivityState.Exited);
 
-        Assert.True(s.OnHold);
         Assert.Equal(HoldState.Held, s.HoldState);
     }
 
     [Fact]
-    public async Task SendTextAsync_FromAnotherAgent_LeavesOnHold()
+    public async Task OwnerDrivenSend_StampsLastOwnerTurn()
     {
-        // THE REGRESSION. Session 8c17dc1c was held at 13:20:16 on 15 July 2026 and un-held 93 seconds
-        // later by a fleet message from a reviewer session ("Message [message from Gateway SQLite - Codex
-        // Reviewer ...]"). One agent messaging another is real work, but it is not the OWNER, and it must
-        // not cancel the owner's snooze.
+        // The second and last fact this Director contributes to hold. The Gateway cannot see it: desktop
+        // typing never leaves this machine.
         var backend = new RecordingBackend();
         using var s = NewSession(backend, ActivityState.Idle);
-        s.RequestHold(true);
-        Assert.True(s.OnHold);
+        Assert.Null(s.LastOwnerTurnAtUtc);
 
-        await s.SendTextAsync("a fleet message from another agent", SendSource.Agent);
+        await s.SendTextAsync("hello", SendSource.UserInput, InputOrigin.DesktopTyped);
 
-        Assert.True(s.OnHold);
-        Assert.Equal(HoldState.Held, s.HoldState);
+        Assert.NotNull(s.LastOwnerTurnAtUtc);
     }
 
     [Fact]
-    public async Task SendTextAsync_FrameworkPlumbing_LeavesOnHold()
+    public async Task OwnersOwnVoice_ArrivingAsFrameworkTransport_StillStampsAnOwnerTurn()
     {
-        // Handover text, a queue drain, a pre-prompt: the product talking to itself. No human, no hold lift.
+        // The desktop dictation path sends the owner's transcribed voice tagged Framework: the TRANSPORT
+        // is the framework, the ACTOR is the human. The non-null origin is what tells them apart, which is
+        // why the origin - not the source - is the primary signal.
         var backend = new RecordingBackend();
         using var s = NewSession(backend, ActivityState.Idle);
-        s.RequestHold(true);
-
-        await s.SendTextAsync("/handover", SendSource.Framework);
-
-        Assert.True(s.OnHold);
-    }
-
-    [Fact]
-    public async Task SendTextAsync_CarryingTheOwnersOwnVoice_ClearsOnHold()
-    {
-        // The desktop dictation path sends the owner's transcribed voice tagged Framework - the TRANSPORT
-        // is framework, the ACTOR is the human. Only the non-null InputOrigin tells them apart, which is
-        // why the origin, not the source, is the primary owner-intent signal.
-        var backend = new RecordingBackend();
-        using var s = NewSession(backend, ActivityState.Idle);
-        s.RequestHold(true);
 
         await s.SendTextAsync("what is the status", SendSource.Framework, InputOrigin.DesktopVoice);
 
-        Assert.False(s.OnHold); // the owner spoke, so the hold goes
+        Assert.NotNull(s.LastOwnerTurnAtUtc);
     }
 
     [Fact]
-    public async Task SendTextAsync_FromTheOwner_SupersedesADeferredHold()
+    public async Task AgentAndFrameworkSends_DoNotStampAnOwnerTurn()
     {
-        // The owner's rule, in his words: "if you type into a turn and the hold had already been set, it's
-        // not the same turn, it's a new turn, so no it should not hold."
-        var backend = new RecordingBackend();
-        using var s = NewSession(backend, ActivityState.Working);
-        s.RequestHold(true);
-        Assert.Equal(HoldState.DeferredHold, s.HoldState);
-
-        await s.SendTextAsync("actually, keep going", SendSource.UserInput, InputOrigin.DesktopTyped);
-
-        Assert.Equal(HoldState.None, s.HoldState); // the armed hold is discarded, not deferred onward
-    }
-
-    [Fact]
-    public async Task SendTextAsync_FromAnotherAgent_DoesNotSupersedeADeferredHold()
-    {
-        // An agent poking a working session must not cancel the owner's pending hold - it still lands when
-        // the session settles.
-        var backend = new RecordingBackend();
-        using var s = NewSession(backend, ActivityState.Working);
-        s.RequestHold(true);
-        Assert.Equal(HoldState.DeferredHold, s.HoldState);
-
-        await s.SendTextAsync("a fleet message", SendSource.Agent);
-        Assert.Equal(HoldState.DeferredHold, s.HoldState); // still armed
-
-        s.ApplyTerminalActivityState(ActivityState.WaitingForInput);
-        Assert.Equal(HoldState.Held, s.HoldState);         // and it lands
-        Assert.True(s.OnHold);
-    }
-
-    [Fact]
-    public void SendInput_BareKeystroke_LeavesOnHold()
-    {
-        var backend = new RecordingBackend();
-        using var s = NewSession(backend, ActivityState.Idle);
-        s.RequestHold(true);
-
-        s.SendInput(new byte[] { (byte)'h', (byte)'i' }); // composing - no CR/LF
-
-        Assert.True(s.OnHold); // still held - a bare keystroke is not a submitted turn
-    }
-
-    [Fact]
-    public async Task SendTextAsync_OnHeldSession_RaisesOnHoldChangedOnceWithFalse()
-    {
-        var backend = new RecordingBackend();
-        using var s = NewSession(backend, ActivityState.Idle);
-        s.RequestHold(true);
-        var events = new List<bool>();
-        s.OnHoldChanged += value => events.Add(value);
-
-        await s.SendTextAsync("hello");
-
-        Assert.Single(events);          // exactly once
-        Assert.False(events[0]);        // with value false
-    }
-
-    // ---- DeferredHold: "hold my session when it finishes what it is doing" (credit: #1512) ----
-
-    [Fact]
-    public async Task RequestHold_MidTurn_IsDeferred_ThenAppliesDurablyAtRedSettle()
-    {
-        var backend = new RecordingBackend();
-        using var s = NewSession(backend, ActivityState.Working);
-
-        await s.SendTextAsync("do the thing");
-        var outcome = s.RequestHold(true);      // user says "hold this" WHILE it is working
-
-        Assert.Equal(Session.HoldOutcome.Pending, outcome);
-        Assert.Equal(HoldState.DeferredHold, s.HoldState);
-        Assert.False(s.OnHold);                 // not parked yet - it is still visibly working
-
-        s.ApplyTerminalActivityState(ActivityState.WaitingForInput); // turn ends -> red "needs you"
-        Assert.True(s.OnHold);                  // the deferral landed
-        Assert.Equal(HoldState.Held, s.HoldState);
-    }
-
-    [Fact]
-    public async Task RequestHold_MidTurn_AppliesAtIdleSettleToo()
-    {
-        var backend = new RecordingBackend();
-        using var s = NewSession(backend, ActivityState.Working);
-
-        await s.SendTextAsync("go");
-        s.RequestHold(true);
-
-        s.ApplyTerminalActivityState(ActivityState.Idle); // turn ends at ready, not "needs you"
-        Assert.True(s.OnHold);                            // still parks held
-    }
-
-    [Fact]
-    public void RequestHold_WhenSettled_HoldsImmediately()
-    {
+        // A fleet message from another agent is real work, but it is not the owner coming back. If this
+        // stamped, the Gateway would drop the owner's hold - which is exactly the defect that killed
+        // session 8c17dc1c 93 seconds after it was held on 15 July 2026.
         var backend = new RecordingBackend();
         using var s = NewSession(backend, ActivityState.Idle);
 
-        var outcome = s.RequestHold(true); // not working
-        Assert.Equal(Session.HoldOutcome.Held, outcome);
-        Assert.True(s.OnHold);
+        await s.SendTextAsync("a fleet message from another agent", SendSource.Agent);
+        await s.SendTextAsync("/handover", SendSource.Framework);
+
+        Assert.Null(s.LastOwnerTurnAtUtc);
     }
 
     [Fact]
-    public async Task RequestHold_False_ReleasesAndClearsAPendingDefer()
+    public void SendInput_StampsAnOwnerTurn_OnlyWithAHumanOrigin()
     {
         var backend = new RecordingBackend();
-        using var s = NewSession(backend, ActivityState.Working);
+        using var typed = NewSession(backend, ActivityState.Idle);
+        typed.SendInput(new byte[] { (byte)'h', (byte)'i', 0x0D }, InputOrigin.DesktopTyped);
+        Assert.NotNull(typed.LastOwnerTurnAtUtc);
 
-        await s.SendTextAsync("go");
-        s.RequestHold(true);                          // deferred
-        var outcome = s.RequestHold(false);           // user changes their mind before it lands
-
-        Assert.Equal(Session.HoldOutcome.Released, outcome);
-        Assert.Equal(HoldState.None, s.HoldState);
-
-        s.ApplyTerminalActivityState(ActivityState.WaitingForInput); // turn ends
-        Assert.False(s.OnHold); // the cleared deferral is NOT resurrected
+        using var agent = NewSession(new RecordingBackend(), ActivityState.Idle);
+        agent.SendInput(new byte[] { (byte)'h', (byte)'i', 0x0D }); // no origin: an agent's AppendEnter=false prompt
+        Assert.Null(agent.LastOwnerTurnAtUtc);
     }
 
     [Fact]
-    public async Task RequestHold_PendingDefer_IsSupersededByANewSubmission()
+    public void SendInput_BareKeystroke_IsNotATurn()
     {
         var backend = new RecordingBackend();
-        using var s = NewSession(backend, ActivityState.Working);
-
-        await s.SendTextAsync("first");
-        s.RequestHold(true);             // deferred
-        await s.SendTextAsync("second"); // a fresh submission - the user is driving again
-
-        s.ApplyTerminalActivityState(ActivityState.WaitingForInput); // that turn ends
-        Assert.False(s.OnHold); // the superseded deferral did not apply
+        using var s = NewSession(backend, ActivityState.Idle);
+        s.SendInput(new byte[] { (byte)'h', (byte)'i' }, InputOrigin.DesktopTyped); // composing - no CR/LF
+        Assert.Null(s.LastOwnerTurnAtUtc);
     }
-
-    [Fact]
-    public async Task RequestHold_Deferred_IsDroppedIfTheSessionExits()
-    {
-        // A deferral has nothing to come back to once the agent is gone; parking a dead session would
-        // just hide it behind a "Snoozed" label forever.
-        var backend = new RecordingBackend();
-        using var s = NewSession(backend, ActivityState.Working);
-
-        await s.SendTextAsync("go");
-        s.RequestHold(true);
-
-        s.ApplyTerminalActivityState(ActivityState.Exited);
-        Assert.False(s.OnHold);
-        Assert.Equal(HoldState.None, s.HoldState);
-    }
-
-    // ---- Defect 21: a snoozed session that exits reads Exited, never "Snoozed" ----
-
-    [Fact]
-    public void RequestHold_Landed_IsAlsoClearedIfTheSessionExits()
-    {
-        // DEFECT 21. The rule above (drop a DEFERRED hold on exit) carried the reasoning in its own
-        // comment - "parking a dead session would just hide it behind a 'Snoozed' label forever" - and was
-        // then applied only to the deferred case. A session that was ALREADY Held kept OnHold=true on
-        // exit, the fold checks OnHold before the base activity colour, and so the row read "Snoozed"
-        // forever: the exact outcome the neighbouring comment forbids.
-        //
-        // THE RULING (owner, 14 July 2026): a snoozed session that exits reads Exited. A dead session
-        // never hides behind a Snoozed label.
-        var backend = new RecordingBackend();
-        using var s = NewSession(backend, ActivityState.WaitingForInput);
-        s.RequestHold(true);
-        Assert.Equal(HoldState.Held, s.HoldState);   // landed immediately - it was not working
-
-        s.ApplyTerminalActivityState(ActivityState.Exited);
-
-        Assert.Equal(HoldState.None, s.HoldState);
-        Assert.False(s.OnHold);   // -> the fold falls through to the base colour: grey "Exited"
-    }
-
-    // ---- Defect 22: the hold survives a Director restart ----
-
-    [Fact]
-    public void RestoreHoldState_Held_OnASettledSession_ComesBackHeld()
-    {
-        // DEFECT 22: before this, HoldState was runtime-only - a restart forgot every snooze, so a
-        // 12-hour snooze silently became no snooze at all while the Gateway's timer entry lived on,
-        // pointing at a session that was not held.
-        var backend = new RecordingBackend();
-        using var s = NewSession(backend, ActivityState.WaitingForInput);
-
-        s.RestoreHoldState(HoldState.Held);
-
-        Assert.Equal(HoldState.Held, s.HoldState);
-        Assert.True(s.OnHold);
-    }
-
-    [Fact]
-    public void RestoreHoldState_DeferredHold_OnASettledSession_Lands()
-    {
-        // THE RULING (owner, 14 July 2026): persist the hold state, and LAND the deferral on restart if
-        // the session is not working. It follows from the ruling that the clock starts when the work ends
-        // - the deferral was waiting for a turn to finish, and the Director that died finished it.
-        var backend = new RecordingBackend();
-        using var s = NewSession(backend, ActivityState.WaitingForInput);
-
-        s.RestoreHoldState(HoldState.DeferredHold);
-
-        Assert.Equal(HoldState.Held, s.HoldState);
-        Assert.True(s.OnHold);
-    }
-
-    [Fact]
-    public void RestoreHoldState_DeferredHold_OnAWorkingSession_StaysDeferred()
-    {
-        // Still working, so the deferral is still waiting for exactly what it was always waiting for.
-        // The settle edge lands it as usual, and meanwhile the session is blue and reads "Working".
-        var backend = new RecordingBackend();
-        using var s = NewSession(backend, ActivityState.Working);
-
-        s.RestoreHoldState(HoldState.DeferredHold);
-
-        Assert.Equal(HoldState.DeferredHold, s.HoldState);
-        Assert.False(s.OnHold);
-
-        s.ApplyTerminalActivityState(ActivityState.WaitingForInput);
-        Assert.Equal(HoldState.Held, s.HoldState);   // lands at the settle, as it would have done
-    }
-
-    [Fact]
-    public void RestoreHoldState_Held_OnAWorkingSession_IsKept()
-    {
-        // A restart that happens to catch the session mid-turn must not throw the owner's hold away. This
-        // test asserted the opposite on the old "working ALWAYS clears a hold" rule, which is gone: only
-        // the owner lifts a hold, and a Director restarting is not the owner.
-        var backend = new RecordingBackend();
-        using var s = NewSession(backend, ActivityState.Working);
-
-        s.RestoreHoldState(HoldState.Held);
-
-        Assert.Equal(HoldState.Held, s.HoldState);
-        Assert.True(s.OnHold);
-    }
-
-    [Fact]
-    public void RestoreHoldState_OnAnExitedSession_DropsTheHold()
-    {
-        // The exit rule, applied at restore: there is no turn to come back to, and a dead session must
-        // never hide behind a "Snoozed" label (defect 21's ruling).
-        var backend = new RecordingBackend();
-        using var s = NewSession(backend, ActivityState.Exited);
-
-        s.RestoreHoldState(HoldState.Held);
-        Assert.Equal(HoldState.None, s.HoldState);
-
-        s.RestoreHoldState(HoldState.DeferredHold);
-        Assert.Equal(HoldState.None, s.HoldState);
-    }
-
-    [Fact]
-    public void RequestHold_WhileWorking_DoesNotRaiseOnHoldChanged_ButDoesRaiseHoldStateChanged()
-    {
-        // None -> DeferredHold parks nothing, so the "is it parked?" listeners (rail strip, FIFO
-        // conductor) must not fire. The push to the Gateway must, because the LABEL changes.
-        var backend = new RecordingBackend();
-        using var s = NewSession(backend, ActivityState.Working);
-        var parked = new List<bool>();
-        var states = new List<HoldState>();
-        s.OnHoldChanged += v => parked.Add(v);
-        s.HoldStateChanged += st => states.Add(st);
-
-        s.RequestHold(true);
-
-        Assert.Empty(parked);
-        Assert.Equal(new[] { HoldState.DeferredHold }, states);
-    }
-
-    // ---- #5 PTY resize guard ----
 
     [Fact]
     public void Resize_changed_size_calls_backend_unchanged_is_noop()

@@ -1,5 +1,6 @@
 using System.Text.Json;
 using CcDirector.Core.Utilities;
+using CcDirector.Gateway.Contracts;
 
 namespace CcDirector.Gateway.Snooze;
 
@@ -74,10 +75,39 @@ public sealed class SnoozeRegistry
     /// is the whole of defect 20: the old shape had no way to say "asked for, not landed", so a deferral
     /// was indistinguishable from no snooze at all and its timer was deleted 15 seconds later.
     /// </summary>
-    public sealed record SnoozeEntry(string SessionId, DateTime? SnoozeUntilUtc, string DirectorId, int? PendingMinutes = null)
+    public sealed record SnoozeEntry(
+        string SessionId,
+        DateTime? SnoozeUntilUtc,
+        string DirectorId,
+        int? PendingMinutes = null,
+        DateTime? OwnerTurnBaselineUtc = null)
     {
         /// <summary>True when the hold has been asked for but has not landed: no deadline yet, length remembered.</summary>
         public bool IsDeferred => SnoozeUntilUtc is null;
+
+        /// <summary>
+        /// Did the owner drive a turn on this session AFTER the hold was asked for? If so they are back,
+        /// and a hold exists only to stop bothering someone who is away - so it is over.
+        ///
+        /// NEVER COMPARE TWO MACHINES' CLOCKS. <paramref name="lastOwnerTurnAtUtc"/> is stamped by the
+        /// owning DIRECTOR, and <see cref="OwnerTurnBaselineUtc"/> is that same Director's value captured
+        /// at the instant the hold was asked for - so this compares one clock against itself and skew
+        /// cannot exist. The obvious version of this rule compared the Director's turn stamp against a
+        /// GATEWAY-stamped request time; those are different machines, and a Director running even
+        /// slightly fast would read as "the owner is back" the moment the hold was set, killing every
+        /// hold instantly. That is the bug this whole refactor exists to end, reintroduced by a
+        /// timestamp.
+        ///
+        /// A null baseline means the owner had NEVER driven a turn when the hold was set, so any turn at
+        /// all is news. A null turn means the Director has not reported one (or is too old to send the
+        /// field) and can never supersede: silence is not evidence the owner came back.
+        /// </summary>
+        public bool SupersededByOwnerTurn(DateTime? lastOwnerTurnAtUtc)
+        {
+            if (lastOwnerTurnAtUtc is not DateTime turn) return false;
+            if (OwnerTurnBaselineUtc is not DateTime baseline) return true;
+            return turn.ToUniversalTime() > baseline.ToUniversalTime();
+        }
     }
 
     /// <summary>
@@ -87,14 +117,14 @@ public sealed class SnoozeRegistry
     /// escalation, no cap). Written through to disk before returning.
     /// </summary>
     /// <exception cref="ArgumentException">The session id is null/empty/whitespace.</exception>
-    public void Snooze(string sessionId, DateTime untilUtc, string directorId)
+    public void Snooze(string sessionId, DateTime untilUtc, string directorId, DateTime? ownerTurnBaselineUtc = null)
     {
         if (string.IsNullOrWhiteSpace(sessionId))
             throw new ArgumentException("session id is required", nameof(sessionId));
 
         lock (_gate)
         {
-            _entries[sessionId] = new SnoozeEntry(sessionId, untilUtc.ToUniversalTime(), directorId ?? "");
+            _entries[sessionId] = new SnoozeEntry(sessionId, untilUtc.ToUniversalTime(), directorId ?? "", null, ownerTurnBaselineUtc);
             Save();
             FileLog.Write($"[SnoozeRegistry] Snooze: sid={sessionId}, untilUtc={untilUtc.ToUniversalTime():O}, director={directorId}");
         }
@@ -111,7 +141,7 @@ public sealed class SnoozeRegistry
     /// request time can expire before the hold has even landed.
     /// </summary>
     /// <exception cref="ArgumentException">The session id is null/empty/whitespace, or minutes is not positive.</exception>
-    public void SnoozeDeferred(string sessionId, int minutes, string directorId)
+    public void SnoozeDeferred(string sessionId, int minutes, string directorId, DateTime? ownerTurnBaselineUtc = null)
     {
         if (string.IsNullOrWhiteSpace(sessionId))
             throw new ArgumentException("session id is required", nameof(sessionId));
@@ -120,7 +150,7 @@ public sealed class SnoozeRegistry
 
         lock (_gate)
         {
-            _entries[sessionId] = new SnoozeEntry(sessionId, null, directorId ?? "", minutes);
+            _entries[sessionId] = new SnoozeEntry(sessionId, null, directorId ?? "", minutes, ownerTurnBaselineUtc);
             Save();
             FileLog.Write($"[SnoozeRegistry] SnoozeDeferred: sid={sessionId}, minutes={minutes} (clock starts when the work ends), director={directorId}");
         }
@@ -277,6 +307,70 @@ public sealed class SnoozeRegistry
             return _entries.TryGetValue(sessionId, out var e)
                 && e.SnoozeUntilUtc is DateTime untilUtc
                 && nowUtc.ToUniversalTime() >= untilUtc;
+    }
+
+    /// <summary>
+    /// THE AUTHORITATIVE HOLD STATE for a session. This registry is the only writer and the only owner of
+    /// hold; a Director never decides it, and what a Director reports about hold is ignored.
+    ///
+    /// The tri-state was always here - it is the shape of the entry itself - it simply was not trusted:
+    ///   * no entry          -> <see cref="HoldStates.None"/>. Never asked for, or already over.
+    ///   * a deferred entry  -> <see cref="HoldStates.DeferredHold"/>. Asked for while the agent was
+    ///                          working; no clock yet, because the clock starts when the work ENDS.
+    ///   * an armed entry, elapsed -> <see cref="HoldStates.None"/>. The owner asked for N minutes of
+    ///                          quiet and got them; the hold is over. This subsumes the old aggregation
+    ///                          overlay, which had to patch OnHold=false on the way out precisely because
+    ///                          the real state lived on a Director this Gateway could not write to.
+    ///   * an armed entry, running -> <see cref="HoldStates.Held"/>.
+    ///
+    /// Pure (no mutation), so it is safe on the hot read path of the fold.
+    /// </summary>
+    public string HoldStateFor(string sessionId, DateTime nowUtc)
+    {
+        if (string.IsNullOrWhiteSpace(sessionId)) return HoldStates.None;
+        lock (_gate)
+        {
+            if (!_entries.TryGetValue(sessionId, out var e))
+                return HoldStates.None;
+            if (e.SnoozeUntilUtc is not DateTime untilUtc)
+                return HoldStates.DeferredHold;
+            return nowUtc.ToUniversalTime() >= untilUtc ? HoldStates.None : HoldStates.Held;
+        }
+    }
+
+    /// <summary>
+    /// The owner came back: if they drove a turn on this session after the hold was asked for, drop it.
+    /// Returns true only when an entry was actually removed.
+    ///
+    /// This is one of the four - and only four - ways a hold ends: the owner releases it, the owner drives
+    /// a turn (here), the clock runs out, or the session exits. Nothing else, and in particular no amount
+    /// of activity. See <see cref="SnoozeEntry.SupersededByOwnerTurn"/> for why the comparison is against
+    /// the request instant.
+    /// </summary>
+    public bool ClearIfSupersededByOwnerTurn(string sessionId, DateTime? lastOwnerTurnAtUtc)
+    {
+        if (string.IsNullOrWhiteSpace(sessionId) || lastOwnerTurnAtUtc is null) return false;
+        lock (_gate)
+        {
+            if (!_entries.TryGetValue(sessionId, out var e)) return false;
+            if (!e.SupersededByOwnerTurn(lastOwnerTurnAtUtc)) return false;
+            _entries.Remove(sessionId);
+            Save();
+            FileLog.Write($"[SnoozeRegistry] ClearIfSupersededByOwnerTurn: sid={sessionId}, owner drove a turn at {lastOwnerTurnAtUtc:O}, past the baseline {e.OwnerTurnBaselineUtc:O} captured when the hold was set -> hold dropped");
+            return true;
+        }
+    }
+
+    /// <summary>
+    /// The Director that owned this session when its hold was set, or null when nothing is held. One
+    /// lookup under one lock: a Contains() followed by a separate scan of Entries() is two reads of a
+    /// mutable map with a gap in between, and the entry can vanish in the gap.
+    /// </summary>
+    public string? DirectorIdFor(string sessionId)
+    {
+        if (string.IsNullOrWhiteSpace(sessionId)) return null;
+        lock (_gate)
+            return _entries.TryGetValue(sessionId, out var e) ? e.DirectorId : null;
     }
 
     /// <summary>True when <paramref name="sessionId"/> has a pending entry (expired or not).</summary>

@@ -46,42 +46,11 @@ public class SessionPersistenceTests : IDisposable
         Assert.Equal(42, loaded[0].SortOrder);
     }
 
-    // ---- Defect 22: the hold state survives a Director restart ----
-
-    [Fact]
-    public void SaveCurrentState_PersistsTheHoldState()
-    {
-        // DEFECT 22. HoldState was runtime-only: SessionStateStore stored no hold at all, so a Director
-        // restart forgot every snooze and every deferral - a 12-hour snooze silently became no snooze,
-        // while the Gateway's timer entry lived on pointing at a session that was not held.
-        var store = CreateTempStore();
-        var session = _manager.CreateSession(Path.GetTempPath());
-        session.RequestHold(true);   // a fresh session is not working -> lands immediately
-        Assert.Equal(HoldState.Held, session.HoldState);
-
-        _manager.SaveCurrentState(store);
-
-        var loaded = store.Load().Sessions;
-        Assert.Single(loaded);
-        Assert.Equal(HoldState.Held, loaded[0].HoldState);
-    }
-
-    [Fact]
-    public void LoadPersistedSessions_WithNoHoldStateField_DefaultsToNone()
-    {
-        // A session persisted before this field existed must restore un-held - exactly what it did before,
-        // and never a guess at a hold nobody recorded.
-        var store = CreateTempStore();
-        File.WriteAllText(store.FilePath,
-            $$"""
-            [{"Id":"{{Guid.NewGuid()}}","RepoPath":"C:\\test","ActivityState":"WaitingForInput","SortOrder":0}]
-            """);
-
-        var loaded = store.Load();
-
-        Assert.True(loaded.Success);
-        Assert.Equal(HoldState.None, Assert.Single(loaded.Sessions).HoldState);
-    }
+    // Defect 22's two tests lived here and are gone with their subject. The Director no longer persists a
+    // hold, because it no longer owns one: the Gateway holds the state and writes it through to
+    // snooze.json on every mutation (SnoozeRegistry). That is strictly stronger than what this file used
+    // to assert - a hold now survives a Director restart even if that Director never comes back at all,
+    // which is the entire reason the state moved. The coverage lives in SnoozeRegistryTests.
 
     [Fact]
     public void SaveCurrentState_PreservesExpectedFirstPrompt()

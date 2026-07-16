@@ -1252,55 +1252,74 @@ internal static class GatewayEndpoints
                             + $"{Core.Configuration.SnoozeDefaultConfig.MaxMinutes}"
                 });
             }
-            // Post-cut: tunnel-only. The Ok result's body IS the { onHold } JSON; a null result (Director not
-            // connected) or a non-Ok result collapses to 502.
-            var streamResult = await DirectorCommandRouter.TrySendAsync(sendCommand, director.DirectorId, "hold", sid, holdReq, ct, machineName: director.MachineName);
-            var body = streamResult is not null && streamResult.Ok ? streamResult.BodyJson : null;
-            if (body is null)
-                return Results.StatusCode(StatusCodes.Status502BadGateway);
+            if (snoozeRegistry is null)
+                return Results.StatusCode(StatusCodes.Status503ServiceUnavailable);
 
-            if (snoozeRegistry is not null)
+            // THE GATEWAY DECIDES, HERE, AND NOWHERE ELSE.
+            //
+            // This used to forward the hold to the Director, read HoldResponse.Pending back, and record
+            // whatever the DIRECTOR had decided. That is the whole defect in one paragraph: the ruling
+            // ("is it working, so should this defer?") was made on a Director, the clock was kept here,
+            // and the two drifted - defects 12, 20, 21, 22, and every hold that died within minutes on
+            // 15 July 2026.
+            //
+            // The activity is already in hand: LocateSessionAsync returned the session, and its
+            // ActivityState is the one fact the Director reports and the Gateway rules on.
+            var decided = HoldStates.None;
+            if (holdReq.OnHold)
             {
-                if (holdReq.OnHold)
+                // Issue #1500: honour a per-call snooze length when the caller passed one (already
+                // validated above); otherwise the per-user default (snooze_default_minutes), read now so a
+                // Settings change applies to the next snooze.
+                var minutes = holdReq.SnoozeMinutes ?? Core.Configuration.SnoozeDefaultConfig.Get();
+
+                // Working -> DEFER. THE RULING (owner, 14 July 2026): the clock starts when the work ENDS,
+                // so a deferral records its LENGTH and no deadline, and SnoozeLandingObserver starts the
+                // clock when the Director reports the work has stopped. Arming a clock at request time is
+                // what made an agent-requested snooze permanent.
+                var working = string.Equals(session.ActivityState?.Trim(), nameof(Core.Sessions.ActivityState.Working),
+                    StringComparison.OrdinalIgnoreCase);
+                // The owner-turn BASELINE: this Director's own LastOwnerTurnAtUtc as of right now. The
+                // hold is superseded when a LATER value arrives from that same Director - one clock,
+                // compared against itself. Never against DateTime.UtcNow here: that is the GATEWAY's
+                // clock, and comparing it to a Director's stamp makes every hold hostage to clock skew.
+                var ownerTurnBaseline = session.LastOwnerTurnAtUtc;
+
+                if (working)
                 {
-                    // Issue #1500: honour a per-call snooze length when the caller passed one (already
-                    // validated above); otherwise fall back to the per-user default (snooze_default_minutes),
-                    // read now so a Settings change applies to the next snooze.
-                    var minutes = holdReq.SnoozeMinutes ?? Core.Configuration.SnoozeDefaultConfig.Get();
-
-                    // DEFECT 20: read the Director's answer instead of assuming the hold landed. The hold
-                    // verb reports back whether it PARKED the session or DEFERRED it (the agent was
-                    // working, so the hold lands when the turn ends). HoldResponse.Pending has always
-                    // carried exactly this fact and this endpoint has always received it - it simply
-                    // passed the body through and never deserialized it.
-                    //
-                    // THE RULING (owner, 14 July 2026): the clock starts when the work ENDS. So a deferred
-                    // hold records its LENGTH and no deadline; the clock starts when the hold lands
-                    // (SnoozeLandingObserver on the push, SnoozeExpirySweep as the backstop). Arming a
-                    // clock here, at request time, is what made an agent-requested snooze permanent: the
-                    // sweep read OnHold=false 15 seconds later and deleted the timer.
-                    var hold = DirectorCommandRouter.ReadBody<HoldResponse>(streamResult!);
-                    if (hold is null)
-                    {
-                        // The Director said Ok but did not answer with a hold state. Fail loudly rather
-                        // than guess which of "held" and "deferred" happened - guessing wrong either
-                        // strands the snooze without a clock or expires it before it lands.
-                        FileLog.Write($"[GatewayEndpoints] hold: sid={sid} director returned an unreadable HoldResponse; not arming a snooze");
-                        return Results.StatusCode(StatusCodes.Status502BadGateway);
-                    }
-
-                    if (hold.Pending)
-                        snoozeRegistry.SnoozeDeferred(sid, minutes, director.DirectorId);
-                    else
-                        snoozeRegistry.Snooze(sid, DateTime.UtcNow.AddMinutes(minutes), director.DirectorId);
+                    snoozeRegistry.SnoozeDeferred(sid, minutes, director.DirectorId, ownerTurnBaseline);
+                    decided = HoldStates.DeferredHold;
                 }
                 else
                 {
-                    // Manual unsnooze: drop the timer (an alarm turned off).
-                    snoozeRegistry.Clear(sid);
+                    snoozeRegistry.Snooze(sid, DateTime.UtcNow.AddMinutes(minutes), director.DirectorId, ownerTurnBaseline);
+                    decided = HoldStates.Held;
                 }
             }
-            return Results.Content(body, "application/json");
+            else
+            {
+                // Manual unsnooze: drop the timer (an alarm turned off).
+                snoozeRegistry.Clear(sid);
+            }
+
+            // The hold is now a FACT, recorded and persisted here. What follows is the display mirror: push
+            // the ruling down so the owning Director's desktop rail can render it. Best-effort BY DESIGN -
+            // the hold does not depend on it. A Director that is slow, unreachable or dead cannot prevent
+            // the owner from holding a session, which is the entire reason the state moved here; the fold
+            // already reports the truth to every other surface from the registry, and the next push
+            // reconciles the desktop.
+            var pushed = await DirectorCommandRouter.TrySendAsync(
+                sendCommand, director.DirectorId, "hold", sid,
+                new HoldRequest { OnHold = holdReq.OnHold, SnoozeMinutes = holdReq.SnoozeMinutes, HoldState = decided },
+                ct, machineName: director.MachineName);
+            if (pushed is null || !pushed.Ok)
+                FileLog.Write($"[GatewayEndpoints] hold: sid={sid} decided={decided} and RECORDED, but the mirror push to director={director.DirectorId} did not land; the hold stands and the desktop reconciles on the next push");
+
+            return Results.Json(new HoldResponse
+            {
+                OnHold = HoldStates.IsHeld(decided),
+                Pending = decided == HoldStates.DeferredHold,
+            });
         });
 
         // Mark / clear a session as transcribing a dictated utterance. Unlike hold this is a purely
@@ -2569,16 +2588,33 @@ internal static class GatewayEndpoints
         // between the moment it expires and the moment its Director confirms the clear. A DEAD Director's
         // session still carries its last-known OnHold=true in the cached roster; this overlay is exactly
         // what surfaces it anyway - the dead-man's-switch.
+        // THE GATEWAY OWNS HOLD. The registry is not consulted as an overlay on a Director's answer any
+        // more - it IS the answer. Whatever a Director reported in SessionDto.HoldState is overwritten
+        // here, unread, because a Director does not decide hold and its copy is a display mirror this
+        // Gateway wrote in the first place.
+        //
+        // This one assignment is what makes every surface agree by construction: the roster, /exes/list
+        // and GET /sessions/{sid} all fold here, and the fold is the only place hold is decided. It
+        // replaces three workarounds that existed solely because the truth used to live on the Director -
+        // a read-time OnHold=false overlay, a tunnel round-trip to ask a Director for its hold, and a
+        // nudge-write to beg it to change. All three are gone.
+        //
+        // An elapsed snooze reads None straight out of HoldStateFor, so "expired" needs no special case:
+        // the owner asked for N minutes of quiet and got them. SnoozeExpired stays, because it is not a
+        // hold state - it is display metadata saying "this one JUST came back", which the clients render
+        // as a distinct badge and the phone announces once.
         var nowUtc = DateTime.UtcNow;
         if (snoozeRegistry is not null)
             foreach (var s in all)
-                if (!string.IsNullOrEmpty(s.SessionId) && s.OnHold && snoozeRegistry.IsExpired(s.SessionId, nowUtc))
-                {
-                    s.OnHold = false;
-                    // Phase 2: mark it as a RETURNED-from-snooze item so clients render a distinct
-                    // "Snooze ended" badge and the phone push announces it once. Display-only metadata.
+            {
+                if (string.IsNullOrEmpty(s.SessionId)) continue;
+                s.HoldState = snoozeRegistry.HoldStateFor(s.SessionId, nowUtc);
+                // Expiry is a REGISTRY fact, not a Director one: an entry whose clock has elapsed reads
+                // None above and is flagged as just-returned here. It stays flagged until the sweep drops
+                // the entry, which is what makes the badge continuous rather than a one-frame flicker.
+                if (snoozeRegistry.IsExpired(s.SessionId, nowUtc))
                     s.SnoozeExpired = true;
-                }
+            }
 
         // Defect 5: the role resolution moved to Fleet.FleetRoleResolver so this roster read and the
         // FleetRoleObserver (which pushes the role down to the owning Director's desktop) share ONE

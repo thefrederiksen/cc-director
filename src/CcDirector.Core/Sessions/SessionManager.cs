@@ -1093,7 +1093,6 @@ public sealed class SessionManager : IDisposable
                 ClaudeSessionId = s.ClaudeSessionId,
                 ActivityState = s.ActivityState,
                 // Defect 22: a snooze must survive a Director restart.
-                HoldState = s.HoldState,
                 CreatedAt = s.CreatedAt,
                 SortOrder = s.SortOrder,
                 ExpectedFirstPrompt = s.ExpectedFirstPrompt ?? s.VerifiedFirstPrompt,
@@ -1155,10 +1154,14 @@ public sealed class SessionManager : IDisposable
         session.MissionId = ps.MissionId;
         session.MissionName = ps.MissionName;
         session.WingmanEnabled = ps.WingmanEnabled;
-        // Defect 22: restore the hold the Director was holding when it died. RestoreHoldState reads the
-        // ActivityState set by the constructor above, so it must run after it - it lands a deferral whose
-        // turn ended during the restart, and drops any hold on a session that came back exited.
-        session.RestoreHoldState(ps.HoldState);
+        // No hold is restored here, because this Director never owned one. The Gateway holds the state and
+        // persists it (SnoozeRegistry, an atomic write-through on every mutation), and it pushes the hold
+        // back down to this session's display mirror as soon as this Director reconnects and it folds the
+        // roster. Restoring a hold from local disk would be a second copy of the fact, racing the Gateway's
+        // - which is what defect 22 was.
+        //
+        // This is strictly better than what it replaces: a hold now survives a Director restart even if
+        // this Director never comes back at all, which is the whole reason the state moved.
         // Issue #820: carry the persisted three-digit number in BEFORE RaiseSessionCreated so
         // AssignSessionNumber reserves this exact number (keeping it across a restart) when it is
         // still free, or backfills a fresh one when this session had none / it collides.

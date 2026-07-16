@@ -1267,10 +1267,15 @@ internal static class ControlEndpoints
             IdleSeconds = idleSeconds,
             QuietThresholdSeconds = CcDirector.Core.Wingman.TerminalStateDetector.QuietThreshold.TotalSeconds,
             VoiceMode = s.VoiceMode,
-            // Defect 12: report the WHOLE hold machine, not just "is it parked". OnHold is derived from
-            // this on the DTO, so setting it here as well would be a second writer of one fact - exactly
-            // the shape that lost the deferred state in the first place.
+            // The display mirror the Gateway wrote down to us, echoed back. The Gateway OVERWRITES this in
+            // its fold from its own registry without reading it, so this is reported for the loopback
+            // readers (the desktop) and not because anyone upstream believes it. A Director does not
+            // decide hold.
             HoldState = s.HoldState.ToString(),
+            // One of the two facts this Director contributes to hold - the other is ActivityState above.
+            // Only a Director can see this: desktop typing never leaves the machine, and the origin is
+            // known only at the input choke points. The Gateway rules on what it means.
+            LastOwnerTurnAtUtc = s.LastOwnerTurnAtUtc,
             PendingDeletion = s.PendingDeletion,
             DeletionReason = s.DeletionReason,
             WingmanEnabled = s.WingmanEnabled,

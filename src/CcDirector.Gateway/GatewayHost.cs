@@ -545,10 +545,32 @@ public sealed class GatewayHost : IAsyncDisposable
         // registry is bounded by dropping a removed Director's entries so they do not accumulate on disk.
         _snoozeRegistry = new Snooze.SnoozeRegistry(snoozePath ?? Path.Combine(CcStorage.Root(), "snooze.json"));
         Registry.OnDirectorRemoved += id => _snoozeRegistry.ClearForDirector(id);
-        // Defect 20: the push seam that starts a deferred snooze's clock the moment the hold lands. The
+        // THE PUSH SEAM where this Gateway drives the hold machine off the facts Directors report. The
         // DirectorHub (constructed per-invocation by SignalR) folds every pushed session through this one
         // instance, exactly as it does the input-stats aggregator.
-        SnoozeLandings = new Snooze.SnoozeLandingObserver(_snoozeRegistry);
+        //
+        // The mirror stamp-down is the same move FleetRoleObserver makes with roles: when the GATEWAY
+        // moves the state on its own initiative (a deferral landing, an exit, the owner coming back), the
+        // ruling is sent to the owning Director's display mirror so its desktop rail renders what the
+        // phone renders. Without it the one screen that folds from the in-process Session - the local
+        // rail - would disagree with every other surface, which is the disease, not the cure.
+        SnoozeLandings = new Snooze.SnoozeLandingObserver(
+            _snoozeRegistry,
+            utcNow: null,
+            pushMirror: async (directorId, sessionId, holdState) =>
+            {
+                var command = new DirectorCommand
+                {
+                    Verb = "hold",
+                    SessionId = sessionId,
+                    PayloadJson = System.Text.Json.JsonSerializer.Serialize(new HoldRequest
+                    {
+                        OnHold = HoldStates.IsHeld(holdState),
+                        HoldState = holdState,
+                    }),
+                };
+                await SendCommandAsync(directorId, command, CancellationToken.None);
+            });
         // Defect 5: the push seam that stamps each session's resolved role down to its owning Director, so
         // the desktop stops being the one screen that cannot suppress a Worker's red. Reads the same fresh
         // fleet snapshot the auto-dismiss sweeper reads (roles need the WHOLE fleet - a controller may be on
@@ -1750,23 +1772,13 @@ public sealed class GatewayHost : IAsyncDisposable
         // expired-and-still-held session on a LIVE Director is nudged off hold (its own state and voice
         // rotation then agree); the entry is cleared once the Director reports OnHold=false. A dead
         // Director's entry is left alone - the /sessions fold surfaces it as "needs you" from the cached
-        // roster (the dead-man's-switch), and it is dropped only when that Director leaves the fleet.
-        // Gateway Cleanup mission, Phase 2 (PR E-B3): the snooze watchdog reaches the owning Director
-        // tunnel-first (by director id) under stream mode, HTTP fallback otherwise - the same coexistence
-        // pattern as every other Gateway->Director caller, folded into one choke point. The RAW hold READ
-        // rides the "snapshot" read verb (a round-trip to the Director's own SessionDto, byte-identical to
-        // the old GetSessionAsync and so faithful to the nudge->next-sweep-clears cycle); the expiry NUDGE
-        // rides the "hold" write verb.
-        var snoozeClient = new Api.SnoozeSweepDirectorClient(
-            Registry, PushedSessions, SendCommandAsync);
+        // The snooze watchdog now needs nothing but the registry and a clock. It used to be wired to a
+        // SnoozeSweepDirectorClient so it could read each owning Director's hold over the tunnel and nudge
+        // it off hold on expiry - a reconciliation between two processes that both thought they knew the
+        // answer. The Gateway owns the state and the clock, so there is nobody left to reconcile with, and
+        // the client is gone with the protocol.
         _snoozeSweep = new Snooze.SnoozeExpirySweep(
             _snoozeRegistry,
-            isDirectorReachable: snoozeClient.IsReachable,
-            // Defect 20: the sweep reads the Director's FULL hold state, never the derived OnHold boolean -
-            // a DeferredHold reads false there, and clearing a snooze on that is what made an
-            // agent-requested snooze permanent.
-            readHoldState: snoozeClient.ReadHoldStateAsync,
-            forwardUnhold: snoozeClient.NudgeUnholdAsync,
             utcNow: () => DateTime.UtcNow);
         _snoozeSweep.Start();
 

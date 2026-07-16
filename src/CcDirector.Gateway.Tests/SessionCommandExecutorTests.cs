@@ -283,7 +283,7 @@ public sealed class SessionCommandExecutorTests
         var (sm, session, _) = NewSession();
         try
         {
-            session.RequestHold(true); // start held
+            session.ApplyGatewayHold(HoldState.Held); // start held (the Gateway's ruling, mirrored)
             var command = new DirectorCommand
             {
                 Verb = "hold",
