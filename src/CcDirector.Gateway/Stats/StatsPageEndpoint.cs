@@ -303,6 +303,22 @@ public static class StatsPageEndpoint
   // How many recent periods to show, by grain. Enough to see a trend without an endless table.
   var PERIOD_LIMIT = { day: 14, week: 8, month: 6 };
 
+  // Build a <tr> from cells using textContent, never innerHTML. cells = [{ t: text, num: bool }]. This is the
+  // ONLY way an untrusted value reaches these tables: the model name is records-derived free text taken from
+  // the agent's own transcript, so composing it into an HTML string would let a model string containing
+  // markup parse as HTML in the Gateway's own origin. textContent makes that impossible by construction -
+  // the same discipline the page's row() helper already uses for the bar rows above.
+  function trow(cells) {
+    var tr = document.createElement("tr");
+    cells.forEach(function (c) {
+      var td = document.createElement("td");
+      if (c.num) td.className = "num";
+      td.textContent = c.t;
+      tr.appendChild(td);
+    });
+    return tr;
+  }
+
   function sumBy(buckets, field, keyName, keyVal) {
     var t = 0;
     for (var i = 0; i < buckets.length; i++) {
@@ -440,10 +456,7 @@ public static class StatsPageEndpoint
       return;
     }
     keys.forEach(function (k) {
-      var tr = document.createElement("tr");
-      tr.innerHTML = "<td>" + label(k) + "</td><td class='num'>" + fmt(acc[k].turns) +
-        "</td><td class='num'>" + fmt(acc[k].tokens) + "</td>";
-      tb.appendChild(tr);
+      tb.appendChild(trow([{ t: label(k) }, { t: fmt(acc[k].turns), num: true }, { t: fmt(acc[k].tokens), num: true }]));
     });
   }
 
@@ -457,12 +470,11 @@ public static class StatsPageEndpoint
     }
     rows.forEach(function (r) {
       // A null model is the honest "not recorded yet" bucket - the first turn of every session folds before
-      // its model is known - shown as such, never hidden and never an empty name.
+      // its model is known - shown as such, never hidden and never an empty name. The name is UNTRUSTED
+      // free text and reaches the DOM only through trow's textContent, so markup in it renders as literal
+      // characters, never as HTML.
       var name = r.model ? r.model : "Not recorded";
-      var tr = document.createElement("tr");
-      tr.innerHTML = "<td>" + name + "</td><td class='num'>" + fmt(r.totalTokens) +
-        "</td><td class='num'>" + pct(r.totalTokens, grand) + "%</td>";
-      tb.appendChild(tr);
+      tb.appendChild(trow([{ t: name }, { t: fmt(r.totalTokens), num: true }, { t: pct(r.totalTokens, grand) + "%", num: true }]));
     });
   }
 

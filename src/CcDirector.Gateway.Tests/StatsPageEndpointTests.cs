@@ -87,6 +87,16 @@ public sealed class StatsPageEndpointTests : IDisposable
             Assert.Contains("data-period=\"month\"", html);
             Assert.Contains("Spend by model", html);
             Assert.Contains("modelSpendTable", html);
+
+            // SOURCE TRIPWIRE, not behavioral coverage - and named as such because this repo has no
+            // JavaScript execution harness, so a C# HTTP test cannot run the page's rendering. The model
+            // name is records-derived free text; a Codex review found it was concatenated into innerHTML,
+            // which would parse markup from a model string as HTML in the Gateway's own origin. The fix
+            // routes every cell through a textContent builder (trow). The BEHAVIOURAL proof that a hostile
+            // model name renders as inert text is the Playwright before/after check run at review time; this
+            // assertion only trips the obvious verbatim revert - it does not claim to prove escaping.
+            Assert.Contains("function trow(", html);          // the safe textContent row builder exists
+            Assert.DoesNotContain("\"<td>\" + name", html);   // the exact vulnerable concatenation is gone
             // Self-contained: no external resource references.
             Assert.DoesNotContain("http://", html);
             Assert.DoesNotContain("https://", html);
