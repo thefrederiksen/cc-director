@@ -690,77 +690,28 @@ public sealed class Session : IDisposable
     }
 
     /// <summary>
-    /// Request an EXPLICIT hold / un-hold - the user pressing Snooze. Un-hold clears the hold and any
-    /// pending deferral at once. A hold requested while the agent is WORKING is deferred (the user's "hold
-    /// this one when it finishes"); a hold requested while it is settled applies immediately. Returns which
-    /// of those happened so the caller's button can say what it did.
+    /// Write down what the GATEWAY has decided this session's hold is, so the desktop can render it.
     ///
-    /// The defer decision reads <see cref="IsWorking"/> - the live state - deliberately NOT a turn latch.
-    /// The old latch was armed only by a submitted turn and destroyed by any 10 seconds of terminal quiet
-    /// (see TerminalStateDetector.QuietThreshold), which an ordinary slow command produces mid-turn, so a
-    /// hold requested after such a gap read as "no turn in flight" and was applied immediately instead of
-    /// deferred - and could then never lift itself.
+    /// THIS IS A DUMB SETTER AND MUST STAY ONE. It contains no rule, reads no other state, and decides
+    /// nothing. The Gateway owns hold: it holds the state, it holds the clock, and it makes every ruling
+    /// about both. This field is a display mirror the Gateway writes down the tunnel, for the one reader
+    /// that cannot go and ask - the local desktop rail, which folds from this in-process Session rather
+    /// than from the Gateway roster.
+    ///
+    /// It used to be <c>RequestHold</c>, which decided defer-versus-immediate by reading
+    /// <see cref="IsWorking"/>, and it lived here because the Director owned hold. It should never have:
+    /// a hold is a statement of the OWNER'S INTENT ("do not bother me with this for twelve hours"), and
+    /// intent has nothing to do with a pseudo-terminal. The Director's world is bytes and processes. Two
+    /// owners of one idea drift, and every defect this machine ever had - 12, 20, 21, 22, and every hold
+    /// that died within minutes on 15 July 2026 - was that drift.
+    ///
+    /// If you are about to add an <c>if</c> to this method, you are putting the bug back.
     /// </summary>
-    public HoldOutcome RequestHold(bool onHold)
+    public void ApplyGatewayHold(HoldState decidedByGateway)
     {
-        if (!onHold)
-        {
-            HoldState = HoldState.None;
-            return HoldOutcome.Released;
-        }
-        if (IsWorking)
-        {
-            FileLog.Write($"[Session] Hold requested while working - deferring until it stops: session={Id}");
-            HoldState = HoldState.DeferredHold;
-            return HoldOutcome.Pending;
-        }
-        HoldState = HoldState.Held;
-        return HoldOutcome.Held;
+        HoldState = decidedByGateway;
     }
 
-    /// <summary>
-    /// Restore a hold that was persisted before a Director restart (defect 22). Called by the restore path
-    /// AFTER <see cref="ActivityState"/> has been set, because the rule below reads it.
-    ///
-    /// THE RULING (owner, 14 July 2026): persist the hold state, and LAND the deferral on restart if the
-    /// session is not working. It follows from the ruling that the snooze clock starts when the work ends -
-    /// the deferral was waiting for a turn to finish, and a Director that died finished it. There is no
-    /// turn still running to wait for, so a restored deferral has already got what it was waiting for.
-    ///
-    /// The three cases, which are the existing machine's rules applied at restore rather than new ones:
-    ///  * The session came back EXITED - drop the hold entirely, exactly as the exit edge does. There is no
-    ///    turn to come back to, and a dead session must never hide behind a "Snoozed" label.
-    ///  * The session came back WORKING - keep the deferral pending. It is still waiting for work to stop,
-    ///    which is what DeferredHold means; the settle edge lands it as usual. A restored <c>Held</c> is
-    ///    lifted, because working ALWAYS clears a hold - the load-bearing rule of the whole machine.
-    ///  * Otherwise (settled) - a deferral LANDS, and a landed hold stays landed.
-    /// </summary>
-    /// <param name="persisted">The hold state read back from the store.</param>
-    public void RestoreHoldState(HoldState persisted)
-    {
-        if (persisted == HoldState.None) return;
-
-        if (ActivityState is ActivityState.Exited)
-        {
-            FileLog.Write($"[Session] Restore: dropping persisted hold ({persisted}) on an exited session: session={Id}");
-            return;
-        }
-
-        if (IsWorking)
-        {
-            // A working session keeps whatever was persisted: a Held stays Held (work does not lift a hold
-            // - only the owner does), and a deferral stays deferred, still waiting for this work to stop.
-            // This branch used to downgrade a restored Held to None on the "working always clears a hold"
-            // rule; that rule is gone, and honouring it here threw away a hold across every restart that
-            // happened to catch the session mid-turn.
-            FileLog.Write($"[Session] Restore: persisted hold {persisted} on a working session -> {persisted}: session={Id}");
-            HoldState = persisted;
-            return;
-        }
-
-        FileLog.Write($"[Session] Restore: persisted hold {persisted} on a settled session -> Held: session={Id}");
-        HoldState = HoldState.Held;
-    }
 
     /// <summary>
     /// Whether this session participates in the Wingman experience: the auto-explain
@@ -1941,7 +1892,7 @@ public sealed class Session : IDisposable
             // prompt path when an AGENT sends text with AppendEnter=false, and that must not un-snooze a
             // session the owner parked. See IsOwnerDriven for the same rule on the text path.
             if (origin is not null)
-                HoldState = HoldState.None;
+                StampOwnerTurn();
             SetActivityState(ActivityState.Working);
         }
     }
@@ -2051,6 +2002,27 @@ public sealed class Session : IDisposable
     private static bool IsOwnerDriven(SendSource source, InputOrigin? origin)
         => origin is not null || source is SendSource.UserInput or SendSource.Delivery;
 
+    /// <summary>
+    /// When the OWNER last drove a turn here - a person typing or speaking - or null if they never have.
+    ///
+    /// This is a FACT THIS SESSION REPORTS, not a decision it makes. It is the second and last thing the
+    /// Director contributes to hold (the first being <see cref="ActivityState"/>): the Gateway owns hold
+    /// and decides what to do about it, but only the Director can see who drove a turn, because desktop
+    /// typing never leaves this machine and the origin is only known at the input choke points.
+    ///
+    /// The Gateway clears a hold when this moves past the moment the hold was asked for - the owner came
+    /// back, so they are not being bothered by a session they are sitting in front of. That ruling lives
+    /// on the Gateway. This session neither knows nor cares that it is held.
+    /// </summary>
+    public DateTime? LastOwnerTurnAtUtc { get; private set; }
+
+    /// <summary>Record that the owner just drove a turn. Idempotent by nature - it is a timestamp.</summary>
+    private void StampOwnerTurn()
+    {
+        LastOwnerTurnAtUtc = DateTime.UtcNow;
+        FileLog.Write($"[Session] Owner drove a turn: session={Id}, atUtc={LastOwnerTurnAtUtc:O}");
+    }
+
     public async Task SendTextAsync(string text, SendSource source = SendSource.UserInput, InputOrigin? origin = null)
     {
         if (_disposed || Status is SessionStatus.Exited or SessionStatus.Failed) return;
@@ -2077,7 +2049,7 @@ public sealed class Session : IDisposable
         // hold for those un-snoozed a session the owner had explicitly parked. That is what made a 12-hour
         // hold die 90 seconds later when another agent messaged it. See IsOwnerDriven.
         if (IsOwnerDriven(source, origin))
-            HoldState = HoldState.None;
+            StampOwnerTurn();
         SetActivityState(ActivityState.Working);
         // DevThrottle Stats: a SendTextAsync is exactly one submitted turn. Count it (plus its character
         // volume) for the tagged origin. Null origin = not a human turn - either another agent (counted on
@@ -2222,62 +2194,16 @@ public sealed class Session : IDisposable
         var old = ActivityState;
         if (old == newState) return;
         ActivityState = newState;
-        // ===== The hold state machine's activity edges (docs/new_architecture/session-state.html).
-        // ActivityState has already been assigned above, so IsWorking below reads the NEW state.
-        if (IsWorking)
-        {
-            // A hold SURVIVES work. Activity is not consent: a held session starting to work says nothing
-            // about whether the owner wants it back, so it must not lift the hold. Only the owner lifts a
-            // hold - by un-holding it, by typing/speaking into it (see IsOwnerDriven), or by letting the
-            // snooze timer expire.
-            //
-            // This edge used to read "a held session that starts working takes itself off hold, every time"
-            // and justified itself with "reaching Working means real work, on every path". Both halves were
-            // wrong, and the log proved it: 16 of 16 holds set on 15 July 2026 died here within 1-21
-            // minutes, none reaching even 1% of a 12-hour hold.
-            //  * Work is not always the owner. Another agent's fleet message is real work, driven by an
-            //    agent. Session 8c17dc1c was held at 13:20:16 and un-held at 13:21:49 by a fleet message
-            //    from a reviewer session. The owner never touched it.
-            //  * Work is not always real. The detector's rule is "a byte out of the ConPTY means working",
-            //    which fires on a spontaneous repaint. Session 7ed715c7 landed a 12-hour hold at 21:35:30
-            //    and lost it at 21:42:46 to a lone byte, with nothing delivered in the 7 minutes between.
-            //
-            // A DeferredHold also survives here: it is WAITING for this work to stop.
-        }
-        else if (newState is ActivityState.Exited)
-        {
-            // Exited: THE RULING (owner, 14 July 2026) - a snoozed session that exits reads Exited. A dead
-            // session never hides behind a "Snoozed" label.
-            //
-            // This clears BOTH hold states, and the reason is the same for both: parking a dead session
-            // would just hide it behind a "Snoozed" label forever. A deferral can never land (there is no
-            // turn to come back to); a LANDED hold has nothing left to hold back (the thing it was
-            // silencing is over). Defect 21 was that this branch made that argument in its own comment and
-            // then applied it only to the deferred case - so a Held session that exited kept OnHold=true,
-            // the fold checked OnHold before the base colour, and the row read "Snoozed" forever.
-            //
-            // Clearing the hold HERE, on the Director, is what makes the fold say Exited without a new
-            // rule: OnHold goes false, so the ladder falls through to the base activity colour, which is
-            // grey "Exited". The exit edge is only ever observed by a live Director, so there is no case
-            // this misses.
-            if (HoldState != HoldState.None)
-            {
-                FileLog.Write($"[Session] Session exited - clearing hold ({HoldState}): session={Id}");
-                HoldState = HoldState.None;
-            }
-        }
-        else
-        {
-            // Settled (WaitingForInput / WaitingForPerm / Idle): a deferred hold lands DURABLY. There is no
-            // turn-end auto-lift any more - the lift edge moved to "starts working" above, which is both
-            // earlier (the user sees it go blue immediately) and immune to the quiet-gap problem that made
-            // the old turn-end lift unreachable after any slow command.
-            if (HoldState == HoldState.DeferredHold)
-            {
-                FileLog.Write($"[Session] Deferred hold landed at settle ({newState}): session={Id}");
-                HoldState = HoldState.Held;
-            }
-        }
+        // NO HOLD EDGES LIVE HERE, AND NONE MAY BE ADDED. Activity does not decide hold. This method used
+        // to run the whole hold machine off these transitions - work lifts a hold, exit clears it, settle
+        // lands a deferral - and every one of those was the Director ruling on something that is not its
+        // business. A hold is the owner's intent; this class knows about bytes and processes.
+        //
+        // Those rulings now live on the Gateway, driven by the two facts this session REPORTS upward:
+        // its ActivityState (assigned just above, pushed on the tunnel, read by SnoozeLandingObserver to
+        // land a deferral when the work ends and to drop a hold when the session exits) and
+        // LastOwnerTurnAtUtc (the owner came back). Reporting is this class's job. Deciding is not.
+        //
         // A real activity change ends any Wingman "running in the background" overlay: once the
         // terminal produces output again (Working), or the session otherwise leaves the parked
         // turn-end it was judged at, the background-wait verdict is stale. The next turn-end

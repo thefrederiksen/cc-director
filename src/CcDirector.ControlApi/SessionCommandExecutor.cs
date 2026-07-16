@@ -298,10 +298,16 @@ internal static class SessionCommandExecutor
     }
 
     /// <summary>
-    /// The <c>hold</c> verb: park / un-park a session in the FIFO voice queue. Mirrors the Director's
-    /// <c>POST /sessions/{sid}/hold</c> lambda - invalid id -&gt; BadRequest, missing session -&gt; NotFound -
-    /// and sets <see cref="Session.OnHold"/>, returning the resulting state. An empty/absent payload
-    /// defaults to <c>OnHold = true</c> (the common "hold this one" case), same as the REST endpoint.
+    /// The <c>hold</c> verb: write down the hold the GATEWAY has decided, so the desktop can render it.
+    ///
+    /// This verb no longer decides anything. It used to call <c>Session.RequestHold</c>, which ran the
+    /// whole hold machine here on the Director - reading whether the agent was working to choose between
+    /// an immediate and a deferred hold. The Gateway owns hold now: it holds the state, it owns the clock,
+    /// and it makes both rulings. This is the push seam that carries its answer down to the one reader
+    /// that cannot ask for itself, the local desktop rail.
+    ///
+    /// The response reports the mirror back for callers that still read it. <c>Pending</c> is simply
+    /// "the Gateway says this is a deferral", not an outcome this Director computed.
     /// </summary>
     internal static DirectorCommandResult Hold(SessionManager sessionManager, DirectorCommand command)
     {
@@ -309,22 +315,27 @@ internal static class SessionCommandExecutor
             return DirectorCommandResult.Fail(DirectorCommandStatus.BadRequest, "invalid session id format");
 
         var request = Deserialize<HoldRequest>(command.PayloadJson);
-        var onHold = request?.OnHold ?? true;
 
         var session = sessionManager.GetSession(guid);
         if (session is null)
             return DirectorCommandResult.Fail(DirectorCommandStatus.NotFound, "session not found");
 
-        // RequestHold runs the hold state machine rather than poking a flag: a hold that arrives while the
-        // agent is working is DEFERRED and lands when the work stops ("hold my session when it finishes"),
-        // instead of parking a session that is visibly still running. An immediate hold / un-hold is
-        // unchanged. See docs/new_architecture/session-state.html.
-        var outcome = session.RequestHold(onHold);
-        FileLog.Write($"[SessionCommandExecutor] hold: session={guid} onHold={onHold} outcome={outcome} state={session.HoldState}");
+        // The Gateway's ruling, or - for a caller that sends only the boolean - the best that boolean can
+        // say. Either way this Director reads no state and applies no rule.
+        var decided = HoldStates.Normalize(request?.HoldState) switch
+        {
+            HoldStates.Held => HoldState.Held,
+            HoldStates.DeferredHold => HoldState.DeferredHold,
+            HoldStates.None => HoldState.None,
+            _ => (request?.OnHold ?? true) ? HoldState.Held : HoldState.None,
+        };
+
+        session.ApplyGatewayHold(decided);
+        FileLog.Write($"[SessionCommandExecutor] hold: session={guid} gateway-decided={decided} (mirror written, nothing decided here)");
         return DirectorCommandResult.Success(Serialize(new HoldResponse
         {
             OnHold = session.OnHold,
-            Pending = outcome == Session.HoldOutcome.Pending,
+            Pending = decided == HoldState.DeferredHold,
         }));
     }
 

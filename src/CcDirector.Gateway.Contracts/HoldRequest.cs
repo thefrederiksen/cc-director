@@ -18,6 +18,19 @@ public sealed class HoldRequest
     /// reads it, so this is a Gateway-only capability and needs no Director change.
     /// </summary>
     public int? SnoozeMinutes { get; set; }
+
+    /// <summary>
+    /// The hold state the GATEWAY has decided for this session, as a <see cref="HoldStates"/> value, when
+    /// this request is the Gateway pushing its ruling DOWN to the owning Director. The Director writes it
+    /// to its display mirror verbatim - it decides nothing.
+    ///
+    /// Null means the caller is not the Gateway pushing a decision (an old Gateway, or a direct loopback
+    /// call), and the Director falls back to reading <see cref="OnHold"/> as before: true -&gt; Held,
+    /// false -&gt; None. That is not a guess - a boolean genuinely cannot express DeferredHold, so the
+    /// worst an old caller can produce is a mirror that says Held instead of DeferredHold, which the next
+    /// Gateway push corrects. Nothing decides anything from it either way.
+    /// </summary>
+    public string? HoldState { get; set; }
 }
 
 /// <summary>

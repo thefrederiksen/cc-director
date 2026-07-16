@@ -113,9 +113,14 @@ public sealed class SessionsAggregationTests : IAsyncLifetime
         var briefing = Sample("brief1", "ClaudeCode", "repo", "WaitingForInput", "red");
         briefing.BriefingState = "Briefing";
         var parked = Sample("hold1", "ClaudeCode", "repo", "WaitingForInput", "red");
-        parked.OnHold = true;
         var fake = await StartFake("M", "u", new[] { red, briefing, parked });
         await Register(fake);
+
+        // The hold is the GATEWAY'S, so it is armed here rather than by the Director asserting OnHold on
+        // its own DTO. That used to be how this test set it up, and it no longer means anything: the fold
+        // overwrites whatever a Director claims about hold from this registry, unread. A Director cannot
+        // make a session look snoozed by saying so.
+        _gateway.SnoozeRegistry.Snooze("hold1", DateTime.UtcNow.AddMinutes(30), fake.DirectorId);
 
         var sessions = await GetSessions();
 

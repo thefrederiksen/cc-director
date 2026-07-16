@@ -99,7 +99,7 @@ public sealed class FifoQueueFoldTests
         worker.ControllerSessionId = Guid.NewGuid();
         worker.SetGatewayResolvedRole(SessionRoles.Worker);
         var snoozed = RedAtTurnEnd();
-        Assert.Equal(Session.HoldOutcome.Held, snoozed.RequestHold(true));
+        snoozed.ApplyGatewayHold(HoldState.Held);
         var roster = new[] { ordinary, worker, snoozed };
 
         var queue = FifoWindow.BuildQueue(roster);
@@ -117,7 +117,7 @@ public sealed class FifoQueueFoldTests
     public void ASnoozedRedSession_IsNotQueued()
     {
         var session = RedAtTurnEnd();
-        Assert.Equal(Session.HoldOutcome.Held, session.RequestHold(true));
+        session.ApplyGatewayHold(HoldState.Held);
 
         Assert.Empty(FifoWindow.BuildQueue(new[] { session }));
     }

@@ -4,49 +4,26 @@ using CcDirector.Core.Utilities;
 namespace CcDirector.Gateway.Snooze;
 
 /// <summary>
-/// The Gateway-owned watchdog that makes a snooze always come back (Snooze Length mission,
-/// docs/architecture/snooze-length-mission-2026-07-11.md). On a fixed cadence it walks the
-/// <see cref="SnoozeRegistry"/> and, for each pending snooze, decides what to do from the OWNING
-/// DIRECTOR'S RAW HOLD STATE (read straight from the Director, NOT from the overlaid /sessions roster,
-/// so the aggregation overlay can never mask the Director's own signal):
+/// Retires snooze entries whose clock has run out. That is all it does, and it is bookkeeping rather than
+/// correctness: the fold reads <see cref="SnoozeRegistry.HoldStateFor"/>, which reports an elapsed entry
+/// as not-held the instant it elapses, on every read. A session returns to "needs you" the moment its
+/// snooze is up whether or not this sweep has run yet. Dropping the entry just stops the registry growing.
 ///
-///   * <see cref="HoldState.None"/> - the session is genuinely NOT held: it came back on its own (a new
-///     turn or a keystroke cleared the hold, issue #470) OR a prior expiry nudge has now taken. The
-///     snooze has served its purpose, so the entry is CLEARED.
-///   * <see cref="HoldState.DeferredHold"/> - the hold has been asked for and has NOT landed. The sweep
-///     does NOTHING: there is no clock to expire yet, and there is nothing to clear. See the warning
-///     below - this case is defect 20 and it is the reason this seam reads a tri-state.
-///   * <see cref="HoldState.Held"/> - the hold is landed. If the entry is still DEFERRED in the
-///     registry, the landing was missed on the push seam, so the sweep LANDS it here (the backstop) and
-///     the clock starts now. If the snooze has then EXPIRED (now &gt;= SnoozeUntilUtc) - the session went
-///     quiet and never came back on its own, the exact stuck/dead population the watchdog exists to
-///     surface - the sweep NUDGES the live Director off hold (so its own state and voice rotation agree)
-///     and KEEPS the entry; the next sweep sees the Director report None and clears it. The entry is
-///     kept across the nudge on purpose: the aggregation overlay pins the session to "needs you"
-///     CONTINUOUSLY from the instant of expiry, so there is never a beat where the roster flashes back
-///     to "Snoozed".
-///   * The owning Director is UNREACHABLE (dead/offline). The sweep does NOTHING and KEEPS the entry -
-///     this is the dead-man's-switch: the aggregation overlay surfaces the session from the cached
-///     roster as "needs you" without the Director's help. The entry is dropped only when that Director
-///     is removed from the fleet (SnoozeRegistry.ClearForDirector via Registry.OnDirectorRemoved).
+/// WHAT THIS USED TO BE, AND WHY IT ISN'T. The hold state lived on the owning Director and the clock lived
+/// here, so expiry had to be negotiated between two processes across a network. Every 15 seconds this
+/// class read each Director's raw hold over the tunnel, interpreted a tri-state, acted as a BACKSTOP for a
+/// landing missed on the push seam, compare-and-cleared so a racing re-snooze survived, nudged the live
+/// Director off hold, and kept the entry until that Director agreed. It also needed a dead-man's-switch,
+/// because a dead Director stranded a hold nobody else could release.
 ///
-/// WHY THIS READS A TRI-STATE AND NOT A BOOLEAN - defect 20, fixed 14 July 2026. This seam used to read
-/// <c>SessionDto.OnHold</c>, a single boolean. A DeferredHold reports <c>OnHold=false</c> - correctly, it
-/// is not parked yet - so it was indistinguishable from None. The sweep runs every 15 seconds: an agent
-/// snoozed its own session (which by definition happens while it is working, so the hold deferred), the
-/// sweep asked "is it held?", heard "no", concluded the snooze was over, and DELETED the 12-hour timer.
-/// The turn then ended, the deferral landed, and the session was held with no clock at all - an
-/// agent-requested snooze NEVER EXPIRED. If you are about to make this read a boolean again, or clear an
-/// entry because something reads "not held": don't. That is the bug, exactly, and it is the case the
-/// feature exists to serve rather than an edge case.
+/// All of it is gone, because the premise is gone: the Gateway owns the state AND the clock, so there is
+/// nobody to ask and nobody to nudge. Defect 20 - the one that deleted a twelve-hour timer 15 seconds
+/// after it was asked for, by reading a boolean that could not tell "deferred" from "not held" - is not
+/// defended against here any more. It is unreachable: this sweep never asks anyone whether a session is
+/// held, because it already knows.
 ///
-/// The sweep NEVER clears an entry merely because a read came back empty (a transient miss or a
-/// momentarily-unreachable Director must not lose a pending snooze); "the session permanently left
-/// the roster" is handled authoritatively by the aggregation (a reachable Director's live set prunes
-/// exited sessions) and by Director removal - not by this sweep guessing from one failed read.
-///
-/// Already-past entries at startup need no special handling: the registry re-arms them on load, and
-/// the first sweep tick reads them as expired and fires them immediately.
+/// Already-past entries at startup need no special handling: the registry loads them back and they read as
+/// expired on the first read after boot.
 /// </summary>
 public sealed class SnoozeExpirySweep : IDisposable
 {
@@ -58,42 +35,25 @@ public sealed class SnoozeExpirySweep : IDisposable
     public static readonly TimeSpan StartupDelay = TimeSpan.FromSeconds(12);
 
     private readonly SnoozeRegistry _registry;
-    private readonly Func<string, bool> _isDirectorReachable;
-    private readonly Func<string, string, CancellationToken, Task<HoldState?>> _readHoldState;
-    private readonly Func<string, string, CancellationToken, Task> _forwardUnhold;
     private readonly Func<DateTime> _utcNow;
 
     private System.Threading.Timer? _timer;
     private int _busy; // 0 = idle, 1 = a tick is running (reentrancy guard)
 
     /// <param name="registry">The pending-snooze registry to sweep.</param>
-    /// <param name="isDirectorReachable">
-    /// Whether the owning Director (by id) is reachable at all - over the tunnel (stream-connected) OR over
-    /// HTTP (an advertised endpoint). False when it is offline/dead: the dead-man's-switch case, which the
-    /// sweep leaves untouched. (Gateway Cleanup mission, Phase 2 PR E-B3: this replaced the earlier
-    /// resolve-to-an-endpoint gate so the sweep no longer depends on a dialable HTTP URL - the read/forward
-    /// seams reach the Director by id, tunnel-first.)
-    /// </param>
-    /// <param name="readHoldState">
-    /// Reads the owning Director's RAW hold state for a session, addressed by DIRECTOR ID: the full
-    /// tri-state (<see cref="HoldState.None"/> / <see cref="HoldState.Held"/> /
-    /// <see cref="HoldState.DeferredHold"/>), or null when the session is absent from that Director or the
-    /// read did not land. Reads the Director directly (its own pushed/snapshotted state), never the
-    /// overlaid roster. NOT a boolean - see the type-level warning: a boolean here is defect 20.
-    /// </param>
-    /// <param name="forwardUnhold">Forwards a hold=false to the owning Director (by id) - the expiry nudge.</param>
     /// <param name="utcNow">The clock; injected so the expiry boundary is deterministic in tests.</param>
+    ///
+    /// <remarks>
+    /// This used to take three more dependencies - is the owning Director reachable, read its hold over
+    /// the tunnel, and nudge it off hold - and every one of them is gone. They existed because the hold
+    /// state lived on a Director while its clock lived here, so expiry meant negotiating with another
+    /// process across a network. The Gateway owns both now, and a timer that runs out is a local fact.
+    /// </remarks>
     public SnoozeExpirySweep(
         SnoozeRegistry registry,
-        Func<string, bool> isDirectorReachable,
-        Func<string, string, CancellationToken, Task<HoldState?>> readHoldState,
-        Func<string, string, CancellationToken, Task> forwardUnhold,
         Func<DateTime> utcNow)
     {
         _registry = registry ?? throw new ArgumentNullException(nameof(registry));
-        _isDirectorReachable = isDirectorReachable ?? throw new ArgumentNullException(nameof(isDirectorReachable));
-        _readHoldState = readHoldState ?? throw new ArgumentNullException(nameof(readHoldState));
-        _forwardUnhold = forwardUnhold ?? throw new ArgumentNullException(nameof(forwardUnhold));
         _utcNow = utcNow ?? throw new ArgumentNullException(nameof(utcNow));
     }
 
@@ -116,7 +76,7 @@ public sealed class SnoozeExpirySweep : IDisposable
             if (cancellationToken.IsCancellationRequested) return;
             try
             {
-                await HandleEntryAsync(entry, now, cancellationToken);
+                HandleEntry(entry, now);
             }
             catch (Exception ex)
             {
@@ -125,69 +85,30 @@ public sealed class SnoozeExpirySweep : IDisposable
         }
     }
 
-    private async Task HandleEntryAsync(SnoozeRegistry.SnoozeEntry entry, DateTime now, CancellationToken ct)
+    /// <summary>
+    /// Retire an entry whose clock has run out. That is the sweep's WHOLE job now.
+    ///
+    /// It used to be a distributed-consensus engine: read the owning Director's hold over the tunnel,
+    /// interpret its tri-state, act as a BACKSTOP for a landing missed on the push seam, compare-and-clear
+    /// so a racing re-snooze was not clobbered, then nudge the Director off hold and wait for it to agree.
+    /// Every line of that existed for one reason - the state lived on a Director and the clock lived here,
+    /// so the two had to be reconciled across a network.
+    ///
+    /// They are the same object now. There is nobody to ask and nobody to nudge: the fold reads
+    /// <see cref="SnoozeRegistry.HoldStateFor"/>, which reports an elapsed entry as None the instant it
+    /// elapses, on every read, with no round trip. Dropping the entry here is bookkeeping, not correctness
+    /// - and it is why an unreachable Director no longer needs a dead-man's-switch. A dead Director cannot
+    /// strand a hold it never owned.
+    /// </summary>
+    private void HandleEntry(SnoozeRegistry.SnoozeEntry entry, DateTime now)
     {
-        if (!_isDirectorReachable(entry.DirectorId))
-        {
-            // Owning Director unreachable/dead: leave the entry alone. The aggregation overlay
-            // surfaces the session as "needs you" from the cached roster (the dead-man's-switch);
-            // the entry is dropped only when the Director is removed from the fleet.
-            return;
-        }
+        if (!_registry.IsExpired(entry.SessionId, now))
+            return; // deferred (no clock yet) or still running. Nothing to do.
 
-        var holdState = await _readHoldState(entry.DirectorId, entry.SessionId, ct);
-
-        if (holdState == HoldState.DeferredHold)
-        {
-            // DEFECT 20, THE WHOLE POINT OF THIS BRANCH. The hold has been asked for and has NOT landed:
-            // the agent is still working. There is no clock running, so nothing can have expired; and the
-            // snooze is very much still wanted, so there is nothing to clear. Do nothing and wait.
-            //
-            // This is where the old boolean seam destroyed the snooze: DeferredHold reports OnHold=false,
-            // which the sweep read as "not held" and treated as the CLEAR case below - 15 seconds after
-            // the snooze was asked for. Never merge these two branches.
-            return;
-        }
-
-        if (holdState == HoldState.None)
-        {
-            // The Director itself reports the session is genuinely not held - it came back on its own
-            // (issue #470) or a prior nudge took. The snooze is done; clear it - but only if the entry is
-            // unchanged since this pass snapshotted it, so a re-snooze that landed in between is never
-            // clobbered (compare-and-clear; the fresh snooze wins).
-            if (_registry.ClearIfUnchanged(entry.SessionId, entry.SnoozeUntilUtc, entry.PendingMinutes))
-                FileLog.Write($"[SnoozeExpirySweep] sid={entry.SessionId}: director reports not-held -> cleared");
-            return;
-        }
-
-        if (holdState == HoldState.Held)
-        {
-            // The hold is landed. If the registry still has this entry DEFERRED, the landing was missed on
-            // the push seam (the Director's hold-state delta), so land it here: this is the backstop, and
-            // it is what starts the clock - the owner's ruling is that the clock starts when the work
-            // ENDS, and a landed hold is exactly that moment. Land is idempotent, so an entry the push
-            // seam already landed is untouched and its running clock is never restarted.
-            if (_registry.Land(entry.SessionId, now))
-                FileLog.Write($"[SnoozeExpirySweep] sid={entry.SessionId}: deferred hold seen landed -> clock started (sweep backstop)");
-
-            // Re-check expiry against the LIVE registry (not the snapshot): if the user re-snoozed this
-            // session since the pass began, or it just landed above, its time has moved into the future
-            // and it must NOT be nudged off hold. This keeps a fresh snooze from being cancelled by a
-            // stale expiry decision.
-            if (_registry.IsExpired(entry.SessionId, now))
-            {
-                // Expired and still held on a live Director: nudge it off hold so its own state and voice
-                // rotation resume. Keep the entry; the overlay already reads the session as "needs you",
-                // and the next sweep clears the entry once the Director reports None.
-                FileLog.Write($"[SnoozeExpirySweep] sid={entry.SessionId}: expired (untilUtc={entry.SnoozeUntilUtc:O}) -> nudging director off hold");
-                await _forwardUnhold(entry.DirectorId, entry.SessionId, ct);
-            }
-            return;
-        }
-
-        // holdState == null (session absent from a reachable Director, or the read did not land): keep the
-        // entry. A permanently-exited session is pruned authoritatively by the aggregation, not guessed
-        // at here.
+        // Compare-and-clear against the snapshot this pass took, so a re-snooze that landed while the pass
+        // was running is never destroyed by a stale expiry decision. The fresh snooze wins.
+        if (_registry.ClearIfUnchanged(entry.SessionId, entry.SnoozeUntilUtc, entry.PendingMinutes))
+            FileLog.Write($"[SnoozeExpirySweep] sid={entry.SessionId}: snooze elapsed (untilUtc={entry.SnoozeUntilUtc:O}) -> entry retired; the session was already reading as not-held from the moment it expired");
     }
 
     private void Tick()

@@ -63,7 +63,7 @@ public sealed class SessionRailStateTests
         // The real Snooze path the user's button calls, not a poke at internals. A settled session
         // holds immediately (a working one would defer) - assert that, so this can never silently
         // become a test of a session that was never actually held.
-        Assert.Equal(Session.HoldOutcome.Held, session.RequestHold(true));
+        session.ApplyGatewayHold(HoldState.Held);
         var vm = new SessionViewModel(session);
 
         // The raw fact the old predicate read is STILL "red" - a snoozed session genuinely IS at a
@@ -93,7 +93,7 @@ public sealed class SessionRailStateTests
         var raised = new List<string?>();
         vm.PropertyChanged += (_, e) => raised.Add(e.PropertyName);
 
-        Assert.Equal(Session.HoldOutcome.Held, session.RequestHold(true));
+        session.ApplyGatewayHold(HoldState.Held);
         Dispatcher.UIThread.RunJobs();   // the view-model marshals its repaints; pump them
 
         Assert.Contains(nameof(SessionViewModel.NeedsYou), raised);
@@ -106,7 +106,7 @@ public sealed class SessionRailStateTests
     public void StatusColorBrush_SnoozedSession_IsTheOneGrey_NotTheOldLightGrey()
     {
         var session = RedAtTurnEnd();
-        Assert.Equal(Session.HoldOutcome.Held, session.RequestHold(true));
+        session.ApplyGatewayHold(HoldState.Held);
         var vm = new SessionViewModel(session);
 
         var actual = ((ISolidColorBrush)vm.StatusColorBrush).Color;
@@ -312,7 +312,7 @@ public sealed class SessionRailStateTests
         {
             case "role": session.SetGatewayResolvedRole("Worker"); break;
             case "activity": session.ApplyTerminalActivityState(ActivityState.Working); break;
-            case "hold": session.RequestHold(true); break;
+            case "hold": session.ApplyGatewayHold(HoldState.Held); break;
             case "dictation": session.IsTranscribing = true; break;
             case "background": session.SetBackgroundRunning(true, "running in background"); break;
             case "explaining": session.IsExplaining = true; break;
