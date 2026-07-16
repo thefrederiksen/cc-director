@@ -1320,8 +1320,13 @@ internal static class ControlEndpoints
             // fresh session does not bloat every snapshot; the Gateway aggregates the non-null tallies.
             InputStats = s.InputStats.IsEmpty ? null : s.InputStats.Snapshot(),
             // The model producer (issue #1637): the driver-reported model this agent is currently
-            // using, stamped at turn-end by SessionCurrentModelWatcher. Null until a read succeeds.
+            // using, stamped at turn-end by SessionRecordsWatcher. Null until a read succeeds.
             CurrentModel = s.CurrentModel,
+            // The token producer (issue #1637): this session's cumulative token spend, stamped at the
+            // same turn-end from the same records as CurrentModel. Null until a read succeeds or on a
+            // driver without the TokenUsage capability. The lean totals only - the on-demand usage view
+            // keeps its own per-turn command.
+            TokenTotals = s.TokenTotals,
             RemoteRepo = s.RemoteRepo ?? "",
             RemoteThreadUrl = s.RemoteThreadUrl ?? "",
             RemoteRunUrl = s.RemoteRunUrl ?? "",

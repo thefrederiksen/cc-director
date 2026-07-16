@@ -49,7 +49,8 @@ public sealed class ClaudeDriver : IAgentDriver
         | DriverCapabilities.PreassignedSessionId
         | DriverCapabilities.ModelSelection
         | DriverCapabilities.ContextUsage
-        | DriverCapabilities.ModelReport;
+        | DriverCapabilities.ModelReport
+        | DriverCapabilities.TokenUsage;
 
     public IReadOnlyList<AgentSlashCommand> SlashCommands => BuiltInSlashCommands.All
         .Select(command => new AgentSlashCommand(

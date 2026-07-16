@@ -615,7 +615,7 @@ public sealed class SessionDto
     /// turn-end, so a mid-session model switch (Claude's /model) is reflected; the launch flag alone
     /// would go stale. RECORDS-ONLY: this never carries the launch ALIAS (<c>opus[1m]</c>), only
     /// what the tool recorded producing - so a fold can never attribute a turn to an alias the
-    /// records will later contradict (see SessionCurrentModelWatcher.RefreshModel). Null when the
+    /// records will later contradict (see SessionRecordsWatcher.RefreshModel). Null when the
     /// tool has recorded no model yet (fresh session before its first turn-end), the agent's driver
     /// does not declare the ModelReport capability, or the Director predates this field. Free text
     /// with unbounded cardinality, casing by convention only - consumers key it like RepoPath/Agent
@@ -624,6 +624,23 @@ public sealed class SessionDto
     /// folds from (the gateway-sqlite mission brief names this field as its prerequisite).
     /// </summary>
     public string? CurrentModel { get; set; }
+
+    /// <summary>
+    /// This session's CUMULATIVE token spend (issue #1637), reported by the owning Director from the
+    /// agent driver's own records (<c>ReadUsage</c>) and refreshed at every turn-end - the same moment
+    /// and the same records read as <see cref="CurrentModel"/>, so the model that produced a turn and the
+    /// tokens it cost arrive together. Null when the tool has recorded no usage yet (fresh session before
+    /// its first turn-end), the agent's driver does not declare the TokenUsage capability (only Claude
+    /// does today - Codex reports context occupancy, which is a gauge, not spend), or the Director
+    /// predates this field.
+    ///
+    /// LEAN ON PURPOSE: the totals only, not the per-turn breakdown the on-demand usage view shows. This
+    /// rides the roster snapshot for every session on every poll, so it carries what a governance page
+    /// sums and nothing heavier. Passes through the Gateway aggregation unchanged; this is the PRODUCER
+    /// the Gateway statistics' token dimension will fold from (the wire the mission brief names as the
+    /// prerequisite for the token column).
+    /// </summary>
+    public TokenTotalsDto? TokenTotals { get; set; }
 
     /// <summary>
     /// Issue #1176 (Phase 1a): a copy safe to hand out from the Gateway's pushed-session cache. The

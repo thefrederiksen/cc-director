@@ -56,6 +56,17 @@ public enum DriverCapabilities
     /// it really running right now", so the Director can log model usage per session (issue
     /// #1637).</summary>
     ModelReport = 256,
+
+    /// <summary>The driver can report CUMULATIVE token spend for the session - the running sums of
+    /// input, output and cached tokens across the whole conversation - from the tool's own records
+    /// (<see cref="IAgentDriver.ReadUsage"/>). Distinct from <see cref="ContextUsage"/>, which answers
+    /// the narrower "how full is the window right now": that is a gauge at a point in time and cannot
+    /// be summed into spend, while this is the additive total the governance statistics fold. A driver
+    /// may declare one without the other - Codex reports context occupancy but not cumulative spend,
+    /// so it declares ContextUsage and NOT this. Gate any turn-end spend read on this flag: several
+    /// drivers implement <see cref="IAgentDriver.ReadUsage"/> as a throw, so calling it ungated would
+    /// use an exception as control flow at every turn-end.</summary>
+    TokenUsage = 512,
 }
 
 /// <summary>
