@@ -20,7 +20,7 @@ public sealed class GatewayInputStatsAggregatorTests : IDisposable
     {
         _dir = Path.Combine(Path.GetTempPath(), "cc-stats-agg-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(_dir);
-        _path = Path.Combine(_dir, "input-stats.json");
+        _path = Path.Combine(_dir, "gateway-stats.db");
     }
 
     public void Dispose()
@@ -493,94 +493,51 @@ public sealed class GatewayInputStatsAggregatorTests : IDisposable
     }
 
     // ==================== Issue #1633: the high-water lockout ====================
+    //
+    // These tests used to seed a legacy gateway-input-stats.json and drive the JSON Load path. That path is
+    // GONE: the owner ruled the old numbers are not carried across, so the document is renamed aside UNREAD
+    // and this store starts empty. Tests for a load that no longer happens would be testing nothing.
+    //
+    // The BEHAVIOUR they guarded is still live and is still tested below, re-expressed against SQLite. What
+    // is deliberately no longer covered is the legacy-document shapes - a pre-tally store, and the hybrid
+    // partially-attributed store - because neither state is reachable any more: high-water and agents_seeded
+    // are now written in the same transaction, so a session can never have counted turns without having been
+    // seeded. That is not a revert of #1647; #1647's fold, back-fill and guard are all ported and exercised.
 
-    // A store exactly as a build WITHOUT the agent tally left it: the session's turns are already consumed
-    // into the totals and its high-water, so its delta is zero from here on. No Agents map, and no
-    // AgentsSeeded - the shape the aggregator actually finds in the field.
-    private void WriteLegacyStore(string sessionId, string modality, string surface, long turns, long chars)
+    // The hazard the persisted seed-set exists to prevent. session_highwater survives a Gateway restart, so
+    // without agents_seeded the first fold after one would back-fill every live session's high-water into its
+    // agent a SECOND time and inflate the numbers a little more on every restart.
+    //
+    // This is the test that justifies the agents_seeded table existing at all: on a fresh database the
+    // back-fill contributes nothing, so the table looks like dead weight until you restart.
+    [Fact]
+    public void BackFill_DoesNotDoubleCount_AcrossAGatewayRestart()
     {
-        var json = $$"""
+        using (var first = new GatewayInputStatsAggregator(_path))
         {
-          "Totals": [ { "Modality": "{{modality}}", "Surface": "{{surface}}", "Turns": {{turns}}, "Characters": {{chars}} } ],
-          "HighWater": {
-            "{{sessionId}}": [ { "Modality": "{{modality}}", "Surface": "{{surface}}", "Turns": {{turns}}, "Characters": {{chars}} } ]
-          },
-          "Hourly": {},
-          "WingmanTurns": 0,
-          "WingmanSessions": [],
-          "Repos": {},
-          "Agents": {},
-          "AgentsSinceUtc": ""
+            first.Observe(SessionOnAgent("codex-1", "Codex", ("typed", "unknown", 4, 400)));
+            Assert.Equal(4, Agent(first, "Codex")!.Turns);
         }
-        """;
-        File.WriteAllText(_path, json);
-    }
 
-    // THE REPORTED SYMPTOM. A live Codex session carrying real turns showed nowhere on the Agents page,
-    // which read "100% Claude Code / 1 agent driven", because its turns were consumed before the agent
-    // tally existed and its delta is zero forever.
-    [Fact]
-    public void LegacyStore_TurnsAlreadyCounted_AreAttributedToTheirAgentOnTheNextFold()
-    {
-        WriteLegacyStore("codex-1", "typed", "unknown", 1, 623);
-        var agg = new GatewayInputStatsAggregator(_path);
-        Assert.Empty(agg.AgentTotals()); // the store had no agent breakdown at all
-
-        // The same session, unchanged: turns=1 is what it already reported, so the delta is ZERO.
-        agg.Observe(SessionOnAgent("codex-1", "Codex", ("typed", "unknown", 1, 623)));
-
-        var codex = Agent(agg, "Codex");
-        Assert.NotNull(codex);
-        Assert.Equal(1, codex!.Turns);
-        Assert.Equal(623, codex.Characters);
-        Assert.Equal(1, codex.Sessions);
-    }
-
-    // The back-fill is a one-shot. Folding the same session again must not attribute its history twice.
-    [Fact]
-    public void LegacyStore_BackFill_DoesNotDoubleCount_OnRepeatedFold()
-    {
-        WriteLegacyStore("codex-1", "typed", "unknown", 4, 400);
-        var agg = new GatewayInputStatsAggregator(_path);
-
-        agg.Observe(SessionOnAgent("codex-1", "Codex", ("typed", "unknown", 4, 400)));
-        agg.Observe(SessionOnAgent("codex-1", "Codex", ("typed", "unknown", 4, 400)));
-        agg.Observe(SessionOnAgent("codex-1", "Codex", ("typed", "unknown", 4, 400)));
-
-        Assert.Equal(4, Agent(agg, "Codex")!.Turns);
-    }
-
-    // The hazard the persisted seed-set exists to prevent: without it every Gateway restart would re-run
-    // the back-fill and inflate the agent numbers a little more each time.
-    [Fact]
-    public void LegacyStore_BackFill_DoesNotDoubleCount_AcrossAGatewayRestart()
-    {
-        WriteLegacyStore("codex-1", "typed", "unknown", 4, 400);
-        var first = new GatewayInputStatsAggregator(_path);
-        first.Observe(SessionOnAgent("codex-1", "Codex", ("typed", "unknown", 4, 400)));
-        Assert.Equal(4, Agent(first, "Codex")!.Turns);
-
-        var restarted = new GatewayInputStatsAggregator(_path);
+        using var restarted = new GatewayInputStatsAggregator(_path);
         Assert.Equal(4, Agent(restarted, "Codex")!.Turns);
 
+        // The same session, same counts, after a restart: its high-water is loaded and non-empty, which is
+        // exactly the state an unguarded back-fill would fire against.
         restarted.Observe(SessionOnAgent("codex-1", "Codex", ("typed", "unknown", 4, 400)));
         Assert.Equal(4, Agent(restarted, "Codex")!.Turns);
     }
 
-    // Back-filled history and new activity must add up, with the increase counted once.
+    // The back-fill is a one-shot within a run too.
     [Fact]
-    public void LegacyStore_BackFill_ThenNewTurns_CountsTheHistoryAndTheIncrease()
+    public void BackFill_DoesNotDoubleCount_OnRepeatedFold()
     {
-        WriteLegacyStore("codex-1", "typed", "unknown", 4, 400);
-        var agg = new GatewayInputStatsAggregator(_path);
-
+        using var agg = new GatewayInputStatsAggregator(_path);
         agg.Observe(SessionOnAgent("codex-1", "Codex", ("typed", "unknown", 4, 400)));
-        agg.Observe(SessionOnAgent("codex-1", "Codex", ("typed", "unknown", 7, 700)));
-
-        var codex = Agent(agg, "Codex");
-        Assert.Equal(7, codex!.Turns);
-        Assert.Equal(700, codex.Characters);
+        agg.Observe(SessionOnAgent("codex-1", "Codex", ("typed", "unknown", 4, 400)));
+        Assert.Equal(4, Agent(agg, "Codex")!.Turns);
     }
+
 
     // The back-fill must not invent turns for a session that never had any. A fresh session with an empty
     // high-water back-fills nothing, and the ordinary delta path does all the work - the control that says
@@ -595,76 +552,5 @@ public sealed class GatewayInputStatsAggregatorTests : IDisposable
 
         agg.Observe(SessionOnAgent("new-1", "Codex", ("typed", "desktop", 2, 20)));
         Assert.Equal(2, Agent(agg, "Codex")!.Turns);
-    }
-
-    // THE SHAPE ACTUALLY FOUND IN THE FIELD, and the one that makes the back-fill dangerous: a store where
-    // the agent tally was live for a while, so SOME of a session's turns are already attributed - and those
-    // same turns are also in its high-water. Nothing says which sessions those were.
-    //
-    // Here the session has 10 turns in its high-water, 3 of which the delta path already attributed to
-    // Codex. Adding the high-water on top would report 13. The answer is 10: the partial tally is discarded
-    // and rebuilt from the high-water, never added to.
-    [Fact]
-    public void HybridStore_PartiallyAttributed_IsRebuiltNotDoubleCounted()
-    {
-        var json = """
-        {
-          "Totals": [ { "Modality": "voice", "Surface": "desktop", "Turns": 10, "Characters": 1000 } ],
-          "HighWater": {
-            "codex-1": [ { "Modality": "voice", "Surface": "desktop", "Turns": 10, "Characters": 1000 } ]
-          },
-          "Hourly": {},
-          "WingmanTurns": 0,
-          "WingmanSessions": [],
-          "Repos": {},
-          "Agents": {
-            "Codex": { "VoiceTurns": 3, "TypedTurns": 0, "Characters": 300, "Sessions": [ "codex-1" ] }
-          },
-          "AgentsSinceUtc": "2026-07-15T16:03:53.6255973Z"
-        }
-        """;
-        File.WriteAllText(_path, json);
-
-        var agg = new GatewayInputStatsAggregator(_path);
-        agg.Observe(SessionOnAgent("codex-1", "Codex", ("voice", "desktop", 10, 1000)));
-
-        var codex = Agent(agg, "Codex");
-        Assert.NotNull(codex);
-        Assert.Equal(10, codex!.Turns);
-        Assert.Equal(1000, codex.Characters);
-        Assert.Equal(1, codex.Sessions);
-    }
-
-    // The rebuild is one-time. Once rebuilt, the store carries the seed set and a restart must leave the
-    // numbers exactly where they are rather than discarding and rebuilding again.
-    [Fact]
-    public void HybridStore_OnceRebuilt_IsStableAcrossAFurtherRestart()
-    {
-        WriteLegacyStore("codex-1", "voice", "desktop", 10, 1000);
-        var first = new GatewayInputStatsAggregator(_path);
-        first.Observe(SessionOnAgent("codex-1", "Codex", ("voice", "desktop", 10, 1000)));
-        Assert.Equal(10, Agent(first, "Codex")!.Turns);
-
-        var second = new GatewayInputStatsAggregator(_path);
-        Assert.Equal(10, Agent(second, "Codex")!.Turns);
-        second.Observe(SessionOnAgent("codex-1", "Codex", ("voice", "desktop", 12, 1200)));
-        Assert.Equal(12, Agent(second, "Codex")!.Turns);
-
-        var third = new GatewayInputStatsAggregator(_path);
-        Assert.Equal(12, Agent(third, "Codex")!.Turns);
-    }
-
-    // "Agents driven" counted only agents that submitted a turn in the observed window, so an agent being
-    // actively run showed as absent rather than as present-with-no-new-turns.
-    [Fact]
-    public void LegacyStore_SessionWithNoNewTurns_StillRegistersItsAgent()
-    {
-        WriteLegacyStore("codex-1", "typed", "unknown", 2, 200);
-        var agg = new GatewayInputStatsAggregator(_path);
-
-        agg.Observe(SessionOnAgent("codex-1", "Codex", ("typed", "unknown", 2, 200)));
-
-        Assert.Single(agg.AgentTotals());
-        Assert.Equal(1, Agent(agg, "Codex")!.Sessions);
     }
 }
