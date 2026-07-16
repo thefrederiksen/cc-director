@@ -60,6 +60,7 @@ export function VoiceMode() {
     audioUnavailable,
     unavailableReason,
     unavailableIsServiceDown,
+    unavailableIsRetrying,
     agentWorking,
     pollDone,
     narrative,
@@ -176,9 +177,16 @@ export function VoiceMode() {
             said nothing. */}
         {audioUnavailable && (
           <>
+            {/* A timeout (Retrying) is NOT an outage: the audio just is not ready yet and the Gateway
+                is trying again. Show a calm yellow "on its way", never the red "Voice service down" -
+                that red panel is right for an answered outage (ServiceDown) and a lie for a slow call. */}
             <div className="voice-statusbar">
-              <span className="voice-state voice-state-red">
-                {unavailableIsServiceDown ? "Voice service down" : "Voice unavailable"}
+              <span className={"voice-state " + (unavailableIsRetrying ? "voice-state-yellow" : "voice-state-red")}>
+                {unavailableIsRetrying
+                  ? "Voice on its way"
+                  : unavailableIsServiceDown
+                    ? "Voice service down"
+                    : "Voice unavailable"}
               </span>
             </div>
             <div className="voice-narr">
@@ -187,7 +195,11 @@ export function VoiceMode() {
                   (what is going on?). A headline has one job - say what happened - and the sentence
                   underneath, which comes from the Gateway, says what is being done about it. */}
               <div className="voice-narr-title">
-                {unavailableIsServiceDown ? "The speech service did not answer." : "No narration is ready to play."}
+                {unavailableIsRetrying
+                  ? "Taking a moment - still trying."
+                  : unavailableIsServiceDown
+                    ? "The speech service did not answer."
+                    : "No narration is ready to play."}
               </div>
               <div className="voice-narr-body">
                 {unavailableReason?.text
@@ -199,10 +211,10 @@ export function VoiceMode() {
                       : "There is no spoken summary for this session's latest turn yet. Tap Generate narration to make one now."}
               </div>
             </div>
-            {/* No button during a service outage: the Gateway is already backing off and retrying, and
-                pressing Generate would hit the same dead service and fail the same way. A button that
-                cannot work is worse than no button - it invites you to keep trying and blame yourself. */}
-            {!unavailableIsServiceDown && (
+            {/* No button during a service outage OR a timeout-retry: the Gateway is already backing off
+                and retrying, and pressing Generate would race the same slow/failing call. A button that
+                cannot help is worse than no button - it invites you to keep trying and blame yourself. */}
+            {!unavailableIsServiceDown && !unavailableIsRetrying && (
               <button
                 type="button"
                 className="voice-switch"

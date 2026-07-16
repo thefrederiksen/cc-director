@@ -88,6 +88,9 @@ export interface VoiceModeView {
   unavailableReason: { state?: string; text?: string; ctaLabel?: string; ctaAction?: string; ctaUrl?: string | null } | null;
   /** The hosted service is down: not the user's fault, nothing for them to press, already retrying. */
   unavailableIsServiceDown: boolean;
+  /** The speech call did not answer in time (a timeout, not an outage): the audio is on its way and
+   *  the Gateway is already trying again. A calm "on its way" state, never the red "down" panel. */
+  unavailableIsRetrying: boolean;
   gatewayPreparing: boolean;
   phoneDownloadPending: boolean;
   agentWorking: boolean;
@@ -638,6 +641,10 @@ export function useVoiceMode(
   // A service outage is not the user's fault and there is nothing for them to press: the Gateway is
   // already backing off and retrying. Offering a "Generate narration now" button here would be a lie.
   const unavailableIsServiceDown = unavailableReason?.state === "ServiceDown";
+  // A timeout is NOT an outage: the service did not answer in time, the audio is still coming, and the
+  // sweep is already trying again. Distinct from ServiceDown so the screen can say "on its way" instead
+  // of the red "Voice service down" panel - the wording that was a lie on a one-off slow call.
+  const unavailableIsRetrying = unavailableReason?.state === "Retrying";
 
   return {
     voiceOn,
@@ -646,6 +653,7 @@ export function useVoiceMode(
     audioUnavailable,
     unavailableReason,
     unavailableIsServiceDown,
+    unavailableIsRetrying,
     gatewayPreparing,
     phoneDownloadPending,
     agentWorking,

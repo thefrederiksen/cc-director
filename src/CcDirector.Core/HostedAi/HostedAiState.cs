@@ -27,8 +27,14 @@ public enum HostedAiState
     NeedsKey = 3,
 
     /// <summary>
-    /// The hosted service itself is failing - it answered with an error, or did not answer at all.
-    /// Nothing is wrong with the account, the setup, or this machine: the far end is down.
+    /// The hosted service ANSWERED with a failure - a 5xx, or a 429 asking us to slow down. The service
+    /// itself is genuinely struggling: nothing is wrong with the account, the setup, or this machine.
+    ///
+    /// This is reserved for an ANSWER. A call that simply did not answer in time (a timeout or transport
+    /// failure) is <see cref="Retrying"/>, NOT this - because a non-answer is the absence of evidence,
+    /// and stamping "the service is down" on it is a claim we cannot support. That distinction is the
+    /// whole point of splitting the two: the phone renders a red "Voice service down" panel on this
+    /// state, which is right for a real answered outage and wrong for one slow call.
     ///
     /// This state exists because we USED to throw this reason away. WingmanVoiceService mapped 402 and
     /// NeedsKey and returned a bare null for everything else ("other provider error: logged, no shared
@@ -41,4 +47,21 @@ public enum HostedAiState
     /// RETRY BY ITSELF rather than offering a button that fails the same way.
     /// </summary>
     ServiceDown = 4,
+
+    /// <summary>
+    /// The speech call did not answer in time - a timeout, or a transport failure - so we have NO
+    /// evidence about the service. The audio is simply not ready yet, and a retry is already underway.
+    ///
+    /// This is deliberately NOT <see cref="ServiceDown"/>. A timeout is the ABSENCE of an answer, which
+    /// tells us nothing about whether the service is healthy; on 2026-07-15/16 the service answered
+    /// hand-made calls in ~2 seconds while the sweep's calls were timing out on a cold start. Reporting
+    /// "the voice service is not responding" / "Voice service down" on that is a lie the user cannot
+    /// act on - it sends them hunting for an outage that is not there. The honest thing to say is that
+    /// the audio is on its way and we are trying again, which is exactly what is happening.
+    ///
+    /// Like <see cref="ServiceDown"/> it is not the user's fault and offers no call to action - the
+    /// surface retries by itself. Unlike it, the surface shows a calm "on its way" state, not a red
+    /// outage panel.
+    /// </summary>
+    Retrying = 5,
 }

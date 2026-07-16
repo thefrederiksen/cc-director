@@ -44,6 +44,22 @@ public sealed class HostedAiMessagesTests
     }
 
     [Fact]
+    public void Retrying_SaysItIsComing_NoCtaNoOutageClaim()
+    {
+        // A timeout is the absence of an answer, so the copy must not claim the service is down or
+        // "not responding" - the wording that was a lie on one slow call. It says what is true: the
+        // audio is on its way and we are trying again. No call to action - the surface retries itself.
+        var m = HostedAiMessages.For(HostedAiState.Retrying);
+        Assert.NotEmpty(m.Text);
+        Assert.Equal("", m.CtaLabel);
+        Assert.Equal(HostedAiCtaAction.None, m.CtaAction);
+        Assert.Null(m.CtaUrl);
+        Assert.DoesNotContain("not responding", m.Text, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("down", m.Text, StringComparison.OrdinalIgnoreCase);
+        Assert.True(HostedAiCopyRules.IsClean(m.Text));
+    }
+
+    [Fact]
     public void NeedsKey_OpenSettings_NoUrl()
     {
         var m = HostedAiMessages.For(HostedAiState.NeedsKey);

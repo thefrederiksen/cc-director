@@ -50,6 +50,16 @@ public static class HostedAiMessages
             HostedAiCtaAction.None,
             null),
 
+        // The service did not answer in time - a timeout, not an outage. Say what is TRUE (the audio is
+        // still coming and we are trying again), not "the service is down", which we have no evidence
+        // for and which sends the user hunting for a bug that is not theirs. No call to action: the
+        // surface retries by itself. Names no provider, per the copy rules above.
+        HostedAiState.Retrying => new HostedAiMessage(
+            "Voice is taking a moment - retrying automatically. It should come through shortly.",
+            "",
+            HostedAiCtaAction.None,
+            null),
+
         _ => throw new ArgumentOutOfRangeException(nameof(state), state, "Unknown hosted-AI state"),
     };
 }
