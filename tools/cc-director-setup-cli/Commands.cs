@@ -1,3 +1,4 @@
+using CcDirector.Core.Configuration;
 using CcDirector.Setup.Engine;
 
 namespace CcDirector.Setup.Cli;
@@ -129,6 +130,137 @@ internal static class Commands
         var (plan, _, _) = await ComputePlanAsync(args, layout);
         PrintPlan(plan, json);
         return Ok;
+    }
+
+    /// <summary>
+    /// Sign this machine's DevThrottle account in from the command line (the headless sibling of the
+    /// wizard's sign-in step). Opens the browser to devthrottle.com, where the user signs in - or creates a
+    /// free account - and the captured credential is stored where the Gateway reads it, so the Gateway does
+    /// not re-prompt on first launch. The account credential lives on the Gateway (Windows-only, per-user), so
+    /// this command is Windows-only; on macOS a machine is a Workstation and uses <c>enroll</c> instead. The
+    /// access token is never printed or logged (security rule DT-05).
+    /// </summary>
+    public static async Task<int> SignInAsync(CliArgs args, bool json)
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            const string reason =
+                "'signin' stores the account on the Gateway, which is Windows-only. On macOS, install a Workstation and run 'enroll' to join your gateway.";
+            if (json) Program.WriteJson(new { command = "signin", signedIn = false, outcome = "Failed", message = reason });
+            else Console.Error.WriteLine(reason);
+            return Error;
+        }
+
+        if (!json)
+        {
+            Console.WriteLine("Opening your browser to sign in to DevThrottle...");
+            Console.WriteLine("Sign in - or create a free account - in the browser. Waiting for you to finish (up to 5 minutes)...");
+        }
+
+        var result = await new AccountSignInRunner().RunAsync();
+        if (json)
+            Program.WriteJson(new { command = "signin", signedIn = result.Succeeded, outcome = result.Outcome.ToString(), message = result.Message });
+        else
+            Console.WriteLine(result.Succeeded ? $"OK: {result.Message}" : $"Sign-in did not complete: {result.Message}");
+        return result.Succeeded ? Ok : Error;
+    }
+
+    /// <summary>
+    /// Join this machine (a Workstation) to its gateway from the command line (the headless sibling of the
+    /// wizard's gateway-connect step). Opens the browser to sign in - or create a free account - then registers
+    /// this machine on the account and enrolls it at the gateway for a local, revocable device key, which is
+    /// persisted so the Director and cc-* tools connect on first run. With <c>--gateway &lt;url&gt;</c> it uses
+    /// that address (proven reachable first); without it, it discovers the account's gateways and joins the one
+    /// it finds. Idempotent: a machine already connected reports so and succeeds. Device keys are never printed
+    /// or logged (security rule DT-05).
+    /// </summary>
+    public static async Task<int> EnrollAsync(CliArgs args, bool json)
+    {
+        // Idempotent: an already-connected machine (an update/repair run) has nothing to do.
+        var existing = GatewayConfig.Load();
+        if (existing.IsEnabled)
+        {
+            var msg = $"This machine is already connected to its gateway ({existing.Url}).";
+            if (json) Program.WriteJson(new { command = "enroll", enrolled = true, alreadyConnected = true, gatewayUrl = existing.Url, message = msg });
+            else Console.WriteLine(msg);
+            return Ok;
+        }
+
+        // No running Director yet, so mint a stable device id for this machine (wizard parity): used both as
+        // the account-registration install id and the enroll device id.
+        var deviceId = Guid.NewGuid().ToString();
+        var machineName = Environment.MachineName;
+        var runner = new GatewayAccountEnrollRunner();
+        var gatewayUrl = args.Option("gateway");
+
+        if (!json)
+        {
+            Console.WriteLine("Opening your browser to sign in to DevThrottle...");
+            Console.WriteLine("Sign in - or create a free account - in the browser. Waiting for you to finish (up to 5 minutes)...");
+        }
+
+        // A given gateway URL is proven reachable BEFORE we sign in against it (wizard parity: never register
+        // against an address we could not reach), then sign in + register + enroll.
+        if (!string.IsNullOrWhiteSpace(gatewayUrl))
+        {
+            var test = await runner.TestGatewayAddressAsync(gatewayUrl, 0);
+            if (!test.Success || test.Value is null)
+                return FailEnroll(test.ErrorMessage ?? "Could not reach a gateway at that address.", json);
+
+            var verified = await runner.VerifyAndSaveAsync(test.Value, deviceId, machineName);
+            return ReportEnroll(verified.Success, verified.ErrorMessage, json);
+        }
+
+        // No URL given: sign in and discover the account's gateways.
+        var discovered = await runner.SignInAndDiscoverGatewaysAsync();
+        if (!discovered.Success || discovered.Value is null)
+            return FailEnroll(discovered.ErrorMessage ?? "Could not discover a gateway on your account.", json);
+
+        var gateways = discovered.Value;
+        if (gateways.Count > 1)
+        {
+            // A headless command cannot show an interactive chooser; list the account's gateways and ask the
+            // user to re-run naming one, rather than silently picking.
+            if (json)
+                Program.WriteJson(new
+                {
+                    command = "enroll",
+                    enrolled = false,
+                    message = "Your account has more than one gateway. Re-run 'enroll --gateway <url>' with one of these.",
+                    gateways = gateways.Select(g => new { name = g.Name, url = g.EndpointUrl }),
+                });
+            else
+            {
+                Console.WriteLine("Your account has more than one gateway. Re-run with --gateway <url> naming one of these:");
+                foreach (var g in gateways) Console.WriteLine($"  {g.Name,-24} {g.EndpointUrl}");
+            }
+            return Error;
+        }
+
+        var only = gateways[0];
+        if (!json) Console.WriteLine($"Joining gateway: {only.Name} ({only.EndpointUrl})");
+        var enrolled = await runner.EnrollWithDiscoveredGatewayAsync(only.EndpointUrl, deviceId, machineName);
+        return ReportEnroll(enrolled.Success, enrolled.ErrorMessage, json);
+    }
+
+    /// <summary>Render a successful/failed enroll outcome. The issued device key is never printed (DT-05).</summary>
+    private static int ReportEnroll(bool success, string? errorMessage, bool json)
+    {
+        if (success)
+        {
+            if (json) Program.WriteJson(new { command = "enroll", enrolled = true, message = "Connected to the gateway." });
+            else Console.WriteLine("OK: connected to the gateway.");
+            return Ok;
+        }
+        return FailEnroll(errorMessage ?? "The gateway did not complete the enrollment.", json);
+    }
+
+    /// <summary>Render an enroll failure with a user-safe reason.</summary>
+    private static int FailEnroll(string reason, bool json)
+    {
+        if (json) Program.WriteJson(new { command = "enroll", enrolled = false, message = reason });
+        else Console.Error.WriteLine(reason);
+        return Error;
     }
 
     public static async Task<int> UpdateAsync(CliArgs args, InstallLayout layout, bool json, bool installMode)

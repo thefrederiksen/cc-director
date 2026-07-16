@@ -13,6 +13,11 @@
 
   <ItemGroup>
     <ProjectReference Include="..\cc-director-setup-engine\CcDirector.Setup.Engine.csproj" />
+    <!-- signin/enroll drive account sign-in + gateway enrollment: GatewayConfig + OperationResult live in
+         Core, and the /m/enroll response type lives in Gateway.Contracts. Both also flow transitively
+         through the engine; referenced directly here because this project now uses them by name. -->
+    <ProjectReference Include="..\..\src\CcDirector.Core\CcDirector.Core.csproj" />
+    <ProjectReference Include="..\..\src\CcDirector.Gateway.Contracts\CcDirector.Gateway.Contracts.csproj" />
   </ItemGroup>
 
 </Project>
