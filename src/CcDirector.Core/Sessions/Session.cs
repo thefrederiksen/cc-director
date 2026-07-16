@@ -774,7 +774,7 @@ public sealed class Session : IDisposable
     /// The model this session's agent is CURRENTLY using (issue #1637), as reported by the driver's
     /// <see cref="Drivers.IAgentDriver.ReadCurrentModel"/> from the tool's own records - e.g.
     /// <c>claude-fable-5</c>, <c>gpt-5.5</c>, <c>grok-4.5</c>. Refreshed at every turn-end by
-    /// <see cref="SessionCurrentModelWatcher"/>, so a mid-session model switch is reflected. Null
+    /// <see cref="SessionRecordsWatcher"/>, so a mid-session model switch is reflected. Null
     /// until the first read succeeds (no turn yet, or an agent without the ModelReport capability).
     /// Set via <see cref="SetCurrentModel"/>; flows to the Gateway on
     /// <see cref="Gateway.Contracts.SessionDto.CurrentModel"/> for the model-usage statistics.
@@ -794,6 +794,30 @@ public sealed class Session : IDisposable
             return;
         CurrentModel = normalized;
         FileLog.Write($"[Session] SetCurrentModel: session={Id} model={normalized}");
+    }
+
+    /// <summary>
+    /// This session's cumulative token spend (issue #1637), read from the tool's own records at turn-end
+    /// by <see cref="SessionRecordsWatcher"/> and flowed to the Gateway on
+    /// <see cref="Gateway.Contracts.SessionDto.TokenTotals"/> for the token-usage statistics. Null until
+    /// the first read succeeds (no turn yet, or an agent without the TokenUsage capability). Set via
+    /// <see cref="SetTokenTotals"/>.
+    /// </summary>
+    public Gateway.Contracts.TokenTotalsDto? TokenTotals { get; private set; }
+
+    /// <summary>
+    /// Record the driver-reported cumulative token spend (issue #1637). A null argument is IGNORED rather
+    /// than clearing: a read that could not be taken (torn records, agent restarting, a driver without the
+    /// capability) is a missed read, not evidence the spend went away - the last known totals stand, the
+    /// same discipline as <see cref="SetCurrentModel"/>. This is the only writer of
+    /// <see cref="TokenTotals"/>.
+    /// </summary>
+    public void SetTokenTotals(Gateway.Contracts.TokenTotalsDto? totals)
+    {
+        if (totals is null) return;
+        TokenTotals = totals;
+        FileLog.Write($"[Session] SetTokenTotals: session={Id} in={totals.InputTokens} out={totals.OutputTokens} " +
+                      $"cacheRead={totals.CacheReadTokens} cacheCreate={totals.CacheCreationTokens} ctx={totals.ContextTokens}");
     }
 
     /// <summary>
