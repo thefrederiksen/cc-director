@@ -98,10 +98,10 @@ This downloads all tools from GitHub releases, places them in `%LOCALAPPDATA%\cc
 On macOS, use the **DevThrottle Setup** app instead. Install and open it with one command in Terminal:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/example-org/devthrottle/main/scripts/install-mac.sh | bash
+curl -fsSL https://raw.githubusercontent.com/thefrederiksen/devthrottle/main/scripts/install-mac.sh | bash
 ```
 
-The command downloads the wizard from the [latest release](https://github.com/example-org/devthrottle/releases/latest), verifies its SHA-256 hash against the release manifest, places **DevThrottle Setup** in `~/Applications`, and opens it.
+The command downloads the wizard from the [latest release](https://github.com/thefrederiksen/devthrottle/releases/latest), verifies its SHA-256 hash against the release manifest, places **DevThrottle Setup** in `~/Applications`, and opens it.
 
 It uses `curl` on purpose. The wizard is ad-hoc-signed, not notarized by Apple, so a **browser** download of it is blocked by Gatekeeper — "Apple could not verify 'DevThrottle Setup' is free of malware" — and on macOS 15 (Sequoia) and later that dialog offers no way to open the app (the old right-click -> Open bypass was removed). Downloads made with `curl` are never quarantined, so the wizard opens normally.
 
@@ -119,25 +119,35 @@ cc-excel --version
 cc-hardware
 ```
 
-## Install the Desktop Engine
+## Install the Desktop App
 
-Clone the repository and build:
+You do **not** build the desktop app from source to install it - the released build is what
+auto-updates in place. On **Windows**, install it one of two ways:
 
-```bash
-git clone https://github.com/example-org/devthrottle.git
-cd cc-director
-dotnet build src/CcDirector.Wpf/CcDirector.Wpf.csproj
-```
+- **Headless (recommended for an AI coding agent):** download the command-line installer
+  `devthrottle-setup-cli-win-x64.exe` from the [latest release](https://github.com/thefrederiksen/devthrottle/releases/latest),
+  verify its SHA-256 against `release-manifest.json`, then run it:
 
-Run the application:
+  ```powershell
+  devthrottle-setup-cli-win-x64.exe install
+  ```
 
-```bash
-dotnet run --project src/CcDirector.Wpf/CcDirector.Wpf.csproj
-```
+  This installs the Director app, the `cc-*` tools (added to your `PATH`), and the launcher -
+  per-user, no admin. The Director is a .NET 10 app, so also ensure the runtime is present:
+  `winget install Microsoft.DotNet.AspNetCore.10`. Full agent walkthrough:
+  [Installing with an AI coding agent](https://devthrottle.com/docs/install#install-agent).
+
+- **Graphical wizard:** download **DevThrottle Setup** from your [account page](https://devthrottle.com/signup)
+  and run it - it walks you through the same install.
+
+On **macOS**, use the **DevThrottle Setup** app via the Terminal command shown above under
+[macOS](#macos) (Workstation-only; no Gateway on macOS).
 
 ## Configure Claude Code Skills
 
-DevThrottle includes Claude Code skills that extend what Claude can do. After cloning, the skills in `.claude/skills/` are automatically available when you run Claude Code from the repository directory.
+DevThrottle includes Claude Code skills that extend what Claude can do. The installer places them in
+`~/.claude/skills/`, so they are available whenever you run Claude Code. (When working in a clone of
+the repository, the skills in `.claude/skills/` are also available from the repository directory.)
 
 Key skills:
 - `/commit` -- create commits following project standards
