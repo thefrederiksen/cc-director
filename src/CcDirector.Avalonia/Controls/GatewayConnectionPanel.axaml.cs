@@ -107,6 +107,15 @@ public partial class GatewayConnectionPanel : UserControl
     public event EventHandler? ConnectionVerified;
 
     /// <summary>
+    /// Raised when the panel settles the account sign-in state: signed in (Done) or signed out (the sign-in
+    /// step). The sidebar status box listens for this so line 2 repaints the instant the panel learns the
+    /// new state, instead of waiting for its 30-second heartbeat poll (the near-a-minute lag after signing
+    /// in). Purely a nudge to refresh - the box still reads /account/status itself; no state travels on the
+    /// event.
+    /// </summary>
+    public event EventHandler? AccountStateSettled;
+
+    /// <summary>
     /// Build a panel opened on the resolver's current step (spec section 6), for the three hosts that
     /// embed it (Settings Gateway tab, onboarding Gateway step, and the status-box window). Uses the cheap
     /// synchronous signal - the live handshake state - to choose the opening step: a proven handshake
@@ -914,6 +923,7 @@ public partial class GatewayConnectionPanel : UserControl
         SignInButton.IsEnabled = true;
         ShowOnly(SignInPanel);
         FileLog.Write("[GatewayConnectionPanel] showing Step 2 (sign in)");
+        AccountStateSettled?.Invoke(this, EventArgs.Empty);
     }
 
     // Epic #1069 A3 fallback: is a handshake failure an authorization failure (401)? The monitor's failure
@@ -1087,6 +1097,7 @@ public partial class GatewayConnectionPanel : UserControl
         DoneGatewayUrl.Text = config.Url;
         ShowOnly(DonePanel);
         FileLog.Write("[GatewayConnectionPanel] showing Done (both checks green)");
+        AccountStateSettled?.Invoke(this, EventArgs.Empty);
     }
 
     private void DoneAdvancedToggle_IsCheckedChanged(object? sender, RoutedEventArgs e)

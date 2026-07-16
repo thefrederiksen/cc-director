@@ -704,6 +704,10 @@ public partial class MainWindow : Window
     {
         try
         {
+            var panel = Controls.GatewayConnectionPanel.CreateForCurrentState();
+            // Push an immediate status-box refresh the instant the panel settles the sign-in state, so
+            // line 2 flips within a couple of seconds instead of waiting for its 30-second heartbeat poll.
+            panel.AccountStateSettled += (_, _) => _ = RefreshAccountStatusAsync();
             var window = new Window
             {
                 Title = "Gateway Connection",
@@ -711,8 +715,11 @@ public partial class MainWindow : Window
                 Height = 660,
                 WindowStartupLocation = WindowStartupLocation.CenterOwner,
                 Background = global::Avalonia.Media.Brush.Parse("#252526"),
-                Content = Controls.GatewayConnectionPanel.CreateForCurrentState(),
+                Content = panel,
             };
+            // Catch-all: refresh once when the panel window closes, covering any path that signs in and
+            // dismisses the window before the settled event lands.
+            window.Closed += (_, _) => _ = RefreshAccountStatusAsync();
             window.Show(this);
             FileLog.Write("[MainWindow] Gateway Connection panel opened (on the resolver's current step)");
         }
