@@ -474,8 +474,15 @@ public sealed class GatewayHost : IAsyncDisposable
     /// Shared instances that write to the real user's directories). Production omits it and the host builds
     /// the service over its own key vault, exactly as before.
     /// </param>
-    public GatewayHost(int port = DefaultPort, string? token = null, bool? authEnabled = null, string? instancesDirectory = null, string? turnBriefDirectory = null, string? keyVaultPath = null, string? workListsPath = null, string? cronJobsPath = null, string? cronRunsPath = null, string? devicesPath = null, string? telemetryQueuePath = null, int? telemetryQueueMaxSize = null, TimeSpan? telemetryRetryInterval = null, Core.Account.DevThrottleAccountService? account = null, bool? streamMode = null, string? inputStatsPath = null, string? snoozePath = null, string? missionsPath = null, string? missionNotesPath = null, Transcription.GatewayTranscriptionService? dictationTranscription = null)
+    public GatewayHost(int port = DefaultPort, string? token = null, bool? authEnabled = null, string? instancesDirectory = null, string? turnBriefDirectory = null, string? keyVaultPath = null, string? workListsPath = null, string? cronJobsPath = null, string? cronRunsPath = null, string? devicesPath = null, string? telemetryQueuePath = null, int? telemetryQueueMaxSize = null, TimeSpan? telemetryRetryInterval = null, Core.Account.DevThrottleAccountService? account = null, bool? streamMode = null, string? inputStatsPath = null, string? snoozePath = null, string? missionsPath = null, string? missionNotesPath = null, Transcription.GatewayTranscriptionService? dictationTranscription = null, Core.Agents.AgentKind? brainTool = null)
     {
+        // Resolve and VALIDATE the warm-brain tool up front, before any resource is opened: a brain tool
+        // that cannot be hosted is a configuration error that must fail loudly at construction, not
+        // silently later at the brain's first spawn. BrainToolConfig.Get reads config.json; a test passes
+        // brainTool directly. Only ClaudeCode is hostable today (the hosted-agent path needs a preassigned
+        // session id and transcript reads), so a non-hostable value throws here with the fix.
+        BrainTool = Core.Configuration.BrainToolConfig.EnsureHostable(brainTool ?? Core.Configuration.BrainToolConfig.Get());
+
         Port = port;
         Token = token ?? GatewayAuth.LoadOrCreate();
         Registry = new DirectorRegistry(instancesDirectory);
@@ -514,9 +521,8 @@ public sealed class GatewayHost : IAsyncDisposable
         // so it runs the configured tool + model deliberately instead of a hardcoded claude.exe
         // and the account-default model. Both default to claude + opus when unset, so existing
         // fleets are unchanged. A config change applies on the next Gateway restart.
-        BrainTool = BrainToolConfig.Get();
+        // BrainTool is resolved and validated hostable at the very top of this constructor.
         BrainModel = BrainModelConfig.Get();
-        var brainDriver = AgentDrivers.For(BrainTool);
         FileLog.Write($"[GatewayHost] brain tool: {BrainTool}, model: {BrainModel}");
         Brain = new BrainSupervisor(
             new HostedAgentOptions
@@ -525,11 +531,12 @@ public sealed class GatewayHost : IAsyncDisposable
                 AgentArgs = $"{ClaudeDriver.DefaultArgs} --model {BrainModel}",
                 Log = FileLog.Write,
             },
-            // Host the chosen agent through its own driver. As of issue #510 the wingman agent is
-            // chosen from the machine's registered agents (any AgentKind), since the driver-level
-            // hostability work landed in issue #509; BrainToolConfig.Get validates the configured
-            // name is a recognised AgentKind (default ClaudeCode).
-            agentFactory: o => new CcDirector.HostedAgent.HostedAgent(o, brainDriver));
+            // Construct the hosted brain through HostedAgent.For - the single guard for which agent kinds
+            // can be hosted headless (only ClaudeCode today). BrainTool is already validated hostable at
+            // the top of this constructor, so this never throws here; routing through For instead of
+            // newing a HostedAgent with an arbitrary registry driver keeps that guard the one and only
+            // path to a hosted brain, so a non-hostable tool can never slip through to fail at Start.
+            agentFactory: o => CcDirector.HostedAgent.HostedAgent.For(BrainTool, o));
         _turnBriefStore = new GatewayTurnBriefStore(turnBriefDirectory);
         // Production omits keyVaultPath for the shared default; tests pass an isolated path so
         // they never touch the real %LOCALAPPDATA% key store.
