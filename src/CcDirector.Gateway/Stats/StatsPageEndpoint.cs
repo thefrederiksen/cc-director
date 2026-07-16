@@ -157,6 +157,13 @@ public static class StatsPageEndpoint
   .empty { color: var(--muted); font-size: 14px; padding: 8px 0; }
   .foot { color: var(--muted); font-size: 12px; margin-top: 18px; }
   .err { color: #c0392b; }
+  .toggle { display: inline-flex; border: 1px solid var(--line); border-radius: 8px;
+    overflow: hidden; margin-bottom: 14px; }
+  .toggle button { border: 0; background: var(--card); color: var(--muted); font: inherit;
+    font-size: 13px; padding: 6px 14px; cursor: pointer; border-right: 1px solid var(--line); }
+  .toggle button:last-child { border-right: 0; }
+  .toggle button.on { background: var(--voice); color: #fff; }
+  .lede { color: var(--muted); font-size: 12.5px; margin: -4px 0 12px; }
 </style>
 </head>
 <body>
@@ -197,6 +204,45 @@ public static class StatsPageEndpoint
     </table>
   </div>
 
+  <div class="section" id="spendSection">
+    <h2>What you have spent</h2>
+    <div class="cards">
+      <div class="card headline">
+        <div class="big" id="tokenTotal">-</div>
+        <div class="lbl">tokens spent</div>
+        <div class="of" id="tokenBreakdown"></div>
+      </div>
+      <div class="card headline">
+        <div class="big" id="turnTotal">-</div>
+        <div class="lbl">turns submitted, all time</div>
+        <div class="of" id="turnChars"></div>
+      </div>
+    </div>
+    <p class="lede" id="spendNote"></p>
+  </div>
+
+  <div class="section">
+    <h2>Your activity</h2>
+    <div class="toggle" id="periodToggle">
+      <button type="button" data-period="day" class="on">By day</button>
+      <button type="button" data-period="week">By week</button>
+      <button type="button" data-period="month">By month</button>
+    </div>
+    <p class="lede" id="activityLede">Turns and token spend, grouped by your local calendar. Most recent first.</p>
+    <table>
+      <thead><tr><th id="periodHead">Day</th><th class="num">Turns</th><th class="num">Tokens</th></tr></thead>
+      <tbody id="activityTable"></tbody>
+    </table>
+  </div>
+
+  <div class="section">
+    <h2>Spend by model</h2>
+    <table>
+      <thead><tr><th>Model</th><th class="num">Tokens</th><th class="num">Share</th></tr></thead>
+      <tbody id="modelSpendTable"></tbody>
+    </table>
+  </div>
+
   <div class="notes section">
     <h2>What is counted, and what is not-captured</h2>
     <ul id="notCaptured"></ul>
@@ -211,6 +257,51 @@ public static class StatsPageEndpoint
 
   function pct(part, whole) { return whole > 0 ? Math.round((part / whole) * 100) : 0; }
   function fmt(n) { return (n || 0).toLocaleString(); }
+
+  // Compact form for the big token numbers, which run to millions: 1234567 -> "1.2M". The exact figure is
+  // always available in the by-model and by-period tables below, so the headline trades precision for a
+  // number the eye can read at a glance.
+  function fmtCompact(n) {
+    n = n || 0;
+    if (n >= 1e9) return (n / 1e9).toFixed(1).replace(/\.0$/, "") + "B";
+    if (n >= 1e6) return (n / 1e6).toFixed(1).replace(/\.0$/, "") + "M";
+    if (n >= 1e3) return (n / 1e3).toFixed(1).replace(/\.0$/, "") + "K";
+    return String(n);
+  }
+
+  // The local calendar date ("YYYY-MM-DD") of a UTC hour key, in the Gateway's configured display zone. The
+  // stored hour keys are UTC ("yyyy-MM-ddTHH"); grouping by the OWNER'S local day/week/month is what makes
+  // "what did I do today" mean his today, not UTC's. en-CA formats as YYYY-MM-DD, which sorts correctly as a
+  // string. A bad/blank zone falls back to the browser's own, never throws.
+  function localYmd(hourUtc, tz) {
+    var d = new Date(hourUtc + ":00:00Z");
+    try {
+      var f = new Intl.DateTimeFormat("en-CA", { timeZone: tz || undefined, year: "numeric", month: "2-digit", day: "2-digit" });
+      var p = {}; f.formatToParts(d).forEach(function (x) { p[x.type] = x.value; });
+      return p.year + "-" + p.month + "-" + p.day;
+    } catch (e) {
+      return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0");
+    }
+  }
+
+  // Monday-of-the-week for a local YYYY-MM-DD, as YYYY-MM-DD. Computed from the calendar date alone (parsed
+  // as a plain local date), so it never depends on the hour or the zone offset - the date was already
+  // resolved to the owner's zone by localYmd.
+  function weekStart(ymd) {
+    var parts = ymd.split("-");
+    var d = new Date(Number(parts[0]), Number(parts[1]) - 1, Number(parts[2]));
+    var dow = (d.getDay() + 6) % 7; // Monday = 0
+    d.setDate(d.getDate() - dow);
+    return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0");
+  }
+
+  var MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+  function labelDay(ymd) { var p = ymd.split("-"); return MONTHS[Number(p[1]) - 1] + " " + Number(p[2]) + ", " + p[0]; }
+  function labelWeek(ymd) { var p = ymd.split("-"); return "Week of " + MONTHS[Number(p[1]) - 1] + " " + Number(p[2]); }
+  function labelMonth(ym) { var p = ym.split("-"); return MONTHS[Number(p[1]) - 1] + " " + p[0]; }
+
+  // How many recent periods to show, by grain. Enough to see a trend without an endless table.
+  var PERIOD_LIMIT = { day: 14, week: 8, month: 6 };
 
   function sumBy(buckets, field, keyName, keyVal) {
     var t = 0;
@@ -283,6 +374,10 @@ public static class StatsPageEndpoint
       });
     }
 
+    renderSpend(data, turns);
+    renderActivity(data);
+    renderModelSpend(data);
+
     var nc = document.getElementById("notCaptured"); nc.innerHTML = "";
     (data.notCaptured || []).forEach(function (m) {
       var li = document.createElement("li"); li.textContent = m; nc.appendChild(li);
@@ -292,12 +387,104 @@ public static class StatsPageEndpoint
     document.getElementById("foot").textContent = "Updated " + when + " - refreshes every few seconds. Counts only; no message text ever leaves your machine for this page.";
   }
 
+  function renderSpend(data, turns) {
+    var spend = data.tokenSpend || {};
+    var totalTokens = spend.totalTokens || 0;
+    document.getElementById("tokenTotal").textContent = totalTokens > 0 ? fmtCompact(totalTokens) : "--";
+    document.getElementById("tokenBreakdown").textContent = totalTokens > 0
+      ? (fmt(spend.inputTokens) + " in / " + fmt(spend.outputTokens) + " out / "
+         + fmt((spend.cacheReadTokens || 0) + (spend.cacheCreationTokens || 0)) + " cache")
+      : "";
+
+    var chars = total(data.buckets || [], "characters");
+    document.getElementById("turnTotal").textContent = turns > 0 ? fmt(turns) : "--";
+    document.getElementById("turnChars").textContent = turns > 0 ? fmt(chars) + " characters" : "";
+
+    // Say plainly that spend is Claude-only today, so a small number is read as "only Claude reports it yet",
+    // never as "I barely spent anything". Honesty caveat, same spirit as the not-captured notes.
+    document.getElementById("spendNote").textContent = totalTokens > 0
+      ? "Token spend is recorded for agents that report it from their own records - Claude today. Other agents show no spend until their drivers report it."
+      : "No token spend recorded yet. It appears once an agent that reports its usage - Claude today - finishes a turn.";
+  }
+
+  // Roll the per-hour turn and token series into the owner's local day / week / month buckets, newest first.
+  function renderActivity(data) {
+    var tz = data.timeZone;
+    var hoursTurns = data.hourlyTurns || [];
+    var hoursTokens = data.tokenSpendByHour || [];
+    var period = PERIOD;
+
+    var keyOf = period === "month"
+      ? function (ymd) { return ymd.slice(0, 7); }
+      : period === "week"
+        ? function (ymd) { return weekStart(ymd); }
+        : function (ymd) { return ymd; };
+
+    var acc = {}; // key -> { turns, tokens }
+    function bump(hourUtc, field, value) {
+      if (!value) return;
+      var key = keyOf(localYmd(hourUtc, tz));
+      if (!acc[key]) acc[key] = { turns: 0, tokens: 0 };
+      acc[key][field] += value;
+    }
+    hoursTurns.forEach(function (h) { bump(h.hour, "turns", h.turns || 0); });
+    hoursTokens.forEach(function (h) { bump(h.hour, "tokens", h.totalTokens || 0); });
+
+    var label = period === "month" ? labelMonth : period === "week" ? labelWeek : labelDay;
+    document.getElementById("periodHead").textContent = period.charAt(0).toUpperCase() + period.slice(1);
+
+    var keys = Object.keys(acc).sort().reverse().slice(0, PERIOD_LIMIT[period]);
+    var tb = document.getElementById("activityTable"); tb.innerHTML = "";
+    if (keys.length === 0) {
+      tb.innerHTML = '<tr><td colspan="3" class="empty">Nothing recorded in the retained window yet.</td></tr>';
+      return;
+    }
+    keys.forEach(function (k) {
+      var tr = document.createElement("tr");
+      tr.innerHTML = "<td>" + label(k) + "</td><td class='num'>" + fmt(acc[k].turns) +
+        "</td><td class='num'>" + fmt(acc[k].tokens) + "</td>";
+      tb.appendChild(tr);
+    });
+  }
+
+  function renderModelSpend(data) {
+    var rows = data.tokenSpendByModel || [];
+    var grand = 0; rows.forEach(function (r) { grand += (r.totalTokens || 0); });
+    var tb = document.getElementById("modelSpendTable"); tb.innerHTML = "";
+    if (rows.length === 0) {
+      tb.innerHTML = '<tr><td colspan="3" class="empty">No token spend recorded yet.</td></tr>';
+      return;
+    }
+    rows.forEach(function (r) {
+      // A null model is the honest "not recorded yet" bucket - the first turn of every session folds before
+      // its model is known - shown as such, never hidden and never an empty name.
+      var name = r.model ? r.model : "Not recorded";
+      var tr = document.createElement("tr");
+      tr.innerHTML = "<td>" + name + "</td><td class='num'>" + fmt(r.totalTokens) +
+        "</td><td class='num'>" + pct(r.totalTokens, grand) + "%</td>";
+      tb.appendChild(tr);
+    });
+  }
+
   function load() {
     fetch("/stats/data", { credentials: "same-origin" })
       .then(function (r) { if (!r.ok) throw new Error("HTTP " + r.status); return r.json(); })
-      .then(render)
+      .then(function (data) { LAST = data; render(data); })
       .catch(function (e) { document.getElementById("foot").innerHTML = '<span class="err">Could not load stats: ' + e.message + "</span>"; });
   }
+
+  // The chosen day/week/month grain, kept across the 4-second refreshes and re-applied to the latest data
+  // without a refetch, so a periodic reload never snaps the toggle back to Day mid-read.
+  var LAST = null;
+  var PERIOD = "day";
+  document.getElementById("periodToggle").addEventListener("click", function (e) {
+    var btn = e.target.closest("button"); if (!btn) return;
+    PERIOD = btn.getAttribute("data-period");
+    Array.prototype.forEach.call(this.querySelectorAll("button"), function (b) {
+      b.classList.toggle("on", b === btn);
+    });
+    if (LAST) renderActivity(LAST);
+  });
 
   load();
   setInterval(load, 4000);

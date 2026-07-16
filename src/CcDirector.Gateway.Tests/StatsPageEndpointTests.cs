@@ -78,6 +78,15 @@ public sealed class StatsPageEndpointTests : IDisposable
             var html = await resp.Content.ReadAsStringAsync();
             Assert.Contains("Your Throttle", html); // private per-person view name (owner decision)
             Assert.Contains("/stats/data", html); // the page fetches its own data endpoint
+            // The governance views (issue #1637): the spend headline, the day/week/month activity rollup with
+            // its toggle, and the per-model spend table. A guard so a future edit cannot quietly drop the
+            // "what did I spend" surface the mission exists to deliver.
+            Assert.Contains("What you have spent", html);
+            Assert.Contains("tokenTotal", html);
+            Assert.Contains("periodToggle", html);
+            Assert.Contains("data-period=\"month\"", html);
+            Assert.Contains("Spend by model", html);
+            Assert.Contains("modelSpendTable", html);
             // Self-contained: no external resource references.
             Assert.DoesNotContain("http://", html);
             Assert.DoesNotContain("https://", html);
