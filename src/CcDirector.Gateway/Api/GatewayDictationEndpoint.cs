@@ -417,15 +417,25 @@ internal static class GatewayDictationEndpoint
             // Moved-on guard (issue #1006): for a RESUMED clip, if the session's terminal output grew
             // materially since the clip was recorded, other turns happened - drop the stale dictation
             // rather than inject it into a session that has moved on. Immediate sends skip this.
+            //
+            // The baseline is the LARGER of what the phone recorded and what a previous FAILED delivery
+            // attempt of THIS upload id re-baselined to (Lost Dictations mission, issue #1593). The phone's
+            // baseline is stamped once, when the clip was recorded, and never moves - so after one of our own
+            // failed attempts typed the text and cleared it again, the phone's baseline describes a terminal
+            // that no longer exists, and the retry gets dropped as "moved on" by OUR OWN noise. Taking the
+            // larger of the two costs nothing when no attempt failed (the stored value is absent) and is what
+            // stops the observed drop when one did.
+            var effectiveBaseline = Math.Max(
+                req.BaselineBufferBytes, uploads.ReadRecord(uploadId)?.RebaselineBufferBytes ?? 0);
             if (req.Resumed && session is not null && req.BaselineBufferBytes > 0 &&
-                session.TotalBufferBytes > req.BaselineBufferBytes + MovedOnBufferGrowthBytes)
+                session.TotalBufferBytes > effectiveBaseline + MovedOnBufferGrowthBytes)
             {
                 // The turn is resolved (deliberately dropped as stale): a durable DELIVERED tombstone with
                 // movedOn set, so a re-complete returns the same moved-on outcome and never injects the stale
                 // clip (issue #1183). Discards the retained chunks, keeps the marker.
                 uploads.MarkDelivered(uploadId, submitted: false, movedOn: true, transcript);
                 FileLog.Write($"[GatewayDictation] complete sid={sid} uploadId={uploadId}: session moved on " +
-                    $"(buffer {req.BaselineBufferBytes}->{session.TotalBufferBytes}); dropped");
+                    $"(buffer {req.BaselineBufferBytes}/effective {effectiveBaseline}->{session.TotalBufferBytes}); dropped");
                 return DictationOutcome.Submitted(false, true, transcript);
             }
 
@@ -443,7 +453,34 @@ internal static class GatewayDictationEndpoint
             // "unknown" surface bucket, never silently dropped (decision 9).
             var (ok, _, err) = await route.PostPromptAsync(sid, new PromptRequest { Text = message, AppendEnter = true, Surface = deliverySurface ?? "unknown", DeliveryUploadId = uploadId });
             if (!ok)
+            {
+                // THE ATTEMPT WE JUST MADE INVALIDATED THE PHONE'S BASELINE (Lost Dictations mission, #1593).
+                // A failed submit is not a no-op on the terminal: the observed failure (05:31 on 2026-07-15)
+                // typed the text twice and cleared it twice, writing ~8,700 bytes of our own noise into the
+                // buffer. The phone's baseline was stamped when the clip was RECORDED and never moves, so the
+                // retry that follows this 502 would be judged against a number our own failure just made a
+                // lie, and the moved-on guard would drop the user's words as stale. Re-baseline the upload id
+                // to the freshest buffer position we can see, so the retry is judged honestly.
+                //
+                // Re-READ the session rather than reusing the `session` snapshot from before the attempt:
+                // that snapshot predates the noise by definition and would re-baseline to the same number the
+                // phone already sent, which is no re-baseline at all.
+                //
+                // NOT PROVEN TO CLOSE THE WINDOW COMPLETELY, and deliberately not dressed up as if it does:
+                // this reads the pushed store, so it sees only what the owning Director has pushed BY NOW. If
+                // the push stream lags the failure, some of the attempt's noise is not in this number yet and
+                // a retry could still be judged against a baseline that is too low. It is strictly better than
+                // today (today re-baselines by exactly zero) and it is monotonic, so a later failed attempt
+                // can only improve it - but the residual lag window is real and is not closed here.
+                var (_, freshSession) = await GatewayEndpoints.LocateSessionAsync(
+                    registry, sid, pushedSessions, streamStale, owners);
+                if (freshSession is not null)
+                    uploads.RecordFailedDeliveryBaseline(uploadId, freshSession.TotalBufferBytes);
+                FileLog.Write($"[GatewayDictation] complete sid={sid} uploadId={uploadId}: submit FAILED ({err}); " +
+                    $"re-baselined to {freshSession?.TotalBufferBytes.ToString() ?? "unavailable"} " +
+                    $"(was {req.BaselineBufferBytes}) so the retry is not dropped as stale");
                 return DictationOutcome.Error(StatusCodes.Status502BadGateway, err ?? "submit to session failed");
+            }
 
             // Write the durable DELIVERED tombstone as the IMMEDIATE next step after the session accepted the
             // prompt, before anything else, to minimize the window in which a re-complete could re-inject
