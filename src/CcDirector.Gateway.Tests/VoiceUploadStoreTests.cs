@@ -435,6 +435,57 @@ public sealed class VoiceUploadStoreTests : IDisposable
     }
 
     [Fact]
+    public void RecordFailedDeliveryBaseline_CannotResurrectATombstoneThatLandsMidWrite()
+    {
+        // THE INTERLEAVING THAT MATTERS (found by inspection of the #1593 fix). Serializing the re-baseline
+        // writers against each other is not enough: the dangerous race is between DIFFERENT writers. A
+        // re-baseline reads a PENDING record, stalls, MarkDelivered lands a terminal tombstone, and the
+        // re-baseline then writes its remembered PENDING record back over it. The upload id is resurrected as
+        // pending, and #1183's durable de-dupe - the only thing standing between a delivered dictation and a
+        // SECOND injection of the same turn - is gone.
+        //
+        // Driven deterministically: the re-baseline is stalled at the exact instant between its read and its
+        // write, and a competing MarkDelivered is fired from another thread right then. With every record write
+        // behind one per-upload gate, that MarkDelivered CANNOT land inside the window - it waits, so the
+        // stall times out and the tombstone lands cleanly afterwards. With the gate removed it lands
+        // immediately, the re-baseline overwrites it, and the record comes back as Pending.
+        var uploadId = _store.Register(null);
+        _store.MarkPending(uploadId, Guid.NewGuid().ToString());
+
+        var tombstoneLanded = new ManualResetEventSlim(false);
+        Task? competing = null;
+        VoiceUploadStore.BetweenRecordReadAndWriteForTests = _ =>
+        {
+            // Fire the competing terminal write from another thread, then give it every chance to land BEFORE
+            // this re-baseline writes. The gate is what must stop it; nothing else here does.
+            competing = Task.Run(() =>
+            {
+                new VoiceUploadStore(_root).MarkDelivered(uploadId, submitted: true, movedOn: false, transcript: "delivered words");
+                tombstoneLanded.Set();
+            });
+            // A bounded wait, NOT a barrier: under the gate this must time out (the tombstone is blocked behind
+            // us, which is the whole point), so waiting forever would hang rather than pass.
+            tombstoneLanded.Wait(TimeSpan.FromSeconds(1));
+        };
+        try
+        {
+            _store.RecordFailedDeliveryBaseline(uploadId, 9_000);
+        }
+        finally
+        {
+            VoiceUploadStore.BetweenRecordReadAndWriteForTests = null;
+        }
+        competing?.Wait(TimeSpan.FromSeconds(5));
+
+        // The delivered tombstone stands. A re-complete of this upload id returns the cached delivered outcome
+        // and never injects a second turn.
+        var record = _store.ReadRecord(uploadId)!;
+        Assert.Equal(DictationDeliveryState.Delivered, record.State);
+        Assert.True(record.Submitted);
+        Assert.Equal("delivered words", record.Transcript);
+    }
+
+    [Fact]
     public void RecordFailedDeliveryBaseline_IsANoOpForATerminalRecord()
     {
         // A resolved upload's guard has already run for the last time; re-baselining it would move a number

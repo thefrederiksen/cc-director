@@ -1,4 +1,3 @@
-using System.Collections.Concurrent;
 using System.Security.Cryptography;
 using System.Text.Json;
 using System.Text.Json.Serialization;
@@ -276,14 +275,18 @@ public sealed class VoiceUploadStore
     public void MarkPending(string uploadId, string sessionId)
     {
         var uid = NormalizeId(uploadId) ?? throw new InvalidOperationException("invalid upload id");
-        var dir = DirFor(uid);
-        Directory.CreateDirectory(dir);
-        // Carry the #1593 re-baseline forward: a phone that never saw our 502 simply RE-REGISTERS its upload
-        // id and retries. That path lands here, so dropping the value would hand the retry back the very
-        // baseline our own failed attempt invalidated - the exact drop this field exists to stop.
-        WriteRecordMarker(dir, new DictationDeliveryRecord(
-            DictationDeliveryState.Pending, false, false, "", null, sessionId ?? "", ExistingRebaseline(uid)));
-        FileLog.Write($"[VoiceUploadStore] MarkPending: uploadId={uid} sessionId={sessionId}");
+        WithRecordLock(uid, () =>
+        {
+            var dir = DirFor(uid);
+            Directory.CreateDirectory(dir);
+            // Carry the #1593 re-baseline forward: a phone that never saw our 502 simply RE-REGISTERS its
+            // upload id and retries. That path lands here, so dropping the value would hand the retry back the
+            // very baseline our own failed attempt invalidated - the exact drop this field exists to stop.
+            // Read inside the gate, so it cannot be a value from before another writer moved it.
+            WriteRecordMarker(dir, new DictationDeliveryRecord(
+                DictationDeliveryState.Pending, false, false, "", null, sessionId ?? "", ExistingRebaseline(uid)));
+            FileLog.Write($"[VoiceUploadStore] MarkPending: uploadId={uid} sessionId={sessionId}");
+        });
     }
 
     /// <summary>
@@ -331,8 +334,8 @@ public sealed class VoiceUploadStore
     /// tombstone is retired only by <see cref="Acknowledge"/>.
     /// </summary>
     public void MarkDelivered(string uploadId, bool submitted, bool movedOn, string transcript)
-        => WriteTombstone(uploadId, new DictationDeliveryRecord(
-            DictationDeliveryState.Delivered, submitted, movedOn, transcript ?? "", null, ExistingSessionId(uploadId)));
+        => WriteTombstone(uploadId, uid => new DictationDeliveryRecord(
+            DictationDeliveryState.Delivered, submitted, movedOn, transcript ?? "", null, ExistingSessionId(uid)));
 
     /// <summary>
     /// Transition this upload id to the durable ABANDONED tombstone: persist the reason and discard the
@@ -340,8 +343,8 @@ public sealed class VoiceUploadStore
     /// from the surfaces are a later task; this provides the state and its read side.
     /// </summary>
     public void MarkAbandoned(string uploadId, string reason)
-        => WriteTombstone(uploadId, new DictationDeliveryRecord(
-            DictationDeliveryState.Abandoned, false, false, "", reason ?? "", ExistingSessionId(uploadId)));
+        => WriteTombstone(uploadId, uid => new DictationDeliveryRecord(
+            DictationDeliveryState.Abandoned, false, false, "", reason ?? "", ExistingSessionId(uid)));
 
     /// <summary>
     /// Park this upload id as FAILED with a permanent-failure reason code (issue #1185). Unlike DELIVERED
@@ -353,16 +356,20 @@ public sealed class VoiceUploadStore
     public void MarkFailed(string uploadId, string reasonCode)
     {
         var uid = NormalizeId(uploadId) ?? throw new InvalidOperationException("invalid upload id");
-        var dir = DirFor(uid);
-        Directory.CreateDirectory(dir);
-        // Write ONLY the marker - keep the chunk bytes (the retry re-drives them), the opposite of a tombstone.
-        // Preserve the owning session id so a later ClearFailed can restore a PENDING marker that re-locks it,
-        // and the #1593 re-baseline so a transcription failure on a retry cannot erase what an earlier failed
-        // DELIVERY attempt already learned about the buffer.
-        WriteRecordMarker(dir, new DictationDeliveryRecord(
-            DictationDeliveryState.Failed, false, false, "", reasonCode ?? "", ExistingSessionId(uid),
-            ExistingRebaseline(uid)));
-        FileLog.Write($"[VoiceUploadStore] MarkFailed: uploadId={uid} reason={reasonCode} (chunks retained)");
+        WithRecordLock(uid, () =>
+        {
+            var dir = DirFor(uid);
+            Directory.CreateDirectory(dir);
+            // Write ONLY the marker - keep the chunk bytes (the retry re-drives them), the opposite of a
+            // tombstone. Preserve the owning session id so a later ClearFailed can restore a PENDING marker
+            // that re-locks it, and the #1593 re-baseline so a transcription failure on a retry cannot erase
+            // what an earlier failed DELIVERY attempt already learned about the buffer. Both read inside the
+            // gate, so neither can be a value from before another writer moved it.
+            WriteRecordMarker(dir, new DictationDeliveryRecord(
+                DictationDeliveryState.Failed, false, false, "", reasonCode ?? "", ExistingSessionId(uid),
+                ExistingRebaseline(uid)));
+            FileLog.Write($"[VoiceUploadStore] MarkFailed: uploadId={uid} reason={reasonCode} (chunks retained)");
+        });
     }
 
     /// <summary>
@@ -376,20 +383,25 @@ public sealed class VoiceUploadStore
     {
         var uid = NormalizeId(uploadId);
         if (uid is null) return false;
-        if (ReadRecord(uid) is not { State: DictationDeliveryState.Failed } failed) return false;
-        try
+        // Read-modify-write under the gate, read inside: without it, a ClearFailed that read FAILED could
+        // write PENDING back over a tombstone that landed in between, resurrecting a resolved upload id.
+        return WithRecordLock(uid, () =>
         {
-            WriteRecordMarker(DirFor(uid), new DictationDeliveryRecord(
-                DictationDeliveryState.Pending, false, false, "", null, failed.SessionId,
-                failed.RebaselineBufferBytes));
-            FileLog.Write($"[VoiceUploadStore] ClearFailed: uploadId={uid} back to PENDING (chunks retained)");
-            return true;
-        }
-        catch (Exception ex)
-        {
-            FileLog.Write($"[VoiceUploadStore] ClearFailed uploadId={uid} failed: {ex.Message}");
-            return false;
-        }
+            if (ReadRecord(uid) is not { State: DictationDeliveryState.Failed } failed) return false;
+            try
+            {
+                WriteRecordMarker(DirFor(uid), new DictationDeliveryRecord(
+                    DictationDeliveryState.Pending, false, false, "", null, failed.SessionId,
+                    failed.RebaselineBufferBytes));
+                FileLog.Write($"[VoiceUploadStore] ClearFailed: uploadId={uid} back to PENDING (chunks retained)");
+                return true;
+            }
+            catch (Exception ex)
+            {
+                FileLog.Write($"[VoiceUploadStore] ClearFailed uploadId={uid} failed: {ex.Message}");
+                return false;
+            }
+        });
     }
 
     /// <summary>
@@ -411,15 +423,22 @@ public sealed class VoiceUploadStore
         var uid = NormalizeId(uploadId);
         if (uid is null) return false;
 
-        // Read-modify-write under the per-upload gate. Without it the max-and-write is not atomic: two
-        // writers can both read the old value, and the one that computed the SMALLER max can land last and
-        // overwrite the larger - handing a retry a baseline lower than one we had already proven honest,
-        // which is exactly the drop this whole field exists to stop. The monotonic rule has to hold at the
-        // WRITE, not just in the arithmetic.
-        lock (GateFor(DirFor(uid)))
+        // Read-modify-write under the per-upload gate, with the read INSIDE the lock. Two things depend on
+        // that, and the second is the serious one:
+        //   1. The max-and-write is atomic, so two re-baseline writers cannot both read the old value and let
+        //      the one that computed the SMALLER max land last - handing a retry a baseline we already knew
+        //      was too low, which is the drop this field exists to stop. Monotonicity has to hold at the
+        //      WRITE, not just in the arithmetic.
+        //   2. We write only the re-baseline field onto the record AS IT IS RIGHT NOW, never a record read
+        //      before the lock. Otherwise a stalled re-baseline could write a remembered PENDING record back
+        //      over a tombstone that landed in the meantime and resurrect a delivered upload id (issue #1183).
+        return WithRecordLock(uid, () =>
         {
             if (ReadRecord(uid) is not { } record) return false;
+            // Terminal is final: its guard has already run for the last time, and rewriting the tombstone here
+            // is precisely how a resolved upload id would come back to life.
             if (record.State is DictationDeliveryState.Delivered or DictationDeliveryState.Abandoned) return false;
+            BetweenRecordReadAndWriteForTests?.Invoke(uid);
 
             var merged = Math.Max(record.RebaselineBufferBytes ?? 0, bufferBytes);
             if (merged <= (record.RebaselineBufferBytes ?? -1)) return false; // already at least this honest
@@ -436,7 +455,7 @@ public sealed class VoiceUploadStore
                 FileLog.Write($"[VoiceUploadStore] RecordFailedDeliveryBaseline uploadId={uid} failed: {ex.Message}");
                 return false;
             }
-        }
+        });
     }
 
     /// <summary>
@@ -449,19 +468,25 @@ public sealed class VoiceUploadStore
     {
         var uid = NormalizeId(uploadId);
         if (uid is null) return false;
-        var dir = DirFor(uid);
-        if (!Directory.Exists(dir)) return false;
-        try
+        // Retiring the record is a record mutation, so it takes the same gate. Without it, a retirement landing
+        // in the middle of another writer's read-modify-write would let that writer re-create the staging
+        // directory and a marker for an upload id that had just been acknowledged away.
+        return WithRecordLock(uid, () =>
         {
-            Directory.Delete(dir, recursive: true);
-            FileLog.Write($"[VoiceUploadStore] Acknowledge: uploadId={uid} tombstone retired");
-            return true;
-        }
-        catch (Exception ex)
-        {
-            FileLog.Write($"[VoiceUploadStore] Acknowledge uploadId={uid} failed: {ex.Message}");
-            return false;
-        }
+            var dir = DirFor(uid);
+            if (!Directory.Exists(dir)) return false;
+            try
+            {
+                Directory.Delete(dir, recursive: true);
+                FileLog.Write($"[VoiceUploadStore] Acknowledge: uploadId={uid} tombstone retired");
+                return true;
+            }
+            catch (Exception ex)
+            {
+                FileLog.Write($"[VoiceUploadStore] Acknowledge uploadId={uid} failed: {ex.Message}");
+                return false;
+            }
+        });
     }
 
     // The owning session id already recorded for this upload id (empty when there is no record yet), so a
@@ -477,19 +502,29 @@ public sealed class VoiceUploadStore
     // crash between the two leaves a valid tombstone rather than orphaned chunks with no marker. Used by the
     // TERMINAL transitions (delivered/abandoned) that no longer need the audio; FAILED keeps its bytes and
     // so writes the marker alone (see MarkFailed).
-    private void WriteTombstone(string uploadId, DictationDeliveryRecord record)
+    // The record is composed by a FACTORY run inside the gate, not passed in ready-made: a tombstone carries
+    // the session id already on the record, and reading that outside the lock would be one more
+    // read-modify-write straddling the gate - the very shape this is here to eliminate.
+    private void WriteTombstone(string uploadId, Func<string, DictationDeliveryRecord> compose)
     {
         var uid = NormalizeId(uploadId) ?? throw new InvalidOperationException("invalid upload id");
-        var dir = DirFor(uid);
-        Directory.CreateDirectory(dir);
-        WriteRecordMarker(dir, record);
-        foreach (var part in Directory.EnumerateFiles(dir, "*.part"))
+        // Under the per-upload gate like every other record write: a tombstone that lands while another writer
+        // is mid read-modify-write is exactly the interleaving that would let a resolved upload id be written
+        // back to PENDING and re-injected (issue #1183).
+        WithRecordLock(uid, () =>
         {
-            try { File.Delete(part); }
-            catch (Exception ex) { FileLog.Write($"[VoiceUploadStore] discard chunk {part} failed: {ex.Message}"); }
-        }
-        FileLog.Write($"[VoiceUploadStore] MarkRecord: uploadId={uid} state={record.State} " +
-            $"submitted={record.Submitted} movedOn={record.MovedOn}");
+            var record = compose(uid);
+            var dir = DirFor(uid);
+            Directory.CreateDirectory(dir);
+            WriteRecordMarker(dir, record);
+            foreach (var part in Directory.EnumerateFiles(dir, "*.part"))
+            {
+                try { File.Delete(part); }
+                catch (Exception ex) { FileLog.Write($"[VoiceUploadStore] discard chunk {part} failed: {ex.Message}"); }
+            }
+            FileLog.Write($"[VoiceUploadStore] MarkRecord: uploadId={uid} state={record.State} " +
+                $"submitted={record.Submitted} movedOn={record.MovedOn}");
+        });
     }
 
     // Persist the record.json marker atomically (temp + move), leaving any staged chunks untouched.
@@ -503,22 +538,91 @@ public sealed class VoiceUploadStore
 
     // ====== internals ===============================================================
 
-    // Per-upload write gates, keyed by the upload's staging DIRECTORY - the resource itself, not the store
-    // object - so the gate holds even though callers construct their own VoiceUploadStore instances over the
-    // same root (the endpoint, the tests, and the aggregator all do). Static for the same reason: two store
-    // instances over one directory must contend for one gate, or the gate protects nothing.
+    // ====== the per-upload record gate ==============================================
     //
-    // In-process only, and deliberately so: this guards the read-modify-write in RecordFailedDeliveryBaseline,
-    // whose writers are all inside this Gateway. It is NOT a cross-process file lock and does not claim to be;
-    // the individual marker write is already atomic (temp + move), so the worst a second process could do is
-    // land a stale value, which no deployment we run can produce (one Gateway owns a staging root).
+    // EVERY read-modify-write of an upload's record.json runs under this gate. Not just the re-baseline:
+    // serializing the re-baseline writers against each other only is worse than useless, because the
+    // dangerous interleaving is between DIFFERENT writers. A re-baseline that reads a PENDING record, then
+    // stalls while MarkDelivered lands a terminal tombstone, would write its remembered PENDING record back
+    // over that tombstone and RESURRECT the upload id as pending - reopening the exact re-injection door the
+    // durable record exists to close (issue #1183). Hence: one gate per upload id, every writer inside it,
+    // and every writer RE-READS the record inside the lock rather than trusting anything read outside it.
     //
-    // One small object per upload id that has had a failed delivery attempt. Never pruned; bounded by real
-    // failed-delivery volume, the same shape as the endpoint's own uploadId->sessionId map.
-    private static readonly ConcurrentDictionary<string, object> _recordGates =
+    // Keyed by the upload's staging DIRECTORY - the resource itself, not the store object - because callers
+    // construct their own VoiceUploadStore instances over the same root (the endpoint, the aggregator, and
+    // the tests all do), so a gate belonging to an instance would protect nothing. Canonicalized through
+    // Path.GetFullPath so two spellings of one directory cannot resolve to two different gates.
+    //
+    // In-process only, and deliberately so: every writer of a given staging root lives in this Gateway. It is
+    // NOT a cross-process file lock and does not pretend to be; the individual marker write is already atomic
+    // (temp + move), so the worst a second process could do is land a stale value - which no deployment we run
+    // can produce, because one Gateway owns a staging root.
+    //
+    // REFCOUNTED, so the map is bounded by CONCURRENT users rather than by lifetime upload ids - it holds
+    // nothing at rest. This is why there is no "prune on terminal transition": removing a gate that another
+    // thread is still holding would let the next caller lock a DIFFERENT object and walk straight into the
+    // section, which is the race this gate exists to prevent. An entry that nobody holds cannot be in anyone's
+    // way, and an entry that somebody holds must not be removed - refcounting is just those two rules.
+    private sealed class RecordGate
+    {
+        public int Users;
+    }
+
+    /// <summary>
+    /// Test seam: invoked INSIDE the per-upload gate, between the record read and the record write of
+    /// <see cref="RecordFailedDeliveryBaseline"/>. Null in production and never assigned outside tests.
+    ///
+    /// It exists because the tombstone-resurrection hazard is an INTERLEAVING, and an interleaving cannot be
+    /// proven by hammering threads and hoping: a test that only sometimes reproduces the race is a test that
+    /// will pass on a broken build. This lets one test stall the read-modify-write at the exact instant a
+    /// competing tombstone writer tries to land, deterministically, in both directions - the gate holding, and
+    /// the gate removed.
+    /// </summary>
+    internal static Action<string>? BetweenRecordReadAndWriteForTests;
+
+    private static readonly Dictionary<string, RecordGate> _recordGates =
         new(StringComparer.OrdinalIgnoreCase);
 
-    private static object GateFor(string dir) => _recordGates.GetOrAdd(dir, _ => new object());
+    private static RecordGate AcquireGate(string key)
+    {
+        lock (_recordGates)
+        {
+            if (!_recordGates.TryGetValue(key, out var gate))
+            {
+                gate = new RecordGate();
+                _recordGates[key] = gate;
+            }
+            gate.Users++;
+            return gate;
+        }
+    }
+
+    private static void ReleaseGate(string key, RecordGate gate)
+    {
+        lock (_recordGates)
+        {
+            if (--gate.Users == 0) _recordGates.Remove(key);
+        }
+    }
+
+    /// <summary>Run a record read-modify-write for this upload id under its per-upload gate.</summary>
+    private T WithRecordLock<T>(string uid, Func<T> body)
+    {
+        var key = GateKey(uid);
+        var gate = AcquireGate(key);
+        try
+        {
+            lock (gate) return body();
+        }
+        finally
+        {
+            ReleaseGate(key, gate);
+        }
+    }
+
+    private void WithRecordLock(string uid, Action body) => WithRecordLock(uid, () => { body(); return true; });
+
+    private string GateKey(string uid) => Path.GetFullPath(DirFor(uid));
 
     private string DirFor(string uid) => Path.Combine(_root, uid);
     private static string ChunkPath(string dir, int index) => Path.Combine(dir, $"{index:D5}.part");
