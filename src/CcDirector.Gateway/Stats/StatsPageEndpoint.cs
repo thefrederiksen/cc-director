@@ -67,6 +67,13 @@ public static class StatsPageEndpoint
                 // turns ran under no agent.
                 agents = aggregator.AgentTotals(),
                 agentsSinceUtc = aggregator.AgentsSinceUtc,
+                // DevThrottle Stats (issue #1637): the per-model all-time tally - which model actually did
+                // the work, ranked most-driven first. Like the agents series it starts at modelsSinceUtc
+                // rather than at the beginning of the totals, so the page states that window instead of
+                // implying the earlier turns ran under no model. A null model in this list is the honest
+                // "the agent had not recorded one yet" bucket, not a missing value to hide.
+                models = aggregator.ModelTotals(),
+                modelsSinceUtc = aggregator.ModelsSinceUtc,
                 // DevThrottle Stats (issue #1636): turns the fleet drove into ITSELF - one agent prompting
                 // another. Reported alongside the human tally but never inside it: "how do you drive" and
                 // "how much does the fleet drive itself" are different questions, and the ratio between

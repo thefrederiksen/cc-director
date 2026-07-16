@@ -61,17 +61,20 @@ public sealed class GatewayInputStatsAggregator : IDisposable
 
     // Display spelling -> surrogate id. THE COMPARER HERE IS THE WHOLE REASON THE SCHEMA USES SURROGATE IDS:
     // it is the same StringComparer.OrdinalIgnoreCase the old dictionaries used, so grouping is decided by
-    // the identical object with identical semantics and SQLite is never asked to compare a repository or
-    // agent string. First-seen-wins on the display spelling, which is what a Dictionary does.
+    // the identical object with identical semantics and SQLite is never asked to compare a repository,
+    // agent or model string. First-seen-wins on the display spelling, which is what a Dictionary does.
     private readonly Dictionary<string, long> _repoIds = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, long> _agentIds = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, long> _modelIds = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<long, string> _repoDisplay = new();
     private readonly Dictionary<long, string> _agentDisplay = new();
+    private readonly Dictionary<long, string> _modelDisplay = new();
 
     private readonly HashSet<(long Id, string SessionId)> _repoSessions = new();
     private readonly HashSet<(long Id, string SessionId)> _agentSessions = new();
 
     private string _agentsSinceUtc = "";
+    private string _modelsSinceUtc = "";
 
     /// <summary>Every statement executed against the database. The seam acceptance criterion 3 measures: an
     /// IDLE poll must not move this at all, and a fold must move it by an amount bounded by what CHANGED,
@@ -83,6 +86,52 @@ public sealed class GatewayInputStatsAggregator : IDisposable
         public long Turns { get; set; }
         public long Characters { get; set; }
     }
+
+    /// <summary>
+    /// Which identity table a display spelling belongs to. This replaced a <c>bool isRepo</c> when the model
+    /// dimension arrived and made the question three-valued: a boolean cannot name a third kind, and the
+    /// alternative - a second parallel set of NeedIdentity/Resolve methods for models - would have
+    /// duplicated the batch-level OrdinalIgnoreCase dedup, which is the subtle part.
+    ///
+    /// <see cref="Model"/> is a first-class kind here but has NO distinct-session set: nothing asks how many
+    /// sessions ran a model, so <see cref="SessionsFor"/> refuses it rather than carrying a set nothing
+    /// populates. It is also the only kind that can be ABSENT - see <see cref="FoldLocked"/>.
+    /// </summary>
+    private enum IdentityKind { Repo, Agent, Model }
+
+    private Dictionary<string, long> IdsFor(IdentityKind kind) => kind switch
+    {
+        IdentityKind.Repo => _repoIds,
+        IdentityKind.Agent => _agentIds,
+        IdentityKind.Model => _modelIds,
+        _ => throw new ArgumentOutOfRangeException(nameof(kind), kind, "Unknown identity kind."),
+    };
+
+    private Dictionary<long, string> DisplayFor(IdentityKind kind) => kind switch
+    {
+        IdentityKind.Repo => _repoDisplay,
+        IdentityKind.Agent => _agentDisplay,
+        IdentityKind.Model => _modelDisplay,
+        _ => throw new ArgumentOutOfRangeException(nameof(kind), kind, "Unknown identity kind."),
+    };
+
+    // The distinct-session sets exist for repositories and agents only. A model has none, deliberately, so
+    // asking for one is a programming error and says so rather than inventing an empty answer.
+    private HashSet<(long Id, string SessionId)> SessionsFor(IdentityKind kind) => kind switch
+    {
+        IdentityKind.Repo => _repoSessions,
+        IdentityKind.Agent => _agentSessions,
+        _ => throw new ArgumentOutOfRangeException(nameof(kind), kind,
+            "Only repositories and agents keep distinct-session sets."),
+    };
+
+    private static (string Table, string Column) IdentityTableFor(IdentityKind kind) => kind switch
+    {
+        IdentityKind.Repo => ("repo_identity", "repo_display"),
+        IdentityKind.Agent => ("agent_identity", "agent_display"),
+        IdentityKind.Model => ("model_identity", "model_display"),
+        _ => throw new ArgumentOutOfRangeException(nameof(kind), kind, "Unknown identity kind."),
+    };
 
     /// <param name="path">The statistics database. Defaults to gateway-stats.db under the cc-director
     /// storage root, beside the store it replaces.</param>
@@ -152,13 +201,25 @@ public sealed class GatewayInputStatsAggregator : IDisposable
                 var id = r.GetInt64(0); var d = r.GetString(1);
                 _agentIds[d] = id; _agentDisplay[id] = d;
             });
+            Read("SELECT model_id, model_display FROM model_identity", r =>
+            {
+                var id = r.GetInt64(0); var d = r.GetString(1);
+                _modelIds[d] = id; _modelDisplay[id] = d;
+            });
             Read("SELECT repo_id, session_id FROM repo_session", r => _repoSessions.Add((r.GetInt64(0), r.GetString(1))));
             Read("SELECT agent_id, session_id FROM agent_session", r => _agentSessions.Add((r.GetInt64(0), r.GetString(1))));
             _agentsSinceUtc = ReadScalarString("SELECT value FROM meta WHERE name=$n", ("$n", AgentsSinceKey)) ?? "";
 
+            // Written by the version 2 migration, so it is present on every database this build can open -
+            // the migration runs before this does. Read into the mirror because the stats surface reports it
+            // on every request and it never changes at runtime.
+            _modelsSinceUtc = ReadScalarString("SELECT value FROM meta WHERE name=$n",
+                ("$n", GatewayStatsDatabase.ModelsSinceKey)) ?? "";
+
             FileLog.Write($"[GatewayInputStatsAggregator] LoadMirror: {_highWater.Count} live session(s), " +
                           $"{_wingmanSessions.Count} wingman session(s), {_repoIds.Count} repo(s), {_agentIds.Count} agent(s), " +
-                          $"{_agentsSeeded.Count} seeded, agentsSince='{_agentsSinceUtc}' from {_db.Path}");
+                          $"{_modelIds.Count} model(s), {_agentsSeeded.Count} seeded, agentsSince='{_agentsSinceUtc}', " +
+                          $"modelsSince='{_modelsSinceUtc}' from {_db.Path}");
         }
     }
 
@@ -202,15 +263,17 @@ public sealed class GatewayInputStatsAggregator : IDisposable
         public DateTime NowUtc { get; }
         public string HourKey { get; }
 
-        public readonly List<(string Hour, string SessionId, string Modality, string Surface, bool IsVoice, string Repo, bool Wingman, long Turns, long Chars)> Rows = new();
+        // Model is the only nullable member of a row: null means the owning Director had recorded no model
+        // for that session when the turn folded, which is the honest state and never a lookup failure.
+        public readonly List<(string Hour, string SessionId, string Modality, string Surface, bool IsVoice, string Repo, string? Model, bool Wingman, long Turns, long Chars)> Rows = new();
         public readonly List<(string Agent, bool IsVoice, long Turns, long Chars)> AgentRows = new();
         public readonly List<(string Agent, long Turns, long Chars)> AgentDrivenRows = new();
         public readonly List<(string SessionId, string Modality, string Surface, long Turns, long Chars)> HighWater = new();
         public readonly List<(string SessionId, long Turns, long Chars)> AgentDrivenHighWater = new();
         public readonly List<string> NewWingmanSessions = new();
         public readonly List<string> NewSeeded = new();
-        public readonly List<(string Display, bool IsRepo)> NewIdentities = new();
-        public readonly List<(string Display, string SessionId, bool IsRepo)> NewIdentitySessions = new();
+        public readonly List<(string Display, IdentityKind Kind)> NewIdentities = new();
+        public readonly List<(string Display, string SessionId, IdentityKind Kind)> NewIdentitySessions = new();
         public string? StampAgentsSince;
 
         public bool IsEmpty => Rows.Count == 0 && AgentRows.Count == 0 && AgentDrivenRows.Count == 0
@@ -279,6 +342,16 @@ public sealed class GatewayInputStatsAggregator : IDisposable
         // is his question, not this mission's.
         var repoKey = s.RepoPath ?? "";
 
+        // The model this session's agent was last RECORDED using (issue #1637). Unlike the repository and
+        // the agent, an unknown model is stored as SQL NULL rather than folded into an empty-string
+        // identity: the producer reports null until the agent's own records name a model, so "not said" is a
+        // real and permanent state for a session's first turn, and it is not a model named "".
+        //
+        // Whitespace is treated as absent too. The producer says null, but a display spelling of " " could
+        // only ever become an identity row that renders as nothing - the same broken cell an empty string
+        // would give, arrived at by a different route.
+        var modelKey = string.IsNullOrWhiteSpace(s.CurrentModel) ? null : s.CurrentModel;
+
         foreach (var b in s.InputStats.Buckets)
         {
             var key = (b.Modality ?? "", b.Surface ?? "");
@@ -300,10 +373,15 @@ public sealed class GatewayInputStatsAggregator : IDisposable
                 // the flag keeps it out of the query layer.
                 var isVoice = string.Equals(key.Item1, "voice", StringComparison.OrdinalIgnoreCase);
 
-                batch.Rows.Add((batch.HourKey, s.SessionId, key.Item1, key.Item2, isVoice, repoKey, wingman, deltaTurns, deltaChars));
-                NeedIdentity(repoKey, isRepo: true, batch);
-                if (!KnownIdentitySession(repoKey, s.SessionId, isRepo: true, batch))
-                    batch.NewIdentitySessions.Add((repoKey, s.SessionId, true));
+                batch.Rows.Add((batch.HourKey, s.SessionId, key.Item1, key.Item2, isVoice, repoKey, modelKey, wingman, deltaTurns, deltaChars));
+                NeedIdentity(repoKey, IdentityKind.Repo, batch);
+                if (!KnownIdentitySession(repoKey, s.SessionId, IdentityKind.Repo, batch))
+                    batch.NewIdentitySessions.Add((repoKey, s.SessionId, IdentityKind.Repo));
+
+                // Only a model the Director actually named earns an identity. An absent model writes a null
+                // model_id and creates nothing, so model_identity never grows a row for "not said".
+                if (modelKey is not null)
+                    NeedIdentity(modelKey, IdentityKind.Model, batch);
 
                 AttributeToAgentLocked(s, key.Item1, deltaTurns, deltaChars, batch);
             }
@@ -324,7 +402,7 @@ public sealed class GatewayInputStatsAggregator : IDisposable
     private void AttributeToAgentLocked(SessionDto s, string modality, long turns, long characters, FoldBatch batch)
     {
         var agentKey = s.Agent ?? "";
-        NeedIdentity(agentKey, isRepo: false, batch);
+        NeedIdentity(agentKey, IdentityKind.Agent, batch);
 
         if (turns > 0 || characters > 0)
         {
@@ -332,8 +410,8 @@ public sealed class GatewayInputStatsAggregator : IDisposable
             batch.AgentRows.Add((agentKey, isVoice, turns, characters));
         }
 
-        if (!string.IsNullOrEmpty(s.SessionId) && !KnownIdentitySession(agentKey, s.SessionId, isRepo: false, batch))
-            batch.NewIdentitySessions.Add((agentKey, s.SessionId, false));
+        if (!string.IsNullOrEmpty(s.SessionId) && !KnownIdentitySession(agentKey, s.SessionId, IdentityKind.Agent, batch))
+            batch.NewIdentitySessions.Add((agentKey, s.SessionId, IdentityKind.Agent));
     }
 
     // Fold the turns OTHER agents drove into this session (issue #1636) via the same high-water increment
@@ -364,33 +442,28 @@ public sealed class GatewayInputStatsAggregator : IDisposable
         if (deltaTurns <= 0 && deltaChars <= 0) return;
 
         var agentKey = s.Agent ?? "";
-        NeedIdentity(agentKey, isRepo: false, batch);
+        NeedIdentity(agentKey, IdentityKind.Agent, batch);
         batch.AgentDrivenRows.Add((agentKey, deltaTurns, deltaChars));
-        if (!string.IsNullOrEmpty(s.SessionId) && !KnownIdentitySession(agentKey, s.SessionId, isRepo: false, batch))
-            batch.NewIdentitySessions.Add((agentKey, s.SessionId, false));
+        if (!string.IsNullOrEmpty(s.SessionId) && !KnownIdentitySession(agentKey, s.SessionId, IdentityKind.Agent, batch))
+            batch.NewIdentitySessions.Add((agentKey, s.SessionId, IdentityKind.Agent));
     }
 
-    private void NeedIdentity(string display, bool isRepo, FoldBatch batch)
+    private void NeedIdentity(string display, IdentityKind kind, FoldBatch batch)
     {
-        var known = isRepo ? _repoIds : _agentIds;
-        if (known.ContainsKey(display)) return;
+        if (IdsFor(kind).ContainsKey(display)) return;
         // The pending list is compared with the SAME comparer, so two spellings differing only by case
         // inside one batch resolve to one identity, exactly as the dictionary would.
-        foreach (var (d, r) in batch.NewIdentities)
-            if (r == isRepo && StringComparer.OrdinalIgnoreCase.Equals(d, display)) return;
-        batch.NewIdentities.Add((display, isRepo));
+        foreach (var (d, k) in batch.NewIdentities)
+            if (k == kind && StringComparer.OrdinalIgnoreCase.Equals(d, display)) return;
+        batch.NewIdentities.Add((display, kind));
     }
 
-    private bool KnownIdentitySession(string display, string sessionId, bool isRepo, FoldBatch batch)
+    private bool KnownIdentitySession(string display, string sessionId, IdentityKind kind, FoldBatch batch)
     {
-        var ids = isRepo ? _repoIds : _agentIds;
-        if (ids.TryGetValue(display, out var id))
-        {
-            var set = isRepo ? _repoSessions : _agentSessions;
-            if (set.Contains((id, sessionId))) return true;
-        }
-        foreach (var (d, sid, r) in batch.NewIdentitySessions)
-            if (r == isRepo && sid == sessionId && StringComparer.OrdinalIgnoreCase.Equals(d, display)) return true;
+        if (IdsFor(kind).TryGetValue(display, out var id) && SessionsFor(kind).Contains((id, sessionId)))
+            return true;
+        foreach (var (d, sid, k) in batch.NewIdentitySessions)
+            if (k == kind && sid == sessionId && StringComparer.OrdinalIgnoreCase.Equals(d, display)) return true;
         return false;
     }
 
@@ -406,37 +479,46 @@ public sealed class GatewayInputStatsAggregator : IDisposable
             Execute("INSERT OR REPLACE INTO meta(name, value) VALUES ($n, $v)", tx,
                 ("$n", AgentsSinceKey), ("$v", batch.StampAgentsSince));
 
-        var newRepoIds = new Dictionary<string, long>(StringComparer.OrdinalIgnoreCase);
-        var newAgentIds = new Dictionary<string, long>(StringComparer.OrdinalIgnoreCase);
-        foreach (var (display, isRepo) in batch.NewIdentities)
+        // Freshly minted ids, per kind, keyed with the SAME comparer as the mirror they will join.
+        var newIds = new Dictionary<IdentityKind, Dictionary<string, long>>
         {
-            var table = isRepo ? "repo_identity" : "agent_identity";
-            var column = isRepo ? "repo_display" : "agent_display";
+            [IdentityKind.Repo] = new(StringComparer.OrdinalIgnoreCase),
+            [IdentityKind.Agent] = new(StringComparer.OrdinalIgnoreCase),
+            [IdentityKind.Model] = new(StringComparer.OrdinalIgnoreCase),
+        };
+        foreach (var (display, kind) in batch.NewIdentities)
+        {
+            var (table, column) = IdentityTableFor(kind);
             var id = ExecuteScalarLong($"INSERT INTO {table}({column}) VALUES ($d); SELECT last_insert_rowid()", tx, ("$d", display));
-            (isRepo ? newRepoIds : newAgentIds)[display] = id;
+            newIds[kind][display] = id;
         }
 
-        long Resolve(string display, bool isRepo)
+        long Resolve(string display, IdentityKind kind)
         {
-            var pending = isRepo ? newRepoIds : newAgentIds;
-            if (pending.TryGetValue(display, out var fresh)) return fresh;
-            return (isRepo ? _repoIds : _agentIds)[display];
+            if (newIds[kind].TryGetValue(display, out var fresh)) return fresh;
+            return IdsFor(kind)[display];
         }
+
+        // An absent model resolves to nothing at all - DBNull, so the column is SQL NULL rather than a
+        // sentinel id that a later reader could mistake for a real model.
+        object ResolveModel(string? display) =>
+            display is null ? DBNull.Value : Resolve(display, IdentityKind.Model);
 
         foreach (var r in batch.Rows)
-            Execute(@"INSERT INTO stat_delta(hour_utc, session_id, modality, surface, is_voice, repo_id, wingman, turns, chars)
-                      VALUES ($h, $s, $m, $u, $v, $r, $w, $t, $c)", tx,
+            Execute(@"INSERT INTO stat_delta(hour_utc, session_id, modality, surface, is_voice, repo_id, model_id, wingman, turns, chars)
+                      VALUES ($h, $s, $m, $u, $v, $r, $d, $w, $t, $c)", tx,
                 ("$h", r.Hour), ("$s", r.SessionId), ("$m", r.Modality), ("$u", r.Surface),
-                ("$v", r.IsVoice ? 1 : 0), ("$r", Resolve(r.Repo, true)), ("$w", r.Wingman ? 1 : 0),
+                ("$v", r.IsVoice ? 1 : 0), ("$r", Resolve(r.Repo, IdentityKind.Repo)),
+                ("$d", ResolveModel(r.Model)), ("$w", r.Wingman ? 1 : 0),
                 ("$t", r.Turns), ("$c", r.Chars));
 
         foreach (var a in batch.AgentRows)
             Execute("INSERT INTO agent_delta(agent_id, is_voice, turns, chars) VALUES ($a, $v, $t, $c)", tx,
-                ("$a", Resolve(a.Agent, false)), ("$v", a.IsVoice ? 1 : 0), ("$t", a.Turns), ("$c", a.Chars));
+                ("$a", Resolve(a.Agent, IdentityKind.Agent)), ("$v", a.IsVoice ? 1 : 0), ("$t", a.Turns), ("$c", a.Chars));
 
         foreach (var a in batch.AgentDrivenRows)
             Execute("INSERT INTO agent_driven_delta(agent_id, turns, chars) VALUES ($a, $t, $c)", tx,
-                ("$a", Resolve(a.Agent, false)), ("$t", a.Turns), ("$c", a.Chars));
+                ("$a", Resolve(a.Agent, IdentityKind.Agent)), ("$t", a.Turns), ("$c", a.Chars));
 
         foreach (var h in batch.HighWater)
             Execute(@"INSERT INTO session_highwater(session_id, modality, surface, turns, chars)
@@ -455,12 +537,17 @@ public sealed class GatewayInputStatsAggregator : IDisposable
         foreach (var sid in batch.NewSeeded)
             Execute("INSERT OR IGNORE INTO agents_seeded(session_id) VALUES ($s)", tx, ("$s", sid));
 
-        foreach (var (display, sessionId, isRepo) in batch.NewIdentitySessions)
+        foreach (var (display, sessionId, kind) in batch.NewIdentitySessions)
         {
-            var table = isRepo ? "repo_session" : "agent_session";
-            var column = isRepo ? "repo_id" : "agent_id";
+            // SessionsFor refuses a model, so a model queued here would fail loudly rather than write a row
+            // into a table that does not exist. Nothing queues one - the fold never adds a model to
+            // NewIdentitySessions - and this is the check that keeps that true.
+            _ = SessionsFor(kind);
+            var (table, column) = kind == IdentityKind.Repo
+                ? ("repo_session", "repo_id")
+                : ("agent_session", "agent_id");
             Execute($"INSERT OR IGNORE INTO {table}({column}, session_id) VALUES ($i, $s)", tx,
-                ("$i", Resolve(display, isRepo)), ("$s", sessionId));
+                ("$i", Resolve(display, kind)), ("$s", sessionId));
         }
 
         if (batch.Rows.Count > 0) PruneLocked(batch.NowUtc, tx);
@@ -469,8 +556,8 @@ public sealed class GatewayInputStatsAggregator : IDisposable
 
         // ---- Committed. Only now does the mirror move. ----
         if (batch.StampAgentsSince is not null) _agentsSinceUtc = batch.StampAgentsSince;
-        foreach (var (d, id) in newRepoIds) { _repoIds[d] = id; _repoDisplay[id] = d; }
-        foreach (var (d, id) in newAgentIds) { _agentIds[d] = id; _agentDisplay[id] = d; }
+        foreach (var (kind, minted) in newIds)
+            foreach (var (d, id) in minted) { IdsFor(kind)[d] = id; DisplayFor(kind)[id] = d; }
         foreach (var h in batch.HighWater)
         {
             if (!_highWater.TryGetValue(h.SessionId, out var hw))
@@ -484,11 +571,8 @@ public sealed class GatewayInputStatsAggregator : IDisposable
             _agentDrivenHighWater[h.SessionId] = new Counters { Turns = h.Turns, Characters = h.Chars };
         foreach (var sid in batch.NewWingmanSessions) _wingmanSessions.Add(sid);
         foreach (var sid in batch.NewSeeded) _agentsSeeded.Add(sid);
-        foreach (var (display, sessionId, isRepo) in batch.NewIdentitySessions)
-        {
-            var id = isRepo ? _repoIds[display] : _agentIds[display];
-            (isRepo ? _repoSessions : _agentSessions).Add((id, sessionId));
-        }
+        foreach (var (display, sessionId, kind) in batch.NewIdentitySessions)
+            SessionsFor(kind).Add((IdsFor(kind)[display], sessionId));
     }
 
     /// <summary>
@@ -517,11 +601,19 @@ public sealed class GatewayInputStatsAggregator : IDisposable
     private void PruneLocked(DateTime nowUtc, SqliteTransaction tx)
     {
         var cutoff = HourKey(nowUtc.AddDays(-RetentionDays));
-        Execute(@"INSERT INTO stat_delta(hour_utc, session_id, modality, surface, is_voice, repo_id, wingman, turns, chars)
-                  SELECT $marker, $marker, modality, surface, is_voice, repo_id, wingman, SUM(turns), SUM(chars)
+        // model_id is carried through the archive fold, and it MUST be in BOTH lists. Left out of the SELECT
+        // the archive row would read NULL and every pruned turn would silently become "model unknown"; left
+        // out of the GROUP BY it would collapse different models into one row and take an arbitrary model
+        // id with it. Adding a dimension to this table means adding it here, in both places, or pruning
+        // quietly destroys it ninety days later - long after the change that caused it.
+        //
+        // SQLite groups NULLs together, so every unknown-model row of a bucket archives into ONE row that is
+        // still honestly NULL. That is the wanted behaviour: absence aggregates as absence.
+        Execute(@"INSERT INTO stat_delta(hour_utc, session_id, modality, surface, is_voice, repo_id, model_id, wingman, turns, chars)
+                  SELECT $marker, $marker, modality, surface, is_voice, repo_id, model_id, wingman, SUM(turns), SUM(chars)
                     FROM stat_delta
                    WHERE hour_utc <> $marker AND hour_utc < $cutoff
-                   GROUP BY modality, surface, is_voice, repo_id, wingman", tx,
+                   GROUP BY modality, surface, is_voice, repo_id, model_id, wingman", tx,
             ("$marker", GatewayStatsDatabase.ArchiveMarker), ("$cutoff", cutoff));
         Execute("DELETE FROM stat_delta WHERE hour_utc <> $marker AND hour_utc < $cutoff", tx,
             ("$marker", GatewayStatsDatabase.ArchiveMarker), ("$cutoff", cutoff));
@@ -724,6 +816,71 @@ public sealed class GatewayInputStatsAggregator : IDisposable
         get { lock (_lock) { return _agentsSinceUtc; } }
     }
 
+    /// <summary>
+    /// When the model dimension started recording (round-trip UTC), stamped by the schema version 2
+    /// migration. A page NEEDS this to read a null model honestly: a turn folded before this moment predates
+    /// the dimension and could never have carried a model, while one folded after it belongs to a session
+    /// whose agent had recorded no model yet. Both store null and only this stamp tells them apart.
+    /// </summary>
+    public string ModelsSinceUtc
+    {
+        get { lock (_lock) { return _modelsSinceUtc; } }
+    }
+
+    /// <summary>
+    /// The per-model all-time tally (turns by modality, character volume), ranked most-driven first, for the
+    /// private Models page. Includes the null-model bucket, which is a real answer and not a gap - see
+    /// <see cref="ModelStatBucketDto"/>.
+    ///
+    /// No distinct-session count, unlike the repository and agent tallies: a session's model can CHANGE
+    /// mid-session (the whole reason the producer re-reads it at every turn-end), so "sessions that ran this
+    /// model" is not a question this store can answer without a per-session-per-model set nothing keeps. A
+    /// count of sessions here would be a number that looks like the neighbouring ones and means something
+    /// weaker, so it is absent rather than approximated.
+    /// </summary>
+    public IReadOnlyList<ModelStatBucketDto> ModelTotals()
+    {
+        lock (_lock)
+        {
+            var list = new List<ModelStatBucketDto>();
+            // Archive rows are INCLUDED - the marker convention only excludes them from hourly and
+            // working-day series, and an all-time tally that dropped them would shrink as history is pruned.
+            Read(@"SELECT model_id,
+                          COALESCE(SUM(CASE WHEN is_voice = 1 THEN turns ELSE 0 END), 0),
+                          COALESCE(SUM(CASE WHEN is_voice = 0 THEN turns ELSE 0 END), 0),
+                          SUM(chars)
+                     FROM stat_delta GROUP BY model_id", r =>
+            {
+                var voice = r.GetInt64(1);
+                var typed = r.GetInt64(2);
+                // A null model_id is the "not recorded" bucket and stays null all the way to the page. The
+                // display spelling comes from the identity mirror, never from a SQL join that might be
+                // tempted to group or order by the string.
+                string? display = r.IsDBNull(0)
+                    ? null
+                    : (_modelDisplay.TryGetValue(r.GetInt64(0), out var d) ? d : "");
+                list.Add(new ModelStatBucketDto
+                {
+                    Model = display,
+                    Turns = voice + typed,
+                    VoiceTurns = voice,
+                    TypedTurns = typed,
+                    Characters = r.GetInt64(3),
+                });
+            });
+            // Ranked in C#, matching the repository and agent tallies. The null bucket sorts by its numbers
+            // like any other and is deliberately not pinned anywhere: it is a bucket, not a footnote.
+            list.Sort((a, b) =>
+            {
+                var byTurns = b.Turns.CompareTo(a.Turns);
+                if (byTurns != 0) return byTurns;
+                var byChars = b.Characters.CompareTo(a.Characters);
+                return byChars != 0 ? byChars : string.CompareOrdinal(a.Model ?? "", b.Model ?? "");
+            });
+            return list;
+        }
+    }
+
     // An explicit map, not a PascalCase splitter: "OpenCode" is the product's own spelling and must not
     // become "Open Code". An unrecognised token is shown verbatim - it is a real value we simply do not have
     // a nicer name for, so showing it is honest where hiding it behind "Other" would not be.
@@ -832,6 +989,26 @@ public sealed class RepoStatBucketDto
 
     /// <summary>Distinct sessions that drove counted input into this repo.</summary>
     public int Sessions { get; set; }
+}
+
+/// <summary>
+/// One model's all-time input tally for the private Models page (issue #1637).
+///
+/// The "unknown model" row is a REAL row here, not an omission: it is where every turn folded before its
+/// session's agent had recorded a model lands, and it is the only bucket that can never shrink to zero -
+/// each session's first turn is permanently in it. A page must show it and label it honestly rather than
+/// filter it out, or the model turns will not add up to the total turns and the page will look broken.
+/// </summary>
+public sealed class ModelStatBucketDto
+{
+    /// <summary>The model the owning Director recorded, e.g. "claude-opus-4-8" - or null for the bucket of
+    /// turns folded when no model had been recorded. Never an empty string: absence is null.</summary>
+    public string? Model { get; set; }
+
+    public long Turns { get; set; }
+    public long VoiceTurns { get; set; }
+    public long TypedTurns { get; set; }
+    public long Characters { get; set; }
 }
 
 /// <summary>One agent CLI's all-time input tally for the private Agents page.</summary>

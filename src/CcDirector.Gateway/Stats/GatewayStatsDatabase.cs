@@ -35,7 +35,12 @@ public sealed class GatewayStatsDatabase : IDisposable
 {
     /// <summary>The schema version this build understands. Bump it and add a migration step; never reshape
     /// an existing table in place without one.</summary>
-    public const int SchemaVersion = 1;
+    public const int SchemaVersion = 2;
+
+    /// <summary>The meta key holding when the model dimension started recording - an ISO-8601 UTC stamp
+    /// written once, by the migration that added the dimension. See <see cref="MigrateToVersion2"/> for why
+    /// a reader cannot interpret a null model_id without it.</summary>
+    public const string ModelsSinceKey = "models_since_utc";
 
     /// <summary>The marker written into hour_utc and session_id when a pruned row is folded into an archive
     /// row. Cannot collide with a real hour key ("yyyy-MM-ddTHH") or a real session id.
@@ -120,6 +125,9 @@ public sealed class GatewayStatsDatabase : IDisposable
 
         if (current < 1)
             MigrateToVersion1(tx);
+
+        if (current < 2)
+            MigrateToVersion2(tx);
 
         Execute($"PRAGMA user_version={SchemaVersion}", tx);
         tx.Commit();
@@ -336,6 +344,65 @@ public sealed class GatewayStatsDatabase : IDisposable
             )", tx);
     }
 
+    // Version 2: the model dimension - which model produced each turn.
+    //
+    // THIS IS THE FIRST REAL MIGRATION, and that is half its value. Version 1 shipped the machinery
+    // (PRAGMA user_version, a transaction per step, a loud refusal to open a newer file) against a single
+    // version, where nothing exercised it. This step is the proof: an existing database at version 1 - the
+    // owner's, carrying real turns - gains a column and a table and keeps every row it had.
+    //
+    // model_id is NULLABLE, alone among the dimensions, and the nullability is the design rather than a
+    // concession. SessionDto.CurrentModel is RECORDS-ONLY: the owning Director stamps it from the agent's
+    // own records at each turn-end and reports null until the tool has actually recorded a model. So a
+    // session's first turn folds before any record of its model exists, and it folds that way FOREVER -
+    // this store records forward only and never revisits a written row. A NOT NULL column would have to
+    // invent a value for that turn; a null says the true thing.
+    //
+    // Deliberately NOT the empty-string identity that repo_id and agent_id use for "the Director did not
+    // say". An empty display spelling would appear in model_identity as a model, be ranked among models, and
+    // read as a model named nothing. Absence is not a value here, so it is stored as the absence of one.
+    //
+    // ALTER TABLE ADD COLUMN, not a table rebuild: SQLite appends the column and reads NULL for every
+    // existing row, which is exactly the state those rows are in - folded before the dimension existed.
+    private void MigrateToVersion2(SqliteTransaction tx)
+    {
+        Execute("ALTER TABLE stat_delta ADD COLUMN model_id INTEGER", tx);
+
+        // Surrogate id to first-seen display spelling, exactly as repo_identity and agent_identity: the
+        // in-memory OrdinalIgnoreCase map decides identity and SQLite is never asked to compare a model
+        // string. The reasoning is identical and is written out at length on repo_identity above - most of
+        // all the part about there being no normalizer equivalent to the comparer, which is why no folded
+        // string is stored.
+        //
+        // Model names need it as much as repositories do: CurrentModel is free text with unbounded
+        // cardinality and casing by convention only.
+        Execute(@"
+            CREATE TABLE IF NOT EXISTS model_identity (
+                model_id      INTEGER PRIMARY KEY AUTOINCREMENT,
+                model_display TEXT    NOT NULL
+            )", tx);
+
+        // When the model dimension began, stamped HERE rather than at the first fold, because the migration
+        // is the moment it began and it is the only moment that is exactly knowable.
+        //
+        // Without this a null model_id is UNREADABLE, and that is the whole reason it exists. Two different
+        // facts both store NULL: a row folded BEFORE this migration ran, which predates the dimension
+        // entirely and could never have carried a model; and a row folded AFTER it, whose session had
+        // genuinely not recorded a model yet. Same null, different meanings, and a page that cannot tell
+        // them apart would report the owner's entire history as "model unknown" as though the data were
+        // missing rather than never collected. Compared against a row's hour_utc, this separates them.
+        //
+        // agents_since_utc is the same idea one dimension earlier, and its comment on the meta table above -
+        // "not a statistic: a fact about when a statistic began" - describes this exactly.
+        //
+        // INSERT OR IGNORE, not INSERT: this stamp is written once and never moved. If a database somehow
+        // already carries the key, the ORIGINAL is the true beginning and overwriting it with a later time
+        // would silently reclassify real model rows as predating the dimension.
+        Execute("INSERT OR IGNORE INTO meta(name, value) VALUES ($n, $v)", tx,
+            ("$n", ModelsSinceKey),
+            ("$v", DateTime.UtcNow.ToString("o", System.Globalization.CultureInfo.InvariantCulture)));
+    }
+
     private int QueryUserVersion()
     {
         using var cmd = _connection.CreateCommand();
@@ -349,6 +416,18 @@ public sealed class GatewayStatsDatabase : IDisposable
         using var cmd = _connection.CreateCommand();
         if (tx is not null) cmd.Transaction = tx;
         cmd.CommandText = sql;
+        cmd.ExecuteNonQuery();
+    }
+
+    /// <summary>Execute with bound parameters. Values reach SQLite as parameters, never as text pasted into
+    /// the statement - the same rule the aggregator's own Execute follows.</summary>
+    private void Execute(string sql, SqliteTransaction? tx, params (string Name, object Value)[] parameters)
+    {
+        using var cmd = _connection.CreateCommand();
+        if (tx is not null) cmd.Transaction = tx;
+        cmd.CommandText = sql;
+        foreach (var (name, value) in parameters)
+            cmd.Parameters.AddWithValue(name, value);
         cmd.ExecuteNonQuery();
     }
 
