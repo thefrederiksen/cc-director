@@ -1,59 +1,75 @@
 using System.Text.Json;
 using CcDirector.Core.Utilities;
 using CcDirector.Gateway.Contracts;
+using CcDirector.Gateway.Data;
+using CcDirector.Gateway.Data.Entities;
+using Microsoft.EntityFrameworkCore;
 
 namespace CcDirector.Gateway;
 
 /// <summary>
-/// The fleet's named work-list store (issue #273, child of #270; persistent since #301). A named
-/// work list is an ordered list of structured item refs (<see cref="WorkListItemRef"/>) plus a
-/// single-consumer claim. This object is what the product skill writes to, the Cockpit views, and
-/// the queue runner drains - so it exists before any of those.
+/// The fleet's named work-list store (issue #273, child of #270; persistent since #301). A named work list
+/// is an ordered list of structured item refs (<see cref="WorkListItemRef"/>) plus a single-consumer claim.
 ///
-/// The store keeps order + the structured refs + the single-consumer assignment ONLY. It never
-/// stores item status (consumers read status from the source themselves) and it never rejects a
-/// source (runnability is the queue runner's concern).
+/// PERSISTENCE (Hosted Gateway mission, Step 1b): lists live in the EF data layer's <c>worklists</c> table
+/// with their items in the ordered <c>worklist_items</c> child table (SQLite locally), NOT the old
+/// hand-rolled <c>worklists.json</c>. The public API and observable behavior are unchanged.
 ///
-/// PERSISTENCE (issue #301, keyvault.json precedent): the whole store lives in ONE plain JSON
-/// file at the path the constructor receives (production: worklists.json in the Gateway data
-/// dir). Every mutation writes through immediately with an atomic temp-file + rename, so a crash
-/// mid-write can never half-truncate the store. On construction the file is loaded back:
-///   - missing file  = empty store + a log line (the normal first boot), never an error;
-///   - corrupt file  = the bytes are QUARANTINED to "&lt;path&gt;.corrupt-&lt;stamp&gt;" (preserved
-///     for the operator, never silently overwritten), an explicit error is logged, and the store
-///     starts empty so the Gateway still boots;
-///   - a persisted consumer claim is BY DEFINITION stale after a restart (the claiming runner
-///     died with the Gateway), so it is released on load with a log line naming the list and the
-///     dead consumer token, and the released state is persisted immediately.
+/// CASE-INSENSITIVE NAMES, PROVIDER-AWARE: names address one list case-insensitively ("Backlog" and
+/// "backlog" are the same list), exactly as the old OrdinalIgnoreCase dictionary. This is enforced in the
+/// database by a NOCASE collation on the name column plus a unique per-tenant index (see
+/// <see cref="Data.GatewayDbContext"/>), NOT by EF.Functions.ILike (Postgres-only). The Postgres provider
+/// selects its own case-insensitive collation later; the store code is provider-agnostic.
+///
+/// STALE-CLAIM RELEASE: a persisted consumer claim is by definition stale after a restart (the claiming
+/// runner died with the Gateway), so every persisted claim is released on construction - preserved exactly.
+///
+/// ONE-TIME IMPORT: on first run after the upgrade, if a legacy <c>worklists.json</c> exists and the table
+/// is empty, every list (name preserving case, items preserving order, and the consumer/claim) is imported
+/// inside one transaction, then the JSON is renamed aside as a backup. Fail-loud and all-or-nothing, the
+/// cron-store contract. The stale-claim release runs AFTER the import, exactly as a real restart would, so a
+/// claim imported losslessly is then released (the claim does not survive a restart).
+///
+/// Threading: the Gateway is a single writer. Every operation runs under this store's write lock over a
+/// fresh pooled context.
 /// </summary>
 public sealed class WorkListStore
 {
     private readonly object _gate = new();
-    private readonly string _path;
-
-    // Name -> list. Case-insensitive names so "Backlog" and "backlog" address the same list.
-    private readonly Dictionary<string, WorkListDto> _lists =
-        new(StringComparer.OrdinalIgnoreCase);
+    private readonly GatewayDatabase _db;
+    private readonly string _legacyJsonPath;
 
     private static readonly JsonSerializerOptions FileJsonOptions = new()
     {
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
         PropertyNameCaseInsensitive = true,
-        WriteIndented = true,
     };
 
-    /// <param name="path">
-    /// The JSON file the store persists to. REQUIRED so no caller can silently land on the real
-    /// user's file: production (<see cref="GatewayHost"/>) passes worklists.json in the Gateway
-    /// data dir; tests pass an isolated temp path.
-    /// </param>
-    /// <exception cref="ArgumentException">The path is null/empty/whitespace.</exception>
-    public WorkListStore(string path)
+    /// <summary>
+    /// The number of stale consumer claims released by the most recent load (import + stale-release on
+    /// construction). A test-observability seam that surfaces the count Load already computes: it lets a test
+    /// prove the import carried a claim into the database (count 1) before the load-time release cleared it
+    /// (Consumer null) - it is NOT a behavior change.
+    /// </summary>
+    internal int LastLoadStaleClaimsReleased { get; private set; }
+
+    /// <param name="db">The Gateway EF database this store reads and writes through.</param>
+    /// <param name="legacyJsonPath">The legacy <c>worklists.json</c> path to import ONCE if it exists and the
+    /// table is empty. REQUIRED (no silent default).</param>
+    /// <exception cref="ArgumentNullException">The database is null.</exception>
+    /// <exception cref="ArgumentException">The legacy path is null/empty/whitespace.</exception>
+    public WorkListStore(GatewayDatabase db, string legacyJsonPath)
     {
-        if (string.IsNullOrWhiteSpace(path))
-            throw new ArgumentException("store path is required", nameof(path));
-        _path = path;
-        Load();
+        _db = db ?? throw new ArgumentNullException(nameof(db));
+        if (string.IsNullOrWhiteSpace(legacyJsonPath))
+            throw new ArgumentException("legacy json path is required", nameof(legacyJsonPath));
+        _legacyJsonPath = legacyJsonPath;
+
+        lock (_gate)
+        {
+            ImportLegacyJsonIfNeeded();
+            ReleaseStaleClaimsOnLoad();
+        }
     }
 
     /// <summary>The outcome of a single-consumer claim attempt.</summary>
@@ -70,8 +86,8 @@ public sealed class WorkListStore
     }
 
     /// <summary>
-    /// Create a named list. Returns false if a list with that name already exists (the caller maps
-    /// that to a conflict); the existing list is left untouched.
+    /// Create a named list. Returns false if a list with that name already exists (case-insensitively); the
+    /// existing list is left untouched.
     /// </summary>
     /// <exception cref="ArgumentException">The name is null/empty/whitespace.</exception>
     public bool Create(string name)
@@ -81,41 +97,59 @@ public sealed class WorkListStore
 
         lock (_gate)
         {
-            if (_lists.ContainsKey(name))
+            using var ctx = _db.CreateContext();
+            if (ctx.WorkLists.Any(e => e.Name == name)) // NOCASE column collation makes this case-insensitive
             {
                 FileLog.Write($"[WorkListStore] Create: name={name} already exists");
                 return false;
             }
 
-            _lists[name] = new WorkListDto { Name = name };
-            Save();
+            ctx.WorkLists.Add(new WorkListEntity { Id = Guid.NewGuid(), TenantId = ctx.ActiveTenant!, Name = name });
+            ctx.SaveChanges();
             FileLog.Write($"[WorkListStore] Create: name={name}");
             return true;
         }
     }
 
-    /// <summary>All named lists, name-sorted. Each is a defensive copy (callers never mutate the store).</summary>
+    /// <summary>All named lists, name-sorted (OrdinalIgnoreCase). Each is a defensive copy.</summary>
     public IReadOnlyList<WorkListDto> ListAll()
     {
         lock (_gate)
-            return _lists.Values
+        {
+            using var ctx = _db.CreateContext();
+            var lists = ctx.WorkLists.AsNoTracking().ToList();
+            var itemsByList = ctx.WorkListItems.AsNoTracking()
+                .ToList()
+                .GroupBy(i => i.WorkListId)
+                .ToDictionary(g => g.Key, g => g.OrderBy(i => i.Position).ToList());
+
+            return lists
+                .Select(l => ToDto(l, itemsByList.TryGetValue(l.Id, out var items) ? items : new List<WorkListItemEntity>()))
                 .OrderBy(l => l.Name, StringComparer.OrdinalIgnoreCase)
-                .Select(Copy)
                 .ToList();
+        }
     }
 
-    /// <summary>One list by name as a defensive copy, or null if absent.</summary>
+    /// <summary>One list by name (case-insensitive) as a defensive copy, or null if absent.</summary>
     public WorkListDto? Get(string name)
     {
         if (string.IsNullOrWhiteSpace(name)) return null;
         lock (_gate)
-            return _lists.TryGetValue(name, out var list) ? Copy(list) : null;
+        {
+            using var ctx = _db.CreateContext();
+            var list = ctx.WorkLists.AsNoTracking().FirstOrDefault(e => e.Name == name);
+            if (list is null) return null;
+            var items = ctx.WorkListItems.AsNoTracking()
+                .Where(i => i.WorkListId == list.Id)
+                .OrderBy(i => i.Position)
+                .ToList();
+            return ToDto(list, items);
+        }
     }
 
     /// <summary>
-    /// Append one structured item ref to the end of the named list. Returns false if no list with
-    /// that name exists. The source is NOT validated against any enum here - any source is stored
-    /// (mixed sources coexist in one ordered list).
+    /// Append one structured item ref to the end of the named list. Returns false if no list with that name
+    /// exists. Any source is stored (mixed sources coexist in one ordered list).
     /// </summary>
     /// <exception cref="ArgumentNullException">The ref is null.</exception>
     /// <exception cref="ArgumentException">The ref's source or id is null/empty/whitespace.</exception>
@@ -130,22 +164,26 @@ public sealed class WorkListStore
 
         lock (_gate)
         {
-            if (!_lists.TryGetValue(name, out var list))
+            using var ctx = _db.CreateContext();
+            var list = ctx.WorkLists.FirstOrDefault(e => e.Name == name);
+            if (list is null)
             {
                 FileLog.Write($"[WorkListStore] AppendItem: no such list name={name}");
                 return false;
             }
 
-            list.Items.Add(new WorkListItemRef { Source = item.Source, Id = item.Id, Area = item.Area });
-            Save();
-            FileLog.Write($"[WorkListStore] AppendItem: name={name}, source={item.Source}, id={item.Id}, count={list.Items.Count}");
+            var nextPos = (ctx.WorkListItems.Where(i => i.WorkListId == list.Id).Max(i => (int?)i.Position) ?? -1) + 1;
+            ctx.WorkListItems.Add(NewItem(list, ctx.ActiveTenant!, nextPos, item));
+            ctx.SaveChanges();
+            var count = ctx.WorkListItems.Count(i => i.WorkListId == list.Id);
+            FileLog.Write($"[WorkListStore] AppendItem: name={name}, source={item.Source}, id={item.Id}, count={count}");
             return true;
         }
     }
 
     /// <summary>
-    /// Replace the named list's items with the supplied ordered array (reorder). Returns false if
-    /// no list with that name exists. The new array is taken verbatim as the new order.
+    /// Replace the named list's items with the supplied ordered array (reorder). Returns false if no list
+    /// with that name exists. The new array is taken verbatim as the new order.
     /// </summary>
     /// <exception cref="ArgumentNullException">The items array is null.</exception>
     /// <exception cref="ArgumentException">Any ref has a null/empty source or id.</exception>
@@ -165,25 +203,29 @@ public sealed class WorkListStore
 
         lock (_gate)
         {
-            if (!_lists.TryGetValue(name, out var list))
+            using var ctx = _db.CreateContext();
+            var list = ctx.WorkLists.FirstOrDefault(e => e.Name == name);
+            if (list is null)
             {
                 FileLog.Write($"[WorkListStore] Reorder: no such list name={name}");
                 return false;
             }
 
-            list.Items = items
-                .Select(i => new WorkListItemRef { Source = i.Source, Id = i.Id, Area = i.Area })
-                .ToList();
-            Save();
-            FileLog.Write($"[WorkListStore] Reorder: name={name}, count={list.Items.Count}");
+            // Replace the whole ordered set in ONE change set (delete existing rows + insert the new order).
+            var existing = ctx.WorkListItems.Where(i => i.WorkListId == list.Id).ToList();
+            ctx.WorkListItems.RemoveRange(existing);
+            for (var pos = 0; pos < items.Count; pos++)
+                ctx.WorkListItems.Add(NewItem(list, ctx.ActiveTenant!, pos, items[pos]));
+            ctx.SaveChanges();
+            FileLog.Write($"[WorkListStore] Reorder: name={name}, count={items.Count}");
             return true;
         }
     }
 
     /// <summary>
-    /// Remove the one item addressed by source + id (case-insensitive on source, exact on id) from
-    /// the named list, preserving the relative order of the rest. Returns true if an item was
-    /// removed, false if no list with that name exists or no item matched.
+    /// Remove the item(s) addressed by source + id (case-insensitive on source, exact on id) from the named
+    /// list, preserving the relative order of the rest. Returns true if an item was removed, false if no list
+    /// with that name exists or no item matched.
     /// </summary>
     public bool RemoveItem(string name, string source, string id)
     {
@@ -192,26 +234,36 @@ public sealed class WorkListStore
 
         lock (_gate)
         {
-            if (!_lists.TryGetValue(name, out var list))
+            using var ctx = _db.CreateContext();
+            var list = ctx.WorkLists.FirstOrDefault(e => e.Name == name);
+            if (list is null)
             {
                 FileLog.Write($"[WorkListStore] RemoveItem: no such list name={name}");
                 return false;
             }
 
-            var removed = list.Items.RemoveAll(i =>
-                string.Equals(i.Source, source, StringComparison.OrdinalIgnoreCase) &&
-                string.Equals(i.Id, id, StringComparison.Ordinal));
-            if (removed > 0)
-                Save();
-            FileLog.Write($"[WorkListStore] RemoveItem: name={name}, source={source}, id={id}, removed={removed}");
-            return removed > 0;
+            // Match in memory with the exact .NET semantics the JSON store used: source OrdinalIgnoreCase,
+            // id Ordinal. The remaining items keep their positions, so ordering is preserved on read.
+            var doomed = ctx.WorkListItems
+                .Where(i => i.WorkListId == list.Id)
+                .ToList()
+                .Where(i => string.Equals(i.Source, source, StringComparison.OrdinalIgnoreCase)
+                            && string.Equals(i.ItemId, id, StringComparison.Ordinal))
+                .ToList();
+
+            if (doomed.Count > 0)
+            {
+                ctx.WorkListItems.RemoveRange(doomed);
+                ctx.SaveChanges();
+            }
+            FileLog.Write($"[WorkListStore] RemoveItem: name={name}, source={source}, id={id}, removed={doomed.Count}");
+            return doomed.Count > 0;
         }
     }
 
     /// <summary>
-    /// Claim the single draining consumer for the named list. Granted only when the list is
-    /// currently unclaimed; a claim on an already-claimed list is refused. The supplied token
-    /// becomes the active consumer on success.
+    /// Claim the single draining consumer for the named list. Granted only when currently unclaimed; a claim
+    /// on an already-claimed list is refused. The supplied token becomes the active consumer on success.
     /// </summary>
     /// <exception cref="ArgumentException">The token is null/empty/whitespace.</exception>
     public ClaimResult Claim(string name, string consumerToken)
@@ -221,7 +273,9 @@ public sealed class WorkListStore
 
         lock (_gate)
         {
-            if (!_lists.TryGetValue(name, out var list))
+            using var ctx = _db.CreateContext();
+            var list = ctx.WorkLists.FirstOrDefault(e => e.Name == name);
+            if (list is null)
             {
                 FileLog.Write($"[WorkListStore] Claim: no such list name={name}");
                 return ClaimResult.NoSuchList;
@@ -234,22 +288,23 @@ public sealed class WorkListStore
             }
 
             list.Consumer = consumerToken;
-            Save();
+            ctx.SaveChanges();
             FileLog.Write($"[WorkListStore] Claim: name={name} granted");
             return ClaimResult.Granted;
         }
     }
 
     /// <summary>
-    /// Release the consumer claim on the named list, after which a new claim succeeds. Returns
-    /// false if no list with that name exists; releasing an already-unclaimed list is a no-op
-    /// that returns true (the post-condition - no consumer - holds).
+    /// Release the consumer claim on the named list. Returns false if no list with that name exists;
+    /// releasing an already-unclaimed list is a no-op that returns true (the post-condition holds).
     /// </summary>
     public bool Release(string name)
     {
         lock (_gate)
         {
-            if (!_lists.TryGetValue(name, out var list))
+            using var ctx = _db.CreateContext();
+            var list = ctx.WorkLists.FirstOrDefault(e => e.Name == name);
+            if (list is null)
             {
                 FileLog.Write($"[WorkListStore] Release: no such list name={name}");
                 return false;
@@ -258,139 +313,121 @@ public sealed class WorkListStore
             if (list.Consumer is not null)
             {
                 list.Consumer = null;
-                Save();
+                ctx.SaveChanges();
             }
             FileLog.Write($"[WorkListStore] Release: name={name}");
             return true;
         }
     }
 
-    private static WorkListDto Copy(WorkListDto list) => new()
+    /// <summary>
+    /// Release every persisted consumer claim on construction: a persisted claim's runner died with the
+    /// Gateway, so it is stale by definition (issue #301 policy). Reproduces the JSON store's load-time
+    /// release exactly. Records the count in <see cref="LastLoadStaleClaimsReleased"/>.
+    /// </summary>
+    private void ReleaseStaleClaimsOnLoad()
+    {
+        using var ctx = _db.CreateContext();
+        var claimed = ctx.WorkLists.Where(e => e.Consumer != null).ToList();
+        var released = 0;
+        foreach (var list in claimed)
+        {
+            if (string.IsNullOrEmpty(list.Consumer)) continue;
+            FileLog.Write($"[WorkListStore] Load: released stale claim on list={list.Name}, deadConsumer={list.Consumer} (claims do not survive a Gateway restart)");
+            list.Consumer = null;
+            released++;
+        }
+        if (released > 0)
+            ctx.SaveChanges();
+
+        LastLoadStaleClaimsReleased = released;
+        FileLog.Write($"[WorkListStore] Load: {ctx.WorkLists.Count()} list(s) present, staleClaimsReleased={released}");
+    }
+
+    private static WorkListItemEntity NewItem(WorkListEntity list, string tenantId, int position, WorkListItemRef item) => new()
+    {
+        Id = Guid.NewGuid(),
+        WorkListId = list.Id,
+        TenantId = tenantId,
+        Position = position,
+        Source = item.Source,
+        ItemId = item.Id,
+        Area = item.Area,
+    };
+
+    private static WorkListDto ToDto(WorkListEntity list, List<WorkListItemEntity> items) => new()
     {
         Name = list.Name,
         Consumer = list.Consumer,
-        Items = list.Items
-            .Select(i => new WorkListItemRef { Source = i.Source, Id = i.Id, Area = i.Area })
+        Items = items
+            .OrderBy(i => i.Position)
+            .Select(i => new WorkListItemRef { Source = i.Source, Id = i.ItemId, Area = i.Area })
             .ToList(),
     };
 
-    // ---- persistence (issue #301) ------------------------------------------------------------
+    // ---- one-time legacy JSON import --------------------------------------------------------------
 
-    /// <summary>The on-disk shape: one document holding every named list.</summary>
+    /// <summary>The on-disk shape of the legacy store file: one document holding every named list.</summary>
     private sealed class StoreFile
     {
         public List<WorkListDto> Lists { get; set; } = new();
     }
 
     /// <summary>
-    /// Load the store file written by a previous Gateway run. Called once from the constructor.
-    /// Missing file = the normal first boot (empty store, logged). A corrupt file is quarantined
-    /// (renamed next to the original with a timestamp suffix) so its bytes are preserved for the
-    /// operator and never silently overwritten by the next write-through; the store then starts
-    /// empty so the Gateway still boots. Stale consumer claims are released here - a persisted
-    /// claim's runner died with the Gateway - and the released state is persisted immediately.
+    /// Import a legacy <c>worklists.json</c> exactly once: only when it exists AND the table is empty. Every
+    /// list's name (case preserved), items (ORDER preserved), and consumer/claim (preserved losslessly) are
+    /// inserted inside one transaction, then the JSON is renamed aside. Fail-loud and all-or-nothing - a parse
+    /// error throws and imports nothing (the file is left in place). The load-time stale-claim release runs
+    /// AFTER this, so an imported claim is then released exactly as a restart would release it.
     /// </summary>
-    private void Load()
+    private void ImportLegacyJsonIfNeeded()
     {
-        if (!File.Exists(_path))
-        {
-            FileLog.Write($"[WorkListStore] Load: no store file at {_path}; starting empty");
+        if (!File.Exists(_legacyJsonPath))
             return;
-        }
+
+        using var ctx = _db.CreateContext();
+        if (ctx.WorkLists.Any())
+            return;
 
         StoreFile? parsed;
         try
         {
-            parsed = JsonSerializer.Deserialize<StoreFile>(File.ReadAllText(_path), FileJsonOptions);
-        }
-        catch (JsonException ex)
-        {
-            Quarantine(ex.Message);
-            return;
-        }
-
-        if (parsed is null)
-        {
-            // "null" is valid JSON, so deserialization succeeds but yields no document - the
-            // file carries no usable store. Same recovery as a parse failure: preserve + start empty.
-            Quarantine("file deserialized to null (no store document)");
-            return;
-        }
-
-        var staleClaims = 0;
-        foreach (var list in parsed.Lists)
-        {
-            if (string.IsNullOrWhiteSpace(list.Name))
-            {
-                Quarantine("a persisted list has an empty name");
-                _lists.Clear();
-                return;
-            }
-
-            // A persisted claim is by definition stale after a restart: the claiming runner died
-            // with the Gateway (or belongs to a session that may no longer exist). Release it so a
-            // new runner can re-claim and continue from the persisted order (issue #301 policy).
-            if (!string.IsNullOrEmpty(list.Consumer))
-            {
-                FileLog.Write($"[WorkListStore] Load: released stale claim on list={list.Name}, deadConsumer={list.Consumer} (claims do not survive a Gateway restart)");
-                list.Consumer = null;
-                staleClaims++;
-            }
-
-            _lists[list.Name] = list;
-        }
-
-        FileLog.Write($"[WorkListStore] Load: restored {_lists.Count} list(s) from {_path}, staleClaimsReleased={staleClaims}");
-
-        // Persist the released-claim state immediately so a crash before the next mutation
-        // does not resurrect a dead consumer on the following boot.
-        if (staleClaims > 0)
-            Save();
-    }
-
-    /// <summary>
-    /// Preserve an unreadable store file as "&lt;path&gt;.corrupt-&lt;stamp&gt;" and log loudly.
-    /// The original path is then free for the next write-through; the operator can inspect or
-    /// hand-restore the quarantined bytes. The move is not allowed to fail silently: if even the
-    /// quarantine fails, the exception propagates and the Gateway does not start half-blind.
-    /// </summary>
-    private void Quarantine(string reason)
-    {
-        var quarantinePath = $"{_path}.corrupt-{DateTime.UtcNow:yyyyMMdd-HHmmss-fff}";
-        File.Move(_path, quarantinePath);
-        FileLog.Write($"[WorkListStore] Load FAILED: store file at {_path} is corrupt ({reason}); quarantined to {quarantinePath}; starting empty. Operator action: inspect the quarantined file to recover lists.");
-    }
-
-    /// <summary>
-    /// Write-through: serialize the whole store and atomically replace the file (temp + rename),
-    /// so a concurrent reader or a crash mid-write never sees a half-written store. Called inside
-    /// the lock by every mutation. A failed save is a LOGGED error that propagates (the caller's
-    /// request fails loudly) - never a silent skip.
-    /// </summary>
-    private void Save()
-    {
-        try
-        {
-            var dir = Path.GetDirectoryName(_path);
-            if (!string.IsNullOrEmpty(dir))
-                Directory.CreateDirectory(dir);
-
-            var file = new StoreFile
-            {
-                Lists = _lists.Values
-                    .OrderBy(l => l.Name, StringComparer.OrdinalIgnoreCase)
-                    .ToList(),
-            };
-            var json = JsonSerializer.Serialize(file, FileJsonOptions);
-
-            var tmp = _path + ".tmp";
-            File.WriteAllText(tmp, json);
-            File.Move(tmp, _path, overwrite: true);
+            parsed = JsonSerializer.Deserialize<StoreFile>(File.ReadAllText(_legacyJsonPath), FileJsonOptions);
         }
         catch (Exception ex)
         {
-            FileLog.Write($"[WorkListStore] Save FAILED: path={_path}: {ex.Message}");
-            throw;
+            FileLog.Write($"[WorkListStore] Import FAILED: legacy file {_legacyJsonPath} could not be read: {ex.Message}");
+            throw new InvalidOperationException(
+                $"The legacy work-lists file '{_legacyJsonPath}' could not be parsed for the one-time import: " +
+                $"{ex.Message}. The Gateway will not start with a partial import. Fix or move the file aside " +
+                "and restart.", ex);
         }
+
+        var lists = parsed?.Lists ?? new List<WorkListDto>();
+
+        using var tx = ctx.Database.BeginTransaction();
+        foreach (var list in lists)
+        {
+            if (string.IsNullOrWhiteSpace(list.Name))
+                throw new InvalidOperationException(
+                    $"The legacy work-lists file '{_legacyJsonPath}' has a list with an empty name; refusing a " +
+                    "partial import.");
+
+            var entity = new WorkListEntity
+            {
+                Id = Guid.NewGuid(),
+                TenantId = ctx.ActiveTenant!,
+                Name = list.Name,
+                Consumer = list.Consumer,
+            };
+            ctx.WorkLists.Add(entity);
+            for (var pos = 0; pos < list.Items.Count; pos++)
+                ctx.WorkListItems.Add(NewItem(entity, ctx.ActiveTenant!, pos, list.Items[pos]));
+        }
+        ctx.SaveChanges();
+        tx.Commit();
+
+        LegacyJsonImport.RenameAside(_legacyJsonPath, "[WorkListStore]");
+        FileLog.Write($"[WorkListStore] Import: {lists.Count} list(s) imported from {_legacyJsonPath}");
     }
 }

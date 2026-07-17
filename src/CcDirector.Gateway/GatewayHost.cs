@@ -581,10 +581,15 @@ public sealed class GatewayHost : IAsyncDisposable
         // they never touch the real %LOCALAPPDATA% key store.
         _keyVault = new KeyVault(keyVaultPath);
         _dictationTranscription = dictationTranscription;
-        // Named work lists persist across a Gateway restart (issue #301): one JSON file in the
-        // Gateway data dir, loaded here (stale claims released) and written through on every
-        // mutation. Tests MUST pass an isolated path so they never touch the real store.
-        _workLists = new WorkListStore(workListsPath ?? Path.Combine(CcStorage.Root(), "worklists.json"));
+        // The EF data layer (Hosted Gateway mission, Step 1b): one gateway.db under the storage root,
+        // migrated on open, fail-loud (no JSON fallback). The structured stores that have moved off JSON
+        // (work lists, cron) read/write through it, so it is built before them. Tests get an isolated
+        // database via CC_DIRECTOR_ROOT, exactly as gateway-stats.db is isolated today.
+        _gatewayDb = new Data.GatewayDatabase(_tenantContext);
+        // Named work lists persist across a Gateway restart (issue #301) in the worklists table (stale
+        // claims released on load). The path argument is the LEGACY worklists.json, imported once on first
+        // upgrade then renamed aside. Tests MUST pass an isolated path so they never touch the real legacy file.
+        _workLists = new WorkListStore(_gatewayDb, workListsPath ?? Path.Combine(CcStorage.Root(), "worklists.json"));
         // Snooze Length mission: the persisted snooze registry (sessionId -> SnoozeUntilUtc). Loaded here
         // so a Gateway restart re-arms every pending snooze; an entry already past its time simply fires
         // on the first sweep. Tests MUST pass an isolated path so they never touch the real store. The
@@ -644,10 +649,6 @@ public sealed class GatewayHost : IAsyncDisposable
         // (CcStorage.Root(), the same location the snooze and cron stores use). Loaded here so a Gateway
         // restart re-serves every WHY. Tests MUST pass an isolated path so they never touch the real store.
         _missionNotes = new MissionNotes.MissionNoteStore(missionNotesPath ?? Path.Combine(CcStorage.Root(), "mission-notes.json"));
-        // The EF data layer (Hosted Gateway mission, Step 1b): one gateway.db under the storage root,
-        // migrated on open, fail-loud (no JSON fallback). The cron stores read/write through it. Tests get
-        // an isolated database via CC_DIRECTOR_ROOT, exactly as gateway-stats.db is isolated today.
-        _gatewayDb = new Data.GatewayDatabase(_tenantContext);
         // Cron-job definitions persist across a Gateway restart (epic #479, #482) in the cron_jobs table
         // (next-run times recomputed on load). The path argument is the LEGACY cronjobs.json, imported once
         // on first upgrade then renamed aside. Tests MUST pass an isolated path so they never touch the real

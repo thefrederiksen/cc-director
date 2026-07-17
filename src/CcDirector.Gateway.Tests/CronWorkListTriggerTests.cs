@@ -1,6 +1,8 @@
 using CcDirector.Gateway;
 using CcDirector.Gateway.Contracts;
+using CcDirector.Gateway.Data;
 using CcDirector.Gateway.Running;
+using CcDirector.Gateway.Tests.Data;
 using Xunit;
 
 namespace CcDirector.Gateway.Tests;
@@ -14,14 +16,15 @@ namespace CcDirector.Gateway.Tests;
 /// </summary>
 public sealed class CronWorkListTriggerTests : IDisposable
 {
-    private readonly string _dir =
-        Path.Combine(Path.GetTempPath(), "cc-cronwl-tests-" + Guid.NewGuid().ToString("N"));
+    private readonly GatewayDbTestHarness _h = new();
+    private GatewayDatabase? _db;
+    private GatewayDatabase Db => _db ??= _h.Open();
 
-    private WorkListStore NewListStore() => new(Path.Combine(_dir, Guid.NewGuid().ToString("N") + ".json"));
+    private WorkListStore NewListStore() => new(Db, _h.LegacyPath(Guid.NewGuid().ToString("N") + ".json"));
 
     public void Dispose()
     {
-        if (Directory.Exists(_dir)) Directory.Delete(_dir, recursive: true);
+        _h.Dispose();
     }
 
     private static CronJobDto WorkListJob(string listName = "Tonight") => new()
