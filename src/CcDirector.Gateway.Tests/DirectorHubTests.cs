@@ -1,4 +1,5 @@
 using System.Security.Claims;
+using CcDirector.Core.Tenancy;
 using CcDirector.Gateway.Contracts;
 using CcDirector.Gateway.Discovery;
 using CcDirector.Gateway.Stats;
@@ -61,7 +62,7 @@ public sealed class DirectorHubTests : IDisposable
 
         Assert.False(ctx.Aborted);
         Assert.True(_registry.IsStateReporting("dir-A"));
-        Assert.True(_store.IsStreamConnected("dir-A"));
+        Assert.True(_store.IsStreamConnected(TenantId.Local, "dir-A"));
     }
 
     [Fact]
@@ -72,7 +73,7 @@ public sealed class DirectorHubTests : IDisposable
 
         hub.PushSnapshot(0, new[] { Session("s1"), Session("s2") });
 
-        var fresh = _store.TryGetFresh("dir-A", _staleAfter);
+        var fresh = _store.TryGetFresh(TenantId.Local, "dir-A", _staleAfter);
         Assert.NotNull(fresh);
         Assert.Equal(2, fresh.Count);
     }
@@ -85,7 +86,7 @@ public sealed class DirectorHubTests : IDisposable
         hub.Hello(Hello("   "));
 
         Assert.True(ctx.Aborted);
-        Assert.False(_store.IsStreamConnected("dir-A"));
+        Assert.False(_store.IsStreamConnected(TenantId.Local, "dir-A"));
     }
 
     [Fact]
@@ -105,7 +106,7 @@ public sealed class DirectorHubTests : IDisposable
 
         hub.PushDelta(2, Session("s1", "WaitingForInput"));
 
-        var fresh = _store.TryGetFresh("dir-A", _staleAfter);
+        var fresh = _store.TryGetFresh(TenantId.Local, "dir-A", _staleAfter);
         Assert.NotNull(fresh);
         Assert.Single(fresh);
         Assert.Equal("WaitingForInput", fresh[0].ActivityState);
@@ -120,7 +121,7 @@ public sealed class DirectorHubTests : IDisposable
 
         hub.RemoveSession(2, "s1");
 
-        var fresh = _store.TryGetFresh("dir-A", _staleAfter);
+        var fresh = _store.TryGetFresh(TenantId.Local, "dir-A", _staleAfter);
         Assert.NotNull(fresh);
         Assert.Single(fresh);
         Assert.Equal("s2", fresh[0].SessionId);
@@ -135,8 +136,8 @@ public sealed class DirectorHubTests : IDisposable
 
         await hub.OnDisconnectedAsync(null);
 
-        Assert.False(_store.IsStreamConnected("dir-A"));
-        Assert.Null(_store.TryGetFresh("dir-A", _staleAfter));
+        Assert.False(_store.IsStreamConnected(TenantId.Local, "dir-A"));
+        Assert.Null(_store.TryGetFresh(TenantId.Local, "dir-A", _staleAfter));
     }
 
     [Fact]
@@ -150,8 +151,8 @@ public sealed class DirectorHubTests : IDisposable
         hubA.PushSnapshot(0, new[] { Session("a1"), Session("a2") });
         hubB.PushSnapshot(0, new[] { Session("b1") });
 
-        var a = _store.TryGetFresh("dir-A", _staleAfter);
-        var b = _store.TryGetFresh("dir-B", _staleAfter);
+        var a = _store.TryGetFresh(TenantId.Local, "dir-A", _staleAfter);
+        var b = _store.TryGetFresh(TenantId.Local, "dir-B", _staleAfter);
         Assert.NotNull(a);
         Assert.NotNull(b);
         Assert.Equal(2, a.Count);
@@ -171,7 +172,7 @@ public sealed class DirectorHubTests : IDisposable
         hub2.Hello(Hello("dir-A"));
         hub2.PushSnapshot(0, new[] { Session("fresh") });
 
-        var fresh = _store.TryGetFresh("dir-A", _staleAfter);
+        var fresh = _store.TryGetFresh(TenantId.Local, "dir-A", _staleAfter);
         Assert.NotNull(fresh);
         Assert.Single(fresh);
         Assert.Equal("fresh", fresh[0].SessionId);

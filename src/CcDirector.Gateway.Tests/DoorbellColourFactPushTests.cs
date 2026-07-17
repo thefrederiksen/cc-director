@@ -2,6 +2,7 @@ using System.Net.Sockets;
 using CcDirector.ControlApi;
 using CcDirector.Core.Configuration;
 using CcDirector.Core.Sessions;
+using CcDirector.Core.Tenancy;
 using Xunit;
 
 namespace CcDirector.Gateway.Tests;
@@ -116,7 +117,7 @@ public sealed class DoorbellColourFactPushTests : IAsyncLifetime
         var deadline = DateTime.UtcNow + within;
         while (DateTime.UtcNow < deadline)
         {
-            var pushed = _gateway.PushedSessions.SnapshotFresh(TimeSpan.FromSeconds(30));
+            var pushed = _gateway.PushedSessions.SnapshotFresh(TenantId.Local, TimeSpan.FromSeconds(30));
             var mine = pushed.FirstOrDefault(t => t.Session.SessionId == sessionId).Session;
             if (mine is not null && predicate(mine)) return true;
             await Task.Delay(100);

@@ -6,6 +6,7 @@ using System.Text.Json.Nodes;
 using CcDirector.Core.Diagnostics;
 using CcDirector.Core.Network;
 using CcDirector.Core.Storage;
+using CcDirector.Core.Tenancy;
 using CcDirector.Core.Utilities;
 using CcDirector.Gateway.Contracts;
 using CcDirector.Gateway.Discovery;
@@ -284,7 +285,8 @@ internal static class GatewayEndpoints
             // fresh pushed snapshot is not connected to the tunnel and contributes zero.
             int totalSessions = directors.Sum(d =>
             {
-                var cached = pushedSessions?.TryGetFresh(d.DirectorId, streamStaleResolved);
+                // Stage 3b: single-tenant core serves the Local tenant (the request's tenant in Stage 3c).
+                var cached = pushedSessions?.TryGetFresh(TenantId.Local, d.DirectorId, streamStaleResolved);
                 return cached?.Count ?? 0;
             });
 
@@ -550,7 +552,7 @@ internal static class GatewayEndpoints
                 // a pushed snapshot, so exited rows are simply absent - there is no HTTP pull to fetch them.)
                 if (pushedSessions is not null)
                 {
-                    var cached = pushedSessions.TryGetFresh(d.DirectorId, streamStale);
+                    var cached = pushedSessions.TryGetFresh(TenantId.Local, d.DirectorId, streamStale);
                     if (cached is not null)
                     {
                         FileLog.Write($"[GatewayEndpoints] /sessions director={d.DirectorId} served=pushed-cache ({cached.Count} sessions)");
@@ -1986,7 +1988,7 @@ internal static class GatewayEndpoints
             // Post-cut: read the live session list from the push store (it carries the same SessionDto incl.
             // Status). A Director with no fresh push is not connected to the tunnel, so the live count is
             // unknowable and the session gate is skipped below.
-            var cachedSessions = pushedSessions?.TryGetFresh(director.DirectorId, streamStaleResolved);
+            var cachedSessions = pushedSessions?.TryGetFresh(TenantId.Local, director.DirectorId, streamStaleResolved);
             var sessions = cachedSessions?.ToList();
             if (sessions is not null)
             {
@@ -2548,7 +2550,7 @@ internal static class GatewayEndpoints
         if (pushedSessions is null) return byDirector;
         foreach (var d in registry.ListDirectors())
         {
-            var cached = pushedSessions.TryGetFresh(d.DirectorId, streamStale);
+            var cached = pushedSessions.TryGetFresh(TenantId.Local, d.DirectorId, streamStale);
             if (cached is not null) byDirector[d.DirectorId] = cached;
         }
         return byDirector;
@@ -2809,7 +2811,7 @@ internal static class GatewayEndpoints
     {
         if (pushedSessions is not null)
         {
-            var located = pushedSessions.TryLocate(sid, streamStale);
+            var located = pushedSessions.TryLocate(TenantId.Local, sid, streamStale);
             if (located is not null)
             {
                 var (directorId, pushedSession) = located.Value;

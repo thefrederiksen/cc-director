@@ -7,6 +7,7 @@ using CcDirector.Core;
 using CcDirector.Core.Configuration;
 using CcDirector.Core.Dictation;
 using CcDirector.Core.HostedAi;
+using CcDirector.Core.Tenancy;
 using CcDirector.Core.Utilities;
 using CcDirector.Core.Voice.Services;
 using CcDirector.Gateway.Contracts;
@@ -138,7 +139,7 @@ internal static class GatewayWingmanVoiceEndpoint
         // the honest answer and simply means no title is spoken; see GatewayHost.ResolveSessionTitle.
         string? SessionTitle(string sid)
         {
-            var name = pushedSessions?.TryLocate(sid, stale)?.Session.Name;
+            var name = pushedSessions?.TryLocate(TenantId.Local, sid, stale)?.Session.Name;
             return string.IsNullOrWhiteSpace(name) ? null : name;
         }
 

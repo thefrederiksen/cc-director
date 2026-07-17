@@ -1,3 +1,4 @@
+using CcDirector.Core.Tenancy;
 using CcDirector.Core.Utilities;
 using CcDirector.Gateway.Contracts;
 using CcDirector.Gateway.Discovery;
@@ -26,6 +27,7 @@ namespace CcDirector.Gateway.Streaming;
 public sealed class DirectorHub : Hub
 {
     private const string DirectorIdItemKey = "cc.directorId";
+    private const string TenantIdItemKey = "cc.tenantId";
 
     private readonly PushedSessionStore _store;
     private readonly DirectorRegistry _registry;
@@ -83,7 +85,12 @@ public sealed class DirectorHub : Hub
         }
 
         Context.Items[DirectorIdItemKey] = directorId;
-        _store.RegisterConnection(directorId, Context.ConnectionId);
+        // Stage 3b: resolve the tenant this Director's connection belongs to, ONCE, here at bind time, and
+        // carry it on the connection like the directorId. The single-tenant core resolves to Local; the
+        // resolver (Stage 3c) supplies the real tenant from the Director's device key at exactly this point.
+        var tenant = TenantId.Local;
+        Context.Items[TenantIdItemKey] = tenant;
+        _store.RegisterConnection(tenant, directorId, Context.ConnectionId);
         // Gateway Cleanup mission (tunnel-only): the stream IS the registration now (HTTP register is gone).
         // Register this Director from the Hello identity so registry.Get(id) - the gate on create-session and
         // the other director-level routes - resolves it. Source="stream", no dialable endpoint.
@@ -96,7 +103,7 @@ public sealed class DirectorHub : Hub
     {
         var directorId = RequireBoundDirector();
         var set = sessions ?? Array.Empty<SessionDto>();
-        _store.ApplySnapshot(directorId, Context.ConnectionId, sequence, set);
+        _store.ApplySnapshot(RequireBoundTenant(), directorId, Context.ConnectionId, sequence, set);
         // DevThrottle Stats: fold each session's input tally into the always-available aggregate.
         _inputStats.ObserveSnapshot(set);
         // Defect 20: a deferred snooze whose hold landed while this Director was disconnected arrives in
@@ -122,7 +129,7 @@ public sealed class DirectorHub : Hub
             FileLog.Write($"[DirectorHub] PushDelta ignored (no session id): director={directorId}, conn={Short(Context.ConnectionId)}");
             return;
         }
-        _store.ApplyDelta(directorId, Context.ConnectionId, sequence, session);
+        _store.ApplyDelta(RequireBoundTenant(), directorId, Context.ConnectionId, sequence, session);
         // DevThrottle Stats: fold this session's tally into the always-available aggregate.
         _inputStats.Observe(session);
         // Defect 20: THE landing seam. Session.HoldStateChanged fires on DeferredHold -> Held and the
@@ -150,7 +157,7 @@ public sealed class DirectorHub : Hub
             FileLog.Write($"[DirectorHub] RemoveSession ignored (no session id): director={directorId}, conn={Short(Context.ConnectionId)}");
             return;
         }
-        _store.ApplyRemove(directorId, Context.ConnectionId, sequence, sessionId);
+        _store.ApplyRemove(RequireBoundTenant(), directorId, Context.ConnectionId, sequence, sessionId);
         // DevThrottle Stats: its contribution stays in the totals; drop only its high-water entry.
         _inputStats.Forget(sessionId);
         // A DEPARTURE RE-ROLES THE SURVIVORS, exactly as an arrival does: a controller leaving should stop
@@ -170,14 +177,16 @@ public sealed class DirectorHub : Hub
     public override Task OnDisconnectedAsync(Exception? exception)
     {
         var directorId = BoundDirectorId();
-        if (directorId is not null)
+        var tenant = BoundTenant();
+        if (directorId is not null && tenant is { } t)
         {
             // Clear the active connection so aggregation falls back to the cached roster. Gateway Cleanup
             // mission (tunnel-only): do NOT drop the registry entry here - a dead Director's cached roster must
             // survive the sweep window (so a Gateway-owned snooze still fires it back to "needs you" from the
             // cache) and a brief reconnect blip must not flap the roster. The stale sweeper ages out a Director
             // that stops refreshing LastSeen (HttpHeartbeatTimeout); a reconnect re-Hellos and refreshes it.
-            _store.UnregisterConnection(directorId, Context.ConnectionId);
+            // The tenant is the one bound at Hello (Hello sets both, so a bound director always has a tenant).
+            _store.UnregisterConnection(t, directorId, Context.ConnectionId);
         }
         FileLog.Write($"[DirectorHub] disconnected: conn={Short(Context.ConnectionId)}, director={directorId ?? "(unbound)"} ({exception?.Message ?? "clean"})");
         return base.OnDisconnectedAsync(exception);
@@ -188,6 +197,12 @@ public sealed class DirectorHub : Hub
 
     private string RequireBoundDirector() =>
         BoundDirectorId() ?? throw new HubException("Director stream not initialized: send Hello first.");
+
+    private TenantId? BoundTenant() =>
+        Context.Items.TryGetValue(TenantIdItemKey, out var value) && value is TenantId t ? t : null;
+
+    private TenantId RequireBoundTenant() =>
+        BoundTenant() ?? throw new HubException("Director stream not initialized: send Hello first.");
 
     private static string Short(string? id) =>
         string.IsNullOrEmpty(id) ? "(none)" : (id.Length <= 8 ? id : id[..8]);

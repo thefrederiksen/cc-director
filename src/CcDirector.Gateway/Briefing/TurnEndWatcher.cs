@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using CcDirector.Core.Tenancy;
 using CcDirector.Core.Utilities;
 using CcDirector.Gateway.Contracts;
 using CcDirector.Gateway.Discovery;
@@ -143,7 +144,10 @@ public sealed class TurnEndWatcher : IDisposable
         _ = sweepAll;
         if (_pushedSessions is not null)
         {
-            foreach (var (directorId, session) in _pushedSessions.SnapshotFresh(_streamStale))
+            // Stage 3b: the single-tenant core sweeps the one Local tenant. When more than one tenant
+            // exists (Stage 3c), this background sweep iterates every tenant and addresses each session
+            // with its owning tenant - it never reaches across tenants.
+            foreach (var (directorId, session) in _pushedSessions.SnapshotFresh(TenantId.Local, _streamStale))
             {
                 if (_disposed) return Task.CompletedTask;
                 Observe(session.SessionId, session.ActivityState, directorId);
