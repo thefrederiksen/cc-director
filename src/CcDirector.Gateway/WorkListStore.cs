@@ -95,17 +95,19 @@ public sealed class WorkListStore
         if (string.IsNullOrWhiteSpace(name))
             throw new ArgumentException("list name is required", nameof(name));
 
-        var fold = Fold(name);
         lock (_gate)
         {
             using var ctx = _db.CreateContext();
-            if (ctx.WorkLists.Any(e => e.NameFold == fold)) // case-insensitive via the ToUpperInvariant fold
+            // Case-insensitive collision matched in CODE via OrdinalIgnoreCase (loading the tenant's lists),
+            // because no SQL comparison reproduces OrdinalIgnoreCase exactly. Race-free under the write lock,
+            // exactly like the old Dictionary(OrdinalIgnoreCase).
+            if (FindList(ctx, name) is not null)
             {
                 FileLog.Write($"[WorkListStore] Create: name={name} already exists");
                 return false;
             }
 
-            ctx.WorkLists.Add(new WorkListEntity { Id = Guid.NewGuid(), TenantId = ctx.ActiveTenant!, Name = name, NameFold = fold! });
+            ctx.WorkLists.Add(new WorkListEntity { Id = Guid.NewGuid(), TenantId = ctx.ActiveTenant!, Name = name });
             ctx.SaveChanges();
             FileLog.Write($"[WorkListStore] Create: name={name}");
             return true;
@@ -138,7 +140,7 @@ public sealed class WorkListStore
         lock (_gate)
         {
             using var ctx = _db.CreateContext();
-            var list = ctx.WorkLists.AsNoTracking().FirstOrDefault(e => e.NameFold == Fold(name));
+            var list = FindList(ctx, name);
             if (list is null) return null;
             var items = ctx.WorkListItems.AsNoTracking()
                 .Where(i => i.WorkListId == list.Id)
@@ -166,7 +168,7 @@ public sealed class WorkListStore
         lock (_gate)
         {
             using var ctx = _db.CreateContext();
-            var list = ctx.WorkLists.FirstOrDefault(e => e.NameFold == Fold(name));
+            var list = FindList(ctx, name);
             if (list is null)
             {
                 FileLog.Write($"[WorkListStore] AppendItem: no such list name={name}");
@@ -205,7 +207,7 @@ public sealed class WorkListStore
         lock (_gate)
         {
             using var ctx = _db.CreateContext();
-            var list = ctx.WorkLists.FirstOrDefault(e => e.NameFold == Fold(name));
+            var list = FindList(ctx, name);
             if (list is null)
             {
                 FileLog.Write($"[WorkListStore] Reorder: no such list name={name}");
@@ -236,7 +238,7 @@ public sealed class WorkListStore
         lock (_gate)
         {
             using var ctx = _db.CreateContext();
-            var list = ctx.WorkLists.FirstOrDefault(e => e.NameFold == Fold(name));
+            var list = FindList(ctx, name);
             if (list is null)
             {
                 FileLog.Write($"[WorkListStore] RemoveItem: no such list name={name}");
@@ -275,7 +277,7 @@ public sealed class WorkListStore
         lock (_gate)
         {
             using var ctx = _db.CreateContext();
-            var list = ctx.WorkLists.FirstOrDefault(e => e.NameFold == Fold(name));
+            var list = FindList(ctx, name);
             if (list is null)
             {
                 FileLog.Write($"[WorkListStore] Claim: no such list name={name}");
@@ -304,7 +306,7 @@ public sealed class WorkListStore
         lock (_gate)
         {
             using var ctx = _db.CreateContext();
-            var list = ctx.WorkLists.FirstOrDefault(e => e.NameFold == Fold(name));
+            var list = FindList(ctx, name);
             if (list is null)
             {
                 FileLog.Write($"[WorkListStore] Release: no such list name={name}");
@@ -346,11 +348,18 @@ public sealed class WorkListStore
     }
 
     /// <summary>
-    /// The case-fold of a name: <c>ToUpperInvariant</c>, which reproduces <see cref="StringComparer.OrdinalIgnoreCase"/>
-    /// across the full Unicode range (unlike an ASCII-only database collation). Null in, null out, so a null
-    /// name matches no row.
+    /// Find one list by name, case-insensitively via <see cref="StringComparer.OrdinalIgnoreCase"/> matched in
+    /// CODE (loading the tenant's lists - the query is tenant-scoped by the global filter), because no SQL
+    /// comparison reproduces OrdinalIgnoreCase exactly. This is what makes the name key EXACTLY the legacy
+    /// Dictionary(OrdinalIgnoreCase) - full Unicode, no U+017F over-merge, no brick. The returned entity is
+    /// tracked, so a caller can mutate and save it. Null on a null/blank name or no match. Small N (a fleet
+    /// has few named lists), the same cost as the old store's whole-file load.
     /// </summary>
-    private static string? Fold(string? name) => name?.ToUpperInvariant();
+    private static WorkListEntity? FindList(GatewayDbContext ctx, string? name)
+    {
+        if (string.IsNullOrWhiteSpace(name)) return null;
+        return ctx.WorkLists.AsEnumerable().FirstOrDefault(e => StringComparer.OrdinalIgnoreCase.Equals(e.Name, name));
+    }
 
     private static WorkListItemEntity NewItem(WorkListEntity list, string tenantId, int position, WorkListItemRef item) => new()
     {
@@ -434,7 +443,6 @@ public sealed class WorkListStore
                 Id = Guid.NewGuid(),
                 TenantId = ctx.ActiveTenant!,
                 Name = list.Name,
-                NameFold = Fold(list.Name)!,
                 Consumer = list.Consumer,
             };
             ctx.WorkLists.Add(entity);

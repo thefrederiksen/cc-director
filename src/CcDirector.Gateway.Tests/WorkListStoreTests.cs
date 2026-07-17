@@ -75,22 +75,8 @@ public sealed class WorkListStoreTests : IDisposable
         Assert.Equal(WorkListStore.ClaimResult.Granted, store.Claim("mylist", "tok3"));
     }
 
-    [Fact]
-    public void Names_AreCaseInsensitive_AcrossFullUnicode_NotJustAscii()
-    {
-        // "cafe" ending in a lowercase acute-e (U+00E9) vs its uppercase (U+00C9), written as ASCII escapes.
-        // ToUpperInvariant folds the full Unicode range, so these are the SAME name and the second create
-        // collides - exactly StringComparer.OrdinalIgnoreCase. A SQLite NOCASE collation folds only ASCII and
-        // would NOT collide these, which is the parity break this fold column replaces.
-        var lower = "caf" + (char)0x00e9; // cafe + lowercase acute-e
-        var upper = "CAF" + (char)0x00c9; // CAFE + uppercase acute-E
-        var store = NewStore();
-
-        Assert.True(store.Create(lower));
-        Assert.False(store.Create(upper));      // differs only by case of an accented letter -> collides
-        Assert.Single(store.ListAll());
-        Assert.Equal(lower, store.Get(upper)!.Name); // lookup by the uppercased form finds the original row
-    }
+    // Full-Unicode case parity (accented Latin, the long-s U+017F edge, astral) is proven exactly against
+    // StringComparer.OrdinalIgnoreCase in WorkListStoreCaseParityTests.
 
     [Fact]
     public void AppendItem_ThreeItems_PreservesAppendOrder()

@@ -17,7 +17,6 @@ namespace CcDirector.Gateway.Data.Migrations
                 {
                     Id = table.Column<Guid>(type: "TEXT", nullable: false),
                     Name = table.Column<string>(type: "TEXT", nullable: false),
-                    NameFold = table.Column<string>(type: "TEXT", nullable: false),
                     Consumer = table.Column<string>(type: "TEXT", nullable: true),
                     tenant_id = table.Column<string>(type: "TEXT", nullable: false)
                 },
@@ -63,12 +62,6 @@ namespace CcDirector.Gateway.Data.Migrations
                 name: "IX_worklists_tenant_id",
                 table: "worklists",
                 column: "tenant_id");
-
-            migrationBuilder.CreateIndex(
-                name: "IX_worklists_tenant_id_NameFold",
-                table: "worklists",
-                columns: new[] { "tenant_id", "NameFold" },
-                unique: true);
         }
 
         /// <inheritdoc />

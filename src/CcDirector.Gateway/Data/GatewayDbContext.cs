@@ -84,13 +84,12 @@ public sealed class GatewayDbContext : DbContext
             b.HasKey(e => e.Id);
             // Items are an ORDERED child table (worklist_items) with a cascade so a list's items go with it.
             b.HasMany(e => e.Items).WithOne().HasForeignKey(i => i.WorkListId).OnDelete(DeleteBehavior.Cascade);
-            // The name is unique per tenant, case-insensitively, via the .NET-computed fold column NameFold
-            // (= Name.ToUpperInvariant(), kept in sync by the store). ToUpperInvariant reproduces
-            // StringComparer.OrdinalIgnoreCase across the full Unicode range - a database collation like SQLite
-            // NOCASE folds only ASCII and would let accented case-variants NOT collide. This unique index is a
-            // plain (binary) index over the folded values, so it is fully provider-AGNOSTIC (no NOCASE, no
-            // citext, no ILike). This folded-shadow-column is the seam the #340 case-insensitive nickname reuses.
-            b.HasIndex(e => new { e.TenantId, e.NameFold }).IsUnique();
+            // Deliberately NO database-level name-unique index. Name uniqueness is case-insensitive and must
+            // match the legacy Dictionary(OrdinalIgnoreCase) exactly, and no stored string transform
+            // reproduces StringComparer.OrdinalIgnoreCase (ToUpperInvariant over-merges U+017F onto 'S'), so a
+            // unique index over a fold column could not preserve the behaviour and could brick an import. The
+            // store enforces uniqueness in code via OrdinalIgnoreCase under its single-writer lock - exactly
+            // what the old Dictionary did (which also had no database constraint).
         });
 
         modelBuilder.Entity<WorkListItemEntity>(b =>

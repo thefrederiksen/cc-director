@@ -11,7 +11,7 @@ using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 namespace CcDirector.Gateway.Data.Migrations
 {
     [DbContext(typeof(GatewayDbContext))]
-    [Migration("20260717222745_AddWorkLists")]
+    [Migration("20260717230354_AddWorkLists")]
     partial class AddWorkLists
     {
         /// <inheritdoc />
@@ -143,10 +143,6 @@ namespace CcDirector.Gateway.Data.Migrations
                         .IsRequired()
                         .HasColumnType("TEXT");
 
-                    b.Property<string>("NameFold")
-                        .IsRequired()
-                        .HasColumnType("TEXT");
-
                     b.Property<string>("TenantId")
                         .IsRequired()
                         .HasColumnType("TEXT")
@@ -155,9 +151,6 @@ namespace CcDirector.Gateway.Data.Migrations
                     b.HasKey("Id");
 
                     b.HasIndex("TenantId");
-
-                    b.HasIndex("TenantId", "NameFold")
-                        .IsUnique();
 
                     b.ToTable("worklists", (string)null);
                 });
