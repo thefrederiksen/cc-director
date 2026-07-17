@@ -275,6 +275,30 @@ public sealed class WingmanVoiceService
         => _voiceUnavailable.TryGetValue(sid, out var s) ? s : (HostedAiState?)null;
 
     /// <summary>
+    /// Record that a model/translation call did not answer in time (a bounded timeout or a transport
+    /// failure), so this session shows the calm "voice on its way" retrying state rather than a silent
+    /// failure or a false "this session's computer is offline". The on-demand explain path uses this
+    /// when its translation times out; the auto path sets the same state inline. Cleared on the next
+    /// successful generation, on the Working transition, and when voice is turned off - exactly like the
+    /// speech-leg unavailable state.
+    /// </summary>
+    public void NoteRetrying(string sid) => _voiceUnavailable[sid] = HostedAiState.Retrying;
+
+    /// <summary>
+    /// True when an exception from the model (translation) leg means it DID NOT ANSWER - a bounded
+    /// <see cref="TimeoutException"/> from <see cref="HostedInferenceBrain"/>, or an
+    /// <see cref="HttpRequestException"/> transport failure - as opposed to an answered failure (402,
+    /// 429, 5xx surface as typed/InvalidOperation exceptions and are handled elsewhere). A caller-cancel
+    /// (shutdown) is excluded: that is not the model's non-answer, it is us stopping. This is the model
+    /// leg's mirror of the "absence of evidence -> Retrying" rule the speech leg already applies.
+    /// </summary>
+    private static bool IsModelDidNotAnswer(Exception ex, CancellationToken ct)
+        => ex is not WingmanModelRateLimitedException
+           && (ex is TimeoutException
+               || ex is HttpRequestException
+               || (ex is OperationCanceledException && !ct.IsCancellationRequested));
+
+    /// <summary>
     /// Capture one wingman summary for the training dataset (no-op unless the setting is on).
     /// Best-effort and fire-and-forget at the call site so it never delays a voice turn; the
     /// store fetches up to 20,000 chars of the session terminal and appends the record itself.
@@ -530,7 +554,25 @@ public sealed class WingmanVoiceService
         if (showReadingWindow) BeginGenerating(sid);
         try
         {
-            var t = await _translator.TranslateAsync(recentContext, lastReply, _sessionTitleResolver?.Invoke(sid), ct);
+            WingmanTranslation t;
+            try
+            {
+                t = await _translator.TranslateAsync(recentContext, lastReply, _sessionTitleResolver?.Invoke(sid), ct);
+            }
+            catch (Exception ex) when (IsModelDidNotAnswer(ex, ct))
+            {
+                // The MODEL leg (the translation) did not answer - a bounded timeout or a transport
+                // failure - so we have no evidence about the service. This is the exact story the speech
+                // leg already tells (see TtsAsync): a non-answer is Retrying, NOT a silent FAILED and NOT
+                // ServiceDown. Recording Retrying makes the phone show the calm "voice on its way" state
+                // and the voice sweep retries on its own, instead of the session sitting red with no audio
+                // and no reason (the wedge the owner hit: half the fleet stuck, "generate" doing nothing).
+                // A rate-limit (WingmanModelRateLimitedException) is NOT caught here - it stays thrown so
+                // GenerateAsync's handler arms the model cooldown with the provider's Retry-After.
+                _voiceUnavailable[sid] = HostedAiState.Retrying;
+                FileLog.Write($"[WingmanVoiceService] model did not answer for sid={sid}: {ex.Message} - Retrying (audio on its way); the session retries on its own");
+                return false;   // nothing produced; the provider was not usefully reached, so report no success
+            }
             await StoreSpokenAsync(sid, t.Spoken, lastReply, ct);
             // Log the TRUE outcome: StoreSpokenAsync only makes the session playable when the
             // text-to-speech synthesis actually returned audio. Logging "voice ready"

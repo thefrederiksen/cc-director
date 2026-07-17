@@ -234,6 +234,66 @@ public sealed class WingmanVoiceServiceTests
         public void Dispose() { }
     }
 
+    /// <summary>A brain whose ask never answers - it throws <see cref="TimeoutException"/>, the shape a
+    /// bounded model-leg deadline (HostedInferenceBrain) now takes when the hosted worker stalls. Proves
+    /// the turn-end path maps a model NON-ANSWER to the calm Retrying state, not a silent FAILED.</summary>
+    private sealed class TimingOutBrain : IAgentBrain
+    {
+        private int _askCount;
+        public int AskCount => _askCount;
+        public string? SessionId => "timing-out-brain";
+        public Task<AskResult> AskAsync(string prompt, CancellationToken ct = default)
+        {
+            Interlocked.Increment(ref _askCount);
+            throw new TimeoutException("The wingman model call did not answer within 60 seconds.");
+        }
+        public Task CancelAsync(CancellationToken ct = default) => Task.CompletedTask;
+        public Task<ClearResult> ClearAsync(CancellationToken ct = default) => Task.FromResult(new ClearResult());
+        public Task RestartAsync(CancellationToken ct = default) => Task.CompletedTask;
+        public Task KillAsync(CancellationToken ct = default) => Task.CompletedTask;
+        public Task<BrainHealth> GetHealthAsync(CancellationToken ct = default) => Task.FromResult(new BrainHealth { IsAlive = true });
+        public void Dispose() { }
+    }
+
+    [Fact]
+    public async Task GenerateAsync_WhenModelLegTimesOut_RecordsRetrying_NoAudio_NoSilentFailure()
+    {
+        // THE FIX (the owner's 2026-07-17 wedge): the MODEL leg (translation) stalling used to hang the
+        // whole generation for 180s and then die as a bare FAILED - the session sat red "needs you" with
+        // no audio and NO reason, so "half the fleet is stuck and generate does nothing". The model leg now
+        // mirrors the speech leg: a non-answer is Retrying (calm "voice on its way", the sweep retries),
+        // never a silent failure and never ServiceDown. Nothing plays, but the phone knows why.
+        var director = new TunnelReadStub("{\"widgets\":[{\"kind\":\"Text\",\"content\":\"the reply to narrate\"}]}");
+        var dir = Path.Combine(Path.GetTempPath(), "wmvs-modeltimeout-" + Guid.NewGuid().ToString("N"));
+        var persistPath = Path.Combine(dir, "voice-sessions.json");
+        try
+        {
+            var brain = new TimingOutBrain();
+            var svc = ServiceWithBrainAndTts(brain, new byte[] { 7, 7, 7 }, persistPath);
+
+            await svc.GenerateAsync("sid-1", RouteFor(director), CancellationToken.None, showReadingWindow: true);
+
+            Assert.Equal(1, brain.AskCount);                                          // it tried the model
+            Assert.False(svc.HasVoice("sid-1"));                                      // nothing to play
+            Assert.Equal(HostedAiState.Retrying, svc.VoiceUnavailableFor("sid-1"));   // and it says WHY, calmly
+            Assert.NotEqual(HostedAiState.ServiceDown, svc.VoiceUnavailableFor("sid-1")); // a non-answer is not "down"
+            Assert.False(svc.IsGenerating("sid-1"));                                  // the yellow window closed
+            Assert.False(svc.SpeechCooldownArmed, "one slow model call must not silence the fleet");
+        }
+        finally { try { Directory.Delete(dir, recursive: true); } catch { /* best-effort cleanup */ } }
+    }
+
+    [Fact]
+    public void NoteRetrying_RecordsRetryingState_ForTheExplainPath()
+    {
+        // The on-demand "generate" (explain) path calls this when its translation times out, so the phone
+        // shows "voice on its way" instead of the old false 502 "this session's computer is offline".
+        var svc = NewService();
+        Assert.Null(svc.VoiceUnavailableFor("sid-1"));
+        svc.NoteRetrying("sid-1");
+        Assert.Equal(HostedAiState.Retrying, svc.VoiceUnavailableFor("sid-1"));
+    }
+
     /// <summary>A voice service wired to a recording brain and a text-to-speech stub that returns
     /// <paramref name="audio"/>, so the full turn-end path (fetch -> translate -> synthesize -> store)
     /// runs without a live model or provider.</summary>

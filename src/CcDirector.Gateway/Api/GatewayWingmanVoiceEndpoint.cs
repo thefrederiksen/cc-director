@@ -670,6 +670,24 @@ internal static class GatewayWingmanVoiceEndpoint
                 _ = voice.CaptureTrainingAsync(route, sid, "explain", lastReply, recentContext, t.Spoken, t.ReplySeconds, CancellationToken.None);
                 return Results.Json(new { reply = lastReply, spoken = t.Spoken, replySeconds = t.ReplySeconds });
             }
+            catch (Exception ex) when (ex is TimeoutException or HttpRequestException)
+            {
+                // The model leg did not answer in time (bounded timeout) or the transport failed. This is
+                // the absence of an answer, not evidence the session's computer is offline - so record the
+                // calm Retrying state (the phone shows "voice on its way" and the sweep keeps trying) and
+                // return a benign 200, NOT the 502 the phone used to mislabel "this session's computer looks
+                // offline". Before this, a stalled model hung the request the full 180s and then 502'd, which
+                // is exactly the "I hit generate and nothing happens" the owner reported.
+                voice.NoteRetrying(sid);
+                FileLog.Write($"[GatewayWingmanVoice] explain sid={sid} model did not answer: {ex.Message} - Retrying (audio on its way)");
+                return Results.Json(new
+                {
+                    reply = "",
+                    spoken = "Voice is taking a moment - it will keep trying.",
+                    replySeconds = 0.0,
+                    retrying = true,
+                });
+            }
             catch (Exception ex)
             {
                 FileLog.Write($"[GatewayWingmanVoice] explain sid={sid} FAILED: {ex.Message}");

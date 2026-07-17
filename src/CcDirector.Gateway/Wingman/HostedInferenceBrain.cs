@@ -25,22 +25,50 @@ namespace CcDirector.Gateway.Wingman;
 /// </summary>
 public sealed class HostedInferenceBrain : IAgentBrain
 {
-    /// <summary>Shared client with a generous timeout - a wingman summary is one model round trip and
-    /// the caller (voice turn) already bounds the overall wait.</summary>
-    private static readonly HttpClient SharedHttp = new() { Timeout = TimeSpan.FromMinutes(3) };
+    /// <summary>
+    /// The bound on ONE model round trip, and the whole reason this class owns a deadline at all.
+    ///
+    /// This client used to carry a flat <c>Timeout = TimeSpan.FromMinutes(3)</c> and nothing else. When
+    /// a hosted worker stalled (a cold start, a slow provider minute), the translation call did not fail
+    /// - it BLOCKED for the full three minutes and then threw. That is the wingman's model leg, which the
+    /// voice path runs on every turn-end and on the manual "generate" button, so a single stalled call
+    /// froze a session's voice for three minutes and then died with a raw cancellation - logged as a
+    /// silent FAILED on the auto path, and returned as a 502 the phone mislabelled "this session's
+    /// computer is offline" on the manual path. Measured on 2026-07-17: many translations finished in
+    /// ~10-20 seconds while the stalls went the full 180 (see the Gateway log's "HttpClient.Timeout of
+    /// 180 seconds elapsing" lines). The speech leg was already bounded and fast-failed to a Retrying
+    /// state (issue #1322 / the 2026-07-15 work); the model leg was left with this naive client and
+    /// skipped all of it.
+    ///
+    /// So the deadline is bounded and OWNED here (one timeout, one owner, matching TtsSynthesis and the
+    /// shared speech client): the static client's own timeout is INFINITE and each call is bounded by a
+    /// linked CancellationTokenSource. A stall now fails in <see cref="DefaultCallTimeout"/>, not 180s,
+    /// as a clear <see cref="TimeoutException"/> the caller maps to "audio on its way, retrying" and
+    /// retries on its own (the voice sweep). 60 seconds is deliberately generous over the ~10-20s a real
+    /// translation takes - the goal is to end the pathological three-minute hang without false-timing-out
+    /// a legitimately slow-but-working call; tune it down only with measurements.
+    /// </summary>
+    public static readonly TimeSpan DefaultCallTimeout = TimeSpan.FromSeconds(60);
+
+    /// <summary>Shared client: the deadline is owned per-call by a linked token (see
+    /// <see cref="DefaultCallTimeout"/>), so the client itself never imposes a second, racing bound.</summary>
+    private static readonly HttpClient SharedHttp = new() { Timeout = Timeout.InfiniteTimeSpan };
 
     private readonly HttpClient _http;
     private readonly string _chatUrl;
     private readonly string _apiKey;
     private readonly string _model;
+    private readonly TimeSpan _callTimeout;
     private readonly Action<string> _log;
 
     /// <param name="baseUrl">The provider-compatible <c>/v1</c> base URL.</param>
     /// <param name="apiKey">The credential to present as the Bearer token. Must be non-empty.</param>
     /// <param name="model">The chat model id.</param>
-    /// <param name="http">HTTP client (tests inject a stub over a fake handler); a shared 3-minute client when null.</param>
+    /// <param name="http">HTTP client (tests inject a stub over a fake handler); a shared client when null.</param>
     /// <param name="log">Log sink; <see cref="FileLog.Write"/> when null.</param>
-    public HostedInferenceBrain(string baseUrl, string apiKey, string model, HttpClient? http = null, Action<string>? log = null)
+    /// <param name="callTimeout">Per-call deadline (tests pass a tiny value to prove the fast-fail without
+    /// a real wait); <see cref="DefaultCallTimeout"/> when null.</param>
+    public HostedInferenceBrain(string baseUrl, string apiKey, string model, HttpClient? http = null, Action<string>? log = null, TimeSpan? callTimeout = null)
     {
         if (string.IsNullOrWhiteSpace(baseUrl)) throw new ArgumentException("baseUrl is required", nameof(baseUrl));
         if (string.IsNullOrWhiteSpace(model)) throw new ArgumentException("model is required", nameof(model));
@@ -48,6 +76,7 @@ public sealed class HostedInferenceBrain : IAgentBrain
         _chatUrl = baseUrl.TrimEnd('/') + "/chat/completions";
         _apiKey = apiKey ?? "";
         _model = model.Trim();
+        _callTimeout = callTimeout ?? DefaultCallTimeout;
         _log = log ?? FileLog.Write;
     }
 
@@ -78,28 +107,51 @@ public sealed class HostedInferenceBrain : IAgentBrain
         req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", _apiKey);
         req.Content = new StringContent(payload, Encoding.UTF8, "application/json");
 
-        using var resp = await _http.SendAsync(req, HttpCompletionOption.ResponseContentRead, ct);
-        var text = await resp.Content.ReadAsStringAsync(ct);
+        // Bound this one round trip (see DefaultCallTimeout). The linked source cancels on EITHER the
+        // caller's token or our deadline; we then tell the two apart below so a real caller-cancel is
+        // never mislabelled a timeout and vice versa.
+        using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        timeoutCts.CancelAfter(_callTimeout);
+        HttpResponseMessage resp;
+        string text;
+        try
+        {
+            resp = await _http.SendAsync(req, HttpCompletionOption.ResponseContentRead, timeoutCts.Token);
+            text = await resp.Content.ReadAsStringAsync(timeoutCts.Token);
+        }
+        catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+        {
+            // Our deadline fired, not the caller's token. This is the stall the bound exists for: fail
+            // fast and clearly as a TimeoutException so the voice path maps it to Retrying ("audio on
+            // its way") and retries on its own, instead of blocking three minutes then dying.
+            sw.Stop();
+            _log($"[HostedInferenceBrain] chat/completions model={_model} did not answer within {_callTimeout.TotalSeconds:F0}s - giving up this attempt (the session retries on its own)");
+            throw new TimeoutException(
+                $"The wingman model call did not answer within {_callTimeout.TotalSeconds:F0} seconds.");
+        }
         sw.Stop();
 
-        if (!resp.IsSuccessStatusCode)
+        using (resp)
         {
-            _log($"[HostedInferenceBrain] chat/completions model={_model} -> {(int)resp.StatusCode} ({text.Length} bytes)");
-            // Out of credits / monthly cap (issue #939): use the ONE shared message, branched by the
-            // 402 code (insufficient_credits vs monthly_limit_reached) - not a hand-written string that
-            // can only say "out of credits" and drifts from the other surfaces.
-            var detail = resp.StatusCode == System.Net.HttpStatusCode.PaymentRequired
-                ? HostedAiMessages.For(HostedAiErrorMapper.Map402(text)).Text
-                : "Check the AI provider settings and that the account/key is valid.";
-            // Rate limited (issue #1324): surface a TYPED signal carrying the provider's Retry-After so
-            // the caller can back off for exactly as long as asked instead of hammering it into a 429
-            // storm. It extends InvalidOperationException, so every existing catch stays unchanged.
-            if ((int)resp.StatusCode == 429)
-                throw new WingmanModelRateLimitedException(
-                    $"The wingman model call failed: {(int)resp.StatusCode} {resp.StatusCode}. " + detail,
-                    CcDirector.Core.HostedAi.RetryAfterHeader.Parse(resp.Headers.RetryAfter));
-            throw new InvalidOperationException(
-                $"The wingman model call failed: {(int)resp.StatusCode} {resp.StatusCode}. " + detail);
+            if (!resp.IsSuccessStatusCode)
+            {
+                _log($"[HostedInferenceBrain] chat/completions model={_model} -> {(int)resp.StatusCode} ({text.Length} bytes)");
+                // Out of credits / monthly cap (issue #939): use the ONE shared message, branched by the
+                // 402 code (insufficient_credits vs monthly_limit_reached) - not a hand-written string that
+                // can only say "out of credits" and drifts from the other surfaces.
+                var detail = resp.StatusCode == System.Net.HttpStatusCode.PaymentRequired
+                    ? HostedAiMessages.For(HostedAiErrorMapper.Map402(text)).Text
+                    : "Check the AI provider settings and that the account/key is valid.";
+                // Rate limited (issue #1324): surface a TYPED signal carrying the provider's Retry-After so
+                // the caller can back off for exactly as long as asked instead of hammering it into a 429
+                // storm. It extends InvalidOperationException, so every existing catch stays unchanged.
+                if ((int)resp.StatusCode == 429)
+                    throw new WingmanModelRateLimitedException(
+                        $"The wingman model call failed: {(int)resp.StatusCode} {resp.StatusCode}. " + detail,
+                        CcDirector.Core.HostedAi.RetryAfterHeader.Parse(resp.Headers.RetryAfter));
+                throw new InvalidOperationException(
+                    $"The wingman model call failed: {(int)resp.StatusCode} {resp.StatusCode}. " + detail);
+            }
         }
 
         var content = ExtractContent(text);
