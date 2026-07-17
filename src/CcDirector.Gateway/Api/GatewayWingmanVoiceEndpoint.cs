@@ -185,6 +185,85 @@ internal static class GatewayWingmanVoiceEndpoint
             voice.Unmark(sid);
             return Results.Json(new { stopped = true });
         });
+
+        // Turn voice mode on or off for EVERY session at once (issue #1765). The fleet-wide counterpart
+        // to the per-session pair the phone and Cockpit fire (POST /voice-mode on the owning Director,
+        // plus mark/unmark here): ONE call, and the Gateway walks the whole roster so the caller never
+        // loops it itself. The person's own use is "as I leave the house, put my whole fleet on voice;
+        // when I get home, take it all off". Each session gets the SAME two effects the single path gives:
+        //   - the owning Director's voice-mode flag is set over the tunnel (ViewMode = Voice, so the roster
+        //     flag flips and the session persists as a voice session across navigation), and
+        //   - the Gateway voice marker is set (enable) or cleared (disable), so the per-turn narration
+        //     starts or stops.
+        // A session whose owning computer is not tunnel-connected is SKIPPED and reported, never failing
+        // the whole batch - the same "that computer is offline" story the single path tells. The
+        // Director-side writes run concurrently (each is its own tunnel round-trip); the Gateway-side
+        // mark/unmark is then applied SEQUENTIALLY so the persisted voice-session file is written on one
+        // thread and never raced. Idempotent: enabling a session already on, or disabling one already off,
+        // is a harmless no-op. This endpoint sends NO prompt into any session - it only sets voice marking,
+        // exactly like the single-session /voice-mode and /wingman/voice/stop it fans out to.
+        app.MapPost("/sessions/voice-mode/all", async (VoiceModeAllRequest? req, CancellationToken ct) =>
+        {
+            var enabled = req?.Enabled ?? true;
+            FileLog.Write($"[GatewayWingmanVoice] voice-mode/all requested: enabled={enabled}");
+
+            // The machine each Director runs on, so a skipped session names where it lives in plain English.
+            var machineByDirector = registry.ListDirectors()
+                .ToDictionary(d => d.DirectorId, d => d.MachineName, StringComparer.Ordinal);
+
+            // Every session the Gateway can see right now, de-duplicated by id. A session belongs to exactly
+            // one Director, but the guard keeps a duplicated roster entry from being toggled (and counted) twice.
+            var byDirector = GatewayEndpoints.FleetByDirector(registry, pushedSessions, stale);
+            var targets = new List<(string DirectorId, string Machine, string Sid, string? Name)>();
+            var seen = new HashSet<string>(StringComparer.Ordinal);
+            foreach (var (directorId, sessions) in byDirector)
+                foreach (var s in sessions)
+                    if (!string.IsNullOrEmpty(s.SessionId) && seen.Add(s.SessionId))
+                        targets.Add((directorId, machineByDirector.GetValueOrDefault(directorId, ""), s.SessionId, s.Name));
+
+            // Set the Director-side flag on every session concurrently: each is an independent tunnel
+            // round-trip, so the batch finishes in the slowest single session's time, not the sum.
+            var sends = await Task.WhenAll(targets.Select(async t =>
+            {
+                var result = await DirectorCommandRouter.TrySendAsync(
+                    sendCommand, t.DirectorId, "voice-mode", t.Sid, new { enabled }, ct,
+                    machineName: string.IsNullOrEmpty(t.Machine) ? null : t.Machine);
+                return (Target: t, Result: result);
+            }));
+
+            // Apply the Gateway-side mark/unmark sequentially (one thread writes the persisted set), and
+            // build the per-session report so the caller sees exactly what changed and what was skipped.
+            var sessionResults = new List<object>(sends.Length);
+            var changed = 0;
+            foreach (var (t, result) in sends)
+            {
+                var ok = result is { Ok: true };
+                if (ok)
+                {
+                    if (enabled) voice.Mark(t.Sid); else voice.Unmark(t.Sid);
+                    changed++;
+                }
+                var reason = ok
+                    ? null
+                    : result is null
+                        ? string.IsNullOrEmpty(t.Machine)
+                            ? "This session's computer looks offline."
+                            : $"{t.Machine} looks offline."
+                        : DirectorCommandRouter.DescribeFailure(result);
+                sessionResults.Add(new { sessionId = t.Sid, name = t.Name, ok, reason });
+            }
+
+            FileLog.Write($"[GatewayWingmanVoice] voice-mode/all done: enabled={enabled}, total={sends.Length}, changed={changed}, skipped={sends.Length - changed}");
+            return Results.Json(new
+            {
+                enabled,
+                total = sends.Length,
+                changed,
+                skipped = sends.Length - changed,
+                sessions = sessionResults,
+            });
+        });
+
         // Resumable, idempotent piece-by-piece upload store (the same one the native app path uses):
         // chunks land on disk under a stable upload id and survive between retry attempts, so the
         // phone can keep re-sending pieces until the whole recording is through.
@@ -854,6 +933,13 @@ internal static class GatewayWingmanVoiceEndpoint
 public sealed class WingmanVoiceTurnRequest
 {
     public string Text { get; set; } = "";
+}
+
+/// <summary>Body of the fleet-wide voice-mode route (issue #1765): <c>Enabled = true</c> turns voice
+/// mode on for every session at once, <c>false</c> turns it off. An absent body defaults to enabling.</summary>
+public sealed class VoiceModeAllRequest
+{
+    public bool Enabled { get; set; } = true;
 }
 
 /// <summary>Body of the menu-press route: the exact keystrokes that pick an option, and (for a

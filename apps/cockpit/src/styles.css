@@ -348,6 +348,54 @@ body {
   filter: brightness(1.08);
 }
 
+/* The fleet-wide voice switch under the roster ordering toggle (issue #1765). A full-width action so it
+   reads as a "do this to the whole fleet" control, with a status line beneath it for the result. */
+.roster-voice-all {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 6px 8px 2px;
+}
+
+.roster-voice-all-btn {
+  width: 100%;
+  padding: 7px 10px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #ffffff;
+  background: var(--accent);
+  border: 1px solid var(--accent);
+  border-radius: 7px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+/* The return trip ("turn it all off"): muted fill with the accent outline, so on and off never look alike. */
+.roster-voice-all-btn.off {
+  color: var(--accent);
+  background: transparent;
+}
+
+.roster-voice-all-btn:hover {
+  filter: brightness(1.08);
+}
+
+.roster-voice-all-btn:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.roster-voice-all-note {
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
+.roster-voice-all-error {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--attention);
+}
+
 /* ---- New-session dialog (issue #1023): the dedicated machine/repo picker the roster opens. Shares
    the modal look of the Schedule create dialog, on the shared navy tokens. ---- */
 .newsess-backdrop {
