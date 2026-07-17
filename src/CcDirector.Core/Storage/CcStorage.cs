@@ -27,6 +27,14 @@ public static class CcStorage
     /// <summary>Root directory for all cc-director storage.</summary>
     public static string Root() => Base();
 
+    /// <summary>
+    /// The Gateway's EF Core database file (gateway.db) under the storage root, beside the existing
+    /// gateway-stats.db. One SQLite file holds the structured stores that have moved off hand-rolled JSON
+    /// onto the EF data layer (Hosted Gateway mission, Step 1b). Resolved through the root so
+    /// CC_DIRECTOR_ROOT redirects it - callers must ask here rather than composing the path themselves.
+    /// </summary>
+    public static string GatewayDb() => Path.Combine(Root(), "gateway.db");
+
     private static string Base()
     {
         var overrideRoot = Environment.GetEnvironmentVariable("CC_DIRECTOR_ROOT");

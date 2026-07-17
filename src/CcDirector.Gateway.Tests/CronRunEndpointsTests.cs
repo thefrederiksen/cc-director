@@ -3,7 +3,9 @@ using System.Text.Json;
 using CcDirector.Gateway;
 using CcDirector.Gateway.Api;
 using CcDirector.Gateway.Contracts;
+using CcDirector.Gateway.Data;
 using CcDirector.Gateway.Running;
+using CcDirector.Gateway.Tests.Data;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.Extensions.Logging;
 using Xunit;
@@ -18,6 +20,7 @@ namespace CcDirector.Gateway.Tests;
 /// </summary>
 public sealed class CronRunEndpointsTests : IAsyncLifetime
 {
+    private readonly GatewayDbTestHarness _h = new();
     private readonly string _jobsPath = Path.Combine(
         Path.GetTempPath(), "cc-cronrun-ep-jobs-" + Guid.NewGuid().ToString("N") + ".json");
     private readonly string _runsPath = Path.Combine(
@@ -32,8 +35,9 @@ public sealed class CronRunEndpointsTests : IAsyncLifetime
         var port = AllocateFreePort();
         var baseUrl = $"http://127.0.0.1:{port}";
 
-        _store = new CronJobStore(_jobsPath);
-        var history = new CronRunHistoryStore(_runsPath);
+        var db = _h.Open();
+        _store = new CronJobStore(db, _jobsPath);
+        var history = new CronRunHistoryStore(db, _runsPath);
         var engine = new CronEngine(_store, history, new FakeStarter(), new UnusedWorkListRunner(), new NullCronNotifier(), new SystemClock());
 
         var builder = WebApplication.CreateBuilder();
@@ -50,6 +54,7 @@ public sealed class CronRunEndpointsTests : IAsyncLifetime
     {
         _http.Dispose();
         await _app.DisposeAsync();
+        _h.Dispose();
         foreach (var p in new[] { _jobsPath, _runsPath })
             if (File.Exists(p)) File.Delete(p);
     }
