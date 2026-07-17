@@ -33,7 +33,7 @@ public class AutoUpdateConfigTests : IDisposable
     {
         var c = AutoUpdateConfig.Load(_layout);
         Assert.True(c.Enabled);
-        Assert.Equal(6, c.IntervalHours);
+        Assert.Equal(1, c.IntervalHours);
     }
 
     [Fact]
@@ -42,7 +42,7 @@ public class AutoUpdateConfigTests : IDisposable
         WriteConfig("""{ "llm": {}, "gateway": {} }""");
         var c = AutoUpdateConfig.Load(_layout);
         Assert.True(c.Enabled);
-        Assert.Equal(6, c.IntervalHours);
+        Assert.Equal(1, c.IntervalHours);
     }
 
     [Fact]
@@ -71,9 +71,9 @@ public class AutoUpdateConfigTests : IDisposable
     }
 
     [Fact]
-    public void Interval_ClampsTinyValuesToSixHours()
+    public void Interval_ClampsTinyValuesToDefault()
     {
         WriteConfig("""{ "autoUpdate": { "intervalHours": 0 } }""");
-        Assert.Equal(TimeSpan.FromHours(6), AutoUpdateConfig.Load(_layout).Interval);
+        Assert.Equal(TimeSpan.FromHours(1), AutoUpdateConfig.Load(_layout).Interval);
     }
 }
