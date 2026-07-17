@@ -1,6 +1,8 @@
 using CcDirector.Gateway;
 using CcDirector.Gateway.Contracts;
+using CcDirector.Gateway.Data;
 using CcDirector.Gateway.Running;
+using CcDirector.Gateway.Tests.Data;
 using Xunit;
 
 namespace CcDirector.Gateway.Tests;
@@ -14,15 +16,16 @@ namespace CcDirector.Gateway.Tests;
 /// </summary>
 public sealed class WorkListRunnerTests : IDisposable
 {
-    private readonly string _dir =
-        Path.Combine(Path.GetTempPath(), "cc-worklist-runner-tests-" + Guid.NewGuid().ToString("N"));
+    private readonly GatewayDbTestHarness _h = new();
+    private GatewayDatabase? _db;
+    private GatewayDatabase Db => _db ??= _h.Open();
 
     private WorkListStore NewStore() =>
-        new(Path.Combine(_dir, Guid.NewGuid().ToString("N") + ".json"));
+        new(Db, _h.LegacyPath(Guid.NewGuid().ToString("N") + ".json"));
 
     public void Dispose()
     {
-        if (Directory.Exists(_dir)) Directory.Delete(_dir, recursive: true);
+        _h.Dispose();
     }
 
     private static WorkListItemRef Ref(string source, string id, string? area = null) =>

@@ -1,36 +1,31 @@
+using System.Text.Json;
 using CcDirector.Gateway;
 using CcDirector.Gateway.Contracts;
+using CcDirector.Gateway.Data;
 using CcDirector.Gateway.Running;
+using CcDirector.Gateway.Tests.Data;
 using Xunit;
 
 namespace CcDirector.Gateway.Tests;
 
 /// <summary>
-/// Unit tests for <see cref="WorkListStore"/> persistence (issue #301): the store survives a
-/// "restart" - modeled as a brand-new store instance loading the same file, exactly what a new
-/// Gateway process does. Covers the restated acceptance criteria:
-///   - round-trip: lists, item order, and mixed sources reload intact;
-///   - stale-claim release: a persisted consumer claim is released on load (and the released
-///     state is persisted, so the dead consumer never resurrects);
-///   - write-through: EVERY mutation is on disk immediately (each verified by reloading);
-///   - atomic write: no .tmp residue is left behind and the file is always whole JSON;
-///   - missing file: empty store, no crash (the normal first boot);
-///   - corrupt file: quarantined next to the original (bytes preserved, never silently
-///     overwritten), explicit error logged, store starts empty so the Gateway still boots;
-///   - interrupted drain: a drain killed mid-run (the restart) leaves the queue on disk; after
-///     reload a new runner re-claims and continues from the persisted order - nothing lost.
+/// Persistence tests for <see cref="WorkListStore"/> over the EF data layer (Hosted Gateway mission, Step
+/// 1b): the store survives a "restart" - modeled as a brand-new store over the same database, exactly what
+/// a new Gateway process does. Covers the round-trip (lists, item order, mixed sources), the load-time
+/// stale-claim release, the lossless one-time JSON import (name/case + item order + the claim carried into
+/// the database, then released as stale), the fail-loud corrupt-import contract, and interrupted-drain
+/// recovery.
 /// </summary>
 public sealed class WorkListStorePersistenceTests : IDisposable
 {
-    private readonly string _dir =
-        Path.Combine(Path.GetTempPath(), "cc-worklist-persist-tests-" + Guid.NewGuid().ToString("N"));
+    private readonly GatewayDbTestHarness _h = new();
+    private GatewayDatabase? _db;
+    private GatewayDatabase Db => _db ??= _h.Open();
 
-    private string NewPath() => Path.Combine(_dir, Guid.NewGuid().ToString("N") + ".json");
+    private string LegacyPath() => _h.LegacyPath("worklists-" + Guid.NewGuid().ToString("N") + ".json");
+    private WorkListStore NewStore(string legacy) => new(Db, legacy);
 
-    public void Dispose()
-    {
-        if (Directory.Exists(_dir)) Directory.Delete(_dir, recursive: true);
-    }
+    public void Dispose() => _h.Dispose();
 
     private static WorkListItemRef Ref(string source, string id, string? area = null) =>
         new() { Source = source, Id = id, Area = area };
@@ -38,9 +33,8 @@ public sealed class WorkListStorePersistenceTests : IDisposable
     [Fact]
     public void RoundTrip_ListsOrderAndMixedSources_SurviveReload()
     {
-        var path = NewPath();
-
-        var store = new WorkListStore(path);
+        var legacy = LegacyPath();
+        var store = NewStore(legacy);
         store.Create("backlog");
         store.AppendItem("backlog", Ref("github", "262", "Gateway"));
         store.AppendItem("backlog", Ref("devops", "1203"));
@@ -48,8 +42,8 @@ public sealed class WorkListStorePersistenceTests : IDisposable
         store.Create("today");
         store.AppendItem("today", Ref("github", "301"));
 
-        // "Restart": a fresh store instance on the same file, as a new Gateway process would do.
-        var reloaded = new WorkListStore(path);
+        // "Restart": a fresh store over the same database, as a new Gateway process would do.
+        var reloaded = NewStore(legacy);
 
         var names = reloaded.ListAll().Select(l => l.Name).ToArray();
         Assert.Equal(new[] { "backlog", "today" }, names);
@@ -62,199 +56,196 @@ public sealed class WorkListStorePersistenceTests : IDisposable
         Assert.Null(backlog.Items[1].Area);
         Assert.Equal("Web", backlog.Items[2].Area);
 
-        var today = reloaded.Get("today");
-        Assert.NotNull(today);
-        Assert.Equal(new[] { "301" }, today.Items.Select(i => i.Id).ToArray());
+        Assert.Equal(new[] { "301" }, reloaded.Get("today")!.Items.Select(i => i.Id).ToArray());
     }
 
     [Fact]
-    public void Reload_PersistedClaim_IsReleasedAsStale_AndReleasePersisted()
+    public void Reload_PersistedClaim_IsReleasedAsStale()
     {
-        var path = NewPath();
-
-        var store = new WorkListStore(path);
+        var legacy = LegacyPath();
+        var store = NewStore(legacy);
         store.Create("backlog");
         store.AppendItem("backlog", Ref("github", "262"));
         Assert.Equal(WorkListStore.ClaimResult.Granted, store.Claim("backlog", "dead-runner-token"));
 
-        // First "restart": the persisted claim belongs to a runner that died with the Gateway.
-        var reloaded = new WorkListStore(path);
+        // "Restart": the persisted claim belongs to a runner that died with the Gateway.
+        var reloaded = NewStore(legacy);
         var list = reloaded.Get("backlog");
         Assert.NotNull(list);
         Assert.Null(list.Consumer);
         Assert.Equal(new[] { "262" }, list.Items.Select(i => i.Id).ToArray());
+        Assert.Equal(1, reloaded.LastLoadStaleClaimsReleased);
 
         // A new runner can re-claim immediately.
         Assert.Equal(WorkListStore.ClaimResult.Granted, reloaded.Claim("backlog", "new-runner-token"));
 
-        // The released state was persisted at load time: a store created from the file as it was
-        // BETWEEN the release and the re-claim must also see no consumer. Prove it by checking the
-        // raw file the first reload wrote before our re-claim above overwrote it again - simplest
-        // equivalent: release, reload once more, still unclaimed.
+        // The released state persisted: another fresh store still sees no consumer and nothing left to release.
         reloaded.Release("backlog");
-        var reloadedAgain = new WorkListStore(path);
-        var listAgain = reloadedAgain.Get("backlog");
-        Assert.NotNull(listAgain);
-        Assert.Null(listAgain.Consumer);
+        var again = NewStore(legacy);
+        Assert.Null(again.Get("backlog")!.Consumer);
+        Assert.Equal(0, again.LastLoadStaleClaimsReleased);
     }
 
     [Fact]
-    public void EveryMutation_IsWrittenThroughImmediately()
+    public void EveryMutation_IsVisibleToAFreshStore()
     {
-        var path = NewPath();
-        var store = new WorkListStore(path);
+        var legacy = LegacyPath();
+        var store = NewStore(legacy);
 
-        // Create
         store.Create("wt");
-        Assert.NotNull(new WorkListStore(path).Get("wt"));
+        Assert.NotNull(NewStore(legacy).Get("wt"));
 
-        // AppendItem
         store.AppendItem("wt", Ref("github", "1"));
         store.AppendItem("wt", Ref("github", "2"));
-        Assert.Equal(new[] { "1", "2" }, new WorkListStore(path).Get("wt")!.Items.Select(i => i.Id).ToArray());
+        Assert.Equal(new[] { "1", "2" }, NewStore(legacy).Get("wt")!.Items.Select(i => i.Id).ToArray());
 
-        // Reorder
         store.Reorder("wt", new List<WorkListItemRef> { Ref("github", "2"), Ref("github", "1") });
-        Assert.Equal(new[] { "2", "1" }, new WorkListStore(path).Get("wt")!.Items.Select(i => i.Id).ToArray());
+        Assert.Equal(new[] { "2", "1" }, NewStore(legacy).Get("wt")!.Items.Select(i => i.Id).ToArray());
 
-        // RemoveItem
         store.RemoveItem("wt", "github", "2");
-        Assert.Equal(new[] { "1" }, new WorkListStore(path).Get("wt")!.Items.Select(i => i.Id).ToArray());
-
-        // Claim: persisted (a reloading store releases it as stale - which is only possible
-        // because the claim itself was written through). Read the raw file instead of reloading.
-        store.Claim("wt", "tok-a");
-        Assert.Contains("tok-a", File.ReadAllText(path), StringComparison.Ordinal);
-
-        // Release
-        store.Release("wt");
-        Assert.DoesNotContain("tok-a", File.ReadAllText(path), StringComparison.Ordinal);
+        Assert.Equal(new[] { "1" }, NewStore(legacy).Get("wt")!.Items.Select(i => i.Id).ToArray());
     }
 
     [Fact]
-    public void Save_LeavesNoTempResidue_AndFileIsWholeJson()
+    public void ManyItems_SurviveReload_InOrder()
     {
-        var path = NewPath();
-        var store = new WorkListStore(path);
+        var legacy = LegacyPath();
+        var store = NewStore(legacy);
         store.Create("backlog");
         for (var i = 0; i < 50; i++)
             store.AppendItem("backlog", Ref("github", i.ToString()));
 
-        // Atomic temp + rename: after any number of write-throughs there is exactly the store
-        // file, never a .tmp left behind, and the file parses (no half-truncation).
-        Assert.True(File.Exists(path));
-        Assert.False(File.Exists(path + ".tmp"));
-        var reloaded = new WorkListStore(path);
-        Assert.Equal(50, reloaded.Get("backlog")!.Items.Count);
+        var reloaded = NewStore(legacy).Get("backlog");
+        Assert.NotNull(reloaded);
+        Assert.Equal(Enumerable.Range(0, 50).Select(i => i.ToString()).ToArray(),
+            reloaded.Items.Select(i => i.Id).ToArray());
     }
 
     [Fact]
-    public void MissingFile_StartsEmpty_NoCrash()
+    public void NoLegacyFile_StartsEmpty()
     {
-        var path = NewPath();
-        Assert.False(File.Exists(path));
-
-        var store = new WorkListStore(path);
-
+        var store = NewStore(LegacyPath());
         Assert.Empty(store.ListAll());
-        // First boot never creates the file until the first mutation.
-        Assert.False(File.Exists(path));
     }
 
     [Fact]
-    public void CorruptFile_IsQuarantined_StoreStartsEmpty_BytesPreserved()
+    public void LegacyJson_ImportedOnce_NameCaseAndItemOrderSurvive_ClaimCarriedThenReleasedAsStale()
     {
-        var path = NewPath();
-        Directory.CreateDirectory(_dir);
+        // A legacy worklists.json written by the old store: a claimed list with a MIXED-CASE name and
+        // ORDERED items, plus a second unclaimed list.
+        var legacy = LegacyPath();
+        WriteLegacyFile(legacy,
+            new WorkListDto
+            {
+                Name = "MyBacklog",
+                Consumer = "runner-that-died",
+                Items =
+                {
+                    Ref("github", "262", "Gateway"),
+                    Ref("devops", "1203"),
+                    Ref("jira", "CCD-44", "Web"),
+                },
+            },
+            new WorkListDto { Name = "today", Items = { Ref("github", "301") } });
+
+        var store = NewStore(legacy);
+
+        // Name (case preserved) + item ORDER + fields survived the import.
+        var backlog = store.Get("mybacklog"); // case-insensitive lookup finds it
+        Assert.NotNull(backlog);
+        Assert.Equal("MyBacklog", backlog.Name);
+        Assert.Equal(new[] { "262", "1203", "CCD-44" }, backlog.Items.Select(i => i.Id).ToArray());
+        Assert.Equal(new[] { "github", "devops", "jira" }, backlog.Items.Select(i => i.Source).ToArray());
+        Assert.Equal("Gateway", backlog.Items[0].Area);
+        Assert.Equal("Web", backlog.Items[2].Area);
+        Assert.Equal(new[] { "301" }, store.Get("today")!.Items.Select(i => i.Id).ToArray());
+
+        // The consumer was CARRIED INTO THE DATABASE by the import (else there would be nothing to release),
+        // and the load-time stale-release then cleared it - so it is released as stale, Consumer null, exactly
+        // as a real restart. The stale-release count of 1 is the honest proof the import did not drop it.
+        Assert.Equal(1, store.LastLoadStaleClaimsReleased);
+        Assert.Null(backlog.Consumer);
+
+        // The legacy file is renamed aside (kept as a backup) and not re-imported by a fresh store.
+        Assert.False(File.Exists(legacy));
+        Assert.Single(Directory.GetFiles(Path.GetDirectoryName(legacy)!, Path.GetFileName(legacy) + ".migrated-*"));
+        var fresh = NewStore(legacy);
+        Assert.Equal("MyBacklog", fresh.Get("MYBACKLOG")!.Name);
+        Assert.Equal(0, fresh.LastLoadStaleClaimsReleased); // nothing left to release
+    }
+
+    [Fact]
+    public void CorruptLegacyJson_FailsLoud_AndLeavesTheFileInPlace()
+    {
+        var legacy = LegacyPath();
+        Directory.CreateDirectory(Path.GetDirectoryName(legacy)!);
         const string corrupt = "{ this is not json !!!";
-        File.WriteAllText(path, corrupt);
+        File.WriteAllText(legacy, corrupt);
 
-        var store = new WorkListStore(path);
-
-        // The store boots empty rather than crashing the Gateway...
-        Assert.Empty(store.ListAll());
-        // ...the corrupt bytes are preserved under a quarantine name (never silently overwritten)...
-        var quarantined = Directory.GetFiles(_dir, Path.GetFileName(path) + ".corrupt-*");
-        var q = Assert.Single(quarantined);
-        Assert.Equal(corrupt, File.ReadAllText(q));
-        // ...and the original path is freed for the next write-through.
-        Assert.False(File.Exists(path));
-        store.Create("fresh");
-        Assert.NotNull(new WorkListStore(path).Get("fresh"));
+        Assert.Throws<InvalidOperationException>(() => NewStore(legacy));
+        Assert.True(File.Exists(legacy));
+        Assert.Equal(corrupt, File.ReadAllText(legacy));
     }
 
     [Fact]
-    public void NullJsonFile_IsQuarantined_StoreStartsEmpty()
+    public void Import_RenameAsideFails_NextConstructionRenamesAside_WithoutReimporting()
     {
-        var path = NewPath();
-        Directory.CreateDirectory(_dir);
-        File.WriteAllText(path, "null");
+        var legacy = LegacyPath();
+        WriteLegacyFile(legacy, new WorkListDto { Name = "backlog", Items = { Ref("github", "1") } });
 
-        var store = new WorkListStore(path);
+        // First construction: the import reads the file and COMMITS to the database, but the rename-aside
+        // fails because the file is held open (FileShare.Read lets the read succeed while File.Move cannot
+        // delete the source). The failed rename is best-effort, so construction still completes and the file
+        // lingers.
+        using (new FileStream(legacy, FileMode.Open, FileAccess.Read, FileShare.Read))
+        {
+            var store1 = NewStore(legacy);
+            Assert.Single(store1.ListAll());        // imported into the database
+            Assert.NotNull(store1.Get("backlog"));
+            Assert.True(File.Exists(legacy));       // the rename failed, so the legacy file lingers
+        }
 
-        Assert.Empty(store.ListAll());
-        Assert.Single(Directory.GetFiles(_dir, Path.GetFileName(path) + ".corrupt-*"));
-    }
-
-    [Fact]
-    public void Constructor_EmptyPath_Throws()
-    {
-        Assert.Throws<ArgumentException>(() => new WorkListStore(" "));
+        // Next construction (file released): the table is already populated, so it does NOT re-import - it
+        // renames the lingering file aside (idempotent recovery), self-healing the earlier failed rename.
+        var store2 = NewStore(legacy);
+        Assert.Single(store2.ListAll());            // still exactly one list -> never re-imported over existing rows
+        Assert.Equal(new[] { "1" }, store2.Get("backlog")!.Items.Select(i => i.Id).ToArray());
+        Assert.False(File.Exists(legacy));          // renamed aside on recovery
+        Assert.Single(Directory.GetFiles(Path.GetDirectoryName(legacy)!, Path.GetFileName(legacy) + ".migrated-*"));
     }
 
     /// <summary>
-    /// The interrupted-drain criterion (issue #301 AC, D-2): a drain is killed mid-run (the
-    /// Gateway restart), the queue survives on disk, the stale claim is released on reload, and a
-    /// NEW runner re-claims and continues from the persisted order - nothing silently lost. The
-    /// session driver is the #300 <see cref="IImplSessionDriver"/> fake per the existing runner
-    /// test patterns; re-running already-dispatched items is the re-claiming runner's documented
-    /// v1 behavior (duplicate protection lives at the issue-level claim, #298).
+    /// Interrupted-drain recovery (issue #301 AC, D-2): a runner that died mid-drain left its claim persisted
+    /// (a hard crash never runs a graceful release), the queue survives, the stale claim is released on the
+    /// next construction, and a NEW runner re-claims and drains the persisted queue IN ORDER to completion.
     /// </summary>
     [Fact]
     public async Task InterruptedDrain_AfterRestart_NewRunnerReclaims_ContinuesInPersistedOrder()
     {
-        var path = NewPath();
+        var legacy = LegacyPath();
 
-        // Before the restart: a list of three items is being drained; the runner holds the claim
-        // and is wedged inside item 1 when the Gateway dies (we never let item 1 finish).
-        var store = new WorkListStore(path);
+        // Before the restart: a queue is built and a runner holds the claim, then the Gateway is killed - a
+        // hard crash, so the claim stays persisted (no graceful release runs).
+        var store = NewStore(legacy);
         store.Create("queue");
         store.AppendItem("queue", Ref("github", "101"));
         store.AppendItem("queue", Ref("github", "102"));
         store.AppendItem("queue", Ref("github", "103"));
-
-        var wedgedDriver = new WedgedDriver();
-        var interruptedRunner = new WorkListRunner(store, wedgedDriver,
-            pollInterval: TimeSpan.FromMilliseconds(5), perItemTimeout: TimeSpan.FromMinutes(5));
-        using var death = new CancellationTokenSource();
-        var drainTask = interruptedRunner.DrainAsync("queue", "runner-before-restart", death.Token);
-
-        // The drain is live: the claim is held and item 101's session has started.
-        await wedgedDriver.FirstStartObserved.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        Assert.Equal(WorkListStore.ClaimResult.Granted, store.Claim("queue", "runner-before-restart"));
+        // While claimed, another consumer is refused - the claim is genuinely held.
         Assert.Equal(WorkListStore.ClaimResult.AlreadyClaimed, store.Claim("queue", "someone-else"));
 
-        // THE RESTART: the Gateway process dies mid-drain. Snapshot the file AS IT IS at the
-        // instant of death - a killed process never reaches the runner's finally-release, so the
-        // snapshot still carries the now-stale claim. (The in-process runner is then cancelled
-        // purely for test hygiene; its graceful release goes to the ORIGINAL path, not the
-        // snapshot, so it cannot launder the crash state we reload below.)
-        var crashPath = path + ".as-killed";
-        File.Copy(path, crashPath);
-        Assert.Contains("runner-before-restart", File.ReadAllText(crashPath), StringComparison.Ordinal);
-        death.Cancel();
-        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => drainTask);
-
-        // After the restart: a fresh store loads the crash-state file. List + order intact, and
-        // the stale claim from the dead runner is released on load.
-        var reloadedStore = new WorkListStore(crashPath);
-        var queue = reloadedStore.Get("queue");
+        // After the restart: a fresh store over the same database releases the stale claim; list + order intact.
+        var reloaded = NewStore(legacy);
+        var queue = reloaded.Get("queue");
         Assert.NotNull(queue);
         Assert.Equal(new[] { "101", "102", "103" }, queue.Items.Select(i => i.Id).ToArray());
         Assert.Null(queue.Consumer);
+        Assert.Equal(1, reloaded.LastLoadStaleClaimsReleased);
 
         // A NEW runner re-claims and drains the persisted queue in order to completion.
         var driver = new RecordingDriver();
-        var newRunner = new WorkListRunner(reloadedStore, driver, pollInterval: TimeSpan.FromMilliseconds(5));
+        var newRunner = new WorkListRunner(reloaded, driver, pollInterval: TimeSpan.FromMilliseconds(5));
         var result = await newRunner.DrainAsync("queue", "runner-after-restart");
 
         Assert.Equal(new[] { "101", "102", "103" }, driver.StartOrder.ToArray());
@@ -263,21 +254,11 @@ public sealed class WorkListStorePersistenceTests : IDisposable
         Assert.True(result.ConsumerReleased);
     }
 
-    /// <summary>Starts the first session, then never emits a terminal sentinel - the drain wedges
-    /// inside item 1 until the test "kills the Gateway" via cancellation.</summary>
-    private sealed class WedgedDriver : IImplSessionDriver
+    private static void WriteLegacyFile(string path, params WorkListDto[] lists)
     {
-        public TaskCompletionSource FirstStartObserved { get; } =
-            new(TaskCreationOptions.RunContinuationsAsynchronously);
-
-        public Task<(string? sessionId, string? error)> StartImplementationSessionAsync(string itemId, string seedPrompt, CancellationToken ct)
-        {
-            FirstStartObserved.TrySetResult();
-            return Task.FromResult<(string?, string?)>(($"sid-{itemId}", null));
-        }
-
-        public Task<string?> ReadTranscriptAsync(string sessionId, CancellationToken ct) =>
-            Task.FromResult<string?>("still working, no sentinel yet");
+        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+        var options = new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase, WriteIndented = true };
+        File.WriteAllText(path, JsonSerializer.Serialize(new { Lists = lists }, options));
     }
 
     /// <summary>Records start order and completes every session on the first poll.</summary>

@@ -49,6 +49,12 @@ public sealed class GatewayDbContext : DbContext
     /// <summary>Cron run history (<c>cron_runs</c>), one row per fire.</summary>
     public DbSet<CronRunEntity> CronRuns => Set<CronRunEntity>();
 
+    /// <summary>Named work lists (<c>worklists</c>).</summary>
+    public DbSet<WorkListEntity> WorkLists => Set<WorkListEntity>();
+
+    /// <summary>Work-list item references (<c>worklist_items</c>), ordered per list.</summary>
+    public DbSet<WorkListItemEntity> WorkListItems => Set<WorkListItemEntity>();
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         base.OnModelCreating(modelBuilder);
@@ -72,10 +78,34 @@ public sealed class GatewayDbContext : DbContext
             b.HasIndex(e => new { e.JobId, e.Sequence });
         });
 
+        modelBuilder.Entity<WorkListEntity>(b =>
+        {
+            b.ToTable("worklists");
+            b.HasKey(e => e.Id);
+            // Items are an ORDERED child table (worklist_items) with a cascade so a list's items go with it.
+            b.HasMany(e => e.Items).WithOne().HasForeignKey(i => i.WorkListId).OnDelete(DeleteBehavior.Cascade);
+            // Deliberately NO database-level name-unique index. Name uniqueness is case-insensitive and must
+            // match the legacy Dictionary(OrdinalIgnoreCase) exactly, and no stored string transform
+            // reproduces StringComparer.OrdinalIgnoreCase (ToUpperInvariant over-merges U+017F onto 'S'), so a
+            // unique index over a fold column could not preserve the behaviour and could brick an import. The
+            // store enforces uniqueness in code via OrdinalIgnoreCase under its single-writer lock - exactly
+            // what the old Dictionary did (which also had no database constraint).
+        });
+
+        modelBuilder.Entity<WorkListItemEntity>(b =>
+        {
+            b.ToTable("worklist_items");
+            b.HasKey(e => e.Id);
+            // Ordered read + the per-list lookup path (Reorder / RemoveItem) go through (WorkListId, Position).
+            b.HasIndex(e => new { e.WorkListId, e.Position });
+        });
+
         // Tenant scoping - the tenant_id column plus the global query filter - applied uniformly to every
         // entity that derives from TenantScopedEntity, so future stores inherit it by deriving from the base.
         ApplyTenantScope<CronJobEntity>(modelBuilder);
         ApplyTenantScope<CronRunEntity>(modelBuilder);
+        ApplyTenantScope<WorkListEntity>(modelBuilder);
+        ApplyTenantScope<WorkListItemEntity>(modelBuilder);
 
         ApplyCommonSubsetConventions(modelBuilder);
     }

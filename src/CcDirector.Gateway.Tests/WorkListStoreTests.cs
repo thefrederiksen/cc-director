@@ -1,29 +1,28 @@
 using CcDirector.Gateway;
 using CcDirector.Gateway.Contracts;
+using CcDirector.Gateway.Data;
+using CcDirector.Gateway.Tests.Data;
 using Xunit;
 
 namespace CcDirector.Gateway.Tests;
 
 /// <summary>
-/// Unit tests for <see cref="WorkListStore"/> (issue #273): create/append/round-trip,
-/// mixed-source ordering, reorder, remove-by-source+id, and the single-consumer claim/refusal.
-/// These cover the store layer directly; <see cref="WorkListEndpointsTests"/> covers the wire.
-/// Persistence behavior (issue #301) is covered by <see cref="WorkListStorePersistenceTests"/>;
-/// here each store gets its own isolated temp file (the path is required by design so a test can
-/// never land on the real user's worklists.json).
+/// Unit tests for <see cref="WorkListStore"/> (issue #273) over the EF data layer (Hosted Gateway mission,
+/// Step 1b): create/append/round-trip, mixed-source ordering, reorder, remove-by-source+id, the
+/// single-consumer claim/refusal, and the case-insensitive name behaviour (enforced in code via
+/// StringComparer.OrdinalIgnoreCase; exact full-Unicode parity is proven in
+/// <see cref="WorkListStoreCaseParityTests"/>). Persistence and import are covered by
+/// <see cref="WorkListStorePersistenceTests"/>.
 /// </summary>
 public sealed class WorkListStoreTests : IDisposable
 {
-    private readonly string _dir =
-        Path.Combine(Path.GetTempPath(), "cc-worklist-store-tests-" + Guid.NewGuid().ToString("N"));
+    private readonly GatewayDbTestHarness _h = new();
+    private GatewayDatabase? _db;
+    private GatewayDatabase Db => _db ??= _h.Open();
 
-    private WorkListStore NewStore() =>
-        new(Path.Combine(_dir, Guid.NewGuid().ToString("N") + ".json"));
+    private WorkListStore NewStore() => new(Db, _h.LegacyPath(Guid.NewGuid().ToString("N") + ".json"));
 
-    public void Dispose()
-    {
-        if (Directory.Exists(_dir)) Directory.Delete(_dir, recursive: true);
-    }
+    public void Dispose() => _h.Dispose();
 
     private static WorkListItemRef Ref(string source, string id, string? area = null) =>
         new() { Source = source, Id = id, Area = area };
@@ -50,6 +49,36 @@ public sealed class WorkListStoreTests : IDisposable
 
         Assert.False(store.Create("backlog"));
     }
+
+    [Fact]
+    public void Names_AreCaseInsensitive_Create_Get_Claim_AllAddressTheSameRow()
+    {
+        var store = NewStore();
+        Assert.True(store.Create("MyList"));
+
+        // Get with a different case hits the same row (the stored name keeps its original case).
+        var byLower = store.Get("mylist");
+        Assert.NotNull(byLower);
+        Assert.Equal("MyList", byLower.Name);
+        Assert.Equal("MyList", store.Get("MYLIST")!.Name);
+
+        // A create that differs only in case collides (returns false), exactly as the OrdinalIgnoreCase
+        // dictionary did - no second row is created.
+        Assert.False(store.Create("mylist"));
+        Assert.False(store.Create("MYLIST"));
+        Assert.Single(store.ListAll());
+
+        // Claim/AppendItem/Release address the same row through any casing.
+        Assert.True(store.AppendItem("MYLIST", Ref("github", "1")));
+        Assert.Single(store.Get("mylist")!.Items);
+        Assert.Equal(WorkListStore.ClaimResult.Granted, store.Claim("MYLIST", "tok"));
+        Assert.Equal(WorkListStore.ClaimResult.AlreadyClaimed, store.Claim("mylist", "tok2"));
+        Assert.True(store.Release("MyList"));
+        Assert.Equal(WorkListStore.ClaimResult.Granted, store.Claim("mylist", "tok3"));
+    }
+
+    // Full-Unicode case parity (accented Latin, the long-s U+017F edge, astral) is proven exactly against
+    // StringComparer.OrdinalIgnoreCase in WorkListStoreCaseParityTests.
 
     [Fact]
     public void AppendItem_ThreeItems_PreservesAppendOrder()
@@ -125,6 +154,19 @@ public sealed class WorkListStoreTests : IDisposable
     }
 
     [Fact]
+    public void RemoveItem_SourceIsCaseInsensitive_IdIsExact()
+    {
+        var store = NewStore();
+        store.Create("backlog");
+        store.AppendItem("backlog", Ref("GitHub", "1"));
+
+        // id must match exactly; source folds case.
+        Assert.False(store.RemoveItem("backlog", "github", "1x"));
+        Assert.True(store.RemoveItem("backlog", "github", "1"));
+        Assert.Empty(store.Get("backlog")!.Items);
+    }
+
+    [Fact]
     public void Claim_FirstSucceeds_SecondRefused_ReleaseThenReclaimSucceeds()
     {
         var store = NewStore();
@@ -143,6 +185,28 @@ public sealed class WorkListStoreTests : IDisposable
         var store = NewStore();
 
         Assert.Equal(WorkListStore.ClaimResult.NoSuchList, store.Claim("ghost", "consumer-a"));
+    }
+
+    [Fact]
+    public void Release_NoSuchList_ReturnsFalse_UnclaimedIsNoOpTrue()
+    {
+        var store = NewStore();
+        store.Create("backlog");
+
+        Assert.False(store.Release("ghost"));
+        Assert.True(store.Release("backlog")); // already unclaimed -> no-op true
+    }
+
+    [Fact]
+    public void Constructor_NullDb_Throws()
+    {
+        Assert.Throws<ArgumentNullException>(() => new WorkListStore(null!, _h.LegacyPath("x.json")));
+    }
+
+    [Fact]
+    public void Constructor_EmptyLegacyPath_Throws()
+    {
+        Assert.Throws<ArgumentException>(() => new WorkListStore(Db, " "));
     }
 
     [Fact]
