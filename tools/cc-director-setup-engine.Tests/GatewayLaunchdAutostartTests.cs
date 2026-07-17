@@ -59,6 +59,21 @@ public sealed class GatewayLaunchdAutostartTests
     }
 
     [Fact]
+    public void PlistContent_KeepsQuotedArgumentWithSpacesAsOneToken()
+    {
+        // A value containing spaces (a path under "Application Support") must survive as ONE
+        // ProgramArguments token; splitting it at the space would hand the Gateway a wrong path.
+        var plist = GatewayLaunchdAutostart.PlistContent(
+            Exe, "--config \"/Users/me/Application Support/gateway.json\"", LogDir);
+
+        Assert.Contains("<string>--config</string>", plist);
+        Assert.Contains("<string>/Users/me/Application Support/gateway.json</string>", plist);
+        // not torn at the embedded space
+        Assert.DoesNotContain("<string>Support/gateway.json</string>", plist);
+        Assert.DoesNotContain("<string>Application</string>", plist);
+    }
+
+    [Fact]
     public void PlistContent_EscapesXmlCharacters()
     {
         var plist = GatewayLaunchdAutostart.PlistContent("/tmp/a&b/CcDirector.Gateway", null, "/tmp/a&b/logs");

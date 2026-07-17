@@ -187,11 +187,39 @@ public static class GatewayLaunchdAutostart
         return uid.ToString();
     }
 
-    /// <summary>Split the stored argument string on whitespace (no quoting in Gateway arguments today).</summary>
-    private static IEnumerable<string> SplitArguments(string? arguments) =>
-        string.IsNullOrWhiteSpace(arguments)
-            ? Array.Empty<string>()
-            : arguments.Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+    /// <summary>
+    /// Split the stored argument string into launchd ProgramArguments tokens, respecting double
+    /// quotes so a value containing spaces (for example a path under "Application Support") stays a
+    /// single token rather than being torn apart at the space, which would hand the Gateway a wrong
+    /// path. Surrounding double quotes are stripped; unquoted runs split on whitespace. Simple
+    /// flag/value arguments such as the Gateway's "--port 7878" are unaffected.
+    /// </summary>
+    private static IEnumerable<string> SplitArguments(string? arguments)
+    {
+        if (string.IsNullOrWhiteSpace(arguments)) yield break;
+
+        var token = new StringBuilder();
+        var inQuotes = false;
+        var started = false;
+        foreach (var ch in arguments)
+        {
+            if (ch == '"')
+            {
+                inQuotes = !inQuotes;
+                started = true;
+            }
+            else if (char.IsWhiteSpace(ch) && !inQuotes)
+            {
+                if (started) { yield return token.ToString(); token.Clear(); started = false; }
+            }
+            else
+            {
+                token.Append(ch);
+                started = true;
+            }
+        }
+        if (started) yield return token.ToString();
+    }
 
     private static string Xml(string value) => SecurityElement.Escape(value);
 
