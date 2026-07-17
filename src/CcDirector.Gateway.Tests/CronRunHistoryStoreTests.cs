@@ -47,8 +47,19 @@ public sealed class CronRunHistoryStoreTests : IDisposable
     public void Append_BeyondCap_PrunesOldest()
     {
         var store = new CronRunHistoryStore(_h.Open(), LegacyPath());
-        for (var i = 0; i < CronRunHistoryStore.MaxRecordsPerJob + 10; i++)
+
+        // Fill to exactly the cap.
+        for (var i = 0; i < CronRunHistoryStore.MaxRecordsPerJob; i++)
             store.Append("cj_1", Run("sid-" + i));
+        Assert.Equal(CronRunHistoryStore.MaxRecordsPerJob, store.List("cj_1").Count);
+
+        // Every further append inserts AND prunes atomically, so the observable count stays AT the cap and
+        // is never transiently one over it (the insert+prune is a single SaveChanges).
+        for (var i = CronRunHistoryStore.MaxRecordsPerJob; i < CronRunHistoryStore.MaxRecordsPerJob + 10; i++)
+        {
+            store.Append("cj_1", Run("sid-" + i));
+            Assert.Equal(CronRunHistoryStore.MaxRecordsPerJob, store.List("cj_1").Count);
+        }
 
         var runs = store.List("cj_1");
         Assert.Equal(CronRunHistoryStore.MaxRecordsPerJob, runs.Count);

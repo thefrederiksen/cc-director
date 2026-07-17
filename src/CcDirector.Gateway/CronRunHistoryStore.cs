@@ -67,25 +67,29 @@ public sealed class CronRunHistoryStore
         lock (_gate)
         {
             using var ctx = _db.CreateContext();
-            var nextSeq = (ctx.CronRuns.Max(e => (long?)e.Sequence) ?? 0) + 1;
 
+            // Read the job's current rows (oldest-first) so the insert and the prune are decided together
+            // and committed in ONE SaveChanges - the whole capped list moves as a single durable state,
+            // exactly like the old JSON store's single whole-list rewrite. There is no intermediate save, so
+            // a crash or failure can never leave the job holding more than the cap. Two separate SaveChanges
+            // (the earlier shape) could persist the insert and then die before the prune - that is the
+            // atomicity regression this closes.
+            var existing = ctx.CronRuns
+                .Where(e => e.JobId == jobId)
+                .OrderBy(e => e.Sequence)
+                .ToList();
+
+            var nextSeq = (ctx.CronRuns.Max(e => (long?)e.Sequence) ?? 0) + 1;
             ctx.CronRuns.Add(ToEntity(jobId, record, nextSeq, ctx.ActiveTenant!));
+
+            // Prune the oldest beyond the cap (lowest Sequence = oldest) in the SAME change set as the insert.
+            var overflow = existing.Count + 1 - MaxRecordsPerJob;
+            if (overflow > 0)
+                ctx.CronRuns.RemoveRange(existing.Take(overflow));
+
             ctx.SaveChanges();
 
-            // Prune the oldest beyond the cap for THIS job (lowest Sequence = oldest).
-            var overflow = ctx.CronRuns.Count(e => e.JobId == jobId) - MaxRecordsPerJob;
-            if (overflow > 0)
-            {
-                var doomed = ctx.CronRuns
-                    .Where(e => e.JobId == jobId)
-                    .OrderBy(e => e.Sequence)
-                    .Take(overflow)
-                    .ToList();
-                ctx.CronRuns.RemoveRange(doomed);
-                ctx.SaveChanges();
-            }
-
-            var kept = ctx.CronRuns.Count(e => e.JobId == jobId);
+            var kept = Math.Min(existing.Count + 1, MaxRecordsPerJob);
             FileLog.Write($"[CronRunHistoryStore] Append: job={jobId}, firedUtc={record.FiredUtc:o}, infra={record.InfraStatus}, task={record.TaskStatus}, count={kept}");
         }
     }
