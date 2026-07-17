@@ -3,6 +3,7 @@ using System.Net.Http.Headers;
 using System.Text.Json;
 using CcDirector.Core.Configuration;
 using CcDirector.Core.HostedAi;
+using CcDirector.Core.Network;
 using CcDirector.Core.Utilities;
 
 namespace CcDirector.Core.Transcription;
@@ -14,7 +15,7 @@ namespace CcDirector.Core.Transcription;
 /// </summary>
 public sealed class GatewayTranscriptionClient
 {
-    private static readonly HttpClient SharedHttp = new() { Timeout = TimeSpan.FromMinutes(5) };
+    private static readonly HttpClient SharedHttp = new(GatewayHttp.Handler()) { Timeout = TimeSpan.FromMinutes(5) };
 
     private readonly Func<GatewayConfig> _gatewayProvider;
     private readonly HttpClient _http;

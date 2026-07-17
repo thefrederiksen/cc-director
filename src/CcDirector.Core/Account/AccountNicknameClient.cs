@@ -1,3 +1,4 @@
+using CcDirector.Core.Network;
 using System.Net.Http;
 using System.Net.Http.Headers;
 using System.Text.Json;
@@ -35,7 +36,7 @@ public sealed class AccountNicknameClient
     /// <param name="baseUrl">API base URL; defaults to the shared account-egress base resolution.</param>
     public AccountNicknameClient(HttpClient? client = null, string? baseUrl = null)
     {
-        _client = client ?? new HttpClient { Timeout = TimeSpan.FromSeconds(10) };
+        _client = client ?? new HttpClient(GatewayHttp.Handler()) { Timeout = TimeSpan.FromSeconds(10) };
         _baseUrl = ResolveBaseUrl(baseUrl);
     }
 

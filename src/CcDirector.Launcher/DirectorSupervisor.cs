@@ -1,3 +1,4 @@
+using CcDirector.Core.Network;
 using System.Diagnostics;
 using System.Net.Http;
 using CcDirector.Core.Storage;
@@ -36,7 +37,7 @@ public sealed class DirectorSupervisor
     public DirectorSupervisor(InstallLayout layout)
     {
         _layout = layout ?? throw new ArgumentNullException(nameof(layout));
-        _http = new HttpClient { Timeout = TimeSpan.FromSeconds(5) };
+        _http = new HttpClient(GatewayHttp.Handler()) { Timeout = TimeSpan.FromSeconds(5) };
     }
 
     /// <summary>

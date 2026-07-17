@@ -118,7 +118,7 @@ public sealed class GatewayClient : IGatewayHold, IDisposable
         _activeUrl = _config.Url;
         ProbeGatewayCandidate = (url, ct) => ProbeGatewayHealthzAsync(url, ct);
 
-        _http = new HttpClient
+        _http = new HttpClient(GatewayHttp.Handler())
         {
             Timeout = TimeSpan.FromSeconds(10),
         };
@@ -438,7 +438,7 @@ public sealed class GatewayClient : IGatewayHold, IDisposable
             throw new ArgumentException("Target session id is required", nameof(toSessionId));
 
         FileLog.Write($"[GatewayClient] AskFleetAsync: POST /sessions/{toSessionId}/prompt (wait <= {timeoutMs}ms)");
-        using var http = new HttpClient
+        using var http = new HttpClient(GatewayHttp.Handler())
         {
             BaseAddress = new Uri(_activeUrl.TrimEnd('/') + "/"),
             Timeout = TimeSpan.FromMilliseconds(timeoutMs + 15_000),
@@ -514,7 +514,7 @@ public sealed class GatewayClient : IGatewayHold, IDisposable
             throw new ArgumentNullException(nameof(req));
 
         FileLog.Write($"[GatewayClient] SpawnOnMachineAsync: POST /machines/{machine}/sessions, repo={req.RepoPath}, agent={req.Agent}");
-        using var http = new HttpClient
+        using var http = new HttpClient(GatewayHttp.Handler())
         {
             BaseAddress = new Uri(_activeUrl.TrimEnd('/') + "/"),
             Timeout = TimeSpan.FromSeconds(120),
@@ -804,7 +804,7 @@ public sealed class GatewayClient : IGatewayHold, IDisposable
     // which makes GatewayEndpointSelector move to the next candidate.
     private static async Task<string?> ProbeGatewayHealthzAsync(string url, CancellationToken ct)
     {
-        using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(5) };
+        using var http = new HttpClient(GatewayHttp.Handler()) { Timeout = TimeSpan.FromSeconds(5) };
         return await GatewayEndpointSelector.ProbeHealthzAsync(url, http, ct);
     }
 
