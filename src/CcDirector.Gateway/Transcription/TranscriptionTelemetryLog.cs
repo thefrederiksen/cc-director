@@ -26,9 +26,6 @@ namespace CcDirector.Gateway.Transcription;
 /// </summary>
 public sealed class TranscriptionTelemetryLog
 {
-    /// <summary>Process-wide shared log used by the per-request transcription service.</summary>
-    public static readonly TranscriptionTelemetryLog Shared = new();
-
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
         DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,

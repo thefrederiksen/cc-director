@@ -4,7 +4,7 @@ using Xunit;
 namespace CcDirector.Gateway.Tests.Account;
 
 /// <summary>
-/// Proves the Gateway's stable install identity (issue #857): <see cref="GatewayInstallId.LoadOrCreate(string)"/>
+/// Proves the Gateway's stable install identity (issue #857): <see cref="GatewayInstallId.LoadOrCreate()"/>
 /// mints a GUID once, persists it, and returns the SAME value on every later call - the idempotency anchor
 /// that keeps the cloud from creating a new device record on each launch. A malformed file regenerates.
 /// </summary>
@@ -19,11 +19,11 @@ public sealed class GatewayInstallIdTests
         var path = TempPath();
         try
         {
-            var first = GatewayInstallId.LoadOrCreate(path);
+            var first = new GatewayInstallId(path).LoadOrCreate();
             Assert.True(Guid.TryParse(first, out _), "the minted id must be a GUID");
             Assert.True(File.Exists(path));
 
-            var second = GatewayInstallId.LoadOrCreate(path);
+            var second = new GatewayInstallId(path).LoadOrCreate();
             Assert.Equal(first, second);
         }
         finally
@@ -41,7 +41,7 @@ public sealed class GatewayInstallIdTests
             Directory.CreateDirectory(Path.GetDirectoryName(path)!);
             File.WriteAllText(path, "not-a-guid");
 
-            var id = GatewayInstallId.LoadOrCreate(path);
+            var id = new GatewayInstallId(path).LoadOrCreate();
             Assert.True(Guid.TryParse(id, out _));
             Assert.Equal(id, File.ReadAllText(path).Trim());
         }

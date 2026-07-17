@@ -46,14 +46,20 @@ internal static class RecordingEndpoints
         PropertyNameCaseInsensitive = true,
     };
 
-    public static void Map(IEndpointRouteBuilder app)
+    public static void Map(
+        IEndpointRouteBuilder app,
+        KeyVault? keyVault = null,
+        TranscriptionTelemetryLog? telemetry = null,
+        TranscriptionAudioArchive? audioArchive = null)
     {
         // Lazily built on FIRST USE, not at host startup: constructing the service resolves
         // the OpenAI API key (the transcriber needs it), and the Gateway must boot on machines
         // without that key. A missing key then fails the individual recording request loudly
         // (500 with an explicit hosted-AI setup message) instead of preventing
         // the entire Gateway host from starting.
-        var lazyService = new Lazy<RecordingIngestService>(BuildService);
+        // In production the host owns the key vault + telemetry + audio archive and passes them, so the
+        // recording transcriber shares the host's single instances rather than newing its own copies.
+        var lazyService = new Lazy<RecordingIngestService>(() => BuildService(keyVault, telemetry, audioArchive));
 
         app.MapPost("/ingest/recording", async (HttpContext ctx) =>
         {
@@ -406,7 +412,10 @@ internal static class RecordingEndpoints
         """;
     }
 
-    private static RecordingIngestService BuildService()
+    private static RecordingIngestService BuildService(
+        KeyVault? keyVault,
+        TranscriptionTelemetryLog? telemetry,
+        TranscriptionAudioArchive? audioArchive)
     {
         // Local transient store for transcripts (audio + markdown). Transcripts
         // are NOT auto-filed into the vault; the user promotes the keepers.
@@ -434,7 +443,7 @@ internal static class RecordingEndpoints
         return new RecordingIngestService(
             root,
             transcriberFactory: () => new GatewayServiceRecordingTranscriber(
-                new GatewayTranscriptionService(new KeyVault())),
+                new GatewayTranscriptionService(keyVault ?? new KeyVault(), telemetry: telemetry, audioArchive: audioArchive)),
             filer,
             collectionDir);
     }

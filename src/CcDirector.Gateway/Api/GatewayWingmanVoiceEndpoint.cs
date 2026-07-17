@@ -116,7 +116,10 @@ internal static class GatewayWingmanVoiceEndpoint
         SessionOwnerCache? owners = null,
         TimeSpan? streamStale = null,
         Func<string>? instructionsProvider = null,
-        HttpClient? ttsHttpClient = null)
+        HttpClient? ttsHttpClient = null,
+        Voice.VoiceUploadStore? uploadStore = null,
+        Transcription.TranscriptionTelemetryLog? telemetry = null,
+        Transcription.TranscriptionAudioArchive? audioArchive = null)
     {
         // The speech transport: the shared static in production, an injected stub in a test. This is the
         // same seam WingmanVoiceService already exposes for its narration leg (ttsHttpClient) and it
@@ -147,7 +150,7 @@ internal static class GatewayWingmanVoiceEndpoint
         // (the resumable /wingman/utterance/complete and the one-shot /wingman/transcribe) go through
         // it, so they resolve the mode + key and pick the hosted endpoint exactly the same way every
         // other batch caller does - no second resolver.
-        var transcription = new Transcription.GatewayTranscriptionService(vault);
+        var transcription = new Transcription.GatewayTranscriptionService(vault, telemetry: telemetry, audioArchive: audioArchive);
 
         // Which voice sessions have a ready, playable spoken summary right now (the phone's list
         // shows a play button on these and can play without entering).
@@ -266,8 +269,9 @@ internal static class GatewayWingmanVoiceEndpoint
 
         // Resumable, idempotent piece-by-piece upload store (the same one the native app path uses):
         // chunks land on disk under a stable upload id and survive between retry attempts, so the
-        // phone can keep re-sending pieces until the whole recording is through.
-        var uploads = new VoiceUploadStore();
+        // phone can keep re-sending pieces until the whole recording is through. In production the host
+        // owns this instance and passes it; when omitted it defaults to a fresh one over the same root.
+        var uploads = uploadStore ?? new VoiceUploadStore();
 
         // ===== Resumable transcription upload (issue #531: drive-safe, keeps trying) =====
         // The phone records locally (works offline), then ships the recording in pieces here and

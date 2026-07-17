@@ -8,14 +8,29 @@ namespace CcDirector.Gateway.Util;
 /// Loads (or generates and stores) the gateway bearer token used to protect
 /// write endpoints. Stored in plain text at:
 ///     %LOCALAPPDATA%\cc-director\config\director\gateway-token.txt
+///
+/// Instance-owned so the host constructs one and hands it to the caller that needs it, rather than
+/// minting through a process-wide static. The on-disk path and the load-or-create semantics are
+/// unchanged. <see cref="DefaultTokenFile"/> stays a pure static path accessor for read-only callers
+/// (the self-update helper reads the file directly and must NEVER mint one).
 /// </summary>
-public static class GatewayAuth
+public sealed class GatewayAuth
 {
-    public static string TokenFile { get; } =
+    /// <summary>The default on-disk token path. A pure path - resolving it never reads or writes a token.</summary>
+    public static string DefaultTokenFile { get; } =
         Path.Combine(CcStorage.Config(), "director", "gateway-token.txt");
 
+    /// <summary>This store's token file path.</summary>
+    public string TokenFile { get; }
+
+    /// <param name="tokenFile">Override the token file (tests). Defaults to <see cref="DefaultTokenFile"/>.</param>
+    public GatewayAuth(string? tokenFile = null)
+    {
+        TokenFile = string.IsNullOrWhiteSpace(tokenFile) ? DefaultTokenFile : tokenFile;
+    }
+
     /// <summary>Read the existing token from disk or generate a new one and persist it.</summary>
-    public static string LoadOrCreate()
+    public string LoadOrCreate()
     {
         try
         {

@@ -42,10 +42,10 @@ public sealed class GatewayTranscriptionServiceTests : IDisposable
 
     /// <summary>
     /// A scratch archive under this test's own root. EVERY service built here must be given one:
-    /// falling back to TranscriptionAudioArchive.Shared writes clips into the REAL user's
-    /// transcription-audio folder. CC_DIRECTOR_ROOT alone does NOT protect against that - it is
-    /// process-wide, and xUnit runs other collections in parallel that clear it mid-test, so Shared
-    /// resolves to the real location. Injection is the only isolation that holds.
+    /// an omitted archive defaults to one over the REAL user's transcription-audio folder.
+    /// CC_DIRECTOR_ROOT alone does NOT protect against that - it is process-wide, and xUnit runs other
+    /// collections in parallel that clear it mid-test, so the default can resolve to the real location.
+    /// Injection is the only isolation that holds.
     /// </summary>
     private TranscriptionAudioArchive ScratchArchive() => new(Path.Combine(_root, "archive-scratch"));
 
