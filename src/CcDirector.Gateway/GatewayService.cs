@@ -195,19 +195,28 @@ public sealed class GatewayService : IDisposable
     private Api.GatewaySettingsHooks BuildSettingsHooks() => new()
     {
         Mode = () => _options.ModeLabel,
-        AutostartEnabled = () =>
-            OperatingSystem.IsWindows() ? GatewayAutostart.IsRegistered() : (bool?)null,
+        AutostartEnabled = () => OperatingSystem.IsWindows() ? GatewayAutostart.IsRegistered()
+            : OperatingSystem.IsMacOS() ? GatewayLaunchdAutostart.IsRegistered()
+            : (bool?)null,
         SetAutostart = enable =>
         {
-            if (!OperatingSystem.IsWindows()) return false;
+            // Windows and macOS have real per-user autostart; every other platform (the container)
+            // reports unsupported rather than pretending, per GatewaySettingsHooks' contract.
+            if (!OperatingSystem.IsWindows() && !OperatingSystem.IsMacOS()) return false;
             if (enable)
             {
                 var exe = Environment.ProcessPath
                           ?? throw new InvalidOperationException("Could not resolve own exe path");
-                GatewayAutostart.EnsureRegistered(exe, _options.AutostartArguments);
+                if (OperatingSystem.IsWindows())
+                    GatewayAutostart.EnsureRegistered(exe, _options.AutostartArguments);
+                else
+                    GatewayLaunchdAutostart.EnsureRegistered(exe, _options.AutostartArguments);
                 return true;
             }
-            GatewayAutostart.Unregister();
+            if (OperatingSystem.IsWindows())
+                GatewayAutostart.Unregister();
+            else
+                GatewayLaunchdAutostart.Unregister();
             return false;
         },
     };
@@ -324,12 +333,12 @@ public sealed class GatewayService : IDisposable
             FileLog.Write("[GatewayService] Autostart registration skipped (not requested)");
             return;
         }
-        // The autostart Run key is a Windows concept. The tray app never needed this guard because it
-        // targets net10.0-windows; this library targets net10.0 and runs anywhere, so the platform check
-        // is real, not ceremony (issue #1095 builds the account stack on non-Windows hosts).
-        if (!OperatingSystem.IsWindows())
+        // Autostart is a per-user, per-platform mechanism: the Run key on Windows, a launchd user
+        // launch agent on macOS. Linux has neither by design - the container runtime keeps the
+        // hosted Gateway alive, so there is nothing to register and we say so rather than guess.
+        if (!OperatingSystem.IsWindows() && !OperatingSystem.IsMacOS())
         {
-            FileLog.Write("[GatewayService] Autostart registration skipped (not Windows)");
+            FileLog.Write("[GatewayService] Autostart registration skipped (not Windows or macOS)");
             return;
         }
 
@@ -337,7 +346,10 @@ public sealed class GatewayService : IDisposable
         {
             var exePath = Environment.ProcessPath
                           ?? throw new InvalidOperationException("Could not resolve own exe path for autostart");
-            GatewayAutostart.EnsureRegistered(exePath, _options.AutostartArguments);
+            if (OperatingSystem.IsWindows())
+                GatewayAutostart.EnsureRegistered(exePath, _options.AutostartArguments);
+            else
+                GatewayLaunchdAutostart.EnsureRegistered(exePath, _options.AutostartArguments);
         }
         catch (Exception ex)
         {
