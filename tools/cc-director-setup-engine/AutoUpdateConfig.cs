@@ -6,16 +6,16 @@ namespace CcDirector.Setup.Engine;
 /// Auto-update settings, read from the shared config.json "autoUpdate" section. Controls whether the
 /// resident apps (Director, Gateway) silently pull newer releases and how often they check.
 ///
-/// Defaults: enabled, every 6 hours. A missing section, a missing file, or a parse error all fall back
+/// Defaults: enabled, every 1 hour. A missing section, a missing file, or a parse error all fall back
 /// to the defaults (no config required to get auto-update). The env var CC_AUTOUPDATE=0 is a global
 /// kill switch that overrides the config (handy for a machine you never want auto-updating).
 /// </summary>
 public sealed record AutoUpdateConfig(bool Enabled, double IntervalHours)
 {
-    public static readonly AutoUpdateConfig Default = new(Enabled: true, IntervalHours: 6);
+    public static readonly AutoUpdateConfig Default = new(Enabled: true, IntervalHours: 1);
 
     /// <summary>The check interval, clamped to a sane floor so a bad config can't cause a hammering loop.</summary>
-    public TimeSpan Interval => TimeSpan.FromHours(IntervalHours < 0.25 ? 6 : IntervalHours);
+    public TimeSpan Interval => TimeSpan.FromHours(IntervalHours < 0.25 ? Default.IntervalHours : IntervalHours);
 
     public static AutoUpdateConfig Load(InstallLayout layout)
     {
