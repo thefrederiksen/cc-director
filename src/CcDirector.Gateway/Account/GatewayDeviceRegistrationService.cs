@@ -62,9 +62,10 @@ public sealed class GatewayDeviceRegistrationService
     /// <param name="platform">This device's platform string (for example "windows"). Required.</param>
     /// <param name="appVersion">The reporting app version, or null when omitted.</param>
     /// <param name="installIdProvider">
-    /// Resolves the stable Gateway install id; defaults to <see cref="GatewayInstallId.LoadOrCreate()"/>.
-    /// Tests inject a fixed provider so they never touch the real config root. Resolved lazily on first
-    /// use (never at construction) and cached, so constructing this service does no disk I/O.
+    /// Resolves the stable Gateway install id; in production the host owns one <see cref="GatewayInstallId"/>
+    /// instance and passes its resolver, and when omitted it defaults to a fresh instance over the default
+    /// path. Tests inject a fixed provider so they never touch the real config root. Resolved lazily on
+    /// first use (never at construction) and cached, so constructing this service does no disk I/O.
     /// </param>
     /// <param name="endpointUrlsProvider">
     /// Resolves THIS Gateway's own reachable front-door URLs in priority order to publish as the device's
@@ -91,7 +92,7 @@ public sealed class GatewayDeviceRegistrationService
         _machineName = machineName ?? throw new ArgumentNullException(nameof(machineName));
         _platform = platform ?? throw new ArgumentNullException(nameof(platform));
         _appVersion = appVersion;
-        _installIdProvider = installIdProvider ?? GatewayInstallId.LoadOrCreate;
+        _installIdProvider = installIdProvider ?? new GatewayInstallId().LoadOrCreate;
         _endpointUrlsProvider = endpointUrlsProvider;
     }
 

@@ -22,7 +22,7 @@ namespace CcDirector.Gateway.Account;
 ///     %LOCALAPPDATA%\cc-director\config\director\gateway-install-id.txt
 /// Locked to the current user by living under that per-user root.
 /// </summary>
-public static class GatewayInstallId
+public sealed class GatewayInstallId
 {
     /// <summary>The file name that holds the persisted Gateway install id.</summary>
     public const string FileName = "gateway-install-id.txt";
@@ -30,21 +30,22 @@ public static class GatewayInstallId
     /// <summary>The default on-disk path of the install-id file under the config root.</summary>
     public static string DefaultPath => Path.Combine(CcStorage.Config(), "director", FileName);
 
-    /// <summary>
-    /// Reads the persisted Gateway install id, minting and writing a fresh GUID once if the file is
-    /// missing, empty, or malformed. Subsequent calls return the same id. Uses <see cref="DefaultPath"/>.
-    /// </summary>
-    public static string LoadOrCreate() => LoadOrCreate(DefaultPath);
+    private readonly string _path;
+
+    /// <param name="path">Override the install-id file path (tests). Defaults to <see cref="DefaultPath"/>.</param>
+    public GatewayInstallId(string? path = null)
+    {
+        _path = string.IsNullOrWhiteSpace(path) ? DefaultPath : path;
+    }
 
     /// <summary>
-    /// Reads the persisted Gateway install id from <paramref name="path"/>, minting and writing a fresh
-    /// GUID once if the file is missing, empty, or malformed. Public so tests can drive an isolated path.
+    /// Reads the persisted Gateway install id, minting and writing a fresh GUID once if the file is
+    /// missing, empty, or malformed. Subsequent calls return the same id. Instance-owned so the host
+    /// constructs one and hands its resolver down, instead of an ambient static method.
     /// </summary>
-    /// <param name="path">The install-id file path. Required.</param>
-    public static string LoadOrCreate(string path)
+    public string LoadOrCreate()
     {
-        if (string.IsNullOrWhiteSpace(path))
-            throw new ArgumentException("Install-id path is required", nameof(path));
+        var path = _path;
 
         var dir = Path.GetDirectoryName(path);
         if (!string.IsNullOrEmpty(dir))

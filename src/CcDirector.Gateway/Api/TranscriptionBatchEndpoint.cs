@@ -32,7 +32,11 @@ namespace CcDirector.Gateway.Api;
 /// </summary>
 internal static class TranscriptionBatchEndpoint
 {
-    public static void Map(IEndpointRouteBuilder app, KeyVault vault)
+    public static void Map(
+        IEndpointRouteBuilder app,
+        KeyVault vault,
+        TranscriptionTelemetryLog? telemetry = null,
+        TranscriptionAudioArchive? audioArchive = null)
     {
         app.MapPost("/transcription", async (HttpContext ctx) =>
         {
@@ -52,7 +56,7 @@ internal static class TranscriptionBatchEndpoint
 
             FileLog.Write($"[TranscriptionBatchEndpoint] POST /transcription: bytes={audio.Length}, contentType={contentType}, correct={correct}");
 
-            var service = new GatewayTranscriptionService(vault);
+            var service = new GatewayTranscriptionService(vault, telemetry: telemetry, audioArchive: audioArchive);
             var result = await service.TranscribeAsync(audio, fileName, contentType, correct, ctx.RequestAborted);
 
             return result.Outcome switch

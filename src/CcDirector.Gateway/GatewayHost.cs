@@ -389,6 +389,21 @@ public sealed class GatewayHost : IAsyncDisposable
     // terminal tombstone de-dupes the upload id forever until the client acknowledges it - so there is no
     // age sweep for dictation staging (only the unrelated voice-turn staging is age-swept).
     private readonly Voice.VoiceUploadStore _dictationUploads = new(CcDirector.Core.Storage.CcStorage.DictationUploads());
+    // Store injection points (Hosted Gateway, Step 1b): the host owns ONE instance of each durable store
+    // that was previously reached through a process-wide static, and hands it to the endpoint/service that
+    // uses it, so a tenant id can reach the storage layer in a later pull request. Same default paths as
+    // the retired statics; no behavior change. The voice-turn upload store (VoiceTurnUploads root) is
+    // distinct from _dictationUploads above (DictationUploads root) - two roots, two subsystems.
+    private readonly Prompts.GatewayPromptLog _promptLog = new();
+    private readonly Transcription.TranscriptionTelemetryLog _transcriptionTelemetry = new();
+    private readonly Transcription.TranscriptionAudioArchive _transcriptionAudioArchive = new();
+    private readonly Voice.VoiceUploadStore _voiceTurnUploads = new();
+    // The Gateway's stable per-machine install identity (issue #857), owned by the host and handed to the
+    // device-registration service instead of the retired static GatewayInstallId.LoadOrCreate.
+    private readonly Account.GatewayInstallId _installIdStore = new();
+    // The Gateway bearer token store, owned by the host and used to resolve the token below instead of the
+    // retired static GatewayAuth.LoadOrCreate. The tray's read-only path stays on GatewayAuth.DefaultTokenFile.
+    private readonly Util.GatewayAuth _gatewayAuth = new();
 
     /// <summary>
     /// THE PRODUCER of the dictation phase label - the three facts that decide whether a session paints
@@ -503,7 +518,7 @@ public sealed class GatewayHost : IAsyncDisposable
         BrainTool = Core.Configuration.BrainToolConfig.EnsureHostable(brainTool ?? Core.Configuration.BrainToolConfig.Get());
 
         Port = port;
-        Token = token ?? GatewayAuth.LoadOrCreate();
+        Token = token ?? _gatewayAuth.LoadOrCreate();
         Registry = new DirectorRegistry(instancesDirectory);
         // Issue #1292: free a removed Director's session numbers so a Director that died without releasing
         // them does not leak the pool. OnDirectorRemoved fires on graceful unregister and on the registry's
@@ -771,6 +786,7 @@ public sealed class GatewayHost : IAsyncDisposable
                 machineName: Environment.MachineName,
                 platform: ResolvePlatform(),
                 appVersion: AppVersion.Semver,
+                installIdProvider: _installIdStore.LoadOrCreate,
                 endpointUrlsProvider: resolveEndpointUrls);
             _childMirror = new Account.ChildDeviceMirrorService(
                 Account,
@@ -1314,6 +1330,11 @@ public sealed class GatewayHost : IAsyncDisposable
         // network-diagnostics rollup store is threaded in as a named argument on the tunnel-only signature.
         GatewayEndpoints.Map(_app, Registry, version, Token, AuthEnabled,
             netDiagRollup: _netDiagRollup,
+            // Store injection points: hand the phone-recorder ingest (RecordingEndpoints) the host's single
+            // key vault + transcription telemetry + audio archive, so it stops newing its own copies.
+            recordingKeyVault: _keyVault,
+            transcriptionTelemetry: _transcriptionTelemetry,
+            transcriptionAudioArchive: _transcriptionAudioArchive,
             requestShutdown: () =>
             {
                 var handler = OnShutdownRequested;
@@ -1491,7 +1512,12 @@ public sealed class GatewayHost : IAsyncDisposable
             pushedSessions: PushedSessions,
             sendCommand: SendCommandAsync,
             owners: SessionOwners,
-            instructionsProvider: () => _instructionsStore.ActiveContent);
+            instructionsProvider: () => _instructionsStore.ActiveContent,
+            // Store injection points: hand the endpoint the host's single voice-turn upload store and the
+            // host's transcription telemetry + audio archive, so it stops newing its own copies.
+            uploadStore: _voiceTurnUploads,
+            telemetry: _transcriptionTelemetry,
+            audioArchive: _transcriptionAudioArchive);
 
         // Car Mode brain (Car Mode mission, New build A): the fleet tool-calling loop behind
         // POST /carmode/turn. The chat transport resolves the fast wingman model + the vault key at CALL
@@ -1528,7 +1554,7 @@ public sealed class GatewayHost : IAsyncDisposable
         // in resumable chunks and the Gateway assembles → transcribes → injects the turn into the
         // owning session itself, so a refresh / dropped connection cannot lose a recorded utterance.
         GatewayDictationEndpoint.Map(_app, Registry, SessionOwners, Token,
-            _dictationTranscription ?? new Transcription.GatewayTranscriptionService(_keyVault), _transcribingSessions, _dictationUploads, Devices,
+            _dictationTranscription ?? new Transcription.GatewayTranscriptionService(_keyVault, telemetry: _transcriptionTelemetry, audioArchive: _transcriptionAudioArchive), _transcribingSessions, _dictationUploads, Devices,
             pushedSessions: PushedSessions,
             sendCommand: SendCommandAsync);
         // Durable per-upload-id dictation record (issue #1183): a PENDING upload's chunks are retained
@@ -1658,7 +1684,7 @@ public sealed class GatewayHost : IAsyncDisposable
         // through this one endpoint - it resolves the mode + key and runs the right provider (in-process
         // Whisper, or the resolved provider-compatible batch endpoint). Optional ?correct=true also runs
         // the validated dictionary correction, keeping that out of the callers too.
-        TranscriptionBatchEndpoint.Map(_app, _keyVault);
+        TranscriptionBatchEndpoint.Map(_app, _keyVault, _transcriptionTelemetry, _transcriptionAudioArchive);
 
         // Read-only analysis over the LOCAL transcription telemetry log: latency percentiles, cleanup
         // behaviour, most-corrected terms, and word frequencies, so any agent can query the Gateway to
@@ -1765,7 +1791,7 @@ public sealed class GatewayHost : IAsyncDisposable
         // wanting history reads GET /prompts. It lives here, not on a Director, because the Gateway is
         // what the whole fleet reports to - so the history is already present rather than scattered
         // across machines - and because the Gateway is what moves to the server.
-        Prompts.PromptEndpoints.Map(_app);
+        Prompts.PromptEndpoints.Map(_app, _promptLog);
 
         Mobile.MobileApp.Map(_app, Token);
 

@@ -52,11 +52,12 @@ public sealed class GatewayTranscriptionService
     /// dictionary-corrector POST (tests inject a stub). The pipeline creates and owns one when null.</param>
     /// <param name="cleanupModel">Cleanup identity used only for logging (the corrector is deterministic,
     /// not a model). Defaults to the dictation default when blank.</param>
-    /// <param name="telemetry">Local transcription telemetry sink. Defaults to the process-wide shared
-    /// log (<see cref="TranscriptionTelemetryLog.Shared"/>); tests inject their own.</param>
-    /// <param name="audioArchive">Rolling archive of the audio behind each turn. Defaults to the
-    /// process-wide shared archive (<see cref="TranscriptionAudioArchive.Shared"/>); tests inject their
-    /// own so they never write into the real user's archive.</param>
+    /// <param name="telemetry">Local transcription telemetry sink. In production the host owns one
+    /// instance and passes it here; when omitted it defaults to a fresh instance over the per-user
+    /// location, and tests inject their own.</param>
+    /// <param name="audioArchive">Rolling archive of the audio behind each turn. In production the host
+    /// owns one instance and passes it here; when omitted it defaults to a fresh instance over the
+    /// per-user location, and tests inject their own so they never write into the real user's archive.</param>
     public GatewayTranscriptionService(
         KeyVault vault,
         Func<DictationDictionary>? dictionaryProvider = null,
@@ -71,8 +72,8 @@ public sealed class GatewayTranscriptionService
         _modeProvider = modeProvider ?? TranscriptionModeConfig.Get;
         _http = http;
         _cleanupModel = string.IsNullOrWhiteSpace(cleanupModel) ? CleanupOrchestrator.DefaultModel : cleanupModel;
-        _telemetry = telemetry ?? TranscriptionTelemetryLog.Shared;
-        _audioArchive = audioArchive ?? TranscriptionAudioArchive.Shared;
+        _telemetry = telemetry ?? new TranscriptionTelemetryLog();
+        _audioArchive = audioArchive ?? new TranscriptionAudioArchive();
     }
 
     /// <summary>

@@ -30,9 +30,6 @@ namespace CcDirector.Gateway.Prompts;
 /// </summary>
 public sealed class GatewayPromptLog
 {
-    /// <summary>Process-wide shared log used by the Gateway's prompt endpoints.</summary>
-    public static readonly GatewayPromptLog Shared = new();
-
     private static readonly JsonSerializerOptions JsonOpts = new()
     {
         DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,

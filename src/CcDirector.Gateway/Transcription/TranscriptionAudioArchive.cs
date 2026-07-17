@@ -34,9 +34,6 @@ namespace CcDirector.Gateway.Transcription;
 /// </summary>
 public sealed class TranscriptionAudioArchive
 {
-    /// <summary>Process-wide shared archive used by the transcription service.</summary>
-    public static readonly TranscriptionAudioArchive Shared = new();
-
     /// <summary>How long a clip is kept. A problem reported "yesterday" must still have its audio.</summary>
     public static readonly TimeSpan MaxAge = TimeSpan.FromHours(24);
 
@@ -51,12 +48,11 @@ public sealed class TranscriptionAudioArchive
 
     /// <summary>
     /// An explicit directory override, or null to use <see cref="DefaultDirectory"/>. Only the OVERRIDE
-    /// is stored; the default is resolved PER ACCESS by <see cref="ArchiveDirectory"/> and never captured here.
-    /// <see cref="Shared"/> is a static field, so anything this constructor resolves is baked at type
-    /// load - which happens once, before a test can set CC_DIRECTOR_ROOT, and no test can undo it. That
-    /// bug shipped: test clips landed in the real user's archive because the isolated tests fell back to
-    /// Shared, whose path had already been fixed to the real location. The tests were isolated
-    /// correctly; the static defeated them.
+    /// is stored; the default is resolved PER ACCESS by <see cref="ArchiveDirectory"/> and never captured
+    /// here, so CC_DIRECTOR_ROOT set after this instance is built still redirects where clips land. An
+    /// instance that captured the default in its constructor would bake the path at construction time and
+    /// defeat a test that sets CC_DIRECTOR_ROOT afterwards - which is how isolated tests once wrote clips
+    /// into the real user's archive.
     /// </summary>
     private readonly string? _directoryOverride;
 

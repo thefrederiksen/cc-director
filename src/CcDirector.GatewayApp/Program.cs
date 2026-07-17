@@ -68,7 +68,7 @@ public static class Program
     {
         try
         {
-            var path = GatewayAuth.TokenFile;
+            var path = GatewayAuth.DefaultTokenFile;
             if (!File.Exists(path))
             {
                 FileLog.Write($"[Program] gateway token file not found at {path}");
@@ -116,7 +116,7 @@ public static class Program
                 //
                 // Reading the token is legitimate here: this helper is the Gateway's own exe, running as
                 // the same user on the same machine, and the file it reads is the very one the running
-                // Gateway loaded its token from (GatewayAuth.TokenFile).
+                // Gateway loaded its token from (GatewayAuth.DefaultTokenFile).
                 var request = new HttpRequestMessage(HttpMethod.Post, $"http://127.0.0.1:{port}/shutdown");
                 var token = TryReadGatewayToken();
                 if (token is null)

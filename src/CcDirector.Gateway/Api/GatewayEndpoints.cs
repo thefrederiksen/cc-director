@@ -102,7 +102,14 @@ internal static class GatewayEndpoints
         // POST/GET /missions routes are mapped and a mission-scoped spawn validates against it. Missions are
         // a fleet-level concept, so the source of truth lives here at the Gateway. Null (old callers, tests)
         // maps nothing, leaving missions to the Director's own /missions routes (unchanged this phase).
-        Core.Sessions.MissionStore? missions = null)
+        Core.Sessions.MissionStore? missions = null,
+        // Store injection points: the host owns a single key vault, transcription telemetry log, and audio
+        // archive and passes them here so the phone-recorder ingest transcriber (RecordingEndpoints) uses
+        // the host's instances rather than newing its own. Null (old callers, tests) leaves RecordingEndpoints
+        // to build its own defaults, byte-identical to before.
+        Core.KeyVault? recordingKeyVault = null,
+        Transcription.TranscriptionTelemetryLog? transcriptionTelemetry = null,
+        Transcription.TranscriptionAudioArchive? transcriptionAudioArchive = null)
     {
         // The old issue #1188 "session lock" (423 Locked on human input while a PENDING dictation record
         // existed) was removed deliberately (issue #1308). This is a single-operator tool: a collision
@@ -214,7 +221,7 @@ internal static class GatewayEndpoints
         var logoutVisibility = authEnabled ? "" : "style=\"display:none\"";
 
         // Phone recorder ingest (offline-recorded audio -> transcription -> vault).
-        RecordingEndpoints.Map(app);
+        RecordingEndpoints.Map(app, recordingKeyVault, transcriptionTelemetry, transcriptionAudioArchive);
 
         // Read-only view of the Communication Manager approval queue (see the phone's
         // pending drafts remotely). Step 1 of centralizing the comm queue on the Gateway.

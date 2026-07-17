@@ -17,9 +17,9 @@ namespace CcDirector.Gateway.Prompts;
 /// </summary>
 public static class PromptEndpoints
 {
-    public static void Map(IEndpointRouteBuilder app, GatewayPromptLog? log = null)
+    public static void Map(IEndpointRouteBuilder app, GatewayPromptLog log)
     {
-        var store = log ?? GatewayPromptLog.Shared;
+        var store = log ?? throw new ArgumentNullException(nameof(log));
 
         app.MapPost("/prompts", (PromptIngestRequest? request) =>
         {
