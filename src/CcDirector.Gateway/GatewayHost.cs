@@ -1182,6 +1182,9 @@ public sealed class GatewayHost : IAsyncDisposable
         builder.Services.AddSingleton(SnoozeLandings);
         builder.Services.AddSingleton(FleetRoles);
         builder.Services.AddSingleton(FleetDisplayState);
+        // Register the tenancy seam. The core ships the single-tenant default (everything resolves to
+        // TenantId.Local), so behavior is unchanged; a resolver can replace this behind the same interface.
+        builder.Services.AddSingleton<CcDirector.Core.Tenancy.ITenantContext, CcDirector.Core.Tenancy.SingleTenantContext>();
         builder.Services.AddSingleton(SessionConcurrency);
         builder.Services.AddSingleton(Registry);
         // launcher-persistent-join: the LauncherHub (constructed per-invocation by SignalR) and
