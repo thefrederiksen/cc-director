@@ -1,3 +1,4 @@
+using CcDirector.Core.Tenancy;
 using CcDirector.Gateway.Contracts;
 using CcDirector.Gateway.Streaming;
 using Xunit;
@@ -28,11 +29,11 @@ public sealed class PushedSessionStoreTests
     {
         // Arrange
         var store = NewStore();
-        store.RegisterConnection("dir-A", "conn-1");
+        store.RegisterConnection(TenantId.Local, "dir-A", "conn-1");
 
         // Act
-        var applied = store.ApplySnapshot("dir-A", "conn-1", 0, new[] { Session("s1"), Session("s2") });
-        var fresh = store.TryGetFresh("dir-A", _staleAfter);
+        var applied = store.ApplySnapshot(TenantId.Local, "dir-A", "conn-1", 0, new[] { Session("s1"), Session("s2") });
+        var fresh = store.TryGetFresh(TenantId.Local, "dir-A", _staleAfter);
 
         // Assert
         Assert.True(applied);
@@ -47,12 +48,12 @@ public sealed class PushedSessionStoreTests
     {
         // Issue #1200: the auto-dismiss sweep enumerates every fresh session paired with its Director.
         var store = NewStore();
-        store.RegisterConnection("dir-A", "conn-A");
-        store.RegisterConnection("dir-B", "conn-B");
-        store.ApplySnapshot("dir-A", "conn-A", 0, new[] { Session("s1") });
-        store.ApplySnapshot("dir-B", "conn-B", 0, new[] { Session("s2") });
+        store.RegisterConnection(TenantId.Local, "dir-A", "conn-A");
+        store.RegisterConnection(TenantId.Local, "dir-B", "conn-B");
+        store.ApplySnapshot(TenantId.Local, "dir-A", "conn-A", 0, new[] { Session("s1") });
+        store.ApplySnapshot(TenantId.Local, "dir-B", "conn-B", 0, new[] { Session("s2") });
 
-        var all = store.SnapshotFresh(_staleAfter);
+        var all = store.SnapshotFresh(TenantId.Local, _staleAfter);
 
         Assert.Equal(2, all.Count);
         Assert.Contains(all, t => t.DirectorId == "dir-A" && t.Session.SessionId == "s1");
@@ -63,13 +64,13 @@ public sealed class PushedSessionStoreTests
     public void SnapshotFresh_ExcludesStaleAndDisconnectedDirectors()
     {
         var store = NewStore();
-        store.RegisterConnection("dir-A", "conn-A");
-        store.ApplySnapshot("dir-A", "conn-A", 0, new[] { Session("s1") });
+        store.RegisterConnection(TenantId.Local, "dir-A", "conn-A");
+        store.ApplySnapshot(TenantId.Local, "dir-A", "conn-A", 0, new[] { Session("s1") });
 
         // Advance past the stale window: the cache is now stale, so the sweep must not act on it.
         _now = _now.Add(_staleAfter).AddSeconds(1);
 
-        Assert.Empty(store.SnapshotFresh(_staleAfter));
+        Assert.Empty(store.SnapshotFresh(TenantId.Local, _staleAfter));
     }
 
     [Fact]
@@ -77,14 +78,14 @@ public sealed class PushedSessionStoreTests
     {
         // Arrange
         var store = NewStore();
-        store.RegisterConnection("dir-A", "conn-1");
+        store.RegisterConnection(TenantId.Local, "dir-A", "conn-1");
 
         // Act - a stale connection tries to push
-        var applied = store.ApplySnapshot("dir-A", "conn-OLD", 5, new[] { Session("s1") });
+        var applied = store.ApplySnapshot(TenantId.Local, "dir-A", "conn-OLD", 5, new[] { Session("s1") });
 
         // Assert
         Assert.False(applied);
-        Assert.Null(store.TryGetFresh("dir-A", _staleAfter));
+        Assert.Null(store.TryGetFresh(TenantId.Local, "dir-A", _staleAfter));
     }
 
     [Fact]
@@ -92,15 +93,15 @@ public sealed class PushedSessionStoreTests
     {
         // Arrange
         var store = NewStore();
-        store.RegisterConnection("dir-A", "conn-1");
-        store.ApplySnapshot("dir-A", "conn-1", 5, new[] { Session("s1") });
+        store.RegisterConnection(TenantId.Local, "dir-A", "conn-1");
+        store.ApplySnapshot(TenantId.Local, "dir-A", "conn-1", 5, new[] { Session("s1") });
 
         // Act - sequence 5 already applied; 5 and below must be dropped
-        var stale = store.ApplyDelta("dir-A", "conn-1", 5, Session("s2"));
+        var stale = store.ApplyDelta(TenantId.Local, "dir-A", "conn-1", 5, Session("s2"));
 
         // Assert
         Assert.False(stale);
-        var fresh = store.TryGetFresh("dir-A", _staleAfter);
+        var fresh = store.TryGetFresh(TenantId.Local, "dir-A", _staleAfter);
         Assert.NotNull(fresh);
         Assert.Single(fresh);
         Assert.Equal("s1", fresh[0].SessionId);
@@ -111,15 +112,15 @@ public sealed class PushedSessionStoreTests
     {
         // Arrange
         var store = NewStore();
-        store.RegisterConnection("dir-A", "conn-1");
-        store.ApplySnapshot("dir-A", "conn-1", 1, new[] { Session("s1", "Working") });
+        store.RegisterConnection(TenantId.Local, "dir-A", "conn-1");
+        store.ApplySnapshot(TenantId.Local, "dir-A", "conn-1", 1, new[] { Session("s1", "Working") });
 
         // Act
-        var applied = store.ApplyDelta("dir-A", "conn-1", 2, Session("s1", "WaitingForInput"));
+        var applied = store.ApplyDelta(TenantId.Local, "dir-A", "conn-1", 2, Session("s1", "WaitingForInput"));
 
         // Assert
         Assert.True(applied);
-        var fresh = store.TryGetFresh("dir-A", _staleAfter);
+        var fresh = store.TryGetFresh(TenantId.Local, "dir-A", _staleAfter);
         Assert.NotNull(fresh);
         Assert.Single(fresh);
         Assert.Equal("WaitingForInput", fresh[0].ActivityState);
@@ -130,14 +131,14 @@ public sealed class PushedSessionStoreTests
     {
         // Arrange
         var store = NewStore();
-        store.RegisterConnection("dir-A", "conn-1");
-        store.ApplySnapshot("dir-A", "conn-1", 1, new[] { Session("s1"), Session("s2"), Session("s3") });
+        store.RegisterConnection(TenantId.Local, "dir-A", "conn-1");
+        store.ApplySnapshot(TenantId.Local, "dir-A", "conn-1", 1, new[] { Session("s1"), Session("s2"), Session("s3") });
 
         // Act - a later snapshot no longer contains s2
-        store.ApplySnapshot("dir-A", "conn-1", 2, new[] { Session("s1"), Session("s3") });
+        store.ApplySnapshot(TenantId.Local, "dir-A", "conn-1", 2, new[] { Session("s1"), Session("s3") });
 
         // Assert
-        var fresh = store.TryGetFresh("dir-A", _staleAfter);
+        var fresh = store.TryGetFresh(TenantId.Local, "dir-A", _staleAfter);
         Assert.NotNull(fresh);
         Assert.Equal(2, fresh.Count);
         Assert.DoesNotContain(fresh, s => s.SessionId == "s2");
@@ -148,15 +149,15 @@ public sealed class PushedSessionStoreTests
     {
         // Arrange
         var store = NewStore();
-        store.RegisterConnection("dir-A", "conn-1");
-        store.ApplySnapshot("dir-A", "conn-1", 1, new[] { Session("s1"), Session("s2") });
+        store.RegisterConnection(TenantId.Local, "dir-A", "conn-1");
+        store.ApplySnapshot(TenantId.Local, "dir-A", "conn-1", 1, new[] { Session("s1"), Session("s2") });
 
         // Act
-        var removed = store.ApplyRemove("dir-A", "conn-1", 2, "s1");
+        var removed = store.ApplyRemove(TenantId.Local, "dir-A", "conn-1", 2, "s1");
 
         // Assert
         Assert.True(removed);
-        var fresh = store.TryGetFresh("dir-A", _staleAfter);
+        var fresh = store.TryGetFresh(TenantId.Local, "dir-A", _staleAfter);
         Assert.NotNull(fresh);
         Assert.Single(fresh);
         Assert.Equal("s2", fresh[0].SessionId);
@@ -168,16 +169,16 @@ public sealed class PushedSessionStoreTests
         // Arrange - a first connection pushed a high sequence, then the Director process restarts and
         // dials a brand-new connection that (correctly) starts its own sequence at 0.
         var store = NewStore();
-        store.RegisterConnection("dir-A", "conn-1");
-        store.ApplySnapshot("dir-A", "conn-1", 42, new[] { Session("old") });
+        store.RegisterConnection(TenantId.Local, "dir-A", "conn-1");
+        store.ApplySnapshot(TenantId.Local, "dir-A", "conn-1", 42, new[] { Session("old") });
 
         // Act - the restart: new connection, first snapshot at sequence 0 must NOT be rejected.
-        store.RegisterConnection("dir-A", "conn-2");
-        var applied = store.ApplySnapshot("dir-A", "conn-2", 0, new[] { Session("fresh") });
+        store.RegisterConnection(TenantId.Local, "dir-A", "conn-2");
+        var applied = store.ApplySnapshot(TenantId.Local, "dir-A", "conn-2", 0, new[] { Session("fresh") });
 
         // Assert
         Assert.True(applied);
-        var fresh = store.TryGetFresh("dir-A", _staleAfter);
+        var fresh = store.TryGetFresh(TenantId.Local, "dir-A", _staleAfter);
         Assert.NotNull(fresh);
         Assert.Single(fresh);
         Assert.Equal("fresh", fresh[0].SessionId);
@@ -188,16 +189,16 @@ public sealed class PushedSessionStoreTests
     {
         // Arrange - a reconnect overlap: conn-2 becomes active, THEN conn-1 (superseded) disconnects.
         var store = NewStore();
-        store.RegisterConnection("dir-A", "conn-1");
-        store.RegisterConnection("dir-A", "conn-2");
-        store.ApplySnapshot("dir-A", "conn-2", 0, new[] { Session("s1") });
+        store.RegisterConnection(TenantId.Local, "dir-A", "conn-1");
+        store.RegisterConnection(TenantId.Local, "dir-A", "conn-2");
+        store.ApplySnapshot(TenantId.Local, "dir-A", "conn-2", 0, new[] { Session("s1") });
 
         // Act - the late disconnect of the old connection must be ignored.
-        store.UnregisterConnection("dir-A", "conn-1");
+        store.UnregisterConnection(TenantId.Local, "dir-A", "conn-1");
 
         // Assert - the active connection and its cache survive.
-        Assert.True(store.IsStreamConnected("dir-A"));
-        var fresh = store.TryGetFresh("dir-A", _staleAfter);
+        Assert.True(store.IsStreamConnected(TenantId.Local, "dir-A"));
+        var fresh = store.TryGetFresh(TenantId.Local, "dir-A", _staleAfter);
         Assert.NotNull(fresh);
         Assert.Single(fresh);
     }
@@ -207,15 +208,15 @@ public sealed class PushedSessionStoreTests
     {
         // Arrange
         var store = NewStore();
-        store.RegisterConnection("dir-A", "conn-1");
-        store.ApplySnapshot("dir-A", "conn-1", 0, new[] { Session("s1") });
+        store.RegisterConnection(TenantId.Local, "dir-A", "conn-1");
+        store.ApplySnapshot(TenantId.Local, "dir-A", "conn-1", 0, new[] { Session("s1") });
 
         // Act
-        store.UnregisterConnection("dir-A", "conn-1");
+        store.UnregisterConnection(TenantId.Local, "dir-A", "conn-1");
 
         // Assert - no active connection => aggregation must fall back to pull.
-        Assert.False(store.IsStreamConnected("dir-A"));
-        Assert.Null(store.TryGetFresh("dir-A", _staleAfter));
+        Assert.False(store.IsStreamConnected(TenantId.Local, "dir-A"));
+        Assert.Null(store.TryGetFresh(TenantId.Local, "dir-A", _staleAfter));
     }
 
     [Fact]
@@ -223,14 +224,14 @@ public sealed class PushedSessionStoreTests
     {
         // Arrange
         var store = NewStore();
-        store.RegisterConnection("dir-A", "conn-1");
-        store.ApplySnapshot("dir-A", "conn-1", 0, new[] { Session("s1") });
+        store.RegisterConnection(TenantId.Local, "dir-A", "conn-1");
+        store.ApplySnapshot(TenantId.Local, "dir-A", "conn-1", 0, new[] { Session("s1") });
 
         // Act - advance the clock past the stale window with no new push.
         _now = _now.AddSeconds(21);
 
         // Assert
-        Assert.Null(store.TryGetFresh("dir-A", _staleAfter));
+        Assert.Null(store.TryGetFresh(TenantId.Local, "dir-A", _staleAfter));
     }
 
     [Fact]
@@ -238,18 +239,18 @@ public sealed class PushedSessionStoreTests
     {
         // Arrange
         var store = NewStore();
-        store.RegisterConnection("dir-A", "conn-1");
-        store.ApplySnapshot("dir-A", "conn-1", 0, new[] { Session("s1", "Working") });
+        store.RegisterConnection(TenantId.Local, "dir-A", "conn-1");
+        store.ApplySnapshot(TenantId.Local, "dir-A", "conn-1", 0, new[] { Session("s1", "Working") });
 
         // Act - the aggregation stamps fields on the returned object.
-        var first = store.TryGetFresh("dir-A", _staleAfter);
+        var first = store.TryGetFresh(TenantId.Local, "dir-A", _staleAfter);
         Assert.NotNull(first);
         first[0].EffectiveColor = "red";
         first[0].DirectorId = "mutated";
         first[0].DriverCapabilities.Add("Interrupt");
 
         // Assert - a later read is pristine.
-        var second = store.TryGetFresh("dir-A", _staleAfter);
+        var second = store.TryGetFresh(TenantId.Local, "dir-A", _staleAfter);
         Assert.NotNull(second);
         Assert.Null(second[0].EffectiveColor);
         Assert.Equal("", second[0].DirectorId);
@@ -261,13 +262,13 @@ public sealed class PushedSessionStoreTests
     {
         // Arrange - a quiet session whose last activity was 10s before the snapshot.
         var store = NewStore();
-        store.RegisterConnection("dir-A", "conn-1");
+        store.RegisterConnection(TenantId.Local, "dir-A", "conn-1");
         var lastActivity = _now.AddSeconds(-10);
-        store.ApplySnapshot("dir-A", "conn-1", 0, new[] { Session("s1", "WaitingForInput", lastActivity) });
+        store.ApplySnapshot(TenantId.Local, "dir-A", "conn-1", 0, new[] { Session("s1", "WaitingForInput", lastActivity) });
 
         // Act - 5s later, served from cache with no new push.
         _now = _now.AddSeconds(5);
-        var fresh = store.TryGetFresh("dir-A", _staleAfter);
+        var fresh = store.TryGetFresh(TenantId.Local, "dir-A", _staleAfter);
 
         // Assert - idle seconds reflect now - lastActivity (15s), not the frozen value at push time (10s).
         Assert.NotNull(fresh);
@@ -281,19 +282,19 @@ public sealed class PushedSessionStoreTests
         var store = NewStore();
 
         // Act - no RegisterConnection first.
-        var applied = store.ApplySnapshot("dir-A", "conn-1", 0, new[] { Session("s1") });
+        var applied = store.ApplySnapshot(TenantId.Local, "dir-A", "conn-1", 0, new[] { Session("s1") });
 
         // Assert
         Assert.False(applied);
-        Assert.Null(store.TryGetFresh("dir-A", _staleAfter));
+        Assert.Null(store.TryGetFresh(TenantId.Local, "dir-A", _staleAfter));
     }
 
     [Fact]
     public void TryGetFresh_ForUnknownDirector_ReturnsNull()
     {
         var store = NewStore();
-        Assert.Null(store.TryGetFresh("nobody", _staleAfter));
-        Assert.False(store.IsStreamConnected("nobody"));
+        Assert.Null(store.TryGetFresh(TenantId.Local, "nobody", _staleAfter));
+        Assert.False(store.IsStreamConnected(TenantId.Local, "nobody"));
     }
 
     [Fact]
@@ -301,13 +302,13 @@ public sealed class PushedSessionStoreTests
     {
         // Arrange - two Directors each pushing a distinct session.
         var store = NewStore();
-        store.RegisterConnection("dir-A", "conn-A");
-        store.RegisterConnection("dir-B", "conn-B");
-        store.ApplySnapshot("dir-A", "conn-A", 0, new[] { Session("s-A") });
-        store.ApplySnapshot("dir-B", "conn-B", 0, new[] { Session("s-B") });
+        store.RegisterConnection(TenantId.Local, "dir-A", "conn-A");
+        store.RegisterConnection(TenantId.Local, "dir-B", "conn-B");
+        store.ApplySnapshot(TenantId.Local, "dir-A", "conn-A", 0, new[] { Session("s-A") });
+        store.ApplySnapshot(TenantId.Local, "dir-B", "conn-B", 0, new[] { Session("s-B") });
 
         // Act
-        var located = store.TryLocate("s-B", _staleAfter);
+        var located = store.TryLocate(TenantId.Local, "s-B", _staleAfter);
 
         // Assert - the session is resolved to its owning Director with zero HTTP pull.
         Assert.NotNull(located);
@@ -320,17 +321,17 @@ public sealed class PushedSessionStoreTests
     {
         // Arrange
         var store = NewStore();
-        store.RegisterConnection("dir-A", "conn-A");
-        store.ApplySnapshot("dir-A", "conn-A", 0, new[] { Session("s1", "Working") });
+        store.RegisterConnection(TenantId.Local, "dir-A", "conn-A");
+        store.ApplySnapshot(TenantId.Local, "dir-A", "conn-A", 0, new[] { Session("s1", "Working") });
 
         // Act - a caller stamps fields on the located copy.
-        var located = store.TryLocate("s1", _staleAfter);
+        var located = store.TryLocate(TenantId.Local, "s1", _staleAfter);
         Assert.NotNull(located);
         located.Value.Session.EffectiveColor = "red";
         located.Value.Session.DirectorId = "mutated";
 
         // Assert - the cache is pristine on the next read.
-        var again = store.TryLocate("s1", _staleAfter);
+        var again = store.TryLocate(TenantId.Local, "s1", _staleAfter);
         Assert.NotNull(again);
         Assert.Null(again.Value.Session.EffectiveColor);
         Assert.Equal("", again.Value.Session.DirectorId);
@@ -341,14 +342,14 @@ public sealed class PushedSessionStoreTests
     {
         // Arrange
         var store = NewStore();
-        store.RegisterConnection("dir-A", "conn-A");
-        store.ApplySnapshot("dir-A", "conn-A", 0, new[] { Session("s1") });
+        store.RegisterConnection(TenantId.Local, "dir-A", "conn-A");
+        store.ApplySnapshot(TenantId.Local, "dir-A", "conn-A", 0, new[] { Session("s1") });
 
         // Act - advance past the stale window with no re-push.
         _now = _now.AddSeconds(21);
 
         // Assert - a stale cache cannot locate (matching TryGetFresh's staleness rule).
-        Assert.Null(store.TryLocate("s1", _staleAfter));
+        Assert.Null(store.TryLocate(TenantId.Local, "s1", _staleAfter));
     }
 
     [Fact]
@@ -356,24 +357,24 @@ public sealed class PushedSessionStoreTests
     {
         // Arrange
         var store = NewStore();
-        store.RegisterConnection("dir-A", "conn-A");
-        store.ApplySnapshot("dir-A", "conn-A", 0, new[] { Session("s1") });
+        store.RegisterConnection(TenantId.Local, "dir-A", "conn-A");
+        store.ApplySnapshot(TenantId.Local, "dir-A", "conn-A", 0, new[] { Session("s1") });
 
         // Act - the stream disconnects.
-        store.UnregisterConnection("dir-A", "conn-A");
+        store.UnregisterConnection(TenantId.Local, "dir-A", "conn-A");
 
         // Assert - no active connection => no location from the cache.
-        Assert.Null(store.TryLocate("s1", _staleAfter));
+        Assert.Null(store.TryLocate(TenantId.Local, "s1", _staleAfter));
     }
 
     [Fact]
     public void TryLocate_ForUnknownSession_ReturnsNull()
     {
         var store = NewStore();
-        store.RegisterConnection("dir-A", "conn-A");
-        store.ApplySnapshot("dir-A", "conn-A", 0, new[] { Session("s1") });
+        store.RegisterConnection(TenantId.Local, "dir-A", "conn-A");
+        store.ApplySnapshot(TenantId.Local, "dir-A", "conn-A", 0, new[] { Session("s1") });
 
-        Assert.Null(store.TryLocate("nobody", _staleAfter));
-        Assert.Null(store.TryLocate("", _staleAfter));
+        Assert.Null(store.TryLocate(TenantId.Local, "nobody", _staleAfter));
+        Assert.Null(store.TryLocate(TenantId.Local, "", _staleAfter));
     }
 }

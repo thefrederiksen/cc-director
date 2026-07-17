@@ -1,6 +1,7 @@
 using System.Net.WebSockets;
 using System.Text;
 using System.Text.Json;
+using CcDirector.Core.Tenancy;
 using CcDirector.Core.Utilities;
 using CcDirector.Gateway.Contracts;
 using Microsoft.AspNetCore.Builder;
@@ -58,7 +59,7 @@ internal static class SessionWsProxyEndpoints
         // terminal-input unary verbs. See TunnelStreamLegs for the wire translation.
         app.MapGet("/sessions/{sid}/stream", async (string sid, HttpContext ctx) =>
         {
-            if (pushedSessions.TryLocate(sid, stale) is { } loc)
+            if (pushedSessions.TryLocate(TenantId.Local, sid, stale) is { } loc)
             {
                 await tunnel.ServeTerminalAsync(ctx, sid, loc.DirectorId);
                 return;
@@ -70,7 +71,7 @@ internal static class SessionWsProxyEndpoints
         // a Range request re-fetches the whole file (tracked follow-up); never a silent truncation.
         app.MapGet("/sessions/{sid}/file", async (string sid, HttpContext ctx) =>
         {
-            if (pushedSessions.TryLocate(sid, stale) is { } loc)
+            if (pushedSessions.TryLocate(TenantId.Local, sid, stale) is { } loc)
             {
                 ctx.Response.Headers["X-Content-Type-Options"] = "nosniff";
                 if (await tunnel.TryServeFileAsync(ctx, sid, loc.DirectorId, ctx.Request.Query["path"].ToString()))
@@ -84,7 +85,7 @@ internal static class SessionWsProxyEndpoints
         // routing key for the machine-wide screenshots folder on the owning Director.
         app.Map("/sessions/{sid}/screenshots/file", async (string sid, HttpContext ctx) =>
         {
-            if (pushedSessions.TryLocate(sid, stale) is not { } loc)
+            if (pushedSessions.TryLocate(TenantId.Local, sid, stale) is not { } loc)
             {
                 await RejectAsync(ctx, sid, "shot");
                 return;
@@ -106,7 +107,7 @@ internal static class SessionWsProxyEndpoints
         // caps the newest-first rows.
         app.MapGet("/sessions/{sid}/screenshots", async (string sid, HttpContext ctx) =>
         {
-            if (pushedSessions.TryLocate(sid, stale) is not { } loc)
+            if (pushedSessions.TryLocate(TenantId.Local, sid, stale) is not { } loc)
             {
                 await RejectAsync(ctx, sid, "shots");
                 return;
@@ -142,7 +143,7 @@ internal static class SessionWsProxyEndpoints
         var catchAll = new TunnelCatchAllDispatch(sendCommand);
         app.Map("/sessions/{sid}/{**rest}", async (string sid, string? rest, HttpContext ctx) =>
         {
-            if (pushedSessions.TryLocate(sid, stale) is not { } loc)
+            if (pushedSessions.TryLocate(TenantId.Local, sid, stale) is not { } loc)
             {
                 await RejectAsync(ctx, sid, "verb");
                 return;

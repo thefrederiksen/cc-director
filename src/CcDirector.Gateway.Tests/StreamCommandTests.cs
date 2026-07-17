@@ -1,3 +1,4 @@
+using CcDirector.Core.Tenancy;
 using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
@@ -121,14 +122,14 @@ public sealed class StreamCommandTests : IAsyncLifetime
         await WaitForPushedSession(session.Id.ToString());
 
         // The verdict actually reached the Gateway UP the stream, on the pushed DTO.
-        var pushed = _gateway.PushedSessions.SnapshotFresh(TimeSpan.FromSeconds(30));
+        var pushed = _gateway.PushedSessions.SnapshotFresh(TenantId.Local, TimeSpan.FromSeconds(30));
         var mine = pushed.Single(t => t.Session.SessionId == session.Id.ToString());
         Assert.True(mine.Session.AutoDismiss);
         Assert.Equal("done", mine.Session.DismissVerdict);
 
         // The real Gateway sweep, wired exactly as GatewayHost wires it (pushed snapshot + SendCommandAsync).
         var sweeper = new AutoDismissSweeper(
-            () => _gateway.PushedSessions.SnapshotFresh(TimeSpan.FromSeconds(30)),
+            () => _gateway.PushedSessions.SnapshotFresh(TenantId.Local, TimeSpan.FromSeconds(30)),
             _gateway.SendCommandAsync);
 
         var closed = await sweeper.SweepAsync(CancellationToken.None);
@@ -152,7 +153,7 @@ public sealed class StreamCommandTests : IAsyncLifetime
         await WaitForPushedSession(session.Id.ToString());
 
         var sweeper = new AutoDismissSweeper(
-            () => _gateway.PushedSessions.SnapshotFresh(TimeSpan.FromSeconds(30)),
+            () => _gateway.PushedSessions.SnapshotFresh(TenantId.Local, TimeSpan.FromSeconds(30)),
             _gateway.SendCommandAsync);
 
         var closed = await sweeper.SweepAsync(CancellationToken.None);
@@ -638,7 +639,7 @@ public sealed class StreamCommandTests : IAsyncLifetime
         for (var i = 0; i < 12; i++)
         {
             await Task.Delay(100);
-            Assert.NotNull(_gateway.PushedSessions.TryGetFresh(DirectorId, stale));
+            Assert.NotNull(_gateway.PushedSessions.TryGetFresh(TenantId.Local, DirectorId, stale));
         }
     }
 
@@ -909,7 +910,7 @@ public sealed class StreamCommandTests : IAsyncLifetime
         var deadline = DateTime.UtcNow.AddSeconds(15);
         while (DateTime.UtcNow < deadline)
         {
-            if (_gateway.PushedSessions.TryLocate(sessionId, TimeSpan.FromSeconds(30)) is not null) return;
+            if (_gateway.PushedSessions.TryLocate(TenantId.Local, sessionId, TimeSpan.FromSeconds(30)) is not null) return;
             await Task.Delay(100);
         }
         throw new TimeoutException("Timed out waiting for the session to appear in the pushed cache");

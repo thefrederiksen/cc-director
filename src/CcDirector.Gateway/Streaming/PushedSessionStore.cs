@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using CcDirector.Core.Tenancy;
 using CcDirector.Core.Utilities;
 using CcDirector.Gateway.Contracts;
 
@@ -8,6 +9,14 @@ namespace CcDirector.Gateway.Streaming;
 /// Issue #1176 (Phase 1a): the Gateway's in-memory cache of the session state each Director pushes UP
 /// over its persistent stream, replacing the on-demand pull for stream-connected Directors. One entry
 /// per Director (keyed by directorId), holding the sessions that Director last pushed.
+///
+/// Tenant partitioning (Stage 3b of the multi-tenant plan): entries are partitioned by
+/// <see cref="TenantId"/> first, then by directorId. A Director belongs to exactly one tenant, and the
+/// cross-tenant scans (<see cref="TryLocate"/>, <see cref="SnapshotFresh"/>) only ever walk one
+/// tenant's partition, so a session id from one tenant can never resolve a Director in another. Today the
+/// core is single-tenant: callers pass <see cref="TenantId.Local"/> and behavior is unchanged. When the
+/// resolver lands, the tenant is the one resolved for the Director's connection (ingest) or the request
+/// (reads); nothing in this store changes.
 ///
 /// Correctness rules this store enforces (Phase 1 plan, section 4.4):
 ///  - CONNECTION GENERATION: each stream connection is identified by its SignalR connection id. A new
@@ -27,12 +36,12 @@ namespace CcDirector.Gateway.Streaming;
 /// contaminating the cache, and recompute relative time fields (idle seconds) from the absolute
 /// LastActivityAt so a quiet session's idle clock keeps advancing between pushes.
 ///
-/// Thread-safe: a <see cref="ConcurrentDictionary{TKey,TValue}"/> of per-Director entries, each guarded
-/// by its own lock.
+/// Thread-safe: a <see cref="ConcurrentDictionary{TKey,TValue}"/> per tenant of per-Director entries,
+/// each entry guarded by its own lock.
 /// </summary>
 public sealed class PushedSessionStore
 {
-    private readonly ConcurrentDictionary<string, DirectorEntry> _byDirector = new(StringComparer.OrdinalIgnoreCase);
+    private readonly ConcurrentDictionary<TenantId, ConcurrentDictionary<string, DirectorEntry>> _byTenant = new();
     private readonly Func<DateTime> _utcNow;
 
     /// <summary>
@@ -44,27 +53,35 @@ public sealed class PushedSessionStore
         _utcNow = utcNow ?? (() => DateTime.UtcNow);
     }
 
+    /// <summary>The per-Director map for one tenant, created on first use. Fails loud on an invalid tenant.</summary>
+    private ConcurrentDictionary<string, DirectorEntry> DirectorsFor(TenantId tenant)
+    {
+        if (!tenant.IsValid)
+            throw new ArgumentException("A valid TenantId is required.", nameof(tenant));
+        return _byTenant.GetOrAdd(tenant, _ => new ConcurrentDictionary<string, DirectorEntry>(StringComparer.OrdinalIgnoreCase));
+    }
+
     /// <summary>
-    /// Mark <paramref name="connectionId"/> as the active stream connection for <paramref name="directorId"/>.
-    /// Existing cached sessions are kept (so a fast reconnect keeps roster continuity), but the sequence
-    /// baseline resets so the new connection's first message - at any sequence - is authoritative. The
-    /// last-received timestamp is deliberately NOT refreshed here: until the new connection actually pushes
-    /// a snapshot, the cache is treated as stale so aggregation falls back to pull.
+    /// Mark <paramref name="connectionId"/> as the active stream connection for <paramref name="directorId"/>
+    /// within <paramref name="tenant"/>. Existing cached sessions are kept (so a fast reconnect keeps roster
+    /// continuity), but the sequence baseline resets so the new connection's first message - at any sequence -
+    /// is authoritative. The last-received timestamp is deliberately NOT refreshed here: until the new
+    /// connection actually pushes a snapshot, the cache is treated as stale so aggregation falls back to pull.
     /// </summary>
-    public void RegisterConnection(string directorId, string connectionId)
+    public void RegisterConnection(TenantId tenant, string directorId, string connectionId)
     {
         if (string.IsNullOrWhiteSpace(directorId))
             throw new ArgumentException("directorId is required", nameof(directorId));
         if (string.IsNullOrWhiteSpace(connectionId))
             throw new ArgumentException("connectionId is required", nameof(connectionId));
 
-        var entry = _byDirector.GetOrAdd(directorId, _ => new DirectorEntry());
+        var entry = DirectorsFor(tenant).GetOrAdd(directorId, _ => new DirectorEntry());
         lock (entry.Gate)
         {
             entry.ActiveConnectionId = connectionId;
             entry.LastSequence = -1;
         }
-        FileLog.Write($"[PushedSessionStore] RegisterConnection: director={directorId}, conn={Short(connectionId)} is now the active connection");
+        FileLog.Write($"[PushedSessionStore] RegisterConnection: tenant={tenant}, director={directorId}, conn={Short(connectionId)} is now the active connection");
     }
 
     /// <summary>
@@ -79,21 +96,21 @@ public sealed class PushedSessionStore
     /// the Director is unknown. Gateway Cleanup mission (tunnel-only): the caller uses this to decide whether
     /// to drop the Director from the registry - only a genuine last-connection close should.
     /// </returns>
-    public bool UnregisterConnection(string directorId, string connectionId)
+    public bool UnregisterConnection(TenantId tenant, string directorId, string connectionId)
     {
-        if (!_byDirector.TryGetValue(directorId, out var entry))
+        if (!DirectorsFor(tenant).TryGetValue(directorId, out var entry))
             return false;
 
         lock (entry.Gate)
         {
             if (!string.Equals(entry.ActiveConnectionId, connectionId, StringComparison.Ordinal))
             {
-                FileLog.Write($"[PushedSessionStore] UnregisterConnection IGNORED (not active): director={directorId}, conn={Short(connectionId)}, active={Short(entry.ActiveConnectionId)}");
+                FileLog.Write($"[PushedSessionStore] UnregisterConnection IGNORED (not active): tenant={tenant}, director={directorId}, conn={Short(connectionId)}, active={Short(entry.ActiveConnectionId)}");
                 return false;
             }
             entry.ActiveConnectionId = null;
         }
-        FileLog.Write($"[PushedSessionStore] UnregisterConnection: director={directorId}, conn={Short(connectionId)} cleared; aggregation will fall back to pull");
+        FileLog.Write($"[PushedSessionStore] UnregisterConnection: tenant={tenant}, director={directorId}, conn={Short(connectionId)} cleared; aggregation will fall back to pull");
         return true;
     }
 
@@ -101,16 +118,16 @@ public sealed class PushedSessionStore
     /// Apply a full snapshot: replace the Director's whole session set, pruning any session not present.
     /// </summary>
     /// <returns>true if applied; false if rejected (not the active connection, or a stale sequence).</returns>
-    public bool ApplySnapshot(string directorId, string connectionId, long sequence, IReadOnlyList<SessionDto> sessions)
+    public bool ApplySnapshot(TenantId tenant, string directorId, string connectionId, long sequence, IReadOnlyList<SessionDto> sessions)
     {
         if (sessions is null)
             throw new ArgumentNullException(nameof(sessions));
-        if (!_byDirector.TryGetValue(directorId, out var entry))
+        if (!DirectorsFor(tenant).TryGetValue(directorId, out var entry))
             return false;
 
         lock (entry.Gate)
         {
-            if (!IsAcceptable(entry, directorId, connectionId, sequence, "snapshot"))
+            if (!IsAcceptable(entry, tenant, directorId, connectionId, sequence, "snapshot"))
                 return false;
 
             entry.Sessions.Clear();
@@ -130,18 +147,18 @@ public sealed class PushedSessionStore
 
     /// <summary>Apply a single-session delta: upsert one session.</summary>
     /// <returns>true if applied; false if rejected.</returns>
-    public bool ApplyDelta(string directorId, string connectionId, long sequence, SessionDto session)
+    public bool ApplyDelta(TenantId tenant, string directorId, string connectionId, long sequence, SessionDto session)
     {
         if (session is null)
             throw new ArgumentNullException(nameof(session));
         if (string.IsNullOrEmpty(session.SessionId))
             throw new ArgumentException("session.SessionId is required", nameof(session));
-        if (!_byDirector.TryGetValue(directorId, out var entry))
+        if (!DirectorsFor(tenant).TryGetValue(directorId, out var entry))
             return false;
 
         lock (entry.Gate)
         {
-            if (!IsAcceptable(entry, directorId, connectionId, sequence, "delta"))
+            if (!IsAcceptable(entry, tenant, directorId, connectionId, sequence, "delta"))
                 return false;
 
             DiscardInboundRole(session);
@@ -175,16 +192,16 @@ public sealed class PushedSessionStore
 
     /// <summary>Apply a remove/tombstone: drop one session from the Director's set.</summary>
     /// <returns>true if applied; false if rejected.</returns>
-    public bool ApplyRemove(string directorId, string connectionId, long sequence, string sessionId)
+    public bool ApplyRemove(TenantId tenant, string directorId, string connectionId, long sequence, string sessionId)
     {
         if (string.IsNullOrEmpty(sessionId))
             throw new ArgumentException("sessionId is required", nameof(sessionId));
-        if (!_byDirector.TryGetValue(directorId, out var entry))
+        if (!DirectorsFor(tenant).TryGetValue(directorId, out var entry))
             return false;
 
         lock (entry.Gate)
         {
-            if (!IsAcceptable(entry, directorId, connectionId, sequence, "remove"))
+            if (!IsAcceptable(entry, tenant, directorId, connectionId, sequence, "remove"))
                 return false;
 
             entry.Sessions.Remove(sessionId);
@@ -201,9 +218,9 @@ public sealed class PushedSessionStore
     /// seconds) are recomputed from the absolute LastActivityAt at serve time so a quiet session's idle
     /// clock keeps advancing between pushes.
     /// </summary>
-    public IReadOnlyList<SessionDto>? TryGetFresh(string directorId, TimeSpan staleAfter)
+    public IReadOnlyList<SessionDto>? TryGetFresh(TenantId tenant, string directorId, TimeSpan staleAfter)
     {
-        if (!_byDirector.TryGetValue(directorId, out var entry))
+        if (!DirectorsFor(tenant).TryGetValue(directorId, out var entry))
             return null;
 
         lock (entry.Gate)
@@ -226,23 +243,25 @@ public sealed class PushedSessionStore
 
     /// <summary>
     /// Issue #1177 (Phase 4a): find the Director that currently owns <paramref name="sessionId"/> in a FRESH
-    /// pushed cache, without any HTTP pull. Scans each Director's cache (under its own lock) and returns the
-    /// first fresh match as (directorId, deep-copied session). Returns null when no stream-connected Director's
-    /// fresh cache holds the session, which post-cut means the session cannot be located at all - the pushed
-    /// cache is the ONLY roster source, so the caller reports "not found" rather than dialling anything.
+    /// pushed cache, without any HTTP pull. Scans <paramref name="tenant"/>'s Directors only (each under its
+    /// own lock) and returns the first fresh match as (directorId, deep-copied session). Returns null when no
+    /// stream-connected Director in this tenant holds the session, which post-cut means the session cannot be
+    /// located at all - the pushed cache is the ONLY roster source, so the caller reports "not found" rather
+    /// than dialling anything.
     ///
     /// This is the portless session-location primitive: a remotely-unreachable Director has an empty control
     /// endpoint, so an HTTP pull can never locate its sessions, but the pushed cache already records which
     /// Director pushed each session. Freshness and idle-clock recompute follow the same rules as
-    /// <see cref="TryGetFresh"/>.
+    /// <see cref="TryGetFresh"/>. Because it only walks one tenant's partition, a session id can never
+    /// resolve a Director in a different tenant.
     /// </summary>
-    public (string DirectorId, SessionDto Session)? TryLocate(string sessionId, TimeSpan staleAfter)
+    public (string DirectorId, SessionDto Session)? TryLocate(TenantId tenant, string sessionId, TimeSpan staleAfter)
     {
         if (string.IsNullOrEmpty(sessionId))
             return null;
 
         var now = _utcNow();
-        foreach (var kvp in _byDirector)
+        foreach (var kvp in DirectorsFor(tenant))
         {
             var entry = kvp.Value;
             lock (entry.Gate)
@@ -261,17 +280,18 @@ public sealed class PushedSessionStore
     }
 
     /// <summary>
-    /// Issue #1200 (auto-dismiss sweep): enumerate every FRESH pushed session across all stream-connected
-    /// Directors, each paired with its owning directorId so the caller can address a command DOWN that
-    /// Director's stream. Applies the same active-connection + freshness rules as <see cref="TryGetFresh"/>
-    /// and returns deep COPIES with recomputed idle clocks, so a caller may inspect them without touching the
-    /// cache. A Director with no active connection or a stale cache contributes nothing.
+    /// Issue #1200 (auto-dismiss sweep): enumerate every FRESH pushed session across <paramref name="tenant"/>'s
+    /// stream-connected Directors, each paired with its owning directorId so the caller can address a command
+    /// DOWN that Director's stream. Applies the same active-connection + freshness rules as
+    /// <see cref="TryGetFresh"/> and returns deep COPIES with recomputed idle clocks, so a caller may inspect
+    /// them without touching the cache. A Director with no active connection or a stale cache contributes
+    /// nothing. Scoped to one tenant - a sweep for one tenant never sees another's sessions.
     /// </summary>
-    public IReadOnlyList<(string DirectorId, SessionDto Session)> SnapshotFresh(TimeSpan staleAfter)
+    public IReadOnlyList<(string DirectorId, SessionDto Session)> SnapshotFresh(TenantId tenant, TimeSpan staleAfter)
     {
         var now = _utcNow();
         var result = new List<(string, SessionDto)>();
-        foreach (var kvp in _byDirector)
+        foreach (var kvp in DirectorsFor(tenant))
         {
             var entry = kvp.Value;
             lock (entry.Gate)
@@ -290,31 +310,31 @@ public sealed class PushedSessionStore
     }
 
     /// <summary>True when this Director currently has an active stream connection (used for diagnostics).</summary>
-    public bool IsStreamConnected(string directorId) =>
-        _byDirector.TryGetValue(directorId, out var entry) && entry.ActiveConnectionId is not null;
+    public bool IsStreamConnected(TenantId tenant, string directorId) =>
+        DirectorsFor(tenant).TryGetValue(directorId, out var entry) && entry.ActiveConnectionId is not null;
 
     /// <summary>
     /// The active stream connection id for a Director, or null when none. The Gateway uses it to address a
     /// message DOWN the stream to that Director (issue #1176, Phase 1b down-channel).
     /// </summary>
-    public string? GetActiveConnectionId(string directorId)
+    public string? GetActiveConnectionId(TenantId tenant, string directorId)
     {
-        if (!_byDirector.TryGetValue(directorId, out var entry))
+        if (!DirectorsFor(tenant).TryGetValue(directorId, out var entry))
             return null;
         lock (entry.Gate)
             return entry.ActiveConnectionId;
     }
 
-    private static bool IsAcceptable(DirectorEntry entry, string directorId, string connectionId, long sequence, string kind)
+    private static bool IsAcceptable(DirectorEntry entry, TenantId tenant, string directorId, string connectionId, long sequence, string kind)
     {
         if (!string.Equals(entry.ActiveConnectionId, connectionId, StringComparison.Ordinal))
         {
-            FileLog.Write($"[PushedSessionStore] {kind} DROPPED (not the active connection): director={directorId}, conn={Short(connectionId)}, active={Short(entry.ActiveConnectionId)}");
+            FileLog.Write($"[PushedSessionStore] {kind} DROPPED (not the active connection): tenant={tenant}, director={directorId}, conn={Short(connectionId)}, active={Short(entry.ActiveConnectionId)}");
             return false;
         }
         if (sequence <= entry.LastSequence)
         {
-            FileLog.Write($"[PushedSessionStore] {kind} DROPPED (stale sequence {sequence} <= last {entry.LastSequence}): director={directorId}, conn={Short(connectionId)}");
+            FileLog.Write($"[PushedSessionStore] {kind} DROPPED (stale sequence {sequence} <= last {entry.LastSequence}): tenant={tenant}, director={directorId}, conn={Short(connectionId)}");
             return false;
         }
         return true;

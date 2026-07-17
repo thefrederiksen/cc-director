@@ -7,6 +7,7 @@ using CcDirector.Core;
 using CcDirector.Core.Audio;
 using CcDirector.Core.Configuration;
 using CcDirector.Core.Storage;
+using CcDirector.Core.Tenancy;
 using CcDirector.Gateway.Contracts;
 using CcDirector.Gateway.Transcription;
 using CcDirector.Gateway.Voice;
@@ -280,9 +281,9 @@ public sealed class Issue1593FailedAttemptRebaselineTests : IAsyncLifetime
     /// </summary>
     private void ReportBuffer(long bufferBytes)
     {
-        var connectionId = _gateway.PushedSessions.GetActiveConnectionId(DirectorId)!;
+        var connectionId = _gateway.PushedSessions.GetActiveConnectionId(TenantId.Local, DirectorId)!;
         var applied = _gateway.PushedSessions.ApplyDelta(
-            DirectorId, connectionId, Interlocked.Increment(ref _pushSequence), SessionAt(bufferBytes));
+            TenantId.Local, DirectorId, connectionId, Interlocked.Increment(ref _pushSequence), SessionAt(bufferBytes));
         Assert.True(applied, "the test's own buffer report must actually land, or it proves nothing");
     }
 

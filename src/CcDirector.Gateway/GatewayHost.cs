@@ -5,6 +5,7 @@ using CcDirector.Core;
 using CcDirector.Core.Configuration;
 using CcDirector.Core.Drivers;
 using CcDirector.Core.Storage;
+using CcDirector.Core.Tenancy;
 using CcDirector.Core.Utilities;
 using CcDirector.Gateway.Api;
 using CcDirector.Gateway.Briefing;
@@ -604,7 +605,7 @@ public sealed class GatewayHost : IAsyncDisposable
         // which matters here more than anywhere: the instance holds the change gate that stops the stamp
         // echoing back up and re-triggering itself forever.
         FleetRoles = new Fleet.FleetRoleObserver(
-            () => PushedSessions.SnapshotFresh(AutoDismissStaleAfter),
+            () => PushedSessions.SnapshotFresh(TenantId.Local, AutoDismissStaleAfter),
             SendCommandAsync);
         // The fold push seam: stamps each session's folded display state down to its owning Director, so the
         // desktop rail stops re-folding from local facts it cannot see. Folds through the SAME method the
@@ -612,7 +613,7 @@ public sealed class GatewayHost : IAsyncDisposable
         // the answer pushed to the desktop is byte-identical to the answer every browser gets - one fold, one
         // authority. Like FleetRoles it holds the change gate that stops the stamp echoing back up forever.
         FleetDisplayState = new Fleet.FleetDisplayStateObserver(
-            () => PushedSessions.SnapshotFresh(AutoDismissStaleAfter),
+            () => PushedSessions.SnapshotFresh(TenantId.Local, AutoDismissStaleAfter),
             sessions => Api.GatewayEndpoints.StampFleetRolesAndFold(
                 sessions,
                 sessions,
@@ -951,7 +952,7 @@ public sealed class GatewayHost : IAsyncDisposable
     /// </summary>
     private string? ResolveSessionTitle(string sessionId)
     {
-        var located = PushedSessions.TryLocate(sessionId, _streamStaleAfter);
+        var located = PushedSessions.TryLocate(TenantId.Local, sessionId, _streamStaleAfter);
         var name = located?.Session.Name;
         return string.IsNullOrWhiteSpace(name) ? null : name;
     }
@@ -1787,7 +1788,7 @@ public sealed class GatewayHost : IAsyncDisposable
         // sending the kill verb DOWN the Director stream. The close has no REST fallback by design (the
         // Gateway owns session lifecycle and reaches the Director through its stream).
         _autoDismissSweeper = new Running.AutoDismissSweeper(
-            () => PushedSessions.SnapshotFresh(AutoDismissStaleAfter),
+            () => PushedSessions.SnapshotFresh(TenantId.Local, AutoDismissStaleAfter),
             SendCommandAsync);
         _autoDismissTimer = new System.Threading.Timer(_ => SweepAutoDismiss(), null, AutoDismissSweepInterval, AutoDismissSweepInterval);
         FileLog.Write($"[GatewayHost] auto-dismiss sweep started: every {AutoDismissSweepInterval.TotalSeconds:0}s");
@@ -1931,7 +1932,7 @@ public sealed class GatewayHost : IAsyncDisposable
     /// </summary>
     public async Task<string?> PingDirectorAsync(string directorId, string message, CancellationToken ct = default)
     {
-        var connectionId = PushedSessions.GetActiveConnectionId(directorId);
+        var connectionId = PushedSessions.GetActiveConnectionId(TenantId.Local, directorId);
         var hub = _app?.Services.GetService(typeof(Microsoft.AspNetCore.SignalR.IHubContext<Streaming.DirectorHub>))
             as Microsoft.AspNetCore.SignalR.IHubContext<Streaming.DirectorHub>;
         if (connectionId is null || hub is null)
@@ -1960,7 +1961,7 @@ public sealed class GatewayHost : IAsyncDisposable
     {
         if (command is null) throw new ArgumentNullException(nameof(command));
 
-        var connectionId = PushedSessions.GetActiveConnectionId(directorId);
+        var connectionId = PushedSessions.GetActiveConnectionId(TenantId.Local, directorId);
         var hub = _app?.Services.GetService(typeof(Microsoft.AspNetCore.SignalR.IHubContext<Streaming.DirectorHub>))
             as Microsoft.AspNetCore.SignalR.IHubContext<Streaming.DirectorHub>;
         if (connectionId is null || hub is null)

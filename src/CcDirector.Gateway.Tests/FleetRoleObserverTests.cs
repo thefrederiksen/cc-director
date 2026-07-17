@@ -1,3 +1,4 @@
+using CcDirector.Core.Tenancy;
 using CcDirector.Gateway.Contracts;
 using CcDirector.Gateway.Fleet;
 using CcDirector.Gateway.Streaming;
@@ -40,14 +41,14 @@ public sealed class FleetRoleObserverTests
     public void ApplyDelta_DiscardsAnyRoleTheDirectorEchoedBack()
     {
         var store = new PushedSessionStore(() => _now);
-        store.RegisterConnection("dir-A", "conn-1");
+        store.RegisterConnection(TenantId.Local, "dir-A", "conn-1");
 
         var echoed = Session("s1");
         echoed.SessionRole = SessionRoles.Worker; // what a Director sends back up after we stamped it
 
-        Assert.True(store.ApplyDelta("dir-A", "conn-1", 1, echoed));
+        Assert.True(store.ApplyDelta(TenantId.Local, "dir-A", "conn-1", 1, echoed));
 
-        var fresh = store.TryGetFresh("dir-A", _staleAfter);
+        var fresh = store.TryGetFresh(TenantId.Local, "dir-A", _staleAfter);
         Assert.NotNull(fresh);
         Assert.Null(Assert.Single(fresh!).SessionRole);
     }
@@ -58,16 +59,16 @@ public sealed class FleetRoleObserverTests
     public void ApplySnapshot_DiscardsAnyRoleTheDirectorEchoedBack()
     {
         var store = new PushedSessionStore(() => _now);
-        store.RegisterConnection("dir-A", "conn-1");
+        store.RegisterConnection(TenantId.Local, "dir-A", "conn-1");
 
         var a = Session("s1");
         a.SessionRole = SessionRoles.Worker;
         var b = Session("s2");
         b.SessionRole = SessionRoles.Manager;
 
-        Assert.True(store.ApplySnapshot("dir-A", "conn-1", 1, new[] { a, b }));
+        Assert.True(store.ApplySnapshot(TenantId.Local, "dir-A", "conn-1", 1, new[] { a, b }));
 
-        var fresh = store.TryGetFresh("dir-A", _staleAfter);
+        var fresh = store.TryGetFresh(TenantId.Local, "dir-A", _staleAfter);
         Assert.NotNull(fresh);
         Assert.All(fresh!, s => Assert.Null(s.SessionRole));
     }
