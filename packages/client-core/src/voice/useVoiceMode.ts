@@ -8,12 +8,12 @@ import {
   setVoiceMode,
   stopWingmanVoice,
   type SessionDto,
+  type VoiceDisplay,
   type WingmanVoice,
 } from "../api/client";
 import { backgroundTranscribeAndSend, type CapturedUtterance } from "../dictation/backgroundSend";
 import { ensureClip, getClipState, getVoiceMeta, saveVoiceMeta, stopPlayback, useVoiceClips, type ClipPhase } from "./clips";
 import { positionFor, saveMark, wasAutoPlayed } from "./playbackPositions";
-import { isAudioUnavailable } from "./voiceAvailability";
 import { isWorking } from "../sessions/ordering";
 
 // Session Voice mode (issue #850): the hands-free Wingman narration screen, the third session view
@@ -54,6 +54,13 @@ function sameSessionForVoice(a: SessionDto | null, b: SessionDto | null): boolea
     // as a change. Leaving it out meant the poll could carry a fresh reason every 3 seconds and this
     // guard would declare the session identical, so the screen never re-rendered to show it.
     && (a.voiceUnavailable?.state ?? null) === (b.voiceUnavailable?.state ?? null)
+    // The FOLDED voice verdict is exactly what the screen renders now, so a change in it must count as a
+    // change - otherwise a shift (e.g. notReady -> nothingToNarrate) would be declared identical and the
+    // screen would never re-render to show the new label / drop the Generate button. kind + canGenerate +
+    // label together capture every visible difference.
+    && (a.voiceDisplay?.kind ?? null) === (b.voiceDisplay?.kind ?? null)
+    && Boolean(a.voiceDisplay?.canGenerate) === Boolean(b.voiceDisplay?.canGenerate)
+    && (a.voiceDisplay?.label ?? null) === (b.voiceDisplay?.label ?? null)
     && a.statusColor === b.statusColor
     && a.assessedState === b.assessedState
     && a.activityState === b.activityState;
@@ -80,20 +87,13 @@ export function formatClock(seconds: number): string {
 // names; all behavior lives behind these members.
 export interface VoiceModeView {
   voiceOn: boolean;
+  /** The phone is holding playable clip bytes right now (a local playback fact, not a verdict). When
+   *  true the view shows the player; it takes precedence so a listener is never interrupted. */
   speaking: boolean;
-  working: boolean;
-  audioUnavailable: boolean;
-  /** WHY voice is unavailable, as the Gateway reported it (null when it has nothing to say). Render
-   *  this instead of guessing - the guess was wrong during a real outage. */
-  unavailableReason: { state?: string; text?: string; ctaLabel?: string; ctaAction?: string; ctaUrl?: string | null } | null;
-  /** The hosted service is down: not the user's fault, nothing for them to press, already retrying. */
-  unavailableIsServiceDown: boolean;
-  /** The speech call did not answer in time (a timeout, not an outage): the audio is on its way and
-   *  the Gateway is already trying again. A calm "on its way" state, never the red "down" panel. */
-  unavailableIsRetrying: boolean;
-  gatewayPreparing: boolean;
-  phoneDownloadPending: boolean;
-  agentWorking: boolean;
+  /** THE Gateway-computed verdict - badge (label + tone), message, and which actions are offered
+   *  (canPlay / canGenerate). Rendered VERBATIM; the view derives nothing from it. Null until the first
+   *  poll resolves the session. All voice-screen ruling lives on the Gateway (the client is dumb). */
+  voiceDisplay: VoiceDisplay | null;
   pollDone: boolean;
   narrative: string;
   title: string;
@@ -150,20 +150,10 @@ export function useVoiceMode(
   const [error, setError] = useState<string | null>(null);
   // Whether a real poll has resolved the true state yet. Until it has, we never paint the OFF card -
   // the screen starts blank (or ON when the roster seeded it) and only shows OFF once confirmed.
-  // NOTE: this is knowledge of the SESSION only. It says nothing about the voice - it is set as soon
-  // as listSessions resolves, while the getWingmanVoice call below has not even been made yet. The
-  // unavailable verdict used to read it as if it meant both, which is why the screen announced "no
-  // narration" and then played the narration; voiceKnown is the fact it actually needed.
+  // NOTE: this is knowledge of the SESSION only - set as soon as listSessions resolves. The Voice
+  // screen no longer derives a "voice is unavailable" verdict from timing (that ruling moved to the
+  // Gateway's VoiceDisplay); pollDone only gates the first-paint OFF card so it never flashes.
   const [pollDone, setPollDone] = useState(false);
-  // Whether the getWingmanVoice fetch has RESOLVED for this session - i.e. we have actually asked
-  // about the voice and been answered. Only then may the screen say voice is unavailable.
-  const [voiceKnown, setVoiceKnown] = useState(false);
-
-  // A different session is a different question: forget what we knew about the last one's voice, so
-  // its answer can never be used to declare THIS session's narration missing.
-  useEffect(() => {
-    setVoiceKnown(false);
-  }, [sid]);
 
   // Optimistic "this session is now a voice session" the instant Switch is tapped, so the screen
   // moves to the working state immediately (responsive UI) before the roster reflects voiceMode.
@@ -258,7 +248,6 @@ export function useVoiceMode(
 
         const v = await getWingmanVoice(sid, signal);
         setVoice((prev) => (sameVoice(prev, v) ? prev : v));
-        setVoiceKnown(true); // we have now ASKED about the voice, so a "no narration" verdict is allowed
         saveVoiceMeta(sid, v); // keep the cached state + text fresh for the next instant entry (#1015)
         // Kick the phone-side download the moment a (new) clip is ready on the Gateway.
         if (v.ready && v.generatedAt) void ensureClip(sid, v.generatedAt);
@@ -364,7 +353,6 @@ export function useVoiceMode(
     // Voice was just switched on, so nothing has asked about THIS session's narration yet. Without
     // this the old answer ("off", hence no voice) survived the switch and the screen flashed the red
     // unavailable banner over the top of the narration it had just asked the Gateway to make.
-    setVoiceKnown(false);
     try {
       // Two steps, matching the native phone app's enter-voice flow: first mark the session a Voice
       // session on the owning Director (ViewMode=Voice) so SessionDto.VoiceMode flips true and the
@@ -397,7 +385,6 @@ export function useVoiceMode(
     stopPlayback(); // stop any roster clip too
     setLocalEnabled(false);
     setVoice(null);
-    setVoiceKnown(false);
     setEnableNote("");
     setSession((prev) => (prev ? { ...prev, voiceMode: false } : prev));
     restoredForRef.current = "";
@@ -595,27 +582,10 @@ export function useVoiceMode(
   // The speaking state (and its play-triangle) is suppressed while the agent is working again: the
   // finished-turn narration is stale, so the screen falls back to the working card instead of
   // offering a replay of it.
+  // The ONE piece of state the phone still owns: whether it is holding playable clip bytes RIGHT NOW,
+  // so it can play them without pulling the rug on a listener when the agent resumes (issue #1322). This
+  // is playback, not ruling - "do I have the bytes", not "what state is voice in".
   const speaking = voiceOn && phoneReady && (voice?.spoken.length ?? 0) > 0 && !agentWorking;
-  const gatewayPreparing = voiceOn && !speaking && !agentWorking && Boolean(session?.voiceGenerating);
-  const phoneDownloadPending =
-    voiceOn && !speaking && !agentWorking && Boolean(session?.voiceAudioReady) && clip.phase !== "error";
-  // "Voice unavailable" is a POSITIVE finding - something looked and reported no narration - never the
-  // gap left when no other state matched. The rule and the two windows it closes are documented in
-  // voiceAvailability.ts; the short version is that this screen used to say "no narration is ready to
-  // play" while it was still fetching the answer, and then play the narration. Notably clipDownloading
-  // asks THIS PHONE what it holds, where phoneDownloadPending only relays what the GATEWAY holds.
-  const audioUnavailable = isAudioUnavailable({
-    voiceOn,
-    sessionKnown: pollDone,
-    voiceKnown,
-    speaking,
-    agentWorking,
-    gatewayPreparing,
-    phoneDownloadPending,
-    clipDownloading: clip.phase === "downloading",
-    hasEnableNote: enableNote.length > 0,
-  });
-  const working = voiceOn && !speaking && !audioUnavailable;
   const narrative = voice?.spoken ?? "";
   const title = session?.number ? `${session.number} ${name ?? "Session"}` : name ?? "Session";
 
@@ -632,31 +602,17 @@ export function useVoiceMode(
     void onSwitchOn();
   }, [autoSwitchOn, pollDone, voiceOn, onSwitchOn]);
 
-  // WHY voice is unavailable, straight from the Gateway. This field has been arriving on every poll and
-  // being thrown away: it had ZERO readers, while the screens hardcoded a guess ("the Gateway has not
-  // made one, or this session's computer is offline") that was simply speculation - and during the
-  // 2026-07-15 speech outage it was flatly false on both counts. Surface the real reason, and let the
-  // views render it instead of inventing one. Null when the Gateway has nothing to say.
-  const unavailableReason = session?.voiceUnavailable ?? null;
-  // A service outage is not the user's fault and there is nothing for them to press: the Gateway is
-  // already backing off and retrying. Offering a "Generate narration now" button here would be a lie.
-  const unavailableIsServiceDown = unavailableReason?.state === "ServiceDown";
-  // A timeout is NOT an outage: the service did not answer in time, the audio is still coming, and the
-  // sweep is already trying again. Distinct from ServiceDown so the screen can say "on its way" instead
-  // of the red "Voice service down" panel - the wording that was a lie on a one-off slow call.
-  const unavailableIsRetrying = unavailableReason?.state === "Retrying";
+  // THE VERDICT, folded by the Gateway (see the C# VoiceDisplayFold) and rendered VERBATIM. Every piece
+  // of "what does the Voice screen show and offer" ruling the client used to do for itself - the badge,
+  // the message, whether a Generate button appears, retrying vs service-down vs nothing-to-narrate - now
+  // lives on the Gateway. The client is dumb: it reads this and renders it, and derives nothing. That is
+  // the law (docs/new_architecture/session-state.html). Null until the first poll resolves the session.
+  const voiceDisplay: VoiceDisplay | null = session?.voiceDisplay ?? null;
 
   return {
     voiceOn,
     speaking,
-    working,
-    audioUnavailable,
-    unavailableReason,
-    unavailableIsServiceDown,
-    unavailableIsRetrying,
-    gatewayPreparing,
-    phoneDownloadPending,
-    agentWorking,
+    voiceDisplay,
     pollDone,
     narrative,
     title,

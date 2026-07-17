@@ -43,85 +43,71 @@ export function VoiceTab({ sessionId }: { sessionId: string | undefined }) {
           </div>
         )}
 
-        {/* Render the reason the GATEWAY gave (v.unavailableReason), never a guess. This block used to
-            hardcode "the Gateway has not made one, or this session's computer is offline" - the exact
-            string the mobile screen had, duplicated character-for-character, and false on both counts
-            during the 2026-07-15 speech outage. Both views now read the shared hook, so they cannot
-            drift apart again; the fallback line is only for when the Gateway has said nothing. */}
-        {v.audioUnavailable && (
-          <>
-            {/* A timeout (Retrying) is not an outage: the audio is on its way and the Gateway is trying
-                again. Calm yellow "on its way", never the red "Voice service down" - that red panel is
-                right for an answered outage (ServiceDown) and a lie for a single slow call. */}
-            <div className="voice-statusbar">
-              <span className={"voice-state " + (v.unavailableIsRetrying ? "voice-state-yellow" : "voice-state-red")}>
-                {v.unavailableIsRetrying
-                  ? "Voice on its way"
-                  : v.unavailableIsServiceDown
-                    ? "Voice service down"
-                    : "Voice unavailable"}
-              </span>
-            </div>
-            <div className="voice-narr">
-              <div className="voice-narr-title">
-                {v.unavailableIsRetrying
-                  ? "Taking a moment - still trying."
-                  : v.unavailableIsServiceDown
-                    ? "This is not your fault."
-                    : "No narration is ready to play."}
-              </div>
-              <div className="voice-narr-body">
-                {v.unavailableReason?.text
-                  ? v.unavailableReason.text
-                  : v.clipPhase === "error"
-                    ? "The browser could not download the spoken audio for this turn. Click Generate narration to make it again."
-                    : v.narrative.length > 0
-                      ? v.narrative
-                      : "There is no spoken summary for this session's latest turn yet. Click Generate narration to make one now."}
-              </div>
-            </div>
-            {/* No button while the service is down OR a timeout is retrying: it races the same slow or
-                failing call, and the Gateway is already backing off and retrying on its own. */}
-            {!v.unavailableIsServiceDown && !v.unavailableIsRetrying && (
-              <button
-                type="button"
-                className="voice-switch"
-                onClick={() => void v.onGenerateNow()}
-                disabled={v.regenerating}
-              >
-                {v.regenerating ? "Generating narration..." : "Generate narration now"}
-              </button>
-            )}
-          </>
-        )}
-
-        {/* B. WORKING - the Wingman is reading + the browser is downloading the clip, or the agent has
-            resumed and the finished-turn narration has been retired. */}
-        {v.working && (
-          <>
-            <div className="voice-statusbar">
-              <span className="voice-state voice-state-yellow">
-                {v.agentWorking ? "Agent is working..." : "Wingman is reading..."}
-              </span>
-            </div>
-            <div className="voice-narr">
-              <div className="voice-narr-title">{v.agentWorking ? "Working" : "Listening"}</div>
-              <div className="voice-narr-body">
-                {v.enableNote.length > 0
-                  ? v.enableNote
-                  : v.agentWorking
-                    ? "The agent is working on the next step. The Wingman will narrate the next completed turn."
-                    : "Preparing the spoken summary of the latest turn. This will play automatically."}
-              </div>
-            </div>
-            {v.enableNote.length === 0 && (
-              <div className="voice-working">
-                <span className="voice-spinner" aria-hidden="true" />
-                <span className="voice-ref">{v.agentWorking ? "working" : "rendering audio + downloading"}</span>
-              </div>
-            )}
-          </>
-        )}
+        {/* THE GATEWAY VERDICT, rendered verbatim (the client is dumb). This view used to derive its own
+            "audio unavailable" answer and branch on retrying / service-down / reason to choose the badge,
+            the message, and whether a Generate button appeared - the same guessing the mobile screen did,
+            and the same dead-end Generate button it produced. All of that ruling is now folded once on the
+            Gateway (VoiceDisplayFold) and arrives as v.voiceDisplay; this renders its label, tone, message,
+            and a Generate button ONLY when the Gateway says one can help. */}
+        {(() => {
+          const vd = v.voiceDisplay;
+          const busy = v.voiceOn && !v.speaking && (vd?.kind === "preparing" || vd?.kind === "working");
+          const downloading = v.voiceOn && !v.speaking && vd?.kind === "ready";
+          const status =
+            v.voiceOn && !v.speaking && vd != null &&
+            vd.kind !== "ready" && vd.kind !== "preparing" && vd.kind !== "working" && vd.kind !== "off";
+          if (busy && vd) {
+            return (
+              <>
+                <div className="voice-statusbar">
+                  <span className={"voice-state voice-state-" + vd.tone}>{vd.label}</span>
+                </div>
+                <div className="voice-narr"><div className="voice-narr-body">{vd.message}</div></div>
+                <div className="voice-working">
+                  <span className="voice-spinner" aria-hidden="true" />
+                  <span className="voice-ref">{vd.kind === "working" ? "working" : "rendering audio"}</span>
+                </div>
+              </>
+            );
+          }
+          if (downloading) {
+            return (
+              <>
+                <div className="voice-statusbar">
+                  <span className="voice-state voice-state-yellow">Voice on its way</span>
+                </div>
+                <div className="voice-narr">
+                  <div className="voice-narr-body">Downloading the spoken audio. It will play automatically.</div>
+                </div>
+                <div className="voice-working">
+                  <span className="voice-spinner" aria-hidden="true" />
+                  <span className="voice-ref">downloading</span>
+                </div>
+              </>
+            );
+          }
+          if (status && vd) {
+            return (
+              <>
+                <div className="voice-statusbar">
+                  <span className={"voice-state voice-state-" + vd.tone}>{vd.label}</span>
+                </div>
+                <div className="voice-narr"><div className="voice-narr-body">{vd.message}</div></div>
+                {vd.canGenerate && (
+                  <button
+                    type="button"
+                    className="voice-switch"
+                    onClick={() => void v.onGenerateNow()}
+                    disabled={v.regenerating}
+                  >
+                    {v.regenerating ? "Generating narration..." : "Generate narration now"}
+                  </button>
+                )}
+              </>
+            );
+          }
+          return null;
+        })()}
 
         {/* C. SPEAKING - the audio bar and Respond are pinned at the top; the response text scrolls
             below. */}

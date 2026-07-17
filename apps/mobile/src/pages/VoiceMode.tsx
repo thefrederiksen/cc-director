@@ -56,12 +56,7 @@ export function VoiceMode() {
   const {
     voiceOn,
     speaking,
-    working,
-    audioUnavailable,
-    unavailableReason,
-    unavailableIsServiceDown,
-    unavailableIsRetrying,
-    agentWorking,
+    voiceDisplay,
     pollDone,
     narrative,
     title,
@@ -72,12 +67,10 @@ export function VoiceMode() {
     dur,
     enabling,
     regenerating,
-    enableNote,
     responding,
     setResponding,
     setPlaying,
     clipUrl,
-    clipPhase,
     onSwitchOn,
     onSwitchOff,
     onGenerateNow,
@@ -91,6 +84,18 @@ export function VoiceMode() {
     onRespondSend,
     onRespondSendAudio,
   } = useVoiceMode(sessionId, { seededVoiceOn, autoSwitchOn });
+
+  // Dumb-renderer mapping: the Gateway's voiceDisplay verdict decides which card shows. The view only
+  // maps its kind to a layout and renders its label / message / actions VERBATIM - it derives no state.
+  // The one thing the phone still owns is `speaking` (it holds playable bytes right now), which takes
+  // precedence so a listener is never interrupted. When the verdict is "ready" but the phone is not yet
+  // speaking, the bytes are still downloading locally - a phone-local affordance, not a Gateway state.
+  const vd = voiceDisplay;
+  const showDownloading = voiceOn && !speaking && vd?.kind === "ready";
+  const showBusy = voiceOn && !speaking && (vd?.kind === "preparing" || vd?.kind === "working");
+  const showStatus =
+    voiceOn && !speaking && vd != null &&
+    vd.kind !== "ready" && vd.kind !== "preparing" && vd.kind !== "working" && vd.kind !== "off";
 
   // Snooze and Remove share this one live held-state, so the bottom bar and the overflow menu can
   // never disagree about it.
@@ -106,7 +111,7 @@ export function VoiceMode() {
         extraMenuItems={
           voiceOn ? (
             <>
-              {!audioUnavailable && (
+              {(speaking || vd?.canPlay) && (
                 <button
                   type="button"
                   className="menu-item"
@@ -169,52 +174,63 @@ export function VoiceMode() {
           </div>
         )}
 
-        {/* Voice is unavailable. The Gateway usually KNOWS why, and now says so (unavailableReason).
-            This screen used to hardcode a guess - "the Gateway has not made one, or this session's
-            computer is offline" - which during the 2026-07-15 speech outage was false on both counts,
-            and left the owner unable to tell an outage from a bug for 45 minutes. Never invent a cause
-            here; render what the Gateway reported, and only fall back to the generic line when it has
-            said nothing. */}
-        {audioUnavailable && (
+        {/* THE GATEWAY VERDICT, rendered verbatim. This screen used to RULE for itself here - deriving
+            "is the audio unavailable" from nine local inputs and branching on retrying / service-down /
+            reason to pick the badge, the message, and whether a Generate button appeared. That guessing
+            is what put a dead-end "Generate narration now" button next to a red "Voice unavailable" badge
+            when the session was simply waiting on a prompt. Now the Gateway folds one voiceDisplay verdict
+            (see VoiceDisplayFold) and this renders it: label, tone, message, and a Generate button ONLY
+            when the Gateway says one can help (canGenerate). The client derives nothing. */}
+
+        {/* Busy: the agent is working, or the Wingman is preparing this turn's narration. Both come from
+            the Gateway (kind = working / preparing); the phone only shows the spinner + its words. */}
+        {showBusy && vd && (
           <>
-            {/* A timeout (Retrying) is NOT an outage: the audio just is not ready yet and the Gateway
-                is trying again. Show a calm yellow "on its way", never the red "Voice service down" -
-                that red panel is right for an answered outage (ServiceDown) and a lie for a slow call. */}
             <div className="voice-statusbar">
-              <span className={"voice-state " + (unavailableIsRetrying ? "voice-state-yellow" : "voice-state-red")}>
-                {unavailableIsRetrying
-                  ? "Voice on its way"
-                  : unavailableIsServiceDown
-                    ? "Voice service down"
-                    : "Voice unavailable"}
-              </span>
+              <span className={"voice-state voice-state-" + vd.tone}>{vd.label}</span>
             </div>
             <div className="voice-narr">
-              {/* "This is not your fault." was the headline here, and it told the reader nothing: it
-                  answered a question nobody asked (whose fault?) instead of the one everybody asks
-                  (what is going on?). A headline has one job - say what happened - and the sentence
-                  underneath, which comes from the Gateway, says what is being done about it. */}
-              <div className="voice-narr-title">
-                {unavailableIsRetrying
-                  ? "Taking a moment - still trying."
-                  : unavailableIsServiceDown
-                    ? "The speech service did not answer."
-                    : "No narration is ready to play."}
-              </div>
+              <div className="voice-narr-body">{vd.message}</div>
+            </div>
+            <div className="voice-working">
+              <span className="voice-spinner" aria-hidden="true" />
+              <span className="voice-ref">{vd.kind === "working" ? "working" : "rendering audio"}</span>
+            </div>
+          </>
+        )}
+
+        {/* Downloading: the Gateway has the audio (kind = ready) but this phone has not pulled the bytes
+            down yet. That last hop is the phone's own, so the "downloading" words are the phone's - the
+            verdict (there IS audio) is still the Gateway's. */}
+        {showDownloading && (
+          <>
+            <div className="voice-statusbar">
+              <span className="voice-state voice-state-yellow">Voice on its way</span>
+            </div>
+            <div className="voice-narr">
               <div className="voice-narr-body">
-                {unavailableReason?.text
-                  ? unavailableReason.text
-                  : clipPhase === "error"
-                    ? "The phone could not download the spoken audio for this turn. Tap Generate narration to make it again."
-                    : narrative.length > 0
-                      ? narrative
-                      : "There is no spoken summary for this session's latest turn yet. Tap Generate narration to make one now."}
+                Downloading the spoken audio to your phone. It will play automatically.
               </div>
             </div>
-            {/* No button during a service outage OR a timeout-retry: the Gateway is already backing off
-                and retrying, and pressing Generate would race the same slow/failing call. A button that
-                cannot help is worse than no button - it invites you to keep trying and blame yourself. */}
-            {!unavailableIsServiceDown && !unavailableIsRetrying && (
+            <div className="voice-working">
+              <span className="voice-spinner" aria-hidden="true" />
+              <span className="voice-ref">downloading</span>
+            </div>
+          </>
+        )}
+
+        {/* Every other verdict - retrying, service down, blocked (credits / key), nothing to narrate, or
+            not-made-yet. One uniform card: the Gateway's tone + label + message, and a Generate button
+            ONLY when the Gateway says it can help. No dead-end button, ever. */}
+        {showStatus && vd && (
+          <>
+            <div className="voice-statusbar">
+              <span className={"voice-state voice-state-" + vd.tone}>{vd.label}</span>
+            </div>
+            <div className="voice-narr">
+              <div className="voice-narr-body">{vd.message}</div>
+            </div>
+            {vd.canGenerate && (
               <button
                 type="button"
                 className="voice-switch"
@@ -223,35 +239,6 @@ export function VoiceMode() {
               >
                 {regenerating ? "Generating narration..." : "Generate narration now"}
               </button>
-            )}
-          </>
-        )}
-
-        {/* B. WORKING - either the Wingman is reading + the phone is downloading the clip, or (when
-            agentWorking) the agent has resumed and the finished-turn narration has been retired: show
-            truthful copy for each so we never promise auto-play that the working gate suppresses. */}
-        {working && (
-          <>
-            <div className="voice-statusbar">
-              <span className="voice-state voice-state-yellow">
-                {agentWorking ? "Agent is working..." : "Wingman is reading..."}
-              </span>
-            </div>
-            <div className="voice-narr">
-              <div className="voice-narr-title">{agentWorking ? "Working" : "Listening"}</div>
-              <div className="voice-narr-body">
-                {enableNote.length > 0
-                  ? enableNote
-                  : agentWorking
-                    ? "The agent is working on the next step. The Wingman will narrate the next completed turn."
-                    : "Preparing the spoken summary of the latest turn. This will play automatically."}
-              </div>
-            </div>
-            {enableNote.length === 0 && (
-              <div className="voice-working">
-                <span className="voice-spinner" aria-hidden="true" />
-                <span className="voice-ref">{agentWorking ? "working" : "rendering audio + downloading"}</span>
-              </div>
             )}
           </>
         )}

@@ -206,6 +206,14 @@ Dispatcher.BeginInvoke(() =>
 });
 ```
 
+### 7. THE CLIENT IS DUMB - THE GATEWAY OWNS ALL RULING
+
+**Every display verdict is computed on the Gateway and pushed; clients only render it, verbatim.** Colors, labels, triage buckets, and the voice-mode display state (badge, message, and which actions are offered) are all FOLDED once on the Gateway and stamped onto the session the client reads. A client never re-derives a verdict, never guesses, never branches to decide what a state "means".
+
+**Why:** a client that rules for itself will, the moment the Gateway hands it something it did not expect, render something *plausible* instead of something *true*. That is exactly how the Voice screen came to show a red "Voice unavailable" badge next to a "Generate narration now" button that could never work: the Gateway sent no reason, so the phone GUESSED "offer a button". A dumb client cannot guess. See `docs/new_architecture/session-state.html`.
+
+**How to apply:** compute the verdict in one Gateway place (e.g. `SessionOrdering` for color/label/triage, `VoiceDisplayFold` for the voice screen), put the finished strings and booleans on the DTO, and have the client read them. If you find yourself writing a conditional in a `.tsx`/`.xaml` view that decides *what a state means* (as opposed to *how to lay out* what the Gateway already decided), move it to the Gateway. Adding a new state is one edit in the fold, never a new branch in every client.
+
 ---
 
 ## Naming Conventions

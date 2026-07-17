@@ -1238,6 +1238,14 @@ a.banner-btn {
   border: 1px solid rgba(241, 76, 76, 0.45);
 }
 
+/* Neutral tone: an informational state that is not an error (e.g. "Nothing to read aloud" while a
+   session waits on a prompt). Muted, not alarming. Kept in step with the cockpit stylesheet. */
+.voice-state-neutral {
+  background: rgba(148, 163, 184, 0.14);
+  color: var(--text-dim);
+  border: 1px solid rgba(148, 163, 184, 0.4);
+}
+
 .voice-ref {
   font-size: 11px;
   color: var(--text-dim);

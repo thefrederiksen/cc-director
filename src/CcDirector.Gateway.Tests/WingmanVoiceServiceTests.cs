@@ -294,6 +294,84 @@ public sealed class WingmanVoiceServiceTests
         Assert.Equal(HostedAiState.Retrying, svc.VoiceUnavailableFor("sid-1"));
     }
 
+    // ---------- "Nothing to narrate": the session is waiting on a prompt, no text reply to read ----------
+
+    [Fact]
+    public async Task GenerateAsync_NoTextWidget_RecordsNothingToNarrate_NoAudio_NoFailureReason()
+    {
+        // The screenshot's session: waiting on a prompt/menu, so the latest turn has no Text widget. The
+        // auto path must record the honest "nothing to narrate" fact (so the Voice screen says so), call
+        // no model, produce no audio, and set NO failure reason - it is not a failure, it is just empty.
+        var director = new TunnelReadStub("{\"widgets\":[{\"kind\":\"ToolUse\",\"content\":\"running a tool\"}]}");
+        var dir = Path.Combine(Path.GetTempPath(), "wmvs-nothing-" + Guid.NewGuid().ToString("N"));
+        var persistPath = Path.Combine(dir, "voice-sessions.json");
+        try
+        {
+            var brain = new RecordingBrain();
+            var svc = ServiceWithBrainAndTts(brain, new byte[] { 1 }, persistPath);
+
+            await svc.GenerateAsync("sid-1", RouteFor(director), CancellationToken.None, showReadingWindow: true);
+
+            Assert.True(svc.NothingToNarrateFor("sid-1"));
+            Assert.False(svc.HasVoice("sid-1"));
+            Assert.Null(svc.VoiceUnavailableFor("sid-1"));   // NOT a failure - no Retrying/ServiceDown
+            Assert.Equal(0, brain.AskCount);                 // nothing to translate, so the model was never called
+        }
+        finally { try { Directory.Delete(dir, recursive: true); } catch { /* best-effort */ } }
+    }
+
+    [Fact]
+    public async Task GenerateAsync_WithTextWidget_ClearsStaleNothingToNarrate_AndNarrates()
+    {
+        // A text reply appeared: the auto path clears any stale "nothing to narrate" and makes the voice.
+        var director = new TunnelReadStub("{\"widgets\":[{\"kind\":\"Text\",\"content\":\"the reply to read\"}]}");
+        var dir = Path.Combine(Path.GetTempPath(), "wmvs-nowtext-" + Guid.NewGuid().ToString("N"));
+        var persistPath = Path.Combine(dir, "voice-sessions.json");
+        try
+        {
+            var brain = new RecordingBrain();
+            var svc = ServiceWithBrainAndTts(brain, new byte[] { 9, 9, 9 }, persistPath);
+            svc.SetNothingToNarrate("sid-1", true);   // a stale marker from an earlier empty read
+
+            await svc.GenerateAsync("sid-1", RouteFor(director), CancellationToken.None, showReadingWindow: false);
+
+            Assert.False(svc.NothingToNarrateFor("sid-1"));   // cleared - there IS text now
+            Assert.True(svc.HasVoice("sid-1"));
+        }
+        finally { try { Directory.Delete(dir, recursive: true); } catch { /* best-effort */ } }
+    }
+
+    [Fact]
+    public void SetNothingToNarrate_TogglesTheFact()
+    {
+        var svc = NewService();
+        Assert.False(svc.NothingToNarrateFor("s"));
+        svc.SetNothingToNarrate("s", true);
+        Assert.True(svc.NothingToNarrateFor("s"));
+        svc.SetNothingToNarrate("s", false);
+        Assert.False(svc.NothingToNarrateFor("s"));
+    }
+
+    [Fact]
+    public void OnSessionWorking_ClearsNothingToNarrate()
+    {
+        // A new turn supersedes the old "nothing to narrate" verdict - it is re-evaluated on the next turn-end.
+        var svc = NewService();
+        svc.SetNothingToNarrate("s", true);
+        svc.OnSessionWorking("s");
+        Assert.False(svc.NothingToNarrateFor("s"));
+    }
+
+    [Fact]
+    public void Unmark_ClearsNothingToNarrate()
+    {
+        var svc = NewService();
+        svc.Mark("s");
+        svc.SetNothingToNarrate("s", true);
+        svc.Unmark("s");
+        Assert.False(svc.NothingToNarrateFor("s"));
+    }
+
     /// <summary>A voice service wired to a recording brain and a text-to-speech stub that returns
     /// <paramref name="audio"/>, so the full turn-end path (fetch -> translate -> synthesize -> store)
     /// runs without a live model or provider.</summary>

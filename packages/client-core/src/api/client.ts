@@ -14,6 +14,9 @@ import { publishDictationStatus } from "../dictation/status";
 import { reportGatewayReachable, reportGatewayUnreachable } from "../connection/health";
 
 export type SessionDto = components["schemas"]["SessionDto"];
+/** The Gateway-computed voice display verdict (see the C# VoiceDisplay). Rendered verbatim by the Voice
+ *  screen; the client never re-derives it - all voice-screen ruling lives on the Gateway. */
+export type VoiceDisplay = components["schemas"]["VoiceDisplay"];
 
 // Request bodies are typed from the generated OpenAPI schema (the C# DTOs stay the source of
 // truth). The buffer/escape/interrupt/transcription responses are not declared in the schema (the
