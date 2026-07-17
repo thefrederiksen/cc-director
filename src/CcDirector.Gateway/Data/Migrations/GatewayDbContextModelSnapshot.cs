@@ -138,8 +138,11 @@ namespace CcDirector.Gateway.Data.Migrations
 
                     b.Property<string>("Name")
                         .IsRequired()
-                        .HasColumnType("TEXT")
-                        .UseCollation("NOCASE");
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("NameFold")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
 
                     b.Property<string>("TenantId")
                         .IsRequired()
@@ -150,7 +153,7 @@ namespace CcDirector.Gateway.Data.Migrations
 
                     b.HasIndex("TenantId");
 
-                    b.HasIndex("TenantId", "Name")
+                    b.HasIndex("TenantId", "NameFold")
                         .IsUnique();
 
                     b.ToTable("worklists", (string)null);

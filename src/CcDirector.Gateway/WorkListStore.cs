@@ -95,16 +95,17 @@ public sealed class WorkListStore
         if (string.IsNullOrWhiteSpace(name))
             throw new ArgumentException("list name is required", nameof(name));
 
+        var fold = Fold(name);
         lock (_gate)
         {
             using var ctx = _db.CreateContext();
-            if (ctx.WorkLists.Any(e => e.Name == name)) // NOCASE column collation makes this case-insensitive
+            if (ctx.WorkLists.Any(e => e.NameFold == fold)) // case-insensitive via the ToUpperInvariant fold
             {
                 FileLog.Write($"[WorkListStore] Create: name={name} already exists");
                 return false;
             }
 
-            ctx.WorkLists.Add(new WorkListEntity { Id = Guid.NewGuid(), TenantId = ctx.ActiveTenant!, Name = name });
+            ctx.WorkLists.Add(new WorkListEntity { Id = Guid.NewGuid(), TenantId = ctx.ActiveTenant!, Name = name, NameFold = fold! });
             ctx.SaveChanges();
             FileLog.Write($"[WorkListStore] Create: name={name}");
             return true;
@@ -137,7 +138,7 @@ public sealed class WorkListStore
         lock (_gate)
         {
             using var ctx = _db.CreateContext();
-            var list = ctx.WorkLists.AsNoTracking().FirstOrDefault(e => e.Name == name);
+            var list = ctx.WorkLists.AsNoTracking().FirstOrDefault(e => e.NameFold == Fold(name));
             if (list is null) return null;
             var items = ctx.WorkListItems.AsNoTracking()
                 .Where(i => i.WorkListId == list.Id)
@@ -165,7 +166,7 @@ public sealed class WorkListStore
         lock (_gate)
         {
             using var ctx = _db.CreateContext();
-            var list = ctx.WorkLists.FirstOrDefault(e => e.Name == name);
+            var list = ctx.WorkLists.FirstOrDefault(e => e.NameFold == Fold(name));
             if (list is null)
             {
                 FileLog.Write($"[WorkListStore] AppendItem: no such list name={name}");
@@ -204,7 +205,7 @@ public sealed class WorkListStore
         lock (_gate)
         {
             using var ctx = _db.CreateContext();
-            var list = ctx.WorkLists.FirstOrDefault(e => e.Name == name);
+            var list = ctx.WorkLists.FirstOrDefault(e => e.NameFold == Fold(name));
             if (list is null)
             {
                 FileLog.Write($"[WorkListStore] Reorder: no such list name={name}");
@@ -235,7 +236,7 @@ public sealed class WorkListStore
         lock (_gate)
         {
             using var ctx = _db.CreateContext();
-            var list = ctx.WorkLists.FirstOrDefault(e => e.Name == name);
+            var list = ctx.WorkLists.FirstOrDefault(e => e.NameFold == Fold(name));
             if (list is null)
             {
                 FileLog.Write($"[WorkListStore] RemoveItem: no such list name={name}");
@@ -274,7 +275,7 @@ public sealed class WorkListStore
         lock (_gate)
         {
             using var ctx = _db.CreateContext();
-            var list = ctx.WorkLists.FirstOrDefault(e => e.Name == name);
+            var list = ctx.WorkLists.FirstOrDefault(e => e.NameFold == Fold(name));
             if (list is null)
             {
                 FileLog.Write($"[WorkListStore] Claim: no such list name={name}");
@@ -303,7 +304,7 @@ public sealed class WorkListStore
         lock (_gate)
         {
             using var ctx = _db.CreateContext();
-            var list = ctx.WorkLists.FirstOrDefault(e => e.Name == name);
+            var list = ctx.WorkLists.FirstOrDefault(e => e.NameFold == Fold(name));
             if (list is null)
             {
                 FileLog.Write($"[WorkListStore] Release: no such list name={name}");
@@ -343,6 +344,13 @@ public sealed class WorkListStore
         LastLoadStaleClaimsReleased = released;
         FileLog.Write($"[WorkListStore] Load: {ctx.WorkLists.Count()} list(s) present, staleClaimsReleased={released}");
     }
+
+    /// <summary>
+    /// The case-fold of a name: <c>ToUpperInvariant</c>, which reproduces <see cref="StringComparer.OrdinalIgnoreCase"/>
+    /// across the full Unicode range (unlike an ASCII-only database collation). Null in, null out, so a null
+    /// name matches no row.
+    /// </summary>
+    private static string? Fold(string? name) => name?.ToUpperInvariant();
 
     private static WorkListItemEntity NewItem(WorkListEntity list, string tenantId, int position, WorkListItemRef item) => new()
     {
@@ -387,7 +395,15 @@ public sealed class WorkListStore
 
         using var ctx = _db.CreateContext();
         if (ctx.WorkLists.Any())
+        {
+            // Recovery (idempotent): a prior import committed but its rename-aside did not complete (the file
+            // was briefly locked), so the legacy file lingers even though the data is already in the database.
+            // Rename it aside now - NEVER re-importing over existing rows - so the leftover file is cleaned up
+            // and can never be re-imported. Best-effort: if the rename fails again the data is safe and the
+            // next boot retries.
+            TryRenameAside();
             return;
+        }
 
         StoreFile? parsed;
         try
@@ -418,6 +434,7 @@ public sealed class WorkListStore
                 Id = Guid.NewGuid(),
                 TenantId = ctx.ActiveTenant!,
                 Name = list.Name,
+                NameFold = Fold(list.Name)!,
                 Consumer = list.Consumer,
             };
             ctx.WorkLists.Add(entity);
@@ -427,7 +444,25 @@ public sealed class WorkListStore
         ctx.SaveChanges();
         tx.Commit();
 
-        LegacyJsonImport.RenameAside(_legacyJsonPath, "[WorkListStore]");
+        TryRenameAside();
         FileLog.Write($"[WorkListStore] Import: {lists.Count} list(s) imported from {_legacyJsonPath}");
+    }
+
+    /// <summary>
+    /// Rename the imported legacy file aside, best-effort. The data is already committed to the database and
+    /// the empty-table guard prevents any re-import, so a failed rename (e.g. the file is briefly locked) must
+    /// NOT fail the Gateway - it is logged and left for the next boot's recovery to retry.
+    /// </summary>
+    private void TryRenameAside()
+    {
+        try
+        {
+            LegacyJsonImport.RenameAside(_legacyJsonPath, "[WorkListStore]");
+        }
+        catch (Exception ex)
+        {
+            FileLog.Write($"[WorkListStore] Import: rename-aside of {_legacyJsonPath} failed (data is safe in the " +
+                          $"database; the next boot retries): {ex.Message}");
+        }
     }
 }

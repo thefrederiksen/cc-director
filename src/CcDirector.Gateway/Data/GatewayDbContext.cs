@@ -84,10 +84,13 @@ public sealed class GatewayDbContext : DbContext
             b.HasKey(e => e.Id);
             // Items are an ORDERED child table (worklist_items) with a cascade so a list's items go with it.
             b.HasMany(e => e.Items).WithOne().HasForeignKey(i => i.WorkListId).OnDelete(DeleteBehavior.Cascade);
-            // The name is unique per tenant, case-insensitively. With the provider-aware case-insensitive
-            // collation on Name (applied below), this unique index enforces "backlog" and "Backlog" as one
-            // name within a tenant - matching the store's OrdinalIgnoreCase behaviour.
-            b.HasIndex(e => new { e.TenantId, e.Name }).IsUnique();
+            // The name is unique per tenant, case-insensitively, via the .NET-computed fold column NameFold
+            // (= Name.ToUpperInvariant(), kept in sync by the store). ToUpperInvariant reproduces
+            // StringComparer.OrdinalIgnoreCase across the full Unicode range - a database collation like SQLite
+            // NOCASE folds only ASCII and would let accented case-variants NOT collide. This unique index is a
+            // plain (binary) index over the folded values, so it is fully provider-AGNOSTIC (no NOCASE, no
+            // citext, no ILike). This folded-shadow-column is the seam the #340 case-insensitive nickname reuses.
+            b.HasIndex(e => new { e.TenantId, e.NameFold }).IsUnique();
         });
 
         modelBuilder.Entity<WorkListItemEntity>(b =>
@@ -97,15 +100,6 @@ public sealed class GatewayDbContext : DbContext
             // Ordered read + the per-list lookup path (Reorder / RemoveItem) go through (WorkListId, Position).
             b.HasIndex(e => new { e.WorkListId, e.Position });
         });
-
-        // The case-insensitive-name discipline, PROVIDER-SELECTED, not hardcoded: on SQLite a NOCASE column
-        // collation makes both the equality lookups and the unique index case-insensitive. The Postgres
-        // provider will select its own equivalent later (a citext column or a lower() unique index); the
-        // model shape above is unchanged, only this collation call is provider-specific. This is the seam the
-        // #340 case-insensitive nickname will reuse. EF.Functions.ILike is deliberately NOT used - it is
-        // Postgres-only and does not translate on SQLite.
-        if (Database.IsSqlite())
-            modelBuilder.Entity<WorkListEntity>().Property(e => e.Name).UseCollation("NOCASE");
 
         // Tenant scoping - the tenant_id column plus the global query filter - applied uniformly to every
         // entity that derives from TenantScopedEntity, so future stores inherit it by deriving from the base.

@@ -187,6 +187,33 @@ public sealed class WorkListStorePersistenceTests : IDisposable
         Assert.Equal(corrupt, File.ReadAllText(legacy));
     }
 
+    [Fact]
+    public void Import_RenameAsideFails_NextConstructionRenamesAside_WithoutReimporting()
+    {
+        var legacy = LegacyPath();
+        WriteLegacyFile(legacy, new WorkListDto { Name = "backlog", Items = { Ref("github", "1") } });
+
+        // First construction: the import reads the file and COMMITS to the database, but the rename-aside
+        // fails because the file is held open (FileShare.Read lets the read succeed while File.Move cannot
+        // delete the source). The failed rename is best-effort, so construction still completes and the file
+        // lingers.
+        using (new FileStream(legacy, FileMode.Open, FileAccess.Read, FileShare.Read))
+        {
+            var store1 = NewStore(legacy);
+            Assert.Single(store1.ListAll());        // imported into the database
+            Assert.NotNull(store1.Get("backlog"));
+            Assert.True(File.Exists(legacy));       // the rename failed, so the legacy file lingers
+        }
+
+        // Next construction (file released): the table is already populated, so it does NOT re-import - it
+        // renames the lingering file aside (idempotent recovery), self-healing the earlier failed rename.
+        var store2 = NewStore(legacy);
+        Assert.Single(store2.ListAll());            // still exactly one list -> never re-imported over existing rows
+        Assert.Equal(new[] { "1" }, store2.Get("backlog")!.Items.Select(i => i.Id).ToArray());
+        Assert.False(File.Exists(legacy));          // renamed aside on recovery
+        Assert.Single(Directory.GetFiles(Path.GetDirectoryName(legacy)!, Path.GetFileName(legacy) + ".migrated-*"));
+    }
+
     /// <summary>
     /// Interrupted-drain recovery (issue #301 AC, D-2): a runner that died mid-drain left its claim persisted
     /// (a hard crash never runs a graceful release), the queue survives, the stale claim is released on the
