@@ -1,49 +1,62 @@
 using System.Text.Json;
 using CcDirector.Core.Utilities;
 using CcDirector.Gateway.Contracts;
+using CcDirector.Gateway.Data;
+using CcDirector.Gateway.Data.Entities;
+using Microsoft.EntityFrameworkCore;
 
 namespace CcDirector.Gateway;
 
 /// <summary>
-/// The run-history store for cron jobs (epic #479, #483): one <see cref="CronRunRecord"/> per fire,
-/// keyed by job id, newest-first, capped per job. Persisted to <c>cronruns.json</c> with the same
-/// atomic write-through + corrupt-file quarantine contract as <see cref="CronJobStore"/> /
-/// <see cref="WorkListStore"/>, so a crash mid-write never half-truncates the file and an unreadable
-/// file is preserved rather than silently overwritten.
+/// The run-history store for cron jobs (epic #479, #483): one <see cref="CronRunRecord"/> per fire, keyed by
+/// job id, newest-first, capped per job.
+///
+/// PERSISTENCE (Hosted Gateway mission, Step 1b): runs live in the EF data layer's <c>cron_runs</c> table
+/// (SQLite locally), NOT the old hand-rolled <c>cronruns.json</c>. The public API and observable behavior
+/// are unchanged - newest-first ordering and the per-job cap of <see cref="MaxRecordsPerJob"/> hold exactly
+/// as before. Newest-first is served by ordering on the code-assigned <see cref="CronRunEntity.Sequence"/>
+/// (highest = newest), which reproduces the old prepend-on-append order and survives a restart and the
+/// one-time import.
+///
+/// ONE-TIME IMPORT: on first run after the upgrade, if a legacy <c>cronruns.json</c> exists and the table is
+/// empty, every job's run list is imported (newest-first order preserved, capped at <see cref="MaxRecordsPerJob"/>)
+/// inside one transaction, then the JSON file is renamed aside as a backup. Fail-loud and all-or-nothing, the
+/// same contract as <see cref="CronJobStore"/>.
 /// </summary>
 public sealed class CronRunHistoryStore
 {
-    /// <summary>Max records retained per job; older runs are pruned (keeps the file bounded).</summary>
+    /// <summary>Max records retained per job; older runs are pruned (keeps the store bounded).</summary>
     public const int MaxRecordsPerJob = 50;
 
     private readonly object _gate = new();
-    private readonly string _path;
-
-    // Job id -> runs, newest first.
-    private readonly Dictionary<string, List<CronRunRecord>> _runs = new(StringComparer.Ordinal);
+    private readonly GatewayDatabase _db;
+    private readonly string _legacyJsonPath;
 
     private static readonly JsonSerializerOptions FileJsonOptions = new()
     {
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
         PropertyNameCaseInsensitive = true,
-        WriteIndented = true,
     };
 
-    /// <param name="path">The JSON file the store persists to. REQUIRED (no silent default).</param>
-    /// <exception cref="ArgumentException">The path is null/empty/whitespace.</exception>
-    public CronRunHistoryStore(string path)
+    /// <param name="db">The Gateway EF database this store reads and writes through.</param>
+    /// <param name="legacyJsonPath">The legacy <c>cronruns.json</c> path to import ONCE if it exists and the
+    /// table is empty. REQUIRED (no silent default).</param>
+    /// <exception cref="ArgumentNullException">The database is null.</exception>
+    /// <exception cref="ArgumentException">The legacy path is null/empty/whitespace.</exception>
+    public CronRunHistoryStore(GatewayDatabase db, string legacyJsonPath)
     {
-        if (string.IsNullOrWhiteSpace(path))
-            throw new ArgumentException("store path is required", nameof(path));
-        _path = path;
-        Load();
+        _db = db ?? throw new ArgumentNullException(nameof(db));
+        if (string.IsNullOrWhiteSpace(legacyJsonPath))
+            throw new ArgumentException("legacy json path is required", nameof(legacyJsonPath));
+        _legacyJsonPath = legacyJsonPath;
+
+        lock (_gate)
+            ImportLegacyJsonIfNeeded();
     }
 
     /// <summary>
     /// Record one run for a job (newest first), pruning to <see cref="MaxRecordsPerJob"/>, and persist.
     /// </summary>
-    /// <exception cref="ArgumentException">The job id is null/empty/whitespace.</exception>
-    /// <exception cref="ArgumentNullException">The record is null.</exception>
     public void Append(string jobId, CronRunRecord record)
     {
         if (string.IsNullOrWhiteSpace(jobId))
@@ -53,18 +66,27 @@ public sealed class CronRunHistoryStore
 
         lock (_gate)
         {
-            if (!_runs.TryGetValue(jobId, out var list))
+            using var ctx = _db.CreateContext();
+            var nextSeq = (ctx.CronRuns.Max(e => (long?)e.Sequence) ?? 0) + 1;
+
+            ctx.CronRuns.Add(ToEntity(jobId, record, nextSeq, ctx.ActiveTenant!));
+            ctx.SaveChanges();
+
+            // Prune the oldest beyond the cap for THIS job (lowest Sequence = oldest).
+            var overflow = ctx.CronRuns.Count(e => e.JobId == jobId) - MaxRecordsPerJob;
+            if (overflow > 0)
             {
-                list = new List<CronRunRecord>();
-                _runs[jobId] = list;
+                var doomed = ctx.CronRuns
+                    .Where(e => e.JobId == jobId)
+                    .OrderBy(e => e.Sequence)
+                    .Take(overflow)
+                    .ToList();
+                ctx.CronRuns.RemoveRange(doomed);
+                ctx.SaveChanges();
             }
 
-            list.Insert(0, Copy(record));
-            if (list.Count > MaxRecordsPerJob)
-                list.RemoveRange(MaxRecordsPerJob, list.Count - MaxRecordsPerJob);
-
-            Save();
-            FileLog.Write($"[CronRunHistoryStore] Append: job={jobId}, firedUtc={record.FiredUtc:o}, infra={record.InfraStatus}, task={record.TaskStatus}, count={list.Count}");
+            var kept = ctx.CronRuns.Count(e => e.JobId == jobId);
+            FileLog.Write($"[CronRunHistoryStore] Append: job={jobId}, firedUtc={record.FiredUtc:o}, infra={record.InfraStatus}, task={record.TaskStatus}, count={kept}");
         }
     }
 
@@ -75,13 +97,23 @@ public sealed class CronRunHistoryStore
             return Array.Empty<CronRunRecord>();
 
         lock (_gate)
-            return _runs.TryGetValue(jobId, out var list)
-                ? list.Select(Copy).ToList()
-                : Array.Empty<CronRunRecord>();
+        {
+            using var ctx = _db.CreateContext();
+            return ctx.CronRuns.AsNoTracking()
+                .Where(e => e.JobId == jobId)
+                .OrderByDescending(e => e.Sequence)
+                .ToList()
+                .Select(ToRecord)
+                .ToList();
+        }
     }
 
-    private static CronRunRecord Copy(CronRunRecord r) => new()
+    private static CronRunEntity ToEntity(string jobId, CronRunRecord r, long sequence, string tenantId) => new()
     {
+        Id = Guid.NewGuid(),
+        JobId = jobId,
+        Sequence = sequence,
+        TenantId = tenantId,
         ScheduledUtc = r.ScheduledUtc,
         FiredUtc = r.FiredUtc,
         Machine = r.Machine,
@@ -91,74 +123,76 @@ public sealed class CronRunHistoryStore
         TaskStatus = r.TaskStatus,
     };
 
-    // ---- persistence (CronJobStore / WorkListStore precedent) --------------------------------
+    private static CronRunRecord ToRecord(CronRunEntity e) => new()
+    {
+        ScheduledUtc = e.ScheduledUtc,
+        FiredUtc = e.FiredUtc,
+        Machine = e.Machine,
+        TargetDirectorId = e.TargetDirectorId,
+        SessionId = e.SessionId,
+        InfraStatus = e.InfraStatus,
+        TaskStatus = e.TaskStatus,
+    };
+
+    // ---- one-time legacy JSON import --------------------------------------------------------------
 
     private sealed class StoreFile
     {
         public Dictionary<string, List<CronRunRecord>> Runs { get; set; } = new(StringComparer.Ordinal);
     }
 
-    private void Load()
+    /// <summary>
+    /// Import a legacy <c>cronruns.json</c> exactly once: only when it exists AND the table is empty. Each
+    /// job's list is newest-first; it is capped at <see cref="MaxRecordsPerJob"/> and inserted so that the
+    /// newest record gets the highest <see cref="CronRunEntity.Sequence"/>, preserving the exact newest-first
+    /// order. All inside one transaction, then the JSON is renamed aside. Fail-loud and all-or-nothing.
+    /// </summary>
+    private void ImportLegacyJsonIfNeeded()
     {
-        if (!File.Exists(_path))
-        {
-            FileLog.Write($"[CronRunHistoryStore] Load: no store file at {_path}; starting empty");
+        if (!File.Exists(_legacyJsonPath))
             return;
-        }
+
+        using var ctx = _db.CreateContext();
+        if (ctx.CronRuns.Any())
+            return;
 
         StoreFile? parsed;
         try
         {
-            parsed = JsonSerializer.Deserialize<StoreFile>(File.ReadAllText(_path), FileJsonOptions);
-        }
-        catch (JsonException ex)
-        {
-            Quarantine(ex.Message);
-            return;
-        }
-
-        if (parsed is null)
-        {
-            Quarantine("file deserialized to null (no store document)");
-            return;
-        }
-
-        foreach (var (jobId, list) in parsed.Runs)
-        {
-            if (string.IsNullOrWhiteSpace(jobId))
-                continue;
-            _runs[jobId] = list ?? new List<CronRunRecord>();
-        }
-
-        FileLog.Write($"[CronRunHistoryStore] Load: restored runs for {_runs.Count} job(s) from {_path}");
-    }
-
-    private void Quarantine(string reason)
-    {
-        var quarantinePath = $"{_path}.corrupt-{DateTime.UtcNow:yyyyMMdd-HHmmss-fff}";
-        File.Move(_path, quarantinePath);
-        FileLog.Write($"[CronRunHistoryStore] Load FAILED: store file at {_path} is corrupt ({reason}); quarantined to {quarantinePath}; starting empty.");
-    }
-
-    private void Save()
-    {
-        try
-        {
-            var dir = Path.GetDirectoryName(_path);
-            if (!string.IsNullOrEmpty(dir))
-                Directory.CreateDirectory(dir);
-
-            var file = new StoreFile { Runs = _runs };
-            var json = JsonSerializer.Serialize(file, FileJsonOptions);
-
-            var tmp = _path + ".tmp";
-            File.WriteAllText(tmp, json);
-            File.Move(tmp, _path, overwrite: true);
+            parsed = JsonSerializer.Deserialize<StoreFile>(File.ReadAllText(_legacyJsonPath), FileJsonOptions);
         }
         catch (Exception ex)
         {
-            FileLog.Write($"[CronRunHistoryStore] Save FAILED: path={_path}: {ex.Message}");
-            throw;
+            FileLog.Write($"[CronRunHistoryStore] Import FAILED: legacy file {_legacyJsonPath} could not be read: {ex.Message}");
+            throw new InvalidOperationException(
+                $"The legacy cron run-history file '{_legacyJsonPath}' could not be parsed for the one-time " +
+                $"import: {ex.Message}. The Gateway will not start with a partial import. Fix or move the file " +
+                "aside and restart.", ex);
         }
+
+        var runsByJob = parsed?.Runs ?? new Dictionary<string, List<CronRunRecord>>(StringComparer.Ordinal);
+
+        long seq = 0;
+        var imported = 0;
+        using var tx = ctx.Database.BeginTransaction();
+        foreach (var (jobId, list) in runsByJob)
+        {
+            if (string.IsNullOrWhiteSpace(jobId) || list is null)
+                continue;
+
+            // The list is newest-first and capped at the per-job max; keep the newest ones. Insert
+            // oldest-first so the newest record ends up with the highest Sequence (newest-first on read).
+            var capped = list.Take(MaxRecordsPerJob).ToList();
+            for (var i = capped.Count - 1; i >= 0; i--)
+            {
+                ctx.CronRuns.Add(ToEntity(jobId, capped[i], ++seq, ctx.ActiveTenant!));
+                imported++;
+            }
+        }
+        ctx.SaveChanges();
+        tx.Commit();
+
+        LegacyJsonImport.RenameAside(_legacyJsonPath, "[CronRunHistoryStore]");
+        FileLog.Write($"[CronRunHistoryStore] Import: {imported} run(s) across {runsByJob.Count} job(s) imported from {_legacyJsonPath}");
     }
 }

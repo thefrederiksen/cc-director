@@ -4,6 +4,8 @@ using System.Text.Json;
 using CcDirector.Gateway;
 using CcDirector.Gateway.Api;
 using CcDirector.Gateway.Contracts;
+using CcDirector.Gateway.Data;
+using CcDirector.Gateway.Tests.Data;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.Extensions.Logging;
 using Xunit;
@@ -19,6 +21,7 @@ namespace CcDirector.Gateway.Tests;
 /// </summary>
 public sealed class CronJobEndpointsTests : IAsyncLifetime
 {
+    private readonly GatewayDbTestHarness _h = new();
     private readonly string _storePath = Path.Combine(
         Path.GetTempPath(), "cc-cronjob-ep-tests-" + Guid.NewGuid().ToString("N") + ".json");
 
@@ -34,7 +37,7 @@ public sealed class CronJobEndpointsTests : IAsyncLifetime
         builder.Logging.ClearProviders();
         _app = builder.Build();
         _app.Urls.Add(baseUrl);
-        CronJobEndpoints.Map(_app, new CronJobStore(_storePath));
+        CronJobEndpoints.Map(_app, new CronJobStore(_h.Open(), _storePath));
         await _app.StartAsync();
 
         _http = new HttpClient { BaseAddress = new Uri(baseUrl) };
@@ -44,6 +47,7 @@ public sealed class CronJobEndpointsTests : IAsyncLifetime
     {
         _http.Dispose();
         await _app.DisposeAsync();
+        _h.Dispose();
         if (File.Exists(_storePath)) File.Delete(_storePath);
     }
 

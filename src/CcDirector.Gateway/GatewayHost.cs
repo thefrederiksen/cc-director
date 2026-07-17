@@ -324,6 +324,11 @@ public sealed class GatewayHost : IAsyncDisposable
     // and the future Mission-Control chat/API read the same WHY. Constructed here (load-on-construct
     // re-serves every WHY after a restart); exposed to the client over MissionNotesEndpoint.
     private readonly MissionNotes.MissionNoteStore _missionNotes;
+    // Hosted Gateway mission, Step 1b: the EF data layer (gateway.db). The host owns ONE instance and the
+    // structured stores that have moved off hand-rolled JSON read/write through it. On the single-tenant
+    // local install every row is the "local" tenant (SingleTenantContext), so behavior is unchanged.
+    private readonly Core.Tenancy.SingleTenantContext _tenantContext = new();
+    private readonly Data.GatewayDatabase _gatewayDb;
     private readonly CronJobStore _cronJobs;
     private readonly CronRunHistoryStore _cronRuns;
     private readonly Running.CronEngine _cronEngine;
@@ -639,15 +644,20 @@ public sealed class GatewayHost : IAsyncDisposable
         // (CcStorage.Root(), the same location the snooze and cron stores use). Loaded here so a Gateway
         // restart re-serves every WHY. Tests MUST pass an isolated path so they never touch the real store.
         _missionNotes = new MissionNotes.MissionNoteStore(missionNotesPath ?? Path.Combine(CcStorage.Root(), "mission-notes.json"));
-        // Cron-job definitions persist across a Gateway restart (epic #479, #482): one JSON file in
-        // the Gateway data dir, loaded here (next-run times recomputed) and written through on every
-        // mutation - the WorkListStore precedent. Tests MUST pass an isolated path so they never
-        // touch the real store.
-        _cronJobs = new CronJobStore(cronJobsPath ?? Path.Combine(CcStorage.Root(), "cronjobs.json"));
+        // The EF data layer (Hosted Gateway mission, Step 1b): one gateway.db under the storage root,
+        // migrated on open, fail-loud (no JSON fallback). The cron stores read/write through it. Tests get
+        // an isolated database via CC_DIRECTOR_ROOT, exactly as gateway-stats.db is isolated today.
+        _gatewayDb = new Data.GatewayDatabase(_tenantContext);
+        // Cron-job definitions persist across a Gateway restart (epic #479, #482) in the cron_jobs table
+        // (next-run times recomputed on load). The path argument is the LEGACY cronjobs.json, imported once
+        // on first upgrade then renamed aside. Tests MUST pass an isolated path so they never touch the real
+        // legacy file.
+        _cronJobs = new CronJobStore(_gatewayDb, cronJobsPath ?? Path.Combine(CcStorage.Root(), "cronjobs.json"));
         // Cron run history + the firing engine (epic #479, #483). The engine resolves each due job's
         // target Director from the registry and starts a session over the shared client (the same
-        // path the work-list runner uses). The background sweep timer is started in StartAsync.
-        _cronRuns = new CronRunHistoryStore(cronRunsPath ?? Path.Combine(CcStorage.Root(), "cronruns.json"));
+        // path the work-list runner uses). The background sweep timer is started in StartAsync. The path
+        // argument is the LEGACY cronruns.json, imported once then renamed aside.
+        _cronRuns = new CronRunHistoryStore(_gatewayDb, cronRunsPath ?? Path.Combine(CcStorage.Root(), "cronruns.json"));
         // The Gateway-hosted DevThrottle credential service (issue #636, Gateway Centralization Phase 2
         // foundation). Tests inject their own service over an isolated store; production builds the
         // service over the operating system credential store rooted under the Gateway config directory:
@@ -2069,6 +2079,10 @@ public sealed class GatewayHost : IAsyncDisposable
         try { _turnEndWatcher?.Dispose(); } catch (Exception ex) { FileLog.Write($"[GatewayHost] watcher dispose error: {ex.Message}"); }
         _turnEndWatcher = null;
         try { Brain.Dispose(); } catch (Exception ex) { FileLog.Write($"[GatewayHost] brain dispose error: {ex.Message}"); }
+
+        // The EF data layer: dispose the pooled context factory and release the SQLite connections so a
+        // restart (and a test) can reopen or delete the database file cleanly.
+        try { _gatewayDb.Dispose(); } catch (Exception ex) { FileLog.Write($"[GatewayHost] gateway db dispose error: {ex.Message}"); }
 
         // Unsubscribe from registry events. We deliberately do NOT tear down the serve
         // mappings: the Directors are still alive and reachable, and a Gateway restart

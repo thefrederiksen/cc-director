@@ -1,61 +1,72 @@
 using System.Text.Json;
 using CcDirector.Core.Utilities;
 using CcDirector.Gateway.Contracts;
+using CcDirector.Gateway.Data;
+using CcDirector.Gateway.Data.Entities;
+using Microsoft.EntityFrameworkCore;
 
 namespace CcDirector.Gateway;
 
 /// <summary>
-/// The Gateway's cron-job definition store (epic #479, part 1 = issue #482). Holds cron-job
-/// definitions keyed by id and serves the REST CRUD surface; it does NOT fire jobs (the background
-/// engine is part 2, issue #483).
+/// The Gateway's cron-job definition store (epic #479, part 1 = issue #482). Holds cron-job definitions
+/// keyed by id and serves the REST CRUD surface; it does NOT fire jobs (the background engine is part 2,
+/// issue #483).
 ///
-/// PERSISTENCE (the <see cref="WorkListStore"/> precedent): the whole store lives in ONE plain
-/// JSON file at the path the constructor receives (production: <c>cronjobs.json</c> in the Gateway
-/// data dir). Every mutation writes through immediately with an atomic temp-file + rename, so a
-/// crash mid-write can never half-truncate the store. On construction the file is loaded back:
-///   - missing file  = empty store + a log line (the normal first boot), never an error;
-///   - corrupt file  = the bytes are QUARANTINED to "&lt;path&gt;.corrupt-&lt;stamp&gt;" (preserved
-///     for the operator, never silently overwritten), an explicit error is logged, and the store
-///     starts empty so the Gateway still boots;
-///   - every loaded job has its <see cref="CronJobDto.NextRunUtc"/> RECOMPUTED from the schedule
-///     (the wall clock moved on while the Gateway was down), and the refreshed state is persisted.
+/// PERSISTENCE (Hosted Gateway mission, Step 1b): definitions live in the EF data layer's <c>cron_jobs</c>
+/// table (SQLite locally), NOT the old hand-rolled <c>cronjobs.json</c>. The public API and observable
+/// behavior are unchanged - every mutation writes through immediately, and a fresh store instance over the
+/// same database reads the same jobs, exactly as a new Gateway process does. On construction each loaded
+/// job's <see cref="CronJobDto.NextRunUtc"/> is RECOMPUTED from its schedule (the wall clock moved on while
+/// the Gateway was down) and persisted, matching the previous store.
+///
+/// ONE-TIME IMPORT: on first run after the upgrade, if a legacy <c>cronjobs.json</c> exists and the table
+/// is empty, every job is imported inside one transaction and the JSON file is renamed aside
+/// (<c>.migrated-&lt;UTCstamp&gt;</c>) so it is never re-imported and stays on disk as a backup. The import
+/// is fail-loud and all-or-nothing: on any error it throws and imports nothing, so no local user loses data
+/// or gets a partial import. A corrupt legacy file therefore fails the Gateway loudly rather than being
+/// silently quarantined - the fail-loud contract of the EF data layer, matching GatewayStatsDatabase.
+///
+/// Threading: the Gateway is a single writer. Every operation runs under this store's write lock over a
+/// fresh pooled context, preserving the single-writer invariant.
 /// </summary>
 public sealed class CronJobStore
 {
     private readonly object _gate = new();
-    private readonly string _path;
-
-    // Id -> job. Ids are case-sensitive opaque tokens minted by the store.
-    private readonly Dictionary<string, CronJobDto> _jobs = new(StringComparer.Ordinal);
+    private readonly GatewayDatabase _db;
+    private readonly string _legacyJsonPath;
 
     private static readonly JsonSerializerOptions FileJsonOptions = new()
     {
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
         PropertyNameCaseInsensitive = true,
-        WriteIndented = true,
     };
 
-    /// <param name="path">
-    /// The JSON file the store persists to. REQUIRED so no caller can silently land on the real
-    /// user's file: production (<see cref="GatewayHost"/>) passes <c>cronjobs.json</c> in the
-    /// Gateway data dir; tests pass an isolated temp path.
+    /// <param name="db">The Gateway EF database this store reads and writes through.</param>
+    /// <param name="legacyJsonPath">
+    /// The legacy <c>cronjobs.json</c> path to import ONCE if it exists and the table is empty. REQUIRED so
+    /// no caller silently lands on the real user's file: production (<see cref="GatewayHost"/>) passes the
+    /// Gateway data dir path; tests pass an isolated temp path (usually nonexistent, so no import).
     /// </param>
-    /// <exception cref="ArgumentException">The path is null/empty/whitespace.</exception>
-    public CronJobStore(string path)
+    /// <exception cref="ArgumentNullException">The database is null.</exception>
+    /// <exception cref="ArgumentException">The legacy path is null/empty/whitespace.</exception>
+    public CronJobStore(GatewayDatabase db, string legacyJsonPath)
     {
-        if (string.IsNullOrWhiteSpace(path))
-            throw new ArgumentException("store path is required", nameof(path));
-        _path = path;
-        Load();
+        _db = db ?? throw new ArgumentNullException(nameof(db));
+        if (string.IsNullOrWhiteSpace(legacyJsonPath))
+            throw new ArgumentException("legacy json path is required", nameof(legacyJsonPath));
+        _legacyJsonPath = legacyJsonPath;
+
+        lock (_gate)
+        {
+            ImportLegacyJsonIfNeeded();
+            RecomputeNextRunOnLoad();
+        }
     }
 
     /// <summary>
     /// Create a job from a validated definition. Mints an id, stamps <see cref="CronJobDto.CreatedUtc"/>,
     /// computes <see cref="CronJobDto.NextRunUtc"/>, persists, and returns a copy of the stored job.
     /// </summary>
-    /// <exception cref="ArgumentNullException">The job is null.</exception>
-    /// <exception cref="ArgumentException">The job fails <see cref="CronSchedule.Validate"/> (the
-    /// REST surface validates first and returns 400; reaching here with an invalid job is a bug).</exception>
     public CronJobDto Create(CronJobDto job)
     {
         if (job is null)
@@ -66,31 +77,38 @@ public sealed class CronJobStore
 
         lock (_gate)
         {
+            using var ctx = _db.CreateContext();
             var now = DateTime.UtcNow;
-            job.Id = NewId();
-            job.CreatedUtc = now;
-            job.LastFiredUtc = null;
-            job.LastStatus = null;
-            // Canonicalize the notify policy (#622) so the store only ever holds none/always/failure
-            // (an unknown or empty value becomes the opt-in default "none").
-            job.NotifyOn = CronNotify.Normalize(job.NotifyOn);
-            job.NextRunUtc = CronSchedule.ComputeNextRunUtc(job, now);
+            var id = NewId(ctx);
 
-            _jobs[job.Id] = Copy(job);
-            Save();
-            FileLog.Write($"[CronJobStore] Create: id={job.Id}, name={job.Name}, kind={job.ScheduleKind}, nextRunUtc={job.NextRunUtc:o}");
-            return Copy(job);
+            var entity = new CronJobEntity { Id = id, TenantId = ctx.ActiveTenant! };
+            ApplyDefinition(entity, job);
+            entity.CreatedUtc = now;
+            entity.LastFiredUtc = null;
+            entity.LastStatus = null;
+            entity.NotifyOn = CronNotify.Normalize(job.NotifyOn);
+            entity.NextRunUtc = CronSchedule.ComputeNextRunUtc(ToDto(entity), now);
+
+            ctx.CronJobs.Add(entity);
+            ctx.SaveChanges();
+
+            var stored = ToDto(entity);
+            FileLog.Write($"[CronJobStore] Create: id={stored.Id}, name={stored.Name}, kind={stored.ScheduleKind}, nextRunUtc={stored.NextRunUtc:o}");
+            return stored;
         }
     }
 
-    /// <summary>All jobs, id-sorted. Each is a defensive copy (callers never mutate the store).</summary>
+    /// <summary>All jobs, id-sorted (ordinal). Each is a defensive copy.</summary>
     public IReadOnlyList<CronJobDto> ListAll()
     {
         lock (_gate)
-            return _jobs.Values
+        {
+            using var ctx = _db.CreateContext();
+            return ctx.CronJobs.AsNoTracking().ToList()
+                .Select(ToDto)
                 .OrderBy(j => j.Id, StringComparer.Ordinal)
-                .Select(Copy)
                 .ToList();
+        }
     }
 
     /// <summary>One job by id as a defensive copy, or null if absent.</summary>
@@ -99,16 +117,18 @@ public sealed class CronJobStore
         if (string.IsNullOrWhiteSpace(id))
             return null;
         lock (_gate)
-            return _jobs.TryGetValue(id, out var job) ? Copy(job) : null;
+        {
+            using var ctx = _db.CreateContext();
+            var entity = ctx.CronJobs.AsNoTracking().FirstOrDefault(e => e.Id == id);
+            return entity is null ? null : ToDto(entity);
+        }
     }
 
     /// <summary>
-    /// Replace an existing job's editable fields from a validated definition, preserving its id,
-    /// creation time, and last-run metadata, and recomputing <see cref="CronJobDto.NextRunUtc"/>.
-    /// Returns the updated copy, or null if no job with that id exists.
+    /// Replace an existing job's editable fields from a validated definition, preserving its id, creation
+    /// time, and last-run metadata, and recomputing <see cref="CronJobDto.NextRunUtc"/>. Returns the updated
+    /// copy, or null if no job with that id exists.
     /// </summary>
-    /// <exception cref="ArgumentNullException">The incoming definition is null.</exception>
-    /// <exception cref="ArgumentException">The definition fails <see cref="CronSchedule.Validate"/>.</exception>
     public CronJobDto? Update(string id, CronJobDto incoming)
     {
         if (incoming is null)
@@ -119,35 +139,27 @@ public sealed class CronJobStore
 
         lock (_gate)
         {
-            if (!_jobs.TryGetValue(id, out var existing))
+            using var ctx = _db.CreateContext();
+            var entity = ctx.CronJobs.FirstOrDefault(e => e.Id == id);
+            if (entity is null)
             {
                 FileLog.Write($"[CronJobStore] Update: no such job id={id}");
                 return null;
             }
 
             // Preserve identity + the firing engine's metadata; overwrite the editable definition.
-            existing.Name = incoming.Name;
-            existing.Enabled = incoming.Enabled;
-            existing.ScheduleKind = incoming.ScheduleKind;
-            existing.CronExpression = incoming.CronExpression;
-            existing.RunAt = incoming.RunAt;
-            existing.TimeZoneId = incoming.TimeZoneId;
-            existing.Target = new CronJobTarget { Machine = incoming.Target.Machine };
-            existing.Action = new CronJobAction { RepoPath = incoming.Action.RepoPath, Seed = incoming.Action.Seed, WorkListName = incoming.Action.WorkListName };
-            existing.PreventOverlap = incoming.PreventOverlap;
-            existing.NotifyOn = CronNotify.Normalize(incoming.NotifyOn);   // editable run-complete policy (#622)
-            existing.NotifyWebhookUrl = incoming.NotifyWebhookUrl;
-            existing.NextRunUtc = CronSchedule.ComputeNextRunUtc(existing, DateTime.UtcNow);
+            ApplyDefinition(entity, incoming);
+            entity.NotifyOn = CronNotify.Normalize(incoming.NotifyOn);
+            entity.NextRunUtc = CronSchedule.ComputeNextRunUtc(ToDto(entity), DateTime.UtcNow);
 
-            Save();
-            FileLog.Write($"[CronJobStore] Update: id={id}, name={existing.Name}, nextRunUtc={existing.NextRunUtc:o}");
-            return Copy(existing);
+            ctx.SaveChanges();
+            var stored = ToDto(entity);
+            FileLog.Write($"[CronJobStore] Update: id={id}, name={stored.Name}, nextRunUtc={stored.NextRunUtc:o}");
+            return stored;
         }
     }
 
-    /// <summary>
-    /// Delete the job with the given id. Returns true if a job was removed, false if none existed.
-    /// </summary>
+    /// <summary>Delete the job with the given id. Returns true if a job was removed, false if none existed.</summary>
     public bool Delete(string id)
     {
         if (string.IsNullOrWhiteSpace(id))
@@ -155,24 +167,26 @@ public sealed class CronJobStore
 
         lock (_gate)
         {
-            if (!_jobs.Remove(id))
+            using var ctx = _db.CreateContext();
+            var entity = ctx.CronJobs.FirstOrDefault(e => e.Id == id);
+            if (entity is null)
             {
                 FileLog.Write($"[CronJobStore] Delete: no such job id={id}");
                 return false;
             }
 
-            Save();
+            ctx.CronJobs.Remove(entity);
+            ctx.SaveChanges();
             FileLog.Write($"[CronJobStore] Delete: id={id}");
             return true;
         }
     }
 
     /// <summary>
-    /// Record a fire's outcome on a job (epic #479, #483): the firing engine is the writer of the
-    /// run metadata that <see cref="Update"/> deliberately preserves. Sets <see cref="CronJobDto.LastFiredUtc"/>,
+    /// Record a fire's outcome on a job (epic #479, #483). Sets <see cref="CronJobDto.LastFiredUtc"/>,
     /// <see cref="CronJobDto.LastStatus"/>, <see cref="CronJobDto.NextRunUtc"/>, and
-    /// <see cref="CronJobDto.Enabled"/> (a one-off fire disables itself with a null next-run), then
-    /// persists. Returns the updated copy, or null if no job with that id exists.
+    /// <see cref="CronJobDto.Enabled"/>, then persists. Returns the updated copy, or null if no job with that
+    /// id exists.
     /// </summary>
     public CronJobDto? MarkFired(string id, DateTime lastFiredUtc, string lastStatus, DateTime? nextRunUtc, bool enabled)
     {
@@ -181,161 +195,163 @@ public sealed class CronJobStore
 
         lock (_gate)
         {
-            if (!_jobs.TryGetValue(id, out var existing))
+            using var ctx = _db.CreateContext();
+            var entity = ctx.CronJobs.FirstOrDefault(e => e.Id == id);
+            if (entity is null)
             {
                 FileLog.Write($"[CronJobStore] MarkFired: no such job id={id}");
                 return null;
             }
 
-            existing.LastFiredUtc = lastFiredUtc;
-            existing.LastStatus = lastStatus;
-            existing.NextRunUtc = nextRunUtc;
-            existing.Enabled = enabled;
+            entity.LastFiredUtc = lastFiredUtc;
+            entity.LastStatus = lastStatus;
+            entity.NextRunUtc = nextRunUtc;
+            entity.Enabled = enabled;
 
-            Save();
+            ctx.SaveChanges();
+            var stored = ToDto(entity);
             FileLog.Write($"[CronJobStore] MarkFired: id={id}, status={lastStatus}, enabled={enabled}, nextRunUtc={nextRunUtc:o}");
-            return Copy(existing);
+            return stored;
         }
     }
 
-    /// <summary>Mint an id not already in use. Short and human-quotable, like the design report's <c>cj_7fa3b1</c>.</summary>
-    private string NewId()
+    /// <summary>Recompute every job's next-run time on load and persist (the wall clock advanced while down).</summary>
+    private void RecomputeNextRunOnLoad()
+    {
+        using var ctx = _db.CreateContext();
+        var entities = ctx.CronJobs.ToList();
+        if (entities.Count == 0)
+            return;
+
+        var now = DateTime.UtcNow;
+        foreach (var entity in entities)
+            entity.NextRunUtc = CronSchedule.ComputeNextRunUtc(ToDto(entity), now);
+
+        ctx.SaveChanges();
+        FileLog.Write($"[CronJobStore] Load: {entities.Count} job(s) present; next-run recomputed");
+    }
+
+    /// <summary>Mint an id not already in use. Short and human-quotable, like <c>cj_7fa3b1</c>.</summary>
+    private static string NewId(GatewayDbContext ctx)
     {
         string id;
         do
         {
             id = "cj_" + Guid.NewGuid().ToString("N")[..6];
         }
-        while (_jobs.ContainsKey(id));
+        while (ctx.CronJobs.Any(e => e.Id == id));
         return id;
     }
 
-    private static CronJobDto Copy(CronJobDto job) => new()
+    /// <summary>Copy the editable definition fields from a DTO onto an entity (identity/run metadata untouched).</summary>
+    private static void ApplyDefinition(CronJobEntity entity, CronJobDto job)
     {
-        Id = job.Id,
-        Name = job.Name,
-        Enabled = job.Enabled,
-        ScheduleKind = job.ScheduleKind,
-        CronExpression = job.CronExpression,
-        RunAt = job.RunAt,
-        TimeZoneId = job.TimeZoneId,
-        Target = new CronJobTarget { Machine = job.Target.Machine },
-        Action = new CronJobAction { RepoPath = job.Action.RepoPath, Seed = job.Action.Seed, WorkListName = job.Action.WorkListName },
-        PreventOverlap = job.PreventOverlap,
-        NotifyOn = job.NotifyOn,
-        NotifyWebhookUrl = job.NotifyWebhookUrl,
-        CreatedUtc = job.CreatedUtc,
-        LastFiredUtc = job.LastFiredUtc,
-        NextRunUtc = job.NextRunUtc,
-        LastStatus = job.LastStatus,
+        entity.Name = job.Name;
+        entity.Enabled = job.Enabled;
+        entity.ScheduleKind = job.ScheduleKind;
+        entity.CronExpression = job.CronExpression;
+        entity.RunAt = job.RunAt;
+        entity.TimeZoneId = job.TimeZoneId;
+        entity.Target = new CronJobTarget { Machine = job.Target.Machine };
+        entity.Action = new CronJobAction
+        {
+            RepoPath = job.Action.RepoPath,
+            Seed = job.Action.Seed,
+            WorkListName = job.Action.WorkListName,
+            AutoDismiss = job.Action.AutoDismiss,
+        };
+        entity.PreventOverlap = job.PreventOverlap;
+        entity.NotifyOn = job.NotifyOn;
+        entity.NotifyWebhookUrl = job.NotifyWebhookUrl;
+    }
+
+    private static CronJobDto ToDto(CronJobEntity e) => new()
+    {
+        Id = e.Id,
+        Name = e.Name,
+        Enabled = e.Enabled,
+        ScheduleKind = e.ScheduleKind,
+        CronExpression = e.CronExpression,
+        RunAt = e.RunAt,
+        TimeZoneId = e.TimeZoneId,
+        Target = new CronJobTarget { Machine = e.Target.Machine },
+        Action = new CronJobAction
+        {
+            RepoPath = e.Action.RepoPath,
+            Seed = e.Action.Seed,
+            WorkListName = e.Action.WorkListName,
+            AutoDismiss = e.Action.AutoDismiss,
+        },
+        PreventOverlap = e.PreventOverlap,
+        NotifyOn = e.NotifyOn,
+        NotifyWebhookUrl = e.NotifyWebhookUrl,
+        CreatedUtc = e.CreatedUtc,
+        LastFiredUtc = e.LastFiredUtc,
+        NextRunUtc = e.NextRunUtc,
+        LastStatus = e.LastStatus,
     };
 
-    // ---- persistence (WorkListStore precedent) -----------------------------------------------
+    // ---- one-time legacy JSON import --------------------------------------------------------------
 
-    /// <summary>The on-disk shape: one document holding every job.</summary>
+    /// <summary>The on-disk shape of the legacy store file: one document holding every job.</summary>
     private sealed class StoreFile
     {
         public List<CronJobDto> Jobs { get; set; } = new();
     }
 
     /// <summary>
-    /// Load the store file written by a previous Gateway run. Missing file = the normal first boot
-    /// (empty store, logged). A corrupt file is quarantined (renamed next to the original with a
-    /// timestamp suffix) so its bytes are preserved and never silently overwritten; the store then
-    /// starts empty so the Gateway still boots. Every loaded job's next-run time is recomputed (the
-    /// clock advanced while down) and the refreshed state persisted.
+    /// Import a legacy <c>cronjobs.json</c> exactly once: only when it exists AND the table is empty. Every
+    /// job is inserted inside one transaction, then the JSON file is renamed aside so it is never
+    /// re-imported and stays as a backup. Fail-loud and all-or-nothing - a parse or write error throws and
+    /// imports nothing (the transaction rolls back and the JSON is left in place), so no data is lost or
+    /// partially imported.
     /// </summary>
-    private void Load()
+    private void ImportLegacyJsonIfNeeded()
     {
-        if (!File.Exists(_path))
-        {
-            FileLog.Write($"[CronJobStore] Load: no store file at {_path}; starting empty");
+        if (!File.Exists(_legacyJsonPath))
             return;
-        }
+
+        using var ctx = _db.CreateContext();
+        if (ctx.CronJobs.Any())
+            return; // already migrated (or already has data); never re-import over existing rows.
 
         StoreFile? parsed;
         try
         {
-            parsed = JsonSerializer.Deserialize<StoreFile>(File.ReadAllText(_path), FileJsonOptions);
-        }
-        catch (JsonException ex)
-        {
-            Quarantine(ex.Message);
-            return;
-        }
-
-        if (parsed is null)
-        {
-            // "null" is valid JSON, so deserialization succeeds but yields no document.
-            Quarantine("file deserialized to null (no store document)");
-            return;
-        }
-
-        var now = DateTime.UtcNow;
-        foreach (var job in parsed.Jobs)
-        {
-            if (string.IsNullOrWhiteSpace(job.Id))
-            {
-                Quarantine("a persisted job has an empty id");
-                _jobs.Clear();
-                return;
-            }
-
-            // The wall clock moved on while the Gateway was down: recompute the next-run time so a
-            // GET after restart reports a current value (epic #479 AC3).
-            job.NextRunUtc = CronSchedule.ComputeNextRunUtc(job, now);
-            _jobs[job.Id] = job;
-        }
-
-        FileLog.Write($"[CronJobStore] Load: restored {_jobs.Count} job(s) from {_path}");
-
-        // Persist the recomputed next-run times so disk matches memory after a restart.
-        if (_jobs.Count > 0)
-            Save();
-    }
-
-    /// <summary>
-    /// Preserve an unreadable store file as "&lt;path&gt;.corrupt-&lt;stamp&gt;" and log loudly. The
-    /// original path is then free for the next write-through. The move is not allowed to fail
-    /// silently: if even the quarantine fails, the exception propagates and the Gateway does not
-    /// start half-blind.
-    /// </summary>
-    private void Quarantine(string reason)
-    {
-        var quarantinePath = $"{_path}.corrupt-{DateTime.UtcNow:yyyyMMdd-HHmmss-fff}";
-        File.Move(_path, quarantinePath);
-        FileLog.Write($"[CronJobStore] Load FAILED: store file at {_path} is corrupt ({reason}); quarantined to {quarantinePath}; starting empty. Operator action: inspect the quarantined file to recover jobs.");
-    }
-
-    /// <summary>
-    /// Write-through: serialize the whole store and atomically replace the file (temp + rename), so
-    /// a concurrent reader or a crash mid-write never sees a half-written store. Called inside the
-    /// lock by every mutation. A failed save is a LOGGED error that propagates - never a silent skip.
-    /// </summary>
-    private void Save()
-    {
-        try
-        {
-            var dir = Path.GetDirectoryName(_path);
-            if (!string.IsNullOrEmpty(dir))
-                Directory.CreateDirectory(dir);
-
-            var file = new StoreFile
-            {
-                Jobs = _jobs.Values
-                    .OrderBy(j => j.Id, StringComparer.Ordinal)
-                    .ToList(),
-            };
-            var json = JsonSerializer.Serialize(file, FileJsonOptions);
-
-            var tmp = _path + ".tmp";
-            File.WriteAllText(tmp, json);
-            File.Move(tmp, _path, overwrite: true);
+            parsed = JsonSerializer.Deserialize<StoreFile>(File.ReadAllText(_legacyJsonPath), FileJsonOptions);
         }
         catch (Exception ex)
         {
-            FileLog.Write($"[CronJobStore] Save FAILED: path={_path}: {ex.Message}");
-            throw;
+            FileLog.Write($"[CronJobStore] Import FAILED: legacy file {_legacyJsonPath} could not be read: {ex.Message}");
+            throw new InvalidOperationException(
+                $"The legacy cron jobs file '{_legacyJsonPath}' could not be parsed for the one-time import: " +
+                $"{ex.Message}. The Gateway will not start with a partial import. Fix or move the file aside " +
+                "and restart.", ex);
         }
+
+        var jobs = parsed?.Jobs ?? new List<CronJobDto>();
+
+        using var tx = ctx.Database.BeginTransaction();
+        foreach (var job in jobs)
+        {
+            if (string.IsNullOrWhiteSpace(job.Id))
+                throw new InvalidOperationException(
+                    $"The legacy cron jobs file '{_legacyJsonPath}' has a job with an empty id; refusing a " +
+                    "partial import.");
+
+            var entity = new CronJobEntity { Id = job.Id, TenantId = ctx.ActiveTenant! };
+            ApplyDefinition(entity, job);
+            entity.NotifyOn = CronNotify.Normalize(job.NotifyOn);
+            entity.CreatedUtc = job.CreatedUtc;
+            entity.LastFiredUtc = job.LastFiredUtc;
+            entity.LastStatus = job.LastStatus;
+            entity.NextRunUtc = job.NextRunUtc;
+            ctx.CronJobs.Add(entity);
+        }
+        ctx.SaveChanges();
+        tx.Commit();
+
+        LegacyJsonImport.RenameAside(_legacyJsonPath, "[CronJobStore]");
+        FileLog.Write($"[CronJobStore] Import: {jobs.Count} job(s) imported from {_legacyJsonPath}");
     }
 }

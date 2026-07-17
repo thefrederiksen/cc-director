@@ -1,28 +1,25 @@
+using System.Text.Json;
 using CcDirector.Gateway;
 using CcDirector.Gateway.Contracts;
+using CcDirector.Gateway.Tests.Data;
 using Xunit;
 
 namespace CcDirector.Gateway.Tests;
 
 /// <summary>
-/// Unit tests for <see cref="CronJobStore"/> (epic #479, #482). Covers the CRUD contract, the
-/// id/created/next-run stamping on create, and the persistence contract (the
-/// <see cref="WorkListStore"/> precedent): a "restart" is a brand-new store instance loading the
-/// same file - exactly what a new Gateway process does. Asserts round-trip, write-through on every
-/// mutation, atomic write (no .tmp residue), missing-file first boot, corrupt-file quarantine, and
-/// next-run recompute on load.
+/// Unit tests for <see cref="CronJobStore"/> (epic #479, #482) over the EF data layer (Hosted Gateway
+/// mission, Step 1b). Covers the CRUD contract, the id/created/next-run stamping on create, and the
+/// persistence contract: a "restart" is a brand-new database + store over the same file - exactly what a new
+/// Gateway process does. Also covers the one-time legacy-JSON import (lossless, fail-loud) that replaces the
+/// old JSON store.
 /// </summary>
 public sealed class CronJobStoreTests : IDisposable
 {
-    private readonly string _dir =
-        Path.Combine(Path.GetTempPath(), "cc-cronjob-tests-" + Guid.NewGuid().ToString("N"));
+    private readonly GatewayDbTestHarness _h = new();
 
-    private string NewPath() => Path.Combine(_dir, Guid.NewGuid().ToString("N") + ".json");
+    public void Dispose() => _h.Dispose();
 
-    public void Dispose()
-    {
-        if (Directory.Exists(_dir)) Directory.Delete(_dir, recursive: true);
-    }
+    private string LegacyPath() => _h.LegacyPath("cronjobs-" + Guid.NewGuid().ToString("N") + ".json");
 
     private static CronJobDto ValidJob(string name = "nightly") => new()
     {
@@ -31,14 +28,15 @@ public sealed class CronJobStoreTests : IDisposable
         CronExpression = "0 0 * * *",
         TimeZoneId = "America/Chicago",
         Target = new CronJobTarget { Machine = "workstation-A" },
-        Action = new CronJobAction { RepoPath = @"D:\repo", Seed = "/work-list run Tonight" },
+        Action = new CronJobAction { RepoPath = @"D:\repo", Seed = "/work-list run Tonight", AutoDismiss = false },
     };
 
     [Fact]
     public void Create_AssignsId_StampsCreated_ComputesNextRun_AndPersists()
     {
-        var path = NewPath();
-        var store = new CronJobStore(path);
+        var db = _h.Open();
+        var legacy = LegacyPath();
+        var store = new CronJobStore(db, legacy);
 
         var created = store.Create(ValidJob());
 
@@ -48,18 +46,21 @@ public sealed class CronJobStoreTests : IDisposable
         Assert.True(created.Enabled);
         Assert.Null(created.LastFiredUtc);
 
-        // Written through: a fresh store on the same file sees it.
-        var reloaded = new CronJobStore(path).Get(created.Id);
+        // Written through: a fresh database + store over the same file sees it.
+        var reloaded = new CronJobStore(_h.Open(), legacy).Get(created.Id);
         Assert.NotNull(reloaded);
         Assert.Equal("nightly", reloaded.Name);
         Assert.Equal("0 0 * * *", reloaded.CronExpression);
+        // The nested action round-trips field-for-field, including AutoDismiss.
+        Assert.Equal(@"D:\repo", reloaded.Action.RepoPath);
+        Assert.False(reloaded.Action.AutoDismiss);
+        Assert.Equal("workstation-A", reloaded.Target.Machine);
     }
 
     [Fact]
     public void Create_InvalidJob_Throws()
     {
-        var path = NewPath();
-        var store = new CronJobStore(path);
+        var store = new CronJobStore(_h.Open(), LegacyPath());
         var bad = ValidJob();
         bad.CronExpression = "not a cron";
 
@@ -67,15 +68,27 @@ public sealed class CronJobStoreTests : IDisposable
     }
 
     [Fact]
+    public void CreatedUtc_RoundTripsAsUtc()
+    {
+        var db = _h.Open();
+        var legacy = LegacyPath();
+        var created = new CronJobStore(db, legacy).Create(ValidJob());
+
+        var reloaded = new CronJobStore(_h.Open(), legacy).Get(created.Id)!;
+        Assert.Equal(DateTimeKind.Utc, reloaded.CreatedUtc.Kind);
+        Assert.Equal(created.CreatedUtc, reloaded.CreatedUtc);
+    }
+
+    [Fact]
     public void RoundTrip_MultipleJobs_SurviveReloadWithRecomputedNextRun()
     {
-        var path = NewPath();
-        var store = new CronJobStore(path);
+        var legacy = LegacyPath();
+        var store = new CronJobStore(_h.Open(), legacy);
         store.Create(ValidJob("a"));
         store.Create(ValidJob("b"));
 
-        // "Restart": a fresh store instance on the same file.
-        var reloaded = new CronJobStore(path);
+        // "Restart": a fresh database + store over the same file.
+        var reloaded = new CronJobStore(_h.Open(), legacy);
 
         Assert.Equal(2, reloaded.ListAll().Count);
         Assert.All(reloaded.ListAll(), j => Assert.NotNull(j.NextRunUtc));
@@ -86,8 +99,8 @@ public sealed class CronJobStoreTests : IDisposable
     [Fact]
     public void Update_ChangesFields_PreservesIdAndCreated_AndPersists()
     {
-        var path = NewPath();
-        var store = new CronJobStore(path);
+        var legacy = LegacyPath();
+        var store = new CronJobStore(_h.Open(), legacy);
         var created = store.Create(ValidJob());
 
         var edit = ValidJob("renamed");
@@ -100,7 +113,7 @@ public sealed class CronJobStoreTests : IDisposable
         Assert.Equal("renamed", updated.Name);
         Assert.Equal("30 9 * * 1-5", updated.CronExpression);
 
-        var reloaded = new CronJobStore(path).Get(created.Id);
+        var reloaded = new CronJobStore(_h.Open(), legacy).Get(created.Id);
         Assert.NotNull(reloaded);
         Assert.Equal("renamed", reloaded.Name);
         Assert.Equal("30 9 * * 1-5", reloaded.CronExpression);
@@ -109,14 +122,14 @@ public sealed class CronJobStoreTests : IDisposable
     [Fact]
     public void Update_NoSuchId_ReturnsNull()
     {
-        var store = new CronJobStore(NewPath());
+        var store = new CronJobStore(_h.Open(), LegacyPath());
         Assert.Null(store.Update("cj_nope", ValidJob()));
     }
 
     [Fact]
     public void Update_InvalidJob_Throws()
     {
-        var store = new CronJobStore(NewPath());
+        var store = new CronJobStore(_h.Open(), LegacyPath());
         var created = store.Create(ValidJob());
         var bad = ValidJob();
         bad.TimeZoneId = "Nowhere/Land";
@@ -125,71 +138,138 @@ public sealed class CronJobStoreTests : IDisposable
     }
 
     [Fact]
+    public void MarkFired_RecordsRunMetadata_AndPersists()
+    {
+        var legacy = LegacyPath();
+        var store = new CronJobStore(_h.Open(), legacy);
+        var created = store.Create(ValidJob());
+
+        var firedUtc = new DateTime(2026, 6, 17, 5, 0, 0, DateTimeKind.Utc);
+        var next = new DateTime(2026, 6, 18, 5, 0, 0, DateTimeKind.Utc);
+        var marked = store.MarkFired(created.Id, firedUtc, "started", next, enabled: true);
+
+        Assert.NotNull(marked);
+        Assert.Equal(firedUtc, marked.LastFiredUtc);
+        Assert.Equal("started", marked.LastStatus);
+
+        var reloaded = new CronJobStore(_h.Open(), legacy).Get(created.Id)!;
+        Assert.Equal(firedUtc, reloaded.LastFiredUtc);
+        Assert.Equal("started", reloaded.LastStatus);
+        Assert.Equal(DateTimeKind.Utc, reloaded.LastFiredUtc!.Value.Kind);
+    }
+
+    [Fact]
     public void Delete_RemovesJob_AndPersists()
     {
-        var path = NewPath();
-        var store = new CronJobStore(path);
+        var legacy = LegacyPath();
+        var store = new CronJobStore(_h.Open(), legacy);
         var created = store.Create(ValidJob());
 
         Assert.True(store.Delete(created.Id));
         Assert.Null(store.Get(created.Id));
-        Assert.Null(new CronJobStore(path).Get(created.Id));
+        Assert.Null(new CronJobStore(_h.Open(), legacy).Get(created.Id));
     }
 
     [Fact]
     public void Delete_NoSuchId_ReturnsFalse()
     {
-        var store = new CronJobStore(NewPath());
+        var store = new CronJobStore(_h.Open(), LegacyPath());
         Assert.False(store.Delete("cj_nope"));
     }
 
     [Fact]
-    public void MissingFile_StartsEmpty_NoFileUntilFirstWrite()
+    public void NoLegacyFile_StartsEmpty()
     {
-        var path = NewPath();
-        var store = new CronJobStore(path);
-
+        var store = new CronJobStore(_h.Open(), LegacyPath());
         Assert.Empty(store.ListAll());
-        Assert.False(File.Exists(path));
     }
 
     [Fact]
-    public void CorruptFile_IsQuarantined_StoreStartsEmpty_BytesPreserved()
+    public void Constructor_NullDb_Throws()
     {
-        var path = NewPath();
-        Directory.CreateDirectory(_dir);
+        Assert.Throws<ArgumentNullException>(() => new CronJobStore(null!, LegacyPath()));
+    }
+
+    [Fact]
+    public void Constructor_EmptyLegacyPath_Throws()
+    {
+        Assert.Throws<ArgumentException>(() => new CronJobStore(_h.Open(), " "));
+    }
+
+    [Fact]
+    public void LegacyJson_ImportedOnce_Lossless_ThenRenamedAside()
+    {
+        // A legacy cronjobs.json written by the old store, including nested target/action and every field.
+        var legacy = LegacyPath();
+        var job = new CronJobDto
+        {
+            Id = "cj_abc123",
+            Name = "midnight loop",
+            Enabled = true,
+            ScheduleKind = CronSchedule.KindRecurring,
+            CronExpression = "0 0 * * *",
+            RunAt = null,
+            TimeZoneId = "America/Chicago",
+            Target = new CronJobTarget { Machine = "workstation-B" },
+            Action = new CronJobAction { RepoPath = @"D:\loop", Seed = "/work-list run Tonight", WorkListName = "Tonight", AutoDismiss = false },
+            PreventOverlap = true,
+            NotifyOn = CronNotify.Failure,
+            NotifyWebhookUrl = "https://example.test/hook",
+            CreatedUtc = new DateTime(2026, 6, 1, 12, 0, 0, DateTimeKind.Utc),
+            LastFiredUtc = new DateTime(2026, 6, 16, 0, 0, 0, DateTimeKind.Utc),
+            NextRunUtc = new DateTime(2026, 6, 17, 0, 0, 0, DateTimeKind.Utc),
+            LastStatus = "started",
+        };
+        WriteLegacyJobsFile(legacy, job);
+
+        var store = new CronJobStore(_h.Open(), legacy);
+
+        var loaded = store.Get("cj_abc123");
+        Assert.NotNull(loaded);
+        Assert.Equal("midnight loop", loaded.Name);
+        Assert.Equal(CronSchedule.KindRecurring, loaded.ScheduleKind);
+        Assert.Equal("0 0 * * *", loaded.CronExpression);
+        Assert.Equal("America/Chicago", loaded.TimeZoneId);
+        Assert.Equal("workstation-B", loaded.Target.Machine);
+        Assert.Equal(@"D:\loop", loaded.Action.RepoPath);
+        Assert.Equal("/work-list run Tonight", loaded.Action.Seed);
+        Assert.Equal("Tonight", loaded.Action.WorkListName);
+        Assert.False(loaded.Action.AutoDismiss);
+        Assert.True(loaded.PreventOverlap);
+        Assert.Equal(CronNotify.Failure, loaded.NotifyOn);
+        Assert.Equal("https://example.test/hook", loaded.NotifyWebhookUrl);
+        Assert.Equal(job.CreatedUtc, loaded.CreatedUtc);
+        Assert.Equal(job.LastFiredUtc, loaded.LastFiredUtc);
+        Assert.Equal("started", loaded.LastStatus);
+
+        // The legacy file is renamed aside (kept as a backup), never left to re-import.
+        Assert.False(File.Exists(legacy));
+        Assert.Single(Directory.GetFiles(Path.GetDirectoryName(legacy)!, Path.GetFileName(legacy) + ".migrated-*"));
+
+        // A fresh database + store over the same DB does NOT re-import (the file is gone) and still has it.
+        Assert.NotNull(new CronJobStore(_h.Open(), legacy).Get("cj_abc123"));
+    }
+
+    [Fact]
+    public void CorruptLegacyJson_FailsLoud_AndLeavesTheFileInPlace()
+    {
+        var legacy = LegacyPath();
+        Directory.CreateDirectory(Path.GetDirectoryName(legacy)!);
         const string corrupt = "{ this is not json !!!";
-        File.WriteAllText(path, corrupt);
+        File.WriteAllText(legacy, corrupt);
 
-        var store = new CronJobStore(path);
+        // Fail-loud, no partial import, no silent quarantine (the EF data-layer contract).
+        Assert.Throws<InvalidOperationException>(() => new CronJobStore(_h.Open(), legacy));
 
-        Assert.Empty(store.ListAll());
-        var quarantined = Directory.GetFiles(_dir, Path.GetFileName(path) + ".corrupt-*");
-        var q = Assert.Single(quarantined);
-        Assert.Equal(corrupt, File.ReadAllText(q));
-        Assert.False(File.Exists(path));
-
-        // The original path is freed for the next write-through.
-        var created = store.Create(ValidJob());
-        Assert.NotNull(new CronJobStore(path).Get(created.Id));
+        // The corrupt file is left exactly as it was for the operator to recover.
+        Assert.True(File.Exists(legacy));
+        Assert.Equal(corrupt, File.ReadAllText(legacy));
     }
 
-    [Fact]
-    public void Save_LeavesNoTempResidue_AndFileIsWholeJson()
+    private static void WriteLegacyJobsFile(string path, params CronJobDto[] jobs)
     {
-        var path = NewPath();
-        var store = new CronJobStore(path);
-        for (var i = 0; i < 25; i++)
-            store.Create(ValidJob("job-" + i));
-
-        Assert.True(File.Exists(path));
-        Assert.False(File.Exists(path + ".tmp"));
-        Assert.Equal(25, new CronJobStore(path).ListAll().Count);
-    }
-
-    [Fact]
-    public void Constructor_EmptyPath_Throws()
-    {
-        Assert.Throws<ArgumentException>(() => new CronJobStore(" "));
+        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+        var options = new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase, WriteIndented = true };
+        File.WriteAllText(path, JsonSerializer.Serialize(new { Jobs = jobs }, options));
     }
 }
