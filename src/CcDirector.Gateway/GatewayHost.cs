@@ -401,6 +401,9 @@ public sealed class GatewayHost : IAsyncDisposable
     // The Gateway's stable per-machine install identity (issue #857), owned by the host and handed to the
     // device-registration service instead of the retired static GatewayInstallId.LoadOrCreate.
     private readonly Account.GatewayInstallId _installIdStore = new();
+    // The Gateway bearer token store, owned by the host and used to resolve the token below instead of the
+    // retired static GatewayAuth.LoadOrCreate. The tray's read-only path stays on GatewayAuth.DefaultTokenFile.
+    private readonly Util.GatewayAuth _gatewayAuth = new();
 
     /// <summary>
     /// THE PRODUCER of the dictation phase label - the three facts that decide whether a session paints
@@ -515,7 +518,7 @@ public sealed class GatewayHost : IAsyncDisposable
         BrainTool = Core.Configuration.BrainToolConfig.EnsureHostable(brainTool ?? Core.Configuration.BrainToolConfig.Get());
 
         Port = port;
-        Token = token ?? new GatewayAuth().LoadOrCreate();
+        Token = token ?? _gatewayAuth.LoadOrCreate();
         Registry = new DirectorRegistry(instancesDirectory);
         // Issue #1292: free a removed Director's session numbers so a Director that died without releasing
         // them does not leak the pool. OnDirectorRemoved fires on graceful unregister and on the registry's
