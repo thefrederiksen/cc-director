@@ -375,7 +375,8 @@ public sealed class GatewayHost : IAsyncDisposable
     // Issue #549: the always-on turn-brief stamping pipeline (GatewayTurnBriefAgent) is retired.
     // TurnEndWatcher stays and runs unconditionally - its only job now is firing voice
     // auto-refresh on turn-end for voice sessions, and clearing the stale voice/text cache on
-    // the Working transition. The wingman brain (BrainSupervisor) is kept; voice mode uses it.
+    // the Working transition. The wingman narration (text and voice) now runs on the stateless
+    // HostedInferenceBrain (a hosted model call), not the spawned BrainSupervisor.
     private TurnEndWatcher? _turnEndWatcher;
     private Wingman.WingmanVoiceService? _voiceService;
     // Editable/versioned wingman instructions (issue #537); the voice translator reads the active set.
@@ -533,14 +534,15 @@ public sealed class GatewayHost : IAsyncDisposable
             FileLog.Write($"[GatewayHost] auth gate booted OFF (disabled via override - requests are accepted without a credential; this is a debugging mode, not the shipped default)");
         _serveProvisioner = new TailscaleServeProvisioner(Registry, Port);
 
-        // The Gateway's in-process warm brain (issue #184): supervisor only - the chosen
-        // tool spawns on first use (the brief agent's first ask, or Settings' Restart Brain).
-        // The tool and model are an EXPLICIT Gateway-level choice (issue #393, building on the
-        // pinned-model #204): the wingman is the product's one always-on intelligence point,
-        // so it runs the configured tool + model deliberately instead of a hardcoded claude.exe
-        // and the account-default model. Both default to claude + opus when unset, so existing
-        // fleets are unchanged. A config change applies on the next Gateway restart.
-        // BrainTool is resolved and validated hostable at the very top of this constructor.
+        // The Gateway's in-process warm brain (issue #184): supervisor only - the chosen tool
+        // spawns lazily. Its former consumers have since moved off it: the wingman narration now
+        // runs on the stateless HostedInferenceBrain (a hosted model call), and the always-on
+        // turn-brief agent was retired (issue #549). Today the only thing that spawns it is the
+        // Settings "Restart Brain" action, so this supervisor is kept for that manual path only.
+        // The tool and model remain an EXPLICIT Gateway-level choice (issue #393, building on the
+        // pinned-model #204); both default to claude + opus when unset. A config change applies on
+        // the next Gateway restart. BrainTool is resolved and validated hostable at the top of this
+        // constructor.
         BrainModel = BrainModelConfig.Get();
         FileLog.Write($"[GatewayHost] brain tool: {BrainTool}, model: {BrainModel}");
         Brain = new BrainSupervisor(
