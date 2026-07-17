@@ -1,5 +1,6 @@
+import { useState } from "react";
 import { Link } from "react-router-dom";
-import type { SessionDto } from "@devthrottle/client-core/api/client";
+import { setVoiceModeAllSessions, type SessionDto } from "@devthrottle/client-core/api/client";
 import {
   classify,
   contextLine,
@@ -88,6 +89,11 @@ export function SessionRoster({ sessions, directors, portByDirector, selectedId,
         </button>
       </div>
 
+      {/* The fleet-wide voice switch (issue #1765): one button turns voice mode on for every session,
+          or off again, so a person leaving their desk can put the whole fleet on voice and take it back
+          off later without touching each session. It reads the roster to pick its own direction. */}
+      {sessions !== null && total > 0 && <VoiceAllButton sessions={sessions} />}
+
       {error !== null && (
         <div className="roster-error" role="alert">
           {sessions !== null ? "Roster stale - showing last-known sessions" : error}
@@ -134,6 +140,56 @@ export function SessionRoster({ sessions, directors, portByDirector, selectedId,
           selectedId={selectedId}
         />
       )}
+    </div>
+  );
+}
+
+// The fleet-wide voice switch shown under the roster ordering toggle (issue #1765). One control for both
+// directions: while no session is a voice session it offers "Turn on voice for all N sessions"; the moment
+// any session is on, it offers "Turn voice off for all sessions". It calls the Gateway's single fan-out
+// endpoint, which walks the roster itself, then shows a plain summary of what changed and what was skipped
+// (a session whose owning computer is offline is passed over, never failing the batch). The next roster
+// poll repaints the "voice" tags and the button flips to its opposite direction.
+function VoiceAllButton({ sessions }: { sessions: SessionDto[] }) {
+  const [busy, setBusy] = useState(false);
+  const [note, setNote] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const anyOn = sessions.some((s) => Boolean(s.voiceMode));
+  const enable = !anyOn;
+  const count = sessions.length;
+
+  const onClick = async () => {
+    setBusy(true);
+    setError(null);
+    setNote(null);
+    try {
+      const result = await setVoiceModeAllSessions(enable);
+      const changedLabel = `${result.changed} ${result.changed === 1 ? "session" : "sessions"} ${enable ? "on" : "off"}`;
+      setNote(result.skipped > 0 ? `${changedLabel}, ${result.skipped} skipped (computer offline)` : changedLabel);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not change voice mode for all sessions");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const label = enable ? `Turn on voice for all ${count}` : "Turn voice off for all";
+  const busyLabel = enable ? "Turning voice on..." : "Turning voice off...";
+
+  return (
+    <div className="roster-voice-all">
+      <button
+        type="button"
+        className={`roster-voice-all-btn${enable ? "" : " off"}`}
+        onClick={() => void onClick()}
+        disabled={busy}
+        title="Turn voice mode on or off for every session at once"
+      >
+        {busy ? busyLabel : label}
+      </button>
+      {note && <span className="roster-voice-all-note" role="status">{note}</span>}
+      {error && <span className="roster-voice-all-error" role="alert">{error}</span>}
     </div>
   );
 }

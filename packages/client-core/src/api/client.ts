@@ -1991,3 +1991,49 @@ export async function stopWingmanVoice(sessionId: string, signal?: AbortSignal):
     throw new GatewayError(res.status, `POST wingman/voice/stop failed: ${res.status}`);
   }
 }
+
+// The per-session outcome the fleet-wide voice-mode call reports back (issue #1765). `ok` sessions were
+// switched; a not-ok session was skipped (its owning computer was not reachable) and `reason` says so
+// in plain English.
+export interface VoiceModeAllSessionResult {
+  sessionId: string;
+  name: string | null;
+  ok: boolean;
+  reason: string | null;
+}
+
+// The whole-fleet result: what was asked for (enabled), how many sessions the Gateway saw, how many it
+// actually switched, how many it skipped, and the per-session detail.
+export interface VoiceModeAllResult {
+  enabled: boolean;
+  total: number;
+  changed: number;
+  skipped: number;
+  sessions: VoiceModeAllSessionResult[];
+}
+
+// POST /sessions/voice-mode/all { enabled } - turn voice mode on (enabled=true) or off (false) for EVERY
+// session at once (issue #1765). The Gateway walks the whole roster and fans the per-session voice-mode
+// write out itself, so this is ONE call for the caller. Sessions whose owning computer is offline are
+// skipped and reported, never failing the batch. Enabling spends per-turn narration credits on every
+// session it switches on, so a 402 (out of credits) surfaces the shared credits notice, once.
+export async function setVoiceModeAllSessions(enabled: boolean, signal?: AbortSignal): Promise<VoiceModeAllResult> {
+  const res = await gatewayFetch(`/sessions/voice-mode/all`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Accept: "application/json", ...authHeaders() },
+    body: JSON.stringify({ enabled }),
+    signal,
+  });
+  if (!res.ok) {
+    if (res.status === 402) throw creditsErrorFrom(await res.json().catch(() => ({})));
+    throw new GatewayError(res.status, `POST voice-mode/all failed: ${res.status}`);
+  }
+  const body = (await res.json()) as Partial<VoiceModeAllResult>;
+  return {
+    enabled: Boolean(body.enabled),
+    total: Number(body.total ?? 0),
+    changed: Number(body.changed ?? 0),
+    skipped: Number(body.skipped ?? 0),
+    sessions: Array.isArray(body.sessions) ? body.sessions : [],
+  };
+}

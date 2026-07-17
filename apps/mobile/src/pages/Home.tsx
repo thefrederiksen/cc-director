@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
-import { type SessionDto } from "@devthrottle/client-core/api/client";
+import { setVoiceModeAllSessions, type SessionDto } from "@devthrottle/client-core/api/client";
 import { getSessionsEnvelope } from "@devthrottle/client-core/fleet/fleetClient";
 import { emptyRetentionCache, mergeRosterRetention, type RosterSessionMark } from "@devthrottle/client-core/fleet/rosterRetention";
 import { classify, contextLine, deletionReason, dotColor, effectiveColor, inBucket, inDesktopOrder, inWaitingOrder, isWorking, pendingDeletion, repoLeaf, snoozeCountdown, snoozeExpired } from "@devthrottle/client-core/sessions/ordering";
@@ -220,6 +220,15 @@ export function Home() {
         <p className="status-line">No sessions running.</p>
       )}
 
+      {/* The one-tap fleet-wide voice switch (issue #1765): "as I leave the house, put my whole fleet on
+          voice; when I get home, take it all off". It reads the roster to decide its own action - offer
+          "turn all on" while no session is a voice session, "turn all off" once any is - so the same
+          button covers both halves of the walk-out / come-home round trip. Lives in the Voice tab, the
+          voice-focused surface, and speaks to the Gateway which fans the change out to every session. */}
+      {tab === "voice" && sessions !== null && total > 0 && (
+        <VoiceAllControl sessions={sessions} />
+      )}
+
       {/* The Voice tab, empty. Said plainly and without alarm: nothing is ready to listen to yet. The
           way out is one tap, so an empty voice roster is never a dead end. */}
       {tab === "voice" && sessions !== null && total > 0 && voiceReady.length === 0 && (
@@ -314,6 +323,58 @@ function EnableAlerts() {
       <button type="button" className="banner-btn" onClick={() => void onEnable()} disabled={busy}>
         {busy ? "Enabling..." : "Enable notifications"}
       </button>
+    </div>
+  );
+}
+
+// The fleet-wide voice switch shown at the top of the Voice tab (issue #1765). One control for the whole
+// round trip: while no session is in voice mode it offers "Turn on voice for all N sessions"; the moment
+// any session is a voice session it offers "Turn voice off for all sessions". Tapping calls the Gateway's
+// one fan-out endpoint, which walks the roster itself, and shows a fail-loud summary of what changed and
+// what was skipped (the mobile rule: never fail silently - name the offline sessions that were passed
+// over). The next roster poll (5s) repaints each row's voice state, so the button flips to its opposite.
+function VoiceAllControl({ sessions }: { sessions: SessionDto[] }) {
+  const [busy, setBusy] = useState(false);
+  const [note, setNote] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const anyOn = sessions.some((s) => Boolean(s.voiceMode));
+  // No session on voice yet -> the action is to turn the whole fleet ON; otherwise turn it all OFF.
+  const enable = !anyOn;
+  const count = sessions.length;
+
+  const onClick = async () => {
+    setBusy(true);
+    setError(null);
+    setNote(null);
+    try {
+      const result = await setVoiceModeAllSessions(enable);
+      const changedLabel = `${result.changed} ${result.changed === 1 ? "session" : "sessions"} ${enable ? "on" : "off"}`;
+      setNote(result.skipped > 0 ? `${changedLabel}, ${result.skipped} skipped (computer offline)` : changedLabel);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not change voice mode for all sessions");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const label = enable
+    ? `Turn on voice for all ${count} ${count === 1 ? "session" : "sessions"}`
+    : "Turn voice off for all sessions";
+  const busyLabel = enable ? "Turning voice on..." : "Turning voice off...";
+
+  return (
+    <div className="voice-all">
+      <button
+        type="button"
+        className={`voice-all-btn${enable ? "" : " voice-all-btn-off"}`}
+        onClick={() => void onClick()}
+        disabled={busy}
+      >
+        {busy ? busyLabel : label}
+      </button>
+      {note && <p className="voice-all-note" role="status">{note}</p>}
+      {error && <p className="voice-all-error" role="alert">{error}</p>}
     </div>
   );
 }

@@ -2092,6 +2092,52 @@ a.banner-btn {
   line-height: 1;
 }
 
+/* The fleet-wide voice switch at the top of the Voice tab (issue #1765). A big, one-tap target - it is
+   reached for on the way out the door - full width, accent-filled for the "turn on" action and a muted
+   surface for the "turn off" return trip so the two directions read differently at a glance. */
+.voice-all {
+  margin: 14px 0 4px;
+}
+
+.voice-all-btn {
+  display: block;
+  width: 100%;
+  padding: 16px;
+  min-height: 56px;
+  border: none;
+  border-radius: 10px;
+  background: var(--accent);
+  color: #ffffff;
+  font-size: 16px;
+  font-weight: 700;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+
+/* The return trip ("turn it all off"): muted surface with an accent outline, so on/off never look alike. */
+.voice-all-btn-off {
+  background: var(--surface);
+  color: var(--accent);
+  border: 1px solid var(--accent);
+}
+
+.voice-all-btn:disabled {
+  opacity: 0.6;
+}
+
+.voice-all-note {
+  margin: 8px 2px 0;
+  font-size: 13px;
+  color: var(--text-dim);
+}
+
+.voice-all-error {
+  margin: 8px 2px 0;
+  font-size: 13px;
+  color: var(--attention);
+  font-weight: 600;
+}
+
 /* Machine / repo picker rows on the add screen. The row chrome reuses .row; .picker-link is the
    full-width button inside it (the roster uses an <a>, the pickers use <button> for the tap). */
 .picker-link {
