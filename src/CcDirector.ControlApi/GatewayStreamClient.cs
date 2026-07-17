@@ -1,4 +1,5 @@
 using CcDirector.Core.Configuration;
+using CcDirector.Core.Network;
 using CcDirector.Core.Sessions;
 using CcDirector.Core.Utilities;
 using CcDirector.Gateway.Contracts;
@@ -152,6 +153,13 @@ public sealed class GatewayStreamClient : IAsyncDisposable
                 var token = _config.Token;
                 if (!string.IsNullOrEmpty(token))
                     options.AccessTokenProvider = () => Task.FromResult<string?>(token);
+                // Local-name-friendly dialing (see GatewayHttp): a gateway named soren_north.local
+                // resolves to a link-local IPv6 address first, and the default connect hangs on it.
+                // The handler covers negotiate and the fallback transports; the websocket factory
+                // covers the websocket itself, which dials outside that handler by default.
+                options.HttpMessageHandlerFactory = _ => GatewayHttp.Handler();
+                options.WebSocketFactory = async (context, cancellationToken) =>
+                    await GatewayHttp.ConnectWebSocketAsync(context.Uri, token, cancellationToken);
             })
             .WithAutomaticReconnect(new[]
             {

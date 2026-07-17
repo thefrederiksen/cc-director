@@ -1,3 +1,4 @@
+using CcDirector.Core.Network;
 using System.Net;
 using System.Net.Http;
 using System.Net.Http.Headers;
@@ -135,7 +136,7 @@ public sealed class DeviceRegistryClient
     /// </summary>
     public DeviceRegistryClient(HttpClient? client = null, string? baseUrl = null)
     {
-        _client = client ?? new HttpClient { Timeout = TimeSpan.FromSeconds(10) };
+        _client = client ?? new HttpClient(GatewayHttp.Handler()) { Timeout = TimeSpan.FromSeconds(10) };
         _baseUrl = ResolveBaseUrl(baseUrl);
     }
 

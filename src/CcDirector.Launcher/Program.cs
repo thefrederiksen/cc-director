@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Net.Http;
 using System.Net.Http.Headers;
 using Avalonia;
+using CcDirector.Core.Network;
 using CcDirector.Core.Utilities;
 using CcDirector.Setup.Engine;
 
@@ -156,7 +157,7 @@ public static class Program
         var stagedSelf = Environment.ProcessPath ?? "";
         FileLog.Write($"[Program] --apply-update: version={version}, target={target}, port={port}, args={relaunchArgs}, staged={stagedSelf}");
 
-        using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(5) };
+        using var http = new HttpClient(GatewayHttp.Handler()) { Timeout = TimeSpan.FromSeconds(5) };
 
         var result = new LauncherSelfUpdate().ApplyAsync(
             target, stagedSelf, version,

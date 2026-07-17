@@ -1,3 +1,4 @@
+using CcDirector.Core.Network;
 using System.Net.Http;
 using System.Net.Http.Headers;
 using System.Text;
@@ -61,7 +62,7 @@ public sealed class AccountTelemetryClient
     /// </summary>
     public AccountTelemetryClient(HttpClient? client = null, string? baseUrl = null)
     {
-        _client = client ?? new HttpClient { Timeout = TimeSpan.FromSeconds(10) };
+        _client = client ?? new HttpClient(GatewayHttp.Handler()) { Timeout = TimeSpan.FromSeconds(10) };
         _baseUrl = ResolveBaseUrl(baseUrl);
     }
 

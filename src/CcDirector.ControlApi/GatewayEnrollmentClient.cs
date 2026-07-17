@@ -1,3 +1,4 @@
+using CcDirector.Core.Network;
 using System.Net;
 using System.Net.Http.Json;
 using CcDirector.Core.Utilities;
@@ -51,7 +52,7 @@ public static class GatewayEnrollmentClient
             DeviceType = "workstation",
         };
 
-        using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(15) };
+        using var http = new HttpClient(GatewayHttp.Handler()) { Timeout = TimeSpan.FromSeconds(15) };
         http.BaseAddress = new Uri(gatewayUrl.TrimEnd('/') + "/");
         if (!string.IsNullOrEmpty(token))
             http.DefaultRequestHeaders.Authorization =

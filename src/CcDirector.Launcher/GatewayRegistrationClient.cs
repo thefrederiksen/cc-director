@@ -1,6 +1,7 @@
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using CcDirector.Core.Configuration;
+using CcDirector.Core.Network;
 using CcDirector.Core.Utilities;
 using CcDirector.Gateway.Contracts;
 
@@ -43,7 +44,7 @@ public sealed class GatewayRegistrationClient : IAsyncDisposable
         _port = port;
         _token = token ?? throw new ArgumentNullException(nameof(token));
         _version = version;
-        _http = new HttpClient
+        _http = new HttpClient(GatewayHttp.Handler())
         {
             Timeout = TimeSpan.FromSeconds(10),
         };

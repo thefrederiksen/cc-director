@@ -267,7 +267,7 @@ public sealed class GatewayConnectivitySelfTest
     /// <summary>One short HTTP GET: (2xx?, body-snippet-or-error). 5s budget per probe.</summary>
     private static async Task<(bool ok, string detail)> ProbeHttpAsync(string url, CancellationToken ct)
     {
-        using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(5) };
+        using var http = new HttpClient(GatewayHttp.Handler()) { Timeout = TimeSpan.FromSeconds(5) };
         try
         {
             var resp = await http.GetAsync(url, ct);
