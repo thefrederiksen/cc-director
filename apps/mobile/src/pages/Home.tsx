@@ -3,7 +3,7 @@ import { Link } from "react-router-dom";
 import { type SessionDto } from "@devthrottle/client-core/api/client";
 import { getSessionsEnvelope } from "@devthrottle/client-core/fleet/fleetClient";
 import { emptyRetentionCache, mergeRosterRetention, type RosterSessionMark } from "@devthrottle/client-core/fleet/rosterRetention";
-import { classify, contextLine, dotColor, effectiveColor, inBucket, inDesktopOrder, inWaitingOrder, isWorking, repoLeaf, snoozeExpired } from "@devthrottle/client-core/sessions/ordering";
+import { classify, contextLine, deletionReason, dotColor, effectiveColor, inBucket, inDesktopOrder, inWaitingOrder, isWorking, pendingDeletion, repoLeaf, snoozeCountdown, snoozeExpired } from "@devthrottle/client-core/sessions/ordering";
 import { applyFilter, filterIsActive, filterSummary, machineName, pruneFilter } from "@devthrottle/client-core/sessions/filter";
 import { useDictationStatusFor } from "@devthrottle/client-core/dictation/status";
 import { useNow, waitingLabel } from "@devthrottle/client-core/sessions/waiting";
@@ -340,6 +340,10 @@ function SessionRow({ session, mark }: { session: SessionDto; mark?: RosterSessi
   // regenerated typed client. Null on sessions/Directors without a number - then no prefix shows.
   const num = session.number;
   const hasNum = num !== null && num !== undefined && String(num).trim().length > 0;
+  // The Gateway-owned hold time ("wakes in 3h 48m") and the winding-down flag, read the same way the
+  // desktop rail and the Cockpit read them - never the raw onHold sensor (which can drift from the fold).
+  const holdCountdown = snoozeCountdown(session);
+  const windingDown = pendingDeletion(session);
   // Issue #948: a voice-mode session opens straight on its Voice tab (the surface it is meant to be
   // used from), not on the default Chat tab; every other session still opens on Chat.
   const sid = encodeURIComponent(session.sessionId ?? "");
@@ -363,11 +367,21 @@ function SessionRow({ session, mark }: { session: SessionDto; mark?: RosterSessi
           <span className="row-meta">
             <span className="row-context">{contextLine(session)}</span>
             {attention && session.needsYouSince && <WaitingTime since={String(session.needsYouSince)} />}
+            {/* The hold time on a snoozed row ("wakes in 3h 48m"), from the Gateway-owned snooze clock,
+                ticking each second - only mounted when there is a clock, so other rows keep no timer. */}
+            {holdCountdown !== null && <HoldCountdown session={session} />}
           </span>
           {/* Snooze Length mission: a distinct "Snooze ended" badge when this session just returned from
               an expired snooze on its own (the dead-man's switch fired) - so the reader knows this is a
               "go see why it went quiet" item, not a fresh turn-end. */}
           {snoozeExpired(session) && <span className="row-snooze-ended">Snooze ended</span>}
+          {/* A session flagged for deletion wears a neutral "winding down" badge (a BADGE, never a colour):
+              the dot keeps telling the truth about the work while this rides beside it. */}
+          {windingDown && (
+            <span className="row-winding-down" title={deletionReason(session) ?? "Marked for deletion"}>
+              winding down
+            </span>
+          )}
           {/* The facts you navigate and filter by - the machine the session runs on and its repo - are
               a bottom row of small chips, so a fleet spread across several machines is legible at a
               glance without crowding the status line. The machine chip is accent-tinted; the repo chip
@@ -508,4 +522,14 @@ function WaitingTime({ since }: { since: string }) {
   const label = waitingLabel(since, now);
   if (label.length === 0) return null;
   return <span className="row-waiting">{label}</span>;
+}
+
+// The live "wakes in <dur>" hold time for a snoozed card, ticking each second from the Gateway-owned
+// snooze clock (no roster refetch). Only mounted for snoozed cards that carry a clock, so the per-second
+// re-render never touches other rows - the same pattern as WaitingTime.
+function HoldCountdown({ session }: { session: SessionDto }) {
+  const now = useNow(1000);
+  const label = snoozeCountdown(session, now);
+  if (label === null) return null;
+  return <span className="row-hold-time">{label}</span>;
 }

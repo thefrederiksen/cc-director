@@ -275,6 +275,34 @@ a.banner-btn {
   color: #d99120;
 }
 
+/* The Gateway-owned hold time on a snoozed row ("wakes in 3h 48m"), right-aligned on the status line like
+   the waiting timer but muted - it annotates the "Snoozed" label rather than nagging. */
+.row-hold-time {
+  margin-left: auto;
+  flex: 0 0 auto;
+  font-size: 12px;
+  color: var(--text-dim, #9aa4b2);
+  white-space: nowrap;
+}
+
+/* A session flagged for deletion wears a neutral "winding down" badge (a BADGE, never a colour): the dot
+   keeps telling the truth about the work while this rides beside it. Same shape as the snooze-ended badge,
+   neutral gray so it never competes with the status dot. */
+.row-winding-down {
+  display: inline-block;
+  align-self: flex-start;
+  margin-top: 4px;
+  padding: 1px 7px;
+  border-radius: 6px;
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  background: rgba(156, 163, 175, 0.14);
+  border: 1px solid rgba(156, 163, 175, 0.45);
+  color: #9ca3af;
+}
+
 /* Issue #838: the dot is top-aligned at the start of the FIRST name line (align-items:
    flex-start) so a name that wraps to several lines keeps the dot beside its first line. */
 .row-link {
