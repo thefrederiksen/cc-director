@@ -207,8 +207,11 @@ each of its predecessors look disposable. See section 8.</p>
 <tr><td>Gateway Exes page (<span class="file">ExesEndpoints</span>)</td><td>1</td><td>Calls the fold but skips the fleet pass - so it produces different answers.</td></tr>
 <tr><td>Desktop app</td><td><strong class="good">0 (since #1746, 16 July 2026)</strong></td><td>Yes - the rail, the voice-takeover queue and the fleet map render the Gateway's stamped <code>EffectiveColor</code>/<code>StateLabel</code>/<code>TriageBucket</code> verbatim, pushed down over <code>set-display-state</code>. It used to hold 7 live folds.</td></tr>
 <tr><td>Web / mobile clients</td><td><strong class="good">0 (since #1748, 16 July 2026)</strong></td><td>Colour, label AND triage all from the Gateway stamp, via one shared <span class="file">client-core/ordering.ts</span>. The label/triage re-derivations are gone.</td></tr>
+<tr><td>Voice-mode screen (mobile + Cockpit)</td><td><strong class="good">0 (since the voice-display fold, 17 July 2026)</strong></td><td>The LAST client fold to fall. The Voice tab used to derive its own "audio unavailable" verdict from nine local inputs (<span class="file">client-core/voiceAvailability.ts</span>, now deleted) and branch on retrying / service-down / reason to pick the badge, message, and whether a Generate button appeared. When the Gateway sent no reason it GUESSED "offer a button" - the dead-end "Generate narration now" next to a red "Voice unavailable" badge. The Gateway now folds one <code>VoiceDisplay</code> verdict (<span class="file">VoiceDisplayFold</span>) - label, tone, message, canPlay, canGenerate - and both views render it verbatim.</td></tr>
 <tr><td>Retired MAUI phone app</td><td>2 (+2 duplicates)</td><td>No. Different palette entirely. Retired.</td></tr>
 </table>
+
+<p><strong>The law, stated plainly:</strong> the client is dumb. Every verdict - colour, label, triage, and now the voice-mode display state (badge, message, and which actions are offered) - is computed once on the Gateway and pushed; clients only render it. A client that rules for itself renders something <em>plausible</em> when it should render something <em>true</em>, which is precisely how the Voice screen offered a button that could never work. Add a new state in the fold, never as a fresh branch in a view.</p>
 
 <h2>2. The machine</h2>
 

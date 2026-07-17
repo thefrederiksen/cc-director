@@ -644,8 +644,10 @@ internal static class GatewayWingmanVoiceEndpoint
             voice.Mark(sid);   // opening voice on a session makes it a voice session (kept fresh on turn-end)
             if (string.IsNullOrWhiteSpace(lastReply))
             {
-                // A fresh or text-only session with nothing to read yet: a truthful canned line,
-                // no brain call.
+                // No text reply to read aloud (waiting on a prompt / menu). Record the honest "nothing to
+                // narrate" fact so the Voice screen shows it via VoiceDisplayFold instead of a dead-end
+                // Generate button, then return the truthful canned line - no brain call.
+                voice.SetNothingToNarrate(sid, true);
                 return Results.Json(new
                 {
                     reply = "",
@@ -660,6 +662,7 @@ internal static class GatewayWingmanVoiceEndpoint
             // navigates away or the request is abandoned mid-read - returning to the session then
             // loads the finished summary from cache instead of losing it. Mark the session generating
             // so it shows YELLOW ("not ready yet") for the duration, then back to red.
+            voice.SetNothingToNarrate(sid, false);   // there IS a text reply - clear any stale "nothing to narrate"
             voice.BeginGenerating(sid);
             try
             {

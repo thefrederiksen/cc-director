@@ -42,6 +42,7 @@ public sealed class WingmanVoiceService
     private readonly ConcurrentDictionary<string, VoiceReady> _ready = new();      // sid -> spoken+audio
     private readonly ConcurrentDictionary<string, byte> _generating = new();       // sid -> wingman is running now
     private readonly ConcurrentDictionary<string, HostedAiState> _voiceUnavailable = new();  // sid -> why voice is off (issue #939)
+    private readonly ConcurrentDictionary<string, byte> _nothingToNarrate = new();  // sid -> the last turn has no text reply to read aloud (waiting on a prompt)
     private readonly string _persistPath;
     private readonly string _audioDir;
     private readonly HttpClient? _ttsHttp;   // test seam for TtsAsync (issue #939); the shared static when null
@@ -275,6 +276,25 @@ public sealed class WingmanVoiceService
         => _voiceUnavailable.TryGetValue(sid, out var s) ? s : (HostedAiState?)null;
 
     /// <summary>
+    /// True when this session's latest turn has NO assistant text reply to read aloud - it is waiting for
+    /// the user on a prompt / menu, not a text answer. A NON-failure: there is genuinely nothing to
+    /// narrate, distinct from "the audio has not been made yet". Recorded when a generation attempt (auto
+    /// or on-demand) finds an empty last reply; cleared the moment a text reply exists, on a new turn, or
+    /// when voice is turned off. The <c>/sessions</c> aggregation feeds this to <see cref="VoiceDisplayFold"/>
+    /// so the screen shows an honest "nothing to read aloud" instead of a Generate button that cannot work.
+    /// </summary>
+    public bool NothingToNarrateFor(string sid) => _nothingToNarrate.ContainsKey(sid);
+
+    /// <summary>Set or clear the "nothing to narrate" fact from a caller that has already read the turn
+    /// (the on-demand explain path): true when the last reply is empty (waiting on a prompt), false the
+    /// moment a text reply exists. The auto path sets/clears it inline in <c>GenerateOnceAsync</c>.</summary>
+    public void SetNothingToNarrate(string sid, bool nothing)
+    {
+        if (nothing) _nothingToNarrate[sid] = 1;
+        else _nothingToNarrate.TryRemove(sid, out _);
+    }
+
+    /// <summary>
     /// Record that a model/translation call did not answer in time (a bounded timeout or a transport
     /// failure), so this session shows the calm "voice on its way" retrying state rather than a silent
     /// failure or a false "this session's computer is offline". The on-demand explain path uses this
@@ -331,6 +351,7 @@ public sealed class WingmanVoiceService
         if (wasVoice) SaveVoiceSessions();
         _generating.TryRemove(sid, out _);
         _voiceUnavailable.TryRemove(sid, out _);   // voice is off, so its unavailable-state is moot (issue #939)
+        _nothingToNarrate.TryRemove(sid, out _);   // voice is off, so "nothing to narrate" is moot too
         if (_ready.TryRemove(sid, out _))
             DeleteReadyAudio(sid);   // keep the durable cache in step so a stale tap can't 404
         if (wasVoice)
@@ -349,6 +370,7 @@ public sealed class WingmanVoiceService
         // yellow "wingman running" marker too - raw activity wins while the agent works.
         _generating.TryRemove(sid, out _);
         _voiceUnavailable.TryRemove(sid, out _);   // a fresh turn clears the old unavailable-state (dismissible, issue #939)
+        _nothingToNarrate.TryRemove(sid, out _);   // a fresh turn supersedes "nothing to narrate" - re-evaluated on its turn-end
         if (_ready.TryRemove(sid, out _))
         {
             DeleteReadyAudio(sid);   // issue #553: keep the durable cache in step so a stale tap can't 404
@@ -393,6 +415,7 @@ public sealed class WingmanVoiceService
         var ready = new VoiceReady(spoken, reply, audio, DateTime.UtcNow,
             NormalizeContentType(contentType) ?? DetectAudioContentType(audio));
         _ready[sid] = ready;
+        _nothingToNarrate.TryRemove(sid, out _);   // audio exists, so there was something to narrate after all
         SaveReadyAudio(sid, ready);
     }
 
@@ -535,7 +558,15 @@ public sealed class WingmanVoiceService
         var turns = await route.GetTurnsAsync(sid, ct);
         var widgets = turns?.Widgets ?? new List<TurnWidgetDto>();
         var lastReply = widgets.LastOrDefault(w => w.Kind == "Text")?.Content;
-        if (string.IsNullOrWhiteSpace(lastReply)) return false;  // nothing to say yet - the provider was not called
+        if (string.IsNullOrWhiteSpace(lastReply))
+        {
+            // No text reply to read aloud - the session is waiting on a prompt / menu. Record the honest
+            // "nothing to narrate" fact so the Voice screen (via VoiceDisplayFold) says so, instead of
+            // offering a Generate button that would re-run this same empty read and never produce audio.
+            _nothingToNarrate[sid] = 1;
+            return false;  // nothing to say yet - the provider was not called
+        }
+        _nothingToNarrate.TryRemove(sid, out _);   // there IS a text reply now - clear any stale "nothing to narrate"
         // Identity-aware skip (issue #1322 done right): only skip when the CURRENT last reply is the
         // exact one already narrated. Unlike the old bare HasVoice guard this does not depend on having
         // observed the Working transition, so a genuinely new/changed reply is never suppressed by a

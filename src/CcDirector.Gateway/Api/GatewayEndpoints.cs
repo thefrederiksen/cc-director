@@ -50,6 +50,7 @@ internal static class GatewayEndpoints
         Func<string, bool>? voiceGeneratingFor = null,
         Func<string, bool>? voiceAudioReadyFor = null,
         Func<string, Core.HostedAi.HostedAiState?>? voiceUnavailableFor = null,
+        Func<string, bool>? nothingToNarrateFor = null,
         Func<string, bool, DateTime?>? needsYouStampFor = null,
         Func<string, bool>? transcribingFor = null,
         Func<string, string?>? dictationStatusFor = null,
@@ -808,6 +809,20 @@ internal static class GatewayEndpoints
                     // missing play triangle. Null (voice fine) leaves the field unset.
                     if (voiceUnavailableFor is not null && voiceUnavailableFor(s.SessionId) is Core.HostedAi.HostedAiState reason)
                         s.VoiceUnavailable = HostedAi.HostedAiHttp.Dto(reason);
+                    // The FOLDED voice-mode display verdict the Voice screen renders VERBATIM. Every piece
+                    // of ruling the phone used to do for itself - the badge, the message, and crucially
+                    // whether a "Generate narration" button appears - is decided HERE, from the facts just
+                    // stamped plus the "nothing to narrate" marker, so a dumb client never has to guess (the
+                    // guess is what put a dead-end Generate button next to a red "unavailable" badge). This
+                    // is the law: the Gateway rules, the client renders (docs/new_architecture/session-state.html).
+                    s.VoiceDisplay = Wingman.VoiceDisplayFold.Fold(
+                        voiceMode: s.VoiceMode,
+                        agentWorking: string.Equals(s.ActivityState, "Working", StringComparison.OrdinalIgnoreCase)
+                                   || string.Equals(s.ActivityState, "Starting", StringComparison.OrdinalIgnoreCase),
+                        hasAudio: s.VoiceAudioReady,
+                        generating: s.VoiceGenerating,
+                        unavailable: voiceUnavailableFor?.Invoke(s.SessionId),
+                        nothingToNarrate: nothingToNarrateFor?.Invoke(s.SessionId) ?? false);
                     // Orange "Transcribing..." while a dictated utterance is uploading/transcribing in
                     // the background for this session (mobile Speak -> Send released the screen). Stamped
                     // BEFORE the NeedsYouSince clock below so the EffectiveColor fold already sees orange

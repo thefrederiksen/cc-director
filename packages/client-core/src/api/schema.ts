@@ -7453,6 +7453,15 @@ export interface components {
             ctaAction?: string;
             ctaUrl?: null | string;
         };
+        VoiceDisplay: {
+            kind?: string;
+            tone?: string;
+            label?: string;
+            message?: string;
+            canPlay?: boolean;
+            canGenerate?: boolean;
+            reason?: null | components["schemas"]["HostedAiMessageDto"];
+        };
         InputStatBucketDto: {
             modality?: string;
             surface?: string;
@@ -7651,6 +7660,7 @@ export interface components {
             voiceGenerating?: boolean;
             voiceAudioReady?: boolean;
             voiceUnavailable?: null | components["schemas"]["HostedAiMessageDto"];
+            voiceDisplay?: null | components["schemas"]["VoiceDisplay"];
             transcribing?: boolean;
             dictationStatus?: null | string;
             wingmanEnabled?: boolean;

@@ -1352,6 +1352,10 @@ public sealed class GatewayHost : IAsyncDisposable
             // of credits / cap / no key), stamp the shared unavailable state onto the session so the UI
             // shows the consistent add-credit / add-key message instead of a silently missing triangle.
             voiceUnavailableFor: sid => _voiceService?.VoiceUnavailableFor(sid),
+            // The last turn has no text reply to read aloud (waiting on a prompt / menu). Feeds the folded
+            // VoiceDisplay so the screen shows an honest "nothing to read aloud" instead of a Generate
+            // button that cannot work - the client no longer rules on this.
+            nothingToNarrateFor: sid => _voiceService?.NothingToNarrateFor(sid) == true,
             // Issue #218: stamp the Gateway-owned NeedsYouSince entry clock onto each session.
             needsYouStampFor: (sid, isRed) => _needsYouClock.Stamp(sid, isRed),
             // Stamp the orange "Transcribing..." flag while a dictated utterance is being uploaded

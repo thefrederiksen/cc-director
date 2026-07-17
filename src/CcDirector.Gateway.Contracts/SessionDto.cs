@@ -435,6 +435,17 @@ public sealed class SessionDto
     public HostedAiMessageDto? VoiceUnavailable { get; set; }
 
     /// <summary>
+    /// The FOLDED voice-mode display verdict (what the Voice screen shows and offers), computed by the
+    /// Gateway aggregator from the facts above plus the "nothing to narrate" marker, and rendered
+    /// VERBATIM by every client. This is the field the Voice screen reads; the individual
+    /// <see cref="VoiceMode"/> / <see cref="VoiceGenerating"/> / <see cref="VoiceAudioReady"/> /
+    /// <see cref="VoiceUnavailable"/> facts remain for the roster and other surfaces, but the screen's
+    /// badge, message, and whether a Generate button appears all come from here - never re-derived on the
+    /// client (see <see cref="VoiceDisplay"/> for why). Null in Director-local responses.
+    /// </summary>
+    public VoiceDisplay? VoiceDisplay { get; set; }
+
+    /// <summary>
     /// True while a client is transcribing a dictated utterance into this session: the phone has
     /// released the Speak dialog and the Gateway is uploading + transcribing the recorded audio in
     /// the background, which will then be submitted into the session. Stamped by the Gateway
@@ -676,7 +687,8 @@ public sealed class SessionDto
     /// voice/transcription overlays, etc.) on the object it serves, so callers must never receive the
     /// cached instance itself or one request would contaminate the cache for later ones. Reference-type
     /// members the aggregator could mutate in place are re-created here; <see cref="VoiceUnavailable"/>
-    /// is only ever replaced wholesale by the aggregator (never mutated), so sharing its reference is safe.
+    /// and <see cref="VoiceDisplay"/> are only ever replaced wholesale by the aggregator (never mutated),
+    /// so sharing their references is safe.
     /// </summary>
     public SessionDto Clone()
     {
