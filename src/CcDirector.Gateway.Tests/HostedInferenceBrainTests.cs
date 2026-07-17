@@ -153,6 +153,59 @@ public sealed class HostedInferenceBrainTests
         Assert.IsAssignableFrom<InvalidOperationException>(caught);
     }
 
+    /// <summary>A handler that never answers until its token is cancelled - the shape a stalled hosted
+    /// worker takes. Drives the per-call deadline without a real 60-second (or 180-second) wait.</summary>
+    private sealed class HangingHandler : HttpMessageHandler
+    {
+        private int _calls;
+        public int Calls => _calls;
+        protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
+        {
+            Interlocked.Increment(ref _calls);
+            await Task.Delay(Timeout.Infinite, ct);   // answers only when the (linked) token cancels
+            return new HttpResponseMessage(HttpStatusCode.OK);
+        }
+    }
+
+    [Fact]
+    public async Task AskAsync_WhenModelStalls_FailsFastAsTimeout_NotAfterThreeMinutes()
+    {
+        // THE FIX: the model leg used to carry a flat 180-second client timeout and nothing else, so a
+        // stalled hosted worker BLOCKED the whole voice generation for three minutes and then threw a raw
+        // cancellation - a silent FAILED on the auto path, a false "computer offline" 502 on the manual
+        // "generate" button. The call is now bounded per-attempt and fails fast as a clear TimeoutException
+        // the voice path maps to Retrying. A tiny injected deadline proves the bound without a real wait.
+        var handler = new HangingHandler();
+        using var http = new HttpClient(handler);
+        var brain = new HostedInferenceBrain("https://devthrottle.com/api/v1", "dt_live_abc", "glm-5.2", http, _ => { },
+            callTimeout: TimeSpan.FromMilliseconds(100));
+
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        await Assert.ThrowsAsync<TimeoutException>(() => brain.AskAsync("translate this"));
+        sw.Stop();
+
+        Assert.Equal(1, handler.Calls);
+        Assert.True(sw.Elapsed < TimeSpan.FromSeconds(10), $"a bounded call must fail fast, but took {sw.Elapsed}");
+    }
+
+    [Fact]
+    public async Task AskAsync_WhenCallerCancels_SurfacesCancellation_NotMislabelledTimeout()
+    {
+        // The deadline and a real caller-cancel must be told apart: a caller cancelling (shutdown) is NOT
+        // the model failing to answer, so it surfaces as cancellation, never as a TimeoutException that the
+        // voice path would wrongly turn into a Retrying banner.
+        var handler = new HangingHandler();
+        using var http = new HttpClient(handler);
+        var brain = new HostedInferenceBrain("https://devthrottle.com/api/v1", "dt_live_abc", "glm-5.2", http, _ => { },
+            callTimeout: TimeSpan.FromMinutes(5));   // deadline far away, so only the caller-cancel can fire
+
+        using var cts = new CancellationTokenSource();
+        var task = brain.AskAsync("translate this", cts.Token);
+        cts.Cancel();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => task);
+    }
+
     [Fact]
     public async Task AskAsync_EmptyContent_Throws()
     {
