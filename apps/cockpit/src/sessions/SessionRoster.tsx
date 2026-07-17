@@ -3,10 +3,13 @@ import type { SessionDto } from "@devthrottle/client-core/api/client";
 import {
   classify,
   contextLine,
+  deletionReason,
   dotColor,
   effectiveColor,
   groupByDirector,
   inBucket,
+  pendingDeletion,
+  snoozeCountdown,
   snoozeExpired,
 } from "@devthrottle/client-core/sessions/ordering";
 import { machinePortLabel } from "@devthrottle/client-core/fleet/directorEndpoint";
@@ -233,11 +236,18 @@ function RosterRow({
   const wobbly = reach?.state === REACHABILITY_WOBBLY;
   const offline = reach?.state === REACHABILITY_OFFLINE;
   const lastSeen = wobbly || offline ? reachabilityLastSeen(reach?.lastSeenAgeSeconds) : "";
-  // The tag row (voice / snoozed / snooze-ended / last-seen / waiting) renders only when it has
-  // something to say, so a plain working session stays a compact two lines (name + state).
+  // The hold time ("wakes in 3h 48m") and the winding-down flag are the Gateway's fold, read the same way
+  // the desktop rail reads them - never the raw onHold sensor, which can drift from the fold (a Held
+  // session that starts working is blue, and must not still read "snoozed"). The snooze LABEL already
+  // rides on contextLine (the stamped stateLabel); this tag adds the countdown beside it.
+  const holdCountdown = snoozeCountdown(session);
+  const windingDown = pendingDeletion(session);
+  // The tag row (voice / hold-time / snooze-ended / winding-down / last-seen / waiting) renders only when
+  // it has something to say, so a plain working session stays a compact two lines (name + state).
   const hasTags =
-    !!session.onHold ||
+    holdCountdown !== null ||
     snoozeExpired(session) ||
+    windingDown ||
     !!session.voiceMode ||
     lastSeen.length > 0 ||
     (attention && !!session.needsYouSince);
@@ -268,7 +278,12 @@ function RosterRow({
           {hasTags && (
             <span className="roster-tags">
               {session.voiceMode && <span className="roster-tag voice">voice</span>}
-              {session.onHold && <span className="roster-tag">snoozed</span>}
+              {windingDown && (
+                <span className="roster-tag winding-down" title={deletionReason(session) ?? "Marked for deletion"}>
+                  winding down
+                </span>
+              )}
+              {holdCountdown !== null && <HoldCountdown session={session} />}
               {snoozeExpired(session) && <span className="roster-tag snooze-ended">Snooze ended</span>}
               {lastSeen && <span className="roster-lastseen">{lastSeen}</span>}
               {attention && session.needsYouSince && <WaitingTime since={String(session.needsYouSince)} />}
@@ -295,4 +310,14 @@ function WaitingTime({ since }: { since: string }) {
   const label = waitingLabel(since, now);
   if (label.length === 0) return null;
   return <span className="roster-waiting">{label}</span>;
+}
+
+// The live "wakes in <dur>" hold time for a snoozed row, ticking each second from the Gateway-owned
+// snooze clock (no roster refetch). Only mounted for snoozed rows that carry a clock, so the per-second
+// re-render never touches other rows - the same pattern as WaitingTime.
+function HoldCountdown({ session }: { session: SessionDto }) {
+  const now = useNow(1000);
+  const label = snoozeCountdown(session, now);
+  if (label === null) return null;
+  return <span className="roster-tag hold-time">{label}</span>;
 }

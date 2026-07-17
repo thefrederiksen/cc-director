@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { holdSession, killSession, listSessions } from "@devthrottle/client-core/api/client";
+import { classify, snoozeCountdown } from "@devthrottle/client-core/sessions/ordering";
 
 // The session management verbs (Snooze/Unsnooze + Remove) for ONE session, hoisted out of the old
 // SessionManageBar so two places can drive them from one copy of the state: the app bar's overflow
@@ -16,6 +17,12 @@ const POLL_INTERVAL_MS = 4000;
 export interface SessionManage {
   onHold: boolean | null;
   held: boolean;
+  // The FOLD's verdict for DISPLAY (classify === "onHold"), distinct from the raw `held` the toggle uses.
+  // A Held session that has started working is blue "Working" and must NOT read "snoozed" - working wins in
+  // the fold, so a display pill reads this, never the raw onHold flag.
+  snoozed: boolean;
+  // "wakes in 3h 48m" from the Gateway-owned snooze clock, or null when there is no running clock.
+  holdCountdown: string | null;
   busy: boolean;
   error: string | null;
   setError: (message: string | null) => void;
@@ -26,6 +33,8 @@ export interface SessionManage {
 export function useSessionManage(sessionId: string | undefined): SessionManage {
   const navigate = useNavigate();
   const [onHold, setOnHold] = useState<boolean | null>(null);
+  const [snoozed, setSnoozed] = useState(false);
+  const [holdCountdown, setHoldCountdown] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   // While a toggle is in flight the optimistic state must not be clobbered by a slower poll.
@@ -40,7 +49,18 @@ export function useSessionManage(sessionId: string | undefined): SessionManage {
         const all = await listSessions(controller.signal);
         if (cancelled || pendingRef.current) return;
         const match = all.find((s) => s.sessionId === sessionId);
-        if (match) setOnHold(Boolean(match.onHold));
+        if (match) {
+          // The toggle needs the raw hold (what it will flip); the DISPLAY reads the fold (working wins).
+          setOnHold(Boolean(match.onHold));
+          setHoldCountdown(snoozeCountdown(match));
+          // classify fails loud against a Gateway that did not stamp triageBucket; in this polling loop a
+          // mixed-version blip must not throw the refresh, so keep the last verdict on that rare miss.
+          try {
+            setSnoozed(classify(match) === "onHold");
+          } catch {
+            /* keep the last-known snoozed verdict */
+          }
+        }
       } catch {
         /* keep the last-known held state; the actions surface their own errors */
       }
@@ -89,6 +109,8 @@ export function useSessionManage(sessionId: string | undefined): SessionManage {
   return {
     onHold,
     held: onHold === true,
+    snoozed,
+    holdCountdown,
     busy,
     error,
     setError,

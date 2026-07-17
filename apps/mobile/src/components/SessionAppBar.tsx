@@ -188,7 +188,14 @@ export function SessionAppBar({ title, manage, showSnooze = false, showSwitchToV
       </div>
 
       {manage.error !== null && <div className="banner banner-error" role="alert">{manage.error}</div>}
-      {manage.held && <span className="manage-held-pill">Snoozed</span>}
+      {/* The snoozed pill reads the Gateway's FOLD (manage.snoozed), not the raw onHold flag: a Held session
+          that has started working is blue "Working" and must not still read "Snoozed". Shows the hold time
+          beside it when the Gateway's snooze clock is running, matching the roster and the desktop rail. */}
+      {manage.snoozed && (
+        <span className="manage-held-pill">
+          {manage.holdCountdown ? `Snoozed - ${manage.holdCountdown}` : "Snoozed"}
+        </span>
+      )}
 
       {confirming && (
         <div className="confirm-overlay" role="dialog" aria-modal="true" aria-label="Remove session">

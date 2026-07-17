@@ -835,6 +835,21 @@ body {
   color: #d99120;
 }
 
+/* The Gateway-owned hold time on a snoozed row ("wakes in 3h 48m") - muted, and NOT uppercased so the
+   duration reads naturally beside the stamped "Snoozed" label. */
+.roster-tag.hold-time {
+  text-transform: none;
+  letter-spacing: 0;
+  color: var(--text-dim);
+}
+
+/* A session flagged for deletion wears a neutral "winding down" badge (a BADGE, never a colour): the dot
+   still tells the truth about the work while this rides beside it. Mirrors the desktop rail's badge. */
+.roster-tag.winding-down {
+  color: #9ca3af;
+  border-color: rgba(156, 163, 175, 0.45);
+}
+
 /* The "computer:port" line on a card (Attention view only - in My order the group header carries it).
    Its own line, shown in full so a long machine name never clips. */
 .roster-machine {

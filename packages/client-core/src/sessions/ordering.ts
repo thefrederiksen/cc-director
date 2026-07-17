@@ -12,6 +12,15 @@ type GatewayStampedSession = SessionDto & {
   // (its Gateway-owned timer elapsed and the fold put it back into "needs you" on its own). The Gateway
   // stamps it; clients render a distinct "Snooze ended" badge. Optional (absent/false for most sessions).
   snoozeExpired?: boolean | null;
+  // The armed-snooze deadline (Gateway-owned snooze clock), so a client can render the hold time
+  // ("wakes in 3h 48m"). Null when there is no running clock: not snoozed, or a deferred snooze that has
+  // not landed yet. The generated schema does not carry it, so it is augmented here like the fields above.
+  snoozeUntil?: string | null;
+  // The session is flagged for deletion and awaiting the reaper - drives the "winding down" badge. A BADGE,
+  // NEVER A COLOUR: the fold does not read it, so the dot keeps telling the truth about the work while this
+  // rides beside it (mirrors the desktop rail's IsPendingDeletion). Optional; false for most sessions.
+  pendingDeletion?: boolean | null;
+  deletionReason?: string | null;
 };
 
 // The stable "desktop order": honor the owning Director's SortOrder (the user-controlled,
@@ -112,6 +121,41 @@ export function stateLabel(s: SessionDto): string {
 // Non-throwing (optional field): a session without the marker is simply not returned-from-snooze.
 export function snoozeExpired(s: SessionDto): boolean {
   return Boolean((s as GatewayStampedSession).snoozeExpired);
+}
+
+// "wakes in 3h 48m" - how long until an armed snooze returns this session to needs-you, read from the
+// Gateway-owned snooze clock (snoozeUntil). Returns null when there is no running clock: not snoozed, or a
+// deferred snooze that has not landed (no deadline yet). The Director never owns the clock; the client only
+// renders the countdown. The wording matches the desktop rail's HoldTimeLabel exactly, so the hold time
+// reads identically on the rail, the Cockpit and the phone. `nowMs` is injectable for deterministic tests.
+export function snoozeCountdown(s: SessionDto, nowMs: number = Date.now()): string | null {
+  const raw = (s as GatewayStampedSession).snoozeUntil?.trim();
+  if (!raw) return null;
+  const until = Date.parse(raw);
+  if (Number.isNaN(until)) return null;
+  const remainingMs = until - nowMs;
+  if (remainingMs <= 0) return "waking up";
+  const totalMin = Math.floor(remainingMs / 60000);
+  if (totalMin < 1) return "wakes in <1m";
+  if (totalMin < 60) return `wakes in ${totalMin}m`;
+  const h = Math.floor(totalMin / 60);
+  const m = totalMin % 60;
+  return m > 0 ? `wakes in ${h}h ${m}m` : `wakes in ${h}h`;
+}
+
+// True when this session is flagged for deletion and awaiting the reaper - drives the "winding down"
+// badge. A BADGE, NEVER A COLOUR (owner's ruling): pending deletion says nothing about what the agent is
+// DOING - a flagged session may still be working - so the dot keeps telling the truth and this rides
+// beside it. Non-throwing (optional field); mirrors the desktop rail's IsPendingDeletion.
+export function pendingDeletion(s: SessionDto): boolean {
+  return Boolean((s as GatewayStampedSession).pendingDeletion);
+}
+
+// The human reason captured when a session was flagged for deletion (e.g. "jobs-auto: nothing to report"),
+// or null when none was given - surfaced as the winding-down badge's tooltip.
+export function deletionReason(s: SessionDto): string | null {
+  const r = (s as GatewayStampedSession).deletionReason?.trim();
+  return r ? r : null;
 }
 
 // True while the agent is actively running a turn - the "working" state. Blue is the authoritative

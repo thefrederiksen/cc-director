@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { SessionDto } from "../api/client";
-import { classify, contextLine, dotColor, effectiveColor, groupByDirector, inBucket, inWaitingOrder, isWorking, stateLabel } from "./ordering";
+import { classify, contextLine, deletionReason, dotColor, effectiveColor, groupByDirector, inBucket, inWaitingOrder, isWorking, pendingDeletion, snoozeCountdown, stateLabel } from "./ordering";
 
 function session(fields: Partial<SessionDto> & { sessionId?: string } = {}): SessionDto {
   return {
@@ -214,5 +214,36 @@ describe("groupByDirector", () => {
 
     expect(groups[0].port).toBe("");
     expect(groups[0].machineName).toBe("SOREN_NORTH");
+  });
+});
+
+describe("hold time (snoozeCountdown) - the Gateway-owned snooze clock", () => {
+  const now = Date.parse("2026-07-16T12:00:00Z");
+
+  it("formats the remaining time to match the desktop rail's wording", () => {
+    const at = (iso: string) => snoozeCountdown(session({ snoozeUntil: iso } as Partial<SessionDto>), now);
+    expect(at("2026-07-16T15:48:00Z")).toBe("wakes in 3h 48m"); // 3h 48m
+    expect(at("2026-07-16T15:00:00Z")).toBe("wakes in 3h");      // exact hours -> no minutes
+    expect(at("2026-07-16T12:42:00Z")).toBe("wakes in 42m");     // under an hour
+    expect(at("2026-07-16T12:00:30Z")).toBe("wakes in <1m");     // under a minute
+    expect(at("2026-07-16T11:59:00Z")).toBe("waking up");        // already past due
+  });
+
+  it("returns null when there is no running snooze clock", () => {
+    // Not snoozed, or a deferred snooze that has not landed (no deadline yet).
+    expect(snoozeCountdown(session(), now)).toBeNull();
+    expect(snoozeCountdown(session({ snoozeUntil: null } as Partial<SessionDto>), now)).toBeNull();
+    expect(snoozeCountdown(session({ snoozeUntil: "not-a-date" } as Partial<SessionDto>), now)).toBeNull();
+  });
+});
+
+describe("winding-down (pendingDeletion) - a badge, never a colour", () => {
+  it("reads the Gateway flag and reason, defaulting to false / null", () => {
+    expect(pendingDeletion(session())).toBe(false);
+    expect(deletionReason(session())).toBeNull();
+
+    const flagged = session({ pendingDeletion: true, deletionReason: "jobs-auto: nothing to report" } as Partial<SessionDto>);
+    expect(pendingDeletion(flagged)).toBe(true);
+    expect(deletionReason(flagged)).toBe("jobs-auto: nothing to report");
   });
 });
