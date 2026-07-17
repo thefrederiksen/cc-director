@@ -15,11 +15,15 @@ namespace CcDirector.Gateway;
 /// with their items in the ordered <c>worklist_items</c> child table (SQLite locally), NOT the old
 /// hand-rolled <c>worklists.json</c>. The public API and observable behavior are unchanged.
 ///
-/// CASE-INSENSITIVE NAMES, PROVIDER-AWARE: names address one list case-insensitively ("Backlog" and
-/// "backlog" are the same list), exactly as the old OrdinalIgnoreCase dictionary. This is enforced in the
-/// database by a NOCASE collation on the name column plus a unique per-tenant index (see
-/// <see cref="Data.GatewayDbContext"/>), NOT by EF.Functions.ILike (Postgres-only). The Postgres provider
-/// selects its own case-insensitive collation later; the store code is provider-agnostic.
+/// CASE-INSENSITIVE NAMES: names address one list case-insensitively ("Backlog" and "backlog" are the same
+/// list), exactly as the legacy <c>Dictionary(OrdinalIgnoreCase)</c>. This is enforced in CODE via
+/// <see cref="System.StringComparer.OrdinalIgnoreCase"/> under the write lock - there is NO database-level
+/// name-unique index or collation (the legacy Dictionary had no database constraint either, and the
+/// single-writer lock gives the same guarantee). No stored string transform reproduces OrdinalIgnoreCase
+/// exactly - both whole-string and per-character <c>ToUpperInvariant</c> over-merge U+017F (LATIN SMALL
+/// LETTER LONG S) onto 'S', which OrdinalIgnoreCase keeps distinct - so a fold column plus a unique index
+/// could not preserve the behaviour and could brick an import; code-side comparison is the exact,
+/// provider-agnostic match.
 ///
 /// STALE-CLAIM RELEASE: a persisted consumer claim is by definition stale after a restart (the claiming
 /// runner died with the Gateway), so every persisted claim is released on construction - preserved exactly.

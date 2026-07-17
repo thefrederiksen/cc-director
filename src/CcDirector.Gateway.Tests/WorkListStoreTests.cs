@@ -9,8 +9,10 @@ namespace CcDirector.Gateway.Tests;
 /// <summary>
 /// Unit tests for <see cref="WorkListStore"/> (issue #273) over the EF data layer (Hosted Gateway mission,
 /// Step 1b): create/append/round-trip, mixed-source ordering, reorder, remove-by-source+id, the
-/// single-consumer claim/refusal, and the case-insensitive name behaviour (enforced provider-aware by the
-/// NOCASE collation). Persistence and import are covered by <see cref="WorkListStorePersistenceTests"/>.
+/// single-consumer claim/refusal, and the case-insensitive name behaviour (enforced in code via
+/// StringComparer.OrdinalIgnoreCase; exact full-Unicode parity is proven in
+/// <see cref="WorkListStoreCaseParityTests"/>). Persistence and import are covered by
+/// <see cref="WorkListStorePersistenceTests"/>.
 /// </summary>
 public sealed class WorkListStoreTests : IDisposable
 {
