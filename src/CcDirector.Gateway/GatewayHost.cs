@@ -386,6 +386,9 @@ public sealed class GatewayHost : IAsyncDisposable
     // the Working transition. The wingman brain (BrainSupervisor) is kept; voice mode uses it.
     private TurnEndWatcher? _turnEndWatcher;
     private Wingman.WingmanVoiceService? _voiceService;
+
+    /// <summary>Test-only warm-brain provider override (issue #1777); null in production.</summary>
+    private readonly Func<Core.Configuration.WingmanModelRole, CancellationToken, Task<CcDirector.AgentBrain.IAgentBrain>>? _brainProviderOverride;
     // Editable/versioned wingman instructions (issue #537); the voice translator reads the active set.
     private readonly Wingman.WingmanInstructionsStore _instructionsStore = new();
     // Shared training-data store: the voice service WRITES captures, the instructions A/B test READS them.
@@ -516,8 +519,12 @@ public sealed class GatewayHost : IAsyncDisposable
     /// Shared instances that write to the real user's directories). Production omits it and the host builds
     /// the service over its own key vault, exactly as before.
     /// </param>
-    public GatewayHost(int port = DefaultPort, string? token = null, bool? authEnabled = null, string? instancesDirectory = null, string? turnBriefDirectory = null, string? keyVaultPath = null, string? workListsPath = null, string? cronJobsPath = null, string? cronRunsPath = null, string? devicesPath = null, string? telemetryQueuePath = null, int? telemetryQueueMaxSize = null, TimeSpan? telemetryRetryInterval = null, Core.Account.DevThrottleAccountService? account = null, bool? streamMode = null, string? inputStatsPath = null, string? snoozePath = null, string? missionsPath = null, string? missionNotesPath = null, Transcription.GatewayTranscriptionService? dictationTranscription = null, Core.Agents.AgentKind? brainTool = null)
+    public GatewayHost(int port = DefaultPort, string? token = null, bool? authEnabled = null, string? instancesDirectory = null, string? turnBriefDirectory = null, string? keyVaultPath = null, string? workListsPath = null, string? cronJobsPath = null, string? cronRunsPath = null, string? devicesPath = null, string? telemetryQueuePath = null, int? telemetryQueueMaxSize = null, TimeSpan? telemetryRetryInterval = null, Core.Account.DevThrottleAccountService? account = null, bool? streamMode = null, string? inputStatsPath = null, string? snoozePath = null, string? missionsPath = null, string? missionNotesPath = null, Transcription.GatewayTranscriptionService? dictationTranscription = null, Core.Agents.AgentKind? brainTool = null,
+        Func<Core.Configuration.WingmanModelRole, CancellationToken, Task<CcDirector.AgentBrain.IAgentBrain>>? brainProviderOverride = null)
     {
+        // Test seam (issue #1777): a test passes a stub warm-brain provider so the wingman menu detector can be
+        // exercised end-to-end without a live model. Null in production - the real WingmanBrainAsync is used.
+        _brainProviderOverride = brainProviderOverride;
         // Resolve and VALIDATE the warm-brain tool up front, before any resource is opened: a brain tool
         // that cannot be hosted is a configuration error that must fail loudly at construction, not
         // silently later at the brain's first spawn. BrainToolConfig.Get reads config.json; a test passes
@@ -1530,7 +1537,7 @@ public sealed class GatewayHost : IAsyncDisposable
         // listener with the phone in a pocket knows WHICH session is talking before anything else
         // (WingmanTranslator.FidelityPrompt v5.2). Push-store read - no dial. See ResolveSessionTitle.
         _voiceService ??= new Wingman.WingmanVoiceService(WingmanBrainAsync, _keyVault, training: _trainingStore, instructionsProvider: () => _instructionsStore.ActiveContent, sessionTitleResolver: ResolveSessionTitle);
-        GatewayWingmanVoiceEndpoint.Map(_app, Registry, WingmanBrainAsync, _keyVault, _voiceService,
+        GatewayWingmanVoiceEndpoint.Map(_app, Registry, _brainProviderOverride ?? WingmanBrainAsync, _keyVault, _voiceService,
             pushedSessions: PushedSessions,
             sendCommand: SendCommandAsync,
             owners: SessionOwners,

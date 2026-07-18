@@ -5,6 +5,9 @@ using System.Net.Http.Json;
 using System.Net.Sockets;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using CcDirector.AgentBrain;
+using CcDirector.Core.Configuration;
+using CcDirector.Core.Drivers;
 using CcDirector.Gateway.Contracts;
 using Microsoft.AspNetCore.SignalR.Client;
 using Microsoft.Extensions.DependencyInjection; // AddMessagePackProtocol (client)
@@ -13,22 +16,16 @@ using Xunit;
 namespace CcDirector.Gateway.Tests;
 
 /// <summary>
-/// The floor of the menu-handling mission (issue #1777): the wingman voice-turn must READ THE LIVE SCREEN and
-/// FAIL CLOSED. It boots a REAL streamMode <see cref="GatewayHost"/>, dials the REAL DirectorHub over the
-/// tunnel, and answers the session verbs (<c>screen-grid</c> / <c>buffer</c> / <c>turns</c> / <c>prompt</c>)
-/// per scenario, recording every command the Gateway dispatches so a test can prove exactly what was - and
-/// was NOT - sent into the session.
+/// The fail-closed floor of the menu-handling mission (issue #1777), proven end-to-end against a REAL
+/// streamMode <see cref="GatewayHost"/> over the tunnel. Every session verb (<c>screen-grid</c> /
+/// <c>turns</c> / <c>prompt</c>) is answered per scenario and every dispatched command is recorded, so a test
+/// proves exactly what did - and did NOT - reach the terminal. A STUB warm brain is injected so the menu
+/// detector can be exercised WITH a working model (proving detection off the live grid and the menu-press
+/// path), while the fail-closed tests leave the brain throwing (no reply set) to prove that a menu the brain
+/// cannot read still types nothing.
 ///
-/// The three cases the brief demands:
-///   1. Alternate-screen Claude menu, empty scrollback -> the menu is detected off the LIVE grid and NEITHER
-///      the spoken words NOR any selection bytes reach the terminal (no <c>prompt</c> verb at all).
-///   2. Confident plain-text prompt -> the spoken answer IS typed (a <c>prompt</c> verb carrying the words).
-///   3. Unreadable screen -> nothing is typed (no <c>prompt</c> verb).
-///
-/// TUNNEL-BY-CONSTRUCTION (as in <see cref="TunnelWingmanVoiceProofTests"/>): the Director is registered
-/// unreachable and the session arrives only via PushSnapshot, so any answered read rode the tunnel. No live
-/// wingman brain is configured, so the brain call throws immediately on the empty key - which is precisely the
-/// fail-closed path case 1 exercises (a menu on screen the brain could not read must still type nothing).
+/// The classification is decided ONLY from the live screen grid: the <c>buffer</c> (scrollback) verb is never
+/// read on this path, which these tests assert.
 /// </summary>
 [Collection("DirectorRoot")]
 public sealed class WingmanVoiceTurnLiveScreenProofTests : IAsyncLifetime
@@ -53,19 +50,44 @@ public sealed class WingmanVoiceTurnLiveScreenProofTests : IAsyncLifetime
     private Func<DirectorCommand, DirectorCommandResult> _dispatch =
         cmd => DirectorCommandResult.Fail(DirectorCommandStatus.BadRequest, $"unexpected verb {cmd.Verb}");
 
-    public WingmanVoiceTurnLiveScreenProofTests()
+    // ---- Stub warm brain (issue #1777, finding 4) ----
+    // Every prompt the brain received (so a test can assert the LIVE grid text reached menu detection).
+    private readonly ConcurrentQueue<string> _brainPrompts = new();
+    // What the brain replies. Null => AskAsync throws (the real no-key brain behavior) => fail-closed path.
+    private Func<string, string>? _brainReply;
+
+    private sealed class StubBrain : IAgentBrain
     {
-        _prevRoot = Environment.GetEnvironmentVariable("CC_DIRECTOR_ROOT");
-        _root = Path.Combine(Path.GetTempPath(), "ccd-vlsproof-" + Guid.NewGuid().ToString("N"));
-        Environment.SetEnvironmentVariable("CC_DIRECTOR_ROOT", _root);
+        private readonly WingmanVoiceTurnLiveScreenProofTests _owner;
+        public StubBrain(WingmanVoiceTurnLiveScreenProofTests owner) => _owner = owner;
+        public string? SessionId => "stub";
+        public Task<AskResult> AskAsync(string prompt, CancellationToken ct = default)
+        {
+            _owner._brainPrompts.Enqueue(prompt);
+            var reply = _owner._brainReply;
+            if (reply is null)
+                throw new InvalidOperationException("stub brain: no reply configured (fail-closed path)");
+            return Task.FromResult(new AskResult { Text = reply(prompt) });
+        }
+        public Task CancelAsync(CancellationToken ct = default) => Task.CompletedTask;
+        public Task<ClearResult> ClearAsync(CancellationToken ct = default) => Task.FromResult(new ClearResult());
+        public Task RestartAsync(CancellationToken ct = default) => Task.CompletedTask;
+        public Task KillAsync(CancellationToken ct = default) => Task.CompletedTask;
+        public Task<BrainHealth> GetHealthAsync(CancellationToken ct = default) => Task.FromResult(new BrainHealth());
+        public void Dispose() { }
     }
+
+    /// <summary>Wrap a spoken answer in the brain's answer markers, the way the model is told to.</summary>
+    private static string Wrapped(string body) =>
+        SessionAskRunner.AnswerBeginMarker + "\n" + body + "\n" + SessionAskRunner.AnswerEndMarker;
 
     public async Task InitializeAsync()
     {
         _gateway = new GatewayHost(port: AllocateFreePort(), token: Token, authEnabled: true,
             instancesDirectory: _instancesDir,
             workListsPath: Path.Combine(_instancesDir, "worklists", "worklists.json"),
-            streamMode: true);
+            streamMode: true,
+            brainProviderOverride: (_, _) => Task.FromResult<IAgentBrain>(new StubBrain(this)));
         await _gateway.StartAsync();
         _http = new HttpClient { BaseAddress = new Uri($"http://127.0.0.1:{_gateway.Port}/") };
         _http.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", Token);
@@ -73,7 +95,7 @@ public sealed class WingmanVoiceTurnLiveScreenProofTests : IAsyncLifetime
         _gateway.Registry.Upsert(new DirectorRegistrationRequest
         {
             DirectorId = DirectorId,
-            TailnetEndpoint = "http://127.0.0.1:59923/", // nothing listens here
+            TailnetEndpoint = "http://127.0.0.1:59924/", // nothing listens here
             MachineName = Environment.MachineName,
             Pid = 1,
             Version = "test",
@@ -93,6 +115,13 @@ public sealed class WingmanVoiceTurnLiveScreenProofTests : IAsyncLifetime
         await _conn.InvokeAsync("Hello", new DirectorStreamHello { DirectorId = DirectorId, Version = "test" });
     }
 
+    public WingmanVoiceTurnLiveScreenProofTests()
+    {
+        _prevRoot = Environment.GetEnvironmentVariable("CC_DIRECTOR_ROOT");
+        _root = Path.Combine(Path.GetTempPath(), "ccd-vlsproof-" + Guid.NewGuid().ToString("N"));
+        Environment.SetEnvironmentVariable("CC_DIRECTOR_ROOT", _root);
+    }
+
     public async Task DisposeAsync()
     {
         try { await _conn.DisposeAsync(); } catch { /* best effort */ }
@@ -109,7 +138,6 @@ public sealed class WingmanVoiceTurnLiveScreenProofTests : IAsyncLifetime
     private static DirectorCommandResult Ok(object body) =>
         DirectorCommandResult.Success(JsonSerializer.Serialize(body, Web));
 
-    /// <summary>Push a voice session and return its id.</summary>
     private async Task<string> PushSessionAsync()
     {
         var sid = Guid.NewGuid().ToString();
@@ -124,7 +152,6 @@ public sealed class WingmanVoiceTurnLiveScreenProofTests : IAsyncLifetime
         return sid;
     }
 
-    /// <summary>Every prompt the Gateway dispatched into the session (the bytes that would reach the terminal).</summary>
     private List<PromptRequest> DispatchedPrompts()
     {
         var prompts = new List<PromptRequest>();
@@ -137,78 +164,158 @@ public sealed class WingmanVoiceTurnLiveScreenProofTests : IAsyncLifetime
         return prompts;
     }
 
-    // A real Claude Code permission menu, as it renders on the ALTERNATE screen (full-screen picker). The
-    // scrollback is empty on the alternate screen by design, so this menu is visible ONLY on the live grid.
-    private static readonly List<string> AltScreenClaudeMenuRows = new()
+    // A real Claude permission menu on the PRIMARY screen (the "do you want to proceed" / "❯ 1" fingerprint),
+    // whose option labels are on the grid so the re-verify before pressing passes.
+    private static ScreenGridResponse PrimaryMenuGrid(string sid) => new()
     {
-        "╭──────────────────────────────────────────────╮",
-        "│ Bash command                                 │",
-        "│ dotnet test                                  │",
-        "│                                              │",
-        "│ Do you want to proceed?                      │",
-        "│ ❯ 1. Yes                                     │",
-        "│   2. Yes, and don't ask again this session   │",
-        "│   3. No, and tell Claude what to do          │",
-        "╰──────────────────────────────────────────────╯",
+        SessionId = sid,
+        Rows = new List<string> { "Do you want to proceed?", "❯ 1. Yes", "  2. No" },
+        CursorRow = 1,
+        CursorCol = 2,
+        IsAlternateScreen = false,
+        HasGrid = true,
     };
 
+    // A Claude composer at the bottom of the PRIMARY screen, cursor in the empty input box (row 2).
+    private static ScreenGridResponse ComposerGrid(string sid, bool alternateScreen = false) => new()
+    {
+        SessionId = sid,
+        Rows = new List<string>
+        {
+            "I finished the change. What next?",
+            "╭──────────────────────────────────────╮",
+            "│ >                                     │",
+            "╰──────────────────────────────────────╯",
+            "  ? for shortcuts",
+        },
+        CursorRow = 2,
+        CursorCol = 4,
+        IsAlternateScreen = alternateScreen,
+        HasGrid = true,
+    };
+
+    // ===================== Finding 4: detection off the LIVE grid, menu-press path =====================
+
     [Fact]
-    public async Task VoiceTurn_AltScreenClaudeMenu_EmptyScrollback_DetectsMenuOffLiveGridAndTypesNothing()
+    public async Task VoiceTurn_LiveGridMenu_StubBrainRecognizesIt_PressesTheOptionOffTheLiveGrid()
     {
         var sid = await PushSessionAsync();
+        var promptSent = false;
 
-        // The alternate-screen menu is on the LIVE grid; the scrollback (buffer) is empty, as it is on the
-        // alternate screen. A "prompt" answer would be the exact defect - so any prompt dispatch fails loud.
+        // The brain SUCCEEDS: it returns the menu it read from the live grid.
+        _brainReply = _ => Wrapped(
+            "{\"isMenu\":true,\"question\":\"Proceed?\",\"selectionMode\":\"single\",\"submit\":\"\"," +
+            "\"options\":[{\"key\":\"1. Yes\",\"send\":\"1\\r\"},{\"key\":\"2. No\",\"send\":\"2\\r\"}]}");
+
         _dispatch = cmd => cmd.Verb switch
         {
-            "screen-grid" => Ok(new ScreenGridResponse
+            "screen-grid" => Ok(PrimaryMenuGrid(sid)),
+            "turns" => Ok(new TurnsResponse
             {
                 SessionId = sid,
-                Rows = AltScreenClaudeMenuRows,
-                CursorRow = 5,
-                CursorCol = 3,
-                IsAlternateScreen = true,
-                HasGrid = true,
+                Status = "ok",
+                Widgets = promptSent
+                    ? new List<TurnWidgetDto> { new() { Kind = "Text", Content = "Ran the tests, all green." } }
+                    : new List<TurnWidgetDto>(),
             }),
-            "buffer" => Ok(new BufferResponse { SessionId = sid, Text = "" }),   // empty scrollback (alt screen)
+            "prompt" => Mark(ref promptSent, Ok(new PromptResponse { Accepted = true })),
             _ => DirectorCommandResult.Fail(DirectorCommandStatus.BadRequest, $"unexpected verb {cmd.Verb}"),
         };
 
-        var resp = await _http.PostAsJsonAsync($"sessions/{sid}/wingman/voice-turn",
-            new { text = "yeah go ahead and run them" });
-
+        var resp = await _http.PostAsJsonAsync($"sessions/{sid}/wingman/voice-turn", new { text = "option one" });
         Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
-        var node = await resp.Content.ReadFromJsonAsync<JsonNode>();
-        // Fail closed: the client is told it cannot type here and to look at the terminal.
-        Assert.True(node?["cannotType"]?.GetValue<bool>());
 
-        // The whole point: the spoken words - and any selection bytes - NEVER reached the terminal.
-        Assert.Empty(DispatchedPrompts());
+        // The menu-press path was taken: the option's keystroke reached the terminal (NOT the spoken words).
+        var prompts = DispatchedPrompts();
+        Assert.Contains(prompts, p => p.Text == "1\r");
+        Assert.DoesNotContain(prompts, p => p.Text == "option one");
 
-        // And the menu situation was detected off the LIVE screen grid (the authoritative read), not scrollback.
-        Assert.Contains(_commands, c => c.Verb == "screen-grid" && c.SessionId == sid);
+        // Detection ran off the LIVE grid text - the brain's first prompt carried the live menu content.
+        Assert.True(_brainPrompts.TryPeek(out var firstPrompt));
+        Assert.Contains("Do you want to proceed?", firstPrompt);
+
+        // The scrollback (buffer) verb was never read - the live grid is the only detection source (finding 2).
+        Assert.DoesNotContain(_commands, c => c.Verb == "buffer");
     }
 
+    // ===================== Finding 3: re-verify the menu is still on screen before pressing =====================
+
     [Fact]
-    public async Task VoiceTurn_ConfidentPlainTextPrompt_TypesTheSpokenAnswer()
+    public async Task VoiceTurn_MenuClosedBetweenReadAndPress_PressesNothing()
+    {
+        var sid = await PushSessionAsync();
+        var gridCall = 0;
+
+        // The brain recognizes the menu on the FIRST read. But by the time we go to press, the menu has closed
+        // and a shell prompt is on screen - the re-verify must catch that and press NOTHING (no selection bytes
+        // into the shell).
+        _brainReply = _ => Wrapped(
+            "{\"isMenu\":true,\"question\":\"Proceed?\",\"selectionMode\":\"single\",\"submit\":\"\"," +
+            "\"options\":[{\"key\":\"1. Yes\",\"send\":\"1\\r\"},{\"key\":\"2. No\",\"send\":\"2\\r\"}]}");
+
+        _dispatch = cmd =>
+        {
+            if (cmd.Verb == "screen-grid")
+            {
+                // First read: the menu. Re-verify read (and after): the menu is gone, a shell prompt is up.
+                var call = System.Threading.Interlocked.Increment(ref gridCall);
+                return call == 1
+                    ? Ok(PrimaryMenuGrid(sid))
+                    : Ok(new ScreenGridResponse
+                    {
+                        SessionId = sid,
+                        Rows = new List<string> { "user@host:~/repo$ ", "" },
+                        CursorRow = 0,
+                        CursorCol = 18,
+                        IsAlternateScreen = false,
+                        HasGrid = true,
+                    });
+            }
+            return DirectorCommandResult.Fail(DirectorCommandStatus.BadRequest, $"unexpected verb {cmd.Verb}");
+        };
+
+        var resp = await _http.PostAsJsonAsync($"sessions/{sid}/wingman/voice-turn", new { text = "option one" });
+        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+        var node = await resp.Content.ReadFromJsonAsync<JsonNode>();
+        Assert.True(node?["cannotType"]?.GetValue<bool>());
+        // No keystrokes reached the terminal - not the option, not the spoken words.
+        Assert.Empty(DispatchedPrompts());
+    }
+
+    // ===================== Fail-closed: a menu the brain cannot read types nothing =====================
+
+    [Fact]
+    public async Task VoiceTurn_LiveGridMenu_BrainCannotRead_TypesNothing()
+    {
+        var sid = await PushSessionAsync();
+        _brainReply = null; // brain throws => detection fails => fail closed
+
+        _dispatch = cmd => cmd.Verb switch
+        {
+            "screen-grid" => Ok(PrimaryMenuGrid(sid)),
+            _ => DirectorCommandResult.Fail(DirectorCommandStatus.BadRequest, $"unexpected verb {cmd.Verb}"),
+        };
+
+        var resp = await _http.PostAsJsonAsync($"sessions/{sid}/wingman/voice-turn", new { text = "yeah go ahead" });
+        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+        var node = await resp.Content.ReadFromJsonAsync<JsonNode>();
+        Assert.True(node?["cannotType"]?.GetValue<bool>());
+        Assert.Empty(DispatchedPrompts());
+        Assert.Contains(_commands, c => c.Verb == "screen-grid");
+    }
+
+    // ===================== Finding 5: plain text types ONLY on a positive composer signal =====================
+
+    [Fact]
+    public async Task VoiceTurn_PrimaryComposerWithCursor_TypesTheSpokenAnswer()
     {
         var sid = await PushSessionAsync();
         var spoken = "add a retry to the upload path";
         var promptSent = false;
 
-        // A readable, plain-text prompt (no menu) is the one case where typing is safe. "turns" returns no
-        // widgets before the prompt and one Text widget after, so WaitForReplyAsync converges quickly.
         _dispatch = cmd => cmd.Verb switch
         {
-            "screen-grid" => Ok(new ScreenGridResponse
-            {
-                SessionId = sid,
-                Rows = new List<string> { "I finished the last change. What next?", "", "> " },
-                CursorRow = 2,
-                CursorCol = 2,
-                IsAlternateScreen = false,
-                HasGrid = true,
-            }),
+            "screen-grid" => Ok(ComposerGrid(sid)),
             "turns" => Ok(new TurnsResponse
             {
                 SessionId = sid,
@@ -221,39 +328,102 @@ public sealed class WingmanVoiceTurnLiveScreenProofTests : IAsyncLifetime
             _ => DirectorCommandResult.Fail(DirectorCommandStatus.BadRequest, $"unexpected verb {cmd.Verb}"),
         };
 
-        // The translate step needs a wingman brain, which this test does not configure, so the final response
-        // is a 502 - irrelevant to the claim. What matters is that the spoken answer WAS typed into the
-        // session as an ordinary prompt (a "prompt" verb carrying the words).
+        // It types only because the LIVE screen was POSITIVELY classified plain text (primary composer, cursor
+        // on the prompt line). The translate step then fails (stub brain has no reply set), which is
+        // irrelevant to the claim: the answer WAS typed.
         await _http.PostAsJsonAsync($"sessions/{sid}/wingman/voice-turn", new { text = spoken });
 
-        var prompts = DispatchedPrompts();
-        Assert.Contains(prompts, p => p.Text == spoken && p.AppendEnter);
+        Assert.Contains(DispatchedPrompts(), p => p.Text == spoken && p.AppendEnter);
     }
 
     [Fact]
-    public async Task VoiceTurn_UnreadableScreen_TypesNothing()
+    public async Task VoiceTurn_SameComposerButOnAlternateScreen_TypesNothing()
     {
+        // Finding 5: the SAME composer content, but on the alternate screen, is NOT typed into. This is what
+        // distinguishes the new positive classifier from the old "anything that is not a menu is plain text".
         var sid = await PushSessionAsync();
-
-        // The session has no resolved live grid (HasGrid=false) - the screen is unreadable. A "prompt" answer
-        // would be typing blind, so it must not happen.
         _dispatch = cmd => cmd.Verb switch
         {
-            "screen-grid" => Ok(new ScreenGridResponse { SessionId = sid, Rows = new List<string>(), HasGrid = false }),
+            "screen-grid" => Ok(ComposerGrid(sid, alternateScreen: true)),
             _ => DirectorCommandResult.Fail(DirectorCommandStatus.BadRequest, $"unexpected verb {cmd.Verb}"),
         };
 
-        var resp = await _http.PostAsJsonAsync($"sessions/{sid}/wingman/voice-turn",
-            new { text = "option two please" });
-
+        var resp = await _http.PostAsJsonAsync($"sessions/{sid}/wingman/voice-turn", new { text = "do the thing" });
         Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
         var node = await resp.Content.ReadFromJsonAsync<JsonNode>();
         Assert.True(node?["cannotType"]?.GetValue<bool>());
         Assert.Empty(DispatchedPrompts());
     }
 
-    /// <summary>Set a flag as a side effect while returning a dispatcher result (used to flip "turns" output
-    /// once the prompt has been sent, so the reply-wait converges without a real running session).</summary>
+    // ===================== Finding 6: cover the fail-closed edges - each types NOTHING =====================
+
+    [Fact]
+    public async Task VoiceTurn_ScreenGridVerbFails_TypesNothing()
+    {
+        var sid = await PushSessionAsync();
+        _dispatch = _ => DirectorCommandResult.Fail(DirectorCommandStatus.Timeout, "director did not answer");
+        await AssertTypesNothing(sid, "option two");
+    }
+
+    [Fact]
+    public async Task VoiceTurn_ScreenGridMalformedBody_TypesNothing()
+    {
+        var sid = await PushSessionAsync();
+        _dispatch = cmd => cmd.Verb == "screen-grid"
+            ? DirectorCommandResult.Success("this is not valid json for a ScreenGridResponse {{{")
+            : DirectorCommandResult.Fail(DirectorCommandStatus.BadRequest, "x");
+        await AssertTypesNothing(sid, "option two");
+    }
+
+    [Fact]
+    public async Task VoiceTurn_EmptyRowsWithHasGrid_TypesNothing()
+    {
+        var sid = await PushSessionAsync();
+        _dispatch = cmd => cmd.Verb == "screen-grid"
+            ? Ok(new ScreenGridResponse { SessionId = sid, Rows = new List<string>(), HasGrid = true })
+            : DirectorCommandResult.Fail(DirectorCommandStatus.BadRequest, "x");
+        await AssertTypesNothing(sid, "option two");
+    }
+
+    [Fact]
+    public async Task VoiceTurn_AllBlankRows_TypesNothing()
+    {
+        var sid = await PushSessionAsync();
+        _dispatch = cmd => cmd.Verb == "screen-grid"
+            ? Ok(new ScreenGridResponse { SessionId = sid, Rows = new List<string> { "", "   ", "\t" }, HasGrid = true, CursorRow = 0, CursorCol = 0 })
+            : DirectorCommandResult.Fail(DirectorCommandStatus.BadRequest, "x");
+        await AssertTypesNothing(sid, "option two");
+    }
+
+    [Fact]
+    public async Task VoiceTurn_AlternateScreenUnrecognized_TypesNothing()
+    {
+        // A full-screen app on the alternate screen we did NOT recognize as a menu (no fingerprint). The old
+        // inversion would have called this plain text and typed into it.
+        var sid = await PushSessionAsync();
+        _dispatch = cmd => cmd.Verb == "screen-grid"
+            ? Ok(new ScreenGridResponse
+            {
+                SessionId = sid,
+                Rows = new List<string> { "a full screen viewer", "line of content", "another line", "status: reading" },
+                CursorRow = 3,
+                CursorCol = 8,
+                IsAlternateScreen = true,
+                HasGrid = true,
+            })
+            : DirectorCommandResult.Fail(DirectorCommandStatus.BadRequest, "x");
+        await AssertTypesNothing(sid, "option two");
+    }
+
+    private async Task AssertTypesNothing(string sid, string spoken)
+    {
+        var resp = await _http.PostAsJsonAsync($"sessions/{sid}/wingman/voice-turn", new { text = spoken });
+        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+        var node = await resp.Content.ReadFromJsonAsync<JsonNode>();
+        Assert.True(node?["cannotType"]?.GetValue<bool>());
+        Assert.Empty(DispatchedPrompts());
+    }
+
     private static DirectorCommandResult Mark(ref bool flag, DirectorCommandResult result)
     {
         flag = true;

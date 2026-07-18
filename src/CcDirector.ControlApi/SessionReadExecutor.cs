@@ -274,14 +274,16 @@ internal sealed class SessionReadExecutor : ISessionCommandArea
         if (session is null)
             return DirectorCommandResult.Fail(DirectorCommandStatus.NotFound, "session not found");
 
-        var (rows, cursorRow, cursorCol) = session.SnapshotScreenRowsWithCursor();
+        // Rows + cursor + alternate-screen flag from ONE coherent snapshot (issue #1777, finding 8): the menu
+        // classifier relies on the alternate-screen flag describing the same frame as the rows.
+        var (rows, cursorRow, cursorCol, isAlternateScreen) = session.SnapshotLiveScreen();
         return DirectorCommandResult.Success(SessionCommandExecutor.Serialize(new ScreenGridResponse
         {
             SessionId = command.SessionId,
             Rows = rows.ToList(),
             CursorRow = cursorRow,
             CursorCol = cursorCol,
-            IsAlternateScreen = session.IsAlternateScreen,
+            IsAlternateScreen = isAlternateScreen,
             // A session with a real terminal parser yields a fixed-height grid (rows.Length > 0) even when the
             // screen is blank; only an Embedded session (no parser) yields an empty array - that is unreadable.
             HasGrid = rows.Length > 0,

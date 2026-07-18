@@ -104,6 +104,27 @@ public static class WingmanMenuLogic
         return LooksLikeMenu(string.Join("\n", rows));
     }
 
+    /// <summary>
+    /// Re-verify a menu is STILL on the live screen (issue #1777, finding 3): every extracted option's visible
+    /// label must still appear on the given live grid rows. Used as the cheap TOCTOU guard right before
+    /// pressing an option's keystrokes - if the menu has closed or changed, the labels are gone and this
+    /// returns false so the caller does not press selection bytes into whatever replaced it. A menu with no
+    /// options is not "present". Normalizes both sides (lowercase, punctuation to spaces) so box padding and
+    /// spacing differences do not cause a false miss.
+    /// </summary>
+    public static bool MenuOptionsPresentOnScreen(WingmanMenu? menu, IReadOnlyList<string>? rows)
+    {
+        if (menu?.Options is null || menu.Options.Count == 0 || rows is null || rows.Count == 0) return false;
+        var screen = Norm(string.Join("\n", rows));
+        foreach (var o in menu.Options)
+        {
+            var label = Norm(StripLeadingKey(o.Key));
+            if (label.Length == 0) continue;               // nothing to match on (a bare "1." key)
+            if (!screen.Contains(label)) return false;      // this option's label is gone -> not the same menu
+        }
+        return true;
+    }
+
     private static readonly Dictionary<string, int> NumberWords = new()
     {
         ["one"] = 1, ["two"] = 2, ["three"] = 3, ["four"] = 4, ["five"] = 5,

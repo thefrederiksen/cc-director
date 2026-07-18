@@ -123,6 +123,31 @@ public sealed class WingmanMenuTests
         Assert.False(WingmanMenuLogic.LiveScreenLooksLikeMenu(System.Array.Empty<string>()));
     }
 
+    // ===== MenuOptionsPresentOnScreen (issue #1777, finding 3: the re-verify before pressing) =====
+
+    [Fact]
+    public void MenuOptionsPresentOnScreen_AllLabelsStillOnScreen_IsTrue()
+    {
+        var rows = new[] { "Do you want to proceed?", "❯ 1. Yes", "  2. Yes, and don't ask again", "  3. No" };
+        Assert.True(WingmanMenuLogic.MenuOptionsPresentOnScreen(PermissionMenu(), rows));
+    }
+
+    [Fact]
+    public void MenuOptionsPresentOnScreen_MenuClosed_IsFalse()
+    {
+        // The menu closed and a shell prompt replaced it - the option labels are gone, so pressing would be
+        // dangerous. This is the TOCTOU guard: press NOTHING.
+        var rows = new[] { "user@host:~/repo$ ", "" };
+        Assert.False(WingmanMenuLogic.MenuOptionsPresentOnScreen(PermissionMenu(), rows));
+    }
+
+    [Fact]
+    public void MenuOptionsPresentOnScreen_EmptyOrNull_IsFalse()
+    {
+        Assert.False(WingmanMenuLogic.MenuOptionsPresentOnScreen(PermissionMenu(), System.Array.Empty<string>()));
+        Assert.False(WingmanMenuLogic.MenuOptionsPresentOnScreen(new WingmanMenu { IsMenu = true }, new[] { "1. Yes" }));
+    }
+
     // ===== MatchOption (local spoken-answer mapping) =====
 
     [Theory]

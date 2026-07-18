@@ -177,25 +177,83 @@ public sealed class SessionReadExecutorTests
     }
 
     [Fact]
-    public async Task DispatchAsync_ScreenGrid_ExistingSession_ReturnsTheLiveGrid()
+    public async Task DispatchAsync_ScreenGrid_AlternateScreenMenu_ReadsTheLiveGrid_WhileScrollbackMissesIt()
     {
-        // The verb reads the session's RESOLVED live screen grid: a session with a terminal parser reports a
-        // grid (HasGrid=true) plus the live cursor cell and the alternate-screen flag - the alternate-screen-
-        // correct read the wingman menu detector uses. (Only a parser-less session yields HasGrid=false, which
-        // the detector treats as an unreadable screen and fails closed - exercised at the Gateway.)
-        var (sm, session, _) = NewSession();
+        // The REAL Director-layer bug (issue #1777, finding 7): drive a session ONTO the alternate screen and
+        // draw a menu the way a production TUI does - absolute cursor positioning, no line feeds - whose text
+        // does not contain a stock fingerprint phrase. The screen-grid verb reads the ACTIVE (alternate) grid,
+        // so it returns the exact menu rows, the cursor cell parked on the selected option, and
+        // IsAlternateScreen=true. The scrollback (the buffer verb) keeps only the raw byte stream: with no line
+        // feeds it has no line structure, so the OLD line-based gate MISSES the menu on it - which is exactly
+        // why the detector had to move to the live grid.
+        var sm = new SessionManager(new Core.Configuration.AgentOptions());
+        var backend = new ScreenGridBufferBackend();
         try
         {
-            var result = await SessionCommandExecutor.DispatchAsync(sm, "dir-A", Cmd("screen-grid", session.Id.ToString()));
+            var session = sm.CreateEmbeddedSession(Path.GetTempPath(), null, backend);
+            session.Resize(50, 14);
 
-            Assert.Equal(DirectorCommandStatus.Ok, result.Status);
-            var resp = JsonSerializer.Deserialize<ScreenGridResponse>(result.BodyJson ?? "", Json);
-            Assert.NotNull(resp);
-            Assert.Equal(session.Id.ToString(), resp.SessionId);
-            Assert.True(resp.HasGrid);
-            Assert.NotEmpty(resp.Rows);
+            // Some ordinary primary-screen scrollback first, then enter the alternate screen and paint a menu
+            // with absolute positioning (\x1b[row;colH) and NO \r\n - the way a full-screen picker repaints.
+            backend.Buffer!.Write(System.Text.Encoding.UTF8.GetBytes("normal shell output before the app started\r\n"));
+            var draw = new System.Text.StringBuilder();
+            draw.Append("\x1b[?1049h");                                  // enter the alternate screen
+            draw.Append("\x1b[2J");                                       // clear
+            draw.Append("\x1b[1;1HPick an environment to deploy");
+            draw.Append("\x1b[2;1H > 1. staging");
+            draw.Append("\x1b[3;1H   2. production");
+            draw.Append("\x1b[4;1H   3. cancel");
+            draw.Append("\x1b[2;3H");                                     // park the cursor on the selected option
+            backend.Buffer!.Write(System.Text.Encoding.UTF8.GetBytes(draw.ToString()));
+
+            var gridResult = await SessionCommandExecutor.DispatchAsync(sm, "dir-A", Cmd("screen-grid", session.Id.ToString()));
+            Assert.Equal(DirectorCommandStatus.Ok, gridResult.Status);
+            var grid = JsonSerializer.Deserialize<ScreenGridResponse>(gridResult.BodyJson ?? "", Json);
+            Assert.NotNull(grid);
+
+            // Alternate-screen correct: the ACTIVE grid holds the menu (not the frozen pre-alt primary content).
+            Assert.True(grid!.HasGrid);
+            Assert.True(grid.IsAlternateScreen);
+            Assert.Equal("Pick an environment to deploy", grid.Rows[0]);
+            Assert.Equal(" > 1. staging", grid.Rows[1]);
+            Assert.Equal("   2. production", grid.Rows[2]);
+            Assert.Equal("   3. cancel", grid.Rows[3]);
+            // The cursor is parked on the selected option row (row index 1, "\x1b[2;3H" -> 0-based (1,2)).
+            Assert.Equal(1, grid.CursorRow);
+            Assert.Equal(2, grid.CursorCol);
+
+            // The OPERATIVE bug predicate at the Director layer: the live grid IS a menu, but the scrollback
+            // (buffer verb) - the old source - does NOT look like one, so detecting off it would have missed
+            // the menu and typed the spoken words in. (The buffer is not literally empty - it keeps the raw
+            // bytes - but with no line feeds the line-based gate finds no menu on it.)
+            var bufResult = await SessionCommandExecutor.DispatchAsync(sm, "dir-A", Cmd("buffer", session.Id.ToString()));
+            var buf = JsonSerializer.Deserialize<BufferResponse>(bufResult.BodyJson ?? "", Json);
+            Assert.False(CcDirector.Gateway.Wingman.WingmanMenuLogic.LooksLikeMenu(buf!.Text));
+            Assert.True(CcDirector.Gateway.Wingman.WingmanMenuLogic.LiveScreenLooksLikeMenu(grid.Rows));
         }
         finally { sm.Dispose(); }
+    }
+
+    /// <summary>A minimal backend with a real terminal buffer, so a session's server-side parser is created
+    /// and fed via the buffer's OnBytesWritten event - the same path the real backend uses.</summary>
+    private sealed class ScreenGridBufferBackend : Core.Backends.ISessionBackend
+    {
+        public Core.Memory.CircularTerminalBuffer? Buffer { get; } = new Core.Memory.CircularTerminalBuffer(256 * 1024);
+        public int ProcessId => 1234;
+        public string Status => "Buffered";
+        public bool IsRunning => true;
+        public bool HasExited => false;
+#pragma warning disable CS0067
+        public event Action<string>? StatusChanged;
+        public event Action<int>? ProcessExited;
+#pragma warning restore CS0067
+        public void Start(string executable, string args, string workingDir, short cols, short rows, Dictionary<string, string>? environmentVars = null) { }
+        public void Write(byte[] data) { }
+        public Task SendTextAsync(string text) => Task.CompletedTask;
+        public Task SendEnterAsync() => Task.CompletedTask;
+        public void Resize(short cols, short rows) { }
+        public Task GracefulShutdownAsync(int timeoutMs = 5000) => Task.CompletedTask;
+        public void Dispose() => Buffer?.Dispose();
     }
 
     // ---------- summary ----------
