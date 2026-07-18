@@ -204,15 +204,26 @@ public sealed class WorkflowRunStore
     /// off still gets created - it simply runs ungoverned (no run record) until the switch flips
     /// back, which is a different answer than the hard refusal an unrunnable workflow gets.
     /// </summary>
-    public bool IsWorkflowEnabled(string workflowId)
+    public bool IsWorkflowEnabled(string workflowId) => GetWorkflowEnabled(workflowId) == true;
+
+    /// <summary>
+    /// Three-valued on purpose: TRUE = in force, FALSE = the owner explicitly turned it off, NULL =
+    /// the workflow does not exist (or is archived). The mission-create path needs the distinction,
+    /// because only the owner's explicit OFF may produce an ungoverned mission - a MISSING mission
+    /// workflow is a broken store and must keep failing loud, never be mistaken for a choice.
+    /// </summary>
+    public bool? GetWorkflowEnabled(string workflowId)
     {
         if (string.IsNullOrWhiteSpace(workflowId))
-            return false;
+            return null;
         var key = workflowId.Trim().ToLowerInvariant();
         lock (_gate)
         {
             using var ctx = _db.CreateContext();
-            return WorkflowEnabledFor(ctx, key);
+            return ctx.Workflows.AsNoTracking()
+                .Where(h => h.Id == key && !h.Archived)
+                .Select(h => (bool?)h.Enabled)
+                .FirstOrDefault();
         }
     }
 

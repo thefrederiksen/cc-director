@@ -191,11 +191,14 @@ internal static class GatewayEndpoints
                 // and EF), so a process death exactly between the two writes can still orphan a
                 // mission - a transition-era window that closes when the JSON mission store retires
                 // onto the EF layer; the pre-check removes every failure mode short of that.
-                // The owner's switch (register redesign ruling): a mission whose workflow is
-                // turned OFF still gets created - it runs UNGOVERNED (no run record) until the
-                // switch flips back. Only an unrunnable-but-enabled workflow refuses the create.
-                var missionWorkflowEnabled = workflowRuns?.IsWorkflowEnabled("mission") ?? false;
-                if (workflowRuns is not null && missionWorkflowEnabled)
+                // The owner's switch (register redesign ruling): a mission whose workflow the
+                // owner EXPLICITLY turned off still gets created - it runs UNGOVERNED (no run
+                // record) until the switch flips back. Three-valued on purpose: only an explicit
+                // FALSE is the owner's choice; a MISSING mission workflow (null - a broken or
+                // unseeded store) keeps the fail-loud path below, because silently ungoverned
+                // missions are exactly the gap the outcome spine exists to close.
+                var missionWorkflowEnabled = workflowRuns?.GetWorkflowEnabled("mission") ?? true;
+                if (workflowRuns is not null && missionWorkflowEnabled != false)
                 {
                     try
                     {
@@ -210,7 +213,7 @@ internal static class GatewayEndpoints
 
                 var mission = missions.Create(req.MissionName, req.ParentMissionId);
                 var dto = ToMissionDto(mission);
-                if (workflowRuns is not null && missionWorkflowEnabled)
+                if (workflowRuns is not null && missionWorkflowEnabled != false)
                 {
                     var run = workflowRuns.Create(
                         "mission", mission.MissionName, missionId: mission.MissionId);
