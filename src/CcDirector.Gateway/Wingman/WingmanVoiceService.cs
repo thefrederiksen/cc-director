@@ -43,6 +43,7 @@ public sealed class WingmanVoiceService
     private readonly ConcurrentDictionary<string, byte> _generating = new();       // sid -> wingman is running now
     private readonly ConcurrentDictionary<string, HostedAiState> _voiceUnavailable = new();  // sid -> why voice is off (issue #939)
     private readonly ConcurrentDictionary<string, byte> _nothingToNarrate = new();  // sid -> the last turn has no text reply to read aloud (waiting on a prompt)
+    private readonly ConcurrentDictionary<string, DateTime> _preferBackupUntil = new();  // sid -> UTC deadline while this session routes past a silent primary (issue devthrottle_internal#405)
     private readonly string _persistPath;
     private readonly string _audioDir;
     private readonly HttpClient? _ttsHttp;   // test seam for TtsAsync (issue #939); the shared static when null
@@ -332,6 +333,7 @@ public sealed class WingmanVoiceService
         _generating.TryRemove(sid, out _);
         _voiceUnavailable.TryRemove(sid, out _);   // voice is off, so its unavailable-state is moot (issue #939)
         _nothingToNarrate.TryRemove(sid, out _);   // voice is off, so "nothing to narrate" is moot too
+        _preferBackupUntil.TryRemove(sid, out _);  // voice is off, so the backup-routing window is moot too (issue devthrottle_internal#405)
         if (_ready.TryRemove(sid, out _))
             DeleteReadyAudio(sid);   // keep the durable cache in step so a stale tap can't 404
         if (wasVoice)
@@ -367,7 +369,7 @@ public sealed class WingmanVoiceService
     {
         Mark(sid);
         if (string.IsNullOrWhiteSpace(spoken)) return;
-        var tts = await TtsAsync(spoken, ct);
+        var tts = await TtsAsync(sid, spoken, ct);
         // The "if anything fails, remove the triangle" rule: when synthesis returns null/empty we
         // leave _ready WITHOUT this session, so HasVoice stays false and no triangle shows. Only a
         // real, playable summary becomes ready - and is persisted (issue #553) so it survives a restart.
@@ -553,6 +555,32 @@ public sealed class WingmanVoiceService
     }
 
     /// <summary>
+    /// How long a single observed primary hang keeps routing THIS session to the backup voice provider
+    /// (issue devthrottle_internal#405). The cloud proxy's failover only reacts to an ERROR the primary returns; a silent
+    /// hang gives it nothing to react to. The Gateway, which owns the only deadline on the speech path,
+    /// is the layer that actually sees the hang - so on a hang it arms this window and, while it lasts,
+    /// asks the proxy to skip the stalling primary and serve from the backup. Time-based with NO active
+    /// probing: once the window passes we call the primary again, and if it is still silent the next
+    /// hang re-arms it. Long enough to ride out a provider blip without re-eating the full per-attempt
+    /// deadline on every turn; short enough to return to the cheaper primary promptly once it recovers.
+    /// </summary>
+    private static readonly TimeSpan PreferBackupWindow = TimeSpan.FromMinutes(3);
+
+    /// <summary>True while this session should route past a silent primary straight to the backup
+    /// (the window armed by a recent hang has not yet expired).</summary>
+    private bool PrefersBackup(string sid)
+        => _preferBackupUntil.TryGetValue(sid, out var until) && until > DateTime.UtcNow;
+
+    /// <summary>Arm the "route to the backup" window for this session after the primary went silent.
+    /// Overwrites any existing deadline (a fresh hang restarts the full window).</summary>
+    private void ArmPreferBackup(string sid)
+    {
+        _preferBackupUntil[sid] = DateTime.UtcNow + PreferBackupWindow;
+        FileLog.Write($"[WingmanVoiceService] primary voice provider went silent on sid={sid}; " +
+                      $"routing this session to the backup provider for {PreferBackupWindow.TotalMinutes:0} min (issue devthrottle_internal#405)");
+    }
+
+    /// <summary>
     /// Synthesize the spoken summary to audio through the SAME provider seam the <c>/wingman/tts</c>
     /// endpoint uses (issue #939): the configured mode's base URL + key + model + the user's chosen
     /// voice (<see cref="TtsVoiceConfig"/> / <see cref="TtsModelConfig"/>). This replaced a hardcoded
@@ -561,7 +589,7 @@ public sealed class WingmanVoiceService
     /// condition is returned as a typed <see cref="HostedAiState"/> instead of a silent null, so the
     /// caller can surface the consistent unavailable state.
     /// </summary>
-    private async Task<TtsResult> TtsAsync(string text, CancellationToken ct)
+    private async Task<TtsResult> TtsAsync(string sid, string text, CancellationToken ct)
     {
         var mode = TranscriptionModeConfig.Get();
         var tts = TranscriptionEndpointResolver.ResolveTts(mode);
@@ -592,9 +620,13 @@ public sealed class WingmanVoiceService
         // connection to the proxy. The narration leg fires on a sweep, so that was the hottest speech
         // path in the product paying the reconnect cost every time.
         var http = _ttsHttp ?? SharedTtsHttp;
+        // If this session recently saw the primary go silent, ask the proxy to skip it and serve from the
+        // backup (issue devthrottle_internal#405). A hang is invisible to the proxy's own failover, so this is how a hang
+        // becomes a failover: the Gateway saw it, the proxy did not. The window expires on its own.
+        var preferBackup = PrefersBackup(sid);
         try
         {
-            using var resp = await TtsSynthesis.PostAsync(http, url, key, new { model, voice, input, response_format = "mp3" }, input.Length, ct);
+            using var resp = await TtsSynthesis.PostAsync(http, url, key, new { model, voice, input, response_format = "mp3" }, input.Length, preferBackup, ct);
             if (!resp.IsSuccessStatusCode)
             {
                 var body = await resp.Content.ReadAsStringAsync(ct);
@@ -656,6 +688,13 @@ public sealed class WingmanVoiceService
             // This is per session and touches nothing else: there is no shared gate for a timeout to arm.
             FileLog.Write($"[WingmanVoiceService] tts did not answer for this narration: {ex.Message} - " +
                           "no answer from the service, so this is Retrying (not down); this session retries on its own");
+            // A TimeoutException specifically means the primary went SILENT (the per-attempt deadline
+            // fired, no answer). That silent hang is exactly what the cloud proxy's own failover cannot
+            // see, so arm this session to route past the primary to the backup on its next turn-end /
+            // idle-sweep retry (issue devthrottle_internal#405, Option B). A transport failure (HttpRequestException) is a
+            // DIFFERENT fault - the proxy itself was unreachable, which does not implicate the primary -
+            // so it does not arm the backup route.
+            if (ex is TimeoutException) ArmPreferBackup(sid);
             return new TtsResult(null, null, HostedAiState.Retrying);
         }
         // NOTE: no `finally { http.Dispose(); }`. `http` is now either the caller's injected client or

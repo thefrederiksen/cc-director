@@ -1,6 +1,7 @@
 using System.Net;
 using CcDirector.AgentBrain;
 using CcDirector.Core;
+using CcDirector.Core.HostedAi;
 using CcDirector.Gateway.Wingman;
 using Xunit;
 
@@ -112,5 +113,74 @@ public sealed class WingmanVoiceFallbackTests
         var reloaded = ServiceWith(new SpeechStub(Array.Empty<byte>(), withFallbackHeader: false), persist);
         Assert.True(reloaded.HasVoice("sid-1"));
         Assert.True(reloaded.ServedViaFallbackFor("sid-1"));
+    }
+
+    /// <summary>A speech upstream that STALLS on its first call (the primary goes silent - a
+    /// TimeoutException, exactly what TtsSynthesis throws when its per-attempt deadline fires with no
+    /// answer), then on every later call returns 200 + audio with the fallback header, recording the
+    /// last request so a test can assert what headers the Gateway sent.</summary>
+    private sealed class HangThenBackupStub : HttpMessageHandler
+    {
+        public int Calls { get; private set; }
+        public HttpRequestMessage? LastRequest { get; private set; }
+
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
+        {
+            Calls++;
+            LastRequest = request;
+            if (Calls == 1)
+                // A silent primary: the request never gets an answer, which TtsSynthesis surfaces as a
+                // TimeoutException. Returning a faulted task is how a stub reproduces that give-up.
+                return Task.FromException<HttpResponseMessage>(new TimeoutException("primary went silent"));
+            var resp = new HttpResponseMessage(HttpStatusCode.OK) { Content = new ByteArrayContent(new byte[] { 1, 2, 3 }) };
+            resp.Content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("audio/mpeg");
+            resp.Headers.TryAddWithoutValidation("X-DevThrottle-TTS-Fallback", "1");   // the proxy served via the backup
+            return Task.FromResult(resp);
+        }
+    }
+
+    [Fact]
+    public async Task PrimaryHang_ArmsBackupRoute_SoTheNextCallAsksTheProxyForTheBackup_AndIsServedByIt()
+    {
+        // Issue devthrottle_internal#405 (Option B). The cloud proxy's failover only reacts to an ERROR the primary returns;
+        // a silent hang gives it nothing to react to, so the Gateway - which DID see the hang via its own
+        // deadline - must route the session's next narration past the stalling primary by asking the proxy
+        // for the backup (the X-DevThrottle-TTS-Prefer-Backup header).
+        var stub = new HangThenBackupStub();
+        var svc = ServiceWith(stub, TempPersist());
+
+        // First narration: the primary goes silent. No audio, Retrying, and the request did NOT yet ask
+        // for the backup (a fresh session has no reason to skip the primary).
+        await svc.StoreSpokenAsync("sid-1", "first summary", "reply one");
+        Assert.False(svc.HasVoice("sid-1"));
+        Assert.Equal(HostedAiState.Retrying, svc.VoiceUnavailableFor("sid-1"));
+        Assert.Equal(1, stub.Calls);
+        Assert.False(stub.LastRequest!.Headers.Contains("X-DevThrottle-TTS-Prefer-Backup"));
+
+        // Second narration (same session, inside the armed window): the Gateway routes past the hung
+        // primary - the request carries the prefer-backup header, the proxy serves the backup, and the
+        // session becomes playable with the backup-voice note.
+        await svc.StoreSpokenAsync("sid-1", "second summary", "reply two");
+        Assert.Equal(2, stub.Calls);
+        Assert.True(stub.LastRequest!.Headers.Contains("X-DevThrottle-TTS-Prefer-Backup"));
+        Assert.True(svc.HasVoice("sid-1"));
+        Assert.True(svc.ServedViaFallbackFor("sid-1"));
+        Assert.Null(svc.VoiceUnavailableFor("sid-1"));   // a served backup clears the Retrying state
+    }
+
+    [Fact]
+    public async Task PrimaryHang_OnOneSession_DoesNotRouteAnotherSessionToTheBackup()
+    {
+        // The backup-routing window is strictly per session (keyed by sid): one session's hang must never
+        // make a different, healthy session skip its primary.
+        var stub = new HangThenBackupStub();
+        var svc = ServiceWith(stub, TempPersist());
+
+        await svc.StoreSpokenAsync("sid-hang", "summary", "reply");   // sid-hang hits the silent primary
+        Assert.Equal(1, stub.Calls);
+
+        await svc.StoreSpokenAsync("sid-other", "summary", "reply");  // a DIFFERENT session
+        Assert.Equal(2, stub.Calls);
+        Assert.False(stub.LastRequest!.Headers.Contains("X-DevThrottle-TTS-Prefer-Backup"));   // not armed for sid-other
     }
 }
