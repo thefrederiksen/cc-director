@@ -91,6 +91,10 @@ public sealed class GatewayDbContext : DbContext
     /// <summary>Mission WHY notes (<c>mission_notes</c>), keyed by the normalized mission name.</summary>
     public DbSet<MissionNoteEntity> MissionNotes => Set<MissionNoteEntity>();
 
+    /// <summary>The append-only governance audit trail (<c>governance_audit_events</c>) - structured
+    /// intervention and permission/sandbox decisions, never inferred from transcripts (issue #1771).</summary>
+    public DbSet<GovernanceAuditEventEntity> GovernanceAuditEvents => Set<GovernanceAuditEventEntity>();
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         base.OnModelCreating(modelBuilder);
@@ -256,6 +260,19 @@ public sealed class GatewayDbContext : DbContext
             b.HasKey(e => e.Key);
         });
 
+        modelBuilder.Entity<GovernanceAuditEventEntity>(b =>
+        {
+            b.ToTable("governance_audit_events");
+            b.HasKey(e => e.Id);
+            // The read paths: a session's audit trail over time, a run's, and a category scan (all the
+            // permission decisions, all the interventions) over a window - each tenant-leading for the
+            // global filter. SessionId/RunId are value references, never foreign keys - the trail outlives
+            // the session and run it records.
+            b.HasIndex(e => new { e.TenantId, e.SessionId, e.OccurredUtc });
+            b.HasIndex(e => new { e.TenantId, e.RunId, e.OccurredUtc });
+            b.HasIndex(e => new { e.TenantId, e.Category, e.OccurredUtc });
+        });
+
         // Tenant scoping - the tenant_id column plus the global query filter - applied uniformly to every
         // entity that derives from TenantScopedEntity, so future stores inherit it by deriving from the base.
         ApplyTenantScope<CronJobEntity>(modelBuilder);
@@ -273,6 +290,7 @@ public sealed class GatewayDbContext : DbContext
         ApplyTenantScope<SessionSpendEntity>(modelBuilder);
         ApplyTenantScope<AccountHostedAiSpendEntity>(modelBuilder);
         ApplyTenantScope<MissionNoteEntity>(modelBuilder);
+        ApplyTenantScope<GovernanceAuditEventEntity>(modelBuilder);
 
         ApplyCommonSubsetConventions(modelBuilder);
     }
