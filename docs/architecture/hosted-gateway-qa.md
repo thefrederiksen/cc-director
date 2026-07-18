@@ -209,3 +209,79 @@ Passed!  - Failed:     0, Passed:    35, Skipped:     5, Total:    40, Duration:
 
 The whole solution builds clean (Debug): 0 warnings, 0 errors, TreatWarningsAsErrors on. The container
 was removed after the run (`docker rm -f cc-pg-proof`).
+
+## Step 4a - increment 2: proof on the real Supabase Postgres
+
+Date: 2026-07-18
+
+Increment 1 proved the provider on a throwaway Docker Postgres. Increment 2 proves the SAME provider
+against the REAL hosted target - the Supabase Postgres project - through the actual Gateway startup path,
+in an isolated `gateway` schema, before any Azure deploy.
+
+### Target and constraints
+
+The connection points at the hosted Supabase project's SESSION POOLER
+(`Host=<...>.pooler.supabase.com;Port=5432;...;SSL Mode=Require`, password REDACTED - never committed or
+logged), authenticating as a dedicated role scoped to the `gateway` schema ONLY: it has no access to the
+website's accounts/auth/public tables, and it cannot create or drop databases. So the increment-1 harness
+that drops a throwaway database (the `ccpg`-prefixed `EnsureDeleted` path) does NOT apply here. This is a
+real integration run instead: it applies the migration into the existing `gateway` schema and leaves it in
+place (deploy-ready), and it cleans up its own test rows so the tables are left empty.
+
+The connection string lives ONLY in the machine-local credential file
+(`%LOCALAPPDATA%/cc-director/config/credentials.env`, key `DEVTHROTTLE_GATEWAY_DB_CONNECTION`), read at the
+point of use and exported into `CC_GATEWAY_DB_CONNECTION`. It is never echoed, committed, or written to a
+log - the Gateway's Postgres path logs only a redacted host+database target.
+
+### The proof (a real integration run)
+
+`GatewayDatabaseLivePostgresProofTests` (new) drives the REAL runtime path: each fact constructs a
+`GatewayDatabase` (the same class the running Gateway uses), whose constructor reads
+`CC_GATEWAY_DB_CONNECTION`, selects Npgsql, and runs `Database.Migrate()` - applying the Postgres migration
+set into the `gateway` schema on Supabase. It never calls `EnsureDeleted` and never drops anything.
+
+CI SAFETY: every fact is gated behind the PRESENCE of `CC_GATEWAY_DB_CONNECTION` (skips cleanly when
+unset, the same pattern as the increment-1 Postgres tests). Automated CI never sets it, so CI never
+connects to the hosted project and never needs the secret; the proof runs only locally/manually with the
+connection string exported.
+
+```
+CC_GATEWAY_DB_CONNECTION="<Supabase session-pooler string; password redacted>" \
+  dotnet test src/CcDirector.Gateway.Tests/CcDirector.Gateway.Tests.csproj \
+  --filter "FullyQualifiedName~GatewayDatabaseLivePostgresProofTests"
+
+Passed!  - Failed:     0, Passed:     4, Skipped:     0, Total:     4, Duration: 6 s
+```
+
+The four facts that passed on real Supabase:
+
+- `Startup_AppliesGatewaySchemaAndTables_OnConfiguredPostgres` - constructing `GatewayDatabase` migrates
+  into the `gateway` schema; asserts the schema, all 16 mapped tables, and `__EFMigrationsHistory` exist
+  under `gateway` and NONE of the mapped tables exist under `public` (schema isolation holds on the real
+  project).
+- `JsonOwnedColumns_RoundTrip_OnConfiguredPostgres` - a WorkflowVersion's Steps + OutcomeCriteria written
+  and read back field-for-field through `jsonb`, then the row deleted.
+- `NaturalKeyByteOrdinalCollation_RoundTrip_OnConfiguredPostgres` - endpoints come back in byte order
+  (`..._B`, `..._C`, `..._a`; a locale collation would have put `..._a` first), a duplicate endpoint is
+  rejected, then the rows deleted.
+- `UtcTimestampRoundTrip_OnConfiguredPostgres` - a session_spend row's UTC timestamps come back equal with
+  `Kind == Utc`, then the row deleted.
+
+### Schema left clean and deploy-ready
+
+Every round-trip deletes its rows in a `finally`, so a failed assertion could not leave data behind.
+Verified independently after the run by counting rows directly on Supabase (via `psql` over the pooler),
+summing across ALL 16 application tables rather than only the three written:
+
+```
+app_table_rows_total=0        (sum of row counts across all 16 mapped tables)
+migrations_history_rows=1     (the one applied InitialPostgres record - expected)
+app_tables_in_gateway=16
+```
+
+So the `gateway` schema holds the 16 application tables, ALL empty (0 rows in total), plus the
+`__EFMigrationsHistory` table carrying exactly one row: the applied `InitialPostgres` migration. That one
+history row is not residue - it is the record that the migration ran, and it is precisely what makes the
+schema deploy-ready: the eventual hosted deploy's `Migrate()` reads it, sees the migration already applied,
+and is a no-op. This closes increment 2. The runtime host packaging that ships the migrations assembly (so
+the deployed Gateway can load it) remains the deploy increment's work.
