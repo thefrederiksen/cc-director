@@ -143,6 +143,10 @@ public sealed class WorkflowRunStoreTests : IDisposable
         var pending = runs.Patch(run.Id, new PatchWorkflowRunRequest { AcceptanceStatus = "pending" })!;
         Assert.Null(pending.AcceptedBy);
         Assert.Null(pending.AcceptedUtc);
+
+        // A non-pending acceptance is a ruling, and a ruling has a ruler: no accepter, no acceptance.
+        Assert.Throws<WorkflowValidationException>(() =>
+            runs.Patch(run.Id, new PatchWorkflowRunRequest { AcceptanceStatus = "accepted" }));
     }
 
     [Fact]

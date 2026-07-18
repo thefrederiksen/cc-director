@@ -254,17 +254,23 @@ public sealed class WorkflowRunStore
             throw new WorkflowValidationException(
                 $"'{acceptance}' is not an acceptance status. Legal values: " +
                 string.Join(", ", AcceptanceStatuses) + ".");
-        entity.AcceptanceStatus = acceptance;
         if (acceptance == WorkflowRunAcceptance.Pending)
         {
+            entity.AcceptanceStatus = acceptance;
             entity.AcceptedBy = null;
             entity.AcceptedUtc = null;
+            return;
         }
-        else
-        {
-            entity.AcceptedBy = string.IsNullOrWhiteSpace(acceptedBy) ? entity.AcceptedBy : acceptedBy;
-            entity.AcceptedUtc = now;
-        }
+
+        // A non-pending acceptance is a RULING, and a ruling has a ruler: the accepter identity is
+        // what the verified-yield metric audits (issue #1771), so it can never be blank.
+        var who = string.IsNullOrWhiteSpace(acceptedBy) ? entity.AcceptedBy : acceptedBy;
+        if (string.IsNullOrWhiteSpace(who))
+            throw new WorkflowValidationException(
+                $"Setting acceptance to '{acceptance}' requires acceptedBy - who made the call.");
+        entity.AcceptanceStatus = acceptance;
+        entity.AcceptedBy = who;
+        entity.AcceptedUtc = now;
     }
 
     private static void ApplyCriteria(
