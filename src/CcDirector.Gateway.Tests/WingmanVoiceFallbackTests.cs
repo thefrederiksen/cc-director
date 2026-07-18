@@ -16,15 +16,17 @@ namespace CcDirector.Gateway.Tests;
 /// </summary>
 public sealed class WingmanVoiceFallbackTests
 {
-    /// <summary>A speech upstream that returns 200 + audio bytes, optionally with the fallback header.</summary>
-    private sealed class SpeechStub(byte[] audio, bool withFallbackHeader) : HttpMessageHandler
+    /// <summary>A speech upstream that returns 200 + audio bytes, optionally with the fallback header.
+    /// The header VALUE is configurable so a test can prove the Gateway keys on the header's presence,
+    /// never on its value (the cloud proxy sends a generic "1", never the provider name).</summary>
+    private sealed class SpeechStub(byte[] audio, bool withFallbackHeader, string headerValue = "1") : HttpMessageHandler
     {
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
         {
             var resp = new HttpResponseMessage(HttpStatusCode.OK) { Content = new ByteArrayContent(audio) };
             resp.Content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("audio/mpeg");
             if (withFallbackHeader)
-                resp.Headers.TryAddWithoutValidation("X-DevThrottle-TTS-Fallback", "openai");
+                resp.Headers.TryAddWithoutValidation("X-DevThrottle-TTS-Fallback", headerValue);
             return Task.FromResult(resp);
         }
     }
@@ -55,13 +57,34 @@ public sealed class WingmanVoiceFallbackTests
     [Fact]
     public async Task Synthesis_WithFallbackHeader_MarksTheClipServedViaFallback_AndIsNotAnOutage()
     {
-        var svc = ServiceWith(new SpeechStub(new byte[] { 1, 2, 3 }, withFallbackHeader: true), TempPersist());
+        // The generic marker "1" is what the cloud proxy now sends (never the provider name).
+        var svc = ServiceWith(new SpeechStub(new byte[] { 1, 2, 3 }, withFallbackHeader: true, headerValue: "1"), TempPersist());
 
         await svc.StoreSpokenAsync("sid-1", "a spoken summary", "the reply");
 
         Assert.True(svc.HasVoice("sid-1"));                       // a fallback is a real, playable clip
         Assert.True(svc.ServedViaFallbackFor("sid-1"));           // ...noted as backup-served
         Assert.Null(svc.VoiceUnavailableFor("sid-1"));            // ...and NEVER an outage/unavailable state
+    }
+
+    // The Gateway must detect the fallback by the header's PRESENCE alone, never by its value. This
+    // locks that contract: the notice fires for the generic marker the cloud sends today ("1"), for the
+    // legacy value from before the value was scrubbed ("openai" - proving backward-compatibility across
+    // the deploy window), and for any other opaque value. A regression that starts comparing the value
+    // against a provider name would break exactly one of these and be caught.
+    [Theory]
+    [InlineData("1")]         // the generic marker the cloud sends now
+    [InlineData("backup")]    // any other opaque value must work identically
+    [InlineData("openai")]    // the legacy value: old cloud + new Gateway stays compatible
+    public async Task Synthesis_FallbackDetection_IsByHeaderPresence_NotValue(string headerValue)
+    {
+        var svc = ServiceWith(new SpeechStub(new byte[] { 1, 2, 3 }, withFallbackHeader: true, headerValue), TempPersist());
+
+        await svc.StoreSpokenAsync("sid-1", "a spoken summary", "the reply");
+
+        Assert.True(svc.HasVoice("sid-1"));
+        Assert.True(svc.ServedViaFallbackFor("sid-1"));           // fires regardless of the header value
+        Assert.Null(svc.VoiceUnavailableFor("sid-1"));
     }
 
     [Fact]
