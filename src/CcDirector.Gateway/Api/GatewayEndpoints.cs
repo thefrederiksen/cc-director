@@ -215,9 +215,22 @@ internal static class GatewayEndpoints
                 var dto = ToMissionDto(mission);
                 if (workflowRuns is not null && missionWorkflowEnabled != false)
                 {
-                    var run = workflowRuns.Create(
-                        "mission", mission.MissionName, missionId: mission.MissionId);
-                    dto.WorkflowRunId = run.Id;
+                    try
+                    {
+                        var run = workflowRuns.Create(
+                            "mission", mission.MissionName, missionId: mission.MissionId);
+                        dto.WorkflowRunId = run.Id;
+                    }
+                    catch (Workflows.WorkflowValidationException)
+                        when (workflowRuns.GetWorkflowEnabled("mission") == false)
+                    {
+                        // The owner flipped the switch between the pre-check and the run create.
+                        // The mission record already exists, and the ruling says an explicit OFF
+                        // makes an UNGOVERNED mission - so honor the flip instead of returning an
+                        // error for a mission that was in fact created.
+                        FileLog.Write($"[GatewayEndpoints] POST /missions: the mission workflow was " +
+                                      $"turned OFF mid-create - mission {mission.MissionId} is UNGOVERNED");
+                    }
                 }
                 else if (workflowRuns is not null)
                 {

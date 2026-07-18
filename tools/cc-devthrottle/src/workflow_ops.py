@@ -26,7 +26,7 @@ import typer
 from rich import box
 from rich.console import Console
 from rich.table import Table
-from urllib.parse import urlparse
+from urllib.parse import quote as urllib_quote, urlparse
 
 _tools_dir = str(Path(__file__).resolve().parent.parent.parent)
 if _tools_dir not in sys.path:
@@ -215,8 +215,10 @@ class WorkflowClient:
 
     def set_enabled(self, workflow_id: str, enabled: bool) -> Dict[str, Any]:
         verb = "enable" if enabled else "disable"
+        # A governance change has an actor: the session flipping the switch names itself.
+        actor = urllib_quote(default_authored_by())
         return self._json_or_raise(
-            self._request("POST", f"/gateway/workflows/{workflow_id}/{verb}")
+            self._request("POST", f"/gateway/workflows/{workflow_id}/{verb}?by={actor}")
         )
 
     # ---- runs (the governance outcome spine, issue #1771) -------------------------------------

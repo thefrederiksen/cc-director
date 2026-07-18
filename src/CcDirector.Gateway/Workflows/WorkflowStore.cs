@@ -550,8 +550,13 @@ public sealed class WorkflowStore
     /// deletes NOTHING; the flip is instant both ways for every subsequent read fleet-wide. False
     /// when no such workflow exists (archived counts as gone).
     /// </summary>
-    public bool SetEnabled(string id, bool enabled)
+    public bool SetEnabled(string id, bool enabled, string by)
     {
+        // A governance change has an actor, always - the same posture as run acceptance (#1771):
+        // who flipped the fleet's rules is never allowed to be nobody.
+        if (string.IsNullOrWhiteSpace(by))
+            throw new WorkflowValidationException(
+                "Turning a workflow on or off requires 'by' - who is making the change.");
         var key = NormalizeId(id);
         lock (_gate)
         {
@@ -563,7 +568,9 @@ public sealed class WorkflowStore
             head.Enabled = enabled;
             head.UpdatedUtc = DateTime.UtcNow;
             ctx.SaveChanges();
-            FileLog.Write($"[WorkflowStore] SetEnabled: id={key}, enabled={enabled}");
+            // Attribution is log-based for now; the durable audit trail is governance's append-only
+            // event ledger (#1771), which will hang off these same ids.
+            FileLog.Write($"[WorkflowStore] SetEnabled: id={key}, enabled={enabled}, by={by.Trim()}");
             return true;
         }
     }

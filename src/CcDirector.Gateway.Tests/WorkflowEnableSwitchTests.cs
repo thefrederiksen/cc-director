@@ -34,7 +34,7 @@ public sealed class WorkflowEnableSwitchTests : IDisposable
     {
         var (workflows, _) = NewStores();
 
-        Assert.True(workflows.SetEnabled("mission", false));
+        Assert.True(workflows.SetEnabled("mission", false, "test:owner"));
 
         // The catalog still lists it - the register must be able to SHOW an off workflow to flip
         // it back - and the state is reported honestly.
@@ -49,7 +49,7 @@ public sealed class WorkflowEnableSwitchTests : IDisposable
     public void Off_refuses_the_default_conduct_read_with_a_clear_message_but_pinned_reads_resolve()
     {
         var (workflows, _) = NewStores();
-        workflows.SetEnabled("mission", false);
+        workflows.SetEnabled("mission", false, "test:owner");
 
         var refusal = Assert.Throws<WorkflowValidationException>(
             () => workflows.GetInstructions("mission", version: null));
@@ -65,14 +65,14 @@ public sealed class WorkflowEnableSwitchTests : IDisposable
     {
         var (workflows, runs) = NewStores();
         var before = runs.Create("mission", "Governed while on");
-        workflows.SetEnabled("mission", false);
+        workflows.SetEnabled("mission", false, "test:owner");
 
         Assert.Throws<WorkflowValidationException>(() => runs.Create("mission", "Refused while off"));
         Assert.False(runs.IsWorkflowEnabled("mission"));
         // Past runs stay readable, and they report the workflow's current state.
         Assert.False(runs.Get(before.Id)!.WorkflowEnabled);
 
-        Assert.True(workflows.SetEnabled("mission", true));
+        Assert.True(workflows.SetEnabled("mission", true, "test:owner"));
         Assert.True(runs.IsWorkflowEnabled("mission"));
         Assert.Equal("mission", runs.Create("mission", "Governed again").WorkflowId);
         Assert.Contains("THE FOUR LAWS", workflows.GetInstructions("mission", version: null));
@@ -148,7 +148,7 @@ public sealed class WorkflowEnableSwitchEndpointTests : IAsyncLifetime
     [Fact]
     public async Task Disable_off_missions_run_ungoverned_then_enable_governs_again()
     {
-        var off = await _http.PostAsync("gateway/workflows/mission/disable", null);
+        var off = await _http.PostAsync("gateway/workflows/mission/disable?by=test-owner", null);
         Assert.Equal(HttpStatusCode.OK, off.StatusCode);
 
         // The default conduct read refuses with the clear message, as a 400 - never a 404.
@@ -162,7 +162,7 @@ public sealed class WorkflowEnableSwitchEndpointTests : IAsyncLifetime
         var ungovernedDto = await ungoverned.Content.ReadFromJsonAsync<JsonObject>();
         Assert.Null(ungovernedDto!["workflowRunId"]?.GetValue<string?>());
 
-        var on = await _http.PostAsync("gateway/workflows/mission/enable", null);
+        var on = await _http.PostAsync("gateway/workflows/mission/enable?by=test-owner", null);
         Assert.Equal(HttpStatusCode.OK, on.StatusCode);
 
         var governed = await _http.PostAsJsonAsync("missions", new { missionName = "After the flip" });
@@ -172,9 +172,19 @@ public sealed class WorkflowEnableSwitchEndpointTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task The_switch_requires_an_actor()
+    {
+        // A governance change has an actor, always - flipping the fleet's rules anonymously is
+        // refused, the same posture as run acceptance.
+        var resp = await _http.PostAsync("gateway/workflows/mission/disable", null);
+        Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
+        Assert.Contains("requires 'by'", await resp.Content.ReadAsStringAsync());
+    }
+
+    [Fact]
     public async Task Unknown_workflow_switch_is_a_404()
     {
-        var resp = await _http.PostAsync("gateway/workflows/no-such/disable", null);
+        var resp = await _http.PostAsync("gateway/workflows/no-such/disable?by=test-owner", null);
         Assert.Equal(HttpStatusCode.NotFound, resp.StatusCode);
     }
 

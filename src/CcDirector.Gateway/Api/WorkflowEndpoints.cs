@@ -153,15 +153,17 @@ internal static class WorkflowEndpoints
         // The owner's switch (register redesign): turn a workflow on or off - built-ins included.
         // Off = hidden from agents' briefings, default reads refused, no new runs or seats; nothing
         // deleted, instant both ways fleet-wide.
-        app.MapPost("/gateway/workflows/{id}/enable", (string id) =>
-            store.SetEnabled(id, true)
+        // Both verbs REQUIRE ?by=<who> - a governance change has an actor, always (the run-
+        // acceptance posture). Attribution is log-based until governance's event ledger lands.
+        app.MapPost("/gateway/workflows/{id}/enable", (string id, string? by) => Guard(() =>
+            store.SetEnabled(id, true, by ?? "")
                 ? Results.Json(new { id, enabled = true })
-                : NotFound(id));
+                : NotFound(id)));
 
-        app.MapPost("/gateway/workflows/{id}/disable", (string id) =>
-            store.SetEnabled(id, false)
+        app.MapPost("/gateway/workflows/{id}/disable", (string id, string? by) => Guard(() =>
+            store.SetEnabled(id, false, by ?? "")
                 ? Results.Json(new { id, enabled = false })
-                : NotFound(id));
+                : NotFound(id)));
 
         app.MapGet("/gateway/workflows/{id}/files/{fileName}", (string id, string fileName, int? version) =>
         {
