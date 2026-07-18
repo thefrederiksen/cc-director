@@ -67,6 +67,9 @@ public sealed class GatewayDbContext : DbContext
     /// <summary>Workflow runs (<c>workflow_runs</c>) - the governance outcome spine (issue #1771).</summary>
     public DbSet<WorkflowRunEntity> WorkflowRuns => Set<WorkflowRunEntity>();
 
+    /// <summary>Pending session snoozes (<c>snoozes</c>), keyed by session id.</summary>
+    public DbSet<SnoozeEntity> Snoozes => Set<SnoozeEntity>();
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         base.OnModelCreating(modelBuilder);
@@ -153,6 +156,16 @@ public sealed class GatewayDbContext : DbContext
             b.OwnsMany(e => e.Participants, o => o.ToJson());
         });
 
+        modelBuilder.Entity<SnoozeEntity>(b =>
+        {
+            b.ToTable("snoozes");
+            // SessionId is the natural key - a globally unique, ordinally-compared GUID string - so it is the
+            // primary key directly (no surrogate id). SQLite's default BINARY text collation compares it
+            // ordinally, matching the legacy Dictionary(StringComparer.Ordinal). The armed-vs-deferred
+            // invariant is kept in the store, not as a database CHECK (provider-divergent), matching today.
+            b.HasKey(e => e.SessionId);
+        });
+
         // Tenant scoping - the tenant_id column plus the global query filter - applied uniformly to every
         // entity that derives from TenantScopedEntity, so future stores inherit it by deriving from the base.
         ApplyTenantScope<CronJobEntity>(modelBuilder);
@@ -163,6 +176,7 @@ public sealed class GatewayDbContext : DbContext
         ApplyTenantScope<WorkflowVersionEntity>(modelBuilder);
         ApplyTenantScope<WorkflowFileEntity>(modelBuilder);
         ApplyTenantScope<WorkflowRunEntity>(modelBuilder);
+        ApplyTenantScope<SnoozeEntity>(modelBuilder);
 
         ApplyCommonSubsetConventions(modelBuilder);
     }

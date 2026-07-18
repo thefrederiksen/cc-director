@@ -1,5 +1,7 @@
 using CcDirector.Gateway.Contracts;
+using CcDirector.Gateway.Data;
 using CcDirector.Gateway.Snooze;
+using CcDirector.Gateway.Tests.Data;
 using Xunit;
 
 namespace CcDirector.Gateway.Tests;
@@ -17,19 +19,18 @@ namespace CcDirector.Gateway.Tests;
 /// </summary>
 public sealed class SnoozeLandingObserverTests : IDisposable
 {
-    private readonly string _dir = Path.Combine(Path.GetTempPath(), "cc-snoozeland-" + Guid.NewGuid().ToString("N"));
+    private readonly GatewayDbTestHarness _h = new();
+    private GatewayDatabase? _db;
+    private GatewayDatabase Db => _db ??= _h.Open();
     private readonly DateTime _now = new(2026, 7, 14, 12, 0, 0, DateTimeKind.Utc);
 
-    private string Path_ => System.IO.Path.Combine(_dir, "snooze.json");
+    private SnoozeRegistry NewReg() => new(Db, _h.LegacyPath(Guid.NewGuid().ToString("N") + ".json"));
 
-    public void Dispose()
-    {
-        try { if (Directory.Exists(_dir)) Directory.Delete(_dir, true); } catch { }
-    }
+    public void Dispose() => _h.Dispose();
 
     private (SnoozeRegistry reg, SnoozeLandingObserver obs) Make(DateTime? now = null)
     {
-        var reg = new SnoozeRegistry(Path_);
+        var reg = NewReg();
         return (reg, new SnoozeLandingObserver(reg, () => now ?? _now));
     }
 
