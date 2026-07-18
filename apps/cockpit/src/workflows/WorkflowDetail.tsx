@@ -25,10 +25,11 @@ export function WorkflowDetail() {
     async (signal?: AbortSignal) => {
       if (id === undefined) return;
       try {
-        const [wf, md] = await Promise.all([
-          getWorkflow(id, signal),
-          getWorkflowInstructions(id, signal),
-        ]);
+        // Sequential on purpose: the metadata names a version, and the conduct is fetched PINNED to
+        // that exact version - two concurrent unpinned fetches can straddle a publish and render v1
+        // steps over v2 conduct (a torn read the inspection caught).
+        const wf = await getWorkflow(id, signal);
+        const md = await getWorkflowInstructions(id, wf.version, signal);
         setWorkflow(wf);
         setInstructions(md);
         setError(null);

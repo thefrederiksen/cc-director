@@ -98,9 +98,16 @@ export async function getWorkflow(id: string, signal?: AbortSignal): Promise<Wor
 }
 
 // GET /gateway/workflows/{id}/instructions - the authoritative conduct, raw markdown. This is the
-// same text an agent fetches and follows; the detail page renders it read-only.
-export async function getWorkflowInstructions(id: string, signal?: AbortSignal): Promise<string> {
-  const res = await fetch(`/gateway/workflows/${encodeURIComponent(id)}/instructions`, {
+// same text an agent fetches and follows; the detail page renders it read-only. Pass the version
+// from the workflow projection you already hold so the metadata and the conduct are guaranteed to
+// be the SAME version - two unpinned fetches can straddle a publish and show a torn read.
+export async function getWorkflowInstructions(
+  id: string,
+  version?: number,
+  signal?: AbortSignal,
+): Promise<string> {
+  const versionQuery = typeof version === "number" ? `?version=${version}` : "";
+  const res = await fetch(`/gateway/workflows/${encodeURIComponent(id)}/instructions${versionQuery}`, {
     method: "GET",
     headers: { Accept: "text/markdown" , ...authHeaders() },
     signal,

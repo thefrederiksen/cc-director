@@ -85,9 +85,10 @@ function WorkflowRow({ workflow }: { workflow: WorkflowDefinition }) {
     <Link className="wf-row" to={`/workflows/${encodeURIComponent(workflow.id)}`}>
       <div className="wf-row-main">
         <span className="wf-row-name">{workflow.name}</span>
-        <span className={workflow.isBuiltIn === true ? "wf-badge wf-badge-builtin" : "wf-badge wf-badge-custom"}>
-          {workflow.isBuiltIn === true ? "Built-in" : "Custom"}
-        </span>
+        {/* The kind badge renders only when the Gateway REPORTS the field - an older Gateway that
+            omits it must not see every built-in mislabeled "Custom". Absent field, absent badge. */}
+        {workflow.isBuiltIn === true ? <span className="wf-badge wf-badge-builtin">Built-in</span> : null}
+        {workflow.isBuiltIn === false ? <span className="wf-badge wf-badge-custom">Custom</span> : null}
         {workflow.hasDraft === true ? <span className="wf-badge wf-badge-draft">Draft waiting</span> : null}
       </div>
       <p className="wf-row-summary">{workflow.summary}</p>
@@ -131,8 +132,16 @@ function AddWorkflowDialog({ onClose, onCreated }: { onClose: () => void; onCrea
     }
   };
 
+  // The backdrop dismisses only while the form is idle: dismissing DURING the create leaves the
+  // draft half-born on the Gateway with its handoff prompt never shown (and a retry then hits an
+  // id conflict), and dismissing the success state would lose the prompt - both are click-through
+  // traps the inspection caught.
   return (
-    <div className="wf-dialog-backdrop" role="presentation" onClick={createdId === null ? onClose : undefined}>
+    <div
+      className="wf-dialog-backdrop"
+      role="presentation"
+      onClick={createdId === null && !busy ? onClose : undefined}
+    >
       <div
         className="wf-dialog"
         role="dialog"
@@ -186,11 +195,18 @@ function AddWorkflowDialog({ onClose, onCreated }: { onClose: () => void; onCrea
               Hand this to any agent - it authors the workflow and publishes it to the whole fleet:
             </p>
             <pre className="wf-dialog-handoff">{handoff}</pre>
+            {error !== null ? <p className="wf-dialog-error">{error}</p> : null}
             <div className="wf-dialog-actions">
               <Button
                 variant="secondary"
                 onClick={() => {
-                  void navigator.clipboard.writeText(handoff).then(() => setCopied(true));
+                  // Clipboard access can be absent (insecure remote origin) or denied. The prompt is
+                  // fully visible in the box above, so the honest degrade is to SAY the copy failed
+                  // and let the person select the text - never an unhandled rejection.
+                  navigator.clipboard?.writeText(handoff).then(
+                    () => setCopied(true),
+                    () => setError("Copy failed - select the text above and copy it manually."),
+                  ) ?? setError("Copy is unavailable here - select the text above and copy it manually.");
                 }}
               >
                 {copied ? "Copied" : "Copy prompt"}

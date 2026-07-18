@@ -195,7 +195,7 @@
 }
 
 .wf-row:hover {
-  border-color: var(--accent, #4a9eff);
+  border-color: var(--accent);
 }
 
 .wf-row-main {
@@ -219,13 +219,13 @@
 }
 
 .wf-badge-builtin {
-  color: var(--accent, #4a9eff);
-  border-color: var(--accent, #4a9eff);
+  color: var(--accent);
+  border-color: var(--accent);
 }
 
 .wf-badge-draft {
-  color: var(--warning, #d9a133);
-  border-color: var(--warning, #d9a133);
+  color: var(--warn);
+  border-color: var(--warn);
 }
 
 .wf-row-summary {
@@ -299,7 +299,7 @@
 
 .wf-dialog-error {
   margin: 0 0 10px;
-  color: var(--danger, #e5534b);
+  color: var(--attention);
   font-size: 13px;
 }
 
