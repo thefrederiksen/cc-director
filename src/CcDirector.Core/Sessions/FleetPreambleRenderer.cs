@@ -31,6 +31,11 @@ public static class FleetPreamblePlaceholders
     /// <summary>The signed-in user's email. Only meaningful inside an [IF_SIGNED_IN] block.</summary>
     public const string UserEmail = "[USER_EMAIL]";
 
+    /// <summary>The workflow catalog index block (Workflows mission, phase 5): one line per published
+    /// fleet workflow plus how to fetch its conduct. Empty when the Director has never reached a
+    /// Gateway or the catalog is empty.</summary>
+    public const string WorkflowIndex = "[WORKFLOW_INDEX]";
+
     /// <summary>Opens a block kept only when a user is signed in.</summary>
     public const string IfSignedIn = "[IF_SIGNED_IN]";
 
@@ -40,7 +45,7 @@ public static class FleetPreamblePlaceholders
     /// <summary>Every substitution token, for documentation and for the Settings tab to list.</summary>
     public static IReadOnlyList<string> All { get; } = new[]
     {
-        SessionId, SessionShortId, SessionName, Machine, RepoPath, UserName, UserEmail,
+        SessionId, SessionShortId, SessionName, Machine, RepoPath, UserName, UserEmail, WorkflowIndex,
     };
 }
 
@@ -86,7 +91,8 @@ public static class FleetPreambleRenderer
         string? name,
         string machine,
         string repoPath,
-        SignedInUser? user = null)
+        SignedInUser? user = null,
+        string workflowIndex = "")
     {
         var signedIn = user is not null && !string.IsNullOrWhiteSpace(user.Email);
         var kept = ApplyConditionals(template, signedIn);
@@ -105,6 +111,10 @@ public static class FleetPreambleRenderer
             // empty rather than leaking the token text to the agent.
             [FleetPreamblePlaceholders.UserName] = signedIn ? user!.DisplayName : "",
             [FleetPreamblePlaceholders.UserEmail] = signedIn ? user!.Email : "",
+            // The workflow index renders whatever block the caller supplies - possibly empty. A user
+            // running their own template gets the index only where they wrote the token, the same
+            // contract as every other placeholder.
+            [FleetPreamblePlaceholders.WorkflowIndex] = workflowIndex,
         };
 
         return Substitute(kept, values);
