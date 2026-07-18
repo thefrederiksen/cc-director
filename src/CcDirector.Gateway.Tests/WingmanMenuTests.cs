@@ -137,51 +137,6 @@ public sealed class WingmanMenuTests
     public void IsOptionLine_ClassifiesRows(string row, bool expected)
         => Assert.Equal(expected, WingmanMenuLogic.IsOptionLine(row));
 
-    // ===== SameMenuStillOnScreen (issue #1777, B3: re-verify against the CAPTURED menu block) =====
-
-    [Fact]
-    public void SameMenuStillOnScreen_IdenticalMenu_IsTrue()
-    {
-        var captured = new[] { "Do you want to proceed?", "❯ 1. Yes", "  2. No" };
-        var fresh = new[] { "Do you want to proceed?", "❯ 1. Yes", "  2. No" };
-        Assert.True(WingmanMenuLogic.SameMenuStillOnScreen(captured, fresh));
-    }
-
-    [Fact]
-    public void SameMenuStillOnScreen_SameLabelsDifferentQuestion_IsFalse()
-    {
-        // The exact B3 hole: a replacement menu with the SAME option labels but a different question. Comparing
-        // only labels would pass and press the old answer into the new menu; comparing the block catches it.
-        var captured = new[] { "Delete production?", "❯ 1. Yes", "  2. No" };
-        var fresh = new[] { "Deploy production?", "❯ 1. Yes", "  2. No" };
-        Assert.False(WingmanMenuLogic.SameMenuStillOnScreen(captured, fresh));
-    }
-
-    [Fact]
-    public void SameMenuStillOnScreen_MenuClosed_IsFalse()
-    {
-        var captured = new[] { "Do you want to proceed?", "❯ 1. Yes", "  2. No" };
-        var fresh = new[] { "user@host:~/repo$ ", "" };
-        Assert.False(WingmanMenuLogic.SameMenuStillOnScreen(captured, fresh));
-    }
-
-    [Fact]
-    public void SameMenuStillOnScreen_NoOptions_IsFalse()
-    {
-        // No option lines -> no signature -> never "the same menu" (nothing to verify against).
-        Assert.False(WingmanMenuLogic.SameMenuStillOnScreen(new[] { "just prose", "more prose" }, new[] { "just prose", "more prose" }));
-    }
-
-    [Fact]
-    public void SameMenuStillOnScreen_BlankLineSeparatedQuestionChanges_IsFalse()
-    {
-        // B3 (round-4): the question is separated from the options by a BLANK line. A changed question must
-        // still fail the re-verify - the signature has to reach across the blank line to the question.
-        var captured = new[] { "Delete production?", "", "❯ 1. Yes", "  2. No" };
-        var fresh = new[] { "Deploy production?", "", "❯ 1. Yes", "  2. No" };
-        Assert.False(WingmanMenuLogic.SameMenuStillOnScreen(captured, fresh));
-    }
-
     // ===== IsSelectedOptionLine / LiveScreenHasMenuSelection (round-4: menu owned by its DRAWN marker) =====
 
     [Theory]

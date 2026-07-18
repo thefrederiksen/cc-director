@@ -58,7 +58,10 @@ public static class WaitingScreenClassifier
         // Both present is ambiguous (a stale menu above a live composer, or vice versa) - fail closed.
         if (hasMenu && hasComposer) return WaitingScreenKind.Blocked;
         if (hasMenu) return WaitingScreenKind.Menu;
-        if (hasComposer) return WaitingScreenKind.PlainText;
+        // TYPING is allowed only on a composer with NO menu-ish structure ANYWHERE on the grid (issue #1777,
+        // floor rescope, finding 3): a numbered/lettered option line, a drawn selection marker, or a
+        // choose/select/proceed/pick prompt all block typing, even next to a live composer. When in doubt, block.
+        if (hasComposer && !HasMenuishStructure(rows)) return WaitingScreenKind.PlainText;
         return WaitingScreenKind.Blocked;
     }
 
@@ -72,6 +75,35 @@ public static class WaitingScreenClassifier
     /// </summary>
     public static bool LooksLikePlainTextPrompt(IReadOnlyList<string> rows, int cursorRow, int cursorCol)
         => rows is not null && cursorRow >= 0 && cursorRow < rows.Count && CursorInComposer(rows, cursorRow, cursorCol);
+
+    /// <summary>
+    /// Any menu-ish structure ANYWHERE on the grid (issue #1777, floor rescope): a numbered/lettered option
+    /// line, a drawn <c>❯</c>/<c>&gt;</c> selection marker on an option, or a menu-prompt phrase
+    /// ("choose", "select", "do you want to proceed", "pick one/a", "which option/one"). Typing is refused when
+    /// any of these is present - a bordered "&gt; production" under "Choose a deployment:" must block, not type.
+    /// This is deliberately conservative (an ordinary numbered list in the reply also blocks); on this floor
+    /// branch the spoken words are only ever typed onto an unambiguous plain-text composer. Public so a test
+    /// can assert it directly.
+    /// </summary>
+    public static bool HasMenuishStructure(IReadOnlyList<string>? rows)
+    {
+        if (rows is null) return false;
+        foreach (var row in rows)
+        {
+            if (string.IsNullOrWhiteSpace(row)) continue;
+            if (WingmanMenuLogic.IsOptionLine(row)) return true;
+            if (WingmanMenuLogic.IsSelectedOptionLine(row)) return true;
+            var lower = row.ToLowerInvariant();
+            foreach (var phrase in MenuPromptPhrases)
+                if (lower.Contains(phrase)) return true;
+        }
+        return false;
+    }
+
+    private static readonly string[] MenuPromptPhrases =
+    {
+        "do you want to proceed", "choose", "select ", "pick one", "pick a ", "which option", "which one",
+    };
 
     private static bool CursorInComposer(IReadOnlyList<string> rows, int cursorRow, int cursorCol)
     {

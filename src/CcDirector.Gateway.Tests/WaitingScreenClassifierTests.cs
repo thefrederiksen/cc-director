@@ -128,4 +128,34 @@ public sealed class WaitingScreenClassifierTests
         var rows = new[] { "some output", "> ", "  bypass permissions on (shift+tab to cycle)" };
         Assert.True(WaitingScreenClassifier.LooksLikePlainTextPrompt(rows, cursorRow: 1, cursorCol: 2));
     }
+
+    // ===== HasMenuishStructure (floor rescope, finding 3: any menu structure blocks typing) =====
+
+    [Fact]
+    public void Classify_ComposerWithNumberedListPresent_IsBlocked()
+    {
+        // Even a valid visible-cursor composer is not typed into when a numbered (menu-ish) list is anywhere on
+        // the grid. When in doubt, block.
+        var rows = new[]
+        {
+            "Here are the choices:",
+            "1. staging",
+            "2. production",
+            "╭──────────────────────────────────────╮",
+            "│ >                                     │",
+            "╰──────────────────────────────────────╯",
+            "  ? for shortcuts",
+        };
+        Assert.Equal(WaitingScreenKind.Blocked, WaitingScreenClassifier.Classify(rows, cursorRow: 4, cursorCol: 4, cursorVisible: true, isAlternateScreen: false, hasGrid: true));
+    }
+
+    [Theory]
+    [InlineData(new[] { "some prose", "1. first", "2. second" }, true)]     // a numbered/lettered option line
+    [InlineData(new[] { "prose", "❯ 1. Yes" }, true)]                        // a drawn selection marker
+    [InlineData(new[] { "Choose a deployment:", "the rest" }, true)]         // a menu-prompt phrase
+    [InlineData(new[] { "Do you want to proceed?", "..." }, true)]
+    [InlineData(new[] { "I finished the change.", "> ", "  ? for shortcuts" }, false)] // a plain composer
+    [InlineData(new[] { "just some prose output", "and more" }, false)]
+    public void HasMenuishStructure_DetectsMenuStructure(string[] rows, bool expected)
+        => Assert.Equal(expected, WaitingScreenClassifier.HasMenuishStructure(rows));
 }

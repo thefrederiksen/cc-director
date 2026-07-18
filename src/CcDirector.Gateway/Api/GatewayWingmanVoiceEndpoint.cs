@@ -501,54 +501,30 @@ internal static class GatewayWingmanVoiceEndpoint
             if (route is null)
                 return Results.Json(new { error = "session not found on any director" }, statusCode: StatusCodes.Status404NotFound);
 
-            // Menu handling + FAIL CLOSED (issues #531 / #1777). Read the LIVE screen (authoritative) to
-            // classify what the session is waiting on: a menu, a confident plain-text prompt, or something we
-            // must NOT type into (a menu we could not read, an uncertain screen, or an unreadable one). The
-            // spoken words are only ever typed as an ordinary prompt when the screen is CONFIDENTLY plain text.
-            var screen = await DetectWaitingScreenAtAsync(route, translator, sid, ct);
-            if (screen.Kind == WaitingKind.Menu)
+            // THE FLOOR INVARIANT (issue #1777). This branch NEVER presses a key into a session. The spoken
+            // words are typed as an ordinary prompt ONLY when the live screen is a CONFIDENT plain-text
+            // composer: not the alternate screen, the hardware cursor VISIBLE, the cursor within the framed
+            // composer's input column span, and NO menu marker or menu-ish structure anywhere on the grid.
+            // Every menu, and every uncertain / unreadable / alternate-screen / hidden-cursor screen, types
+            // NOTHING and presses NOTHING. (Fully hands-free voice-ANSWERING - the wingman pressing menu keys -
+            // is its own later issue with per-agent picker profiles and a screen-version lock; it is not here.)
+            var (kind, blockedSpoken) = await ClassifyLiveScreenAtAsync(route, sid, ct);
+            if (kind != WaitingScreenKind.PlainText)
             {
-                // The agent is RIGHT NOW showing an on-screen menu, so the person's words are a CHOICE, not a
-                // new prompt. Map the words to an option and PRESS that option (raw keystrokes).
-                var menu = screen.Menu;
-                var idx = WingmanMenuLogic.MatchOption(menu, req.Text);
-                if (idx < 0) idx = await translator.MapChoiceAsync(menu, req.Text, ct);
-                if (idx >= 0 && idx < menu.Options.Count)
-                {
-                    // Finding 3: mapping the choice took one or two model calls; re-verify the SAME menu is
-                    // still on the live screen before pressing, so the selection bytes cannot land in a shell
-                    // or prompt if the menu closed in the meantime. If it changed, press NOTHING and fail closed.
-                    if (!await MenuStillOnScreenAsync(route, screen.MenuGridRows, sid, ct))
-                    {
-                        FileLog.Write($"[GatewayWingmanVoice] voice-turn sid={sid}: menu changed before press - fail closed, not pressing");
-                        return Results.Json(new { reply = "", spoken = "The menu changed before I could answer, so I didn't press anything. Open the session to see what it's asking now.", cannotType = true, lookAtTerminal = true });
-                    }
-                    var opt = menu.Options[idx];
-                    var submit = string.Equals(menu.SelectionMode, "multiple", StringComparison.OrdinalIgnoreCase) ? menu.Submit : "";
-                    FileLog.Write($"[GatewayWingmanVoice] voice-turn sid={sid}: menu choice -> option {idx + 1}");
-                    return await PressAndSummarizeAsync(route, translator, voice, sid, SessionTitle(sid), opt.Send, submit, $"Selecting option {idx + 1}. ", "voice-menu", ct);
-                }
-                // Heard them, but no confident option: re-read the menu and send NOTHING (don't burn the turn).
-                FileLog.Write($"[GatewayWingmanVoice] voice-turn sid={sid}: menu present, choice unclear");
-                return Results.Json(new { reply = "", spoken = "I didn't catch which one. " + menu.Spoken, needsChoice = true, menu = MenuJson(menu) });
+                FileLog.Write($"[GatewayWingmanVoice] voice-turn sid={sid}: FAIL CLOSED - not typing (screen is {kind})");
+                return Results.Json(new { reply = "", spoken = blockedSpoken, cannotType = true, lookAtTerminal = true });
             }
-            if (screen.Kind == WaitingKind.Blocked)
+
+            // Close the snapshot-to-send race (issue #1777, floor rescope, finding 2): RE-READ the live screen
+            // immediately before the send and re-confirm it is STILL a confident plain-text composer. If it
+            // changed in the meantime (now a menu / alternate screen / cursor hidden / gone), fail closed - the
+            // spoken words must never land on anything but the composer they were classified against.
+            var (kindNow, blockedNow) = await ClassifyLiveScreenAtAsync(route, sid, ct);
+            if (kindNow != WaitingScreenKind.PlainText)
             {
-                // FAIL CLOSED (issue #1777): the waiting screen is a menu we could not read, an uncertain
-                // screen, or an unreadable one. Typing the spoken words in blindly is the exact defect that
-                // leaves the person stuck (a wrong pick AND no escape), so send NOTHING - not the words, not
-                // any selection bytes - and tell them to look at the terminal.
-                FileLog.Write($"[GatewayWingmanVoice] voice-turn sid={sid}: FAIL CLOSED - not typing ({screen.BlockedReason})");
-                return Results.Json(new { reply = "", spoken = screen.BlockedSpoken, cannotType = true, lookAtTerminal = true });
+                FileLog.Write($"[GatewayWingmanVoice] voice-turn sid={sid}: screen changed before send (now {kindNow}) - fail closed, not typing");
+                return Results.Json(new { reply = "", spoken = blockedNow, cannotType = true, lookAtTerminal = true });
             }
-            // screen.Kind == WaitingKind.PlainText: a positive composer/input-prompt signal on the primary
-            // screen - typing the answer is safe.
-            //
-            // ACCEPTED, DOCUMENTED GAP (issue #1777, finding 3): there is a micro-race where a plain-text
-            // prompt turns into a menu between this classification and the PostPromptAsync below. We do NOT
-            // re-verify on this path (only the menu-press path re-verifies, where the cost of a wrong press is
-            // a bad selection). The full screen-revision-token precondition that would close this race is a
-            // later phase (issue #1786); it is not built here.
 
             // We are about to start a new turn, so the cached spoken summary + audio are now stale.
             // Clear them DETERMINISTICALLY here (do not rely on observing the Working state, which is
@@ -787,20 +763,36 @@ internal static class GatewayWingmanVoiceEndpoint
             return Results.Json(MenuJson(menu));
         });
 
-        // Press a specific menu option (the phone's option-button tap): send the exact keystrokes,
-        // then wait for the agent's result and translate it back. { send, submit? } -> { reply, spoken }.
-        app.MapPost("/sessions/{sid}/wingman/menu-press", async (string sid, WingmanMenuPressRequest? req, CancellationToken ct) =>
+        // NOTE (issue #1777, floor rescope): the raw POST /wingman/menu-press endpoint - which pressed menu
+        // keystrokes into a session - was REMOVED. Nothing on this branch ever presses a key into a session.
+        // Pressing menu options (fully hands-free voice-answering) is its own later issue, built with per-agent
+        // picker profiles and a screen-version lock on every keypress. The GET /wingman/menu detection above
+        // stays (read-only, for the announce step); it never leads to a keypress.
+    }
+
+    /// <summary>
+    /// Classify the live waiting screen for the FLOOR (issue #1777): read the grid over the tunnel and run the
+    /// pure, no-brain <see cref="WaitingScreenClassifier"/>. Returns the kind and, when it is not typeable, the
+    /// line to speak. This is all voice-turn needs - it types only on <see cref="WaitingScreenKind.PlainText"/>
+    /// and never presses - so no menu extraction (brain) happens on the send path.
+    /// </summary>
+    private static async Task<(WaitingScreenKind Kind, string BlockedSpoken)> ClassifyLiveScreenAtAsync(
+        SessionVerbClient route, string sid, CancellationToken ct)
+    {
+        Contracts.ScreenGridResponse? grid;
+        try { grid = await route.GetScreenGridAsync(sid, ct); }
+        catch (Exception ex)
         {
-            FileLog.Write($"[GatewayWingmanVoice] menu-press sid={sid}");
-            if (!Guid.TryParse(sid, out _))
-                return Results.Json(new { error = "invalid session id format" }, statusCode: StatusCodes.Status400BadRequest);
-            if (req is null || string.IsNullOrEmpty(req.Send))
-                return Results.Json(new { error = "send is required" }, statusCode: StatusCodes.Status400BadRequest);
-            var route = await ResolveRouteAsync(sid);
-            if (route is null)
-                return Results.Json(new { error = "session not found on any director" }, statusCode: StatusCodes.Status404NotFound);
-            return await PressAndSummarizeAsync(route, translator, voice, sid, SessionTitle(sid), req.Send, req.Submit, null, "menu-press", ct);
-        });
+            FileLog.Write($"[GatewayWingmanVoice] classify sid={sid}: screen-grid read threw ({ex.Message}) - fail closed");
+            return (WaitingScreenKind.Blocked, BlockedUnreadableSpoken);
+        }
+        if (grid is null)
+            return (WaitingScreenKind.Blocked, BlockedUnreadableSpoken);
+
+        var kind = WaitingScreenClassifier.Classify(grid.Rows, grid.CursorRow, grid.CursorCol, grid.CursorVisible, grid.IsAlternateScreen, grid.HasGrid);
+        // A menu says "look at the terminal"; everything else uncertain says the generic unreadable line.
+        var spoken = kind == WaitingScreenKind.Menu ? BlockedMenuSpoken : BlockedUnreadableSpoken;
+        return (kind, spoken);
     }
 
     /// <summary>What a session's live waiting screen turns out to be (issue #1777), so voice-turn can decide
@@ -817,14 +809,13 @@ internal static class GatewayWingmanVoiceEndpoint
         Blocked,
     }
 
-    /// <summary>The classified live waiting screen plus, for a menu, the extracted options and the live grid
-    /// rows the menu was read off (kept so the caller can re-verify the menu is STILL on screen right before
-    /// pressing keystrokes), and for a blocked screen, the plain-English reason and the line to speak.</summary>
+    /// <summary>The classified live waiting screen for the read-only <c>GET /wingman/menu</c> path: for a menu,
+    /// the extracted options; for a blocked screen, the plain-English reason and the line to speak. (The send
+    /// path does not use this - it classifies with the pure classifier and only ever types.)</summary>
     private sealed class WaitingScreen
     {
         public WaitingKind Kind { get; init; }
         public WingmanMenu Menu { get; init; } = new() { IsMenu = false };
-        public IReadOnlyList<string> MenuGridRows { get; init; } = System.Array.Empty<string>();
         public string BlockedReason { get; init; } = "";
         public string BlockedSpoken { get; init; } = "";
     }
@@ -904,7 +895,7 @@ internal static class GatewayWingmanVoiceEndpoint
         if (menu.IsMenu && WingmanMenuLogic.MenuHasAnswerableOptions(menu, liveRows))
         {
             FileLog.Write($"[GatewayWingmanVoice] waiting-screen sid={sid}: MENU with {menu.Options.Count} answerable option(s)");
-            return new WaitingScreen { Kind = WaitingKind.Menu, Menu = menu, MenuGridRows = liveRows };
+            return new WaitingScreen { Kind = WaitingKind.Menu, Menu = menu };
         }
 
         // Looks like a menu but no answerable options could be extracted. UNCERTAIN - the dangerous case the
@@ -913,85 +904,17 @@ internal static class GatewayWingmanVoiceEndpoint
         return Blocked("menu on screen, options not answerable", BlockedMenuSpoken);
     }
 
-    /// <summary>
-    /// TOCTOU re-verify before pressing (issue #1777, findings 3 / B3): between reading the grid and pressing
-    /// an option there are one or two model calls, in which the menu can close or be REPLACED, and the
-    /// selection bytes would land in a shell, a composer, or a different menu. Re-fetch the LIVE grid and
-    /// confirm it is STILL the SAME menu: the cursor is still on a menu option, and the captured menu block
-    /// (question + full option set) still matches - not merely that the same option labels appear somewhere
-    /// (a replacement menu "Delete production?" -> "Deploy production?" with the same Yes/No labels must fail
-    /// this). Returns false (do not press) on any doubt. The full screen-revision-token precondition is a later
-    /// phase; this is the floor.
-    /// </summary>
-    private static async Task<bool> MenuStillOnScreenAsync(
-        SessionVerbClient route, IReadOnlyList<string> capturedRows, string sid, CancellationToken ct)
-    {
-        Contracts.ScreenGridResponse? grid;
-        try { grid = await route.GetScreenGridAsync(sid, ct); }
-        catch { grid = null; }
-        if (grid is null || !grid.HasGrid || grid.Rows is null || grid.Rows.Count == 0) return false;
-        // Still a drawn menu on screen (its selection marker is present) - cursor-independent, since the Ink
-        // picker hides the hardware cursor.
-        if (!WingmanMenuLogic.LiveScreenHasMenuSelection(grid.Rows)) return false;
-        // And it is the SAME menu (question + options), not a same-labelled replacement.
-        return WingmanMenuLogic.SameMenuStillOnScreen(capturedRows, grid.Rows);
-    }
-
-    /// <summary>Fetch the session's live screen and, only when it looks like a menu, ask the warm brain to
-    /// extract it. Returns IsMenu=false on any miss - used by the read-only <c>wingman/menu</c> endpoint,
-    /// which only needs the menu shape (voice-turn uses <see cref="DetectWaitingScreenAtAsync"/> directly so
-    /// it can also fail closed).</summary>
+    /// <summary>Fetch the session's live screen and, only when it is a drawn menu, ask the warm brain to
+    /// extract it. Returns IsMenu=false on any miss. Used ONLY by the read-only <c>GET /wingman/menu</c>
+    /// endpoint (the phone's on-entry render / the later announce step) - it never leads to a keypress. The
+    /// send path (voice-turn) uses the pure <see cref="ClassifyLiveScreenAtAsync"/> instead and only ever
+    /// types on a plain-text composer.</summary>
     private static async Task<WingmanMenu> DetectMenuAtAsync(
         SessionVerbClient route, WingmanTranslator translator, string sid, CancellationToken ct)
     {
         var screen = await DetectWaitingScreenAtAsync(route, translator, sid, ct);
         return screen.Kind == WaitingKind.Menu ? screen.Menu : new WingmanMenu { IsMenu = false };
     }
-
-    /// <summary>Press an option's keystrokes (then the multi-select submit, if any), wait for the
-    /// agent's resulting turn, translate it, cache it, and return the spoken summary. Shared by the
-    /// option-button tap (menu-press) and the spoken-choice path (voice-turn).</summary>
-    private static async Task<IResult> PressAndSummarizeAsync(
-        SessionVerbClient route, WingmanTranslator translator, WingmanVoiceService voice,
-        string sid, string? sessionTitle, string send, string? submit, string? confirmPrefix, string source, CancellationToken ct)
-    {
-        voice.OnSessionWorking(sid);   // a new turn is coming; drop the stale cached summary
-        var before = await CountTextWidgetsAsync(route, sid, ct);
-
-        var (ok, _, err) = await route.PostPromptAsync(sid, new PromptRequest { Text = send, AppendEnter = false }, ct);
-        if (!ok)
-            return Results.Json(new { error = "press failed: " + err }, statusCode: StatusCodes.Status502BadGateway);
-        if (!string.IsNullOrEmpty(submit))
-        {
-            try { await Task.Delay(300, ct); } catch (OperationCanceledException) { }
-            await route.PostPromptAsync(sid, new PromptRequest { Text = submit, AppendEnter = false }, CancellationToken.None);
-        }
-        FileLog.Write($"[GatewayWingmanVoice] {source} sid={sid}: pressed send=\"{Escape(send)}\" submit=\"{Escape(submit)}\"");
-
-        var prefix = confirmPrefix ?? "";
-        var reply = await WaitForReplyAsync(route, sid, before, ct);
-        if (string.IsNullOrWhiteSpace(reply))
-            return Results.Json(new { reply = "", spoken = prefix + "Done. The agent is working - I'll have the result shortly.", pressed = true });
-
-        voice.BeginGenerating(sid);
-        try
-        {
-            var t = await translator.TranslateAsync("(you picked a menu option)", reply, sessionTitle, CancellationToken.None);
-            var spoken = prefix + t.Spoken;
-            await voice.StoreSpokenAsync(sid, spoken, reply, CancellationToken.None);
-            _ = voice.CaptureTrainingAsync(route, sid, source, reply, "(menu pick)", spoken, t.ReplySeconds, CancellationToken.None);
-            FileLog.Write($"[GatewayWingmanVoice] {source} sid={sid}: replyLen={reply.Length}, spokenLen={spoken.Length}");
-            return Results.Json(new { reply, spoken, replySeconds = t.ReplySeconds, pressed = true });
-        }
-        catch (Exception ex)
-        {
-            FileLog.Write($"[GatewayWingmanVoice] {source} sid={sid} translate FAILED: {ex.Message}");
-            return Results.Json(new { error = "wingman translation failed: " + ex.Message }, statusCode: StatusCodes.Status502BadGateway);
-        }
-        finally { voice.EndGenerating(sid); }
-    }
-
-    private static string Escape(string? s) => (s ?? "").Replace("\r", "\\r").Replace("\n", "\\n");
 
     /// <summary>
     /// Persist a mobile dictation capture-health record (issue #863) into the shared dictation
@@ -1106,13 +1029,6 @@ internal static class GatewayWingmanVoiceEndpoint
         var last = turns.Widgets.Skip(widgetsBefore).LastOrDefault(w => w.Kind == "Text");
         return last?.Content;
     }
-
-    private static async Task<int> CountTextWidgetsAsync(
-        SessionVerbClient route, string sid, CancellationToken ct)
-    {
-        var turns = await route.GetTurnsAsync(sid, ct);
-        return turns?.Widgets?.Count ?? 0;
-    }
 }
 
 /// <summary>Body of the wingman voice-turn and ask-direct routes: the person's message.</summary>
@@ -1126,14 +1042,6 @@ public sealed class WingmanVoiceTurnRequest
 public sealed class VoiceModeAllRequest
 {
     public bool Enabled { get; set; } = true;
-}
-
-/// <summary>Body of the menu-press route: the exact keystrokes that pick an option, and (for a
-/// multi-select menu) the completing submit keystroke.</summary>
-public sealed class WingmanMenuPressRequest
-{
-    public string Send { get; set; } = "";
-    public string? Submit { get; set; }
 }
 
 /// <summary>Body of the wingman text-to-speech route: the text to speak, and an optional voice + model

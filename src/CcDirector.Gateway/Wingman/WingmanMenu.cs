@@ -129,6 +129,15 @@ public static class WingmanMenuLogic
         return SelectedOption.IsMatch(stripped);
     }
 
+    /// <summary>Box-drawing glyphs and pipes stripped from a row's leading edge before looking for a selection
+    /// marker, so a bordered "│ ❯ 1. Yes │" reads as "❯ 1. Yes".</summary>
+    private static readonly char[] BorderPadding =
+    {
+        '│','┃','┆','┇','┊','┋','╎','╏','║',
+        '╭','╮','╰','╯','┌','┐','└','┘','╔','╗','╚','╝',
+        '─','━','═','┄','┅','┈','┉','|',' ','\t','\r',
+    };
+
     /// <summary>
     /// True when the LIVE grid carries a menu OWNED BY ITS DRAWN SELECTION MARKER (issue #1777, round-4): a row
     /// with the drawn <c>❯</c>/<c>&gt;</c> marker on a numbered/lettered option, plus two or more option lines.
@@ -167,76 +176,6 @@ public static class WingmanMenuLogic
         }
         return true;
     }
-
-    /// <summary>
-    /// Re-verify the SAME menu is still on the live screen (issue #1777, finding B3), by comparing the CAPTURED
-    /// menu block (the question line plus the full option set, as they were when the menu was read) to the menu
-    /// block on the freshly re-read grid. Substring-of-labels is NOT enough: a replacement menu with the same
-    /// option labels but a different question ("Delete production?" -> "Deploy production?") must fail this, so
-    /// the whole block is compared, not just the labels. Returns false if either block is empty or they differ,
-    /// so the caller presses nothing when the menu changed or closed.
-    /// </summary>
-    public static bool SameMenuStillOnScreen(IReadOnlyList<string>? capturedRows, IReadOnlyList<string>? freshRows)
-    {
-        var a = MenuSignature(capturedRows);
-        var b = MenuSignature(freshRows);
-        return a.Count > 0 && a.SequenceEqual(b);
-    }
-
-    /// <summary>
-    /// The identity of the menu currently on a grid: the normalized menu block - the contiguous run from the
-    /// first non-blank line above the first option (the question / prompt) through the last option line. Box
-    /// borders and padding are normalized away so re-reads of the SAME static menu compare equal, while any
-    /// change to the question wording or the option set changes the signature. Empty when the grid holds no
-    /// option lines. Internal so a test can assert it directly.
-    /// </summary>
-    internal static List<string> MenuSignature(IReadOnlyList<string>? rows)
-    {
-        var result = new List<string>();
-        if (rows is null || rows.Count == 0) return result;
-
-        // The option lines bound the block; a menu with no options has no signature.
-        var firstOption = -1;
-        var lastOption = -1;
-        for (var i = 0; i < rows.Count; i++)
-        {
-            if (!IsOptionLine(rows[i])) continue;
-            if (firstOption < 0) firstOption = i;
-            lastOption = i;
-        }
-        if (firstOption < 0) return result;
-
-        // Capture the QUESTION block above the options, EVEN when a blank line separates it from them
-        // (issue #1777, finding B3: "Delete production?" and "Deploy production?" separated from the options by
-        // a blank line must NOT produce identical signatures). Skip the blank separator, then take the
-        // contiguous non-blank block (the question and any wrapped continuation), stopping at the blank above it.
-        var q0 = firstOption - 1;
-        while (q0 >= 0 && string.IsNullOrWhiteSpace(rows[q0])) q0--;   // skip the blank separator(s)
-        var questionEnd = q0;
-        while (q0 >= 0 && !string.IsNullOrWhiteSpace(rows[q0])) q0--;  // top of the question block
-        var questionStart = q0 + 1;
-
-        for (var q = questionStart; q <= questionEnd; q++)
-        {
-            var norm = Norm(rows[q].Trim(BorderPadding));
-            if (norm.Length > 0) result.Add(norm);
-        }
-        for (var o = firstOption; o <= lastOption; o++)
-        {
-            var norm = Norm(rows[o].Trim(BorderPadding));
-            if (norm.Length > 0) result.Add(norm);
-        }
-        return result;
-    }
-
-    /// <summary>Box-drawing glyphs and pipes stripped from a row's edges before normalizing, so a bordered
-    /// "│ 1. Yes │" compares equal to an unbordered "1. Yes".</summary>
-    private static readonly char[] BorderPadding =
-    {
-        '│','┃','┆','┇','┊','┋','╎','╏','║',
-        '╭','╮','╰','╯','┌','┐','└','┘','╔','╗','╚','╝',
-        '─','━','═','┄','┅','┈','┉','|',' ','\t','\r',
-    };
 
     private static readonly Dictionary<string, int> NumberWords = new()
     {
