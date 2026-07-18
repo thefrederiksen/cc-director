@@ -271,11 +271,12 @@ internal static class Commands
         var role = Role(args);
         var isGatewayInstall = installMode && role == InstallRole.Gateway && !args.HasFlag("dry-run");
 
-        // Gateway installs are per-user (tray app, %LOCALAPPDATA%) - NO elevation. Still verify the
-        // key the Gateway needs, and fail loudly (no silent degrade) before doing any work.
+        // Gateway installs are per-user (tray app, %LOCALAPPDATA%) - NO elevation. Verify the platform
+        // (the managed Gateway is Windows-only) and fail loudly before doing any work. No OPENAI_API_KEY
+        // is required: inference routes through the account-minted dt_live_ key the runtime auto-mints.
         if (isGatewayInstall)
         {
-            var preflight = GatewayPreflight();
+            var preflight = GatewayInstallPreflight.Check(OperatingSystem.IsWindows());
             if (preflight is not null)
             {
                 if (json) Program.WriteJson(new { mode = "install", role = "gateway", failed = preflight });
@@ -359,10 +360,8 @@ internal static class Commands
         // served in-process by the Gateway now (issue #979), so there is no Cockpit zip to extract.
         if (isGatewayInstall && result.Failed == 0 && OperatingSystem.IsWindows())
         {
-            var key = OpenAiKey()
-                ?? throw new InvalidOperationException("OPENAI_API_KEY missing after Gateway pre-flight passed.");
             var installer = new GatewayTrayInstaller(layout);
-            var tray = await installer.InstallAsync(release, source, key);
+            var tray = await installer.InstallAsync(release, source);
             if (json)
                 Program.WriteJson(new { gatewayTray = new { success = tray.Success, message = tray.Message, steps = tray.Steps } });
             else
@@ -471,30 +470,6 @@ internal static class Commands
         if (!json) Console.WriteLine("Placing CC Director.app:");
         return await MacAppPlacer.PlaceAsync(layout, release, source,
             log: m => { if (!json) Console.WriteLine($"  {m}"); });
-    }
-
-    /// <summary>
-    /// Pre-flight checks for a Gateway install. Returns an error message to print, or null if OK.
-    /// Not a fallback: it stops the install with an exact fix rather than half-installing.
-    /// </summary>
-    private static string? GatewayPreflight()
-    {
-        if (!OperatingSystem.IsWindows())
-            return "ERROR: The Gateway role is Windows-only.";
-        if (string.IsNullOrWhiteSpace(OpenAiKey()))
-            return "ERROR: OPENAI_API_KEY is not set in your environment; the Gateway needs it to start.\n" +
-                   "       Set it (User scope) and re-run, e.g.:\n" +
-                   "         setx OPENAI_API_KEY \"sk-...\"";
-        return null;
-    }
-
-    /// <summary>The OpenAI key from the process env, falling back to the User-scope env on Windows.</summary>
-    private static string? OpenAiKey()
-    {
-        var key = Environment.GetEnvironmentVariable("OPENAI_API_KEY");
-        if (string.IsNullOrWhiteSpace(key) && OperatingSystem.IsWindows())
-            key = Environment.GetEnvironmentVariable("OPENAI_API_KEY", EnvironmentVariableTarget.User);
-        return string.IsNullOrWhiteSpace(key) ? null : key;
     }
 
     public static int Rollback(CliArgs args, InstallLayout layout, bool json)

@@ -22,6 +22,9 @@ public partial class MainWindow : Window
     // disk in the constructor via InstalledRoleDetector so an existing Gateway host stays a Gateway host.
     private InstallRole _role = InstallRole.Workstation;
     private string? _gatewayResultMessage;
+    // The Gateway refresh failure reason (null when it succeeded), carried onto the Complete screen so
+    // a failed Gateway update tells the user WHY, not just that a component did not install.
+    private string? _gatewayFailureReason;
 
     private readonly bool _isUpdate;
     private readonly string? _installedVersion;
@@ -191,7 +194,7 @@ public partial class MainWindow : Window
             StepPrivacy => _privacyStep ??= BuildPrivacyStep(),
             6 => _skillsStep ??= new SkillsStep(_isUpdate),
             StepInstall => _installStep ??= new InstallStep(),
-            StepComplete => _completeStep ??= new CompleteStep(_installedCount, _skippedCount, _installPath, _directorExePath, _isUpdate, _alreadyUpToDate, _cachedPrep?.Version),
+            StepComplete => _completeStep ??= new CompleteStep(_installedCount, _skippedCount, _installPath, _directorExePath, _isUpdate, _alreadyUpToDate, _cachedPrep?.Version, _gatewayFailureReason),
             _ => null
         };
 
@@ -483,27 +486,25 @@ public partial class MainWindow : Window
         _installStep?.SetStatus("Installing the Gateway tray app...");
         _installStep?.SetGatewayInstalling();
 
-        try
-        {
-            var launcher = new GatewayTrayLauncher(new ReleaseSource());
-            var result = await launcher.RunAsync(
+        // The gateway-outcome -> completion-state transition lives in GatewayRefresh (UI-free, tested):
+        // a returned failure AND a thrown failure both add one to the skipped count so the Complete step
+        // reports the honest failure instead of "Everything went perfectly." This is the ONLY place the
+        // wizard folds the Gateway refresh into its counts.
+        var launcher = new GatewayTrayLauncher(new ReleaseSource());
+        var outcome = await GatewayRefresh.RunAsync(
+            () => launcher.RunAsync(
                 prep.Release,
-                line => Dispatcher.BeginInvoke(() => _installStep?.SetStatus($"Gateway: {line}")));
+                line => Dispatcher.BeginInvoke(() => _installStep?.SetStatus($"Gateway: {line}"))),
+            _skippedCount);
 
-            _gatewayResultMessage = result.Message;
-            // result.Message already carries the tailnet Cockpit URL (never localhost).
-            _installStep?.SetStatus(result.Message);
-            if (result.Success) _installStep?.SetGatewayDone();
-            else _installStep?.SetGatewayFailed();
-            SetupLog.Write($"[MainWindow] Gateway install success={result.Success}: {result.Message}");
-        }
-        catch (Exception ex)
-        {
-            _gatewayResultMessage = $"Gateway install error: {ex.Message}";
-            _installStep?.SetStatus(_gatewayResultMessage);
-            _installStep?.SetGatewayFailed();
-            SetupLog.Write($"[MainWindow] RunGatewayTrayInstallAsync FAILED: {ex.Message}");
-        }
+        _skippedCount = outcome.Skipped;
+        _gatewayResultMessage = outcome.Message;
+        // outcome.Message carries the tailnet Cockpit URL on success, the failure reason on failure.
+        _gatewayFailureReason = outcome.Success ? null : outcome.Message;
+        _installStep?.SetStatus(outcome.Message);
+        if (outcome.Success) _installStep?.SetGatewayDone();
+        else _installStep?.SetGatewayFailed();
+        SetupLog.Write($"[MainWindow] Gateway install success={outcome.Success}: {outcome.Message} (skipped now {_skippedCount})");
     }
 
     private Task<bool> OnProcessBlockingAsync(string processName)
