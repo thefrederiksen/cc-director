@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Diagnostics;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Text.Json;
@@ -624,6 +625,11 @@ public sealed class WingmanVoiceService
         // backup (issue devthrottle_internal#405). A hang is invisible to the proxy's own failover, so this is how a hang
         // becomes a failover: the Gateway saw it, the proxy did not. The window expires on its own.
         var preferBackup = PrefersBackup(sid);
+        // Time the whole synthesis call (request sent -> response in hand), so how long a narration
+        // actually took is in the log next to transcription's transcribeMs. A healthy call is a second
+        // or two; the per-attempt deadline caps it at <=108s, so any elapsedMs over ~108s means the
+        // deadline bound itself failed (the >3-minute tripwire). Milliseconds, matching transcription.
+        var sw = Stopwatch.StartNew();
         try
         {
             using var resp = await TtsSynthesis.PostAsync(http, url, key, new { model, voice, input, response_format = "mp3" }, input.Length, preferBackup, ct);
@@ -669,7 +675,13 @@ public sealed class WingmanVoiceService
             var servedViaFallback = resp.Headers.Contains(FallbackHeaderName);
             if (servedViaFallback)
                 FileLog.Write($"[WingmanVoiceService] tts served via backup voice provider (fallback) - {mode.ToConfigString()}");
-            return new TtsResult(await resp.Content.ReadAsByteArrayAsync(ct), contentType, null, servedViaFallback);
+            var audio = await resp.Content.ReadAsByteArrayAsync(ct);
+            sw.Stop();
+            // The request -> done span for this narration, in the log for the speed watch (the proxy also
+            // returns X-DevThrottle-Elapsed-Ms, its own view one hop out). elapsedMs over ~108s = the
+            // deadline bound broke; over 180000 = the three-minute alarm.
+            FileLog.Write($"[WingmanVoiceService] tts ok sid={sid}: elapsedMs={sw.ElapsedMilliseconds}, chars={input.Length}, served={(servedViaFallback ? "backup" : "primary")}");
+            return new TtsResult(audio, contentType, null, servedViaFallback);
         }
         // A timeout (TtsSynthesis exhausted its attempts) or a transport failure is the same story from
         // the user's side: the service did not answer. It is not their fault and there is nothing for
@@ -686,7 +698,8 @@ public sealed class WingmanVoiceService
             // again on its own next turn-end / idle sweep. (An ANSWERED failure - the 429/5xx branches
             // above - keeps ServiceDown, because there the service really did tell us it is failing.)
             // This is per session and touches nothing else: there is no shared gate for a timeout to arm.
-            FileLog.Write($"[WingmanVoiceService] tts did not answer for this narration: {ex.Message} - " +
+            sw.Stop();
+            FileLog.Write($"[WingmanVoiceService] tts did not answer for this narration (elapsedMs={sw.ElapsedMilliseconds}): {ex.Message} - " +
                           "no answer from the service, so this is Retrying (not down); this session retries on its own");
             // A TimeoutException specifically means the primary went SILENT (the per-attempt deadline
             // fired, no answer). That silent hang is exactly what the cloud proxy's own failover cannot
