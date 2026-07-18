@@ -62,53 +62,27 @@ public sealed class WingmanVoiceService
     /// </summary>
     private static readonly HttpClient SharedTtsHttp = new() { Timeout = Timeout.InfiniteTimeSpan };
 
-    // Backpressure so a busy fleet does not storm the hosted model when the provider genuinely pushes
-    // back (issue #1324). All generation - the turn-end hook AND the idle sweep - funnels through
-    // GenerateAsync, so gating it here bounds the whole fleet at once:
-    //  * _rateGate: a shared cooldown that skips the model call while the provider is rate limiting us.
-    //  * _inFlight: coalesces - never two generations for the same session at the same time.
+    // THERE IS DELIBERATELY NO FLEET-WIDE GATE OR CONCURRENCY CAP HERE (owner's call, 2026-07-17).
     //
-    // THERE IS DELIBERATELY NO FIXED FLEET-WIDE CONCURRENCY CAP (removed 2026-07-16, owner's call).
+    // Every voice session calls the hosted relay on its own and discovers an outage for itself. There
+    // used to be two shared cooldown gates (a _rateGate on the model leg and a _ttsGate on the speech
+    // leg): a single 429 or 5xx from one session's call armed a fleet-wide cooldown, and every OTHER
+    // session was then SKIPPED for up to 120 seconds while one "probe" call tested recovery. That is the
+    // coupling that turned a partial or flaky outage into total fleet silence - one call's bad luck
+    // muted every session on the machine. It was removed on 2026-07-17.
     //
-    // There used to be one: a SemaphoreSlim (_genGate) fixed at two, so at most two sessions could
-    // have their narration made at once across the whole machine, and a third dropped its cycle with
-    // "SKIPPED: 2 generations already in flight". It was invented here, not required by anything: the
-    // hosted speech/model provider allows 200 concurrent calls per model before it answers 429, and
-    // the real spend control is the account's MONTHLY CREDIT LIMIT, not a made-up concurrency number.
+    // The principle: a service outage may be FLAKY (some calls fail, some succeed), so the honest thing
+    // is to let every session try - the ones that can get through, do; the ones that fail, fail on their
+    // own and retry on their own next cadence (turn-end, or the 45s idle sweep). We are a RELAY of the
+    // hosted service and do not model its health on its behalf: no breaker, no shared cooldown, no
+    // invented ceiling. This matches the "the hosted proxy is a thin pass-through" law. A 429 or a 5xx
+    // is recorded as this ONE session's unavailable-state so its UI can say so, and nothing more - it
+    // never reaches across to another session. Do NOT reintroduce a shared gate or a constant cap here.
     //
-    // It was also actively harmful. The cap wrapped the WHOLE generation - the model translation AND
-    // the speech synthesis - in one slot. When the speech leg stalled (a slow network minute on
-    // 2026-07-15/16), each stuck job held one of only two slots for up to a full deadline, so two
-    // slow jobs froze narration for EVERY other session, and a 25-minute blip read as the whole fleet
-    // losing its voice. A fixed cap that a single slow call can saturate is a chokepoint, not a brake.
-    //
-    // The principle: we are a RELAY of the hosted service, so the only throttle we honour is the one
-    // the SERVICE tells us about - a 429, handled by _rateGate/_ttsGate below, which back off exactly
-    // as long as the provider asks and no longer. We do not invent our own ceiling on top of that.
-    // If the provider ever needs us to slow down, it says so; until then, every session that has
-    // something to say gets its narration made immediately. Do NOT reintroduce a constant cap here.
+    // _inFlight stays: it is NOT a fleet gate. It coalesces a single session so two generations for the
+    // SAME session never run at once (a slow turn overlapping the idle sweep would otherwise double the
+    // spend). It never makes one session wait on another.
     private readonly ConcurrentDictionary<string, byte> _inFlight = new();   // sid -> a generation is running now
-    private readonly WingmanRateLimitGate _rateGate = new();
-
-    //  * _ttsGate: the same cooldown, armed by a failing TEXT-TO-SPEECH leg rather than the model leg.
-    //    Without it, a speech outage costs real money for nothing: the idle sweep
-    //    (GatewayHost.SweepVoiceSessionsAsync, every 45s, 3 sessions a cycle) regenerates any session
-    //    missing voice, and each pass runs a full model TRANSLATION *before* it reaches the speech call
-    //    that is going to fail again. On 2026-07-15 speech was down ~45 minutes: that is ~60 sweeps
-    //    re-translating and re-failing, burning model spend the whole way, and none of it could ever
-    //    produce audio. Voice already comes back by itself when the service returns - the sweep is the
-    //    retry - so the gap was never "no retry", it was "retry with no brakes". Arming this gate on a
-    //    speech failure makes the fleet back off (5/10/20..120s) and honours a 429's Retry-After.
-    private readonly WingmanRateLimitGate _ttsGate = new();
-
-    // There is deliberately NO consecutive-timeout counter here any more (2026-07-15).
-    //
-    // There was one, and it armed the fleet-wide gate at three. It was the previous version of this same
-    // bug: it read a run of timeouts as evidence stacking toward "the service is down", when the run was
-    // the gate's own doing - each cooldown's silence let the provider go cold, and a cold provider is
-    // what produced the next timeout. Counting to three did not make the inference sound, it just made
-    // the fleet take three steps before falling silent. Timeouts are now handled where they happen, per
-    // session, and the shared gate is armed only by an ANSWER from the service. See TtsAsync.
 
     /// <summary>On-disk shape of one ready session's metadata (the audio bytes live next to it as
     /// an .mp3). Persisted so the play triangle / playability survives a gateway restart (issue #553).</summary>
@@ -221,14 +195,6 @@ public sealed class WingmanVoiceService
 
     /// <summary>True when this session currently has a fresh, playable cached summary.</summary>
     public bool HasVoice(string sid) => _ready.ContainsKey(sid);
-
-    /// <summary>
-    /// Whether the FLEET-WIDE speech cooldown is currently armed - that is, whether GenerateAsync will
-    /// skip every session's voice right now. Exposed because this one flag decides whether the whole
-    /// fleet has narration or none of it does, and a bug in what arms it is invisible from the outside
-    /// (it looks exactly like "the speech service is down"). Tests assert on it directly.
-    /// </summary>
-    public bool SpeechCooldownArmed => _ttsGate.InCooldown(out _);
 
     /// <summary>
     /// Whether a turn-end should (re)generate the spoken narration for this session. True when there is
@@ -458,100 +424,46 @@ public sealed class WingmanVoiceService
         // The idle sweep still guards on HasVoice at its own call site, so it never reaches here for a
         // cached session; only the turn-end path does, and it pays one cheap /turns read to compare.
 
-        // Backpressure #1 (issue #1324) - respect a provider rate-limit cooldown. A 429 means "slow
-        // down", so while the cooldown is in effect all but ONE caller skip the model call. Both callers
-        // funnel through here, so one cooldown calms the WHOLE fleet at once.
+        // NO fleet-wide gate. Every session calls the hosted relay on its own and discovers an outage
+        // for itself (see the field comment above). There used to be two shared cooldown gates here that
+        // SKIPPED every session but one probe while another session's 429 held a cooldown - the coupling
+        // that muted the whole fleet on one bad call. Removed 2026-07-17. The only guard left is
+        // per-session coalescing, which never makes one session wait on another.
         //
-        // The one caller that gets through is the half-open probe. A gate that lets NOBODY through can
-        // never discover the provider recovered - it can only wait out the clock and then release the
-        // whole fleet at once. See WingmanRateLimitGate for why that is not merely inelegant but the
-        // mechanism by which a transient outage became a permanent one.
-        if (!_rateGate.TryEnter(out var rateProbe, out var cooldownLeft))
-        {
-            FileLog.Write($"[WingmanVoiceService] GenerateAsync sid={sid} SKIPPED: provider throttled, {cooldownLeft.TotalSeconds:F0}s cooldown left (another session is probing)");
+        // Coalesce: never run two generations for the SAME session at once (a slow turn overlapping the
+        // idle sweep would otherwise double the spend). First caller wins.
+        if (!_inFlight.TryAdd(sid, 1))
             return;
-        }
-        if (rateProbe)
-            FileLog.Write($"[WingmanVoiceService] GenerateAsync sid={sid} PROBING the throttled provider ({cooldownLeft.TotalSeconds:F0}s cooldown left) - one call through to test recovery");
-
-        // Backpressure #1b - the SPEECH leg is down. This check must stay ABOVE the translation, because
-        // the whole point is to not pay for a model call whose audio cannot be made. Skipping leaves the
-        // recorded ServiceDown state untouched, so the phone keeps saying the true thing while we wait.
-        //
-        // Same probe rule, and this is the gate that actually trapped the fleet on 2026-07-15: its 120s
-        // of total silence let the speech model go cold, and a cold model is what produced the timeout
-        // that armed it. One real narration goes through to test AND to keep the model warm.
-        if (!_ttsGate.TryEnter(out var ttsProbe, out var ttsCooldownLeft))
-        {
-            if (rateProbe) _rateGate.EndProbe();   // never leave the outer probe slot held
-            FileLog.Write($"[WingmanVoiceService] GenerateAsync sid={sid} SKIPPED: speech service down, {ttsCooldownLeft.TotalSeconds:F0}s cooldown left (another session is probing)");
-            return;
-        }
-        if (ttsProbe)
-            FileLog.Write($"[WingmanVoiceService] GenerateAsync sid={sid} PROBING the speech service ({ttsCooldownLeft.TotalSeconds:F0}s cooldown left) - one narration through to test recovery and keep the model warm");
-
-        // Everything below may return or throw on a dozen paths (coalesced, capped, nothing to say,
-        // cancelled, provider blew up). If ANY of them leaves a probe slot held, that gate is wedged
-        // half-open forever: one probe permanently out, every other session permanently gated - the
-        // exact fleet-wide silence this whole change exists to end, arrived by a new road. So releasing
-        // is unconditional and lives in a finally, not sprinkled on the paths someone remembered.
-        //
-        // EndProbe only frees the slot; it never clears a cooldown. OnSuccess/OnRateLimited have already
-        // freed it by the time we get here, so this is idempotent and cannot undo their verdict.
         try
         {
-            // Coalesce. Never run two generations for the same session at once (a slow turn overlapping
-            // the idle sweep would otherwise double the spend). First caller wins. This is the ONLY
-            // concurrency guard left, and it is per-session dedup, not a fleet-wide ceiling: it never
-            // makes one session wait on another. The fixed two-at-a-time fleet cap that used to sit here
-            // was removed 2026-07-16 (see the field comments above) - the provider's own 429 is the only
-            // throttle we honour, so a burst of simultaneous turn-ends now all generate at once.
-            if (!_inFlight.TryAdd(sid, 1))
-                return;
-            try
-            {
-                // ONLY a generation that actually reached the model may clear the model's cooldown.
-                // This was unconditional, so a session with nothing to say cleared the gate without
-                // calling the provider - during a 429 storm that released the fleet back onto a
-                // service still throttling us, on the word of a session that never spoke to it.
-                if (await GenerateOnceAsync(sid, route, ct, showReadingWindow))
-                    _rateGate.OnSuccess();
-            }
-            catch (WingmanModelRateLimitedException rl)
-            {
-                // The provider rate limited us - arm the cooldown so the next turn-end/sweep backs off
-                // instead of piling on. Honors its Retry-After when it sent one (issue #1324).
-                var backoff = _rateGate.OnRateLimited(rl.RetryAfter);
-                FileLog.Write($"[WingmanVoiceService] GenerateAsync sid={sid} rate limited (429); backing off {backoff.TotalSeconds:F0}s before the next generation");
-            }
-            catch (Exception ex)
-            {
-                FileLog.Write($"[WingmanVoiceService] GenerateAsync sid={sid} FAILED: {ex.Message}");
-            }
-            finally { _inFlight.TryRemove(sid, out _); }
+            await GenerateOnceAsync(sid, route, ct, showReadingWindow);
         }
-        finally
+        catch (WingmanModelRateLimitedException rl)
         {
-            if (rateProbe) _rateGate.EndProbe();
-            if (ttsProbe) _ttsGate.EndProbe();
+            // The provider rate limited THIS call. Nothing fleet-wide happens: this session simply has no
+            // audio this cycle and retries on its own next turn-end / idle sweep. Record Retrying so its
+            // OWN UI says "voice on its way", exactly as the model-leg timeout path does - and it never
+            // reaches across to another session (that coupling was the gate we removed).
+            _voiceUnavailable[sid] = HostedAiState.Retrying;
+            FileLog.Write($"[WingmanVoiceService] GenerateAsync sid={sid} rate limited (429){(rl.RetryAfter is { } ra ? $" (Retry-After {ra.TotalSeconds:F0}s)" : "")}; no audio this cycle, this session retries on its own");
         }
+        catch (Exception ex)
+        {
+            FileLog.Write($"[WingmanVoiceService] GenerateAsync sid={sid} FAILED: {ex.Message}");
+        }
+        finally { _inFlight.TryRemove(sid, out _); }
     }
 
     /// <summary>
     /// One generation attempt: read the latest reply, translate it, synthesize and store the audio.
-    /// Split out of <see cref="GenerateAsync"/> so the backpressure wrapper (cooldown, concurrency cap,
-    /// coalescing) stays readable and this stays the pure "make the voice" step. A rate-limit surfaces
-    /// as <see cref="WingmanModelRateLimitedException"/> for the wrapper's cooldown to catch.
+    /// Split out of <see cref="GenerateAsync"/> so the per-session coalescing wrapper stays readable and
+    /// this stays the pure "make the voice" step. A rate-limit surfaces as
+    /// <see cref="WingmanModelRateLimitedException"/> for the wrapper to catch and record on this session.
     ///
-    /// Returns TRUE only when the model leg actually RAN - i.e. we reached the provider and it answered.
-    /// False means there was nothing to do (no reply yet, or this reply is already narrated).
-    ///
-    /// The caller uses this to decide whether to report success to the rate-limit gate, and the
-    /// distinction is not cosmetic. This used to return void and the caller cleared the gate whenever it
-    /// did not throw - so an idle session with nothing to say, sweeping during a real 429 storm, would
-    /// report "the provider recovered" without having called the provider at all, and release the whole
-    /// fleet back onto a service that was still throttling us. Found in review (Codex, 2026-07-15).
-    /// Only a real answer from the provider may speak for the provider.
+    /// Returns TRUE only when the model leg actually RAN - i.e. we reached the provider and it answered;
+    /// FALSE means there was nothing to do (no reply yet, or this reply is already narrated). The caller
+    /// no longer needs the distinction now that the shared rate-limit gate is gone, but it is kept because
+    /// it honestly reports whether the provider was reached.
     /// </summary>
     private async Task<bool> GenerateOnceAsync(string sid, SessionVerbClient route, CancellationToken ct, bool showReadingWindow)
     {
@@ -679,14 +591,14 @@ public sealed class WingmanVoiceService
                 if ((int)resp.StatusCode == HostedAiHttp.PaymentRequired)
                     return new TtsResult(null, null, HostedAiErrorMapper.Map402(body));
 
-                // A 429 is the provider saying "stop calling", and it usually says for how long. We used
-                // to drop that header on the floor here and simply try again on the next sweep. Honour it.
+                // A 429 is the provider saying "stop calling" for THIS call. There is no shared gate any
+                // more (removed 2026-07-17): this session simply gets no audio this cycle and retries on
+                // its own next turn-end / idle sweep. It never reaches across to silence another session.
                 if ((int)resp.StatusCode == 429)
                 {
                     var retryAfter = RetryAfterHeader.Parse(resp.Headers);
-                    var backoff = _ttsGate.OnRateLimited(retryAfter);
-                    FileLog.Write($"[WingmanVoiceService] tts 429 - backing off {backoff.TotalSeconds:F0}s" +
-                                  $"{(retryAfter is null ? "" : $" (Retry-After {retryAfter.Value.TotalSeconds:F0}s)")}");
+                    FileLog.Write($"[WingmanVoiceService] tts 429 - no audio for this session this cycle, it retries on its own" +
+                                  $"{(retryAfter is null ? "" : $" (provider Retry-After {retryAfter.Value.TotalSeconds:F0}s)")}");
                     return new TtsResult(null, null, HostedAiState.ServiceDown);
                 }
 
@@ -695,17 +607,12 @@ public sealed class WingmanVoiceService
                 // a log nobody reads and thrown away three lines from where it was known, so the phone
                 // fell back to "the Gateway has not made one, or this session's computer is offline".
                 // Both false. On 2026-07-15 that cost ~45 minutes of the owner not being able to tell an
-                // outage from a bug. Say what actually happened, and back off so the sweep stops paying
-                // for a translation whose audio cannot be made.
-                //
-                // The server ANSWERED with a failure status, so this is evidence about the service and
-                // not about one narration: arm the shared cooldown at once.
-                FileLog.Write($"[WingmanVoiceService] tts {(int)resp.StatusCode} - server answered with a failure; arming the shared speech cooldown");
-                _ttsGate.OnRateLimited(null);
+                // outage from a bug. Say what actually happened - this ONE session's ServiceDown - and
+                // let it retry on its own next cycle. No shared cooldown reaches across to other sessions.
+                FileLog.Write($"[WingmanVoiceService] tts {(int)resp.StatusCode} - server answered with a failure; this session has no audio this cycle and retries on its own");
                 return new TtsResult(null, null, HostedAiState.ServiceDown);
             }
             var contentType = resp.Content.Headers.ContentType?.MediaType;
-            _ttsGate.OnSuccess();   // real audio from the service clears any cooldown/backoff ramp
             return new TtsResult(await resp.Content.ReadAsByteArrayAsync(ct), contentType, null);
         }
         // A timeout (TtsSynthesis exhausted its attempts) or a transport failure is the same story from
@@ -714,50 +621,17 @@ public sealed class WingmanVoiceService
         catch (Exception ex) when (ex is not OperationCanceledException || !ct.IsCancellationRequested)
         {
             // A TimeoutException here is TtsSynthesis giving up after its attempts - the exact failure it
-            // exists to bound, and previously the one that stamped NOTHING. Same story for a transport
-            // failure: the service did not answer. Tell the truth.
+            // exists to bound. Same story for a transport failure: the service did not answer.
             //
-            // But a timeout is NOT evidence that the service is down, and this line used to treat it as
-            // if it were: one timeout armed the SHARED gate, and GenerateAsync then SKIPPED every other
-            // session with "speech service down" for up to 120 seconds. One slow narration silenced the
-            // whole fleet. Measured on 2026-07-15 with 9 voice sessions: the speech endpoint answered a
-            // 871-character narration in 1.7 seconds from this very machine, while the Gateway logged
-            // 1031 attempt-1 timeouts and 759 give-ups, and NOT ONE session held audio - yet asking for
-            // narration on demand produced real audio for 13 of 13 reachable sessions. The service was
-            // never down. The gate was, and it was armed by ambiguous evidence.
-            //
-            // A TIMEOUT NEVER ARMS THE SHARED GATE. Not once, not after three (2026-07-15).
-            //
-            // The three-consecutive rule above was this same mistake with a bigger number in front of it.
-            // It assumed consecutive timeouts are independent evidence that stacks toward certainty. They
-            // are not independent - they are the SAME cold provider, and the gate they armed produced the
-            // next one, because 120 seconds of nobody calling is exactly how the provider goes cold. So
-            // three-in-a-row was not a higher bar; it was the first three steps of a staircase that
-            // always arrived at a silent fleet. It went 0/8 with audio again the day the rule shipped.
-            //
-            // The distinction that actually matters is not HOW MANY timeouts, it is WHO the failure is
-            // about. A timeout is the absence of evidence: the service said nothing, so we know nothing
-            // about the service. Ten narrations timing out on a slow provider are ten sessions having a
-            // slow turn, and the honest response is for each of them to try again on its own - the voice
-            // sweep already does exactly that for any session without audio.
-            //
-            // Only an ANSWER is evidence about the service, and the two answers that are get handled
-            // above, where they belong: a 429 with its Retry-After, and a failure status. Those arm the
-            // shared cooldown at once, because the service has told us something true about itself.
-            //
-            // The money guard this rule claimed to keep was never worth the price. It bought "a sweep
-            // stops paying for translations whose audio cannot be made" - and paid for it by silencing
-            // every session on every machine, on evidence that turned out to be our own doing. Cheap
-            // narrations are not the failure mode; a mute fleet is.
-            //
-            // And because a timeout is the absence of evidence, it is reported as Retrying, NOT
-            // ServiceDown. ServiceDown makes the phone say "Voice service down" - a claim about the
-            // service that a non-answer cannot support. Retrying tells the honest truth: the audio is
-            // not ready yet and this session is trying again. An ANSWERED failure (the 429/5xx branches
-            // above) keeps ServiceDown, because there the service really did tell us it is failing.
+            // A timeout is the ABSENCE of evidence - the service said nothing, so we know nothing about
+            // the service. It is reported as Retrying, NOT ServiceDown: ServiceDown makes the phone say
+            // "Voice service down", a claim about the service that a non-answer cannot support, whereas
+            // Retrying tells the honest truth - the audio is not ready yet and this session is trying
+            // again on its own next turn-end / idle sweep. (An ANSWERED failure - the 429/5xx branches
+            // above - keeps ServiceDown, because there the service really did tell us it is failing.)
+            // This is per session and touches nothing else: there is no shared gate for a timeout to arm.
             FileLog.Write($"[WingmanVoiceService] tts did not answer for this narration: {ex.Message} - " +
-                          "absence of evidence about the service, so this is Retrying (not down); the " +
-                          "fleet keeps its turn at speech and this session retries on its own");
+                          "no answer from the service, so this is Retrying (not down); this session retries on its own");
             return new TtsResult(null, null, HostedAiState.Retrying);
         }
         // NOTE: no `finally { http.Dispose(); }`. `http` is now either the caller's injected client or
