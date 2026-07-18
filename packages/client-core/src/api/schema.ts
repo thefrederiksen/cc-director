@@ -7639,6 +7639,7 @@ export interface components {
             /** Format: date-time */
             needsYouSince?: null | string;
             effectiveColor?: null | string;
+            effectiveColorHex?: null | string;
             triageBucket?: null | string;
             stateLabel?: null | string;
             backendType?: string;

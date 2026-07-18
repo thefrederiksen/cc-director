@@ -1,7 +1,7 @@
 import { createContext, useCallback, useContext, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { type SessionDto } from "@devthrottle/client-core/api/client";
-import { dotColor, effectiveColor, stateLabel } from "@devthrottle/client-core/sessions/ordering";
+import { dotColor, dotHex, effectiveColor, stateLabel } from "@devthrottle/client-core/sessions/ordering";
 import {
   reachabilityFor,
   reachabilityLastSeen,
@@ -534,7 +534,7 @@ function NodeCard({
       <div className="fmap-card-top">
         <span
           className={color === "blue" ? "fmap-dot working" : "fmap-dot"}
-          style={{ backgroundColor: dotColor(color) }}
+          style={{ backgroundColor: dotHex(s) }}
           title={s.lastStatusReason ?? undefined}
         />
         {hasNum && <span className="num-badge">{num}</span>}
@@ -556,7 +556,7 @@ function NodeCard({
         </div>
       )}
 
-      <div className="fmap-card-state" style={{ color: dotColor(color) }}>
+      <div className="fmap-card-state" style={{ color: dotHex(s) }}>
         {stateLabel(s)}
         <span className="fmap-card-idle">{relativeTime(s.lastActivityAt)}</span>
       </div>

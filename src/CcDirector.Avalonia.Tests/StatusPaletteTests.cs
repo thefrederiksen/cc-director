@@ -12,8 +12,9 @@ namespace CcDirector.Avalonia.Tests;
 /// #F44747 in the FIFO window and the (dead) Director view, and #F14C4C on the phone. This file is
 /// the C# half of the pin; the web/mobile client carries the same table in
 /// packages/client-core/src/sessions/ordering.ts, and docs/new_architecture/session-state.html is
-/// the single written source both sides cite. A C# test cannot assert the TypeScript, so the spec's
-/// table is what keeps them honest - change it and both sides in the same pull request.
+/// the single written source both sides cite. PaletteAgreementTests now READS that shipping TypeScript
+/// table and asserts it equals the canonical map and this one, so the two sides are machine-checked to
+/// agree instead of relying on a human to change both in the same pull request.
 /// </summary>
 public sealed class StatusPaletteTests
 {
@@ -86,6 +87,43 @@ public sealed class StatusPaletteTests
     [Fact]
     public void EveryColourTheRealFoldCanEmit_IsKnownToThePalette()
     {
+        var emitted = EveryColourTheRealFoldCanEmit();
+
+        Assert.NotEmpty(emitted);
+        foreach (var color in emitted)
+            Assert.True(StatusPalette.Knows(color),
+                $"The fold can emit '{color}' and the desktop palette does not know it, so the rail would " +
+                $"render the BROKEN magenta sentinel. Add it to StatusPalette AND to the palette table in " +
+                $"docs/new_architecture/session-state.html AND to the client's ordering.ts, in one pull request.");
+    }
+
+    /// <summary>
+    /// The CANONICAL half of the exhaustiveness proof. The desktop palette test above
+    /// asserts StatusPalette.Knows, but the Gateway stamps EffectiveColorHex from the CANONICAL map
+    /// (SessionColorPalette), and an unknown name there stamps the magenta sentinel. So a future fold colour
+    /// could escape if the desktop table were taught it while the canonical map was not. Drive the SAME real
+    /// fold and assert SessionColorPalette knows every colour it can emit, so the canonical map is provably
+    /// exhaustive over the fold - not just the desktop table.
+    /// </summary>
+    [Fact]
+    public void EveryColourTheRealFoldCanEmit_IsKnownToTheCanonicalMap()
+    {
+        var emitted = EveryColourTheRealFoldCanEmit();
+
+        Assert.NotEmpty(emitted);
+        foreach (var color in emitted)
+            Assert.True(SessionColorPalette.Knows(color),
+                $"The fold can emit '{color}' and the canonical SessionColorPalette does not know it, so the " +
+                "Gateway would stamp the magenta BROKEN sentinel for it. Add it to SessionColorPalette AND to " +
+                "docs/new_architecture/session-state.html AND to the client's ordering.ts, in one pull request.");
+    }
+
+    /// <summary>Every colour the REAL fold (<see cref="SessionOrdering.EffectiveColor"/>) can emit across
+    /// every activity state crossed with every overlay it folds. Deliberately NOT a hand-copied list of
+    /// names: a list would rot the moment the fold learned a tenth colour, which is how the desktop came to
+    /// have five palettes in the first place.</summary>
+    private static HashSet<string> EveryColourTheRealFoldCanEmit()
+    {
         var states = new[] { "Starting", "Working", "WaitingForInput", "WaitingForPerm", "Idle", "Exited", "NonsenseState" };
         var emitted = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
@@ -117,12 +155,7 @@ public sealed class StatusPaletteTests
                                             emitted.Add(SessionOrdering.EffectiveColor(dto));
                                         }
 
-        Assert.NotEmpty(emitted);
-        foreach (var color in emitted)
-            Assert.True(StatusPalette.Knows(color),
-                $"The fold can emit '{color}' and the desktop palette does not know it, so the rail would " +
-                $"render the BROKEN magenta sentinel. Add it to StatusPalette AND to the palette table in " +
-                $"docs/new_architecture/session-state.html AND to the client's ordering.ts, in one pull request.");
+        return emitted;
     }
 
     [Fact]

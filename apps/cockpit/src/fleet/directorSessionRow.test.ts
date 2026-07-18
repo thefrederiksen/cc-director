@@ -1,16 +1,24 @@
 import { describe, expect, it } from "vitest";
 import type { SessionDto } from "@devthrottle/client-core/api/client";
+import { dotColor } from "@devthrottle/client-core/sessions/ordering";
 import { directorSessionRow } from "./DirectorDetailView";
 
 // Defect 7: the Director-detail Sessions table carried THREE authorities in ONE row - a Gateway-stamped
 // dot, a State cell re-derived from raw activity fields, and a SNOOZED tag read off the raw onHold
 // boolean. These tests pin the row to the single fold. Each one was watched failing against the old
 // code with the reported symptom before this file was kept; see the report for the evidence.
+//
+// The row dot reads the Gateway-stamped effectiveColorHex, so a fixture must model the REAL /sessions
+// payload: name AND its canonical hex. This helper stamps the hex from the colour name (the same value
+// the Gateway stamps), unless a test overrides effectiveColorHex explicitly to model a missing/malformed
+// stamp.
 function session(fields: Partial<SessionDto> = {}): SessionDto {
+  const name = (fields as { effectiveColor?: string }).effectiveColor;
   return {
     sessionId: "s1",
     createdAt: "2026-07-08T00:00:00Z",
     sortOrder: 0,
+    ...(name ? { effectiveColorHex: dotColor(name) } : {}),
     ...fields,
   } as unknown as SessionDto;
 }

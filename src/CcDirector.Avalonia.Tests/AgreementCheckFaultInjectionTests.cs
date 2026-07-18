@@ -47,6 +47,9 @@ public sealed class AgreementCheckFaultInjectionTests
     private static SessionDto AsGatewayServesIt(SessionDto s)
     {
         s.EffectiveColor = SessionOrdering.EffectiveColor(s);
+        // The Gateway stamps the hex beside the name in the same fold (StampFleetRolesAndFold), so a row
+        // built here carries it too - the web session dot paints this verbatim.
+        s.EffectiveColorHex = SessionColorPalette.HexFor(s.EffectiveColor);
         s.StateLabel = SessionOrdering.StateLabel(s);
         s.TriageBucket = SessionOrdering.Classify(s) switch
         {

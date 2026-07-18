@@ -2723,6 +2723,23 @@ internal static class GatewayEndpoints
         {
             var effectiveColor = SessionOrdering.EffectiveColor(s);
             s.EffectiveColor = effectiveColor;
+            // The "Dumb Clients" palette slice: resolve the colour NAME to its pixel HEX through the ONE
+            // canonical map, right here beside the name, so the /sessions consumers (the web phone and the
+            // Cockpit) paint that hex verbatim and carry no name->hex table that can drift. The DESKTOP does
+            // NOT receive this hex - it is held to the SAME canonical values at compile time (StatusPalette
+            // references SessionColorPalette) and by the agreement tests (approved Fork B: no pushed hex).
+            // So this stamp is for the /sessions wire only; the display-state push still carries the name.
+            //
+            // FAIL LOUD on a name the canonical map does not know. HexFor returns the magenta sentinel for an
+            // unknown name, and a valid-looking #FF00FF would otherwise sail through the web unlogged - a
+            // silent magenta, the exact class of quiet failure this mission ends. A fold colour the palette
+            // does not know is a bug (the fold learned a name nobody taught the palette), so say so here.
+            if (!SessionColorPalette.Knows(effectiveColor))
+                FileLog.Write($"[GatewayEndpoints] UNKNOWN FOLD COLOUR '{effectiveColor}' for session " +
+                              $"{s.SessionId} - not in SessionColorPalette; stamping the magenta BROKEN sentinel. " +
+                              "The fold emitted a colour name the canonical palette does not know; see " +
+                              "docs/new_architecture/session-state.html.");
+            s.EffectiveColorHex = SessionColorPalette.HexFor(effectiveColor);
             s.StateLabel = SessionOrdering.StateLabel(s);
             s.TriageBucket = SessionOrdering.Classify(s) switch
             {

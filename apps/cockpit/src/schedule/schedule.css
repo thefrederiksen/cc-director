@@ -875,10 +875,10 @@
   color: var(--text-dim);
 }
 
-/* The dot's colour is applied inline from the shared palette (dotColor), like every other session dot
-   in the Cockpit. There are deliberately no .run / .needs / .idle modifiers: they were a local palette
-   fed by a local fold, and .run painted a WORKING session --sched-green when the law says working is
-   blue - with green already meaning "ready, parked at its prompt" everywhere else. */
+/* The dot's colour is the Gateway-stamped hex, applied inline (dotHex), like every other session dot in
+   the Cockpit. There are deliberately no .run / .needs / .idle modifiers: they were a local palette fed
+   by a local fold, and .run painted a WORKING session --sched-green when the law says working is blue -
+   with green already meaning "ready, parked at its prompt" everywhere else. */
 .sched-sdot {
   width: 7px;
   height: 7px;

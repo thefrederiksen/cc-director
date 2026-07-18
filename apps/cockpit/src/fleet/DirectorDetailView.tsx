@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { gatewayErrorMessage, getRepos, type RepoInfo, type SessionDto } from "@devthrottle/client-core/api/client";
-import { dotColor, effectiveColor, inDesktopOrder, stateLabel } from "@devthrottle/client-core/sessions/ordering";
+import { dotHex, inDesktopOrder, stateLabel } from "@devthrottle/client-core/sessions/ordering";
 import {
   getDirectorSettings,
   getFleetDirectors,
@@ -43,7 +43,7 @@ export function directorSessionRow(s: SessionDto): {
 } {
   const label = stateLabel(s);
   return {
-    dot: dotColor(effectiveColor(s)),
+    dot: dotHex(s),
     state: label,
     // "Snoozed" and "Wingman reading" are the fold's OWN words (SessionOrdering.StateLabel), so asking
     // the label is asking the fold. Never re-read s.onHold here: that is a raw sensor fact the fold

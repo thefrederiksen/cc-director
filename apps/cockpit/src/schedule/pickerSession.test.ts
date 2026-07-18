@@ -1,15 +1,22 @@
 import { describe, expect, it } from "vitest";
 import type { SessionDto } from "@devthrottle/client-core/api/client";
+import { dotColor } from "@devthrottle/client-core/sessions/ordering";
 import { needsYouCount, pickerSession } from "./ScheduleView";
 
 // Defect 9: the schedule page's Director picker ran an entire parallel triage fold (sessState /
 // sessClass), deriving "needs you" from the needsYouSince timestamp instead of the Gateway's stamped
 // bucket, and painting a working session GREEN. These tests pin the picker to the one fold.
+//
+// The picker dot reads the Gateway-stamped effectiveColorHex, so a fixture models the REAL /sessions
+// payload: name AND its canonical hex. This helper stamps the hex from the colour name (the same value
+// the Gateway stamps), unless a test overrides effectiveColorHex explicitly.
 function session(fields: Partial<SessionDto> = {}): SessionDto {
+  const name = (fields as { effectiveColor?: string }).effectiveColor;
   return {
     sessionId: "s1",
     createdAt: "2026-07-08T00:00:00Z",
     sortOrder: 0,
+    ...(name ? { effectiveColorHex: dotColor(name) } : {}),
     ...fields,
   } as unknown as SessionDto;
 }
