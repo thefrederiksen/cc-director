@@ -347,6 +347,33 @@ public sealed class Session : IDisposable
         FileLog.Write($"[Session] {Id} attached to mission {MissionId?.ToString() ?? "(none)"} (name={MissionName ?? "(none)"})");
     }
 
+    /// <summary>
+    /// The workflow RUN this session is seated on (Workflows mission, phase 5b), or null for an
+    /// unseated session. Stamped at spawn from the create request after the GATEWAY validated the run
+    /// (the source of truth); the Director never resolves a run itself. Persisted, like the mission
+    /// attachment beside it.
+    /// </summary>
+    public Guid? WorkflowRunId { get; internal set; }
+
+    /// <summary>The seated run's workflow id (e.g. "mission"), cached for rendering and for the
+    /// seated preamble paragraph. Null when unseated. Persisted.</summary>
+    public string? WorkflowId { get; internal set; }
+
+    /// <summary>The seated run's PINNED workflow version. The seated preamble tells the agent to
+    /// fetch its conduct at exactly this version - never a moving head. Null when unseated. Persisted.</summary>
+    public int? WorkflowVersion { get; internal set; }
+
+    /// <summary>Seat this session on a workflow run (all three values Gateway-resolved), or clear the
+    /// seat when <paramref name="workflowRunId"/> is null. Stores only what it is given.</summary>
+    public void SeatOnWorkflow(Guid? workflowRunId, string? workflowId, int? workflowVersion)
+    {
+        WorkflowRunId = workflowRunId;
+        WorkflowId = workflowRunId is null ? null : (string.IsNullOrWhiteSpace(workflowId) ? null : workflowId.Trim());
+        WorkflowVersion = workflowRunId is null ? null : workflowVersion;
+        FileLog.Write($"[Session] {Id} seated on workflow run {WorkflowRunId?.ToString() ?? "(none)"} " +
+                      $"({WorkflowId ?? "(none)"} v{WorkflowVersion?.ToString() ?? "-"})");
+    }
+
     public Guid Id { get; }
 
     /// <summary>

@@ -1118,6 +1118,9 @@ public sealed class SessionManager : IDisposable
                 IsAutoNamed = s.IsAutoNamed,
                 MissionId = s.MissionId,
                 MissionName = s.MissionName,
+                WorkflowRunId = s.WorkflowRunId,
+                WorkflowId = s.WorkflowId,
+                WorkflowVersion = s.WorkflowVersion,
                 RawStartupText = s.RawStartupText,
                 SelectedTabName = s.SelectedTabName,
                 WingmanEnabled = s.WingmanEnabled,
@@ -1164,6 +1167,9 @@ public sealed class SessionManager : IDisposable
         session.IsAutoNamed = ps.IsAutoNamed;
         session.MissionId = ps.MissionId;
         session.MissionName = ps.MissionName;
+        session.WorkflowRunId = ps.WorkflowRunId;
+        session.WorkflowId = ps.WorkflowId;
+        session.WorkflowVersion = ps.WorkflowVersion;
         session.WingmanEnabled = ps.WingmanEnabled;
         // No hold is restored here, because this Director never owned one. The Gateway holds the state and
         // persists it (SnoozeRegistry, an atomic write-through on every mutation), and it pushes the hold

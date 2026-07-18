@@ -1775,7 +1775,9 @@ public sealed class GatewayHost : IAsyncDisposable
         MachineEndpoints.Map(_app, Launchers, _machineSessionSpawner, SendLauncherCommandAsync,
             // Gateway Cleanup mission (Wave 4b): validate a mission-scoped spawn against the Gateway store and
             // stamp the resolved mission name onto the create request forwarded to the Director.
-            missions: Missions);
+            missions: Missions,
+            // Workflows mission (phase 5b): seat spawns on workflow runs and record participants.
+            workflowRuns: _workflowRuns);
 
         // The Cockpit Settings page surface (docs/architecture/gateway/SETTINGS_OWNERSHIP.md):
         // one snapshot GET plus brain-restart and autostart actions. Reads this host directly

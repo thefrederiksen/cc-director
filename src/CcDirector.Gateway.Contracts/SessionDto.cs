@@ -93,6 +93,19 @@ public sealed class SessionDto
     /// </summary>
     public string? MissionName { get; set; }
 
+    /// <summary>The workflow RUN this session is seated on (Workflows mission, phase 5b - issue
+    /// #1771), or null for an unseated session. Stamped at spawn from the Gateway-validated create
+    /// request; mirrors <c>Session.WorkflowRunId</c> on the owning Director.</summary>
+    public Guid? WorkflowRunId { get; set; }
+
+    /// <summary>The seated run's workflow id (e.g. "mission"), cached beside the run link. Null when
+    /// unseated.</summary>
+    public string? WorkflowId { get; set; }
+
+    /// <summary>The seated run's PINNED workflow version - the version the session's conduct is
+    /// fetched at, never a moving head. Null when unseated.</summary>
+    public int? WorkflowVersion { get; set; }
+
     /// <summary>
     /// The session's short, human-friendly three-digit number (100-999), or null when the session
     /// has no number (issue #820). Allocated by the owning Director at creation and stable for the

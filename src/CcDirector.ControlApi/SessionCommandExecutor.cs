@@ -575,6 +575,14 @@ internal static class SessionCommandExecutor
         if (attachMissionId is Guid stampMissionId)
             session.AttachToMission(stampMissionId, attachMissionName);
 
+        // Workflow seat at spawn (Workflows mission, phase 5b): the Director stamps the seat ONLY when
+        // the run id arrives with its Gateway-resolved workflow id and pinned version - the Gateway is
+        // the source of truth for runs, and the Director never resolves one itself. A run id arriving
+        // alone (a caller that skipped the Gateway relay) is stamped as nothing rather than guessed at.
+        if (req.WorkflowRunId is Guid seatRunId &&
+            !string.IsNullOrWhiteSpace(req.WorkflowId) && req.WorkflowVersion is int seatVersion)
+            session.SeatOnWorkflow(seatRunId, req.WorkflowId, seatVersion);
+
         // Issue #212: dispatch a supplied PrePrompt once the agent is actually READY, fire-and-forget so
         // create returns immediately. Readiness = a substantial startup burst followed by a quiet poll;
         // ActivityState alone is not a gate (a fresh session reads WaitingForInput from t=0, and seeding

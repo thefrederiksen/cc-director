@@ -64,6 +64,17 @@ public class PersistedSession
     /// <see cref="MissionId"/> so the name renders after a restart without re-resolving the Mission store.</summary>
     public string? MissionName { get; set; }
 
+    /// <summary>The workflow run this session is seated on (Workflows mission, phase 5b), or null.
+    /// Persisted with its cached workflow id + pinned version so the seat - and the seated preamble
+    /// paragraph - survives a Director restart. Null for sessions persisted before the field existed.</summary>
+    public Guid? WorkflowRunId { get; set; }
+
+    /// <summary>The seated run's cached workflow id, or null.</summary>
+    public string? WorkflowId { get; set; }
+
+    /// <summary>The seated run's pinned workflow version, or null.</summary>
+    public int? WorkflowVersion { get; set; }
+
     public DateTimeOffset CreatedAt { get; set; }
 
     /// <summary>Order in the session list, used to restore UI order after restart.</summary>

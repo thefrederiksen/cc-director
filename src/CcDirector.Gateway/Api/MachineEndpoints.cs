@@ -60,7 +60,14 @@ internal static class MachineEndpoints
         // of truth - and the resolved mission NAME is stamped onto the create request so the Director stamps
         // the attachment without any local lookup. Null (old callers, tests) leaves MissionId to flow through
         // to the Director's transitional local-store bridge unchanged.
-        Core.Sessions.MissionStore? missions = null)
+        Core.Sessions.MissionStore? missions = null,
+        // Workflows mission (phase 5b, issue #1771): the workflow-run store. When non-null, a spawn is
+        // SEATED on a run: an explicit req.WorkflowRunId is validated here and the run's workflow id +
+        // pinned version are stamped onto the create request (the MissionName pattern); a mission-scoped
+        // spawn with no explicit run auto-seats onto the mission's run. After a successful spawn the new
+        // session is recorded as a run PARTICIPANT - the persisted run-to-session membership governance
+        // reads. Null (old callers, tests) seats nothing and changes nothing.
+        Workflows.WorkflowRunStore? workflowRuns = null)
     {
         if (spawner is null) throw new ArgumentNullException(nameof(spawner));
 
@@ -151,6 +158,36 @@ internal static class MachineEndpoints
                 req.MissionName = mission.MissionName;
             }
 
+            // Workflows mission (phase 5b): resolve the seat. An EXPLICIT run id must exist; a
+            // mission-scoped spawn with no explicit run auto-seats onto the mission's newest run (the
+            // one POST /missions opened). The run's workflow id + pinned version ride the create
+            // request so the Director stamps the seat with no lookup of its own - and the seated
+            // session's conduct is pinned to the run's version, never a moving head.
+            Contracts.WorkflowRunDto? seatRun = null;
+            if (workflowRuns is not null)
+            {
+                if (req.WorkflowRunId is Guid explicitRunId)
+                {
+                    seatRun = workflowRuns.Get(explicitRunId);
+                    if (seatRun is null)
+                    {
+                        FileLog.Write($"[MachineEndpoints] POST /machines/{machine}/sessions: unknown workflow run {explicitRunId}");
+                        return Results.BadRequest(new { error = $"unknown workflow run '{explicitRunId}'." });
+                    }
+                }
+                else if (req.MissionId is Guid seatMissionId)
+                {
+                    seatRun = workflowRuns.List(missionId: seatMissionId, limit: 1).FirstOrDefault();
+                }
+
+                if (seatRun is not null)
+                {
+                    req.WorkflowRunId = seatRun.Id;
+                    req.WorkflowId = seatRun.WorkflowId;
+                    req.WorkflowVersion = seatRun.WorkflowVersion;
+                }
+            }
+
             var (ok, dto, error, _) = await spawner.SpawnOnMachineAsync(machine, req, ct);
             if (!ok || dto is null)
             {
@@ -158,7 +195,27 @@ internal static class MachineEndpoints
                 return Results.Json(new { error = error ?? $"could not start a session on '{machine}'", machine }, statusCode: 502);
             }
 
-            FileLog.Write($"[MachineEndpoints] POST /machines/{machine}/sessions: started sid={dto.SessionId}");
+            // Record the new session as a run participant - the persisted run-to-session membership
+            // (#1771). The session id is the canonical fleet GUID governance joins effort on.
+            if (seatRun is not null && workflowRuns is not null && !string.IsNullOrWhiteSpace(dto.SessionId))
+            {
+                workflowRuns.Patch(seatRun.Id, new Contracts.PatchWorkflowRunRequest
+                {
+                    AddParticipants = new List<Contracts.WorkflowRunParticipantDto>
+                    {
+                        new()
+                        {
+                            SessionId = dto.SessionId,
+                            AgentKind = req.Agent,
+                            Role = req.Role ?? "",
+                            Machine = machine,
+                        },
+                    },
+                });
+            }
+
+            FileLog.Write($"[MachineEndpoints] POST /machines/{machine}/sessions: started sid={dto.SessionId}" +
+                          (seatRun is null ? "" : $", seated on run {seatRun.Id} ({seatRun.WorkflowId} v{seatRun.WorkflowVersion})"));
             return Results.Json(dto, statusCode: 201);
         });
 
