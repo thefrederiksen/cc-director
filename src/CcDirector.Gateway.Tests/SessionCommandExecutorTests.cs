@@ -299,6 +299,71 @@ public sealed class SessionCommandExecutorTests
         finally { sm.Dispose(); }
     }
 
+    // ---------- set-display-state reconciles the raw hold mirror (inspection finding 3) ----------
+
+    [Fact]
+    public async Task DispatchAsync_SetDisplayState_HoldStateNone_HealsAStaleOnHold()
+    {
+        // FINDING 3. The desktop's raw Session.OnHold drives the rail's Snooze-versus-Unsnooze menu and was
+        // healed only by a one-shot, unretried hold mirror. The reliable, change-gated display-state channel
+        // now carries HoldState too, so a session left stale-held (a dropped None mirror) self-heals the next
+        // time the Gateway stamps its fold down.
+        var (sm, session, _) = NewSession();
+        try
+        {
+            session.ApplyGatewayHold(HoldState.Held); // a stale mirror from an earlier snooze
+            Assert.True(session.OnHold);
+
+            var command = new DirectorCommand
+            {
+                Verb = "set-display-state",
+                SessionId = session.Id.ToString(),
+                PayloadJson = JsonSerializer.Serialize(new SetDisplayStateRequest
+                {
+                    EffectiveColor = "red",
+                    StateLabel = "Needs you",
+                    TriageBucket = "needsYou",
+                    HoldState = HoldStates.None,
+                }, Json),
+            };
+
+            var result = await SessionCommandExecutor.DispatchAsync(sm, "dir-A", command);
+
+            Assert.Equal(DirectorCommandStatus.Ok, result.Status);
+            Assert.False(session.OnHold); // the fold-down healed the raw mirror
+        }
+        finally { sm.Dispose(); }
+    }
+
+    [Fact]
+    public async Task DispatchAsync_SetDisplayState_BlankHoldState_LeavesTheMirrorUntouched()
+    {
+        // An older Gateway that does not send HoldState must NOT be read as "force None": a blank value
+        // normalises to null and the existing mirror stands. (No fallback; no silent clobber.)
+        var (sm, session, _) = NewSession();
+        try
+        {
+            session.ApplyGatewayHold(HoldState.Held);
+
+            var command = new DirectorCommand
+            {
+                Verb = "set-display-state",
+                SessionId = session.Id.ToString(),
+                PayloadJson = JsonSerializer.Serialize(new SetDisplayStateRequest
+                {
+                    EffectiveColor = "grey",
+                    HoldState = null,
+                }, Json),
+            };
+
+            var result = await SessionCommandExecutor.DispatchAsync(sm, "dir-A", command);
+
+            Assert.Equal(DirectorCommandStatus.Ok, result.Status);
+            Assert.True(session.OnHold); // untouched
+        }
+        finally { sm.Dispose(); }
+    }
+
     [Fact]
     public async Task DispatchAsync_Hold_MissingSession_ReturnsNotFound()
     {

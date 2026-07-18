@@ -37,4 +37,14 @@ public sealed class SetDisplayStateRequest
     /// <summary>The Gateway's "just came back from an expired snooze" marker
     /// (<see cref="SessionDto.SnoozeExpired"/>), rendered as a distinct "Snooze ended" badge.</summary>
     public bool SnoozeExpired { get; set; }
+
+    /// <summary>
+    /// The Gateway-owned hold state (<see cref="SessionDto.HoldState"/>): "None" | "Held" | "DeferredHold".
+    /// Carried on THIS reliable, change-gated, self-healing channel - not only on the one-shot hold mirror -
+    /// so the desktop's raw <c>Session.OnHold</c> (which still drives the rail's Snooze-versus-Unsnooze menu)
+    /// reconciles even if a fire-and-forget mirror is dropped or arrives out of order. The Director applies it
+    /// via <c>ApplyGatewayHold</c>. Blank/unrecognised leaves the existing mirror untouched (the fold always
+    /// stamps a real value, so blank only occurs for an older Gateway that does not send this field).
+    /// </summary>
+    public string? HoldState { get; set; }
 }

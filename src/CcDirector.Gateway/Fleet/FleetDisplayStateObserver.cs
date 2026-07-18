@@ -142,7 +142,8 @@ public sealed class FleetDisplayStateObserver
             s.TriageBucket ?? "",
             s.NeedsYouSince?.ToUniversalTime().ToString("O") ?? "",
             s.SnoozeUntil?.ToUniversalTime().ToString("O") ?? "",
-            s.SnoozeExpired ? "1" : "0");
+            s.SnoozeExpired ? "1" : "0",
+            s.HoldState ?? "");
 
     private async Task SendDisplayStateAsync(string directorId, SessionDto s, string signature)
     {
@@ -162,6 +163,7 @@ public sealed class FleetDisplayStateObserver
                         NeedsYouSince = s.NeedsYouSince,
                         SnoozeUntil = s.SnoozeUntil,
                         SnoozeExpired = s.SnoozeExpired,
+                        HoldState = s.HoldState,
                     },
                     new System.Text.Json.JsonSerializerOptions(System.Text.Json.JsonSerializerDefaults.Web)),
             };

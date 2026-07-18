@@ -1,3 +1,4 @@
+using CcDirector.Core.Sessions;
 using CcDirector.Core.Utilities;
 using CcDirector.Gateway.Contracts;
 
@@ -66,7 +67,21 @@ internal sealed class FleetDisplayStateExecutor : ISessionCommandArea
             request.NeedsYouSince,
             request.SnoozeUntil,
             request.SnoozeExpired);
-        FileLog.Write($"[FleetDisplayStateExecutor] set-display-state: session={guid}, color={request.EffectiveColor ?? "(cleared)"}, label={request.StateLabel ?? "(none)"}");
+
+        // Reconcile the raw hold mirror on THIS reliable, change-gated channel - not only on the one-shot
+        // hold mirror the Gateway fires alongside its own edges. The Gateway folds a real HoldState every
+        // pass, so applying it here means the desktop's Session.OnHold (which still drives the rail's
+        // Snooze-versus-Unsnooze menu) self-heals even when that fire-and-forget mirror is dropped or arrives
+        // out of order. A blank/unrecognised value (an older Gateway that does not send the field) normalises
+        // to null and leaves the existing mirror untouched - never a forced None.
+        switch (HoldStates.Normalize(request.HoldState))
+        {
+            case HoldStates.Held: session.ApplyGatewayHold(HoldState.Held); break;
+            case HoldStates.DeferredHold: session.ApplyGatewayHold(HoldState.DeferredHold); break;
+            case HoldStates.None: session.ApplyGatewayHold(HoldState.None); break;
+        }
+
+        FileLog.Write($"[FleetDisplayStateExecutor] set-display-state: session={guid}, color={request.EffectiveColor ?? "(cleared)"}, label={request.StateLabel ?? "(none)"}, hold={request.HoldState ?? "(unchanged)"}");
         return DirectorCommandResult.Success();
     }
 }
