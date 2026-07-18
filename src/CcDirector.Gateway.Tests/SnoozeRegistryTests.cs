@@ -1,30 +1,33 @@
+using System.Text.Json;
+using CcDirector.Gateway.Contracts;
 using CcDirector.Gateway.Snooze;
+using CcDirector.Gateway.Data;
+using CcDirector.Gateway.Tests.Data;
 using Xunit;
 
 namespace CcDirector.Gateway.Tests;
 
 /// <summary>
-/// Unit tests for the Gateway-owned snooze registry (Snooze Length mission): the persisted
-/// <c>sessionId -&gt; SnoozeUntilUtc</c> map that is the one piece of new Gateway state. Covers the
-/// expiry predicate, the clear paths, the two bound-guards (per-Director removal and per-Director
-/// live-set prune), and the persistence contract (write-through + re-arm on load + corrupt quarantine).
-/// Every test uses an isolated temp path so it never touches the real snooze.json.
+/// Unit tests for the Gateway-owned snooze registry (Snooze Length mission) over the EF data layer (Hosted
+/// Gateway mission, Step 1b): the persisted <c>sessionId -&gt; SnoozeUntilUtc</c> map that is the one piece of
+/// new Gateway state. Covers the expiry predicate, the clear paths, the two bound-guards (per-Director
+/// removal and per-Director live-set prune), the armed/deferred invariant, and the persistence contract
+/// (a fresh registry over the same database re-arms; the one-time JSON import and its fail-loud/drop rules).
 /// </summary>
 public sealed class SnoozeRegistryTests : IDisposable
 {
-    private readonly string _dir = Path.Combine(Path.GetTempPath(), "cc-snooze-" + Guid.NewGuid().ToString("N"));
+    private readonly GatewayDbTestHarness _h = new();
+    private GatewayDatabase? _db;
+    private GatewayDatabase Db => _db ??= _h.Open();
 
-    private string Path_ => System.IO.Path.Combine(_dir, "snooze.json");
+    private SnoozeRegistry NewReg() => new(Db, _h.LegacyPath(Guid.NewGuid().ToString("N") + ".json"));
 
-    public void Dispose()
-    {
-        try { if (Directory.Exists(_dir)) Directory.Delete(_dir, true); } catch { }
-    }
+    public void Dispose() => _h.Dispose();
 
     [Fact]
     public void IsExpired_is_false_for_a_future_snooze_and_true_once_the_time_passes()
     {
-        var reg = new SnoozeRegistry(Path_);
+        var reg = NewReg();
         var now = new DateTime(2026, 7, 11, 12, 0, 0, DateTimeKind.Utc);
         reg.Snooze("s1", now.AddMinutes(60), "dir-1");
 
@@ -38,7 +41,7 @@ public sealed class SnoozeRegistryTests : IDisposable
     [Fact]
     public void IsExpired_is_false_for_a_session_with_no_entry()
     {
-        var reg = new SnoozeRegistry(Path_);
+        var reg = NewReg();
         Assert.False(reg.IsExpired("nobody", DateTime.UtcNow));
         Assert.False(reg.Contains("nobody"));
     }
@@ -46,7 +49,7 @@ public sealed class SnoozeRegistryTests : IDisposable
     [Fact]
     public void SnoozeUntilFor_returns_the_armed_deadline()
     {
-        var reg = new SnoozeRegistry(Path_);
+        var reg = NewReg();
         var now = new DateTime(2026, 7, 16, 12, 0, 0, DateTimeKind.Utc);
         var until = now.AddHours(4);
         reg.Snooze("s1", until, "dir-1");
@@ -60,7 +63,7 @@ public sealed class SnoozeRegistryTests : IDisposable
     [Fact]
     public void SnoozeUntilFor_is_null_for_a_deferred_snooze()
     {
-        var reg = new SnoozeRegistry(Path_);
+        var reg = NewReg();
         // A deferral has no clock yet - it starts when the work ends - so there is no deadline to show.
         reg.SnoozeDeferred("s1", 720, "dir-1");
 
@@ -70,14 +73,14 @@ public sealed class SnoozeRegistryTests : IDisposable
     [Fact]
     public void SnoozeUntilFor_is_null_for_a_session_with_no_entry()
     {
-        var reg = new SnoozeRegistry(Path_);
+        var reg = NewReg();
         Assert.Null(reg.SnoozeUntilFor("nobody"));
     }
 
     [Fact]
     public void Snooze_again_overwrites_the_prior_time_no_escalation()
     {
-        var reg = new SnoozeRegistry(Path_);
+        var reg = NewReg();
         var now = new DateTime(2026, 7, 11, 12, 0, 0, DateTimeKind.Utc);
         reg.Snooze("s1", now.AddMinutes(1), "dir-1");
         Assert.True(reg.IsExpired("s1", now.AddMinutes(2)));   // first snooze would be expired
@@ -90,7 +93,7 @@ public sealed class SnoozeRegistryTests : IDisposable
     [Fact]
     public void Clear_removes_the_entry_and_reports_whether_there_was_one()
     {
-        var reg = new SnoozeRegistry(Path_);
+        var reg = NewReg();
         reg.Snooze("s1", DateTime.UtcNow.AddMinutes(60), "dir-1");
 
         Assert.True(reg.Clear("s1"));
@@ -101,7 +104,7 @@ public sealed class SnoozeRegistryTests : IDisposable
     [Fact]
     public void ClearIfUnchanged_clears_only_when_the_time_has_not_moved()
     {
-        var reg = new SnoozeRegistry(Path_);
+        var reg = NewReg();
         var now = new DateTime(2026, 7, 11, 12, 0, 0, DateTimeKind.Utc);
         var until = now.AddMinutes(60);
         reg.Snooze("s1", until, "dir-1");
@@ -119,7 +122,7 @@ public sealed class SnoozeRegistryTests : IDisposable
     [Fact]
     public void ClearForDirector_drops_only_that_directors_entries()
     {
-        var reg = new SnoozeRegistry(Path_);
+        var reg = NewReg();
         var until = DateTime.UtcNow.AddMinutes(60);
         reg.Snooze("a1", until, "dir-1");
         reg.Snooze("a2", until, "dir-1");
@@ -134,7 +137,7 @@ public sealed class SnoozeRegistryTests : IDisposable
     [Fact]
     public void PruneNotLive_drops_only_that_directors_gone_sessions()
     {
-        var reg = new SnoozeRegistry(Path_);
+        var reg = NewReg();
         var until = DateTime.UtcNow.AddMinutes(60);
         reg.Snooze("live", until, "dir-1");
         reg.Snooze("exited", until, "dir-1");
@@ -153,7 +156,7 @@ public sealed class SnoozeRegistryTests : IDisposable
     [Fact]
     public void Entries_returned_snapshot_is_detached_from_the_live_store()
     {
-        var reg = new SnoozeRegistry(Path_);
+        var reg = NewReg();
         reg.Snooze("s1", DateTime.UtcNow.AddMinutes(60), "dir-1");
 
         var snapshot = reg.Entries();
@@ -167,11 +170,11 @@ public sealed class SnoozeRegistryTests : IDisposable
     public void Pending_snooze_survives_a_restart_re_armed_from_disk()
     {
         var now = new DateTime(2026, 7, 11, 12, 0, 0, DateTimeKind.Utc);
-        var reg1 = new SnoozeRegistry(Path_);
+        var reg1 = NewReg();
         reg1.Snooze("s1", now.AddMinutes(60), "dir-1");
 
         // A fresh registry over the same file = a Gateway restart. The pending snooze must re-arm.
-        var reg2 = new SnoozeRegistry(Path_);
+        var reg2 = NewReg();
         Assert.True(reg2.Contains("s1"));
         Assert.False(reg2.IsExpired("s1", now.AddMinutes(30)));
         Assert.True(reg2.IsExpired("s1", now.AddMinutes(90)));
@@ -181,10 +184,10 @@ public sealed class SnoozeRegistryTests : IDisposable
     public void An_already_past_snooze_reloads_as_expired_so_it_fires_immediately()
     {
         var now = new DateTime(2026, 7, 11, 12, 0, 0, DateTimeKind.Utc);
-        var reg1 = new SnoozeRegistry(Path_);
+        var reg1 = NewReg();
         reg1.Snooze("s1", now.AddMinutes(-5), "dir-1"); // already past when written
 
-        var reg2 = new SnoozeRegistry(Path_);          // restart
+        var reg2 = NewReg();          // restart
         Assert.True(reg2.IsExpired("s1", now));        // reads as expired -> the first sweep fires it
     }
 
@@ -196,7 +199,7 @@ public sealed class SnoozeRegistryTests : IDisposable
         // THE RULING (owner, 14 July 2026): the clock starts when the work ENDS. So a hold asked for
         // while the agent is working records what was ASKED FOR and nothing else - arming a clock at
         // request time is what let it be deleted (or expire) before the hold had even landed.
-        var reg = new SnoozeRegistry(Path_);
+        var reg = NewReg();
 
         reg.SnoozeDeferred("s1", 720, "dir-1");
 
@@ -209,7 +212,7 @@ public sealed class SnoozeRegistryTests : IDisposable
     [Fact]
     public void A_deferred_entry_is_never_expired_however_long_it_waits()
     {
-        var reg = new SnoozeRegistry(Path_);
+        var reg = NewReg();
         var now = new DateTime(2026, 7, 14, 12, 0, 0, DateTimeKind.Utc);
         reg.SnoozeDeferred("s1", 1, "dir-1");   // a ONE-minute snooze...
 
@@ -219,7 +222,7 @@ public sealed class SnoozeRegistryTests : IDisposable
     [Fact]
     public void Land_starts_the_clock_from_the_landing_instant()
     {
-        var reg = new SnoozeRegistry(Path_);
+        var reg = NewReg();
         var landedAt = new DateTime(2026, 7, 14, 12, 0, 0, DateTimeKind.Utc);
         reg.SnoozeDeferred("s1", 720, "dir-1");
 
@@ -237,7 +240,7 @@ public sealed class SnoozeRegistryTests : IDisposable
     public void Land_is_idempotent_and_never_restarts_a_running_clock()
     {
         // Two callers land a deferral: the push seam and the sweep backstop. Whichever is first wins.
-        var reg = new SnoozeRegistry(Path_);
+        var reg = NewReg();
         var landedAt = new DateTime(2026, 7, 14, 12, 0, 0, DateTimeKind.Utc);
         reg.SnoozeDeferred("s1", 720, "dir-1");
         reg.Land("s1", landedAt);
@@ -249,7 +252,7 @@ public sealed class SnoozeRegistryTests : IDisposable
     [Fact]
     public void Land_on_an_absent_session_is_a_no_op()
     {
-        var reg = new SnoozeRegistry(Path_);
+        var reg = NewReg();
         Assert.False(reg.Land("nobody", DateTime.UtcNow));
     }
 
@@ -259,7 +262,7 @@ public sealed class SnoozeRegistryTests : IDisposable
         // The sweep snapshots a DEFERRED entry, then the hold lands mid-pass and the clock starts. A
         // decision taken against the old snapshot must not delete the freshly-armed snooze - which is
         // defect 20 in miniature, one pass later.
-        var reg = new SnoozeRegistry(Path_);
+        var reg = NewReg();
         reg.SnoozeDeferred("s1", 720, "dir-1");
         reg.Land("s1", DateTime.UtcNow);
 
@@ -270,38 +273,138 @@ public sealed class SnoozeRegistryTests : IDisposable
     [Fact]
     public void A_deferred_entry_survives_a_restart_with_its_length_intact()
     {
-        var reg1 = new SnoozeRegistry(Path_);
+        var reg1 = NewReg();
         reg1.SnoozeDeferred("s1", 720, "dir-1");
 
-        var reg2 = new SnoozeRegistry(Path_);   // restart
+        var reg2 = NewReg();   // restart
         var e = Assert.Single(reg2.Entries());
         Assert.True(e.IsDeferred);
         Assert.Equal(720, e.PendingMinutes);
     }
 
     [Fact]
-    public void A_row_with_neither_a_deadline_nor_a_length_is_dropped_on_load()
+    public void Import_DropsARowWithNeitherADeadlineNorALength()
     {
-        // Such a row could never expire and never land - a snooze that would silently never return.
-        // Drop it loudly rather than keep a promise that cannot be kept.
-        Directory.CreateDirectory(_dir);
-        File.WriteAllText(Path_, """{"entries":[{"sessionId":"s1","snoozeUntilUtc":null,"directorId":"d","pendingMinutes":null}]}""");
+        // Such a row could never expire and never land - a snooze that would silently never return. The
+        // one-time import drops it loudly (mirroring the old load) rather than keep a promise it cannot keep.
+        var legacy = LegacyFile();
+        File.WriteAllText(legacy, """{"entries":[{"sessionId":"s1","snoozeUntilUtc":null,"directorId":"d","pendingMinutes":null}]}""");
 
-        var reg = new SnoozeRegistry(Path_);
+        var reg = new SnoozeRegistry(Db, legacy);
 
         Assert.Empty(reg.Entries());
     }
 
     [Fact]
-    public void A_corrupt_file_is_quarantined_and_the_registry_starts_empty()
+    public void Import_CorruptLegacyJson_FailsLoud_AndLeavesTheFileInPlace()
     {
-        Directory.CreateDirectory(_dir);
-        File.WriteAllText(Path_, "{ this is not valid json ");
+        var legacy = LegacyFile();
+        const string corrupt = "{ this is not valid json ";
+        File.WriteAllText(legacy, corrupt);
 
-        var reg = new SnoozeRegistry(Path_);   // must not throw - the Gateway still boots
-        Assert.Empty(reg.Entries());
+        // Fail-loud, no partial import, no silent quarantine (the EF data-layer contract).
+        Assert.Throws<InvalidOperationException>(() => new SnoozeRegistry(Db, legacy));
+        Assert.True(File.Exists(legacy));
+        Assert.Equal(corrupt, File.ReadAllText(legacy));
+    }
 
-        var quarantined = Directory.GetFiles(_dir, "snooze.json.corrupt-*");
-        Assert.Single(quarantined);            // the bad bytes were preserved, not overwritten
+    [Fact]
+    public void LegacyJson_ImportedOnce_ArmedAndDeferred_InvariantPreserved_ThenRenamedAside()
+    {
+        var now = new DateTime(2026, 7, 16, 12, 0, 0, DateTimeKind.Utc);
+        var baseline = new DateTime(2026, 7, 16, 11, 0, 0, DateTimeKind.Utc);
+        var legacy = LegacyFile();
+        // An ARMED entry (a deadline, no pending) and a DEFERRED entry (a length, no deadline), plus the
+        // owner-turn baseline - exactly the two shapes the old store wrote.
+        File.WriteAllText(legacy, JsonSerializer.Serialize(new
+        {
+            entries = new object[]
+            {
+                new { sessionId = "armed-1", snoozeUntilUtc = (DateTime?)now.AddHours(4), directorId = "dir-1", pendingMinutes = (int?)null, ownerTurnBaselineUtc = (DateTime?)baseline },
+                new { sessionId = "deferred-1", snoozeUntilUtc = (DateTime?)null, directorId = "dir-2", pendingMinutes = (int?)720, ownerTurnBaselineUtc = (DateTime?)null },
+            },
+        }));
+
+        var reg = new SnoozeRegistry(Db, legacy);
+
+        var armed = reg.Entries().Single(e => e.SessionId == "armed-1");
+        Assert.False(armed.IsDeferred);
+        Assert.Equal(now.AddHours(4), armed.SnoozeUntilUtc);
+        Assert.Equal(DateTimeKind.Utc, armed.SnoozeUntilUtc!.Value.Kind);
+        Assert.Null(armed.PendingMinutes);
+        Assert.Equal("dir-1", armed.DirectorId);
+        Assert.Equal(baseline, armed.OwnerTurnBaselineUtc);
+
+        var deferred = reg.Entries().Single(e => e.SessionId == "deferred-1");
+        Assert.True(deferred.IsDeferred);
+        Assert.Null(deferred.SnoozeUntilUtc);
+        Assert.Equal(720, deferred.PendingMinutes);
+        Assert.Equal("dir-2", deferred.DirectorId);
+        Assert.Null(deferred.OwnerTurnBaselineUtc);
+
+        // The armed/deferred invariant is reflected in the hold state for both.
+        Assert.Equal(HoldStates.Held, reg.HoldStateFor("armed-1", now));
+        Assert.Equal(HoldStates.DeferredHold, reg.HoldStateFor("deferred-1", now));
+
+        // Renamed aside (kept as a backup); a fresh registry does not re-import.
+        Assert.False(File.Exists(legacy));
+        Assert.Single(Directory.GetFiles(Path.GetDirectoryName(legacy)!, Path.GetFileName(legacy) + ".migrated-*"));
+        Assert.Equal(2, new SnoozeRegistry(Db, legacy).Entries().Count);
+    }
+
+    [Fact]
+    public void Import_NullRoot_FailsLoud_AndLeavesTheFileInPlace()
+    {
+        // The JSON literal "null" is an unreadable store, not an empty one: fail loud and leave the file in
+        // place, rather than committing zero rows and renaming an invalid store aside as if it had migrated.
+        var legacy = LegacyFile();
+        File.WriteAllText(legacy, "null");
+
+        Assert.Throws<InvalidOperationException>(() => new SnoozeRegistry(Db, legacy));
+        Assert.True(File.Exists(legacy));
+    }
+
+    [Fact]
+    public void Import_NullEntriesList_FailsLoud_AndLeavesTheFileInPlace()
+    {
+        var legacy = LegacyFile();
+        File.WriteAllText(legacy, """{"entries":null}""");
+
+        Assert.Throws<InvalidOperationException>(() => new SnoozeRegistry(Db, legacy));
+        Assert.True(File.Exists(legacy));
+    }
+
+    [Fact]
+    public void Import_RetainsANullDirectorId_ExactlyAsTheLegacyStoreHeld()
+    {
+        // The old store retained a null DirectorId exactly as read (it never coerced it to ""), so the import
+        // must too - a null stays null on round-trip through DirectorIdFor and Entries.
+        var legacy = LegacyFile();
+        File.WriteAllText(legacy, """{"entries":[{"sessionId":"s1","snoozeUntilUtc":"2026-07-16T16:00:00Z","directorId":null,"pendingMinutes":null}]}""");
+
+        var reg = new SnoozeRegistry(Db, legacy);
+
+        Assert.Null(reg.DirectorIdFor("s1"));
+        Assert.Null(Assert.Single(reg.Entries()).DirectorId);
+    }
+
+    [Fact]
+    public void Entries_IsOrderedBySessionId_Deterministic()
+    {
+        // The old Dictionary enumeration order was undefined; Entries() now returns a stable session-id order.
+        var reg = NewReg();
+        var until = new DateTime(2026, 7, 16, 12, 0, 0, DateTimeKind.Utc);
+        reg.Snooze("s-charlie", until, "d");
+        reg.Snooze("s-alpha", until, "d");
+        reg.Snooze("s-bravo", until, "d");
+
+        Assert.Equal(new[] { "s-alpha", "s-bravo", "s-charlie" }, reg.Entries().Select(e => e.SessionId).ToArray());
+    }
+
+    private string LegacyFile()
+    {
+        var legacy = _h.LegacyPath("snooze-" + Guid.NewGuid().ToString("N") + ".json");
+        Directory.CreateDirectory(Path.GetDirectoryName(legacy)!);
+        return legacy;
     }
 }

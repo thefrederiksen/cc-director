@@ -1,5 +1,7 @@
 using CcDirector.Gateway.Contracts;
+using CcDirector.Gateway.Data;
 using CcDirector.Gateway.Snooze;
+using CcDirector.Gateway.Tests.Data;
 using Xunit;
 
 namespace CcDirector.Gateway.Tests;
@@ -25,19 +27,18 @@ namespace CcDirector.Gateway.Tests;
 /// </summary>
 public sealed class SnoozeExpirySweepTests : IDisposable
 {
-    private readonly string _dir = Path.Combine(Path.GetTempPath(), "cc-snoozesweep-" + Guid.NewGuid().ToString("N"));
+    private readonly GatewayDbTestHarness _h = new();
+    private GatewayDatabase? _db;
+    private GatewayDatabase Db => _db ??= _h.Open();
     private readonly DateTime _now = new(2026, 7, 11, 12, 0, 0, DateTimeKind.Utc);
 
-    private string Path_ => System.IO.Path.Combine(_dir, "snooze.json");
+    private SnoozeRegistry NewReg() => new(Db, _h.LegacyPath(Guid.NewGuid().ToString("N") + ".json"));
 
-    public void Dispose()
-    {
-        try { if (Directory.Exists(_dir)) Directory.Delete(_dir, true); } catch { }
-    }
+    public void Dispose() => _h.Dispose();
 
     private (SnoozeRegistry reg, SnoozeExpirySweep sweep) Make(DateTime now)
     {
-        var reg = new SnoozeRegistry(Path_);
+        var reg = NewReg();
         return (reg, new SnoozeExpirySweep(reg, utcNow: () => now));
     }
 
@@ -115,7 +116,7 @@ public sealed class SnoozeExpirySweepTests : IDisposable
     {
         // Compare-and-clear: the pass snapshots the entries, and a snooze that lands while it is running
         // must win over the decision the pass made from the older value.
-        var reg = new SnoozeRegistry(Path_);
+        var reg = NewReg();
         reg.Snooze("s1", _now.AddMinutes(-1), "dir-1"); // expired as the pass begins
 
         var sweep = new SnoozeExpirySweep(reg, utcNow: () =>

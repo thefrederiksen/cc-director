@@ -603,11 +603,13 @@ public sealed class GatewayHost : IAsyncDisposable
         // Workflow runs (phase 4, issue #1771): built after the catalog store so the built-ins a run
         // pins are already seeded.
         _workflowRuns = new Workflows.WorkflowRunStore(_gatewayDb);
-        // Snooze Length mission: the persisted snooze registry (sessionId -> SnoozeUntilUtc). Loaded here
-        // so a Gateway restart re-arms every pending snooze; an entry already past its time simply fires
-        // on the first sweep. Tests MUST pass an isolated path so they never touch the real store. The
-        // registry is bounded by dropping a removed Director's entries so they do not accumulate on disk.
-        _snoozeRegistry = new Snooze.SnoozeRegistry(snoozePath ?? Path.Combine(CcStorage.Root(), "snooze.json"));
+        // Snooze Length mission: the persisted snooze registry (sessionId -> SnoozeUntilUtc), now in the
+        // snoozes table of the EF data layer - a Gateway restart re-arms every pending snooze from the
+        // database; an entry already past its time simply fires on the first sweep. The path argument is the
+        // LEGACY snooze.json, imported once on first upgrade then renamed aside. Tests MUST pass an isolated
+        // path so they never touch the real legacy file. The registry is bounded by dropping a removed
+        // Director's entries so they do not accumulate.
+        _snoozeRegistry = new Snooze.SnoozeRegistry(_gatewayDb, snoozePath ?? Path.Combine(CcStorage.Root(), "snooze.json"));
         Registry.OnDirectorRemoved += id => _snoozeRegistry.ClearForDirector(id);
         // THE PUSH SEAM where this Gateway drives the hold machine off the facts Directors report. The
         // DirectorHub (constructed per-invocation by SignalR) folds every pushed session through this one

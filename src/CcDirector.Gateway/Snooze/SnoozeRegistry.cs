@@ -1,62 +1,67 @@
 using System.Text.Json;
 using CcDirector.Core.Utilities;
 using CcDirector.Gateway.Contracts;
+using CcDirector.Gateway.Data;
+using CcDirector.Gateway.Data.Entities;
+using Microsoft.EntityFrameworkCore;
 
 namespace CcDirector.Gateway.Snooze;
 
 /// <summary>
 /// The Gateway-owned, restart-surviving snooze registry (Snooze Length mission,
 /// docs/architecture/snooze-length-mission-2026-07-11.md). A snooze is a time-bounded hold with a
-/// GUARANTEED return: the map <c>sessionId -&gt; SnoozeUntilUtc</c> is the one piece of new
-/// Gateway-owned state, and it is the thing that keeps a snoozed session from vanishing when its
-/// owning Director dies. The timer MUST live here (not on the Director) precisely so it survives a
-/// dead Director - the whole point of the mission.
+/// GUARANTEED return: the map <c>sessionId -&gt; SnoozeUntilUtc</c> is the one piece of new Gateway-owned
+/// state, and it is the thing that keeps a snoozed session from vanishing when its owning Director dies. The
+/// timer MUST live here (not on the Director) precisely so it survives a dead Director - the whole point of
+/// the mission.
 ///
-/// Each entry also carries the owning <see cref="SnoozeEntry.DirectorId"/> so the registry can be
-/// bounded: when a Director is removed from the fleet (<c>Registry.OnDirectorRemoved</c>), every
-/// entry it owned is dropped, so entries for sessions that permanently left the roster do not
-/// accumulate on disk.
+/// Each entry also carries the owning <see cref="SnoozeEntry.DirectorId"/> so the registry can be bounded:
+/// when a Director is removed from the fleet (<c>Registry.OnDirectorRemoved</c>), every entry it owned is
+/// dropped, so entries for sessions that permanently left the roster do not accumulate.
 ///
-/// PERSISTENCE (WorkListStore precedent): the whole registry lives in ONE plain JSON file at the
-/// path the constructor receives (production: snooze.json in the Gateway data dir). Every mutation
-/// writes through immediately with an atomic temp-file + rename, so a crash mid-write can never
-/// half-truncate the store. On construction the file is loaded back so every pending snooze is
-/// re-armed - an entry already past its time at startup simply reads as expired on the first sweep
-/// and fires immediately (the mission's "fire any already-past entry immediately" rule), rather than
-/// being lost. A corrupt file is quarantined (never silently overwritten) and the registry starts
-/// empty so the Gateway still boots.
+/// PERSISTENCE (Hosted Gateway mission, Step 1b): entries live in the EF data layer's <c>snoozes</c> table
+/// (SQLite locally), NOT the old hand-rolled <c>snooze.json</c>. The public API and observable behavior are
+/// unchanged. A pending snooze survives a restart because it is in the database; an entry already past its
+/// time reads as expired on the first sweep and fires immediately (the mission rule), exactly as before.
 ///
-/// NO FALLBACK (CLAUDE.md): a failed persist is a LOGGED error that PROPAGATES - a snooze that
-/// cannot be written to disk would not survive a restart, so the caller fails loudly rather than
-/// silently running a snooze that will not come back.
+/// ONE-TIME IMPORT: on first run after the upgrade, if a legacy <c>snooze.json</c> exists and the table is
+/// empty, every entry is imported inside one transaction - mirroring the old load exactly: a row with an
+/// empty session id is skipped, a row carrying neither a deadline nor a deferred length is dropped loudly
+/// (it could never expire or land), and a duplicate session id is last-wins - then the JSON is renamed aside.
+/// The rename-recovery is the idempotent, best-effort one the worklist store established. A parse error is
+/// fail-loud and all-or-nothing.
+///
+/// NO FALLBACK (the repository's no-fallback rule): a failed persist propagates - a snooze that cannot be written would not survive a
+/// restart, so the caller fails loudly rather than silently running a snooze that will not come back. The
+/// Gateway is single-writer: every operation runs under this registry's write lock over a fresh pooled
+/// context.
 /// </summary>
 public sealed class SnoozeRegistry
 {
     private readonly object _gate = new();
-    private readonly string _path;
-
-    // sessionId -> entry. Ordinal keys: a session id is an exact GUID string.
-    private readonly Dictionary<string, SnoozeEntry> _entries = new(StringComparer.Ordinal);
+    private readonly GatewayDatabase _db;
+    private readonly string _legacyJsonPath;
 
     private static readonly JsonSerializerOptions FileJsonOptions = new()
     {
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
         PropertyNameCaseInsensitive = true,
-        WriteIndented = true,
     };
 
-    /// <param name="path">
-    /// The JSON file the registry persists to. REQUIRED so no caller can silently land on the real
-    /// user's file: production (<see cref="GatewayHost"/>) passes snooze.json in the Gateway data
-    /// dir; tests pass an isolated temp path.
-    /// </param>
-    /// <exception cref="ArgumentException">The path is null/empty/whitespace.</exception>
-    public SnoozeRegistry(string path)
+    /// <param name="db">The Gateway EF database this registry reads and writes through.</param>
+    /// <param name="legacyJsonPath">The legacy <c>snooze.json</c> path to import ONCE if it exists and the
+    /// table is empty. REQUIRED (no silent default).</param>
+    /// <exception cref="ArgumentNullException">The database is null.</exception>
+    /// <exception cref="ArgumentException">The legacy path is null/empty/whitespace.</exception>
+    public SnoozeRegistry(GatewayDatabase db, string legacyJsonPath)
     {
-        if (string.IsNullOrWhiteSpace(path))
-            throw new ArgumentException("registry path is required", nameof(path));
-        _path = path;
-        Load();
+        _db = db ?? throw new ArgumentNullException(nameof(db));
+        if (string.IsNullOrWhiteSpace(legacyJsonPath))
+            throw new ArgumentException("legacy json path is required", nameof(legacyJsonPath));
+        _legacyJsonPath = legacyJsonPath;
+
+        lock (_gate)
+            ImportLegacyJsonIfNeeded();
     }
 
     /// <summary>
@@ -124,8 +129,9 @@ public sealed class SnoozeRegistry
 
         lock (_gate)
         {
-            _entries[sessionId] = new SnoozeEntry(sessionId, untilUtc.ToUniversalTime(), directorId ?? "", null, ownerTurnBaselineUtc);
-            Save();
+            using var ctx = _db.CreateContext();
+            Upsert(ctx, sessionId, untilUtc.ToUniversalTime(), directorId ?? "", null, ownerTurnBaselineUtc);
+            ctx.SaveChanges();
             FileLog.Write($"[SnoozeRegistry] Snooze: sid={sessionId}, untilUtc={untilUtc.ToUniversalTime():O}, director={directorId}");
         }
     }
@@ -150,8 +156,9 @@ public sealed class SnoozeRegistry
 
         lock (_gate)
         {
-            _entries[sessionId] = new SnoozeEntry(sessionId, null, directorId ?? "", minutes, ownerTurnBaselineUtc);
-            Save();
+            using var ctx = _db.CreateContext();
+            Upsert(ctx, sessionId, null, directorId ?? "", minutes, ownerTurnBaselineUtc);
+            ctx.SaveChanges();
             FileLog.Write($"[SnoozeRegistry] SnoozeDeferred: sid={sessionId}, minutes={minutes} (clock starts when the work ends), director={directorId}");
         }
     }
@@ -173,7 +180,10 @@ public sealed class SnoozeRegistry
         if (string.IsNullOrWhiteSpace(sessionId)) return false;
         lock (_gate)
         {
-            if (!_entries.TryGetValue(sessionId, out var e) || !e.IsDeferred)
+            using var ctx = _db.CreateContext();
+            var e = Find(ctx, sessionId);
+            // Only a deferred entry (no deadline yet) can land; a missing or already-armed one is a no-op.
+            if (e is null || e.SnoozeUntilUtc is not null)
                 return false;
             // A deferred entry always carries its length (the record's invariant), so a missing one is a
             // real defect, not something to paper over with a default. Fail loudly.
@@ -182,8 +192,9 @@ public sealed class SnoozeRegistry
                     $"deferred snooze entry for session {sessionId} has no PendingMinutes; the registry is corrupt");
 
             var untilUtc = nowUtc.ToUniversalTime().AddMinutes(minutes);
-            _entries[sessionId] = e with { SnoozeUntilUtc = untilUtc, PendingMinutes = null };
-            Save();
+            e.SnoozeUntilUtc = untilUtc;
+            e.PendingMinutes = null;
+            ctx.SaveChanges();
             FileLog.Write($"[SnoozeRegistry] Land: sid={sessionId}, deferred hold landed -> clock started, untilUtc={untilUtc:O} ({minutes} min)");
             return true;
         }
@@ -199,8 +210,11 @@ public sealed class SnoozeRegistry
         if (string.IsNullOrWhiteSpace(sessionId)) return false;
         lock (_gate)
         {
-            if (!_entries.Remove(sessionId)) return false;
-            Save();
+            using var ctx = _db.CreateContext();
+            var e = Find(ctx, sessionId);
+            if (e is null) return false;
+            ctx.Snoozes.Remove(e);
+            ctx.SaveChanges();
             FileLog.Write($"[SnoozeRegistry] Clear: sid={sessionId}");
             return true;
         }
@@ -209,22 +223,19 @@ public sealed class SnoozeRegistry
     /// <summary>
     /// Drop every entry owned by <paramref name="directorId"/>. Called from
     /// <c>Registry.OnDirectorRemoved</c> so entries for sessions whose Director permanently left the
-    /// fleet do not accumulate on disk. Returns the number of entries removed; persists once if any.
+    /// fleet do not accumulate. Returns the number of entries removed; persists once if any.
     /// </summary>
     public int ClearForDirector(string directorId)
     {
         if (string.IsNullOrWhiteSpace(directorId)) return 0;
         lock (_gate)
         {
-            var gone = _entries.Values
-                .Where(e => string.Equals(e.DirectorId, directorId, StringComparison.Ordinal))
-                .Select(e => e.SessionId)
-                .ToList();
-            foreach (var sid in gone)
-                _entries.Remove(sid);
+            using var ctx = _db.CreateContext();
+            var gone = ctx.Snoozes.Where(e => e.DirectorId == directorId).ToList();
             if (gone.Count > 0)
             {
-                Save();
+                ctx.Snoozes.RemoveRange(gone);
+                ctx.SaveChanges();
                 FileLog.Write($"[SnoozeRegistry] ClearForDirector: director={directorId}, removed={gone.Count}");
             }
             return gone.Count;
@@ -248,12 +259,14 @@ public sealed class SnoozeRegistry
         if (string.IsNullOrWhiteSpace(sessionId)) return false;
         lock (_gate)
         {
-            if (_entries.TryGetValue(sessionId, out var e)
+            using var ctx = _db.CreateContext();
+            var e = Find(ctx, sessionId);
+            if (e is not null
                 && e.SnoozeUntilUtc == expectedUntilUtc?.ToUniversalTime()
                 && e.PendingMinutes == expectedPendingMinutes)
             {
-                _entries.Remove(sessionId);
-                Save();
+                ctx.Snoozes.Remove(e);
+                ctx.SaveChanges();
                 FileLog.Write($"[SnoozeRegistry] ClearIfUnchanged: sid={sessionId} (unchanged since the sweep read it)");
                 return true;
             }
@@ -274,16 +287,14 @@ public sealed class SnoozeRegistry
         liveSessionIds ??= new HashSet<string>(StringComparer.Ordinal);
         lock (_gate)
         {
-            var gone = _entries.Values
-                .Where(e => string.Equals(e.DirectorId, directorId, StringComparison.Ordinal)
-                            && !liveSessionIds.Contains(e.SessionId))
-                .Select(e => e.SessionId)
+            using var ctx = _db.CreateContext();
+            var gone = ctx.Snoozes.Where(e => e.DirectorId == directorId).ToList()
+                .Where(e => !liveSessionIds.Contains(e.SessionId))
                 .ToList();
-            foreach (var sid in gone)
-                _entries.Remove(sid);
             if (gone.Count > 0)
             {
-                Save();
+                ctx.Snoozes.RemoveRange(gone);
+                ctx.SaveChanges();
                 FileLog.Write($"[SnoozeRegistry] PruneNotLive: director={directorId}, removed={gone.Count}");
             }
             return gone.Count;
@@ -304,9 +315,13 @@ public sealed class SnoozeRegistry
     {
         if (string.IsNullOrWhiteSpace(sessionId)) return false;
         lock (_gate)
-            return _entries.TryGetValue(sessionId, out var e)
+        {
+            using var ctx = _db.CreateContext();
+            var e = Find(ctx, sessionId, tracking: false);
+            return e is not null
                 && e.SnoozeUntilUtc is DateTime untilUtc
                 && nowUtc.ToUniversalTime() >= untilUtc;
+        }
     }
 
     /// <summary>
@@ -330,7 +345,9 @@ public sealed class SnoozeRegistry
         if (string.IsNullOrWhiteSpace(sessionId)) return HoldStates.None;
         lock (_gate)
         {
-            if (!_entries.TryGetValue(sessionId, out var e))
+            using var ctx = _db.CreateContext();
+            var e = Find(ctx, sessionId, tracking: false);
+            if (e is null)
                 return HoldStates.None;
             if (e.SnoozeUntilUtc is not DateTime untilUtc)
                 return HoldStates.DeferredHold;
@@ -350,7 +367,10 @@ public sealed class SnoozeRegistry
     {
         if (string.IsNullOrWhiteSpace(sessionId)) return null;
         lock (_gate)
-            return _entries.TryGetValue(sessionId, out var e) ? e.SnoozeUntilUtc : null;
+        {
+            using var ctx = _db.CreateContext();
+            return Find(ctx, sessionId, tracking: false)?.SnoozeUntilUtc;
+        }
     }
 
     /// <summary>
@@ -367,25 +387,28 @@ public sealed class SnoozeRegistry
         if (string.IsNullOrWhiteSpace(sessionId) || lastOwnerTurnAtUtc is null) return false;
         lock (_gate)
         {
-            if (!_entries.TryGetValue(sessionId, out var e)) return false;
-            if (!e.SupersededByOwnerTurn(lastOwnerTurnAtUtc)) return false;
-            _entries.Remove(sessionId);
-            Save();
+            using var ctx = _db.CreateContext();
+            var e = Find(ctx, sessionId);
+            if (e is null) return false;
+            if (!ToRecord(e).SupersededByOwnerTurn(lastOwnerTurnAtUtc)) return false;
+            ctx.Snoozes.Remove(e);
+            ctx.SaveChanges();
             FileLog.Write($"[SnoozeRegistry] ClearIfSupersededByOwnerTurn: sid={sessionId}, owner drove a turn at {lastOwnerTurnAtUtc:O}, past the baseline {e.OwnerTurnBaselineUtc:O} captured when the hold was set -> hold dropped");
             return true;
         }
     }
 
     /// <summary>
-    /// The Director that owned this session when its hold was set, or null when nothing is held. One
-    /// lookup under one lock: a Contains() followed by a separate scan of Entries() is two reads of a
-    /// mutable map with a gap in between, and the entry can vanish in the gap.
+    /// The Director that owned this session when its hold was set, or null when nothing is held.
     /// </summary>
     public string? DirectorIdFor(string sessionId)
     {
         if (string.IsNullOrWhiteSpace(sessionId)) return null;
         lock (_gate)
-            return _entries.TryGetValue(sessionId, out var e) ? e.DirectorId : null;
+        {
+            using var ctx = _db.CreateContext();
+            return Find(ctx, sessionId, tracking: false)?.DirectorId;
+        }
     }
 
     /// <summary>True when <paramref name="sessionId"/> has a pending entry (expired or not).</summary>
@@ -393,117 +416,172 @@ public sealed class SnoozeRegistry
     {
         if (string.IsNullOrWhiteSpace(sessionId)) return false;
         lock (_gate)
-            return _entries.ContainsKey(sessionId);
+        {
+            using var ctx = _db.CreateContext();
+            return ctx.Snoozes.Any(e => e.SessionId == sessionId);
+        }
     }
 
-    /// <summary>A snapshot of every pending entry, for the expiry sweep. A copy, so the sweep can
-    /// iterate and mutate the registry (Clear) without touching the live collection.</summary>
+    /// <summary>
+    /// A snapshot of every pending entry, for the expiry sweep. A copy detached from the store, ordered by
+    /// session id for a DETERMINISTIC result. The legacy store returned .NET Dictionary enumeration order,
+    /// which is undefined and unstable - never a guaranteed contract - and the sole caller (the expiry sweep)
+    /// handles each entry independently, so no order was ever observable; ordering here removes that
+    /// nondeterminism rather than reproducing an order nothing relied on.
+    /// </summary>
     public IReadOnlyList<SnoozeEntry> Entries()
     {
         lock (_gate)
-            return _entries.Values.ToList();
+        {
+            using var ctx = _db.CreateContext();
+            return ctx.Snoozes.AsNoTracking().OrderBy(e => e.SessionId).ToList().Select(ToRecord).ToList();
+        }
     }
 
-    // ---- persistence (WorkListStore precedent) -----------------------------------------------
+    // ---- mapping + helpers ------------------------------------------------------------------------
 
-    /// <summary>The on-disk shape: one document holding every pending snooze.</summary>
+    /// <summary>Find the entry for a session id (ordinal, the primary key). Tracked by default so a caller
+    /// can mutate and save it; pass tracking:false for a pure read.</summary>
+    private static SnoozeEntity? Find(GatewayDbContext ctx, string sessionId, bool tracking = true)
+        => (tracking ? ctx.Snoozes : ctx.Snoozes.AsNoTracking()).FirstOrDefault(e => e.SessionId == sessionId);
+
+    /// <summary>Insert or overwrite the entry for a session id (the old Dictionary indexer semantics).</summary>
+    private static void Upsert(GatewayDbContext ctx, string sessionId, DateTime? snoozeUntilUtc, string directorId,
+        int? pendingMinutes, DateTime? ownerTurnBaselineUtc)
+    {
+        var e = Find(ctx, sessionId);
+        if (e is null)
+        {
+            ctx.Snoozes.Add(new SnoozeEntity
+            {
+                SessionId = sessionId,
+                TenantId = ctx.ActiveTenant!,
+                SnoozeUntilUtc = snoozeUntilUtc,
+                DirectorId = directorId,
+                PendingMinutes = pendingMinutes,
+                OwnerTurnBaselineUtc = ownerTurnBaselineUtc,
+            });
+        }
+        else
+        {
+            e.SnoozeUntilUtc = snoozeUntilUtc;
+            e.DirectorId = directorId;
+            e.PendingMinutes = pendingMinutes;
+            e.OwnerTurnBaselineUtc = ownerTurnBaselineUtc;
+        }
+    }
+
+    // DirectorId is passed through exactly - including a null retained from a legacy import - so DirectorIdFor
+    // and Entries return precisely what the old store held (the record's DirectorId carried a runtime null the
+    // same way). The null-forgiving operator only silences the nullable-reference warning; the value flows as-is.
+    private static SnoozeEntry ToRecord(SnoozeEntity e)
+        => new(e.SessionId, e.SnoozeUntilUtc, e.DirectorId!, e.PendingMinutes, e.OwnerTurnBaselineUtc);
+
+    // ---- one-time legacy JSON import --------------------------------------------------------------
+
+    /// <summary>The on-disk shape of the legacy registry file: one document holding every pending snooze.</summary>
     private sealed class StoreFile
     {
         public List<SnoozeEntry> Entries { get; set; } = new();
     }
 
     /// <summary>
-    /// Load the registry file written by a previous Gateway run - this is the re-arm on startup.
-    /// Missing file = the normal first boot (empty registry, logged). A corrupt file is quarantined
-    /// (renamed next to the original with a timestamp suffix) so its bytes are preserved for the
-    /// operator and never silently overwritten; the registry then starts empty so the Gateway still
-    /// boots. An entry already past its time is kept as-is: the first sweep reads it as expired and
-    /// fires it immediately (mission rule), so nothing is dropped and nothing all-fires-at-once.
+    /// Import a legacy <c>snooze.json</c> exactly once: only when it exists AND the table is empty. Mirrors
+    /// the old load exactly - skip an empty session id, DROP loudly a row carrying neither a deadline nor a
+    /// deferred length (it could never expire or land), last-wins on a duplicate session id, and normalize
+    /// the deadline to UTC - then insert inside one transaction and rename the JSON aside. Fail-loud and
+    /// all-or-nothing on a parse error. When the file lingers but the table is already populated, rename it
+    /// aside idempotently (best-effort recovery) so a failed rename self-heals next boot without re-importing.
     /// </summary>
-    private void Load()
+    private void ImportLegacyJsonIfNeeded()
     {
-        if (!File.Exists(_path))
+        if (!File.Exists(_legacyJsonPath))
+            return;
+
+        using var ctx = _db.CreateContext();
+        if (ctx.Snoozes.Any())
         {
-            FileLog.Write($"[SnoozeRegistry] Load: no registry file at {_path}; starting empty");
+            TryRenameAside();
             return;
         }
 
         StoreFile? parsed;
         try
         {
-            parsed = JsonSerializer.Deserialize<StoreFile>(File.ReadAllText(_path), FileJsonOptions);
+            parsed = JsonSerializer.Deserialize<StoreFile>(File.ReadAllText(_legacyJsonPath), FileJsonOptions);
         }
-        catch (JsonException ex)
+        catch (Exception ex)
         {
-            Quarantine(ex.Message);
-            return;
+            FileLog.Write($"[SnoozeRegistry] Import FAILED: legacy file {_legacyJsonPath} could not be read: {ex.Message}");
+            throw new InvalidOperationException(
+                $"The legacy snooze file '{_legacyJsonPath}' could not be parsed for the one-time import: " +
+                $"{ex.Message}. The Gateway will not start with a partial import. Fix or move the file aside " +
+                "and restart.", ex);
         }
 
-        if (parsed is null)
+        // A null root (the JSON literal "null") or a null entries list is NOT a valid, empty store - it is an
+        // unreadable one. Fail loud and leave the file in place, exactly like a parse error, rather than
+        // committing zero rows and renaming the file aside (which would permanently mark an invalid legacy
+        // store as migrated). This matches the corrupt-JSON contract the cron and worklist imports use.
+        if (parsed is null || parsed.Entries is null)
         {
-            Quarantine("file deserialized to null (no registry document)");
-            return;
+            FileLog.Write($"[SnoozeRegistry] Import FAILED: legacy file {_legacyJsonPath} deserialized to a null document or a null entries list");
+            throw new InvalidOperationException(
+                $"The legacy snooze file '{_legacyJsonPath}' could not be parsed for the one-time import: the " +
+                "document is null or carries no entries list. The Gateway will not start with a partial import. " +
+                "Fix or move the file aside and restart.");
         }
 
-        var rearmed = 0;
+        // Reproduce the old load's row handling, INCLUDING last-wins on a duplicate session id (the old
+        // in-memory Dictionary keyed by session id overwrote), so the imported set matches byte-for-byte.
+        var toImport = new Dictionary<string, SnoozeEntry>(StringComparer.Ordinal);
         foreach (var e in parsed.Entries)
         {
             if (string.IsNullOrWhiteSpace(e.SessionId))
                 continue; // skip a malformed row rather than fail the whole boot
-            // A row must carry exactly one half of the clock (armed OR deferred, never both, never
-            // neither). A row that carries neither is unusable - it can never expire and can never land -
-            // so it is dropped loudly rather than kept as a snooze that would silently never return.
             if (e.SnoozeUntilUtc is null && e.PendingMinutes is null)
             {
-                FileLog.Write($"[SnoozeRegistry] Load: DROPPED malformed row sid={e.SessionId} (neither a deadline nor a deferred length)");
+                FileLog.Write($"[SnoozeRegistry] Import: DROPPED malformed row sid={e.SessionId} (neither a deadline nor a deferred length)");
                 continue;
             }
-            _entries[e.SessionId] = e with { SnoozeUntilUtc = e.SnoozeUntilUtc?.ToUniversalTime() };
-            rearmed++;
+            toImport[e.SessionId] = e with { SnoozeUntilUtc = e.SnoozeUntilUtc?.ToUniversalTime() };
         }
 
-        FileLog.Write($"[SnoozeRegistry] Load: re-armed {rearmed} pending snooze(s) from {_path}");
+        using var tx = ctx.Database.BeginTransaction();
+        foreach (var e in toImport.Values)
+        {
+            ctx.Snoozes.Add(new SnoozeEntity
+            {
+                SessionId = e.SessionId,
+                TenantId = ctx.ActiveTenant!,
+                SnoozeUntilUtc = e.SnoozeUntilUtc,
+                DirectorId = e.DirectorId, // retain the exact value, including a null (losslessness - do NOT coerce to "")
+                PendingMinutes = e.PendingMinutes,
+                OwnerTurnBaselineUtc = e.OwnerTurnBaselineUtc,
+            });
+        }
+        ctx.SaveChanges();
+        tx.Commit();
+
+        TryRenameAside();
+        FileLog.Write($"[SnoozeRegistry] Import: {toImport.Count} pending snooze(s) imported from {_legacyJsonPath}");
     }
 
     /// <summary>
-    /// Preserve an unreadable registry file as "&lt;path&gt;.corrupt-&lt;stamp&gt;" and log loudly.
-    /// The original path is then free for the next write-through. The move is not allowed to fail
-    /// silently: if even the quarantine fails, the exception propagates and the Gateway does not
-    /// start half-blind.
+    /// Rename the imported legacy file aside, best-effort. The data is already committed and the empty-table
+    /// guard prevents any re-import, so a failed rename (a briefly-locked file) is logged and left for the
+    /// next boot to retry rather than failing the Gateway.
     /// </summary>
-    private void Quarantine(string reason)
-    {
-        var quarantinePath = $"{_path}.corrupt-{DateTime.UtcNow:yyyyMMdd-HHmmss-fff}";
-        File.Move(_path, quarantinePath);
-        FileLog.Write($"[SnoozeRegistry] Load FAILED: registry file at {_path} is corrupt ({reason}); quarantined to {quarantinePath}; starting empty. Operator action: inspect the quarantined file to recover pending snoozes.");
-    }
-
-    /// <summary>
-    /// Write-through: serialize the whole registry and atomically replace the file (temp + rename),
-    /// so a concurrent reader or a crash mid-write never sees a half-written registry. Called inside
-    /// the lock by every mutation. A failed save is a LOGGED error that PROPAGATES (the caller's
-    /// request fails loudly) - never a silent skip, because a snooze that did not persist would not
-    /// survive a restart.
-    /// </summary>
-    private void Save()
+    private void TryRenameAside()
     {
         try
         {
-            var dir = Path.GetDirectoryName(_path);
-            if (!string.IsNullOrEmpty(dir))
-                Directory.CreateDirectory(dir);
-
-            var file = new StoreFile { Entries = _entries.Values.ToList() };
-            var json = JsonSerializer.Serialize(file, FileJsonOptions);
-
-            var tmp = _path + ".tmp";
-            File.WriteAllText(tmp, json);
-            File.Move(tmp, _path, overwrite: true);
+            LegacyJsonImport.RenameAside(_legacyJsonPath, "[SnoozeRegistry]");
         }
         catch (Exception ex)
         {
-            FileLog.Write($"[SnoozeRegistry] Save FAILED: path={_path}: {ex.Message}");
-            throw;
+            FileLog.Write($"[SnoozeRegistry] Import: rename-aside of {_legacyJsonPath} failed (data is safe in the " +
+                          $"database; the next boot retries): {ex.Message}");
         }
     }
 }
