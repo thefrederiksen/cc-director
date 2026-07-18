@@ -17,10 +17,10 @@ public partial class MainWindow : Window
     private int _skippedCount;
     private string _installPath = "";
     private string _directorExePath = "";
-    // Default to Gateway so a fresh install's step rail matches the pre-selected "first machine" card
-    // (issue #645). Update mode overrides this from disk in the constructor; the live RoleSelected handler
-    // tracks the user toggling cards. The committed value is read from the Welcome step when leaving step 1.
-    private InstallRole _role = InstallRole.Gateway;
+    // A fresh install always lays down the Director set only - no role choice, no account (issue #1807),
+    // so the fresh-install role is always Workstation (Director-only). Update mode overrides this from
+    // disk in the constructor via InstalledRoleDetector so an existing Gateway host stays a Gateway host.
+    private InstallRole _role = InstallRole.Workstation;
     private string? _gatewayResultMessage;
 
     private readonly bool _isUpdate;
@@ -31,38 +31,28 @@ public partial class MainWindow : Window
 
     private WelcomeStep? _welcomeStep;
     private PrerequisitesStep? _prerequisitesStep;
-    private SignInStep? _signInStep;
     private PrivacyStep? _privacyStep;
-    private GatewayConnectStep? _gatewayConnectStep;
     private SkillsStep? _skillsStep;
     private InstallStep? _installStep;
     private CompleteStep? _completeStep;
 
     private readonly record struct StepUI(Border Circle, TextBlock Label, TextBlock? Number);
 
-    // Wizard steps: 1 Welcome, 2 Prerequisites, 3 Sign in, 4 Privacy, 5 Connect, 6 Skills, 7 Install,
-    // 8 Complete. The forced sign-in (issue #657) and the Privacy step (issue #659) slot in after the
-    // prerequisite Checks; Privacy comes right after Sign in.
-    //
-    // Two steps are role-aware and are exact inverses of each other (the whole policy lives in
-    // WizardStepFlow so it is unit-testable without this window):
-    //   - Sign in (3) applies only to a Gateway install - a Workstation signs in through its gateway
-    //     (issue #679).
-    //   - Connect (5), the mandatory gateway-join step (issues #646, #1198: account sign-in, not a
-    //     pairing code), applies only to a fresh Workstation install - the Gateway IS the gateway, and
-    //     an update keeps its connection.
-    private const int StepSignIn = WizardStepFlow.StepSignIn;
+    // Wizard steps: 1 Welcome, 2 Prerequisites, 4 Privacy, 6 Skills, 7 Install, 8 Complete. The Privacy
+    // step (issue #659) slots in after the prerequisite checks. There is one linear path for every
+    // install and update - the installer always lays down the Director set with no account gate (issue
+    // #1807). Ids 3 (the old Gateway-only Sign-in step) and 5 (the old mandatory gateway-join Connect
+    // step) were removed with the account gate; the surviving ids keep their old numbers so this switch
+    // and the eight-row sidebar are unchanged, and the two removed rows simply never appear.
     private const int StepPrivacy = 4;
-    private const int StepConnect = WizardStepFlow.StepConnect;
     private const int StepInstall = 7;
     private const int StepComplete = 8;
 
-    // Role-aware step ordering lives in WizardStepFlow so it is unit-testable without constructing this
-    // WPF window. These thin members bind it to the current role + install kind - there is no parallel
-    // navigation logic in this window.
-    private List<int> VisibleSteps() => WizardStepFlow.VisibleSteps(_role, _isUpdate);
-    private int NextStep(int step) => WizardStepFlow.NextStep(step, _role, _isUpdate);
-    private int PrevStep(int step) => WizardStepFlow.PrevStep(step, _role, _isUpdate);
+    // Step ordering lives in WizardStepFlow so it is unit-testable without constructing this WPF window.
+    // These thin members bind to it - there is no parallel navigation logic in this window.
+    private static List<int> VisibleSteps() => WizardStepFlow.VisibleSteps();
+    private static int NextStep(int step) => WizardStepFlow.NextStep(step);
+    private static int PrevStep(int step) => WizardStepFlow.PrevStep(step);
 
     public MainWindow()
     {
@@ -108,62 +98,18 @@ public partial class MainWindow : Window
     {
         var step = new WelcomeStep(_isUpdate, _installedVersion, _role);
         step.UninstallRequested += OnUninstallRequested;
-        // Fresh install: Next starts disabled and the user must pick a role. Enable it the moment
-        // they do. (Update mode hides the picker and never fires this.)
-        step.RoleSelected += (_, _) =>
-        {
-            if (_currentStep != 1)
-                return;
-            NextButton.IsEnabled = true;
-            // Keep the step rail honest as the user toggles cards. The two role-aware steps flip
-            // together: switching to "I already have a gateway" (Workstation) drops Sign-in and adds the
-            // mandatory Connect step; switching back to the Gateway "first machine" role does the inverse.
-            _role = _welcomeStep?.SelectedRole ?? _role;
-            // The Prerequisites step is cached (??=) and its Tailscale wording is role-aware, so
-            // drop the cached instance when the role flips - it rebuilds with the correct copy the
-            // next time the user reaches it.
-            _prerequisitesStep = null;
-            UpdateSidebar();
-        };
         return step;
     }
 
-    /// <summary>Build the forced Sign-in step (issue #657) and wire its completion to enable Next.
-    /// Next stays disabled on this step until a sign-in completes - there is no skip.</summary>
-    private SignInStep BuildSignInStep()
+    /// <summary>Build the Privacy step (issue #659). There is no in-wizard sign-in anymore (issue
+    /// #1807), so there is no account token to pre-fill from; the step reads the server default (ON)
+    /// and always mirrors the choice to the local config.json. The Privacy step never gates Next -
+    /// the toggle is a choice.</summary>
+    private static PrivacyStep BuildPrivacyStep()
     {
-        var step = new SignInStep();
-        step.SignInCompleted += (_, _) =>
-        {
-            if (_currentStep == StepSignIn)
-                NextButton.IsEnabled = true;
-        };
-        return step;
-    }
-
-    /// <summary>Build the Privacy step (issue #659). It reads the Bearer access token captured at
-    /// Sign-in from the Sign-in step in memory (never logged) so it can pre-fill and write the
-    /// per-account telemetry flag. The Privacy step never gates Next - the toggle is a choice.</summary>
-    private PrivacyStep BuildPrivacyStep()
-    {
-        // The token provider reads the in-memory captured token from the Sign-in step on demand; it is
-        // never copied into a field here and never logged.
-        return new PrivacyStep(() => _signInStep?.CapturedAccessToken);
-    }
-
-    /// <summary>Build the mandatory gateway-join step (issues #646, #1198) and wire its completion to
-    /// enable Next. Next stays disabled on this step until the account sign-in connects to the gateway and
-    /// a device key is issued - there is no skip, so a Workstation install cannot finish without a gateway.
-    /// On a return visit via Back, IsVerified is still true so Next stays enabled.</summary>
-    private GatewayConnectStep BuildGatewayConnectStep()
-    {
-        var step = new GatewayConnectStep();
-        step.Connected += (_, _) =>
-        {
-            if (_currentStep == StepConnect)
-                NextButton.IsEnabled = true;
-        };
-        return step;
+        // No account token in a no-account install: the token provider always returns null, so the
+        // step falls back to the local telemetry mirror.
+        return new PrivacyStep(() => null);
     }
 
     /// <summary>
@@ -243,9 +189,7 @@ public partial class MainWindow : Window
         {
             1 => _welcomeStep ??= BuildWelcomeStep(),
             2 => _prerequisitesStep ??= new PrerequisitesStep(OnPrerequisitesChecked, _isUpdate, _role),
-            StepSignIn => _signInStep ??= BuildSignInStep(),
             StepPrivacy => _privacyStep ??= BuildPrivacyStep(),
-            StepConnect => _gatewayConnectStep ??= BuildGatewayConnectStep(),
             6 => _skillsStep ??= new SkillsStep(_isUpdate),
             StepInstall => _installStep ??= new InstallStep(),
             StepComplete => _completeStep ??= new CompleteStep(_installedCount, _skippedCount, _installPath, _directorExePath, _isUpdate, _alreadyUpToDate, _cachedPrep?.Version),
@@ -351,32 +295,10 @@ public partial class MainWindow : Window
             NextButton.Content = "Next";
             UpdateNextButtonForPrereqs();
         }
-        else if (_currentStep == StepSignIn)
-        {
-            // Forced sign-in (issue #657): Next is disabled until a sign-in completes, with no skip.
-            // On a return visit via Back, IsSignedIn is still true so Next stays enabled.
-            NextButton.Content = "Next";
-            NextButton.IsEnabled = _signInStep?.IsSignedIn == true;
-        }
-        else if (_currentStep == StepConnect)
-        {
-            // Mandatory gateway join (issues #646, #1198): a Workstation install cannot finish without a
-            // connected gateway, so Next is disabled until the account sign-in connects and a device key
-            // is issued + persisted - there is no skip. On a return visit via Back, IsVerified is still
-            // true so Next stays enabled. (This step is only reached on the Workstation path.)
-            NextButton.Content = "Next";
-            NextButton.IsEnabled = _gatewayConnectStep?.IsVerified == true;
-        }
-        else if (_currentStep == 1 && !_isUpdate)
-        {
-            // Fresh install: the "first machine" card is pre-selected by default (issue #645), so a role
-            // is already picked and Next is enabled from the start; switching cards keeps it enabled
-            // (RoleSelected re-confirms). Still gate on a non-null pick so the invariant is explicit.
-            NextButton.Content = "Next";
-            NextButton.IsEnabled = _welcomeStep?.SelectedRole != null;
-        }
         else
         {
+            // Welcome, Privacy, and every other step: nothing to gate on. The Welcome screen makes no
+            // choice anymore (issue #1807), so Next is always enabled here.
             NextButton.Content = "Next";
             NextButton.IsEnabled = true;
         }
@@ -646,30 +568,6 @@ public partial class MainWindow : Window
 
         if (_currentStep < StepComplete)
         {
-            // Leaving Welcome: capture the chosen role and rebuild all forward steps fresh. On update
-            // the role picker is hidden and the role was already detected from disk in the constructor,
-            // so only a fresh install reads the user's pick (the hidden picker is never constructed).
-            if (_currentStep == 1)
-            {
-                // The "first machine" card is pre-selected on a fresh install (issue #645) so the solo
-                // path provisions a local gateway by default; the user can still switch to "I already
-                // have a gateway". SelectedRole is non-null from the start, so this is always set here.
-                // Fail loudly if that invariant ever breaks.
-                if (!_isUpdate)
-                    _role = _welcomeStep?.SelectedRole
-                        ?? throw new InvalidOperationException("Next reached on Welcome with no role selected.");
-                SetupLog.Write($"[MainWindow] role selected: {_role}");
-                _prerequisitesStep = null;
-                // Drop any captured step state if the role changed: a Workstation skips Sign-in entirely
-                // (re-entry as Gateway should start it fresh), and a Gateway skips the Connect/pairing step.
-                _signInStep = null;
-                _privacyStep = null;
-                _gatewayConnectStep = null;
-                _skillsStep = null;
-                _installStep = null;
-                _completeStep = null;
-            }
-
             // Leaving Privacy (issue #659): apply the telemetry choice. This writes the per-account
             // server flag (best-effort) and always mirrors the choice to the local config.json. It must
             // never block the wizard - the toggle is a choice, not a gate - so we fire it detached and
