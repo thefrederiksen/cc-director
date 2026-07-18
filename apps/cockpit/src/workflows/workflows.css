@@ -1,221 +1,155 @@
-/* The Workflows page (issue #1617). Rendered as normal scrolling content inside the padded main pane,
-   on the shell theme tokens (src/styles.css :root) so it reads as one product with the rest.
+/* The Workflows REGISTER (register redesign, approved mockup direction A), on the shell theme
+   tokens (src/styles.css :root) so it reads as one product with the rest.
 
-   The layout answers one question per card: what shape of work is this, and who sits in which seat.
-   The steps are a numbered spine so the order is readable at a glance, and each step states its seats
-   on one row - who does it, who reviews it, what done means - because those three are the whole reason
-   the feature exists. */
+   Workflows are the rules the fleet works by, and the page is styled with that weight: a ledger,
+   not cards. One row per workflow, a colored state spine on the left edge (in force / draft
+   waiting / off), the owner's switch in the State column, provenance and activity in tabular
+   figures - and the lifecycle strip up top as page furniture, because "how does this reach my
+   agents" is the standing question this page gets asked. */
 
 .wf {
-  max-width: 880px;
+  max-width: 1020px;
+  /* The register collapses on the width of THIS pane, not the viewport: with the session rail
+     open, a wide window can still leave the main pane too narrow for the full grid. */
+  container-type: inline-size;
 }
 
-.wf-intro {
-  margin: 0 0 20px;
-  max-width: 68ch;
+.wf-eyebrow {
+  margin: 0 0 2px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
   color: var(--text-dim);
-  font-size: 13px;
-  line-height: 1.55;
 }
 
-.wf-list {
+/* The lifecycle strip: authors -> draft -> publish -> in force, with the no-deploy fact as the
+   tail. It states the delivery model once, above the register, instead of hiding it in help. */
+.wf-lifecycle {
   display: flex;
-  flex-direction: column;
-  gap: 16px;
-}
-
-.wf-card {
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 6px 10px;
+  margin: 0 0 18px;
+  padding: 10px 14px;
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: 8px;
-  padding: 18px 20px;
-}
-
-.wf-card-head {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 12px;
-}
-
-.wf-name {
-  margin: 0;
-  font-size: 16px;
-  font-weight: 600;
-  color: var(--text);
-}
-
-.wf-steps-count {
-  font-size: 11px;
+  font-size: 12px;
   color: var(--text-dim);
+}
+
+.wf-lc-step {
+  color: var(--text);
   white-space: nowrap;
 }
 
-.wf-summary {
-  margin: 6px 0 0;
-  max-width: 68ch;
-  color: var(--text);
-  font-size: 13px;
-  line-height: 1.55;
+.wf-lc-who {
+  font-weight: 600;
 }
 
-/* The two standing facts about a workflow, as a label/value grid rather than prose: they are the
-   things you compare ACROSS workflows when choosing one, so they need to sit in the same place on
-   every card. */
-.wf-facts {
-  display: grid;
-  grid-template-columns: max-content 1fr;
-  gap: 4px 14px;
-  margin: 14px 0 0;
-  padding: 12px 0 0;
-  border-top: 1px solid var(--border);
+.wf-lc-arrow {
+  color: var(--text-dim);
+  font-family: var(--mono, monospace);
 }
 
-.wf-facts dt {
+.wf-lc-live {
+  font-weight: 600;
+  color: var(--accent);
+}
+
+.wf-lc-tail {
+  flex: 1 1 100%;
   font-size: 11px;
-  font-weight: 600;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-  color: var(--text-dim);
-  padding-top: 1px;
-}
-
-.wf-facts dd {
-  margin: 0;
-  font-size: 13px;
-  line-height: 1.5;
-  color: var(--text);
-}
-
-.wf-steps {
-  list-style: none;
-  margin: 16px 0 0;
-  padding: 14px 0 0;
-  border-top: 1px solid var(--border);
-  display: flex;
-  flex-direction: column;
-  gap: 14px;
-}
-
-.wf-step {
-  display: grid;
-  grid-template-columns: 24px 1fr;
-  gap: 12px;
-  align-items: start;
-}
-
-.wf-step-num {
-  width: 24px;
-  height: 24px;
-  border-radius: 50%;
-  background: var(--surface-2);
-  border: 1px solid var(--border);
-  color: var(--text-dim);
-  font-size: 12px;
-  font-weight: 600;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-
-.wf-step-name {
-  font-size: 14px;
-  font-weight: 600;
-  color: var(--text);
-}
-
-.wf-step-desc {
-  margin: 3px 0 0;
-  max-width: 62ch;
-  color: var(--text-dim);
-  font-size: 13px;
-  line-height: 1.5;
-}
-
-/* The seats row. Wraps rather than scrolls: on a narrow pane the seats stack instead of clipping the
-   "Done when" value, which is the longest of the three. */
-.wf-seats {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px 20px;
-  margin-top: 8px;
-}
-
-.wf-seat {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  min-width: 0;
-}
-
-/* "Done when" carries a sentence, not a name - let it take the remaining width instead of squeezing
-   into a name-sized column. */
-.wf-seat-done {
-  flex: 1 1 22ch;
-}
-
-.wf-seat-label {
-  font-size: 10px;
-  font-weight: 600;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
   color: var(--text-dim);
 }
 
-.wf-seat-who {
-  font-size: 13px;
-  color: var(--text);
-  line-height: 1.45;
-}
+/* ---- The register itself. ---- */
 
-/* A step with no review seat states that plainly, dimmed - it is a real answer, not missing data. */
-.wf-seat-none {
-  color: var(--text-dim);
-  font-style: italic;
-}
-
-/* ---- Workflows mission, phase 7: the compact list, the add dialog, and the detail page. The list
-   answers "what exists" in one row per workflow; the conduct lives on the detail page; the dialog
-   asks only what a DRAFT needs, because authoring is agent-driven by design. ---- */
-
-.wf-rows {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-
-.wf-row {
-  display: block;
+.wf-register {
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: 8px;
-  padding: 12px 16px;
-  color: inherit;
-  text-decoration: none;
+  overflow: hidden;
 }
 
-.wf-row:hover {
-  border-color: var(--accent);
+.wf-reg-head,
+.wf-reg-row {
+  display: grid;
+  grid-template-columns: 5px minmax(230px, 1.5fr) 160px minmax(150px, 1fr) 170px;
+  gap: 0 16px;
+  align-items: start;
 }
 
-.wf-row-main {
-  display: flex;
-  align-items: baseline;
-  gap: 10px;
-}
-
-.wf-row-name {
-  font-size: 15px;
+.wf-reg-head {
+  padding: 8px 16px 8px 0;
+  border-bottom: 1px solid var(--border);
+  font-size: 10px;
   font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+}
+
+.wf-reg-row {
+  padding: 13px 16px 13px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.wf-reg-row:last-of-type {
+  border-bottom: none;
+}
+
+/* An OFF row stays fully readable - the register must show it to flip it back - just visibly
+   stood down. */
+.wf-reg-row-off .wf-cell-main,
+.wf-reg-row-off .wf-cell-prov {
+  opacity: 0.55;
+}
+
+/* The state spine: the row's left edge IS its state, readable before any label. */
+.wf-spine {
+  width: 5px;
+  align-self: stretch;
+}
+
+.wf-spine-on {
+  background: var(--ok, #3fb970);
+}
+
+.wf-spine-draft {
+  background: var(--warn);
+}
+
+.wf-spine-off {
+  background: var(--border);
+}
+
+.wf-cell-main {
+  min-width: 0;
+}
+
+.wf-reg-id {
+  font-family: var(--mono, monospace);
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--accent);
+  text-decoration: none;
+  margin-right: 8px;
+}
+
+.wf-reg-id:hover {
+  text-decoration: underline;
 }
 
 .wf-badge {
-  font-size: 11px;
-  padding: 1px 8px;
+  font-size: 10px;
+  padding: 1px 7px;
   border-radius: 10px;
   border: 1px solid var(--border);
   color: var(--text-dim);
   white-space: nowrap;
+  vertical-align: 1px;
 }
 
 .wf-badge-builtin {
@@ -228,21 +162,195 @@
   border-color: var(--warn);
 }
 
-.wf-row-summary {
-  margin: 6px 0 4px;
+.wf-reg-name {
+  margin-top: 3px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.wf-reg-sum {
+  margin-top: 2px;
+  font-size: 12px;
+  line-height: 1.45;
   color: var(--text-dim);
+  max-width: 52ch;
+}
+
+.wf-cell-state {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* The owner's switch: a plain two-state pill, no text inside - the label beside it names the
+   state. Focus is visible because this is the most consequential control on the page. */
+.wf-switch {
+  position: relative;
+  width: 34px;
+  height: 19px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: var(--surface-2);
+  cursor: pointer;
+  padding: 0;
+  flex: 0 0 auto;
+}
+
+.wf-switch::after {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 13px;
+  height: 13px;
+  border-radius: 50%;
+  background: var(--text-dim);
+}
+
+.wf-switch-on {
+  background: var(--ok, #3fb970);
+  border-color: var(--ok, #3fb970);
+}
+
+.wf-switch-on::after {
+  left: auto;
+  right: 2px;
+  background: #fff;
+}
+
+.wf-switch:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.wf-state-label {
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.wf-state-on {
+  color: var(--ok, #3fb970);
+}
+
+.wf-state-draft {
+  color: var(--warn);
+}
+
+.wf-state-off {
+  color: var(--text-dim);
+}
+
+.wf-cell-prov,
+.wf-cell-activity {
+  font-family: var(--mono, monospace);
+  font-variant-numeric: tabular-nums;
+  font-size: 11px;
+  line-height: 1.6;
+  color: var(--text-dim);
+}
+
+.wf-cell-prov b,
+.wf-cell-activity b {
+  color: var(--text);
+  font-weight: 600;
+}
+
+.wf-off-note {
+  font-family: inherit;
+  font-style: italic;
+}
+
+.wf-reg-foot {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 12px;
+  padding: 9px 16px;
+  border-top: 1px solid var(--border);
+  background: var(--surface-2);
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
+.wf-reg-foot code {
+  font-family: var(--mono, monospace);
+}
+
+.wf-linklike {
+  background: none;
+  border: none;
+  padding: 0;
+  font: inherit;
+  color: var(--accent);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.wf-linklike:hover {
+  text-decoration: underline;
+}
+
+/* On a narrow pane the grid collapses to a stacked row: spine on the left, cells flowing under
+   each other; the head row (pure labels) disappears because each cell is self-describing. */
+@container (max-width: 900px) {
+  .wf-reg-head {
+    display: none;
+  }
+
+  .wf-reg-row {
+    grid-template-columns: 5px 1fr;
+    gap: 6px 14px;
+  }
+
+  .wf-spine {
+    grid-row: 1 / span 4;
+  }
+}
+
+/* ---- The explainer: the standing answers, revealed under the register on demand. ---- */
+
+.wf-explainer {
+  margin-top: 18px;
+  padding: 16px 18px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.wf-explainer h2 {
+  margin: 0 0 10px;
+  font-size: 14px;
+}
+
+.wf-explainer dl {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 8px 16px;
+  margin: 0;
+}
+
+.wf-explainer dt {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+  padding-top: 2px;
+  white-space: nowrap;
+}
+
+.wf-explainer dd {
+  margin: 0;
   font-size: 13px;
   line-height: 1.5;
+  color: var(--text);
+  max-width: 72ch;
 }
 
-.wf-row-facts {
-  display: flex;
-  gap: 14px;
-  font-size: 12px;
-  color: var(--text-dim);
-}
+/* ---- The add dialog (phase 7): name + one-line summary only, then the copyable handoff. ---- */
 
-/* The add dialog. */
 .wf-dialog-backdrop {
   position: fixed;
   inset: 0;
@@ -322,7 +430,8 @@
   overflow-y: scroll;
 }
 
-/* The detail page. */
+/* ---- The detail page (phase 7 + the switch and off banner from the register redesign). ---- */
+
 .wf-crumb {
   margin: 0 0 2px;
   font-size: 12px;
@@ -339,8 +448,56 @@
 
 .wf-detail-facts {
   display: flex;
+  align-items: center;
+  flex-wrap: wrap;
   gap: 8px;
   margin: 0 0 14px;
+}
+
+.wf-detail-switch {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: 4px;
+}
+
+.wf-off-banner {
+  margin: 0 0 14px;
+  padding: 10px 14px;
+  border: 1px solid var(--border);
+  border-left: 4px solid var(--warn);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--text-dim);
+  font-size: 13px;
+  line-height: 1.5;
+  max-width: 72ch;
+}
+
+/* The two standing facts about a workflow, as a label/value grid: they are the things you compare
+   ACROSS workflows when choosing one, so they sit in the same place on every detail page. */
+.wf-facts {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 4px 14px;
+  margin: 0 0 16px;
+}
+
+.wf-facts dt {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+  padding-top: 1px;
+}
+
+.wf-facts dd {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--text);
+  max-width: 72ch;
 }
 
 .wf-detail-steps {
