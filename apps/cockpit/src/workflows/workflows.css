@@ -9,6 +9,9 @@
 
 .wf {
   max-width: 1020px;
+  /* The register collapses on the width of THIS pane, not the viewport: with the session rail
+     open, a wide window can still leave the main pane too narrow for the full grid. */
+  container-type: inline-size;
 }
 
 .wf-eyebrow {
@@ -291,7 +294,7 @@
 
 /* On a narrow pane the grid collapses to a stacked row: spine on the left, cells flowing under
    each other; the head row (pure labels) disappears because each cell is self-describing. */
-@media (max-width: 900px) {
+@container (max-width: 900px) {
   .wf-reg-head {
     display: none;
   }

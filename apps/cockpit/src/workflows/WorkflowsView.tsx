@@ -68,8 +68,15 @@ export function WorkflowsView() {
     return byWorkflow;
   }, [runs]);
 
+  // A failed flip is never silent: the error lands in the page's error state (with Retry), and the
+  // register re-renders from the Gateway's truth rather than an optimistic guess.
   const flip = async (workflow: WorkflowDefinition, enabled: boolean) => {
-    await setWorkflowEnabled(workflow.id, enabled, "cockpit");
+    try {
+      await setWorkflowEnabled(workflow.id, enabled, "cockpit");
+    } catch (err) {
+      setError(gatewayErrorMessage(err));
+      return;
+    }
     await load();
   };
 
@@ -111,7 +118,7 @@ export function WorkflowsView() {
             <div>Workflow</div>
             <div>State</div>
             <div>Provenance</div>
-            <div>Activity</div>
+            <div>Recent activity</div>
           </div>
           {workflows.map((wf) => (
             <RegisterRow
@@ -129,7 +136,12 @@ export function WorkflowsView() {
             <span>
               Agents read and author these with <code>cc-devthrottle workflow ...</code>
             </span>
-            <button className="wf-linklike" onClick={() => setExplainerOpen((open) => !open)}>
+            <button
+              className="wf-linklike"
+              aria-expanded={explainerOpen}
+              aria-controls="wf-explainer-panel"
+              onClick={() => setExplainerOpen((open) => !open)}
+            >
               How workflows reach your agents
             </button>
           </div>
@@ -192,13 +204,17 @@ function RegisterRow({
         <div className="wf-reg-sum">{workflow.summary}</div>
       </div>
       <div className="wf-cell-state">
-        <button
-          className={off ? "wf-switch" : "wf-switch wf-switch-on"}
-          role="switch"
-          aria-checked={!off}
-          aria-label={`${workflow.name}: ${off ? "off - turn on" : "in force - turn off"}`}
-          onClick={() => onFlip(off)}
-        ></button>
+        {/* The switch renders only when the Gateway reported the enabled flag: an older Gateway
+            without the switch routes must not show a control that can only fail. */}
+        {workflow.enabled !== undefined ? (
+          <button
+            className={off ? "wf-switch" : "wf-switch wf-switch-on"}
+            role="switch"
+            aria-checked={!off}
+            aria-label={`${workflow.name}: ${off ? "off - turn on" : "in force - turn off"}`}
+            onClick={() => onFlip(off)}
+          ></button>
+        ) : null}
         <span className={`wf-state-label ${stateClass}`}>{stateLabel}</span>
       </div>
       <div className="wf-cell-prov">
@@ -220,7 +236,7 @@ function RegisterRow({
             last: {activity.newestUtc.slice(0, 10)}
           </>
         ) : runsLoaded ? (
-          <span>no runs yet</span>
+          <span>no recent runs</span>
         ) : (
           <span className="wf-off-note">activity unavailable</span>
         )}
@@ -233,7 +249,7 @@ function RegisterRow({
 // where the question gets asked.
 function Explainer() {
   return (
-    <section className="wf-explainer">
+    <section className="wf-explainer" id="wf-explainer-panel">
       <h2>How workflows reach your agents</h2>
       <dl>
         <dt>out of the box</dt>

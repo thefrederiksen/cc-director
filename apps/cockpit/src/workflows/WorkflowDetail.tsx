@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import {
   getWorkflow,
@@ -24,21 +24,28 @@ export function WorkflowDetail() {
   const [error, setError] = useState<string | null>(null);
   const [pendingOff, setPendingOff] = useState(false);
   const [pendingReset, setPendingReset] = useState(false);
+  // Every load claims a generation; a load that finishes after a newer one started (a mutation
+  // refresh racing a route change to another workflow) drops its result instead of painting
+  // workflow A's state under workflow B's URL.
+  const loadGen = useRef(0);
 
   const load = useCallback(
     async (signal?: AbortSignal) => {
       if (id === undefined) return;
+      const gen = ++loadGen.current;
       try {
         // Sequential on purpose: the metadata names a version, and the conduct is fetched PINNED to
         // that exact version - two concurrent unpinned fetches can straddle a publish and render v1
-        // steps over v2 conduct (a torn read the inspection caught).
+        // steps over v2 conduct (a torn read the inspection caught). The pin also keeps this page
+        // working for an OFF workflow, whose unversioned conduct read the Gateway refuses.
         const wf = await getWorkflow(id, signal);
         const md = await getWorkflowInstructions(id, wf.version, signal);
+        if (gen !== loadGen.current) return;
         setWorkflow(wf);
         setInstructions(md);
         setError(null);
       } catch (err) {
-        if (signal?.aborted === true) return;
+        if (signal?.aborted === true || gen !== loadGen.current) return;
         setError(gatewayErrorMessage(err));
       }
     },
@@ -51,9 +58,15 @@ export function WorkflowDetail() {
     return () => ctrl.abort();
   }, [load]);
 
+  // A failed flip or reset is never silent: it lands in the page's error state (with Retry).
   const flip = async (enabled: boolean) => {
     if (id === undefined) return;
-    await setWorkflowEnabled(id, enabled, "cockpit");
+    try {
+      await setWorkflowEnabled(id, enabled, "cockpit");
+    } catch (err) {
+      setError(gatewayErrorMessage(err));
+      return;
+    }
     await load();
   };
 
@@ -171,10 +184,14 @@ export function WorkflowDetail() {
         confirmLabel="Reset to shipped"
         danger={false}
         onConfirm={async () => {
-          if (id !== undefined) {
+          if (id === undefined) return;
+          try {
             await resetWorkflow(id);
-            await load();
+          } catch (err) {
+            setError(gatewayErrorMessage(err));
+            return;
           }
+          await load();
         }}
         onClose={() => setPendingReset(false)}
       />
