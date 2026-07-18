@@ -104,6 +104,30 @@ public sealed class DirectorHubTests : IDisposable
         Assert.True(Assert.Single(reg.Entries()).IsDeferred); // still deferred, not armed
     }
 
+    [Fact]
+    public void ARejectedSnapshotFromASupersededConnection_DoesNotDeleteAnArmedSnooze()
+    {
+        // Inspection round 2, finding 4: the SNAPSHOT path is gated on ApplySnapshot acceptance too, not
+        // only the delta path. Reconnect and periodic reseeds arrive as PushSnapshot, so a rejected/stale
+        // snapshot must not reach ObserveSnapshot and delete a snooze the current connection owns.
+        var reg = new SnoozeRegistry(Path.Combine(_tempDir, "snooze-f4.json"));
+        var obs = new SnoozeLandingObserver(reg, () => _now);
+
+        var (hub1, _) = NewHub("conn-1", obs);
+        hub1.Hello(Hello("dir-A"));
+        hub1.PushSnapshot(1, new[] { Session("s1", "WaitingForInput") });
+        reg.Snooze("s1", _now.AddHours(12), "dir-A"); // armed
+
+        var (hub2, _) = NewHub("conn-2", obs);
+        hub2.Hello(Hello("dir-A")); // supersede conn-1
+
+        // A late full SNAPSHOT on the superseded conn-1 is rejected by ApplySnapshot; it must not reach the
+        // working edge through ObserveSnapshot.
+        hub1.PushSnapshot(2, new[] { Session("s1", "Working") });
+
+        Assert.True(reg.Contains("s1")); // the armed snooze survived a rejected snapshot
+    }
+
     private static DirectorStreamHello Hello(string directorId) => new() { DirectorId = directorId, Version = "test" };
 
     private static SessionDto Session(string id, string state = "Working") => new() { SessionId = id, ActivityState = state };
