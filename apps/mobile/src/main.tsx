@@ -72,11 +72,16 @@ function GatedLayout() {
   // The file viewer was missed when the pill was first moved inline (caught in review of #1631) - it is
   // under /session/ but does not use SessionAppBar, so it silently lost its pill. Add a new /session/
   // route and you own its pill too.
-  const onSessionScreen = useLocation().pathname.startsWith("/session/");
+  // The roster (Home, "/") also gives the pill a real home on its header row now - an inline item in the
+  // middle of the bar, the same as the session screens - so the fixed overlay stands down there too. It
+  // used to sit fixed in the top-right corner and land on top of the roster's filter button.
+  const pathname = useLocation().pathname;
+  const onSessionScreen = pathname.startsWith("/session/");
+  const onHome = pathname === "/";
   return (
     <>
       <ConnectionBanner />
-      {!onSessionScreen && <StatusPill />}
+      {!onSessionScreen && !onHome && <StatusPill />}
       <Outlet />
     </>
   );
