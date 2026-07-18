@@ -1,4 +1,6 @@
+using System.Text.Json;
 using CcDirector.Core.Utilities;
+using CcDirector.Gateway.Contracts;
 using CcDirector.Gateway.Workflows;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
@@ -23,9 +25,23 @@ namespace CcDirector.Gateway.Api;
 /// Director picks them up.
 ///
 /// The catalog is PERSISTED (Workflows mission, phase 1): reads come from the WorkflowStore (EF data
-/// layer), where the built-ins are seeded at startup and user-defined workflows will live beside
-/// them. The legacy read shape is frozen - fields are only ever ADDED. Authoring routes are the next
-/// phase. Inherits the host-wide token middleware, like every other Gateway route.
+/// layer), where the built-ins are seeded at startup and user-defined workflows live beside them.
+/// The legacy read shape is frozen - fields are only ever ADDED.
+///
+/// Authoring (phase 2) - drafts are the safety boundary, publish is the fleet-visible act:
+///
+///   POST   /gateway/workflows                        body WorkflowContentRequest -> 201 detail | 400 | 409
+///   PUT    /gateway/workflows/{id}/draft             body WorkflowContentRequest, optional If-Match
+///                                                    (content hash) -> 200 detail | 400 | 404 | 409
+///   POST   /gateway/workflows/{id}/publish           -> 200 WorkflowDto | 400 | 404
+///   POST   /gateway/workflows/{id}/reset             built-ins: republish shipped -> 200 | 400 | 404
+///   DELETE /gateway/workflows/{id}                   archive (never a built-in) -> 200 | 400 | 404
+///   GET    /gateway/workflows/{id}/versions          -> { versions: [...] } | 404
+///   GET    /gateway/workflows/{id}/versions/{n}      -> full content snapshot | 404
+///   GET    /gateway/workflows/{id}/instructions      raw text/markdown (agent read path) | 404
+///   GET    /gateway/workflows/{id}/files/{fileName}  raw text/plain | 404
+///
+/// Inherits the host-wide token middleware, like every other Gateway route.
 /// </summary>
 internal static class WorkflowEndpoints
 {
@@ -51,5 +67,140 @@ internal static class WorkflowEndpoints
             FileLog.Write($"[WorkflowEndpoints] get workflow: id={id}, result=found");
             return Results.Json(workflow);
         });
+
+        // ---- authoring (Workflows mission, phase 2) -----------------------------------------------
+        // Drafts are the safety boundary; publish is the fleet-visible act. Agents may publish (owner
+        // ruling, 2026-07-17) - authorship is recorded on every version and a bad publish is fixed by
+        // publishing again.
+
+        app.MapPost("/gateway/workflows", async (HttpContext ctx) =>
+        {
+            var content = await ReadBody(ctx);
+            if (content is null)
+                return Results.BadRequest(new { error = "a workflow body is required" });
+            return Guard(() =>
+            {
+                var created = store.CreateDraft(content);
+                FileLog.Write($"[WorkflowEndpoints] create workflow: id={created.WorkflowId}, draft v{created.Version}");
+                return Results.Json(created, statusCode: StatusCodes.Status201Created);
+            });
+        });
+
+        app.MapPut("/gateway/workflows/{id}/draft", async (string id, HttpContext ctx) =>
+        {
+            var content = await ReadBody(ctx);
+            if (content is null)
+                return Results.BadRequest(new { error = "a workflow body is required" });
+            var ifMatch = ReadIfMatch(ctx);
+            return Guard(() =>
+            {
+                var updated = store.UpdateDraft(id, content, ifMatch);
+                if (updated is null)
+                    return NotFound(id);
+                FileLog.Write($"[WorkflowEndpoints] update draft: id={id}, v{updated.Version}");
+                return Results.Json(updated);
+            });
+        });
+
+        app.MapPost("/gateway/workflows/{id}/publish", (string id) => Guard(() =>
+        {
+            var published = store.Publish(id);
+            if (published is null)
+                return NotFound(id);
+            FileLog.Write($"[WorkflowEndpoints] publish: id={id}, v{published.Version}");
+            return Results.Json(published);
+        }));
+
+        app.MapPost("/gateway/workflows/{id}/reset", (string id) => Guard(() =>
+        {
+            var reset = store.ResetToShipped(id);
+            if (reset is null)
+                return NotFound(id);
+            FileLog.Write($"[WorkflowEndpoints] reset to shipped: id={id}, v{reset.Version}");
+            return Results.Json(reset);
+        }));
+
+        app.MapDelete("/gateway/workflows/{id}", (string id) => Guard(() =>
+        {
+            if (!store.Archive(id))
+                return NotFound(id);
+            FileLog.Write($"[WorkflowEndpoints] archive: id={id}");
+            return Results.Json(new { id, archived = true });
+        }));
+
+        app.MapGet("/gateway/workflows/{id}/versions", (string id) =>
+        {
+            var versions = store.ListVersions(id);
+            return versions is null ? NotFound(id) : Results.Json(new { versions });
+        });
+
+        app.MapGet("/gateway/workflows/{id}/versions/{version:int}", (string id, int version) =>
+        {
+            var detail = store.GetVersionDetail(id, version);
+            return detail is null ? NotFound(id) : Results.Json(detail);
+        });
+
+        // The agent read path: raw markdown, no JSON envelope, so `cc-devthrottle workflow
+        // instructions <id>` can print it verbatim into an agent's context.
+        app.MapGet("/gateway/workflows/{id}/instructions", (string id, int? version) =>
+        {
+            var markdown = store.GetInstructions(id, version);
+            return markdown is null ? NotFound(id) : Results.Text(markdown, "text/markdown");
+        });
+
+        app.MapGet("/gateway/workflows/{id}/files/{fileName}", (string id, string fileName, int? version) =>
+        {
+            var content = store.GetFileContent(id, fileName, version);
+            return content is null
+                ? Results.Json(new { error = $"no file '{fileName}' on workflow '{id}'" },
+                    statusCode: StatusCodes.Status404NotFound)
+                : Results.Text(content, "text/plain");
+        });
     }
+
+    private static readonly JsonSerializerOptions JsonOpts = new() { PropertyNameCaseInsensitive = true };
+
+    private static async Task<WorkflowContentRequest?> ReadBody(HttpContext ctx)
+    {
+        try
+        {
+            return await JsonSerializer.DeserializeAsync<WorkflowContentRequest>(
+                ctx.Request.Body, JsonOpts, ctx.RequestAborted);
+        }
+        catch (JsonException ex)
+        {
+            FileLog.Write($"[WorkflowEndpoints] bad JSON body: {ex.Message}");
+            return null;
+        }
+    }
+
+    /// <summary>The If-Match header as a bare hash (clients may send it RFC-quoted).</summary>
+    private static string? ReadIfMatch(HttpContext ctx)
+    {
+        string? raw = ctx.Request.Headers.IfMatch;
+        return string.IsNullOrWhiteSpace(raw) ? null : raw.Trim().Trim('"');
+    }
+
+    /// <summary>Translate the store's authoring exceptions to their status codes.</summary>
+    private static IResult Guard(Func<IResult> action)
+    {
+        try
+        {
+            return action();
+        }
+        catch (WorkflowValidationException ex)
+        {
+            FileLog.Write($"[WorkflowEndpoints] rejected: {ex.Message}");
+            return Results.BadRequest(new { error = ex.Message });
+        }
+        catch (WorkflowConflictException ex)
+        {
+            FileLog.Write($"[WorkflowEndpoints] conflict: {ex.Message}");
+            return Results.Json(new { error = ex.Message }, statusCode: StatusCodes.Status409Conflict);
+        }
+    }
+
+    private static IResult NotFound(string id) =>
+        Results.Json(new { error = $"no workflow with id '{id}'" },
+            statusCode: StatusCodes.Status404NotFound);
 }
