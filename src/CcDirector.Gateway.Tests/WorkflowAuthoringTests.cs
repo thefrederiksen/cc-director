@@ -97,9 +97,13 @@ public sealed class WorkflowAuthoringTests : IDisposable
         Assert.Equal("verify.py", updated.Files[0].FileName);
 
         // A DRAFT is never served by the pinned-read routes (it is mutable, so it cannot be pinned
-        // history); the file becomes readable the moment the version publishes.
+        // history); the file becomes readable the moment the version publishes. The AUTHORING read
+        // (the version detail) does carry the draft's file content - that is what the CLI's pull
+        // round-trips, drafts included.
         Assert.Null(store.GetFileContent("release-train", "verify.py", version: 1));
         Assert.Null(store.GetInstructions("release-train", version: 1));
+        Assert.Equal("print('verify')",
+            store.GetVersionDetail("release-train", 1)!.Files.Single().Content);
         store.Publish("release-train");
         Assert.Equal("print('verify')",
             store.GetFileContent("release-train", "verify.py", version: 1));

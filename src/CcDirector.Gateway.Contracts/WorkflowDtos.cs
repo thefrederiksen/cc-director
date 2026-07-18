@@ -72,12 +72,14 @@ public sealed class WorkflowFileDto
     public string Content { get; set; } = "";
 }
 
-/// <summary>A helper file reference without its content (detail responses; content is served raw by
-/// <c>GET /gateway/workflows/{id}/files/{fileName}</c>).</summary>
+/// <summary>A helper file in a version-detail response. Carries the full content: the detail route is
+/// the authoring read (the CLI pulls a complete directory from it, drafts included - the raw
+/// <c>files/{fileName}</c> route serves only pinned, non-draft versions).</summary>
 public sealed class WorkflowFileInfoDto
 {
     public string FileName { get; set; } = "";
     public string ContentHash { get; set; } = "";
+    public string Content { get; set; } = "";
 }
 
 /// <summary>One row of a workflow's version history (no content bodies).</summary>
