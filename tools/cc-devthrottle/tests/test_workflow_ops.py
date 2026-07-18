@@ -160,6 +160,83 @@ class TestPullPushRoundTrip:
         client.update_draft.assert_not_called()
 
 
+class TestInspectionHardening:
+    def test_pull_refuses_an_unsafe_server_supplied_file_name(self, tmp_path):
+        detail = dict(DETAIL)
+        detail["files"] = [{"fileName": "..\\escape.py", "contentHash": "x", "content": "boom"}]
+        client = MagicMock()
+        client.list_versions.return_value = [{"version": 2, "status": "draft"}]
+        client.get_version_detail.return_value = detail
+        with patch.object(workflow_ops, "_client", return_value=client):
+            result = runner.invoke(
+                app, ["workflow", "pull", "release-train", "--dir", str(tmp_path)]
+            )
+        assert result.exit_code == 1
+        assert not (tmp_path.parent / "escape.py").exists()
+
+    def test_repull_removes_helpers_the_server_no_longer_has(self, tmp_path):
+        client = MagicMock()
+        client.list_versions.return_value = [{"version": 2, "status": "draft"}]
+        client.get_version_detail.return_value = DETAIL
+        with patch.object(workflow_ops, "_client", return_value=client):
+            workflow_ops.pull_workflow("release-train", str(tmp_path), None)
+        # Another author deletes the helper on the Gateway; the next pull must not leave the
+        # local copy behind to be resurrected by the next push.
+        no_files = dict(DETAIL)
+        no_files["files"] = []
+        client.get_version_detail.return_value = no_files
+        with patch.object(workflow_ops, "_client", return_value=client):
+            workflow_ops.pull_workflow("release-train", str(tmp_path), None)
+        assert not (tmp_path / "helpers" / "verify.py").exists()
+
+    def test_push_update_without_sidecar_is_refused_unless_forced(self, tmp_path):
+        (tmp_path / "workflow.json").write_text(
+            json.dumps({"id": "release-train", "name": "n", "summary": "s"}), encoding="utf-8"
+        )
+        client = MagicMock()
+        client.workflow_exists.return_value = True
+        client.update_draft.return_value = {"version": 3, "contentHash": "h"}
+        with patch.object(workflow_ops, "_client", return_value=client):
+            refused = runner.invoke(
+                app, ["workflow", "push", "release-train", "--dir", str(tmp_path)]
+            )
+            assert refused.exit_code == 1
+            client.update_draft.assert_not_called()
+
+            forced = runner.invoke(
+                app, ["workflow", "push", "release-train", "--dir", str(tmp_path), "--force"]
+            )
+            assert forced.exit_code == 0
+            client.update_draft.assert_called_once()
+
+    def test_wrong_shaped_workflow_json_fails_cleanly(self, tmp_path):
+        (tmp_path / "workflow.json").write_text("[]", encoding="utf-8")
+        client = MagicMock()
+        with patch.object(workflow_ops, "_client", return_value=client):
+            result = runner.invoke(
+                app, ["workflow", "push", "x-flow", "--dir", str(tmp_path)]
+            )
+        assert result.exit_code == 1
+        client.create.assert_not_called()
+
+    def test_round_trip_preserves_carriage_returns_exactly(self, tmp_path):
+        detail = dict(DETAIL)
+        detail["instructionsMarkdown"] = "line one\r\nline two\n"
+        client = MagicMock()
+        client.list_versions.return_value = [{"version": 2, "status": "draft"}]
+        client.get_version_detail.return_value = detail
+        with patch.object(workflow_ops, "_client", return_value=client):
+            workflow_ops.pull_workflow("release-train", str(tmp_path), None)
+
+        push_client = MagicMock()
+        push_client.workflow_exists.return_value = True
+        push_client.update_draft.return_value = {"version": 2, "contentHash": "h"}
+        with patch.object(workflow_ops, "_client", return_value=push_client):
+            workflow_ops.push_workflow("release-train", str(tmp_path), None)
+        body = push_client.update_draft.call_args.args[1]
+        assert body["instructionsMarkdown"] == "line one\r\nline two\n"
+
+
 class TestAuthoringVersionPick:
     def test_draft_wins_over_published(self):
         rows = [{"version": 3, "status": "published"}, {"version": 4, "status": "draft"}]

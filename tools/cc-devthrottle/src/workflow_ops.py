@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import socket
 import sys
 from pathlib import Path
@@ -222,6 +223,34 @@ def _client() -> WorkflowClient:
     return WorkflowClient(base_url=gateway_override)
 
 
+def _safe_file_name(name: str) -> str:
+    """Refuse any server-supplied file name that is not a bare name. The Gateway validates names on
+    write, but this CLI must not trust that: a misconfigured, older, or hostile server must not be
+    able to steer a write outside the pull or cache directory."""
+    if (
+        not name
+        or name in (".", "..")
+        or "/" in name
+        or "\\" in name
+        or ":" in name
+        or name != name.strip()
+    ):
+        raise GatewayError(f"The Gateway returned an unsafe helper file name: '{name}'.")
+    return name
+
+
+def _write_exact(path: Path, text: str) -> None:
+    """Write text with NO newline translation, so pull/push round-trips are value-faithful even for
+    content that already contains carriage returns."""
+    with path.open("w", encoding="utf-8", newline="") as handle:
+        handle.write(text)
+
+
+def _read_exact(path: Path) -> str:
+    with path.open("r", encoding="utf-8", newline="") as handle:
+        return handle.read()
+
+
 def _pick_authoring_version(versions: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
     """The version an author edits next: the draft when one exists, else the published head."""
     for row in versions:
@@ -323,15 +352,14 @@ def show_workflow(workflow_id: str, version: Optional[int], json_output: bool) -
 
 
 def print_instructions(workflow_id: str, version: Optional[int]) -> None:
-    """Print the raw conduct markdown, unmangled - this output goes into an agent's context."""
+    """Print the raw conduct markdown, verbatim - this output goes into an agent's context, so
+    nothing is appended, rendered, or wrapped."""
     try:
         markdown = _client().get_instructions(workflow_id, version)
     except GatewayError as ex:
         _fail(str(ex))
         return
     sys.stdout.write(markdown)
-    if markdown and not markdown.endswith("\n"):
-        sys.stdout.write("\n")
 
 
 def list_versions(workflow_id: str, json_output: bool) -> None:
@@ -390,15 +418,17 @@ def pull_workflow(workflow_id: str, directory: str, version: Optional[int]) -> N
         "outcomeCriteria": detail.get("outcomeCriteria") or [],
     }
     (target / WORKFLOW_JSON).write_text(json.dumps(metadata, indent=2) + "\n", encoding="utf-8")
-    (target / INSTRUCTIONS_MD).write_text(
-        detail.get("instructionsMarkdown") or "", encoding="utf-8"
-    )
+    _write_exact(target / INSTRUCTIONS_MD, detail.get("instructionsMarkdown") or "")
+    # The helpers directory mirrors the SERVER exactly: clear it first, so a helper another author
+    # deleted on the Gateway does not survive locally and get resurrected by the next push.
+    helpers = target / HELPERS_DIR
+    if helpers.is_dir():
+        shutil.rmtree(helpers)
     files = detail.get("files") or []
     if files:
-        helpers = target / HELPERS_DIR
-        helpers.mkdir(exist_ok=True)
+        helpers.mkdir()
         for f in files:
-            (helpers / f["fileName"]).write_text(f.get("content") or "", encoding="utf-8")
+            _write_exact(helpers / _safe_file_name(f["fileName"]), f.get("content") or "")
     (target / HASH_SIDECAR).write_text(detail.get("contentHash", ""), encoding="utf-8")
 
     console.print(
@@ -422,6 +452,11 @@ def _read_directory(workflow_id: str, directory: str, note: Optional[str]) -> Di
             metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
         except ValueError as exc:
             raise GatewayError(f"{WORKFLOW_JSON} is not valid JSON: {exc}") from exc
+        if not isinstance(metadata, dict):
+            raise GatewayError(
+                f"{WORKFLOW_JSON} must be a JSON object with the workflow's metadata, "
+                f"not {type(metadata).__name__}."
+            )
     declared_id = (metadata.get("id") or "").strip()
     if declared_id and declared_id != workflow_id:
         raise GatewayError(
@@ -430,18 +465,14 @@ def _read_directory(workflow_id: str, directory: str, note: Optional[str]) -> Di
         )
 
     instructions_path = source / INSTRUCTIONS_MD
-    instructions = (
-        instructions_path.read_text(encoding="utf-8") if instructions_path.is_file() else ""
-    )
+    instructions = _read_exact(instructions_path) if instructions_path.is_file() else ""
 
     files: List[Dict[str, str]] = []
     helpers = source / HELPERS_DIR
     if helpers.is_dir():
         for path in sorted(helpers.iterdir()):
             if path.is_file():
-                files.append(
-                    {"fileName": path.name, "content": path.read_text(encoding="utf-8")}
-                )
+                files.append({"fileName": path.name, "content": _read_exact(path)})
 
     return {
         "id": workflow_id,
@@ -458,7 +489,7 @@ def _read_directory(workflow_id: str, directory: str, note: Optional[str]) -> Di
     }
 
 
-def push_workflow(workflow_id: str, directory: str, note: Optional[str]) -> None:
+def push_workflow(workflow_id: str, directory: str, note: Optional[str], force: bool = False) -> None:
     try:
         client = _client()
         body = _read_directory(workflow_id, directory, note)
@@ -471,6 +502,13 @@ def push_workflow(workflow_id: str, directory: str, note: Optional[str]) -> None
             if_match = (
                 sidecar.read_text(encoding="utf-8").strip() if sidecar.is_file() else None
             )
+            if not if_match and not force:
+                raise GatewayError(
+                    f"No {HASH_SIDECAR} sidecar in {directory}, so this push cannot prove it "
+                    "builds on the current content and could silently overwrite another "
+                    "author's edit. Pull first (which writes the sidecar), or pass --force to "
+                    "overwrite deliberately."
+                )
             result = client.update_draft(workflow_id, body, if_match)
             verb = "Updated"
     except GatewayError as ex:
@@ -479,7 +517,15 @@ def push_workflow(workflow_id: str, directory: str, note: Optional[str]) -> None
 
     new_hash = result.get("contentHash", "")
     if new_hash:
-        (Path(directory) / HASH_SIDECAR).write_text(new_hash, encoding="utf-8")
+        try:
+            (Path(directory) / HASH_SIDECAR).write_text(new_hash, encoding="utf-8")
+        except OSError as exc:
+            _fail(
+                f"The draft WAS updated on the Gateway (v{result.get('version')}), but the local "
+                f"hash sidecar could not be written: {exc}. Run 'cc-devthrottle workflow pull "
+                f"{workflow_id} --dir \"{directory}\"' to resynchronize before the next push."
+            )
+            return
     console.print(
         f"{verb} draft v{result.get('version')} of '{workflow_id}'. "
         "Nothing changes for the fleet until it publishes: "
@@ -553,19 +599,30 @@ def materialize_workflow(workflow_id: str, version: Optional[int]) -> None:
     root = Path(local_app_data) / "cc-director" / "workflows" / workflow_id / str(version)
     hash_file = root / HASH_SIDECAR
     expected = detail.get("contentHash", "")
-    if hash_file.is_file() and hash_file.read_text(encoding="utf-8").strip() == expected:
+    files = detail.get("files") or []
+    for f in files:
+        _safe_file_name(f["fileName"])
+
+    # The sidecar alone is not proof the bundle is intact - every listed file must actually exist,
+    # or a deleted/half-written cache would be reported as materialized forever.
+    intact = (
+        hash_file.is_file()
+        and hash_file.read_text(encoding="utf-8").strip() == expected
+        and (root / INSTRUCTIONS_MD).is_file()
+        and all((root / HELPERS_DIR / f["fileName"]).is_file() for f in files)
+    )
+    if intact:
         console.print(f"Already materialized: {root}")
     else:
         root.mkdir(parents=True, exist_ok=True)
-        (root / INSTRUCTIONS_MD).write_text(
-            detail.get("instructionsMarkdown") or "", encoding="utf-8"
-        )
-        files = detail.get("files") or []
+        _write_exact(root / INSTRUCTIONS_MD, detail.get("instructionsMarkdown") or "")
+        helpers = root / HELPERS_DIR
+        if helpers.is_dir():
+            shutil.rmtree(helpers)
         if files:
-            helpers = root / HELPERS_DIR
-            helpers.mkdir(exist_ok=True)
+            helpers.mkdir()
             for f in files:
-                (helpers / f["fileName"]).write_text(f.get("content") or "", encoding="utf-8")
+                _write_exact(helpers / _safe_file_name(f["fileName"]), f.get("content") or "")
         hash_file.write_text(expected, encoding="utf-8")
         console.print(f"Materialized '{workflow_id}' v{version} into {root}")
 

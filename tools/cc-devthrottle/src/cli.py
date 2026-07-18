@@ -858,9 +858,15 @@ def workflow_push(
     workflow_id: str = typer.Argument(..., help="The workflow id."),
     directory: str = typer.Option(..., "--dir", "-d", help="Directory holding the workflow files."),
     note: Optional[str] = typer.Option(None, "--note", help="One line describing what changed."),
+    force: bool = typer.Option(
+        False,
+        "--force",
+        help="Push an update WITHOUT the .workflow-hash sidecar (skips the stale-copy check; "
+        "may overwrite another author's edit).",
+    ),
 ) -> None:
     """Push a Workflow directory to the Gateway as a draft (creates the Workflow if new)."""
-    workflow_ops.push_workflow(workflow_id, directory, note)
+    workflow_ops.push_workflow(workflow_id, directory, note, force)
 
 
 @workflow_app.command("publish")
