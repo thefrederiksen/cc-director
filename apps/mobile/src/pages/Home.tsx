@@ -10,6 +10,7 @@ import { useNow, waitingLabel } from "@devthrottle/client-core/sessions/waiting"
 import { playClip, playingSid, rowVoiceInputs, stopPlayback, syncVoiceSessions, useVoiceClips } from "@devthrottle/client-core/voice/clips";
 import { isVoiceReady, voiceRowState } from "@devthrottle/client-core/voice/voiceRowState";
 import { NavDrawer } from "../components/NavDrawer";
+import { StatusPill } from "../components/StatusPill";
 import { SessionFilterPanel } from "../components/SessionFilterPanel";
 import { useSessionFilter } from "../hooks/useSessionFilter";
 import { enablePush, notificationPermission, pushSupported, reconcileBadge } from "@devthrottle/client-core/push/register";
@@ -134,7 +135,14 @@ export function Home() {
       <header className="app-bar">
         <NavDrawer />
         <h1>DevThrottle</h1>
-        <span className="app-bar-sub">Mission Control</span>
+        {/* Two spacers put the network pill in the MIDDLE of the bar, exactly as the session screens do
+            (see SessionAppBar). It used to be a fixed top-right overlay that landed on top of the filter
+            button in the corner; now it rides the row as an ordinary inline item. The "Mission Control"
+            subtitle was dropped to give the pill this room - the header title already says what screen
+            this is. GatedLayout stands the fixed pill down on the roster so it is not shown twice. */}
+        <div className="app-bar-spacer" />
+        <StatusPill inline />
+        <div className="app-bar-spacer" />
         {/* The funnel opens the full-screen filter panel and doubles as the "filter active" indicator
             (a dot appears when a machine/repo filter is applied), so it is both the one-tap entry point
             and the status light - no separate menu item needed. */}

@@ -59,6 +59,13 @@ body {
   color: var(--text-dim);
 }
 
+/* Splits the leftover width so the inline network pill sits in the MIDDLE of the roster header, the
+   same way .session-bar-spacer centres it on the session screens. Two of these, one each side. */
+.app-bar-spacer {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
 .back-link,
 .row-link {
   color: inherit;
@@ -478,7 +485,9 @@ a.banner-btn {
 /* The app-bar funnel button, pushed to the right of the title. margin-left:auto floats it to the far
    edge; it is a >=34px tap target with the same chrome as the hamburger for visual symmetry. */
 .filter-btn {
-  margin-left: auto;
+  /* The right .app-bar-spacer now pushes this to the edge. An auto left-margin here would instead
+     eat that spacer whole (auto margins consume free space before flex-grow), un-centring the pill. */
+  margin-left: 0;
   align-self: center;
   position: relative;
   display: inline-flex;
