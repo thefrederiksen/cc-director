@@ -352,6 +352,8 @@ public sealed class GatewayHost : IAsyncDisposable
     private readonly Governance.GovernanceAuditLog _governanceAudit;
     // Fills session_spend at each turn-end from the pushed roster snapshot (issue #1771, spine item 3).
     private readonly Governance.SessionSpendEmitter _sessionSpendEmitter;
+    // Fills the governance event ledger with session state transitions (issue #1771, spine item 2).
+    private readonly Governance.SessionStateEventEmitter _sessionStateEmitter;
     // The weekly Outcome Ledger reporter (issue #1771, spine item 4): a read-only assembly over the run
     // tables, event ledger, spend, and audit trail - the first governance report that pays rent.
     private readonly Governance.OutcomeLedgerReporter _outcomeLedger;
@@ -635,6 +637,7 @@ public sealed class GatewayHost : IAsyncDisposable
         // sandbox decisions on the EF data layer, so a Gateway restart never loses a recorded audit fact.
         _governanceAudit = new Governance.GovernanceAuditLog(_gatewayDb);
         _sessionSpendEmitter = new Governance.SessionSpendEmitter(_sessionSpend);
+        _sessionStateEmitter = new Governance.SessionStateEventEmitter(_governanceEvents);
         // The weekly Outcome Ledger reporter (issue #1771, spine item 4): read-only over the run tables +
         // event ledger + spend + audit trail. No store of its own.
         _outcomeLedger = new Governance.OutcomeLedgerReporter(_gatewayDb);
@@ -1447,6 +1450,18 @@ public sealed class GatewayHost : IAsyncDisposable
                 // directorId, so feed THAT to the watcher (the voice-refresh path reaches the Director
                 // through the tunnel by id) instead of converting it to a dialable control URL.
                 _turnEndWatcher.Observe(sessionId, newState, directorId);
+
+                // Governance capture (issue #1771, spine item 2): record this session's state transition on
+                // the append-only ledger (emits only on a real change; isolated so a ledger hiccup never
+                // breaks the turn tracking above).
+                try
+                {
+                    _sessionStateEmitter.Observe(sessionId, newState);
+                }
+                catch (Exception ex)
+                {
+                    FileLog.Write($"[GatewayHost] session-state event emit FAILED: sid={sessionId}: {ex.Message}");
+                }
             },
             // Issue #549: the assessed-state refutation (issue #186) is dropped with the pipeline
             // (Option A) - "needs you" reverts to the Director's raw mechanical signal. The
