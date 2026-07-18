@@ -110,7 +110,13 @@ internal static class GatewayEndpoints
         // to build its own defaults, byte-identical to before.
         Core.KeyVault? recordingKeyVault = null,
         Transcription.TranscriptionTelemetryLog? transcriptionTelemetry = null,
-        Transcription.TranscriptionAudioArchive? transcriptionAudioArchive = null)
+        Transcription.TranscriptionAudioArchive? transcriptionAudioArchive = null,
+        // Round 4 finding 1: the reliable display-state channel, so the hold endpoint can TRIGGER a prompt
+        // push of the folded HoldState after a snooze / unsnooze instead of sending its own second hold
+        // command. This makes FleetDisplayStateObserver the single writer of the Director's raw hold. Null
+        // (old callers, tests) leaves the endpoint to record the registry only, and the periodic sweep
+        // reconciles the desktop.
+        Fleet.FleetDisplayStateObserver? fleetDisplayState = null)
     {
         // The old issue #1188 "session lock" (423 Locked on human input while a PENDING dictation record
         // existed) was removed deliberately (issue #1308). This is a single-operator tool: a collision
@@ -1337,18 +1343,16 @@ internal static class GatewayEndpoints
                 snoozeRegistry.Clear(sid);
             }
 
-            // The hold is now a FACT, recorded and persisted here. What follows is the display mirror: push
-            // the ruling down so the owning Director's desktop rail can render it. Best-effort BY DESIGN -
-            // the hold does not depend on it. A Director that is slow, unreachable or dead cannot prevent
-            // the owner from holding a session, which is the entire reason the state moved here; the fold
-            // already reports the truth to every other surface from the registry, and the next push
-            // reconciles the desktop.
-            var pushed = await DirectorCommandRouter.TrySendAsync(
-                sendCommand, director.DirectorId, "hold", sid,
-                new HoldRequest { OnHold = holdReq.OnHold, SnoozeMinutes = holdReq.SnoozeMinutes, HoldState = decided },
-                ct, machineName: director.MachineName);
-            if (pushed is null || !pushed.Ok)
-                FileLog.Write($"[GatewayEndpoints] hold: sid={sid} decided={decided} and RECORDED, but the mirror push to director={director.DirectorId} did not land; the hold stands and the desktop reconciles on the next push");
+            // The hold is now a FACT, recorded and persisted in the registry. Round 4 finding 1: the desktop
+            // rail is updated through the ONE reliable channel, not a second direct hold command. Trigger a
+            // prompt push of the FOLDED hold state (from the registry we just changed) down the same
+            // change-gated FleetDisplayStateObserver that serves every other surface - so there is a single
+            // writer of the Director's raw hold and no descheduled second writer can leave it stale. Best-
+            // effort BY DESIGN: the hold does not depend on it - a slow, unreachable or dead Director cannot
+            // prevent the owner from holding a session, and the fold already reports the truth to every other
+            // surface from the registry, with the periodic sweep reconciling the desktop.
+            if (fleetDisplayState is not null)
+                await fleetDisplayState.PushSessionAsync(sid);
 
             return Results.Json(new HoldResponse
             {

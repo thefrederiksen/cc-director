@@ -1478,7 +1478,11 @@ public sealed class GatewayHost : IAsyncDisposable
             snoozeRegistry: _snoozeRegistry,
             // Gateway Cleanup mission (Wave 4b): the Gateway-native mission store backs POST/GET /missions and
             // mission-scoped spawn validation. Missions are a fleet concept, so their source of truth is here.
-            missions: Missions);
+            missions: Missions,
+            // Round 4 finding 1: the hold endpoint triggers a prompt display-state push through this ONE
+            // channel after a snooze / unsnooze, instead of sending its own second hold command - the single
+            // writer of the Director's raw hold.
+            fleetDisplayState: FleetDisplayState);
 
         // Issue #268: the two raw per-session WebSocket legs (live Terminal stream + dictation)
         // proxied through the Gateway so a remote Cockpit talks same-origin to the Gateway and

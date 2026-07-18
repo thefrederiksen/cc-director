@@ -499,6 +499,31 @@ public sealed class SnoozeEndToEndTests : IAsyncLifetime
         Assert.Equal(HoldStates.Held, fake.CurrentHoldState("r5"));
     }
 
+    [Fact]
+    public async Task The_real_hold_endpoint_is_not_a_second_writer_and_work_leaves_no_stale_hold()
+    {
+        // ROUND 4 FINDING 1. The POST /hold endpoint used to send its own hold command carrying the decided
+        // HoldState - a SECOND writer that could land a stale Held after the reliable channel already sent
+        // None, defeating the change gate forever. Now the endpoint records the registry and triggers the ONE
+        // reliable display-state channel, which stamps the CURRENT folded hold down. It sends NO hold command.
+        var fake = await StartFakeAsync("h1", onHold: false);
+
+        // Snooze via the REAL endpoint. The reliable channel carried the hold down promptly (awaited), and no
+        // hold command was sent.
+        var resp = await _http.PostAsJsonAsync("sessions/h1/hold", new HoldRequest { OnHold = true, SnoozeMinutes = 12 * 60 });
+        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+        Assert.Equal(HoldStates.Held, fake.CurrentHoldState("h1")); // delivered by the reliable channel
+        Assert.Empty(fake.HoldCalls("h1"));                          // SINGLE WRITER: the endpoint sent no hold command
+
+        // Work deletes the entry. With one writer there is no stale Held to resurrect: the raw hold ends None.
+        fake.SetActivity("h1", "Working");
+        await fake.RePushAsync();
+        await WaitForHoldAsync(fake, "h1", HoldStates.None);
+        await Task.Delay(150); // give any (reverted) second writer time to land, so the assert below is real
+        Assert.Equal(HoldStates.None, fake.CurrentHoldState("h1")); // stays None - no second writer overwrote it
+        Assert.Empty(fake.HoldCalls("h1"));                          // still no hold command from the endpoint
+    }
+
     /// <summary>Poll the fake's raw hold until it reaches the expected value (the reliable channel is
     /// fire-and-forget, so delivery is asynchronous), then assert - giving a clear failure if it never does.</summary>
     private static async Task WaitForHoldAsync(SnoozeFake fake, string sid, string expected)

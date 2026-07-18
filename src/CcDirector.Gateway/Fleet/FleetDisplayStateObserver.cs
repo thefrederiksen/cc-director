@@ -132,6 +132,41 @@ public sealed class FleetDisplayStateObserver
                 _lastSent.TryRemove(key, out _);
     }
 
+    /// <summary>
+    /// Fold the fleet and stamp ONE session's display state down NOW, awaiting delivery. This is the PROMPT
+    /// trigger the hold endpoint uses so a Snooze / Unsnooze click reaches the desktop rail immediately
+    /// instead of on the next periodic sweep - and it is what keeps this observer the SINGLE writer of the
+    /// Director's raw hold: the endpoint records the registry and calls this, rather than sending its own
+    /// hold command. Because it stamps the CURRENT fold of the CURRENT registry (not a value decided earlier),
+    /// it can never write a stale hold: if the session was worked or unsnoozed between the mutation and this
+    /// call, the fold already reads that, so there is no descheduled-writer race.
+    ///
+    /// Goes through the SAME change gate as <see cref="Sweep"/>, so an unchanged fold sends nothing and there
+    /// is never a double-send. Best-effort, like every send here: a slow or dead Director cannot fail the
+    /// hold (already recorded in the registry) - the periodic sweep and the next push reconcile the rail.
+    /// </summary>
+    public async Task PushSessionAsync(string sessionId)
+    {
+        if (string.IsNullOrEmpty(sessionId)) return;
+        var fleet = _snapshot() ?? Array.Empty<(string, SessionDto)>();
+        var toFold = fleet.Select(f => f.Session).ToList();
+        if (toFold.Count > 0)
+            _stampFold(toFold);
+
+        foreach (var (directorId, s) in fleet)
+        {
+            if (!string.Equals(s.SessionId, sessionId, StringComparison.Ordinal) || string.IsNullOrEmpty(directorId))
+                continue;
+            var signature = Signature(s);
+            // The same gate Sweep uses: if the desktop already holds this exact fold, there is nothing to
+            // send - and nothing to double-send if a push delivered it a moment ago.
+            if (_lastSent.TryGetValue(s.SessionId, out var sent) && string.Equals(sent, signature, StringComparison.Ordinal))
+                return;
+            await SendDisplayStateAsync(directorId, s, signature);
+            return;
+        }
+    }
+
     /// <summary>The fold answer as one comparable string. Any field the desktop renders changing must re-push,
     /// so every rendered field is in the signature.</summary>
     private static string Signature(SessionDto s) =>
