@@ -19,7 +19,7 @@ public static class PrerequisiteChecker
             new PrerequisiteInfo
             {
                 Name = ".NET 10 Runtime",
-                Description = "ASP.NET Core Runtime 10 (runs the Director, Gateway, and Cockpit)",
+                Description = "ASP.NET Core Runtime 10 (runs DevThrottle)",
                 IsRequired = true,
                 CanAutoInstall = true,
                 WingetId = "Microsoft.DotNet.AspNetCore.10",
