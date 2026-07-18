@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using CcDirector.Core.Utilities;
+using CcDirector.Gateway.Api;
 using CcDirector.Gateway.Contracts;
 
 namespace CcDirector.Gateway.Fleet;
@@ -142,10 +143,21 @@ public sealed class FleetDisplayStateObserver
     /// call, the fold already reads that, so there is no descheduled-writer race.
     ///
     /// Goes through the SAME change gate as <see cref="Sweep"/>, so an unchanged fold sends nothing and there
-    /// is never a double-send. Best-effort, like every send here: a slow or dead Director cannot fail the
-    /// hold (already recorded in the registry) - the periodic sweep and the next push reconcile the rail.
+    /// is never a double-send.
+    ///
+    /// BOUNDED AND CANCELLABLE (round 5 finding 1). This runs on the user's Snooze / Unsnooze CLICK path, so
+    /// it must never hang. Unlike <see cref="Sweep"/> - a fire-and-forget backstop that can send with no
+    /// deadline - it routes the send through the SAME <see cref="DirectorCommandRouter.TrySendAsync"/> 30s
+    /// linked-timeout chokepoint every other Gateway-to-Director command uses, carrying the endpoint's
+    /// request token <paramref name="ct"/>. A connected-but-unresponsive Director then times out at 30s (or
+    /// the browser cancelling the request cancels the wait) instead of leaving the click pending forever. It
+    /// is best-effort either way: the hold is already recorded in the registry (the authoritative result), so
+    /// a timeout or an unreachable Director does not fail the endpoint - the periodic sweep (&lt;=5s) and the
+    /// next push reconcile the rail. The gate is recorded ONLY when the Director actually took the fold (Ok,
+    /// or a rollout BadRequest from an old Director that does not know the verb yet); a timeout or a tunnel
+    /// drop leaves it unrecorded so the sweep retries.
     /// </summary>
-    public async Task PushSessionAsync(string sessionId)
+    public async Task PushSessionAsync(string sessionId, CancellationToken ct)
     {
         if (string.IsNullOrEmpty(sessionId)) return;
         var fleet = _snapshot() ?? Array.Empty<(string, SessionDto)>();
@@ -162,10 +174,29 @@ public sealed class FleetDisplayStateObserver
             // send - and nothing to double-send if a push delivered it a moment ago.
             if (_lastSent.TryGetValue(s.SessionId, out var sent) && string.Equals(sent, signature, StringComparison.Ordinal))
                 return;
-            await SendDisplayStateAsync(directorId, s, signature);
+
+            var result = await DirectorCommandRouter.TrySendAsync(
+                new DirectorCommandRouter.SendDirectorCommandAsync(_sendCommand),
+                directorId, "set-display-state", s.SessionId, BuildRequest(s), ct);
+            if (result is not null && result.Status is DirectorCommandStatus.Ok or DirectorCommandStatus.BadRequest)
+                _lastSent[s.SessionId] = signature;
             return;
         }
     }
+
+    /// <summary>The folded display state to stamp down, built from the session the fold has already stamped.
+    /// Shared by the periodic <see cref="Sweep"/> and the prompt <see cref="PushSessionAsync"/> so both carry
+    /// exactly the same fields.</summary>
+    private static SetDisplayStateRequest BuildRequest(SessionDto s) => new()
+    {
+        EffectiveColor = s.EffectiveColor,
+        StateLabel = s.StateLabel,
+        TriageBucket = s.TriageBucket,
+        NeedsYouSince = s.NeedsYouSince,
+        SnoozeUntil = s.SnoozeUntil,
+        SnoozeExpired = s.SnoozeExpired,
+        HoldState = s.HoldState,
+    };
 
     /// <summary>The fold answer as one comparable string. Any field the desktop renders changing must re-push,
     /// so every rendered field is in the signature.</summary>
@@ -190,16 +221,7 @@ public sealed class FleetDisplayStateObserver
                 Verb = "set-display-state",
                 SessionId = s.SessionId,
                 PayloadJson = System.Text.Json.JsonSerializer.Serialize(
-                    new SetDisplayStateRequest
-                    {
-                        EffectiveColor = s.EffectiveColor,
-                        StateLabel = s.StateLabel,
-                        TriageBucket = s.TriageBucket,
-                        NeedsYouSince = s.NeedsYouSince,
-                        SnoozeUntil = s.SnoozeUntil,
-                        SnoozeExpired = s.SnoozeExpired,
-                        HoldState = s.HoldState,
-                    },
+                    BuildRequest(s),
                     new System.Text.Json.JsonSerializerOptions(System.Text.Json.JsonSerializerDefaults.Web)),
             };
 

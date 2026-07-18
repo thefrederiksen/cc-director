@@ -1351,8 +1351,13 @@ internal static class GatewayEndpoints
             // effort BY DESIGN: the hold does not depend on it - a slow, unreachable or dead Director cannot
             // prevent the owner from holding a session, and the fold already reports the truth to every other
             // surface from the registry, with the periodic sweep reconciling the desktop.
+            // Bounded and cancellable (round 5 finding 1): PushSessionAsync routes through the standard
+            // DirectorCommandRouter 30s chokepoint carrying THIS request's token, so a connected-but-
+            // unresponsive Director cannot hang the Snooze / Unsnooze click. On timeout or an unreachable
+            // Director this still returns SUCCESS below - the registry mutation is the authoritative result
+            // and the periodic sweep reconciles the desktop.
             if (fleetDisplayState is not null)
-                await fleetDisplayState.PushSessionAsync(sid);
+                await fleetDisplayState.PushSessionAsync(sid, ct);
 
             return Results.Json(new HoldResponse
             {
