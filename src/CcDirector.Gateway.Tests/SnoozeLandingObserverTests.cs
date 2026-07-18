@@ -68,45 +68,57 @@ public sealed class SnoozeLandingObserverTests : IDisposable
         Assert.False(Assert.Single(reg.Entries()).IsDeferred);
     }
 
-    [Fact]
-    public void StillWorking_ChangesNothing()
+    [Theory]
+    [InlineData("Working")]
+    [InlineData("Starting")]
+    public void ADeferredHold_SurvivesWork_AndStaysDeferred(string activity)
     {
-        // No clock starts while the work is running: that is the whole meaning of "snooze me when this
-        // finishes".
+        // THE LOAD-BEARING EXCEPTION (decision 2). Work DELETES an armed snooze, but a DEFERRED hold is
+        // spared: "snooze me when this finishes" is asked for WHILE the agent is working, so if the next
+        // working push deleted it an agent could never snooze its own session. No clock starts while the
+        // work runs (that is the meaning of "when this finishes"), and the working edge must leave the
+        // deferral entirely alone - only the settled edge (Land) converts it.
         var (reg, obs) = Make();
         reg.SnoozeDeferred("s1", 720, "dir-1");
 
-        obs.Observe(Session("s1", "Working"));
+        obs.Observe(Session("s1", activity));
 
         Assert.True(Assert.Single(reg.Entries()).IsDeferred);
     }
 
-    [Fact]
-    public void ALandedHoldSurvivesTheSessionWorkingAgain()
+    [Theory]
+    [InlineData("Working")]
+    [InlineData("Starting")]
+    public void AnArmedHold_IsDeletedWhenTheSessionWorksAgain(string activity)
     {
-        // THE DEFECT THIS ARCHITECTURE EXISTS TO KILL. Activity is not consent. On 15 July 2026 all
-        // sixteen holds died within 1-21 minutes to exactly this edge, because "it started working" was
-        // treated as "the owner wants it back". Another agent's fleet message is real work; so is a bare
-        // terminal repaint. Neither is the owner.
+        // THE OWNER'S LAW (17 July 2026): "if you snooze it, it's a human thing I'm doing. As soon as
+        // there's any work on that terminal that comes out of snooze, period, full stop." An armed snooze
+        // is DELETED by work - not merely outranked. It does not matter WHO woke the terminal (an agent's
+        // fleet message, a repaint, the owner); a snooze exists to quiet a session with nothing happening,
+        // and the instant something happens the snooze is spent. So when the work settles the session reads
+        // red "needs you", never grey "Snoozed". (This deliberately reverses the old rule that Working was
+        // not an edge; the background-churn need that rule feared is a separate future state, not a snooze
+        // surviving work.)
         var (reg, obs) = Make();
         reg.Snooze("s1", _now.AddHours(12), "dir-1");
 
-        obs.Observe(Session("s1", "Working"));
+        obs.Observe(Session("s1", activity));
 
-        var entry = Assert.Single(reg.Entries());
-        Assert.Equal(_now.AddHours(12), entry.SnoozeUntilUtc);
+        Assert.Empty(reg.Entries());
     }
 
     [Fact]
     public void AnOwnerTurnAfterTheRequest_DropsTheHold()
     {
         // The owner came back and typed. They are demonstrably not away, so there is nobody to avoid
-        // bothering. This is one of only four ways a hold ends.
+        // bothering. This is one of only four ways a hold ends. The activity is settled (quiet), not
+        // Working, so this isolates the owner-turn ruling from the working edge, which would otherwise
+        // delete the armed hold on its own.
         var (reg, obs) = Make();
         var baseline = DateTime.UtcNow;
         reg.Snooze("s1", _now.AddHours(12), "dir-1", ownerTurnBaselineUtc: baseline);
 
-        obs.Observe(Session("s1", "Working", ownerTurn: baseline.AddSeconds(5))); // a NEW turn, same clock
+        obs.Observe(Session("s1", "WaitingForInput", ownerTurn: baseline.AddSeconds(5))); // a NEW turn, same clock
 
         Assert.Empty(reg.Entries());
     }
@@ -121,7 +133,9 @@ public sealed class SnoozeLandingObserverTests : IDisposable
         var typedAnHourAgo = DateTime.UtcNow.AddHours(-1);
         reg.Snooze("s1", _now.AddHours(12), "dir-1", ownerTurnBaselineUtc: typedAnHourAgo);
 
-        obs.Observe(Session("s1", "Working", ownerTurn: typedAnHourAgo)); // unchanged since the hold was set
+        // Settled/quiet activity, not Working: the working edge would delete an armed hold outright, which
+        // would mask whether the owner-turn baseline logic is right. Here only the owner-turn ruling can act.
+        obs.Observe(Session("s1", "WaitingForInput", ownerTurn: typedAnHourAgo)); // unchanged since the hold was set
 
         Assert.Single(reg.Entries());
     }
@@ -141,7 +155,9 @@ public sealed class SnoozeLandingObserverTests : IDisposable
         var directorClockIsAnHourFast = DateTime.UtcNow.AddHours(1);
         reg.Snooze("s1", _now.AddHours(12), "dir-1", ownerTurnBaselineUtc: directorClockIsAnHourFast);
 
-        obs.Observe(Session("s1", "Working", ownerTurn: directorClockIsAnHourFast)); // no NEW turn
+        // Settled/quiet activity, not Working, so the working edge cannot delete the armed hold and confound
+        // what this guards - the clock-skew comparison, and only that.
+        obs.Observe(Session("s1", "WaitingForInput", ownerTurn: directorClockIsAnHourFast)); // no NEW turn
 
         Assert.Single(reg.Entries()); // still held
     }
@@ -154,7 +170,9 @@ public sealed class SnoozeLandingObserverTests : IDisposable
         var (reg, obs) = Make();
         reg.Snooze("s1", _now.AddHours(12), "dir-1", ownerTurnBaselineUtc: null);
 
-        obs.Observe(Session("s1", "Working", ownerTurn: DateTime.UtcNow));
+        // Settled/quiet activity, not Working, so the drop here is the owner-turn ruling's doing, not the
+        // working edge's.
+        obs.Observe(Session("s1", "WaitingForInput", ownerTurn: DateTime.UtcNow));
 
         Assert.Empty(reg.Entries());
     }

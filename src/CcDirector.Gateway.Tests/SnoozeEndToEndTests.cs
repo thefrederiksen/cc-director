@@ -290,20 +290,28 @@ public sealed class SnoozeEndToEndTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task Another_agents_message_does_NOT_clear_the_snooze()
+    public async Task Work_on_a_snoozed_session_clears_the_snooze_completely()
     {
-        // The 15 July 2026 defect, end to end. Session 8c17dc1c was held at 13:20:16 and un-held 93
-        // seconds later by a fleet message from a reviewer session. An agent poking a held session makes it
-        // work - and work is not consent. No owner turn is reported, so the hold stands.
+        // THE MISSION, end to end. On 15 July 2026 session 8c17dc1c was snoozed, a reviewer session sent it
+        // a fleet message 93 seconds later, it did the work - and it stayed snoozed, silently re-parked
+        // where the owner would never look. The owner's law (17 July 2026): a snooze is a human "not now",
+        // and the instant there is ANY work on that terminal the snooze is over, completely. It does not
+        // matter that another agent, not the owner, woke it - a snooze exists to quiet a session with
+        // nothing happening, and something is happening. The armed entry is DELETED (not merely outranked),
+        // so when the work settles the session reads red "needs you", never grey "Snoozed".
+        //
+        // This deliberately reverses the earlier end-to-end test that asserted the message did NOT clear the
+        // snooze; that test encoded the behaviour this mission exists to correct.
         await SetDefaultMinutes(1);
         var fake = await StartFakeAsync("s8", onHold: true);
         _gw.SnoozeRegistry.Snooze("s8", DateTime.UtcNow.AddHours(12), fake.DirectorId);
+        Assert.True((await GetSession("s8")).OnHold); // snoozed to start
 
         fake.SetActivity("s8", "Working"); // an agent's message woke it
         await fake.RePushAsync();
 
-        Assert.True(_gw.SnoozeRegistry.Contains("s8"));
-        Assert.True((await GetSession("s8")).OnHold); // still snoozed, still working. Both true, and correct.
+        Assert.False(_gw.SnoozeRegistry.Contains("s8")); // the snooze is gone, deleted by work
+        Assert.False((await GetSession("s8")).OnHold);   // no longer held
     }
 
     [Fact]

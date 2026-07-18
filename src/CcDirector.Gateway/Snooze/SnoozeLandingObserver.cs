@@ -76,16 +76,29 @@ public sealed class SnoozeLandingObserver
     /// fact means for the owner's hold. It used to read <c>session.HoldState</c>, which meant asking a
     /// Director to decide, and then believing it.
     ///
-    /// Two edges, both of them the Gateway's ruling, not the Director's:
+    /// Three edges, all of them the Gateway's ruling, not the Director's:
+    ///  * WORKING (Working or Starting) - there is activity on this terminal again, so an ARMED snooze is
+    ///    spent and is DELETED outright (not merely outranked): the owner's law (17 July 2026), "if you
+    ///    snooze it, it's a human thing; as soon as there's any work on that terminal it comes out of
+    ///    snooze, period, full stop." A DEFERRED hold is the single exception - see below.
     ///  * SETTLED (anything that is not Working, Starting or Exited) - the work the deferral was waiting
     ///    for has ended, so the deferral lands and the clock starts. The owner's ruling (14 July 2026):
     ///    "snooze me for 12 hours when this finishes" means twelve hours of quiet AFTER it finishes.
     ///  * EXITED - drop the hold entirely. There is no turn to come back to, and a dead session must never
     ///    hide behind a "Snoozed" label.
     ///
-    /// Deliberately NOT an edge: Working. A held session that starts working STAYS HELD. Activity is not
-    /// consent - another agent's fleet message is real work, and a bare terminal repaint reads as work
-    /// too. Only the owner lifts a hold, and the owner never speaks through this seam.
+    /// This REVERSES the old rule that Working was deliberately not an edge. That rule feared that another
+    /// agent's fleet message, or a bare terminal repaint, would be misread as "the owner is back" and kill
+    /// the hold - so it kept a snooze alive through work. The owner has ruled the other way: it does not
+    /// matter WHO woke the terminal, only that it is awake. A snooze exists to quiet a session with nothing
+    /// happening; the instant something happens, the snooze is over. (The genuine need it feared - agents
+    /// churning quietly in the background - is a separate future "background/running" state, NOT a snooze
+    /// surviving work.)
+    ///
+    /// The one thing Working does NOT delete is a DEFERRED hold. "Snooze me when this finishes" is asked
+    /// for while the agent is still working; if the next working observation cleared it, an agent could
+    /// never snooze its own session. So the working edge clears only ARMED entries; a deferral is converted
+    /// solely by the SETTLED edge (Land). This armed/deferred distinction is load-bearing.
     /// </remarks>
     public void Observe(SessionDto? session)
     {
@@ -120,12 +133,37 @@ public sealed class SnoozeLandingObserver
             return;
         }
 
+        // The terminal is working again (Working or Starting). By the owner's law any activity ends a
+        // snooze, so an ARMED entry is DELETED here - the clock dies with it, and when the work settles the
+        // session reads red "needs you", never grey "Snoozed". A DEFERRED entry is spared: it was asked for
+        // WHILE working, so deleting it on the next working push would make an agent unable to snooze its own
+        // session - only the settled edge (Land) converts a deferral. That armed/deferred split lives in
+        // ClearIfArmed so it cannot be got wrong here.
+        if (IsWorking(activity))
+        {
+            if (_registry.ClearIfArmed(session.SessionId))
+            {
+                FileLog.Write($"[SnoozeLandingObserver] sid={session.SessionId}: working again -> armed snooze deleted (work ends a snooze)");
+                Mirror(directorId, session.SessionId, HoldStates.None);
+            }
+            return;
+        }
+
         if (IsSettled(activity) && _registry.Land(session.SessionId, _utcNow()))
         {
             FileLog.Write($"[SnoozeLandingObserver] sid={session.SessionId}: work ended -> deferred hold landed, clock started");
             Mirror(directorId, session.SessionId, HoldStates.Held);
         }
     }
+
+    /// <summary>
+    /// Is the session actively running? Working, or Starting (still coming up but already alive on the
+    /// terminal). Both are "there is activity here", which the owner's law says ends a snooze. Mirrors
+    /// <c>Session.IsWorking</c> (Working or Starting).
+    /// </summary>
+    private static bool IsWorking(string activity) =>
+        string.Equals(activity, nameof(ActivityState.Working), StringComparison.OrdinalIgnoreCase)
+        || string.Equals(activity, nameof(ActivityState.Starting), StringComparison.OrdinalIgnoreCase);
 
     /// <summary>
     /// Has the work ENDED? Settled is everything that is not actively running and not dead: the agent is

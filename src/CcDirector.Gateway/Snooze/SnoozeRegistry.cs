@@ -207,6 +207,33 @@ public sealed class SnoozeRegistry
     }
 
     /// <summary>
+    /// Delete the entry for <paramref name="sessionId"/> ONLY if it is ARMED (its clock is running or
+    /// has already elapsed), and leave a DEFERRED entry untouched. Returns true when it removed an armed
+    /// entry (and persisted), false when there was no entry or the entry was deferred.
+    ///
+    /// This is the working edge's clear (owner's law, 17 July 2026: any work on a snoozed terminal ends
+    /// the snooze, completely - the entry is deleted, not merely outranked). A DEFERRED entry is
+    /// deliberately spared: "snooze me when this finishes" is asked for WHILE the agent is working, so the
+    /// very next working observation must not delete the request it just made - that would make it
+    /// impossible for an agent to snooze its own session. Only <see cref="Land"/> (settle) ever converts a
+    /// deferral; work leaves it alone. This is the load-bearing armed/deferred distinction, kept in one
+    /// place so the caller cannot get it wrong.
+    /// </summary>
+    public bool ClearIfArmed(string sessionId)
+    {
+        if (string.IsNullOrWhiteSpace(sessionId)) return false;
+        lock (_gate)
+        {
+            if (!_entries.TryGetValue(sessionId, out var e) || e.IsDeferred)
+                return false;
+            _entries.Remove(sessionId);
+            Save();
+            FileLog.Write($"[SnoozeRegistry] ClearIfArmed: sid={sessionId} (armed snooze deleted - the session is working again, and work ends a snooze)");
+            return true;
+        }
+    }
+
+    /// <summary>
     /// Drop every entry owned by <paramref name="directorId"/>. Called from
     /// <c>Registry.OnDirectorRemoved</c> so entries for sessions whose Director permanently left the
     /// fleet do not accumulate on disk. Returns the number of entries removed; persists once if any.
