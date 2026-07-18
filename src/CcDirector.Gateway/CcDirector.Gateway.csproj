@@ -56,6 +56,12 @@
          Core (advisory GHSA-2m69-gcr7-jv3q), which wins transitively over EF's 2.1.11. -->
     <PackageReference Include="Microsoft.EntityFrameworkCore.Sqlite" Version="9.0.2" />
     <PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="9.0.2" />
+    <!-- Hosted Gateway mission, Step 4a: the PostgreSQL provider for the SAME EF Core data model. The local
+         install stays on SQLite; a hosted single-tenant Gateway runs on Postgres when CC_GATEWAY_DB_CONNECTION
+         is set. Pinned to 9.0.2 so the Npgsql provider's EF Core dependency matches the 9.0.2 already
+         referenced above - one EF Core version in the process, no downgrade under TreatWarningsAsErrors. A
+         10.x Npgsql would drag EF Core to 10 and break that pin, so it is deliberately held at 9.0.2. -->
+    <PackageReference Include="Npgsql.EntityFrameworkCore.PostgreSQL" Version="9.0.2" />
   </ItemGroup>
 
   <ItemGroup>

@@ -297,6 +297,35 @@ public sealed class GatewayDbContext : DbContext
         ApplyTenantScope<GovernanceAuditEventEntity>(modelBuilder);
 
         ApplyCommonSubsetConventions(modelBuilder);
+
+        // Provider-specific model shape. Guarded by Database.IsNpgsql() so the SQLite path is 100% unchanged
+        // (its snapshot must not move) and Postgres alone gets the two things SQLite gives for free. IsNpgsql()
+        // is available at model-build time because both the runtime pooled factory and the design-time factory
+        // construct this context with a concrete provider already selected.
+        if (Database.IsNpgsql())
+        {
+            // 1. A named default schema. SQLite is schemaless (one file, no schema namespace), so it needs
+            //    none; Postgres puts every table under the "gateway" schema, matching the migrations history
+            //    table (__EFMigrationsHistory in schema "gateway") the database and factory pin.
+            modelBuilder.HasDefaultSchema("gateway");
+
+            // 2. Byte-ordinal collation on the four natural-key string PRIMARY KEY columns. These keys rely on
+            //    SQLite's DEFAULT BINARY collation, which compares raw bytes (memcmp) - the same ordering the
+            //    legacy Dictionary(StringComparer.Ordinal) had. Postgres' default collation is LOCALE-based,
+            //    NOT byte-ordinal, so without this the ordering and the case-of-uniqueness would silently
+            //    differ between the two providers. Collation "C" collates raw UTF-8 bytes (memcmp) and SQLite's
+            //    default BINARY collation also compares raw UTF-8 bytes, so the two providers AGREE with each
+            //    other exactly on both ordering and uniqueness - which is the property we need here. (The only
+            //    theoretical divergence is against .NET's UTF-16 StringComparer.Ordinal for rare supplementary-
+            //    plane characters, where UTF-8 byte order and UTF-16 code-unit order can differ; that does not
+            //    matter here because equality/uniqueness is exact regardless, and any in-memory ordering the
+            //    stores do is done in .NET, not the database. So no assumption that these keys are ASCII is
+            //    needed - mission_notes.Key in particular is only trimmed and lower-cased, not restricted.)
+            modelBuilder.Entity<SnoozeEntity>().Property(e => e.SessionId).UseCollation("C");
+            modelBuilder.Entity<PushSubscriptionEntity>().Property(e => e.Endpoint).UseCollation("C");
+            modelBuilder.Entity<SessionSpendEntity>().Property(e => e.SessionId).UseCollation("C");
+            modelBuilder.Entity<MissionNoteEntity>().Property(e => e.Key).UseCollation("C");
+        }
     }
 
     /// <summary>Map the tenant column and install the deny-by-default global query filter for one entity.</summary>

@@ -27,6 +27,12 @@
     <ProjectReference Include="..\CcDirector.Engine\CcDirector.Engine.csproj" />
     <ProjectReference Include="..\CcDirector.Gateway.Contracts\CcDirector.Gateway.Contracts.csproj" />
     <ProjectReference Include="..\CcDirector.Gateway\CcDirector.Gateway.csproj" />
+    <!-- Hosted Gateway mission, Step 4a: the Postgres migration assembly, so the real-Postgres proof test
+         (PostgresProviderProofTests) can load it and Database.Migrate() applies the Postgres migration set.
+         This is the same runtime dependency the hosted Gateway host will carry; here it lets the test prove
+         the provider-agnostic model runs on real Postgres. The test is gated behind an env var, so this
+         reference does not change the default (SQLite) test run. -->
+    <ProjectReference Include="..\CcDirector.Gateway.Migrations.Postgres\CcDirector.Gateway.Migrations.Postgres.csproj" />
   </ItemGroup>
 
   <ItemGroup>

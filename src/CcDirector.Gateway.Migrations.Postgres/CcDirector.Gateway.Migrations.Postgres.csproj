@@ -1,0 +1,29 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- Hosted Gateway mission, Step 4a: the PostgreSQL migration set for GatewayDbContext, kept in its OWN
+       assembly (the MigrationsAssembly the Postgres provider and the design-time factory both pin). It holds
+       only the generated Postgres migrations + snapshot; the model lives in CcDirector.Gateway. The reference
+       direction is Migrations.Postgres -> Gateway ONLY - the Gateway must never reference this project back
+       (that would be a cycle). -->
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <RootNamespace>CcDirector.Gateway.Migrations.Postgres</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\CcDirector.Gateway\CcDirector.Gateway.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- The generated migration source references the Npgsql design annotations and the EF Core migration
+         base types directly, so those packages are declared here rather than leaned on transitively. Pinned
+         to 9.0.2 to match the EF Core version the Gateway pins - one EF Core version across the process. -->
+    <PackageReference Include="Npgsql.EntityFrameworkCore.PostgreSQL" Version="9.0.2" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="9.0.2" />
+  </ItemGroup>
+
+</Project>
