@@ -1,5 +1,8 @@
 using System.Text.Json;
 using CcDirector.Core.Utilities;
+using CcDirector.Gateway.Data;
+using CcDirector.Gateway.Data.Entities;
+using Microsoft.EntityFrameworkCore;
 
 namespace CcDirector.Gateway.MissionNotes;
 
@@ -22,22 +25,27 @@ namespace CcDirector.Gateway.MissionNotes;
 /// so the Mission Screen shows its "no why set" flag rather than a blank. A PUT with an empty why is the
 /// clear path.
 ///
-/// PERSISTENCE (SnoozeRegistry precedent): the whole store is ONE plain JSON file at the path the
-/// constructor receives (production: mission-notes.json in the Gateway data dir). Every mutation writes
-/// through immediately with an atomic temp-file + rename, so a crash mid-write can never half-truncate
-/// the store. On construction the file is loaded back so a Gateway restart re-serves every WHY. A corrupt
-/// file is quarantined (never silently overwritten) and the store starts empty so the Gateway still boots.
+/// PERSISTENCE (Hosted Gateway mission, Step 1b): notes live in the EF data layer's <c>mission_notes</c>
+/// table (SQLite locally), keyed by the normalized mission name, NOT the old hand-rolled
+/// <c>mission-notes.json</c>. The public API and observable behavior are unchanged. On first run after the
+/// upgrade a legacy <c>mission-notes.json</c> is imported once through the shared recoverable-import helper.
 ///
-/// NO FALLBACK (CLAUDE.md): a failed persist is a LOGGED error that PROPAGATES - a WHY that cannot be
-/// written to disk would silently vanish on the next restart, so the caller's request fails loudly.
+/// CORRUPT-FILE = QUARANTINE, deliberately (not fail-loud): this is a COSMETIC store, and a corrupt WHY file
+/// must NOT block Gateway boot. So the import uses <see cref="CorruptFilePolicy.Quarantine"/> - a corrupt
+/// legacy file is renamed aside as <c>.corrupt-&lt;stamp&gt;</c> (bytes preserved for the operator) and the
+/// store boots empty, reproducing the long-standing quarantine behaviour exactly. This is the per-store
+/// criticality contract: FAIL-LOUD for operationally-critical stores (never silently lose a scheduled job,
+/// claim, or hold), QUARANTINE-and-continue for cosmetic stores that must not block boot. A failed WRITE is
+/// still fail-loud (a WHY that cannot persist would vanish on restart, so the request fails loudly).
+///
+/// Threading: the Gateway is a single writer. Every operation runs under this store's write lock over a
+/// fresh pooled context.
 /// </summary>
 public sealed class MissionNoteStore
 {
     private readonly object _gate = new();
-    private readonly string _path;
-
-    // normalized mission key -> note. Ordinal keys: the key is already lower-cased by NormalizeKey.
-    private readonly Dictionary<string, MissionNote> _notes = new(StringComparer.Ordinal);
+    private readonly GatewayDatabase _db;
+    private readonly string _legacyJsonPath;
 
     private static readonly JsonSerializerOptions FileJsonOptions = new()
     {
@@ -46,18 +54,20 @@ public sealed class MissionNoteStore
         WriteIndented = true,
     };
 
-    /// <param name="path">
-    /// The JSON file the store persists to. REQUIRED so no caller can silently land on the real user's
-    /// file: production (<see cref="GatewayHost"/>) passes mission-notes.json in the Gateway data dir;
-    /// tests pass an isolated temp path.
-    /// </param>
-    /// <exception cref="ArgumentException">The path is null/empty/whitespace.</exception>
-    public MissionNoteStore(string path)
+    /// <param name="db">The Gateway EF database this store reads and writes through.</param>
+    /// <param name="legacyJsonPath">The legacy <c>mission-notes.json</c> path to import ONCE if it exists and
+    /// the table is empty. REQUIRED (no silent default).</param>
+    /// <exception cref="ArgumentNullException">The database is null.</exception>
+    /// <exception cref="ArgumentException">The legacy path is null/empty/whitespace.</exception>
+    public MissionNoteStore(GatewayDatabase db, string legacyJsonPath)
     {
-        if (string.IsNullOrWhiteSpace(path))
-            throw new ArgumentException("store path is required", nameof(path));
-        _path = path;
-        Load();
+        _db = db ?? throw new ArgumentNullException(nameof(db));
+        if (string.IsNullOrWhiteSpace(legacyJsonPath))
+            throw new ArgumentException("legacy json path is required", nameof(legacyJsonPath));
+        _legacyJsonPath = legacyJsonPath;
+
+        lock (_gate)
+            ImportLegacyJsonIfNeeded();
     }
 
     /// <summary>One mission's WHY: the normalized grouping key, the display name as last written, the
@@ -73,7 +83,7 @@ public sealed class MissionNoteStore
     /// <summary>
     /// Set (or clear) a mission's WHY. An empty or all-whitespace <paramref name="why"/> UNSETS the note
     /// (removes it) so the screen shows its flag; any other value stores the trimmed WHY. Returns the
-    /// resulting note, or null when the note was cleared/left unset. Written through to disk before
+    /// resulting note, or null when the note was cleared/left unset. Written through to the database before
     /// returning. <paramref name="nowUtc"/> is injected so tests are deterministic.
     /// </summary>
     /// <exception cref="ArgumentException">The mission name is null/empty/whitespace.</exception>
@@ -86,22 +96,42 @@ public sealed class MissionNoteStore
         var key = NormalizeKey(display);
         lock (_gate)
         {
+            using var ctx = _db.CreateContext();
+            var existing = ctx.MissionNotes.FirstOrDefault(e => e.Key == key);
+
             var trimmed = (why ?? "").Trim();
             if (trimmed.Length == 0)
             {
-                if (_notes.Remove(key))
+                if (existing is not null)
                 {
-                    Save();
+                    ctx.MissionNotes.Remove(existing);
+                    ctx.SaveChanges();
                     FileLog.Write($"[MissionNoteStore] Set: cleared why for mission='{display}' (key={key})");
                 }
                 return null;
             }
 
-            var note = new MissionNote(key, display, trimmed, nowUtc.ToUniversalTime());
-            _notes[key] = note;
-            Save();
+            var updatedAtUtc = nowUtc.ToUniversalTime();
+            if (existing is null)
+            {
+                ctx.MissionNotes.Add(new MissionNoteEntity
+                {
+                    Key = key,
+                    TenantId = ctx.ActiveTenant!,
+                    Mission = display,
+                    Why = trimmed,
+                    UpdatedAtUtc = updatedAtUtc,
+                });
+            }
+            else
+            {
+                existing.Mission = display;
+                existing.Why = trimmed;
+                existing.UpdatedAtUtc = updatedAtUtc;
+            }
+            ctx.SaveChanges();
             FileLog.Write($"[MissionNoteStore] Set: mission='{display}' (key={key}), why length={trimmed.Length}");
-            return note;
+            return new MissionNote(key, display, trimmed, updatedAtUtc);
         }
     }
 
@@ -111,7 +141,11 @@ public sealed class MissionNoteStore
         var key = NormalizeKey(mission);
         if (key.Length == 0) return null;
         lock (_gate)
-            return _notes.TryGetValue(key, out var n) ? n : null;
+        {
+            using var ctx = _db.CreateContext();
+            var e = ctx.MissionNotes.AsNoTracking().FirstOrDefault(x => x.Key == key);
+            return e is null ? null : ToRecord(e);
+        }
     }
 
     /// <summary>A snapshot of every set WHY, ordered by key so the read is stable. A copy, detached from
@@ -119,10 +153,22 @@ public sealed class MissionNoteStore
     public IReadOnlyList<MissionNote> All()
     {
         lock (_gate)
-            return _notes.Values.OrderBy(n => n.Key, StringComparer.Ordinal).ToList();
+        {
+            using var ctx = _db.CreateContext();
+            // Order by key in memory with StringComparer.Ordinal - matching the legacy OrderBy(Key, Ordinal)
+            // exactly. (SQLite's ORDER BY on a TEXT column also uses BINARY/ordinal, but sorting in memory
+            // keeps the ordinal guarantee independent of the provider's default collation.)
+            return ctx.MissionNotes.AsNoTracking().ToList()
+                .OrderBy(e => e.Key, StringComparer.Ordinal)
+                .Select(ToRecord)
+                .ToList();
+        }
     }
 
-    // ---- persistence (SnoozeRegistry precedent) ----------------------------------------------
+    private static MissionNote ToRecord(MissionNoteEntity e)
+        => new(e.Key, e.Mission, e.Why, e.UpdatedAtUtc);
+
+    // ---- one-time legacy JSON import --------------------------------------------------------------
 
     /// <summary>The on-disk shape: one document holding every mission WHY.</summary>
     private sealed class StoreFile
@@ -131,86 +177,71 @@ public sealed class MissionNoteStore
     }
 
     /// <summary>
-    /// Load the store file written by a previous Gateway run so a restart re-serves every WHY. A missing
-    /// file is the normal first boot (empty store, logged). A corrupt file is quarantined (renamed with a
-    /// timestamp suffix) so its bytes are preserved for the operator and never silently overwritten; the
-    /// store then starts empty so the Gateway still boots.
+    /// Import a legacy <c>mission-notes.json</c> exactly once, through the shared recoverable-import plumbing
+    /// (<see cref="LegacyJsonImport.Recoverable"/>): import only when the file exists AND the table is empty;
+    /// recover a lingering file idempotently; rename aside best-effort after a successful import. Uses
+    /// <see cref="CorruptFilePolicy.Quarantine"/> because this is a cosmetic store - a corrupt WHY file is
+    /// renamed aside as <c>.corrupt</c> and the store boots empty rather than blocking Gateway boot.
     /// </summary>
-    private void Load()
-    {
-        if (!File.Exists(_path))
-        {
-            FileLog.Write($"[MissionNoteStore] Load: no store file at {_path}; starting empty");
-            return;
-        }
+    private void ImportLegacyJsonIfNeeded()
+        => LegacyJsonImport.Recoverable(
+            _legacyJsonPath,
+            "[MissionNoteStore]",
+            isPopulated: () => { using var ctx = _db.CreateContext(); return ctx.MissionNotes.Any(); },
+            importCommitted: ImportRowsFromLegacyJson,
+            corruptFilePolicy: CorruptFilePolicy.Quarantine);
 
+    /// <summary>
+    /// Parse the legacy file and insert every note inside one transaction. Mirrors the old load exactly: skip
+    /// a row with an empty normalized key or an empty why, normalize the key, last-wins on a duplicate key,
+    /// and normalize the timestamp to UTC. A PARSE error (a corrupt input file) throws a
+    /// <see cref="LegacyJsonImportCorruptException"/> - the helper's Quarantine policy renames it aside as
+    /// <c>.corrupt</c> and boots empty (this cosmetic store must not block boot).
+    /// </summary>
+    private void ImportRowsFromLegacyJson()
+    {
         StoreFile? parsed;
         try
         {
-            parsed = JsonSerializer.Deserialize<StoreFile>(File.ReadAllText(_path), FileJsonOptions);
+            parsed = JsonSerializer.Deserialize<StoreFile>(File.ReadAllText(_legacyJsonPath), FileJsonOptions);
         }
         catch (JsonException ex)
         {
-            Quarantine(ex.Message);
-            return;
+            throw new LegacyJsonImportCorruptException(
+                $"The legacy mission-notes file '{_legacyJsonPath}' could not be parsed: {ex.Message}", ex);
         }
 
         if (parsed is null)
-        {
-            Quarantine("file deserialized to null (no store document)");
-            return;
-        }
+            throw new LegacyJsonImportCorruptException(
+                $"The legacy mission-notes file '{_legacyJsonPath}' deserialized to a null document.");
 
-        var loaded = 0;
+        // Reproduce the old load's row handling, INCLUDING last-wins on a duplicate normalized key (the old
+        // in-memory Dictionary keyed by the normalized key overwrote), so the imported set matches.
+        var toImport = new Dictionary<string, MissionNote>(StringComparer.Ordinal);
         foreach (var n in parsed.Notes)
         {
             var key = NormalizeKey(n.Mission);
             if (key.Length == 0 || string.IsNullOrWhiteSpace(n.Why))
                 continue; // skip a malformed/empty row rather than fail the whole boot
-            _notes[key] = n with { Key = key, UpdatedAtUtc = n.UpdatedAtUtc.ToUniversalTime() };
-            loaded++;
+            toImport[key] = n with { Key = key, UpdatedAtUtc = n.UpdatedAtUtc.ToUniversalTime() };
         }
 
-        FileLog.Write($"[MissionNoteStore] Load: loaded {loaded} mission why(s) from {_path}");
-    }
-
-    /// <summary>
-    /// Preserve an unreadable store file as "&lt;path&gt;.corrupt-&lt;stamp&gt;" and log loudly. The
-    /// original path is then free for the next write-through. If even the quarantine fails, the exception
-    /// propagates and the Gateway does not start half-blind.
-    /// </summary>
-    private void Quarantine(string reason)
-    {
-        var quarantinePath = $"{_path}.corrupt-{DateTime.UtcNow:yyyyMMdd-HHmmss-fff}";
-        File.Move(_path, quarantinePath);
-        FileLog.Write($"[MissionNoteStore] Load FAILED: store file at {_path} is corrupt ({reason}); quarantined to {quarantinePath}; starting empty. Operator action: inspect the quarantined file to recover mission whys.");
-    }
-
-    /// <summary>
-    /// Write-through: serialize the whole store and atomically replace the file (temp + rename), so a
-    /// concurrent reader or a crash mid-write never sees a half-written store. Called inside the lock by
-    /// every mutation. A failed save is a LOGGED error that PROPAGATES (the caller's request fails
-    /// loudly) - never a silent skip, because a WHY that did not persist would vanish on the next restart.
-    /// </summary>
-    private void Save()
-    {
-        try
+        using var ctx = _db.CreateContext();
+        using var tx = ctx.Database.BeginTransaction();
+        foreach (var n in toImport.Values)
         {
-            var dir = Path.GetDirectoryName(_path);
-            if (!string.IsNullOrEmpty(dir))
-                Directory.CreateDirectory(dir);
-
-            var file = new StoreFile { Notes = _notes.Values.ToList() };
-            var json = JsonSerializer.Serialize(file, FileJsonOptions);
-
-            var tmp = _path + ".tmp";
-            File.WriteAllText(tmp, json);
-            File.Move(tmp, _path, overwrite: true);
+            ctx.MissionNotes.Add(new MissionNoteEntity
+            {
+                Key = n.Key,
+                TenantId = ctx.ActiveTenant!,
+                Mission = n.Mission,
+                Why = n.Why,
+                UpdatedAtUtc = n.UpdatedAtUtc,
+            });
         }
-        catch (Exception ex)
-        {
-            FileLog.Write($"[MissionNoteStore] Save FAILED: path={_path}: {ex.Message}");
-            throw;
-        }
+        ctx.SaveChanges();
+        tx.Commit();
+
+        FileLog.Write($"[MissionNoteStore] Import: {toImport.Count} mission why(s) imported from {_legacyJsonPath}");
     }
 }
