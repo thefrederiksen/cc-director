@@ -26,7 +26,10 @@ using Microsoft.Extensions.Logging;
 namespace CcDirector.Gateway;
 
 /// <summary>
-/// The Gateway's Kestrel host. One process per machine. Binds to 127.0.0.1:7878.
+/// The Gateway's Kestrel host. One process per machine. Binds all interfaces (0.0.0.0:7878 by default) so a
+/// tailnet or hosted client can reach it; every route except /healthz, /login, /logout requires auth, so the
+/// bind is reachable-but-authenticated, not open. When CC_GATEWAY_HOSTED=1 the port follows the platform's
+/// WEBSITES_PORT/PORT (see <see cref="GatewayHostedMode"/>).
 /// </summary>
 public sealed class GatewayHost : IAsyncDisposable
 {
@@ -312,6 +315,8 @@ public sealed class GatewayHost : IAsyncDisposable
     // tombstone and is retired only by an edge that ends a snooze (work, an owner turn, an exit, a
     // re-snooze), bounded by the live-session prune paths.
     private readonly Snooze.SnoozeRegistry _snoozeRegistry;
+    // Fills account_hosted_ai_spend by periodically mirroring the cloud credit-debit ledger (issue #1771).
+    private Governance.HostedAiSpendSweep? _hostedAiSpendSweep;
     // Mission Screen mission (Phase 1b, issue #1405): the Gateway-owned, restart-surviving store of each
     // mission's WHY, keyed by the mission's normalized name. Durable + shared so every Cockpit, the phone,
     // and the future Mission-Control chat/API read the same WHY. Constructed here (load-on-construct
@@ -340,6 +345,11 @@ public sealed class GatewayHost : IAsyncDisposable
     private readonly Governance.GovernanceAuditLog _governanceAudit;
     // Fills session_spend at each turn-end from the pushed roster snapshot (issue #1771, spine item 3).
     private readonly Governance.SessionSpendEmitter _sessionSpendEmitter;
+    // Fills the governance event ledger with session state transitions (issue #1771, spine item 2).
+    private readonly Governance.SessionStateEventEmitter _sessionStateEmitter;
+    // The weekly Outcome Ledger reporter (issue #1771, spine item 4): a read-only assembly over the run
+    // tables, event ledger, spend, and audit trail - the first governance report that pays rent.
+    private readonly Governance.OutcomeLedgerReporter _outcomeLedger;
     private readonly CronJobStore _cronJobs;
     private readonly CronRunHistoryStore _cronRuns;
     private readonly Running.CronEngine _cronEngine;
@@ -620,6 +630,10 @@ public sealed class GatewayHost : IAsyncDisposable
         // sandbox decisions on the EF data layer, so a Gateway restart never loses a recorded audit fact.
         _governanceAudit = new Governance.GovernanceAuditLog(_gatewayDb);
         _sessionSpendEmitter = new Governance.SessionSpendEmitter(_sessionSpend);
+        _sessionStateEmitter = new Governance.SessionStateEventEmitter(_governanceEvents);
+        // The weekly Outcome Ledger reporter (issue #1771, spine item 4): read-only over the run tables +
+        // event ledger + spend + audit trail. No store of its own.
+        _outcomeLedger = new Governance.OutcomeLedgerReporter(_gatewayDb);
         // Snooze Length mission: the persisted snooze registry (sessionId -> SnoozeUntilUtc), now in the
         // snoozes table of the EF data layer - a Gateway restart re-arms every pending snooze from the
         // database; an entry already past its time simply fires on the first sweep. The path argument is the
@@ -1114,8 +1128,11 @@ public sealed class GatewayHost : IAsyncDisposable
 
         // Subscribe the Tailscale provisioner BEFORE Registry.Start() so the initial
         // file-discovery load fires OnDirectorAdded into it and every Director port
-        // gets an HTTPS mapping without anyone re-running a script.
-        _serveProvisioner.Start();
+        // gets an HTTPS mapping without anyone re-running a script. Skipped when HOSTED: a
+        // hosted Gateway is reached by its public URL, not a tailnet, and the image bundles
+        // no tailscale binary, so provisioning would only produce noise.
+        if (!GatewayHostedMode.IsHosted)
+            _serveProvisioner.Start();
         Registry.Start();
 
         // Issue #331: start the stale-launcher sweep timer so launchers that crash
@@ -1126,7 +1143,9 @@ public sealed class GatewayHost : IAsyncDisposable
         // reconcile - re-assert the front door, drop serve mappings for Directors that died
         // while the Gateway was down (orphans -> 502 from a phone), and sweep any leaked
         // ephemeral-port mappings (issue #179). The provisioner repeats this on a timer.
-        _serveProvisioner.Reconcile();
+        // Skipped when HOSTED (no tailnet, no tailscale binary).
+        if (!GatewayHostedMode.IsHosted)
+            _serveProvisioner.Reconcile();
 
         // Gateway Cleanup mission (post-cut): the advertised-endpoint re-verification monitor (issue #325)
         // is DELETED. It HTTP-probed each Director's advertised /healthz; post-cut liveness is the tunnel
@@ -1412,6 +1431,18 @@ public sealed class GatewayHost : IAsyncDisposable
                 // directorId, so feed THAT to the watcher (the voice-refresh path reaches the Director
                 // through the tunnel by id) instead of converting it to a dialable control URL.
                 _turnEndWatcher.Observe(sessionId, newState, directorId);
+
+                // Governance capture (issue #1771, spine item 2): record this session's state transition on
+                // the append-only ledger (emits only on a real change; isolated so a ledger hiccup never
+                // breaks the turn tracking above).
+                try
+                {
+                    _sessionStateEmitter.Observe(sessionId, newState);
+                }
+                catch (Exception ex)
+                {
+                    FileLog.Write($"[GatewayHost] session-state event emit FAILED: sid={sessionId}: {ex.Message}");
+                }
             },
             // Issue #549: the assessed-state refutation (issue #186) is dropped with the pipeline
             // (Option A) - "needs you" reverts to the Director's raw mechanical signal. The
@@ -1670,6 +1701,10 @@ public sealed class GatewayHost : IAsyncDisposable
         // permission/sandbox decisions - the safety and attention-burden audit. Append and read only.
         Api.GovernanceAuditEndpoints.Map(_app, _governanceAudit);
 
+        // The weekly Outcome Ledger (issue #1771, spine item 4): the first report that pays rent - verified
+        // yield, aging WIP, and high-effort/no-outcome runs with cost + attention-burden. Read-only.
+        Api.GovernanceReportEndpoints.Map(_app, _outcomeLedger);
+
         // Gateway Centralization Phase 1 (issue #628): the inbound login-telemetry RELAY. The Director
         // POSTs its login-telemetry event here (instead of the cloud) and the Gateway forwards it on,
         // so the Gateway becomes the single egress. Best-effort: a backend failure is logged and the
@@ -1893,7 +1928,7 @@ public sealed class GatewayHost : IAsyncDisposable
         Cockpit.CockpitReactApp.Map(_app);
 
         await _app.StartAsync();
-        FileLog.Write($"[GatewayHost] listening on http://127.0.0.1:{Port} (version {version})");
+        FileLog.Write($"[GatewayHost] listening on http://0.0.0.0:{Port} (all interfaces, auth-gated; version {version})");
 
         // Cron firing sweep (epic #479, #483): wake ~every minute and fire due jobs. The first tick
         // also catches up a fire that came due while the Gateway was down (at most once per job).
@@ -1944,6 +1979,16 @@ public sealed class GatewayHost : IAsyncDisposable
         // as a durable tombstone, retired only by an edge that ends a snooze; the registry is bounded by the
         // live-session prune paths. A no-op timer would be a smell, so there is none.
 
+        // Governance capture (issue #1771, spine item 3): periodically mirror the account's real hosted-AI
+        // service debits from the cloud credit-debit ledger into account_hosted_ai_spend, so the weekly
+        // report shows an honest account-level "Hosted-AI services: $X" figure. Signed out is an expected
+        // no-op (no fabricated spend); the store dedups the ledger's rolling window so over-polling is safe.
+        _hostedAiSpendSweep = new Governance.HostedAiSpendSweep(
+            accessToken: () => Account?.GetAccessTokenForForwarding(),
+            credits: new Core.Account.AccountCreditsClient(new HttpClient { Timeout = TimeSpan.FromSeconds(10) }),
+            store: _hostedAiSpend);
+        _hostedAiSpendSweep.Start();
+
         // Web Push (mobile app-icon "needs you" dot): start the background notifier now that this
         // Gateway's own /sessions endpoint is live on loopback. The notifier reads that endpoint (so its
         // "needs you" verdict is byte-identical to the roster's) and pushes the count to subscribed
@@ -1956,23 +2001,29 @@ public sealed class GatewayHost : IAsyncDisposable
         // Network Diagnostics monitor (Network Diagnostics mission, Phase 1): on a timer, watch each
         // connected device's direct-vs-relay path and log persistent home-relay drift QUIETLY. Alert
         // channels (doorbell + owner email) are wired in P5 onto the same Decide-machine state.
-        var netDiagDeviceStore = new Api.NetDiagDeviceStore(Path.Combine(CcStorage.Root(), "netdiag-devices.json"));
-        // P5: deliver the monitor's drift/resolve to the doorbell + owner email. The alert service owns the
-        // 401-explicit "not signed in" path, the daily email cap, and one-email-per-episode; the monitor
-        // just hands it the device name on the machine's rising/falling edges.
-        var netDiagNotify = new Core.Account.AccountNotifyClient(new HttpClient { Timeout = TimeSpan.FromSeconds(30) });
-        var netDiagAlerts = new Api.NetDiagAlertService(
-            DirectorEvents,
-            () => Account?.GetAccessTokenForForwarding(),
-            async (token, subject, bodyText) =>
-            {
-                var r = await netDiagNotify.SendOwnerAsync(token, subject, bodyText, null, null, default).ConfigureAwait(false);
-                return r.Sent;
-            });
-        _netDiagMonitor = new Api.NetDiagMonitor(
-            Api.TailscaleDiagnostics.Collect, Api.LanPresenceProbe.TryResolveMac, netDiagDeviceStore, _netDiagRollup,
-            netDiagAlerts.OnDrift, netDiagAlerts.OnResolve);
-        _netDiagMonitor.Start();
+        //
+        // Skipped when HOSTED: the monitor's collector shells out to the tailscale CLI, which the container
+        // image does not bundle, so every poll would throw. A hosted Gateway has no tailnet to diagnose.
+        if (!GatewayHostedMode.IsHosted)
+        {
+            var netDiagDeviceStore = new Api.NetDiagDeviceStore(Path.Combine(CcStorage.Root(), "netdiag-devices.json"));
+            // P5: deliver the monitor's drift/resolve to the doorbell + owner email. The alert service owns the
+            // 401-explicit "not signed in" path, the daily email cap, and one-email-per-episode; the monitor
+            // just hands it the device name on the machine's rising/falling edges.
+            var netDiagNotify = new Core.Account.AccountNotifyClient(new HttpClient { Timeout = TimeSpan.FromSeconds(30) });
+            var netDiagAlerts = new Api.NetDiagAlertService(
+                DirectorEvents,
+                () => Account?.GetAccessTokenForForwarding(),
+                async (token, subject, bodyText) =>
+                {
+                    var r = await netDiagNotify.SendOwnerAsync(token, subject, bodyText, null, null, default).ConfigureAwait(false);
+                    return r.Sent;
+                });
+            _netDiagMonitor = new Api.NetDiagMonitor(
+                Api.TailscaleDiagnostics.Collect, Api.LanPresenceProbe.TryResolveMac, netDiagDeviceStore, _netDiagRollup,
+                netDiagAlerts.OnDrift, netDiagAlerts.OnResolve);
+            _netDiagMonitor.Start();
+        }
     }
 
     /// <summary>
@@ -2130,6 +2181,7 @@ public sealed class GatewayHost : IAsyncDisposable
         // on every change), so stopping loses nothing.
         try { _pushNotifier?.Dispose(); } catch (Exception ex) { FileLog.Write($"[GatewayHost] push notifier dispose error: {ex.Message}"); }
         try { _netDiagMonitor?.Dispose(); } catch (Exception ex) { FileLog.Write($"[GatewayHost] netdiag monitor dispose error: {ex.Message}"); }
+        try { _hostedAiSpendSweep?.Dispose(); } catch (Exception ex) { FileLog.Write($"[GatewayHost] hosted-ai spend sweep dispose error: {ex.Message}"); }
         _pushNotifier = null;
         try { _pushLoopbackHttp.Dispose(); } catch (Exception ex) { FileLog.Write($"[GatewayHost] push loopback client dispose error: {ex.Message}"); }
 
