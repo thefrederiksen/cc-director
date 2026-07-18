@@ -203,6 +203,7 @@ public sealed class ControlApiHost : IAsyncDisposable
     // (StartControlApi runs before StartScheduler), so we capture an accessor, not the instance.
     private readonly Func<Core.Scheduler.SchedulerService?>? _schedulerAccessor;
     private readonly string? _instancesDirectory;
+    private readonly TimeSpan? _rePushInterval;
     private bool _stopped;
     private bool _stateServicesStarted;
 
@@ -217,7 +218,7 @@ public sealed class ControlApiHost : IAsyncDisposable
     /// If true, bearer-token or cookie auth is required for all routes except /healthz/login/logout.
     /// If false (default), the Director is completely open. The Tailscale tailnet is the trust boundary.
     /// </param>
-    public ControlApiHost(SessionManager sessionManager, string version, Func<Task> requestShutdownAsync, bool useEphemeralPort = false, bool authEnabled = false, RepositoryRegistry? repositoryRegistry = null, string? directorId = null, Func<Core.Scheduler.SchedulerService?>? schedulerAccessor = null, string? instancesDirectory = null)
+    public ControlApiHost(SessionManager sessionManager, string version, Func<Task> requestShutdownAsync, bool useEphemeralPort = false, bool authEnabled = false, RepositoryRegistry? repositoryRegistry = null, string? directorId = null, Func<Core.Scheduler.SchedulerService?>? schedulerAccessor = null, string? instancesDirectory = null, TimeSpan? rePushInterval = null)
     {
         _sessionManager = sessionManager ?? throw new ArgumentNullException(nameof(sessionManager));
         _version = version ?? "0.0.0";
@@ -244,6 +245,10 @@ public sealed class ControlApiHost : IAsyncDisposable
         // Tests pass an isolated instances directory so test Directors never appear in a real
         // Gateway's discovery (and a real Director never appears in a test Gateway's).
         _instancesDirectory = instancesDirectory;
+        // A test seam only: how often the stream client re-pushes its full snapshot. Production passes null
+        // and GatewayStreamClient uses its own default. A doorbell-push test sets it far beyond the run so a
+        // coincidental full re-push cannot masquerade as an event-driven delta and pass a no-op subscription.
+        _rePushInterval = rePushInterval;
 
         // Production: persisted id (same across restarts so the Gateway recognizes us).
         // Tests: inject a fresh id per fixture so parallel runs don't collide on the
@@ -745,6 +750,9 @@ public sealed class ControlApiHost : IAsyncDisposable
             // registry so the director-level reads that stamp/read them (facts, handover, repos-list) serve the
             // same value over the tunnel that their REST route served.
             cmd => DispatchTunnelCommandAsync(cmd),
+            // A test seam only (null in production): a doorbell-push test sets this far beyond the run so no
+            // full re-push fires during it, and an observed change can only be an event-driven delta.
+            rePushInterval: _rePushInterval,
             // Gateway Cleanup mission, Phase 0 (up-stream): pass the SessionManager so the four connection-bound
             // stream verbs work - their terminal/file producers read session and file state from it and stream
             // frames up this same connection.
@@ -877,6 +885,23 @@ public sealed class ControlApiHost : IAsyncDisposable
             // actually holds: if the fold READS it, it pushes - no judgement about whether it feels like a
             // colour. Found by review of pull request 1598, after three earlier passes hunting exactly this.
             session.OnWingmanEnabledChanged += _ =>
+                _streamClient?.NotifyDelta(ControlEndpoints.Map(session, DirectorId));
+
+            // The mobile view mode is the SAME trap one more time, for a fact that is not a colour. The map
+            // stamps VoiceMode (derived from ViewMode) onto the pushed SessionDto, and the mobile roster reads
+            // it for a row's link target (voice sessions open straight on their Voice tab) and its voice
+            // affordance. Before this it pushed on activity, hold, the three colour inputs and the wingman
+            // gate but NOT on ViewMode, so switching a session to voice mode told the Gateway nothing until
+            // the next ten-second re-push. Same rule the colour fixes above established: if a client READS
+            // it, it pushes.
+            //
+            // NOTE on the shared lifetime: like the six subscriptions above, this handler is anonymous and is
+            // not detached when the session is removed. That is a real, PRE-EXISTING property of this whole
+            // subscription set - a late change on a removed session can map a disposed session - and it is
+            // addressed for ALL of these handlers together in a dedicated follow-up (doorbell subscription
+            // lifetime and concurrency). This slice deliberately does not change that behaviour; it only adds
+            // the missing push, identically to the existing handlers.
+            session.OnViewModeChanged += (_, _) =>
                 _streamClient?.NotifyDelta(ControlEndpoints.Map(session, DirectorId));
         }
 

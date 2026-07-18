@@ -8,33 +8,39 @@ using Xunit;
 namespace CcDirector.Gateway.Tests;
 
 /// <summary>
-/// Defect 14: three colour inputs were invisible to the Gateway until something ELSE happened.
+/// Event-to-stream fact propagation: when a fact the Gateway folds or a client reads changes on a Session,
+/// the Director must PUSH it up the stream on that change - not leave it to sit until the periodic full
+/// re-push. The rule the whole suite proves: if the fold or a client READS it, it pushes.
 ///
+/// This began as "defect 14", three COLOUR inputs invisible to the Gateway until something else happened.
 /// The Gateway folds orange from <c>IsTranscribing</c>, orange from <c>IsAutoExplaining</c> and purple from
-/// <c>IsBackgroundRunning</c>, reading them off the pushed <c>SessionDto</c>. But nothing pushed when they
-/// CHANGED. Each raised a Director event into an empty room - verified by looking for subscribers rather
-/// than call sites: <c>OnIsBackgroundRunningChanged</c> and <c>OnIsExplainingChanged</c> had ZERO
-/// subscribers anywhere in the codebase, and <c>OnIsTranscribingChanged</c> had exactly one, a desktop UI
-/// handler that pushes nothing. So the fact sat on the Session until some unrelated activity change
-/// happened to push a delta, or the ten-second re-push came round - and those three colours lagged by up to
-/// that long. Three comments on the events claimed they notified the SessionStatusWingman "so it can
-/// repaint the dot", which is how the gap stayed invisible: the events looked wired.
+/// <c>IsBackgroundRunning</c>, reading them off the pushed <c>SessionDto</c>, but nothing pushed when they
+/// CHANGED - each raised a Director event into an empty room (verified by looking for subscribers, not call
+/// sites). A fourth test covers the GATE on two of those (<c>WingmanEnabled</c>). The suite now also covers a
+/// fact that is NOT a colour - the mobile <c>VoiceMode</c>/<c>ViewMode</c>, which the phone reads for a row's
+/// link target and voice affordance.
 ///
 /// THIS IS THE REAL WIRE. A real <see cref="GatewayHost"/>, and a real <see cref="ControlApiHost"/> whose
 /// OWN config points at it, so the Director builds its real <c>GatewayStreamClient</c> and runs the real
-/// <c>WireDoorbellPush</c>. Nothing is hand-pushed: the test flips the flag on the Session exactly as
-/// production does and waits for the fact to appear in the Gateway's pushed store.
+/// <c>WireDoorbellPush</c>. Nothing is hand-pushed: the test flips the fact on the Session exactly as
+/// production does and waits for it to appear in the Gateway's pushed store.
 ///
-/// THE WINDOW IS THE ASSERTION. Each wait is far shorter than the ten-second re-push that would eventually
-/// carry the fact anyway - so a pass means a PUSH happened, not that we waited out the fallback. Remove any
-/// of the three subscriptions and the matching test fails by timing out, which is the defect exactly.
+/// THE PUSH IS THE ASSERTION, ISOLATED. The host is built with the periodic re-push pushed far beyond the
+/// run (<see cref="RePushBeyondTheRun"/>), so no periodic full snapshot fires during a test, and the value
+/// tests observe an explicit <c>false</c> baseline then both transitions, so a constant stamp cannot satisfy
+/// them. Remove a subscription and the matching test fails by timing out, which is the defect exactly.
+///
+/// One residual, stated honestly: <c>GatewayStreamClient</c> also sends a full snapshot on RECONNECT. This
+/// fixture holds a single stable loopback connection and never induces a disconnect, so no reseed occurs -
+/// but that is a property of the harness, not a hard assertion. Proving delta-vs-snapshot at the received
+/// message is left to the doorbell-lifetime follow-up, which adds that seam.
 ///
 /// Design: docs/new_architecture/session-state.html, defect 14.
 /// </summary>
 [Collection("DirectorRoot")]
-public sealed class DoorbellColourFactPushTests : IAsyncLifetime
+public sealed class DoorbellFactPushTests : IAsyncLifetime
 {
-    private const string Token = "test-token-doorbell-14";
+    private const string Token = "test-token-doorbell";
     private const string DirectorId = "dir-doorbell";
 
     private readonly string _root;
@@ -46,10 +52,16 @@ public sealed class DoorbellColourFactPushTests : IAsyncLifetime
     private SessionManager _sm = null!;
     private ControlApiHost _host = null!;
 
-    /// <summary>Well under the ten-second re-push, so a pass can only be a push.</summary>
+    /// <summary>How long we allow an event-driven delta to land. Isolation does NOT come from this being
+    /// under the re-push (see <see cref="RePushBeyondTheRun"/>); it comes from the re-push being disabled for
+    /// the run, so anything that lands inside this window can only be the per-fact push.</summary>
     private static readonly TimeSpan PushWindow = TimeSpan.FromSeconds(4);
 
-    public DoorbellColourFactPushTests()
+    /// <summary>The full re-push interval, set far beyond the whole test so NO snapshot fires during it. This
+    /// is what makes a pass provably a push rather than a coincidental re-push carrying the changed value.</summary>
+    private static readonly TimeSpan RePushBeyondTheRun = TimeSpan.FromMinutes(5);
+
+    public DoorbellFactPushTests()
     {
         _prevRoot = Environment.GetEnvironmentVariable("CC_DIRECTOR_ROOT");
         _root = Path.Combine(Path.GetTempPath(), "ccd-doorbell-root-" + Guid.NewGuid().ToString("N"));
@@ -82,7 +94,10 @@ public sealed class DoorbellColourFactPushTests : IAsyncLifetime
 
         _sm = new SessionManager(new AgentOptions());
         _host = new ControlApiHost(_sm, "1.0.0-test", () => Task.CompletedTask,
-            useEphemeralPort: true, authEnabled: false, directorId: DirectorId, instancesDirectory: _directorInstances);
+            useEphemeralPort: true, authEnabled: false, directorId: DirectorId, instancesDirectory: _directorInstances,
+            // Disable the full re-push for the run so a fact that appears in the pushed store can only have got
+            // there by its own event-driven delta - the whole point of these tests.
+            rePushInterval: RePushBeyondTheRun);
         await _host.StartAsync();
     }
 
@@ -200,5 +215,41 @@ public sealed class DoorbellColourFactPushTests : IAsyncLifetime
         Assert.True(await WaitForPushed(s.Id.ToString(), d => d.IsAutoExplaining, PushWindow),
             "IsAutoExplaining never reached the Gateway inside the push window - the Gateway folds the " +
             "auto-explain orange from this fact. Before defect 14 this event had ZERO subscribers anywhere.");
+    }
+
+    /// <summary>
+    /// THE SAME WIRE FOR A FACT THAT IS NOT A COLOUR (Dumb Clients mission, slice A).
+    ///
+    /// The map stamps <c>VoiceMode</c> (derived from <c>ViewMode</c>) onto the pushed <c>SessionDto</c>, and
+    /// the mobile roster READS it: a voice-mode session's row links straight to its Voice tab and shows a
+    /// voice affordance. But <c>WireDoorbellPush</c> subscribed to activity, hold, the three colour inputs and
+    /// the wingman gate - and not to <c>OnViewModeChanged</c>. So switching a session to voice mode told the
+    /// Gateway nothing until the re-push. Same wire, same rule: if a client reads it, it pushes.
+    ///
+    /// Proven both ways round an observed <c>false</c> baseline, so a mapper that stamped a CONSTANT
+    /// <c>VoiceMode</c> could not satisfy it: the false-&gt;true assertion would fail a constant false, the
+    /// true-&gt;false assertion would fail a constant true. With the re-push disabled (see the fixture), each
+    /// transition inside the window can only be its own <c>OnViewModeChanged</c> delta - remove the
+    /// subscription and this fails by timing out.
+    /// </summary>
+    [Fact]
+    public async Task VoiceMode_ReachesTheGateway_OnItsOwnPush()
+    {
+        var s = await ASessionTheGatewayCanSee();
+        var id = s.Id.ToString();
+
+        // Baseline: the create-time push stamped VoiceMode=false. Observe it, so "became true" below cannot
+        // be satisfied by a row that was already true.
+        Assert.True(await WaitForPushed(id, d => !d.VoiceMode, TimeSpan.FromSeconds(5)),
+            "the baseline VoiceMode=false was never observed - the transitions below could not mean a change");
+
+        s.ViewMode = MobileViewMode.Voice; // exactly what entering voice mode does (SessionWriteExecutor)
+        Assert.True(await WaitForPushed(id, d => d.VoiceMode, PushWindow),
+            "VoiceMode false->true never reached the Gateway on the OnViewModeChanged push - the mobile roster " +
+            "reads it for the row's link target and voice affordance, so it would lag by up to one re-push.");
+
+        s.ViewMode = MobileViewMode.Text; // leaving voice mode
+        Assert.True(await WaitForPushed(id, d => !d.VoiceMode, PushWindow),
+            "VoiceMode true->false never reached the Gateway on the OnViewModeChanged push.");
     }
 }
