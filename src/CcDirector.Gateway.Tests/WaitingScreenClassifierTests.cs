@@ -123,19 +123,21 @@ public sealed class WaitingScreenClassifierTests
     }
 
     [Fact]
-    public void LooksLikePlainTextPrompt_FooterOnly_CursorAtTrailingEdge_IsTrue()
+    public void LooksLikePlainTextPrompt_FooterOnly_EmptyTrimmedComposer_CursorAtInput_IsTrue()
     {
-        // Footer-only composer (no right border), empty input: the trailing edge is right after "> " (col 2).
-        var rows = new[] { "some output", "> ", "  bypass permissions on (shift+tab to cycle)" };
+        // The REAL trailing-trimmed representation: a footer-only empty "> " composer arrives as ">" (the space
+        // is trimmed). The visible cursor is at col 2 (the true input column, one past the trimmed marker). This
+        // is a normal empty composer and MUST type - a hand-supplied "> " row would mask the trimming.
+        var rows = new[] { "some output", ">", "  bypass permissions on (shift+tab to cycle)" };
         Assert.True(WaitingScreenClassifier.LooksLikePlainTextPrompt(rows, cursorRow: 1, cursorCol: 2));
     }
 
     [Fact]
     public void LooksLikePlainTextPrompt_FooterOnly_CursorPastTheInput_IsFalse()
     {
-        // Blocker B: with no right border, the cursor is bounded by the END of the input content. A cursor far
-        // past the input (col 10 over an empty "> ") is NOT the trailing insertion point -> not a composer.
-        var rows = new[] { "some output", "> ", "  bypass permissions on (shift+tab to cycle)" };
+        // Blocker B: with no right border, the cursor is still bounded. A cursor far past the input (col 10 over
+        // a trimmed ">") is neither the insertion point nor the trimmed-space column -> not a composer.
+        var rows = new[] { "some output", ">", "  bypass permissions on (shift+tab to cycle)" };
         Assert.False(WaitingScreenClassifier.LooksLikePlainTextPrompt(rows, cursorRow: 1, cursorCol: 10));
     }
 

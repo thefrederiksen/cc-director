@@ -214,6 +214,44 @@ public sealed class WingmanVoiceTurnLiveScreenProofTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task VoiceTurn_EmptyFooterComposer_TrimmedRow_TypesTheSpokenAnswer()
+    {
+        // Regression (final fix): a NORMAL empty footer-only composer, in the REAL trailing-trimmed
+        // representation ("> " arrives as ">"), with the visible cursor at the true input column (2). A normal
+        // voice answer MUST be typed here - the trailing-edge rule must not over-block the empty composer.
+        var sid = await PushSessionAsync();
+        var spoken = "run the tests";
+        var promptSent = false;
+
+        _dispatch = cmd => cmd.Verb switch
+        {
+            "screen-grid" => Ok(new ScreenGridResponse
+            {
+                SessionId = sid,
+                Rows = new List<string> { ">", "  ? for shortcuts" },   // the trimmed "> " row
+                CursorRow = 0,
+                CursorCol = 2,
+                CursorVisible = true,
+                IsAlternateScreen = false,
+                HasGrid = true,
+            }),
+            "turns" => Ok(new TurnsResponse
+            {
+                SessionId = sid,
+                Status = "ok",
+                Widgets = promptSent
+                    ? new List<TurnWidgetDto> { new() { Kind = "Text", Content = "Running." } }
+                    : new List<TurnWidgetDto>(),
+            }),
+            "prompt" => Mark(ref promptSent, Ok(new PromptResponse { Accepted = true })),
+            _ => DirectorCommandResult.Fail(DirectorCommandStatus.BadRequest, $"unexpected verb {cmd.Verb}"),
+        };
+
+        await _http.PostAsJsonAsync($"sessions/{sid}/wingman/voice-turn", new { text = spoken });
+        Assert.Contains(DispatchedPrompts(), p => p.Text == spoken && p.AppendEnter);
+    }
+
+    [Fact]
     public async Task VoiceTurn_PlainTextThenBecomesMenuBeforeSend_TypesNothing()
     {
         // Finding 2 (snapshot-to-send race): the screen is a plain-text composer when classified, but a menu by

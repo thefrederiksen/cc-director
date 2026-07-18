@@ -161,8 +161,16 @@ public static class WaitingScreenClassifier
         {
             if (line[c] != ' ' && line[c] != '\t' && line[c] != '\r') { lastContent = c; break; }
         }
+        var emptyInput = lastContent < inputStart;
         var insertionPoint = lastContent + 1;   // right after the last typed char, or == inputStart when empty
-        if (cursorCol != insertionPoint) return false;
+        if (cursorCol == insertionPoint) { /* the trailing insertion point - a confident composer */ }
+        // Account for TRAILING-TRIMMED rows (issue #1777): ScreenGridResponse rows are trailing-trimmed, so a
+        // footer-only EMPTY "> " composer arrives as ">" - the trimmed space is gone, so the visible cursor sits
+        // one column PAST the marker, at the true input column. Accept that only for an empty composer with no
+        // right border. A "> label" selector keeps its non-space label (never empty here), so this never
+        // loosens the selector rejection - a cursor not at the trailing edge of a labelled line still fails.
+        else if (emptyInput && rightBorder < 0 && cursorCol == insertionPoint + 1) { /* trimmed "> " space */ }
+        else return false;
 
         // Positively framed as an input box: a box-border row adjacent, or the mode-status footer just below.
         return HasAdjacentBorder(rows, cursorRow) || HasModeStatusBelow(rows, cursorRow);

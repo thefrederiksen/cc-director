@@ -238,6 +238,47 @@ public sealed class SessionReadExecutorTests
         finally { sm.Dispose(); }
     }
 
+    [Fact]
+    public async Task DispatchAsync_ScreenGrid_EmptyFooterComposer_TrimsTrailingSpace_ClassifiesPlainText()
+    {
+        // The REAL trailing-trimmed representation (issue #1777, final fix): Claude's empty "> " composer is
+        // drawn on the primary screen with a visible cursor right after "> " and a mode-status footer below.
+        // The parser trailing-trims each row, so the "> " row arrives as ">" (the space is gone) while the
+        // visible cursor stays at its true column. The classifier must still read this as a plain-text composer
+        // and allow typing - not over-block a normal empty composer.
+        var sm = new SessionManager(new Core.Configuration.AgentOptions());
+        var backend = new ScreenGridBufferBackend();
+        try
+        {
+            var session = sm.CreateEmbeddedSession(Path.GetTempPath(), null, backend);
+            session.Resize(40, 6);
+
+            var draw = new System.Text.StringBuilder();
+            draw.Append("\x1b[?25h");                         // cursor visible (a composer keeps it visible)
+            draw.Append("\x1b[2J");
+            draw.Append("\x1b[1;1H> ");                        // the empty composer prompt: marker + a space
+            draw.Append("\x1b[2;1H? for shortcuts");          // the mode-status footer below it
+            draw.Append("\x1b[1;3H");                          // park the cursor right after "> " (row 1, col 3)
+            backend.Buffer!.Write(System.Text.Encoding.UTF8.GetBytes(draw.ToString()));
+
+            var result = await SessionCommandExecutor.DispatchAsync(sm, "dir-A", Cmd("screen-grid", session.Id.ToString()));
+            var grid = JsonSerializer.Deserialize<ScreenGridResponse>(result.BodyJson ?? "", Json);
+            Assert.NotNull(grid);
+
+            // The trailing space really is trimmed off the composer row, and the cursor really is at col 2.
+            Assert.Equal(">", grid!.Rows[0]);
+            Assert.True(grid.CursorVisible);
+            Assert.Equal(0, grid.CursorRow);
+            Assert.Equal(2, grid.CursorCol);
+
+            // The classifier reads THIS real representation as a plain-text composer (types), not a blocked screen.
+            var kind = CcDirector.Gateway.Wingman.WaitingScreenClassifier.Classify(
+                grid.Rows, grid.CursorRow, grid.CursorCol, grid.CursorVisible, grid.IsAlternateScreen, grid.HasGrid);
+            Assert.Equal(CcDirector.Gateway.Wingman.WaitingScreenKind.PlainText, kind);
+        }
+        finally { sm.Dispose(); }
+    }
+
     /// <summary>A minimal backend with a real terminal buffer, so a session's server-side parser is created
     /// and fed via the buffer's OnBytesWritten event - the same path the real backend uses.</summary>
     private sealed class ScreenGridBufferBackend : Core.Backends.ISessionBackend
