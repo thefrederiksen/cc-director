@@ -345,6 +345,8 @@ public sealed class GatewayHost : IAsyncDisposable
     // The append-only governance audit trail (issue #1771, spine item 4): structured intervention +
     // permission/sandbox decisions, recorded as events, never inferred from transcripts.
     private readonly Governance.GovernanceAuditLog _governanceAudit;
+    // Fills session_spend at each turn-end from the pushed roster snapshot (issue #1771, spine item 3).
+    private readonly Governance.SessionSpendEmitter _sessionSpendEmitter;
     private readonly CronJobStore _cronJobs;
     private readonly CronRunHistoryStore _cronRuns;
     private readonly Running.CronEngine _cronEngine;
@@ -624,6 +626,7 @@ public sealed class GatewayHost : IAsyncDisposable
         // The governance audit trail (issue #1771, spine item 4): append-only intervention + permission/
         // sandbox decisions on the EF data layer, so a Gateway restart never loses a recorded audit fact.
         _governanceAudit = new Governance.GovernanceAuditLog(_gatewayDb);
+        _sessionSpendEmitter = new Governance.SessionSpendEmitter(_sessionSpend);
         // Snooze Length mission: the persisted snooze registry (sessionId -> SnoozeUntilUtc), now in the
         // snoozes table of the EF data layer - a Gateway restart re-arms every pending snooze from the
         // database; an entry already past its time simply fires on the first sweep. The path argument is the
@@ -1162,6 +1165,20 @@ public sealed class GatewayHost : IAsyncDisposable
         _turnEndWatcher = new TurnEndWatcher(
             onTurnEnd: signal =>
             {
+                // Governance capture (issue #1771, spine item 3): record this session's cumulative spend at
+                // turn-end from the pushed roster snapshot. Runs for EVERY session (not just voice), and is
+                // isolated so a spend hiccup never breaks the voice refresh below - the failure is logged loud,
+                // not swallowed into a fabricated value.
+                try
+                {
+                    if (PushedSessions.TryLocate(TenantId.Local, signal.SessionId, _streamStaleAfter) is { } spendLoc)
+                        _sessionSpendEmitter.Emit(spendLoc.Session);
+                }
+                catch (Exception ex)
+                {
+                    FileLog.Write($"[GatewayHost] turn-end spend emit FAILED: sid={signal.SessionId}: {ex.Message}");
+                }
+
                 // Voice sessions (issue #531): the turn just finished on its own, so re-make the
                 // spoken summary + audio in the background. It is then "voice ready" in the session
                 // list with no wait. Non-voice sessions do nothing here - the watcher is voice-only.
