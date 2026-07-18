@@ -77,7 +77,8 @@ internal static class ControlEndpoints
             try
             {
                 var text = FleetPreamble.BuildForSession(
-                    session.Id.ToString(), name, Environment.MachineName, session.RepoPath, user);
+                    session.Id.ToString(), name, Environment.MachineName, session.RepoPath, user,
+                    workflowIndex: new WorkflowIndexStore());
                 return Results.Text(text, "text/plain");
             }
             catch (Exception ex) when (ex is InjectedTextUnavailableException or FleetPreambleTemplateException)
@@ -124,7 +125,8 @@ internal static class ControlEndpoints
             try
             {
                 text = FleetPreamble.BuildForSession(
-                    session.Id.ToString(), name, Environment.MachineName, session.RepoPath, user);
+                    session.Id.ToString(), name, Environment.MachineName, session.RepoPath, user,
+                    workflowIndex: new WorkflowIndexStore());
             }
             catch (Exception ex) when (ex is InjectedTextUnavailableException or FleetPreambleTemplateException)
             {

@@ -45,11 +45,14 @@ public static class PiPreambleWriter
         Directory.CreateDirectory(directory);
 
         // BuildForSession, not Build: Pi is a live delivery path, so it injects the user's own text
-        // when they are running one.
+        // when they are running one - and, being a live path, it opts into the workflow index
+        // (Workflows mission, phase 5) exactly like the hook endpoints. When the injected-text store
+        // is pinned (tests), the index store follows the same hermetic rule and is omitted.
         string text;
         try
         {
-            text = FleetPreamble.BuildForSession(sessionId, name, machine, repoPath, user, store);
+            text = FleetPreamble.BuildForSession(sessionId, name, machine, repoPath, user, store,
+                workflowIndex: store is null ? new WorkflowIndexStore() : null);
         }
         catch (Exception ex) when (ex is InjectedTextUnavailableException or FleetPreambleTemplateException)
         {
