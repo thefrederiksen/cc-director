@@ -409,6 +409,9 @@ internal static class GatewayWingmanVoiceEndpoint
             var voice = string.IsNullOrWhiteSpace(req.Voice) ? TtsVoiceConfig.Resolve(mode) : req.Voice.Trim();
             var model = string.IsNullOrWhiteSpace(req.Model) ? TtsModelConfig.Resolve(mode) : req.Model.Trim();
             var url = tts.BaseUrl.TrimEnd('/') + "/audio/speech";
+            // Time the read-aloud call (request -> done) so its speed is in the log, matching the
+            // narration path (WingmanVoiceService) and transcription's transcribeMs.
+            var sw = System.Diagnostics.Stopwatch.StartNew();
             try
             {
                 // Per-attempt deadline derived from the text length + one retry (TtsSynthesis), so a
@@ -470,7 +473,8 @@ internal static class GatewayWingmanVoiceEndpoint
                 // Pass the upstream content type through: speech providers usually return audio/mpeg.
                 // may return audio/wav for some models - the browser must be told which so it can play it.
                 var contentType = resp.Content.Headers.ContentType?.MediaType ?? "audio/mpeg";
-                FileLog.Write($"[GatewayWingmanVoice] tts ok: provider={mode.ToConfigString()}, chars={input.Length}, bytes={bytes.Length}, model={model}, voice={voice}, type={contentType}");
+                sw.Stop();
+                FileLog.Write($"[GatewayWingmanVoice] tts ok: elapsedMs={sw.ElapsedMilliseconds}, provider={mode.ToConfigString()}, chars={input.Length}, bytes={bytes.Length}, model={model}, voice={voice}, type={contentType}");
                 return Results.Bytes(bytes, contentType);
             }
             // TtsSynthesis exhausted its attempts: the worker never answered inside the per-attempt cap.
@@ -480,7 +484,8 @@ internal static class GatewayWingmanVoiceEndpoint
             // client and different answers from support, so they must not share a status.
             catch (TimeoutException ex)
             {
-                FileLog.Write($"[GatewayWingmanVoice] tts TIMED OUT: {ex.Message}");
+                sw.Stop();
+                FileLog.Write($"[GatewayWingmanVoice] tts TIMED OUT (elapsedMs={sw.ElapsedMilliseconds}): {ex.Message}");
                 return Results.Json(new { error = "text-to-speech timed out: " + ex.Message },
                     statusCode: StatusCodes.Status504GatewayTimeout);
             }
