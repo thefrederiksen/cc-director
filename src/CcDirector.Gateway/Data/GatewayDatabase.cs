@@ -211,8 +211,20 @@ public sealed class GatewayDatabase : IDisposable
     /// exists because the tenant registry must mint or look up a tenant BEFORE any tenant is resolved, so it
     /// cannot go through <see cref="CreateContext"/> (which fails loud on an unresolved tenant). The caller
     /// disposes it (it returns to the pool).
+    ///
+    /// It EXPLICITLY sets <see cref="GatewayDbContext.ActiveTenant"/> to null. The factory is a POOL - a
+    /// returned context keeps its custom <c>ActiveTenant</c> (pooling resets EF's own state, not arbitrary
+    /// properties), so a context previously handed out by <see cref="CreateContext"/> could come back here
+    /// still stamped with that prior tenant. Without this reset a scoped-entity read through the "unscoped"
+    /// context would silently filter by a leftover tenant instead of failing closed - so the null is set here,
+    /// exactly as <see cref="CreateContext"/> always sets the real tenant.
     /// </summary>
-    public GatewayDbContext CreateUnscopedContext() => _factory.CreateDbContext();
+    public GatewayDbContext CreateUnscopedContext()
+    {
+        var ctx = _factory.CreateDbContext();
+        ctx.ActiveTenant = null;
+        return ctx;
+    }
 
     public void Dispose()
     {
