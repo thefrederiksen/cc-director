@@ -332,6 +332,9 @@ public sealed class GatewayHost : IAsyncDisposable
     // The persisted workflow catalog (Workflows mission, phase 1): built-ins seeded at startup,
     // user-defined workflows beside them, served by Api.WorkflowEndpoints.
     private readonly Workflows.WorkflowStore _workflows;
+    // Workflow runs (phase 4, issue #1771): one row per execution of a workflow definition, pinned to
+    // the version that governed it. The governance outcome spine.
+    private readonly Workflows.WorkflowRunStore _workflowRuns;
     private readonly CronJobStore _cronJobs;
     private readonly CronRunHistoryStore _cronRuns;
     private readonly Running.CronEngine _cronEngine;
@@ -597,6 +600,9 @@ public sealed class GatewayHost : IAsyncDisposable
         // shipped built-ins seeded/upgraded at construction. No legacy JSON - the previous catalog was
         // compiled-in C# literals, so there is nothing on disk to import.
         _workflows = new Workflows.WorkflowStore(_gatewayDb);
+        // Workflow runs (phase 4, issue #1771): built after the catalog store so the built-ins a run
+        // pins are already seeded.
+        _workflowRuns = new Workflows.WorkflowRunStore(_gatewayDb);
         // Snooze Length mission: the persisted snooze registry (sessionId -> SnoozeUntilUtc). Loaded here
         // so a Gateway restart re-arms every pending snooze; an entry already past its time simply fires
         // on the first sweep. Tests MUST pass an isolated path so they never touch the real store. The
@@ -1497,7 +1503,10 @@ public sealed class GatewayHost : IAsyncDisposable
             snoozeRegistry: _snoozeRegistry,
             // Gateway Cleanup mission (Wave 4b): the Gateway-native mission store backs POST/GET /missions and
             // mission-scoped spawn validation. Missions are a fleet concept, so their source of truth is here.
-            missions: Missions);
+            missions: Missions,
+            // Workflows mission (phase 4, issue #1771): creating a mission also opens a workflow run of
+            // the built-in "mission" workflow, pinned to its published version - the outcome spine.
+            workflowRuns: _workflowRuns);
 
         // Issue #268: the two raw per-session WebSocket legs (live Terminal stream + dictation)
         // proxied through the Gateway so a remote Cockpit talks same-origin to the Gateway and
@@ -1604,6 +1613,10 @@ public sealed class GatewayHost : IAsyncDisposable
         // each carrying a private copy. Served from the persisted store (built-ins seeded at startup);
         // authoring routes are the next phase. Inherits the host-wide token middleware above.
         Api.WorkflowEndpoints.Map(_app, _workflows);
+
+        // Workflow runs (phase 4, issue #1771): the outcome spine's REST surface. One row per
+        // execution of a workflow, pinned to the exact published version that governed it.
+        Api.WorkflowRunEndpoints.Map(_app, _workflowRuns);
 
         // Gateway Centralization Phase 1 (issue #628): the inbound login-telemetry RELAY. The Director
         // POSTs its login-telemetry event here (instead of the cloud) and the Gateway forwards it on,

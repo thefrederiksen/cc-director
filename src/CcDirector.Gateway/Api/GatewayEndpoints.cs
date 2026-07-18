@@ -104,6 +104,11 @@ internal static class GatewayEndpoints
         // a fleet-level concept, so the source of truth lives here at the Gateway. Null (old callers, tests)
         // maps nothing, leaving missions to the Director's own /missions routes (unchanged this phase).
         Core.Sessions.MissionStore? missions = null,
+        // Workflows mission (phase 4, issue #1771): when non-null, creating a mission also opens a
+        // workflow RUN of the built-in "mission" workflow, pinned to its published version, and the
+        // created mission's DTO carries the additive workflowRunId. Null (old callers, tests) leaves
+        // mission creation byte-identical to before.
+        Workflows.WorkflowRunStore? workflowRuns = null,
         // Store injection points: the host owns a single key vault, transcription telemetry log, and audio
         // archive and passes them here so the phone-recorder ingest transcriber (RecordingEndpoints) uses
         // the host's instances rather than newing its own. Null (old callers, tests) leaves RecordingEndpoints
@@ -174,7 +179,20 @@ internal static class GatewayEndpoints
                     return Results.BadRequest(new { error = "missionName is required" });
 
                 var mission = missions.Create(req.MissionName, req.ParentMissionId);
-                return Results.Json(ToMissionDto(mission), statusCode: StatusCodes.Status201Created);
+                var dto = ToMissionDto(mission);
+
+                // Workflows mission (phase 4, issue #1771): a mission IS a run of the built-in
+                // "mission" workflow. Open the run beside the Mission record, pinned to the published
+                // mission conduct, and hand the id back additively. Fail-loud: if the run cannot be
+                // opened the store is broken, and a mission without its governance record would be
+                // exactly the silent gap the outcome spine exists to close.
+                if (workflowRuns is not null)
+                {
+                    var run = workflowRuns.Create(
+                        "mission", mission.MissionName, missionId: mission.MissionId);
+                    dto.WorkflowRunId = run.Id;
+                }
+                return Results.Json(dto, statusCode: StatusCodes.Status201Created);
             });
 
             app.MapGet("/missions", () =>

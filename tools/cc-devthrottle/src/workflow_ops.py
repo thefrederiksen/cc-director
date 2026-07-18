@@ -213,6 +213,23 @@ class WorkflowClient:
             self._request("DELETE", f"/gateway/workflows/{workflow_id}")
         )
 
+    # ---- runs (the governance outcome spine, issue #1771) -------------------------------------
+
+    def list_runs(
+        self, workflow_id: Optional[str], status: Optional[str]
+    ) -> List[Dict[str, Any]]:
+        params = []
+        if workflow_id:
+            params.append(f"workflowId={workflow_id}")
+        if status:
+            params.append(f"status={status}")
+        path = "/gateway/workflow-runs" + (("?" + "&".join(params)) if params else "")
+        data = self._json_or_raise(self._request("GET", path))
+        return list(data.get("runs", []))
+
+    def get_run(self, run_id: str) -> Dict[str, Any]:
+        return self._json_or_raise(self._request("GET", f"/gateway/workflow-runs/{run_id}"))
+
 
 def _fail(message: str) -> None:
     err_console.print(f"[red]Error:[/red] {message}")
@@ -571,6 +588,83 @@ def delete_workflow(workflow_id: str, yes: bool) -> None:
         _fail(str(ex))
         return
     console.print(f"Archived '{workflow_id}'.")
+
+
+def list_runs(workflow_id: Optional[str], status: Optional[str], json_output: bool) -> None:
+    try:
+        runs = _client().list_runs(workflow_id, status)
+    except GatewayError as ex:
+        _fail(str(ex))
+        return
+
+    if json_output:
+        print(json.dumps({"runs": runs}, indent=2))
+        return
+
+    table = Table(box=box.SIMPLE)
+    table.add_column("Run id")
+    table.add_column("Workflow")
+    table.add_column("V", justify="right")
+    table.add_column("Name", overflow="fold")
+    table.add_column("Status")
+    table.add_column("Acceptance")
+    table.add_column("Created (UTC)")
+    for run in runs:
+        table.add_row(
+            (run.get("id") or "")[:8],
+            run.get("workflowId", ""),
+            str(run.get("workflowVersion", "")),
+            run.get("name", ""),
+            run.get("status", ""),
+            run.get("acceptanceStatus", ""),
+            (run.get("createdUtc") or "").replace("T", " ")[:19],
+        )
+    console.print(table)
+    console.print("Details with: cc-devthrottle workflow run <run id>")
+
+
+def show_run(run_id: str, json_output: bool) -> None:
+    try:
+        run = _client().get_run(run_id)
+    except GatewayError as ex:
+        _fail(str(ex))
+        return
+
+    if json_output:
+        print(json.dumps(run, indent=2))
+        return
+
+    console.print(f"[bold]{run.get('name', '')}[/bold]  (run {run.get('id')})")
+    console.print(
+        f"Workflow: {run.get('workflowId')} v{run.get('workflowVersion')}  "
+        f"Status: {run.get('status')}  Acceptance: {run.get('acceptanceStatus')}"
+    )
+    if run.get("acceptedBy"):
+        console.print(f"Accepted by: {run['acceptedBy']} at {run.get('acceptedUtc')}")
+    if run.get("outcome"):
+        console.print(f"Outcome: {run['outcome']}")
+    if run.get("missionId"):
+        console.print(f"Mission: {run['missionId']}")
+    criteria = run.get("criteriaResults") or []
+    if criteria:
+        console.print("Criteria:")
+        for c in criteria:
+            proof = f"  proof {c['proofUrl']}" if c.get("proofUrl") else ""
+            console.print(f"  - {c.get('criterionId')}: {c.get('status')}{proof}")
+    participants = run.get("participants") or []
+    if participants:
+        console.print("Participants:")
+        for p in participants:
+            left = f" (left {p['leftUtc']})" if p.get("leftUtc") else ""
+            console.print(
+                f"  - {p.get('role') or '?'} {p.get('sessionId')} "
+                f"[{p.get('agentKind')}] on {p.get('machine')}{left}"
+            )
+    links = run.get("proofLinks") or []
+    if links:
+        console.print("Proof links:")
+        for link in links:
+            console.print(f"  - {link.get('label') or 'link'}: {link.get('url')}")
 
 
 def materialize_workflow(workflow_id: str, version: Optional[int]) -> None:

@@ -20,6 +20,12 @@ public sealed class MissionDto
 
     /// <summary>The parent Mission this one nests under (a tree of Missions), or null for a root Mission.</summary>
     public Guid? ParentMissionId { get; set; }
+
+    /// <summary>ADDITIVE (Workflows mission, phase 4, issue #1771): the workflow run opened beside
+    /// this Mission when it was created through the Gateway - a mission is a run of the built-in
+    /// "mission" workflow. Null on reads that do not resolve it and on missions predating the spine.
+    /// Existing clients ignore it.</summary>
+    public Guid? WorkflowRunId { get; set; }
 }
 
 /// <summary>
