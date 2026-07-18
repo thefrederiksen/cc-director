@@ -198,6 +198,35 @@ public sealed class WorkflowEndpointsTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Creating_a_mission_opens_a_workflow_run_pinned_to_the_mission_conduct()
+    {
+        // Workflows mission, phase 4 (issue #1771): a mission IS a run of the built-in "mission"
+        // workflow. The mission response carries the additive workflowRunId; the run is pinned to
+        // the published mission version and anchored back to the mission.
+        var created = await _http.PostAsJsonAsync("missions", new { missionName = "Spine proof" });
+        Assert.Equal(HttpStatusCode.Created, created.StatusCode);
+        var mission = await created.Content.ReadFromJsonAsync<JsonObject>();
+        var runId = (string?)mission!["workflowRunId"];
+        Assert.False(string.IsNullOrWhiteSpace(runId));
+
+        var run = await _http.GetFromJsonAsync<JsonObject>($"gateway/workflow-runs/{runId}");
+        Assert.Equal("mission", (string?)run!["workflowId"]);
+        Assert.Equal("Spine proof", (string?)run["name"]);
+        Assert.Equal("created", (string?)run["status"]);
+        Assert.Equal("pending", (string?)run["acceptanceStatus"]);
+        Assert.Equal((string?)mission["missionId"], (string?)run["missionId"]);
+
+        // The pinned hash is the published mission workflow's hash.
+        var workflow = await _http.GetFromJsonAsync<JsonObject>("gateway/workflows/mission");
+        Assert.Equal((string?)workflow!["contentHash"], (string?)run["contentHash"]);
+
+        // The run also lists by its mission anchor.
+        var listed = await _http.GetFromJsonAsync<JsonObject>(
+            $"gateway/workflow-runs?missionId={(string?)mission["missionId"]}");
+        Assert.Single(listed!["runs"]!.AsArray());
+    }
+
+    [Fact]
     public async Task The_api_does_not_squat_on_the_cockpit_page_path()
     {
         // Regression: the catalog was first mapped at a bare /workflows, which is the path the Cockpit's

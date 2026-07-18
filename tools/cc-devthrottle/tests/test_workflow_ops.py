@@ -68,6 +68,8 @@ class TestActionsDiscoverability:
             "workflow-materialize",
             "workflow-reset",
             "workflow-delete",
+            "workflow-runs",
+            "workflow-run-show",
         } <= ids
 
 

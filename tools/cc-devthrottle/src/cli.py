@@ -333,6 +333,20 @@ _ACTIONS = [
         "args": [{"name": "id", "required": True}, {"name": "version", "required": False}],
     },
     {
+        "id": "workflow-runs",
+        "description": "List workflow runs (one row per execution; the governance outcome spine).",
+        "command": "cc-devthrottle workflow runs",
+        "mutatesState": False,
+        "args": [{"name": "workflow", "required": False}, {"name": "status", "required": False}],
+    },
+    {
+        "id": "workflow-run-show",
+        "description": "Show one workflow run: pinned version, lifecycle, acceptance, criteria, participants.",
+        "command": "cc-devthrottle workflow run <run id>",
+        "mutatesState": False,
+        "args": [{"name": "run_id", "required": True}],
+    },
+    {
         "id": "workflow-reset",
         "description": "Reset a built-in Workflow to the shipped content (published as a new version).",
         "command": "cc-devthrottle workflow reset <id>",
@@ -886,6 +900,30 @@ def workflow_materialize(
 ) -> None:
     """Write the Workflow's instructions and helper files to this machine's cache and print the paths."""
     workflow_ops.materialize_workflow(workflow_id, version)
+
+
+@workflow_app.command("runs")
+def workflow_runs(
+    workflow: Optional[str] = typer.Option(
+        None, "--workflow", "-w", help="Only runs of this workflow id."
+    ),
+    status: Optional[str] = typer.Option(
+        None, "--status", "-s",
+        help="Only runs in this lifecycle status (created, active, awaiting-human, succeeded, failed, abandoned).",
+    ),
+    json_output: bool = typer.Option(False, "--json", "-j", help="Output as JSON."),
+) -> None:
+    """List workflow runs (one row per execution of a workflow), newest first."""
+    workflow_ops.list_runs(workflow, status, json_output)
+
+
+@workflow_app.command("run")
+def workflow_run(
+    run_id: str = typer.Argument(..., help="The run id."),
+    json_output: bool = typer.Option(False, "--json", "-j", help="Output as JSON."),
+) -> None:
+    """Show one workflow run: pinned version, lifecycle, acceptance, criteria, participants, proof."""
+    workflow_ops.show_run(run_id, json_output)
 
 
 @workflow_app.command("reset")

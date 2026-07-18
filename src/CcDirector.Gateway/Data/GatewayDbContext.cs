@@ -64,6 +64,9 @@ public sealed class GatewayDbContext : DbContext
     /// <summary>Helper files belonging to a workflow version (<c>workflow_files</c>).</summary>
     public DbSet<WorkflowFileEntity> WorkflowFiles => Set<WorkflowFileEntity>();
 
+    /// <summary>Workflow runs (<c>workflow_runs</c>) - the governance outcome spine (issue #1771).</summary>
+    public DbSet<WorkflowRunEntity> WorkflowRuns => Set<WorkflowRunEntity>();
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         base.OnModelCreating(modelBuilder);
@@ -137,6 +140,19 @@ public sealed class GatewayDbContext : DbContext
             b.HasIndex(e => e.VersionId);
         });
 
+        modelBuilder.Entity<WorkflowRunEntity>(b =>
+        {
+            b.ToTable("workflow_runs");
+            b.HasKey(e => e.Id);
+            // The reporting cuts: per-workflow and per-mission run lists. Indexed, never foreign
+            // keys - a run outlives archives and mission cleanup.
+            b.HasIndex(e => e.WorkflowId);
+            b.HasIndex(e => e.MissionId);
+            b.OwnsMany(e => e.CriteriaResults, o => o.ToJson());
+            b.OwnsMany(e => e.ProofLinks, o => o.ToJson());
+            b.OwnsMany(e => e.Participants, o => o.ToJson());
+        });
+
         // Tenant scoping - the tenant_id column plus the global query filter - applied uniformly to every
         // entity that derives from TenantScopedEntity, so future stores inherit it by deriving from the base.
         ApplyTenantScope<CronJobEntity>(modelBuilder);
@@ -146,6 +162,7 @@ public sealed class GatewayDbContext : DbContext
         ApplyTenantScope<WorkflowEntity>(modelBuilder);
         ApplyTenantScope<WorkflowVersionEntity>(modelBuilder);
         ApplyTenantScope<WorkflowFileEntity>(modelBuilder);
+        ApplyTenantScope<WorkflowRunEntity>(modelBuilder);
 
         ApplyCommonSubsetConventions(modelBuilder);
     }
