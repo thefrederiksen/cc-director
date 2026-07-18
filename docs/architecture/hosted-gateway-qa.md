@@ -360,3 +360,83 @@ Regression: the Gateway Data-namespace suite with no env var
 (`dotnet test src/CcDirector.Gateway.Tests/CcDirector.Gateway.Tests.csproj --filter FullyQualifiedName~CcDirector.Gateway.Tests.Data`)
 - 9 passed, 10 skipped. Every database/Supabase fact is among the 10 skips, so nothing connects to a server,
 and the SQLite/local path stays green and unchanged.
+
+## Live end-to-end validation - the hosted Gateway on Azure App Service + Supabase
+
+Date: 2026-07-18
+
+The hosted Gateway is deployed and LIVE: Azure App Service B1 (Linux container, East US), the image built
+from merged HEAD (the CcDirector.Gateway.Host entrypoint with the Postgres migrations shipped), pointed at
+the real Supabase Postgres in the isolated `gateway` schema via CC_GATEWAY_DB_CONNECTION as an App Service
+application setting (the connection string is never baked into the image, never logged - the Postgres path
+logs only host+database). Public URL https://devthrottle-gw.azurewebsites.net, /healthz returns 200. Boot
+log: `[GatewayDatabase] Open: ready, provider=Postgres host=aws-1-us-east-1.pooler.supabase.com
+database=postgres`; there is NO gateway.db on the App Service file share (the operational stores are on
+Supabase).
+
+Validation was run by pointing a DEDICATED, ISOLATED test Director at the cloud gateway - never the live
+fleet, never the live token. The test Director is a slot-5 `cc-director` built from origin/main, given its
+OWN CC_DIRECTOR_ROOT and a config.json with the gateway block (gateway.url = the public URL, gateway.token =
+the hosted director-auth token, read at point of use from the machine-local credential file, never echoed or
+committed). Three steps, each confirmed on BOTH the client side (this run) and the gateway/Supabase side
+(container logs + psql over the pooler by the deploy overseer).
+
+### Step 1 - authenticate + establish the tunnel
+
+The test Director authenticated with the token ALONE (no account/JWT/device-enrollment) and its
+GatewayStreamClient established the SignalR tunnel over HTTPS/WSS to the public URL on 443 (App Service
+terminates TLS and maps 443 to the container's WEBSITES_PORT 7878); no tailnet (the hosted-mode contract -
+CC_GATEWAY_HOSTED skips tailnet/Serve).
+- Client side: /healthz directors 0 -> 1; GET /directors (bearer token) returns directorId
+  71eeeedd-9bfc-4d1c-bf3b-cbbcfc11a57e, pid 38432 (matches the launched process), machine SOREN_NORTH,
+  version 1.5.0, source=stream (the SignalR tunnel, not an endpoint probe), tailnetEndpoint=null.
+  Unauthenticated GET /directors -> HTTP 401 (token gating).
+- Gateway side (container logs): `[DirectorRegistry] RegisterFromStream: id=71eeeedd..., machine=SOREN_NORTH,
+  version=1.5.0`; `[DirectorHub] Hello: director=71eeeedd... bound to conn=Pn44B_Sc`; tenant=local; and both
+  `GET /directors -> 200` (with the bearer) and `-> 401` (without) observed.
+
+### Step 2 - a real operation writes through to Supabase
+
+A token-gated write through the cloud gateway: `PUT /gateway/missions/notes` with
+{mission: HGW-VALIDATE-STEP2-38432, why: hosted-validation-71eeeedd-step2} -> HTTP 200; `GET
+/gateway/missions/notes` reads it straight back (round-trip through the gateway). (The gateway token
+authenticates the /gateway/... route as well - auth is unified.)
+- Physically verified in Supabase (psql over the pooler, gateway_app -> gateway schema): the
+  gateway.mission_notes row is Key=hgw-validate-step2-38432, Why=hosted-validation-71eeeedd-step2,
+  UpdatedAtUtc=2026-07-18 18:49:09.448459+00, tenant_id=local; total_rows=1 (clean isolated schema). The
+  write went all the way to the database, not ephemeral container state.
+
+### Step 3 - restart: re-register + persist
+
+`az webapp restart` on the App Service (the overseer ran it - the resource group is in the deploy
+subscription, a different tenant than the client's az login).
+- Genuine fresh boot: container logs show a new startup at 18:52:41-45
+  (`[GatewayHost] listening on 0.0.0.0:7878, version 1.5.0`); the old container disposed its Postgres
+  connection at 18:53:07 (clean handoff).
+- Client side observed the outage: /healthz 200 -> HTTP 000 (~t+19s) -> 200 (~t+23s), a ~4s real outage
+  during the container handoff.
+- The tunnel auto-re-established with no manual action:
+  `[DirectorRegistry] RegisterFromStream: id=71eeeedd...` at 18:53:16; /healthz directors:1 again.
+- Persistence proven: after the fresh boot the mission_notes row is BYTE-IDENTICAL - Key,
+  Why=hosted-validation-71eeeedd-step2, and UpdatedAtUtc=2026-07-18 18:49:09.448459+00 (the ORIGINAL write
+  time, untouched, not rewritten) - re-read via both the gateway GET and psql. State is Supabase-backed and
+  survived a fresh container = not ephemeral.
+
+### Idle-hold observation (App Service ~230s idle cut)
+
+The Director-Gateway tunnel heartbeats about every 10s (gateway logs), well under App Service's ~230s idle
+cap. Over a deliberate 276s idle window (no operations sent through the tunnel), client-side /healthz polling
+showed directors=1 continuously with 0 drops (poll interval 15s). The gateway-side continuous log watch
+(authoritative) confirmed the tunnel HELD - no idle drop: only two RegisterFromStream events across the
+ENTIRE run (18:45:07 initial, 18:53:16 post-restart re-register) and ZERO during the idle window; 84 unbroken
+~10s heartbeat lines from 18:55:05 to 19:01:55 all on the SAME connection (conn=TTpM8mjD - the connection id
+never changed); zero disconnect/closed events. A drop-and-reconnect would have logged a fresh
+RegisterFromStream and a new connection id; neither happened. So the ~10s SignalR heartbeat keeps the tunnel
+active and App Service never idle-cuts it - it holds, no reconnect needed.
+
+### Result
+
+The hosted Gateway is validated end to end: a real Director authenticates and tunnels to it over the public
+URL, a real operation persists through it into the isolated Supabase gateway schema, state survives an App
+Service restart, and the tunnel holds past the idle cap. The isolated test Director (pid 38432) and its
+scratch CC_DIRECTOR_ROOT were torn down after the run.
