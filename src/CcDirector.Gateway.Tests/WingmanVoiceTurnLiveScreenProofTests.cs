@@ -176,8 +176,8 @@ public sealed class WingmanVoiceTurnLiveScreenProofTests : IAsyncLifetime
         HasGrid = true,
     };
 
-    // A Claude composer at the bottom of the PRIMARY screen, cursor in the empty input box (row 2).
-    private static ScreenGridResponse ComposerGrid(string sid, bool alternateScreen = false) => new()
+    // A Claude composer, cursor in the empty input box (row 2), framed by box borders and a mode-status footer.
+    private static ScreenGridResponse ComposerGrid(string sid) => new()
     {
         SessionId = sid,
         Rows = new List<string>
@@ -190,7 +190,7 @@ public sealed class WingmanVoiceTurnLiveScreenProofTests : IAsyncLifetime
         },
         CursorRow = 2,
         CursorCol = 4,
-        IsAlternateScreen = alternateScreen,
+        IsAlternateScreen = false,
         HasGrid = true,
     };
 
@@ -337,22 +337,124 @@ public sealed class WingmanVoiceTurnLiveScreenProofTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task VoiceTurn_SameComposerButOnAlternateScreen_TypesNothing()
+    public async Task VoiceTurn_BareSelectorRow_NoComposerFrame_TypesNothing()
     {
-        // Finding 5: the SAME composer content, but on the alternate screen, is NOT typed into. This is what
-        // distinguishes the new positive classifier from the old "anything that is not a menu is plain text".
+        // Named test A / B1: "Choose a deployment:" / "> production" with the cursor on the selector is NOT a
+        // composer (no input-box frame). Typing + Enter would select "production" - so type NOTHING.
         var sid = await PushSessionAsync();
+        _dispatch = cmd => cmd.Verb == "screen-grid"
+            ? Ok(new ScreenGridResponse
+            {
+                SessionId = sid,
+                Rows = new List<string> { "Choose a deployment:", "> production" },
+                CursorRow = 1,
+                CursorCol = 5,
+                IsAlternateScreen = false,
+                HasGrid = true,
+            })
+            : DirectorCommandResult.Fail(DirectorCommandStatus.BadRequest, "x");
+        await AssertTypesNothing(sid, "production");
+    }
+
+    [Fact]
+    public async Task VoiceTurn_StaleMenuAboveLiveComposer_TypesIntoTheComposer()
+    {
+        // Named test B: an answered menu is still visible ABOVE the live composer, but the cursor is IN the
+        // composer. The words must be TYPED into the composer as plain text, NOT pressed as a menu choice.
+        var sid = await PushSessionAsync();
+        var spoken = "now run the integration tests";
+        var promptSent = false;
+
         _dispatch = cmd => cmd.Verb switch
         {
-            "screen-grid" => Ok(ComposerGrid(sid, alternateScreen: true)),
+            "screen-grid" => Ok(new ScreenGridResponse
+            {
+                SessionId = sid,
+                Rows = new List<string>
+                {
+                    "Do you want to proceed?",     // <- stale, already-answered menu still visible above
+                    "❯ 1. Yes",
+                    "  2. No",
+                    "╭──────────────────────────────────────╮",
+                    "│ >                                     │",   // <- the LIVE composer, cursor here
+                    "╰──────────────────────────────────────╯",
+                    "  ? for shortcuts",
+                },
+                CursorRow = 4,
+                CursorCol = 4,
+                IsAlternateScreen = false,
+                HasGrid = true,
+            }),
+            "turns" => Ok(new TurnsResponse
+            {
+                SessionId = sid,
+                Status = "ok",
+                Widgets = promptSent
+                    ? new List<TurnWidgetDto> { new() { Kind = "Text", Content = "Ran them." } }
+                    : new List<TurnWidgetDto>(),
+            }),
+            "prompt" => Mark(ref promptSent, Ok(new PromptResponse { Accepted = true })),
             _ => DirectorCommandResult.Fail(DirectorCommandStatus.BadRequest, $"unexpected verb {cmd.Verb}"),
         };
 
-        var resp = await _http.PostAsJsonAsync($"sessions/{sid}/wingman/voice-turn", new { text = "do the thing" });
+        await _http.PostAsJsonAsync($"sessions/{sid}/wingman/voice-turn", new { text = spoken });
+
+        var prompts = DispatchedPrompts();
+        // The spoken words were typed into the composer with Enter - NOT a menu keystroke like "1\r".
+        Assert.Contains(prompts, p => p.Text == spoken && p.AppendEnter);
+        Assert.DoesNotContain(prompts, p => p.Text == "1\r" || p.Text == "2\r");
+    }
+
+    [Fact]
+    public async Task VoiceTurn_ReplacementMenuSameLabels_ReVerifyFailsClosed_PressesNothing()
+    {
+        // Named test C: the menu is REPLACED between classification and press by a different menu with the SAME
+        // option labels (Delete production? -> Deploy production?, both 1.Yes / 2.No). The re-verify compares
+        // the captured menu BLOCK (question + options), so it catches the change and presses nothing.
+        var sid = await PushSessionAsync();
+        var gridCall = 0;
+
+        _brainReply = _ => Wrapped(
+            "{\"isMenu\":true,\"question\":\"Delete production?\",\"selectionMode\":\"single\",\"submit\":\"\"," +
+            "\"options\":[{\"key\":\"1. Yes\",\"send\":\"1\\r\"},{\"key\":\"2. No\",\"send\":\"2\\r\"}]}");
+
+        _dispatch = cmd =>
+        {
+            if (cmd.Verb == "screen-grid")
+            {
+                var call = System.Threading.Interlocked.Increment(ref gridCall);
+                var question = call == 1 ? "Delete production?" : "Deploy production?";
+                return Ok(new ScreenGridResponse
+                {
+                    SessionId = sid,
+                    Rows = new List<string> { question, "❯ 1. Yes", "  2. No" },
+                    CursorRow = 1,
+                    CursorCol = 2,
+                    IsAlternateScreen = false,
+                    HasGrid = true,
+                });
+            }
+            return DirectorCommandResult.Fail(DirectorCommandStatus.BadRequest, $"unexpected verb {cmd.Verb}");
+        };
+
+        var resp = await _http.PostAsJsonAsync($"sessions/{sid}/wingman/voice-turn", new { text = "yes" });
         Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
         var node = await resp.Content.ReadFromJsonAsync<JsonNode>();
         Assert.True(node?["cannotType"]?.GetValue<bool>());
         Assert.Empty(DispatchedPrompts());
+    }
+
+    [Fact]
+    public async Task VoiceTurn_MenuLookingScreen_DetectorReturnsNotAMenu_TypesNothing()
+    {
+        // Named test D: the live screen looks like a menu and the brain is reached, but it returns isMenu:false
+        // (no pressable options). This must fail closed - never fall through to typing.
+        var sid = await PushSessionAsync();
+        _brainReply = _ => Wrapped("{\"isMenu\":false}");
+        _dispatch = cmd => cmd.Verb == "screen-grid"
+            ? Ok(PrimaryMenuGrid(sid))
+            : DirectorCommandResult.Fail(DirectorCommandStatus.BadRequest, "x");
+        await AssertTypesNothing(sid, "yes go ahead");
     }
 
     // ===================== Finding 6: cover the fail-closed edges - each types NOTHING =====================

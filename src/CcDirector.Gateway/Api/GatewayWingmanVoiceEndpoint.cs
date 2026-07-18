@@ -518,7 +518,7 @@ internal static class GatewayWingmanVoiceEndpoint
                     // Finding 3: mapping the choice took one or two model calls; re-verify the SAME menu is
                     // still on the live screen before pressing, so the selection bytes cannot land in a shell
                     // or prompt if the menu closed in the meantime. If it changed, press NOTHING and fail closed.
-                    if (!await MenuStillOnScreenAsync(route, menu, sid, ct))
+                    if (!await MenuStillOnScreenAsync(route, screen.MenuGridRows, sid, ct))
                     {
                         FileLog.Write($"[GatewayWingmanVoice] voice-turn sid={sid}: menu changed before press - fail closed, not pressing");
                         return Results.Json(new { reply = "", spoken = "The menu changed before I could answer, so I didn't press anything. Open the session to see what it's asking now.", cannotType = true, lookAtTerminal = true });
@@ -868,7 +868,10 @@ internal static class GatewayWingmanVoiceEndpoint
             return Blocked("no screen-grid answer", BlockedUnreadableSpoken);
         }
 
-        var kind = WaitingScreenClassifier.Classify(grid.Rows, grid.CursorRow, grid.CursorCol, grid.IsAlternateScreen, grid.HasGrid);
+        // The verdict is anchored to WHERE THE CURSOR IS (issue #1777, round-3), not to menu-like text anywhere
+        // on the grid. The alternate-screen flag is carried on the DTO for the fold phase but is not the
+        // discriminator here - the cursor's relationship to the composer / menu option is.
+        var kind = WaitingScreenClassifier.Classify(grid.Rows, grid.CursorRow, grid.CursorCol, grid.HasGrid);
 
         if (kind == WaitingScreenKind.Blocked)
         {
@@ -907,21 +910,27 @@ internal static class GatewayWingmanVoiceEndpoint
     }
 
     /// <summary>
-    /// Cheap TOCTOU re-verify (issue #1777, finding 3): between reading the grid and pressing an option there
-    /// are one or two model calls, in which the menu can close and the selection bytes would land in a shell
-    /// or prompt. Re-fetch the LIVE grid and confirm the SAME menu is still on screen - every extracted option
-    /// label must still appear on the live rows. Returns false (do not press) if the grid could not be re-read
-    /// or the menu changed. The full screen-revision-token precondition is a later phase; this is the floor.
+    /// TOCTOU re-verify before pressing (issue #1777, findings 3 / B3): between reading the grid and pressing
+    /// an option there are one or two model calls, in which the menu can close or be REPLACED, and the
+    /// selection bytes would land in a shell, a composer, or a different menu. Re-fetch the LIVE grid and
+    /// confirm it is STILL the SAME menu: the cursor is still on a menu option, and the captured menu block
+    /// (question + full option set) still matches - not merely that the same option labels appear somewhere
+    /// (a replacement menu "Delete production?" -> "Deploy production?" with the same Yes/No labels must fail
+    /// this). Returns false (do not press) on any doubt. The full screen-revision-token precondition is a later
+    /// phase; this is the floor.
     /// </summary>
     private static async Task<bool> MenuStillOnScreenAsync(
-        SessionVerbClient route, WingmanMenu menu, string sid, CancellationToken ct)
+        SessionVerbClient route, IReadOnlyList<string> capturedRows, string sid, CancellationToken ct)
     {
         Contracts.ScreenGridResponse? grid;
         try { grid = await route.GetScreenGridAsync(sid, ct); }
         catch { grid = null; }
         if (grid is null || !grid.HasGrid || grid.Rows is null || grid.Rows.Count == 0) return false;
-        if (!WingmanMenuLogic.LiveScreenLooksLikeMenu(grid.Rows)) return false;
-        return WingmanMenuLogic.MenuOptionsPresentOnScreen(menu, grid.Rows);
+        // Still a live menu with the cursor on an option (same anchor the classifier used).
+        if (grid.CursorRow < 0 || grid.CursorRow >= grid.Rows.Count) return false;
+        if (!WingmanMenuLogic.IsOptionLine(grid.Rows[grid.CursorRow]) || !WingmanMenuLogic.LiveScreenLooksLikeMenu(grid.Rows)) return false;
+        // And it is the SAME menu (question + options), not a same-labelled replacement.
+        return WingmanMenuLogic.SameMenuStillOnScreen(capturedRows, grid.Rows);
     }
 
     /// <summary>Fetch the session's live screen and, only when it looks like a menu, ask the warm brain to

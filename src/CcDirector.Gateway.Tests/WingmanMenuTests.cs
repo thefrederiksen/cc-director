@@ -123,29 +123,53 @@ public sealed class WingmanMenuTests
         Assert.False(WingmanMenuLogic.LiveScreenLooksLikeMenu(System.Array.Empty<string>()));
     }
 
-    // ===== MenuOptionsPresentOnScreen (issue #1777, finding 3: the re-verify before pressing) =====
+    // ===== IsOptionLine (issue #1777, round-3: is the CURSOR on a menu option?) =====
+
+    [Theory]
+    [InlineData("❯ 1. Yes", true)]
+    [InlineData("  2. No", true)]
+    [InlineData("│ 3. Cancel │", true)]
+    [InlineData("a) Apply", true)]
+    [InlineData("Do you want to proceed?", false)]
+    [InlineData("> production", false)]        // a bare selector, not a numbered/lettered option line
+    [InlineData("│ >  │", false)]              // a composer input line
+    [InlineData("", false)]
+    public void IsOptionLine_ClassifiesRows(string row, bool expected)
+        => Assert.Equal(expected, WingmanMenuLogic.IsOptionLine(row));
+
+    // ===== SameMenuStillOnScreen (issue #1777, B3: re-verify against the CAPTURED menu block) =====
 
     [Fact]
-    public void MenuOptionsPresentOnScreen_AllLabelsStillOnScreen_IsTrue()
+    public void SameMenuStillOnScreen_IdenticalMenu_IsTrue()
     {
-        var rows = new[] { "Do you want to proceed?", "❯ 1. Yes", "  2. Yes, and don't ask again", "  3. No" };
-        Assert.True(WingmanMenuLogic.MenuOptionsPresentOnScreen(PermissionMenu(), rows));
+        var captured = new[] { "Do you want to proceed?", "❯ 1. Yes", "  2. No" };
+        var fresh = new[] { "Do you want to proceed?", "❯ 1. Yes", "  2. No" };
+        Assert.True(WingmanMenuLogic.SameMenuStillOnScreen(captured, fresh));
     }
 
     [Fact]
-    public void MenuOptionsPresentOnScreen_MenuClosed_IsFalse()
+    public void SameMenuStillOnScreen_SameLabelsDifferentQuestion_IsFalse()
     {
-        // The menu closed and a shell prompt replaced it - the option labels are gone, so pressing would be
-        // dangerous. This is the TOCTOU guard: press NOTHING.
-        var rows = new[] { "user@host:~/repo$ ", "" };
-        Assert.False(WingmanMenuLogic.MenuOptionsPresentOnScreen(PermissionMenu(), rows));
+        // The exact B3 hole: a replacement menu with the SAME option labels but a different question. Comparing
+        // only labels would pass and press the old answer into the new menu; comparing the block catches it.
+        var captured = new[] { "Delete production?", "❯ 1. Yes", "  2. No" };
+        var fresh = new[] { "Deploy production?", "❯ 1. Yes", "  2. No" };
+        Assert.False(WingmanMenuLogic.SameMenuStillOnScreen(captured, fresh));
     }
 
     [Fact]
-    public void MenuOptionsPresentOnScreen_EmptyOrNull_IsFalse()
+    public void SameMenuStillOnScreen_MenuClosed_IsFalse()
     {
-        Assert.False(WingmanMenuLogic.MenuOptionsPresentOnScreen(PermissionMenu(), System.Array.Empty<string>()));
-        Assert.False(WingmanMenuLogic.MenuOptionsPresentOnScreen(new WingmanMenu { IsMenu = true }, new[] { "1. Yes" }));
+        var captured = new[] { "Do you want to proceed?", "❯ 1. Yes", "  2. No" };
+        var fresh = new[] { "user@host:~/repo$ ", "" };
+        Assert.False(WingmanMenuLogic.SameMenuStillOnScreen(captured, fresh));
+    }
+
+    [Fact]
+    public void SameMenuStillOnScreen_NoOptions_IsFalse()
+    {
+        // No option lines -> no signature -> never "the same menu" (nothing to verify against).
+        Assert.False(WingmanMenuLogic.SameMenuStillOnScreen(new[] { "just prose", "more prose" }, new[] { "just prose", "more prose" }));
     }
 
     // ===== MatchOption (local spoken-answer mapping) =====

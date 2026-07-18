@@ -4,15 +4,15 @@ using Xunit;
 namespace CcDirector.Gateway.Tests;
 
 /// <summary>
-/// The fail-closed classifier (issue #1777, finding 1): the spoken words may be typed ONLY on a positive
-/// plain-text signal (a primary-screen composer input line with the cursor on it). Everything else - a blank
-/// grid, an unrecognized alternate-screen app, a primary screen with no composer, an unreadable session - is
-/// Blocked. "Not a recognized menu" must never collapse into "confident plain text".
+/// The cursor-anchored fail-closed classifier (issue #1777, round-3): the spoken words may be typed ONLY when
+/// the cursor is positively inside the agent's framed composer input box. A bare "&gt;" row is not a composer,
+/// menu-like text elsewhere while the cursor is in the composer is stale, and a menu owns the turn only when
+/// the cursor is on a menu option. Everything the cursor does not positively resolve fails closed.
 /// </summary>
 public sealed class WaitingScreenClassifierTests
 {
-    // A real Claude permission menu, drawn on the alternate screen (full-screen picker).
-    private static readonly string[] AltScreenMenuRows =
+    // A Claude permission menu on screen, cursor parked on the selected option (row 3, the "❯ 1. Yes" line).
+    private static readonly string[] MenuRows =
     {
         "╭──────────────────────────────────────────────╮",
         "│ Bash command                                 │",
@@ -23,7 +23,7 @@ public sealed class WaitingScreenClassifierTests
         "╰──────────────────────────────────────────────╯",
     };
 
-    // A Claude composer at the bottom of the PRIMARY screen, cursor sitting in the empty input box (row 1).
+    // A Claude composer, cursor in the empty input box (row 2), framed by box borders and a mode-status footer.
     private static readonly string[] ComposerRows =
     {
         "I finished the last change. What next?",
@@ -35,57 +35,79 @@ public sealed class WaitingScreenClassifierTests
 
     [Fact]
     public void Classify_NoGrid_IsBlocked()
-        => Assert.Equal(WaitingScreenKind.Blocked, WaitingScreenClassifier.Classify(new[] { "anything" }, 0, 0, false, hasGrid: false));
+        => Assert.Equal(WaitingScreenKind.Blocked, WaitingScreenClassifier.Classify(new[] { "x" }, 0, 0, hasGrid: false));
 
     [Fact]
     public void Classify_EmptyRows_IsBlocked()
-        => Assert.Equal(WaitingScreenKind.Blocked, WaitingScreenClassifier.Classify(System.Array.Empty<string>(), -1, -1, false, hasGrid: true));
+        => Assert.Equal(WaitingScreenKind.Blocked, WaitingScreenClassifier.Classify(System.Array.Empty<string>(), -1, -1, hasGrid: true));
 
     [Fact]
     public void Classify_AllBlankGrid_IsBlocked()
-        => Assert.Equal(WaitingScreenKind.Blocked, WaitingScreenClassifier.Classify(new[] { "", "   ", "\t" }, 0, 0, false, hasGrid: true));
+        => Assert.Equal(WaitingScreenKind.Blocked, WaitingScreenClassifier.Classify(new[] { "", "   ", "\t" }, 0, 0, hasGrid: true));
 
     [Fact]
-    public void Classify_MenuFingerprint_IsMenu_EvenOnAlternateScreen()
-        => Assert.Equal(WaitingScreenKind.Menu, WaitingScreenClassifier.Classify(AltScreenMenuRows, 3, 3, isAlternateScreen: true, hasGrid: true));
+    public void Classify_CursorOutOfRange_IsBlocked()
+        => Assert.Equal(WaitingScreenKind.Blocked, WaitingScreenClassifier.Classify(ComposerRows, cursorRow: 99, cursorCol: 4, hasGrid: true));
 
     [Fact]
-    public void Classify_AlternateScreen_Unrecognized_IsBlocked()
+    public void Classify_CursorOnMenuOption_IsMenu()
+        => Assert.Equal(WaitingScreenKind.Menu, WaitingScreenClassifier.Classify(MenuRows, cursorRow: 3, cursorCol: 5, hasGrid: true));
+
+    [Fact]
+    public void Classify_CursorOnMenuQuestionLine_NotAnOption_IsBlocked()
+        // The screen is a menu, but the cursor is on the question line, not on an option - fail closed.
+        => Assert.Equal(WaitingScreenKind.Blocked, WaitingScreenClassifier.Classify(MenuRows, cursorRow: 2, cursorCol: 5, hasGrid: true));
+
+    [Fact]
+    public void Classify_CursorInFramedComposer_IsPlainText()
+        => Assert.Equal(WaitingScreenKind.PlainText, WaitingScreenClassifier.Classify(ComposerRows, cursorRow: 2, cursorCol: 4, hasGrid: true));
+
+    [Fact]
+    public void Classify_BareSelectorRow_NoInputBoxFrame_IsBlocked()
     {
-        // A full-screen app (alternate screen) we did NOT recognize as a menu - never type into it. This is
-        // the inversion the original bug had: it is NOT a plain-text prompt just because no menu was matched.
-        var appRows = new[] { "some full screen TUI", "with content we cannot parse", "and a cursor somewhere" };
-        Assert.Equal(WaitingScreenKind.Blocked, WaitingScreenClassifier.Classify(appRows, 2, 5, isAlternateScreen: true, hasGrid: true));
+        // B1: "> production" under "Choose a deployment:" with the cursor on the selector is NOT a composer -
+        // there is no input-box frame - so it must fail closed, not be typed into.
+        var rows = new[] { "Choose a deployment:", "> production" };
+        Assert.Equal(WaitingScreenKind.Blocked, WaitingScreenClassifier.Classify(rows, cursorRow: 1, cursorCol: 5, hasGrid: true));
     }
 
     [Fact]
-    public void Classify_PrimaryComposer_CursorOnPromptLine_IsPlainText()
-        => Assert.Equal(WaitingScreenKind.PlainText, WaitingScreenClassifier.Classify(ComposerRows, cursorRow: 2, cursorCol: 4, isAlternateScreen: false, hasGrid: true));
-
-    [Fact]
-    public void Classify_PrimaryComposer_CursorNotOnPromptLine_IsBlocked()
-        => Assert.Equal(WaitingScreenKind.Blocked, WaitingScreenClassifier.Classify(ComposerRows, cursorRow: 0, cursorCol: 4, isAlternateScreen: false, hasGrid: true));
-
-    [Fact]
-    public void Classify_PrimaryScreen_NoComposer_IsBlocked()
+    public void Classify_StaleMenuAboveLiveComposer_CursorInComposer_IsPlainText()
     {
-        // Primary screen, non-blank, not a menu, but no recognizable composer - unsure, so fail closed.
-        var rows = new[] { "the agent printed some output", "and then more output", "but no input prompt is visible" };
-        Assert.Equal(WaitingScreenKind.Blocked, WaitingScreenClassifier.Classify(rows, cursorRow: 2, cursorCol: 5, isAlternateScreen: false, hasGrid: true));
+        // B2-new: an answered menu is still visible ABOVE the live composer. The cursor is in the composer, so
+        // this is plain text - the stale menu is ignored, the words go in the composer.
+        var rows = new[]
+        {
+            "Do you want to proceed?",
+            "❯ 1. Yes",
+            "  2. No",
+            "╭──────────────────────────────────────╮",
+            "│ >                                     │",
+            "╰──────────────────────────────────────╯",
+            "  ? for shortcuts",
+        };
+        Assert.Equal(WaitingScreenKind.PlainText, WaitingScreenClassifier.Classify(rows, cursorRow: 4, cursorCol: 4, hasGrid: true));
     }
 
     [Fact]
-    public void Classify_ComposerButOnAlternateScreen_IsBlocked()
+    public void Classify_ComposerPromptButCursorBeforeThePrompt_IsBlocked()
     {
-        // Even a ">"-looking line on the alternate screen is not typed into: full-screen apps own their input.
-        Assert.Equal(WaitingScreenKind.Blocked, WaitingScreenClassifier.Classify(ComposerRows, cursorRow: 2, cursorCol: 4, isAlternateScreen: true, hasGrid: true));
+        // The cursor is to the LEFT of the input start (not inside the editable input) - not a positive signal.
+        Assert.Equal(WaitingScreenKind.Blocked, WaitingScreenClassifier.Classify(ComposerRows, cursorRow: 2, cursorCol: 1, hasGrid: true));
     }
 
     [Fact]
-    public void LooksLikePlainTextPrompt_ModeArrowIsNotAPrompt()
+    public void Classify_ModeCycleArrow_IsNotAComposer_IsBlocked()
     {
-        // ">> bypass permissions on" is the mode-cycle arrow, NOT the input prompt.
         var rows = new[] { "output", ">> bypass permissions on (shift+tab to cycle)" };
-        Assert.False(WaitingScreenClassifier.LooksLikePlainTextPrompt(rows, cursorRow: 1, cursorCol: 3));
+        Assert.Equal(WaitingScreenKind.Blocked, WaitingScreenClassifier.Classify(rows, cursorRow: 1, cursorCol: 5, hasGrid: true));
+    }
+
+    [Fact]
+    public void LooksLikePlainTextPrompt_FramedByModeStatusFooterAlone_IsTrue()
+    {
+        // No box border, but the mode-status footer just below anchors the composer positively.
+        var rows = new[] { "some output", "> ", "  bypass permissions on (shift+tab to cycle)" };
+        Assert.True(WaitingScreenClassifier.LooksLikePlainTextPrompt(rows, cursorRow: 1, cursorCol: 2));
     }
 }

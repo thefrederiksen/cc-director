@@ -104,26 +104,73 @@ public static class WingmanMenuLogic
         return LooksLikeMenu(string.Join("\n", rows));
     }
 
+    /// <summary>True when a row is a menu option / selection line (a leading marker run - a box edge, a
+    /// selection arrow like <c>❯</c> or <c>&gt;</c>, whitespace - then a number or letter, a <c>.</c> or
+    /// <c>)</c>, a space, and content). This is the same shape <see cref="LooksLikeMenu"/> counts; exposed so
+    /// the cursor-anchored classifier can ask "is the CURSOR sitting on an option row?" rather than deciding
+    /// from menu-like text anywhere on the grid.</summary>
+    public static bool IsOptionLine(string? row)
+        => !string.IsNullOrWhiteSpace(row) && OptionLine.IsMatch(row.Trim());
+
     /// <summary>
-    /// Re-verify a menu is STILL on the live screen (issue #1777, finding 3): every extracted option's visible
-    /// label must still appear on the given live grid rows. Used as the cheap TOCTOU guard right before
-    /// pressing an option's keystrokes - if the menu has closed or changed, the labels are gone and this
-    /// returns false so the caller does not press selection bytes into whatever replaced it. A menu with no
-    /// options is not "present". Normalizes both sides (lowercase, punctuation to spaces) so box padding and
-    /// spacing differences do not cause a false miss.
+    /// Re-verify the SAME menu is still on the live screen (issue #1777, finding B3), by comparing the CAPTURED
+    /// menu block (the question line plus the full option set, as they were when the menu was read) to the menu
+    /// block on the freshly re-read grid. Substring-of-labels is NOT enough: a replacement menu with the same
+    /// option labels but a different question ("Delete production?" -> "Deploy production?") must fail this, so
+    /// the whole block is compared, not just the labels. Returns false if either block is empty or they differ,
+    /// so the caller presses nothing when the menu changed or closed.
     /// </summary>
-    public static bool MenuOptionsPresentOnScreen(WingmanMenu? menu, IReadOnlyList<string>? rows)
+    public static bool SameMenuStillOnScreen(IReadOnlyList<string>? capturedRows, IReadOnlyList<string>? freshRows)
     {
-        if (menu?.Options is null || menu.Options.Count == 0 || rows is null || rows.Count == 0) return false;
-        var screen = Norm(string.Join("\n", rows));
-        foreach (var o in menu.Options)
-        {
-            var label = Norm(StripLeadingKey(o.Key));
-            if (label.Length == 0) continue;               // nothing to match on (a bare "1." key)
-            if (!screen.Contains(label)) return false;      // this option's label is gone -> not the same menu
-        }
-        return true;
+        var a = MenuSignature(capturedRows);
+        var b = MenuSignature(freshRows);
+        return a.Count > 0 && a.SequenceEqual(b);
     }
+
+    /// <summary>
+    /// The identity of the menu currently on a grid: the normalized menu block - the contiguous run from the
+    /// first non-blank line above the first option (the question / prompt) through the last option line. Box
+    /// borders and padding are normalized away so re-reads of the SAME static menu compare equal, while any
+    /// change to the question wording or the option set changes the signature. Empty when the grid holds no
+    /// option lines. Internal so a test can assert it directly.
+    /// </summary>
+    internal static List<string> MenuSignature(IReadOnlyList<string>? rows)
+    {
+        var result = new List<string>();
+        if (rows is null || rows.Count == 0) return result;
+
+        // The option lines bound the block; a menu with no options has no signature.
+        var firstOption = -1;
+        var lastOption = -1;
+        for (var i = 0; i < rows.Count; i++)
+        {
+            if (!IsOptionLine(rows[i])) continue;
+            if (firstOption < 0) firstOption = i;
+            lastOption = i;
+        }
+        if (firstOption < 0) return result;
+
+        // Walk up from the first option across any contiguous non-blank lines (the question / prompt) so a
+        // changed question is part of the identity. Stop at the first blank line.
+        var start = firstOption;
+        while (start - 1 >= 0 && !string.IsNullOrWhiteSpace(rows[start - 1])) start--;
+
+        for (var i = start; i <= lastOption; i++)
+        {
+            var norm = Norm(rows[i].Trim(BorderPadding));
+            if (norm.Length > 0) result.Add(norm);
+        }
+        return result;
+    }
+
+    /// <summary>Box-drawing glyphs and pipes stripped from a row's edges before normalizing, so a bordered
+    /// "│ 1. Yes │" compares equal to an unbordered "1. Yes".</summary>
+    private static readonly char[] BorderPadding =
+    {
+        '│','┃','┆','┇','┊','┋','╎','╏','║',
+        '╭','╮','╰','╯','┌','┐','└','┘','╔','╗','╚','╝',
+        '─','━','═','┄','┅','┈','┉','|',' ','\t','\r',
+    };
 
     private static readonly Dictionary<string, int> NumberWords = new()
     {
