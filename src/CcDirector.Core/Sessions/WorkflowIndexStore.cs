@@ -134,7 +134,12 @@ public sealed class WorkflowIndexStore
         text.Append("on work that matches one, fetch its conduct and FOLLOW it:  cc-devthrottle workflow instructions <id>\n");
         foreach (var workflow in workflows)
         {
-            var summary = (workflow.Summary ?? "").Trim();
+            // ONE line per workflow is the index's structural promise. Summaries are authored data,
+            // so any run of whitespace - including newlines and control characters that could dress a
+            // summary up as extra preamble lines in every session - collapses to a single space
+            // before the length cap is applied.
+            var summary = string.Join(' ',
+                (workflow.Summary ?? "").Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries));
             if (summary.Length > MaxSummaryChars)
                 summary = summary[..MaxSummaryChars].TrimEnd() + "...";
             text.Append($"  - {workflow.Id}: {summary}\n");
