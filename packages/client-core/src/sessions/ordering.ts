@@ -6,6 +6,10 @@ import type { SessionDto } from "../api/client";
 export type TriageBucket = "needsYou" | "active" | "onHold";
 type GatewayStampedSession = SessionDto & {
   effectiveColor?: string | null;
+  // The Gateway-stamped pixel hex for the dot (SessionColorPalette.HexFor of effectiveColor). The session
+  // dot renders this verbatim via dotHex(); the generated schema does not carry it, so it is augmented here
+  // like effectiveColor. Absent from an old Gateway - dotHex() then paints the magenta sentinel.
+  effectiveColorHex?: string | null;
   stateLabel?: string | null;
   triageBucket?: TriageBucket | string | null;
   // Snooze Length mission: display-only marker that this session just returned from an EXPIRED snooze
@@ -215,20 +219,20 @@ function waitingSinceMs(s: SessionDto): number {
   return Number.isNaN(parsed) ? Number.POSITIVE_INFINITY : parsed;
 }
 
-// Map an effective Gateway colour name to its dot hex. THE CANONICAL PALETTE: one name, one hex,
-// every surface. These exact values are also the desktop rail's brushes (SessionViewModel.cs), so a
-// session renders the same pixel on the phone, the Cockpit and the rail - which is the whole point of
-// law 7 ("every device shows the same thing, always"). A name that resolves to two hexes, or two
-// surfaces that resolve one name differently, IS the violation - comparing fold answers ("red" ===
-// "red") cannot see it, so keep this table and the rail's in step by hand when either moves.
+// Map a Gateway colour NAME to its dot hex, for the LEGEND / AGGREGATE swatches that have no session
+// behind them (the fleet-map legend, the lane aggregate dots, the missions-board priority key). A real
+// SESSION dot no longer reads this table - it renders the Gateway-stamped hex via dotHex() below, so the
+// name->hex step is done ONCE on the Gateway and every device paints the identical pixel. This table
+// survives only for the decorative swatches, which have no stamped session to read.
 //
-// This comment used to say the table "mirrors the m.js palette so the mobile roster's dots match the
-// existing prototype and the desktop rail". Both halves were false: m.js does not exist anywhere in
-// the repository, and the table disagreed with the rail on red (#F14C4C here vs #EF4444 there) and
-// yellow (#F59E0B, which is amber-500, vs #EAB308). It named a deleted file as the source of truth
-// for a claim that was not true. Every name below is now Tailwind-500 for its own ramp - the two
-// strays were the two that disagreed - except `error`, which is deliberately red-700 so a crashed
-// session reads darker than a needs-you red.
+// THE DRIFT GUARD: these values must equal the canonical Gateway map (SessionColorPalette.HexFor in
+// CcDirector.Gateway.Contracts). Comparing fold answers ("red" === "red") cannot see a table that paints
+// "red" a different hex, so the StateAgreementCheck asserts canonical == this table == the desktop
+// StatusPalette on every run. Change a value here and that check goes red until the canonical map and the
+// desktop agree - which is how a legend swatch is kept from drifting from the session dot beside it.
+//
+// Every name below is Tailwind-500 for its own ramp, except `error`, which is deliberately red-700 so a
+// crashed session reads darker than a needs-you red.
 const COLORS: Record<string, string> = {
   red: "#EF4444", // needs you
   yellow: "#EAB308", // wingman narrating / preparing voice
@@ -251,6 +255,34 @@ export function dotColor(color: string): string {
   const value = COLORS[color];
   if (!value) throw new Error(`Unknown Gateway effectiveColor '${color}'.`);
   return value;
+}
+
+// The magenta protocol-error sentinel - matches SessionColorPalette.Broken and the desktop rail's
+// StatusPalette.Broken. NOT a state: it is what a session dot paints when the Gateway did not stamp a
+// usable hex, and it is deliberately unmissable and impossible to mistake for a real colour (grey MEANS
+// snoozed/exited, so a fallback to grey would be an affirmative lie that the session is parked).
+const BROKEN_HEX = "#FF00FF";
+// A #RGB or #RRGGBB hex, the only shapes the canonical palette emits.
+const HEX_RE = /^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/;
+
+// THE session dot's colour: the Gateway-stamped pixel hex (effectiveColorHex), resolved once on the
+// Gateway through the canonical name->hex map and painted here verbatim. A session dot renders THIS, not
+// the COLORS table above, so the phone, the Cockpit and the desktop rail all paint the identical pixel
+// and no client carries a name->hex table that can drift from the others.
+//
+// FAIL LOUD, NEVER GUESS. A missing or unparseable stamp - an old Gateway that sends the colour NAME but
+// not the hex, i.e. a mixed-version deploy - renders the magenta sentinel and logs it. It does NOT fall
+// back to dotColor(effectiveColor(s)): a guessed colour is indistinguishable from a real one on screen,
+// so it would not degrade gracefully, it would lie quietly. Magenta plus a console error is the honest
+// answer - loud on the dot, diagnosable in the log.
+export function dotHex(s: SessionDto): string {
+  const raw = (s as GatewayStampedSession).effectiveColorHex?.trim();
+  if (raw && HEX_RE.test(raw)) return raw;
+  console.error(
+    `Gateway /sessions missing or unparseable effectiveColorHex ('${raw ?? ""}') for session ` +
+      `${s.sessionId ?? "(unknown)"}. Rendering the magenta protocol-error sentinel. Redeploy Gateway and clients together.`,
+  );
+  return BROKEN_HEX;
 }
 
 // One short context line per row: the Gateway's stamped label, else the latest status reason.

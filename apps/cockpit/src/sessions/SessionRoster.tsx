@@ -5,8 +5,7 @@ import {
   classify,
   contextLine,
   deletionReason,
-  dotColor,
-  effectiveColor,
+  dotHex,
   groupByDirector,
   inBucket,
   pendingDeletion,
@@ -276,7 +275,6 @@ function RosterRow({
   selectedId: string | undefined;
 }) {
   const sid = session.sessionId ?? "";
-  const color = effectiveColor(session);
   const selected = sid === selectedId;
   const attention = classify(session) === "needsYou";
   const name = session.name && session.name.trim().length > 0 ? session.name : session.repoPath || "(unnamed session)";
@@ -311,11 +309,11 @@ function RosterRow({
     <li className="roster-li">
       <Link
         className={`roster-row${selected ? " roster-row-selected" : ""}${attention ? " roster-row-attention" : ""}${wobbly ? " roster-row-wobbly" : ""}${offline ? " roster-row-offline" : ""}`}
-        style={{ borderLeftColor: dotColor(color) }}
+        style={{ borderLeftColor: dotHex(session) }}
         to={`/session/${encodeURIComponent(sid)}`}
         title={session.lastStatusReason ?? undefined}
       >
-        <span className="roster-dot" style={{ backgroundColor: dotColor(color) }} aria-hidden="true" />
+        <span className="roster-dot" style={{ backgroundColor: dotHex(session) }} aria-hidden="true" />
         <span className="roster-body">
           {/* Line 1: the session number badge + the full name (wraps freely, no clamp). */}
           <span className="roster-name">

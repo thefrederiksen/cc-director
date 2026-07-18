@@ -217,6 +217,17 @@ public sealed class SessionDto
     public string? EffectiveColor { get; set; }
 
     /// <summary>
+    /// The pixel HEX for <see cref="EffectiveColor"/>, resolved through the ONE canonical map
+    /// (<see cref="SessionColorPalette.HexFor"/>) and stamped beside the name at the same fold point.
+    /// This is the whole of the "Dumb Clients" palette slice: a client paints THIS verbatim instead of
+    /// carrying its own name-&gt;hex table that can drift from the others. A missing/unparseable value on
+    /// a client (an old Gateway that stamps the name but not the hex) renders the loud magenta sentinel
+    /// (<see cref="SessionColorPalette.Broken"/>) plus a log - never a guessed colour. Required on Gateway
+    /// /sessions responses; Director-local responses may leave it null.
+    /// </summary>
+    public string? EffectiveColorHex { get; set; }
+
+    /// <summary>
     /// Gateway-owned triage bucket after the same effective-color fold:
     /// "needsYou" | "active" | "onHold". Stamped by the Gateway aggregator as the
     /// authoritative grouping value for mobile/Cockpit rosters. Required on Gateway /sessions

@@ -2700,6 +2700,12 @@ internal static class GatewayEndpoints
         {
             var effectiveColor = SessionOrdering.EffectiveColor(s);
             s.EffectiveColor = effectiveColor;
+            // The "Dumb Clients" palette slice: resolve the name to its pixel HEX through the ONE canonical
+            // map, right here beside the name, so every client paints the same hex and none carries its own
+            // name->hex table that can drift. This one fold feeds BOTH the /sessions HTTP roster (the web
+            // reads EffectiveColorHex) and the desktop display-state push (FleetDisplayStateObserver reads it
+            // off the stamped session), so a single line covers every surface.
+            s.EffectiveColorHex = SessionColorPalette.HexFor(effectiveColor);
             s.StateLabel = SessionOrdering.StateLabel(s);
             s.TriageBucket = SessionOrdering.Classify(s) switch
             {

@@ -18,7 +18,7 @@ import {
 } from "@devthrottle/client-core/fleet/fleetClient";
 import type { SessionDto } from "@devthrottle/client-core/api/client";
 import { gatewayErrorMessage } from "@devthrottle/client-core/api/client";
-import { classify, dotColor, effectiveColor, stateLabel } from "@devthrottle/client-core/sessions/ordering";
+import { classify, dotHex, stateLabel } from "@devthrottle/client-core/sessions/ordering";
 import { useVisiblePolling } from "@devthrottle/client-core/polling/useVisiblePolling";
 import { clockLabel, relativeTime, repoBasename } from "../fleet/format";
 import { Button, ConfirmDialog, DataTable, PageHeader, type DataTableColumn } from "../components";
@@ -1140,7 +1140,7 @@ function sessName(s: SessionDto): string {
 // The picker reads the same /sessions envelope that stamps every other screen (getSessionsEnvelope),
 // so the fold's answers were available here all along. The client renders; it does not decide.
 export function pickerSession(s: SessionDto): { dot: string; state: string } {
-  return { dot: dotColor(effectiveColor(s)), state: stateLabel(s) };
+  return { dot: dotHex(s), state: stateLabel(s) };
 }
 
 // How many of a machine's sessions actually need you: the Gateway's stamped bucket, never a count of

@@ -1,16 +1,26 @@
 using Avalonia.Media;
 using CcDirector.Core.Utilities;
+using CcDirector.Gateway.Contracts;
 
 namespace CcDirector.Avalonia;
 
 /// <summary>
-/// THE desktop palette: one fold-colour NAME, one hex, everywhere. This is the whole of defect 18.
+/// The desktop's Avalonia-brush adapter over the ONE canonical palette. This is the whole of defect 18.
 ///
-/// The colour NAMES are the shared fold's (SessionOrdering.EffectiveColor). The hexes are the
-/// Tailwind 500 ramp, and they are written down in docs/new_architecture/session-state.html, which
-/// is the single source both this table and the web/mobile client
-/// (packages/client-core/src/sessions/ordering.ts) cite. Change the spec's table and both sides in
-/// the same pull request, or they drift - which is exactly how this defect happened.
+/// The colour NAMES are the shared fold's (SessionOrdering.EffectiveColor). The hexes are NO LONGER
+/// hand-written here: every value below references <see cref="SessionColorPalette"/> in
+/// CcDirector.Gateway.Contracts - the single source the Gateway also stamps from onto
+/// <see cref="SessionDto.EffectiveColorHex"/>. The desktop is the same C# solution as the Gateway, so
+/// referencing that canonical map compile-time IS sharing the Gateway's own source of truth, not a
+/// second copy that can drift. (A change to the canonical hex therefore needs a desktop rebuild; the
+/// two ship together as one solution, so a colour never lands on one and not the other.) This class
+/// stays because the rail, the fleet map, the FIFO window and the turn review still need Avalonia
+/// brushes and the magenta sentinel; only its VALUES moved to the canonical map.
+///
+/// The web/mobile client (packages/client-core/src/sessions/ordering.ts) cannot reference C#, so it
+/// carries its own COLORS table for legend swatches AND renders the Gateway-stamped hex for a real
+/// session dot. The StateAgreementCheck asserts canonical == this table == that COLORS table every run,
+/// so the three can never drift - which is the guard that ends this defect for good.
 ///
 /// There used to be FIVE private palettes for the same colour names: the rail said red was #EF4444,
 /// the turn review said #E5484D, the (dead) Director view said #F44747 - and there it meant EXITED,
@@ -28,15 +38,15 @@ namespace CcDirector.Avalonia;
 /// </summary>
 public static class StatusPalette
 {
-    public const string Red        = "#EF4444";  // red-500      - needs you
-    public const string Blue       = "#3B82F6";  // blue-500     - working
-    public const string Green      = "#22C55E";  // green-500    - ready (brand new)
-    public const string Yellow     = "#EAB308";  // yellow-500   - wingman reading / preparing voice
-    public const string Orange     = "#F97316";  // orange-500   - dictation in flight / deep dive
-    public const string Purple     = "#A855F7";  // purple-500   - parked on its own background task
-    public const string Supporting = "#64748B";  // slate-500    - a live Worker's suppressed red
-    public const string Error      = "#B91C1C";  // red-700      - crashed, NOT finished (issue #959)
-    public const string Grey       = "#6B7280";  // gray-500     - snoozed, exited, or indeterminate
+    public const string Red        = SessionColorPalette.Red;         // red-500      - needs you
+    public const string Blue       = SessionColorPalette.Blue;        // blue-500     - working
+    public const string Green      = SessionColorPalette.Green;       // green-500    - ready (brand new)
+    public const string Yellow     = SessionColorPalette.Yellow;      // yellow-500   - wingman reading / preparing voice
+    public const string Orange     = SessionColorPalette.Orange;      // orange-500   - dictation in flight / deep dive
+    public const string Purple     = SessionColorPalette.Purple;      // purple-500   - parked on its own background task
+    public const string Supporting = SessionColorPalette.Supporting;  // slate-500    - a live Worker's suppressed red
+    public const string Error      = SessionColorPalette.Error;       // red-700      - crashed, NOT finished (issue #959)
+    public const string Grey       = SessionColorPalette.Grey;        // gray-500     - snoozed, exited, or indeterminate
 
     /// <summary>
     /// The BROKEN sentinel - magenta. Not a state. It means "the Gateway sent this desktop a colour
@@ -57,7 +67,7 @@ public static class StatusPalette
     /// across every state it can emit and proves this branch cannot fire. The sentinel is a tripwire
     /// a test guarantees is unreachable, not a guess that fires silently in production.
     /// </summary>
-    public const string Broken     = "#FF00FF";  // magenta - NOT a state; "this desktop does not know that colour"
+    public const string Broken     = SessionColorPalette.Broken;  // magenta - NOT a state; "this desktop does not know that colour"
 
     private static readonly ISolidColorBrush RedBrush        = new SolidColorBrush(Color.Parse(Red));
     private static readonly ISolidColorBrush BlueBrush       = new SolidColorBrush(Color.Parse(Blue));

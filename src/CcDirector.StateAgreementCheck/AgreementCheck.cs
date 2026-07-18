@@ -373,31 +373,48 @@ public static class AgreementCheck
                         $"'{desktopLabel}'. {WhyDesktopDiffers(row)}");
             }
 
-            // ---- 5. THE RENDERED PIXEL. The hole the Phase 4 Manager found, and it would have made this
-            // whole measurement worthless: comparing the fold's ANSWER reports ZERO while two screens paint
-            // different colours. Before Phase 4 the rail's red was #EF4444 and the client's #F14C4C, and the
-            // rail's yellow #EAB308 against #F59E0B - both surfaces folded to "red", agreed perfectly, and
-            // painted different pixels. Law 7 is "every device shows the same thing, always", and the thing
-            // the owner sees is a pixel, not a string. So resolve each surface's answer THROUGH ITS OWN
-            // PALETTE and compare the hex.
+            // ---- 5. THE RENDERED PIXEL, MEASURED AGAINST THE ONE CANONICAL MAP. Comparing the fold's
+            // ANSWER (the colour NAME) reports agreement while two screens paint different hexes - the exact
+            // hole the Phase 4 Manager found (the rail's red #EF4444 against the client's #F14C4C, the rail's
+            // yellow #EAB308 against #F59E0B). Law 7 is "every device shows the same thing, always", and the
+            // thing the owner sees is a pixel, not a string.
+            //
+            // The "Dumb Clients" palette slice made ONE map the source: SessionColorPalette
+            // (CcDirector.Gateway.Contracts). The Gateway stamps it onto SessionDto.EffectiveColorHex (what
+            // the web session dot paints), and the desktop StatusPalette now REFERENCES it compile-time. So
+            // this check resolves the name through canonical and asserts each client table matches it - the
+            // guard that keeps the web's over-the-wire values from ever drifting from the canonical source.
+            var canonicalHex = SessionColorPalette.HexFor(row.EffectiveColor).ToUpperInvariant();
             var desktopHex = StatusPalette.HexFor(row.EffectiveColor).ToUpperInvariant();
+
+            // The desktop table must equal canonical. It does so BY CONSTRUCTION today (StatusPalette's
+            // constants reference SessionColorPalette), so this arm is the tripwire that fires the instant a
+            // future edit hardcodes a desktop hex again - the very drift this mission exists to end.
+            if (!string.Equals(desktopHex, canonicalHex, StringComparison.OrdinalIgnoreCase))
+                yield return new Finding(row.SessionId, name, "two-different-pixels",
+                    $"the desktop StatusPalette paints '{row.EffectiveColor}' {desktopHex}, the canonical map " +
+                    $"{canonicalHex} - both fold the same name and paint different colours. The desktop palette " +
+                    "has drifted from SessionColorPalette. Law 7 is 'every device shows the same thing, always'.");
+
+            // The web client's COLORS table must equal canonical too - read from the file the phone and the
+            // Cockpit actually ship, so a drift here is a real different pixel on those screens.
             if (!clientPalette.TryGetValue(row.EffectiveColor, out var clientHex))
             {
                 yield return new Finding(row.SessionId, name, "palette-missing",
                     $"the Gateway emitted colour '{row.EffectiveColor}' and the client palette " +
                     $"({ClientPalette.RelativePath}) has no entry for it - the phone cannot paint it.");
             }
-            else if (!string.Equals(desktopHex, clientHex, StringComparison.OrdinalIgnoreCase))
+            else if (!string.Equals(clientHex.ToUpperInvariant(), canonicalHex, StringComparison.OrdinalIgnoreCase))
             {
                 yield return new Finding(row.SessionId, name, "two-different-pixels",
                     $"both surfaces fold to '{row.EffectiveColor}' and AGREE - and then paint different colours: " +
-                    $"the desktop rail {desktopHex}, the phone and Cockpit {clientHex}. Law 7 is 'every device " +
-                    "shows the same thing, always'.");
+                    $"the canonical map {canonicalHex}, the web client table {clientHex.ToUpperInvariant()}. Law 7 is " +
+                    "'every device shows the same thing, always'.");
             }
-            else if (!StatusPalette.Knows(row.EffectiveColor))
+            else if (!SessionColorPalette.Knows(row.EffectiveColor))
             {
                 yield return new Finding(row.SessionId, name, "palette-missing",
-                    $"the desktop palette does not know '{row.EffectiveColor}' - the rail renders the magenta " +
+                    $"the palette does not know '{row.EffectiveColor}' - every surface renders the magenta " +
                     "BROKEN sentinel for this session.");
             }
         }

@@ -1,6 +1,6 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { SessionDto } from "../api/client";
-import { classify, contextLine, deletionReason, dotColor, effectiveColor, groupByDirector, inBucket, inWaitingOrder, isWorking, pendingDeletion, snoozeCountdown, stateLabel } from "./ordering";
+import { classify, contextLine, deletionReason, dotColor, dotHex, effectiveColor, groupByDirector, inBucket, inWaitingOrder, isWorking, pendingDeletion, snoozeCountdown, stateLabel } from "./ordering";
 
 function session(fields: Partial<SessionDto> & { sessionId?: string } = {}): SessionDto {
   return {
@@ -133,6 +133,39 @@ describe("Gateway-stamped session presentation state", () => {
     // ladder that produced a blue dot beside the word "Snoozed" is gone.
     expect(contextLine(session({ effectiveColor: "blue", stateLabel: "Working", transcribing: true } as Partial<SessionDto>)))
       .toBe("Working");
+  });
+});
+
+describe("dotHex - the session dot renders the Gateway-stamped pixel", () => {
+  it("paints the stamped effectiveColorHex verbatim", () => {
+    // The Gateway resolves the name through the ONE canonical map and stamps the hex; the dot paints it.
+    expect(dotHex(session({ effectiveColor: "red", effectiveColorHex: "#EF4444" } as Partial<SessionDto>))).toBe("#EF4444");
+    expect(dotHex(session({ effectiveColor: "blue", effectiveColorHex: "#3B82F6" } as Partial<SessionDto>))).toBe("#3B82F6");
+  });
+
+  it("paints the magenta sentinel and logs when the stamp is missing (an old Gateway, mixed-version deploy)", () => {
+    // FAIL LOUD, NEVER GUESS: no hex on the wire must NOT fall back to the local COLORS table. Magenta is
+    // not a state and cannot be mistaken for one; grey would read as "parked", which would be a quiet lie.
+    const spy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      expect(dotHex(session({ effectiveColor: "red" }))).toBe("#FF00FF");
+      expect(spy).toHaveBeenCalledOnce();
+      // It must NOT paint the real red the name would have mapped to - that is the guessed colour we refuse.
+      expect(dotHex(session({ effectiveColor: "red" }))).not.toBe(dotColor("red"));
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it("paints the magenta sentinel and logs when the stamp is not a hex", () => {
+    const spy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      expect(dotHex(session({ effectiveColor: "red", effectiveColorHex: "reddish" } as Partial<SessionDto>))).toBe("#FF00FF");
+      expect(dotHex(session({ effectiveColor: "red", effectiveColorHex: "" } as Partial<SessionDto>))).toBe("#FF00FF");
+      expect(spy).toHaveBeenCalled();
+    } finally {
+      spy.mockRestore();
+    }
   });
 });
 
