@@ -43,6 +43,9 @@ export interface WorkflowDefinition {
   contentHash?: string;
   /** When the workflow head last changed (UTC, ISO). */
   updatedUtc?: string;
+  /** The owner's switch: false = OFF (hidden from agents' briefings, no new runs or seats).
+   *  Absent on an older Gateway, which means enabled. */
+  enabled?: boolean;
 }
 
 /** The response of creating a workflow: the new draft's snapshot (subset this client reads). */
@@ -131,6 +134,57 @@ export async function createWorkflow(
   });
   if (!res.ok) throw await gatewayErrorFrom(res, "POST /gateway/workflows");
   return (await res.json()) as WorkflowDraft;
+}
+
+/** One workflow run (the slice this page reads: activity rollups per workflow). */
+export interface WorkflowRunSummary {
+  id: string;
+  workflowId: string;
+  workflowVersion: number;
+  status: string;
+  acceptanceStatus: string;
+  createdUtc: string;
+}
+
+// GET /gateway/workflow-runs - newest first, bounded server-side. The register groups these
+// client-side into per-workflow activity (count + newest); a dedicated rollup endpoint can replace
+// this read if catalogs ever outgrow it.
+export async function getWorkflowRuns(limit = 200, signal?: AbortSignal): Promise<WorkflowRunSummary[]> {
+  const res = await fetch(`/gateway/workflow-runs?limit=${limit}`, {
+    method: "GET",
+    headers: { Accept: "application/json", ...authHeaders() },
+    signal,
+  });
+  if (!res.ok) throw await gatewayErrorFrom(res, "GET /gateway/workflow-runs");
+  const body = (await res.json()) as { runs?: WorkflowRunSummary[] } | null;
+  return body?.runs ?? [];
+}
+
+// POST /gateway/workflows/{id}/enable | /disable - the owner's switch. The Gateway REQUIRES the
+// actor: a governance change is never anonymous.
+export async function setWorkflowEnabled(
+  id: string,
+  enabled: boolean,
+  by: string,
+  signal?: AbortSignal,
+): Promise<void> {
+  const verb = enabled ? "enable" : "disable";
+  const res = await fetch(
+    `/gateway/workflows/${encodeURIComponent(id)}/${verb}?by=${encodeURIComponent(by)}`,
+    { method: "POST", headers: { Accept: "application/json", ...authHeaders() }, signal },
+  );
+  if (!res.ok) throw await gatewayErrorFrom(res, `POST /gateway/workflows/${id}/${verb}`);
+}
+
+// POST /gateway/workflows/{id}/reset - built-ins only: republish the shipped content as a new
+// version. The customized versions stay as history.
+export async function resetWorkflow(id: string, signal?: AbortSignal): Promise<void> {
+  const res = await fetch(`/gateway/workflows/${encodeURIComponent(id)}/reset`, {
+    method: "POST",
+    headers: { Accept: "application/json", ...authHeaders() },
+    signal,
+  });
+  if (!res.ok) throw await gatewayErrorFrom(res, `POST /gateway/workflows/${id}/reset`);
 }
 
 /** A workflow id slug from a display name: "Release Train" -> "release-train". The Gateway enforces

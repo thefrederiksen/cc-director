@@ -3,11 +3,13 @@ import { Link, useParams } from "react-router-dom";
 import {
   getWorkflow,
   getWorkflowInstructions,
+  resetWorkflow,
+  setWorkflowEnabled,
   type WorkflowDefinition,
 } from "@devthrottle/client-core/workflows/workflowsClient";
 import { gatewayErrorMessage } from "@devthrottle/client-core/api/client";
 import { markdownToHtml } from "@devthrottle/client-core/history/historyMarkdown";
-import { ErrorBanner, LoadingState } from "../components";
+import { Button, ConfirmDialog, ErrorBanner, LoadingState } from "../components";
 
 // One workflow, in full (Workflows mission, phase 7). The list row answered "what exists"; this page
 // answers "what does it actually say": the metadata and step summary up top (the machine-readable
@@ -20,6 +22,8 @@ export function WorkflowDetail() {
   const [workflow, setWorkflow] = useState<WorkflowDefinition | null>(null);
   const [instructions, setInstructions] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [pendingOff, setPendingOff] = useState(false);
+  const [pendingReset, setPendingReset] = useState(false);
 
   const load = useCallback(
     async (signal?: AbortSignal) => {
@@ -47,6 +51,12 @@ export function WorkflowDetail() {
     return () => ctrl.abort();
   }, [load]);
 
+  const flip = async (enabled: boolean) => {
+    if (id === undefined) return;
+    await setWorkflowEnabled(id, enabled, "cockpit");
+    await load();
+  };
+
   return (
     <div className="page wf">
       <header className="ui-page-header">
@@ -66,12 +76,41 @@ export function WorkflowDetail() {
       ) : (
         <>
           <div className="wf-detail-facts">
-            <span className={workflow.isBuiltIn === true ? "wf-badge wf-badge-builtin" : "wf-badge wf-badge-custom"}>
-              {workflow.isBuiltIn === true ? "Built-in" : "Custom"}
-            </span>
+            {workflow.isBuiltIn === true ? <span className="wf-badge wf-badge-builtin">Built-in</span> : null}
+            {workflow.isBuiltIn === false ? <span className="wf-badge">Custom</span> : null}
             {typeof workflow.version === "number" ? <span className="wf-badge">v{workflow.version}</span> : null}
             {workflow.hasDraft === true ? <span className="wf-badge wf-badge-draft">Draft waiting</span> : null}
+            {/* The owner's switch, on the workflow's own page too - state named, flip confirmed
+                when turning off (the register's semantics, in one place per the shared client). */}
+            {workflow.enabled !== undefined ? (
+              <span className="wf-detail-switch">
+                <button
+                  className={workflow.enabled ? "wf-switch wf-switch-on" : "wf-switch"}
+                  role="switch"
+                  aria-checked={workflow.enabled}
+                  aria-label={workflow.enabled ? "in force - turn off" : "off - turn on"}
+                  onClick={() => {
+                    if (workflow.enabled) setPendingOff(true);
+                    else void flip(true);
+                  }}
+                ></button>
+                <span className={workflow.enabled ? "wf-state-label wf-state-on" : "wf-state-label wf-state-off"}>
+                  {workflow.enabled ? "In force" : "Off"}
+                </span>
+              </span>
+            ) : null}
+            {workflow.isBuiltIn === true ? (
+              <Button variant="secondary" onClick={() => setPendingReset(true)}>
+                Reset to shipped
+              </Button>
+            ) : null}
           </div>
+          {workflow.enabled === false ? (
+            <p className="wf-off-banner">
+              This workflow is OFF: agents will not see it in their briefings, and it cannot start
+              new runs or seat new sessions. Nothing is deleted - turn it back on anytime.
+            </p>
+          ) : null}
 
           <dl className="wf-facts">
             <dt>When to use it</dt>
@@ -104,6 +143,41 @@ export function WorkflowDetail() {
           </section>
         </>
       )}
+
+      <ConfirmDialog
+        open={pendingOff}
+        title={`Turn '${workflow?.name ?? id}' off?`}
+        message={
+          <>
+            Agents will no longer see this workflow in their briefings, and it cannot start new runs
+            or seat new sessions. Nothing is deleted - turn it back on anytime.
+          </>
+        }
+        confirmLabel="Turn off"
+        danger={false}
+        onConfirm={() => flip(false)}
+        onClose={() => setPendingOff(false)}
+      />
+
+      <ConfirmDialog
+        open={pendingReset}
+        title={`Reset '${workflow?.name ?? id}' to the shipped content?`}
+        message={
+          <>
+            The content DevThrottle ships becomes a NEW published version, in force immediately.
+            Your customized versions stay as history and remain readable by version number.
+          </>
+        }
+        confirmLabel="Reset to shipped"
+        danger={false}
+        onConfirm={async () => {
+          if (id !== undefined) {
+            await resetWorkflow(id);
+            await load();
+          }
+        }}
+        onClose={() => setPendingReset(false)}
+      />
     </div>
   );
 }
