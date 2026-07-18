@@ -342,6 +342,9 @@ public sealed class GatewayHost : IAsyncDisposable
     // label, and the account-level hosted-AI service dollars mirrored from the credit-debit ledger.
     private readonly Governance.SessionSpendStore _sessionSpend;
     private readonly Governance.AccountHostedAiSpendStore _hostedAiSpend;
+    // The append-only governance audit trail (issue #1771, spine item 4): structured intervention +
+    // permission/sandbox decisions, recorded as events, never inferred from transcripts.
+    private readonly Governance.GovernanceAuditLog _governanceAudit;
     private readonly CronJobStore _cronJobs;
     private readonly CronRunHistoryStore _cronRuns;
     private readonly Running.CronEngine _cronEngine;
@@ -618,6 +621,9 @@ public sealed class GatewayHost : IAsyncDisposable
         // account-level hosted-AI service dollars mirrored from the credit-debit ledger.
         _sessionSpend = new Governance.SessionSpendStore(_gatewayDb);
         _hostedAiSpend = new Governance.AccountHostedAiSpendStore(_gatewayDb);
+        // The governance audit trail (issue #1771, spine item 4): append-only intervention + permission/
+        // sandbox decisions on the EF data layer, so a Gateway restart never loses a recorded audit fact.
+        _governanceAudit = new Governance.GovernanceAuditLog(_gatewayDb);
         // Snooze Length mission: the persisted snooze registry (sessionId -> SnoozeUntilUtc), now in the
         // snoozes table of the EF data layer - a Gateway restart re-arms every pending snooze from the
         // database; an entry already past its time simply fires on the first sweep. The path argument is the
@@ -1653,6 +1659,10 @@ public sealed class GatewayHost : IAsyncDisposable
         // Honest driver-normalized spend (issue #1771, spine item 3): per-session token effort + billing-mode
         // label, and the account-level hosted-AI service dollars read from the mirrored credit-debit ledger.
         Api.GovernanceSpendEndpoints.Map(_app, _sessionSpend, _hostedAiSpend);
+
+        // The governance audit trail (issue #1771, spine item 4): append-only intervention +
+        // permission/sandbox decisions - the safety and attention-burden audit. Append and read only.
+        Api.GovernanceAuditEndpoints.Map(_app, _governanceAudit);
 
         // Gateway Centralization Phase 1 (issue #628): the inbound login-telemetry RELAY. The Director
         // POSTs its login-telemetry event here (instead of the cloud) and the Gateway forwards it on,
