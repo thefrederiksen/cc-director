@@ -410,6 +410,31 @@ namespace CcDirector.Gateway.Migrations.Postgres.Migrations
                     b.ToTable("snoozes", "gateway");
                 });
 
+            modelBuilder.Entity("CcDirector.Gateway.Data.Entities.TenantEntity", b =>
+                {
+                    b.Property<string>("Id")
+                        .HasColumnType("text")
+                        .UseCollation("C");
+
+                    b.Property<string>("AccountSubject")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .UseCollation("C");
+
+                    b.Property<DateTime>("CreatedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("Email")
+                        .HasColumnType("text");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("AccountSubject")
+                        .IsUnique();
+
+                    b.ToTable("tenants", "gateway");
+                });
+
             modelBuilder.Entity("CcDirector.Gateway.Data.Entities.WingmanInstructionEntity", b =>
                 {
                     b.Property<Guid>("Id")

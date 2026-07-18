@@ -95,6 +95,12 @@ public sealed class GatewayDbContext : DbContext
     /// intervention and permission/sandbox decisions, never inferred from transcripts (issue #1771).</summary>
     public DbSet<GovernanceAuditEventEntity> GovernanceAuditEvents => Set<GovernanceAuditEventEntity>();
 
+    /// <summary>The account-to-tenant mapping (<c>tenants</c>), keyed by the verified Supabase subject. This
+    /// is the GLOBAL mapping table (Hosted Multi-Tenancy increment 1) - deliberately NOT tenant-scoped, so it
+    /// has no <c>tenant_id</c> column and no query filter; it is the table the filter's tenant values come
+    /// from. Unused on the single-tenant local install.</summary>
+    public DbSet<TenantEntity> Tenants => Set<TenantEntity>();
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         base.OnModelCreating(modelBuilder);
@@ -277,6 +283,19 @@ public sealed class GatewayDbContext : DbContext
             b.HasIndex(e => new { e.TenantId, e.Category, e.OccurredUtc });
         });
 
+        modelBuilder.Entity<TenantEntity>(b =>
+        {
+            b.ToTable("tenants");
+            // Id is the tenant's own id value (a code-generated GUID string), the natural primary key -
+            // ordinally compared (SQLite's default BINARY collation), no surrogate. This table is the GLOBAL
+            // account->tenant mapping, so it is deliberately NOT passed to ApplyTenantScope below: it carries
+            // no tenant_id column and no query filter (it is the table the filter's tenant values come from).
+            b.HasKey(e => e.Id);
+            // The mapping is looked up by the verified Supabase subject; it is unique (1:1 account->tenant now,
+            // enforced at the database, so a duplicate mint can never split one account across two tenants).
+            b.HasIndex(e => e.AccountSubject).IsUnique();
+        });
+
         // Tenant scoping - the tenant_id column plus the global query filter - applied uniformly to every
         // entity that derives from TenantScopedEntity, so future stores inherit it by deriving from the base.
         ApplyTenantScope<CronJobEntity>(modelBuilder);
@@ -325,6 +344,11 @@ public sealed class GatewayDbContext : DbContext
             modelBuilder.Entity<PushSubscriptionEntity>().Property(e => e.Endpoint).UseCollation("C");
             modelBuilder.Entity<SessionSpendEntity>().Property(e => e.SessionId).UseCollation("C");
             modelBuilder.Entity<MissionNoteEntity>().Property(e => e.Key).UseCollation("C");
+            // The tenants mapping table's natural-key string columns (the tenant id primary key and the
+            // account_subject unique index) rely on byte-ordinal equality/uniqueness, same as the keys above,
+            // so pin them to "C" too - the account subject in particular must match EXACTLY on both providers.
+            modelBuilder.Entity<TenantEntity>().Property(e => e.Id).UseCollation("C");
+            modelBuilder.Entity<TenantEntity>().Property(e => e.AccountSubject).UseCollation("C");
         }
     }
 

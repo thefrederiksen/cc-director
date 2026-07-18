@@ -202,6 +202,18 @@ public sealed class GatewayDatabase : IDisposable
         return ctx;
     }
 
+    /// <summary>
+    /// A fresh context that is NOT scoped to any tenant - for the GLOBAL mapping tables ONLY (the
+    /// <c>tenants</c> account-subject -> tenant-id table), which carry no <c>tenant_id</c> column and no
+    /// query filter. It leaves <see cref="GatewayDbContext.ActiveTenant"/> null, so any tenant-SCOPED entity
+    /// read through it fails CLOSED - the global filter compares <c>tenant_id == null</c> and matches no row -
+    /// which is exactly the deny-by-default we want if this context is ever misused on a scoped table. It
+    /// exists because the tenant registry must mint or look up a tenant BEFORE any tenant is resolved, so it
+    /// cannot go through <see cref="CreateContext"/> (which fails loud on an unresolved tenant). The caller
+    /// disposes it (it returns to the pool).
+    /// </summary>
+    public GatewayDbContext CreateUnscopedContext() => _factory.CreateDbContext();
+
     public void Dispose()
     {
         if (_disposed) return;
