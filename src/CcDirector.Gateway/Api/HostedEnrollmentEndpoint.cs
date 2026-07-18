@@ -81,11 +81,20 @@ internal static class HostedEnrollmentEndpoint
         // The email is DISPLAY METADATA only (never the mapping key). Read it from the same verified token.
         var email = JwtIdentityReader.Read(bearer)?.Email;
 
-        // Mint-or-lookup the tenant for this verified subject (same account -> same tenant), then mint (or
-        // return) the device's per-device key and bind the device to (subject, tenant).
+        // Mint-or-lookup the tenant for this verified subject (same account -> same tenant).
         var tenant = tenants.MintOrLookupBySubject(validation.Subject, email);
-        var response = devices.RegisterIfAbsent(req.DeviceId, req.MachineName, req.Platform, req.DeviceType);
-        devices.SetAccountBinding(req.DeviceId, validation.Subject, tenant.Value);
+
+        // The device id is CLIENT-supplied, so it must NEVER be the registry key on its own: two different
+        // accounts presenting the same deviceId would otherwise collide, and RegisterIfAbsent's idempotency
+        // would hand one account the OTHER's key (which SetAccountBinding then rebinds to the new tenant) -
+        // letting a pre-enroller keep a key that becomes bound to the victim's tenant. Namespacing the
+        // registry id with the VERIFIED subject makes cross-account collision impossible: each account gets
+        // its own device space, so RegisterIfAbsent only ever returns THIS account's own key, and the binding
+        // is always to this account's tenant. The subject is a fixed Supabase id (prepended), so no
+        // client-supplied suffix can make one account's id collide with another's.
+        var scopedDeviceId = validation.Subject + "|" + req.DeviceId;
+        var response = devices.RegisterIfAbsent(scopedDeviceId, req.MachineName, req.Platform, req.DeviceType);
+        devices.SetAccountBinding(scopedDeviceId, validation.Subject, tenant.Value);
 
         FileLog.Write($"[HostedEnrollment] enrolled deviceId={req.DeviceId}, machine={req.MachineName} " +
                       $"-> bound to its account tenant (no subject/email logged), deviceCount={response.DeviceCount}");

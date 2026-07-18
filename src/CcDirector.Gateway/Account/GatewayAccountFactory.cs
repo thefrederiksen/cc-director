@@ -78,7 +78,11 @@ public static class GatewayAccountFactory
             ResolveSigningSecret(),
             publicKeySetJson: DevThrottleSigningKeys.ResolvePublicKeySet(),
             expectedAudience: audience,
-            expectedIssuer: issuer);
+            expectedIssuer: issuer,
+            // ES256-ONLY: Supabase account tokens are asymmetric ES256, verified against the project's public
+            // key set. Refuse symmetric HS256, so the shared signing secret - which can be an unconfigured
+            // public placeholder - can never be used to forge an arbitrary-subject enrollment token.
+            allowSymmetricHs256: false);
     }
 
     /// <summary>

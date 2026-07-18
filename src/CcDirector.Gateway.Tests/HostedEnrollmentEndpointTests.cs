@@ -39,9 +39,10 @@ public sealed class HostedEnrollmentEndpointTests : IDisposable
         var db = _harness.Open();
         var devices = new DeviceRegistry(_devPath);
         var tenants = new TenantRegistry(db);
+        // ES256-only, exactly as production BuildAuthorizationValidator configures it - HS256 is refused.
         var validator = new JwtAccessTokenValidator(
             "test-signing-secret", timeProvider: null, publicKeySetJson: _key.PublicKeySetJson(),
-            expectedAudience: Audience, expectedIssuer: Issuer);
+            expectedAudience: Audience, expectedIssuer: Issuer, allowSymmetricHs256: false);
         return (devices, tenants, validator);
     }
 
@@ -126,6 +127,54 @@ public sealed class HostedEnrollmentEndpointTests : IDisposable
         Assert.Equal(400, result.Status);
     }
 
+    [Fact]
+    public void DeviceIdCollisionAcrossAccounts_CannotHijackAnotherTenantsKey()
+    {
+        var (devices, tenants, validator) = Wire();
+
+        // Attacker pre-enrolls a client-chosen deviceId "shared" under its OWN account.
+        var attacker = HostedEnrollmentEndpoint.Enroll(
+            _key.Token("sub-attacker", "atk@x.com", Audience, Issuer), Req("shared"), devices, tenants, validator);
+        var attackerKey = attacker.Response!.DeviceKey;
+        var attackerTenant = devices.TenantForKey(attackerKey);
+
+        // Victim later enrolls the SAME deviceId "shared" under the victim account.
+        var victim = HostedEnrollmentEndpoint.Enroll(
+            _key.Token("sub-victim", "vic@x.com", Audience, Issuer), Req("shared"), devices, tenants, validator);
+        var victimKey = victim.Response!.DeviceKey;
+        var victimTenant = devices.TenantForKey(victimKey);
+
+        // The victim gets a DISTINCT key and tenant, and - the security property - the attacker's key was
+        // NEVER handed over or rebound: it still resolves to the attacker's OWN tenant, not the victim's.
+        Assert.NotEqual(attackerKey, victimKey);
+        Assert.NotEqual(attackerTenant, victimTenant);
+        Assert.Equal(attackerTenant, devices.TenantForKey(attackerKey));
+        Assert.NotEqual(victimTenant, devices.TenantForKey(attackerKey));
+    }
+
+    [Fact]
+    public void Hs256Token_IsRefused_EvenWithAKnownSecret()
+    {
+        var (devices, tenants, validator) = Wire();
+        // An attacker forges an HS256 token with an arbitrary subject, signed with a known/placeholder secret.
+        var forged = TestEs256Key.Hs256Token("test-signing-secret", "sub-attacker", Audience, Issuer);
+
+        var result = HostedEnrollmentEndpoint.Enroll(forged, Req("dev-a"), devices, tenants, validator);
+
+        Assert.Equal(401, result.Status);
+    }
+
+    [Fact]
+    public void TokenWithNoExpClaim_IsRefused()
+    {
+        var (devices, tenants, validator) = Wire();
+        var noExp = _key.Token("sub-alice", "a@x.com", Audience, Issuer, includeExp: false);
+
+        var result = HostedEnrollmentEndpoint.Enroll(noExp, Req("dev-a"), devices, tenants, validator);
+
+        Assert.Equal(401, result.Status);
+    }
+
     /// <summary>The Supabase audience/issuer the production validator enforces are the project's real values.</summary>
     [Fact]
     public void BuildAuthorizationValidator_DefaultsToTheSupabaseAudienceAndIssuer()
@@ -156,24 +205,42 @@ public sealed class HostedEnrollmentEndpointTests : IDisposable
             });
         }
 
-        public string Token(string subject, string email, string audience, string issuer)
+        public string Token(string subject, string email, string audience, string issuer, bool includeExp = true)
         {
             var header = B64(Encoding.UTF8.GetBytes(
                 JsonSerializer.Serialize(new { alg = "ES256", typ = "JWT", kid = KeyId })));
-            const long nowSeconds = 1_781_000_000L; // fixed instant; token is far from expiry at test time
-            var payload = B64(Encoding.UTF8.GetBytes(JsonSerializer.Serialize(new
-            {
-                sub = subject,
-                email,
-                aud = audience,
-                iss = issuer,
-                iat = nowSeconds,
-                nbf = nowSeconds,
-                exp = 4_070_000_000L, // year ~2099
-            })));
-            var signingInput = header + "." + payload;
+            var signingInput = header + "." + PayloadSegment(subject, email, audience, issuer, includeExp);
             var sig = _key.SignData(Encoding.ASCII.GetBytes(signingInput), HashAlgorithmName.SHA256);
             return signingInput + "." + B64(sig);
+        }
+
+        /// <summary>A forged HS256 token signed with <paramref name="secret"/> - to prove an ES256-only
+        /// validator refuses symmetric tokens no matter the (possibly public/placeholder) secret.</summary>
+        public static string Hs256Token(string secret, string subject, string audience, string issuer)
+        {
+            var header = B64(Encoding.UTF8.GetBytes(
+                JsonSerializer.Serialize(new { alg = "HS256", typ = "JWT" })));
+            var signingInput = header + "." + PayloadSegment(subject, "x@x.com", audience, issuer, includeExp: true);
+            using var hmac = new HMACSHA256(Encoding.UTF8.GetBytes(secret));
+            var sig = hmac.ComputeHash(Encoding.ASCII.GetBytes(signingInput));
+            return signingInput + "." + B64(sig);
+        }
+
+        private static string PayloadSegment(string subject, string email, string audience, string issuer, bool includeExp)
+        {
+            const long nowSeconds = 1_781_000_000L; // fixed instant; token is far from expiry at test time
+            var claims = new Dictionary<string, object>
+            {
+                ["sub"] = subject,
+                ["email"] = email,
+                ["aud"] = audience,
+                ["iss"] = issuer,
+                ["iat"] = nowSeconds,
+                ["nbf"] = nowSeconds,
+            };
+            if (includeExp)
+                claims["exp"] = 4_070_000_000L; // year ~2099
+            return B64(Encoding.UTF8.GetBytes(JsonSerializer.Serialize(claims)));
         }
 
         private static string B64(byte[] bytes) =>
