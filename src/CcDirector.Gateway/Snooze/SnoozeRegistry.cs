@@ -259,36 +259,6 @@ public sealed class SnoozeRegistry
     }
 
     /// <summary>
-    /// Compare-and-clear: remove the entry for <paramref name="sessionId"/> ONLY if its clock is still
-    /// exactly as the caller last saw it - both <paramref name="expectedUntilUtc"/> and
-    /// <paramref name="expectedPendingMinutes"/>. The sweep uses this so a stale decision (taken from a
-    /// snapshot at the start of a pass) can never clobber a snooze the user re-armed in the meantime - a
-    /// re-snooze moves the time, so the compare fails and the fresh snooze stands. This protects the one
-    /// invariant that matters most: a live snooze is never silently lost. Returns true when it cleared.
-    ///
-    /// Both halves of the clock are compared, not just the time, because a deferred entry has no time: a
-    /// deferral that LANDED mid-pass moves from (null, 12) to (a time, null), so a decision taken against
-    /// the deferred snapshot correctly refuses to clear the freshly-armed clock.
-    /// </summary>
-    public bool ClearIfUnchanged(string sessionId, DateTime? expectedUntilUtc, int? expectedPendingMinutes = null)
-    {
-        if (string.IsNullOrWhiteSpace(sessionId)) return false;
-        lock (_gate)
-        {
-            if (_entries.TryGetValue(sessionId, out var e)
-                && e.SnoozeUntilUtc == expectedUntilUtc?.ToUniversalTime()
-                && e.PendingMinutes == expectedPendingMinutes)
-            {
-                _entries.Remove(sessionId);
-                Save();
-                FileLog.Write($"[SnoozeRegistry] ClearIfUnchanged: sid={sessionId} (unchanged since the sweep read it)");
-                return true;
-            }
-            return false;
-        }
-    }
-
-    /// <summary>
     /// Drop every entry owned by <paramref name="directorId"/> whose session is NOT in
     /// <paramref name="liveSessionIds"/>. Called from the aggregation for a Director that actually
     /// answered (its returned list is authoritative), so a session that has permanently exited is

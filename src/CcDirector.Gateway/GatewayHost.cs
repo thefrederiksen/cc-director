@@ -180,14 +180,6 @@ public sealed class GatewayHost : IAsyncDisposable
     internal Snooze.SnoozeRegistry SnoozeRegistry => _snoozeRegistry;
 
     /// <summary>
-    /// Snooze Length mission: run one pass of the REAL wired snooze watchdog synchronously, so an
-    /// end-to-end test can prove the expiry nudge and the confirm-clear without waiting on the timer.
-    /// No-op before <see cref="StartAsync"/> builds the sweep.
-    /// </summary>
-    internal Task RunSnoozeSweepOnceAsync(CancellationToken cancellationToken = default)
-        => _snoozeSweep?.RunOnceAsync(cancellationToken) ?? Task.CompletedTask;
-
-    /// <summary>
     /// Issue #469: the registry of enrolled devices and their unique per-device keys - the single
     /// issuer and record of credentials in the per-device-key trust model. Persisted under the
     /// config root so issued keys survive a Gateway restart.
@@ -314,11 +306,12 @@ public sealed class GatewayHost : IAsyncDisposable
     private readonly Account.TranscriptionKeyAutoProvisioner? _transcriptionKeyProvisioner;
     private readonly WorkListStore _workLists;
     // Snooze Length mission: the Gateway-owned, restart-surviving snooze registry (the one piece of
-    // new state) and the watchdog sweep that makes an expired snooze come back on its own. The
-    // registry is constructed here (load-on-construct re-arms every pending snooze); the sweep is
-    // built and started in StartAsync (it needs the live Director client) and disposed in StopAsync.
+    // new state). An expired snooze comes back on its own with no background timer: HoldStateFor reports
+    // an elapsed entry as None on every read. Constructed here (load-on-construct re-arms every pending
+    // snooze). There is no expiry sweep - an elapsed entry lingers as a durable returned-by-timer
+    // tombstone and is retired only by an edge that ends a snooze (work, an owner turn, an exit, a
+    // re-snooze), bounded by the live-session prune paths.
     private readonly Snooze.SnoozeRegistry _snoozeRegistry;
-    private Snooze.SnoozeExpirySweep? _snoozeSweep;
     // Mission Screen mission (Phase 1b, issue #1405): the Gateway-owned, restart-surviving store of each
     // mission's WHY, keyed by the mission's normalized name. Durable + shared so every Cockpit, the phone,
     // and the future Mission-Control chat/API read the same WHY. Constructed here (load-on-construct
@@ -1858,21 +1851,12 @@ public sealed class GatewayHost : IAsyncDisposable
         // only logs and retries next tick. Null on a host with no credential service.
         _deviceHeartbeat?.Start();
 
-        // Snooze Length mission: start the snooze watchdog. On its cadence it walks the registry and, for
-        // each pending snooze, reads the owning Director's RAW hold state directly (never the overlaid
-        // /sessions roster, so the fold's expiry overlay can never mask the Director's own clear). An
-        // expired-and-still-held session on a LIVE Director is nudged off hold (its own state and voice
-        // rotation then agree); the entry is cleared once the Director reports OnHold=false. A dead
-        // Director's entry is left alone - the /sessions fold surfaces it as "needs you" from the cached
-        // The snooze watchdog now needs nothing but the registry and a clock. It used to be wired to a
-        // SnoozeSweepDirectorClient so it could read each owning Director's hold over the tunnel and nudge
-        // it off hold on expiry - a reconciliation between two processes that both thought they knew the
-        // answer. The Gateway owns the state and the clock, so there is nobody left to reconcile with, and
-        // the client is gone with the protocol.
-        _snoozeSweep = new Snooze.SnoozeExpirySweep(
-            _snoozeRegistry,
-            utcNow: () => DateTime.UtcNow);
-        _snoozeSweep.Start();
+        // No snooze expiry sweep. There used to be a 15-second watchdog here that retired an elapsed entry;
+        // it was removed once the Gateway owned both the state and the clock, because expiry is a local fact
+        // (HoldStateFor reports an elapsed entry as None on every read) and deleting the entry on a timer
+        // erased the returned-by-timer badge before any consumer could see it. An elapsed entry now lingers
+        // as a durable tombstone, retired only by an edge that ends a snooze; the registry is bounded by the
+        // live-session prune paths. A no-op timer would be a smell, so there is none.
 
         // Web Push (mobile app-icon "needs you" dot): start the background notifier now that this
         // Gateway's own /sessions endpoint is live on loopback. The notifier reads that endpoint (so its
@@ -2060,7 +2044,6 @@ public sealed class GatewayHost : IAsyncDisposable
         // on every change), so stopping loses nothing.
         try { _pushNotifier?.Dispose(); } catch (Exception ex) { FileLog.Write($"[GatewayHost] push notifier dispose error: {ex.Message}"); }
         try { _netDiagMonitor?.Dispose(); } catch (Exception ex) { FileLog.Write($"[GatewayHost] netdiag monitor dispose error: {ex.Message}"); }
-        try { _snoozeSweep?.Dispose(); } catch (Exception ex) { FileLog.Write($"[GatewayHost] snooze sweep dispose error: {ex.Message}"); }
         _pushNotifier = null;
         try { _pushLoopbackHttp.Dispose(); } catch (Exception ex) { FileLog.Write($"[GatewayHost] push loopback client dispose error: {ex.Message}"); }
 

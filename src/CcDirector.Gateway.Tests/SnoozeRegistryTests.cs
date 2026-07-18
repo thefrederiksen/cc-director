@@ -1,3 +1,4 @@
+using CcDirector.Gateway.Contracts;
 using CcDirector.Gateway.Snooze;
 using Xunit;
 
@@ -96,24 +97,6 @@ public sealed class SnoozeRegistryTests : IDisposable
         Assert.True(reg.Clear("s1"));
         Assert.False(reg.Contains("s1"));
         Assert.False(reg.Clear("s1"));   // already gone
-    }
-
-    [Fact]
-    public void ClearIfUnchanged_clears_only_when_the_time_has_not_moved()
-    {
-        var reg = new SnoozeRegistry(Path_);
-        var now = new DateTime(2026, 7, 11, 12, 0, 0, DateTimeKind.Utc);
-        var until = now.AddMinutes(60);
-        reg.Snooze("s1", until, "dir-1");
-
-        // A re-snooze moved the time: a stale sweep decision must NOT clobber the fresh snooze.
-        reg.Snooze("s1", now.AddMinutes(120), "dir-1");
-        Assert.False(reg.ClearIfUnchanged("s1", until));   // old time no longer matches -> refused
-        Assert.True(reg.Contains("s1"));                   // the fresh snooze stands
-
-        // Unchanged since the read -> it clears.
-        Assert.True(reg.ClearIfUnchanged("s1", now.AddMinutes(120)));
-        Assert.False(reg.Contains("s1"));
     }
 
     [Fact]
@@ -253,18 +236,62 @@ public sealed class SnoozeRegistryTests : IDisposable
         Assert.False(reg.Land("nobody", DateTime.UtcNow));
     }
 
-    [Fact]
-    public void ClearIfUnchanged_refuses_when_a_deferral_landed_since_the_read()
-    {
-        // The sweep snapshots a DEFERRED entry, then the hold lands mid-pass and the clock starts. A
-        // decision taken against the old snapshot must not delete the freshly-armed snooze - which is
-        // defect 20 in miniature, one pass later.
-        var reg = new SnoozeRegistry(Path_);
-        reg.SnoozeDeferred("s1", 720, "dir-1");
-        reg.Land("s1", DateTime.UtcNow);
+    // ---------- an elapsed entry is a DURABLE returned-by-timer tombstone (round 2 finding 2) ----------
+    // There is no expiry sweep. An elapsed armed entry is NOT retired by the passage of time; it lingers,
+    // reading as needs-you (HoldStateFor None) with IsExpired still true so the "Snooze ended" badge is
+    // durable, until an edge that ends a snooze clears it - work, an owner turn, an exit, or a re-snooze.
+    // This coverage moved here from SnoozeExpirySweepTests when the sweep was deleted; the property it
+    // guards is the registry's, not a sweep's.
 
-        Assert.False(reg.ClearIfUnchanged("s1", null, 720));  // the snapshot's shape no longer matches
-        Assert.True(reg.Contains("s1"));
+    [Fact]
+    public void An_elapsed_armed_entry_lingers_reads_needs_you_and_keeps_the_badge_fact()
+    {
+        var reg = new SnoozeRegistry(Path_);
+        var now = new DateTime(2026, 7, 11, 12, 0, 0, DateTimeKind.Utc);
+        reg.Snooze("s1", now.AddMinutes(-1), "dir-1"); // deadline already passed
+
+        Assert.True(reg.Contains("s1"));                          // NOT retired by the passage of time
+        Assert.True(reg.IsExpired("s1", now));                    // so the badge fact is durable
+        Assert.Equal(HoldStates.None, reg.HoldStateFor("s1", now)); // and it reads needs-you, never held
+    }
+
+    [Fact]
+    public void Work_clears_an_elapsed_tombstone()
+    {
+        var reg = new SnoozeRegistry(Path_);
+        var now = new DateTime(2026, 7, 11, 12, 0, 0, DateTimeKind.Utc);
+        reg.Snooze("s1", now.AddMinutes(-1), "dir-1");
+        Assert.True(reg.IsExpired("s1", now));
+
+        Assert.True(reg.ClearIfArmed("s1")); // an elapsed entry is armed (not deferred), so work removes it
+        Assert.False(reg.Contains("s1"));
+    }
+
+    [Fact]
+    public void An_owner_turn_clears_an_elapsed_tombstone()
+    {
+        var reg = new SnoozeRegistry(Path_);
+        var now = new DateTime(2026, 7, 11, 12, 0, 0, DateTimeKind.Utc);
+        var baseline = now.AddMinutes(-30);
+        reg.Snooze("s1", now.AddMinutes(-1), "dir-1", ownerTurnBaselineUtc: baseline);
+        Assert.True(reg.IsExpired("s1", now));
+
+        Assert.True(reg.ClearIfSupersededByOwnerTurn("s1", baseline.AddMinutes(1)));
+        Assert.False(reg.Contains("s1"));
+    }
+
+    [Fact]
+    public void A_re_snooze_clears_an_elapsed_tombstone_and_arms_a_fresh_clock()
+    {
+        var reg = new SnoozeRegistry(Path_);
+        var now = new DateTime(2026, 7, 11, 12, 0, 0, DateTimeKind.Utc);
+        reg.Snooze("s1", now.AddMinutes(-1), "dir-1");
+        Assert.True(reg.IsExpired("s1", now));
+
+        reg.Snooze("s1", now.AddHours(12), "dir-1"); // re-snooze overwrites with a future clock
+
+        Assert.False(reg.IsExpired("s1", now));                      // badge cleared
+        Assert.Equal(HoldStates.Held, reg.HoldStateFor("s1", now));  // fresh snooze armed
     }
 
     [Fact]
