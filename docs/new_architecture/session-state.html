@@ -472,7 +472,7 @@ so they belong in the inventory. Several are the subject of open defects.</p>
 <table>
 <tr><th>Field</th><th>Owner</th><th>What it does</th></tr>
 <tr><td><code>PendingDeletion</code></td><td>Director</td><td>The session is flagged to be reaped. <strong class="good">A BADGE, NEVER A COLOUR</strong> (owner's ruling; fixed 14 July 2026, defect 23). Pending deletion says nothing about what the agent is <em>doing</em>, and a flagged session may still be working - the reaper explicitly waits out a running final turn (<span class="file">SessionManager.cs:334-338</span>) - so under the law it is <strong>blue, with a badge</strong>. The fold deliberately does <strong>not</strong> read this field and must never gain a branch for it; the fact rides here, beside the dot. The Director's <code>MarkForDeletion</code> now records the fact and decides nothing: its <code>SetStatusColor(Unknown, ...)</code> call is <strong>deleted</strong> (it was the Director deciding a colour, which law 2 forbids, and being positive-evidence it was also sticky - it blocked the activity mapping from repainting a flagged session blue within one generation). The badge renders on the <strong>desktop rail</strong>, and <span class="good">on the Cockpit and mobile rosters too since #1748 (16 July 2026)</span>.</td></tr>
-<tr><td><code>SnoozeExpired</code></td><td>Gateway</td><td>Display-only marker: this session came back on its own because its snooze timer fired. Clients render a distinct "Snooze ended" badge so you know it is a "go and see why it went quiet" item, not a fresh turn-end. Set by the expiry overlay.</td></tr>
+<tr><td><code>SnoozeExpired</code></td><td>Gateway</td><td>Display-only marker: this session came back on its own because its snooze timer fired. Clients render a distinct "Snooze ended" badge so you know it is a "go and see why it went quiet" item, not a fresh turn-end. <strong>ASSIGNED <code>= IsExpired</code> every fold, both ways (17 July 2026):</strong> true only while an armed entry's clock has elapsed, and false the instant that stops being so - so work deleting the entry (the working edge), a re-snooze arming a fresh clock, or an owner turn all clear the badge. It means EXACTLY one thing: returned-to-needs-you by timer expiry. It used to be set one-way and never written false, so it latched onto re-snoozed and worked-again sessions - fixed by the assignment in <span class="file">StampFleetRolesAndFold</span>.</td></tr>
 <tr><td><code>SessionRole</code></td><td>Gateway</td><td><code>Standalone</code> / <code>Manager</code> / <code>Worker</code> / <code>Architect</code>. Computed from the WHOLE fleet (it needs to know whether a controller is still alive), which is why only the Gateway can produce it. Drives the slate suppression at ladder position 8. <span class="bad">The role DTO documents three roles; the code produces four - it omits Architect.</span></td></tr>
 <tr><td><code>NeedsYouSince</code></td><td>Gateway</td><td>The clock that orders the "needs you" queue oldest-first. Stamped as the fleet is assembled.</td></tr>
 <tr><td><code>DictationDeliveryState</code></td><td>Gateway (durable, on disk)</td><td><code>Pending</code> / <code>Delivered</code> / <code>Abandoned</code> / <code>Failed</code>. Not a session state. <code>Pending</code> paints the session orange <em>while the upload is progressing</em> - it does NOT lock the session (issue #1308 removed that), and since 14 July 2026 it does not paint on its own either. See the dictation lifecycle below, and defect 19.</td></tr>
@@ -521,32 +521,55 @@ That is why none of them can outrank blue: they are not competing with "working"
 </ol>
 </div>
 
-<p><strong class="good">All four rules are now implemented correctly (14 July 2026).</strong> Rule 2 used
-to be broken for exactly the case rule 3 exists to serve - see the callout below the table, which
-records what was wrong and why, because that is the part worth not repeating. Verified against this
-worktree:</p>
+<div class="callout">
+<p><strong>Background-quiet is a SEPARATE mechanism - not snooze surviving work.</strong> Rule 1 does not
+mean "an agent may never churn quietly in the background." The owner accepts that agents working away
+without needing him is a real need. But it must NOT be met by letting a snooze live through work: a
+snooze is the owner's "not now", and the moment there is activity on that terminal the snooze is spent.
+Background-quiet is a distinct "background / running" state, a <strong>later mission</strong> - it is
+purpose-built for "let it run silently", where snooze is purpose-built for "I have parked this." Do not
+weaken rule 1 to approximate the other; the two are different states with different meanings, and
+collapsing them is how the working edge came to be dropped in the first place.</p>
+</div>
+
+<p><strong class="good">All four rules are implemented correctly again as of 17 July 2026.</strong>
+<strong>Rule 1 regressed</strong> when snooze ownership moved to the Gateway: the Director-side working
+edge that used to lift a hold was deleted, and no Gateway edge replaced it, so a snoozed session woken by
+another agent's fleet message did its work and stayed silently snoozed. It is restored by adding the
+working edge to <span class="file">SnoozeLandingObserver</span>, the Gateway push seam (see the row
+below). Rule 2 had earlier been broken for exactly the case rule 3 exists to serve - see the callout
+below the table, which records what was wrong and why, because that is the part worth not repeating.
+Verified against this worktree:</p>
 
 <table>
 <tr><th>Rule</th><th>Where</th><th>How</th></tr>
-<tr><td>Working clears the hold</td><td><span class="file">Session.cs</span> (the activity edge)</td><td><code>if (IsWorking &amp;&amp; HoldState == Held) HoldState = None;</code> - unconditional. The snooze timer dies with it.</td></tr>
-<tr><td>Snooze while working defers</td><td><span class="file">Session.cs</span> <code>RequestHold</code></td><td>Snooze pressed while working sets <code>DeferredHold</code> and returns <code>HoldOutcome.Pending</code> - so the session stays blue and reads "Working" while it finishes.</td></tr>
-<tr><td>The Gateway is TOLD it deferred</td><td><span class="file">HoldRequest.cs</span> <code>HoldResponse.Pending</code>; <span class="file">GatewayEndpoints.cs</span> (the hold endpoint)</td><td>The Director's answer carries <code>Pending</code>; the hold endpoint reads it and records a snooze with <strong>its length and no deadline</strong>. <strong>The clock is NOT started here.</strong> This field always existed and carried exactly this fact - until today nothing read it.</td></tr>
-<tr><td>A deferral lands when work stops</td><td><span class="file">Session.cs</span> (the settle edge)</td><td>On settling to WaitingForInput, <code>DeferredHold &rarr; Held</code>. The snooze the agent asked for takes effect exactly when the turn ends.</td></tr>
-<tr><td><strong>...and THAT starts the clock</strong></td><td><span class="file">SnoozeLandingObserver.cs</span> (push); <span class="file">SnoozeExpirySweep.cs</span> (backstop)</td><td><code>Session.HoldStateChanged</code> fires on the landing and the Control API pushes a delta, so <span class="file">DirectorHub</span> hears it within milliseconds and arms the clock at <em>now + the remembered length</em>. The sweep re-reads every Director every 15 seconds and lands anything the push missed. <code>Land</code> is idempotent, so a running clock is never restarted.</td></tr>
-<tr><td>A hold is dropped on exit</td><td><span class="file">Session.cs</span> (the exit edge)</td><td>A dead session has no turn to come back to; parking it would hide it behind "Snoozed" forever. <strong>Both</strong> a deferral and a landed hold (defect 21 - the landed case was missing).</td></tr>
-<tr><td>A fresh prompt supersedes</td><td><span class="file">Session.cs:1645, :1755</span></td><td>You typed at it, so you clearly want it.</td></tr>
+<tr><td>Working clears the hold</td><td><span class="file">SnoozeLandingObserver.cs</span> (the Gateway push seam)</td><td>When a Director pushes a session reporting <code>Working</code> or <code>Starting</code> and the registry holds an <strong>armed</strong> entry, <code>SnoozeRegistry.ClearIfArmed</code> deletes it - the timer dies with it - and the Gateway mirrors <code>None</code> down to the Director's rail. A <code>DeferredHold</code> is spared (rule 3). <strong>Restored 17 July 2026;</strong> it had stopped firing when snooze ownership moved to the Gateway. It does not matter WHO woke the terminal - any activity ends the snooze.</td></tr>
+<tr><td>Snooze while working defers</td><td><span class="file">GatewayEndpoints.cs</span> (the hold endpoint)</td><td>The endpoint reads the <code>ActivityState</code> the Director already reported; <code>Working</code> &rarr; <code>SnoozeRegistry.SnoozeDeferred</code>, and the Director's <code>ApplyGatewayHold</code> mirror keeps the session blue and reading "Working" while it finishes. No <code>RequestHold</code>, no round-trip: the Gateway decides, from the one fact the Director reports.</td></tr>
+<tr><td>A deferral is a length with no clock</td><td><span class="file">SnoozeRegistry.cs</span> (<code>SnoozeDeferred</code>)</td><td>A deferred entry records its <strong>length and no deadline</strong>. <strong>The clock is NOT started at request time</strong> - it starts when the work ends (rule 3). Arming a clock at request time is exactly what made an agent-requested snooze permanent (defect 20).</td></tr>
+<tr><td>A deferral lands when work stops</td><td><span class="file">SnoozeLandingObserver.cs</span> (the settle edge)</td><td>When the Director pushes a <strong>settled</strong> activity (<code>WaitingForInput</code> / <code>WaitingForPerm</code> / <code>Idle</code>), <code>SnoozeRegistry.Land</code> converts <code>DeferredHold &rarr; Held</code> and starts the clock at <em>now + the remembered length</em>. The snooze the agent asked for takes effect exactly when the turn ends.</td></tr>
+<tr><td><strong>...and that starts the clock</strong></td><td><span class="file">SnoozeLandingObserver.cs</span> (push)</td><td>The landing is observed on the Director's own push of the settled activity, within milliseconds. There is no timer backstop - the expiry sweep was deleted, because it swept nothing: a landing missed on one push is simply observed on the next, since a Director pushes its state on every change. <code>Land</code> is idempotent, so repeated observations never restart a running clock.</td></tr>
+<tr><td>A hold is dropped on exit</td><td><span class="file">SnoozeLandingObserver.cs</span> (the exit edge)</td><td>When the Director pushes <code>Exited</code>, <code>SnoozeRegistry.Clear</code> drops the hold - deferred or armed. A dead session has no turn to come back to; parking it would hide it behind "Snoozed" forever (defect 21 - the landed case used to be missing).</td></tr>
+<tr><td>A fresh owner turn supersedes</td><td><span class="file">SnoozeLandingObserver.cs</span> (the owner-turn edge) + the Director's <code>LastOwnerTurnAtUtc</code></td><td>When the Director reports the owner drove a turn AFTER the hold was set, <code>ClearIfSupersededByOwnerTurn</code> drops it - you typed at it, so you clearly want it. Compared against the same Director's baseline captured when the hold was set - one clock against itself, never the Gateway's - so clock skew cannot fire it.</td></tr>
 <tr><td><span class="bad">The hold does NOT survive a restart - and nor does the session</span></td><td><span class="file">SessionStateStore.cs</span>; <span class="file">Session.RestoreHoldState</span>; <span class="file">App.axaml.cs:222-223</span></td><td><span class="bad">This row said "Persisted per session (defect 22). On restore the deferral lands..." and that was FALSE - corrected by QA, 15 July 2026.</span> The hold IS persisted, and the restore rules ARE written correctly - but <code>RestoreEmbeddedSession</code> has <strong>zero callers</strong> and every boot deletes <code>sessions.json</code> first. Session restore does not exist in this build (workspaces replaced it), so no session - and therefore no hold - survives a restart. The code is inert, not wrong. See defect 22.</td></tr>
 <tr><td>The timer expires</td><td><span class="file">GatewayEndpoints.cs</span> (the fleet overlay)</td><td>The Gateway owns the clock (it must survive a dead Director). An expired snooze is overlaid <code>OnHold=false</code> on every read <em>before</em> the fold, so it returns to red with no flicker and no new logic. A DEFERRED entry has no clock, so it can never expire.</td></tr>
 </table>
 
 <div class="callout ok">
-<p><strong>"A session can never be both held and working" is now true twice over.</strong> The Director
-makes the combination unreachable by lifting the hold on the working edge. And as of today the Gateway
-would render it blue anyway, because working is the top of the ladder. The belt and the braces disagree
-about nothing - which is the first time that has been true.</p>
-<p>This matters because the Director's lift is a <em>local</em> guarantee. A snoozed session on a
-Director that has gone dark still carries <code>OnHold=true</code> in the Gateway's cached roster. Before
-today, that stale flag outranked everything. Now, if any fact says the session is working, it is blue.</p>
+<p><strong>"A session can never be both held and working" - one owner now.</strong> This used to be a
+belt-and-braces pair: a <em>local</em> Director-side lift on the working edge, plus the Gateway's colour
+ladder rendering working blue anyway. That pairing is gone. Snooze ownership moved wholesale to the
+Gateway, so there is one guarantee, not two: a Director reporting <code>Working</code> or
+<code>Starting</code> makes <span class="file">SnoozeLandingObserver</span> <strong>delete</strong> the
+armed snooze - <code>HoldStateFor</code> then reads <code>None</code> - and working is still the top of
+the ladder, so the session renders blue either way. The old "belt and braces disagree about nothing"
+framing is retired because there is no second mechanism left to agree or disagree with. That is the
+point: two owners of one idea drift, and every hold that died within minutes on 15 July 2026 was that
+drift.</p>
+<p>The dead-Director case is handled by a different rule, not the working edge: a snoozed session on a
+Director that has gone dark is not working - nothing pushes - so its <strong>timer</strong> is what brings
+it back. The Gateway owns that clock precisely so it survives a dead Director (the dead-man's switch);
+the expiry overlay returns the session to red on its own. The working edge is for a session that is
+alive and working again.</p>
 </div>
 
 <div class="callout ok">
@@ -734,7 +757,7 @@ shipped this morning.</p>
 <div class="scroll">
 <table>
 <tr><th>Scenario</th><th>Before</th><th>Now</th></tr>
-<tr><td>A snoozed session's agent starts working again</td><td class="bad">Grey "Snoozed", sunk to the parked bucket, still snoozed</td><td class="good">Blue "Working", Active. The Director lifts the hold; the Gateway would say blue regardless.</td></tr>
+<tr><td>A snoozed session's agent starts working again (e.g. another agent's fleet message wakes it)</td><td class="bad">Grey "Snoozed", sunk to the parked bucket, still snoozed - it did its work and stayed silently re-parked</td><td class="good">Blue "Working", Active - and the snooze is <strong>DELETED</strong>. The Gateway working edge (<span class="file">SnoozeLandingObserver</span>) clears the armed entry on the working push, so when the work settles it reads red "needs you", never grey "Snoozed", and carries no "Snooze ended" badge. Restored 17 July 2026.</td></tr>
 <tr><td>An agent asks to snooze its own session (so it is working when it asks)</td><td class="good">DeferredHold - stays blue, parks when the turn ends</td><td class="good">Unchanged, and correct. This is why DeferredHold exists.</td></tr>
 <tr><td>...and then that deferred snooze lands</td><td class="bad">Its 12-hour timer was deleted 15 seconds after it was asked for, so the snooze was PERMANENT</td><td class="good"><strong>Fixed - defect 20.</strong> The deferral is recorded with its length and no clock; the landing (pushed by the Director within milliseconds) starts the twelve hours <em>from the turn ending</em>. The sweep now reads all three hold states and never clears a deferral.</td></tr>
 <tr><td>A 12-hour snooze on a session that was NOT working when you pressed it</td><td class="good">Gateway overlays OnHold=false at expiry, returns to red, "Snooze ended" badge</td><td class="good">Unchanged, and correct. The timer survives because the hold landed immediately.</td></tr>

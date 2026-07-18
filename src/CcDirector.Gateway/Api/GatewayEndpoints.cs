@@ -94,11 +94,10 @@ internal static class GatewayEndpoints
         // (live count + actively-working count), so the peak is captured fleet-wide whether stream mode is
         // on or off. Null (old callers, tests) records nothing.
         Stats.GatewaySessionConcurrencyStats? concurrency = null,
-        // Snooze Length mission: the Gateway-owned snooze registry. When non-null, POST
-        // /sessions/{sid}/hold records/clears a snooze-until for the session, and the /sessions fold
-        // overlays an EXPIRED snooze back into "needs you" (OnHold=false) so the session returns on its
-        // own even if its Director has died. Null (old callers, tests) leaves hold as a plain forward
-        // with no timer, byte-identical to before.
+        // Snooze Length mission: the Gateway-owned snooze registry. POST /sessions/{sid}/hold REQUIRES it -
+        // it records/clears a snooze-until here (the authoritative hold) and the /sessions fold reads it to
+        // return an EXPIRED snooze to "needs you" (OnHold=false) on its own even if its Director has died.
+        // When null the hold endpoint returns 503: there is no plain-forward fallback - the Gateway owns hold.
         Snooze.SnoozeRegistry? snoozeRegistry = null,
         // Gateway Cleanup mission (Wave 4b): the Gateway-native mission store. When non-null, the
         // POST/GET /missions routes are mapped and a mission-scoped spawn validates against it. Missions are
@@ -116,7 +115,13 @@ internal static class GatewayEndpoints
         // to build its own defaults, byte-identical to before.
         Core.KeyVault? recordingKeyVault = null,
         Transcription.TranscriptionTelemetryLog? transcriptionTelemetry = null,
-        Transcription.TranscriptionAudioArchive? transcriptionAudioArchive = null)
+        Transcription.TranscriptionAudioArchive? transcriptionAudioArchive = null,
+        // Round 4 finding 1: the reliable display-state channel, so the hold endpoint can TRIGGER a prompt
+        // push of the folded HoldState after a snooze / unsnooze instead of sending its own second hold
+        // command. This makes FleetDisplayStateObserver the single writer of the Director's raw hold. Null
+        // (old callers, tests) leaves the endpoint to record the registry only, and the periodic sweep
+        // reconciles the desktop.
+        Fleet.FleetDisplayStateObserver? fleetDisplayState = null)
     {
         // The old issue #1188 "session lock" (423 Locked on human input while a PENDING dictation record
         // existed) was removed deliberately (issue #1308). This is a single-operator tool: a collision
@@ -1287,23 +1292,25 @@ internal static class GatewayEndpoints
             return Results.Content(body, "application/json");
         });
 
-        // Forward the FIFO "park / un-park this session" (hold) call to the owning Director, AND
-        // record/clear the Gateway-owned snooze timer for it (Snooze Length mission,
-        // docs/architecture/snooze-length-mission-2026-07-11.md). Snooze IS the hold, plus a
-        // Gateway-owned expiry timestamp: holding a session records a snooze-until so the session is
-        // GUARANTEED to return to "needs you" on its own even if its Director later dies; un-holding
-        // clears it. The registry mutation happens only AFTER the forward succeeds, so a hold that did
-        // not take never arms (or leaves) a timer.
+        // Record (or clear) the Gateway-owned snooze for this session - "park / un-park" (hold) (Snooze
+        // Length mission, docs/architecture/snooze-length-mission-2026-07-11.md). Snooze IS the hold: the
+        // Gateway owns the state AND the expiry timestamp, so holding a session records a snooze-until in the
+        // registry - the AUTHORITATIVE result - and the session is GUARANTEED to return to "needs you" on its
+        // own even if its Director later dies; un-holding clears it. The Gateway does NOT forward a plain hold
+        // to the Director: it mutates the registry FIRST, then triggers a prompt, bounded set-display-state
+        // push so the desktop rail reflects the folded hold (the single writer of the Director's raw hold).
+        // The registry mutation stands even if that push times out - the periodic sweep reconciles the rail.
         app.MapPost("/sessions/{sid}/hold", async (string sid, HoldRequest req, CancellationToken ct) =>
         {
             var (director, session) = await LocateSessionAsync(registry, sid, pushedSessions, streamStaleResolved, owners);
             if (session is null || director is null)
                 return Results.NotFound(new { error = "session not found across any director" });
             var holdReq = req ?? new HoldRequest();
-            // Issue #1500: an explicit per-call snooze length. Validate it BEFORE forwarding the hold, so
-            // a bad value fails loudly (no fallback / no silent clamp) and never parks the session. Null =
-            // use the per-user default (unchanged behaviour). Only the Gateway reads this - the Director
-            // gets the same plain hold it always did, so this stays a Gateway-only capability.
+            // Issue #1500: an explicit per-call snooze length. Validate it BEFORE recording the hold, so a
+            // bad value fails loudly (no fallback / no silent clamp) and never parks the session. Null = use
+            // the per-user default. Only the Gateway reads SnoozeMinutes; the hold is recorded in the Gateway
+            // registry and reflected to the Director through the display-state channel, not a plain hold, so
+            // this stays a Gateway-only capability.
             if (holdReq.OnHold && holdReq.SnoozeMinutes is int requested
                 && !Core.Configuration.SnoozeDefaultConfig.IsValid(requested))
             {
@@ -1339,8 +1346,15 @@ internal static class GatewayEndpoints
                 // so a deferral records its LENGTH and no deadline, and SnoozeLandingObserver starts the
                 // clock when the Director reports the work has stopped. Arming a clock at request time is
                 // what made an agent-requested snooze permanent.
-                var working = string.Equals(session.ActivityState?.Trim(), nameof(Core.Sessions.ActivityState.Working),
-                    StringComparison.OrdinalIgnoreCase);
+                //
+                // "Working" here means BOTH Working AND Starting - the same set Session.IsWorking uses and the
+                // same set SnoozeLandingObserver's working edge deletes an armed snooze on. If this armed a
+                // Starting session instead of deferring it, the very next Starting push would delete the
+                // just-created snooze through that edge. The defer decision and the working edge must agree on
+                // what "working" is, or a snooze set on a Starting session cannot survive.
+                var activityNow = session.ActivityState?.Trim();
+                var working = string.Equals(activityNow, nameof(Core.Sessions.ActivityState.Working), StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(activityNow, nameof(Core.Sessions.ActivityState.Starting), StringComparison.OrdinalIgnoreCase);
                 // The owner-turn BASELINE: this Director's own LastOwnerTurnAtUtc as of right now. The
                 // hold is superseded when a LATER value arrives from that same Director - one clock,
                 // compared against itself. Never against DateTime.UtcNow here: that is the GATEWAY's
@@ -1364,18 +1378,21 @@ internal static class GatewayEndpoints
                 snoozeRegistry.Clear(sid);
             }
 
-            // The hold is now a FACT, recorded and persisted here. What follows is the display mirror: push
-            // the ruling down so the owning Director's desktop rail can render it. Best-effort BY DESIGN -
-            // the hold does not depend on it. A Director that is slow, unreachable or dead cannot prevent
-            // the owner from holding a session, which is the entire reason the state moved here; the fold
-            // already reports the truth to every other surface from the registry, and the next push
-            // reconciles the desktop.
-            var pushed = await DirectorCommandRouter.TrySendAsync(
-                sendCommand, director.DirectorId, "hold", sid,
-                new HoldRequest { OnHold = holdReq.OnHold, SnoozeMinutes = holdReq.SnoozeMinutes, HoldState = decided },
-                ct, machineName: director.MachineName);
-            if (pushed is null || !pushed.Ok)
-                FileLog.Write($"[GatewayEndpoints] hold: sid={sid} decided={decided} and RECORDED, but the mirror push to director={director.DirectorId} did not land; the hold stands and the desktop reconciles on the next push");
+            // The hold is now a FACT, recorded and persisted in the registry. Round 4 finding 1: the desktop
+            // rail is updated through the ONE reliable channel, not a second direct hold command. Trigger a
+            // prompt push of the FOLDED hold state (from the registry we just changed) down the same
+            // change-gated FleetDisplayStateObserver that serves every other surface - so there is a single
+            // writer of the Director's raw hold and no descheduled second writer can leave it stale. Best-
+            // effort BY DESIGN: the hold does not depend on it - a slow, unreachable or dead Director cannot
+            // prevent the owner from holding a session, and the fold already reports the truth to every other
+            // surface from the registry, with the periodic sweep reconciling the desktop.
+            // Bounded and cancellable (round 5 finding 1): PushSessionAsync routes through the standard
+            // DirectorCommandRouter 30s chokepoint carrying THIS request's token, so a connected-but-
+            // unresponsive Director cannot hang the Snooze / Unsnooze click. On timeout or an unreachable
+            // Director this still returns SUCCESS below - the registry mutation is the authoritative result
+            // and the periodic sweep reconciles the desktop.
+            if (fleetDisplayState is not null)
+                await fleetDisplayState.PushSessionAsync(sid, ct);
 
             return Results.Json(new HoldResponse
             {
@@ -2665,20 +2682,24 @@ internal static class GatewayEndpoints
         // nudge-write to beg it to change. All three are gone.
         //
         // An elapsed snooze reads None straight out of HoldStateFor, so "expired" needs no special case:
-        // the owner asked for N minutes of quiet and got them. SnoozeExpired stays, because it is not a
-        // hold state - it is display metadata saying "this one JUST came back", which the clients render
-        // as a distinct badge and the phone announces once.
+        // the owner asked for N minutes of quiet and got them. SnoozeExpired is display metadata, not a
+        // hold state - it says "this one JUST came back BECAUSE its timer ran out", which the clients render
+        // as a distinct "Snooze ended" badge and the phone announces once.
         var nowUtc = DateTime.UtcNow;
         if (snoozeRegistry is not null)
             foreach (var s in all)
             {
                 if (string.IsNullOrEmpty(s.SessionId)) continue;
                 s.HoldState = snoozeRegistry.HoldStateFor(s.SessionId, nowUtc);
-                // Expiry is a REGISTRY fact, not a Director one: an entry whose clock has elapsed reads
-                // None above and is flagged as just-returned here. It stays flagged until the sweep drops
-                // the entry, which is what makes the badge continuous rather than a one-frame flicker.
-                if (snoozeRegistry.IsExpired(s.SessionId, nowUtc))
-                    s.SnoozeExpired = true;
+                // Expiry is a REGISTRY fact, not a Director one, and it is ASSIGNED both ways every fold -
+                // never OR-ed in. The DTO reaching this fold can already carry SnoozeExpired=true (the
+                // FleetRosterCache stores folded clones and re-serves them), so a one-way "set true when
+                // expired" would latch the badge on forever: it never wrote false, so a session that left
+                // needs-you by any route OTHER than timer expiry - work deleting the entry (the working
+                // edge), a re-snooze arming a fresh clock, an owner turn - kept a stale badge it never
+                // earned. Assigning = IsExpired makes the badge mean EXACTLY one thing, both directions:
+                // true only while an armed entry's clock has elapsed, false the instant that stops being so.
+                s.SnoozeExpired = snoozeRegistry.IsExpired(s.SessionId, nowUtc);
             }
 
         // Defect 5: the role resolution moved to Fleet.FleetRoleResolver so this roster read and the

@@ -132,6 +132,83 @@ public sealed class FleetDisplayStateObserverTests
         Assert.Single(sender.Sent);
     }
 
+    /// <summary>
+    /// FINDING 3 (inspection). The desktop's raw <c>Session.OnHold</c> still drives the rail's Snooze-versus-
+    /// Unsnooze menu, and it was healed only by a one-shot, unretried hold mirror. Carry the folded HoldState
+    /// on THIS reliable, change-gated channel so a dropped mirror self-heals. First: it rides the down-stamp.
+    /// </summary>
+    [Fact]
+    public void TheFoldedHoldState_RidesTheDownStamp()
+    {
+        var sender = new RecordingSender();
+        var s1 = Session("s1");
+        s1.HoldState = HoldStates.Held; // the fold stamps a real hold state onto the session
+        var fleet = new List<(string, SessionDto)> { ("dir-A", s1) };
+        var observer = new FleetDisplayStateObserver(() => fleet, StubFold, sender.SendAsync);
+
+        observer.Sweep();
+
+        Assert.Equal(HoldStates.Held, sender.Sent.Single().Payload.HoldState);
+    }
+
+    /// <summary>
+    /// FINDING 3, the self-heal itself: when ONLY the hold state changes (colour/label/triage unchanged), the
+    /// new hold must still be stamped down - or the desktop keeps a stale raw OnHold. This is exactly the
+    /// work-deletes-an-armed-snooze transition: the session was Held, then None, while its activity (and so
+    /// its folded colour here) does not move.
+    /// </summary>
+    [Fact]
+    public void WhenOnlyTheHoldStateChanges_TheNewHoldIsSentDown()
+    {
+        var sender = new RecordingSender();
+        var s1 = Session("s1");
+        s1.HoldState = HoldStates.Held;
+        var fleet = new List<(string, SessionDto)> { ("dir-A", s1) };
+        var observer = new FleetDisplayStateObserver(() => fleet, StubFold, sender.SendAsync);
+
+        observer.Sweep();
+        Assert.Equal(HoldStates.Held, sender.Sent.Single().Payload.HoldState);
+
+        // Work deleted the snooze: the fold now reads None. Nothing else about the session changed.
+        s1.HoldState = HoldStates.None;
+        observer.Sweep();
+
+        Assert.Equal(2, sender.Sent.Count);
+        Assert.Equal(HoldStates.None, sender.Sent[^1].Payload.HoldState);
+    }
+
+    /// <summary>
+    /// ROUND 5 FINDING 1. The prompt push runs on the user's Snooze / Unsnooze CLICK path, so it must never
+    /// hang on a connected-but-unresponsive Director. It routes through the bounded, cancellable
+    /// DirectorCommandRouter chokepoint carrying the request token, so cancelling the request unblocks the
+    /// wait at once. Here a sender that never answers on its own (but observes the token) stands in for that
+    /// Director; if the send used CancellationToken.None - the old unbounded direct-transport path -
+    /// cancelling would do nothing and this would hang past the 5-second safety wait and fail.
+    /// </summary>
+    [Fact]
+    public async Task PushSessionAsync_IsCancellable_SoAnUnresponsiveDirectorCannotHangTheClick()
+    {
+        Task<DirectorCommandResult?> NeverAnswers(string _, DirectorCommand __, CancellationToken token)
+        {
+            var tcs = new TaskCompletionSource<DirectorCommandResult?>();
+            token.Register(() => tcs.TrySetCanceled(token)); // only the deadline/cancel token unblocks it
+            return tcs.Task;
+        }
+
+        var s1 = Session("s1");
+        s1.HoldState = HoldStates.Held; // a real fold, so the change gate does not short-circuit the send
+        var fleet = new List<(string, SessionDto)> { ("dir-A", s1) };
+        var observer = new FleetDisplayStateObserver(() => fleet, StubFold, NeverAnswers);
+
+        using var cts = new CancellationTokenSource();
+        var push = observer.PushSessionAsync("s1", cts.Token);
+        cts.Cancel();
+
+        // Cancelling the request unblocks the wait promptly (well within the 30s command deadline). If the
+        // send ignored the token, WaitAsync would time out and throw TimeoutException instead.
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => push.WaitAsync(TimeSpan.FromSeconds(5)));
+    }
+
     /// <summary>A session that leaves the fleet must drop out of the change gate, so if it ever returns its
     /// fold is stamped fresh rather than suppressed by a stale gate entry.</summary>
     [Fact]

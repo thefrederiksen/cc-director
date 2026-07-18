@@ -183,14 +183,6 @@ public sealed class GatewayHost : IAsyncDisposable
     internal Snooze.SnoozeRegistry SnoozeRegistry => _snoozeRegistry;
 
     /// <summary>
-    /// Snooze Length mission: run one pass of the REAL wired snooze watchdog synchronously, so an
-    /// end-to-end test can prove the expiry nudge and the confirm-clear without waiting on the timer.
-    /// No-op before <see cref="StartAsync"/> builds the sweep.
-    /// </summary>
-    internal Task RunSnoozeSweepOnceAsync(CancellationToken cancellationToken = default)
-        => _snoozeSweep?.RunOnceAsync(cancellationToken) ?? Task.CompletedTask;
-
-    /// <summary>
     /// Issue #469: the registry of enrolled devices and their unique per-device keys - the single
     /// issuer and record of credentials in the per-device-key trust model. Persisted under the
     /// config root so issued keys survive a Gateway restart.
@@ -317,11 +309,12 @@ public sealed class GatewayHost : IAsyncDisposable
     private readonly Account.TranscriptionKeyAutoProvisioner? _transcriptionKeyProvisioner;
     private readonly WorkListStore _workLists;
     // Snooze Length mission: the Gateway-owned, restart-surviving snooze registry (the one piece of
-    // new state) and the watchdog sweep that makes an expired snooze come back on its own. The
-    // registry is constructed here (load-on-construct re-arms every pending snooze); the sweep is
-    // built and started in StartAsync (it needs the live Director client) and disposed in StopAsync.
+    // new state). An expired snooze comes back on its own with no background timer: HoldStateFor reports
+    // an elapsed entry as None on every read. Constructed here (load-on-construct re-arms every pending
+    // snooze). There is no expiry sweep - an elapsed entry lingers as a durable returned-by-timer
+    // tombstone and is retired only by an edge that ends a snooze (work, an owner turn, an exit, a
+    // re-snooze), bounded by the live-session prune paths.
     private readonly Snooze.SnoozeRegistry _snoozeRegistry;
-    private Snooze.SnoozeExpirySweep? _snoozeSweep;
     // Fills account_hosted_ai_spend by periodically mirroring the cloud credit-debit ledger (issue #1771).
     private Governance.HostedAiSpendSweep? _hostedAiSpendSweep;
     // Mission Screen mission (Phase 1b, issue #1405): the Gateway-owned, restart-surviving store of each
@@ -657,28 +650,16 @@ public sealed class GatewayHost : IAsyncDisposable
         // DirectorHub (constructed per-invocation by SignalR) folds every pushed session through this one
         // instance, exactly as it does the input-stats aggregator.
         //
-        // The mirror stamp-down is the same move FleetRoleObserver makes with roles: when the GATEWAY
-        // moves the state on its own initiative (a deferral landing, an exit, the owner coming back), the
-        // ruling is sent to the owning Director's display mirror so its desktop rail renders what the
-        // phone renders. Without it the one screen that folds from the in-process Session - the local
-        // rail - would disagree with every other surface, which is the disease, not the cure.
+        // SINGLE WRITER OF HOLD (round 2 finding 1). This observer only mutates the registry now; it no
+        // longer stamps a one-shot hold mirror down. That fire-and-forget could land a stale None after a
+        // fresh Held and be suppressed by the reliable channel's change gate, leaving the desktop rail
+        // permanently stale. The SINGLE writer of HoldState down to the Director is FleetDisplayStateObserver
+        // (constructed just below), which folds the hold from the registry on the same push, is change-gated,
+        // retried, and driven by the periodic display-state sweep - so every transition this observer makes
+        // reaches the rail at fold cadence, with no racing second writer.
         SnoozeLandings = new Snooze.SnoozeLandingObserver(
             _snoozeRegistry,
-            utcNow: null,
-            pushMirror: async (directorId, sessionId, holdState) =>
-            {
-                var command = new DirectorCommand
-                {
-                    Verb = "hold",
-                    SessionId = sessionId,
-                    PayloadJson = System.Text.Json.JsonSerializer.Serialize(new HoldRequest
-                    {
-                        OnHold = HoldStates.IsHeld(holdState),
-                        HoldState = holdState,
-                    }),
-                };
-                await SendCommandAsync(directorId, command, CancellationToken.None);
-            });
+            utcNow: null);
         // Defect 5: the push seam that stamps each session's resolved role down to its owning Director, so
         // the desktop stops being the one screen that cannot suppress a Worker's red. Reads the same fresh
         // fleet snapshot the auto-dismiss sweeper reads (roles need the WHOLE fleet - a controller may be on
@@ -1590,6 +1571,10 @@ public sealed class GatewayHost : IAsyncDisposable
             // Gateway Cleanup mission (Wave 4b): the Gateway-native mission store backs POST/GET /missions and
             // mission-scoped spawn validation. Missions are a fleet concept, so their source of truth is here.
             missions: Missions,
+            // Round 4 finding 1: the hold endpoint triggers a prompt display-state push through this ONE
+            // channel after a snooze / unsnooze, instead of sending its own second hold command - the single
+            // writer of the Director's raw hold.
+            fleetDisplayState: FleetDisplayState,
             // Workflows mission (phase 4, issue #1771): creating a mission also opens a workflow run of
             // the built-in "mission" workflow, pinned to its published version - the outcome spine.
             workflowRuns: _workflowRuns);
@@ -1987,21 +1972,12 @@ public sealed class GatewayHost : IAsyncDisposable
         // only logs and retries next tick. Null on a host with no credential service.
         _deviceHeartbeat?.Start();
 
-        // Snooze Length mission: start the snooze watchdog. On its cadence it walks the registry and, for
-        // each pending snooze, reads the owning Director's RAW hold state directly (never the overlaid
-        // /sessions roster, so the fold's expiry overlay can never mask the Director's own clear). An
-        // expired-and-still-held session on a LIVE Director is nudged off hold (its own state and voice
-        // rotation then agree); the entry is cleared once the Director reports OnHold=false. A dead
-        // Director's entry is left alone - the /sessions fold surfaces it as "needs you" from the cached
-        // The snooze watchdog now needs nothing but the registry and a clock. It used to be wired to a
-        // SnoozeSweepDirectorClient so it could read each owning Director's hold over the tunnel and nudge
-        // it off hold on expiry - a reconciliation between two processes that both thought they knew the
-        // answer. The Gateway owns the state and the clock, so there is nobody left to reconcile with, and
-        // the client is gone with the protocol.
-        _snoozeSweep = new Snooze.SnoozeExpirySweep(
-            _snoozeRegistry,
-            utcNow: () => DateTime.UtcNow);
-        _snoozeSweep.Start();
+        // No snooze expiry sweep. There used to be a 15-second watchdog here that retired an elapsed entry;
+        // it was removed once the Gateway owned both the state and the clock, because expiry is a local fact
+        // (HoldStateFor reports an elapsed entry as None on every read) and deleting the entry on a timer
+        // erased the returned-by-timer badge before any consumer could see it. An elapsed entry now lingers
+        // as a durable tombstone, retired only by an edge that ends a snooze; the registry is bounded by the
+        // live-session prune paths. A no-op timer would be a smell, so there is none.
 
         // Governance capture (issue #1771, spine item 3): periodically mirror the account's real hosted-AI
         // service debits from the cloud credit-debit ledger into account_hosted_ai_spend, so the weekly
@@ -2205,7 +2181,6 @@ public sealed class GatewayHost : IAsyncDisposable
         // on every change), so stopping loses nothing.
         try { _pushNotifier?.Dispose(); } catch (Exception ex) { FileLog.Write($"[GatewayHost] push notifier dispose error: {ex.Message}"); }
         try { _netDiagMonitor?.Dispose(); } catch (Exception ex) { FileLog.Write($"[GatewayHost] netdiag monitor dispose error: {ex.Message}"); }
-        try { _snoozeSweep?.Dispose(); } catch (Exception ex) { FileLog.Write($"[GatewayHost] snooze sweep dispose error: {ex.Message}"); }
         try { _hostedAiSpendSweep?.Dispose(); } catch (Exception ex) { FileLog.Write($"[GatewayHost] hosted-ai spend sweep dispose error: {ex.Message}"); }
         _pushNotifier = null;
         try { _pushLoopbackHttp.Dispose(); } catch (Exception ex) { FileLog.Write($"[GatewayHost] push loopback client dispose error: {ex.Message}"); }

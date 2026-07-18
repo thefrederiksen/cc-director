@@ -22,7 +22,9 @@ namespace CcDirector.Gateway.Snooze;
 /// PERSISTENCE (Hosted Gateway mission, Step 1b): entries live in the EF data layer's <c>snoozes</c> table
 /// (SQLite locally), NOT the old hand-rolled <c>snooze.json</c>. The public API and observable behavior are
 /// unchanged. A pending snooze survives a restart because it is in the database; an entry already past its
-/// time reads as expired on the first sweep and fires immediately (the mission rule), exactly as before.
+/// time reads as expired on the first READ (<see cref="HoldStateFor"/> returns None), so the session returns
+/// to "needs you" at once. There is no sweep: an elapsed entry lingers as a durable returned-by-timer
+/// tombstone, retired only by a lifecycle edge (work, an owner turn, an exit, a re-snooze).
 ///
 /// ONE-TIME IMPORT: on first run after the upgrade, if a legacy <c>snooze.json</c> exists and the table is
 /// empty, every entry is imported inside one transaction - mirroring the old load exactly: a row with an
@@ -170,10 +172,10 @@ public sealed class SnoozeRegistry
     ///
     /// Returns true only when it actually converted a deferred entry into an armed one. IDEMPOTENT and
     /// safe to call on anything: no entry, or an already-armed entry, returns false and changes nothing.
-    /// That matters because two independent things call it - the push seam (the Director's hold-state
-    /// delta, which is prompt) and the expiry sweep (the backstop, which is certain) - and whichever
-    /// arrives first must win without the other corrupting it. A landing must never restart a running
-    /// clock.
+    /// That matters because the push seam calls it on EVERY settled push (a settled session re-pushes its
+    /// state repeatedly), so repeated calls must not restart a running clock. It used to have a second
+    /// caller - an expiry-sweep backstop - but the sweep is gone; the push is the only path now, and it is
+    /// prompt (the Director reports the settle within milliseconds).
     /// </summary>
     public bool Land(string sessionId, DateTime nowUtc)
     {
@@ -221,6 +223,36 @@ public sealed class SnoozeRegistry
     }
 
     /// <summary>
+    /// Delete the entry for <paramref name="sessionId"/> ONLY if it is ARMED (its clock is running or has
+    /// already elapsed), and leave a DEFERRED entry untouched. Returns true when it removed an armed entry
+    /// (and persisted), false when there was no entry or the entry was deferred.
+    ///
+    /// This is the working edge's clear (owner's law, 17 July 2026: any work on a snoozed terminal ends the
+    /// snooze, completely - the entry is deleted, not merely outranked). A DEFERRED entry is deliberately
+    /// spared: "snooze me when this finishes" is asked for WHILE the agent is working, so the very next
+    /// working observation must not delete the request it just made - that would make it impossible for an
+    /// agent to snooze its own session. Only <see cref="Land"/> (settle) ever converts a deferral; work
+    /// leaves it alone. An armed entry has a deadline (<c>SnoozeUntilUtc</c> non-null) whether it is running
+    /// or elapsed; a deferred one has none - that is the armed/deferred split, kept in one place so the
+    /// caller cannot get it wrong.
+    /// </summary>
+    public bool ClearIfArmed(string sessionId)
+    {
+        if (string.IsNullOrWhiteSpace(sessionId)) return false;
+        lock (_gate)
+        {
+            using var ctx = _db.CreateContext();
+            var e = Find(ctx, sessionId);
+            if (e is null || e.SnoozeUntilUtc is null) // no entry, or DEFERRED (no deadline yet) -> spare it
+                return false;
+            ctx.Snoozes.Remove(e);
+            ctx.SaveChanges();
+            FileLog.Write($"[SnoozeRegistry] ClearIfArmed: sid={sessionId} (armed snooze deleted - the session is working again, and work ends a snooze)");
+            return true;
+        }
+    }
+
+    /// <summary>
     /// Drop every entry owned by <paramref name="directorId"/>. Called from
     /// <c>Registry.OnDirectorRemoved</c> so entries for sessions whose Director permanently left the
     /// fleet do not accumulate. Returns the number of entries removed; persists once if any.
@@ -242,37 +274,6 @@ public sealed class SnoozeRegistry
         }
     }
 
-    /// <summary>
-    /// Compare-and-clear: remove the entry for <paramref name="sessionId"/> ONLY if its clock is still
-    /// exactly as the caller last saw it - both <paramref name="expectedUntilUtc"/> and
-    /// <paramref name="expectedPendingMinutes"/>. The sweep uses this so a stale decision (taken from a
-    /// snapshot at the start of a pass) can never clobber a snooze the user re-armed in the meantime - a
-    /// re-snooze moves the time, so the compare fails and the fresh snooze stands. This protects the one
-    /// invariant that matters most: a live snooze is never silently lost. Returns true when it cleared.
-    ///
-    /// Both halves of the clock are compared, not just the time, because a deferred entry has no time: a
-    /// deferral that LANDED mid-pass moves from (null, 12) to (a time, null), so a decision taken against
-    /// the deferred snapshot correctly refuses to clear the freshly-armed clock.
-    /// </summary>
-    public bool ClearIfUnchanged(string sessionId, DateTime? expectedUntilUtc, int? expectedPendingMinutes = null)
-    {
-        if (string.IsNullOrWhiteSpace(sessionId)) return false;
-        lock (_gate)
-        {
-            using var ctx = _db.CreateContext();
-            var e = Find(ctx, sessionId);
-            if (e is not null
-                && e.SnoozeUntilUtc == expectedUntilUtc?.ToUniversalTime()
-                && e.PendingMinutes == expectedPendingMinutes)
-            {
-                ctx.Snoozes.Remove(e);
-                ctx.SaveChanges();
-                FileLog.Write($"[SnoozeRegistry] ClearIfUnchanged: sid={sessionId} (unchanged since the sweep read it)");
-                return true;
-            }
-            return false;
-        }
-    }
 
     /// <summary>
     /// Drop every entry owned by <paramref name="directorId"/> whose session is NOT in
@@ -303,9 +304,10 @@ public sealed class SnoozeRegistry
 
     /// <summary>
     /// True when <paramref name="sessionId"/> has an ARMED entry whose return time is at or before
-    /// <paramref name="nowUtc"/> - i.e. the snooze has elapsed. This is the ONE expiry predicate the
-    /// aggregation overlay uses to flip the session back into "needs you", and the sweep uses to
-    /// decide whether to nudge the owning Director off hold. Pure (no mutation), so it is safe to
+    /// <paramref name="nowUtc"/> - i.e. the snooze has elapsed. This is the ONE expiry predicate: the fold
+    /// reads it to flip the session back into "needs you" and to stamp the durable "Snooze ended" badge
+    /// (<see cref="SessionDto.SnoozeExpired"/>). It stays true for as long as the elapsed entry lingers -
+    /// there is no sweep to retire it; only a lifecycle edge does. Pure (no mutation), so it is safe to
     /// call on the hot read path.
     ///
     /// A DEFERRED entry is never expired: its clock has not started, because the work it is waiting for
@@ -423,11 +425,11 @@ public sealed class SnoozeRegistry
     }
 
     /// <summary>
-    /// A snapshot of every pending entry, for the expiry sweep. A copy detached from the store, ordered by
-    /// session id for a DETERMINISTIC result. The legacy store returned .NET Dictionary enumeration order,
-    /// which is undefined and unstable - never a guaranteed contract - and the sole caller (the expiry sweep)
-    /// handles each entry independently, so no order was ever observable; ordering here removes that
-    /// nondeterminism rather than reproducing an order nothing relied on.
+    /// A snapshot of every pending entry. A copy detached from the store, ordered by session id for a
+    /// DETERMINISTIC result. Its production caller was the expiry sweep, now deleted; it remains for tests
+    /// that enumerate the pending entries. The legacy store returned .NET Dictionary enumeration order, which
+    /// is undefined and unstable - never a guaranteed contract - so ordering here removes that nondeterminism
+    /// rather than reproducing an order nothing relied on.
     /// </summary>
     public IReadOnlyList<SnoozeEntry> Entries()
     {

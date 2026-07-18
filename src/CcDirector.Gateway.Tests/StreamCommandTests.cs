@@ -316,8 +316,12 @@ public sealed class StreamCommandTests : IAsyncLifetime
         var body = await resp.Content.ReadFromJsonAsync<HoldResponse>();
         Assert.NotNull(body);
         Assert.True(body.OnHold);
+        // The hold reached the Director DOWN THE STREAM (not over HTTP), so its raw hold is set. Round 4
+        // finding 1: it now rides the single reliable display-state channel (set-display-state), not a second
+        // direct hold command - so NO hold verb is sent, and the raw hold is applied from the folded value.
         Assert.True(session.OnHold);
-        Assert.Equal(1, spy.CountOf("hold"));
+        Assert.Equal(0, spy.CountOf("hold"));
+        Assert.True(spy.CountOf("set-display-state") >= 1);
     }
 
     [Fact]
@@ -560,8 +564,11 @@ public sealed class StreamCommandTests : IAsyncLifetime
         var body = await resp.Content.ReadFromJsonAsync<HoldResponse>();
         Assert.NotNull(body);
         Assert.True(body.OnHold);
+        // Located via the pushed cache and routed DOWN THE STREAM - the raw hold is set. Round 4 finding 1:
+        // it rides the single reliable display-state channel (set-display-state), not a second hold command.
         Assert.True(session.OnHold);
-        Assert.Equal(1, spy.CountOf("hold"));
+        Assert.Equal(0, spy.CountOf("hold"));
+        Assert.True(spy.CountOf("set-display-state") >= 1);
     }
 
     [Fact]

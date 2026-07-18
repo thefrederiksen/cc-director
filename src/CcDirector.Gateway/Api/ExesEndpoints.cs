@@ -108,6 +108,10 @@ internal static class ExesEndpoints
                             // the fold is a second answer, which is the whole defect.
                             effectiveColor = s.EffectiveColor,
                             stateLabel = s.StateLabel,
+                            // The "Snooze ended" badge must ride /exes/list too (the mission requires the
+                            // cleared value on every roster). The fold above stamps it; the projection dropped
+                            // it. Same verbatim boolean every other surface renders.
+                            snoozeExpired = s.SnoozeExpired,
                             repoPath = s.RepoPath,
                         }).ToList(),
                     };

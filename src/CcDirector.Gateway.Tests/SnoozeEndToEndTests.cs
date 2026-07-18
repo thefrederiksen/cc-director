@@ -188,9 +188,10 @@ public sealed class SnoozeEndToEndTests : IAsyncLifetime
         Assert.Equal("Working", working.StateLabel);
         Assert.False(working.OnHold);
 
-        // The sweep runs (it used to run every 15 seconds and destroy the snooze here). It must not.
-        await _gw.RunSnoozeSweepOnceAsync();
-        Assert.True(_gw.SnoozeRegistry.Contains("s8"));           // THE REGRESSION: the snooze survives
+        // No background timer touches a deferral (there is no expiry sweep any more - it used to run every
+        // 15 seconds and destroy the deferral here, which was defect 20). The deferral simply persists until
+        // the work ends and it lands.
+        Assert.True(_gw.SnoozeRegistry.Contains("s8"));           // THE REGRESSION: the deferral survives
         Assert.True(_gw.SnoozeRegistry.Entries().Single().IsDeferred);
 
         // The turn ends. The Director reports ONLY that it stopped working; the Gateway sees that on the
@@ -209,6 +210,34 @@ public sealed class SnoozeEndToEndTests : IAsyncLifetime
         var returned = await GetSession("s8");
         Assert.False(returned.OnHold);
         Assert.Equal("needsYou", returned.TriageBucket);
+    }
+
+    [Fact]
+    public async Task Snoozing_a_Starting_session_defers_and_survives_a_following_Starting_push()
+    {
+        // FINDING 2 (inspection), END TO END THROUGH THE REAL HOLD ENDPOINT. Session.IsWorking and the
+        // working edge both treat Starting as active work, but the hold endpoint used to check only Working
+        // when deciding whether to DEFER. So a snooze set while Starting was armed, not deferred - and the
+        // very next Starting push deleted it through the working edge. The defer decision and the working edge
+        // must agree on what "working" means.
+        await SetDefaultMinutes(1);
+        var fake = await StartFakeAsync("s9", onHold: false, activityState: "Starting");
+
+        // Snooze it via the REAL hold endpoint while it is Starting.
+        var holdResp = await _http.PostAsJsonAsync(
+            "sessions/s9/hold", new HoldRequest { OnHold = true, SnoozeMinutes = 12 * 60 });
+        Assert.Equal(HttpStatusCode.OK, holdResp.StatusCode);
+
+        // It must DEFER (a length, no clock), not create an armed Held entry.
+        Assert.Equal(HoldStates.DeferredHold, fake.CurrentHoldState("s9"));
+        Assert.True(Assert.Single(_gw.SnoozeRegistry.Entries()).IsDeferred);
+
+        // A following Starting push must NOT delete it - the working edge spares a deferred entry.
+        fake.SetActivity("s9", "Starting");
+        await fake.RePushAsync();
+
+        Assert.True(_gw.SnoozeRegistry.Contains("s9"));
+        Assert.True(Assert.Single(_gw.SnoozeRegistry.Entries()).IsDeferred);
     }
 
     [Fact]
@@ -233,24 +262,31 @@ public sealed class SnoozeEndToEndTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task An_expired_snooze_returns_the_session_with_no_director_conversation_at_all()
+    public async Task An_expired_snooze_returns_the_session_immediately_with_a_durable_badge()
     {
         // This replaces "Watchdog_nudges_the_live_director_off_hold_and_clears_once_confirmed", which
         // asserted a two-round-trip handshake: sweep sees expired -> nudge the Director off hold -> keep
         // the entry -> next sweep sees the Director agree -> clear. That protocol is deleted. The Gateway
         // owns the hold and the clock, so an expired snooze IS returned, immediately, by the fold - no
-        // nudge, no confirmation, no second sweep.
+        // nudge, no confirmation, no sweep at all.
         await SetDefaultMinutes(1);
         var fake = await StartFakeAsync("s2", onHold: true); // the Director's own claim, which counts for nothing
         _gw.SnoozeRegistry.Snooze("s2", DateTime.UtcNow.AddSeconds(-1), fake.DirectorId);
 
         var returned = await GetSession("s2");
-        Assert.False(returned.OnHold);                  // already back, before any sweep has run
+        Assert.False(returned.OnHold);                  // already back, with no background timer having run
         Assert.Equal("needsYou", returned.TriageBucket);
+        Assert.True(returned.SnoozeExpired);            // and it carries the "Snooze ended" badge
         Assert.DoesNotContain(false, fake.HoldCalls("s2")); // nobody was nudged
 
-        await _gw.RunSnoozeSweepOnceAsync();
-        Assert.False(_gw.SnoozeRegistry.Contains("s2")); // the sweep only retires the spent entry
+        // Round 2 finding 2: there is no expiry sweep to erase the badge's only source (the elapsed entry).
+        // The entry lingers as the durable returned-by-timer tombstone, so a second read still shows the
+        // badge - it is not a one-frame flicker that a background timer could delete out from under a
+        // consumer.
+        Assert.True(_gw.SnoozeRegistry.Contains("s2"));
+        var again = await GetSession("s2");
+        Assert.False(again.OnHold);                    // still needs-you, never re-held
+        Assert.True(again.SnoozeExpired);               // badge still there
     }
 
     [Fact]
@@ -290,20 +326,40 @@ public sealed class SnoozeEndToEndTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task Another_agents_message_does_NOT_clear_the_snooze()
+    public async Task Work_on_a_snoozed_session_clears_the_snooze_completely()
     {
-        // The 15 July 2026 defect, end to end. Session 8c17dc1c was held at 13:20:16 and un-held 93
-        // seconds later by a fleet message from a reviewer session. An agent poking a held session makes it
-        // work - and work is not consent. No owner turn is reported, so the hold stands.
+        // THE MISSION, end to end. On 15 July 2026 session 8c17dc1c was snoozed, a reviewer session sent it
+        // a fleet message 93 seconds later, it did the work - and it stayed snoozed, silently re-parked
+        // where the owner would never look. The owner's law (17 July 2026): a snooze is a human "not now",
+        // and the instant there is ANY work on that terminal the snooze is over, completely. It does not
+        // matter that another agent, not the owner, woke it - a snooze exists to quiet a session with
+        // nothing happening, and something is happening. The armed entry is DELETED (not merely outranked),
+        // so when the work settles the session reads red "needs you", never grey "Snoozed".
+        //
+        // This deliberately reverses the earlier end-to-end test that asserted the message did NOT clear the
+        // snooze; that test encoded the behaviour this mission exists to correct.
         await SetDefaultMinutes(1);
         var fake = await StartFakeAsync("s8", onHold: true);
         _gw.SnoozeRegistry.Snooze("s8", DateTime.UtcNow.AddHours(12), fake.DirectorId);
+        Assert.True((await GetSession("s8")).OnHold); // snoozed to start
 
         fake.SetActivity("s8", "Working"); // an agent's message woke it
         await fake.RePushAsync();
 
-        Assert.True(_gw.SnoozeRegistry.Contains("s8"));
-        Assert.True((await GetSession("s8")).OnHold); // still snoozed, still working. Both true, and correct.
+        Assert.False(_gw.SnoozeRegistry.Contains("s8")); // the snooze is gone, deleted by work
+        Assert.False((await GetSession("s8")).OnHold);   // no longer held
+
+        // THE FULL MISSION PROMISE (round 4 finding 2): when the work SETTLES, the session reads red "needs
+        // you" with NO "Snooze ended" badge - it came back by work, not by a timer. The whole terminal
+        // branch: snooze -> work -> entry gone -> settle -> red / needsYou, no badge.
+        fake.SetActivity("s8", "WaitingForInput");
+        await fake.RePushAsync();
+
+        var settled = await GetSession("s8");
+        Assert.False(settled.OnHold);
+        Assert.Equal("red", settled.EffectiveColor);
+        Assert.Equal("needsYou", settled.TriageBucket);
+        Assert.False(settled.SnoozeExpired); // came back by WORK, not by timer expiry - so no badge
     }
 
     [Fact]
@@ -357,6 +413,140 @@ public sealed class SnoozeEndToEndTests : IAsyncLifetime
         Assert.False(returned.OnHold);
         Assert.Equal("needsYou", returned.TriageBucket);
         Assert.True(returned.SnoozeExpired);
+    }
+
+    // ---- Round 2 finding 1: the reliable display-state channel is the SINGLE writer of hold ----
+    // The one-shot hold mirror is deleted. Every edge this Gateway makes on its own initiative
+    // (working-delete, deferral landing, exit, owner-turn) must now reach the Director's raw hold through
+    // the change-gated display-state channel alone - and must send NO "hold" command, or the two writers
+    // race again. The fake applies set-display-state exactly as the real Director does.
+
+    [Fact]
+    public async Task Reliable_channel_delivers_None_when_work_deletes_an_armed_snooze_and_sends_no_hold_command()
+    {
+        var fake = await StartFakeAsync("r1", onHold: false);
+        _gw.SnoozeRegistry.Snooze("r1", DateTime.UtcNow.AddHours(12), fake.DirectorId); // armed
+        await fake.RePushAsync();
+        await WaitForHoldAsync(fake, "r1", HoldStates.Held); // the channel delivered Held (no one-shot in play)
+        var holdCallsBaseline = fake.HoldCalls("r1").Count;
+
+        fake.SetActivity("r1", "Working");
+        await fake.RePushAsync();
+        await WaitForHoldAsync(fake, "r1", HoldStates.None); // working edge -> None, via the reliable channel
+
+        await Task.Delay(100); // give any (reverted) one-shot mirror time to fire, so the assert is real
+        Assert.Equal(holdCallsBaseline, fake.HoldCalls("r1").Count); // SINGLE WRITER: the edge sent no hold command
+    }
+
+    [Fact]
+    public async Task Reliable_channel_delivers_Held_when_a_deferral_lands_and_sends_no_hold_command()
+    {
+        var fake = await StartFakeAsync("r2", onHold: false, activityState: "Working");
+        _gw.SnoozeRegistry.SnoozeDeferred("r2", 720, fake.DirectorId); // asked for while working
+        await fake.RePushAsync();
+        await WaitForHoldAsync(fake, "r2", HoldStates.DeferredHold);
+        var holdCallsBaseline = fake.HoldCalls("r2").Count;
+
+        await fake.EndTurnAsync("r2"); // settle -> the deferral lands
+        await WaitForHoldAsync(fake, "r2", HoldStates.Held);
+
+        await Task.Delay(100);
+        Assert.Equal(holdCallsBaseline, fake.HoldCalls("r2").Count);
+    }
+
+    [Fact]
+    public async Task Reliable_channel_delivers_None_when_a_snoozed_session_exits_and_sends_no_hold_command()
+    {
+        var fake = await StartFakeAsync("r3", onHold: false);
+        _gw.SnoozeRegistry.Snooze("r3", DateTime.UtcNow.AddHours(12), fake.DirectorId);
+        await fake.RePushAsync();
+        await WaitForHoldAsync(fake, "r3", HoldStates.Held);
+        var holdCallsBaseline = fake.HoldCalls("r3").Count;
+
+        fake.SetActivity("r3", "Exited");
+        await fake.RePushAsync();
+        await WaitForHoldAsync(fake, "r3", HoldStates.None);
+
+        await Task.Delay(100);
+        Assert.Equal(holdCallsBaseline, fake.HoldCalls("r3").Count);
+    }
+
+    [Fact]
+    public async Task Reliable_channel_delivers_None_when_the_owner_returns_and_sends_no_hold_command()
+    {
+        var fake = await StartFakeAsync("r4", onHold: false);
+        var baseline = DateTime.UtcNow;
+        _gw.SnoozeRegistry.Snooze("r4", DateTime.UtcNow.AddHours(12), fake.DirectorId, ownerTurnBaselineUtc: baseline);
+        await fake.RePushAsync();
+        await WaitForHoldAsync(fake, "r4", HoldStates.Held);
+        var holdCallsBaseline = fake.HoldCalls("r4").Count;
+
+        fake.SetLastOwnerTurn("r4", baseline.AddSeconds(5)); // a NEW owner turn
+        await fake.RePushAsync();
+        await WaitForHoldAsync(fake, "r4", HoldStates.None);
+
+        await Task.Delay(100);
+        Assert.Equal(holdCallsBaseline, fake.HoldCalls("r4").Count);
+    }
+
+    [Fact]
+    public async Task No_stale_None_reaches_the_desktop_after_a_re_snooze_following_work()
+    {
+        // THE ADVERSE ORDER the one-shot mirror used to lose (finding 1): work clears the snooze (None), then
+        // it is snoozed again (Held). With a single writer there is no delayed None to land after the fresh
+        // Held, so the raw hold ends - and stays - Held.
+        var fake = await StartFakeAsync("r5", onHold: false);
+        _gw.SnoozeRegistry.Snooze("r5", DateTime.UtcNow.AddHours(12), fake.DirectorId);
+        fake.SetActivity("r5", "Working");
+        await fake.RePushAsync();
+        await WaitForHoldAsync(fake, "r5", HoldStates.None); // work deleted it
+
+        fake.SetActivity("r5", "WaitingForInput");
+        await fake.RePushAsync(); // settle
+        _gw.SnoozeRegistry.Snooze("r5", DateTime.UtcNow.AddHours(12), fake.DirectorId); // re-snooze, fresh clock
+        await fake.RePushAsync();
+        await WaitForHoldAsync(fake, "r5", HoldStates.Held);
+
+        await Task.Delay(200); // no second writer can arrive late and overwrite it
+        Assert.Equal(HoldStates.Held, fake.CurrentHoldState("r5"));
+    }
+
+    [Fact]
+    public async Task The_real_hold_endpoint_is_not_a_second_writer_and_work_leaves_no_stale_hold()
+    {
+        // ROUND 4 FINDING 1. The POST /hold endpoint used to send its own hold command carrying the decided
+        // HoldState - a SECOND writer that could land a stale Held after the reliable channel already sent
+        // None, defeating the change gate forever. Now the endpoint records the registry and triggers the ONE
+        // reliable display-state channel, which stamps the CURRENT folded hold down. It sends NO hold command.
+        var fake = await StartFakeAsync("h1", onHold: false);
+
+        // Snooze via the REAL endpoint. The reliable channel carried the hold down promptly (awaited), and no
+        // hold command was sent.
+        var resp = await _http.PostAsJsonAsync("sessions/h1/hold", new HoldRequest { OnHold = true, SnoozeMinutes = 12 * 60 });
+        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+        Assert.Equal(HoldStates.Held, fake.CurrentHoldState("h1")); // delivered by the reliable channel
+        Assert.Empty(fake.HoldCalls("h1"));                          // SINGLE WRITER: the endpoint sent no hold command
+
+        // Work deletes the entry. With one writer there is no stale Held to resurrect: the raw hold ends None.
+        fake.SetActivity("h1", "Working");
+        await fake.RePushAsync();
+        await WaitForHoldAsync(fake, "h1", HoldStates.None);
+        await Task.Delay(150); // give any (reverted) second writer time to land, so the assert below is real
+        Assert.Equal(HoldStates.None, fake.CurrentHoldState("h1")); // stays None - no second writer overwrote it
+        Assert.Empty(fake.HoldCalls("h1"));                          // still no hold command from the endpoint
+    }
+
+    /// <summary>Poll the fake's raw hold until it reaches the expected value (the reliable channel is
+    /// fire-and-forget, so delivery is asynchronous), then assert - giving a clear failure if it never does.</summary>
+    private static async Task WaitForHoldAsync(SnoozeFake fake, string sid, string expected)
+    {
+        for (var i = 0; i < 200; i++) // up to ~4 seconds
+        {
+            if (string.Equals(fake.CurrentHoldState(sid), expected, StringComparison.Ordinal))
+                return;
+            await Task.Delay(20);
+        }
+        Assert.Equal(expected, fake.CurrentHoldState(sid));
     }
 
     // ---- helpers ----
@@ -529,6 +719,24 @@ public sealed class SnoozeEndToEndTests : IAsyncLifetime
                             Pending = req.OnHold && working,
                         });
                     }
+                }
+                case "set-display-state":
+                {
+                    // The reliable display-state channel. Since round 2 finding 1 this is the SINGLE writer of
+                    // hold down to the Director (the one-shot hold mirror is gone), so this fake must apply it
+                    // exactly as the real FleetDisplayStateExecutor does, or CurrentHoldState/CurrentOnHold
+                    // would never see an edge transition. A recognised HoldState reconciles the raw mirror; a
+                    // blank/unknown value normalises to null and leaves it untouched.
+                    var req = JsonSerializer.Deserialize<SetDisplayStateRequest>(cmd.PayloadJson, FakeTunnelDirector.WebJson) ?? new SetDisplayStateRequest();
+                    lock (_gate)
+                    {
+                        if (!_sessions.TryGetValue(cmd.SessionId, out var s))
+                            return DirectorCommandResult.Fail(DirectorCommandStatus.NotFound, "no such session");
+                        var norm = HoldStates.Normalize(req.HoldState);
+                        if (norm is not null) s.HoldState = norm;
+                        s.SnoozeExpired = req.SnoozeExpired;
+                    }
+                    return DirectorCommandResult.Success();
                 }
                 default:
                     return DirectorCommandResult.Fail(DirectorCommandStatus.BadRequest, $"unexpected verb {cmd.Verb}");

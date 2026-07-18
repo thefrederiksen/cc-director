@@ -169,6 +169,31 @@ public sealed class TunnelRosterPushReadProofTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task ExesList_carriesTheSnoozeEndedBadge()
+    {
+        // Inspection round 2, finding 3: /exes/list folds correctly but its projection dropped snoozeExpired,
+        // so the "Snooze ended" badge - which the mission requires on every roster - never rode this page.
+        var sid = Guid.NewGuid().ToString();
+        await PushAsync(1L, new SessionDto
+        {
+            SessionId = sid, Name = "returned by timer", Agent = "ClaudeCode",
+            Status = "Running", ActivityState = "WaitingForInput", StatusColor = "red", RepoPath = @"D:\repo",
+        });
+        // An armed snooze whose clock has already elapsed: the fold stamps SnoozeExpired=true (returned by
+        // its timer, not a fresh turn-end).
+        _gateway.SnoozeRegistry.Snooze(sid, DateTime.UtcNow.AddMinutes(-1), DirectorId);
+
+        var node = await _http.GetFromJsonAsync<JsonNode>("exes/list");
+        var mine = node?["directors"]?.AsArray()
+            .FirstOrDefault(d => d?["directorId"]?.GetValue<string>() == DirectorId);
+        Assert.NotNull(mine);
+        var sessions = mine!["sessions"]?.AsArray();
+        var snoozed = Assert.Single(sessions!, s => s?["sessionId"]?.GetValue<string>() == sid);
+
+        Assert.True(snoozed?["snoozeExpired"]?.GetValue<bool>()); // the badge rides /exes/list
+    }
+
+    [Fact]
     public async Task DeleteDirectorGate_readsTheLiveSessionCountFromThePushStore()
     {
         // One live session in the push store. An HTTP pull to the unreachable Director would return null and the

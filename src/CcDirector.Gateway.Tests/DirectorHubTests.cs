@@ -1,9 +1,12 @@
 using System.Security.Claims;
 using CcDirector.Core.Tenancy;
 using CcDirector.Gateway.Contracts;
+using CcDirector.Gateway.Data;
 using CcDirector.Gateway.Discovery;
+using CcDirector.Gateway.Snooze;
 using CcDirector.Gateway.Stats;
 using CcDirector.Gateway.Streaming;
+using CcDirector.Gateway.Tests.Data;
 using Microsoft.AspNetCore.Http.Features;
 using Microsoft.AspNetCore.SignalR;
 using Xunit;
@@ -22,7 +25,12 @@ public sealed class DirectorHubTests : IDisposable
     private readonly DirectorRegistry _registry;
     private readonly PushedSessionStore _store;
     private readonly GatewayInputStatsAggregator _inputStats;
+    private readonly GatewayDbTestHarness _h = new();
+    private GatewayDatabase? _db;
+    private GatewayDatabase Db => _db ??= _h.Open();
     private DateTime _now = new(2026, 7, 9, 12, 0, 0, DateTimeKind.Utc);
+
+    private SnoozeRegistry NewReg() => new(Db, _h.LegacyPath(Guid.NewGuid().ToString("N") + ".json"));
 
     public DirectorHubTests()
     {
@@ -36,6 +44,7 @@ public sealed class DirectorHubTests : IDisposable
     public void Dispose()
     {
         _registry.Dispose();
+        _h.Dispose();
         try { Directory.Delete(_tempDir, recursive: true); }
         catch (Exception) { /* best-effort temp cleanup */ }
     }
@@ -45,6 +54,86 @@ public sealed class DirectorHubTests : IDisposable
         var ctx = new FakeHubCallerContext(connectionId);
         var hub = new DirectorHub(_store, _registry, _inputStats, new GatewayStreamRegistry()) { Context = ctx };
         return (hub, ctx);
+    }
+
+    private (DirectorHub hub, FakeHubCallerContext ctx) NewHub(string connectionId, SnoozeLandingObserver snooze)
+    {
+        var ctx = new FakeHubCallerContext(connectionId);
+        var hub = new DirectorHub(_store, _registry, _inputStats, new GatewayStreamRegistry(), snoozeLandings: snooze) { Context = ctx };
+        return (hub, ctx);
+    }
+
+    // ---------- F1: a REJECTED push must not drive the snooze observer ----------
+    // The observer's edges MUTATE the authoritative registry - ClearIfArmed deletes an armed snooze, Land
+    // converts a deferral - so a push the store rejected as non-authoritative (from a superseded connection,
+    // or a stale sequence) must not reach it. A single SnoozeRegistry + SnoozeLandingObserver is shared by
+    // both hubs, exactly as the Gateway wires one singleton across every connection.
+
+    [Fact]
+    public void ARejectedWorkingPushFromASupersededConnection_DoesNotDeleteAnArmedSnooze()
+    {
+        var reg = NewReg();
+        var obs = new SnoozeLandingObserver(reg, () => _now);
+
+        var (hub1, _) = NewHub("conn-1", obs);
+        hub1.Hello(Hello("dir-A"));
+        hub1.PushSnapshot(1, new[] { Session("s1", "WaitingForInput") });
+        reg.Snooze("s1", _now.AddHours(12), "dir-A"); // armed, running clock
+
+        // A replacement connection supersedes conn-1 (a reconnect). conn-1 is no longer authoritative.
+        var (hub2, _) = NewHub("conn-2", obs);
+        hub2.Hello(Hello("dir-A"));
+
+        // A late Working push arrives on the SUPERSEDED conn-1. The store rejects it - and it must not reach
+        // the working edge, or it would delete a snooze the current connection owns.
+        hub1.PushDelta(2, Session("s1", "Working"));
+
+        Assert.True(reg.Contains("s1")); // the armed snooze survived a non-authoritative push
+    }
+
+    [Fact]
+    public void ARejectedSettledPushFromASupersededConnection_DoesNotLandADeferral()
+    {
+        var reg = NewReg();
+        var obs = new SnoozeLandingObserver(reg, () => _now);
+
+        var (hub1, _) = NewHub("conn-1", obs);
+        hub1.Hello(Hello("dir-A"));
+        hub1.PushSnapshot(1, new[] { Session("s1", "Working") });
+        reg.SnoozeDeferred("s1", 720, "dir-A"); // "snooze me when I finish" - not landed yet
+
+        var (hub2, _) = NewHub("conn-2", obs);
+        hub2.Hello(Hello("dir-A")); // supersede conn-1
+
+        // A late settled push on the superseded conn-1 must not LAND the deferral: the authoritative session
+        // is still working, and a stale landing plus a later working push is how a deferral gets lost.
+        hub1.PushDelta(2, Session("s1", "WaitingForInput"));
+
+        Assert.True(Assert.Single(reg.Entries()).IsDeferred); // still deferred, not armed
+    }
+
+    [Fact]
+    public void ARejectedSnapshotFromASupersededConnection_DoesNotDeleteAnArmedSnooze()
+    {
+        // Inspection round 2, finding 4: the SNAPSHOT path is gated on ApplySnapshot acceptance too, not
+        // only the delta path. Reconnect and periodic reseeds arrive as PushSnapshot, so a rejected/stale
+        // snapshot must not reach ObserveSnapshot and delete a snooze the current connection owns.
+        var reg = NewReg();
+        var obs = new SnoozeLandingObserver(reg, () => _now);
+
+        var (hub1, _) = NewHub("conn-1", obs);
+        hub1.Hello(Hello("dir-A"));
+        hub1.PushSnapshot(1, new[] { Session("s1", "WaitingForInput") });
+        reg.Snooze("s1", _now.AddHours(12), "dir-A"); // armed
+
+        var (hub2, _) = NewHub("conn-2", obs);
+        hub2.Hello(Hello("dir-A")); // supersede conn-1
+
+        // A late full SNAPSHOT on the superseded conn-1 is rejected by ApplySnapshot; it must not reach the
+        // working edge through ObserveSnapshot.
+        hub1.PushSnapshot(2, new[] { Session("s1", "Working") });
+
+        Assert.True(reg.Contains("s1")); // the armed snooze survived a rejected snapshot
     }
 
     private static DirectorStreamHello Hello(string directorId) => new() { DirectorId = directorId, Version = "test" };

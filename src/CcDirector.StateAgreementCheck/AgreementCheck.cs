@@ -429,7 +429,8 @@ public static class AgreementCheck
     ///   * VoiceGenerating - drives IsVoicePreparing. Gateway: yellow. Desktop: cannot see it.
     ///   * The OnHold expiry overlay - the Gateway owns the snooze clock and overlays OnHold=false BEFORE
     ///     the fold. The desktop reads the Director's raw hold. This one is TRANSIENT, not structural: the
-    ///     sweep nudges a live Director off hold within its 15-second interval (SnoozeExpirySweep).
+    ///     reliable display-state channel reconciles the Director's raw hold at fold cadence (there is no
+    ///     expiry sweep).
     ///
     /// KNOWN LIMIT, stated rather than papered over: the desktop's OWN SessionRole is not externally
     /// observable, because the Gateway's fleet pass overwrites the inbound role on every read

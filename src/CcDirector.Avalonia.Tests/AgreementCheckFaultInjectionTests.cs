@@ -307,10 +307,10 @@ public sealed class AgreementCheckFaultInjectionTests
     /// <summary>
     /// The expired snooze. TRANSIENT rather than structural, and the difference matters: the Gateway owns
     /// the clock and overlays OnHold=false before the fold, so it says red "Needs you" while the Director
-    /// still reads Held and the rail says grey "Snoozed" - but SnoozeExpirySweep nudges a LIVE Director off
-    /// hold within its 15-second interval, so the window is bounded. It is reported all the same: a bounded
-    /// disagreement is still a disagreement, and the bound is a claim about timing that this check does not
-    /// measure.
+    /// still reads Held and the rail says grey "Snoozed" - but the reliable display-state channel reconciles
+    /// the Director's raw hold at fold cadence (there is no expiry sweep), so the window is bounded. It is
+    /// reported all the same: a bounded disagreement is still a disagreement, and the bound is a claim about
+    /// timing that this check does not measure.
     /// </summary>
     [Fact]
     public void AnExpiredSnooze_IsRedOnTheGatewayAndStillSnoozedOnTheDesktop_AndIsReported()
