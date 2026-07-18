@@ -20,6 +20,21 @@ public sealed class TenantSeamTests
     }
 
     [Fact]
+    public void System_IsValidReservedAndDistinctFromLocalAndAccounts()
+    {
+        Assert.True(TenantId.System.IsValid);
+        Assert.True(TenantId.System.IsSystem);
+        Assert.Equal("system", TenantId.System.Value);
+        // Distinct from local (self-host) and never flagged as local.
+        Assert.False(TenantId.System.IsLocal);
+        Assert.NotEqual(TenantId.Local.Value, TenantId.System.Value);
+        // A real account tenant (a GUID) is neither system nor local.
+        var account = new TenantId(Guid.NewGuid().ToString());
+        Assert.False(account.IsSystem);
+        Assert.False(account.IsLocal);
+    }
+
+    [Fact]
     public void Construct_TrimsAndKeepsValue()
     {
         var id = new TenantId("  acme  ");

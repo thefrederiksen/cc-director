@@ -23,6 +23,17 @@ public readonly record struct TenantId
     /// <summary>The well-known single-tenant identity. Self-host and the open core resolve to this.</summary>
     public static readonly TenantId Local = new("local");
 
+    /// <summary>
+    /// The well-known RESERVED system identity (Hosted Multi-Tenancy increment 1). It scopes the hosted
+    /// Gateway's legitimate NON-account writes - startup/built-in seeding and other explicitly-system
+    /// operations - so those never fall back to a real account's tenant OR to <see cref="Local"/>. It is a
+    /// reserved value distinct from <see cref="Local"/> (self-host only) and from every real account tenant
+    /// (which are GUID strings), and its rows are isolated by the SAME global query filter, so a real tenant
+    /// never reads a system row. It is reached ONLY by code that explicitly enters the system scope - it is
+    /// NEVER the answer to "no tenant resolved" (that fails closed). Unused on the single-tenant local install.
+    /// </summary>
+    public static readonly TenantId System = new("system");
+
     /// <summary>The underlying identifier. Null only for an invalid <c>default(TenantId)</c>.</summary>
     public string Value { get; }
 
@@ -45,6 +56,9 @@ public readonly record struct TenantId
 
     /// <summary>True when this is the well-known single-tenant identity (the self-host / N=1 case).</summary>
     public bool IsLocal => IsValid && string.Equals(Value, Local.Value, StringComparison.Ordinal);
+
+    /// <summary>True when this is the reserved <see cref="System"/> identity (hosted non-account/system rows).</summary>
+    public bool IsSystem => IsValid && string.Equals(Value, System.Value, StringComparison.Ordinal);
 
     /// <inheritdoc />
     public override string ToString() => IsValid ? Value : "<invalid-tenant>";

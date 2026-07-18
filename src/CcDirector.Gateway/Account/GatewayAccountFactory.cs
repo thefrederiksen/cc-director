@@ -39,6 +39,48 @@ public static class GatewayAccountFactory
     /// </summary>
     public const string RefreshUrlEnvVar = GatewayHttpTokenRefresher.RefreshUrlEnvVar;
 
+    /// <summary>The environment variable overriding the expected account-token audience (Hosted Multi-Tenancy
+    /// increment 1). Unset in production; tests point it at their test audience.</summary>
+    public const string SupabaseAudienceEnvVar = "CC_GATEWAY_SUPABASE_AUDIENCE";
+
+    /// <summary>The environment variable overriding the expected account-token issuer. Unset in production;
+    /// tests point it at their test issuer.</summary>
+    public const string SupabaseIssuerEnvVar = "CC_GATEWAY_SUPABASE_ISSUER";
+
+    /// <summary>The Supabase audience (<c>aud</c>) a DevThrottle account token must carry to authorize hosted
+    /// enrollment. Supabase mints authenticated-user tokens with this audience.</summary>
+    public const string DefaultSupabaseAudience = "authenticated";
+
+    /// <summary>The Supabase issuer (<c>iss</c>) a DevThrottle account token must carry - the project's auth
+    /// endpoint (project ompujpfrglgqvqprilxa), the same project whose public key set verifies the signature.</summary>
+    public const string DefaultSupabaseIssuer = "https://ompujpfrglgqvqprilxa.supabase.co/auth/v1";
+
+    /// <summary>
+    /// Build the AUTHORIZATION-mode account-token validator used by the hosted enrollment boundary (Hosted
+    /// Multi-Tenancy increment 1). Unlike <see cref="Build"/>'s membership validator (which does not check
+    /// audience/issuer), this one is configured with the Supabase audience and issuer so
+    /// <see cref="JwtAccessTokenValidator.ValidateForAuthorization"/> enforces them and exposes the subject -
+    /// the verified account id the tenant maps from. The public key set and signing secret resolve exactly as
+    /// the membership validator's do; the audience and issuer are the Supabase defaults unless overridden for
+    /// tests. Cross-platform (no operating-system credential store involved).
+    /// </summary>
+    public static JwtAccessTokenValidator BuildAuthorizationValidator()
+    {
+        var audience = Environment.GetEnvironmentVariable(SupabaseAudienceEnvVar);
+        if (string.IsNullOrWhiteSpace(audience))
+            audience = DefaultSupabaseAudience;
+
+        var issuer = Environment.GetEnvironmentVariable(SupabaseIssuerEnvVar);
+        if (string.IsNullOrWhiteSpace(issuer))
+            issuer = DefaultSupabaseIssuer;
+
+        return new JwtAccessTokenValidator(
+            ResolveSigningSecret(),
+            publicKeySetJson: DevThrottleSigningKeys.ResolvePublicKeySet(),
+            expectedAudience: audience,
+            expectedIssuer: issuer);
+    }
+
     /// <summary>
     /// Creates the Gateway-hosted credential service on Windows, using Windows Data Protection as the
     /// credential store under the Gateway config directory. Honors the signing-secret and test-seed

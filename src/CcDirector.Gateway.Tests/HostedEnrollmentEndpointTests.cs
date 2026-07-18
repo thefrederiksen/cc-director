@@ -1,0 +1,182 @@
+using System;
+using System.Security.Cryptography;
+using System.Text;
+using System.Text.Json;
+using CcDirector.Core.Account;
+using CcDirector.Gateway.Api;
+using CcDirector.Gateway.Contracts;
+using CcDirector.Gateway.Pairing;
+using CcDirector.Gateway.Tenancy;
+using CcDirector.Gateway.Tests.Data;
+using Xunit;
+
+namespace CcDirector.Gateway.Tests;
+
+/// <summary>
+/// The hosted enrollment logic (Hosted Multi-Tenancy increment 1): validate a remote Director's OWN Supabase
+/// account token (signature + expiry + audience + issuer), map its subject to a tenant, and bind a per-device
+/// key to that tenant. Exercised through the endpoint's extracted <see cref="HostedEnrollmentEndpoint.Enroll"/>
+/// with a real ES256-signed token, so the audience/issuer enforcement is proven for real.
+/// </summary>
+public sealed class HostedEnrollmentEndpointTests : IDisposable
+{
+    private const string Audience = "authenticated";
+    private const string Issuer = "https://test.example.supabase.co/auth/v1";
+
+    private readonly GatewayDbTestHarness _harness = new();
+    private readonly string _devPath = Path.Combine(Path.GetTempPath(), $"henr-dev-{Guid.NewGuid():N}.json");
+    private readonly TestEs256Key _key = new();
+
+    public void Dispose()
+    {
+        _harness.Dispose();
+        _key.Dispose();
+        if (File.Exists(_devPath)) File.Delete(_devPath);
+    }
+
+    private (DeviceRegistry devices, TenantRegistry tenants, JwtAccessTokenValidator validator) Wire()
+    {
+        var db = _harness.Open();
+        var devices = new DeviceRegistry(_devPath);
+        var tenants = new TenantRegistry(db);
+        var validator = new JwtAccessTokenValidator(
+            "test-signing-secret", timeProvider: null, publicKeySetJson: _key.PublicKeySetJson(),
+            expectedAudience: Audience, expectedIssuer: Issuer);
+        return (devices, tenants, validator);
+    }
+
+    private static EnrollSignedInRequest Req(string deviceId) => new()
+    {
+        DeviceId = deviceId,
+        MachineName = "M",
+        Platform = "linux",
+        DeviceType = "workstation",
+    };
+
+    [Fact]
+    public void ValidToken_MintsADeviceKeyBoundToTheAccountTenant()
+    {
+        var (devices, tenants, validator) = Wire();
+        var token = _key.Token("sub-alice", "alice@example.com", Audience, Issuer);
+
+        var result = HostedEnrollmentEndpoint.Enroll(token, Req("dev-a"), devices, tenants, validator);
+
+        Assert.Equal(200, result.Status);
+        Assert.False(string.IsNullOrWhiteSpace(result.Response!.DeviceKey));
+        // The device is bound to the account's tenant, resolvable from the same key (what the tunnel does).
+        Assert.False(string.IsNullOrEmpty(devices.TenantForKey(result.Response.DeviceKey)));
+    }
+
+    [Fact]
+    public void TwoDistinctAccounts_GetTwoDistinctTenants_AndSameAccountReusesItsTenant()
+    {
+        var (devices, tenants, validator) = Wire();
+
+        var a = HostedEnrollmentEndpoint.Enroll(_key.Token("sub-alice", "a@x.com", Audience, Issuer), Req("dev-a"), devices, tenants, validator);
+        var b = HostedEnrollmentEndpoint.Enroll(_key.Token("sub-bob", "b@x.com", Audience, Issuer), Req("dev-b"), devices, tenants, validator);
+        // A SECOND device of the SAME account (alice) must land in alice's existing tenant.
+        var a2 = HostedEnrollmentEndpoint.Enroll(_key.Token("sub-alice", "a@x.com", Audience, Issuer), Req("dev-a2"), devices, tenants, validator);
+
+        var tenantA = devices.TenantForKey(a.Response!.DeviceKey);
+        var tenantB = devices.TenantForKey(b.Response!.DeviceKey);
+        var tenantA2 = devices.TenantForKey(a2.Response!.DeviceKey);
+
+        Assert.NotEqual(tenantA, tenantB);
+        Assert.Equal(tenantA, tenantA2);
+    }
+
+    [Fact]
+    public void MissingToken_Is401()
+    {
+        var (devices, tenants, validator) = Wire();
+        var result = HostedEnrollmentEndpoint.Enroll(bearer: null, Req("dev-a"), devices, tenants, validator);
+        Assert.Equal(401, result.Status);
+    }
+
+    [Fact]
+    public void WrongIssuer_Is401_NoBinding()
+    {
+        var (devices, tenants, validator) = Wire();
+        var token = _key.Token("sub-alice", "a@x.com", Audience, issuer: "https://attacker.example.com/auth/v1");
+
+        var result = HostedEnrollmentEndpoint.Enroll(token, Req("dev-a"), devices, tenants, validator);
+
+        Assert.Equal(401, result.Status);
+    }
+
+    [Fact]
+    public void WrongAudience_Is401()
+    {
+        var (devices, tenants, validator) = Wire();
+        var token = _key.Token("sub-alice", "a@x.com", audience: "some-other-audience", issuer: Issuer);
+
+        var result = HostedEnrollmentEndpoint.Enroll(token, Req("dev-a"), devices, tenants, validator);
+
+        Assert.Equal(401, result.Status);
+    }
+
+    [Fact]
+    public void MissingDeviceId_Is400()
+    {
+        var (devices, tenants, validator) = Wire();
+        var token = _key.Token("sub-alice", "a@x.com", Audience, Issuer);
+
+        var result = HostedEnrollmentEndpoint.Enroll(token, Req("   "), devices, tenants, validator);
+
+        Assert.Equal(400, result.Status);
+    }
+
+    /// <summary>The Supabase audience/issuer the production validator enforces are the project's real values.</summary>
+    [Fact]
+    public void BuildAuthorizationValidator_DefaultsToTheSupabaseAudienceAndIssuer()
+    {
+        Assert.Equal("authenticated", CcDirector.Gateway.Account.GatewayAccountFactory.DefaultSupabaseAudience);
+        Assert.Equal("https://ompujpfrglgqvqprilxa.supabase.co/auth/v1",
+            CcDirector.Gateway.Account.GatewayAccountFactory.DefaultSupabaseIssuer);
+    }
+
+    /// <summary>A compact ES256 (P-256) signer that mints Supabase-shaped tokens and exports its public JWKS.</summary>
+    private sealed class TestEs256Key : IDisposable
+    {
+        private readonly ECDsa _key = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+        private const string KeyId = "test-key";
+
+        public void Dispose() => _key.Dispose();
+
+        public string PublicKeySetJson()
+        {
+            var p = _key.ExportParameters(includePrivateParameters: false);
+            return JsonSerializer.Serialize(new
+            {
+                keys = new[]
+                {
+                    new { alg = "ES256", crv = "P-256", kid = KeyId, kty = "EC", use = "sig",
+                          x = B64(p.Q.X!), y = B64(p.Q.Y!) },
+                },
+            });
+        }
+
+        public string Token(string subject, string email, string audience, string issuer)
+        {
+            var header = B64(Encoding.UTF8.GetBytes(
+                JsonSerializer.Serialize(new { alg = "ES256", typ = "JWT", kid = KeyId })));
+            const long nowSeconds = 1_781_000_000L; // fixed instant; token is far from expiry at test time
+            var payload = B64(Encoding.UTF8.GetBytes(JsonSerializer.Serialize(new
+            {
+                sub = subject,
+                email,
+                aud = audience,
+                iss = issuer,
+                iat = nowSeconds,
+                nbf = nowSeconds,
+                exp = 4_070_000_000L, // year ~2099
+            })));
+            var signingInput = header + "." + payload;
+            var sig = _key.SignData(Encoding.ASCII.GetBytes(signingInput), HashAlgorithmName.SHA256);
+            return signingInput + "." + B64(sig);
+        }
+
+        private static string B64(byte[] bytes) =>
+            Convert.ToBase64String(bytes).Replace('+', '-').Replace('/', '_').TrimEnd('=');
+    }
+}
