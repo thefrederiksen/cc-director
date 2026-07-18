@@ -262,6 +262,28 @@ public sealed class WingmanVoiceTurnLiveScreenProofTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task VoiceTurn_PickPromptSelectorVisibleCursorAtMarker_TypesNothing()
+    {
+        // Blocker A: "Pick environment:" over a framed "> production" selector, with a VISIBLE cursor at the
+        // marker (col 4). It looks composer-like, but the cursor is at the selection marker, not trailing typed
+        // text - so it is a selector, not a composer. Type NOTHING.
+        var sid = await PushSessionAsync();
+        _dispatch = cmd => cmd.Verb == "screen-grid"
+            ? Ok(new ScreenGridResponse
+            {
+                SessionId = sid,
+                Rows = new List<string> { "Pick environment:", "╭──────────────╮", "│ > production │", "╰──────────────╯" },
+                CursorRow = 2,
+                CursorCol = 4,
+                CursorVisible = true,
+                IsAlternateScreen = false,
+                HasGrid = true,
+            })
+            : DirectorCommandResult.Fail(DirectorCommandStatus.BadRequest, "x");
+        await AssertTypesNothing(sid, "production");
+    }
+
+    [Fact]
     public async Task VoiceTurn_ComposerWithANumberedListPresent_TypesNothing()
     {
         // Finding 3, conservative floor: even a VISIBLE-cursor composer is not typed into when a numbered

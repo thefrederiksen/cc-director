@@ -58,10 +58,12 @@ public static class WaitingScreenClassifier
         // Both present is ambiguous (a stale menu above a live composer, or vice versa) - fail closed.
         if (hasMenu && hasComposer) return WaitingScreenKind.Blocked;
         if (hasMenu) return WaitingScreenKind.Menu;
-        // TYPING is allowed only on a composer with NO menu-ish structure ANYWHERE on the grid (issue #1777,
-        // floor rescope, finding 3): a numbered/lettered option line, a drawn selection marker, or a
-        // choose/select/proceed/pick prompt all block typing, even next to a live composer. When in doubt, block.
-        if (hasComposer && !HasMenuishStructure(rows)) return WaitingScreenKind.PlainText;
+        // TYPING is allowed only on a composer with NO menu-ish structure ANYWHERE ELSE on the grid (issue
+        // #1777): a numbered/lettered option line, a drawn selection marker, a bare-marker selector label, or a
+        // pick/choose/select/proceed prompt all block typing. The confident composer line itself is excluded
+        // from this scan (it is a "> <typed text>" line and would otherwise trip the bare-marker rule); a stale
+        // selector on any OTHER row still blocks. When in doubt, block.
+        if (hasComposer && !HasMenuishStructure(rows, excludeRow: cursorRow)) return WaitingScreenKind.PlainText;
         return WaitingScreenKind.Blocked;
     }
 
@@ -77,33 +79,60 @@ public static class WaitingScreenClassifier
         => rows is not null && cursorRow >= 0 && cursorRow < rows.Count && CursorInComposer(rows, cursorRow, cursorCol);
 
     /// <summary>
-    /// Any menu-ish structure ANYWHERE on the grid (issue #1777, floor rescope): a numbered/lettered option
-    /// line, a drawn <c>❯</c>/<c>&gt;</c> selection marker on an option, or a menu-prompt phrase
-    /// ("choose", "select", "do you want to proceed", "pick one/a", "which option/one"). Typing is refused when
-    /// any of these is present - a bordered "&gt; production" under "Choose a deployment:" must block, not type.
-    /// This is deliberately conservative (an ordinary numbered list in the reply also blocks); on this floor
-    /// branch the spoken words are only ever typed onto an unambiguous plain-text composer. Public so a test
-    /// can assert it directly.
+    /// Any menu-ish structure on the grid (issue #1777): a numbered/lettered option line, a drawn selection
+    /// marker on an option, a bare <c>❯</c>/<c>&gt;</c> selector label (a marker followed by a non-numbered
+    /// label - "&gt; production"), or a pick/choose/select/proceed prompt (a line ending in ':' or '?' naming
+    /// one of those). Typing is refused when any is present. <paramref name="excludeRow"/> is the confident
+    /// composer's own row, skipped so a legitimate "&gt; typed text" composer line does not trip the
+    /// bare-marker rule; a stale selector on any OTHER row still blocks. Deliberately conservative (an ordinary
+    /// numbered list also blocks) - the floor types only onto an unambiguous composer. Public so a test can
+    /// assert it directly.
     /// </summary>
-    public static bool HasMenuishStructure(IReadOnlyList<string>? rows)
+    public static bool HasMenuishStructure(IReadOnlyList<string>? rows, int excludeRow = -1)
     {
         if (rows is null) return false;
-        foreach (var row in rows)
+        for (var i = 0; i < rows.Count; i++)
         {
+            if (i == excludeRow) continue;
+            var row = rows[i];
             if (string.IsNullOrWhiteSpace(row)) continue;
             if (WingmanMenuLogic.IsOptionLine(row)) return true;
             if (WingmanMenuLogic.IsSelectedOptionLine(row)) return true;
-            var lower = row.ToLowerInvariant();
-            foreach (var phrase in MenuPromptPhrases)
-                if (lower.Contains(phrase)) return true;
+            if (IsBareMarkerLabel(row)) return true;
+            if (IsPickPrompt(row)) return true;
         }
         return false;
     }
 
-    private static readonly string[] MenuPromptPhrases =
+    /// <summary>A bare selector label: after the box edge, a single <c>&gt;</c>/<c>❯</c> marker then a space
+    /// then a NON-numbered label ("&gt; production", "❯ deploy to prod") - a drawn selection, not a composer.
+    /// A bare "&gt;" with no label (an empty composer) and a numbered option ("&gt; 1. Yes", caught elsewhere)
+    /// are not this.</summary>
+    private static bool IsBareMarkerLabel(string row)
     {
-        "do you want to proceed", "choose", "select ", "pick one", "pick a ", "which option", "which one",
-    };
+        var t = row.TrimStart(BorderOrSpace);
+        if (t.Length == 0) return false;
+        if (t[0] != '>' && t[0] != '❯') return false;
+        if (t.Length >= 2 && t[1] == '>') return false;                 // ">>" mode arrow
+        var rest = t[1..].TrimStart();
+        if (rest.Length == 0) return false;                             // bare marker, empty input -> composer
+        if (WingmanMenuLogic.IsOptionLine(rest)) return false;          // "> 1. Yes" is a numbered option, handled elsewhere
+        return true;                                                    // a marker with a non-numbered label
+    }
+
+    /// <summary>A menu prompt line: it ends in ':' or '?' and names a pick/choose/select/proceed action
+    /// ("Pick environment:", "Choose a deployment:", "Select an option:", "Proceed?"). The terminator keeps an
+    /// ordinary sentence that merely uses the word ("I'll select the rows.") from tripping it.</summary>
+    private static bool IsPickPrompt(string row)
+    {
+        var trimmed = row.TrimEnd();
+        if (trimmed.Length == 0) return false;
+        var last = trimmed[^1];
+        if (last != ':' && last != '?') return false;
+        var lower = trimmed.ToLowerInvariant();
+        return lower.Contains("pick") || lower.Contains("choose") || lower.Contains("select")
+            || lower.Contains("proceed") || lower.Contains("which option") || lower.Contains("which one");
+    }
 
     private static bool CursorInComposer(IReadOnlyList<string> rows, int cursorRow, int cursorCol)
     {
@@ -116,14 +145,24 @@ public static class WaitingScreenClassifier
         if (first >= line.Length || line[first] != '>') return false;
         if (first + 1 < line.Length && line[first + 1] == '>') return false; // ">>" is the mode-cycle arrow
 
-        // The editable input begins just after "> " (or after a bare ">"). The cursor must sit within the input
-        // span: at or after the input start (so a hidden/stale CursorCol=-1 fails), and strictly left of the
-        // closing box border if there is one (so a right-border / off-target cursor fails). Both bounds matter
-        // (issue #1777, finding 2).
+        // THE COMPOSER INVARIANT (issue #1777, final tighten): a real text composer has the visible cursor at
+        // the INSERTION POINT - it TRAILS the input, right after the last non-space character the user typed, or
+        // right after "> " when the input is empty. A "> production" SELECTION line instead has its marker at
+        // the start and a drawn label after it, with the cursor at the marker, NOT trailing typed text. So the
+        // cursor must sit EXACTLY at the trailing edge of the input content; anything else (a hidden/stale -1, a
+        // cursor at the marker or mid-label, a cursor past the input or on the border) is not a composer. This
+        // is one bound that closes BOTH the "> label selector" hole and the "no right border, cursor unbounded"
+        // hole - the column is bounded on both sides, always.
         var inputStart = (first + 1 < line.Length && line[first + 1] == ' ') ? first + 2 : first + 1;
-        if (cursorCol < inputStart) return false;
         var rightBorder = RightBorderColumn(line);
-        if (rightBorder >= 0 && cursorCol >= rightBorder) return false;
+        var scanEnd = rightBorder >= 0 ? rightBorder : line.Length;   // the input span is [inputStart, scanEnd)
+        var lastContent = inputStart - 1;
+        for (var c = Math.Min(scanEnd, line.Length) - 1; c >= inputStart; c--)
+        {
+            if (line[c] != ' ' && line[c] != '\t' && line[c] != '\r') { lastContent = c; break; }
+        }
+        var insertionPoint = lastContent + 1;   // right after the last typed char, or == inputStart when empty
+        if (cursorCol != insertionPoint) return false;
 
         // Positively framed as an input box: a box-border row adjacent, or the mode-status footer just below.
         return HasAdjacentBorder(rows, cursorRow) || HasModeStatusBelow(rows, cursorRow);

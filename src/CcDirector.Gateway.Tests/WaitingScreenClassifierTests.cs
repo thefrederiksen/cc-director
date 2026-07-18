@@ -123,10 +123,48 @@ public sealed class WaitingScreenClassifierTests
     }
 
     [Fact]
-    public void LooksLikePlainTextPrompt_FramedByModeStatusFooterAlone_IsTrue()
+    public void LooksLikePlainTextPrompt_FooterOnly_CursorAtTrailingEdge_IsTrue()
     {
+        // Footer-only composer (no right border), empty input: the trailing edge is right after "> " (col 2).
         var rows = new[] { "some output", "> ", "  bypass permissions on (shift+tab to cycle)" };
         Assert.True(WaitingScreenClassifier.LooksLikePlainTextPrompt(rows, cursorRow: 1, cursorCol: 2));
+    }
+
+    [Fact]
+    public void LooksLikePlainTextPrompt_FooterOnly_CursorPastTheInput_IsFalse()
+    {
+        // Blocker B: with no right border, the cursor is bounded by the END of the input content. A cursor far
+        // past the input (col 10 over an empty "> ") is NOT the trailing insertion point -> not a composer.
+        var rows = new[] { "some output", "> ", "  bypass permissions on (shift+tab to cycle)" };
+        Assert.False(WaitingScreenClassifier.LooksLikePlainTextPrompt(rows, cursorRow: 1, cursorCol: 10));
+    }
+
+    [Fact]
+    public void Classify_BorderedSelectorVisibleCursorAtMarker_IsBlocked()
+    {
+        // Blocker A: "Pick environment:" over a framed "> production" with a VISIBLE cursor at the marker
+        // (col 4, the start of "production"). The cursor is NOT trailing typed text, so it is a selector, not a
+        // composer -> fail closed.
+        var rows = new[] { "Pick environment:", "╭──────────────╮", "│ > production │", "╰──────────────╯" };
+        Assert.Equal(WaitingScreenKind.Blocked, WaitingScreenClassifier.Classify(rows, cursorRow: 2, cursorCol: 4, cursorVisible: true, isAlternateScreen: false, hasGrid: true));
+    }
+
+    [Fact]
+    public void Classify_ComposerWithTypedWord_CursorTrailing_IsPlainText()
+    {
+        // The same "> production" text, but the cursor TRAILS the typed word (col 14, right after "production")
+        // and there is no menu prompt above - this is a real composer the user typed a word into -> PlainText.
+        var rows = new[] { "do the thing", "╭──────────────╮", "│ > production │", "╰──────────────╯", "  ? for shortcuts" };
+        Assert.Equal(WaitingScreenKind.PlainText, WaitingScreenClassifier.Classify(rows, cursorRow: 2, cursorCol: 14, cursorVisible: true, isAlternateScreen: false, hasGrid: true));
+    }
+
+    [Fact]
+    public void Classify_ComposerCursorMidLabel_IsBlocked()
+    {
+        // The cursor sits in the MIDDLE of the label (col 8 of "> production"), not at the trailing edge -> not
+        // a confident composer.
+        var rows = new[] { "do the thing", "╭──────────────╮", "│ > production │", "╰──────────────╯", "  ? for shortcuts" };
+        Assert.Equal(WaitingScreenKind.Blocked, WaitingScreenClassifier.Classify(rows, cursorRow: 2, cursorCol: 8, cursorVisible: true, isAlternateScreen: false, hasGrid: true));
     }
 
     // ===== HasMenuishStructure (floor rescope, finding 3: any menu structure blocks typing) =====
@@ -152,9 +190,13 @@ public sealed class WaitingScreenClassifierTests
     [Theory]
     [InlineData(new[] { "some prose", "1. first", "2. second" }, true)]     // a numbered/lettered option line
     [InlineData(new[] { "prose", "❯ 1. Yes" }, true)]                        // a drawn selection marker
-    [InlineData(new[] { "Choose a deployment:", "the rest" }, true)]         // a menu-prompt phrase
-    [InlineData(new[] { "Do you want to proceed?", "..." }, true)]
-    [InlineData(new[] { "I finished the change.", "> ", "  ? for shortcuts" }, false)] // a plain composer
+    [InlineData(new[] { "Choose a deployment:", "the rest" }, true)]         // a ':'-terminated pick prompt
+    [InlineData(new[] { "Pick environment:", "..." }, true)]
+    [InlineData(new[] { "Do you want to proceed?", "..." }, true)]           // '?'-terminated proceed prompt
+    [InlineData(new[] { "prose", "> production" }, true)]                    // a bare-marker selector label
+    [InlineData(new[] { "prose", "❯ deploy to prod" }, true)]
+    [InlineData(new[] { "I'll select the rows for you.", "more" }, false)]   // 'select' mid-sentence, not a prompt
+    [InlineData(new[] { "I finished the change.", "> ", "  ? for shortcuts" }, false)] // a plain empty composer
     [InlineData(new[] { "just some prose output", "and more" }, false)]
     public void HasMenuishStructure_DetectsMenuStructure(string[] rows, bool expected)
         => Assert.Equal(expected, WaitingScreenClassifier.HasMenuishStructure(rows));
