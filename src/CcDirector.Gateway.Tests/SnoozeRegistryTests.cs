@@ -168,7 +168,7 @@ public sealed class SnoozeRegistryTests : IDisposable
         reg1.Snooze("s1", now.AddMinutes(-5), "dir-1"); // already past when written
 
         var reg2 = new SnoozeRegistry(Path_);          // restart
-        Assert.True(reg2.IsExpired("s1", now));        // reads as expired -> the first sweep fires it
+        Assert.True(reg2.IsExpired("s1", now));        // reads as expired on the first read -> back in needs-you (no sweep)
     }
 
     // ---- Defect 20: a DEFERRED entry - the snooze was asked for, the clock has not started ----
@@ -219,7 +219,8 @@ public sealed class SnoozeRegistryTests : IDisposable
     [Fact]
     public void Land_is_idempotent_and_never_restarts_a_running_clock()
     {
-        // Two callers land a deferral: the push seam and the sweep backstop. Whichever is first wins.
+        // The push seam lands a deferral, and it calls Land on EVERY settled push - so a second landing on a
+        // running clock must be refused. (There used to be a second caller, the sweep backstop; it is gone.)
         var reg = new SnoozeRegistry(Path_);
         var landedAt = new DateTime(2026, 7, 14, 12, 0, 0, DateTimeKind.Utc);
         reg.SnoozeDeferred("s1", 720, "dir-1");

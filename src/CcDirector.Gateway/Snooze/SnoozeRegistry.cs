@@ -21,10 +21,12 @@ namespace CcDirector.Gateway.Snooze;
 /// path the constructor receives (production: snooze.json in the Gateway data dir). Every mutation
 /// writes through immediately with an atomic temp-file + rename, so a crash mid-write can never
 /// half-truncate the store. On construction the file is loaded back so every pending snooze is
-/// re-armed - an entry already past its time at startup simply reads as expired on the first sweep
-/// and fires immediately (the mission's "fire any already-past entry immediately" rule), rather than
-/// being lost. A corrupt file is quarantined (never silently overwritten) and the registry starts
-/// empty so the Gateway still boots.
+/// re-armed - an entry already past its time at startup simply reads as expired on the first read
+/// (<see cref="HoldStateFor"/> reports it as None), so the session returns to "needs you" at once,
+/// rather than being lost. There is no sweep: an elapsed entry lingers as a durable returned-by-timer
+/// tombstone, retired only by a lifecycle edge (work, an owner turn, an exit, a re-snooze). A corrupt
+/// file is quarantined (never silently overwritten) and the registry starts empty so the Gateway still
+/// boots.
 ///
 /// NO FALLBACK (CLAUDE.md): a failed persist is a LOGGED error that PROPAGATES - a snooze that
 /// cannot be written to disk would not survive a restart, so the caller fails loudly rather than
@@ -163,10 +165,10 @@ public sealed class SnoozeRegistry
     ///
     /// Returns true only when it actually converted a deferred entry into an armed one. IDEMPOTENT and
     /// safe to call on anything: no entry, or an already-armed entry, returns false and changes nothing.
-    /// That matters because two independent things call it - the push seam (the Director's hold-state
-    /// delta, which is prompt) and the expiry sweep (the backstop, which is certain) - and whichever
-    /// arrives first must win without the other corrupting it. A landing must never restart a running
-    /// clock.
+    /// That matters because the push seam calls it on EVERY settled push (a settled session re-pushes its
+    /// state repeatedly), so repeated calls must not restart a running clock. It used to have a second
+    /// caller - an expiry-sweep backstop - but the sweep is gone; the push is the only path now, and it is
+    /// prompt (the Director reports the settle within milliseconds).
     /// </summary>
     public bool Land(string sessionId, DateTime nowUtc)
     {
@@ -289,9 +291,10 @@ public sealed class SnoozeRegistry
 
     /// <summary>
     /// True when <paramref name="sessionId"/> has an ARMED entry whose return time is at or before
-    /// <paramref name="nowUtc"/> - i.e. the snooze has elapsed. This is the ONE expiry predicate the
-    /// aggregation overlay uses to flip the session back into "needs you", and the sweep uses to
-    /// decide whether to nudge the owning Director off hold. Pure (no mutation), so it is safe to
+    /// <paramref name="nowUtc"/> - i.e. the snooze has elapsed. This is the ONE expiry predicate: the fold
+    /// reads it to flip the session back into "needs you" and to stamp the durable "Snooze ended" badge
+    /// (<see cref="SessionDto.SnoozeExpired"/>). It stays true for as long as the elapsed entry lingers -
+    /// there is no sweep to retire it; only a lifecycle edge does. Pure (no mutation), so it is safe to
     /// call on the hot read path.
     ///
     /// A DEFERRED entry is never expired: its clock has not started, because the work it is waiting for
@@ -393,8 +396,9 @@ public sealed class SnoozeRegistry
             return _entries.ContainsKey(sessionId);
     }
 
-    /// <summary>A snapshot of every pending entry, for the expiry sweep. A copy, so the sweep can
-    /// iterate and mutate the registry (Clear) without touching the live collection.</summary>
+    /// <summary>A snapshot of every pending entry. A copy, so a caller can iterate and mutate the registry
+    /// (Clear) without touching the live collection. Its production caller was the expiry sweep, now deleted;
+    /// it remains for tests that enumerate the pending entries.</summary>
     public IReadOnlyList<SnoozeEntry> Entries()
     {
         lock (_gate)
@@ -414,8 +418,9 @@ public sealed class SnoozeRegistry
     /// Missing file = the normal first boot (empty registry, logged). A corrupt file is quarantined
     /// (renamed next to the original with a timestamp suffix) so its bytes are preserved for the
     /// operator and never silently overwritten; the registry then starts empty so the Gateway still
-    /// boots. An entry already past its time is kept as-is: the first sweep reads it as expired and
-    /// fires it immediately (mission rule), so nothing is dropped and nothing all-fires-at-once.
+    /// boots. An entry already past its time is kept as-is: the first READ reads it as expired
+    /// (<see cref="HoldStateFor"/> returns None), so the session is back in "needs you" at once with a
+    /// durable badge, and nothing is dropped and nothing all-fires-at-once. There is no sweep.
     /// </summary>
     private void Load()
     {
