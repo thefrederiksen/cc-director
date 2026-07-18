@@ -350,6 +350,9 @@ public sealed class GatewayHost : IAsyncDisposable
     private readonly Governance.GovernanceAuditLog _governanceAudit;
     // Fills session_spend at each turn-end from the pushed roster snapshot (issue #1771, spine item 3).
     private readonly Governance.SessionSpendEmitter _sessionSpendEmitter;
+    // The weekly Outcome Ledger reporter (issue #1771, spine item 4): a read-only assembly over the run
+    // tables, event ledger, spend, and audit trail - the first governance report that pays rent.
+    private readonly Governance.OutcomeLedgerReporter _outcomeLedger;
     private readonly CronJobStore _cronJobs;
     private readonly CronRunHistoryStore _cronRuns;
     private readonly Running.CronEngine _cronEngine;
@@ -630,6 +633,9 @@ public sealed class GatewayHost : IAsyncDisposable
         // sandbox decisions on the EF data layer, so a Gateway restart never loses a recorded audit fact.
         _governanceAudit = new Governance.GovernanceAuditLog(_gatewayDb);
         _sessionSpendEmitter = new Governance.SessionSpendEmitter(_sessionSpend);
+        // The weekly Outcome Ledger reporter (issue #1771, spine item 4): read-only over the run tables +
+        // event ledger + spend + audit trail. No store of its own.
+        _outcomeLedger = new Governance.OutcomeLedgerReporter(_gatewayDb);
         // Snooze Length mission: the persisted snooze registry (sessionId -> SnoozeUntilUtc), now in the
         // snoozes table of the EF data layer - a Gateway restart re-arms every pending snooze from the
         // database; an entry already past its time simply fires on the first sweep. The path argument is the
@@ -1692,6 +1698,10 @@ public sealed class GatewayHost : IAsyncDisposable
         // The governance audit trail (issue #1771, spine item 4): append-only intervention +
         // permission/sandbox decisions - the safety and attention-burden audit. Append and read only.
         Api.GovernanceAuditEndpoints.Map(_app, _governanceAudit);
+
+        // The weekly Outcome Ledger (issue #1771, spine item 4): the first report that pays rent - verified
+        // yield, aging WIP, and high-effort/no-outcome runs with cost + attention-burden. Read-only.
+        Api.GovernanceReportEndpoints.Map(_app, _outcomeLedger);
 
         // Gateway Centralization Phase 1 (issue #628): the inbound login-telemetry RELAY. The Director
         // POSTs its login-telemetry event here (instead of the cloud) and the Gateway forwards it on,
