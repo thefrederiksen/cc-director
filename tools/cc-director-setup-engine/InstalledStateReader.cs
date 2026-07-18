@@ -11,17 +11,20 @@ public sealed class InstalledStateReader
 {
     private readonly InstallLayout _layout;
     private readonly Func<string, bool> _fileExists;
+    private readonly Func<string, bool> _aliasFileExists;
     private readonly Func<string, string?> _readVersion;
     private readonly InstalledManifest _installed;
 
     public InstalledStateReader(
         InstallLayout layout,
         Func<string, bool>? fileExists = null,
+        Func<string, bool>? aliasFileExists = null,
         Func<string, string?>? readVersion = null,
         InstalledManifest? installed = null)
     {
         _layout = layout ?? throw new ArgumentNullException(nameof(layout));
         _fileExists = fileExists ?? DefaultExists;
+        _aliasFileExists = aliasFileExists ?? DefaultAliasExists;
         _readVersion = readVersion ?? DefaultReadVersion;
         _installed = installed ?? InstalledManifest.Load(layout);
     }
@@ -33,17 +36,34 @@ public sealed class InstalledStateReader
     /// </summary>
     internal static bool DefaultExists(string path) => File.Exists(path) || Directory.Exists(path);
 
+    /// <summary>
+    /// Default presence check for a legacy alias (issue #1821). A pre-rename alias is only ever a
+    /// FILE - the renamed component is a Windows exe, never a bundle - so this probes File.Exists
+    /// only. It deliberately does NOT accept a directory (unlike <see cref="DefaultExists"/>), or a
+    /// Workstation that merely happened to have a DIRECTORY named gateway\cc-director-gateway.exe
+    /// would falsely read as a Gateway host.
+    /// </summary>
+    internal static bool DefaultAliasExists(string path) => File.Exists(path);
+
     /// <summary>Inspect one component.</summary>
     public InstalledComponent Read(Component component)
     {
         ArgumentNullException.ThrowIfNull(component);
         var path = _layout.PathFor(component);
-        if (!_fileExists(path))
+
+        // Presence accepts a pre-rename alias (issue #1821): an existing Gateway host whose exe is the
+        // legacy cc-director-gateway.exe must still read as present, or the update misclassifies it as a
+        // Workstation and orphans its Gateway. The canonical path stays the target we report; the
+        // version is read from whichever file is actually on disk.
+        var onDisk = _fileExists(path)
+            ? path
+            : _layout.LegacyAliasesFor(component).FirstOrDefault(_aliasFileExists);
+        if (onDisk is null)
             return new InstalledComponent(component.Id, Present: false, Version: null, Path: path);
 
         // The on-disk file-version stamp is the ground truth for what the exe actually IS. Read it
         // separately so the planner can cross-check the recorded version against it (issue #176).
-        var fileVersion = _readVersion(path);
+        var fileVersion = _readVersion(onDisk);
 
         // Prefer the version we recorded when we placed it (reliable for every component, incl. tools
         // that carry no file-version stamp); fall back to the on-disk file version for installs that
