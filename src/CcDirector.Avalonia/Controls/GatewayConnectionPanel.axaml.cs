@@ -79,13 +79,11 @@ public partial class GatewayConnectionPanel : UserControl
     // Cancels an in-flight remote sign-in + enroll (the Join-existing seam, #1808a) when the panel is left.
     private CancellationTokenSource? _remoteEnrollCts;
 
-    // Which of the three consumers is hosting the panel (#1808a), so the gateway CHOICE state machine is
-    // filtered by context - one fork, not three copies of the UI.
-    private readonly GatewayChoiceConsumer _consumer;
-
     // The UI-free choice context this panel resolves its CHOICE step from (#1808a). Built once at
-    // construction from the consumer, the host OS capability, and whether this opened in repair mode.
-    private readonly GatewayChoiceContext _choiceContext;
+    // construction from the consumer and the host OS capability. (There is no repair dimension: repair goes
+    // straight to the rediscovery scan and never shows the choice - see OnAttachedToVisualTree.) Not readonly
+    // only so a test can inject a Mac (SelfHostSupported=false) context this Windows host cannot produce.
+    private GatewayChoiceContext _choiceContext;
 
     // True when the panel opens on the gateway CHOICE step (#1808a): a first-time, not-yet-connected,
     // non-repair connect. A connected panel opens on Done and a broken one opens on the repair scan, so
@@ -95,6 +93,15 @@ public partial class GatewayConnectionPanel : UserControl
     // What the choice's Skip action does for this consumer (#1808a), captured from the resolved plan when
     // the choice renders, so the Skip click reads the Gateway/host verdict verbatim (dumb-client rule).
     private GatewaySkipBehavior _skipBehavior;
+
+    // ---- Test seams (#1808a R2): let the remote-Join transaction run headless with no live Gateway. Each
+    // defaults to null -> the real behavior. Tests inject a fake enrollment seam (so no browser/network), a
+    // director id, and a re-apply capture, then drive ConnectToAsync and assert the transaction boundary:
+    // the seam is always called with the SELECTED url (an old saved token cannot bypass it), a failure never
+    // mutates config, and success re-applies the verified credential.
+    internal Func<string, string, string, CancellationToken, Task<OperationResult<MobileEnrollmentResponse>>>? RemoteEnrollSeam;
+    internal Func<Task>? ReapplyGatewaySeam;
+    internal string? DirectorIdOverride;
 
     // Which step the panel opens on (spec section 6: the status-box click opens the panel on the resolver's
     // current step). Connect (the default) starts the auto-scan; SignIn/Done skip the scan and read the
@@ -121,22 +128,18 @@ public partial class GatewayConnectionPanel : UserControl
     {
         _initialStep = initialStep;
         _repairMode = repairMode;
-        _consumer = consumer;
         _showChoiceFirst = showChoiceFirst;
         // Self-host is Windows-only in source, so on a Mac the state machine makes it ABSENT (section 6 open
-        // decision). The choice is only ever shown for a fresh, non-repair connect, so IsRepair rides along
-        // for completeness (it governs the Skip behavior).
-        _choiceContext = new GatewayChoiceContext(consumer, OperatingSystem.IsWindows(), repairMode);
+        // decision).
+        _choiceContext = new GatewayChoiceContext(consumer, OperatingSystem.IsWindows());
         InitializeComponent();
         FileLog.Write($"[GatewayConnectionPanel] constructed (initialStep={initialStep}, repairMode={repairMode}, consumer={consumer}, showChoiceFirst={showChoiceFirst})");
     }
 
-    /// <summary>
-    /// Raised once the two-way handshake proves Connected (Phase 4). Hosts that gate their own flow on
-    /// a live connection - the onboarding wizard's Gateway step - listen for this instead of the deleted
-    /// Test button's verdict.
-    /// </summary>
-    public event EventHandler? ConnectionVerified;
+    // The transport-only ConnectionVerified event was REMOVED in #1808a (R3): the handshake alone is not a
+    // safe advance condition - a Gateway can be reachable but not signed in or inference-ready. The one
+    // terminal advance signal is ConnectionSettled below (connected AND signed in). Removing the event, not
+    // just leaving it unsubscribed, stops any future consumer from re-subscribing to the unsafe seam.
 
     /// <summary>
     /// Raised when the panel settles the account sign-in state: signed in (Done) or signed out (the sign-in
@@ -323,6 +326,9 @@ public partial class GatewayConnectionPanel : UserControl
             Child = inner,
             Tag = option.Action,
             Opacity = enabled ? 1.0 : 0.65,
+            // Render-level non-actionability: a disabled "coming" card is genuinely inert - Avalonia raises
+            // no pointer input on an IsEnabled=false control - so it can never fire, even if a handler existed.
+            IsEnabled = enabled,
         };
         // Only enabled actions get a cursor, hover, and click handler - a disabled "coming" card is inert,
         // never a live-looking button that no-ops.
@@ -371,8 +377,15 @@ public partial class GatewayConnectionPanel : UserControl
 
     private void Choice_PointerPressed(object? sender, PointerPressedEventArgs e)
     {
-        if ((sender as Border)?.Tag is not GatewayChoiceAction action)
-            return;
+        if ((sender as Border)?.Tag is GatewayChoiceAction action)
+            InvokeChoiceAction(action);
+    }
+
+    // The single dispatch for an activated choice card. Only Join and Skip do anything; Self-host and Hosted
+    // are disabled cards that never reach here (no handler, IsEnabled=false), and if one somehow did it
+    // would no-op. Kept separate so the render-level test can activate a card exactly as a click would.
+    private void InvokeChoiceAction(GatewayChoiceAction action)
+    {
         switch (action)
         {
             case GatewayChoiceAction.JoinExisting:
@@ -397,6 +410,39 @@ public partial class GatewayConnectionPanel : UserControl
         if (_skipBehavior == GatewaySkipBehavior.ReturnToChoice)
             ShowChoice();
     }
+
+    // ---- #1808a R2 test hooks: drive the RENDERED choice + terminal emission headless -----------
+
+    /// <summary>Inject a choice context this Windows test host cannot otherwise produce - specifically a Mac
+    /// context (SelfHostSupported=false) - so the render test can prove Self-host is OMITTED there.</summary>
+    internal void SetChoiceContextForTests(GatewayChoiceContext context) => _choiceContext = context;
+
+    /// <summary>Render the choice for this panel's context (as OnAttached would), so a headless test can
+    /// inspect the rendered cards and activate them exactly as a click would.</summary>
+    internal void ShowChoiceForTests() => ShowChoice();
+
+    /// <summary>The rendered choice cards (each a Border tagged with its action, IsEnabled per availability).
+    /// Absent actions are not present. Lets a test assert Mac omission and disabled-card non-actionability at
+    /// the render level, not just the Core value.</summary>
+    internal IReadOnlyList<Control> ChoiceCardsForTests => ChoiceHost.Children;
+
+    /// <summary>Activate a rendered choice card exactly as a real click would: a disabled/absent card does
+    /// nothing (matching IsEnabled=false swallowing pointer input), an enabled card runs its action.</summary>
+    internal void ActivateChoiceForTests(GatewayChoiceAction action)
+    {
+        foreach (var child in ChoiceHost.Children)
+            if (child is Border { Tag: GatewayChoiceAction cardAction } card && cardAction == action)
+            {
+                if (card.IsEnabled)
+                    InvokeChoiceAction(action);
+                return;
+            }
+    }
+
+    /// <summary>Drive the panel to its Done view so it emits the terminal ConnectionSettled result, letting a
+    /// test assert the emitted outcome (NotReady in this slice) without a live Gateway.</summary>
+    internal void EmitTerminalForTests()
+        => ShowDone(GatewayConfig.Load(), GatewayAccountStatus.NotConfigured());
 
     // ---- Step 1a: scan --------------------------------------------------------------------------
 
@@ -907,7 +953,7 @@ public partial class GatewayConnectionPanel : UserControl
         if ((sender as Border)?.Tag is FoundGateway pick)
             // A Gateway anywhere but this machine is remote - it takes the sign-in enroll seam, not the
             // loopback fast path (#1808a drops the same-machine-only limit).
-            ConnectTo(pick.Url, pick.Label, remote: pick.Kind != GatewayLocationKind.ThisMachine);
+            _ = ConnectToAsync(pick.Url, pick.Label, remote: pick.Kind != GatewayLocationKind.ThisMachine);
     }
 
     private void AdvancedToggle_IsCheckedChanged(object? sender, RoutedEventArgs e)
@@ -930,16 +976,29 @@ public partial class GatewayConnectionPanel : UserControl
         }
         // A manually-entered address is treated as remote: it takes the sign-in enroll seam, which works for
         // any reachable Gateway (LAN, tailnet, or account) and is not limited to this machine (#1808a).
-        ConnectTo(url, url, remote: true);
+        _ = ConnectToAsync(url, url, remote: true);
     }
 
     // ---- Step 1c/d/e: connect (the click IS the test) ------------------------------------------
 
-    private async void ConnectTo(string url, string label, bool remote)
+    // Internal so the #1808a R2 integration tests can drive the connect transaction headless and await it.
+    internal async Task ConnectToAsync(string url, string label, bool remote)
     {
         var attempt = ++_attemptId;
         _lastAttempt = (url, label, remote);
         _connecting = true;
+
+        // A REMOTE Join (a Gateway off this machine, or a manually-entered address) ALWAYS verifies and
+        // enrolls against the SELECTED url through the runner - REGARDLESS of any token saved for a PREVIOUS
+        // Gateway (#1808a R1). It never sends the old token to the candidate, and it touches no active
+        // Gateway config until the runner's verified-success persistence commits url+key atomically, so a
+        // cancel/failure leaves the previously-saved connection untouched. This is the whole security +
+        // data-loss boundary; the same-machine loopback fast path below keeps its distinct route.
+        if (remote)
+        {
+            await RemoteEnrollAndHandshakeAsync(url, label, attempt);
+            return;
+        }
 
         ConnectingTitle.Text = $"Connecting to {label}...";
         LegReachMarker.Text = "[.]";
@@ -956,7 +1015,8 @@ public partial class GatewayConnectionPanel : UserControl
 
         try
         {
-            // Write the chosen address, then re-apply so the Director runs a fresh handshake against it.
+            // Same-machine (co-located) fast path only. Write the chosen local address, then re-apply so the
+            // Director runs a fresh handshake against it.
             await Task.Run(() => CcDirectorConfigService.MergePatch(new JsonObject
             {
                 ["gateway"] = new JsonObject { ["url"] = url },
@@ -966,28 +1026,18 @@ public partial class GatewayConnectionPanel : UserControl
             // handshake needs one, so it would 401. Earn the key FIRST via the co-located loopback
             // enrollment (which is public and self-guards), then the handshake succeeds. On the common
             // same-machine case where the Gateway is already signed in this reaches green with ZERO extra
-            // clicks. A signed-out Gateway (409) routes to the browser sign-in; a remote device (403) is
-            // case B, not yet supported.
+            // clicks. A signed-out Gateway (409) routes to the browser sign-in.
             if (!HasDeviceToken(GatewayConfig.Load()))
             {
-                // A remote Gateway (off this machine) cannot use the loopback fast path. Sign in with
-                // DevThrottle and enroll against this explicit URL - the remote-capable seam - which drops
-                // the old same-machine-only limit (#1808a).
-                if (remote)
-                {
-                    await RemoteEnrollAndHandshakeAsync(url, label, host, attempt);
-                    return;
-                }
-
                 switch (await TryEnrollFirstAsync(url, host))
                 {
                     case EnrollFirst.SignInNeeded:
                         ShowSignIn();
                         return;
                     case EnrollFirst.RemoteNotSupported:
-                        // A co-located pick the Gateway reports as non-loopback: fall back to the remote
-                        // sign-in seam rather than dead-ending (#1808a).
-                        await RemoteEnrollAndHandshakeAsync(url, label, host, attempt);
+                        // A co-located pick the Gateway reports as non-loopback: route to the remote seam,
+                        // which verifies against the selected url before any config change.
+                        await RemoteEnrollAndHandshakeAsync(url, label, attempt);
                         return;
                     // Enrolled (key earned) or FellThrough (no local Gateway to enroll with) both continue to
                     // the handshake below - a real failure there surfaces through the normal verdict path.
@@ -1011,10 +1061,22 @@ public partial class GatewayConnectionPanel : UserControl
     // same-machine-only enrollment limit - it works for a Gateway on the LAN, over Tailscale, or on the
     // account, not just one on this machine. The runner reuses the PUBLIC /signin surface (Google + GitHub +
     // email magic-link); on success it has already persisted the gateway URL + this device's local key.
-    private async Task RemoteEnrollAndHandshakeAsync(string url, string label, ControlApiHost host, int attempt)
+    private async Task RemoteEnrollAndHandshakeAsync(string url, string label, int attempt)
     {
+        _connecting = true;
         ConnectingTitle.Text = $"Signing in to DevThrottle to join {label}...";
+        LegReachMarker.Text = "[.]";
+        LegCallbackMarker.Text = "[.]";
         ShowOnly(ConnectingPanel);
+
+        var host = (global::Avalonia.Application.Current as App)?.ControlApiHost;
+        var directorId = DirectorIdOverride ?? host?.DirectorId;
+        if (directorId is null)
+        {
+            ShowFailure("The Control API is not running yet, so this Director cannot connect.",
+                "Wait for the Director to finish starting, then try again.");
+            return;
+        }
 
         _remoteEnrollCts?.Cancel();
         _remoteEnrollCts = new CancellationTokenSource();
@@ -1023,12 +1085,15 @@ public partial class GatewayConnectionPanel : UserControl
         OperationResult<MobileEnrollmentResponse> result;
         try
         {
-            var runner = new GatewayAccountEnrollRunner();
-            result = await runner.VerifyAndSaveAsync(url, host.DirectorId, Environment.MachineName, ct);
+            // The runner signs in on the PUBLIC /signin surface, registers the workstation, enrolls against
+            // the SELECTED url, and persists url+key on verified success ONLY. Nothing is written before this
+            // returns success, so a cancel/failure never mutates the previously-saved connection.
+            var enroll = RemoteEnrollSeam ?? DefaultRemoteEnroll;
+            result = await enroll(url, directorId, Environment.MachineName, ct);
         }
         catch (OperationCanceledException)
         {
-            // The panel was left, or a newer attempt superseded this one; leave the view alone.
+            // The panel was left, or a newer attempt superseded this one; leave the view (and config) alone.
             return;
         }
         catch (Exception ex)
@@ -1042,17 +1107,31 @@ public partial class GatewayConnectionPanel : UserControl
 
         if (!result.Success)
         {
+            // Verification failed: the runner persisted nothing, so the previously-saved connection is
+            // untouched. Surface the reason only.
             ShowFailure(result.ErrorMessage ?? "Could not join the Gateway.", null);
             return;
         }
 
-        // VerifyAndSaveAsync persisted the gateway URL + this device's local key. Re-apply so the running
-        // client authenticates with it, then the handshake proves Connected and the verdict path settles.
+        // The runner committed the verified url + this device's local key atomically. Re-apply so the running
+        // client authenticates with the NEW credential (never the old token), then the handshake settles.
         FileLog.Write("[GatewayConnectionPanel] remote enroll succeeded; re-applying and handshaking");
-        EnsureSubscribed(host.GatewayMonitor);
-        await host.ReapplyGatewayAsync();
+        if (host is not null)
+            EnsureSubscribed(host.GatewayMonitor);
+        var reapply = ReapplyGatewaySeam ?? (host is not null ? host.ReapplyGatewayAsync : null);
+        if (reapply is null)
+        {
+            ShowFailure("The Control API is not running yet, so this Director cannot finish connecting.", null);
+            return;
+        }
+        await reapply();
         _ = TimeoutAsync(attempt);
     }
+
+    // The real remote-enroll seam: verify + enroll against the selected url and persist on success only.
+    private static Task<OperationResult<MobileEnrollmentResponse>> DefaultRemoteEnroll(
+        string url, string deviceId, string machineName, CancellationToken ct)
+        => new GatewayAccountEnrollRunner().VerifyAndSaveAsync(url, deviceId, machineName, ct);
 
     private enum EnrollFirst { Enrolled, SignInNeeded, RemoteNotSupported, FellThrough }
 
@@ -1176,7 +1255,8 @@ public partial class GatewayConnectionPanel : UserControl
     {
         _connecting = false;
         FileLog.Write("[GatewayConnectionPanel] connected (handshake verified); resolving sign-in state");
-        ConnectionVerified?.Invoke(this, EventArgs.Empty);
+        // No transport-only event fires here (#1808a R3): consumers advance only on the terminal
+        // ConnectionSettled result, raised from ShowDone once connected AND signed in.
         await RefreshSignedInViewAsync();
     }
 
@@ -1437,7 +1517,7 @@ public partial class GatewayConnectionPanel : UserControl
     private void TryAgain_Click(object? sender, RoutedEventArgs e)
     {
         if (_lastAttempt is { } attempt)
-            ConnectTo(attempt.Url, attempt.Label, attempt.Remote);
+            _ = ConnectToAsync(attempt.Url, attempt.Label, attempt.Remote);
         else
             StartScan();
     }

@@ -45,9 +45,9 @@ public enum GatewayChoiceConsumer
 
 /// <summary>
 /// Whether a choice action is offered, and if so whether it can be acted on. The dumb-client rule
-/// (CLAUDE.md rule 7): this state machine - not the panel - decides enabled-ness; the panel only renders
-/// what it is told. A disabled action is shown, clearly, as a not-yet-available "coming" action; it is
-/// never a live-looking button that does nothing.
+/// (project coding standards, rule 7): this state machine - not the panel - decides enabled-ness; the panel
+/// only renders what it is told. A disabled action is shown, clearly, as a not-yet-available "coming"
+/// action; it is never a live-looking button that does nothing.
 /// </summary>
 public enum GatewayChoiceAvailability
 {
@@ -65,7 +65,8 @@ public enum GatewayChoiceAvailability
 /// What the Skip action means for the current consumer (architecture two-step-install v4, section 2,
 /// #1808a). Onboarding's Skip is the local-only completion seam (issue #1809): it persists the
 /// onboarding-complete marker and leaves the Director local-only. In Settings and the status box there is
-/// no onboarding to complete, so Skip simply returns to the choice.
+/// no onboarding to complete, so Skip simply returns to the choice. (Repair reconnects a KNOWN broken
+/// connection and never shows the choice at all, so it has no Skip behavior here - see the panel.)
 /// </summary>
 public enum GatewaySkipBehavior
 {
@@ -79,21 +80,21 @@ public enum GatewaySkipBehavior
 /// <summary>
 /// The UI-free input to <see cref="GatewayChoiceStateMachine"/> (architecture two-step-install v4, section
 /// 2, #1808a). A value type with plain fields so tests construct it directly and the machine has nothing to
-/// null-check. It carries exactly what the choice depends on: which consumer is showing it, whether this
-/// host can self-host a Gateway at all, and whether the panel opened to repair a broken connection rather
-/// than to make a first-time choice.
+/// null-check. It carries exactly what the choice depends on: which consumer is showing it, and whether
+/// this host can self-host a Gateway at all.
+///
+/// It intentionally does NOT model a repair/current-connection state. Repair reconnects a KNOWN broken
+/// connection, and the panel routes that case straight to the rediscovery scan without ever showing the
+/// choice (documented in the panel), so a repair dimension here would only add unreachable rows - the
+/// Architect ruling for #1808a removed it. A later slice that wants choice-on-repair owns re-adding it.
 /// </summary>
 /// <param name="Consumer">Which of the three shared-panel consumers is showing the choice.</param>
 /// <param name="SelfHostSupported">Whether this operating system can run a self-hosted Gateway. Self-host
 /// is Windows-only in source, so this is false on macOS and Linux - the self-host action is then ABSENT,
 /// not merely disabled.</param>
-/// <param name="IsRepair">Whether the panel opened to repair a previously-working connection that broke,
-/// rather than to make a first-time choice. Onboarding is already complete when a connection is being
-/// repaired, so a repair-mode Skip returns to the choice instead of re-marking onboarding complete.</param>
 public readonly record struct GatewayChoiceContext(
     GatewayChoiceConsumer Consumer,
-    bool SelfHostSupported,
-    bool IsRepair);
+    bool SelfHostSupported);
 
 /// <summary>
 /// One action in a resolved choice plan: which action, whether it is enabled / disabled / absent, and - when
@@ -171,10 +172,10 @@ public static class GatewayChoiceStateMachine
             ? new GatewayChoiceOption(GatewayChoiceAction.SelfHost, GatewayChoiceAvailability.Disabled, ComingSoonReason)
             : new GatewayChoiceOption(GatewayChoiceAction.SelfHost, GatewayChoiceAvailability.Absent, null);
 
-    // Only a first-time onboarding Skip completes onboarding local-only (the issue #1809 seam). A repair-mode
-    // Skip - onboarding is long done - and any Settings/status Skip just return to the choice.
+    // Only onboarding's Skip completes onboarding local-only (the issue #1809 seam). Settings/status Skip
+    // just return to the choice. (Repair never reaches the choice, so it has no Skip behavior here.)
     private static GatewaySkipBehavior ResolveSkipBehavior(GatewayChoiceContext context)
-        => context is { Consumer: GatewayChoiceConsumer.Onboarding, IsRepair: false }
+        => context.Consumer == GatewayChoiceConsumer.Onboarding
             ? GatewaySkipBehavior.CompleteOnboardingLocalOnly
             : GatewaySkipBehavior.ReturnToChoice;
 }

@@ -61,7 +61,8 @@ public partial class OnboardingWizardDialog : Window
         // the panel settles to connected AND signed in (ConnectionSettled), not on transport alone; Skip
         // completes onboarding local-only via the panel's SkipRequested verdict (the #1809 seam).
         var panel = Controls.GatewayConnectionPanel.CreateForCurrentState(GatewayChoiceConsumer.Onboarding);
-        panel.ConnectionVerified += (_, _) => OnGatewayTransportVerified();
+        // Advance ONLY on the terminal result - connected AND signed in (#1808a). There is no transport-only
+        // event to subscribe to any more (it was removed), so bare transport can never advance the wizard.
         panel.ConnectionSettled += (_, _) => OnGatewaySettled();
         panel.SkipRequested += (_, behavior) =>
         {
@@ -72,14 +73,6 @@ public partial class OnboardingWizardDialog : Window
         GatewayStep.Child = panel;
 
         ShowStep(StepGateway);
-    }
-
-    /// <summary>The embedded panel proved the two-way TRANSPORT handshake. That alone is not enough to
-    /// advance (#1808a): the user still needs to sign in. Nudge them to finish signing in in the panel.</summary>
-    private void OnGatewayTransportVerified()
-    {
-        FileLog.Write("[OnboardingWizardDialog] gateway transport verified (handshake proven; sign-in still needed)");
-        ShowStepStatus("Connected to your Gateway. Sign in in the panel above to continue.", error: false);
     }
 
     /// <summary>The embedded panel reached its TERMINAL result - connected AND signed in (#1808a). Record it
@@ -298,6 +291,17 @@ public partial class OnboardingWizardDialog : Window
         WantsNewSession = wantsNewSession;
         Close(true);
     }
+
+    // ---- #1808a R2 test hooks: prove transport alone cannot advance; only the terminal result can --------
+
+    /// <summary>The wizard's current step index, so a test can assert Next did or did not advance.</summary>
+    internal int CurrentStepForTests => _currentStep;
+
+    /// <summary>The embedded gateway panel, so a test can drive its terminal emission (the only advance signal).</summary>
+    internal Controls.GatewayConnectionPanel GatewayPanelForTests => (Controls.GatewayConnectionPanel)GatewayStep.Child!;
+
+    /// <summary>Invoke the Next button's real handler, exactly as the button click does.</summary>
+    internal void ClickNextForTests() => BtnNext_Click(this, new RoutedEventArgs());
 
     private void SetAgentBadge(string text, string background, string foreground)
     {
