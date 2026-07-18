@@ -1884,6 +1884,28 @@ public sealed class Session : IDisposable
     }
 
     /// <summary>
+    /// The resolved live screen grid, the live cursor cell, the cursor VISIBILITY, and the alternate-screen
+    /// flag captured from ONE coherent read (issue #1777). Reading these as separate locked reads lets a buffer
+    /// switch land between them and report main-screen rows with a mismatched flag. A caller that classifies a
+    /// waiting screen needs the flags to describe the SAME frame as the rows, so this takes them all under a
+    /// single lock. Returns empty rows and (-1,-1) with the flags false when there is no grid (an Embedded
+    /// session with no server-side parser).
+    /// </summary>
+    public (string[] Rows, int CursorRow, int CursorCol, bool CursorVisible, bool IsAlternateScreen) SnapshotLiveScreen()
+    {
+        if (_htmlCells is null || _htmlParser is null)
+            return (System.Array.Empty<string>(), -1, -1, false, false);
+        lock (_htmlParserLock)
+        {
+            var (rows, cursorRow, cursorCol) = _htmlParser.SnapshotActiveRows();
+            // Cursor VISIBILITY is captured in the SAME locked frame as the rows/cursor/alt-screen: it is the
+            // discriminator between a text composer (cursor visible) and a drawn Ink menu (cursor hidden, a
+            // stale cursor cell), so it must describe the same frame the rows do (issue #1777).
+            return (rows, cursorRow, cursorCol, _htmlParser.IsCursorVisible, _htmlParser.IsAlternateScreen);
+        }
+    }
+
+    /// <summary>
     /// Snapshot the CURRENT visible terminal grid as rows of styled <see cref="ScreenSegment"/>
     /// runs, preserving the foreground/background colours and bold weight that
     /// <see cref="SnapshotScreenRows"/> throws away. Adjacent cells sharing a style are coalesced

@@ -34,6 +34,7 @@ internal sealed class SessionReadExecutor : ISessionCommandArea
         "snapshot",
         "buffer",
         "buffer-html",
+        "screen-grid",
         "summary",
         "recap",
         "turn-summaries",
@@ -56,6 +57,7 @@ internal sealed class SessionReadExecutor : ISessionCommandArea
             "snapshot" => Snapshot(sessionManager, context.DirectorId, command),
             "buffer" => Buffer(sessionManager, command),
             "buffer-html" => BufferHtml(sessionManager, command),
+            "screen-grid" => ScreenGrid(sessionManager, command),
             "summary" => Summary(sessionManager, context.DirectorId, command),
             "recap" => Recap(sessionManager, command),
             "turn-summaries" => TurnSummaries(context, command),
@@ -250,6 +252,43 @@ internal sealed class SessionReadExecutor : ISessionCommandArea
             ScrollbackCount = scrollbackCount,
             // Backward-compat: existing callers read .html as the concatenated stream.
             Html = scrollbackHtml + gridHtml,
+        }));
+    }
+
+    /// <summary>
+    /// The <c>screen-grid</c> verb (issue #1777): the RESOLVED live terminal screen grid for a session -
+    /// the on-screen rows exactly as the emulator resolves them right now, the live cursor cell, and whether
+    /// the agent has the terminal in the alternate screen buffer. Invalid id -&gt; BadRequest, missing session
+    /// -&gt; NotFound. Additive (it does not touch the existing <c>buffer</c> verb); backed by
+    /// <see cref="Session.SnapshotScreenRowsWithCursor"/>, which reads the parser's ACTIVE grid, so it is
+    /// alternate-screen-correct - it sees a full-screen picker the scrollback-based <c>buffer</c> verb cannot.
+    /// An Embedded session with no server-side parser returns an empty grid with <c>HasGrid = false</c>, which
+    /// tells the caller the screen is unreadable (fail closed) rather than "not a menu".
+    /// </summary>
+    internal static DirectorCommandResult ScreenGrid(SessionManager sessionManager, DirectorCommand command)
+    {
+        if (!Guid.TryParse(command.SessionId, out var guid))
+            return DirectorCommandResult.Fail(DirectorCommandStatus.BadRequest, "invalid session id format");
+
+        var session = sessionManager.GetSession(guid);
+        if (session is null)
+            return DirectorCommandResult.Fail(DirectorCommandStatus.NotFound, "session not found");
+
+        // Rows + cursor + cursor VISIBILITY + alternate-screen flag from ONE coherent snapshot (issue #1777,
+        // finding 8): the classifier relies on the flags describing the same frame as the rows. Cursor
+        // visibility is the discriminator between a composer (visible) and a drawn Ink menu (hidden).
+        var (rows, cursorRow, cursorCol, cursorVisible, isAlternateScreen) = session.SnapshotLiveScreen();
+        return DirectorCommandResult.Success(SessionCommandExecutor.Serialize(new ScreenGridResponse
+        {
+            SessionId = command.SessionId,
+            Rows = rows.ToList(),
+            CursorRow = cursorRow,
+            CursorCol = cursorCol,
+            CursorVisible = cursorVisible,
+            IsAlternateScreen = isAlternateScreen,
+            // A session with a real terminal parser yields a fixed-height grid (rows.Length > 0) even when the
+            // screen is blank; only an Embedded session (no parser) yields an empty array - that is unreadable.
+            HasGrid = rows.Length > 0,
         }));
     }
 

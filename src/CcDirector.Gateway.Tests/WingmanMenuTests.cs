@@ -72,6 +72,131 @@ public sealed class WingmanMenuTests
         Assert.False(WingmanMenuLogic.LooksLikeMenu(""));
     }
 
+    // ===== LiveScreenLooksLikeMenu (issue #1777: the live grid rules the verdict) =====
+
+    /// <summary>
+    /// The exact defect (issue #1777): a full-screen Claude picker draws on the ALTERNATE screen, where the
+    /// scrollback is empty by design. The old scrollback-only gate saw "" and returned false, so voice-turn
+    /// typed the spoken words into the picker. The live-grid gate reads the resolved on-screen rows and sees
+    /// the menu - this pins the fix: empty scrollback is NOT a menu, but the SAME menu on the live grid IS.
+    /// </summary>
+    private static readonly string[] AltScreenClaudeMenuRows =
+    {
+        "> run the tests",
+        "",
+        "╭──────────────────────────────────────────────╮",
+        "│ Bash command                                 │",
+        "│ dotnet test                                  │",
+        "│                                              │",
+        "│ Do you want to proceed?                      │",
+        "│ ❯ 1. Yes                                     │",
+        "│   2. Yes, and don't ask again this session   │",
+        "│   3. No, and tell Claude what to do          │",
+        "╰──────────────────────────────────────────────╯",
+    };
+
+    [Fact]
+    public void LiveScreenLooksLikeMenu_AltScreenClaudeMenu_IsTrue_EvenThoughScrollbackIsEmpty()
+    {
+        // The scrollback (what the old gate read) is EMPTY on the alternate screen - so the old path misses.
+        Assert.False(WingmanMenuLogic.LooksLikeMenu(""));
+        // The live grid holds the menu - the new gate catches it. This is the whole fix.
+        Assert.True(WingmanMenuLogic.LiveScreenLooksLikeMenu(AltScreenClaudeMenuRows));
+    }
+
+    [Fact]
+    public void LiveScreenLooksLikeMenu_PlainPrompt_IsFalse()
+    {
+        var rows = new[]
+        {
+            "I finished editing the file and ran the tests. Everything passes.",
+            "",
+            "> ",
+        };
+        Assert.False(WingmanMenuLogic.LiveScreenLooksLikeMenu(rows));
+    }
+
+    [Fact]
+    public void LiveScreenLooksLikeMenu_EmptyOrNull_IsFalse()
+    {
+        Assert.False(WingmanMenuLogic.LiveScreenLooksLikeMenu(null));
+        Assert.False(WingmanMenuLogic.LiveScreenLooksLikeMenu(System.Array.Empty<string>()));
+    }
+
+    // ===== IsOptionLine (issue #1777, round-3: is the CURSOR on a menu option?) =====
+
+    [Theory]
+    [InlineData("❯ 1. Yes", true)]
+    [InlineData("  2. No", true)]
+    [InlineData("│ 3. Cancel │", true)]
+    [InlineData("a) Apply", true)]
+    [InlineData("Do you want to proceed?", false)]
+    [InlineData("> production", false)]        // a bare selector, not a numbered/lettered option line
+    [InlineData("│ >  │", false)]              // a composer input line
+    [InlineData("", false)]
+    public void IsOptionLine_ClassifiesRows(string row, bool expected)
+        => Assert.Equal(expected, WingmanMenuLogic.IsOptionLine(row));
+
+    // ===== IsSelectedOptionLine / LiveScreenHasMenuSelection (round-4: menu owned by its DRAWN marker) =====
+
+    [Theory]
+    [InlineData("❯ 1. Yes", true)]
+    [InlineData("│ ❯ 1. Yes │", true)]
+    [InlineData("> 1. Yes", true)]
+    [InlineData("  2. No", false)]          // an option, but not the SELECTED one (no marker)
+    [InlineData("> production", false)]     // a bare selector, no numbered option after the marker
+    [InlineData("Do you want to proceed?", false)]
+    public void IsSelectedOptionLine_DetectsTheDrawnMarker(string row, bool expected)
+        => Assert.Equal(expected, WingmanMenuLogic.IsSelectedOptionLine(row));
+
+    [Fact]
+    public void LiveScreenHasMenuSelection_MarkerPlusOptions_IsTrue()
+    {
+        var rows = new[] { "Do you want to proceed?", "❯ 1. Yes", "  2. No" };
+        Assert.True(WingmanMenuLogic.LiveScreenHasMenuSelection(rows));
+    }
+
+    [Fact]
+    public void LiveScreenHasMenuSelection_BareSelectorNoNumberedOptions_IsFalse()
+        => Assert.False(WingmanMenuLogic.LiveScreenHasMenuSelection(new[] { "Choose a deployment:", "> production" }));
+
+    [Fact]
+    public void LiveScreenHasMenuSelection_OptionsButNoDrawnMarker_IsFalse()
+        // A styled/reverse-video picker with no textual ❯/> marker is not recognized (fail closed, deferred).
+        => Assert.False(WingmanMenuLogic.LiveScreenHasMenuSelection(new[] { "  1. Yes", "  2. No" }));
+
+    // ===== MenuHasAnswerableOptions (finding 4: reject empty/invented labels) =====
+
+    [Fact]
+    public void MenuHasAnswerableOptions_RealLabelsOnScreen_IsTrue()
+    {
+        var rows = new[] { "Do you want to proceed?", "❯ 1. Yes", "  2. Yes, and don't ask again", "  3. No" };
+        Assert.True(WingmanMenuLogic.MenuHasAnswerableOptions(PermissionMenu(), rows));
+    }
+
+    [Fact]
+    public void MenuHasAnswerableOptions_BareNumberLabels_IsFalse()
+    {
+        var menu = new WingmanMenu
+        {
+            IsMenu = true,
+            Options = new() { new() { Key = "1.", Send = "1\r" }, new() { Key = "2.", Send = "2\r" } },
+        };
+        Assert.False(WingmanMenuLogic.MenuHasAnswerableOptions(menu, new[] { "❯ 1.", "  2." }));
+    }
+
+    [Fact]
+    public void MenuHasAnswerableOptions_LabelNotOnScreen_IsFalse()
+    {
+        // The model invented an option that is not actually on the live grid.
+        var menu = new WingmanMenu
+        {
+            IsMenu = true,
+            Options = new() { new() { Key = "1. Yes", Send = "1\r" }, new() { Key = "2. Delete everything", Send = "2\r" } },
+        };
+        Assert.False(WingmanMenuLogic.MenuHasAnswerableOptions(menu, new[] { "Proceed?", "❯ 1. Yes", "  2. No" }));
+    }
+
     // ===== MatchOption (local spoken-answer mapping) =====
 
     [Theory]

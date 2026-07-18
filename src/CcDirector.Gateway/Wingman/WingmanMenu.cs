@@ -87,6 +87,96 @@ public static class WingmanMenuLogic
             || tail.Contains("yes, and");
     }
 
+    /// <summary>
+    /// The AUTHORITATIVE menu gate (issue #1777), applied to the RESOLVED live screen grid rows rather than
+    /// the scrollback text. The live grid is alternate-screen-correct, so this sees the menu a full-screen
+    /// picker draws even though the scrollback is empty by design - which is exactly the case where the old
+    /// scrollback-only <see cref="LooksLikeMenu"/> returned false and the spoken words got typed into the
+    /// picker. Same fingerprint heuristic as <see cref="LooksLikeMenu"/> (2+ option lines, or a Claude-Code
+    /// permission-prompt fingerprint), but the LIVE screen rules the verdict: a menu counts only when its
+    /// choices and selection cursor are on screen NOW. The scrollback may only SUPPLEMENT extraction text
+    /// later; it can never create a menu on its own (it is full of already-answered menus). Empty/no grid is
+    /// not a menu here - an unreadable screen is handled by the caller, which fails closed.
+    /// </summary>
+    public static bool LiveScreenLooksLikeMenu(IReadOnlyList<string>? rows)
+    {
+        if (rows is null || rows.Count == 0) return false;
+        return LooksLikeMenu(string.Join("\n", rows));
+    }
+
+    /// <summary>True when a row is a menu option line (a leading marker run - a box edge, a selection arrow
+    /// like <c>❯</c> or <c>&gt;</c>, whitespace - then a number or letter, a <c>.</c> or <c>)</c>, a space, and
+    /// content). This is the same shape <see cref="LooksLikeMenu"/> counts.</summary>
+    public static bool IsOptionLine(string? row)
+        => !string.IsNullOrWhiteSpace(row) && OptionLine.IsMatch(row.Trim());
+
+    /// <summary>The DRAWN selection marker at the start of an option row: <c>❯</c> (Claude Code's Ink picker)
+    /// or a plain <c>&gt;</c>, then a space or the option content.</summary>
+    private static readonly Regex SelectedOption =
+        new(@"^(?:❯|>)\s*(?:\d{1,2}|[A-Za-z])[.)]\s+\S", RegexOptions.Compiled);
+
+    /// <summary>
+    /// True when a row is the SELECTED option of a menu - it carries the drawn selection marker (<c>❯</c> or
+    /// <c>&gt;</c>) directly before a numbered/lettered option (issue #1777, round-4). The Ink picker HIDES the
+    /// hardware cursor and draws this marker instead, so this - not the cursor cell - is how the live grid says
+    /// "a menu owns the turn". A bare <c>&gt; production</c> selector (no numbered option after the marker) is
+    /// deliberately NOT a selected option line.
+    /// </summary>
+    public static bool IsSelectedOptionLine(string? row)
+    {
+        if (string.IsNullOrWhiteSpace(row)) return false;
+        var stripped = row!.TrimStart(BorderPadding);
+        return SelectedOption.IsMatch(stripped);
+    }
+
+    /// <summary>Box-drawing glyphs and pipes stripped from a row's leading edge before looking for a selection
+    /// marker, so a bordered "│ ❯ 1. Yes │" reads as "❯ 1. Yes".</summary>
+    private static readonly char[] BorderPadding =
+    {
+        '│','┃','┆','┇','┊','┋','╎','╏','║',
+        '╭','╮','╰','╯','┌','┐','└','┘','╔','╗','╚','╝',
+        '─','━','═','┄','┅','┈','┉','|',' ','\t','\r',
+    };
+
+    /// <summary>
+    /// True when the LIVE grid carries a menu OWNED BY ITS DRAWN SELECTION MARKER (issue #1777, round-4): a row
+    /// with the drawn <c>❯</c>/<c>&gt;</c> marker on a numbered/lettered option, plus two or more option lines.
+    /// This is cursor-INDEPENDENT on purpose - a full-screen Ink menu hides the hardware cursor - so
+    /// menu-answering works with a hidden cursor. A menu with no recognizable textual marker (reverse-video
+    /// only) is NOT recognized here and the caller fails closed (styled-picker parsing is deferred).
+    /// </summary>
+    public static bool LiveScreenHasMenuSelection(IReadOnlyList<string>? rows)
+    {
+        if (rows is null || rows.Count == 0) return false;
+        var options = 0;
+        var hasMarker = false;
+        foreach (var r in rows)
+        {
+            if (IsOptionLine(r)) options++;
+            if (!hasMarker && IsSelectedOptionLine(r)) hasMarker = true;
+        }
+        return hasMarker && options >= 2;
+    }
+
+    /// <summary>
+    /// True when an extracted menu is actually ANSWERABLE (issue #1777, finding 4): it has options, every
+    /// option has a non-empty visible label (a bare <c>1.</c> / <c>2.</c> with no words is not answerable), and
+    /// every label actually appears on the live grid rows (the model did not invent options that are not on
+    /// screen). Fail closed when any of these does not hold.
+    /// </summary>
+    public static bool MenuHasAnswerableOptions(WingmanMenu? menu, IReadOnlyList<string>? liveRows)
+    {
+        if (menu?.Options is null || menu.Options.Count == 0 || liveRows is null || liveRows.Count == 0) return false;
+        var screen = Norm(string.Join("\n", liveRows));
+        foreach (var o in menu.Options)
+        {
+            var label = Norm(StripLeadingKey(o.Key));
+            if (label.Length == 0) return false;         // a bare "1." with no words - not answerable
+            if (!screen.Contains(label)) return false;    // an option the model invented, not on the live grid
+        }
+        return true;
+    }
+
     private static readonly Dictionary<string, int> NumberWords = new()
     {
         ["one"] = 1, ["two"] = 2, ["three"] = 3, ["four"] = 4, ["five"] = 5,
