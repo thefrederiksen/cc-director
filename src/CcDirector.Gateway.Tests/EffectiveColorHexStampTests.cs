@@ -6,14 +6,16 @@ namespace CcDirector.Gateway.Tests;
 
 /// <summary>
 /// The "Dumb Clients" palette slice: the Gateway stamps the dot's pixel HEX beside the colour NAME in the
-/// same fold, resolved through the ONE canonical map (<see cref="SessionColorPalette"/>). Every client
-/// paints that stamp; none keeps its own name-&gt;hex table that can drift.
+/// same fold, resolved through the ONE canonical map (<see cref="SessionColorPalette"/>). The /sessions
+/// consumers (the web phone and Cockpit) paint that stamp; the DESKTOP does NOT receive the hex - it
+/// resolves the same canonical values at compile time (StatusPalette references SessionColorPalette). No
+/// client keeps its own name-&gt;hex table that can drift from that one map.
 ///
-/// These drive the REAL fold (<c>StampFleetRolesAndFold</c> - the same method the /sessions roster and the
-/// desktop display-state push both fold through), not a hand-stamped DTO, so they cannot pass on a value
-/// production never puts there. Revert the stamp line in StampFleetRolesAndFold and
-/// <see cref="TheFoldStampsTheCanonicalHexForTheFoldedColour"/> goes red with a null hex - which is the web
-/// session dot painting the magenta sentinel instead of the real colour.
+/// These drive the REAL fold (<c>StampFleetRolesAndFold</c> - the method that stamps the /sessions roster
+/// and the display-state push, though the push carries the NAME and not this hex), not a hand-stamped DTO,
+/// so they cannot pass on a value production never puts there. Revert the stamp line in
+/// StampFleetRolesAndFold and <see cref="TheFoldStampsTheCanonicalHexForTheFoldedColour"/> goes red with a
+/// null hex - which is the web session dot painting the magenta sentinel instead of the real colour.
 /// </summary>
 public sealed class EffectiveColorHexStampTests
 {

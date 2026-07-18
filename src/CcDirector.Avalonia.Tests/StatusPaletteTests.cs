@@ -12,8 +12,9 @@ namespace CcDirector.Avalonia.Tests;
 /// #F44747 in the FIFO window and the (dead) Director view, and #F14C4C on the phone. This file is
 /// the C# half of the pin; the web/mobile client carries the same table in
 /// packages/client-core/src/sessions/ordering.ts, and docs/new_architecture/session-state.html is
-/// the single written source both sides cite. A C# test cannot assert the TypeScript, so the spec's
-/// table is what keeps them honest - change it and both sides in the same pull request.
+/// the single written source both sides cite. PaletteAgreementTests now READS that shipping TypeScript
+/// table and asserts it equals the canonical map and this one, so the two sides are machine-checked to
+/// agree instead of relying on a human to change both in the same pull request.
 /// </summary>
 public sealed class StatusPaletteTests
 {
