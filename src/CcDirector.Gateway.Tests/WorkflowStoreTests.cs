@@ -151,22 +151,74 @@ public sealed class WorkflowStoreTests : IDisposable
         }
     }
 
+    // ---- the content-hash invariant ----------------------------------------------------------------
+    // The whole ours/yours upgrade trade rides on the bundle hash: "uncustomized" is a hash equality
+    // and "this binary ships something different" is a hash inequality. A hash function that returned
+    // any CONSTANT would leave every store test above green while silently breaking upgrade detection
+    // forever - so the function's two invariants are pinned directly.
+
+    [Fact]
+    public void Bundle_hash_is_deterministic_and_sensitive_to_every_content_change()
+    {
+        var steps = new List<Contracts.WorkflowStepDto>
+        {
+            new() { Name = "Do", Description = "d", Doer = "Worker", Reviewer = null, Done = "merged" },
+        };
+        string Hash(string name = "n", string summary = "s", string instructions = "i") =>
+            WorkflowContentHash.ForBundle(name, summary, "w", "h", steps,
+                Array.Empty<Contracts.WorkflowOutcomeCriterionDto>(), instructions,
+                Array.Empty<(string, string)>());
+
+        // Deterministic: the same bundle always hashes the same.
+        Assert.Equal(Hash(), Hash());
+
+        // Sensitive: any changed piece - metadata, instructions, steps, files - changes the hash.
+        Assert.NotEqual(Hash(), Hash(name: "other"));
+        Assert.NotEqual(Hash(), Hash(summary: "other"));
+        Assert.NotEqual(Hash(), Hash(instructions: "other"));
+        var reviewedSteps = new List<Contracts.WorkflowStepDto>
+        {
+            new() { Name = "Do", Description = "d", Doer = "Worker", Reviewer = "Reviewer", Done = "merged" },
+        };
+        Assert.NotEqual(Hash(),
+            WorkflowContentHash.ForBundle("n", "s", "w", "h", reviewedSteps,
+                Array.Empty<Contracts.WorkflowOutcomeCriterionDto>(), "i", Array.Empty<(string, string)>()));
+        Assert.NotEqual(Hash(),
+            WorkflowContentHash.ForBundle("n", "s", "w", "h", steps,
+                Array.Empty<Contracts.WorkflowOutcomeCriterionDto>(), "i",
+                new[] { ("helpers.py", WorkflowContentHash.ForFile("print()")) }));
+    }
+
     // ---- the mission-extraction fidelity test ------------------------------------------------------
 
     /// <summary>
     /// The two mechanical self-reference edits the extraction is allowed (each listed in the plan and
     /// shown in the pull request): the document stops calling itself "this file" where that would now
     /// be a lie, and the brief checklist points at the workflow instead of linking the file.
-    /// Everything else must match byte-for-byte (modulo line endings).
+    /// Everything else must match byte-for-byte (modulo line endings). Each replacement ASSERTS that
+    /// its source phrase was actually present - a silent no-op Replace (the phrase drifted in the
+    /// skill file) would otherwise let an unedited embedded copy pass.
     /// </summary>
-    private static string ApplyListedEdits(string skillBody) => skillBody
-        .Replace(
+    private static string ApplyListedEdits(string skillBody)
+    {
+        var edited = ReplaceExactlyOnce(skillBody,
             "> **THIS FILE IS THE ONLY PLACE THE RULES LIVE.",
-            "> **THIS WORKFLOW IS THE ONLY PLACE THE RULES LIVE.")
-        .Replace(
+            "> **THIS WORKFLOW IS THE ONLY PLACE THE RULES LIVE.");
+        return ReplaceExactlyOnce(edited,
             "5. **A link to this file** for how to conduct itself.",
             "5. **A pointer to this workflow** - `cc-devthrottle workflow instructions mission` - for how to\n" +
             "   conduct itself.");
+    }
+
+    private static string ReplaceExactlyOnce(string text, string from, string to)
+    {
+        var first = text.IndexOf(from, StringComparison.Ordinal);
+        Assert.True(first >= 0,
+            $"Expected the skill file to contain the listed-edit source phrase: \"{from}\". " +
+            "If the skill file changed, update the listed edits deliberately.");
+        Assert.Equal(first, text.LastIndexOf(from, StringComparison.Ordinal));
+        return text.Replace(from, to);
+    }
 
     [Fact]
     public void Mission_instructions_are_a_faithful_extraction_of_the_skill_file()

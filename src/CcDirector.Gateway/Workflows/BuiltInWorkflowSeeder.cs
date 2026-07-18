@@ -14,8 +14,10 @@ namespace CcDirector.Gateway.Workflows;
 ///
 ///  - Absent workflow: seeded as version 1, published, with the shipped content.
 ///  - Present and UNCUSTOMIZED (its published content hash equals the shipped hash we last recorded):
-///    a binary that ships newer content auto-publishes it as the next version - the user follows
-///    "ours" and gets updates.
+///    a binary that ships different content auto-publishes it as the next version - the user follows
+///    "ours" and the catalog tracks the RUNNING binary, in both directions. A rollback deliberately
+///    rolls the conduct back too (and mints a version recording that), exactly as the injected-text
+///    "ours" channel serves whatever the running binary carries.
 ///  - Present and CUSTOMIZED (the user published their own edit): left completely alone. The newly
 ///    shipped hash is still recorded on the head so a later "reset to shipped" knows what this binary
 ///    ships, but no version is created and nothing the user wrote is touched.
@@ -110,8 +112,10 @@ public static class BuiltInWorkflowSeeder
 
         if (uncustomized)
         {
-            // The user follows the shipped content - publish the newer shipped bundle as the next
-            // version so every Director picks it up, exactly like the injected-text "ours" channel.
+            // The user follows the shipped content - publish THIS binary's bundle as the next version
+            // so every Director picks it up, exactly like the injected-text "ours" channel. This is
+            // direction-agnostic on purpose: a rollback republishes the older conduct, and the minted
+            // version row is the honest record of what the fleet was served.
             var now = DateTime.UtcNow;
             published!.Status = WorkflowVersionStatus.Superseded;
             var nextVersion = head.LatestVersion + 1;
