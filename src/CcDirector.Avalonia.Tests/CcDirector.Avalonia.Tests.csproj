@@ -13,6 +13,10 @@
     <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.*" />
     <PackageReference Include="xunit" Version="2.*" />
     <PackageReference Include="xunit.runner.visualstudio" Version="2.*" />
+    <!-- Headless Avalonia so the local-only first-run proof (issue #1809) can drive the real
+         OnboardingWizardDialog Skip seam. -->
+    <PackageReference Include="Avalonia.Headless.XUnit" Version="11.*" />
+    <PackageReference Include="Avalonia.Themes.Fluent" Version="11.*" />
   </ItemGroup>
 
   <ItemGroup>

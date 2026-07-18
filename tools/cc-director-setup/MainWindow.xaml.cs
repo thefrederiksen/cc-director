@@ -160,22 +160,21 @@ public partial class MainWindow : Window
         }
     }
 
+    // The six sidebar rows in display order. Their x:Names keep the historical step ids (1, 2, 4, 6, 7,
+    // 8) so the ShowStep switch and the WizardStepFlow ids stay unchanged; the circles are renumbered
+    // 1..6 at runtime by UpdateSidebar. This list is aligned with WizardStepFlow.VisibleSteps().
     private List<StepUI> GetStepUIs() =>
     [
         new(Step1Circle, Step1Label, null),
         new(Step2Circle, Step2Label, Step2Num),
-        new(Step3Circle, Step3Label, Step3Num),
         new(Step4Circle, Step4Label, Step4Num),
-        new(Step5Circle, Step5Label, Step5Num),
         new(Step6Circle, Step6Label, Step6Num),
         new(Step7Circle, Step7Label, Step7Num),
         new(Step8Circle, Step8Label, Step8Num),
     ];
 
-    private Border[] GetLines() => [Line12, Line23, Line34, Line45, Line56, Line67, Line78];
-
-    private Panel[] GetStepRows() =>
-        [Step1Row, Step2Row, Step3Row, Step4Row, Step5Row, Step6Row, Step7Row, Step8Row];
+    // The five connector lines between the six rows, in order.
+    private Border[] GetLines() => [Line12, Line23, Line45, Line67, Line78];
 
     private void ShowStep(int step)
     {
@@ -209,7 +208,6 @@ public partial class MainWindow : Window
     private void UpdateSidebar()
     {
         var stepUIs = GetStepUIs();
-        var rows = GetStepRows();
         var lines = GetLines();
         var visible = VisibleSteps();
         var accentBrush = (SolidColorBrush)FindResource("AccentBrush");
@@ -218,26 +216,14 @@ public partial class MainWindow : Window
         var dimBrush = (SolidColorBrush)FindResource("DimText");
         var doneLabelBrush = new SolidColorBrush(Color.FromRgb(0xCC, 0xCC, 0xCC));
 
-        // Progress is measured by position within the visible steps, not the absolute step id, so a
-        // skipped step never throws off the highlighting.
+        // One linear path (issue #1807): every row is always shown, so progress is just the current
+        // step's position in the rail. stepUIs is aligned with VisibleSteps(), so row at position i is
+        // step id visible[i]; the circle shows i+1.
         var currentPos = visible.IndexOf(_currentStep);
 
-        for (int i = 0; i < stepUIs.Count; i++)
+        for (int pos = 0; pos < stepUIs.Count; pos++)
         {
-            var stepId = i + 1;
-            var ui = stepUIs[i];
-            var pos = visible.IndexOf(stepId);
-
-            // A step not in the visible set (Sign-in on a Workstation, Connect on a Gateway / update)
-            // is hidden entirely.
-            if (pos < 0)
-            {
-                rows[i].Visibility = Visibility.Collapsed;
-                continue;
-            }
-
-            rows[i].Visibility = Visibility.Visible;
-            // Renumber the visible circles 1..N so a skipped step leaves no gap (e.g. "...2, 4...").
+            var ui = stepUIs[pos];
             if (ui.Number != null) ui.Number.Text = (pos + 1).ToString();
 
             if (pos < currentPos)
@@ -260,20 +246,9 @@ public partial class MainWindow : Window
             }
         }
 
-        // A line sits after step (i+1). Hide the line that trails a hidden step so the rail stays
-        // continuous (Workstation: step 2's line runs straight into Privacy; Gateway: Privacy's line
-        // runs straight into Skills).
+        // Line i sits between row i and row i+1; it is "done" once the current step is past row i.
         for (int i = 0; i < lines.Length; i++)
-        {
-            var pos = visible.IndexOf(i + 1);
-            if (pos < 0)
-            {
-                lines[i].Visibility = Visibility.Collapsed;
-                continue;
-            }
-            lines[i].Visibility = Visibility.Visible;
-            lines[i].Background = pos < currentPos ? successBrush : inactiveBrush;
-        }
+            lines[i].Background = i < currentPos ? successBrush : inactiveBrush;
     }
 
     private void UpdateNavButtons()
