@@ -511,10 +511,11 @@ public sealed class WingmanVoiceService
                 // and the voice sweep retries on its own, instead of the session sitting red with no audio
                 // and no reason (the wedge the owner hit: half the fleet stuck, "generate" doing nothing).
                 // A rate-limit (WingmanModelRateLimitedException) is NOT caught here - it stays thrown so
-                // GenerateAsync's handler arms the model cooldown with the provider's Retry-After.
+                // GenerateAsync's handler records THIS session's Retrying state (it does not reach any
+                // other session; the shared cooldown that used to do so is gone).
                 _voiceUnavailable[sid] = HostedAiState.Retrying;
                 FileLog.Write($"[WingmanVoiceService] model did not answer for sid={sid}: {ex.Message} - Retrying (audio on its way); the session retries on its own");
-                return false;   // nothing produced; the provider was not usefully reached, so report no success
+                return false;   // nothing produced; the provider was not usefully reached
             }
             await StoreSpokenAsync(sid, t.Spoken, lastReply, ct);
             // Log the TRUE outcome: StoreSpokenAsync only makes the session playable when the
@@ -529,8 +530,8 @@ public sealed class WingmanVoiceService
             // delays the turn. CancellationToken.None so a captured turn is not lost on shutdown.
             _ = _training.CaptureAsync(route, sid, "generate", lastReply, recentContext, t.Spoken, t.ReplySeconds, CancellationToken.None);
             // The model leg ran and answered - TranslateAsync returned rather than throwing
-            // WingmanModelRateLimitedException. THIS is the only thing that entitles the caller to tell
-            // the rate-limit gate the provider is well.
+            // WingmanModelRateLimitedException. Reported as true purely so the return honestly says the
+            // provider was reached (no caller acts on it now that the shared gate is gone).
             return true;
         }
         finally { if (showReadingWindow) EndGenerating(sid); }
@@ -586,8 +587,8 @@ public sealed class WingmanVoiceService
                 // Out of credits / monthly cap (402): map by code to the shared state so the caller
                 // records the consistent unavailable state instead of a silent null (issue #939).
                 // 402 is the account, not the service: out of credits or over the cap. It is the user's
-                // to fix, so it must NOT arm the speech cooldown - backing off would only delay the
-                // moment they see the message telling them what to do.
+                // to fix, so it is mapped straight to the account state (NeedsCredits / CapReached) and
+                // surfaced at once - there is nothing to back off from, and nothing reaches other sessions.
                 if ((int)resp.StatusCode == HostedAiHttp.PaymentRequired)
                     return new TtsResult(null, null, HostedAiErrorMapper.Map402(body));
 
