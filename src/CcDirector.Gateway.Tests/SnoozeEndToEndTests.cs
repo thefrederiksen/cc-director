@@ -212,6 +212,34 @@ public sealed class SnoozeEndToEndTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Snoozing_a_Starting_session_defers_and_survives_a_following_Starting_push()
+    {
+        // FINDING 2 (inspection), END TO END THROUGH THE REAL HOLD ENDPOINT. Session.IsWorking and the
+        // working edge both treat Starting as active work, but the hold endpoint used to check only Working
+        // when deciding whether to DEFER. So a snooze set while Starting was armed, not deferred - and the
+        // very next Starting push deleted it through the working edge. The defer decision and the working edge
+        // must agree on what "working" means.
+        await SetDefaultMinutes(1);
+        var fake = await StartFakeAsync("s9", onHold: false, activityState: "Starting");
+
+        // Snooze it via the REAL hold endpoint while it is Starting.
+        var holdResp = await _http.PostAsJsonAsync(
+            "sessions/s9/hold", new HoldRequest { OnHold = true, SnoozeMinutes = 12 * 60 });
+        Assert.Equal(HttpStatusCode.OK, holdResp.StatusCode);
+
+        // It must DEFER (a length, no clock), not create an armed Held entry.
+        Assert.Equal(HoldStates.DeferredHold, fake.CurrentHoldState("s9"));
+        Assert.True(Assert.Single(_gw.SnoozeRegistry.Entries()).IsDeferred);
+
+        // A following Starting push must NOT delete it - the working edge spares a deferred entry.
+        fake.SetActivity("s9", "Starting");
+        await fake.RePushAsync();
+
+        Assert.True(_gw.SnoozeRegistry.Contains("s9"));
+        Assert.True(Assert.Single(_gw.SnoozeRegistry.Entries()).IsDeferred);
+    }
+
+    [Fact]
     public async Task Hold_with_an_out_of_range_duration_is_rejected_and_arms_nothing()
     {
         // Issue #1500: a bad length fails loudly (400) and leaves NO side effect - the session is not held

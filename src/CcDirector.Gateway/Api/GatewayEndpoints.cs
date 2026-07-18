@@ -1305,8 +1305,15 @@ internal static class GatewayEndpoints
                 // so a deferral records its LENGTH and no deadline, and SnoozeLandingObserver starts the
                 // clock when the Director reports the work has stopped. Arming a clock at request time is
                 // what made an agent-requested snooze permanent.
-                var working = string.Equals(session.ActivityState?.Trim(), nameof(Core.Sessions.ActivityState.Working),
-                    StringComparison.OrdinalIgnoreCase);
+                //
+                // "Working" here means BOTH Working AND Starting - the same set Session.IsWorking uses and the
+                // same set SnoozeLandingObserver's working edge deletes an armed snooze on. If this armed a
+                // Starting session instead of deferring it, the very next Starting push would delete the
+                // just-created snooze through that edge. The defer decision and the working edge must agree on
+                // what "working" is, or a snooze set on a Starting session cannot survive.
+                var activityNow = session.ActivityState?.Trim();
+                var working = string.Equals(activityNow, nameof(Core.Sessions.ActivityState.Working), StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(activityNow, nameof(Core.Sessions.ActivityState.Starting), StringComparison.OrdinalIgnoreCase);
                 // The owner-turn BASELINE: this Director's own LastOwnerTurnAtUtc as of right now. The
                 // hold is superseded when a LATER value arrives from that same Director - one clock,
                 // compared against itself. Never against DateTime.UtcNow here: that is the GATEWAY's
