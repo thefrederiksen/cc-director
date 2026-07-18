@@ -1452,6 +1452,10 @@ public sealed class GatewayHost : IAsyncDisposable
             // VoiceDisplay so the screen shows an honest "nothing to read aloud" instead of a Generate
             // button that cannot work - the client no longer rules on this.
             nothingToNarrateFor: sid => _voiceService?.NothingToNarrateFor(sid) == true,
+            // TTS fallback: this session's ready clip was made by the backup voice provider (the primary
+            // was overloaded and the cloud proxy failed over). Feeds the folded VoiceDisplay so the screen
+            // shows the generic backup-voice notice. A success-with-a-note, never an outage state.
+            servedViaFallbackFor: sid => _voiceService?.ServedViaFallbackFor(sid) == true,
             // Issue #218: stamp the Gateway-owned NeedsYouSince entry clock onto each session.
             needsYouStampFor: (sid, isRed) => _needsYouClock.Stamp(sid, isRed),
             // Stamp the orange "Transcribing..." flag while a dictated utterance is being uploaded

@@ -1848,6 +1848,18 @@ body {
   margin: 0 0 12px;
 }
 
+/* TTS fallback: the generic "switched to a backup voice" heads-up. A calm amber note - the voice is
+   working (a success), just via the backup provider. */
+.voice-fallback-note {
+  background: rgba(234, 179, 8, 0.12);
+  border: 1px solid rgba(234, 179, 8, 0.4);
+  color: var(--text);
+  border-radius: 8px;
+  padding: 10px 12px;
+  margin: 0 0 12px;
+  font-size: 13px;
+}
+
 .voice-narr-title {
   font-size: 14px;
   font-weight: 700;

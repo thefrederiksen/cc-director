@@ -54,4 +54,15 @@ public sealed class VoiceDisplay
     /// <c>blocked</c> - the same single-source <see cref="HostedAiMessageDto"/> the roster uses. Null
     /// otherwise.</summary>
     public HostedAiMessageDto? Reason { get; set; }
+
+    /// <summary>
+    /// The optional GENERIC heads-up shown when this turn's ready clip was made by the BACKUP voice
+    /// provider (the primary was temporarily overloaded and the cloud proxy quietly failed over - see the
+    /// TTS-fallback mission). Null in the normal case. It is the finished, verbatim string every client
+    /// shows AS-IS next to the voice card; the Gateway computes it once (VoiceDisplayFold) so no client
+    /// re-derives it. It NAMES NO PROVIDER and states there is no extra charge, because the member is
+    /// billed the normal rate on a fallback. A success-with-a-note, not a failure: it rides the green
+    /// <c>ready</c> verdict, never a red/unavailable one.
+    /// </summary>
+    public string? VoiceFallbackNotice { get; set; }
 }

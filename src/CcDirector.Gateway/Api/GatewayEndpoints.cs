@@ -51,6 +51,7 @@ internal static class GatewayEndpoints
         Func<string, bool>? voiceAudioReadyFor = null,
         Func<string, Core.HostedAi.HostedAiState?>? voiceUnavailableFor = null,
         Func<string, bool>? nothingToNarrateFor = null,
+        Func<string, bool>? servedViaFallbackFor = null,
         Func<string, bool, DateTime?>? needsYouStampFor = null,
         Func<string, bool>? transcribingFor = null,
         Func<string, string?>? dictationStatusFor = null,
@@ -861,7 +862,8 @@ internal static class GatewayEndpoints
                         hasAudio: s.VoiceAudioReady,
                         generating: s.VoiceGenerating,
                         unavailable: voiceUnavailableFor?.Invoke(s.SessionId),
-                        nothingToNarrate: nothingToNarrateFor?.Invoke(s.SessionId) ?? false);
+                        nothingToNarrate: nothingToNarrateFor?.Invoke(s.SessionId) ?? false,
+                        servedViaFallback: servedViaFallbackFor?.Invoke(s.SessionId) ?? false);
                     // Orange "Transcribing..." while a dictated utterance is uploading/transcribing in
                     // the background for this session (mobile Speak -> Send released the screen). Stamped
                     // BEFORE the NeedsYouSince clock below so the EffectiveColor fold already sees orange
