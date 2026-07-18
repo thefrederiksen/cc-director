@@ -335,6 +335,9 @@ public sealed class GatewayHost : IAsyncDisposable
     // Workflow runs (phase 4, issue #1771): one row per execution of a workflow definition, pinned to
     // the version that governed it. The governance outcome spine.
     private readonly Workflows.WorkflowRunStore _workflowRuns;
+    // The append-only governance event ledger (issue #1771, spine item 2): immutable session/run state
+    // transitions, the duration spine no run row can give.
+    private readonly Governance.GovernanceEventLedger _governanceEvents;
     private readonly CronJobStore _cronJobs;
     private readonly CronRunHistoryStore _cronRuns;
     private readonly Running.CronEngine _cronEngine;
@@ -603,6 +606,9 @@ public sealed class GatewayHost : IAsyncDisposable
         // Workflow runs (phase 4, issue #1771): built after the catalog store so the built-ins a run
         // pins are already seeded.
         _workflowRuns = new Workflows.WorkflowRunStore(_gatewayDb);
+        // The governance event ledger (issue #1771, spine item 2): append-only session/run transitions on
+        // the EF data layer, so a Gateway restart never loses a recorded transition.
+        _governanceEvents = new Governance.GovernanceEventLedger(_gatewayDb);
         // Snooze Length mission: the persisted snooze registry (sessionId -> SnoozeUntilUtc), now in the
         // snoozes table of the EF data layer - a Gateway restart re-arms every pending snooze from the
         // database; an entry already past its time simply fires on the first sweep. The path argument is the
@@ -1619,6 +1625,10 @@ public sealed class GatewayHost : IAsyncDisposable
         // Workflow runs (phase 4, issue #1771): the outcome spine's REST surface. One row per
         // execution of a workflow, pinned to the exact published version that governed it.
         Api.WorkflowRunEndpoints.Map(_app, _workflowRuns);
+
+        // The governance event ledger (issue #1771, spine item 2): append-only session/run state
+        // transitions - the duration timeline the weekly Outcome Ledger reads. Append and read only.
+        Api.GovernanceEventEndpoints.Map(_app, _governanceEvents);
 
         // Gateway Centralization Phase 1 (issue #628): the inbound login-telemetry RELAY. The Director
         // POSTs its login-telemetry event here (instead of the cloud) and the Gateway forwards it on,
