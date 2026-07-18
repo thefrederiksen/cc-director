@@ -141,6 +141,63 @@ public sealed class WorkflowEndpointsTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Authoring_round_trip_create_draft_publish_read_archive()
+    {
+        // Workflows mission, phase 2: the full agent authoring loop over real HTTP.
+        var create = await _http.PostAsJsonAsync("gateway/workflows", new
+        {
+            id = "smoke-flow",
+            name = "Smoke flow",
+            summary = "End-to-end authoring smoke.",
+            authoredBy = "endpoint-test",
+        });
+        Assert.Equal(HttpStatusCode.Created, create.StatusCode);
+
+        // A draft is invisible to the catalog and publish refuses a skeletal draft.
+        var listed = await _http.GetFromJsonAsync<JsonObject>("gateway/workflows");
+        Assert.DoesNotContain(listed!["workflows"]!.AsArray(), w => (string?)w!["id"] == "smoke-flow");
+        var earlyPublish = await _http.PostAsync("gateway/workflows/smoke-flow/publish", null);
+        Assert.Equal(HttpStatusCode.BadRequest, earlyPublish.StatusCode);
+
+        // Fill the draft (full replacement), then publish.
+        var put = await _http.PutAsJsonAsync("gateway/workflows/smoke-flow/draft", new
+        {
+            name = "Smoke flow",
+            summary = "End-to-end authoring smoke.",
+            steps = new[] { new { name = "Do", description = "d", doer = "Worker", done = "merged" } },
+            instructionsMarkdown = "# Smoke flow\n\nDo the thing.",
+            authoredBy = "endpoint-test",
+        });
+        Assert.Equal(HttpStatusCode.OK, put.StatusCode);
+        var publish = await _http.PostAsync("gateway/workflows/smoke-flow/publish", null);
+        Assert.Equal(HttpStatusCode.OK, publish.StatusCode);
+
+        // The agent read path serves the raw markdown.
+        var instructions = await _http.GetStringAsync("gateway/workflows/smoke-flow/instructions");
+        Assert.Equal("# Smoke flow\n\nDo the thing.", instructions);
+
+        // A stale If-Match is refused with a conflict.
+        var stale = new HttpRequestMessage(HttpMethod.Put, "gateway/workflows/smoke-flow/draft")
+        {
+            Content = JsonContent.Create(new { name = "Smoke flow", summary = "edit" }),
+        };
+        stale.Headers.TryAddWithoutValidation("If-Match", "\"stale-hash\"");
+        var conflict = await _http.SendAsync(stale);
+        Assert.Equal(HttpStatusCode.Conflict, conflict.StatusCode);
+
+        // A duplicate id is a conflict; archiving removes it from the catalog; built-ins refuse delete.
+        var duplicate = await _http.PostAsJsonAsync("gateway/workflows", new
+        {
+            id = "smoke-flow", name = "n", summary = "s",
+        });
+        Assert.Equal(HttpStatusCode.Conflict, duplicate.StatusCode);
+        var delete = await _http.DeleteAsync("gateway/workflows/smoke-flow");
+        Assert.Equal(HttpStatusCode.OK, delete.StatusCode);
+        var deleteBuiltIn = await _http.DeleteAsync("gateway/workflows/mission");
+        Assert.Equal(HttpStatusCode.BadRequest, deleteBuiltIn.StatusCode);
+    }
+
+    [Fact]
     public async Task The_api_does_not_squat_on_the_cockpit_page_path()
     {
         // Regression: the catalog was first mapped at a bare /workflows, which is the path the Cockpit's
