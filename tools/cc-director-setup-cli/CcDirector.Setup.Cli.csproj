@@ -12,6 +12,12 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <!-- The test project drives the internal Commands entry points (the managed Gateway install
+         branch) at the production seam. -->
+    <InternalsVisibleTo Include="CcDirector.Setup.Cli.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
     <ProjectReference Include="..\cc-director-setup-engine\CcDirector.Setup.Engine.csproj" />
     <!-- signin/enroll drive account sign-in + gateway enrollment: GatewayConfig + OperationResult live in
          Core, and the /m/enroll response type lives in Gateway.Contracts. Both also flow transitively

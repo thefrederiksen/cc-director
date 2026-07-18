@@ -55,21 +55,56 @@ public class GatewayTrayInstallerTests
         Assert.Equal(7878, GatewayTrayInstaller.GatewayDefaultPort);
     }
 
-    // D2a: the Gateway install contract no longer carries an OPENAI_API_KEY. Inference routes through
-    // the account-minted dt_live_ key the managed Gateway runtime mints itself, so InstallAsync neither
-    // asks for nor writes an OpenAI key. Revert-proof: re-add the `string? openAiKey` parameter (and the
-    // env-write block this slice deleted) and this test goes red - the parameter reappears.
+    // D2a at the PRODUCTION SEAM: run the real GatewayTrayInstaller.InstallAsync in a no-key
+    // environment and prove it neither demands nor writes an OPENAI_API_KEY. With the Gateway exe
+    // present, control runs PAST the point where the old key demand/write lived and fails later (here,
+    // at sidecar extraction because the offline release carries no download URL) - NOT with a key
+    // demand, and without touching the User-scope OPENAI_API_KEY.
+    //
+    // Revert-proof: re-insert an executable OPENAI_API_KEY demand in the REAL
+    // GatewayTrayInstaller.InstallAsync (right after the exe-present check, GatewayTrayInstaller.cs ~:56)
+    // - e.g. Fail(...) when the key is blank -> the failure message becomes the key demand, so the
+    // "does not contain OPENAI" assertion goes red.
     [Fact]
-    public void InstallAsync_HasNoOpenAiKeyParameter()
+    [SupportedOSPlatform("windows")]
+    public async Task InstallAsync_NoOpenAiKey_RunsPastKeyRegion_NoDemandNoWrite()
     {
-        var method = typeof(GatewayTrayInstaller).GetMethod(nameof(GatewayTrayInstaller.InstallAsync));
-        Assert.NotNull(method);
-        Assert.DoesNotContain(
-            method!.GetParameters(),
-            p => p.Name is not null && p.Name.Contains("openai", StringComparison.OrdinalIgnoreCase));
-        Assert.DoesNotContain(
-            method.GetParameters(),
-            p => p.Name is not null && p.Name.Equals("key", StringComparison.OrdinalIgnoreCase));
+        if (!OperatingSystem.IsWindows()) return;
+
+        var root = Directory.CreateTempSubdirectory("d2a-eng-").FullName;
+        var savedProcessKey = Environment.GetEnvironmentVariable("OPENAI_API_KEY", EnvironmentVariableTarget.Process);
+        var userKeyBefore = Environment.GetEnvironmentVariable("OPENAI_API_KEY", EnvironmentVariableTarget.User);
+        Environment.SetEnvironmentVariable("OPENAI_API_KEY", null, EnvironmentVariableTarget.Process);
+        try
+        {
+            var layout = new InstallLayout(Path.Combine(root, "local"));
+            Directory.CreateDirectory(layout.GatewayDir);
+            // A file that exists (so the exe-present check passes) but is not a valid executable.
+            File.WriteAllBytes(layout.PathFor(ComponentRegistry.Gateway), new byte[] { 0x00, 0x01, 0x02 });
+
+            // Offline release: the mobile sidecar is in the manifest but has NO download URL, so
+            // extraction fails fast with "No source for asset" - no network, and BEFORE any process
+            // launch. The point is only that the failure is not a key demand.
+            var assets = new Dictionary<string, ManifestAsset>
+            {
+                [MobilePackage.AssetName] = new ManifestAsset(MobilePackage.AssetName, "0.0.0-test", "", "windows", 0),
+            };
+            var release = new ResolvedRelease(
+                new ReleaseManifest { Version = "0.0.0-test", Assets = assets },
+                new Dictionary<string, string>());
+
+            var result = await new GatewayTrayInstaller(layout).InstallAsync(release, new ReleaseSource());
+
+            Assert.False(result.Success);
+            Assert.DoesNotContain("OPENAI", result.Message, StringComparison.OrdinalIgnoreCase);
+            // The installer never writes the User-scope OPENAI_API_KEY.
+            Assert.Equal(userKeyBefore, Environment.GetEnvironmentVariable("OPENAI_API_KEY", EnvironmentVariableTarget.User));
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("OPENAI_API_KEY", savedProcessKey, EnvironmentVariableTarget.Process);
+            Directory.Delete(root, recursive: true);
+        }
     }
 
     // --- Issue #175: the tray launch must NOT inherit the caller's stdio ---------------------------

@@ -17,7 +17,7 @@ public partial class CompleteStep : UserControl
     private readonly int _skipped;
     private readonly bool _isUpdate;
 
-    public CompleteStep(int installed, int skipped, string installPath, string directorExePath, bool isUpdate, bool alreadyUpToDate = false, string? version = null)
+    public CompleteStep(int installed, int skipped, string installPath, string directorExePath, bool isUpdate, bool alreadyUpToDate = false, string? version = null, string? gatewayFailureReason = null)
     {
         InitializeComponent();
         _installPath = installPath;
@@ -34,7 +34,7 @@ public partial class CompleteStep : UserControl
 
         // One place computes the verdict; this only renders it (any skipped component reads as
         // Problems, so a failure can never render as "Everything went perfectly").
-        switch (InstallCompletion.Classify(installed, skipped, isUpdate, alreadyUpToDate))
+        switch (InstallCompletion.Classify(skipped, alreadyUpToDate))
         {
             case InstallCompletionKind.AlreadyUpToDate:
                 HeadingText.Text = "✓  Already Up to Date";
@@ -62,7 +62,11 @@ public partial class CompleteStep : UserControl
                 var amber = new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(0xE0, 0xA0, 0x30));
                 HeadingText.Text = isUpdate ? "Update finished with problems" : "Setup finished with problems";
                 HeadingText.Foreground = amber;
-                DescriptionText.Text = $"{skipped} component(s) did not install. DevThrottle may still work, but please report this.";
+                // Carry the specific Gateway failure reason onto the final screen when we have it, so a
+                // failed Gateway update tells the user WHY - not just that something did not install.
+                DescriptionText.Text = string.IsNullOrWhiteSpace(gatewayFailureReason)
+                    ? $"{skipped} component(s) did not install. DevThrottle may still work, but please report this."
+                    : $"{skipped} component(s) did not install. DevThrottle may still work, but please report this.\n{gatewayFailureReason}";
                 SummaryLine.Visibility = Visibility.Collapsed;
                 FailurePanel.Visibility = Visibility.Visible;
                 DetailsHeader.Text = $"{skipped} component(s) did not install - please report this";
