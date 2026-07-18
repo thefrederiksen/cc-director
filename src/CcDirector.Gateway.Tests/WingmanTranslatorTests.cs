@@ -249,14 +249,22 @@ public sealed class WingmanTranslatorTests
         // Hearing "fe2ec700 dash 458e dash 420e" read out digit by digit is useless - you cannot write
         // it down or act on it. v4 had NO rule about this and told the wingman to preserve every
         // number, so it did. Prompt-only, so pin it or it regresses silently.
+        //
+        // v5.3 (2026-07-17): the rule already existed, yet a narration still spelled out a full 40-char
+        // commit sha one hex character at a time ("d zero six three zero a five c d ...") because the
+        // rule's only example was a DASHED guid and a bare hex sha did not match that shape. Pin BOTH
+        // shapes, the drop-it-entirely instruction, and the extension to reference numbers.
         var brain = new FakeBrain(_ => "ok");
         var translator = BuildTranslator(brain);
 
         await translator.TranslateAsync("q", "session fe2ec700-458e-420e used 5,254,730 bytes", sessionTitle: null);
 
         var prompt = Assert.Single(brain.Asks);
-        Assert.Contains("NEVER READ OUT IDENTIFIERS OR LONG NUMBERS", prompt);
-        Assert.Contains("about five million", prompt);   // the concrete rounding example
+        Assert.Contains("NEVER VOICE AN IDENTIFIER OR A HASH", prompt);
+        Assert.Contains("d0630a5cd517167516675e0299009", prompt); // the bare-hex sha shape that regressed
+        Assert.Contains("the changes were merged", prompt);       // DROP the hash, do not gloss it at length
+        Assert.Contains("REFERENCE NUMBERS ARE NOT SPOKEN NUMBERS", prompt); // issue/pr/bug numbers too
+        Assert.Contains("about five million", prompt);            // the concrete rounding example
     }
 
     [Fact]
