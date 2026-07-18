@@ -46,6 +46,10 @@ public sealed class WorkflowRunProofLinkDto
 /// </summary>
 public sealed class WorkflowRunParticipantDto
 {
+    /// <summary>The CANONICAL fleet session id - the Director-minted session GUID every other
+    /// per-session record (token/spend statistics, transcripts, the roster) also keys on. This is
+    /// governance's join from a run to the effort it consumed (issue #1771, spine item 3); never put
+    /// any other identifier here.</summary>
     public string SessionId { get; set; } = "";
     public string AgentKind { get; set; } = "";
     public string Role { get; set; } = "";

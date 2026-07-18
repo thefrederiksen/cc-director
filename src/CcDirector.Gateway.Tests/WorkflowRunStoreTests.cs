@@ -145,8 +145,22 @@ public sealed class WorkflowRunStoreTests : IDisposable
         Assert.Null(pending.AcceptedUtc);
 
         // A non-pending acceptance is a ruling, and a ruling has a ruler: no accepter, no acceptance.
+        // Governance ask (#1771): this holds for EVERY non-pending status - a rejection and a waiver
+        // are decisions too, and who-decided-and-when must never be null.
         Assert.Throws<WorkflowValidationException>(() =>
             runs.Patch(run.Id, new PatchWorkflowRunRequest { AcceptanceStatus = "accepted" }));
+        Assert.Throws<WorkflowValidationException>(() =>
+            runs.Patch(run.Id, new PatchWorkflowRunRequest { AcceptanceStatus = "rejected" }));
+        Assert.Throws<WorkflowValidationException>(() =>
+            runs.Patch(run.Id, new PatchWorkflowRunRequest { AcceptanceStatus = "waived" }));
+
+        var waived = runs.Patch(run.Id, new PatchWorkflowRunRequest
+        {
+            AcceptanceStatus = "waived",
+            AcceptedBy = "human:owner",
+        })!;
+        Assert.Equal("human:owner", waived.AcceptedBy);
+        Assert.NotNull(waived.AcceptedUtc);
     }
 
     [Fact]
