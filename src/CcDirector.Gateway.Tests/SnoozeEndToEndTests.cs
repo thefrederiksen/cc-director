@@ -395,6 +395,115 @@ public sealed class SnoozeEndToEndTests : IAsyncLifetime
         Assert.True(returned.SnoozeExpired);
     }
 
+    // ---- Round 2 finding 1: the reliable display-state channel is the SINGLE writer of hold ----
+    // The one-shot hold mirror is deleted. Every edge this Gateway makes on its own initiative
+    // (working-delete, deferral landing, exit, owner-turn) must now reach the Director's raw hold through
+    // the change-gated display-state channel alone - and must send NO "hold" command, or the two writers
+    // race again. The fake applies set-display-state exactly as the real Director does.
+
+    [Fact]
+    public async Task Reliable_channel_delivers_None_when_work_deletes_an_armed_snooze_and_sends_no_hold_command()
+    {
+        var fake = await StartFakeAsync("r1", onHold: false);
+        _gw.SnoozeRegistry.Snooze("r1", DateTime.UtcNow.AddHours(12), fake.DirectorId); // armed
+        await fake.RePushAsync();
+        await WaitForHoldAsync(fake, "r1", HoldStates.Held); // the channel delivered Held (no one-shot in play)
+        var holdCallsBaseline = fake.HoldCalls("r1").Count;
+
+        fake.SetActivity("r1", "Working");
+        await fake.RePushAsync();
+        await WaitForHoldAsync(fake, "r1", HoldStates.None); // working edge -> None, via the reliable channel
+
+        await Task.Delay(100); // give any (reverted) one-shot mirror time to fire, so the assert is real
+        Assert.Equal(holdCallsBaseline, fake.HoldCalls("r1").Count); // SINGLE WRITER: the edge sent no hold command
+    }
+
+    [Fact]
+    public async Task Reliable_channel_delivers_Held_when_a_deferral_lands_and_sends_no_hold_command()
+    {
+        var fake = await StartFakeAsync("r2", onHold: false, activityState: "Working");
+        _gw.SnoozeRegistry.SnoozeDeferred("r2", 720, fake.DirectorId); // asked for while working
+        await fake.RePushAsync();
+        await WaitForHoldAsync(fake, "r2", HoldStates.DeferredHold);
+        var holdCallsBaseline = fake.HoldCalls("r2").Count;
+
+        await fake.EndTurnAsync("r2"); // settle -> the deferral lands
+        await WaitForHoldAsync(fake, "r2", HoldStates.Held);
+
+        await Task.Delay(100);
+        Assert.Equal(holdCallsBaseline, fake.HoldCalls("r2").Count);
+    }
+
+    [Fact]
+    public async Task Reliable_channel_delivers_None_when_a_snoozed_session_exits_and_sends_no_hold_command()
+    {
+        var fake = await StartFakeAsync("r3", onHold: false);
+        _gw.SnoozeRegistry.Snooze("r3", DateTime.UtcNow.AddHours(12), fake.DirectorId);
+        await fake.RePushAsync();
+        await WaitForHoldAsync(fake, "r3", HoldStates.Held);
+        var holdCallsBaseline = fake.HoldCalls("r3").Count;
+
+        fake.SetActivity("r3", "Exited");
+        await fake.RePushAsync();
+        await WaitForHoldAsync(fake, "r3", HoldStates.None);
+
+        await Task.Delay(100);
+        Assert.Equal(holdCallsBaseline, fake.HoldCalls("r3").Count);
+    }
+
+    [Fact]
+    public async Task Reliable_channel_delivers_None_when_the_owner_returns_and_sends_no_hold_command()
+    {
+        var fake = await StartFakeAsync("r4", onHold: false);
+        var baseline = DateTime.UtcNow;
+        _gw.SnoozeRegistry.Snooze("r4", DateTime.UtcNow.AddHours(12), fake.DirectorId, ownerTurnBaselineUtc: baseline);
+        await fake.RePushAsync();
+        await WaitForHoldAsync(fake, "r4", HoldStates.Held);
+        var holdCallsBaseline = fake.HoldCalls("r4").Count;
+
+        fake.SetLastOwnerTurn("r4", baseline.AddSeconds(5)); // a NEW owner turn
+        await fake.RePushAsync();
+        await WaitForHoldAsync(fake, "r4", HoldStates.None);
+
+        await Task.Delay(100);
+        Assert.Equal(holdCallsBaseline, fake.HoldCalls("r4").Count);
+    }
+
+    [Fact]
+    public async Task No_stale_None_reaches_the_desktop_after_a_re_snooze_following_work()
+    {
+        // THE ADVERSE ORDER the one-shot mirror used to lose (finding 1): work clears the snooze (None), then
+        // it is snoozed again (Held). With a single writer there is no delayed None to land after the fresh
+        // Held, so the raw hold ends - and stays - Held.
+        var fake = await StartFakeAsync("r5", onHold: false);
+        _gw.SnoozeRegistry.Snooze("r5", DateTime.UtcNow.AddHours(12), fake.DirectorId);
+        fake.SetActivity("r5", "Working");
+        await fake.RePushAsync();
+        await WaitForHoldAsync(fake, "r5", HoldStates.None); // work deleted it
+
+        fake.SetActivity("r5", "WaitingForInput");
+        await fake.RePushAsync(); // settle
+        _gw.SnoozeRegistry.Snooze("r5", DateTime.UtcNow.AddHours(12), fake.DirectorId); // re-snooze, fresh clock
+        await fake.RePushAsync();
+        await WaitForHoldAsync(fake, "r5", HoldStates.Held);
+
+        await Task.Delay(200); // no second writer can arrive late and overwrite it
+        Assert.Equal(HoldStates.Held, fake.CurrentHoldState("r5"));
+    }
+
+    /// <summary>Poll the fake's raw hold until it reaches the expected value (the reliable channel is
+    /// fire-and-forget, so delivery is asynchronous), then assert - giving a clear failure if it never does.</summary>
+    private static async Task WaitForHoldAsync(SnoozeFake fake, string sid, string expected)
+    {
+        for (var i = 0; i < 200; i++) // up to ~4 seconds
+        {
+            if (string.Equals(fake.CurrentHoldState(sid), expected, StringComparison.Ordinal))
+                return;
+            await Task.Delay(20);
+        }
+        Assert.Equal(expected, fake.CurrentHoldState(sid));
+    }
+
     // ---- helpers ----
 
     private async Task SetDefaultMinutes(int minutes)
@@ -565,6 +674,24 @@ public sealed class SnoozeEndToEndTests : IAsyncLifetime
                             Pending = req.OnHold && working,
                         });
                     }
+                }
+                case "set-display-state":
+                {
+                    // The reliable display-state channel. Since round 2 finding 1 this is the SINGLE writer of
+                    // hold down to the Director (the one-shot hold mirror is gone), so this fake must apply it
+                    // exactly as the real FleetDisplayStateExecutor does, or CurrentHoldState/CurrentOnHold
+                    // would never see an edge transition. A recognised HoldState reconciles the raw mirror; a
+                    // blank/unknown value normalises to null and leaves it untouched.
+                    var req = JsonSerializer.Deserialize<SetDisplayStateRequest>(cmd.PayloadJson, FakeTunnelDirector.WebJson) ?? new SetDisplayStateRequest();
+                    lock (_gate)
+                    {
+                        if (!_sessions.TryGetValue(cmd.SessionId, out var s))
+                            return DirectorCommandResult.Fail(DirectorCommandStatus.NotFound, "no such session");
+                        var norm = HoldStates.Normalize(req.HoldState);
+                        if (norm is not null) s.HoldState = norm;
+                        s.SnoozeExpired = req.SnoozeExpired;
+                    }
+                    return DirectorCommandResult.Success();
                 }
                 default:
                     return DirectorCommandResult.Fail(DirectorCommandStatus.BadRequest, $"unexpected verb {cmd.Verb}");

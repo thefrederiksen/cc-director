@@ -607,28 +607,16 @@ public sealed class GatewayHost : IAsyncDisposable
         // DirectorHub (constructed per-invocation by SignalR) folds every pushed session through this one
         // instance, exactly as it does the input-stats aggregator.
         //
-        // The mirror stamp-down is the same move FleetRoleObserver makes with roles: when the GATEWAY
-        // moves the state on its own initiative (a deferral landing, an exit, the owner coming back), the
-        // ruling is sent to the owning Director's display mirror so its desktop rail renders what the
-        // phone renders. Without it the one screen that folds from the in-process Session - the local
-        // rail - would disagree with every other surface, which is the disease, not the cure.
+        // SINGLE WRITER OF HOLD (round 2 finding 1). This observer only mutates the registry now; it no
+        // longer stamps a one-shot hold mirror down. That fire-and-forget could land a stale None after a
+        // fresh Held and be suppressed by the reliable channel's change gate, leaving the desktop rail
+        // permanently stale. The SINGLE writer of HoldState down to the Director is FleetDisplayStateObserver
+        // (constructed just below), which folds the hold from the registry on the same push, is change-gated,
+        // retried, and driven by the periodic display-state sweep - so every transition this observer makes
+        // reaches the rail at fold cadence, with no racing second writer.
         SnoozeLandings = new Snooze.SnoozeLandingObserver(
             _snoozeRegistry,
-            utcNow: null,
-            pushMirror: async (directorId, sessionId, holdState) =>
-            {
-                var command = new DirectorCommand
-                {
-                    Verb = "hold",
-                    SessionId = sessionId,
-                    PayloadJson = System.Text.Json.JsonSerializer.Serialize(new HoldRequest
-                    {
-                        OnHold = HoldStates.IsHeld(holdState),
-                        HoldState = holdState,
-                    }),
-                };
-                await SendCommandAsync(directorId, command, CancellationToken.None);
-            });
+            utcNow: null);
         // Defect 5: the push seam that stamps each session's resolved role down to its owning Director, so
         // the desktop stops being the one screen that cannot suppress a Worker's red. Reads the same fresh
         // fleet snapshot the auto-dismiss sweeper reads (roles need the WHOLE fleet - a controller may be on

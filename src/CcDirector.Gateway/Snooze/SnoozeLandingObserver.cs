@@ -27,43 +27,30 @@ public sealed class SnoozeLandingObserver
 {
     private readonly SnoozeRegistry _registry;
     private readonly Func<DateTime> _utcNow;
-    private readonly Func<string, string, string, Task>? _pushMirror;
 
     /// <param name="registry">The registry holding the deferred entry to land.</param>
     /// <param name="utcNow">The clock; injected so the landing instant is deterministic in tests.</param>
-    /// <param name="pushMirror">
-    /// Stamps this Gateway's ruling back DOWN to the owning Director's display mirror
-    /// (directorId, sessionId, holdState), so the local desktop rail renders what the Gateway decided.
-    /// Same shape and purpose as FleetRoleObserver's role stamp-down. Null in tests that assert only on
-    /// the registry - the truth - because the mirror is display, not state.
     ///
-    /// This exists because the Gateway moves the hold on its OWN initiative here (a landing, an exit, an
-    /// owner-turn clear). The hold ENDPOINT can push its mirror inline because a caller is waiting; these
-    /// transitions have no caller, so without this the desktop would keep rendering the state the last
-    /// hold call left behind while the phone showed the truth. Two surfaces disagreeing about hold is the
-    /// entire disease being cured, and it is not cured by moving where it happens.
-    /// </param>
+    /// <remarks>
+    /// SINGLE WRITER OF HOLD (round 2 finding 1). This observer used to ALSO stamp the hold down to the
+    /// Director's display mirror with its own fire-and-forget, unretried <c>Task.Run</c>. That raced the
+    /// reliable display-state channel: a delayed <c>None</c> from here could land after a fresh <c>Held</c>
+    /// from that channel, and the channel's change gate - which records the value it WANTED, not what the
+    /// Director currently holds - then suppressed the repair, leaving the desktop permanently stale. The
+    /// one-shot mirror is deleted. This observer now ONLY mutates the registry; the SINGLE writer of
+    /// <c>HoldState</c> down to the Director is <c>FleetDisplayStateObserver</c>, which runs on the same
+    /// push right after this one, is change-gated, is retried on a no-stream result, and is driven by the
+    /// periodic display-state sweep. Every hold transition this observer makes (working-delete, exit,
+    /// owner-turn clear, deferral landing) is folded from the registry by that channel, so the desktop rail
+    /// reconciles at fold cadence (&lt;=5s) instead of instantly - the correct trade for one writer and no
+    /// permanent staleness.
+    /// </remarks>
     public SnoozeLandingObserver(
         SnoozeRegistry registry,
-        Func<DateTime>? utcNow = null,
-        Func<string, string, string, Task>? pushMirror = null)
+        Func<DateTime>? utcNow = null)
     {
         _registry = registry ?? throw new ArgumentNullException(nameof(registry));
         _utcNow = utcNow ?? (() => DateTime.UtcNow);
-        _pushMirror = pushMirror;
-    }
-
-    /// <summary>Fire-and-forget the mirror down to the Director. Best-effort by design: the hold is
-    /// already recorded, and a Director that misses this is wrong only on its own rail, only until the
-    /// next push.</summary>
-    private void Mirror(string directorId, string sessionId, string holdState)
-    {
-        if (_pushMirror is null || string.IsNullOrEmpty(directorId)) return;
-        _ = Task.Run(async () =>
-        {
-            try { await _pushMirror(directorId, sessionId, holdState); }
-            catch (Exception ex) { FileLog.Write($"[SnoozeLandingObserver] mirror push failed sid={sessionId}: {ex.Message}"); }
-        });
     }
 
     /// <summary>
@@ -104,32 +91,25 @@ public sealed class SnoozeLandingObserver
     {
         if (session is null || string.IsNullOrEmpty(session.SessionId))
             return;
-        // One lookup, under one lock: nothing held -> nothing to decide, which is the overwhelming
-        // majority of pushes. A Contains() followed by a separate scan of Entries() would read the map
-        // twice with a gap the entry could vanish through.
-        var directorId = _registry.DirectorIdFor(session.SessionId);
-        if (directorId is null)
+        // One lookup: nothing held -> nothing to decide, which is the overwhelming majority of pushes. A
+        // Contains() followed by a separate scan of Entries() would read the map twice with a gap the entry
+        // could vanish through. (The result is no longer used to address a mirror - the reliable
+        // display-state channel owns the down-stamp now - but the cheap early-out still matters.)
+        if (_registry.DirectorIdFor(session.SessionId) is null)
             return;
 
         // The owner came back and drove a turn: the hold is over, whatever the session is doing. Checked
         // FIRST, because it beats every other edge - a hold exists to stop bothering someone who is away,
         // and they are demonstrably not away.
-
         if (_registry.ClearIfSupersededByOwnerTurn(session.SessionId, session.LastOwnerTurnAtUtc))
-        {
-            Mirror(directorId, session.SessionId, HoldStates.None);
             return;
-        }
 
         var activity = (session.ActivityState ?? "").Trim();
 
         if (string.Equals(activity, nameof(ActivityState.Exited), StringComparison.OrdinalIgnoreCase))
         {
             if (_registry.Clear(session.SessionId))
-            {
                 FileLog.Write($"[SnoozeLandingObserver] sid={session.SessionId}: session exited -> hold dropped");
-                Mirror(directorId, session.SessionId, HoldStates.None);
-            }
             return;
         }
 
@@ -142,18 +122,12 @@ public sealed class SnoozeLandingObserver
         if (IsWorking(activity))
         {
             if (_registry.ClearIfArmed(session.SessionId))
-            {
                 FileLog.Write($"[SnoozeLandingObserver] sid={session.SessionId}: working again -> armed snooze deleted (work ends a snooze)");
-                Mirror(directorId, session.SessionId, HoldStates.None);
-            }
             return;
         }
 
         if (IsSettled(activity) && _registry.Land(session.SessionId, _utcNow()))
-        {
             FileLog.Write($"[SnoozeLandingObserver] sid={session.SessionId}: work ended -> deferred hold landed, clock started");
-            Mirror(directorId, session.SessionId, HoldStates.Held);
-        }
     }
 
     /// <summary>
