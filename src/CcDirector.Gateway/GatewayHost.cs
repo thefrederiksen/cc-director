@@ -322,6 +322,8 @@ public sealed class GatewayHost : IAsyncDisposable
     // built and started in StartAsync (it needs the live Director client) and disposed in StopAsync.
     private readonly Snooze.SnoozeRegistry _snoozeRegistry;
     private Snooze.SnoozeExpirySweep? _snoozeSweep;
+    // Fills account_hosted_ai_spend by periodically mirroring the cloud credit-debit ledger (issue #1771).
+    private Governance.HostedAiSpendSweep? _hostedAiSpendSweep;
     // Mission Screen mission (Phase 1b, issue #1405): the Gateway-owned, restart-surviving store of each
     // mission's WHY, keyed by the mission's normalized name. Durable + shared so every Cockpit, the phone,
     // and the future Mission-Control chat/API read the same WHY. Constructed here (load-on-construct
@@ -1986,6 +1988,16 @@ public sealed class GatewayHost : IAsyncDisposable
             utcNow: () => DateTime.UtcNow);
         _snoozeSweep.Start();
 
+        // Governance capture (issue #1771, spine item 3): periodically mirror the account's real hosted-AI
+        // service debits from the cloud credit-debit ledger into account_hosted_ai_spend, so the weekly
+        // report shows an honest account-level "Hosted-AI services: $X" figure. Signed out is an expected
+        // no-op (no fabricated spend); the store dedups the ledger's rolling window so over-polling is safe.
+        _hostedAiSpendSweep = new Governance.HostedAiSpendSweep(
+            accessToken: () => Account?.GetAccessTokenForForwarding(),
+            credits: new Core.Account.AccountCreditsClient(new HttpClient { Timeout = TimeSpan.FromSeconds(10) }),
+            store: _hostedAiSpend);
+        _hostedAiSpendSweep.Start();
+
         // Web Push (mobile app-icon "needs you" dot): start the background notifier now that this
         // Gateway's own /sessions endpoint is live on loopback. The notifier reads that endpoint (so its
         // "needs you" verdict is byte-identical to the roster's) and pushes the count to subscribed
@@ -2179,6 +2191,7 @@ public sealed class GatewayHost : IAsyncDisposable
         try { _pushNotifier?.Dispose(); } catch (Exception ex) { FileLog.Write($"[GatewayHost] push notifier dispose error: {ex.Message}"); }
         try { _netDiagMonitor?.Dispose(); } catch (Exception ex) { FileLog.Write($"[GatewayHost] netdiag monitor dispose error: {ex.Message}"); }
         try { _snoozeSweep?.Dispose(); } catch (Exception ex) { FileLog.Write($"[GatewayHost] snooze sweep dispose error: {ex.Message}"); }
+        try { _hostedAiSpendSweep?.Dispose(); } catch (Exception ex) { FileLog.Write($"[GatewayHost] hosted-ai spend sweep dispose error: {ex.Message}"); }
         _pushNotifier = null;
         try { _pushLoopbackHttp.Dispose(); } catch (Exception ex) { FileLog.Write($"[GatewayHost] push loopback client dispose error: {ex.Message}"); }
 
