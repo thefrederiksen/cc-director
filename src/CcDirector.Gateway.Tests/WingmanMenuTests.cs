@@ -72,6 +72,57 @@ public sealed class WingmanMenuTests
         Assert.False(WingmanMenuLogic.LooksLikeMenu(""));
     }
 
+    // ===== LiveScreenLooksLikeMenu (issue #1777: the live grid rules the verdict) =====
+
+    /// <summary>
+    /// The exact defect (issue #1777): a full-screen Claude picker draws on the ALTERNATE screen, where the
+    /// scrollback is empty by design. The old scrollback-only gate saw "" and returned false, so voice-turn
+    /// typed the spoken words into the picker. The live-grid gate reads the resolved on-screen rows and sees
+    /// the menu - this pins the fix: empty scrollback is NOT a menu, but the SAME menu on the live grid IS.
+    /// </summary>
+    private static readonly string[] AltScreenClaudeMenuRows =
+    {
+        "> run the tests",
+        "",
+        "╭──────────────────────────────────────────────╮",
+        "│ Bash command                                 │",
+        "│ dotnet test                                  │",
+        "│                                              │",
+        "│ Do you want to proceed?                      │",
+        "│ ❯ 1. Yes                                     │",
+        "│   2. Yes, and don't ask again this session   │",
+        "│   3. No, and tell Claude what to do          │",
+        "╰──────────────────────────────────────────────╯",
+    };
+
+    [Fact]
+    public void LiveScreenLooksLikeMenu_AltScreenClaudeMenu_IsTrue_EvenThoughScrollbackIsEmpty()
+    {
+        // The scrollback (what the old gate read) is EMPTY on the alternate screen - so the old path misses.
+        Assert.False(WingmanMenuLogic.LooksLikeMenu(""));
+        // The live grid holds the menu - the new gate catches it. This is the whole fix.
+        Assert.True(WingmanMenuLogic.LiveScreenLooksLikeMenu(AltScreenClaudeMenuRows));
+    }
+
+    [Fact]
+    public void LiveScreenLooksLikeMenu_PlainPrompt_IsFalse()
+    {
+        var rows = new[]
+        {
+            "I finished editing the file and ran the tests. Everything passes.",
+            "",
+            "> ",
+        };
+        Assert.False(WingmanMenuLogic.LiveScreenLooksLikeMenu(rows));
+    }
+
+    [Fact]
+    public void LiveScreenLooksLikeMenu_EmptyOrNull_IsFalse()
+    {
+        Assert.False(WingmanMenuLogic.LiveScreenLooksLikeMenu(null));
+        Assert.False(WingmanMenuLogic.LiveScreenLooksLikeMenu(System.Array.Empty<string>()));
+    }
+
     // ===== MatchOption (local spoken-answer mapping) =====
 
     [Theory]

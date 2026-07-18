@@ -150,6 +150,54 @@ public sealed class SessionReadExecutorTests
         finally { sm.Dispose(); }
     }
 
+    // ---------- screen-grid (issue #1777) ----------
+
+    [Fact]
+    public async Task DispatchAsync_ScreenGrid_InvalidSessionId_ReturnsBadRequest()
+    {
+        var sm = new SessionManager(new Core.Configuration.AgentOptions());
+        try
+        {
+            var result = await SessionCommandExecutor.DispatchAsync(sm, "dir-A", Cmd("screen-grid", "not-a-guid"));
+            Assert.Equal(DirectorCommandStatus.BadRequest, result.Status);
+        }
+        finally { sm.Dispose(); }
+    }
+
+    [Fact]
+    public async Task DispatchAsync_ScreenGrid_MissingSession_ReturnsNotFound()
+    {
+        var sm = new SessionManager(new Core.Configuration.AgentOptions());
+        try
+        {
+            var result = await SessionCommandExecutor.DispatchAsync(sm, "dir-A", Cmd("screen-grid", Guid.NewGuid().ToString()));
+            Assert.Equal(DirectorCommandStatus.NotFound, result.Status);
+        }
+        finally { sm.Dispose(); }
+    }
+
+    [Fact]
+    public async Task DispatchAsync_ScreenGrid_ExistingSession_ReturnsTheLiveGrid()
+    {
+        // The verb reads the session's RESOLVED live screen grid: a session with a terminal parser reports a
+        // grid (HasGrid=true) plus the live cursor cell and the alternate-screen flag - the alternate-screen-
+        // correct read the wingman menu detector uses. (Only a parser-less session yields HasGrid=false, which
+        // the detector treats as an unreadable screen and fails closed - exercised at the Gateway.)
+        var (sm, session, _) = NewSession();
+        try
+        {
+            var result = await SessionCommandExecutor.DispatchAsync(sm, "dir-A", Cmd("screen-grid", session.Id.ToString()));
+
+            Assert.Equal(DirectorCommandStatus.Ok, result.Status);
+            var resp = JsonSerializer.Deserialize<ScreenGridResponse>(result.BodyJson ?? "", Json);
+            Assert.NotNull(resp);
+            Assert.Equal(session.Id.ToString(), resp.SessionId);
+            Assert.True(resp.HasGrid);
+            Assert.NotEmpty(resp.Rows);
+        }
+        finally { sm.Dispose(); }
+    }
+
     // ---------- summary ----------
 
     [Fact]

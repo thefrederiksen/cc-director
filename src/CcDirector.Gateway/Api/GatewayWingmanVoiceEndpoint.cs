@@ -501,12 +501,16 @@ internal static class GatewayWingmanVoiceEndpoint
             if (route is null)
                 return Results.Json(new { error = "session not found on any director" }, statusCode: StatusCodes.Status404NotFound);
 
-            // Menu handling (issue #531): if the agent is RIGHT NOW showing an on-screen menu, the
-            // person's words are a CHOICE, not a new prompt. Detect it, map the words to an option,
-            // and PRESS that option (raw keystrokes) - never type the spoken words as a prompt.
-            var menu = await DetectMenuAtAsync(route, translator, sid, ct);
-            if (menu.IsMenu)
+            // Menu handling + FAIL CLOSED (issues #531 / #1777). Read the LIVE screen (authoritative) to
+            // classify what the session is waiting on: a menu, a confident plain-text prompt, or something we
+            // must NOT type into (a menu we could not read, an uncertain screen, or an unreadable one). The
+            // spoken words are only ever typed as an ordinary prompt when the screen is CONFIDENTLY plain text.
+            var screen = await DetectWaitingScreenAtAsync(route, translator, sid, ct);
+            if (screen.Kind == WaitingKind.Menu)
             {
+                // The agent is RIGHT NOW showing an on-screen menu, so the person's words are a CHOICE, not a
+                // new prompt. Map the words to an option and PRESS that option (raw keystrokes).
+                var menu = screen.Menu;
                 var idx = WingmanMenuLogic.MatchOption(menu, req.Text);
                 if (idx < 0) idx = await translator.MapChoiceAsync(menu, req.Text, ct);
                 if (idx >= 0 && idx < menu.Options.Count)
@@ -520,6 +524,16 @@ internal static class GatewayWingmanVoiceEndpoint
                 FileLog.Write($"[GatewayWingmanVoice] voice-turn sid={sid}: menu present, choice unclear");
                 return Results.Json(new { reply = "", spoken = "I didn't catch which one. " + menu.Spoken, needsChoice = true, menu = MenuJson(menu) });
             }
+            if (screen.Kind == WaitingKind.Blocked)
+            {
+                // FAIL CLOSED (issue #1777): the waiting screen is a menu we could not read, an uncertain
+                // screen, or an unreadable one. Typing the spoken words in blindly is the exact defect that
+                // leaves the person stuck (a wrong pick AND no escape), so send NOTHING - not the words, not
+                // any selection bytes - and tell them to look at the terminal.
+                FileLog.Write($"[GatewayWingmanVoice] voice-turn sid={sid}: FAIL CLOSED - not typing ({screen.BlockedReason})");
+                return Results.Json(new { reply = "", spoken = screen.BlockedSpoken, cannotType = true, lookAtTerminal = true });
+            }
+            // screen.Kind == WaitingKind.PlainText: a confident plain-text prompt - typing the answer is safe.
 
             // We are about to start a new turn, so the cached spoken summary + audio are now stale.
             // Clear them DETERMINISTICALLY here (do not rely on observing the Working state, which is
@@ -774,17 +788,131 @@ internal static class GatewayWingmanVoiceEndpoint
         });
     }
 
-    /// <summary>Fetch the session terminal and, only when it cheaply looks like a menu, ask the warm
-    /// brain to extract it. Returns IsMenu=false on any miss - the caller treats input as a prompt.</summary>
+    /// <summary>What a session's live waiting screen turns out to be (issue #1777), so voice-turn can decide
+    /// whether the person's spoken words may be typed. Only <see cref="PlainText"/> may be typed.</summary>
+    private enum WaitingKind
+    {
+        /// <summary>A readable on-screen menu with pressable options - map the words to a choice and press.</summary>
+        Menu,
+
+        /// <summary>A confident plain-text prompt (a readable screen that is not a menu) - typing is safe.</summary>
+        PlainText,
+
+        /// <summary>A menu we could not read, an uncertain screen, or an unreadable one - NEVER type; fail closed.</summary>
+        Blocked,
+    }
+
+    /// <summary>The classified live waiting screen plus, for a menu, the extracted options, and for a blocked
+    /// screen, the plain-English reason and the line to speak.</summary>
+    private sealed class WaitingScreen
+    {
+        public WaitingKind Kind { get; init; }
+        public WingmanMenu Menu { get; init; } = new() { IsMenu = false };
+        public string BlockedReason { get; init; } = "";
+        public string BlockedSpoken { get; init; } = "";
+    }
+
+    /// <summary>
+    /// Classify what a session is waiting on by reading the LIVE screen grid (issue #1777). The live grid is
+    /// the authority: it is alternate-screen-correct, so a full-screen picker the scrollback cannot see is
+    /// still classified as a menu. The scrollback (the <c>buffer</c> verb) is read ONLY to supplement the
+    /// brain's extraction text when the live screen already looks like a menu - it can never create a menu on
+    /// its own. Fails closed on every uncertainty: an unreadable screen, or a screen that looks like a menu
+    /// but whose options we could not extract, both return <see cref="WaitingKind.Blocked"/>.
+    /// </summary>
+    private static async Task<WaitingScreen> DetectWaitingScreenAtAsync(
+        SessionVerbClient route, WingmanTranslator translator, string sid, CancellationToken ct)
+    {
+        // The LIVE screen grid is the authoritative read.
+        Contracts.ScreenGridResponse? grid;
+        try { grid = await route.GetScreenGridAsync(sid, ct); }
+        catch { grid = null; }
+
+        // Unreadable: no answer from the owning Director, or a session with no resolved grid at all. We cannot
+        // see what is on screen, so we must not type the spoken words in blindly - fail closed.
+        if (grid is null || !grid.HasGrid || grid.Rows is null || grid.Rows.Count == 0)
+        {
+            var why = grid is null ? "no grid answer" : grid.HasGrid ? "empty grid" : "no grid parser";
+            FileLog.Write($"[GatewayWingmanVoice] waiting-screen sid={sid}: UNREADABLE ({why}) - fail closed");
+            return new WaitingScreen
+            {
+                Kind = WaitingKind.Blocked,
+                BlockedReason = "unreadable screen (" + why + ")",
+                BlockedSpoken = "I can't read this session's screen right now, so I won't type your answer in blindly. Open the session to see what it's asking.",
+            };
+        }
+
+        // Does the LIVE screen look like a menu? This is the verdict, and the scrollback never gets a vote.
+        if (!WingmanMenuLogic.LiveScreenLooksLikeMenu(grid.Rows))
+        {
+            // A readable screen that is not a menu is a confident plain-text prompt - typing is safe.
+            FileLog.Write($"[GatewayWingmanVoice] waiting-screen sid={sid}: plain-text prompt (rows={grid.Rows.Count}, alt={grid.IsAlternateScreen})");
+            return new WaitingScreen { Kind = WaitingKind.PlainText };
+        }
+
+        // The live screen IS a menu. Extract it with the brain, supplementing the live grid with the
+        // scrollback tail (text that scrolled above the visible window on a non-full-screen menu). The
+        // verdict already came from the live grid; the scrollback only enriches the extraction text.
+        var liveText = string.Join("\n", grid.Rows);
+        string scrollTail;
+        try
+        {
+            var buf = await route.GetBufferAsync(sid, lines: null, raw: false, since: null, ct);
+            scrollTail = buf?.Text ?? "";
+        }
+        catch { scrollTail = ""; }
+
+        WingmanMenu menu;
+        try { menu = await translator.DetectMenuAsync(BuildMenuDetectionText(scrollTail, liveText), ct); }
+        catch (Exception ex)
+        {
+            // The screen looks like a menu but the brain could not read it (unreachable / no key / error).
+            // Never guess into a picker - fail closed.
+            FileLog.Write($"[GatewayWingmanVoice] waiting-screen sid={sid}: menu on screen, detection FAILED ({ex.Message}) - fail closed");
+            menu = new WingmanMenu { IsMenu = false };
+        }
+
+        if (menu.IsMenu && menu.Options.Count > 0)
+        {
+            FileLog.Write($"[GatewayWingmanVoice] waiting-screen sid={sid}: MENU with {menu.Options.Count} option(s)");
+            return new WaitingScreen { Kind = WaitingKind.Menu, Menu = menu };
+        }
+
+        // The live screen looks like a menu but we could not extract pressable options. UNCERTAIN - the
+        // dangerous case the old code fell through on. Fail closed and point the person at the terminal.
+        FileLog.Write($"[GatewayWingmanVoice] waiting-screen sid={sid}: looks like a menu but no options extracted - fail closed");
+        return new WaitingScreen
+        {
+            Kind = WaitingKind.Blocked,
+            BlockedReason = "menu on screen, options not extractable",
+            BlockedSpoken = "There's a menu on this session's screen that I couldn't read clearly, so I won't answer it blindly. Open the session to pick an option.",
+        };
+    }
+
+    /// <summary>
+    /// Build the terminal text handed to the brain menu detector (issue #1777). The LIVE grid is the
+    /// authority and goes LAST so it is the "bottom of the screen" the detector prompt reads; the scrollback
+    /// tail is prepended ONLY to supply text that scrolled above the visible window on a non-full-screen menu.
+    /// The scrollback is capped to its tail so it enriches without dominating (and so it cannot re-introduce
+    /// an already-answered menu from far up the history).
+    /// </summary>
+    private static string BuildMenuDetectionText(string scrollTail, string liveText)
+    {
+        if (string.IsNullOrWhiteSpace(scrollTail)) return liveText;
+        const int maxScroll = 2000;
+        var tail = scrollTail.Length > maxScroll ? scrollTail[^maxScroll..] : scrollTail;
+        return tail + "\n" + liveText;
+    }
+
+    /// <summary>Fetch the session's live screen and, only when it looks like a menu, ask the warm brain to
+    /// extract it. Returns IsMenu=false on any miss - used by the read-only <c>wingman/menu</c> endpoint,
+    /// which only needs the menu shape (voice-turn uses <see cref="DetectWaitingScreenAtAsync"/> directly so
+    /// it can also fail closed).</summary>
     private static async Task<WingmanMenu> DetectMenuAtAsync(
         SessionVerbClient route, WingmanTranslator translator, string sid, CancellationToken ct)
     {
-        Contracts.BufferResponse? buf;
-        try { buf = await route.GetBufferAsync(sid, lines: null, raw: false, since: null, ct); }
-        catch { buf = null; }
-        var terminal = buf?.Text ?? "";
-        if (!WingmanMenuLogic.LooksLikeMenu(terminal)) return new WingmanMenu { IsMenu = false };
-        return await translator.DetectMenuAsync(terminal, ct);
+        var screen = await DetectWaitingScreenAtAsync(route, translator, sid, ct);
+        return screen.Kind == WaitingKind.Menu ? screen.Menu : new WingmanMenu { IsMenu = false };
     }
 
     /// <summary>Press an option's keystrokes (then the multi-select submit, if any), wait for the

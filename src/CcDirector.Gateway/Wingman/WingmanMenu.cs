@@ -87,6 +87,23 @@ public static class WingmanMenuLogic
             || tail.Contains("yes, and");
     }
 
+    /// <summary>
+    /// The AUTHORITATIVE menu gate (issue #1777), applied to the RESOLVED live screen grid rows rather than
+    /// the scrollback text. The live grid is alternate-screen-correct, so this sees the menu a full-screen
+    /// picker draws even though the scrollback is empty by design - which is exactly the case where the old
+    /// scrollback-only <see cref="LooksLikeMenu"/> returned false and the spoken words got typed into the
+    /// picker. Same fingerprint heuristic as <see cref="LooksLikeMenu"/> (2+ option lines, or a Claude-Code
+    /// permission-prompt fingerprint), but the LIVE screen rules the verdict: a menu counts only when its
+    /// choices and selection cursor are on screen NOW. The scrollback may only SUPPLEMENT extraction text
+    /// later; it can never create a menu on its own (it is full of already-answered menus). Empty/no grid is
+    /// not a menu here - an unreadable screen is handled by the caller, which fails closed.
+    /// </summary>
+    public static bool LiveScreenLooksLikeMenu(IReadOnlyList<string>? rows)
+    {
+        if (rows is null || rows.Count == 0) return false;
+        return LooksLikeMenu(string.Join("\n", rows));
+    }
+
     private static readonly Dictionary<string, int> NumberWords = new()
     {
         ["one"] = 1, ["two"] = 2, ["three"] = 3, ["four"] = 4, ["five"] = 5,

@@ -80,6 +80,18 @@ internal sealed class SessionVerbClient
         return result is not null && result.Ok ? DirectorCommandRouter.ReadBody<BufferResponse>(result) : null;
     }
 
+    /// <summary>Read the session's RESOLVED live screen grid (issue #1777). Tunnel-only ("screen-grid" verb
+    /// -> <see cref="ScreenGridResponse"/>); a failed or absent tunnel result maps to null (owning Director not
+    /// connected = unreachable, which the caller treats as an unreadable screen and fails closed). This is the
+    /// alternate-screen-correct read the menu detector uses - it sees a full-screen picker the scrollback-based
+    /// <see cref="GetBufferAsync"/> cannot.</summary>
+    public async Task<ScreenGridResponse?> GetScreenGridAsync(string sid, CancellationToken ct = default)
+    {
+        var result = await DirectorCommandRouter.TrySendAsync(_sendCommand, _director.DirectorId, "screen-grid", sid, null, ct,
+            machineName: _director.MachineName);
+        return result is not null && result.Ok ? DirectorCommandRouter.ReadBody<ScreenGridResponse>(result) : null;
+    }
+
     /// <summary>Send a prompt into the session. Tunnel-only ("prompt" verb, the <see cref="PromptRequest"/>
     /// as payload -> <see cref="PromptResponse"/>); a failed or absent tunnel result maps to the same
     /// (false, null, error) tuple. This is the UserInput send the voice cluster needs.</summary>

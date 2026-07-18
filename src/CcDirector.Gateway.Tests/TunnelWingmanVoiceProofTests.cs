@@ -87,15 +87,24 @@ public sealed class TunnelWingmanVoiceProofTests : IAsyncLifetime
 
     private static readonly JsonSerializerOptions Web = new(JsonSerializerDefaults.Web);
 
-    // Answer the session "buffer" verb with plain (non-menu) terminal text, so the wingman menu endpoint
+    // Answer the session "screen-grid" verb with a plain (non-menu) live grid, so the wingman menu endpoint
     // returns {isMenu:false} WITHOUT calling the wingman brain - the tunnel read is the whole point here.
+    // Since #1777 the LIVE screen grid is the authoritative read (the scrollback "buffer" verb is only read to
+    // supplement extraction once the live screen already looks like a menu), so a plain grid short-circuits
+    // before any buffer read.
     private DirectorCommandResult Dispatch(DirectorCommand cmd)
     {
         _lastCommand = cmd;
         return cmd.Verb switch
         {
-            "buffer" => DirectorCommandResult.Success(JsonSerializer.Serialize(
-                new BufferResponse { Text = "just some plain terminal output, no menu here\n" }, Web)),
+            "screen-grid" => DirectorCommandResult.Success(JsonSerializer.Serialize(
+                new ScreenGridResponse
+                {
+                    Rows = new List<string> { "just some plain terminal output, no menu here" },
+                    HasGrid = true,
+                    CursorRow = 0,
+                    CursorCol = 0,
+                }, Web)),
             _ => DirectorCommandResult.Fail(DirectorCommandStatus.BadRequest, $"unexpected verb {cmd.Verb}"),
         };
     }
@@ -117,13 +126,13 @@ public sealed class TunnelWingmanVoiceProofTests : IAsyncLifetime
         });
 
         var resp = await _http.GetAsync($"sessions/{sid}/wingman/menu");
-        // An HTTP dial to the unreachable Director would have failed to resolve the owner and read the buffer.
+        // An HTTP dial to the unreachable Director would have failed to resolve the owner and read the screen.
         Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
         var node = await resp.Content.ReadFromJsonAsync<JsonNode>();
         Assert.False(node?["isMenu"]?.GetValue<bool>());
 
-        // The owner resolved from the push store and the terminal was read via the tunnel "buffer" verb.
-        Assert.Equal("buffer", _lastCommand!.Verb);
+        // The owner resolved from the push store and the LIVE screen was read via the tunnel "screen-grid" verb.
+        Assert.Equal("screen-grid", _lastCommand!.Verb);
         Assert.Equal(sid, _lastCommand.SessionId);
     }
 
