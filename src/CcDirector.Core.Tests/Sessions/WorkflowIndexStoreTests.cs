@@ -87,6 +87,55 @@ public sealed class WorkflowIndexStoreTests : IDisposable
     }
 
     [Fact]
+    public void BuildIndexText_StripsControlCharacters_AndCapsIdsAndEntryCount()
+    {
+        // ANSI escapes and other control characters in authored data must never reach a terminal
+        // preamble; a runaway id must not inflate it; and the entry count is capped with an honest
+        // "and N more" line rather than a silent cut.
+        var noisy = WorkflowIndexStore.BuildIndexText(new[]
+        {
+            new WorkflowIndexStore.CatalogWorkflow(new string('i', 300), "esc\u001b[31mred\u001b[0m done"),
+        });
+        var line = noisy.Split('\n').Single(l => l.StartsWith("  - "));
+        Assert.DoesNotContain('\u001b', line);
+        Assert.Contains("esc[31mred[0m done", line);
+        Assert.True(line.Length < WorkflowIndexStore.MaxIdChars + WorkflowIndexStore.MaxSummaryChars + 20);
+
+        var many = WorkflowIndexStore.BuildIndexText(
+            Enumerable.Range(0, WorkflowIndexStore.MaxIndexEntries + 7)
+                .Select(i => new WorkflowIndexStore.CatalogWorkflow($"wf-{i}", "s"))
+                .ToArray());
+        Assert.Equal(WorkflowIndexStore.MaxIndexEntries,
+            many.Split('\n').Count(l => l.StartsWith("  - ")));
+        Assert.Contains("...and 7 more", many);
+    }
+
+    [Fact]
+    public void ACacheOlderThanTheStalenessCeiling_InjectsNothing()
+    {
+        var store = new WorkflowIndexStore(_cachePath);
+        store.WriteCache(new WorkflowIndexCacheEntry("old index",
+            DateTime.UtcNow - WorkflowIndexStore.MaxCacheAge - TimeSpan.FromMinutes(1)));
+
+        Assert.Equal("", store.ActiveIndex());
+
+        // A fresh cache serves normally - the ceiling only suppresses genuinely stale content.
+        store.WriteCache(new WorkflowIndexCacheEntry("fresh index", DateTime.UtcNow));
+        Assert.Equal("fresh index", store.ActiveIndex());
+    }
+
+    [Fact]
+    public void ACorruptCacheFile_DegradesToNoIndex_NeverAnException()
+    {
+        Directory.CreateDirectory(_dir);
+        File.WriteAllText(_cachePath, "{ this is not json");
+
+        // This sits on the session-launch path: corrupt cache = no index + a log line, never a
+        // thrown exception that would turn every launch into an error.
+        Assert.Equal("", new WorkflowIndexStore(_cachePath).ActiveIndex());
+    }
+
+    [Fact]
     public async Task RefreshAsync_DownloadsTheCatalog_AndCachesTheRenderedIndex()
     {
         const string body = "{\"workflows\":[{\"id\":\"mission\",\"summary\":\"The mission conduct.\",\"version\":3}]}";

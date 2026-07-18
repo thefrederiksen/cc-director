@@ -33,9 +33,14 @@ public sealed class FleetPreambleDefaultGoldenTests
                         "beside it as .received.txt; review it and rename it to .approved.txt to approve.");
         }
 
-        var approved = File.ReadAllText(approvedPath).Replace("\r\n", "\n").TrimEnd('\n');
+        // Exact comparison, with exactly ONE concession: editors commonly append a single final
+        // newline on save, so one trailing newline on the approved FILE is tolerated. Nothing else
+        // is trimmed - added or removed blank lines at the end of the template are real changes.
+        var approved = File.ReadAllText(approvedPath).Replace("\r\n", "\n");
+        if (approved.EndsWith('\n') && !actual.EndsWith('\n'))
+            approved = approved[..^1];
 
-        if (!string.Equals(approved, actual.TrimEnd('\n'), StringComparison.Ordinal))
+        if (!string.Equals(approved, actual, StringComparison.Ordinal))
         {
             File.WriteAllText(Path.Combine(dir, "fleet-preamble-default.received.txt"), actual);
             Assert.Fail("FleetPreambleTemplate.Default no longer matches the approved snapshot. If the " +
