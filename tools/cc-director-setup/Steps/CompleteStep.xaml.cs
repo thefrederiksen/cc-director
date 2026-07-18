@@ -32,39 +32,43 @@ public partial class CompleteStep : UserControl
 
         var versionSuffix = string.IsNullOrEmpty(version) ? "" : $" · v{version.TrimStart('v')}";
 
-        if (alreadyUpToDate)
+        // One place computes the verdict; this only renders it (any skipped component reads as
+        // Problems, so a failure can never render as "Everything went perfectly").
+        switch (InstallCompletion.Classify(installed, skipped, isUpdate, alreadyUpToDate))
         {
-            HeadingText.Text = "✓  Already Up to Date";
-            DescriptionText.Text = "DevThrottle is already running the latest version.";
-            SummaryLine.Text = $"Nothing to do{versionSuffix}";
-            PathNote.Visibility = Visibility.Collapsed;
-        }
-        else if (isUpdate)
-        {
-            HeadingText.Text = "✓  Update Complete";
-            DescriptionText.Text = "Everything went perfectly. You're up to date.";
-            SummaryLine.Text = $"{installed} components updated{versionSuffix}";
-            PathNote.Visibility = Visibility.Collapsed;
-        }
-        else
-        {
-            SummaryLine.Text = $"{installed} components installed{versionSuffix}";
-        }
+            case InstallCompletionKind.AlreadyUpToDate:
+                HeadingText.Text = "✓  Already Up to Date";
+                DescriptionText.Text = "DevThrottle is already running the latest version.";
+                SummaryLine.Text = $"Nothing to do{versionSuffix}";
+                PathNote.Visibility = Visibility.Collapsed;
+                break;
 
-        // Failure path: surface the problem loudly - amber heading, full summary box,
-        // and the details/report expander forced open. On success all of that stays
-        // out of the way behind the small collapsed expander at the bottom.
-        if (skipped > 0)
-        {
-            var amber = new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(0xE0, 0xA0, 0x30));
-            HeadingText.Text = isUpdate ? "Update finished with problems" : "Setup finished with problems";
-            HeadingText.Foreground = amber;
-            DescriptionText.Text = $"{skipped} component(s) did not install. DevThrottle may still work, but please report this.";
-            SummaryLine.Visibility = Visibility.Collapsed;
-            FailurePanel.Visibility = Visibility.Visible;
-            DetailsHeader.Text = $"{skipped} component(s) did not install - please report this";
-            DetailsHeader.Foreground = amber;
-            DetailsExpander.IsExpanded = true;
+            case InstallCompletionKind.Success when isUpdate:
+                HeadingText.Text = "✓  Update Complete";
+                DescriptionText.Text = "Everything went perfectly. You're up to date.";
+                SummaryLine.Text = $"{installed} components updated{versionSuffix}";
+                PathNote.Visibility = Visibility.Collapsed;
+                break;
+
+            case InstallCompletionKind.Success:
+                // Fresh install: heading/description keep their XAML defaults ("...ready to go.").
+                SummaryLine.Text = $"{installed} components installed{versionSuffix}";
+                break;
+
+            case InstallCompletionKind.Problems:
+                // Failure path: surface the problem loudly - amber heading, full summary box,
+                // and the details/report expander forced open. On success all of that stays
+                // out of the way behind the small collapsed expander at the bottom.
+                var amber = new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(0xE0, 0xA0, 0x30));
+                HeadingText.Text = isUpdate ? "Update finished with problems" : "Setup finished with problems";
+                HeadingText.Foreground = amber;
+                DescriptionText.Text = $"{skipped} component(s) did not install. DevThrottle may still work, but please report this.";
+                SummaryLine.Visibility = Visibility.Collapsed;
+                FailurePanel.Visibility = Visibility.Visible;
+                DetailsHeader.Text = $"{skipped} component(s) did not install - please report this";
+                DetailsHeader.Foreground = amber;
+                DetailsExpander.IsExpanded = true;
+                break;
         }
 
         SetupLog.Write($"[CompleteStep] Created: installed={installed}, skipped={skipped}, isUpdate={isUpdate}, alreadyUpToDate={alreadyUpToDate}, version={version}");

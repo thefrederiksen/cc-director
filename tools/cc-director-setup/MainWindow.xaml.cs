@@ -495,14 +495,19 @@ public partial class MainWindow : Window
             _installStep?.SetStatus(result.Message);
             if (result.Success) _installStep?.SetGatewayDone();
             else _installStep?.SetGatewayFailed();
-            SetupLog.Write($"[MainWindow] Gateway install success={result.Success}: {result.Message}");
+            // A failed Gateway refresh is a component that did NOT install: count it so the Complete
+            // step reports the honest failure instead of "Everything went perfectly." Painting the row
+            // failed without this let the wizard report a clean success while the Gateway never updated.
+            _skippedCount = InstallCompletion.SkippedAfterGateway(_skippedCount, result.Success);
+            SetupLog.Write($"[MainWindow] Gateway install success={result.Success}: {result.Message} (skipped now {_skippedCount})");
         }
         catch (Exception ex)
         {
             _gatewayResultMessage = $"Gateway install error: {ex.Message}";
             _installStep?.SetStatus(_gatewayResultMessage);
             _installStep?.SetGatewayFailed();
-            SetupLog.Write($"[MainWindow] RunGatewayTrayInstallAsync FAILED: {ex.Message}");
+            _skippedCount = InstallCompletion.SkippedAfterGateway(_skippedCount, gatewaySuccess: false);
+            SetupLog.Write($"[MainWindow] RunGatewayTrayInstallAsync FAILED: {ex.Message} (skipped now {_skippedCount})");
         }
     }
 

@@ -55,6 +55,23 @@ public class GatewayTrayInstallerTests
         Assert.Equal(7878, GatewayTrayInstaller.GatewayDefaultPort);
     }
 
+    // D2a: the Gateway install contract no longer carries an OPENAI_API_KEY. Inference routes through
+    // the account-minted dt_live_ key the managed Gateway runtime mints itself, so InstallAsync neither
+    // asks for nor writes an OpenAI key. Revert-proof: re-add the `string? openAiKey` parameter (and the
+    // env-write block this slice deleted) and this test goes red - the parameter reappears.
+    [Fact]
+    public void InstallAsync_HasNoOpenAiKeyParameter()
+    {
+        var method = typeof(GatewayTrayInstaller).GetMethod(nameof(GatewayTrayInstaller.InstallAsync));
+        Assert.NotNull(method);
+        Assert.DoesNotContain(
+            method!.GetParameters(),
+            p => p.Name is not null && p.Name.Contains("openai", StringComparison.OrdinalIgnoreCase));
+        Assert.DoesNotContain(
+            method.GetParameters(),
+            p => p.Name is not null && p.Name.Equals("key", StringComparison.OrdinalIgnoreCase));
+    }
+
     // --- Issue #175: the tray launch must NOT inherit the caller's stdio ---------------------------
     // When step 4 launched the long-lived tray Gateway with UseShellExecute=false, the Gateway
     // inherited the setup CLI's stdout handle and held it open for its whole lifetime, so any caller

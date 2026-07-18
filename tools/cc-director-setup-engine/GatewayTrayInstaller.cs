@@ -10,11 +10,13 @@ public sealed record GatewayInstallResult(bool Success, string Message, IReadOnl
 /// <summary>
 /// Performs the Gateway-role first install that the generic <see cref="UpdateRunner"/> cannot:
 ///   1. extract the Cockpit .zip (the runner skips archive assets) into the per-user Cockpit dir,
-///   2. ensure OPENAI_API_KEY is available to the user environment (the Gateway needs it),
-///   3. start the Gateway tray app with <c>--managed</c> (it supervises the Cockpit and registers
+///   2. start the Gateway tray app with <c>--managed</c> (it supervises the Cockpit and registers
 ///      its own HKCU Run-key autostart on startup),
-///   4. wait for the Gateway (7878) and the supervised Cockpit (7470) to answer.
+///   3. wait for the Gateway (7878) and the supervised Cockpit (7470) to answer.
 ///
+/// The install path does NOT ask for or write an OPENAI_API_KEY: inference routes through
+/// DevThrottle's account-minted <c>dt_live_</c> key, which the managed Gateway runtime auto-mints and
+/// stores itself after account sign-in (AccountInferenceKeyProvisioner / TranscriptionKeyAutoProvisioner).
 /// The Gateway exe itself is already placed by the UpdateRunner at the Gateway component path before
 /// this runs. Everything is per-user (%LOCALAPPDATA%): NO elevation, NO Windows service
 /// (docs/plans/gateway-tray-app.md). Windows-only.
@@ -39,12 +41,12 @@ public sealed class GatewayTrayInstaller
     /// <summary>
     /// Install + start the Gateway tray app from an already-resolved release. The Gateway exe must
     /// already be placed (by the UpdateRunner) at <see cref="InstallLayout.PathFor"/> for the Gateway
-    /// component. <paramref name="openAiKey"/> is written to the user environment when provided;
-    /// otherwise it must already be present there.
+    /// component. No OPENAI_API_KEY is asked for or written: the managed Gateway runtime auto-mints and
+    /// stores the account <c>dt_live_</c> inference key itself after sign-in.
     /// </summary>
     [SupportedOSPlatform("windows")]
     public async Task<GatewayInstallResult> InstallAsync(
-        ResolvedRelease release, ReleaseSource source, string? openAiKey = null, CancellationToken ct = default)
+        ResolvedRelease release, ReleaseSource source, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(release);
         ArgumentNullException.ThrowIfNull(source);
@@ -56,31 +58,12 @@ public sealed class GatewayTrayInstaller
         if (!File.Exists(gatewayExe))
             return Fail(steps, $"Gateway exe not present at {gatewayExe}; the file swap must run first.");
 
-        // 1. OPENAI_API_KEY: the Gateway process needs it (dictation cleanup, recap). Write it to the
-        // user environment when provided; otherwise require it to already be there. No silent degrade.
-        var keyInUserEnv = Environment.GetEnvironmentVariable("OPENAI_API_KEY", EnvironmentVariableTarget.User);
-        if (!string.IsNullOrWhiteSpace(openAiKey))
-        {
-            Environment.SetEnvironmentVariable("OPENAI_API_KEY", openAiKey, EnvironmentVariableTarget.User);
-            steps.Add("wrote OPENAI_API_KEY to the user environment");
-        }
-        else if (string.IsNullOrWhiteSpace(keyInUserEnv))
-        {
-            return Fail(steps,
-                "OPENAI_API_KEY is not set in the user environment and was not provided. " +
-                "Set it (setx OPENAI_API_KEY <key>) and re-run the Gateway install.");
-        }
-        else
-        {
-            steps.Add("OPENAI_API_KEY already present in the user environment");
-        }
-
-        // 2. Stop any already-running installed Gateway (and a legacy Cockpit child from a
+        // 1. Stop any already-running installed Gateway (and a legacy Cockpit child from a
         // pre-cutover install) so their files unlock before extraction (re-install / repair path).
         // Scoped to processes under the install dirs only.
         StopInstalledProcesses(steps);
 
-        // 3. Extract the mobile app (issue #809) into wwwroot/m beside the Gateway exe so /m serves on
+        // 2. Extract the mobile app (issue #809) into wwwroot/m beside the Gateway exe so /m serves on
         // a clean install with no manual copy. The single-file exe carries no loose content, so this
         // side-car zip is the delivery. A release that predates the mobile app (#806) has no such asset
         // and simply serves no /m (ExtractAsync returns null).
@@ -97,7 +80,7 @@ public sealed class GatewayTrayInstaller
             return Fail(steps, $"Mobile app extraction failed: {ex.Message}");
         }
 
-        // 3b. Extract the React Cockpit (epic #967 cutover, issue #979) into wwwroot/c beside the exe so
+        // 2b. Extract the React Cockpit (epic #967 cutover, issue #979) into wwwroot/c beside the exe so
         // the Gateway serves the Cockpit at the site root on a clean install. Same side-car delivery as
         // the mobile app above (the single-file exe carries no loose content). A release that predates
         // the cutover has no such asset and serves no Cockpit (ExtractAsync returns null).
@@ -114,7 +97,7 @@ public sealed class GatewayTrayInstaller
             return Fail(steps, $"Cockpit extraction failed: {ex.Message}");
         }
 
-        // 3c. Extract the bundled ffmpeg (issue #1186) beside the Gateway exe so the long-clip WebM/Opus
+        // 2c. Extract the bundled ffmpeg (issue #1186) beside the Gateway exe so the long-clip WebM/Opus
         // -> PCM WAV transcode (issue #1139) works on a clean install with no manual copy. Same side-car
         // delivery as the mobile app / Cockpit above (the single-file exe carries no loose content), but
         // ffmpeg.exe lands in the Gateway dir root where FfmpegAudioTranscoder resolves it. A release that
@@ -133,7 +116,7 @@ public sealed class GatewayTrayInstaller
             return Fail(steps, $"ffmpeg extraction failed: {ex.Message}");
         }
 
-        // 4. Start the tray app. It registers its own HKCU Run-key autostart (pointing at itself with
+        // 3. Start the tray app. It registers its own HKCU Run-key autostart (pointing at itself with
         // the same arguments) on startup, so install-time registration and app self-registration can
         // never disagree.
         try
@@ -148,7 +131,7 @@ public sealed class GatewayTrayInstaller
             return Fail(steps, $"Failed to start the Gateway tray app: {ex.Message}");
         }
 
-        // 5. Wait for health: the Gateway itself. It serves the React Cockpit in-process (issue #979),
+        // 4. Wait for health: the Gateway itself. It serves the React Cockpit in-process (issue #979),
         // so a healthy Gateway IS a live Cockpit - there is no separate Cockpit process to health-check.
         var gatewayUp = await WaitForHttpAsync($"http://127.0.0.1:{GatewayDefaultPort}/healthz", TimeSpan.FromSeconds(20), ct);
         steps.Add($"gateway healthz on {GatewayDefaultPort}: {(gatewayUp ? "OK" : "no response")}");
