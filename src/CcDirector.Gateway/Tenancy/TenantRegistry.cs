@@ -70,7 +70,28 @@ public sealed class TenantRegistry
                 Email = string.IsNullOrWhiteSpace(email) ? null : email!.Trim(),
                 CreatedAtUtc = DateTime.UtcNow,
             });
-            ctx.SaveChanges();
+
+            try
+            {
+                ctx.SaveChanges();
+            }
+            catch (DbUpdateException)
+            {
+                // A competing mint for the SAME subject won the unique index on account_subject (a second
+                // instance/process, or a future non-single-writer deployment - the in-process write lock above
+                // does not cover those). The mapping is idempotent by subject, so the loser adopts the winner's
+                // tenant: re-read what the index committed and return it. This is NOT a fallback that hides a
+                // problem - the unique index is the source of truth and we are reading back the value it
+                // enforced. A still-absent row would be a genuine failure, so it re-throws rather than mint again.
+                using var reread = _db.CreateUnscopedContext();
+                var winner = reread.Tenants.AsNoTracking().FirstOrDefault(t => t.AccountSubject == subject);
+                if (winner is not null)
+                {
+                    FileLog.Write("[TenantRegistry] MintOrLookupBySubject: lost a mint race, adopting the winning tenant for the account");
+                    return new TenantId(winner.Id);
+                }
+                throw;
+            }
 
             FileLog.Write("[TenantRegistry] MintOrLookupBySubject: minted a new tenant for a first-seen account");
             return new TenantId(tenantId);

@@ -68,4 +68,40 @@ public sealed class TenantScopeGuardTests : IDisposable
         Assert.Null(tenants.GetQueryFilter());
         Assert.False(typeof(TenantScopedEntity).IsAssignableFrom(tenants.ClrType));
     }
+
+    /// <summary>
+    /// The REVERSE invariant (deny-by-default for new tables). The forward test above only checks entities
+    /// that ALREADY derive from <see cref="TenantScopedEntity"/> - so an author who maps a brand-new table
+    /// and simply FORGETS to derive from the base would sail past it with no tenant_id and no filter, which is
+    /// exactly the cross-tenant leak this guard exists to prevent. This test flips it: EVERY mapped table must
+    /// be tenant-scoped, and the only tables allowed to be global are an explicit allowlist (today just the
+    /// <c>tenants</c> mapping table). Adding a new global table is therefore a CONSCIOUS act - a line added to
+    /// this allowlist with a reason - never a silent omission.
+    ///
+    /// Owned types are excluded: an owned type mapped to a JSON column (the cron/workflow "sub-doc -> JSON in
+    /// a column" pattern) is not its own table - it rides inside its owner's row and its owner's tenant_id, so
+    /// it neither needs nor has a tenant_id of its own.
+    /// </summary>
+    [Fact]
+    public void EveryMappedTable_IsTenantScopedOrAnExplicitlyAllowlistedGlobalTable()
+    {
+        // The ONLY tables permitted to be global (un-scoped). Growing this set must be deliberate: a new
+        // entry here is an author consciously declaring "this table is not tenant data".
+        var allowedGlobalTables = new HashSet<Type> { typeof(TenantEntity) };
+
+        var model = Model();
+        var offenders = model.GetEntityTypes()
+            // Owned types (JSON sub-documents) are part of their owner's table, not tables in their own right.
+            .Where(e => !e.IsOwned())
+            .Where(e => !typeof(TenantScopedEntity).IsAssignableFrom(e.ClrType))
+            .Where(e => !allowedGlobalTables.Contains(e.ClrType))
+            .Select(e => e.ClrType.Name)
+            .ToList();
+
+        Assert.True(offenders.Count == 0,
+            "These mapped tables are neither tenant-scoped nor an allowlisted global table, so a tenant " +
+            "could read another tenant's rows: " + string.Join(", ", offenders) +
+            ". Derive the entity from TenantScopedEntity, or - only if it is genuinely global mapping data - " +
+            "add it to allowedGlobalTables with a reason.");
+    }
 }
