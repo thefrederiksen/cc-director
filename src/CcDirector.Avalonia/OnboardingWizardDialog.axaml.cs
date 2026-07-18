@@ -272,8 +272,10 @@ public partial class OnboardingWizardDialog : Window
         DoneSummary.Text = $"{gatewayPart} {agentPart}";
     }
 
-    /// <summary>Mark onboarding complete and close. Sets WantsNewSession so the caller can route to New Session.</summary>
-    private async Task FinishAsync(bool wantsNewSession)
+    /// <summary>Mark onboarding complete and close. Sets WantsNewSession so the caller can route to New Session.
+    /// Internal so the local-only regression proof (issue #1809) can drive the real Skip/Finish seam and
+    /// assert it persists the completion marker without writing a gateway.</summary>
+    internal async Task FinishAsync(bool wantsNewSession)
     {
         FileLog.Write($"[OnboardingWizardDialog] FinishAsync: wantsNewSession={wantsNewSession}");
         await Task.Run(OnboardingModel.MarkComplete);

@@ -9,96 +9,85 @@ using Xunit;
 namespace CcDirectorSetup.Tests;
 
 /// <summary>
-/// Tests for the reframed installer role step (issue #645). The Welcome step's fresh-install role
-/// picker is reframed around "do you already have a gateway?": the "first machine" card maps to
-/// <see cref="InstallRole.Gateway"/> (provision a LOCAL gateway here) and is pre-selected by default,
-/// so a solo user who does NOT choose to connect to an existing gateway ends with the Gateway role -
-/// every install therefore has a gateway. The "I already have a gateway" card maps to
-/// <see cref="InstallRole.Workstation"/>.
+/// Tests for the installer's Welcome step after it became Director-only with no account gate (issue
+/// #1807). A fresh install makes NO decision on this screen - there is no role picker at all: the step
+/// just shows what gets installed and a "Click Next" hint. Update mode still shows, read-only, which
+/// install type this machine is (from InstalledRoleDetector) plus the Uninstall entry (issue #257).
 ///
 /// <see cref="WelcomeStep"/> is a WPF UserControl whose XAML binds App-level static resources, so all
 /// cases run on ONE shared STA thread that owns a single <see cref="Application"/> with App.xaml's
 /// resources loaded (resource lookup is thread-affine, so every control must be built on the thread
 /// that owns the Application). The shared thread is provided by <see cref="WpfStaFixture"/>.
 /// </summary>
-public sealed class WelcomeStepRoleTests : IClassFixture<WpfStaFixture>
+public sealed class WelcomeStepTests : IClassFixture<WpfStaFixture>
 {
     private readonly WpfStaFixture _wpf;
 
-    public WelcomeStepRoleTests(WpfStaFixture wpf) => _wpf = wpf;
+    public WelcomeStepTests(WpfStaFixture wpf) => _wpf = wpf;
 
     [Fact]
-    public void FreshInstall_DefaultsToGatewayRole_SoSoloInstallProvisionsLocalGateway() =>
-        _wpf.Run(() =>
-        {
-            // Arrange + Act: a fresh install (isUpdate=false). No user interaction at all.
-            var step = new WelcomeStep(isUpdate: false, installedVersion: null);
-
-            // Assert: the solo path is pre-selected to the local-gateway role, so a user who never
-            // touches the cards still ends with a Gateway install (issue #645 acceptance criterion 1/2).
-            Assert.Equal(InstallRole.Gateway, step.SelectedRole);
-        });
-
-    [Fact]
-    public void FreshInstall_FirstMachineCard_MapsToGatewayRole() =>
+    public void FreshInstall_ShowsNoRolePicker_AndNoInstalledRoleOrUninstall() =>
         _wpf.Run(() =>
         {
             var step = new WelcomeStep(isUpdate: false, installedVersion: null);
 
-            // Act: pick "I'm setting up my first machine".
-            FindRadio(step, "FirstMachineRadio").IsChecked = true;
+            // The reframed "do you already have a gateway?" role cards are gone entirely - there is no
+            // decision to make on a fresh install.
+            Assert.Null(step.FindName("RolePanel"));
+            Assert.Null(step.FindName("FirstMachineRadio"));
+            Assert.Null(step.FindName("HaveGatewayRadio"));
 
-            // Assert: that is the local-gateway role.
-            Assert.Equal(InstallRole.Gateway, step.SelectedRole);
+            // The update-only chrome stays hidden on a fresh install.
+            Assert.Equal(Visibility.Collapsed, Panel(step, "InstalledRolePanel").Visibility);
+            Assert.Equal(Visibility.Collapsed, ButtonNamed(step, "UninstallButton").Visibility);
+
+            // The "what gets installed" description and the Next hint are shown.
+            Assert.Equal(Visibility.Visible, Text(step, "DescriptionText").Visibility);
+            Assert.Equal(Visibility.Visible, Text(step, "ClickNextHint").Visibility);
         });
 
     [Fact]
-    public void FreshInstall_HaveGatewayCard_MapsToWorkstationRole() =>
+    public void UpdateMode_Gateway_ShowsTheDetectedRoleReadOnly_AndOffersUninstall() =>
         _wpf.Run(() =>
         {
-            var step = new WelcomeStep(isUpdate: false, installedVersion: null);
-
-            // Act: the user already has a gateway, so this machine pairs to it (Workstation role).
-            FindRadio(step, "HaveGatewayRadio").IsChecked = true;
-
-            // Assert.
-            Assert.Equal(InstallRole.Workstation, step.SelectedRole);
-        });
-
-    [Fact]
-    public void FreshInstall_RoleSelected_FiresWhenUserSwitchesCards() =>
-        _wpf.Run(() =>
-        {
-            var step = new WelcomeStep(isUpdate: false, installedVersion: null);
-            var fired = false;
-            step.RoleSelected += (_, _) => fired = true;
-
-            // Act: switch from the pre-selected first-machine card to the have-a-gateway card.
-            FindRadio(step, "HaveGatewayRadio").IsChecked = true;
-
-            // Assert: the wizard is notified so it can keep Next enabled.
-            Assert.True(fired);
-        });
-
-    [Fact]
-    public void UpdateMode_DoesNotPreSelectAnyRole_SoTheUpdatePathUsesTheDetectedRole() =>
-        _wpf.Run(() =>
-        {
-            // Arrange + Act: update mode hides the interactive picker; the role comes from
-            // InstalledRoleDetector (passed in by MainWindow), never from this step's cards. So the
-            // step itself must not assert a role - SelectedRole stays null and is never read on update.
             var step = new WelcomeStep(isUpdate: true, installedVersion: "1.2.3", installedRole: InstallRole.Gateway);
 
-            // Assert: no card is checked in update mode, so a downgrade can never come from this step
-            // (issue #645 acceptance criterion 3: an update preserves the detected role).
-            Assert.Null(step.SelectedRole);
+            // Update mode surfaces the detected install type read-only (never a picker) so the person
+            // sees they are updating the Gateway, and offers Uninstall (issue #257).
+            Assert.Equal(Visibility.Visible, Panel(step, "InstalledRolePanel").Visibility);
+            Assert.Contains("Gateway", Text(step, "InstalledRoleText").Text);
+            Assert.Equal(Visibility.Visible, ButtonNamed(step, "UninstallButton").Visibility);
         });
 
-    private static RadioButton FindRadio(WelcomeStep step, string name)
+    [Fact]
+    public void UpdateMode_Workstation_ShowsTheWorkstationTypeReadOnly() =>
+        _wpf.Run(() =>
+        {
+            var step = new WelcomeStep(isUpdate: true, installedVersion: "1.2.3", installedRole: InstallRole.Workstation);
+
+            Assert.Equal(Visibility.Visible, Panel(step, "InstalledRolePanel").Visibility);
+            Assert.Contains("Workstation", Text(step, "InstalledRoleText").Text);
+        });
+
+    private static TextBlock Text(WelcomeStep step, string name)
     {
-        var radio = step.FindName(name) as RadioButton;
-        Assert.NotNull(radio);
-        return radio!;
+        var t = step.FindName(name) as TextBlock;
+        Assert.NotNull(t);
+        return t!;
+    }
+
+    private static Border Panel(WelcomeStep step, string name)
+    {
+        var b = step.FindName(name) as Border;
+        Assert.NotNull(b);
+        return b!;
+    }
+
+    private static Button ButtonNamed(WelcomeStep step, string name)
+    {
+        var b = step.FindName(name) as Button;
+        Assert.NotNull(b);
+        return b!;
     }
 }
 
