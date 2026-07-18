@@ -130,10 +130,17 @@ public sealed class WorkflowRunStore
         }
     }
 
-    /// <summary>Runs, newest first, optionally filtered by workflow, lifecycle status, or mission.</summary>
+    /// <summary>The hard ceiling on one list read; the default page is 200. Runs accumulate forever
+    /// (they are never hard-deleted - the reporting horizon depends on it), so an unbounded list
+    /// would eventually materialize the whole history per request.</summary>
+    public const int MaxListLimit = 1000;
+
+    /// <summary>Runs, newest first, optionally filtered by workflow, lifecycle status, or mission.
+    /// Ordered and bounded in the database.</summary>
     public IReadOnlyList<WorkflowRunDto> List(
-        string? workflowId = null, string? status = null, Guid? missionId = null)
+        string? workflowId = null, string? status = null, Guid? missionId = null, int limit = 200)
     {
+        var take = Math.Clamp(limit, 1, MaxListLimit);
         lock (_gate)
         {
             using var ctx = _db.CreateContext();
@@ -151,10 +158,33 @@ public sealed class WorkflowRunStore
             if (missionId.HasValue)
                 query = query.Where(r => r.MissionId == missionId.Value);
 
-            return query.ToList()
+            return query
                 .OrderByDescending(r => r.CreatedUtc)
+                .Take(take)
+                .ToList()
                 .Select(ToDto)
                 .ToList();
+        }
+    }
+
+    /// <summary>
+    /// Throws the same validation error <see cref="Create"/> would when the workflow cannot be run
+    /// (missing, archived, or never published), WITHOUT creating anything. The mission-create path
+    /// checks this BEFORE writing the Mission record, so the expected failure mode cannot leave a
+    /// mission behind with no governance run.
+    /// </summary>
+    public void EnsureRunnable(string workflowId)
+    {
+        if (string.IsNullOrWhiteSpace(workflowId))
+            throw new WorkflowValidationException("A run needs a workflow id.");
+        var key = workflowId.Trim().ToLowerInvariant();
+        lock (_gate)
+        {
+            using var ctx = _db.CreateContext();
+            var head = ctx.Workflows.AsNoTracking().FirstOrDefault(h => h.Id == key);
+            if (head is null || head.Archived || head.PublishedVersion is null)
+                throw new WorkflowValidationException(
+                    $"Workflow '{key}' has no published version to run.");
         }
     }
 
@@ -263,30 +293,38 @@ public sealed class WorkflowRunStore
         }
 
         // A non-pending acceptance is a RULING, and a ruling has a ruler: the accepter identity is
-        // what the verified-yield metric audits (issue #1771), so it can never be blank.
-        var who = string.IsNullOrWhiteSpace(acceptedBy) ? entity.AcceptedBy : acceptedBy;
-        if (string.IsNullOrWhiteSpace(who))
+        // what the verified-yield metric audits (issue #1771), so it must be EXPLICIT on every
+        // decision - never inherited from a previous acceptance, or a later rejection would be
+        // silently attributed to whoever accepted earlier.
+        if (string.IsNullOrWhiteSpace(acceptedBy))
             throw new WorkflowValidationException(
                 $"Setting acceptance to '{acceptance}' requires acceptedBy - who made the call.");
         entity.AcceptanceStatus = acceptance;
-        entity.AcceptedBy = who;
+        entity.AcceptedBy = acceptedBy;
         entity.AcceptedUtc = now;
     }
 
     private static void ApplyCriteria(
-        WorkflowRunEntity entity, List<WorkflowRunCriterionResultDto> updates, DateTime now)
+        WorkflowRunEntity entity, List<WorkflowRunCriterionUpdateDto> updates, DateTime now)
     {
+        var seen = new HashSet<string>(StringComparer.Ordinal);
         foreach (var update in updates)
         {
             if (update is null || string.IsNullOrWhiteSpace(update.CriterionId))
                 throw new WorkflowValidationException("A criterion update needs a criterionId.");
+            if (!seen.Add(update.CriterionId))
+                throw new WorkflowValidationException(
+                    $"Criterion '{update.CriterionId}' appears more than once in one patch - the " +
+                    "result would be an inconsistent blend of the two updates.");
             var existing = entity.CriteriaResults.FirstOrDefault(
                 c => string.Equals(c.CriterionId, update.CriterionId, StringComparison.Ordinal));
             if (existing is null)
                 throw new WorkflowValidationException(
                     $"This run has no criterion '{update.CriterionId}' - criteria come from the " +
                     "pinned workflow version and cannot be invented on the run.");
-            if (!string.IsNullOrWhiteSpace(update.Status))
+            // Null means UNCHANGED (the update type has no defaults on purpose): a patch adding only
+            // a note to a met criterion never resets its status.
+            if (update.Status is not null)
             {
                 var status = update.Status.Trim().ToLowerInvariant();
                 if (!CriterionStatuses.Contains(status, StringComparer.Ordinal))
@@ -298,7 +336,8 @@ public sealed class WorkflowRunStore
             if (update.ProofUrl is not null) existing.ProofUrl = update.ProofUrl;
             if (update.Note is not null) existing.Note = update.Note;
             if (update.Evaluator is not null) existing.Evaluator = update.Evaluator;
-            existing.EvaluatedUtc = update.EvaluatedUtc ?? now;
+            // Server-stamped: the evaluation time is when the Gateway applied it, never caller-supplied.
+            existing.EvaluatedUtc = now;
         }
     }
 

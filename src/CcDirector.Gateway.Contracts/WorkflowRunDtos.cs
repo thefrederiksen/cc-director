@@ -131,10 +131,30 @@ public sealed class NewWorkflowRunRequest
 }
 
 /// <summary>
+/// One criterion UPDATE in a run patch - deliberately a separate type from the stored result:
+/// every field except the id is nullable, and null means "unchanged", so adding a note to a met
+/// criterion can never silently reset its status. The evaluation timestamp is server-stamped and
+/// not accepted from the caller.
+/// </summary>
+public sealed class WorkflowRunCriterionUpdateDto
+{
+    public string CriterionId { get; set; } = "";
+
+    /// <summary>New status ("pending", "met", "not-met", "waived"), or null to leave it unchanged.</summary>
+    public string? Status { get; set; }
+
+    public string? ProofUrl { get; set; }
+    public string? Note { get; set; }
+    public string? Evaluator { get; set; }
+}
+
+/// <summary>
 /// Body of PATCH /gateway/workflow-runs/{id}. Every field is optional; present fields apply. Criteria
-/// entries update the seeded criterion with the same id (an unknown id is rejected). Participants in
-/// <see cref="AddParticipants"/> join; session ids in <see cref="LeaveSessionIds"/> get their
-/// <see cref="WorkflowRunParticipantDto.LeftUtc"/> stamped.
+/// entries update the seeded criterion with the same id (an unknown id is rejected, and one patch may
+/// name a criterion only once). Participants in <see cref="AddParticipants"/> join; session ids in
+/// <see cref="LeaveSessionIds"/> get their <see cref="WorkflowRunParticipantDto.LeftUtc"/> stamped.
+/// Setting a non-pending <see cref="AcceptanceStatus"/> REQUIRES <see cref="AcceptedBy"/> - the
+/// decision's actor is never inferred from a previous acceptance.
 /// </summary>
 public sealed class PatchWorkflowRunRequest
 {
@@ -142,7 +162,7 @@ public sealed class PatchWorkflowRunRequest
     public string? Outcome { get; set; }
     public string? AcceptanceStatus { get; set; }
     public string? AcceptedBy { get; set; }
-    public List<WorkflowRunCriterionResultDto>? Criteria { get; set; }
+    public List<WorkflowRunCriterionUpdateDto>? Criteria { get; set; }
     public List<WorkflowRunProofLinkDto>? ProofLinks { get; set; }
     public List<WorkflowRunParticipantDto>? AddParticipants { get; set; }
     public List<string>? LeaveSessionIds { get; set; }

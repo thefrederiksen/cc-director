@@ -51,8 +51,8 @@ internal static class WorkflowRunEndpoints
             });
         });
 
-        app.MapGet("/gateway/workflow-runs", (string? workflowId, string? status, Guid? missionId) =>
-            Results.Json(new { runs = store.List(workflowId, status, missionId) }));
+        app.MapGet("/gateway/workflow-runs", (string? workflowId, string? status, Guid? missionId, int? limit) =>
+            Results.Json(new { runs = store.List(workflowId, status, missionId, limit ?? 200) }));
 
         app.MapGet("/gateway/workflow-runs/{id:guid}", (Guid id) =>
         {

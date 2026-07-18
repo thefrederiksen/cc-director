@@ -161,6 +161,11 @@ public sealed class WorkflowRunStoreTests : IDisposable
         })!;
         Assert.Equal("human:owner", waived.AcceptedBy);
         Assert.NotNull(waived.AcceptedUtc);
+
+        // The actor is EXPLICIT per decision - flipping waived to rejected without naming who
+        // decided must refuse, never silently attribute the rejection to the previous accepter.
+        Assert.Throws<WorkflowValidationException>(() =>
+            runs.Patch(run.Id, new PatchWorkflowRunRequest { AcceptanceStatus = "rejected" }));
     }
 
     [Fact]
@@ -173,7 +178,7 @@ public sealed class WorkflowRunStoreTests : IDisposable
 
         var patched = runs.Patch(run.Id, new PatchWorkflowRunRequest
         {
-            Criteria = new List<WorkflowRunCriterionResultDto>
+            Criteria = new List<WorkflowRunCriterionUpdateDto>
             {
                 new()
                 {
@@ -191,11 +196,34 @@ public sealed class WorkflowRunStoreTests : IDisposable
         Assert.NotNull(criterion.EvaluatedUtc);
         Assert.Equal("pending", patched.CriteriaResults.Single(c => c.CriterionId == "defect-filed").Status);
 
+        // A partial update (note only, no status) must NEVER reset a met criterion to pending -
+        // null means unchanged, which is why the update type has no status default.
+        var noted = runs.Patch(run.Id, new PatchWorkflowRunRequest
+        {
+            Criteria = new List<WorkflowRunCriterionUpdateDto>
+            {
+                new() { CriterionId = "issue-passed", Note = "double-checked" },
+            },
+        })!;
+        var afterNote = noted.CriteriaResults.Single(c => c.CriterionId == "issue-passed");
+        Assert.Equal("met", afterNote.Status);
+        Assert.Equal("double-checked", afterNote.Note);
+
         Assert.Throws<WorkflowValidationException>(() => runs.Patch(run.Id, new PatchWorkflowRunRequest
         {
-            Criteria = new List<WorkflowRunCriterionResultDto>
+            Criteria = new List<WorkflowRunCriterionUpdateDto>
             {
                 new() { CriterionId = "invented", Status = "met" },
+            },
+        }));
+
+        // The same criterion twice in one patch would persist an inconsistent blend - refused.
+        Assert.Throws<WorkflowValidationException>(() => runs.Patch(run.Id, new PatchWorkflowRunRequest
+        {
+            Criteria = new List<WorkflowRunCriterionUpdateDto>
+            {
+                new() { CriterionId = "issue-passed", Status = "met" },
+                new() { CriterionId = "issue-passed", Status = "not-met" },
             },
         }));
     }

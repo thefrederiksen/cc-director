@@ -178,14 +178,28 @@ internal static class GatewayEndpoints
                 if (req is null || string.IsNullOrWhiteSpace(req.MissionName))
                     return Results.BadRequest(new { error = "missionName is required" });
 
+                // Workflows mission (phase 4, issue #1771): a mission IS a run of the built-in
+                // "mission" workflow. The EXPECTED failure (mission workflow unrunnable) is checked
+                // BEFORE the Mission record is written, so it cannot leave a mission behind with no
+                // governance run. The Mission store and the run store are two different stores (JSON
+                // and EF), so a process death exactly between the two writes can still orphan a
+                // mission - a transition-era window that closes when the JSON mission store retires
+                // onto the EF layer; the pre-check removes every failure mode short of that.
+                if (workflowRuns is not null)
+                {
+                    try
+                    {
+                        workflowRuns.EnsureRunnable("mission");
+                    }
+                    catch (Workflows.WorkflowValidationException ex)
+                    {
+                        FileLog.Write($"[GatewayEndpoints] POST /missions refused: {ex.Message}");
+                        return Results.BadRequest(new { error = ex.Message });
+                    }
+                }
+
                 var mission = missions.Create(req.MissionName, req.ParentMissionId);
                 var dto = ToMissionDto(mission);
-
-                // Workflows mission (phase 4, issue #1771): a mission IS a run of the built-in
-                // "mission" workflow. Open the run beside the Mission record, pinned to the published
-                // mission conduct, and hand the id back additively. Fail-loud: if the run cannot be
-                // opened the store is broken, and a mission without its governance record would be
-                // exactly the silent gap the outcome spine exists to close.
                 if (workflowRuns is not null)
                 {
                     var run = workflowRuns.Create(
