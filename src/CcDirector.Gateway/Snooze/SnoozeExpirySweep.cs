@@ -4,26 +4,29 @@ using CcDirector.Core.Utilities;
 namespace CcDirector.Gateway.Snooze;
 
 /// <summary>
-/// Retires snooze entries whose clock has run out. That is all it does, and it is bookkeeping rather than
-/// correctness: the fold reads <see cref="SnoozeRegistry.HoldStateFor"/>, which reports an elapsed entry
-/// as not-held the instant it elapses, on every read. A session returns to "needs you" the moment its
-/// snooze is up whether or not this sweep has run yet. Dropping the entry just stops the registry growing.
+/// A periodic pass over the registry that, as of round 2 finding 2, RETIRES NOTHING ON TIME. The passage
+/// of a snooze's clock no longer deletes its entry; only an edge that actually ends a snooze does - work,
+/// an owner turn, an exit, or a re-snooze overwrite. See <see cref="HandleEntry"/> for the full reasoning;
+/// the short version is that the elapsed entry is the "Snooze ended" badge's only source, so deleting it
+/// on a timer erased the badge before any five-second display fold or eight-second web-push poll could see
+/// it, and a genuine expiry could show no badge at all.
 ///
-/// WHAT THIS USED TO BE, AND WHY IT ISN'T. The hold state lived on the owning Director and the clock lived
-/// here, so expiry had to be negotiated between two processes across a network. Every 15 seconds this
-/// class read each Director's raw hold over the tunnel, interpreted a tri-state, acted as a BACKSTOP for a
-/// landing missed on the push seam, compare-and-cleared so a racing re-snooze survived, nudged the live
-/// Director off hold, and kept the entry until that Director agreed. It also needed a dead-man's-switch,
-/// because a dead Director stranded a hold nobody else could release.
+/// A session still returns to "needs you" the instant its clock runs out, with no sweep and no round trip:
+/// <see cref="SnoozeRegistry.HoldStateFor"/> reports an elapsed entry as None on every read. The entry
+/// lingers only as a durable returned-by-timer tombstone (<see cref="SnoozeRegistry.IsExpired"/> stays
+/// true) until a consumer sees it and an end-of-snooze edge clears it. The registry stays bounded by the
+/// live-session prune paths (<c>PruneNotLive</c> / <c>ClearForDirector</c>).
 ///
-/// All of it is gone, because the premise is gone: the Gateway owns the state AND the clock, so there is
-/// nobody to ask and nobody to nudge. Defect 20 - the one that deleted a twelve-hour timer 15 seconds
-/// after it was asked for, by reading a boolean that could not tell "deferred" from "not held" - is not
-/// defended against here any more. It is unreachable: this sweep never asks anyone whether a session is
-/// held, because it already knows.
+/// WHAT THIS USED TO BE. The hold state lived on the owning Director and the clock lived here, so expiry
+/// was negotiated between two processes: read each Director's raw hold over the tunnel, interpret a
+/// tri-state, back-stop a missed landing, compare-and-clear a racing re-snooze, nudge the Director off
+/// hold, keep the entry until it agreed, and a dead-man's-switch for an unreachable Director. All of that
+/// went when the Gateway took ownership of both the state and the clock (defect 20's boolean read is
+/// unreachable now). This round removed the last thing it still did - deleting an elapsed entry - because
+/// that delete was destroying the badge fact.
 ///
 /// Already-past entries at startup need no special handling: the registry loads them back and they read as
-/// expired on the first read after boot.
+/// expired (and now durable) on the first read after boot.
 /// </summary>
 public sealed class SnoozeExpirySweep : IDisposable
 {
@@ -86,29 +89,32 @@ public sealed class SnoozeExpirySweep : IDisposable
     }
 
     /// <summary>
-    /// Retire an entry whose clock has run out. That is the sweep's WHOLE job now.
+    /// Look at one entry - and, for an elapsed one, DO NOTHING. The passage of time no longer retires a
+    /// snooze (owner's returned-by-timer rule, round 2 finding 2).
     ///
-    /// It used to be a distributed-consensus engine: read the owning Director's hold over the tunnel,
-    /// interpret its tri-state, act as a BACKSTOP for a landing missed on the push seam, compare-and-clear
-    /// so a racing re-snooze was not clobbered, then nudge the Director off hold and wait for it to agree.
-    /// Every line of that existed for one reason - the state lived on a Director and the clock lived here,
-    /// so the two had to be reconciled across a network.
+    /// Why this stopped deleting. The "Snooze ended" badge's ONLY source is the elapsed entry itself:
+    /// the fold computes <c>SnoozeExpired = IsExpired(entry)</c>, which is true only while that entry
+    /// exists. This sweep used to delete the entry the moment it saw expiry - about twelve seconds after
+    /// the clock ran out - and the desktop's display fold (every five seconds) and the web-push poll
+    /// (every eight seconds) could BOTH miss the one-second window in between, so a genuine expiry could
+    /// show no badge at all. Retiring on time traded the old stuck-on badge for a never-shown one.
     ///
-    /// They are the same object now. There is nobody to ask and nobody to nudge: the fold reads
-    /// <see cref="SnoozeRegistry.HoldStateFor"/>, which reports an elapsed entry as None the instant it
-    /// elapses, on every read, with no round trip. Dropping the entry here is bookkeeping, not correctness
-    /// - and it is why an unreachable Director no longer needs a dead-man's-switch. A dead Director cannot
-    /// strand a hold it never owned.
+    /// So an elapsed snooze now LINGERS as an armed-but-elapsed tombstone. That is not a leak and not a
+    /// held session: <see cref="SnoozeRegistry.HoldStateFor"/> already reports an elapsed entry as None on
+    /// every read (so it is correctly "needs you", never "Snoozed"), while <see cref="SnoozeRegistry.IsExpired"/>
+    /// stays true, so the badge is DURABLE until a consumer sees it. The entry is deleted only by an edge
+    /// that actually ends a snooze - work (<c>ClearIfArmed</c>: an elapsed entry is not deferred, so it is
+    /// removed), an owner turn, an exit, or a re-snooze overwrite (which arms a fresh clock, so
+    /// <c>IsExpired</c> goes false and the badge clears). The registry stays bounded by the live-session
+    /// prune paths (<c>PruneNotLive</c> / <c>ClearForDirector</c>), untouched by this change.
     /// </summary>
     private void HandleEntry(SnoozeRegistry.SnoozeEntry entry, DateTime now)
     {
-        if (!_registry.IsExpired(entry.SessionId, now))
-            return; // deferred (no clock yet) or still running. Nothing to do.
-
-        // Compare-and-clear against the snapshot this pass took, so a re-snooze that landed while the pass
-        // was running is never destroyed by a stale expiry decision. The fresh snooze wins.
-        if (_registry.ClearIfUnchanged(entry.SessionId, entry.SnoozeUntilUtc, entry.PendingMinutes))
-            FileLog.Write($"[SnoozeExpirySweep] sid={entry.SessionId}: snooze elapsed (untilUtc={entry.SnoozeUntilUtc:O}) -> entry retired; the session was already reading as not-held from the moment it expired");
+        // Nothing to do, for any entry. A future or deferred entry has not elapsed; an elapsed one is a
+        // durable returned-by-timer tombstone that only an end-of-snooze edge clears. Time never retires a
+        // snooze. This method is kept (rather than the loop removed) so the sweep's structure and its
+        // per-entry isolation remain, in case a future non-destructive per-entry task is added here.
+        _ = (entry, now);
     }
 
     private void Tick()

@@ -261,7 +261,7 @@ public sealed class SnoozeEndToEndTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task An_expired_snooze_returns_the_session_with_no_director_conversation_at_all()
+    public async Task An_expired_snooze_returns_the_session_immediately_and_the_badge_survives_the_sweep()
     {
         // This replaces "Watchdog_nudges_the_live_director_off_hold_and_clears_once_confirmed", which
         // asserted a two-round-trip handshake: sweep sees expired -> nudge the Director off hold -> keep
@@ -275,10 +275,17 @@ public sealed class SnoozeEndToEndTests : IAsyncLifetime
         var returned = await GetSession("s2");
         Assert.False(returned.OnHold);                  // already back, before any sweep has run
         Assert.Equal("needsYou", returned.TriageBucket);
+        Assert.True(returned.SnoozeExpired);            // and it carries the "Snooze ended" badge
         Assert.DoesNotContain(false, fake.HoldCalls("s2")); // nobody was nudged
 
+        // Round 2 finding 2: the sweep no longer retires an elapsed entry - deleting it here erased the
+        // badge's only source before any consumer could read it. The entry lingers as the durable
+        // returned-by-timer tombstone, so the badge is still present after the sweep runs.
         await _gw.RunSnoozeSweepOnceAsync();
-        Assert.False(_gw.SnoozeRegistry.Contains("s2")); // the sweep only retires the spent entry
+        Assert.True(_gw.SnoozeRegistry.Contains("s2"));
+        var afterSweep = await GetSession("s2");
+        Assert.False(afterSweep.OnHold);               // still needs-you, never re-held
+        Assert.True(afterSweep.SnoozeExpired);          // badge NOT erased by the sweep
     }
 
     [Fact]

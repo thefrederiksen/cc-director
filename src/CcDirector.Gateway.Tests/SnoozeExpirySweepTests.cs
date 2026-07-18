@@ -5,23 +5,16 @@ using Xunit;
 namespace CcDirector.Gateway.Tests;
 
 /// <summary>
-/// The snooze watchdog, which now retires entries whose clock has run out and does nothing else.
+/// The snooze watchdog. As of round 2 finding 2 it RETIRES NOTHING ON TIME: the passage of a snooze's
+/// clock no longer deletes its entry. An elapsed entry is the "Snooze ended" badge's only source
+/// (<c>SnoozeExpired = IsExpired(entry)</c>), so deleting it ~12s after expiry erased the badge before the
+/// 5s display fold or the 8s web-push poll could see it - a genuine expiry could show no badge at all. So
+/// an elapsed entry now lingers as a durable returned-by-timer tombstone, retired only by an edge that
+/// actually ends a snooze: work (ClearIfArmed), an owner turn, an exit, or a re-snooze overwrite.
 ///
-/// WHAT THIS FILE USED TO TEST. The sweep read each pending snooze's owning Director over the tunnel,
-/// interpreted its raw hold, landed deferrals the push seam had missed, nudged live Directors off hold on
-/// expiry, kept entries until a Director confirmed, and never touched an entry whose Director was
-/// unreachable (the dead-man's-switch). Twelve tests covered that protocol. It is all deleted, along with
-/// the reason it existed: the state lived on a Director and the clock lived on the Gateway, so expiry was
-/// a negotiation between two processes.
-///
-/// The Gateway owns both now, so expiry is a local fact and needs no protocol. Note what that does to
-/// defect 20 - the boolean read that deleted a twelve-hour timer 15 seconds after it was asked for. It is
-/// not defended here any more; it is UNREACHABLE, because this sweep never asks anybody whether a session
-/// is held. The best fix for a bug in a conversation between two processes is to stop having it.
-///
-/// The "does a session come back when its snooze is up" behaviour did not move into a gap - it moved to
-/// SnoozeRegistry.HoldStateFor, which reports an elapsed entry as not-held on every read, and is covered
-/// by SnoozeRegistryTests. This sweep only stops the registry growing.
+/// A session still returns to "needs you" the instant its clock runs out, with no sweep - HoldStateFor
+/// reports an elapsed entry as None on every read; that behaviour lives in SnoozeRegistry and is covered by
+/// SnoozeRegistryTests. This sweep no longer changes anything on a pass.
 /// </summary>
 public sealed class SnoozeExpirySweepTests : IDisposable
 {
@@ -54,36 +47,44 @@ public sealed class SnoozeExpirySweepTests : IDisposable
     }
 
     [Fact]
-    public async Task An_expired_snooze_is_retired()
+    public async Task An_elapsed_snooze_is_NOT_retired_by_the_sweep_so_the_returned_by_timer_badge_is_durable()
     {
+        // ROUND 2 FINDING 2. Inspector timing: deadline passes at 11s, the display fold runs at 10s and 15s,
+        // the expiry sweep runs at 12s. If the sweep deletes the entry at 12s, the fold at 15s sees nothing
+        // and stamps SnoozeExpired=false; the desktop never receives true and a genuine expiry shows NO
+        // badge. Here the deadline is already in the past and the sweep runs - and the entry must SURVIVE, so
+        // IsExpired stays true and the badge is durable until a consumer reads it.
         var (reg, sweep) = Make(_now);
-        reg.Snooze("s1", _now.AddMinutes(-1), "dir-1"); // up a minute ago
+        reg.Snooze("s1", _now.AddMinutes(-1), "dir-1"); // deadline already passed
 
         await sweep.RunOnceAsync(CancellationToken.None);
 
-        Assert.False(reg.Contains("s1"));
+        Assert.True(reg.Contains("s1"));                             // NOT retired by the passage of time
+        Assert.True(reg.IsExpired("s1", _now));                      // so the badge fact is durable
+        Assert.Equal(HoldStates.None, reg.HoldStateFor("s1", _now)); // and it reads needs-you, never held
     }
 
     [Fact]
-    public async Task An_expired_snooze_already_reads_as_not_held_BEFORE_the_sweep_runs()
+    public async Task An_elapsed_snooze_already_reads_as_not_held_BEFORE_and_AFTER_the_sweep()
     {
-        // The sweep is bookkeeping, not correctness. This is the property that makes it so: the session is
-        // back in "needs you" the instant its time is up, with no sweep, no round trip, and no Director.
+        // The session is back in "needs you" the instant its time is up, with no sweep and no round trip -
+        // and the sweep does not change that, nor does it delete the entry.
         var (reg, sweep) = Make(_now);
         reg.Snooze("s1", _now.AddMinutes(-1), "dir-1");
 
         Assert.Equal(HoldStates.None, reg.HoldStateFor("s1", _now)); // before the sweep has run at all
 
         await sweep.RunOnceAsync(CancellationToken.None);
-        Assert.False(reg.Contains("s1"));
+
+        Assert.True(reg.Contains("s1"));                             // still there (durable tombstone)
+        Assert.Equal(HoldStates.None, reg.HoldStateFor("s1", _now)); // still needs-you
     }
 
     [Fact]
     public async Task A_deferred_snooze_is_never_expired_or_retired()
     {
-        // DEFECT 20's case, now unreachable by construction. A deferral has no clock, because the clock
-        // starts when the work ENDS. There is nothing to elapse, so there is nothing to retire - and the
-        // sweep cannot mistake it for "not held" because it never asks that question of anyone.
+        // A deferral has no clock, because the clock starts when the work ENDS. There is nothing to elapse,
+        // so there is nothing to retire, and the sweep leaves it exactly as it found it.
         var (reg, sweep) = Make(_now.AddYears(1)); // arbitrarily far in the future
         reg.SnoozeDeferred("s1", 720, "dir-1");
 
@@ -95,55 +96,62 @@ public sealed class SnoozeExpirySweepTests : IDisposable
     }
 
     [Fact]
-    public async Task A_snooze_on_a_dead_director_still_returns_on_time()
-    {
-        // The dead-man's-switch is not needed any more, because the thing it protected against cannot
-        // happen: the hold never lived on the Director, so a Director dying cannot strand it. There is no
-        // reachability check left in the sweep at all - this test exists to pin that a hold owned by a
-        // Director that never comes back still expires exactly on schedule.
-        var (reg, sweep) = Make(_now);
-        reg.Snooze("s1", _now.AddMinutes(-1), "dir-that-is-long-dead");
-
-        Assert.Equal(HoldStates.None, reg.HoldStateFor("s1", _now));
-
-        await sweep.RunOnceAsync(CancellationToken.None);
-        Assert.False(reg.Contains("s1"));
-    }
-
-    [Fact]
-    public async Task A_re_snooze_during_the_pass_is_not_destroyed_by_a_stale_expiry()
-    {
-        // Compare-and-clear: the pass snapshots the entries, and a snooze that lands while it is running
-        // must win over the decision the pass made from the older value.
-        var reg = new SnoozeRegistry(Path_);
-        reg.Snooze("s1", _now.AddMinutes(-1), "dir-1"); // expired as the pass begins
-
-        var sweep = new SnoozeExpirySweep(reg, utcNow: () =>
-        {
-            // The user re-snoozes for another hour in the instant between the snapshot and the decision.
-            reg.Snooze("s1", _now.AddHours(1), "dir-1");
-            return _now;
-        });
-
-        await sweep.RunOnceAsync(CancellationToken.None);
-
-        Assert.True(reg.Contains("s1")); // the fresh snooze survived
-        Assert.Equal(HoldStates.Held, reg.HoldStateFor("s1", _now));
-    }
-
-    [Fact]
-    public async Task Every_entry_is_handled_independently()
+    public async Task Every_entry_is_left_untouched_by_a_pass()
     {
         var (reg, sweep) = Make(_now);
-        reg.Snooze("expired", _now.AddMinutes(-1), "dir-1");
+        reg.Snooze("elapsed", _now.AddMinutes(-1), "dir-1");
         reg.Snooze("running", _now.AddHours(2), "dir-1");
         reg.SnoozeDeferred("deferred", 720, "dir-2");
 
         await sweep.RunOnceAsync(CancellationToken.None);
 
-        Assert.False(reg.Contains("expired"));
+        Assert.True(reg.Contains("elapsed"));  // no longer retired on time
         Assert.True(reg.Contains("running"));
         Assert.True(reg.Contains("deferred"));
+    }
+
+    // ---------- the elapsed tombstone is cleared only by an end-of-snooze edge ----------
+
+    [Fact]
+    public void Work_clears_an_elapsed_tombstone_and_the_badge_with_it()
+    {
+        // An elapsed entry is armed (not deferred), so the working edge's ClearIfArmed removes it - the
+        // session comes back as a plain red "needs you" with no lingering badge.
+        var reg = new SnoozeRegistry(Path_);
+        reg.Snooze("s1", _now.AddMinutes(-1), "dir-1");
+        Assert.True(reg.IsExpired("s1", _now));
+
+        Assert.True(reg.ClearIfArmed("s1"));
+        Assert.False(reg.Contains("s1"));
+    }
+
+    [Fact]
+    public void A_re_snooze_clears_an_elapsed_tombstone_and_arms_a_fresh_clock()
+    {
+        // Re-snooze overwrites the elapsed entry with a future deadline: IsExpired goes false (badge clears)
+        // and the new snooze is armed and running.
+        var reg = new SnoozeRegistry(Path_);
+        reg.Snooze("s1", _now.AddMinutes(-1), "dir-1");
+        Assert.True(reg.IsExpired("s1", _now));
+
+        reg.Snooze("s1", _now.AddHours(12), "dir-1");
+
+        Assert.False(reg.IsExpired("s1", _now));                      // badge cleared
+        Assert.Equal(HoldStates.Held, reg.HoldStateFor("s1", _now));  // fresh snooze armed
+    }
+
+    [Fact]
+    public void An_owner_turn_clears_an_elapsed_tombstone()
+    {
+        // The owner came back and drove a turn after the hold was set: the hold is over and the entry (and
+        // its badge) is dropped.
+        var reg = new SnoozeRegistry(Path_);
+        var baseline = _now.AddMinutes(-30);
+        reg.Snooze("s1", _now.AddMinutes(-1), "dir-1", ownerTurnBaselineUtc: baseline);
+        Assert.True(reg.IsExpired("s1", _now));
+
+        Assert.True(reg.ClearIfSupersededByOwnerTurn("s1", baseline.AddMinutes(1)));
+        Assert.False(reg.Contains("s1"));
     }
 
     [Fact]
@@ -156,6 +164,6 @@ public sealed class SnoozeExpirySweepTests : IDisposable
 
         await sweep.RunOnceAsync(cts.Token);
 
-        Assert.True(reg.Contains("s1")); // untouched
+        Assert.True(reg.Contains("s1")); // untouched (and untouched by a normal pass too, now)
     }
 }
