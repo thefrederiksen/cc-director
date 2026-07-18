@@ -138,9 +138,15 @@ public sealed class FleetDisplayStateObserver
     /// trigger the hold endpoint uses so a Snooze / Unsnooze click reaches the desktop rail immediately
     /// instead of on the next periodic sweep - and it is what keeps this observer the SINGLE writer of the
     /// Director's raw hold: the endpoint records the registry and calls this, rather than sending its own
-    /// hold command. Because it stamps the CURRENT fold of the CURRENT registry (not a value decided earlier),
-    /// it can never write a stale hold: if the session was worked or unsnoozed between the mutation and this
-    /// call, the fold already reads that, so there is no descheduled-writer race.
+    /// hold command. It stamps the CURRENT fold of the CURRENT registry (not a value decided earlier), so the
+    /// common case carries the right hold. It is NOT strictly serialized against the periodic and
+    /// hub-triggered sweeps, so a rare race remains: a descheduled push here can apply an older fold (say
+    /// Held) after a newer one (None) has already reached the Director. That is SELF-HEALING within a
+    /// reconciliation interval (&lt;=5s), NOT permanent - the same send records its signature in the change
+    /// gate, so the very next push or periodic sweep sees the current fold differ and repairs it. The
+    /// mission's guarantee holds throughout: the Gateway registry is the authoritative truth and the desktop
+    /// reconciles. A &lt;=5s self-healing blip on the desktop Snooze / Unsnooze menu in a rare race does not
+    /// justify per-session serialization or versioning, so there is none.
     ///
     /// Goes through the SAME change gate as <see cref="Sweep"/>, so an unchanged fold sends nothing and there
     /// is never a double-send.
