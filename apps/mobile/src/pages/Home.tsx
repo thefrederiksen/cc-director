@@ -3,7 +3,7 @@ import { Link } from "react-router-dom";
 import { setVoiceModeAllSessions, type SessionDto } from "@devthrottle/client-core/api/client";
 import { getSessionsEnvelope } from "@devthrottle/client-core/fleet/fleetClient";
 import { emptyRetentionCache, mergeRosterRetention, type RosterSessionMark } from "@devthrottle/client-core/fleet/rosterRetention";
-import { classify, contextLine, deletionReason, dotColor, dotHex, inBucket, inDesktopOrder, inWaitingOrder, isWorking, pendingDeletion, repoLeaf, snoozeCountdown, snoozeExpired } from "@devthrottle/client-core/sessions/ordering";
+import { classify, contextLine, deletionReason, dotHex, inBucket, inDesktopOrder, inWaitingOrder, isWorking, pendingDeletion, repoLeaf, snoozeCountdown, snoozeExpired } from "@devthrottle/client-core/sessions/ordering";
 import { applyFilter, filterIsActive, filterSummary, machineName, pruneFilter } from "@devthrottle/client-core/sessions/filter";
 import { useDictationStatusFor } from "@devthrottle/client-core/dictation/status";
 import { useNow, waitingLabel } from "@devthrottle/client-core/sessions/waiting";
@@ -421,7 +421,11 @@ function SessionRow({ session, mark }: { session: SessionDto; mark?: RosterSessi
       {/* Hand the known voice-mode state to the destination (issue #1015) so the Voice screen paints
           the right state on the first render instead of flashing OFF while its first poll resolves. */}
       <Link className="row-link" to={to} state={{ voiceMode: Boolean(session.voiceMode) }}>
-        <span className="dot" style={{ backgroundColor: unreachable ? dotColor("grey") : dotHex(session) }} aria-hidden="true" />
+        {/* The dot always paints the Gateway-stamped colour - even when the owning machine is unreachable,
+            the dot keeps telling the truth about the session's last-known state. Unreachability is shown by
+            the row treatment (the .row-unreachable dashed border + dimming opacity + the "Unreachable" note),
+            never by overriding the dot with a locally chosen grey. */}
+        <span className="dot" style={{ backgroundColor: dotHex(session) }} aria-hidden="true" />
         <span className="row-body">
           {/* The name uses the full card width and WRAPS (no truncation) - issue #838. A muted
               three-digit number prefix sits before the bold name, matching the desktop SessionRail

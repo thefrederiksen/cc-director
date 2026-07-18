@@ -59,4 +59,21 @@ public sealed class EffectiveColorHexStampTests
         // Issue #959: a session that DIED must never paint the bright needs-you red.
         Assert.NotEqual(SessionColorPalette.Red, s.EffectiveColorHex);
     }
+
+    /// <summary>
+    /// Prove the stamped hex is on the served /sessions WIRE, not just the C# object. The
+    /// web reads the camel-cased JSON property, so serialize the folded DTO with the SAME Web JSON defaults
+    /// the Gateway serves with and assert the property is present, camel-cased, and carries the stamped
+    /// value. Revert the stamp and this goes red (the field serializes null, not "#EF4444").
+    /// </summary>
+    [Fact]
+    public void TheStampedHex_IsOnTheServedSessionsJson_CamelCased()
+    {
+        var s = Fold(new SessionDto { SessionId = "s", ActivityState = "WaitingForInput" });
+
+        var json = System.Text.Json.JsonSerializer.Serialize(
+            s, new System.Text.Json.JsonSerializerOptions(System.Text.Json.JsonSerializerDefaults.Web));
+
+        Assert.Contains("\"effectiveColorHex\":\"#EF4444\"", json);
+    }
 }

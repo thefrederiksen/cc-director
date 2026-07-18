@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { type SessionDto } from "@devthrottle/client-core/api/client";
-import { dotColor, effectiveColor, stateLabel } from "@devthrottle/client-core/sessions/ordering";
+import { dotColor, dotHex, effectiveColor, stateLabel } from "@devthrottle/client-core/sessions/ordering";
 import { getMissionNotes, setMissionNote } from "@devthrottle/client-core/missions/missionNotes";
 import { repoBasename, relativeTime } from "../fleet/format";
 import { groupByMission, type MissionGroup } from "./missionGrouping";
@@ -303,8 +303,9 @@ interface SessionRowProps {
 // live state label - all colored by the ONE shared effective-color rule so the row agrees with the rail
 // and the Fleet Map. Clicking (or Enter/Space) opens the session.
 function SessionRow({ session: s, label, onOpenSession }: SessionRowProps) {
-  const color = effectiveColor(s);
-  const hex = dotColor(color);
+  // A real session row paints the Gateway-stamped dot hex, not the local COLORS table (which is only for
+  // the mission-card accent and the priority-legend swatches below, none of which have a session).
+  const hex = dotHex(s);
   const sid = s.sessionId ?? "";
   const num = s.number;
   const hasNum = num !== null && num !== undefined && String(num).trim().length > 0;

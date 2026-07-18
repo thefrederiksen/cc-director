@@ -6,10 +6,6 @@ import type { SessionDto } from "../api/client";
 export type TriageBucket = "needsYou" | "active" | "onHold";
 type GatewayStampedSession = SessionDto & {
   effectiveColor?: string | null;
-  // The Gateway-stamped pixel hex for the dot (SessionColorPalette.HexFor of effectiveColor). The session
-  // dot renders this verbatim via dotHex(); the generated schema does not carry it, so it is augmented here
-  // like effectiveColor. Absent from an old Gateway - dotHex() then paints the magenta sentinel.
-  effectiveColorHex?: string | null;
   stateLabel?: string | null;
   triageBucket?: TriageBucket | string | null;
   // Snooze Length mission: display-only marker that this session just returned from an EXPIRED snooze
@@ -276,10 +272,18 @@ const HEX_RE = /^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/;
 // so it would not degrade gracefully, it would lie quietly. Magenta plus a console error is the honest
 // answer - loud on the dot, diagnosable in the log.
 export function dotHex(s: SessionDto): string {
-  const raw = (s as GatewayStampedSession).effectiveColorHex?.trim();
+  // Read the generated-contract property directly (schema.ts carries effectiveColorHex). Typed as
+  // string | null, but a mixed-version or malformed wire can still deliver anything, so guard the runtime
+  // type below rather than trusting the annotation.
+  const value: unknown = s.effectiveColorHex;
+  // Type-guard BEFORE trim. Optional chaining only guards null/undefined; a malformed but possible JSON
+  // value (a number, object, or array) would make .trim non-callable and throw a TypeError from the React
+  // render path - one bad row taking down the whole roster. A non-string stamp is a protocol error exactly
+  // like a missing one: log and paint the magenta sentinel, never crash and never guess a colour.
+  const raw = typeof value === "string" ? value.trim() : "";
   if (raw && HEX_RE.test(raw)) return raw;
   console.error(
-    `Gateway /sessions missing or unparseable effectiveColorHex ('${raw ?? ""}') for session ` +
+    `Gateway /sessions missing or unparseable effectiveColorHex (${JSON.stringify(value)}) for session ` +
       `${s.sessionId ?? "(unknown)"}. Rendering the magenta protocol-error sentinel. Redeploy Gateway and clients together.`,
   );
   return BROKEN_HEX;

@@ -167,6 +167,21 @@ describe("dotHex - the session dot renders the Gateway-stamped pixel", () => {
       spy.mockRestore();
     }
   });
+
+  it("contains a bad row instead of crashing when the stamp is a non-string JSON value", () => {
+    // Optional chaining does NOT guard a number/object/array - .trim would throw a TypeError from the
+    // render path and take down the whole roster. dotHex must type-guard and paint the sentinel instead.
+    const spy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      expect(() => dotHex(session({ effectiveColor: "red", effectiveColorHex: 16711680 } as unknown as Partial<SessionDto>))).not.toThrow();
+      expect(dotHex(session({ effectiveColor: "red", effectiveColorHex: 16711680 } as unknown as Partial<SessionDto>))).toBe("#FF00FF");
+      expect(dotHex(session({ effectiveColor: "red", effectiveColorHex: { r: 255 } } as unknown as Partial<SessionDto>))).toBe("#FF00FF");
+      expect(dotHex(session({ effectiveColor: "red", effectiveColorHex: ["#EF4444"] } as unknown as Partial<SessionDto>))).toBe("#FF00FF");
+      expect(spy).toHaveBeenCalled();
+    } finally {
+      spy.mockRestore();
+    }
+  });
 });
 
 describe("needs-you waiting-line order", () => {
