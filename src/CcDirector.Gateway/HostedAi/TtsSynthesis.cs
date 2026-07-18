@@ -181,9 +181,20 @@ internal static class TtsSynthesis
     /// <paramref name="ct"/>: caller cancellation propagates immediately and is never mistaken for a
     /// per-attempt timeout.
     /// </summary>
+    /// <summary>The out-of-band routing hint the Gateway sends the cloud speech proxy after it has
+    /// watched the primary voice provider go SILENT on a session (issue devthrottle_internal#405). A silent hang gives the
+    /// proxy's own failover no error to react to, so the Gateway - the layer that owns this deadline and
+    /// therefore actually observes the hang - asks the proxy to skip the stalling provider and serve
+    /// from the backup. It is a ROUTING hint, not a deadline: the proxy keys on the header's presence and
+    /// ignores its value. Kept as a stable literal so both repos agree without coordination.</summary>
+    public const string PreferBackupHeaderName = "X-DevThrottle-TTS-Prefer-Backup";
+
     /// <param name="inputChars">Length of the text being synthesised. The deadline is derived from
     /// it, so pass the length of the text actually in <paramref name="payload"/>.</param>
-    public static async Task<HttpResponseMessage> PostAsync(HttpClient http, string url, string key, object payload, int inputChars, CancellationToken ct)
+    /// <param name="preferBackup">When true, send <see cref="PreferBackupHeaderName"/> so the cloud
+    /// proxy routes straight to the backup provider (issue devthrottle_internal#405). The Gateway sets this after it has
+    /// seen the primary go silent on this session; it is a routing hint only and changes no deadline.</param>
+    public static async Task<HttpResponseMessage> PostAsync(HttpClient http, string url, string key, object payload, int inputChars, bool preferBackup, CancellationToken ct)
     {
         var deadline = DeadlineFor(inputChars);
         TimeoutException? lastTimeout = null;
@@ -196,6 +207,8 @@ internal static class TtsSynthesis
                 Content = JsonContent.Create(payload),
             };
             req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", key);
+            if (preferBackup)
+                req.Headers.TryAddWithoutValidation(PreferBackupHeaderName, "1");
             try
             {
                 return await http.SendAsync(req, perAttempt.Token);

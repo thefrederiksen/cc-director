@@ -415,7 +415,10 @@ internal static class GatewayWingmanVoiceEndpoint
                 // stalled upstream voice worker fails fast and retries instead of freezing the caller,
                 // while a legitimately long read still gets the time it actually needs.
                 // The client is the shared static (see SharedTtsHttp) - never a per-call one.
-                using var resp = await TtsSynthesis.PostAsync(ttsHttp, url, key, new { model, voice, input, response_format = "mp3" }, input.Length, ct);
+                // preferBackup is false here: the silent-primary backup routing (issue devthrottle_internal#405) is driven by
+                // the per-session narration path (WingmanVoiceService), which owns the sticky state this
+                // interactive read-aloud endpoint does not carry. It still gets the proxy's own failover.
+                using var resp = await TtsSynthesis.PostAsync(ttsHttp, url, key, new { model, voice, input, response_format = "mp3" }, input.Length, preferBackup: false, ct);
                 if (!resp.IsSuccessStatusCode)
                 {
                     var status = (int)resp.StatusCode;
