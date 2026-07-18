@@ -1,13 +1,17 @@
 # Headless Linux container image for the DevThrottle Gateway.
 #
-# This ships the cross-platform Gateway host (src/CcDirector.Gateway), NOT the Windows tray skin
+# This ships the cross-platform Gateway host (src/CcDirector.Gateway.Host), NOT the Windows tray skin
 # (src/CcDirector.GatewayApp, which is net10.0-windows). The Gateway library is already net10.0 and
 # framework-dependent; the tray is the only Windows-pinned project, and the container has no tray.
 #
-# The entry point is the headless host (src/CcDirector.Gateway/Program.cs -> GatewayWorker), the same
-# no-user-interface process the dev console loop uses: it constructs GatewayService with the managed
-# self-update loop and autostart both off, which is exactly what a container wants (the container
-# runtime keeps the process alive; there is no start-on-login and no self-update swap).
+# The entry point is the headless container host (src/CcDirector.Gateway.Host), a thin executable that
+# calls the SAME shared GatewayEntryPoint the dev console host (src/CcDirector.Gateway) runs - identical
+# startup, identical arg forwarding - and additionally references the Postgres migrations assembly
+# (CcDirector.Gateway.Migrations.Postgres) so that assembly ships in this image and Database.Migrate() can
+# load it when the hosted Gateway runs on Postgres. CcDirector.Gateway itself cannot reference the
+# migrations assembly (that would be a build cycle), which is exactly why this separate host exists. It is
+# the same no-user-interface process, with the managed self-update loop and autostart both off, which is
+# what a container wants (the container runtime keeps the process alive; no start-on-login, no self-update).
 #
 # The cockpit and mobile React apps are deliberately NOT built into this image (the npm build targets
 # are skipped with the three Run*=false properties below). Those static assets are not needed to prove
@@ -18,13 +22,16 @@
 FROM mcr.microsoft.com/dotnet/sdk:10.0 AS build
 WORKDIR /src
 
-# Copy the whole repository; `dotnet publish` on the Gateway csproj restores only the projects it
-# transitively references, so the unrelated trees are ignored by the build (and pruned by .dockerignore).
+# Copy the whole repository; `dotnet publish` on the host csproj restores only the projects it
+# transitively references (CcDirector.Gateway and CcDirector.Gateway.Migrations.Postgres among them), so the
+# unrelated trees are ignored by the build (and pruned by .dockerignore).
 COPY . .
 
 # Framework-dependent publish for linux-x64. The three Run*=false properties skip the npm-driven
 # mobile build, cockpit build, and workspace typecheck, so the build stage needs no Node.js at all.
-RUN dotnet publish src/CcDirector.Gateway/CcDirector.Gateway.csproj \
+# Publishing the host (not CcDirector.Gateway directly) is what pulls the Postgres migrations assembly
+# into /app/publish so Database.Migrate() can load it at runtime.
+RUN dotnet publish src/CcDirector.Gateway.Host/CcDirector.Gateway.Host.csproj \
     -c Release -r linux-x64 --no-self-contained \
     -p:RunMobileBuild=false -p:RunCockpitBuild=false -p:RunWorkspaceTypecheck=false \
     -o /app/publish --nologo
@@ -65,4 +72,4 @@ USER gateway
 # documentation of the internal port, not a public bind.
 EXPOSE 7878
 
-ENTRYPOINT ["dotnet", "CcDirector.Gateway.dll", "--port", "7878"]
+ENTRYPOINT ["dotnet", "CcDirector.Gateway.Host.dll", "--port", "7878"]
