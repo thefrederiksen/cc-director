@@ -12,11 +12,13 @@ using Avalonia.Layout;
 using Avalonia.Media;
 using Avalonia.Threading;
 using CcDirector.ControlApi;
+using CcDirector.Gateway.Contracts;
 using CcDirector.Core.Account;
 using CcDirector.Core.Configuration;
 using CcDirector.Core.GatewayConnection;
 using CcDirector.Core.Network;
 using CcDirector.Core.Utilities;
+using CcDirector.Setup.Engine;
 
 namespace CcDirector.Avalonia.Controls;
 
@@ -67,11 +69,32 @@ public partial class GatewayConnectionPanel : UserControl
     // Distinguishes verdicts of the current attempt from a stale one; bumped on every connect.
     private int _attemptId;
 
-    // The last address tried, so "Try again" repeats it.
-    private (string Url, string Label)? _lastAttempt;
+    // The last address tried, so "Try again" repeats it. Remote records whether the address is off this
+    // machine, so "Try again" takes the same enroll path (loopback fast path vs the remote sign-in seam).
+    private (string Url, string Label, bool Remote)? _lastAttempt;
 
     // Cancels the Step 2 account-status polling loop when the panel is left or the flow restarts.
     private CancellationTokenSource? _pollCts;
+
+    // Cancels an in-flight remote sign-in + enroll (the Join-existing seam, #1808a) when the panel is left.
+    private CancellationTokenSource? _remoteEnrollCts;
+
+    // Which of the three consumers is hosting the panel (#1808a), so the gateway CHOICE state machine is
+    // filtered by context - one fork, not three copies of the UI.
+    private readonly GatewayChoiceConsumer _consumer;
+
+    // The UI-free choice context this panel resolves its CHOICE step from (#1808a). Built once at
+    // construction from the consumer, the host OS capability, and whether this opened in repair mode.
+    private readonly GatewayChoiceContext _choiceContext;
+
+    // True when the panel opens on the gateway CHOICE step (#1808a): a first-time, not-yet-connected,
+    // non-repair connect. A connected panel opens on Done and a broken one opens on the repair scan, so
+    // neither shows the choice.
+    private readonly bool _showChoiceFirst;
+
+    // What the choice's Skip action does for this consumer (#1808a), captured from the resolved plan when
+    // the choice renders, so the Skip click reads the Gateway/host verdict verbatim (dumb-client rule).
+    private GatewaySkipBehavior _skipBehavior;
 
     // Which step the panel opens on (spec section 6: the status-box click opens the panel on the resolver's
     // current step). Connect (the default) starts the auto-scan; SignIn/Done skip the scan and read the
@@ -83,20 +106,29 @@ public partial class GatewayConnectionPanel : UserControl
     // renders the troubleshooter diagnostics inline, and the rediscovery scan offers the new address.
     private readonly bool _repairMode;
 
-    public GatewayConnectionPanel() : this(GatewayPanelStep.Connect, false)
+    public GatewayConnectionPanel()
+        : this(GatewayPanelStep.Connect, repairMode: false, GatewayChoiceConsumer.StatusWindow, showChoiceFirst: false)
     {
     }
 
-    public GatewayConnectionPanel(GatewayPanelStep initialStep) : this(initialStep, false)
+    public GatewayConnectionPanel(GatewayPanelStep initialStep)
+        : this(initialStep, repairMode: false, GatewayChoiceConsumer.StatusWindow, showChoiceFirst: false)
     {
     }
 
-    private GatewayConnectionPanel(GatewayPanelStep initialStep, bool repairMode)
+    private GatewayConnectionPanel(
+        GatewayPanelStep initialStep, bool repairMode, GatewayChoiceConsumer consumer, bool showChoiceFirst)
     {
         _initialStep = initialStep;
         _repairMode = repairMode;
+        _consumer = consumer;
+        _showChoiceFirst = showChoiceFirst;
+        // Self-host is Windows-only in source, so on a Mac the state machine makes it ABSENT (section 6 open
+        // decision). The choice is only ever shown for a fresh, non-repair connect, so IsRepair rides along
+        // for completeness (it governs the Skip behavior).
+        _choiceContext = new GatewayChoiceContext(consumer, OperatingSystem.IsWindows(), repairMode);
         InitializeComponent();
-        FileLog.Write($"[GatewayConnectionPanel] constructed (initialStep={initialStep}, repairMode={repairMode})");
+        FileLog.Write($"[GatewayConnectionPanel] constructed (initialStep={initialStep}, repairMode={repairMode}, consumer={consumer}, showChoiceFirst={showChoiceFirst})");
     }
 
     /// <summary>
@@ -116,28 +148,46 @@ public partial class GatewayConnectionPanel : UserControl
     public event EventHandler? AccountStateSettled;
 
     /// <summary>
-    /// Build a panel opened on the resolver's current step (spec section 6), for the three hosts that
-    /// embed it (Settings Gateway tab, onboarding Gateway step, and the status-box window). Uses the cheap
-    /// synchronous signal - the live handshake state - to choose the opening step: a proven handshake
-    /// opens on the signed-in view (which itself reads account status and settles Step 2 vs Done), and
-    /// anything else opens on Step 1 (the automatic scan).
+    /// Raised when the choice's Skip action is chosen (#1808a). Carries what Skip MEANS for this consumer,
+    /// decided by the state machine, not the panel: onboarding completes local-only (the issue #1809 seam,
+    /// handled by the wizard), and Settings/status return to the choice (handled here). The panel never
+    /// re-derives this - it reads the resolved plan's verdict verbatim (dumb-client rule).
     /// </summary>
-    public static GatewayConnectionPanel CreateForCurrentState()
+    public event EventHandler<GatewaySkipBehavior>? SkipRequested;
+
+    /// <summary>
+    /// The one common TERMINAL RESULT the panel settles to (#1808a). <see cref="ConnectionVerified"/> fires
+    /// on the transport handshake ALONE, so a consumer that gated on it advanced on a connection that was
+    /// not yet signed in. This fires when the panel reaches the Done view - connected AND signed in - and
+    /// carries the full outcome (connected + signed in + inference readiness), so a consumer advances on the
+    /// whole outcome, not on transport alone. Inference readiness is a NotReady placeholder here (#1810).
+    /// </summary>
+    public event EventHandler<GatewayConnectionOutcome>? ConnectionSettled;
+
+    /// <summary>
+    /// Build a panel opened on the resolver's current step (spec section 6), for the three hosts that
+    /// embed it (Settings Gateway tab, onboarding Gateway step, and the status-box window). A proven
+    /// handshake opens on the signed-in view; a prior failure opens Step 1 in repair mode; and a fresh,
+    /// not-yet-connected Director opens on the gateway CHOICE step (#1808a - self-host / hosted / join /
+    /// skip). The <paramref name="consumer"/> filters the choice's state machine (one fork, not three UIs).
+    /// </summary>
+    public static GatewayConnectionPanel CreateForCurrentState(GatewayChoiceConsumer consumer)
     {
         var host = (global::Avalonia.Application.Current as App)?.ControlApiHost;
         var status = host?.GatewayMonitor?.Status;
 
         // A proven handshake opens on the signed-in view (Step 2 vs Done settles from account status).
         if (status == GatewayConnectionStatus.Connected)
-            return new GatewayConnectionPanel(GatewayPanelStep.Done, repairMode: false);
+            return new GatewayConnectionPanel(GatewayPanelStep.Done, repairMode: false, consumer, showChoiceFirst: false);
 
         // A prior failure (or a lost tailnet identity) opens Step 1 in REPAIR mode (Phase 5): the failing
-        // leg is named, diagnostics render inline, and the rediscovery scan offers the new address.
+        // leg is named, diagnostics render inline, and the rediscovery scan offers the new address. Repair
+        // reconnects a known Gateway, so it skips the choice.
         if (status is GatewayConnectionStatus.Failed or GatewayConnectionStatus.NoTailnetIdentity)
-            return new GatewayConnectionPanel(GatewayPanelStep.Connect, repairMode: true);
+            return new GatewayConnectionPanel(GatewayPanelStep.Connect, repairMode: true, consumer, showChoiceFirst: false);
 
-        // Otherwise Step 1, the normal first-time scan.
-        return new GatewayConnectionPanel(GatewayPanelStep.Connect, repairMode: false);
+        // Otherwise a fresh connect: open on the gateway CHOICE step (#1808a).
+        return new GatewayConnectionPanel(GatewayPanelStep.Connect, repairMode: false, consumer, showChoiceFirst: true);
     }
 
     protected override void OnAttachedToVisualTree(VisualTreeAttachmentEventArgs e)
@@ -150,12 +200,21 @@ public partial class GatewayConnectionPanel : UserControl
         {
             _ = RefreshSignedInViewAsync();
         }
-        else
+        else if (_repairMode)
         {
             // Repair mode (Phase 5): name the failing leg, kick the inline diagnostics, THEN scan - the
             // rediscovery scan offers the Gateway's current address as a one-click fix.
-            if (_repairMode)
-                EnterRepairMode();
+            EnterRepairMode();
+            StartScan();
+        }
+        else if (_showChoiceFirst)
+        {
+            // A fresh connect opens on the gateway CHOICE (#1808a): self-host / hosted / join / skip. The
+            // scan starts only when the user picks Join existing.
+            ShowChoice();
+        }
+        else
+        {
             StartScan();
         }
     }
@@ -164,12 +223,179 @@ public partial class GatewayConnectionPanel : UserControl
     {
         base.OnDetachedFromVisualTree(e);
         StopPolling();
+        _remoteEnrollCts?.Cancel();
         _diagCts?.Cancel();
         if (_subscribed && _monitor is not null)
         {
             _monitor.Changed -= OnMonitorChanged;
             _subscribed = false;
         }
+    }
+
+    // ---- Step 0: the gateway CHOICE (#1808a) ----------------------------------------------------
+
+    // Show the gateway CHOICE step: self-host / use hosted / join existing / skip. The state machine
+    // (GatewayChoiceStateMachine) decides which are offered and whether each is enabled - the panel only
+    // renders that verdict (dumb-client rule). Self-host and Hosted have no orchestrator/provisioning yet
+    // (#1808b/#1810, #1808c/#1811), so they render as clearly DISABLED "coming" actions, never live buttons.
+    private void ShowChoice()
+    {
+        _connecting = false;
+        StopPolling();
+        var plan = GatewayChoiceStateMachine.Resolve(_choiceContext);
+        RenderChoice(plan);
+        ShowOnly(ChoicePanel);
+        FileLog.Write($"[GatewayConnectionPanel] showing gateway choice (consumer={_choiceContext.Consumer}, selfHostSupported={_choiceContext.SelfHostSupported}, skip={plan.SkipBehavior})");
+    }
+
+    // Render the resolved plan's options into the choice host. Absent options (for example self-host on a
+    // Mac) are omitted; disabled options render greyed with a "coming soon" reason and no click; enabled
+    // options are clickable cards. The Skip behavior travels with the plan.
+    private void RenderChoice(GatewayChoicePlan plan)
+    {
+        _skipBehavior = plan.SkipBehavior;
+        ChoiceHost.Children.Clear();
+        foreach (var option in plan.Options)
+        {
+            if (option.Availability == GatewayChoiceAvailability.Absent)
+                continue;
+            ChoiceHost.Children.Add(BuildChoiceCard(option));
+        }
+    }
+
+    private Control BuildChoiceCard(GatewayChoiceOption option)
+    {
+        var (title, description) = ChoiceCopyFor(option.Action);
+        var enabled = option.Availability == GatewayChoiceAvailability.Enabled;
+
+        var titleRow = new StackPanel
+        {
+            Orientation = Orientation.Horizontal,
+            Spacing = 8,
+            VerticalAlignment = VerticalAlignment.Center,
+            Margin = new Thickness(0, 0, 0, 3),
+        };
+        titleRow.Children.Add(new TextBlock
+        {
+            Text = title,
+            Foreground = Brush(enabled ? "#E6E6E6" : "#7A7A7A"),
+            FontSize = 14,
+            FontWeight = FontWeight.SemiBold,
+            VerticalAlignment = VerticalAlignment.Center,
+        });
+        // A disabled action is shown, clearly, as a not-yet-available "coming" action (dumb-client rule).
+        if (!enabled && option.DisabledReason is { } reason)
+            titleRow.Children.Add(BuildComingSoonBadge(reason));
+
+        var info = new StackPanel { Spacing = 0, VerticalAlignment = VerticalAlignment.Center };
+        info.Children.Add(titleRow);
+        info.Children.Add(new TextBlock
+        {
+            Text = description,
+            FontSize = 12,
+            TextWrapping = TextWrapping.Wrap,
+            Foreground = Brush(enabled ? "#888888" : "#5F5F5F"),
+        });
+        Grid.SetColumn(info, 0);
+
+        var chevron = new TextBlock
+        {
+            Text = ">",
+            FontSize = 18,
+            Foreground = Brush("#666666"),
+            VerticalAlignment = VerticalAlignment.Center,
+            Margin = new Thickness(10, 0, 0, 0),
+            IsVisible = enabled,
+        };
+        Grid.SetColumn(chevron, 1);
+
+        var inner = new Grid { ColumnDefinitions = new ColumnDefinitions("*,Auto") };
+        inner.Children.Add(info);
+        inner.Children.Add(chevron);
+
+        var card = new Border
+        {
+            CornerRadius = new CornerRadius(9),
+            BorderThickness = new Thickness(1),
+            BorderBrush = Brush(enabled ? "#3C3C3C" : "#2A2A2A"),
+            Background = Brush(enabled ? "#252526" : "#1E1E1F"),
+            Padding = new Thickness(15, 14),
+            Child = inner,
+            Tag = option.Action,
+            Opacity = enabled ? 1.0 : 0.65,
+        };
+        // Only enabled actions get a cursor, hover, and click handler - a disabled "coming" card is inert,
+        // never a live-looking button that no-ops.
+        if (enabled)
+        {
+            card.Cursor = new Cursor(StandardCursorType.Hand);
+            card.PointerPressed += Choice_PointerPressed;
+            WireHover(card, recommended: false);
+        }
+        return card;
+    }
+
+    // The per-action title and description for the choice cards. Self-host and Hosted are described so the
+    // user understands the coming option, but they carry a "coming soon" badge and no click in this slice.
+    private static (string Title, string Description) ChoiceCopyFor(GatewayChoiceAction action) => action switch
+    {
+        GatewayChoiceAction.SelfHost => (
+            "Self-host a Gateway",
+            "Run your own Gateway on this computer. It stays on your machine, and it is free."),
+        GatewayChoiceAction.UseHosted => (
+            "Use a hosted Gateway",
+            "Let DevThrottle run the Gateway for you - always on, and reachable from anywhere."),
+        GatewayChoiceAction.JoinExisting => (
+            "Join an existing Gateway",
+            "Connect to a Gateway that is already running - on your network, over Tailscale, or on your account."),
+        GatewayChoiceAction.Skip => (
+            "Skip for now",
+            "Use this Director on its own. You can connect a Gateway later from Settings."),
+        _ => (string.Empty, string.Empty),
+    };
+
+    private static Border BuildComingSoonBadge(string reason) => new()
+    {
+        Background = Brush("#2A2A2A"),
+        CornerRadius = new CornerRadius(9),
+        Padding = new Thickness(7, 2),
+        VerticalAlignment = VerticalAlignment.Center,
+        Child = new TextBlock
+        {
+            Text = reason.ToUpperInvariant(),
+            Foreground = Brush("#9A9A9A"),
+            FontSize = 9.5,
+            FontWeight = FontWeight.Bold,
+        },
+    };
+
+    private void Choice_PointerPressed(object? sender, PointerPressedEventArgs e)
+    {
+        if ((sender as Border)?.Tag is not GatewayChoiceAction action)
+            return;
+        switch (action)
+        {
+            case GatewayChoiceAction.JoinExisting:
+                // Join drives the existing scan / manual-URL / enroll flow.
+                FileLog.Write("[GatewayConnectionPanel] choice: Join existing -> scan");
+                StartScan();
+                break;
+            case GatewayChoiceAction.Skip:
+                HandleSkip();
+                break;
+            // Self-host and Hosted are disabled in this slice and never wire a handler, so they cannot fire.
+        }
+    }
+
+    // Raise the Skip verdict for the consumer to act on. Onboarding completes local-only (the #1809 seam,
+    // done by the wizard, which then closes); Settings/status return to the choice (done here). The panel
+    // does not decide which - it reads the plan's SkipBehavior verbatim.
+    private void HandleSkip()
+    {
+        FileLog.Write($"[GatewayConnectionPanel] choice: Skip ({_skipBehavior})");
+        SkipRequested?.Invoke(this, _skipBehavior);
+        if (_skipBehavior == GatewaySkipBehavior.ReturnToChoice)
+            ShowChoice();
     }
 
     // ---- Step 1a: scan --------------------------------------------------------------------------
@@ -679,7 +905,9 @@ public partial class GatewayConnectionPanel : UserControl
     private void Pick_PointerPressed(object? sender, PointerPressedEventArgs e)
     {
         if ((sender as Border)?.Tag is FoundGateway pick)
-            ConnectTo(pick.Url, pick.Label);
+            // A Gateway anywhere but this machine is remote - it takes the sign-in enroll seam, not the
+            // loopback fast path (#1808a drops the same-machine-only limit).
+            ConnectTo(pick.Url, pick.Label, remote: pick.Kind != GatewayLocationKind.ThisMachine);
     }
 
     private void AdvancedToggle_IsCheckedChanged(object? sender, RoutedEventArgs e)
@@ -700,15 +928,17 @@ public partial class GatewayConnectionPanel : UserControl
             ManualErrorText.IsVisible = true;
             return;
         }
-        ConnectTo(url, url);
+        // A manually-entered address is treated as remote: it takes the sign-in enroll seam, which works for
+        // any reachable Gateway (LAN, tailnet, or account) and is not limited to this machine (#1808a).
+        ConnectTo(url, url, remote: true);
     }
 
     // ---- Step 1c/d/e: connect (the click IS the test) ------------------------------------------
 
-    private async void ConnectTo(string url, string label)
+    private async void ConnectTo(string url, string label, bool remote)
     {
         var attempt = ++_attemptId;
-        _lastAttempt = (url, label);
+        _lastAttempt = (url, label, remote);
         _connecting = true;
 
         ConnectingTitle.Text = $"Connecting to {label}...";
@@ -740,15 +970,24 @@ public partial class GatewayConnectionPanel : UserControl
             // case B, not yet supported.
             if (!HasDeviceToken(GatewayConfig.Load()))
             {
+                // A remote Gateway (off this machine) cannot use the loopback fast path. Sign in with
+                // DevThrottle and enroll against this explicit URL - the remote-capable seam - which drops
+                // the old same-machine-only limit (#1808a).
+                if (remote)
+                {
+                    await RemoteEnrollAndHandshakeAsync(url, label, host, attempt);
+                    return;
+                }
+
                 switch (await TryEnrollFirstAsync(url, host))
                 {
                     case EnrollFirst.SignInNeeded:
                         ShowSignIn();
                         return;
                     case EnrollFirst.RemoteNotSupported:
-                        ShowFailure(
-                            "This Director is not on the Gateway's own machine, so it cannot sign itself in yet.",
-                            "Run this Director on the Gateway's machine for now. Signing in from another machine is coming next.");
+                        // A co-located pick the Gateway reports as non-loopback: fall back to the remote
+                        // sign-in seam rather than dead-ending (#1808a).
+                        await RemoteEnrollAndHandshakeAsync(url, label, host, attempt);
                         return;
                     // Enrolled (key earned) or FellThrough (no local Gateway to enroll with) both continue to
                     // the handshake below - a real failure there surfaces through the normal verdict path.
@@ -764,6 +1003,55 @@ public partial class GatewayConnectionPanel : UserControl
             FileLog.Write($"[GatewayConnectionPanel] ConnectTo FAILED to start: {ex.Message}");
             ShowFailure($"Could not start connecting: {ex.Message}", null);
         }
+    }
+
+    // Join a REMOTE Gateway (#1808a): sign in with DevThrottle and enroll this Director against the explicit
+    // gateway URL via the remote-capable GatewayAccountEnrollRunner seam, then re-apply and run the normal
+    // handshake so the verdict path drives to Sign-in/Done. This is the seam that removes the panel's old
+    // same-machine-only enrollment limit - it works for a Gateway on the LAN, over Tailscale, or on the
+    // account, not just one on this machine. The runner reuses the PUBLIC /signin surface (Google + GitHub +
+    // email magic-link); on success it has already persisted the gateway URL + this device's local key.
+    private async Task RemoteEnrollAndHandshakeAsync(string url, string label, ControlApiHost host, int attempt)
+    {
+        ConnectingTitle.Text = $"Signing in to DevThrottle to join {label}...";
+        ShowOnly(ConnectingPanel);
+
+        _remoteEnrollCts?.Cancel();
+        _remoteEnrollCts = new CancellationTokenSource();
+        var ct = _remoteEnrollCts.Token;
+
+        OperationResult<MobileEnrollmentResponse> result;
+        try
+        {
+            var runner = new GatewayAccountEnrollRunner();
+            result = await runner.VerifyAndSaveAsync(url, host.DirectorId, Environment.MachineName, ct);
+        }
+        catch (OperationCanceledException)
+        {
+            // The panel was left, or a newer attempt superseded this one; leave the view alone.
+            return;
+        }
+        catch (Exception ex)
+        {
+            FileLog.Write($"[GatewayConnectionPanel] remote enroll error: {ex.Message}");
+            ShowFailure($"Could not sign in and join the Gateway: {ex.Message}", null);
+            return;
+        }
+
+        if (attempt != _attemptId) return; // superseded by a newer connect
+
+        if (!result.Success)
+        {
+            ShowFailure(result.ErrorMessage ?? "Could not join the Gateway.", null);
+            return;
+        }
+
+        // VerifyAndSaveAsync persisted the gateway URL + this device's local key. Re-apply so the running
+        // client authenticates with it, then the handshake proves Connected and the verdict path settles.
+        FileLog.Write("[GatewayConnectionPanel] remote enroll succeeded; re-applying and handshaking");
+        EnsureSubscribed(host.GatewayMonitor);
+        await host.ReapplyGatewayAsync();
+        _ = TimeoutAsync(attempt);
     }
 
     private enum EnrollFirst { Enrolled, SignInNeeded, RemoteNotSupported, FellThrough }
@@ -1098,6 +1386,11 @@ public partial class GatewayConnectionPanel : UserControl
         ShowOnly(DonePanel);
         FileLog.Write("[GatewayConnectionPanel] showing Done (both checks green)");
         AccountStateSettled?.Invoke(this, EventArgs.Empty);
+
+        // The one common TERMINAL RESULT (#1808a): connected AND signed in. Consumers gate on this, not on
+        // the transport handshake alone. Inference readiness is a NotReady placeholder until #1810.
+        ConnectionSettled?.Invoke(this,
+            GatewayConnectionOutcome.ConnectedAndSignedIn(GatewayInferenceReadiness.NotReady));
     }
 
     private void DoneAdvancedToggle_IsCheckedChanged(object? sender, RoutedEventArgs e)
@@ -1144,7 +1437,7 @@ public partial class GatewayConnectionPanel : UserControl
     private void TryAgain_Click(object? sender, RoutedEventArgs e)
     {
         if (_lastAttempt is { } attempt)
-            ConnectTo(attempt.Url, attempt.Label);
+            ConnectTo(attempt.Url, attempt.Label, attempt.Remote);
         else
             StartScan();
     }
@@ -1168,6 +1461,7 @@ public partial class GatewayConnectionPanel : UserControl
     // Show exactly one of the step sub-panels.
     private void ShowOnly(Control panel)
     {
+        ChoicePanel.IsVisible = ReferenceEquals(panel, ChoicePanel);
         ConnectPanel.IsVisible = ReferenceEquals(panel, ConnectPanel);
         ConnectingPanel.IsVisible = ReferenceEquals(panel, ConnectingPanel);
         SignInPanel.IsVisible = ReferenceEquals(panel, SignInPanel);

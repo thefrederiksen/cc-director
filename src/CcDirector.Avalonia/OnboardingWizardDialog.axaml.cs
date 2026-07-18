@@ -5,6 +5,7 @@ using Avalonia.Controls;
 using Avalonia.Interactivity;
 using Avalonia.Media;
 using CcDirector.Core.Configuration;
+using CcDirector.Core.GatewayConnection;
 using CcDirector.Core.Onboarding;
 using CcDirector.Core.Settings;
 using CcDirector.Core.Utilities;
@@ -36,7 +37,9 @@ public partial class OnboardingWizardDialog : Window
     private readonly OnboardingModel _model = new(new ToolDetectionService());
 
     private int _currentStep = StepGateway;
-    private bool _gatewayConnected;
+    // The gateway step advances only on the panel's TERMINAL result - connected AND signed in - not on the
+    // transport handshake alone (#1808a). Skip remains the escape hatch when the user does not connect.
+    private bool _gatewaySettled;
     private bool _agentAvailable;
 
     /// <summary>
@@ -53,23 +56,39 @@ public partial class OnboardingWizardDialog : Window
         _options = options ?? throw new ArgumentNullException(nameof(options));
         InitializeComponent();
 
-        // The Gateway step IS the one reusable connection panel now (Phase 4, design spec section 8). It
-        // auto-scans on show, connects (which IS the test), and signs in - so the wizard no longer has its
-        // own URL box / Detect / Test. Next advances once the panel reports Connected.
-        var panel = Controls.GatewayConnectionPanel.CreateForCurrentState();
-        panel.ConnectionVerified += (_, _) => OnGatewayConnected();
+        // The Gateway step IS the one reusable connection panel now (Phase 4, design spec section 8). In
+        // #1808a it opens on the gateway CHOICE (self-host / hosted / join / skip). Next advances only once
+        // the panel settles to connected AND signed in (ConnectionSettled), not on transport alone; Skip
+        // completes onboarding local-only via the panel's SkipRequested verdict (the #1809 seam).
+        var panel = Controls.GatewayConnectionPanel.CreateForCurrentState(GatewayChoiceConsumer.Onboarding);
+        panel.ConnectionVerified += (_, _) => OnGatewayTransportVerified();
+        panel.ConnectionSettled += (_, _) => OnGatewaySettled();
+        panel.SkipRequested += (_, behavior) =>
+        {
+            // Only the onboarding-completion verdict closes the wizard; the panel handles ReturnToChoice.
+            if (behavior == GatewaySkipBehavior.CompleteOnboardingLocalOnly)
+                _ = FinishAsync(wantsNewSession: false);
+        };
         GatewayStep.Child = panel;
 
         ShowStep(StepGateway);
     }
 
-    /// <summary>The embedded panel proved the two-way connection. Record it and let the user proceed
-    /// (they can finish signing in in the panel first, then click Next).</summary>
-    private void OnGatewayConnected()
+    /// <summary>The embedded panel proved the two-way TRANSPORT handshake. That alone is not enough to
+    /// advance (#1808a): the user still needs to sign in. Nudge them to finish signing in in the panel.</summary>
+    private void OnGatewayTransportVerified()
     {
-        _gatewayConnected = true;
-        FileLog.Write("[OnboardingWizardDialog] gateway connected (panel handshake verified)");
-        ShowStepStatus("Connected to your Gateway. Click Next to continue.", error: false);
+        FileLog.Write("[OnboardingWizardDialog] gateway transport verified (handshake proven; sign-in still needed)");
+        ShowStepStatus("Connected to your Gateway. Sign in in the panel above to continue.", error: false);
+    }
+
+    /// <summary>The embedded panel reached its TERMINAL result - connected AND signed in (#1808a). Record it
+    /// so Next advances, and tell the user they are ready to continue.</summary>
+    private void OnGatewaySettled()
+    {
+        _gatewaySettled = true;
+        FileLog.Write("[OnboardingWizardDialog] gateway settled (connected and signed in)");
+        ShowStepStatus("Connected and signed in. Click Next to continue.", error: false);
     }
 
     /// <summary>Switch the visible step panel and update the title, indicator, and navigation buttons.</summary>
@@ -140,24 +159,21 @@ public partial class OnboardingWizardDialog : Window
     }
 
     /// <summary>
-    /// Gateway step Next (Phase 4): the embedded panel connects and writes gateway.url itself, so the
-    /// wizard only checks that the two-way connection is proven before advancing. If it is not connected
-    /// yet, nudge the user to connect in the panel (they can still leave via "Skip for now" without
-    /// bricking first-run).
+    /// Gateway step Next (#1808a): advance only once the embedded panel has SETTLED - connected AND signed
+    /// in (the terminal result), not on the transport handshake alone. If it has not settled, nudge the user
+    /// to connect and sign in in the panel (they can still leave via "Skip for now" without bricking
+    /// first-run).
     /// </summary>
     private void AdvanceFromGateway()
     {
-        var host = (global::Avalonia.Application.Current as App)?.ControlApiHost;
-        var connected = _gatewayConnected
-            || host?.GatewayMonitor?.Status == CcDirector.ControlApi.GatewayConnectionStatus.Connected;
-        if (!connected)
+        if (!_gatewaySettled)
         {
-            FileLog.Write("[OnboardingWizardDialog] AdvanceFromGateway: not connected yet, nudging");
-            ShowStepStatus("Connect to your Gateway above to continue, or use \"Skip for now\" to set it up later in Settings.", error: true);
+            FileLog.Write("[OnboardingWizardDialog] AdvanceFromGateway: not settled yet (connected+signed-in), nudging");
+            ShowStepStatus("Connect and sign in to your Gateway above to continue, or use \"Skip for now\" to set it up later in Settings.", error: true);
             return;
         }
 
-        FileLog.Write("[OnboardingWizardDialog] AdvanceFromGateway: connected; advancing to the agent step");
+        FileLog.Write("[OnboardingWizardDialog] AdvanceFromGateway: settled; advancing to the agent step");
         ShowStep(StepAgent);
     }
 

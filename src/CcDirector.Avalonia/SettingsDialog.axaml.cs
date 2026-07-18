@@ -15,6 +15,7 @@ using CcDirector.Core.Account;
 using CcDirector.Core.AgentPlugins;
 using CcDirector.Core.Agents;
 using CcDirector.Core.Configuration;
+using CcDirector.Core.GatewayConnection;
 using CcDirector.Core.Onboarding;
 using CcDirector.Core.Settings;
 using CcDirector.Core.Storage;
@@ -84,7 +85,7 @@ public partial class SettingsDialog : Window
 
             // The Gateway tab IS the connection panel now (Phase 4). Embed it opened on the resolver's
             // current step so a connected+signed-in Director lands on the Done view, not the scan.
-            GatewaySettingsHost.Child = Controls.GatewayConnectionPanel.CreateForCurrentState();
+            GatewaySettingsHost.Child = Controls.GatewayConnectionPanel.CreateForCurrentState(GatewayChoiceConsumer.Settings);
 
             // Tools auto-update opt-out (issue #828): reflect tools.autoUpdate.enabled (default ON).
             // The read ran off the UI thread above; suppress the write that the programmatic set
