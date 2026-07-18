@@ -31,6 +31,25 @@ export interface WorkflowDefinition {
   /** Where the human is asked - the interruption budget this workflow spends. */
   humanCheckpoint: string;
   steps: WorkflowStep[];
+  /** ADDITIVE fields from the persisted catalog (Workflows mission). Optional so this client keeps
+   *  reading an older Gateway that serves only the legacy shape. */
+  /** The published version number this projection reflects. */
+  version?: number;
+  /** True for the workflows the Gateway ships (mission, standalone, ...). Editable, never deletable. */
+  isBuiltIn?: boolean;
+  /** True when an unpublished draft exists beside the published version. */
+  hasDraft?: boolean;
+  /** The canonical content hash of the published version. */
+  contentHash?: string;
+  /** When the workflow head last changed (UTC, ISO). */
+  updatedUtc?: string;
+}
+
+/** The response of creating a workflow: the new draft's snapshot (subset this client reads). */
+export interface WorkflowDraft {
+  workflowId: string;
+  version: number;
+  status: string;
 }
 
 async function gatewayErrorFrom(res: Response, label: string): Promise<GatewayError> {
@@ -64,4 +83,55 @@ export async function getWorkflows(signal?: AbortSignal): Promise<WorkflowDefini
   const workflows = body?.workflows;
   if (workflows === undefined) throw new GatewayError(res.status, "GET /gateway/workflows returned no workflows field");
   return workflows;
+}
+
+// GET /gateway/workflows/{id} - one workflow's published projection. 404 throws (the detail page
+// shows the error, never a blank card pretending the workflow exists).
+export async function getWorkflow(id: string, signal?: AbortSignal): Promise<WorkflowDefinition> {
+  const res = await fetch(`/gateway/workflows/${encodeURIComponent(id)}`, {
+    method: "GET",
+    headers: { Accept: "application/json", ...authHeaders() },
+    signal,
+  });
+  if (!res.ok) throw await gatewayErrorFrom(res, `GET /gateway/workflows/${id}`);
+  return (await res.json()) as WorkflowDefinition;
+}
+
+// GET /gateway/workflows/{id}/instructions - the authoritative conduct, raw markdown. This is the
+// same text an agent fetches and follows; the detail page renders it read-only.
+export async function getWorkflowInstructions(id: string, signal?: AbortSignal): Promise<string> {
+  const res = await fetch(`/gateway/workflows/${encodeURIComponent(id)}/instructions`, {
+    method: "GET",
+    headers: { Accept: "text/markdown" , ...authHeaders() },
+    signal,
+  });
+  if (!res.ok) throw await gatewayErrorFrom(res, `GET /gateway/workflows/${id}/instructions`);
+  return await res.text();
+}
+
+// POST /gateway/workflows - create a workflow as a DRAFT (invisible to the catalog until an agent
+// fleshes it out and publishes). The add dialog sends only a name and summary; authoring is
+// agent-driven by design, so the write surface here is deliberately this thin.
+export async function createWorkflow(
+  input: { id: string; name: string; summary: string },
+  signal?: AbortSignal,
+): Promise<WorkflowDraft> {
+  const res = await fetch("/gateway/workflows", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Accept: "application/json", ...authHeaders() },
+    body: JSON.stringify({ ...input, authoredBy: "cockpit:add-dialog" }),
+    signal,
+  });
+  if (!res.ok) throw await gatewayErrorFrom(res, "POST /gateway/workflows");
+  return (await res.json()) as WorkflowDraft;
+}
+
+/** A workflow id slug from a display name: "Release Train" -> "release-train". The Gateway enforces
+ *  the same shape server-side; this just makes the dialog's default id readable. */
+export function suggestWorkflowId(name: string): string {
+  return name
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 64);
 }
