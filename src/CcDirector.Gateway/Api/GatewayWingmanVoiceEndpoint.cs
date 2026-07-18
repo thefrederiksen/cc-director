@@ -868,10 +868,11 @@ internal static class GatewayWingmanVoiceEndpoint
             return Blocked("no screen-grid answer", BlockedUnreadableSpoken);
         }
 
-        // The verdict is anchored to WHERE THE CURSOR IS (issue #1777, round-3), not to menu-like text anywhere
-        // on the grid. The alternate-screen flag is carried on the DTO for the fold phase but is not the
-        // discriminator here - the cursor's relationship to the composer / menu option is.
-        var kind = WaitingScreenClassifier.Classify(grid.Rows, grid.CursorRow, grid.CursorCol, grid.HasGrid);
+        // TWO anchors, fail-closed default (issue #1777, round-4): a MENU is owned by its drawn selection
+        // marker (cursor-independent - the Ink picker hides the cursor); TYPING requires the VISIBLE cursor
+        // inside a framed composer, on the primary screen, with no menu present. Cursor visibility is the
+        // discriminator, so it is passed in alongside the alternate-screen flag.
+        var kind = WaitingScreenClassifier.Classify(grid.Rows, grid.CursorRow, grid.CursorCol, grid.CursorVisible, grid.IsAlternateScreen, grid.HasGrid);
 
         if (kind == WaitingScreenKind.Blocked)
         {
@@ -885,7 +886,7 @@ internal static class GatewayWingmanVoiceEndpoint
             return new WaitingScreen { Kind = WaitingKind.PlainText };
         }
 
-        // kind == Menu: the LIVE grid carries a menu fingerprint. Extract it off the LIVE grid text ONLY.
+        // kind == Menu: the LIVE grid carries a drawn menu. Extract it off the LIVE grid text ONLY.
         var liveRows = grid.Rows ?? new List<string>();
         var liveText = string.Join("\n", liveRows);
         WingmanMenu menu;
@@ -897,16 +898,19 @@ internal static class GatewayWingmanVoiceEndpoint
             return Blocked("menu on screen, detection failed", BlockedMenuSpoken);
         }
 
-        if (menu.IsMenu && menu.Options.Count > 0)
+        // A menu is usable only when it has ANSWERABLE options (issue #1777, finding 4): options exist, every
+        // one has a real visible label (not a bare "1."/"2."), and every label actually appears on the live
+        // grid (the model did not invent options). Anything short of that fails closed.
+        if (menu.IsMenu && WingmanMenuLogic.MenuHasAnswerableOptions(menu, liveRows))
         {
-            FileLog.Write($"[GatewayWingmanVoice] waiting-screen sid={sid}: MENU with {menu.Options.Count} option(s)");
+            FileLog.Write($"[GatewayWingmanVoice] waiting-screen sid={sid}: MENU with {menu.Options.Count} answerable option(s)");
             return new WaitingScreen { Kind = WaitingKind.Menu, Menu = menu, MenuGridRows = liveRows };
         }
 
-        // Looks like a menu but no pressable options could be extracted. UNCERTAIN - the dangerous case the
+        // Looks like a menu but no answerable options could be extracted. UNCERTAIN - the dangerous case the
         // old code fell through on. Fail closed and point the person at the terminal.
-        FileLog.Write($"[GatewayWingmanVoice] waiting-screen sid={sid}: looks like a menu but no options extracted - fail closed");
-        return Blocked("menu on screen, options not extractable", BlockedMenuSpoken);
+        FileLog.Write($"[GatewayWingmanVoice] waiting-screen sid={sid}: looks like a menu but no answerable options - fail closed");
+        return Blocked("menu on screen, options not answerable", BlockedMenuSpoken);
     }
 
     /// <summary>
@@ -926,9 +930,9 @@ internal static class GatewayWingmanVoiceEndpoint
         try { grid = await route.GetScreenGridAsync(sid, ct); }
         catch { grid = null; }
         if (grid is null || !grid.HasGrid || grid.Rows is null || grid.Rows.Count == 0) return false;
-        // Still a live menu with the cursor on an option (same anchor the classifier used).
-        if (grid.CursorRow < 0 || grid.CursorRow >= grid.Rows.Count) return false;
-        if (!WingmanMenuLogic.IsOptionLine(grid.Rows[grid.CursorRow]) || !WingmanMenuLogic.LiveScreenLooksLikeMenu(grid.Rows)) return false;
+        // Still a drawn menu on screen (its selection marker is present) - cursor-independent, since the Ink
+        // picker hides the hardware cursor.
+        if (!WingmanMenuLogic.LiveScreenHasMenuSelection(grid.Rows)) return false;
         // And it is the SAME menu (question + options), not a same-labelled replacement.
         return WingmanMenuLogic.SameMenuStillOnScreen(capturedRows, grid.Rows);
     }

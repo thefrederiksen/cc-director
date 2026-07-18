@@ -164,19 +164,20 @@ public sealed class WingmanVoiceTurnLiveScreenProofTests : IAsyncLifetime
         return prompts;
     }
 
-    // A real Claude permission menu on the PRIMARY screen (the "do you want to proceed" / "❯ 1" fingerprint),
-    // whose option labels are on the grid so the re-verify before pressing passes.
+    // A real Claude permission menu drawn with its selection marker. Like the real Ink picker, the hardware
+    // cursor is HIDDEN (CursorVisible=false) and its cell is stale - the menu is owned by the drawn marker.
     private static ScreenGridResponse PrimaryMenuGrid(string sid) => new()
     {
         SessionId = sid,
         Rows = new List<string> { "Do you want to proceed?", "❯ 1. Yes", "  2. No" },
-        CursorRow = 1,
-        CursorCol = 2,
-        IsAlternateScreen = false,
+        CursorRow = 0,
+        CursorCol = -1,
+        CursorVisible = false,
+        IsAlternateScreen = true,
         HasGrid = true,
     };
 
-    // A Claude composer, cursor in the empty input box (row 2), framed by box borders and a mode-status footer.
+    // A Claude composer, VISIBLE cursor in the empty input box (row 2), framed by box borders and a footer.
     private static ScreenGridResponse ComposerGrid(string sid) => new()
     {
         SessionId = sid,
@@ -190,6 +191,7 @@ public sealed class WingmanVoiceTurnLiveScreenProofTests : IAsyncLifetime
         },
         CursorRow = 2,
         CursorCol = 4,
+        CursorVisible = true,
         IsAlternateScreen = false,
         HasGrid = true,
     };
@@ -225,7 +227,9 @@ public sealed class WingmanVoiceTurnLiveScreenProofTests : IAsyncLifetime
         var resp = await _http.PostAsJsonAsync($"sessions/{sid}/wingman/voice-turn", new { text = "option one" });
         Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
 
-        // The menu-press path was taken: the option's keystroke reached the terminal (NOT the spoken words).
+        // The menu-press path was taken with the cursor HIDDEN (the real Ink-picker case, PrimaryMenuGrid has
+        // CursorVisible=false): the menu was recognized via its DRAWN marker and answered. The option's
+        // keystroke reached the terminal (NOT the spoken words).
         var prompts = DispatchedPrompts();
         Assert.Contains(prompts, p => p.Text == "1\r");
         Assert.DoesNotContain(prompts, p => p.Text == "option one");
@@ -337,18 +341,20 @@ public sealed class WingmanVoiceTurnLiveScreenProofTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task VoiceTurn_BareSelectorRow_NoComposerFrame_TypesNothing()
+    public async Task VoiceTurn_BorderedSelectorHiddenCursor_TypesNothing()
     {
-        // Named test A / B1: "Choose a deployment:" / "> production" with the cursor on the selector is NOT a
-        // composer (no input-box frame). Typing + Enter would select "production" - so type NOTHING.
+        // Named test / B1: a BORDERED "> production" selector - the exact thing that used to read as a composer
+        // because of the box frame. The hardware cursor is HIDDEN (a menu selection), so typing is refused; and
+        // it is not a recognized menu (no numbered option after the marker), so nothing is pressed either.
         var sid = await PushSessionAsync();
         _dispatch = cmd => cmd.Verb == "screen-grid"
             ? Ok(new ScreenGridResponse
             {
                 SessionId = sid,
-                Rows = new List<string> { "Choose a deployment:", "> production" },
-                CursorRow = 1,
-                CursorCol = 5,
+                Rows = new List<string> { "Choose a deployment:", "╭──────────────╮", "│ > production │", "╰──────────────╯" },
+                CursorRow = 2,
+                CursorCol = 4,
+                CursorVisible = false,
                 IsAlternateScreen = false,
                 HasGrid = true,
             })
@@ -357,52 +363,54 @@ public sealed class WingmanVoiceTurnLiveScreenProofTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task VoiceTurn_StaleMenuAboveLiveComposer_TypesIntoTheComposer()
+    public async Task VoiceTurn_SelectorAboveFooterHiddenCursor_TypesNothing()
     {
-        // Named test B: an answered menu is still visible ABOVE the live composer, but the cursor is IN the
-        // composer. The words must be TYPED into the composer as plain text, NOT pressed as a menu choice.
+        // Named test / B1: a ">"-row directly above the mode-status footer, cursor HIDDEN. The footer used to
+        // be read as composer framing; with a hidden cursor it fails closed.
         var sid = await PushSessionAsync();
-        var spoken = "now run the integration tests";
-        var promptSent = false;
+        _dispatch = cmd => cmd.Verb == "screen-grid"
+            ? Ok(new ScreenGridResponse
+            {
+                SessionId = sid,
+                Rows = new List<string> { "> production", "  ? for shortcuts" },
+                CursorRow = 0,
+                CursorCol = 5,
+                CursorVisible = false,
+                IsAlternateScreen = false,
+                HasGrid = true,
+            })
+            : DirectorCommandResult.Fail(DirectorCommandStatus.BadRequest, "x");
+        await AssertTypesNothing(sid, "production");
+    }
 
-        _dispatch = cmd => cmd.Verb switch
-        {
-            "screen-grid" => Ok(new ScreenGridResponse
+    [Fact]
+    public async Task VoiceTurn_MenuMarkerAndLiveComposerBothPresent_TypesNothing()
+    {
+        // Named test B (round-4 correction): a drawn menu marker AND a live composer on the same grid is
+        // AMBIGUOUS. When in doubt, block - neither type the words nor press the (possibly stale) menu.
+        var sid = await PushSessionAsync();
+        _dispatch = cmd => cmd.Verb == "screen-grid"
+            ? Ok(new ScreenGridResponse
             {
                 SessionId = sid,
                 Rows = new List<string>
                 {
-                    "Do you want to proceed?",     // <- stale, already-answered menu still visible above
+                    "Do you want to proceed?",
                     "❯ 1. Yes",
                     "  2. No",
                     "╭──────────────────────────────────────╮",
-                    "│ >                                     │",   // <- the LIVE composer, cursor here
+                    "│ >                                     │",
                     "╰──────────────────────────────────────╯",
                     "  ? for shortcuts",
                 },
                 CursorRow = 4,
                 CursorCol = 4,
+                CursorVisible = true,
                 IsAlternateScreen = false,
                 HasGrid = true,
-            }),
-            "turns" => Ok(new TurnsResponse
-            {
-                SessionId = sid,
-                Status = "ok",
-                Widgets = promptSent
-                    ? new List<TurnWidgetDto> { new() { Kind = "Text", Content = "Ran them." } }
-                    : new List<TurnWidgetDto>(),
-            }),
-            "prompt" => Mark(ref promptSent, Ok(new PromptResponse { Accepted = true })),
-            _ => DirectorCommandResult.Fail(DirectorCommandStatus.BadRequest, $"unexpected verb {cmd.Verb}"),
-        };
-
-        await _http.PostAsJsonAsync($"sessions/{sid}/wingman/voice-turn", new { text = spoken });
-
-        var prompts = DispatchedPrompts();
-        // The spoken words were typed into the composer with Enter - NOT a menu keystroke like "1\r".
-        Assert.Contains(prompts, p => p.Text == spoken && p.AppendEnter);
-        Assert.DoesNotContain(prompts, p => p.Text == "1\r" || p.Text == "2\r");
+            })
+            : DirectorCommandResult.Fail(DirectorCommandStatus.BadRequest, "x");
+        await AssertTypesNothing(sid, "now run the integration tests");
     }
 
     [Fact]
@@ -424,13 +432,16 @@ public sealed class WingmanVoiceTurnLiveScreenProofTests : IAsyncLifetime
             {
                 var call = System.Threading.Interlocked.Increment(ref gridCall);
                 var question = call == 1 ? "Delete production?" : "Deploy production?";
+                // The question is separated from the options by a BLANK line - the signature must still catch
+                // the change (finding B3, round-4). Cursor hidden, like a real menu.
                 return Ok(new ScreenGridResponse
                 {
                     SessionId = sid,
-                    Rows = new List<string> { question, "❯ 1. Yes", "  2. No" },
-                    CursorRow = 1,
-                    CursorCol = 2,
-                    IsAlternateScreen = false,
+                    Rows = new List<string> { question, "", "❯ 1. Yes", "  2. No" },
+                    CursorRow = 0,
+                    CursorCol = -1,
+                    CursorVisible = false,
+                    IsAlternateScreen = true,
                     HasGrid = true,
                 });
             }
@@ -455,6 +466,22 @@ public sealed class WingmanVoiceTurnLiveScreenProofTests : IAsyncLifetime
             ? Ok(PrimaryMenuGrid(sid))
             : DirectorCommandResult.Fail(DirectorCommandStatus.BadRequest, "x");
         await AssertTypesNothing(sid, "yes go ahead");
+    }
+
+    [Fact]
+    public async Task VoiceTurn_MenuWithBareNumberLabels_TypesNothing()
+    {
+        // Finding 4: the detector returns isMenu:true but the options are bare "1."/"2." with no words - not
+        // answerable. Block it rather than pressing a meaningless choice.
+        var sid = await PushSessionAsync();
+        // The grid IS a real drawn menu (so the classifier says Menu), but the detector extracts bare labels.
+        _brainReply = _ => Wrapped(
+            "{\"isMenu\":true,\"question\":\"Pick\",\"selectionMode\":\"single\",\"submit\":\"\"," +
+            "\"options\":[{\"key\":\"1.\",\"send\":\"1\\r\"},{\"key\":\"2.\",\"send\":\"2\\r\"}]}");
+        _dispatch = cmd => cmd.Verb == "screen-grid"
+            ? Ok(PrimaryMenuGrid(sid))
+            : DirectorCommandResult.Fail(DirectorCommandStatus.BadRequest, "x");
+        await AssertTypesNothing(sid, "one");
     }
 
     // ===================== Finding 6: cover the fail-closed edges - each types NOTHING =====================

@@ -104,13 +104,69 @@ public static class WingmanMenuLogic
         return LooksLikeMenu(string.Join("\n", rows));
     }
 
-    /// <summary>True when a row is a menu option / selection line (a leading marker run - a box edge, a
-    /// selection arrow like <c>❯</c> or <c>&gt;</c>, whitespace - then a number or letter, a <c>.</c> or
-    /// <c>)</c>, a space, and content). This is the same shape <see cref="LooksLikeMenu"/> counts; exposed so
-    /// the cursor-anchored classifier can ask "is the CURSOR sitting on an option row?" rather than deciding
-    /// from menu-like text anywhere on the grid.</summary>
+    /// <summary>True when a row is a menu option line (a leading marker run - a box edge, a selection arrow
+    /// like <c>❯</c> or <c>&gt;</c>, whitespace - then a number or letter, a <c>.</c> or <c>)</c>, a space, and
+    /// content). This is the same shape <see cref="LooksLikeMenu"/> counts.</summary>
     public static bool IsOptionLine(string? row)
         => !string.IsNullOrWhiteSpace(row) && OptionLine.IsMatch(row.Trim());
+
+    /// <summary>The DRAWN selection marker at the start of an option row: <c>❯</c> (Claude Code's Ink picker)
+    /// or a plain <c>&gt;</c>, then a space or the option content.</summary>
+    private static readonly Regex SelectedOption =
+        new(@"^(?:❯|>)\s*(?:\d{1,2}|[A-Za-z])[.)]\s+\S", RegexOptions.Compiled);
+
+    /// <summary>
+    /// True when a row is the SELECTED option of a menu - it carries the drawn selection marker (<c>❯</c> or
+    /// <c>&gt;</c>) directly before a numbered/lettered option (issue #1777, round-4). The Ink picker HIDES the
+    /// hardware cursor and draws this marker instead, so this - not the cursor cell - is how the live grid says
+    /// "a menu owns the turn". A bare <c>&gt; production</c> selector (no numbered option after the marker) is
+    /// deliberately NOT a selected option line.
+    /// </summary>
+    public static bool IsSelectedOptionLine(string? row)
+    {
+        if (string.IsNullOrWhiteSpace(row)) return false;
+        var stripped = row!.TrimStart(BorderPadding);
+        return SelectedOption.IsMatch(stripped);
+    }
+
+    /// <summary>
+    /// True when the LIVE grid carries a menu OWNED BY ITS DRAWN SELECTION MARKER (issue #1777, round-4): a row
+    /// with the drawn <c>❯</c>/<c>&gt;</c> marker on a numbered/lettered option, plus two or more option lines.
+    /// This is cursor-INDEPENDENT on purpose - a full-screen Ink menu hides the hardware cursor - so
+    /// menu-answering works with a hidden cursor. A menu with no recognizable textual marker (reverse-video
+    /// only) is NOT recognized here and the caller fails closed (styled-picker parsing is deferred).
+    /// </summary>
+    public static bool LiveScreenHasMenuSelection(IReadOnlyList<string>? rows)
+    {
+        if (rows is null || rows.Count == 0) return false;
+        var options = 0;
+        var hasMarker = false;
+        foreach (var r in rows)
+        {
+            if (IsOptionLine(r)) options++;
+            if (!hasMarker && IsSelectedOptionLine(r)) hasMarker = true;
+        }
+        return hasMarker && options >= 2;
+    }
+
+    /// <summary>
+    /// True when an extracted menu is actually ANSWERABLE (issue #1777, finding 4): it has options, every
+    /// option has a non-empty visible label (a bare <c>1.</c> / <c>2.</c> with no words is not answerable), and
+    /// every label actually appears on the live grid rows (the model did not invent options that are not on
+    /// screen). Fail closed when any of these does not hold.
+    /// </summary>
+    public static bool MenuHasAnswerableOptions(WingmanMenu? menu, IReadOnlyList<string>? liveRows)
+    {
+        if (menu?.Options is null || menu.Options.Count == 0 || liveRows is null || liveRows.Count == 0) return false;
+        var screen = Norm(string.Join("\n", liveRows));
+        foreach (var o in menu.Options)
+        {
+            var label = Norm(StripLeadingKey(o.Key));
+            if (label.Length == 0) return false;         // a bare "1." with no words - not answerable
+            if (!screen.Contains(label)) return false;    // an option the model invented, not on the live grid
+        }
+        return true;
+    }
 
     /// <summary>
     /// Re-verify the SAME menu is still on the live screen (issue #1777, finding B3), by comparing the CAPTURED
@@ -150,14 +206,24 @@ public static class WingmanMenuLogic
         }
         if (firstOption < 0) return result;
 
-        // Walk up from the first option across any contiguous non-blank lines (the question / prompt) so a
-        // changed question is part of the identity. Stop at the first blank line.
-        var start = firstOption;
-        while (start - 1 >= 0 && !string.IsNullOrWhiteSpace(rows[start - 1])) start--;
+        // Capture the QUESTION block above the options, EVEN when a blank line separates it from them
+        // (issue #1777, finding B3: "Delete production?" and "Deploy production?" separated from the options by
+        // a blank line must NOT produce identical signatures). Skip the blank separator, then take the
+        // contiguous non-blank block (the question and any wrapped continuation), stopping at the blank above it.
+        var q0 = firstOption - 1;
+        while (q0 >= 0 && string.IsNullOrWhiteSpace(rows[q0])) q0--;   // skip the blank separator(s)
+        var questionEnd = q0;
+        while (q0 >= 0 && !string.IsNullOrWhiteSpace(rows[q0])) q0--;  // top of the question block
+        var questionStart = q0 + 1;
 
-        for (var i = start; i <= lastOption; i++)
+        for (var q = questionStart; q <= questionEnd; q++)
         {
-            var norm = Norm(rows[i].Trim(BorderPadding));
+            var norm = Norm(rows[q].Trim(BorderPadding));
+            if (norm.Length > 0) result.Add(norm);
+        }
+        for (var o = firstOption; o <= lastOption; o++)
+        {
+            var norm = Norm(rows[o].Trim(BorderPadding));
             if (norm.Length > 0) result.Add(norm);
         }
         return result;

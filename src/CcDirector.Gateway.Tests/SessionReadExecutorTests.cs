@@ -198,12 +198,13 @@ public sealed class SessionReadExecutorTests
             backend.Buffer!.Write(System.Text.Encoding.UTF8.GetBytes("normal shell output before the app started\r\n"));
             var draw = new System.Text.StringBuilder();
             draw.Append("\x1b[?1049h");                                  // enter the alternate screen
+            draw.Append("\x1b[?25l");                                     // HIDE the cursor (like the Ink picker)
             draw.Append("\x1b[2J");                                       // clear
             draw.Append("\x1b[1;1HPick an environment to deploy");
             draw.Append("\x1b[2;1H > 1. staging");
             draw.Append("\x1b[3;1H   2. production");
             draw.Append("\x1b[4;1H   3. cancel");
-            draw.Append("\x1b[2;3H");                                     // park the cursor on the selected option
+            draw.Append("\x1b[2;3H");                                     // park the (hidden) cursor on the option
             backend.Buffer!.Write(System.Text.Encoding.UTF8.GetBytes(draw.ToString()));
 
             var gridResult = await SessionCommandExecutor.DispatchAsync(sm, "dir-A", Cmd("screen-grid", session.Id.ToString()));
@@ -214,6 +215,9 @@ public sealed class SessionReadExecutorTests
             // Alternate-screen correct: the ACTIVE grid holds the menu (not the frozen pre-alt primary content).
             Assert.True(grid!.HasGrid);
             Assert.True(grid.IsAlternateScreen);
+            // The cursor visibility flows through the atomic snapshot (issue #1777, round-4): the Ink picker
+            // hid it, so the verb reports it hidden - the classifier must not trust the (stale) cursor cell.
+            Assert.False(grid.CursorVisible);
             Assert.Equal("Pick an environment to deploy", grid.Rows[0]);
             Assert.Equal(" > 1. staging", grid.Rows[1]);
             Assert.Equal("   2. production", grid.Rows[2]);

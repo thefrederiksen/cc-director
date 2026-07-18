@@ -274,15 +274,17 @@ internal sealed class SessionReadExecutor : ISessionCommandArea
         if (session is null)
             return DirectorCommandResult.Fail(DirectorCommandStatus.NotFound, "session not found");
 
-        // Rows + cursor + alternate-screen flag from ONE coherent snapshot (issue #1777, finding 8): the menu
-        // classifier relies on the alternate-screen flag describing the same frame as the rows.
-        var (rows, cursorRow, cursorCol, isAlternateScreen) = session.SnapshotLiveScreen();
+        // Rows + cursor + cursor VISIBILITY + alternate-screen flag from ONE coherent snapshot (issue #1777,
+        // finding 8): the classifier relies on the flags describing the same frame as the rows. Cursor
+        // visibility is the discriminator between a composer (visible) and a drawn Ink menu (hidden).
+        var (rows, cursorRow, cursorCol, cursorVisible, isAlternateScreen) = session.SnapshotLiveScreen();
         return DirectorCommandResult.Success(SessionCommandExecutor.Serialize(new ScreenGridResponse
         {
             SessionId = command.SessionId,
             Rows = rows.ToList(),
             CursorRow = cursorRow,
             CursorCol = cursorCol,
+            CursorVisible = cursorVisible,
             IsAlternateScreen = isAlternateScreen,
             // A session with a real terminal parser yields a fixed-height grid (rows.Length > 0) even when the
             // screen is blank; only an Embedded session (no parser) yields an empty array - that is unreadable.

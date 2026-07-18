@@ -1,82 +1,77 @@
 namespace CcDirector.Gateway.Wingman;
 
 /// <summary>
-/// What a session's live waiting screen is, decided from WHERE THE CURSOR IS (issue #1777). This is the
-/// fail-closed floor: the spoken words may be typed as an ordinary prompt ONLY when the cursor is positively
-/// inside the agent's composer input box. Everything the classifier is not sure about is
-/// <see cref="Blocked"/> - "not a recognized menu" must never collapse into "confident plain text".
+/// What a session's live waiting screen is (issue #1777). This is the fail-closed floor, and fail closed is
+/// the DEFAULT - anything the grid does not POSITIVELY resolve to a composer or a menu is <see cref="Blocked"/>.
 /// </summary>
 public enum WaitingScreenKind
 {
-    /// <summary>The selection cursor sits on a menu option. The caller extracts the menu (brain) off the LIVE grid.</summary>
+    /// <summary>A menu, owned by its DRAWN selection marker on the grid (not the hardware cursor, which the Ink
+    /// picker hides). The caller extracts and presses off the LIVE grid.</summary>
     Menu,
 
-    /// <summary>The cursor is positively inside the agent's composer input box - the spoken words go there.</summary>
+    /// <summary>The VISIBLE hardware cursor is positively inside the agent's composer input box and no menu is
+    /// on the grid - the spoken words go there.</summary>
     PlainText,
 
-    /// <summary>Unreadable, blank, an ambiguous input, or anything the cursor does not positively resolve: never type.</summary>
+    /// <summary>Unreadable, blank, alternate-screen non-menu, ambiguous, hidden/off-target cursor with no menu
+    /// marker: never type, never press. The default.</summary>
     Blocked,
 }
 
 /// <summary>
-/// The pure (no-brain) waiting-screen classifier, ANCHORED TO THE CURSOR (issue #1777, round-3). Text
-/// fingerprints alone cannot tell a live composer from a menu selection marker (both can read "&gt; x"), nor a
-/// live composer from an already-answered menu still visible above it - the cursor can. So the verdict is:
-///   - the cursor is positively inside the agent's composer input box  -> PlainText (type there; any menu-like
-///     text elsewhere on the grid is stale and ignored);
-///   - the cursor is on a menu option of a live menu                   -> Menu (the caller extracts + presses);
-///   - anything else (a bare "&gt;" row with no input-box frame, an ambiguous picker, an unreadable or blank
-///     grid, a cursor resolving to neither)                            -> Blocked.
-/// A bare row starting with "&gt;" is NOT a composer: the composer is positively identified as a framed input
-/// box (box border or the agent's mode-status footer) with the cursor sitting after the prompt inside it. This
-/// is what makes it agent-uniform: an unrecognized picker fails closed instead of being typed into.
+/// The pure (no-brain) waiting-screen classifier, using TWO DIFFERENT ANCHORS with fail-closed as the default
+/// (issue #1777, round-4). A text composer and an Ink menu cannot be told apart by the hardware cursor: Claude
+/// Code HIDES the cursor on its permission menu and draws its own selection marker, and the parser still
+/// reports a (stale) cursor cell. So:
+///   - TYPING is allowed only when ALL hold: NOT the alternate screen; the cursor is VISIBLE; the cursor is
+///     positively inside the agent's framed composer input box (row and column); and NO menu is on the grid.
+///   - A MENU is owned by its DRAWN selection marker (<c>❯</c>/<c>&gt;</c> on an option row) plus the option
+///     lines - cursor-independent, so menu-answering works with the cursor hidden.
+///   - EVERYTHING ELSE is Blocked. When in doubt, block.
+/// A grid carrying BOTH a menu marker and a live composer is ambiguous (a stale menu above a fresh composer, or
+/// the reverse) and is Blocked rather than guessed.
 /// </summary>
 public static class WaitingScreenClassifier
 {
-    /// <summary>Classify the live waiting screen from the grid and the cursor cell. <paramref name="hasGrid"/>
-    /// is false for an Embedded session with no server-side parser (unreadable). A <see cref="WaitingScreenKind.Menu"/>
-    /// result means the cursor is on an option of a live menu - the caller still has to extract pressable
-    /// options off the LIVE grid and must fail closed if it cannot.</summary>
+    /// <summary>Classify the live waiting screen. <paramref name="cursorVisible"/> is the DECTCEM hardware-cursor
+    /// visibility (a hidden cursor means the cursor cell is stale). <paramref name="hasGrid"/> is false for an
+    /// Embedded session with no parser (unreadable). A <see cref="WaitingScreenKind.Menu"/> result means a
+    /// drawn menu is present - the caller still extracts pressable, answerable options and fails closed if it
+    /// cannot.</summary>
     public static WaitingScreenKind Classify(
-        IReadOnlyList<string>? rows, int cursorRow, int cursorCol, bool hasGrid)
+        IReadOnlyList<string>? rows, int cursorRow, int cursorCol, bool cursorVisible, bool isAlternateScreen, bool hasGrid)
     {
-        // Unreadable: no resolved grid, or nothing on it.
+        // Unreadable / blank -> never type.
         if (!hasGrid || rows is null || rows.Count == 0) return WaitingScreenKind.Blocked;
-
-        // A blank / all-whitespace grid tells us nothing - never type into it.
         if (rows.All(string.IsNullOrWhiteSpace)) return WaitingScreenKind.Blocked;
 
-        // No usable cursor anchor -> we cannot say WHERE the interaction is, so fail closed.
-        if (cursorRow < 0 || cursorRow >= rows.Count) return WaitingScreenKind.Blocked;
+        // A menu is owned by its DRAWN marker, independent of the hardware cursor (the Ink picker hides it).
+        var hasMenu = WingmanMenuLogic.LiveScreenHasMenuSelection(rows);
 
-        // 1) The cursor positively inside the agent's composer input box -> the spoken words go THERE. A stale
-        //    menu still visible elsewhere on the grid does not matter: the cursor is in the composer.
-        if (CursorInComposer(rows, cursorRow, cursorCol)) return WaitingScreenKind.PlainText;
+        // A composer requires the VISIBLE cursor positively inside a framed input box, on the primary screen.
+        var hasComposer = !isAlternateScreen
+            && cursorVisible
+            && cursorRow >= 0 && cursorRow < rows.Count
+            && CursorInComposer(rows, cursorRow, cursorCol);
 
-        // 2) A menu owns the turn ONLY when the selection cursor is on a menu option AND the screen is a menu.
-        if (WingmanMenuLogic.IsOptionLine(rows[cursorRow]) && WingmanMenuLogic.LiveScreenLooksLikeMenu(rows))
-            return WaitingScreenKind.Menu;
-
-        // 3) The cursor resolves to neither a composer nor a menu option - ambiguous interactive UI. Fail closed.
+        // Both present is ambiguous (a stale menu above a live composer, or vice versa) - fail closed.
+        if (hasMenu && hasComposer) return WaitingScreenKind.Blocked;
+        if (hasMenu) return WaitingScreenKind.Menu;
+        if (hasComposer) return WaitingScreenKind.PlainText;
         return WaitingScreenKind.Blocked;
     }
 
     /// <summary>
-    /// POSITIVE composer identification (issue #1777, round-3): the cursor is inside the agent's composer input
-    /// box. That means the cursor's row is the agent's input-prompt line - after stripping the box edge it
-    /// begins with a single "&gt;" prompt marker (not "&gt;&gt;", the mode-cycle arrow) - the cursor is sitting
-    /// AT OR AFTER the prompt (inside the editable input, using <paramref name="cursorCol"/>), AND the line is
-    /// FRAMED as an input box: an adjacent box-border row, or the agent's mode-status footer just below it.
-    ///
-    /// The framing requirement is what closes the "bare &gt; row" hole (B1): a menu selection like
-    /// "&gt; production" under "Choose a deployment:" has no input-box frame, so it is NOT a composer and the
-    /// classifier falls through to Blocked. Public so a test can assert both the positive and the blocked edges.
+    /// POSITIVE composer identification (issue #1777): the cursor's row is the agent's input-prompt line -
+    /// after stripping the box edge it begins with a single "&gt;" prompt marker (not "&gt;&gt;", the mode-cycle
+    /// arrow) - the cursor column is WITHIN the editable input span (at or after the prompt, and left of the
+    /// closing box border), AND the line is FRAMED as an input box (an adjacent box-border row, or the agent's
+    /// mode-status footer just below). Note: this alone is NOT enough to type - the classifier also requires the
+    /// cursor to be VISIBLE and no menu on the grid. Public so a test can assert the input-span edges directly.
     /// </summary>
     public static bool LooksLikePlainTextPrompt(IReadOnlyList<string> rows, int cursorRow, int cursorCol)
-    {
-        if (rows is null || cursorRow < 0 || cursorRow >= rows.Count) return false;
-        return CursorInComposer(rows, cursorRow, cursorCol);
-    }
+        => rows is not null && cursorRow >= 0 && cursorRow < rows.Count && CursorInComposer(rows, cursorRow, cursorCol);
 
     private static bool CursorInComposer(IReadOnlyList<string> rows, int cursorRow, int cursorCol)
     {
@@ -89,13 +84,26 @@ public static class WaitingScreenClassifier
         if (first >= line.Length || line[first] != '>') return false;
         if (first + 1 < line.Length && line[first + 1] == '>') return false; // ">>" is the mode-cycle arrow
 
-        // The editable input begins just after "> " (or after a bare ">"). The cursor must sit at or after it -
-        // "the cursor sitting after the prompt inside it".
+        // The editable input begins just after "> " (or after a bare ">"). The cursor must sit within the input
+        // span: at or after the input start (so a hidden/stale CursorCol=-1 fails), and strictly left of the
+        // closing box border if there is one (so a right-border / off-target cursor fails). Both bounds matter
+        // (issue #1777, finding 2).
         var inputStart = (first + 1 < line.Length && line[first + 1] == ' ') ? first + 2 : first + 1;
         if (cursorCol < inputStart) return false;
+        var rightBorder = RightBorderColumn(line);
+        if (rightBorder >= 0 && cursorCol >= rightBorder) return false;
 
         // Positively framed as an input box: a box-border row adjacent, or the mode-status footer just below.
         return HasAdjacentBorder(rows, cursorRow) || HasModeStatusBelow(rows, cursorRow);
+    }
+
+    /// <summary>The column of the closing box border on a row (the trailing <c>│</c>), or -1 when the row has
+    /// no right border. Used as the upper bound of the composer input span.</summary>
+    private static int RightBorderColumn(string line)
+    {
+        var c = line.Length - 1;
+        while (c >= 0 && (line[c] == ' ' || line[c] == '\t' || line[c] == '\r')) c--;
+        return c >= 0 && System.Array.IndexOf(VerticalBorder, line[c]) >= 0 ? c : -1;
     }
 
     private static bool HasAdjacentBorder(IReadOnlyList<string> rows, int row)
@@ -109,14 +117,13 @@ public static class WaitingScreenClassifier
         foreach (var c in row)
         {
             if (c == ' ' || c == '\t' || c == '\r') continue;
-            if (System.Array.IndexOf(BoxEdge, c) < 0) return false; // a non-edge glyph -> this is content, not a border
+            if (System.Array.IndexOf(BoxEdge, c) < 0) return false; // a non-edge glyph -> content, not a border
             sawEdge = true;
         }
         return sawEdge;
     }
 
-    /// <summary>The agent's mode-status footer (Claude Code renders it directly below the composer box).
-    /// Its presence just below the cursor line is a strong positive "this is the bottom composer" signal.</summary>
+    /// <summary>The agent's mode-status footer (Claude Code renders it directly below the composer box).</summary>
     private static bool HasModeStatusBelow(IReadOnlyList<string> rows, int row)
     {
         var end = Math.Min(rows.Count - 1, row + 3);
@@ -134,8 +141,6 @@ public static class WaitingScreenClassifier
         "bypass permissions", "plan mode", "accept edits", "shift+tab to cycle", "? for shortcuts",
     };
 
-    /// <summary>Box-drawing glyphs and pipes framing the input box, plus whitespace, stripped from a line's
-    /// leading edge before looking for the prompt marker.</summary>
     private static readonly char[] BorderOrSpace =
     {
         '│','┃','┆','┇','┊','┋','╎','╏','║',
@@ -148,4 +153,7 @@ public static class WaitingScreenClassifier
     {
         '─','━','═','┄','┅','┈','┉','╭','╮','╰','╯','┌','┐','└','┘','╔','╗','╚','╝','│','║','|',
     };
+
+    /// <summary>Vertical box borders that frame the right edge of an input box.</summary>
+    private static readonly char[] VerticalBorder = { '│','┃','║','|' };
 }

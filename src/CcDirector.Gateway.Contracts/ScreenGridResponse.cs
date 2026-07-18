@@ -29,6 +29,16 @@ public sealed class ScreenGridResponse
     public int CursorCol { get; set; } = -1;
 
     /// <summary>
+    /// True when the terminal hardware cursor is VISIBLE (DECTCEM ?25h). The discriminator between a text
+    /// composer (cursor visible in its input box) and a drawn full-screen menu (Claude Code's Ink picker HIDES
+    /// the cursor and draws its own selection marker). <see cref="CursorRow"/> / <see cref="CursorCol"/> carry a
+    /// position even when the cursor is hidden - a STALE value - so a consumer must check this before trusting
+    /// the cursor cell. A menu is owned by its drawn marker, not the hardware cursor; typing requires a VISIBLE
+    /// cursor inside the composer.
+    /// </summary>
+    public bool CursorVisible { get; set; }
+
+    /// <summary>
     /// True when the agent currently has the terminal in the alternate screen buffer (a full-screen picker,
     /// <c>ESC[?1049h</c>). While true the scrollback is intentionally empty, so a menu is visible only on
     /// <see cref="Rows"/>.

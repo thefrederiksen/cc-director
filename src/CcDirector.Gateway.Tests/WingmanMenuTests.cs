@@ -172,6 +172,76 @@ public sealed class WingmanMenuTests
         Assert.False(WingmanMenuLogic.SameMenuStillOnScreen(new[] { "just prose", "more prose" }, new[] { "just prose", "more prose" }));
     }
 
+    [Fact]
+    public void SameMenuStillOnScreen_BlankLineSeparatedQuestionChanges_IsFalse()
+    {
+        // B3 (round-4): the question is separated from the options by a BLANK line. A changed question must
+        // still fail the re-verify - the signature has to reach across the blank line to the question.
+        var captured = new[] { "Delete production?", "", "❯ 1. Yes", "  2. No" };
+        var fresh = new[] { "Deploy production?", "", "❯ 1. Yes", "  2. No" };
+        Assert.False(WingmanMenuLogic.SameMenuStillOnScreen(captured, fresh));
+    }
+
+    // ===== IsSelectedOptionLine / LiveScreenHasMenuSelection (round-4: menu owned by its DRAWN marker) =====
+
+    [Theory]
+    [InlineData("❯ 1. Yes", true)]
+    [InlineData("│ ❯ 1. Yes │", true)]
+    [InlineData("> 1. Yes", true)]
+    [InlineData("  2. No", false)]          // an option, but not the SELECTED one (no marker)
+    [InlineData("> production", false)]     // a bare selector, no numbered option after the marker
+    [InlineData("Do you want to proceed?", false)]
+    public void IsSelectedOptionLine_DetectsTheDrawnMarker(string row, bool expected)
+        => Assert.Equal(expected, WingmanMenuLogic.IsSelectedOptionLine(row));
+
+    [Fact]
+    public void LiveScreenHasMenuSelection_MarkerPlusOptions_IsTrue()
+    {
+        var rows = new[] { "Do you want to proceed?", "❯ 1. Yes", "  2. No" };
+        Assert.True(WingmanMenuLogic.LiveScreenHasMenuSelection(rows));
+    }
+
+    [Fact]
+    public void LiveScreenHasMenuSelection_BareSelectorNoNumberedOptions_IsFalse()
+        => Assert.False(WingmanMenuLogic.LiveScreenHasMenuSelection(new[] { "Choose a deployment:", "> production" }));
+
+    [Fact]
+    public void LiveScreenHasMenuSelection_OptionsButNoDrawnMarker_IsFalse()
+        // A styled/reverse-video picker with no textual ❯/> marker is not recognized (fail closed, deferred).
+        => Assert.False(WingmanMenuLogic.LiveScreenHasMenuSelection(new[] { "  1. Yes", "  2. No" }));
+
+    // ===== MenuHasAnswerableOptions (finding 4: reject empty/invented labels) =====
+
+    [Fact]
+    public void MenuHasAnswerableOptions_RealLabelsOnScreen_IsTrue()
+    {
+        var rows = new[] { "Do you want to proceed?", "❯ 1. Yes", "  2. Yes, and don't ask again", "  3. No" };
+        Assert.True(WingmanMenuLogic.MenuHasAnswerableOptions(PermissionMenu(), rows));
+    }
+
+    [Fact]
+    public void MenuHasAnswerableOptions_BareNumberLabels_IsFalse()
+    {
+        var menu = new WingmanMenu
+        {
+            IsMenu = true,
+            Options = new() { new() { Key = "1.", Send = "1\r" }, new() { Key = "2.", Send = "2\r" } },
+        };
+        Assert.False(WingmanMenuLogic.MenuHasAnswerableOptions(menu, new[] { "❯ 1.", "  2." }));
+    }
+
+    [Fact]
+    public void MenuHasAnswerableOptions_LabelNotOnScreen_IsFalse()
+    {
+        // The model invented an option that is not actually on the live grid.
+        var menu = new WingmanMenu
+        {
+            IsMenu = true,
+            Options = new() { new() { Key = "1. Yes", Send = "1\r" }, new() { Key = "2. Delete everything", Send = "2\r" } },
+        };
+        Assert.False(WingmanMenuLogic.MenuHasAnswerableOptions(menu, new[] { "Proceed?", "❯ 1. Yes", "  2. No" }));
+    }
+
     // ===== MatchOption (local spoken-answer mapping) =====
 
     [Theory]
