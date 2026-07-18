@@ -93,11 +93,10 @@ internal static class GatewayEndpoints
         // (live count + actively-working count), so the peak is captured fleet-wide whether stream mode is
         // on or off. Null (old callers, tests) records nothing.
         Stats.GatewaySessionConcurrencyStats? concurrency = null,
-        // Snooze Length mission: the Gateway-owned snooze registry. When non-null, POST
-        // /sessions/{sid}/hold records/clears a snooze-until for the session, and the /sessions fold
-        // overlays an EXPIRED snooze back into "needs you" (OnHold=false) so the session returns on its
-        // own even if its Director has died. Null (old callers, tests) leaves hold as a plain forward
-        // with no timer, byte-identical to before.
+        // Snooze Length mission: the Gateway-owned snooze registry. POST /sessions/{sid}/hold REQUIRES it -
+        // it records/clears a snooze-until here (the authoritative hold) and the /sessions fold reads it to
+        // return an EXPIRED snooze to "needs you" (OnHold=false) on its own even if its Director has died.
+        // When null the hold endpoint returns 503: there is no plain-forward fallback - the Gateway owns hold.
         Snooze.SnoozeRegistry? snoozeRegistry = null,
         // Gateway Cleanup mission (Wave 4b): the Gateway-native mission store. When non-null, the
         // POST/GET /missions routes are mapped and a mission-scoped spawn validates against it. Missions are
@@ -1259,23 +1258,25 @@ internal static class GatewayEndpoints
             return Results.Content(body, "application/json");
         });
 
-        // Forward the FIFO "park / un-park this session" (hold) call to the owning Director, AND
-        // record/clear the Gateway-owned snooze timer for it (Snooze Length mission,
-        // docs/architecture/snooze-length-mission-2026-07-11.md). Snooze IS the hold, plus a
-        // Gateway-owned expiry timestamp: holding a session records a snooze-until so the session is
-        // GUARANTEED to return to "needs you" on its own even if its Director later dies; un-holding
-        // clears it. The registry mutation happens only AFTER the forward succeeds, so a hold that did
-        // not take never arms (or leaves) a timer.
+        // Record (or clear) the Gateway-owned snooze for this session - "park / un-park" (hold) (Snooze
+        // Length mission, docs/architecture/snooze-length-mission-2026-07-11.md). Snooze IS the hold: the
+        // Gateway owns the state AND the expiry timestamp, so holding a session records a snooze-until in the
+        // registry - the AUTHORITATIVE result - and the session is GUARANTEED to return to "needs you" on its
+        // own even if its Director later dies; un-holding clears it. The Gateway does NOT forward a plain hold
+        // to the Director: it mutates the registry FIRST, then triggers a prompt, bounded set-display-state
+        // push so the desktop rail reflects the folded hold (the single writer of the Director's raw hold).
+        // The registry mutation stands even if that push times out - the periodic sweep reconciles the rail.
         app.MapPost("/sessions/{sid}/hold", async (string sid, HoldRequest req, CancellationToken ct) =>
         {
             var (director, session) = await LocateSessionAsync(registry, sid, pushedSessions, streamStaleResolved, owners);
             if (session is null || director is null)
                 return Results.NotFound(new { error = "session not found across any director" });
             var holdReq = req ?? new HoldRequest();
-            // Issue #1500: an explicit per-call snooze length. Validate it BEFORE forwarding the hold, so
-            // a bad value fails loudly (no fallback / no silent clamp) and never parks the session. Null =
-            // use the per-user default (unchanged behaviour). Only the Gateway reads this - the Director
-            // gets the same plain hold it always did, so this stays a Gateway-only capability.
+            // Issue #1500: an explicit per-call snooze length. Validate it BEFORE recording the hold, so a
+            // bad value fails loudly (no fallback / no silent clamp) and never parks the session. Null = use
+            // the per-user default. Only the Gateway reads SnoozeMinutes; the hold is recorded in the Gateway
+            // registry and reflected to the Director through the display-state channel, not a plain hold, so
+            // this stays a Gateway-only capability.
             if (holdReq.OnHold && holdReq.SnoozeMinutes is int requested
                 && !Core.Configuration.SnoozeDefaultConfig.IsValid(requested))
             {
