@@ -178,6 +178,11 @@ public sealed class WorkflowIndexStore
             text.Append($"  - {id}: {summary}\n");
             rendered++;
         }
+        // The maintenance invitation (owner ruling 2026-07-18): agents are told they may IMPROVE
+        // these, not just obey them - an agent that finds a workflow wrong fixes the workflow
+        // instead of silently working around it. One fixed line, rendered only under a non-empty
+        // index so an empty catalog still injects nothing.
+        text.Append("  Improve one, or add a new one: cc-devthrottle workflow pull / push / publish (drafts are private; publish is fleet-wide, instantly)\n");
         return text.ToString().TrimEnd('\n');
     }
 

@@ -59,6 +59,28 @@ public sealed class WorkflowIndexStoreTests : IDisposable
     }
 
     [Fact]
+    public void BuildIndexText_EndsWithTheMaintenanceInvitation_ButNeverOnAnEmptyIndex()
+    {
+        // Agents are invited to IMPROVE workflows, not just obey them (owner ruling 2026-07-18):
+        // the block's last line names the authoring commands. An empty catalog still injects
+        // nothing - the invitation never floats without an index above it.
+        var text = WorkflowIndexStore.BuildIndexText(new[]
+        {
+            new WorkflowIndexStore.CatalogWorkflow("mission", "The conduct."),
+        });
+        var lastLine = text.Split('\n')[^1];
+        Assert.Equal(
+            "  Improve one, or add a new one: cc-devthrottle workflow pull / push / publish (drafts are private; publish is fleet-wide, instantly)",
+            lastLine);
+
+        Assert.Equal("", WorkflowIndexStore.BuildIndexText(Array.Empty<WorkflowIndexStore.CatalogWorkflow>()));
+        Assert.Equal("", WorkflowIndexStore.BuildIndexText(new[]
+        {
+            new WorkflowIndexStore.CatalogWorkflow("off", "Everything off.", Enabled: false),
+        }));
+    }
+
+    [Fact]
     public void BuildIndexText_TruncatesRunawaySummaries()
     {
         var text = WorkflowIndexStore.BuildIndexText(new[]
