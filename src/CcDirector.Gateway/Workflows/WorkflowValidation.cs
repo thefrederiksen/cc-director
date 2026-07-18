@@ -34,6 +34,12 @@ public static class WorkflowValidation
     public const int MaxInstructionsBytes = 200 * 1024;
     public const int MaxFileBytes = 256 * 1024;
     public const int MaxFilesPerVersion = 20;
+    // Every other field is bounded too - an authenticated caller within the host body limit must not
+    // be able to persist megabytes into a name column or a ten-thousand-step list.
+    public const int MaxShortFieldChars = 200;
+    public const int MaxTextFieldChars = 4000;
+    public const int MaxStepsPerVersion = 50;
+    public const int MaxCriteriaPerVersion = 50;
 
     /// <summary>Validate a workflow id (slug).</summary>
     public static void ValidateId(string? id)
@@ -54,21 +60,52 @@ public static class WorkflowValidation
         if (string.IsNullOrWhiteSpace(content.Summary))
             throw new WorkflowValidationException("A workflow needs a one-line summary.");
 
+        CapLength("name", content.Name, MaxShortFieldChars);
+        CapLength("summary", content.Summary, MaxTextFieldChars);
+        CapLength("whenToUse", content.WhenToUse, MaxTextFieldChars);
+        CapLength("humanCheckpoint", content.HumanCheckpoint, MaxTextFieldChars);
+        CapLength("authoredBy", content.AuthoredBy, MaxShortFieldChars);
+        CapLength("changeNote", content.ChangeNote, MaxTextFieldChars);
+
         var instructions = content.InstructionsMarkdown ?? "";
         if (System.Text.Encoding.UTF8.GetByteCount(instructions) > MaxInstructionsBytes)
             throw new WorkflowValidationException(
                 $"The instructions are too large (limit {MaxInstructionsBytes / 1024} KB).");
 
+        var steps = content.Steps ?? new List<WorkflowStepDto>();
+        if (steps.Count > MaxStepsPerVersion)
+            throw new WorkflowValidationException(
+                $"A workflow version carries at most {MaxStepsPerVersion} steps.");
+        foreach (var step in steps)
+        {
+            // JSON like "steps":[null] deserializes to a null element - reject it as the bad input it
+            // is rather than letting it surface later as an unhandled 500.
+            if (step is null)
+                throw new WorkflowValidationException("The steps list contains a null entry.");
+            CapLength("step name", step.Name, MaxShortFieldChars);
+            CapLength("step description", step.Description, MaxTextFieldChars);
+            CapLength("step doer", step.Doer, MaxShortFieldChars);
+            CapLength("step reviewer", step.Reviewer, MaxShortFieldChars);
+            CapLength("step done", step.Done, MaxTextFieldChars);
+        }
+
         var criteria = content.OutcomeCriteria ?? new List<WorkflowOutcomeCriterionDto>();
+        if (criteria.Count > MaxCriteriaPerVersion)
+            throw new WorkflowValidationException(
+                $"A workflow version carries at most {MaxCriteriaPerVersion} outcome criteria.");
         var criterionIds = new HashSet<string>(StringComparer.Ordinal);
         foreach (var criterion in criteria)
         {
+            if (criterion is null)
+                throw new WorkflowValidationException("The outcome criteria list contains a null entry.");
             if (string.IsNullOrWhiteSpace(criterion.CriterionId) || !IdPattern.IsMatch(criterion.CriterionId))
                 throw new WorkflowValidationException(
                     $"Outcome criterion id '{criterion.CriterionId}' must be a lowercase slug.");
             if (string.IsNullOrWhiteSpace(criterion.Description))
                 throw new WorkflowValidationException(
                     $"Outcome criterion '{criterion.CriterionId}' needs a description.");
+            CapLength("criterion description", criterion.Description, MaxTextFieldChars);
+            CapLength("criterion proofHint", criterion.ProofHint, MaxTextFieldChars);
             if (!criterionIds.Add(criterion.CriterionId))
                 throw new WorkflowValidationException(
                     $"Outcome criterion id '{criterion.CriterionId}' appears more than once.");
@@ -81,6 +118,8 @@ public static class WorkflowValidation
         var fileNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (var file in files)
         {
+            if (file is null)
+                throw new WorkflowValidationException("The files list contains a null entry.");
             ValidateFileName(file.FileName);
             if (System.Text.Encoding.UTF8.GetByteCount(file.Content ?? "") > MaxFileBytes)
                 throw new WorkflowValidationException(
@@ -89,6 +128,13 @@ public static class WorkflowValidation
                 throw new WorkflowValidationException(
                     $"Helper file name '{file.FileName}' appears more than once.");
         }
+    }
+
+    private static void CapLength(string field, string? value, int maxChars)
+    {
+        if (value is not null && value.Length > maxChars)
+            throw new WorkflowValidationException(
+                $"The {field} is too long (limit {maxChars} characters).");
     }
 
     /// <summary>The publish-tier rules on top of the draft tier: a listed workflow must actually say

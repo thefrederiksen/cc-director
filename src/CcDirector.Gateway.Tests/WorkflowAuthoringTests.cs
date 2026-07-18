@@ -95,8 +95,38 @@ public sealed class WorkflowAuthoringTests : IDisposable
         Assert.NotEqual(first.ContentHash, updated.ContentHash);
         Assert.Single(updated.Files);
         Assert.Equal("verify.py", updated.Files[0].FileName);
+
+        // A DRAFT is never served by the pinned-read routes (it is mutable, so it cannot be pinned
+        // history); the file becomes readable the moment the version publishes.
+        Assert.Null(store.GetFileContent("release-train", "verify.py", version: 1));
+        Assert.Null(store.GetInstructions("release-train", version: 1));
+        store.Publish("release-train");
         Assert.Equal("print('verify')",
             store.GetFileContent("release-train", "verify.py", version: 1));
+    }
+
+    [Fact]
+    public void Null_collection_entries_and_oversized_fields_are_rejected_not_crashes()
+    {
+        var store = NewStore();
+
+        var nullStep = Minimal("null-step");
+        nullStep.Steps = new List<WorkflowStepDto> { null! };
+        Assert.Throws<WorkflowValidationException>(() => store.CreateDraft(nullStep));
+
+        var nullFile = Minimal("null-file");
+        nullFile.Files = new List<WorkflowFileDto> { null! };
+        Assert.Throws<WorkflowValidationException>(() => store.CreateDraft(nullFile));
+
+        var hugeName = Minimal("huge-name");
+        hugeName.Name = new string('x', WorkflowValidation.MaxShortFieldChars + 1);
+        Assert.Throws<WorkflowValidationException>(() => store.CreateDraft(hugeName));
+
+        var tooManySteps = Minimal("many-steps");
+        tooManySteps.Steps = Enumerable.Range(0, WorkflowValidation.MaxStepsPerVersion + 1)
+            .Select(i => new WorkflowStepDto { Name = $"s{i}", Doer = "Worker", Done = "d" })
+            .ToList();
+        Assert.Throws<WorkflowValidationException>(() => store.CreateDraft(tooManySteps));
     }
 
     [Fact]

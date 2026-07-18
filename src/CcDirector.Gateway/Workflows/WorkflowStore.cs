@@ -351,9 +351,12 @@ public sealed class WorkflowStore
     }
 
     /// <summary>
-    /// The raw instruction markdown - the agent read path. With an explicit version, any version row
-    /// serves (immutable history; a pinned run must always resolve, archived or not). Without one,
-    /// the published version of a live workflow serves; a draft-only or archived workflow yields null.
+    /// The raw instruction markdown - the agent read path. With an explicit version, any PUBLISHED or
+    /// SUPERSEDED row serves (immutable history; a pinned run must always resolve, archived or not) -
+    /// but never the draft: a draft is mutable, so serving it as pinned history would be a lie, and
+    /// the publish boundary is exactly what makes content fleet-readable. (Authoring reads a draft
+    /// through the versions/{n} detail route, which states the status.) Without a version, the
+    /// published version of a live workflow serves; a draft-only or archived workflow yields null.
     /// </summary>
     public string? GetInstructions(string id, int? version)
     {
@@ -387,7 +390,8 @@ public sealed class WorkflowStore
     {
         if (version.HasValue)
             return ctx.WorkflowVersions.AsNoTracking().FirstOrDefault(
-                v => v.WorkflowId == key && v.Version == version.Value);
+                v => v.WorkflowId == key && v.Version == version.Value &&
+                     v.Status != WorkflowVersionStatus.Draft);
 
         var head = ctx.Workflows.AsNoTracking().FirstOrDefault(h => h.Id == key);
         if (head is null || head.Archived || head.PublishedVersion is null)
