@@ -213,6 +213,12 @@ class WorkflowClient:
             self._request("DELETE", f"/gateway/workflows/{workflow_id}")
         )
 
+    def set_enabled(self, workflow_id: str, enabled: bool) -> Dict[str, Any]:
+        verb = "enable" if enabled else "disable"
+        return self._json_or_raise(
+            self._request("POST", f"/gateway/workflows/{workflow_id}/{verb}")
+        )
+
     # ---- runs (the governance outcome spine, issue #1771) -------------------------------------
 
     def list_runs(
@@ -298,14 +304,18 @@ def list_workflows(json_output: bool) -> None:
     table.add_column("Name")
     table.add_column("Version", justify="right")
     table.add_column("Kind")
+    table.add_column("State")
     table.add_column("Draft?")
     table.add_column("Summary", overflow="fold")
     for wf in workflows:
+        # An older Gateway omits the enabled field; absent means in force.
+        state = "OFF" if wf.get("enabled") is False else "in force"
         table.add_row(
             wf.get("id", ""),
             wf.get("name", ""),
             str(wf.get("version", "")),
             "built-in" if wf.get("isBuiltIn") else "custom",
+            state,
             "yes" if wf.get("hasDraft") else "",
             wf.get("summary", ""),
         )
@@ -572,6 +582,24 @@ def reset_workflow(workflow_id: str) -> None:
         f"Reset '{workflow_id}' to the shipped content as v{result.get('version')}. "
         "Earlier versions remain as history."
     )
+
+
+def set_workflow_enabled(workflow_id: str, enabled: bool) -> None:
+    try:
+        _client().set_enabled(workflow_id, enabled)
+    except GatewayError as ex:
+        _fail(str(ex))
+        return
+    if enabled:
+        console.print(
+            f"'{workflow_id}' is IN FORCE again - back in every agent's briefing, runs and seats allowed."
+        )
+    else:
+        console.print(
+            f"'{workflow_id}' is OFF - hidden from agents' briefings, no new runs or seats. "
+            "Nothing was deleted; re-enable anytime with: "
+            f"cc-devthrottle workflow enable {workflow_id}"
+        )
 
 
 def delete_workflow(workflow_id: str, yes: bool) -> None:

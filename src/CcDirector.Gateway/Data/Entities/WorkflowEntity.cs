@@ -25,6 +25,17 @@ public sealed class WorkflowEntity : TenantScopedEntity
     /// versions remain - a run that pinned one must always be able to resolve it.</summary>
     public bool Archived { get; set; }
 
+    /// <summary>
+    /// The owner's switch (register redesign, owner ruling 2026-07-18): DevThrottle configures to
+    /// what the USER wants, so any workflow - built-ins included - can be turned off. Off means:
+    /// hidden from every agent's launch briefing, the default conduct read refused with a clear
+    /// message, and no new runs or seats - but NOTHING deleted: versions, history, and past runs
+    /// stay, pinned explicit-version reads keep resolving, and the switch is instant both ways
+    /// fleet-wide. Distinct from <see cref="Archived"/>: off is a standing choice shown in the
+    /// register; archived is removal from it.
+    /// </summary>
+    public bool Enabled { get; set; } = true;
+
     /// <summary>The highest version number ever minted for this workflow (the draft counter).</summary>
     public int LatestVersion { get; set; }
 

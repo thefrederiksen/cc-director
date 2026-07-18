@@ -191,7 +191,11 @@ internal static class GatewayEndpoints
                 // and EF), so a process death exactly between the two writes can still orphan a
                 // mission - a transition-era window that closes when the JSON mission store retires
                 // onto the EF layer; the pre-check removes every failure mode short of that.
-                if (workflowRuns is not null)
+                // The owner's switch (register redesign ruling): a mission whose workflow is
+                // turned OFF still gets created - it runs UNGOVERNED (no run record) until the
+                // switch flips back. Only an unrunnable-but-enabled workflow refuses the create.
+                var missionWorkflowEnabled = workflowRuns?.IsWorkflowEnabled("mission") ?? false;
+                if (workflowRuns is not null && missionWorkflowEnabled)
                 {
                     try
                     {
@@ -206,11 +210,16 @@ internal static class GatewayEndpoints
 
                 var mission = missions.Create(req.MissionName, req.ParentMissionId);
                 var dto = ToMissionDto(mission);
-                if (workflowRuns is not null)
+                if (workflowRuns is not null && missionWorkflowEnabled)
                 {
                     var run = workflowRuns.Create(
                         "mission", mission.MissionName, missionId: mission.MissionId);
                     dto.WorkflowRunId = run.Id;
+                }
+                else if (workflowRuns is not null)
+                {
+                    FileLog.Write($"[GatewayEndpoints] POST /missions: the mission workflow is OFF - " +
+                                  $"mission {mission.MissionId} created UNGOVERNED (no run record)");
                 }
                 return Results.Json(dto, statusCode: StatusCodes.Status201Created);
             });

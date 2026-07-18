@@ -347,6 +347,20 @@ _ACTIONS = [
         "args": [{"name": "run_id", "required": True}],
     },
     {
+        "id": "workflow-enable",
+        "description": "Turn a Workflow back ON (returns to agents' briefings; runs and seats resume).",
+        "command": "cc-devthrottle workflow enable <id>",
+        "mutatesState": True,
+        "args": [{"name": "id", "required": True}],
+    },
+    {
+        "id": "workflow-disable",
+        "description": "Turn a Workflow OFF - hidden from agents' briefings, no new runs or seats; nothing deleted.",
+        "command": "cc-devthrottle workflow disable <id>",
+        "mutatesState": True,
+        "args": [{"name": "id", "required": True}],
+    },
+    {
         "id": "workflow-reset",
         "description": "Reset a built-in Workflow to the shipped content (published as a new version).",
         "command": "cc-devthrottle workflow reset <id>",
@@ -932,6 +946,22 @@ def workflow_run(
 ) -> None:
     """Show one workflow run: pinned version, lifecycle, acceptance, criteria, participants, proof."""
     workflow_ops.show_run(run_id, json_output)
+
+
+@workflow_app.command("enable")
+def workflow_enable(
+    workflow_id: str = typer.Argument(..., help="The workflow id."),
+) -> None:
+    """Turn a Workflow back ON - it returns to every agent's briefing; runs and seats resume."""
+    workflow_ops.set_workflow_enabled(workflow_id, True)
+
+
+@workflow_app.command("disable")
+def workflow_disable(
+    workflow_id: str = typer.Argument(..., help="The workflow id (built-ins included)."),
+) -> None:
+    """Turn a Workflow OFF - hidden from agents' briefings, no new runs or seats; nothing deleted."""
+    workflow_ops.set_workflow_enabled(workflow_id, False)
 
 
 @workflow_app.command("reset")

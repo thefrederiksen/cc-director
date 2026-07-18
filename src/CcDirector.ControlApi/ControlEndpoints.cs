@@ -685,6 +685,13 @@ internal static class ControlEndpoints
                             statusCode: StatusCodes.Status502BadGateway);
                     }
 
+                    if (seatRun is not null && !seatRun.WorkflowEnabled)
+                    {
+                        // The owner turned this workflow OFF: no new seats; spawn unseated, loudly.
+                        FileLog.Write($"[ControlEndpoints] POST /fleet/spawn: workflow " +
+                                      $"'{seatRun.WorkflowId}' is OFF - spawning UNSEATED");
+                        seatRun = null;
+                    }
                     if (seatRun is not null)
                     {
                         req.WorkflowRunId = seatRun.Id;

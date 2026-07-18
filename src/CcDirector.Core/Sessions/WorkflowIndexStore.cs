@@ -153,18 +153,19 @@ public sealed class WorkflowIndexStore
     /// </summary>
     public static string BuildIndexText(IReadOnlyList<CatalogWorkflow> workflows)
     {
-        if (workflows.Count == 0)
+        var inForce = workflows.Where(w => w.Enabled != false).ToList();
+        if (inForce.Count == 0)
             return "";
 
         var text = new StringBuilder();
         text.Append("[Workflows] Named ways of working this fleet defines - usable by ANY agent. Before taking\n");
         text.Append("on work that matches one, fetch its conduct and FOLLOW it:  cc-devthrottle workflow instructions <id>\n");
         var rendered = 0;
-        foreach (var workflow in workflows)
+        foreach (var workflow in inForce)
         {
             if (rendered == MaxIndexEntries)
             {
-                text.Append($"  ...and {workflows.Count - MaxIndexEntries} more - list them all with: cc-devthrottle workflow list\n");
+                text.Append($"  ...and {inForce.Count - MaxIndexEntries} more - list them all with: cc-devthrottle workflow list\n");
                 break;
             }
             // ONE line per workflow is the index's structural promise, and the line is PRINTABLE text
@@ -242,7 +243,10 @@ public sealed class WorkflowIndexStore
     /// <summary>The slice of <c>GET /gateway/workflows</c> the index needs.</summary>
     public sealed record CatalogWorkflow(
         [property: JsonPropertyName("id")] string Id,
-        [property: JsonPropertyName("summary")] string? Summary);
+        [property: JsonPropertyName("summary")] string? Summary,
+        // Null (an older Gateway that omits the field) means enabled - only an explicit false, the
+        // owner's own switch, removes a workflow from every session's briefing.
+        [property: JsonPropertyName("enabled")] bool? Enabled = null);
 
     private sealed record CatalogResponse(
         [property: JsonPropertyName("workflows")] List<CatalogWorkflow>? Workflows);
