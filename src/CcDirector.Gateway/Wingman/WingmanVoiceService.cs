@@ -197,9 +197,11 @@ public sealed class WingmanVoiceService
     public bool HasVoice(string sid) => _ready.ContainsKey(sid);
 
     /// <summary>The response header the cloud speech proxy sets when it quietly failed the primary
-    /// provider over to the backup (Phase 1). Its mere PRESENCE means "served via backup"; the value is
-    /// never surfaced to a user. Reading it is how the Gateway learns to show the generic backup-voice
-    /// notice (a success-with-a-note), and it is deliberately out-of-band so it never touches the audio.</summary>
+    /// provider over to the backup (Phase 1). Its mere PRESENCE means "served via backup". We key on
+    /// presence ONLY and never read the value: the cloud sends a generic opaque marker ("1"), NOT the
+    /// provider name, so which provider served stays invisible even to a direct API caller who inspects
+    /// headers. Reading presence is how the Gateway learns to show the generic backup-voice notice (a
+    /// success-with-a-note), and it is deliberately out-of-band so it never touches the audio.</summary>
     private const string FallbackHeaderName = "X-DevThrottle-TTS-Fallback";
 
     /// <summary>True when this session's current ready clip was made by the BACKUP voice provider (the
@@ -628,9 +630,10 @@ public sealed class WingmanVoiceService
             }
             var contentType = resp.Content.Headers.ContentType?.MediaType;
             // The cloud proxy sets this out-of-band header when it quietly failed the primary voice
-            // provider over to the backup (Phase 1). Its mere presence is the signal - the value is never
-            // shown to a user. A fallback is a SUCCESS: the audio is real and playable; we only note it so
-            // the Voice screen can add the generic backup-voice line.
+            // provider over to the backup (Phase 1). Its mere PRESENCE is the whole signal - we never read
+            // the value (a generic opaque marker, not the provider name). A fallback is a SUCCESS: the
+            // audio is real and playable; we only note it so the Voice screen can add the generic
+            // backup-voice line.
             var servedViaFallback = resp.Headers.Contains(FallbackHeaderName);
             if (servedViaFallback)
                 FileLog.Write($"[WingmanVoiceService] tts served via backup voice provider (fallback) - {mode.ToConfigString()}");
