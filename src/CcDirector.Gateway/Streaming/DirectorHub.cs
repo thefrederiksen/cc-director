@@ -103,13 +103,20 @@ public sealed class DirectorHub : Hub
     {
         var directorId = RequireBoundDirector();
         var set = sessions ?? Array.Empty<SessionDto>();
-        _store.ApplySnapshot(RequireBoundTenant(), directorId, Context.ConnectionId, sequence, set);
+        var accepted = _store.ApplySnapshot(RequireBoundTenant(), directorId, Context.ConnectionId, sequence, set);
         // DevThrottle Stats: fold each session's input tally into the always-available aggregate.
         _inputStats.ObserveSnapshot(set);
+        // A push the store REJECTED (from a superseded connection, or a stale sequence) is NOT authoritative,
+        // so it must not drive the snooze observer - whose edges MUTATE the authoritative registry
+        // (ClearIfArmed deletes an armed snooze, Land converts a deferral). A rejected stale Working push
+        // could otherwise delete a snooze the current connection owns, and a rejected settled push could land
+        // a deferral while the authoritative session is still working. The roles/display observers below read
+        // the STORE - unchanged by a rejected push - so they are self-correcting and need no gate.
         // Defect 20: a deferred snooze whose hold landed while this Director was disconnected arrives in
         // the reconnect snapshot, not as a delta - so the snapshot must be watched too, or the landing is
         // missed until the sweep's backstop notices.
-        _snoozeLandings?.ObserveSnapshot(set);
+        if (accepted)
+            _snoozeLandings?.ObserveSnapshot(set);
         // Defect 5: a reconnecting Director's whole roster can change roles across the FLEET (its sessions
         // re-enter the liveness set, so their controllers' and workers' roles move with them). Re-resolve
         // and stamp down whatever changed, or the desktop keeps folding a role from before the reconnect.
@@ -129,13 +136,17 @@ public sealed class DirectorHub : Hub
             FileLog.Write($"[DirectorHub] PushDelta ignored (no session id): director={directorId}, conn={Short(Context.ConnectionId)}");
             return;
         }
-        _store.ApplyDelta(RequireBoundTenant(), directorId, Context.ConnectionId, sequence, session);
+        var accepted = _store.ApplyDelta(RequireBoundTenant(), directorId, Context.ConnectionId, sequence, session);
         // DevThrottle Stats: fold this session's tally into the always-available aggregate.
         _inputStats.Observe(session);
-        // Defect 20: THE landing seam. Session.HoldStateChanged fires on DeferredHold -> Held and the
-        // Control API pushes a delta for it, so "the snooze the agent asked for has just landed" arrives
-        // here within milliseconds of the turn ending - which is the exact moment its clock must start.
-        _snoozeLandings?.Observe(session);
+        // A push the store REJECTED (superseded connection, or a stale sequence) is NOT authoritative, so it
+        // must not drive the snooze observer, whose edges MUTATE the authoritative registry (ClearIfArmed
+        // deletes an armed snooze, Land converts a deferral). See the note in PushSnapshot. The roles/display
+        // observers read the store and are self-correcting.
+        // Defect 20: THE landing seam. A settled activity from the Director arrives here within milliseconds
+        // of the turn ending, which is the exact moment a deferred snooze's clock must start.
+        if (accepted)
+            _snoozeLandings?.Observe(session);
         // Defect 5: THE ROLE SEAM. This session's own facts may have changed its role (it gained a
         // controller), and its arrival may change ANOTHER session's role on ANOTHER Director (this session
         // just exited, so the worker it controlled is no longer a Worker and its red must surface). Either
