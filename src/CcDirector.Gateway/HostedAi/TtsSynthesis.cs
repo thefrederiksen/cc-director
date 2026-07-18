@@ -73,13 +73,15 @@ internal static class TtsSynthesis
     /// characters the deadline was 15.2s and the cold start was LONGER than the entire deadline - a
     /// short narration on a cold provider could not succeed at all.
     ///
-    /// This is what made it a trap rather than a slow day. A timeout arms the fleet-wide speech
-    /// cooldown (WingmanVoiceService._ttsGate) for 120 seconds. 120 seconds of nobody calling the
-    /// provider is exactly how the provider goes cold. So the cooldown MANUFACTURES the cold start
-    /// that causes the next timeout that re-arms the cooldown. The fleet observed on 2026-07-15 went
-    /// 0/8 sessions with audio, every one reporting ServiceDown, and could not climb out on its own -
-    /// the service was answering perfectly the whole time. Three warm-up calls by hand took it to
-    /// 6/8 with no code change. Nothing had broken; it had fallen into the hole and the hole was ours.
+    /// This is what made it a trap rather than a slow day. On 2026-07-15 a timeout armed a fleet-wide
+    /// speech cooldown for 120 seconds, and 120 seconds of nobody calling the provider is exactly how the
+    /// provider goes cold - so the cooldown MANUFACTURED the cold start that caused the next timeout that
+    /// re-armed it. The fleet went 0/8 sessions with audio, every one reporting ServiceDown, and could
+    /// not climb out on its own - the service was answering perfectly the whole time; three warm-up calls
+    /// by hand took it to 6/8 with no code change. That shared cooldown gate was removed entirely on
+    /// 2026-07-17: each session now calls the provider on its own, so one slow call no longer starves the
+    /// rest and the cold-start feedback loop is gone. This per-attempt deadline is still the thing that
+    /// bounds a single stalled call, which is why getting it right still matters.
     ///
     /// 30 was the first attempt at this and it was STILL too tight - measured against 16.9s, when the
     /// same provider was later seen taking 39.9s for a SIXTEEN character call. Hours later the live log
