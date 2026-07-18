@@ -2631,20 +2631,24 @@ internal static class GatewayEndpoints
         // nudge-write to beg it to change. All three are gone.
         //
         // An elapsed snooze reads None straight out of HoldStateFor, so "expired" needs no special case:
-        // the owner asked for N minutes of quiet and got them. SnoozeExpired stays, because it is not a
-        // hold state - it is display metadata saying "this one JUST came back", which the clients render
-        // as a distinct badge and the phone announces once.
+        // the owner asked for N minutes of quiet and got them. SnoozeExpired is display metadata, not a
+        // hold state - it says "this one JUST came back BECAUSE its timer ran out", which the clients render
+        // as a distinct "Snooze ended" badge and the phone announces once.
         var nowUtc = DateTime.UtcNow;
         if (snoozeRegistry is not null)
             foreach (var s in all)
             {
                 if (string.IsNullOrEmpty(s.SessionId)) continue;
                 s.HoldState = snoozeRegistry.HoldStateFor(s.SessionId, nowUtc);
-                // Expiry is a REGISTRY fact, not a Director one: an entry whose clock has elapsed reads
-                // None above and is flagged as just-returned here. It stays flagged until the sweep drops
-                // the entry, which is what makes the badge continuous rather than a one-frame flicker.
-                if (snoozeRegistry.IsExpired(s.SessionId, nowUtc))
-                    s.SnoozeExpired = true;
+                // Expiry is a REGISTRY fact, not a Director one, and it is ASSIGNED both ways every fold -
+                // never OR-ed in. The DTO reaching this fold can already carry SnoozeExpired=true (the
+                // FleetRosterCache stores folded clones and re-serves them), so a one-way "set true when
+                // expired" would latch the badge on forever: it never wrote false, so a session that left
+                // needs-you by any route OTHER than timer expiry - work deleting the entry (the working
+                // edge), a re-snooze arming a fresh clock, an owner turn - kept a stale badge it never
+                // earned. Assigning = IsExpired makes the badge mean EXACTLY one thing, both directions:
+                // true only while an armed entry's clock has elapsed, false the instant that stops being so.
+                s.SnoozeExpired = snoozeRegistry.IsExpired(s.SessionId, nowUtc);
             }
 
         // Defect 5: the role resolution moved to Fleet.FleetRoleResolver so this roster read and the
