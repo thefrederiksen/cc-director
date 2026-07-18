@@ -146,4 +146,22 @@ public sealed class InstallLayout
             _ => throw new ArgumentOutOfRangeException(nameof(component), component.Kind, "Unknown component kind."),
         };
     }
+
+    /// <summary>
+    /// Pre-rename on-disk names a component may still occupy on an existing host, besides its current
+    /// canonical <see cref="PathFor"/> location. Presence detection accepts these so an update
+    /// recognises a legacy host and refreshes it instead of silently orphaning it (issue #1821). Only
+    /// the Gateway was renamed (cc-director-gateway.exe -> devthrottle-gateway.exe); every other
+    /// component has no legacy alias. The CURRENT name stays canonical/target - these are read-only
+    /// aliases for detection, never a place we write to.
+    /// </summary>
+    public IReadOnlyList<string> LegacyAliasesFor(Component component)
+    {
+        ArgumentNullException.ThrowIfNull(component);
+        if (component.Kind != ComponentKind.Gateway)
+            return Array.Empty<string>();
+
+        var legacyName = OperatingSystem.IsWindows() ? "cc-director-gateway.exe" : "cc-director-gateway";
+        return new[] { Path.Combine(GatewayDir, legacyName) };
+    }
 }
