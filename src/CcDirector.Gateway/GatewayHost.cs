@@ -26,7 +26,10 @@ using Microsoft.Extensions.Logging;
 namespace CcDirector.Gateway;
 
 /// <summary>
-/// The Gateway's Kestrel host. One process per machine. Binds to 127.0.0.1:7878.
+/// The Gateway's Kestrel host. One process per machine. Binds all interfaces (0.0.0.0:7878 by default) so a
+/// tailnet or hosted client can reach it; every route except /healthz, /login, /logout requires auth, so the
+/// bind is reachable-but-authenticated, not open. When CC_GATEWAY_HOSTED=1 the port follows the platform's
+/// WEBSITES_PORT/PORT (see <see cref="GatewayHostedMode"/>).
 /// </summary>
 public sealed class GatewayHost : IAsyncDisposable
 {
@@ -1133,8 +1136,11 @@ public sealed class GatewayHost : IAsyncDisposable
 
         // Subscribe the Tailscale provisioner BEFORE Registry.Start() so the initial
         // file-discovery load fires OnDirectorAdded into it and every Director port
-        // gets an HTTPS mapping without anyone re-running a script.
-        _serveProvisioner.Start();
+        // gets an HTTPS mapping without anyone re-running a script. Skipped when HOSTED: a
+        // hosted Gateway is reached by its public URL, not a tailnet, and the image bundles
+        // no tailscale binary, so provisioning would only produce noise.
+        if (!GatewayHostedMode.IsHosted)
+            _serveProvisioner.Start();
         Registry.Start();
 
         // Issue #331: start the stale-launcher sweep timer so launchers that crash
@@ -1145,7 +1151,9 @@ public sealed class GatewayHost : IAsyncDisposable
         // reconcile - re-assert the front door, drop serve mappings for Directors that died
         // while the Gateway was down (orphans -> 502 from a phone), and sweep any leaked
         // ephemeral-port mappings (issue #179). The provisioner repeats this on a timer.
-        _serveProvisioner.Reconcile();
+        // Skipped when HOSTED (no tailnet, no tailscale binary).
+        if (!GatewayHostedMode.IsHosted)
+            _serveProvisioner.Reconcile();
 
         // Gateway Cleanup mission (post-cut): the advertised-endpoint re-verification monitor (issue #325)
         // is DELETED. It HTTP-probed each Director's advertised /healthz; post-cut liveness is the tunnel
@@ -1908,7 +1916,7 @@ public sealed class GatewayHost : IAsyncDisposable
         Cockpit.CockpitReactApp.Map(_app);
 
         await _app.StartAsync();
-        FileLog.Write($"[GatewayHost] listening on http://127.0.0.1:{Port} (version {version})");
+        FileLog.Write($"[GatewayHost] listening on http://0.0.0.0:{Port} (all interfaces, auth-gated; version {version})");
 
         // Cron firing sweep (epic #479, #483): wake ~every minute and fire due jobs. The first tick
         // also catches up a fire that came due while the Gateway was down (at most once per job).
@@ -1980,23 +1988,29 @@ public sealed class GatewayHost : IAsyncDisposable
         // Network Diagnostics monitor (Network Diagnostics mission, Phase 1): on a timer, watch each
         // connected device's direct-vs-relay path and log persistent home-relay drift QUIETLY. Alert
         // channels (doorbell + owner email) are wired in P5 onto the same Decide-machine state.
-        var netDiagDeviceStore = new Api.NetDiagDeviceStore(Path.Combine(CcStorage.Root(), "netdiag-devices.json"));
-        // P5: deliver the monitor's drift/resolve to the doorbell + owner email. The alert service owns the
-        // 401-explicit "not signed in" path, the daily email cap, and one-email-per-episode; the monitor
-        // just hands it the device name on the machine's rising/falling edges.
-        var netDiagNotify = new Core.Account.AccountNotifyClient(new HttpClient { Timeout = TimeSpan.FromSeconds(30) });
-        var netDiagAlerts = new Api.NetDiagAlertService(
-            DirectorEvents,
-            () => Account?.GetAccessTokenForForwarding(),
-            async (token, subject, bodyText) =>
-            {
-                var r = await netDiagNotify.SendOwnerAsync(token, subject, bodyText, null, null, default).ConfigureAwait(false);
-                return r.Sent;
-            });
-        _netDiagMonitor = new Api.NetDiagMonitor(
-            Api.TailscaleDiagnostics.Collect, Api.LanPresenceProbe.TryResolveMac, netDiagDeviceStore, _netDiagRollup,
-            netDiagAlerts.OnDrift, netDiagAlerts.OnResolve);
-        _netDiagMonitor.Start();
+        //
+        // Skipped when HOSTED: the monitor's collector shells out to the tailscale CLI, which the container
+        // image does not bundle, so every poll would throw. A hosted Gateway has no tailnet to diagnose.
+        if (!GatewayHostedMode.IsHosted)
+        {
+            var netDiagDeviceStore = new Api.NetDiagDeviceStore(Path.Combine(CcStorage.Root(), "netdiag-devices.json"));
+            // P5: deliver the monitor's drift/resolve to the doorbell + owner email. The alert service owns the
+            // 401-explicit "not signed in" path, the daily email cap, and one-email-per-episode; the monitor
+            // just hands it the device name on the machine's rising/falling edges.
+            var netDiagNotify = new Core.Account.AccountNotifyClient(new HttpClient { Timeout = TimeSpan.FromSeconds(30) });
+            var netDiagAlerts = new Api.NetDiagAlertService(
+                DirectorEvents,
+                () => Account?.GetAccessTokenForForwarding(),
+                async (token, subject, bodyText) =>
+                {
+                    var r = await netDiagNotify.SendOwnerAsync(token, subject, bodyText, null, null, default).ConfigureAwait(false);
+                    return r.Sent;
+                });
+            _netDiagMonitor = new Api.NetDiagMonitor(
+                Api.TailscaleDiagnostics.Collect, Api.LanPresenceProbe.TryResolveMac, netDiagDeviceStore, _netDiagRollup,
+                netDiagAlerts.OnDrift, netDiagAlerts.OnResolve);
+            _netDiagMonitor.Start();
+        }
     }
 
     /// <summary>

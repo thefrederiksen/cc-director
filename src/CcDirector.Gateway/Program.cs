@@ -42,6 +42,19 @@ for (int i = 0; i < args.Length; i++)
     }
 }
 
+// Hosted (Azure App Service): honor the platform's assigned port (WEBSITES_PORT, else PORT), so the
+// front-end can route to the container. Falls through to the --port value when unset. Applied HERE, before
+// the port flows into the Gateway, so the ONE port value is consistent everywhere - the all-interfaces
+// listener bind AND every loopback self-call the Gateway makes to itself. The bind is 0.0.0.0 in both modes;
+// only the port source differs when hosted.
+if (GatewayHostedMode.IsHosted)
+{
+    var hostedPort = GatewayHostedMode.ResolveHostedPort(port);
+    if (hostedPort != port)
+        FileLog.Write($"[Program] HOSTED mode: listening on the platform port {hostedPort} (was {port})");
+    port = hostedPort;
+}
+
 var builder = Host.CreateApplicationBuilder(args);
 builder.Services.AddSingleton(new GatewayWorker(port));
 builder.Services.AddHostedService(sp => sp.GetRequiredService<GatewayWorker>());
