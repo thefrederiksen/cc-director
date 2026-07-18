@@ -70,6 +70,10 @@ public sealed class GatewayDbContext : DbContext
     /// <summary>Pending session snoozes (<c>snoozes</c>), keyed by session id.</summary>
     public DbSet<SnoozeEntity> Snoozes => Set<SnoozeEntity>();
 
+    /// <summary>The append-only governance event ledger (<c>governance_events</c>) - immutable session/run
+    /// state transitions, the duration spine of issue #1771.</summary>
+    public DbSet<GovernanceEventEntity> GovernanceEvents => Set<GovernanceEventEntity>();
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         base.OnModelCreating(modelBuilder);
@@ -166,6 +170,23 @@ public sealed class GatewayDbContext : DbContext
             b.HasKey(e => e.SessionId);
         });
 
+        modelBuilder.Entity<GovernanceEventEntity>(b =>
+        {
+            b.ToTable("governance_events");
+            b.HasKey(e => e.Id);
+            // The duration-rollup read paths: a session's transitions over time, a run's, and the weekly
+            // whole-week scan across every subject. Each composite LEADS WITH tenant_id because the global
+            // query filter prepends "tenant_id = @t" to every query - a SessionId/RunId/OccurredUtc-leading
+            // index would force a cross-tenant scan under Phase B multi-tenant load, so these are the
+            // tenant-leading forms that actually serve the filtered query. (ApplyTenantScope adds a
+            // standalone tenant_id index too; these are the query-serving composites.)
+            // SessionId/RunId are value references, never foreign keys - the ledger outlives the run and
+            // the session it records.
+            b.HasIndex(e => new { e.TenantId, e.SessionId, e.OccurredUtc });
+            b.HasIndex(e => new { e.TenantId, e.RunId, e.OccurredUtc });
+            b.HasIndex(e => new { e.TenantId, e.OccurredUtc });
+        });
+
         // Tenant scoping - the tenant_id column plus the global query filter - applied uniformly to every
         // entity that derives from TenantScopedEntity, so future stores inherit it by deriving from the base.
         ApplyTenantScope<CronJobEntity>(modelBuilder);
@@ -177,6 +198,7 @@ public sealed class GatewayDbContext : DbContext
         ApplyTenantScope<WorkflowFileEntity>(modelBuilder);
         ApplyTenantScope<WorkflowRunEntity>(modelBuilder);
         ApplyTenantScope<SnoozeEntity>(modelBuilder);
+        ApplyTenantScope<GovernanceEventEntity>(modelBuilder);
 
         ApplyCommonSubsetConventions(modelBuilder);
     }
