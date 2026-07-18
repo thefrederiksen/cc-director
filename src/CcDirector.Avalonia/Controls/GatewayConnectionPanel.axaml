@@ -81,6 +81,18 @@
     <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
     <Grid Margin="22" MinHeight="240">
 
+        <!-- STEP 0: the gateway CHOICE (#1808a) - self-host / use hosted / join existing / skip. The cards
+             are built in code from the GatewayChoiceStateMachine's resolved plan, so which are offered and
+             whether each is enabled is the state machine's verdict, not the panel's (dumb-client rule).
+             Self-host and Hosted render as clearly disabled "coming" actions in this slice. -->
+        <StackPanel x:Name="ChoicePanel" Spacing="0" VerticalAlignment="Top" IsVisible="False">
+            <TextBlock Classes="title" Text="Connect a Gateway" Margin="0,0,0,6" />
+            <TextBlock Foreground="#6C79A0" FontSize="12.5" TextWrapping="Wrap" Margin="0,4,0,18"
+                       MaxWidth="540" HorizontalAlignment="Left"
+                       Text="A Gateway is the hub this Director connects to for voice, the fleet view, cross-machine sessions, and shared keys. Choose how you want to connect one." />
+            <StackPanel x:Name="ChoiceHost" Spacing="10" />
+        </StackPanel>
+
         <!-- STEP 1: Connect (scanning and found share one header; the pill and body swap) -->
         <StackPanel x:Name="ConnectPanel" Spacing="0" VerticalAlignment="Top">
 

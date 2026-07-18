@@ -71,10 +71,11 @@
         <Grid Grid.Row="2">
 
             <!-- STEP 1: Gateway - the one reusable GatewayConnectionPanel (Phase 4, design spec section 8).
-                 The wizard's old URL box + Detect + Test are gone; the panel does the guided scan, connect
-                 (which IS the test), and DevThrottle sign-in. Populated in code-behind so it can raise
-                 ConnectionVerified, which lets Next advance. The "connect first, or Skip" nudge reuses the
-                 wizard's shared StepStatusText line (Grid.Row 3). -->
+                 The wizard's old URL box + Detect + Test are gone; the panel does the gateway choice, the
+                 guided scan, connect (which IS the test), and DevThrottle sign-in. Populated in code-behind
+                 so it can raise its TERMINAL ConnectionSettled result - connected AND signed in (#1808a) -
+                 which is what lets Next advance; the transport handshake alone does NOT. The "connect and
+                 sign in first, or Skip" nudge reuses the wizard's shared StepStatusText line (Grid.Row 3). -->
             <Border x:Name="GatewayStep" IsVisible="True" />
 
             <!-- STEP 2: Agent check -->

@@ -704,7 +704,7 @@ public partial class MainWindow : Window
     {
         try
         {
-            var panel = Controls.GatewayConnectionPanel.CreateForCurrentState();
+            var panel = Controls.GatewayConnectionPanel.CreateForCurrentState(GatewayChoiceConsumer.StatusWindow);
             // Push an immediate status-box refresh the instant the panel settles the sign-in state, so
             // line 2 flips within a couple of seconds instead of waiting for its 30-second heartbeat poll.
             panel.AccountStateSettled += (_, _) => _ = RefreshAccountStatusAsync();
