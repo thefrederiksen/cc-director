@@ -145,6 +145,10 @@ public sealed class GatewayDbContext : DbContext
             b.ToTable("workflows");
             b.HasKey(e => e.Id);
             b.Property(e => e.Id);
+            // The owner's switch defaults ON at the DATABASE level too, so the migration that adds
+            // the column backfills every pre-existing workflow as in-force - upgrading must never
+            // silently switch a fleet's workflows off.
+            b.Property(e => e.Enabled).HasDefaultValue(true);
         });
 
         modelBuilder.Entity<WorkflowVersionEntity>(b =>

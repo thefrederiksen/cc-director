@@ -85,6 +85,10 @@ public sealed class WorkflowRunStore
             if (head is null || head.Archived || head.PublishedVersion is null)
                 throw new WorkflowValidationException(
                     $"Workflow '{key}' has no published version to run.");
+            if (!head.Enabled)
+                throw new WorkflowValidationException(
+                    $"Workflow '{key}' is turned OFF on this fleet - no new runs while the owner has " +
+                    "it disabled. Re-enable it in the cockpit or with: cc-devthrottle workflow enable " + key);
             var version = ctx.WorkflowVersions.AsNoTracking().First(
                 v => v.WorkflowId == key && v.Status == WorkflowVersionStatus.Published);
 
@@ -115,7 +119,7 @@ public sealed class WorkflowRunStore
 
             FileLog.Write($"[WorkflowRunStore] Create: run={entity.Id}, workflow={key} v{version.Version}, " +
                           $"name=\"{entity.Name}\", mission={missionId?.ToString() ?? "-"}");
-            return ToDto(entity);
+            return ToDto(entity, workflowEnabled: true);
         }
     }
 
@@ -126,7 +130,7 @@ public sealed class WorkflowRunStore
         {
             using var ctx = _db.CreateContext();
             var entity = ctx.WorkflowRuns.AsNoTracking().FirstOrDefault(r => r.Id == id);
-            return entity is null ? null : ToDto(entity);
+            return entity is null ? null : ToDto(entity, WorkflowEnabledFor(ctx, entity.WorkflowId));
         }
     }
 
@@ -158,11 +162,13 @@ public sealed class WorkflowRunStore
             if (missionId.HasValue)
                 query = query.Where(r => r.MissionId == missionId.Value);
 
-            return query
+            var page = query
                 .OrderByDescending(r => r.CreatedUtc)
                 .Take(take)
-                .ToList()
-                .Select(ToDto)
+                .ToList();
+            var enabledByWorkflow = WorkflowEnabledMap(ctx, page.Select(r => r.WorkflowId));
+            return page
+                .Select(r => ToDto(r, enabledByWorkflow.GetValueOrDefault(r.WorkflowId, false)))
                 .ToList();
         }
     }
@@ -185,7 +191,57 @@ public sealed class WorkflowRunStore
             if (head is null || head.Archived || head.PublishedVersion is null)
                 throw new WorkflowValidationException(
                     $"Workflow '{key}' has no published version to run.");
+            if (!head.Enabled)
+                throw new WorkflowValidationException(
+                    $"Workflow '{key}' is turned OFF on this fleet - no new runs while the owner has " +
+                    "it disabled.");
         }
+    }
+
+    /// <summary>
+    /// Whether a workflow is currently in force (the owner's switch). The mission-create path asks
+    /// THIS before <see cref="EnsureRunnable"/>: per the owner ruling, a mission whose workflow is
+    /// off still gets created - it simply runs ungoverned (no run record) until the switch flips
+    /// back, which is a different answer than the hard refusal an unrunnable workflow gets.
+    /// </summary>
+    public bool IsWorkflowEnabled(string workflowId) => GetWorkflowEnabled(workflowId) == true;
+
+    /// <summary>
+    /// Three-valued on purpose: TRUE = in force, FALSE = the owner explicitly turned it off, NULL =
+    /// the workflow does not exist (or is archived). The mission-create path needs the distinction,
+    /// because only the owner's explicit OFF may produce an ungoverned mission - a MISSING mission
+    /// workflow is a broken store and must keep failing loud, never be mistaken for a choice.
+    /// </summary>
+    public bool? GetWorkflowEnabled(string workflowId)
+    {
+        if (string.IsNullOrWhiteSpace(workflowId))
+            return null;
+        var key = workflowId.Trim().ToLowerInvariant();
+        lock (_gate)
+        {
+            using var ctx = _db.CreateContext();
+            return ctx.Workflows.AsNoTracking()
+                .Where(h => h.Id == key && !h.Archived)
+                .Select(h => (bool?)h.Enabled)
+                .FirstOrDefault();
+        }
+    }
+
+    private static bool WorkflowEnabledFor(GatewayDbContext ctx, string workflowId) =>
+        ctx.Workflows.AsNoTracking()
+            .Where(h => h.Id == workflowId && !h.Archived)
+            .Select(h => (bool?)h.Enabled)
+            .FirstOrDefault() ?? false;
+
+    private static Dictionary<string, bool> WorkflowEnabledMap(
+        GatewayDbContext ctx, IEnumerable<string> workflowIds)
+    {
+        var ids = workflowIds.Distinct(StringComparer.Ordinal).ToList();
+        return ctx.Workflows.AsNoTracking()
+            .Where(h => ids.Contains(h.Id) && !h.Archived)
+            .Select(h => new { h.Id, h.Enabled })
+            .ToList()
+            .ToDictionary(h => h.Id, h => h.Enabled, StringComparer.Ordinal);
     }
 
     /// <summary>
@@ -251,7 +307,7 @@ public sealed class WorkflowRunStore
             ctx.SaveChanges();
             FileLog.Write($"[WorkflowRunStore] Patch: run={id}, status={entity.Status}, " +
                           $"acceptance={entity.AcceptanceStatus}");
-            return ToDto(entity);
+            return ToDto(entity, WorkflowEnabledFor(ctx, entity.WorkflowId));
         }
     }
 
@@ -363,8 +419,9 @@ public sealed class WorkflowRunStore
         }
     }
 
-    private static WorkflowRunDto ToDto(WorkflowRunEntity e) => new()
+    private static WorkflowRunDto ToDto(WorkflowRunEntity e, bool workflowEnabled) => new()
     {
+        WorkflowEnabled = workflowEnabled,
         Id = e.Id,
         WorkflowId = e.WorkflowId,
         WorkflowVersionId = e.WorkflowVersionId,

@@ -142,11 +142,28 @@ internal static class WorkflowEndpoints
 
         // The agent read path: raw markdown, no JSON envelope, so `cc-devthrottle workflow
         // instructions <id>` can print it verbatim into an agent's context.
-        app.MapGet("/gateway/workflows/{id}/instructions", (string id, int? version) =>
+        app.MapGet("/gateway/workflows/{id}/instructions", (string id, int? version) => Guard(() =>
         {
+            // Guard: a workflow the owner turned OFF refuses the default read with a clear 400
+            // message (never a misleading 404); pinned explicit-version reads keep serving.
             var markdown = store.GetInstructions(id, version);
             return markdown is null ? NotFound(id) : Results.Text(markdown, "text/markdown");
-        });
+        }));
+
+        // The owner's switch (register redesign): turn a workflow on or off - built-ins included.
+        // Off = hidden from agents' briefings, default reads refused, no new runs or seats; nothing
+        // deleted, instant both ways fleet-wide.
+        // Both verbs REQUIRE ?by=<who> - a governance change has an actor, always (the run-
+        // acceptance posture). Attribution is log-based until governance's event ledger lands.
+        app.MapPost("/gateway/workflows/{id}/enable", (string id, string? by) => Guard(() =>
+            store.SetEnabled(id, true, by ?? "")
+                ? Results.Json(new { id, enabled = true })
+                : NotFound(id)));
+
+        app.MapPost("/gateway/workflows/{id}/disable", (string id, string? by) => Guard(() =>
+            store.SetEnabled(id, false, by ?? "")
+                ? Results.Json(new { id, enabled = false })
+                : NotFound(id)));
 
         app.MapGet("/gateway/workflows/{id}/files/{fileName}", (string id, string fileName, int? version) =>
         {

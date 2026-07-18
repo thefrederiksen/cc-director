@@ -356,14 +356,28 @@ public sealed class WorkflowStore
     /// but never the draft: a draft is mutable, so serving it as pinned history would be a lie, and
     /// the publish boundary is exactly what makes content fleet-readable. (Authoring reads a draft
     /// through the versions/{n} detail route, which states the status.) Without a version, the
-    /// published version of a live workflow serves; a draft-only or archived workflow yields null.
+    /// published version of a live workflow serves; a draft-only or archived workflow yields null,
+    /// and a workflow the owner turned OFF refuses with a clear message - never a misleading 404.
     /// </summary>
+    /// <exception cref="WorkflowValidationException">The workflow exists but is OFF and no explicit
+    /// version was named. Pinned reads (explicit version) keep resolving - a seated run's conduct
+    /// never disappears under it - but the default head read is exactly the "use this workflow" path
+    /// the owner switched off.</exception>
     public string? GetInstructions(string id, int? version)
     {
         var key = NormalizeId(id);
         lock (_gate)
         {
             using var ctx = _db.CreateContext();
+            if (version is null)
+            {
+                var head = ctx.Workflows.AsNoTracking().FirstOrDefault(h => h.Id == key);
+                if (head is { Archived: false, Enabled: false })
+                    throw new WorkflowValidationException(
+                        $"Workflow '{key}' is turned OFF on this fleet. The owner disabled it; its " +
+                        "history remains readable by explicit version, and it can be re-enabled in " +
+                        "the cockpit or with: cc-devthrottle workflow enable " + key);
+            }
             var row = ResolveVersionRow(ctx, key, version);
             return row?.InstructionsMarkdown;
         }
@@ -526,5 +540,38 @@ public sealed class WorkflowStore
         UpdatedUtc = head.UpdatedUtc,
         HasDraft = hasDraft,
         ContentHash = version.ContentHash,
+        Enabled = head.Enabled,
     };
+
+    /// <summary>
+    /// The owner's switch (register redesign, owner ruling 2026-07-18): turn a workflow on or off -
+    /// built-ins included, because DevThrottle configures to what the USER wants. Off hides the
+    /// workflow from agents' launch briefings, refuses default conduct reads and new runs/seats, and
+    /// deletes NOTHING; the flip is instant both ways for every subsequent read fleet-wide. False
+    /// when no such workflow exists (archived counts as gone).
+    /// </summary>
+    public bool SetEnabled(string id, bool enabled, string by)
+    {
+        // A governance change has an actor, always - the same posture as run acceptance (#1771):
+        // who flipped the fleet's rules is never allowed to be nobody.
+        if (string.IsNullOrWhiteSpace(by))
+            throw new WorkflowValidationException(
+                "Turning a workflow on or off requires 'by' - who is making the change.");
+        var key = NormalizeId(id);
+        lock (_gate)
+        {
+            using var ctx = _db.CreateContext();
+            var head = ctx.Workflows.FirstOrDefault(h => h.Id == key);
+            if (head is null || head.Archived)
+                return false;
+
+            head.Enabled = enabled;
+            head.UpdatedUtc = DateTime.UtcNow;
+            ctx.SaveChanges();
+            // Attribution is log-based for now; the durable audit trail is governance's append-only
+            // event ledger (#1771), which will hang off these same ids.
+            FileLog.Write($"[WorkflowStore] SetEnabled: id={key}, enabled={enabled}, by={by.Trim()}");
+            return true;
+        }
+    }
 }

@@ -191,7 +191,14 @@ internal static class GatewayEndpoints
                 // and EF), so a process death exactly between the two writes can still orphan a
                 // mission - a transition-era window that closes when the JSON mission store retires
                 // onto the EF layer; the pre-check removes every failure mode short of that.
-                if (workflowRuns is not null)
+                // The owner's switch (register redesign ruling): a mission whose workflow the
+                // owner EXPLICITLY turned off still gets created - it runs UNGOVERNED (no run
+                // record) until the switch flips back. Three-valued on purpose: only an explicit
+                // FALSE is the owner's choice; a MISSING mission workflow (null - a broken or
+                // unseeded store) keeps the fail-loud path below, because silently ungoverned
+                // missions are exactly the gap the outcome spine exists to close.
+                var missionWorkflowEnabled = workflowRuns?.GetWorkflowEnabled("mission") ?? true;
+                if (workflowRuns is not null && missionWorkflowEnabled != false)
                 {
                     try
                     {
@@ -206,11 +213,29 @@ internal static class GatewayEndpoints
 
                 var mission = missions.Create(req.MissionName, req.ParentMissionId);
                 var dto = ToMissionDto(mission);
-                if (workflowRuns is not null)
+                if (workflowRuns is not null && missionWorkflowEnabled != false)
                 {
-                    var run = workflowRuns.Create(
-                        "mission", mission.MissionName, missionId: mission.MissionId);
-                    dto.WorkflowRunId = run.Id;
+                    try
+                    {
+                        var run = workflowRuns.Create(
+                            "mission", mission.MissionName, missionId: mission.MissionId);
+                        dto.WorkflowRunId = run.Id;
+                    }
+                    catch (Workflows.WorkflowValidationException)
+                        when (workflowRuns.GetWorkflowEnabled("mission") == false)
+                    {
+                        // The owner flipped the switch between the pre-check and the run create.
+                        // The mission record already exists, and the ruling says an explicit OFF
+                        // makes an UNGOVERNED mission - so honor the flip instead of returning an
+                        // error for a mission that was in fact created.
+                        FileLog.Write($"[GatewayEndpoints] POST /missions: the mission workflow was " +
+                                      $"turned OFF mid-create - mission {mission.MissionId} is UNGOVERNED");
+                    }
+                }
+                else if (workflowRuns is not null)
+                {
+                    FileLog.Write($"[GatewayEndpoints] POST /missions: the mission workflow is OFF - " +
+                                  $"mission {mission.MissionId} created UNGOVERNED (no run record)");
                 }
                 return Results.Json(dto, statusCode: StatusCodes.Status201Created);
             });

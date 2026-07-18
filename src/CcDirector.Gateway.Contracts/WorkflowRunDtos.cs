@@ -108,6 +108,12 @@ public sealed class WorkflowRunDto
     public List<WorkflowRunProofLinkDto> ProofLinks { get; set; } = new();
     public List<WorkflowRunParticipantDto> Participants { get; set; } = new();
 
+    /// <summary>Whether the run's WORKFLOW is currently in force (the owner's switch, register
+    /// redesign). False means the owner turned the workflow off: existing runs remain readable, but
+    /// spawn paths refuse NEW seats on them. Defaults true so a Director reading an older Gateway
+    /// that omits the field keeps seating normally.</summary>
+    public bool WorkflowEnabled { get; set; } = true;
+
     /// <summary>The Mission record this run is anchored to, when the run came from the mission path.
     /// A reference, not a merge - standalone runs have no Mission.</summary>
     public Guid? MissionId { get; set; }

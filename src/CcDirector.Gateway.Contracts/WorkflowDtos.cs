@@ -63,6 +63,12 @@ public sealed class WorkflowDto
 
     /// <summary>The canonical content hash of the published version (the exact bundle a run pins).</summary>
     public string ContentHash { get; set; } = "";
+
+    /// <summary>The owner's switch (register redesign): false = OFF - hidden from agents' launch
+    /// briefings, default conduct reads refused, no new runs or seats; nothing deleted. The catalog
+    /// still LISTS off workflows so the register can show and flip them. Defaults true so a reader
+    /// of an older Gateway that omits the field treats everything as in force.</summary>
+    public bool Enabled { get; set; } = true;
 }
 
 /// <summary>A helper file carried by a workflow version, with full content (authoring payloads).</summary>

@@ -180,6 +180,14 @@ internal static class MachineEndpoints
                     seatRun = workflowRuns.List(missionId: seatMissionId, limit: 1).FirstOrDefault();
                 }
 
+                if (seatRun is not null && !seatRun.WorkflowEnabled)
+                {
+                    // The owner turned this workflow OFF: no new seats. The spawn proceeds
+                    // unseated - the owner's switch, honestly applied and loudly logged.
+                    FileLog.Write($"[MachineEndpoints] POST /machines/{machine}/sessions: workflow " +
+                                  $"'{seatRun.WorkflowId}' is OFF - spawning UNSEATED");
+                    seatRun = null;
+                }
                 if (seatRun is not null)
                 {
                     req.WorkflowRunId = seatRun.Id;
