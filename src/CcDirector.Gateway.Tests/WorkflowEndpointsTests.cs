@@ -118,6 +118,21 @@ public sealed class WorkflowEndpointsTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task The_persisted_catalog_adds_its_fields_without_touching_the_legacy_shape()
+    {
+        // Workflows mission, phase 1: the catalog is served from the persisted store. The legacy
+        // fields are frozen (the tests above pin them); the store may only ADD fields. These are the
+        // additions the Cockpit and CLI will read.
+        var body = await _http.GetFromJsonAsync<JsonObject>("gateway/workflows/mission");
+
+        Assert.Equal(1, (int?)body!["version"]);
+        Assert.True((bool?)body["isBuiltIn"]);
+        Assert.False((bool?)body["hasDraft"]);
+        Assert.False(string.IsNullOrWhiteSpace((string?)body["contentHash"]));
+        Assert.NotNull(body["updatedUtc"]);
+    }
+
+    [Fact]
     public async Task Get_unknown_workflow_reports_not_found()
     {
         // No fallback to "the first workflow" or an empty object: an unknown id is an explicit 404.

@@ -22,24 +22,25 @@ namespace CcDirector.Gateway.Api;
 /// rollout possible later: an administrator defines the workflows once on their Gateway and every
 /// Director picks them up.
 ///
-/// The set is built in and read-only at this step (see BuiltInWorkflows); authoring and editing is a
-/// later step. Inherits the host-wide token middleware, like every other Gateway route.
+/// The catalog is PERSISTED (Workflows mission, phase 1): reads come from the WorkflowStore (EF data
+/// layer), where the built-ins are seeded at startup and user-defined workflows will live beside
+/// them. The legacy read shape is frozen - fields are only ever ADDED. Authoring routes are the next
+/// phase. Inherits the host-wide token middleware, like every other Gateway route.
 /// </summary>
 internal static class WorkflowEndpoints
 {
-    public static void Map(IEndpointRouteBuilder app)
+    public static void Map(IEndpointRouteBuilder app, WorkflowStore store)
     {
         app.MapGet("/gateway/workflows", () =>
         {
-            var workflows = BuiltInWorkflows.All();
+            var workflows = store.ListPublished();
             FileLog.Write($"[WorkflowEndpoints] list workflows: count={workflows.Count}");
             return Results.Json(new { workflows });
         });
 
         app.MapGet("/gateway/workflows/{id}", (string id) =>
         {
-            var workflow = BuiltInWorkflows.All()
-                .FirstOrDefault(w => string.Equals(w.Id, id, StringComparison.OrdinalIgnoreCase));
+            var workflow = store.GetPublished(id);
             if (workflow is null)
             {
                 FileLog.Write($"[WorkflowEndpoints] get workflow: id={id}, result=not found");
