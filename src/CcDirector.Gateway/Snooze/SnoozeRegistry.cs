@@ -494,16 +494,22 @@ public sealed class SnoozeRegistry
     /// aside idempotently (best-effort recovery) so a failed rename self-heals next boot without re-importing.
     /// </summary>
     private void ImportLegacyJsonIfNeeded()
-    {
-        if (!File.Exists(_legacyJsonPath))
-            return;
+        => LegacyJsonImport.Recoverable(
+            _legacyJsonPath,
+            "[SnoozeRegistry]",
+            isPopulated: () => { using var ctx = _db.CreateContext(); return ctx.Snoozes.Any(); },
+            importCommitted: ImportRowsFromLegacyJson);
 
+    /// <summary>
+    /// Parse the legacy file and insert every pending snooze inside one transaction (last-wins on a duplicate
+    /// session id, deadline normalized to UTC, a null DirectorId retained losslessly). Fail-loud and
+    /// all-or-nothing - a parse error or a null document throws and imports nothing (the file is left in
+    /// place). Called by the recoverable-import plumbing only when the file exists and the table is empty; the
+    /// plumbing renames the file aside after this returns.
+    /// </summary>
+    private void ImportRowsFromLegacyJson()
+    {
         using var ctx = _db.CreateContext();
-        if (ctx.Snoozes.Any())
-        {
-            TryRenameAside();
-            return;
-        }
 
         StoreFile? parsed;
         try
@@ -563,25 +569,6 @@ public sealed class SnoozeRegistry
         ctx.SaveChanges();
         tx.Commit();
 
-        TryRenameAside();
         FileLog.Write($"[SnoozeRegistry] Import: {toImport.Count} pending snooze(s) imported from {_legacyJsonPath}");
-    }
-
-    /// <summary>
-    /// Rename the imported legacy file aside, best-effort. The data is already committed and the empty-table
-    /// guard prevents any re-import, so a failed rename (a briefly-locked file) is logged and left for the
-    /// next boot to retry rather than failing the Gateway.
-    /// </summary>
-    private void TryRenameAside()
-    {
-        try
-        {
-            LegacyJsonImport.RenameAside(_legacyJsonPath, "[SnoozeRegistry]");
-        }
-        catch (Exception ex)
-        {
-            FileLog.Write($"[SnoozeRegistry] Import: rename-aside of {_legacyJsonPath} failed (data is safe in the " +
-                          $"database; the next boot retries): {ex.Message}");
-        }
     }
 }

@@ -152,13 +152,20 @@ public sealed class CronRunHistoryStore
     /// order. All inside one transaction, then the JSON is renamed aside. Fail-loud and all-or-nothing.
     /// </summary>
     private void ImportLegacyJsonIfNeeded()
-    {
-        if (!File.Exists(_legacyJsonPath))
-            return;
+        => LegacyJsonImport.Recoverable(
+            _legacyJsonPath,
+            "[CronRunHistoryStore]",
+            isPopulated: () => { using var ctx = _db.CreateContext(); return ctx.CronRuns.Any(); },
+            importCommitted: ImportRowsFromLegacyJson);
 
+    /// <summary>
+    /// Parse the legacy file and insert every run inside one transaction. Fail-loud and all-or-nothing.
+    /// Called by the recoverable-import plumbing only when the file exists and the table is empty; the
+    /// plumbing renames the file aside after this returns.
+    /// </summary>
+    private void ImportRowsFromLegacyJson()
+    {
         using var ctx = _db.CreateContext();
-        if (ctx.CronRuns.Any())
-            return;
 
         StoreFile? parsed;
         try
@@ -196,7 +203,6 @@ public sealed class CronRunHistoryStore
         ctx.SaveChanges();
         tx.Commit();
 
-        LegacyJsonImport.RenameAside(_legacyJsonPath, "[CronRunHistoryStore]");
         FileLog.Write($"[CronRunHistoryStore] Import: {imported} run(s) across {runsByJob.Count} job(s) imported from {_legacyJsonPath}");
     }
 }
