@@ -1194,19 +1194,12 @@ internal static class ControlEndpoints
     /// </summary>
     private static string AppendSeatParagraph(string preamble, Session session)
     {
-        if (session.WorkflowRunId is not Guid runId || string.IsNullOrWhiteSpace(session.WorkflowId))
+        // ONE builder for every delivery channel (WorkflowSeatParagraph) - it also validates the
+        // workflow id against the catalog slug shape, so a forged seat renders nothing.
+        var paragraph = WorkflowSeatParagraph.Build(
+            session.WorkflowRunId, session.WorkflowId, session.WorkflowVersion, session.ExplicitRole);
+        if (paragraph is null)
             return preamble;
-
-        var role = string.IsNullOrWhiteSpace(session.ExplicitRole) ? "a participant" : session.ExplicitRole;
-        var versionArg = session.WorkflowVersion is int v ? $" --version {v}" : "";
-        var paragraph =
-            $"[Workflow seat] You are seated as {role} on the '{session.WorkflowId}' workflow" +
-            (session.WorkflowVersion is int pv ? $" (pinned v{pv})" : "") +
-            $", run {runId}. Before doing anything else, fetch your conduct and FOLLOW it:\n" +
-            $"  cc-devthrottle workflow instructions {session.WorkflowId}{versionArg}\n" +
-            "If that command fails, STOP and report the failure - never proceed on remembered or " +
-            "reconstructed rules.";
-
         return string.IsNullOrEmpty(preamble) ? paragraph : preamble + "\n\n" + paragraph;
     }
 

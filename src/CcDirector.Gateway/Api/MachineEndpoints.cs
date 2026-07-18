@@ -196,22 +196,48 @@ internal static class MachineEndpoints
             }
 
             // Record the new session as a run participant - the persisted run-to-session membership
-            // (#1771). The session id is the canonical fleet GUID governance joins effort on.
+            // (#1771). The session id is the canonical fleet GUID governance joins effort on. Two
+            // guards, both from inspection findings:
+            //  - Record ONLY when the Director's reply proves the seat actually landed. An older
+            //    Director (rolling upgrade) ignores the seat fields and returns a DTO without them;
+            //    recording membership for a session whose agent never received its conduct would be
+            //    a governance lie.
+            //  - The spawn has already SUCCEEDED; a participant-write failure is reported loudly in
+            //    the log, never converted into an HTTP failure the caller would retry into a second
+            //    session.
             if (seatRun is not null && workflowRuns is not null && !string.IsNullOrWhiteSpace(dto.SessionId))
             {
-                workflowRuns.Patch(seatRun.Id, new Contracts.PatchWorkflowRunRequest
+                if (dto.WorkflowRunId != seatRun.Id)
                 {
-                    AddParticipants = new List<Contracts.WorkflowRunParticipantDto>
+                    FileLog.Write($"[MachineEndpoints] POST /machines/{machine}/sessions: Director did NOT " +
+                                  $"stamp the seat (returned run={dto.WorkflowRunId?.ToString() ?? "none"}; it " +
+                                  "likely predates seated sessions). Session started UNSEATED; no participant recorded.");
+                }
+                else
+                {
+                    try
                     {
-                        new()
+                        workflowRuns.Patch(seatRun.Id, new Contracts.PatchWorkflowRunRequest
                         {
-                            SessionId = dto.SessionId,
-                            AgentKind = req.Agent,
-                            Role = req.Role ?? "",
-                            Machine = machine,
-                        },
-                    },
-                });
+                            AddParticipants = new List<Contracts.WorkflowRunParticipantDto>
+                            {
+                                new()
+                                {
+                                    SessionId = dto.SessionId,
+                                    AgentKind = req.Agent,
+                                    Role = req.Role ?? "",
+                                    Machine = machine,
+                                },
+                            },
+                        });
+                    }
+                    catch (Exception ex)
+                    {
+                        FileLog.Write($"[MachineEndpoints] POST /machines/{machine}/sessions: run-participant " +
+                                      $"record FAILED for session {dto.SessionId} on run {seatRun.Id}: {ex.Message}. " +
+                                      "The session is seated and running; governance is missing this membership row.");
+                    }
+                }
             }
 
             FileLog.Write($"[MachineEndpoints] POST /machines/{machine}/sessions: started sid={dto.SessionId}" +
