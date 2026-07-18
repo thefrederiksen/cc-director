@@ -575,6 +575,92 @@ public sealed class GatewayClient : IGatewayHold, IDisposable
     }
 
     /// <summary>
+    /// Workflows mission (phase 5b): look a workflow RUN up by id in the Gateway's run store - the
+    /// source of truth for runs. A LOCAL seated spawn resolves the run through here so it stamps the
+    /// create request exactly the way the Gateway stamps a REMOTE spawn. Returns null ONLY on a
+    /// genuine 404; throws when the Gateway is disabled or unreachable (an unreachable Gateway is
+    /// never reported as "unknown run" - the GetMissionAsync posture).
+    /// </summary>
+    public async Task<WorkflowRunDto?> GetWorkflowRunAsync(Guid runId, CancellationToken ct = default)
+    {
+        if (!_config.IsEnabled)
+            throw new InvalidOperationException("Gateway is not configured; cannot look up a workflow run.");
+
+        FileLog.Write($"[GatewayClient] GetWorkflowRunAsync: GET /gateway/workflow-runs/{runId}");
+        using var resp = await _http.GetAsync($"gateway/workflow-runs/{runId}", ct);
+        if (resp.StatusCode == HttpStatusCode.NotFound)
+            return null;
+        if (!resp.IsSuccessStatusCode)
+        {
+            var detail = await resp.Content.ReadAsStringAsync(ct);
+            throw new InvalidOperationException(
+                $"Gateway could not look up workflow run '{runId}': HTTP {(int)resp.StatusCode} {resp.ReasonPhrase} {detail}".TrimEnd());
+        }
+        var run = await resp.Content.ReadFromJsonAsync<WorkflowRunDto>(ct);
+        if (run is null)
+            throw new InvalidOperationException($"Gateway workflow-run lookup for '{runId}' returned an unparsable body.");
+        return run;
+    }
+
+    /// <summary>The newest workflow run anchored to a mission, or null when the mission has none
+    /// (a mission predating the run spine). Same fail-loud posture as the id lookup.</summary>
+    public async Task<WorkflowRunDto?> GetMissionWorkflowRunAsync(Guid missionId, CancellationToken ct = default)
+    {
+        if (!_config.IsEnabled)
+            throw new InvalidOperationException("Gateway is not configured; cannot look up a mission's workflow run.");
+
+        FileLog.Write($"[GatewayClient] GetMissionWorkflowRunAsync: GET /gateway/workflow-runs?missionId={missionId}");
+        using var resp = await _http.GetAsync($"gateway/workflow-runs?missionId={missionId}&limit=1", ct);
+        if (resp.StatusCode == HttpStatusCode.NotFound)
+        {
+            // A Gateway that predates the run spine has no /gateway/workflow-runs route at all. That
+            // is the PRODUCTION state until the Gateway's next deployment, and a mission spawn must
+            // keep working against it - the session simply starts unseated, exactly as every session
+            // did before this feature. Never conflated with an error: a 5xx or auth failure below
+            // still throws.
+            FileLog.Write($"[GatewayClient] GetMissionWorkflowRunAsync {missionId}: the Gateway has no " +
+                          "workflow-run surface (predates the run spine) -> spawning unseated");
+            return null;
+        }
+        if (!resp.IsSuccessStatusCode)
+        {
+            var detail = await resp.Content.ReadAsStringAsync(ct);
+            throw new InvalidOperationException(
+                $"Gateway could not list workflow runs for mission '{missionId}': HTTP {(int)resp.StatusCode} {resp.ReasonPhrase} {detail}".TrimEnd());
+        }
+        var body = await resp.Content.ReadFromJsonAsync<WorkflowRunListResponse>(ct);
+        return body?.Runs?.FirstOrDefault();
+    }
+
+    /// <summary>Record a session as a participant on a workflow run (persisted run-to-session
+    /// membership, issue #1771). Throws on failure - the caller decides whether that fails the
+    /// operation or is reported loudly beside an already-successful spawn.</summary>
+    public async Task AddWorkflowRunParticipantAsync(
+        Guid runId, WorkflowRunParticipantDto participant, CancellationToken ct = default)
+    {
+        if (!_config.IsEnabled)
+            throw new InvalidOperationException("Gateway is not configured; cannot record a run participant.");
+
+        FileLog.Write($"[GatewayClient] AddWorkflowRunParticipantAsync: PATCH /gateway/workflow-runs/{runId} session={participant.SessionId}");
+        using var content = JsonContent.Create(new PatchWorkflowRunRequest
+        {
+            AddParticipants = new List<WorkflowRunParticipantDto> { participant },
+        });
+        using var resp = await _http.PatchAsync($"gateway/workflow-runs/{runId}", content, ct);
+        if (!resp.IsSuccessStatusCode)
+        {
+            var detail = await resp.Content.ReadAsStringAsync(ct);
+            throw new InvalidOperationException(
+                $"Gateway refused the run-participant record for '{runId}': HTTP {(int)resp.StatusCode} {resp.ReasonPhrase} {detail}".TrimEnd());
+        }
+    }
+
+    private sealed class WorkflowRunListResponse
+    {
+        public List<WorkflowRunDto>? Runs { get; set; }
+    }
+
+    /// <summary>
     /// Snooze Length mission (Phase 3): record or clear a Gateway-owned snooze/hold for a session by
     /// driving the Gateway's <c>POST /sessions/{sid}/hold</c> with the SAME authenticated client (already
     /// pointed at the resolved Gateway address and carrying the fleet token) the other Director-to-Gateway

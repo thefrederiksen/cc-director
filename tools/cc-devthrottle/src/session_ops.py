@@ -499,6 +499,7 @@ def spawn_session(
     role: Optional[str] = None,
     machine: Optional[str] = None,
     mission: Optional[str] = None,
+    workflow_run: Optional[str] = None,
 ) -> None:
     """Open a new session on the local Director, or on another computer when a remote --machine is given."""
     # Automatic roles: a SESSION-initiated spawn (CC_SESSION_ID present) DEFAULTS to a Worker controlled by
@@ -560,6 +561,11 @@ def spawn_session(
     # Mission attach at spawn: forward the Mission id; the Director resolves+validates it (unknown -> 400).
     if mission:
         body["missionId"] = mission
+    # Workflow seat at spawn (Workflows phase 5b): forward the run id; the Gateway validates it and
+    # stamps the workflow id + pinned version, and the seated session's preamble tells the agent to
+    # fetch its conduct at exactly that version. A mission spawn auto-seats without this flag.
+    if workflow_run:
+        body["workflowRunId"] = workflow_run
 
     # "Start a session on another computer": both local and remote spawns now go through the Director's
     # loopback POST /fleet/spawn (issue #1490). With no --machine (or a --machine naming THIS machine) the

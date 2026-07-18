@@ -647,13 +647,21 @@ def spawn(
         "--mission",
         help="Attach the new session to a Mission by its id at spawn (mission-as-first-class-unit-of-work). "
         "The Mission must already exist (create one with 'cc-devthrottle mission create'); an unknown "
-        "Mission is rejected by the Director.",
+        "Mission is rejected by the Director. A mission spawn also auto-seats the session on the "
+        "mission's workflow run.",
+    ),
+    workflow_run: Optional[str] = typer.Option(
+        None,
+        "--workflow-run",
+        help="Seat the new session on a workflow RUN by its id (Workflows phase 5b). The Gateway "
+        "validates the run and the session's preamble tells the agent to fetch the run's conduct at "
+        "its PINNED version. Unknown run ids are rejected.",
     ),
 ) -> None:
     """Open a new session on the local Director, or on another computer with --machine, and print its id."""
     spawn_session(
         repo, agent, prompt, name, purpose, command, command_args, controlled_by, args, standalone, role,
-        machine, mission,
+        machine, mission, workflow_run,
     )
 
 

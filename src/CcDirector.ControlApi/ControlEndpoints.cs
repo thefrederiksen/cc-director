@@ -79,6 +79,7 @@ internal static class ControlEndpoints
                 var text = FleetPreamble.BuildForSession(
                     session.Id.ToString(), name, Environment.MachineName, session.RepoPath, user,
                     workflowIndex: new WorkflowIndexStore());
+                text = AppendSeatParagraph(text, session);
                 return Results.Text(text, "text/plain");
             }
             catch (Exception ex) when (ex is InjectedTextUnavailableException or FleetPreambleTemplateException)
@@ -127,6 +128,7 @@ internal static class ControlEndpoints
                 text = FleetPreamble.BuildForSession(
                     session.Id.ToString(), name, Environment.MachineName, session.RepoPath, user,
                     workflowIndex: new WorkflowIndexStore());
+                text = AppendSeatParagraph(text, session);
             }
             catch (Exception ex) when (ex is InjectedTextUnavailableException or FleetPreambleTemplateException)
             {
@@ -243,7 +245,7 @@ internal static class ControlEndpoints
         // Create a session LOCALLY through the shared SessionCommandExecutor (issue #1177 Phase 1), then build
         // the identity-stamped 201 response. Used by the local branch of POST /fleet/spawn; the Machine routing
         // field is advisory here (the routing decision is made before the request reaches this Director).
-        async Task<IResult> CreateLocalSessionAsync(NewSessionRequest? req)
+        async Task<IResult> CreateLocalSessionAsync(NewSessionRequest? req, Func<Session, Task>? onCreated = null)
         {
             var command = new DirectorCommand
             {
@@ -265,9 +267,15 @@ internal static class ControlEndpoints
             if (created is null || !Guid.TryParse(created.SessionId, out var newGuid))
                 return Results.Problem("created session id missing", statusCode: 500);
             var session = sessionManager.GetSession(newGuid);
-            return session is null
-                ? Results.Problem("created session not found", statusCode: 500)
-                : Results.Json(MapWithIdentity(session, turnSummaryCache), statusCode: 201);
+            if (session is null)
+                return Results.Problem("created session not found", statusCode: 500);
+            // Post-create hook (Workflows mission, phase 5b): lets the caller run follow-up work that
+            // needs the CREATED session - recording the run participant - without re-plumbing the
+            // create result. The session exists whether or not the hook succeeds; the hook owns its
+            // own error posture.
+            if (onCreated is not null)
+                await onCreated(session);
+            return Results.Json(MapWithIdentity(session, turnSummaryCache), statusCode: 201);
         }
 
         // Deliver a framed message to a LOCAL session, wait for the turn to SETTLE, and return its answer
@@ -642,7 +650,73 @@ internal static class ControlEndpoints
                     // resolve it exactly as it does today. That is the only store a Gateway-less Director has.
                 }
 
-                return await CreateLocalSessionAsync(req);
+                // Workflows mission (phase 5b): resolve the SEAT for a local spawn against the Gateway's
+                // run store, the same way the Gateway relay stamps a remote spawn - an explicit run id is
+                // validated (unknown -> 400, unreachable Gateway -> 502, never conflated), and a
+                // mission-scoped spawn with no explicit run auto-seats onto the mission's run. The run's
+                // workflow id + pinned version ride the create request; the floor stamps only what create
+                // carries. A Gateway-less Director seats nothing - runs live only on the Gateway.
+                WorkflowRunDto? seatRun = null;
+                var seatGw = gatewayClientProvider?.Invoke();
+                if (seatGw is { IsEnabled: true })
+                {
+                    try
+                    {
+                        if (req.WorkflowRunId is Guid explicitRunId)
+                        {
+                            seatRun = await seatGw.GetWorkflowRunAsync(explicitRunId, ct);
+                            if (seatRun is null)
+                                return Results.BadRequest(new
+                                {
+                                    error = $"unknown workflow run '{explicitRunId}'. "
+                                          + "List runs with: cc-devthrottle workflow runs",
+                                });
+                        }
+                        else if (req.MissionId is Guid seatMissionId)
+                        {
+                            seatRun = await seatGw.GetMissionWorkflowRunAsync(seatMissionId, ct);
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        FileLog.Write($"[ControlEndpoints] POST /fleet/spawn: workflow-run lookup FAILED: {ex.Message}");
+                        return Results.Json(
+                            new { error = $"Cannot seat the new session on its workflow run: the Gateway could not be reached. {ex.Message}" },
+                            statusCode: StatusCodes.Status502BadGateway);
+                    }
+
+                    if (seatRun is not null)
+                    {
+                        req.WorkflowRunId = seatRun.Id;
+                        req.WorkflowId = seatRun.WorkflowId;
+                        req.WorkflowVersion = seatRun.WorkflowVersion;
+                    }
+                }
+
+                return await CreateLocalSessionAsync(req, onCreated: seatRun is null || seatGw is null
+                    ? null
+                    : async createdSession =>
+                    {
+                        // Record the created session as a run participant (persisted run-to-session
+                        // membership, issue #1771). The spawn has already succeeded; a failed record is
+                        // reported LOUDLY in the log rather than failing the session under the caller.
+                        try
+                        {
+                            await seatGw.AddWorkflowRunParticipantAsync(seatRun.Id, new WorkflowRunParticipantDto
+                            {
+                                SessionId = createdSession.Id.ToString(),
+                                AgentKind = req.Agent,
+                                Role = createdSession.ExplicitRole ?? "",
+                                Machine = Environment.MachineName,
+                            }, ct);
+                        }
+                        catch (Exception ex)
+                        {
+                            FileLog.Write($"[ControlEndpoints] POST /fleet/spawn: run-participant record FAILED for " +
+                                          $"session {createdSession.Id} on run {seatRun.Id}: {ex.Message}. The session " +
+                                          "is seated and running; governance is missing this membership row.");
+                        }
+                    });
             }
 
             FileLog.Write($"[ControlEndpoints] POST /fleet/spawn: machine={machine}, repo={req.RepoPath}, agent={req.Agent}");
@@ -1109,6 +1183,26 @@ internal static class ControlEndpoints
     /// through, BadRequest/NotFound/Conflict keep their meaning, and anything else is a 500. Shared by every
     /// /fleet session-control verb so they cannot drift apart from each other or from the tunnel path.
     /// </summary>
+    /// <summary>
+    /// Append the workflow SEAT paragraph to a session's preamble (Workflows mission, phase 5b): a
+    /// seated session is told, at launch, exactly which run it executes, at which PINNED version to
+    /// fetch its conduct, and to stop rather than proceed on remembered rules if the fetch fails
+    /// (the no-fallback law applied to conduct). Appended even when the preamble itself is empty -
+    /// the seat is the operational fact the session was spawned FOR, not our injectable prose - but
+    /// not on the unreadable-user-template failure path, which deliberately injects nothing at all.
+    /// Unseated sessions pass through untouched.
+    /// </summary>
+    private static string AppendSeatParagraph(string preamble, Session session)
+    {
+        // ONE builder for every delivery channel (WorkflowSeatParagraph) - it also validates the
+        // workflow id against the catalog slug shape, so a forged seat renders nothing.
+        var paragraph = WorkflowSeatParagraph.Build(
+            session.WorkflowRunId, session.WorkflowId, session.WorkflowVersion, session.ExplicitRole);
+        if (paragraph is null)
+            return preamble;
+        return string.IsNullOrEmpty(preamble) ? paragraph : preamble + "\n\n" + paragraph;
+    }
+
     private static IResult CommandResultToHttp(DirectorCommandResult result) => result.Status switch
     {
         DirectorCommandStatus.Ok => Results.Content(result.BodyJson ?? "{}", "application/json"),
@@ -1346,6 +1440,12 @@ internal static class ControlEndpoints
             // in the Director's MissionStore.
             MissionId = s.MissionId,
             MissionName = s.MissionName,
+            // Workflow seat (Workflows mission, phase 5b): the run this session executes, with its
+            // cached workflow id + pinned version - stamped at spawn from the Gateway-validated
+            // create request.
+            WorkflowRunId = s.WorkflowRunId,
+            WorkflowId = s.WorkflowId,
+            WorkflowVersion = s.WorkflowVersion,
             SortOrder = s.SortOrder,
             StatusColor = s.StatusColor,
             LastStatusReason = s.LastStatusReason,

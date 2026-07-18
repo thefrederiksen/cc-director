@@ -434,6 +434,25 @@ internal static class SessionCommandExecutor
         if (req.Role is not null && !SessionRoles.IsValid(req.Role))
             return DirectorCommandResult.Fail(DirectorCommandStatus.BadRequest, $"unknown role '{req.Role}'. Valid: {string.Join(", ", SessionRoles.All)}");
 
+        // Workflow seat at spawn (Workflows mission, phase 5b): validated BEFORE creating the session,
+        // like the role above. The Director stamps the seat ONLY when the run id arrives with its
+        // Gateway-resolved workflow id and pinned version - the Gateway is the source of truth for
+        // runs and the Director never resolves one itself; a run id arriving alone (a caller that
+        // skipped the Gateway resolution) seats nothing rather than guessing. A workflow id that is
+        // not a catalog slug, or a non-positive version, is a forged or corrupted seat and is
+        // REFUSED - never launched and never rendered into a preamble.
+        var seatRequested = req.WorkflowRunId is Guid &&
+            !string.IsNullOrWhiteSpace(req.WorkflowId) && req.WorkflowVersion is int;
+        if (seatRequested)
+        {
+            if (WorkflowSeatParagraph.Build(req.WorkflowRunId, req.WorkflowId, req.WorkflowVersion, req.Role) is null)
+                return DirectorCommandResult.Fail(DirectorCommandStatus.BadRequest,
+                    $"invalid workflow seat: workflow id '{req.WorkflowId}' is not a catalog slug.");
+            if (req.WorkflowVersion is int badVersion && badVersion < 1)
+                return DirectorCommandResult.Fail(DirectorCommandStatus.BadRequest,
+                    $"invalid workflow seat: version {badVersion} is not a published version number.");
+        }
+
         // Mission attach at spawn. Missions are a FLEET-level concept and now live at the Gateway (source of
         // truth), so the mission name that binds the session into a pod arrives ON the create request:
         //   * GATEWAY path (MissionId AND MissionName both set): the Gateway already resolved+validated the
@@ -533,7 +552,20 @@ internal static class SessionCommandExecutor
                 nameFactory: id => SessionName.Compose(
                     repoFolderName, explicitName, purpose, SessionName.Disambiguator(id),
                     isWorker: controllerSessionId is not null),
-                controllerSessionId: controllerSessionId);
+                controllerSessionId: controllerSessionId,
+                // Pre-launch stamps (Workflows mission, phase 5b): the role and the workflow seat are
+                // applied BEFORE any launch-time channel reads the session - Pi's preamble file is
+                // written from it during create, and a startup hook can fetch the preamble the
+                // instant the agent boots. Stamping after create raced the earliest readers and
+                // missed Pi entirely. Both values were validated above.
+                beforeLaunch: s =>
+                {
+                    var preLaunchRole = SessionRoles.Normalize(req.Role);
+                    if (preLaunchRole is not null)
+                        s.SetExplicitRole(preLaunchRole);
+                    if (seatRequested)
+                        s.SeatOnWorkflow(req.WorkflowRunId, req.WorkflowId, req.WorkflowVersion);
+                });
         }
         catch (Exception ex)
         {
@@ -563,17 +595,16 @@ internal static class SessionCommandExecutor
         // --name. Marking it lets a later explicit rename win and never be re-auto-named.
         session.IsAutoNamed = string.IsNullOrWhiteSpace(explicitName);
 
-        // Automatic session roles (chunk 2.5): a spawn-time explicit role is sticky and WINS over the
-        // Gateway's auto-derivation (the only way to declare an Architect). Already validated above.
-        var explicitRole = SessionRoles.Normalize(req.Role);
-        if (explicitRole is not null)
-            session.SetExplicitRole(explicitRole);
+        // Automatic session roles (chunk 2.5): the spawn-time explicit role is stamped PRE-LAUNCH in
+        // the beforeLaunch hook above (the workflow-seat paragraph names it, and Pi's preamble file
+        // is written during create), sticky and winning over auto-derivation exactly as before.
 
         // Mission attach at spawn: stamp the session's MissionId and cache the display name (resolved above,
         // either carried by the Gateway or resolved via the transitional local-store bridge). This is the
         // attachment that binds the new session into a pod.
         if (attachMissionId is Guid stampMissionId)
             session.AttachToMission(stampMissionId, attachMissionName);
+
 
         // Issue #212: dispatch a supplied PrePrompt once the agent is actually READY, fire-and-forget so
         // create returns immediately. Readiness = a substantial startup burst followed by a quiet poll;

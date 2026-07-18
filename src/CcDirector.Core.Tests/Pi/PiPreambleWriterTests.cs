@@ -24,6 +24,43 @@ public class PiPreambleWriterTests
         return store;
     }
 
+    // Workflows mission, phase 5b: a SEATED Pi session's preamble file carries the seat paragraph -
+    // Pi's file is immutable after launch, so this is Pi's only chance to learn its conduct fetch.
+    [Fact]
+    public void WriteForSession_WithASeat_AppendsTheSeatParagraph()
+    {
+        var dir = NewDir();
+        try
+        {
+            var runId = Guid.NewGuid();
+            var paragraph = WorkflowSeatParagraph.Build(runId, "mission", 3, "Architect");
+            Assert.NotNull(paragraph);
+
+            var path = PiPreambleWriter.WriteForSession(
+                "abc12345-1111-2222-3333-444455556666", "myrepo", "MACHINE_A", @"D:\repo\myrepo", dir,
+                user: null, OursStore(dir), paragraph);
+
+            var text = File.ReadAllText(path);
+            Assert.Contains("[Workflow seat]", text);
+            Assert.Contains("seated as Architect on the 'mission' workflow (pinned v3)", text);
+            Assert.Contains("cc-devthrottle workflow instructions mission --version 3", text);
+            Assert.Contains("STOP and report", text);
+        }
+        finally { Cleanup(dir); }
+    }
+
+    // The paragraph builder refuses a workflow id that is not a catalog slug - a forged or corrupted
+    // seat renders NOTHING rather than letting authored bytes ride into an agent's context.
+    [Fact]
+    public void SeatParagraph_RefusesANonSlugWorkflowId()
+    {
+        Assert.Null(WorkflowSeatParagraph.Build(Guid.NewGuid(), "evil\nid", 1, "Worker"));
+        Assert.Null(WorkflowSeatParagraph.Build(Guid.NewGuid(), "UPPER", 1, "Worker"));
+        Assert.Null(WorkflowSeatParagraph.Build(Guid.NewGuid(), null, 1, "Worker"));
+        Assert.Null(WorkflowSeatParagraph.Build(null, "mission", 1, "Worker"));
+        Assert.NotNull(WorkflowSeatParagraph.Build(Guid.NewGuid(), "standalone-with-review", 2, null));
+    }
+
     // Issue #1357: when a signed-in user is supplied, the Pi preamble file names that user.
     [Fact]
     public void WriteForSession_WithSignedInUser_WritesIdentityLine()
