@@ -682,7 +682,11 @@ public sealed class GatewayHost : IAsyncDisposable
         // Mission Screen mission (Phase 1b, issue #1405): the mission-WHY store, at a Gateway-side file
         // (CcStorage.Root(), the same location the snooze and cron stores use). Loaded here so a Gateway
         // restart re-serves every WHY. Tests MUST pass an isolated path so they never touch the real store.
-        _missionNotes = new MissionNotes.MissionNoteStore(missionNotesPath ?? Path.Combine(CcStorage.Root(), "mission-notes.json"));
+        // Mission WHY notes now persist in the mission_notes table of the EF data layer. The path argument is
+        // the LEGACY mission-notes.json, imported once on first upgrade (quarantine-on-corrupt, boot empty -
+        // a cosmetic store must not block boot) then renamed aside. Tests MUST pass an isolated path so they
+        // never touch the real legacy file.
+        _missionNotes = new MissionNotes.MissionNoteStore(_gatewayDb, missionNotesPath ?? Path.Combine(CcStorage.Root(), "mission-notes.json"));
         // Cron-job definitions persist across a Gateway restart (epic #479, #482) in the cron_jobs table
         // (next-run times recomputed on load). The path argument is the LEGACY cronjobs.json, imported once
         // on first upgrade then renamed aside. Tests MUST pass an isolated path so they never touch the real

@@ -88,6 +88,9 @@ public sealed class GatewayDbContext : DbContext
     /// cloud credit-debit ledger - real metered dollars, never pinned to a session or run (issue #1771).</summary>
     public DbSet<AccountHostedAiSpendEntity> AccountHostedAiSpend => Set<AccountHostedAiSpendEntity>();
 
+    /// <summary>Mission WHY notes (<c>mission_notes</c>), keyed by the normalized mission name.</summary>
+    public DbSet<MissionNoteEntity> MissionNotes => Set<MissionNoteEntity>();
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         base.OnModelCreating(modelBuilder);
@@ -242,6 +245,17 @@ public sealed class GatewayDbContext : DbContext
             b.HasIndex(e => new { e.TenantId, e.TransactionCreatedUtc });
         });
 
+        modelBuilder.Entity<MissionNoteEntity>(b =>
+        {
+            b.ToTable("mission_notes");
+            // Key is the natural key - the already-normalized (trim + lower-cased) mission name - compared
+            // ordinally by SQLite's default BINARY collation, matching the legacy Dictionary(StringComparer.
+            // Ordinal) keyed by that same normalized value. It is the primary key directly, no surrogate. No
+            // case-fold question arises: the value is folded BEFORE it becomes the key, so lookup is a plain
+            // ordinal equality (unlike the work-list NAME key, which folds at comparison time).
+            b.HasKey(e => e.Key);
+        });
+
         // Tenant scoping - the tenant_id column plus the global query filter - applied uniformly to every
         // entity that derives from TenantScopedEntity, so future stores inherit it by deriving from the base.
         ApplyTenantScope<CronJobEntity>(modelBuilder);
@@ -258,6 +272,7 @@ public sealed class GatewayDbContext : DbContext
         ApplyTenantScope<WingmanInstructionEntity>(modelBuilder);
         ApplyTenantScope<SessionSpendEntity>(modelBuilder);
         ApplyTenantScope<AccountHostedAiSpendEntity>(modelBuilder);
+        ApplyTenantScope<MissionNoteEntity>(modelBuilder);
 
         ApplyCommonSubsetConventions(modelBuilder);
     }
