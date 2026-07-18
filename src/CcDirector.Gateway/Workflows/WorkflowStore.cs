@@ -495,6 +495,7 @@ public sealed class WorkflowStore
         {
             FileName = f.FileName,
             ContentHash = f.ContentHash,
+            Content = f.Content,
         }).ToList(),
         ContentHash = row.ContentHash,
         AuthoredBy = row.AuthoredBy,
