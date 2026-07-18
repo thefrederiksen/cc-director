@@ -329,6 +329,9 @@ public sealed class GatewayHost : IAsyncDisposable
     // local install every row is the "local" tenant (SingleTenantContext), so behavior is unchanged.
     private readonly Core.Tenancy.SingleTenantContext _tenantContext = new();
     private readonly Data.GatewayDatabase _gatewayDb;
+    // The persisted workflow catalog (Workflows mission, phase 1): built-ins seeded at startup,
+    // user-defined workflows beside them, served by Api.WorkflowEndpoints.
+    private readonly Workflows.WorkflowStore _workflows;
     private readonly CronJobStore _cronJobs;
     private readonly CronRunHistoryStore _cronRuns;
     private readonly Running.CronEngine _cronEngine;
@@ -590,6 +593,10 @@ public sealed class GatewayHost : IAsyncDisposable
         // claims released on load). The path argument is the LEGACY worklists.json, imported once on first
         // upgrade then renamed aside. Tests MUST pass an isolated path so they never touch the real legacy file.
         _workLists = new WorkListStore(_gatewayDb, workListsPath ?? Path.Combine(CcStorage.Root(), "worklists.json"));
+        // The workflow catalog (Workflows mission, phase 1): persisted in the workflows tables, the
+        // shipped built-ins seeded/upgraded at construction. No legacy JSON - the previous catalog was
+        // compiled-in C# literals, so there is nothing on disk to import.
+        _workflows = new Workflows.WorkflowStore(_gatewayDb);
         // Snooze Length mission: the persisted snooze registry (sessionId -> SnoozeUntilUtc). Loaded here
         // so a Gateway restart re-arms every pending snooze; an entry already past its time simply fires
         // on the first sweep. Tests MUST pass an isolated path so they never touch the real store. The
@@ -1591,11 +1598,12 @@ public sealed class GatewayHost : IAsyncDisposable
         // models, test a chat model, save the chosen wingman/speech model). Uses the vault credential.
         Api.AiModelsEndpoint.Map(_app, _keyVault);
 
-        // The workflow catalog (issue #1617): the shapes of work the fleet knows how to run - Mission,
-        // Standalone, Standalone with review. The Gateway is the home for these; Directors and the
-        // Cockpit ask it rather than each carrying a private copy. Built in and read-only at this step.
-        // Inherits the host-wide token middleware above.
-        Api.WorkflowEndpoints.Map(_app);
+        // The workflow catalog (issue #1617; persisted by the Workflows mission): the shapes of work
+        // the fleet knows how to run - Mission, Standalone, Standalone with review, plus user-defined
+        // workflows. The Gateway is the home for these; Directors and the Cockpit ask it rather than
+        // each carrying a private copy. Served from the persisted store (built-ins seeded at startup);
+        // authoring routes are the next phase. Inherits the host-wide token middleware above.
+        Api.WorkflowEndpoints.Map(_app, _workflows);
 
         // Gateway Centralization Phase 1 (issue #628): the inbound login-telemetry RELAY. The Director
         // POSTs its login-telemetry event here (instead of the cloud) and the Gateway forwards it on,

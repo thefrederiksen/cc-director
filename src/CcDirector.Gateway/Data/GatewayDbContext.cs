@@ -55,6 +55,15 @@ public sealed class GatewayDbContext : DbContext
     /// <summary>Work-list item references (<c>worklist_items</c>), ordered per list.</summary>
     public DbSet<WorkListItemEntity> WorkListItems => Set<WorkListItemEntity>();
 
+    /// <summary>Workflow head records (<c>workflows</c>) - identity and lifecycle, never content.</summary>
+    public DbSet<WorkflowEntity> Workflows => Set<WorkflowEntity>();
+
+    /// <summary>Immutable workflow content versions (<c>workflow_versions</c>).</summary>
+    public DbSet<WorkflowVersionEntity> WorkflowVersions => Set<WorkflowVersionEntity>();
+
+    /// <summary>Helper files belonging to a workflow version (<c>workflow_files</c>).</summary>
+    public DbSet<WorkflowFileEntity> WorkflowFiles => Set<WorkflowFileEntity>();
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         base.OnModelCreating(modelBuilder);
@@ -100,12 +109,43 @@ public sealed class GatewayDbContext : DbContext
             b.HasIndex(e => new { e.WorkListId, e.Position });
         });
 
+        modelBuilder.Entity<WorkflowEntity>(b =>
+        {
+            b.ToTable("workflows");
+            b.HasKey(e => e.Id);
+            b.Property(e => e.Id);
+        });
+
+        modelBuilder.Entity<WorkflowVersionEntity>(b =>
+        {
+            b.ToTable("workflow_versions");
+            b.HasKey(e => e.Id);
+            // A workflow's versions are unique per number; lookups go through (WorkflowId, Version).
+            b.HasIndex(e => new { e.WorkflowId, e.Version }).IsUnique();
+            // Steps and outcome criteria are bounded sub-documents: owned types serialized to a JSON
+            // column each (the cron store's "sub-doc -> JSON in a column" pattern).
+            b.OwnsMany(e => e.Steps, o => o.ToJson());
+            b.OwnsMany(e => e.OutcomeCriteria, o => o.ToJson());
+        });
+
+        modelBuilder.Entity<WorkflowFileEntity>(b =>
+        {
+            b.ToTable("workflow_files");
+            b.HasKey(e => e.Id);
+            // Files are read per version; indexed but deliberately NOT a foreign key (independent
+            // lifecycle, matching cron_runs -> cron_jobs).
+            b.HasIndex(e => e.VersionId);
+        });
+
         // Tenant scoping - the tenant_id column plus the global query filter - applied uniformly to every
         // entity that derives from TenantScopedEntity, so future stores inherit it by deriving from the base.
         ApplyTenantScope<CronJobEntity>(modelBuilder);
         ApplyTenantScope<CronRunEntity>(modelBuilder);
         ApplyTenantScope<WorkListEntity>(modelBuilder);
         ApplyTenantScope<WorkListItemEntity>(modelBuilder);
+        ApplyTenantScope<WorkflowEntity>(modelBuilder);
+        ApplyTenantScope<WorkflowVersionEntity>(modelBuilder);
+        ApplyTenantScope<WorkflowFileEntity>(modelBuilder);
 
         ApplyCommonSubsetConventions(modelBuilder);
     }

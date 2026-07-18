@@ -126,6 +126,27 @@ public static class BuiltInWorkflows
             }),
     };
 
-    /// <summary>Every workflow the Gateway serves, in the order the Cockpit lists them.</summary>
+    /// <summary>Every workflow the Gateway ships, in the order the Cockpit lists them. Since the
+    /// catalog moved to the persisted workflow store these are the SEED SOURCE, not the served set:
+    /// the seeder writes them into the store at startup and the endpoints read the store.</summary>
     public static IReadOnlyList<WorkflowDefinition> All() => Definitions;
+
+    /// <summary>
+    /// The shipped instruction body (the authoritative conduct markdown) for a built-in workflow, read
+    /// from the embedded <c>Workflows/Content/&lt;id&gt;.instructions.md</c> resource. The mission body
+    /// is the faithful extraction of <c>.claude/skills/mission/SKILL.md</c> (guarded by a fidelity
+    /// test); kept as .md resources, not string literals, so the text stays diffable. Fail-loud on a
+    /// missing resource - a built-in without its conduct is a build defect, not a runtime condition.
+    /// </summary>
+    public static string InstructionsFor(string id)
+    {
+        var resourceName = $"CcDirector.Gateway.Workflows.Content.{id}.instructions.md";
+        var assembly = typeof(BuiltInWorkflows).Assembly;
+        using var stream = assembly.GetManifestResourceStream(resourceName)
+            ?? throw new InvalidOperationException(
+                $"Embedded workflow instructions '{resourceName}' are missing from the Gateway binary. " +
+                "Every built-in workflow must ship its instruction body.");
+        using var reader = new StreamReader(stream);
+        return reader.ReadToEnd();
+    }
 }
