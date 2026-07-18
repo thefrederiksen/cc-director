@@ -393,7 +393,8 @@ public sealed class GatewayHost : IAsyncDisposable
     private TurnEndWatcher? _turnEndWatcher;
     private Wingman.WingmanVoiceService? _voiceService;
     // Editable/versioned wingman instructions (issue #537); the voice translator reads the active set.
-    private readonly Wingman.WingmanInstructionsStore _instructionsStore = new();
+    // Constructed in the constructor body once the EF database is built (it persists to the data layer).
+    private readonly Wingman.WingmanInstructionsStore _instructionsStore;
     // Shared training-data store: the voice service WRITES captures, the instructions A/B test READS them.
     private readonly Wingman.WingmanTrainingStore _trainingStore = new();
     private System.Threading.Timer? _voiceSweepTimer;
@@ -522,7 +523,7 @@ public sealed class GatewayHost : IAsyncDisposable
     /// Shared instances that write to the real user's directories). Production omits it and the host builds
     /// the service over its own key vault, exactly as before.
     /// </param>
-    public GatewayHost(int port = DefaultPort, string? token = null, bool? authEnabled = null, string? instancesDirectory = null, string? turnBriefDirectory = null, string? keyVaultPath = null, string? workListsPath = null, string? cronJobsPath = null, string? cronRunsPath = null, string? devicesPath = null, string? telemetryQueuePath = null, int? telemetryQueueMaxSize = null, TimeSpan? telemetryRetryInterval = null, Core.Account.DevThrottleAccountService? account = null, bool? streamMode = null, string? inputStatsPath = null, string? snoozePath = null, string? missionsPath = null, string? missionNotesPath = null, Transcription.GatewayTranscriptionService? dictationTranscription = null, Core.Agents.AgentKind? brainTool = null)
+    public GatewayHost(int port = DefaultPort, string? token = null, bool? authEnabled = null, string? instancesDirectory = null, string? turnBriefDirectory = null, string? keyVaultPath = null, string? workListsPath = null, string? cronJobsPath = null, string? cronRunsPath = null, string? devicesPath = null, string? telemetryQueuePath = null, int? telemetryQueueMaxSize = null, TimeSpan? telemetryRetryInterval = null, Core.Account.DevThrottleAccountService? account = null, bool? streamMode = null, string? inputStatsPath = null, string? snoozePath = null, string? pushSubscriptionsPath = null, string? wingmanInstructionsPath = null, string? missionsPath = null, string? missionNotesPath = null, Transcription.GatewayTranscriptionService? dictationTranscription = null, Core.Agents.AgentKind? brainTool = null)
     {
         // Resolve and VALIDATE the warm-brain tool up front, before any resource is opened: a brain tool
         // that cannot be hosted is a configuration error that must fail loudly at construction, not
@@ -616,6 +617,10 @@ public sealed class GatewayHost : IAsyncDisposable
         // path so they never touch the real legacy file. The registry is bounded by dropping a removed
         // Director's entries so they do not accumulate.
         _snoozeRegistry = new Snooze.SnoozeRegistry(_gatewayDb, snoozePath ?? Path.Combine(CcStorage.Root(), "snooze.json"));
+        // Editable/versioned wingman instructions (issue #537) now persist in the wingman_instructions table
+        // of the EF data layer. The path argument is the LEGACY wingman-instructions.json, imported once on
+        // first upgrade then renamed aside. Tests MUST pass an isolated path so they never touch the real file.
+        _instructionsStore = new Wingman.WingmanInstructionsStore(_gatewayDb, wingmanInstructionsPath ?? Path.Combine(CcStorage.Root(), "wingman-instructions.json"));
         Registry.OnDirectorRemoved += id => _snoozeRegistry.ClearForDirector(id);
         // THE PUSH SEAM where this Gateway drives the hold machine off the facts Directors report. The
         // DirectorHub (constructed per-invocation by SignalR) folds every pushed session through this one
@@ -762,7 +767,10 @@ public sealed class GatewayHost : IAsyncDisposable
         // pair and the set of subscribed devices. The notifier that fans out to these is built and
         // started in StartAsync, once this Gateway's own /sessions endpoint is reachable on loopback.
         _vapidStore = new Push.WebPushVapidStore();
-        _pushSubscriptions = new Push.PushSubscriptionStore();
+        // Web Push subscriptions now persist in the push_subscriptions table of the EF data layer. The path
+        // argument is the LEGACY push-subscriptions.json, imported once on first upgrade then renamed aside.
+        // Tests MUST pass an isolated path so they never touch the real legacy file.
+        _pushSubscriptions = new Push.PushSubscriptionStore(_gatewayDb, pushSubscriptionsPath ?? Path.Combine(CcStorage.ToolConfig("gateway"), "push-subscriptions.json"));
 
         // Gateway device registration (issue #857): on sign-in (and as a first-launch/retry safety net on
         // the heartbeat) register THIS Gateway as a device with the cloud account and store the issued

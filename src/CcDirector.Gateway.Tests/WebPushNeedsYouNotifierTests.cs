@@ -1,6 +1,7 @@
 using System.Net;
 using CcDirector.Gateway.Contracts;
 using CcDirector.Gateway.Push;
+using CcDirector.Gateway.Tests.Data;
 using Lib.Net.Http.WebPush;
 using Xunit;
 
@@ -12,13 +13,14 @@ namespace CcDirector.Gateway.Tests;
 /// </summary>
 public sealed class WebPushNeedsYouNotifierTests : IDisposable
 {
-    private readonly string _storePath =
-        Path.Combine(Path.GetTempPath(), $"pushsub-{Guid.NewGuid():N}.json");
+    private readonly GatewayDbTestHarness _h = new();
 
-    public void Dispose()
-    {
-        if (File.Exists(_storePath)) File.Delete(_storePath);
-    }
+    public void Dispose() => _h.Dispose();
+
+    // A subscription store over the isolated on-disk database (two NewStore() calls share the same DB, so a
+    // second store reloads the first's rows).
+    private PushSubscriptionStore NewStore()
+        => new(_h.Open(), _h.LegacyPath("push-subscriptions-" + Guid.NewGuid().ToString("N") + ".json"));
 
     // ---- Pure decision logic -------------------------------------------------------------------
 
@@ -175,7 +177,7 @@ public sealed class WebPushNeedsYouNotifierTests : IDisposable
     [Fact]
     public async Task RunOnce_NewlyExpiredSnooze_AnnouncesOnceThenGoesQuiet()
     {
-        var store = new PushSubscriptionStore(_storePath);
+        var store = NewStore();
         store.Add("https://push.example/aaa", "p", "a");
         var sender = new FakeSender();
         var count = 1;
@@ -218,7 +220,7 @@ public sealed class WebPushNeedsYouNotifierTests : IDisposable
     [Fact]
     public async Task RunOnce_NoSubscribers_DoesNotEvenReadTheRoster()
     {
-        var store = new PushSubscriptionStore(_storePath);
+        var store = NewStore();
         var reads = 0;
         var notifier = new WebPushNeedsYouNotifier(store, _ => { reads++; return Task.FromResult(Snap(5)); }, new FakeSender());
 
@@ -230,7 +232,7 @@ public sealed class WebPushNeedsYouNotifierTests : IDisposable
     [Fact]
     public async Task RunOnce_FirstNonZeroCount_PushesToEverySubscription()
     {
-        var store = new PushSubscriptionStore(_storePath);
+        var store = NewStore();
         store.Add("https://push.example/aaa", "p", "a");
         store.Add("https://push.example/bbb", "p", "a");
         var sender = new FakeSender();
@@ -245,7 +247,7 @@ public sealed class WebPushNeedsYouNotifierTests : IDisposable
     [Fact]
     public async Task RunOnce_UnchangedCount_DoesNotPushTwice()
     {
-        var store = new PushSubscriptionStore(_storePath);
+        var store = NewStore();
         store.Add("https://push.example/aaa", "p", "a");
         var sender = new FakeSender();
         var notifier = new WebPushNeedsYouNotifier(store, _ => Task.FromResult(Snap(2)), sender);
@@ -259,7 +261,7 @@ public sealed class WebPushNeedsYouNotifierTests : IDisposable
     [Fact]
     public async Task RunOnce_DropToZeroThenRise_PushesCountThenClearThenCount()
     {
-        var store = new PushSubscriptionStore(_storePath);
+        var store = NewStore();
         store.Add("https://push.example/aaa", "p", "a");
         var sender = new FakeSender();
         var count = 2;
@@ -281,7 +283,7 @@ public sealed class WebPushNeedsYouNotifierTests : IDisposable
     [Fact]
     public async Task RunOnce_AllSessionsDone_SendsExactlyOneZeroClear()
     {
-        var store = new PushSubscriptionStore(_storePath);
+        var store = NewStore();
         store.Add("https://push.example/aaa", "p", "a");
         var sender = new FakeSender();
         var count = 1;
@@ -301,7 +303,7 @@ public sealed class WebPushNeedsYouNotifierTests : IDisposable
     [Fact]
     public async Task RunOnce_GoneSubscription_IsPruned()
     {
-        var store = new PushSubscriptionStore(_storePath);
+        var store = NewStore();
         store.Add("https://push.example/alive", "p", "a");
         store.Add("https://push.example/dead", "p", "a");
         var sender = new FakeSender();
@@ -318,7 +320,7 @@ public sealed class WebPushNeedsYouNotifierTests : IDisposable
     [Fact]
     public async Task ResetDedupe_RePushesTheCurrentCount()
     {
-        var store = new PushSubscriptionStore(_storePath);
+        var store = NewStore();
         store.Add("https://push.example/aaa", "p", "a");
         var sender = new FakeSender();
         var notifier = new WebPushNeedsYouNotifier(store, _ => Task.FromResult(Snap(2)), sender);
