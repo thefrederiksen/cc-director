@@ -221,6 +221,58 @@ public sealed class DeviceRegistry
         return null;
     }
 
+    /// <summary>
+    /// The tenant id of the active device whose per-device key matches <paramref name="key"/>, or null when
+    /// no active device matches OR the matched device has no tenant binding (Hosted Multi-Tenancy increment
+    /// 1). The tunnel reads this at Hello from the SAME verified key that already authenticated the
+    /// connection, so the resolved tenant comes from the AUTHENTICATED credential, never from anything the
+    /// client sent in its Hello payload. The compare is constant-time, mirroring <see cref="IsValidDeviceKey"/>,
+    /// so a near-miss reveals nothing through timing. A null return on hosted is a DENY, never a fall-back to
+    /// the local tenant.
+    /// </summary>
+    public string? TenantForKey(string? key)
+    {
+        if (string.IsNullOrEmpty(key)) return null;
+        var supplied = System.Text.Encoding.ASCII.GetBytes(key);
+        foreach (var record in _byDeviceId.Values)
+        {
+            if (!string.Equals(record.Status, StatusActive, StringComparison.Ordinal)) continue;
+            var stored = System.Text.Encoding.ASCII.GetBytes(record.DeviceKey);
+            if (stored.Length == supplied.Length &&
+                CryptographicOperations.FixedTimeEquals(stored, supplied))
+                return string.IsNullOrEmpty(record.TenantId) ? null : record.TenantId;
+        }
+        return null;
+    }
+
+    /// <summary>
+    /// Bind an enrolled device to its verified account and resolved tenant (Hosted Multi-Tenancy increment
+    /// 1). Called at hosted enrollment AFTER the account token has been validated and the tenant minted or
+    /// looked up. Idempotent for an unchanged binding. Returns false when the device id is unknown (nothing
+    /// to bind). The subject and tenant are personally identifying / security-relevant, so neither is logged.
+    /// </summary>
+    public bool SetAccountBinding(string deviceId, string accountSubject, string tenantId)
+    {
+        if (string.IsNullOrWhiteSpace(deviceId))
+            throw new ArgumentException("deviceId is required", nameof(deviceId));
+        if (string.IsNullOrWhiteSpace(accountSubject))
+            throw new ArgumentException("accountSubject is required", nameof(accountSubject));
+        if (string.IsNullOrWhiteSpace(tenantId))
+            throw new ArgumentException("tenantId is required", nameof(tenantId));
+
+        if (!_byDeviceId.TryGetValue(deviceId, out var record))
+        {
+            FileLog.Write($"[DeviceRegistry] SetAccountBinding: no local device id={deviceId} -> no-op");
+            return false;
+        }
+
+        record.AccountSubject = accountSubject.Trim();
+        record.TenantId = tenantId.Trim();
+        Save();
+        FileLog.Write($"[DeviceRegistry] SetAccountBinding: bound device id={deviceId} to its account tenant");
+        return true;
+    }
+
     /// <summary>The host-readable list of registered devices, newest first. Keys are never included.</summary>
     public IReadOnlyList<RegisteredDeviceDto> List()
     {
@@ -302,6 +354,16 @@ public sealed class DeviceRegistry
 
         /// <summary>The cloud roster id assigned when this child was mirrored up, or null until mirrored.</summary>
         public string? CloudDeviceId { get; set; }
+
+        /// <summary>The verified Supabase subject (<c>sub</c>) this device's account resolved to at hosted
+        /// enrollment (Hosted Multi-Tenancy increment 1), or null on the single-tenant local install (where a
+        /// device binds to no account). Personally identifying - never logged.</summary>
+        public string? AccountSubject { get; set; }
+
+        /// <summary>The tenant id this device resolved to at hosted enrollment - the value the tunnel binds at
+        /// Hello and every stored row is scoped to. Null on the single-tenant local install (which resolves to
+        /// "local" without a per-device binding).</summary>
+        public string? TenantId { get; set; }
     }
 }
 

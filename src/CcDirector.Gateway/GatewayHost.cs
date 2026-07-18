@@ -327,6 +327,15 @@ public sealed class GatewayHost : IAsyncDisposable
     // local install every row is the "local" tenant (SingleTenantContext), so behavior is unchanged.
     private readonly Core.Tenancy.SingleTenantContext _tenantContext = new();
     private readonly Data.GatewayDatabase _gatewayDb;
+
+    /// <summary>
+    /// The account-to-tenant resolver (Hosted Multi-Tenancy increment 1): owns the tenants mapping table and
+    /// mints or looks up a tenant from a verified account subject. Exposed so the hosted enrollment boundary
+    /// can resolve a tenant once, at the point the account token is validated. Unused on the single-tenant
+    /// local install (everything resolves to "local" without a lookup).
+    /// </summary>
+    public Tenancy.TenantRegistry TenantRegistry { get; }
+
     // The persisted workflow catalog (Workflows mission, phase 1): built-ins seeded at startup,
     // user-defined workflows beside them, served by Api.WorkflowEndpoints.
     private readonly Workflows.WorkflowStore _workflows;
@@ -608,6 +617,11 @@ public sealed class GatewayHost : IAsyncDisposable
         // (work lists, cron) read/write through it, so it is built before them. Tests get an isolated
         // database via CC_DIRECTOR_ROOT, exactly as gateway-stats.db is isolated today.
         _gatewayDb = new Data.GatewayDatabase(_tenantContext);
+        // The account-to-tenant resolver (Hosted Multi-Tenancy increment 1): owns the tenants mapping table
+        // and mints/looks up a tenant from a verified account subject. Built over the EF database; wired into
+        // the hosted enrollment boundary (which validates the account token and stamps the resolved tenant on
+        // the device) in the follow-up increment. Unused on the single-tenant local install.
+        TenantRegistry = new Tenancy.TenantRegistry(_gatewayDb);
         // Named work lists persist across a Gateway restart (issue #301) in the worklists table (stale
         // claims released on load). The path argument is the LEGACY worklists.json, imported once on first
         // upgrade then renamed aside. Tests MUST pass an isolated path so they never touch the real legacy file.
