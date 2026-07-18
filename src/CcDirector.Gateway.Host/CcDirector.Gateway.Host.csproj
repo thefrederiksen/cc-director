@@ -1,0 +1,53 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- Hosted Gateway mission, Step 4b: the container entry point for the hosted (Azure App Service) Gateway.
+       It runs the IDENTICAL headless Gateway as the local console host (CcDirector.Gateway) via the shared
+       GatewayEntryPoint - forwarding its args, including the port flag - and exists as a SEPARATE executable
+       for one reason: it references the Postgres migrations assembly so that assembly ships in this image's
+       publish output and Database.Migrate() can load it by name when the hosted Gateway runs on Postgres.
+
+       CcDirector.Gateway cannot reference the migrations assembly itself: the migrations assembly references
+       CcDirector.Gateway for GatewayDbContext, so the reverse reference is a build cycle (MSB4006). The
+       standard EF pattern for a separate migrations assembly applies - the migrations assembly references
+       the context assembly, and a startup/host project references BOTH - and this project IS that host. -->
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <AssemblyName>CcDirector.Gateway.Host</AssemblyName>
+    <!-- Framework-dependent, matching CcDirector.Gateway, so the Dockerfile's no-self-contained linux-x64
+         publish produces the same shape. -->
+    <SelfContained>false</SelfContained>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <RootNamespace>CcDirector.Gateway.Host</RootNamespace>
+    <!-- This host references CcDirector.Gateway, which is itself an executable (the dev console host), so a
+         RID publish emits CcDirector.Gateway's own deps.json/runtimeconfig.json into both the RID and
+         non-RID paths and the SDK flags them as duplicate publish outputs (NETSDK1152). That is the
+         documented "referencing executable projects" case: those redundant copies are inert (the container
+         entrypoint is CcDirector.Gateway.Host.dll, which uses its OWN deps.json/runtimeconfig), so the
+         duplicate is deduplicated rather than treated as an error. This does not affect the host's own
+         runtime configuration. -->
+    <ErrorOnDuplicatePublishOutputFiles>false</ErrorOnDuplicatePublishOutputFiles>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- The Gateway serves HTTP (Kestrel), so this executable is an ASP.NET Core app. Declared explicitly
+         (matching CcDirector.Gateway) so the published runtimeconfig targets the ASP.NET Core shared
+         framework. -->
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- The cross-platform Gateway host code + the shared GatewayEntryPoint this executable calls. -->
+    <ProjectReference Include="..\CcDirector.Gateway\CcDirector.Gateway.csproj" />
+    <!-- The Postgres migration set. Referenced HERE, not from CcDirector.Gateway (which would be the circular
+         dependency above), so its DLL is included in this host's publish output and Database.Migrate()
+         resolves it by name (MigrationsAssembly "CcDirector.Gateway.Migrations.Postgres") when the hosted
+         Gateway runs on Postgres. Nothing in this project's own code uses the assembly directly; the
+         reference exists solely to ship the DLL, so do NOT remove it as an unused reference. -->
+    <ProjectReference Include="..\CcDirector.Gateway.Migrations.Postgres\CcDirector.Gateway.Migrations.Postgres.csproj" />
+  </ItemGroup>
+
+</Project>

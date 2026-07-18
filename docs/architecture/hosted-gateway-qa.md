@@ -285,3 +285,78 @@ history row is not residue - it is the record that the migration ran, and it is 
 schema deploy-ready: the eventual hosted deploy's `Migrate()` reads it, sees the migration already applied,
 and is a no-op. This closes increment 2. The runtime host packaging that ships the migrations assembly (so
 the deployed Gateway can load it) remains the deploy increment's work.
+
+## Step 4b - increment 3 (code): ship the Postgres migrations in the published image
+
+Date: 2026-07-18
+
+The provider and the runtime MigrationsAssembly wiring were proven against real Supabase in increment 2,
+but that ran inside the solution where every assembly is referenced. The deployed container publishes the
+Gateway alone; if it does not carry the SEPARATE Npgsql migrations assembly, a container boot against
+Supabase would find no migration set. This increment closes that gap. Single-tenant, NO behavior change to
+the SQLite/local path.
+
+### The circular-dependency finding (why a thin host)
+
+The work order's first-cut step - "CcDirector.Gateway ProjectReferences CcDirector.Gateway.Migrations.Postgres"
+- cannot build: the migrations assembly already references CcDirector.Gateway (for GatewayDbContext), so the
+reverse reference is a build cycle (confirmed: MSB4006, "circular dependency in the target dependency graph").
+And the Dockerfile publishes CcDirector.Gateway itself as the container entrypoint, so the migrations DLL has
+to be a real dependency of the PUBLISHED project to load at runtime (a loose-copied DLL does not resolve
+through EF's Assembly.Load in a framework-dependent publish). The fix is the standard EF pattern for a
+separate migrations assembly: a thin startup/host project references BOTH the context assembly and the
+migrations assembly.
+
+### What changed
+
+- New project `src/CcDirector.Gateway.Host` (net10.0, framework-dependent, ASP.NET Core): the container
+  entrypoint. It references CcDirector.Gateway AND CcDirector.Gateway.Migrations.Postgres, and its Program.cs
+  is a one-liner that calls the shared startup and forwards args verbatim. CcDirector.Gateway does NOT
+  reference the migrations assembly (that is the cycle above); the host does, so the migrations DLL ships in
+  the host's publish output.
+- `src/CcDirector.Gateway/GatewayEntryPoint.cs` (new) + `Program.cs` (now a one-liner): the entire Gateway
+  startup logic - the --port/--help parsing, the CC_GATEWAY_HOSTED platform-port resolution, and the worker
+  wiring - was extracted verbatim into a shared `GatewayEntryPoint.Run(args)` that BOTH executables call. The
+  local console host and the container host therefore run byte-identical startup with zero drift; the only
+  difference between the two executables is the migrations-assembly reference. Verified: both exes print
+  identical --help output and exit 0.
+- `Dockerfile`: changed ONLY the publish target (to src/CcDirector.Gateway.Host) and the entrypoint
+  (to CcDirector.Gateway.Host.dll --port 7878). EXPOSE 7878, USER gateway, ENV HOME, and ENV CC_DIRECTOR_ROOT are
+  unchanged. The host csproj sets ErrorOnDuplicatePublishOutputFiles=false because CcDirector.Gateway is
+  itself an executable, so a RID publish emits its (inert) deps.json/runtimeconfig into two paths - the
+  documented "referencing executable projects" case; the container entrypoint uses the host's own runtime
+  config, which is unaffected.
+- Confirmed nothing ELSE launches CcDirector.Gateway.dll as a hosted entrypoint (only the Dockerfile did);
+  the local/desktop path launches CcDirector.Gateway directly on SQLite and is untouched.
+
+### Evidence (a RUN, not a build)
+
+Publish output of the host (the same command the Dockerfile runs), proving the container carries and can
+resolve the migrations assembly:
+
+```
+dotnet publish src/CcDirector.Gateway.Host/CcDirector.Gateway.Host.csproj \
+  -c Release -r linux-x64 --no-self-contained \
+  -p:RunMobileBuild=false -p:RunCockpitBuild=false -p:RunWorkspaceTypecheck=false -o <out>
+
+  CcDirector.Gateway.Host.dll                    PRESENT
+  CcDirector.Gateway.Migrations.Postgres.dll     PRESENT
+  Npgsql.dll                                     PRESENT
+  CcDirector.Gateway.Host.deps.json references CcDirector.Gateway.Migrations.Postgres   (2 entries)
+  CcDirector.Gateway.Host.runtimeconfig.json targets Microsoft.AspNetCore.App
+```
+
+Boot smoke test (`GatewayHostBootSmokeTests`):
+- `PostgresMigrationSet_ResolvesByAssemblyName_WithoutDatabase` (always runs, no database): loads the
+  migration set by the assembly name the host wires (`GetMigrations()`, which does not connect) and asserts
+  it contains `20260718120027_InitialPostgres`. This is the CI-safe half - it proves the separately-assembled
+  set is resolvable by name, connecting to nothing.
+- `HostStartupPath_ResolvesAndAppliesPostgresMigrations_OnConfiguredPostgres` (env-gated by
+  CC_GATEWAY_DB_CONNECTION, skips when unset so CI touches nothing): constructs the real GatewayDatabase (the
+  hosted startup path), which runs Migrate(), and asserts `GetAppliedMigrations()` contains
+  `20260718120027_InitialPostgres`. Run against real Supabase: 2 passed (both facts), password never logged.
+
+Regression: the Gateway Data-namespace suite with no env var
+(`dotnet test src/CcDirector.Gateway.Tests/CcDirector.Gateway.Tests.csproj --filter FullyQualifiedName~CcDirector.Gateway.Tests.Data`)
+- 9 passed, 10 skipped. Every database/Supabase fact is among the 10 skips, so nothing connects to a server,
+and the SQLite/local path stays green and unchanged.
