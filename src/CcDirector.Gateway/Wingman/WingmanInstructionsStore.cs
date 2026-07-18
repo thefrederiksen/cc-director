@@ -1,8 +1,11 @@
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
-using CcDirector.Core.Storage;
 using CcDirector.Core.Utilities;
+using CcDirector.Core.Storage;
+using CcDirector.Gateway.Data;
+using CcDirector.Gateway.Data.Entities;
+using Microsoft.EntityFrameworkCore;
 
 namespace CcDirector.Gateway.Wingman;
 
@@ -19,7 +22,14 @@ namespace CcDirector.Gateway.Wingman;
 ///   content vs the new default) and offer a one-click switch - never silently overwriting the user's
 ///   prompt. Acknowledging (switch, or customizing afresh) snapshots the current default.
 ///
-/// Persisted as one JSON file under the gateway storage root. Thread-safe; best-effort on disk errors.
+/// PERSISTENCE (Hosted Gateway mission, Step 1b): the whole state document lives in the EF data layer's
+/// <c>wingman_instructions</c> table as ONE row per tenant (the active-version pointer, the acknowledged
+/// deployed-default snapshot, and the versions as an owned JSON collection) - NOT the old hand-rolled
+/// <c>wingman-instructions.json</c>. The public API and observable behavior are unchanged. The store keeps
+/// the working state in memory exactly as before; only the load/save primitive moved from a JSON file to the
+/// single row. On first run after the upgrade a legacy <c>wingman-instructions.json</c> is imported once
+/// (through the shared recoverable-import helper) then renamed aside. Thread-safe; fail-loud on a persist
+/// error (no silent best-effort fallback, matching the other migrated stores).
 /// </summary>
 public sealed class WingmanInstructionsStore
 {
@@ -45,18 +55,26 @@ public sealed class WingmanInstructionsStore
     /// <summary>Hard cap so a pasted prompt cannot bloat the brain call / file.</summary>
     public const int MaxContentChars = 20_000;
 
-    private readonly string _path;
+    private readonly GatewayDatabase _db;
+    private readonly string _legacyJsonPath;
     private readonly string _defaultContent;
     private readonly string _defaultVersion;
     private readonly object _lock = new();
     private StateFile _state = new();
     private int _seq;
 
-    public WingmanInstructionsStore(string? defaultContent = null, string? defaultVersion = null, string? path = null)
+    /// <param name="db">The Gateway EF database this store reads and writes through.</param>
+    /// <param name="legacyJsonPath">The legacy <c>wingman-instructions.json</c> path to import ONCE if it
+    /// exists and the table is empty. REQUIRED (no silent default).</param>
+    public WingmanInstructionsStore(GatewayDatabase db, string legacyJsonPath,
+        string? defaultContent = null, string? defaultVersion = null)
     {
+        _db = db ?? throw new ArgumentNullException(nameof(db));
+        if (string.IsNullOrWhiteSpace(legacyJsonPath))
+            throw new ArgumentException("legacy json path is required", nameof(legacyJsonPath));
+        _legacyJsonPath = legacyJsonPath;
         _defaultContent = defaultContent ?? WingmanTranslator.FidelityPrompt;
         _defaultVersion = defaultVersion ?? WingmanTranslator.DefaultInstructionsVersion;
-        _path = path ?? Path.Combine(CcStorage.Root(), "wingman-instructions.json");
         Load();
     }
 
@@ -75,15 +93,10 @@ public sealed class WingmanInstructionsStore
     {
         lock (_lock)
         {
-            try
-            {
-                if (File.Exists(_path))
-                {
-                    var s = JsonSerializer.Deserialize<StateFile>(File.ReadAllText(_path));
-                    if (s is not null) _state = s;
-                }
-            }
-            catch (Exception ex) { FileLog.Write($"[WingmanInstructionsStore] load FAILED: {ex.Message}"); _state = new(); }
+            // One-time legacy import (fail-loud, all-or-nothing), then read the single persisted row into the
+            // in-memory working state. A missing row is a fresh store (new state).
+            ImportLegacyJsonIfNeeded();
+            _state = ReadStateFromDb() ?? new StateFile();
 
             // First run, or a user who has never customized: they ride the latest deployed default,
             // so acknowledge it (no stale "update available" banner).
@@ -94,16 +107,60 @@ public sealed class WingmanInstructionsStore
         }
     }
 
+    /// <summary>Persist the in-memory state to the single per-tenant row. Fail-loud: a persist error
+    /// propagates rather than silently dropping the change.</summary>
     private void Save()
     {
-        try
+        using var ctx = _db.CreateContext();
+        var row = ctx.WingmanInstructions.FirstOrDefault();
+        if (row is null)
         {
-            var tmp = _path + ".tmp";
-            File.WriteAllText(tmp, JsonSerializer.Serialize(_state, new JsonSerializerOptions { WriteIndented = true }));
-            File.Move(tmp, _path, overwrite: true);
+            row = new WingmanInstructionEntity { Id = Guid.NewGuid(), TenantId = ctx.ActiveTenant! };
+            ctx.WingmanInstructions.Add(row);
         }
-        catch (Exception ex) { FileLog.Write($"[WingmanInstructionsStore] save FAILED: {ex.Message}"); }
+        row.ActiveVersionId = _state.ActiveVersionId;
+        row.AckDefaultVersion = _state.AckDefaultVersion;
+        row.AckDefaultContent = _state.AckDefaultContent;
+        row.Versions = _state.Versions.Select(ToOwned).ToList();
+        ctx.SaveChanges();
     }
+
+    /// <summary>Read the single per-tenant state row into an in-memory <see cref="StateFile"/>, or null when
+    /// no row exists yet.</summary>
+    private StateFile? ReadStateFromDb()
+    {
+        using var ctx = _db.CreateContext();
+        var row = ctx.WingmanInstructions.AsNoTracking().FirstOrDefault();
+        if (row is null)
+            return null;
+        return new StateFile
+        {
+            ActiveVersionId = row.ActiveVersionId,
+            AckDefaultVersion = row.AckDefaultVersion,
+            AckDefaultContent = row.AckDefaultContent,
+            Versions = row.Versions.Select(ToPublic).ToList(),
+        };
+    }
+
+    private static InstructionVersion ToPublic(WingmanInstructionVersionOwned o) => new()
+    {
+        Id = o.Id,
+        Content = o.Content,
+        CreatedAtUtc = o.CreatedAtUtc,
+        Label = o.Label,
+        Source = o.Source,
+        Hash = o.Hash,
+    };
+
+    private static WingmanInstructionVersionOwned ToOwned(InstructionVersion v) => new()
+    {
+        Id = v.Id,
+        Content = v.Content,
+        CreatedAtUtc = v.CreatedAtUtc,
+        Label = v.Label,
+        Source = v.Source,
+        Hash = v.Hash,
+    };
 
     private void AcknowledgeDefaultNoLock()
     {
@@ -243,5 +300,64 @@ public sealed class WingmanInstructionsStore
             AcknowledgeDefaultNoLock();
             FileLog.Write($"[WingmanInstructionsStore] switched to deployed default v{_defaultVersion}");
         }
+    }
+
+    // ---- one-time legacy JSON import --------------------------------------------------------------
+
+    /// <summary>
+    /// Import a legacy <c>wingman-instructions.json</c> exactly once, through the shared recoverable-import
+    /// plumbing (<see cref="LegacyJsonImport.Recoverable"/>): import only when the file exists AND the table
+    /// is empty; recover a lingering file idempotently; rename aside best-effort after a successful import.
+    /// </summary>
+    private void ImportLegacyJsonIfNeeded()
+        => LegacyJsonImport.Recoverable(
+            _legacyJsonPath,
+            "[WingmanInstructionsStore]",
+            isPopulated: () => { using var ctx = _db.CreateContext(); return ctx.WingmanInstructions.Any(); },
+            importCommitted: ImportRowFromLegacyJson);
+
+    /// <summary>
+    /// Parse the legacy state file and insert it as the single per-tenant row - the active-version pointer,
+    /// the acknowledged default snapshot, and the versions (order preserved). Fail-loud and all-or-nothing -
+    /// a parse error (or a null document) throws and imports nothing (the file is left in place).
+    /// </summary>
+    private void ImportRowFromLegacyJson()
+    {
+        StateFile? parsed;
+        try
+        {
+            parsed = JsonSerializer.Deserialize<StateFile>(File.ReadAllText(_legacyJsonPath));
+        }
+        catch (Exception ex)
+        {
+            FileLog.Write($"[WingmanInstructionsStore] Import FAILED: legacy file {_legacyJsonPath} could not be read: {ex.Message}");
+            throw new InvalidOperationException(
+                $"The legacy wingman-instructions file '{_legacyJsonPath}' could not be parsed for the one-time " +
+                $"import: {ex.Message}. The Gateway will not start with a partial import. Fix or move the file " +
+                "aside and restart.", ex);
+        }
+
+        if (parsed is null)
+        {
+            FileLog.Write($"[WingmanInstructionsStore] Import FAILED: legacy file {_legacyJsonPath} deserialized to a null document");
+            throw new InvalidOperationException(
+                $"The legacy wingman-instructions file '{_legacyJsonPath}' could not be parsed for the one-time " +
+                "import: the document is null. The Gateway will not start with a partial import. Fix or move the " +
+                "file aside and restart.");
+        }
+
+        using var ctx = _db.CreateContext();
+        ctx.WingmanInstructions.Add(new WingmanInstructionEntity
+        {
+            Id = Guid.NewGuid(),
+            TenantId = ctx.ActiveTenant!,
+            ActiveVersionId = parsed.ActiveVersionId,
+            AckDefaultVersion = parsed.AckDefaultVersion,
+            AckDefaultContent = parsed.AckDefaultContent,
+            Versions = (parsed.Versions ?? new List<InstructionVersion>()).Select(ToOwned).ToList(),
+        });
+        ctx.SaveChanges();
+
+        FileLog.Write($"[WingmanInstructionsStore] Import: state ({parsed.Versions?.Count ?? 0} version(s)) imported from {_legacyJsonPath}");
     }
 }

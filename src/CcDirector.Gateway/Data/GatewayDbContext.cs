@@ -74,6 +74,12 @@ public sealed class GatewayDbContext : DbContext
     /// state transitions, the duration spine of issue #1771.</summary>
     public DbSet<GovernanceEventEntity> GovernanceEvents => Set<GovernanceEventEntity>();
 
+    /// <summary>Web Push subscriptions (<c>push_subscriptions</c>), keyed by browser push endpoint.</summary>
+    public DbSet<PushSubscriptionEntity> PushSubscriptions => Set<PushSubscriptionEntity>();
+
+    /// <summary>The wingman instructions state document (<c>wingman_instructions</c>), one row per tenant.</summary>
+    public DbSet<WingmanInstructionEntity> WingmanInstructions => Set<WingmanInstructionEntity>();
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         base.OnModelCreating(modelBuilder);
@@ -187,6 +193,25 @@ public sealed class GatewayDbContext : DbContext
             b.HasIndex(e => new { e.TenantId, e.OccurredUtc });
         });
 
+        modelBuilder.Entity<PushSubscriptionEntity>(b =>
+        {
+            b.ToTable("push_subscriptions");
+            // Endpoint is the natural key - a unique-per-subscription URL compared ordinally (SQLite's default
+            // BINARY collation), matching the legacy Dictionary(StringComparer.Ordinal) - so it is the primary
+            // key directly, no surrogate id. There is no per-user column: the legacy shape had none.
+            b.HasKey(e => e.Endpoint);
+        });
+
+        modelBuilder.Entity<WingmanInstructionEntity>(b =>
+        {
+            b.ToTable("wingman_instructions");
+            b.HasKey(e => e.Id);
+            // The document has no external id; the store keeps one row per tenant under its write lock.
+            // The saved versions are a bounded sub-document: an owned collection serialized to a JSON column
+            // (the cron/workflow "sub-doc -> JSON in a column" pattern), preserving each field and the order.
+            b.OwnsMany(e => e.Versions, o => o.ToJson());
+        });
+
         // Tenant scoping - the tenant_id column plus the global query filter - applied uniformly to every
         // entity that derives from TenantScopedEntity, so future stores inherit it by deriving from the base.
         ApplyTenantScope<CronJobEntity>(modelBuilder);
@@ -199,6 +224,8 @@ public sealed class GatewayDbContext : DbContext
         ApplyTenantScope<WorkflowRunEntity>(modelBuilder);
         ApplyTenantScope<SnoozeEntity>(modelBuilder);
         ApplyTenantScope<GovernanceEventEntity>(modelBuilder);
+        ApplyTenantScope<PushSubscriptionEntity>(modelBuilder);
+        ApplyTenantScope<WingmanInstructionEntity>(modelBuilder);
 
         ApplyCommonSubsetConventions(modelBuilder);
     }
