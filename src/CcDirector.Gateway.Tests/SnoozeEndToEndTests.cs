@@ -348,6 +348,18 @@ public sealed class SnoozeEndToEndTests : IAsyncLifetime
 
         Assert.False(_gw.SnoozeRegistry.Contains("s8")); // the snooze is gone, deleted by work
         Assert.False((await GetSession("s8")).OnHold);   // no longer held
+
+        // THE FULL MISSION PROMISE (round 4 finding 2): when the work SETTLES, the session reads red "needs
+        // you" with NO "Snooze ended" badge - it came back by work, not by a timer. The whole terminal
+        // branch: snooze -> work -> entry gone -> settle -> red / needsYou, no badge.
+        fake.SetActivity("s8", "WaitingForInput");
+        await fake.RePushAsync();
+
+        var settled = await GetSession("s8");
+        Assert.False(settled.OnHold);
+        Assert.Equal("red", settled.EffectiveColor);
+        Assert.Equal("needsYou", settled.TriageBucket);
+        Assert.False(settled.SnoozeExpired); // came back by WORK, not by timer expiry - so no badge
     }
 
     [Fact]
