@@ -27,13 +27,13 @@ namespace CcDirector.Gateway.Wingman;
 /// </summary>
 public sealed class WingmanVoiceService
 {
-    public sealed record VoiceReady(string Spoken, string Reply, byte[] Audio, DateTime AtUtc, string ContentType = "audio/mpeg");
+    public sealed record VoiceReady(string Spoken, string Reply, byte[] Audio, DateTime AtUtc, string ContentType = "audio/mpeg", bool ServedViaFallback = false);
 
     /// <summary>The outcome of one text-to-speech synthesis (issue #939): the audio bytes on success,
     /// or the shared <see cref="HostedAiState"/> when hosted AI is unavailable (out of credits, cap
     /// reached, or account setup is incomplete) so the caller can surface it instead of a silent
     /// null. Both null means a generic provider error (logged, no shared state).</summary>
-    private sealed record TtsResult(byte[]? Audio, string? ContentType, HostedAiState? Unavailable);
+    private sealed record TtsResult(byte[]? Audio, string? ContentType, HostedAiState? Unavailable, bool ServedViaFallback = false);
 
     private readonly WingmanTranslator _translator;
     private readonly KeyVault _vault;
@@ -86,7 +86,7 @@ public sealed class WingmanVoiceService
 
     /// <summary>On-disk shape of one ready session's metadata (the audio bytes live next to it as
     /// an .mp3). Persisted so the play triangle / playability survives a gateway restart (issue #553).</summary>
-    private sealed record PersistedVoice(string Spoken, string Reply, DateTime AtUtc, string? ContentType = null);
+    private sealed record PersistedVoice(string Spoken, string Reply, DateTime AtUtc, string? ContentType = null, bool ServedViaFallback = false);
 
     /// <param name="ttsHttpClient">Optional HTTP client for the text-to-speech call (tests inject a stub
     /// over a fake handler, issue #939). A per-call 60-second client is created when null.</param>
@@ -153,7 +153,7 @@ public sealed class WingmanVoiceService
                 var meta = JsonSerializer.Deserialize<PersistedVoice>(File.ReadAllText(metaPath));
                 if (meta is null) continue;
                 var contentType = NormalizeContentType(meta.ContentType) ?? DetectAudioContentType(audio);
-                _ready[sid] = new VoiceReady(meta.Spoken, meta.Reply, audio, meta.AtUtc, contentType);
+                _ready[sid] = new VoiceReady(meta.Spoken, meta.Reply, audio, meta.AtUtc, contentType, meta.ServedViaFallback);
                 loaded++;
             }
             FileLog.Write($"[WingmanVoiceService] loaded {loaded} ready voice audio cache(s) from disk");
@@ -170,7 +170,7 @@ public sealed class WingmanVoiceService
             // .mp3 and the .json) never sees a session ready before its bytes are on disk.
             File.WriteAllBytes(Path.Combine(_audioDir, sid + ".mp3"), ready.Audio);
             File.WriteAllText(Path.Combine(_audioDir, sid + ".json"),
-                JsonSerializer.Serialize(new PersistedVoice(ready.Spoken, ready.Reply, ready.AtUtc, ready.ContentType)));
+                JsonSerializer.Serialize(new PersistedVoice(ready.Spoken, ready.Reply, ready.AtUtc, ready.ContentType, ready.ServedViaFallback)));
         }
         catch (Exception ex) { FileLog.Write($"[WingmanVoiceService] save ready audio FAILED sid={sid}: {ex.Message}"); }
     }
@@ -195,6 +195,18 @@ public sealed class WingmanVoiceService
 
     /// <summary>True when this session currently has a fresh, playable cached summary.</summary>
     public bool HasVoice(string sid) => _ready.ContainsKey(sid);
+
+    /// <summary>The response header the cloud speech proxy sets when it quietly failed the primary
+    /// provider over to the backup (Phase 1). Its mere PRESENCE means "served via backup"; the value is
+    /// never surfaced to a user. Reading it is how the Gateway learns to show the generic backup-voice
+    /// notice (a success-with-a-note), and it is deliberately out-of-band so it never touches the audio.</summary>
+    private const string FallbackHeaderName = "X-DevThrottle-TTS-Fallback";
+
+    /// <summary>True when this session's current ready clip was made by the BACKUP voice provider (the
+    /// primary was overloaded and the cloud proxy failed over). Fed to <see cref="VoiceDisplayFold"/> so
+    /// the Voice screen shows the generic backup-voice notice. False when there is no ready clip, or the
+    /// ready clip was served normally. Never an outage signal - a fallback IS a successful narration.</summary>
+    public bool ServedViaFallbackFor(string sid) => _ready.TryGetValue(sid, out var v) && v.ServedViaFallback;
 
     /// <summary>
     /// Whether a turn-end should (re)generate the spoken narration for this session. True when there is
@@ -360,7 +372,7 @@ public sealed class WingmanVoiceService
         if (tts.Audio is { Length: > 0 })
         {
             _voiceUnavailable.TryRemove(sid, out _);   // success clears any prior unavailable-state (dismissible)
-            StoreReady(sid, spoken, reply ?? "", tts.Audio, tts.ContentType);
+            StoreReady(sid, spoken, reply ?? "", tts.Audio, tts.ContentType, tts.ServedViaFallback);
         }
         else if (tts.Unavailable is HostedAiState state)
         {
@@ -376,19 +388,20 @@ public sealed class WingmanVoiceService
     /// persist it to disk so it survives a gateway restart (issue #553). The single place the success
     /// branch lives - the test seam (<see cref="StoreReadyAudioForTest"/>) reuses it so persistence is
     /// exercised without a live provider call.</summary>
-    private void StoreReady(string sid, string spoken, string reply, byte[] audio, string? contentType)
+    private void StoreReady(string sid, string spoken, string reply, byte[] audio, string? contentType, bool servedViaFallback = false)
     {
         var ready = new VoiceReady(spoken, reply, audio, DateTime.UtcNow,
-            NormalizeContentType(contentType) ?? DetectAudioContentType(audio));
+            NormalizeContentType(contentType) ?? DetectAudioContentType(audio), servedViaFallback);
         _ready[sid] = ready;
         _nothingToNarrate.TryRemove(sid, out _);   // audio exists, so there was something to narrate after all
         SaveReadyAudio(sid, ready);
     }
 
     /// <summary>Test seam: store ready audio exactly as a successful synthesis would (in-memory +
-    /// durable), so the persistence round-trip can be tested without calling a provider.</summary>
-    internal void StoreReadyAudioForTest(string sid, string spoken, string reply, byte[] audio, string? contentType = null)
-        => StoreReady(sid, spoken, reply, audio, contentType);
+    /// durable), so the persistence round-trip can be tested without calling a provider. The optional
+    /// <paramref name="servedViaFallback"/> lets a test store a backup-served clip and assert the notice.</summary>
+    internal void StoreReadyAudioForTest(string sid, string spoken, string reply, byte[] audio, string? contentType = null, bool servedViaFallback = false)
+        => StoreReady(sid, spoken, reply, audio, contentType, servedViaFallback);
 
     /// <summary>
     /// Regenerate the voice for a session from its latest turn: read the last reply, translate it,
@@ -614,7 +627,14 @@ public sealed class WingmanVoiceService
                 return new TtsResult(null, null, HostedAiState.ServiceDown);
             }
             var contentType = resp.Content.Headers.ContentType?.MediaType;
-            return new TtsResult(await resp.Content.ReadAsByteArrayAsync(ct), contentType, null);
+            // The cloud proxy sets this out-of-band header when it quietly failed the primary voice
+            // provider over to the backup (Phase 1). Its mere presence is the signal - the value is never
+            // shown to a user. A fallback is a SUCCESS: the audio is real and playable; we only note it so
+            // the Voice screen can add the generic backup-voice line.
+            var servedViaFallback = resp.Headers.Contains(FallbackHeaderName);
+            if (servedViaFallback)
+                FileLog.Write($"[WingmanVoiceService] tts served via backup voice provider (fallback) - {mode.ToConfigString()}");
+            return new TtsResult(await resp.Content.ReadAsByteArrayAsync(ct), contentType, null, servedViaFallback);
         }
         // A timeout (TtsSynthesis exhausted its attempts) or a transport failure is the same story from
         // the user's side: the service did not answer. It is not their fault and there is nothing for

@@ -31,6 +31,13 @@ export function VoiceTab({ sessionId }: { sessionId: string | undefined }) {
           <div className="composer-error" role="alert">{v.error}</div>
         )}
 
+        {/* TTS fallback: the Gateway folded a generic "switched to a backup voice" notice onto this turn's
+            ready clip (the primary provider was temporarily overloaded). Rendered VERBATIM - never names a
+            provider. Shows above whichever voice card is up while the backup clip is the current one. */}
+        {v.voiceDisplay?.voiceFallbackNotice != null && v.voiceDisplay.voiceFallbackNotice !== "" && (
+          <div className="voice-fallback-note" role="status">{v.voiceDisplay.voiceFallbackNotice}</div>
+        )}
+
         {/* A. OFF - one clear "Switch to voice mode" button; only ever shown once a poll has confirmed
             the session is NOT in voice mode. */}
         {!v.voiceOn && v.pollDone && (
