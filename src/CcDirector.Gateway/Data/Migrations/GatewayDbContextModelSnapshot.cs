@@ -17,6 +17,40 @@ namespace CcDirector.Gateway.Data.Migrations
 #pragma warning disable 612, 618
             modelBuilder.HasAnnotation("ProductVersion", "9.0.2");
 
+            modelBuilder.Entity("CcDirector.Gateway.Data.Entities.AccountHostedAiSpendEntity", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .HasColumnType("TEXT");
+
+                    b.Property<long>("AmountMicros")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<string>("Kind")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
+                    b.Property<DateTime>("ObservedUtc")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("TenantId")
+                        .IsRequired()
+                        .HasColumnType("TEXT")
+                        .HasColumnName("tenant_id");
+
+                    b.Property<DateTime>("TransactionCreatedUtc")
+                        .HasColumnType("TEXT");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("TenantId");
+
+                    b.HasIndex("TenantId", "TransactionCreatedUtc");
+
+                    b.HasIndex("TenantId", "Kind", "AmountMicros", "TransactionCreatedUtc");
+
+                    b.ToTable("account_hosted_ai_spend", (string)null);
+                });
+
             modelBuilder.Entity("CcDirector.Gateway.Data.Entities.CronJobEntity", b =>
                 {
                     b.Property<string>("Id")
@@ -126,6 +160,272 @@ namespace CcDirector.Gateway.Data.Migrations
                     b.HasIndex("JobId", "Sequence");
 
                     b.ToTable("cron_runs", (string)null);
+                });
+
+            modelBuilder.Entity("CcDirector.Gateway.Data.Entities.GovernanceAuditEventEntity", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("Actor")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("Category")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("Detail")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("EventType")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
+                    b.Property<DateTime>("OccurredUtc")
+                        .HasColumnType("TEXT");
+
+                    b.Property<DateTime>("RecordedUtc")
+                        .HasColumnType("TEXT");
+
+                    b.Property<Guid?>("RunId")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("SessionId")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("TenantId")
+                        .IsRequired()
+                        .HasColumnType("TEXT")
+                        .HasColumnName("tenant_id");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("TenantId");
+
+                    b.HasIndex("TenantId", "Category", "OccurredUtc");
+
+                    b.HasIndex("TenantId", "RunId", "OccurredUtc");
+
+                    b.HasIndex("TenantId", "SessionId", "OccurredUtc");
+
+                    b.ToTable("governance_audit_events", (string)null);
+                });
+
+            modelBuilder.Entity("CcDirector.Gateway.Data.Entities.GovernanceEventEntity", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .HasColumnType("TEXT");
+
+                    b.Property<DateTime>("OccurredUtc")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("Reason")
+                        .HasColumnType("TEXT");
+
+                    b.Property<DateTime>("RecordedUtc")
+                        .HasColumnType("TEXT");
+
+                    b.Property<Guid?>("RunId")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("SessionId")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("State")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("SubjectKind")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("TenantId")
+                        .IsRequired()
+                        .HasColumnType("TEXT")
+                        .HasColumnName("tenant_id");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("TenantId");
+
+                    b.HasIndex("TenantId", "OccurredUtc");
+
+                    b.HasIndex("TenantId", "RunId", "OccurredUtc");
+
+                    b.HasIndex("TenantId", "SessionId", "OccurredUtc");
+
+                    b.ToTable("governance_events", (string)null);
+                });
+
+            modelBuilder.Entity("CcDirector.Gateway.Data.Entities.MissionNoteEntity", b =>
+                {
+                    b.Property<string>("Key")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("Mission")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("TenantId")
+                        .IsRequired()
+                        .HasColumnType("TEXT")
+                        .HasColumnName("tenant_id");
+
+                    b.Property<DateTime>("UpdatedAtUtc")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("Why")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
+                    b.HasKey("Key");
+
+                    b.HasIndex("TenantId");
+
+                    b.ToTable("mission_notes", (string)null);
+                });
+
+            modelBuilder.Entity("CcDirector.Gateway.Data.Entities.PushSubscriptionEntity", b =>
+                {
+                    b.Property<string>("Endpoint")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("Auth")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
+                    b.Property<DateTime>("CreatedAtUtc")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("P256dh")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("TenantId")
+                        .IsRequired()
+                        .HasColumnType("TEXT")
+                        .HasColumnName("tenant_id");
+
+                    b.HasKey("Endpoint");
+
+                    b.HasIndex("TenantId");
+
+                    b.ToTable("push_subscriptions", (string)null);
+                });
+
+            modelBuilder.Entity("CcDirector.Gateway.Data.Entities.SessionSpendEntity", b =>
+                {
+                    b.Property<string>("SessionId")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("AgentKind")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("BillingMode")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
+                    b.Property<long>("CacheCreationTokens")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<long>("CacheReadTokens")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<DateTime>("FirstObservedUtc")
+                        .HasColumnType("TEXT");
+
+                    b.Property<long>("InputTokens")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<DateTime>("LastObservedUtc")
+                        .HasColumnType("TEXT");
+
+                    b.Property<long?>("MeteredCostMicros")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<string>("Model")
+                        .HasColumnType("TEXT");
+
+                    b.Property<long>("OutputTokens")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<string>("RepoPath")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("TenantId")
+                        .IsRequired()
+                        .HasColumnType("TEXT")
+                        .HasColumnName("tenant_id");
+
+                    b.Property<bool>("TokensCaptured")
+                        .HasColumnType("INTEGER");
+
+                    b.HasKey("SessionId");
+
+                    b.HasIndex("TenantId");
+
+                    b.HasIndex("TenantId", "LastObservedUtc");
+
+                    b.ToTable("session_spend", (string)null);
+                });
+
+            modelBuilder.Entity("CcDirector.Gateway.Data.Entities.SnoozeEntity", b =>
+                {
+                    b.Property<string>("SessionId")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("DirectorId")
+                        .HasColumnType("TEXT");
+
+                    b.Property<DateTime?>("OwnerTurnBaselineUtc")
+                        .HasColumnType("TEXT");
+
+                    b.Property<int?>("PendingMinutes")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<DateTime?>("SnoozeUntilUtc")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("TenantId")
+                        .IsRequired()
+                        .HasColumnType("TEXT")
+                        .HasColumnName("tenant_id");
+
+                    b.HasKey("SessionId");
+
+                    b.HasIndex("TenantId");
+
+                    b.ToTable("snoozes", (string)null);
+                });
+
+            modelBuilder.Entity("CcDirector.Gateway.Data.Entities.WingmanInstructionEntity", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("AckDefaultContent")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("AckDefaultVersion")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("ActiveVersionId")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("TenantId")
+                        .IsRequired()
+                        .HasColumnType("TEXT")
+                        .HasColumnName("tenant_id");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("TenantId");
+
+                    b.ToTable("wingman_instructions", (string)null);
                 });
 
             modelBuilder.Entity("CcDirector.Gateway.Data.Entities.WorkListEntity", b =>
@@ -260,6 +560,80 @@ namespace CcDirector.Gateway.Data.Migrations
                     b.ToTable("workflow_files", (string)null);
                 });
 
+            modelBuilder.Entity("CcDirector.Gateway.Data.Entities.WorkflowRunEntity", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("AcceptanceStatus")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("AcceptedBy")
+                        .HasColumnType("TEXT");
+
+                    b.Property<DateTime?>("AcceptedUtc")
+                        .HasColumnType("TEXT");
+
+                    b.Property<DateTime?>("CompletedUtc")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("ContentHash")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
+                    b.Property<DateTime>("CreatedUtc")
+                        .HasColumnType("TEXT");
+
+                    b.Property<Guid?>("MissionId")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("Outcome")
+                        .HasColumnType("TEXT");
+
+                    b.Property<Guid?>("ParentRunId")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("RepoPath")
+                        .HasColumnType("TEXT");
+
+                    b.Property<DateTime?>("StartedUtc")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("TenantId")
+                        .IsRequired()
+                        .HasColumnType("TEXT")
+                        .HasColumnName("tenant_id");
+
+                    b.Property<string>("WorkflowId")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
+                    b.Property<int>("WorkflowVersion")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<Guid>("WorkflowVersionId")
+                        .HasColumnType("TEXT");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("MissionId");
+
+                    b.HasIndex("TenantId");
+
+                    b.HasIndex("WorkflowId");
+
+                    b.ToTable("workflow_runs", (string)null);
+                });
+
             modelBuilder.Entity("CcDirector.Gateway.Data.Entities.WorkflowVersionEntity", b =>
                 {
                     b.Property<Guid>("Id")
@@ -385,6 +759,51 @@ namespace CcDirector.Gateway.Data.Migrations
                         .IsRequired();
                 });
 
+            modelBuilder.Entity("CcDirector.Gateway.Data.Entities.WingmanInstructionEntity", b =>
+                {
+                    b.OwnsMany("CcDirector.Gateway.Data.Entities.WingmanInstructionVersionOwned", "Versions", b1 =>
+                        {
+                            b1.Property<Guid>("WingmanInstructionEntityId")
+                                .HasColumnType("TEXT");
+
+                            b1.Property<int>("__synthesizedOrdinal")
+                                .ValueGeneratedOnAddOrUpdate()
+                                .HasColumnType("INTEGER");
+
+                            b1.Property<string>("Content")
+                                .IsRequired()
+                                .HasColumnType("TEXT");
+
+                            b1.Property<DateTime>("CreatedAtUtc")
+                                .HasColumnType("TEXT");
+
+                            b1.Property<string>("Hash")
+                                .IsRequired()
+                                .HasColumnType("TEXT");
+
+                            b1.Property<string>("Id")
+                                .HasColumnType("TEXT");
+
+                            b1.Property<string>("Label")
+                                .HasColumnType("TEXT");
+
+                            b1.Property<string>("Source")
+                                .IsRequired()
+                                .HasColumnType("TEXT");
+
+                            b1.HasKey("WingmanInstructionEntityId", "__synthesizedOrdinal");
+
+                            b1.ToTable("wingman_instructions");
+
+                            b1.ToJson("Versions");
+
+                            b1.WithOwner()
+                                .HasForeignKey("WingmanInstructionEntityId");
+                        });
+
+                    b.Navigation("Versions");
+                });
+
             modelBuilder.Entity("CcDirector.Gateway.Data.Entities.WorkListItemEntity", b =>
                 {
                     b.HasOne("CcDirector.Gateway.Data.Entities.WorkListEntity", null)
@@ -392,6 +811,122 @@ namespace CcDirector.Gateway.Data.Migrations
                         .HasForeignKey("WorkListId")
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();
+                });
+
+            modelBuilder.Entity("CcDirector.Gateway.Data.Entities.WorkflowRunEntity", b =>
+                {
+                    b.OwnsMany("CcDirector.Gateway.Contracts.WorkflowRunCriterionResultDto", "CriteriaResults", b1 =>
+                        {
+                            b1.Property<Guid>("WorkflowRunEntityId")
+                                .HasColumnType("TEXT");
+
+                            b1.Property<int>("__synthesizedOrdinal")
+                                .ValueGeneratedOnAddOrUpdate()
+                                .HasColumnType("INTEGER");
+
+                            b1.Property<string>("CriterionId")
+                                .IsRequired()
+                                .HasColumnType("TEXT");
+
+                            b1.Property<DateTime?>("EvaluatedUtc")
+                                .HasColumnType("TEXT");
+
+                            b1.Property<string>("Evaluator")
+                                .HasColumnType("TEXT");
+
+                            b1.Property<string>("Note")
+                                .HasColumnType("TEXT");
+
+                            b1.Property<string>("ProofUrl")
+                                .HasColumnType("TEXT");
+
+                            b1.Property<string>("Status")
+                                .IsRequired()
+                                .HasColumnType("TEXT");
+
+                            b1.HasKey("WorkflowRunEntityId", "__synthesizedOrdinal");
+
+                            b1.ToTable("workflow_runs");
+
+                            b1.ToJson("CriteriaResults");
+
+                            b1.WithOwner()
+                                .HasForeignKey("WorkflowRunEntityId");
+                        });
+
+                    b.OwnsMany("CcDirector.Gateway.Contracts.WorkflowRunParticipantDto", "Participants", b1 =>
+                        {
+                            b1.Property<Guid>("WorkflowRunEntityId")
+                                .HasColumnType("TEXT");
+
+                            b1.Property<int>("__synthesizedOrdinal")
+                                .ValueGeneratedOnAddOrUpdate()
+                                .HasColumnType("INTEGER");
+
+                            b1.Property<string>("AgentKind")
+                                .IsRequired()
+                                .HasColumnType("TEXT");
+
+                            b1.Property<DateTime>("JoinedUtc")
+                                .HasColumnType("TEXT");
+
+                            b1.Property<DateTime?>("LeftUtc")
+                                .HasColumnType("TEXT");
+
+                            b1.Property<string>("Machine")
+                                .IsRequired()
+                                .HasColumnType("TEXT");
+
+                            b1.Property<string>("Role")
+                                .IsRequired()
+                                .HasColumnType("TEXT");
+
+                            b1.Property<string>("SessionId")
+                                .IsRequired()
+                                .HasColumnType("TEXT");
+
+                            b1.HasKey("WorkflowRunEntityId", "__synthesizedOrdinal");
+
+                            b1.ToTable("workflow_runs");
+
+                            b1.ToJson("Participants");
+
+                            b1.WithOwner()
+                                .HasForeignKey("WorkflowRunEntityId");
+                        });
+
+                    b.OwnsMany("CcDirector.Gateway.Contracts.WorkflowRunProofLinkDto", "ProofLinks", b1 =>
+                        {
+                            b1.Property<Guid>("WorkflowRunEntityId")
+                                .HasColumnType("TEXT");
+
+                            b1.Property<int>("__synthesizedOrdinal")
+                                .ValueGeneratedOnAddOrUpdate()
+                                .HasColumnType("INTEGER");
+
+                            b1.Property<string>("Label")
+                                .IsRequired()
+                                .HasColumnType("TEXT");
+
+                            b1.Property<string>("Url")
+                                .IsRequired()
+                                .HasColumnType("TEXT");
+
+                            b1.HasKey("WorkflowRunEntityId", "__synthesizedOrdinal");
+
+                            b1.ToTable("workflow_runs");
+
+                            b1.ToJson("ProofLinks");
+
+                            b1.WithOwner()
+                                .HasForeignKey("WorkflowRunEntityId");
+                        });
+
+                    b.Navigation("CriteriaResults");
+
+                    b.Navigation("Participants");
+
+                    b.Navigation("ProofLinks");
                 });
 
             modelBuilder.Entity("CcDirector.Gateway.Data.Entities.WorkflowVersionEntity", b =>

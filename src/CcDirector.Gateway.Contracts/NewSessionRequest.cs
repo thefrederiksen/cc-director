@@ -126,6 +126,29 @@ public sealed class NewSessionRequest
     public string? MissionName { get; set; }
 
     /// <summary>
+    /// Optional workflow RUN to SEAT the new session on (Workflows mission, phase 5b - the
+    /// governance outcome spine, issue #1771). Set explicitly by a caller seating a session onto a
+    /// known run, or resolved by the Gateway spawn relay from <see cref="MissionId"/> (a mission's
+    /// sessions auto-seat onto the mission's run). The Gateway validates the run and stamps
+    /// <see cref="WorkflowId"/> + <see cref="WorkflowVersion"/> beside it; after the spawn succeeds
+    /// the Gateway records the new session as a run PARTICIPANT. Null seats the session on nothing.
+    /// </summary>
+    public Guid? WorkflowRunId { get; set; }
+
+    /// <summary>
+    /// The seated run's workflow id (e.g. "mission"), stamped by the GATEWAY after validating
+    /// <see cref="WorkflowRunId"/> - the same resolved-by-the-source-of-truth pattern as
+    /// <see cref="MissionName"/>. The Director stamps the seat only when the run id, this, and
+    /// <see cref="WorkflowVersion"/> all arrive together.
+    /// </summary>
+    public string? WorkflowId { get; set; }
+
+    /// <summary>The seated run's PINNED workflow version, stamped by the Gateway beside
+    /// <see cref="WorkflowId"/>. A seated session fetches its conduct at exactly this version -
+    /// never a moving head, even if a newer version publishes mid-run.</summary>
+    public int? WorkflowVersion { get; set; }
+
+    /// <summary>
     /// Optional target machine for spawn routing ("start a session on another computer"). Null,
     /// empty, or the local machine name spawns on the LOCAL machine (the default, unchanged); a
     /// remote machine name routes the spawn via the Gateway to a Director on that machine (first

@@ -300,20 +300,28 @@ public sealed class CronJobStore
     }
 
     /// <summary>
-    /// Import a legacy <c>cronjobs.json</c> exactly once: only when it exists AND the table is empty. Every
-    /// job is inserted inside one transaction, then the JSON file is renamed aside so it is never
-    /// re-imported and stays as a backup. Fail-loud and all-or-nothing - a parse or write error throws and
-    /// imports nothing (the transaction rolls back and the JSON is left in place), so no data is lost or
-    /// partially imported.
+    /// Import a legacy <c>cronjobs.json</c> exactly once, through the shared recoverable-import plumbing
+    /// (<see cref="LegacyJsonImport.Recoverable"/>): import only when the file exists AND the table is empty;
+    /// if the file lingers while the table is already populated, rename it aside idempotently (recovery from a
+    /// rename that failed after a prior commit); and rename aside best-effort after a successful import so a
+    /// briefly-locked file cannot brick startup. The parse/insert below is unchanged and stays fail-loud.
     /// </summary>
     private void ImportLegacyJsonIfNeeded()
-    {
-        if (!File.Exists(_legacyJsonPath))
-            return;
+        => LegacyJsonImport.Recoverable(
+            _legacyJsonPath,
+            "[CronJobStore]",
+            isPopulated: () => { using var ctx = _db.CreateContext(); return ctx.CronJobs.Any(); },
+            importCommitted: ImportRowsFromLegacyJson);
 
+    /// <summary>
+    /// Parse the legacy file and insert every job inside one transaction. Fail-loud and all-or-nothing - a
+    /// parse or write error throws and imports nothing (the transaction rolls back and the JSON is left in
+    /// place), so no data is lost or partially imported. Called by the recoverable-import plumbing only when
+    /// the file exists and the table is empty; the plumbing renames the file aside after this returns.
+    /// </summary>
+    private void ImportRowsFromLegacyJson()
+    {
         using var ctx = _db.CreateContext();
-        if (ctx.CronJobs.Any())
-            return; // already migrated (or already has data); never re-import over existing rows.
 
         StoreFile? parsed;
         try
@@ -351,7 +359,6 @@ public sealed class CronJobStore
         ctx.SaveChanges();
         tx.Commit();
 
-        LegacyJsonImport.RenameAside(_legacyJsonPath, "[CronJobStore]");
         FileLog.Write($"[CronJobStore] Import: {jobs.Count} job(s) imported from {_legacyJsonPath}");
     }
 }

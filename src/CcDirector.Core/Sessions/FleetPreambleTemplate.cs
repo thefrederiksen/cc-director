@@ -53,6 +53,8 @@ public static class FleetPreambleTemplate
         "team, which is what you want. Do NOT try to reach the WHOLE fleet ('--everyone') - it freezes\n" +
         "every session on every machine and repo; the Gateway Hub refuses it without a human grant (issue #1229).\n" +
         "\n" +
+        "[WORKFLOW_INDEX]\n" +
+        "\n" +
         "THE CODE YOU WRITE IS THE OWNER'S. NEVER SIGN IT. Do not put your name, your model, your vendor,\n" +
         "or any assistant on ANYTHING you produce - no 'Co-authored-by' trailer naming Claude, Codex, Pi,\n" +
         "Gemini, Copilot, Cursor, Grok or any agent; no 'Generated with' line; no robot emoji; no mention\n" +

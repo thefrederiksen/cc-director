@@ -397,7 +397,7 @@ public sealed class SessionManager : IDisposable
     /// Create a session by resolving the requested built-in CLI plugin and asking it for the
     /// launch strategy. This is the plugin-backed path new callers should use.
     /// </summary>
-    public Session CreateSession(string repoPath, AgentKind agentKind, string? userArgs, SessionBackendType backendType, string? resumeSessionId, Guid? groupId = null, string? groupRole = null, string? groupName = null, Func<Guid, string>? nameFactory = null, Guid? controllerSessionId = null)
+    public Session CreateSession(string repoPath, AgentKind agentKind, string? userArgs, SessionBackendType backendType, string? resumeSessionId, Guid? groupId = null, string? groupRole = null, string? groupName = null, Func<Guid, string>? nameFactory = null, Guid? controllerSessionId = null, Action<Session>? beforeLaunch = null)
     {
         return CreateSession(
             repoPath,
@@ -409,7 +409,8 @@ public sealed class SessionManager : IDisposable
             groupRole,
             groupName,
             nameFactory,
-            controllerSessionId);
+            controllerSessionId,
+            beforeLaunch);
     }
 
     /// <summary>
@@ -429,7 +430,12 @@ public sealed class SessionManager : IDisposable
     /// <param name="controllerSessionId">The controlling session's id (issue #815) when this
     /// session is spawned as a controlled sub-agent; null for a normal session. Set ONLY here at
     /// birth and immutable afterwards. Drives the recessive "Supporting" status color.</param>
-    public Session CreateSession(string repoPath, IAgent agent, string? userArgs, SessionBackendType backendType, string? resumeSessionId, Guid? groupId = null, string? groupRole = null, string? groupName = null, Func<Guid, string>? nameFactory = null, Guid? controllerSessionId = null)
+    /// <param name="beforeLaunch">Optional stamp hook (Workflows mission, phase 5b) invoked on the
+    /// constructed session BEFORE any launch-time context is materialized and BEFORE the process
+    /// starts. Anything a launch-time channel reads off the session - the Pi preamble file, the
+    /// preamble a startup hook fetches the instant the agent boots - must be stamped here, not
+    /// after create returns, or the earliest readers race the stamp and Pi misses it entirely.</param>
+    public Session CreateSession(string repoPath, IAgent agent, string? userArgs, SessionBackendType backendType, string? resumeSessionId, Guid? groupId = null, string? groupRole = null, string? groupName = null, Func<Guid, string>? nameFactory = null, Guid? controllerSessionId = null, Action<Session>? beforeLaunch = null)
     {
         if (agent is null)
             throw new ArgumentNullException(nameof(agent));
@@ -488,6 +494,11 @@ public sealed class SessionManager : IDisposable
         // ever displaying as the bare repository folder name.
         if (nameFactory is not null)
             session.CustomName = nameFactory(id);
+
+        // Pre-launch stamps (Workflows mission, phase 5b): applied BEFORE the per-agent launch
+        // channels below read the session (Pi's preamble file is written from it) and BEFORE the
+        // process starts (a startup hook can fetch the preamble the instant the agent boots).
+        beforeLaunch?.Invoke(session);
 
         try
         {
@@ -600,8 +611,13 @@ public sealed class SessionManager : IDisposable
                 // Issue #1357: name the signed-in user in Pi's preamble too, read synchronously from the
                 // host's cached snapshot (no network) so launch never blocks; null omits the line.
                 var signedInUser = SignedInUserAccessor?.Invoke();
+                // Workflows mission (phase 5b): a seated Pi session's preamble file carries the seat
+                // paragraph. The seat was stamped by beforeLaunch ABOVE, which is the whole reason
+                // that hook runs before this block - Pi's file is immutable after launch.
+                var piSeatParagraph = WorkflowSeatParagraph.Build(
+                    session.WorkflowRunId, session.WorkflowId, session.WorkflowVersion, session.ExplicitRole);
                 var preambleFile = CcDirector.Core.Pi.PiPreambleWriter.WriteForSession(
-                    id.ToString(), piName, Environment.MachineName, repoPath, signedInUser);
+                    id.ToString(), piName, Environment.MachineName, repoPath, signedInUser, piSeatParagraph);
                 args = $"{args} --append-system-prompt \"{preambleFile}\"".Trim();
                 _log?.Invoke("Wrote Pi fleet preamble and passed it via --append-system-prompt.");
             }
@@ -1118,6 +1134,9 @@ public sealed class SessionManager : IDisposable
                 IsAutoNamed = s.IsAutoNamed,
                 MissionId = s.MissionId,
                 MissionName = s.MissionName,
+                WorkflowRunId = s.WorkflowRunId,
+                WorkflowId = s.WorkflowId,
+                WorkflowVersion = s.WorkflowVersion,
                 RawStartupText = s.RawStartupText,
                 SelectedTabName = s.SelectedTabName,
                 WingmanEnabled = s.WingmanEnabled,
@@ -1164,6 +1183,9 @@ public sealed class SessionManager : IDisposable
         session.IsAutoNamed = ps.IsAutoNamed;
         session.MissionId = ps.MissionId;
         session.MissionName = ps.MissionName;
+        session.WorkflowRunId = ps.WorkflowRunId;
+        session.WorkflowId = ps.WorkflowId;
+        session.WorkflowVersion = ps.WorkflowVersion;
         session.WingmanEnabled = ps.WingmanEnabled;
         // No hold is restored here, because this Director never owned one. The Gateway holds the state and
         // persists it (SnoozeRegistry, an atomic write-through on every mutation), and it pushes the hold

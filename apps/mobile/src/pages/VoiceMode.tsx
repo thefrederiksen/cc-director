@@ -162,6 +162,14 @@ export function VoiceMode() {
           <div className="banner banner-error" role="alert">{error}</div>
         )}
 
+        {/* TTS fallback: the Gateway folded a generic "switched to a backup voice" notice onto this turn's
+            ready clip (the primary provider was temporarily overloaded). Rendered VERBATIM - the client
+            derives nothing and never names a provider. Shows above whichever voice card is up, for as long
+            as the backup clip is the current one (downloading, then speaking). */}
+        {vd?.voiceFallbackNotice != null && vd.voiceFallbackNotice !== "" && (
+          <div className="banner voice-fallback-note" role="status">{vd.voiceFallbackNotice}</div>
+        )}
+
         {/* A. OFF - one clear "Switch to voice mode" button. Only ever shown once a poll has confirmed
             the session is NOT in voice mode, so the screen never flashes OFF then flips (issue #1015). */}
         {!voiceOn && pollDone && (

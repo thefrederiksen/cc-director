@@ -1,7 +1,8 @@
-using System.Collections.Concurrent;
 using System.Text.Json;
-using CcDirector.Core.Storage;
 using CcDirector.Core.Utilities;
+using CcDirector.Gateway.Data;
+using CcDirector.Gateway.Data.Entities;
+using Microsoft.EntityFrameworkCore;
 
 namespace CcDirector.Gateway.Push;
 
@@ -11,39 +12,49 @@ namespace CcDirector.Gateway.Push;
 /// public keys (<c>p256dh</c> and <c>auth</c>) needed to encrypt a message to it, exactly the shape
 /// a browser's <c>PushSubscription.toJSON()</c> produces.
 ///
-/// Persisted to <c>%LOCALAPPDATA%\cc-director\config\gateway\push-subscriptions.json</c> so opt-in
-/// survives a Gateway restart. The endpoint URL is a capability (whoever holds it can ask the push
-/// service to deliver to that device), so the file is treated as a secret store - it lives under the
-/// per-user config root and the endpoint/keys are never written to the log (only counts are).
+/// PERSISTENCE (Hosted Gateway mission, Step 1b): subscriptions live in the EF data layer's
+/// <c>push_subscriptions</c> table (SQLite locally), NOT the old hand-rolled
+/// <c>push-subscriptions.json</c>. The public API and observable behavior are unchanged.
 ///
-/// Keyed by endpoint, which is unique per subscription, so re-subscribing the same device is an
-/// idempotent upsert rather than a duplicate. Thread-safe: subscribe/unsubscribe run on request
-/// threads while the background notifier enumerates the set.
+/// Keyed by endpoint, which is unique per subscription (SQLite's default BINARY collation compares it
+/// ordinally, matching the legacy <c>Dictionary(StringComparer.Ordinal)</c>), so re-subscribing the same
+/// device is an idempotent upsert rather than a duplicate. There is NO per-user column - the legacy shape
+/// had none; <c>tenant_id</c> scopes the tenant and nothing more.
+///
+/// ONE-TIME IMPORT: on first run after the upgrade, if a legacy <c>push-subscriptions.json</c> exists and
+/// the table is empty, every subscription is imported (through the shared recoverable-import helper), then
+/// the JSON is renamed aside as a backup.
+///
+/// Threading: the Gateway is a single writer. Every operation runs under this store's write lock over a
+/// fresh pooled context.
 /// </summary>
 public sealed class PushSubscriptionStore
 {
-    private readonly string _storePath;
-    private readonly object _saveLock = new();
-    private readonly ConcurrentDictionary<string, StoredPushSubscription> _byEndpoint =
-        new(StringComparer.Ordinal);
+    private readonly object _gate = new();
+    private readonly GatewayDatabase _db;
+    private readonly string _legacyJsonPath;
 
-    public PushSubscriptionStore() : this(null) { }
-
-    /// <param name="storePath">Override the store file (tests pass an isolated temp path); production
-    /// omits it for the shared default under the gateway config root.</param>
-    public PushSubscriptionStore(string? storePath)
+    /// <param name="db">The Gateway EF database this store reads and writes through.</param>
+    /// <param name="legacyJsonPath">The legacy <c>push-subscriptions.json</c> path to import ONCE if it
+    /// exists and the table is empty. REQUIRED (no silent default).</param>
+    /// <exception cref="ArgumentNullException">The database is null.</exception>
+    /// <exception cref="ArgumentException">The legacy path is null/empty/whitespace.</exception>
+    public PushSubscriptionStore(GatewayDatabase db, string legacyJsonPath)
     {
-        _storePath = string.IsNullOrWhiteSpace(storePath)
-            ? Path.Combine(CcStorage.ToolConfig("gateway"), "push-subscriptions.json")
-            : storePath;
-        Load();
+        _db = db ?? throw new ArgumentNullException(nameof(db));
+        if (string.IsNullOrWhiteSpace(legacyJsonPath))
+            throw new ArgumentException("legacy json path is required", nameof(legacyJsonPath));
+        _legacyJsonPath = legacyJsonPath;
+
+        lock (_gate)
+            ImportLegacyJsonIfNeeded();
     }
 
-    /// <summary>The on-disk store file path.</summary>
-    public string StorePath => _storePath;
-
     /// <summary>The number of registered subscriptions.</summary>
-    public int Count => _byEndpoint.Count;
+    public int Count
+    {
+        get { lock (_gate) { using var ctx = _db.CreateContext(); return ctx.PushSubscriptions.Count(); } }
+    }
 
     /// <summary>
     /// Record (or refresh) a subscription. A repeat of the same endpoint replaces the prior keys and
@@ -60,17 +71,34 @@ public sealed class PushSubscriptionStore
         if (string.IsNullOrWhiteSpace(auth))
             throw new ArgumentException("auth key is required", nameof(auth));
 
-        var isNew = !_byEndpoint.ContainsKey(endpoint);
-        _byEndpoint[endpoint] = new StoredPushSubscription
+        lock (_gate)
         {
-            Endpoint = endpoint,
-            P256dh = p256dh,
-            Auth = auth,
-            CreatedAtUtc = DateTime.UtcNow,
-        };
-        Save();
-        FileLog.Write($"[PushSubscriptionStore] {(isNew ? "Added" : "Refreshed")} a subscription, total={_byEndpoint.Count}");
-        return isNew;
+            using var ctx = _db.CreateContext();
+            var existing = ctx.PushSubscriptions.FirstOrDefault(e => e.Endpoint == endpoint);
+            var isNew = existing is null;
+            // A refresh replaces the keys AND restamps CreatedAtUtc, exactly as the legacy store did (it
+            // replaced the whole record on every Add).
+            if (existing is null)
+            {
+                ctx.PushSubscriptions.Add(new PushSubscriptionEntity
+                {
+                    Endpoint = endpoint,
+                    TenantId = ctx.ActiveTenant!,
+                    P256dh = p256dh,
+                    Auth = auth,
+                    CreatedAtUtc = DateTime.UtcNow,
+                });
+            }
+            else
+            {
+                existing.P256dh = p256dh;
+                existing.Auth = auth;
+                existing.CreatedAtUtc = DateTime.UtcNow;
+            }
+            ctx.SaveChanges();
+            FileLog.Write($"[PushSubscriptionStore] {(isNew ? "Added" : "Refreshed")} a subscription, total={ctx.PushSubscriptions.Count()}");
+            return isNew;
+        }
     }
 
     /// <summary>Drop a subscription by endpoint. Returns true when one was removed.</summary>
@@ -78,51 +106,114 @@ public sealed class PushSubscriptionStore
     {
         if (string.IsNullOrWhiteSpace(endpoint))
             return false;
-        if (!_byEndpoint.TryRemove(endpoint, out _))
-            return false;
-        Save();
-        FileLog.Write($"[PushSubscriptionStore] Removed a subscription, total={_byEndpoint.Count}");
-        return true;
+
+        lock (_gate)
+        {
+            using var ctx = _db.CreateContext();
+            var existing = ctx.PushSubscriptions.FirstOrDefault(e => e.Endpoint == endpoint);
+            if (existing is null)
+                return false;
+            ctx.PushSubscriptions.Remove(existing);
+            ctx.SaveChanges();
+            FileLog.Write($"[PushSubscriptionStore] Removed a subscription, total={ctx.PushSubscriptions.Count()}");
+            return true;
+        }
     }
 
     /// <summary>A snapshot of every stored subscription.</summary>
-    public IReadOnlyList<StoredPushSubscription> All() => _byEndpoint.Values.ToList();
-
-    private void Load()
+    public IReadOnlyList<StoredPushSubscription> All()
     {
-        if (!File.Exists(_storePath)) return;
-        var json = File.ReadAllText(_storePath);
-        if (string.IsNullOrWhiteSpace(json)) return;
-
-        var records = JsonSerializer.Deserialize<List<StoredPushSubscription>>(json, new JsonSerializerOptions
+        lock (_gate)
         {
-            PropertyNameCaseInsensitive = true,
-        });
-        if (records is null) return;
-        foreach (var record in records)
-        {
-            if (string.IsNullOrWhiteSpace(record.Endpoint)) continue;
-            _byEndpoint[record.Endpoint] = record;
+            using var ctx = _db.CreateContext();
+            return ctx.PushSubscriptions.AsNoTracking().ToList().Select(ToRecord).ToList();
         }
-        FileLog.Write($"[PushSubscriptionStore] Loaded {_byEndpoint.Count} subscription(s) from {_storePath}");
     }
 
-    private void Save()
+    private static StoredPushSubscription ToRecord(PushSubscriptionEntity e) => new()
     {
-        lock (_saveLock)
+        Endpoint = e.Endpoint,
+        P256dh = e.P256dh,
+        Auth = e.Auth,
+        CreatedAtUtc = e.CreatedAtUtc,
+    };
+
+    // ---- one-time legacy JSON import --------------------------------------------------------------
+
+    /// <summary>
+    /// Import a legacy <c>push-subscriptions.json</c> exactly once, through the shared recoverable-import
+    /// plumbing (<see cref="LegacyJsonImport.Recoverable"/>): import only when the file exists AND the table
+    /// is empty; recover a lingering file idempotently; rename aside best-effort after a successful import.
+    /// </summary>
+    private void ImportLegacyJsonIfNeeded()
+        => LegacyJsonImport.Recoverable(
+            _legacyJsonPath,
+            "[PushSubscriptionStore]",
+            isPopulated: () => { using var ctx = _db.CreateContext(); return ctx.PushSubscriptions.Any(); },
+            importCommitted: ImportRowsFromLegacyJson);
+
+    /// <summary>
+    /// Parse the legacy file (a top-level array of subscriptions) and insert every one inside a transaction.
+    /// Mirrors the old load: skip an empty endpoint, last-wins on a duplicate endpoint. Fail-loud and
+    /// all-or-nothing - a parse error throws and imports nothing (the file is left in place).
+    /// </summary>
+    private void ImportRowsFromLegacyJson()
+    {
+        using var ctx = _db.CreateContext();
+
+        List<StoredPushSubscription>? parsed;
+        try
         {
-            var dir = Path.GetDirectoryName(_storePath);
-            if (!string.IsNullOrEmpty(dir))
-                Directory.CreateDirectory(dir);
-            var json = JsonSerializer.Serialize(_byEndpoint.Values.ToList(), new JsonSerializerOptions
-            {
-                WriteIndented = true,
-            });
-            // Atomic replace so a crash mid-write never leaves a half-written subscription file.
-            var temp = _storePath + ".tmp";
-            File.WriteAllText(temp, json);
-            File.Move(temp, _storePath, overwrite: true);
+            parsed = JsonSerializer.Deserialize<List<StoredPushSubscription>>(
+                File.ReadAllText(_legacyJsonPath),
+                new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
         }
+        catch (Exception ex)
+        {
+            FileLog.Write($"[PushSubscriptionStore] Import FAILED: legacy file {_legacyJsonPath} could not be read: {ex.Message}");
+            throw new InvalidOperationException(
+                $"The legacy push-subscriptions file '{_legacyJsonPath}' could not be parsed for the one-time " +
+                $"import: {ex.Message}. The Gateway will not start with a partial import. Fix or move the file " +
+                "aside and restart.", ex);
+        }
+
+        // A null root (the JSON literal "null") is unreadable, not an empty store - fail loud and leave the
+        // file in place, exactly like a parse error, matching the other stores' import contract.
+        if (parsed is null)
+        {
+            FileLog.Write($"[PushSubscriptionStore] Import FAILED: legacy file {_legacyJsonPath} deserialized to a null document");
+            throw new InvalidOperationException(
+                $"The legacy push-subscriptions file '{_legacyJsonPath}' could not be parsed for the one-time " +
+                "import: the document is null. The Gateway will not start with a partial import. Fix or move " +
+                "the file aside and restart.");
+        }
+
+        // Reproduce the old load's row handling, INCLUDING last-wins on a duplicate endpoint (the old
+        // in-memory Dictionary keyed by endpoint overwrote), so the imported set matches.
+        var toImport = new Dictionary<string, StoredPushSubscription>(StringComparer.Ordinal);
+        foreach (var s in parsed)
+        {
+            if (string.IsNullOrWhiteSpace(s.Endpoint))
+                continue;
+            toImport[s.Endpoint] = s;
+        }
+
+        using var tx = ctx.Database.BeginTransaction();
+        foreach (var s in toImport.Values)
+        {
+            ctx.PushSubscriptions.Add(new PushSubscriptionEntity
+            {
+                Endpoint = s.Endpoint,
+                TenantId = ctx.ActiveTenant!,
+                P256dh = s.P256dh,
+                Auth = s.Auth,
+                CreatedAtUtc = s.CreatedAtUtc,
+            });
+        }
+        ctx.SaveChanges();
+        tx.Commit();
+
+        FileLog.Write($"[PushSubscriptionStore] Import: {toImport.Count} subscription(s) imported from {_legacyJsonPath}");
     }
 }
 

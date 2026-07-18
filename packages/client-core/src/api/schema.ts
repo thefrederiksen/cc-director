@@ -7461,6 +7461,7 @@ export interface components {
             canPlay?: boolean;
             canGenerate?: boolean;
             reason?: null | components["schemas"]["HostedAiMessageDto"];
+            voiceFallbackNotice?: string | null;
         };
         InputStatBucketDto: {
             modality?: string;

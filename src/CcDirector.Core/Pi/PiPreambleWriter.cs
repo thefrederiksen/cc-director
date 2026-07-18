@@ -24,10 +24,11 @@ public static class PiPreambleWriter
 
     /// <summary>
     /// Write the preamble for one session under the default per-user directory, naming the signed-in
-    /// DevThrottle user (issue #1357); returns the path.
+    /// DevThrottle user (issue #1357) and carrying the session's workflow-seat paragraph when it is
+    /// seated (Workflows mission, phase 5b); returns the path.
     /// </summary>
-    public static string WriteForSession(string sessionId, string? name, string machine, string repoPath, SignedInUser? user)
-        => WriteForSession(sessionId, name, machine, repoPath, DefaultDirectory(), user);
+    public static string WriteForSession(string sessionId, string? name, string machine, string repoPath, SignedInUser? user, string? seatParagraph = null)
+        => WriteForSession(sessionId, name, machine, repoPath, DefaultDirectory(), user, store: null, seatParagraph);
 
     /// <summary>Testable overload that writes under an explicit directory.</summary>
     public static string WriteForSession(string sessionId, string? name, string machine, string repoPath, string directory)
@@ -37,19 +38,27 @@ public static class PiPreambleWriter
     public static string WriteForSession(string sessionId, string? name, string machine, string repoPath, string directory, SignedInUser? user)
         => WriteForSession(sessionId, name, machine, repoPath, directory, user, store: null);
 
-    /// <summary>Testable overload that also pins the injected-text store.</summary>
+    /// <summary>Testable overload that also pins the injected-text store.
+    /// <paramref name="seatParagraph"/> (Workflows mission, phase 5b) is the pre-built workflow-seat
+    /// paragraph from <see cref="WorkflowSeatParagraph"/>, appended after the preamble so a seated Pi
+    /// session learns its conduct fetch at launch exactly like the hook-fed agents; null for an
+    /// unseated session. It is appended even when the preamble itself is empty - the seat is the
+    /// operational fact the session was spawned for, not our injectable prose.</summary>
     public static string WriteForSession(
         string sessionId, string? name, string machine, string repoPath, string directory,
-        SignedInUser? user, InjectedTextStore? store)
+        SignedInUser? user, InjectedTextStore? store, string? seatParagraph = null)
     {
         Directory.CreateDirectory(directory);
 
         // BuildForSession, not Build: Pi is a live delivery path, so it injects the user's own text
-        // when they are running one.
+        // when they are running one - and, being a live path, it opts into the workflow index
+        // (Workflows mission, phase 5) exactly like the hook endpoints. When the injected-text store
+        // is pinned (tests), the index store follows the same hermetic rule and is omitted.
         string text;
         try
         {
-            text = FleetPreamble.BuildForSession(sessionId, name, machine, repoPath, user, store);
+            text = FleetPreamble.BuildForSession(sessionId, name, machine, repoPath, user, store,
+                workflowIndex: store is null ? new WorkflowIndexStore() : null);
         }
         catch (Exception ex) when (ex is InjectedTextUnavailableException or FleetPreambleTemplateException)
         {
@@ -66,6 +75,9 @@ public static class PiPreambleWriter
                 $"is injected (the DevThrottle text is deliberately not substituted): {ex.Message}");
             text = "";
         }
+
+        if (!string.IsNullOrEmpty(seatParagraph))
+            text = string.IsNullOrEmpty(text) ? seatParagraph : text + "\n\n" + seatParagraph;
 
         var path = Path.Combine(directory, $"{sessionId}.txt");
         File.WriteAllText(path, text);

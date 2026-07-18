@@ -64,3 +64,81 @@ public sealed class WorkflowDto
     /// <summary>The canonical content hash of the published version (the exact bundle a run pins).</summary>
     public string ContentHash { get; set; } = "";
 }
+
+/// <summary>A helper file carried by a workflow version, with full content (authoring payloads).</summary>
+public sealed class WorkflowFileDto
+{
+    public string FileName { get; set; } = "";
+    public string Content { get; set; } = "";
+}
+
+/// <summary>A helper file in a version-detail response. Carries the full content: the detail route is
+/// the authoring read (the CLI pulls a complete directory from it, drafts included - the raw
+/// <c>files/{fileName}</c> route serves only pinned, non-draft versions).</summary>
+public sealed class WorkflowFileInfoDto
+{
+    public string FileName { get; set; } = "";
+    public string ContentHash { get; set; } = "";
+    public string Content { get; set; } = "";
+}
+
+/// <summary>One row of a workflow's version history (no content bodies).</summary>
+public sealed class WorkflowVersionInfoDto
+{
+    public int Version { get; set; }
+    public string Status { get; set; } = "";
+    public string ContentHash { get; set; } = "";
+    public string AuthoredBy { get; set; } = "";
+    public string? ChangeNote { get; set; }
+    public DateTime CreatedUtc { get; set; }
+    public DateTime? PublishedUtc { get; set; }
+}
+
+/// <summary>The complete content snapshot of one workflow version (authoring reads).</summary>
+public sealed class WorkflowVersionDetailDto
+{
+    public string WorkflowId { get; set; } = "";
+    public int Version { get; set; }
+    public string Status { get; set; } = "";
+    public string Name { get; set; } = "";
+    public string Summary { get; set; } = "";
+    public string WhenToUse { get; set; } = "";
+    public string HumanCheckpoint { get; set; } = "";
+    public List<WorkflowStepDto> Steps { get; set; } = new();
+    public string InstructionsMarkdown { get; set; } = "";
+    public List<WorkflowOutcomeCriterionDto> OutcomeCriteria { get; set; } = new();
+    public List<WorkflowFileInfoDto> Files { get; set; } = new();
+    public string ContentHash { get; set; } = "";
+    public string AuthoredBy { get; set; } = "";
+    public string? ChangeNote { get; set; }
+    public DateTime CreatedUtc { get; set; }
+    public DateTime? PublishedUtc { get; set; }
+}
+
+/// <summary>
+/// Body of <c>POST /gateway/workflows</c> (create a workflow as a draft) and
+/// <c>PUT /gateway/workflows/{id}/draft</c> (replace the draft's content wholesale). The draft is a
+/// FULL REPLACEMENT on every write - the CLI round-trips a complete directory, so there is no partial
+/// patch to reason about. Fields a minimal creation (the Cockpit's add dialog) does not supply may be
+/// empty on a DRAFT; publishing enforces the strict rules (instructions present, at least one step
+/// with a doer and a done).
+/// </summary>
+public sealed class WorkflowContentRequest
+{
+    /// <summary>Required on POST (the new workflow's slug id); ignored on PUT (the route id wins).</summary>
+    public string? Id { get; set; }
+
+    public string? Name { get; set; }
+    public string? Summary { get; set; }
+    public string? WhenToUse { get; set; }
+    public string? HumanCheckpoint { get; set; }
+    public List<WorkflowStepDto>? Steps { get; set; }
+    public string? InstructionsMarkdown { get; set; }
+    public List<WorkflowOutcomeCriterionDto>? OutcomeCriteria { get; set; }
+    public List<WorkflowFileDto>? Files { get; set; }
+
+    /// <summary>Who is authoring: a session id, an agent name, or "human:&lt;user&gt;".</summary>
+    public string? AuthoredBy { get; set; }
+
+    public string? ChangeNote { get; set; }
+}

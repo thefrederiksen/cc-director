@@ -18,6 +18,15 @@ namespace CcDirector.Gateway.Wingman;
 /// </summary>
 public static class VoiceDisplayFold
 {
+    /// <summary>
+    /// The GENERIC, provider-neutral heads-up shown when a ready clip was served by the BACKUP voice
+    /// provider (the TTS-fallback mission). Single-source and rendered verbatim by every client. It
+    /// deliberately names NO provider (the host non-disclosure rule has no carve-out) and states there is
+    /// no extra charge, because the member is billed the normal rate on a fallback. Owner-approved wording.
+    /// </summary>
+    public const string BackupVoiceNotice =
+        "Some voice providers are overloaded right now, so we switched you to a backup voice. No extra charge.";
+
     /// <param name="voiceMode">The session is in voice mode (the Director's authoritative flag).</param>
     /// <param name="agentWorking">The agent is mid-turn (a blue / working activity state). The
     /// finished-turn narration is stale while it works, so this dominates: no play, no Generate button,
@@ -31,7 +40,11 @@ public static class VoiceDisplayFold
     /// waiting on a prompt / menu, so there is genuinely nothing to narrate (a NON-failure, distinct from
     /// "not made yet"). This is the fact that used to reach the client as a bare null and got rendered as
     /// a dead-end Generate button.</param>
-    public static VoiceDisplay Fold(bool voiceMode, bool agentWorking, bool hasAudio, bool generating, HostedAiState? unavailable, bool nothingToNarrate)
+    /// <param name="servedViaFallback">This turn's ready clip was made by the BACKUP voice provider (the
+    /// primary was overloaded and the cloud proxy quietly failed over). A SUCCESS-with-a-note: it only ever
+    /// rides the green <c>ready</c> verdict and adds the generic <see cref="BackupVoiceNotice"/> - it is not
+    /// an unavailable/outage state and changes nothing else. Ignored unless there is playable audio.</param>
+    public static VoiceDisplay Fold(bool voiceMode, bool agentWorking, bool hasAudio, bool generating, HostedAiState? unavailable, bool nothingToNarrate, bool servedViaFallback = false)
     {
         // Not a voice session: the screen shows its own "off" card; there is no verdict to render.
         if (!voiceMode)
@@ -51,7 +64,17 @@ public static class VoiceDisplayFold
         // Playable audio wins over everything below. Even mid-regeneration we keep offering the existing
         // clip (issue #1322: never pull the rug on a listener), so has-audio is checked before generating.
         if (hasAudio)
-            return new VoiceDisplay { Kind = "ready", Tone = "green", Label = "Voice ready", Message = "", CanPlay = true };
+            return new VoiceDisplay
+            {
+                Kind = "ready",
+                Tone = "green",
+                Label = "Voice ready",
+                Message = "",
+                CanPlay = true,
+                // A backup-served clip is still a normal, playable "ready" - just with a generic heads-up.
+                // The failover is never surfaced as an outage; it only adds this one verbatim line.
+                VoiceFallbackNotice = servedViaFallback ? BackupVoiceNotice : null,
+            };
 
         // Being made right now: a calm "on its way", no button (it is already happening).
         if (generating)

@@ -203,6 +203,13 @@ public static class CcStorage
     public static string InjectedTextCache() =>
         Path.Combine(ToolConfig("director"), "injected-text-cache.json");
 
+    /// <summary>The Director's cache of the Gateway's workflow catalog INDEX (Workflows mission,
+    /// phase 5): config/director/workflow-index-cache.json. The few-line discoverability block that
+    /// rides the fleet preamble; the authoritative catalog lives on the Gateway
+    /// (GET /gateway/workflows). Mirrors the injected-text cache beside it.</summary>
+    public static string WorkflowIndexCache() =>
+        Path.Combine(ToolConfig("director"), "workflow-index-cache.json");
+
     /// <summary>Dictation root: base/dictation/. Holds the user dictionary plus the
     /// recordings/ and sessions/ subfolders.</summary>
     public static string Dictation() => Path.Combine(Base(), "dictation");

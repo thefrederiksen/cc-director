@@ -402,21 +402,21 @@ public sealed class WorkListStore
     /// AFTER this, so an imported claim is then released exactly as a restart would release it.
     /// </summary>
     private void ImportLegacyJsonIfNeeded()
-    {
-        if (!File.Exists(_legacyJsonPath))
-            return;
+        => LegacyJsonImport.Recoverable(
+            _legacyJsonPath,
+            "[WorkListStore]",
+            isPopulated: () => { using var ctx = _db.CreateContext(); return ctx.WorkLists.Any(); },
+            importCommitted: ImportRowsFromLegacyJson);
 
+    /// <summary>
+    /// Parse the legacy file and insert every list (name case preserved, items ORDER preserved,
+    /// consumer/claim preserved) inside one transaction. Fail-loud and all-or-nothing - a parse error throws
+    /// and imports nothing (the file is left in place). Called by the recoverable-import plumbing only when
+    /// the file exists and the table is empty; the plumbing renames the file aside after this returns.
+    /// </summary>
+    private void ImportRowsFromLegacyJson()
+    {
         using var ctx = _db.CreateContext();
-        if (ctx.WorkLists.Any())
-        {
-            // Recovery (idempotent): a prior import committed but its rename-aside did not complete (the file
-            // was briefly locked), so the legacy file lingers even though the data is already in the database.
-            // Rename it aside now - NEVER re-importing over existing rows - so the leftover file is cleaned up
-            // and can never be re-imported. Best-effort: if the rename fails again the data is safe and the
-            // next boot retries.
-            TryRenameAside();
-            return;
-        }
 
         StoreFile? parsed;
         try
@@ -456,25 +456,6 @@ public sealed class WorkListStore
         ctx.SaveChanges();
         tx.Commit();
 
-        TryRenameAside();
         FileLog.Write($"[WorkListStore] Import: {lists.Count} list(s) imported from {_legacyJsonPath}");
-    }
-
-    /// <summary>
-    /// Rename the imported legacy file aside, best-effort. The data is already committed to the database and
-    /// the empty-table guard prevents any re-import, so a failed rename (e.g. the file is briefly locked) must
-    /// NOT fail the Gateway - it is logged and left for the next boot's recovery to retry.
-    /// </summary>
-    private void TryRenameAside()
-    {
-        try
-        {
-            LegacyJsonImport.RenameAside(_legacyJsonPath, "[WorkListStore]");
-        }
-        catch (Exception ex)
-        {
-            FileLog.Write($"[WorkListStore] Import: rename-aside of {_legacyJsonPath} failed (data is safe in the " +
-                          $"database; the next boot retries): {ex.Message}");
-        }
     }
 }

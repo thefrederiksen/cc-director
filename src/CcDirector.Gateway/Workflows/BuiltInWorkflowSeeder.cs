@@ -42,39 +42,73 @@ public static class BuiltInWorkflowSeeder
         for (var i = 0; i < definitions.Count; i++)
         {
             var definition = definitions[i];
-            var instructions = BuiltInWorkflows.InstructionsFor(definition.Id);
-            var steps = definition.Steps.Select(s => new WorkflowStepDto
-            {
-                Name = s.Name,
-                Description = s.Description,
-                Doer = s.Doer,
-                Reviewer = s.Reviewer,
-                Done = s.Done,
-            }).ToList();
-            var shippedHash = WorkflowContentHash.ForBundle(
-                definition.Name, definition.Summary, definition.WhenToUse, definition.HumanCheckpoint,
-                steps, Array.Empty<WorkflowOutcomeCriterionDto>(), instructions,
-                Array.Empty<(string, string)>());
+            var shippedHash = ShippedHash(definition);
 
             var head = ctx.Workflows.FirstOrDefault(h => h.Id == definition.Id);
             if (head is null)
             {
-                SeedFresh(ctx, definition, steps, instructions, shippedHash, baseUtc.AddMilliseconds(i));
+                SeedFresh(ctx, definition, shippedHash, baseUtc.AddMilliseconds(i));
                 continue;
             }
 
             if (string.Equals(head.ShippedContentHash, shippedHash, StringComparison.Ordinal))
                 continue; // this binary ships exactly what was last recorded - nothing to do.
 
-            UpgradeShippedContent(ctx, head, definition, steps, instructions, shippedHash);
+            UpgradeShippedContent(ctx, head, definition, shippedHash);
         }
     }
+
+    /// <summary>The canonical bundle hash of what THIS binary ships for a built-in definition.</summary>
+    public static string ShippedHash(WorkflowDefinition definition)
+    {
+        var instructions = BuiltInWorkflows.InstructionsFor(definition.Id);
+        return WorkflowContentHash.ForBundle(
+            definition.Name, definition.Summary, definition.WhenToUse, definition.HumanCheckpoint,
+            ShippedSteps(definition), Array.Empty<WorkflowOutcomeCriterionDto>(), instructions,
+            Array.Empty<(string, string)>());
+    }
+
+    /// <summary>
+    /// Build a fully-populated PUBLISHED version row from the running binary's shipped content for a
+    /// built-in definition. Shared by the seeder (initial seed + uncustomized upgrade) and the
+    /// store's reset-to-shipped, so "what shipped content becomes as a version row" has exactly one
+    /// definition.
+    /// </summary>
+    public static WorkflowVersionEntity BuildShippedVersion(
+        GatewayDbContext ctx, WorkflowDefinition definition, int versionNumber, DateTime createdUtc) => new()
+    {
+        Id = Guid.NewGuid(),
+        TenantId = ctx.ActiveTenant!,
+        WorkflowId = definition.Id,
+        Version = versionNumber,
+        Status = WorkflowVersionStatus.Published,
+        Name = definition.Name,
+        Summary = definition.Summary,
+        WhenToUse = definition.WhenToUse,
+        HumanCheckpoint = definition.HumanCheckpoint,
+        Steps = ShippedSteps(definition),
+        InstructionsMarkdown = BuiltInWorkflows.InstructionsFor(definition.Id),
+        OutcomeCriteria = new List<WorkflowOutcomeCriterionDto>(),
+        ContentHash = ShippedHash(definition),
+        AuthoredBy = "gateway:shipped",
+        ChangeNote = "Shipped built-in content.",
+        CreatedUtc = createdUtc,
+        PublishedUtc = createdUtc,
+    };
+
+    private static List<WorkflowStepDto> ShippedSteps(WorkflowDefinition definition) =>
+        definition.Steps.Select(s => new WorkflowStepDto
+        {
+            Name = s.Name,
+            Description = s.Description,
+            Doer = s.Doer,
+            Reviewer = s.Reviewer,
+            Done = s.Done,
+        }).ToList();
 
     private static void SeedFresh(
         GatewayDbContext ctx,
         WorkflowDefinition definition,
-        List<WorkflowStepDto> steps,
-        string instructions,
         string shippedHash,
         DateTime createdUtc)
     {
@@ -91,8 +125,7 @@ public static class BuiltInWorkflowSeeder
             UpdatedUtc = createdUtc,
         };
         ctx.Workflows.Add(head);
-        ctx.WorkflowVersions.Add(NewVersionRow(ctx, definition, steps, instructions, shippedHash,
-            version: 1, createdUtc));
+        ctx.WorkflowVersions.Add(BuildShippedVersion(ctx, definition, versionNumber: 1, createdUtc));
         ctx.SaveChanges();
         FileLog.Write($"[BuiltInWorkflowSeeder] Seeded built-in workflow: id={definition.Id}, v1, hash={shippedHash[..12]}");
     }
@@ -101,8 +134,6 @@ public static class BuiltInWorkflowSeeder
         GatewayDbContext ctx,
         WorkflowEntity head,
         WorkflowDefinition definition,
-        List<WorkflowStepDto> steps,
-        string instructions,
         string shippedHash)
     {
         var published = ctx.WorkflowVersions.FirstOrDefault(
@@ -119,8 +150,7 @@ public static class BuiltInWorkflowSeeder
             var now = DateTime.UtcNow;
             published!.Status = WorkflowVersionStatus.Superseded;
             var nextVersion = head.LatestVersion + 1;
-            ctx.WorkflowVersions.Add(NewVersionRow(ctx, definition, steps, instructions, shippedHash,
-                nextVersion, now));
+            ctx.WorkflowVersions.Add(BuildShippedVersion(ctx, definition, nextVersion, now));
             head.LatestVersion = nextVersion;
             head.PublishedVersion = nextVersion;
             head.UpdatedUtc = now;
@@ -139,38 +169,4 @@ public static class BuiltInWorkflowSeeder
         ctx.SaveChanges();
     }
 
-    private static WorkflowVersionEntity NewVersionRow(
-        GatewayDbContext ctx,
-        WorkflowDefinition definition,
-        List<WorkflowStepDto> steps,
-        string instructions,
-        string contentHash,
-        int version,
-        DateTime createdUtc) => new()
-    {
-        Id = Guid.NewGuid(),
-        TenantId = ctx.ActiveTenant!,
-        WorkflowId = definition.Id,
-        Version = version,
-        Status = WorkflowVersionStatus.Published,
-        Name = definition.Name,
-        Summary = definition.Summary,
-        WhenToUse = definition.WhenToUse,
-        HumanCheckpoint = definition.HumanCheckpoint,
-        Steps = steps.Select(s => new WorkflowStepDto
-        {
-            Name = s.Name,
-            Description = s.Description,
-            Doer = s.Doer,
-            Reviewer = s.Reviewer,
-            Done = s.Done,
-        }).ToList(),
-        InstructionsMarkdown = instructions,
-        OutcomeCriteria = new List<WorkflowOutcomeCriterionDto>(),
-        ContentHash = contentHash,
-        AuthoredBy = "gateway:shipped",
-        ChangeNote = "Shipped built-in content.",
-        CreatedUtc = createdUtc,
-        PublishedUtc = createdUtc,
-    };
 }

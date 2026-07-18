@@ -173,3 +173,222 @@
   color: var(--text-dim);
   font-style: italic;
 }
+
+/* ---- Workflows mission, phase 7: the compact list, the add dialog, and the detail page. The list
+   answers "what exists" in one row per workflow; the conduct lives on the detail page; the dialog
+   asks only what a DRAFT needs, because authoring is agent-driven by design. ---- */
+
+.wf-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.wf-row {
+  display: block;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 12px 16px;
+  color: inherit;
+  text-decoration: none;
+}
+
+.wf-row:hover {
+  border-color: var(--accent);
+}
+
+.wf-row-main {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+}
+
+.wf-row-name {
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.wf-badge {
+  font-size: 11px;
+  padding: 1px 8px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  color: var(--text-dim);
+  white-space: nowrap;
+}
+
+.wf-badge-builtin {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+.wf-badge-draft {
+  color: var(--warn);
+  border-color: var(--warn);
+}
+
+.wf-row-summary {
+  margin: 6px 0 4px;
+  color: var(--text-dim);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.wf-row-facts {
+  display: flex;
+  gap: 14px;
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
+/* The add dialog. */
+.wf-dialog-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 100;
+}
+
+.wf-dialog {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 20px 22px;
+  width: min(560px, calc(100vw - 40px));
+}
+
+.wf-dialog-title {
+  margin: 0 0 6px;
+  font-size: 17px;
+}
+
+.wf-dialog-hint {
+  margin: 0 0 14px;
+  color: var(--text-dim);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.wf-dialog-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 12px;
+  font-size: 13px;
+}
+
+.wf-dialog-field input {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 7px 10px;
+  color: inherit;
+  font-size: 14px;
+}
+
+.wf-dialog-id {
+  margin: 0 0 10px;
+  font-size: 12px;
+  color: var(--text-dim);
+  font-family: var(--mono, monospace);
+}
+
+.wf-dialog-error {
+  margin: 0 0 10px;
+  color: var(--attention);
+  font-size: 13px;
+}
+
+.wf-dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 6px;
+}
+
+.wf-dialog-handoff {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 12px;
+  font-size: 12px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 220px;
+  overflow-y: scroll;
+}
+
+/* The detail page. */
+.wf-crumb {
+  margin: 0 0 2px;
+  font-size: 12px;
+}
+
+.wf-crumb a {
+  color: var(--text-dim);
+  text-decoration: none;
+}
+
+.wf-crumb a:hover {
+  color: inherit;
+}
+
+.wf-detail-facts {
+  display: flex;
+  gap: 8px;
+  margin: 0 0 14px;
+}
+
+.wf-detail-steps {
+  margin: 0 0 20px;
+  padding-left: 0;
+  list-style: none;
+  color: var(--text-dim);
+  font-size: 13px;
+  line-height: 1.7;
+}
+
+.wf-detail-step-num {
+  color: inherit;
+}
+
+.wf-conduct {
+  border-top: 1px solid var(--border);
+  padding-top: 16px;
+}
+
+.wf-conduct-title {
+  margin: 0 0 4px;
+  font-size: 15px;
+}
+
+.wf-conduct-hint {
+  margin: 0 0 14px;
+  color: var(--text-dim);
+  font-size: 12px;
+}
+
+.wf-conduct-body {
+  font-size: 14px;
+  line-height: 1.6;
+  max-width: 78ch;
+}
+
+.wf-conduct-body pre {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 10px 12px;
+  overflow-x: scroll;
+}
+
+.wf-conduct-body blockquote {
+  border-left: 3px solid var(--border);
+  margin: 10px 0;
+  padding: 2px 14px;
+  color: var(--text-dim);
+}

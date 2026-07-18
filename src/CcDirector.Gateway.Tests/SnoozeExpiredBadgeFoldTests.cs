@@ -1,6 +1,8 @@
 using CcDirector.Gateway.Api;
 using CcDirector.Gateway.Contracts;
+using CcDirector.Gateway.Data;
 using CcDirector.Gateway.Snooze;
+using CcDirector.Gateway.Tests.Data;
 using Xunit;
 
 namespace CcDirector.Gateway.Tests;
@@ -25,14 +27,13 @@ namespace CcDirector.Gateway.Tests;
 /// </summary>
 public sealed class SnoozeExpiredBadgeFoldTests : IDisposable
 {
-    private readonly string _dir = Path.Combine(Path.GetTempPath(), "cc-snoozebadge-" + Guid.NewGuid().ToString("N"));
+    private readonly GatewayDbTestHarness _h = new();
+    private GatewayDatabase? _db;
+    private GatewayDatabase Db => _db ??= _h.Open();
 
-    private string Path_ => System.IO.Path.Combine(_dir, "snooze.json");
+    private SnoozeRegistry NewReg() => new(Db, _h.LegacyPath(Guid.NewGuid().ToString("N") + ".json"));
 
-    public void Dispose()
-    {
-        try { if (Directory.Exists(_dir)) Directory.Delete(_dir, true); } catch { }
-    }
+    public void Dispose() => _h.Dispose();
 
     private static SessionDto Session(string sid, bool incomingBadge) => new()
     {
@@ -60,7 +61,7 @@ public sealed class SnoozeExpiredBadgeFoldTests : IDisposable
     {
         // The one condition the badge is FOR: an armed clock that ran out. The DTO arrives without a badge
         // and the fold raises it.
-        var reg = new SnoozeRegistry(Path_);
+        var reg = NewReg();
         reg.Snooze("s1", DateTime.UtcNow.AddMinutes(-1), "dir-1"); // already due
 
         Assert.True(FoldBadge(reg, Session("s1", incomingBadge: false)));
@@ -71,7 +72,7 @@ public sealed class SnoozeExpiredBadgeFoldTests : IDisposable
     {
         // The badge is continuous while the entry is still expired-and-present: a fold over a cached clone
         // that already carries it must not flicker it off. Guards against a fix that clears unconditionally.
-        var reg = new SnoozeRegistry(Path_);
+        var reg = NewReg();
         reg.Snooze("s1", DateTime.UtcNow.AddMinutes(-1), "dir-1"); // still due, not yet swept
 
         Assert.True(FoldBadge(reg, Session("s1", incomingBadge: true)));
@@ -84,7 +85,7 @@ public sealed class SnoozeExpiredBadgeFoldTests : IDisposable
         // future clock. The card now reads grey "Snoozed" and must NOT still carry "Snooze ended" - it did
         // not come back by expiry, the owner parked it again. The incoming badge stands for the cached clone
         // the earlier expired fold stamped.
-        var reg = new SnoozeRegistry(Path_);
+        var reg = NewReg();
         reg.Snooze("s1", DateTime.UtcNow.AddHours(12), "dir-1"); // re-armed, far in the future
 
         Assert.False(FoldBadge(reg, Session("s1", incomingBadge: true)));
@@ -97,7 +98,7 @@ public sealed class SnoozeExpiredBadgeFoldTests : IDisposable
         // session returns as a plain red "needs you" - never with a "Snooze ended" badge, because it did not
         // come back by expiry, work woke it. There is no entry at all here; the incoming badge is the stale
         // one a prior expired fold left on the cached clone.
-        var reg = new SnoozeRegistry(Path_); // no entry for s1 - work deleted it
+        var reg = NewReg(); // no entry for s1 - work deleted it
 
         Assert.False(FoldBadge(reg, Session("s1", incomingBadge: true)));
     }
@@ -107,7 +108,7 @@ public sealed class SnoozeExpiredBadgeFoldTests : IDisposable
     {
         // A deferred hold has no clock (it starts when the work ends), so it is never expired and never the
         // "came back by timer" case. A stale incoming badge is cleared here too.
-        var reg = new SnoozeRegistry(Path_);
+        var reg = NewReg();
         reg.SnoozeDeferred("s1", 720, "dir-1");
 
         Assert.False(FoldBadge(reg, Session("s1", incomingBadge: true)));
@@ -118,7 +119,7 @@ public sealed class SnoozeExpiredBadgeFoldTests : IDisposable
     {
         // Snoozed and still in the future: parked, not returned. No badge, and a stale incoming one is
         // cleared.
-        var reg = new SnoozeRegistry(Path_);
+        var reg = NewReg();
         reg.Snooze("s1", DateTime.UtcNow.AddMinutes(30), "dir-1");
 
         Assert.False(FoldBadge(reg, Session("s1", incomingBadge: true)));

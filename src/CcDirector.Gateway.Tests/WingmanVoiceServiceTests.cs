@@ -258,11 +258,11 @@ public sealed class WingmanVoiceServiceTests
     [Fact]
     public async Task GenerateAsync_WhenModelLegTimesOut_RecordsRetrying_NoAudio_NoSilentFailure()
     {
-        // THE FIX (the owner's 2026-07-17 wedge): the MODEL leg (translation) stalling used to hang the
-        // whole generation for 180s and then die as a bare FAILED - the session sat red "needs you" with
-        // no audio and NO reason, so "half the fleet is stuck and generate does nothing". The model leg now
-        // mirrors the speech leg: a non-answer is Retrying (calm "voice on its way", the sweep retries),
-        // never a silent failure and never ServiceDown. Nothing plays, but the phone knows why.
+        // The MODEL leg (translation) stalling used to hang the whole generation for 180s and then die as
+        // a bare FAILED - the session sat red "needs you" with no audio and NO reason, so "half the fleet
+        // is stuck and generate does nothing". The model leg now mirrors the speech leg: a non-answer is
+        // Retrying (calm "voice on its way", the sweep retries), never a silent failure and never
+        // ServiceDown. Nothing plays, but the phone knows why - and it is one session's state, nobody else's.
         var director = new TunnelReadStub("{\"widgets\":[{\"kind\":\"Text\",\"content\":\"the reply to narrate\"}]}");
         var dir = Path.Combine(Path.GetTempPath(), "wmvs-modeltimeout-" + Guid.NewGuid().ToString("N"));
         var persistPath = Path.Combine(dir, "voice-sessions.json");
@@ -278,7 +278,6 @@ public sealed class WingmanVoiceServiceTests
             Assert.Equal(HostedAiState.Retrying, svc.VoiceUnavailableFor("sid-1"));   // and it says WHY, calmly
             Assert.NotEqual(HostedAiState.ServiceDown, svc.VoiceUnavailableFor("sid-1")); // a non-answer is not "down"
             Assert.False(svc.IsGenerating("sid-1"));                                  // the yellow window closed
-            Assert.False(svc.SpeechCooldownArmed, "one slow model call must not silence the fleet");
         }
         finally { try { Directory.Delete(dir, recursive: true); } catch { /* best-effort cleanup */ } }
     }
@@ -382,6 +381,18 @@ public sealed class WingmanVoiceServiceTests
         vault.Set("OPENAI_API_KEY", "sk-test");
         vault.Set("DEVTHROTTLE_API_KEY", "dt_live_test");
         var http = new HttpClient(new TtsStubHandler(HttpStatusCode.OK, "", audio));
+        return new WingmanVoiceService((_, _) => Task.FromResult(brain), vault, persistPath, ttsHttpClient: http);
+    }
+
+    /// <summary>Like <see cref="ServiceWithBrainAndTts"/> but with a caller-supplied speech transport, so a
+    /// test can drive the full GenerateAsync path (model translation + speech) against a stateful handler.</summary>
+    private static WingmanVoiceService ServiceWithBrainAndHandler(IAgentBrain brain, HttpMessageHandler handler, string persistPath)
+    {
+        var vaultPath = Path.Combine(Path.GetTempPath(), "wmvs-" + Guid.NewGuid().ToString("N") + ".vault");
+        var vault = new KeyVault(vaultPath);
+        vault.Set("OPENAI_API_KEY", "sk-test");
+        vault.Set("DEVTHROTTLE_API_KEY", "dt_live_test");
+        var http = new HttpClient(handler);
         return new WingmanVoiceService((_, _) => Task.FromResult(brain), vault, persistPath, ttsHttpClient: http);
     }
 
@@ -585,6 +596,33 @@ public sealed class WingmanVoiceServiceTests
         }
     }
 
+    /// <summary>Regression transport for the shared-gate removal: the FIRST speech call fails 5xx (which
+    /// armed the old fleet-wide cooldown), and every later call signals it was reached and then BLOCKS on
+    /// <see cref="Release"/> before returning audio. Holding a call in-flight lets a test pin the one call
+    /// the old gate would have let through (the probe) so that a concurrent second session's skip, if the
+    /// gate still existed, is observed deterministically instead of on a timer. <see cref="Entered"/> counts
+    /// the later (success-path) calls that actually reached the provider.</summary>
+    private sealed class FirstFails5xxThenBlockingSuccessHandler : HttpMessageHandler
+    {
+        private readonly byte[] _audio;
+        private readonly TaskCompletionSource _release = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private int _calls;
+        private int _entered;
+        public FirstFails5xxThenBlockingSuccessHandler(byte[] audio) => _audio = audio;
+        public int Entered => Volatile.Read(ref _entered);
+        public void Release() => _release.TrySetResult();
+        protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
+        {
+            var n = Interlocked.Increment(ref _calls);
+            if (n == 1)
+                return new HttpResponseMessage(HttpStatusCode.ServiceUnavailable)
+                { Content = new StringContent("{\"error\":\"upstream\"}", Encoding.UTF8, "application/json") };
+            Interlocked.Increment(ref _entered);
+            await _release.Task;
+            return new HttpResponseMessage(HttpStatusCode.OK) { Content = new ByteArrayContent(_audio) };
+        }
+    }
+
     /// <summary>A voice service whose text-to-speech goes to a stub returning <paramref name="status"/>.
     /// Both provider keys are set so the call proceeds regardless of the machine's configured mode -
     /// the stub ignores the URL, so the mapped state depends only on the response.</summary>
@@ -712,7 +750,6 @@ public sealed class WingmanVoiceServiceTests
         Assert.Equal(1, handler.Calls);                                        // exactly one attempt: no in-call retry
         Assert.False(svc.HasVoice("sid-retry"));                               // nothing to play
         Assert.Equal(HostedAiState.Retrying, svc.VoiceUnavailableFor("sid-retry"));
-        Assert.False(svc.SpeechCooldownArmed, "and it did not drag the rest of the fleet down with it");
 
         // The session tries again - the provider is fine now, and it just works.
         await svc.StoreSpokenAsync("sid-retry", "spoken", "reply");
@@ -774,50 +811,43 @@ public sealed class WingmanVoiceServiceTests
         Assert.NotEqual(HostedAiState.ServiceDown, svc.VoiceUnavailableFor("sid-timeout"));
     }
 
-    // ONE SLOW NARRATION MUST NOT SILENCE THE FLEET.
+    // ONE SLOW NARRATION MUST NOT SILENCE THE FLEET - AND NOW IT CANNOT, BY CONSTRUCTION.
     //
-    // The speech cooldown (_ttsGate) is shared by every session, and GenerateAsync SKIPS a session
-    // outright while it is armed ("speech service down, 105s cooldown left"). A single TIMEOUT used to
-    // arm it, so one long narration blanked voice for every other session for up to 120 seconds.
+    // There is no shared cooldown gate any more (removed 2026-07-17). Each session calls the hosted relay
+    // on its own and records only its OWN state; there is no cross-session mechanism left for one call's
+    // failure to reach another. These tests pin that each failing call reports its own honest state and
+    // nothing more - the fleet-wide silencing that a shared gate could cause is now structurally absent.
     //
-    // Measured against the live fleet on 2026-07-15: the speech endpoint answered an 871-character
-    // narration in 1.7 seconds from the Gateway's own machine, while the Gateway logged 1031 attempt-1
-    // timeouts and 759 give-ups and NOT ONE of 17 sessions held audio - yet asking on demand produced
-    // real audio for 13 of 13 reachable sessions. The service was never down; the shared gate was armed
-    // by evidence that never justified it.
+    // Measured against the live fleet on 2026-07-15 (why the gate had to go): the speech endpoint answered
+    // an 871-character narration in 1.7 seconds from the Gateway's own machine, while the Gateway logged
+    // 1031 attempt-1 timeouts and 759 give-ups and NOT ONE of 17 sessions held audio - yet asking on
+    // demand produced real audio for 13 of 13 reachable sessions. The service was never down; the shared
+    // gate was, armed by evidence that never justified it.
     [Fact]
-    public async Task StoreSpokenAsync_OneTimeout_DoesNotArmTheSharedCooldown()
+    public async Task StoreSpokenAsync_OneTimeout_RecordsOnlyItsOwnRetryingState()
     {
         // One timeout is not evidence about the SERVICE - it can be one long narration or one stalled
-        // worker. The session still reports its own state (Retrying - nothing to play yet, trying
-        // again), but the shared gate must stay open so every other session still gets its turn.
+        // worker. The session reports its own state (Retrying - nothing to play yet, trying again) and
+        // touches nothing else; every other session is entirely unaffected because nothing couples them.
         var handler = new TtsTimeoutHandler(timeouts: TtsSynthesis.Attempts);
         var svc = ServiceWithHandler(handler);
 
         await svc.StoreSpokenAsync("sid-slow", "spoken", "reply");
 
         Assert.Equal(HostedAiState.Retrying, svc.VoiceUnavailableFor("sid-slow"));
-        Assert.False(svc.SpeechCooldownArmed, "one timeout must not silence every other session's voice");
+        Assert.Null(svc.VoiceUnavailableFor("sid-other"));   // a session that never called is untouched
     }
 
     [Fact]
-    public async Task StoreSpokenAsync_NoRunOfTimeoutsEverArmsTheSharedCooldown()
+    public async Task StoreSpokenAsync_ManyTimeouts_EachSessionKeepsOnlyItsOwnState()
     {
-        // THIS TEST USED TO ASSERT THE OPPOSITE, and that is the point of it (2026-07-15).
+        // A RUN of timeouts is not evidence stacking toward "the service is down" - the timeouts are not
+        // independent, they are the same slow provider. With the shared gate gone, a run of them simply
+        // leaves each session with its own Retrying state and nothing crosses between them.
         //
-        // It was called ThreeConsecutiveTimeouts_ArmsTheSharedCooldown and it defended the defect: it
-        // encoded the belief that a RUN of timeouts is evidence stacking toward "the service is down".
-        // It is not. The timeouts were not independent - they were the same cold provider, and the
-        // cooldown they armed produced the next one, because 120 seconds of nobody calling is exactly
-        // how the provider goes cold. Counting to three did not make the inference sound; it just made
-        // the fleet take three steps before falling silent. It went 0/8 with audio again on the day
-        // that rule shipped, while the service answered every hand-made call perfectly.
-        //
-        // A timeout is the ABSENCE of evidence: the service said nothing, so we learned nothing about
-        // it. Ten sessions timing out on a slow provider are ten slow turns, and each retries on its
-        // own (the voice sweep revisits any session without audio). Load is bounded only by the
-        // provider's own 429 backoff (there is no fixed fleet-wide concurrency cap), whatever we
-        // decide here.
+        // A timeout is the ABSENCE of evidence: the service said nothing, so we learned nothing about it.
+        // Each session retries on its own (the voice sweep revisits any session without audio). Load is
+        // bounded only by the provider's own 429 backoff (there is no fixed fleet-wide concurrency cap).
         var handler = new TtsTimeoutHandler(timeouts: int.MaxValue);
         var svc = ServiceWithHandler(handler);
 
@@ -827,23 +857,63 @@ public sealed class WingmanVoiceServiceTests
         await svc.StoreSpokenAsync("sid-d", "spoken", "reply");
         await svc.StoreSpokenAsync("sid-e", "spoken", "reply");
 
-        Assert.False(svc.SpeechCooldownArmed,
-            "no number of timeouts may silence the fleet - the service never answered, so they say nothing about it");
-        // Each session still tells the truth about ITSELF: nothing to play yet, retrying - Retrying,
-        // never ServiceDown, because none of these calls got an answer from the service.
+        // Each session tells the truth about ITSELF: nothing to play yet, retrying - Retrying, never
+        // ServiceDown, because none of these calls got an answer from the service.
+        Assert.Equal(HostedAiState.Retrying, svc.VoiceUnavailableFor("sid-a"));
         Assert.Equal(HostedAiState.Retrying, svc.VoiceUnavailableFor("sid-e"));
     }
 
     [Fact]
-    public async Task StoreSpokenAsync_ServerAnswersWithFailureStatus_ArmsTheSharedCooldownAtOnce()
+    public async Task GenerateAsync_OneSessions5xx_DoesNotSilenceAConcurrentSessionsVoice()
     {
-        // A server that ANSWERS 5xx is evidence about the service, not about one narration, so it does
-        // not wait for a run of three the way an ambiguous timeout does.
-        var svc = ServiceWithTts(HttpStatusCode.ServiceUnavailable, "{\"error\":\"upstream\"}");
+        // THE regression for this whole change (2026-07-17), and it FAILS on the pre-change gated code.
+        //
+        // Old shape: a 5xx armed a shared fleet-wide speech cooldown, after which GenerateAsync let exactly
+        // ONE session through (the half-open probe) and SKIPPED every other concurrent session with no
+        // audio. Session A gets a 5xx here (which armed that cooldown on the old code), then B and C run
+        // CONCURRENTLY: on the old code one of them is the probe and the OTHER is skipped voiceless; on the
+        // new code there is no gate, so BOTH reach the provider and BOTH get audio. The probe is held
+        // in-flight (the handler blocks), so the skip - if the gate still existed - is observed
+        // deterministically, not on a timer.
+        var director = new TunnelReadStub("{\"widgets\":[{\"kind\":\"Text\",\"content\":\"the reply to narrate\"}]}");
+        var dir = Path.Combine(Path.GetTempPath(), "wmvs-nogate-" + Guid.NewGuid().ToString("N"));
+        var persistPath = Path.Combine(dir, "voice-sessions.json");
+        try
+        {
+            var handler = new FirstFails5xxThenBlockingSuccessHandler(new byte[] { 5, 5, 5 });
+            var svc = ServiceWithBrainAndHandler(new RecordingBrain(), handler, persistPath);
 
-        await svc.StoreSpokenAsync("sid-5xx", "spoken", "reply");
+            // A fails 5xx first - on the OLD code this armed the shared cooldown before B/C ever ask.
+            await svc.GenerateAsync("sid-A", RouteFor(director), CancellationToken.None, showReadingWindow: false);
+            Assert.False(svc.HasVoice("sid-A"));
+            Assert.Equal(HostedAiState.ServiceDown, svc.VoiceUnavailableFor("sid-A"));
 
-        Assert.True(svc.SpeechCooldownArmed);
+            // B and C race. Their success-path speech call blocks in the handler, so the ONE the old gate
+            // would let through sits in-flight and cannot free the probe slot - making the old code's skip
+            // of the other deterministic rather than timing-dependent.
+            var b = svc.GenerateAsync("sid-B", RouteFor(director), CancellationToken.None, showReadingWindow: false);
+            var c = svc.GenerateAsync("sid-C", RouteFor(director), CancellationToken.None, showReadingWindow: false);
+
+            // Wait - without a fixed sleep - until EITHER both reached the provider (new code) OR one of
+            // them returned early having been skipped (old code). Bounded by an overall deadline so a hang
+            // fails loudly instead of stalling.
+            var overall = Task.Delay(TimeSpan.FromSeconds(30));
+            while (handler.Entered < 2 && !b.IsCompleted && !c.IsCompleted)
+            {
+                if (await Task.WhenAny(Task.Delay(10), overall) == overall)
+                    throw new TimeoutException("neither the second provider call nor an early skip was observed");
+            }
+
+            handler.Release();     // let the blocked success call(s) finish
+            await Task.WhenAll(b, c);
+
+            // The whole point: NO session's voice was collateral damage to another session's 5xx. Both
+            // reached the provider and both are playable. On the pre-change gated code exactly one of these
+            // is false, so this pair of assertions IS the regression.
+            Assert.True(svc.HasVoice("sid-B"), "session B's voice must not be gated by session A's failure");
+            Assert.True(svc.HasVoice("sid-C"), "session C's voice must not be gated by session A's failure");
+        }
+        finally { try { Directory.Delete(dir, recursive: true); } catch { /* best-effort cleanup */ } }
     }
 
     [Fact]

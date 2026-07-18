@@ -325,6 +325,21 @@ public sealed class GatewayHost : IAsyncDisposable
     // The persisted workflow catalog (Workflows mission, phase 1): built-ins seeded at startup,
     // user-defined workflows beside them, served by Api.WorkflowEndpoints.
     private readonly Workflows.WorkflowStore _workflows;
+    // Workflow runs (phase 4, issue #1771): one row per execution of a workflow definition, pinned to
+    // the version that governed it. The governance outcome spine.
+    private readonly Workflows.WorkflowRunStore _workflowRuns;
+    // The append-only governance event ledger (issue #1771, spine item 2): immutable session/run state
+    // transitions, the duration spine no run row can give.
+    private readonly Governance.GovernanceEventLedger _governanceEvents;
+    // Honest driver-normalized spend (issue #1771, spine item 3): per-session token effort + billing-mode
+    // label, and the account-level hosted-AI service dollars mirrored from the credit-debit ledger.
+    private readonly Governance.SessionSpendStore _sessionSpend;
+    private readonly Governance.AccountHostedAiSpendStore _hostedAiSpend;
+    // The append-only governance audit trail (issue #1771, spine item 4): structured intervention +
+    // permission/sandbox decisions, recorded as events, never inferred from transcripts.
+    private readonly Governance.GovernanceAuditLog _governanceAudit;
+    // Fills session_spend at each turn-end from the pushed roster snapshot (issue #1771, spine item 3).
+    private readonly Governance.SessionSpendEmitter _sessionSpendEmitter;
     private readonly CronJobStore _cronJobs;
     private readonly CronRunHistoryStore _cronRuns;
     private readonly Running.CronEngine _cronEngine;
@@ -380,7 +395,8 @@ public sealed class GatewayHost : IAsyncDisposable
     private TurnEndWatcher? _turnEndWatcher;
     private Wingman.WingmanVoiceService? _voiceService;
     // Editable/versioned wingman instructions (issue #537); the voice translator reads the active set.
-    private readonly Wingman.WingmanInstructionsStore _instructionsStore = new();
+    // Constructed in the constructor body once the EF database is built (it persists to the data layer).
+    private readonly Wingman.WingmanInstructionsStore _instructionsStore;
     // Shared training-data store: the voice service WRITES captures, the instructions A/B test READS them.
     private readonly Wingman.WingmanTrainingStore _trainingStore = new();
     private System.Threading.Timer? _voiceSweepTimer;
@@ -509,7 +525,7 @@ public sealed class GatewayHost : IAsyncDisposable
     /// Shared instances that write to the real user's directories). Production omits it and the host builds
     /// the service over its own key vault, exactly as before.
     /// </param>
-    public GatewayHost(int port = DefaultPort, string? token = null, bool? authEnabled = null, string? instancesDirectory = null, string? turnBriefDirectory = null, string? keyVaultPath = null, string? workListsPath = null, string? cronJobsPath = null, string? cronRunsPath = null, string? devicesPath = null, string? telemetryQueuePath = null, int? telemetryQueueMaxSize = null, TimeSpan? telemetryRetryInterval = null, Core.Account.DevThrottleAccountService? account = null, bool? streamMode = null, string? inputStatsPath = null, string? snoozePath = null, string? missionsPath = null, string? missionNotesPath = null, Transcription.GatewayTranscriptionService? dictationTranscription = null, Core.Agents.AgentKind? brainTool = null)
+    public GatewayHost(int port = DefaultPort, string? token = null, bool? authEnabled = null, string? instancesDirectory = null, string? turnBriefDirectory = null, string? keyVaultPath = null, string? workListsPath = null, string? cronJobsPath = null, string? cronRunsPath = null, string? devicesPath = null, string? telemetryQueuePath = null, int? telemetryQueueMaxSize = null, TimeSpan? telemetryRetryInterval = null, Core.Account.DevThrottleAccountService? account = null, bool? streamMode = null, string? inputStatsPath = null, string? snoozePath = null, string? pushSubscriptionsPath = null, string? wingmanInstructionsPath = null, string? missionsPath = null, string? missionNotesPath = null, Transcription.GatewayTranscriptionService? dictationTranscription = null, Core.Agents.AgentKind? brainTool = null)
     {
         // Resolve and VALIDATE the warm-brain tool up front, before any resource is opened: a brain tool
         // that cannot be hosted is a configuration error that must fail loudly at construction, not
@@ -590,11 +606,31 @@ public sealed class GatewayHost : IAsyncDisposable
         // shipped built-ins seeded/upgraded at construction. No legacy JSON - the previous catalog was
         // compiled-in C# literals, so there is nothing on disk to import.
         _workflows = new Workflows.WorkflowStore(_gatewayDb);
-        // Snooze Length mission: the persisted snooze registry (sessionId -> SnoozeUntilUtc). Loaded here
-        // so a Gateway restart re-arms every pending snooze; an entry already past its time simply fires
-        // on the first sweep. Tests MUST pass an isolated path so they never touch the real store. The
-        // registry is bounded by dropping a removed Director's entries so they do not accumulate on disk.
-        _snoozeRegistry = new Snooze.SnoozeRegistry(snoozePath ?? Path.Combine(CcStorage.Root(), "snooze.json"));
+        // Workflow runs (phase 4, issue #1771): built after the catalog store so the built-ins a run
+        // pins are already seeded.
+        _workflowRuns = new Workflows.WorkflowRunStore(_gatewayDb);
+        // The governance event ledger (issue #1771, spine item 2): append-only session/run transitions on
+        // the EF data layer, so a Gateway restart never loses a recorded transition.
+        _governanceEvents = new Governance.GovernanceEventLedger(_gatewayDb);
+        // Honest spend (issue #1771, spine item 3): per-session token effort + billing-mode label, and the
+        // account-level hosted-AI service dollars mirrored from the credit-debit ledger.
+        _sessionSpend = new Governance.SessionSpendStore(_gatewayDb);
+        _hostedAiSpend = new Governance.AccountHostedAiSpendStore(_gatewayDb);
+        // The governance audit trail (issue #1771, spine item 4): append-only intervention + permission/
+        // sandbox decisions on the EF data layer, so a Gateway restart never loses a recorded audit fact.
+        _governanceAudit = new Governance.GovernanceAuditLog(_gatewayDb);
+        _sessionSpendEmitter = new Governance.SessionSpendEmitter(_sessionSpend);
+        // Snooze Length mission: the persisted snooze registry (sessionId -> SnoozeUntilUtc), now in the
+        // snoozes table of the EF data layer - a Gateway restart re-arms every pending snooze from the
+        // database; an entry already past its time simply fires on the first sweep. The path argument is the
+        // LEGACY snooze.json, imported once on first upgrade then renamed aside. Tests MUST pass an isolated
+        // path so they never touch the real legacy file. The registry is bounded by dropping a removed
+        // Director's entries so they do not accumulate.
+        _snoozeRegistry = new Snooze.SnoozeRegistry(_gatewayDb, snoozePath ?? Path.Combine(CcStorage.Root(), "snooze.json"));
+        // Editable/versioned wingman instructions (issue #537) now persist in the wingman_instructions table
+        // of the EF data layer. The path argument is the LEGACY wingman-instructions.json, imported once on
+        // first upgrade then renamed aside. Tests MUST pass an isolated path so they never touch the real file.
+        _instructionsStore = new Wingman.WingmanInstructionsStore(_gatewayDb, wingmanInstructionsPath ?? Path.Combine(CcStorage.Root(), "wingman-instructions.json"));
         Registry.OnDirectorRemoved += id => _snoozeRegistry.ClearForDirector(id);
         // THE PUSH SEAM where this Gateway drives the hold machine off the facts Directors report. The
         // DirectorHub (constructed per-invocation by SignalR) folds every pushed session through this one
@@ -636,7 +672,11 @@ public sealed class GatewayHost : IAsyncDisposable
         // Mission Screen mission (Phase 1b, issue #1405): the mission-WHY store, at a Gateway-side file
         // (CcStorage.Root(), the same location the snooze and cron stores use). Loaded here so a Gateway
         // restart re-serves every WHY. Tests MUST pass an isolated path so they never touch the real store.
-        _missionNotes = new MissionNotes.MissionNoteStore(missionNotesPath ?? Path.Combine(CcStorage.Root(), "mission-notes.json"));
+        // Mission WHY notes now persist in the mission_notes table of the EF data layer. The path argument is
+        // the LEGACY mission-notes.json, imported once on first upgrade (quarantine-on-corrupt, boot empty -
+        // a cosmetic store must not block boot) then renamed aside. Tests MUST pass an isolated path so they
+        // never touch the real legacy file.
+        _missionNotes = new MissionNotes.MissionNoteStore(_gatewayDb, missionNotesPath ?? Path.Combine(CcStorage.Root(), "mission-notes.json"));
         // Cron-job definitions persist across a Gateway restart (epic #479, #482) in the cron_jobs table
         // (next-run times recomputed on load). The path argument is the LEGACY cronjobs.json, imported once
         // on first upgrade then renamed aside. Tests MUST pass an isolated path so they never touch the real
@@ -729,7 +769,10 @@ public sealed class GatewayHost : IAsyncDisposable
         // pair and the set of subscribed devices. The notifier that fans out to these is built and
         // started in StartAsync, once this Gateway's own /sessions endpoint is reachable on loopback.
         _vapidStore = new Push.WebPushVapidStore();
-        _pushSubscriptions = new Push.PushSubscriptionStore();
+        // Web Push subscriptions now persist in the push_subscriptions table of the EF data layer. The path
+        // argument is the LEGACY push-subscriptions.json, imported once on first upgrade then renamed aside.
+        // Tests MUST pass an isolated path so they never touch the real legacy file.
+        _pushSubscriptions = new Push.PushSubscriptionStore(_gatewayDb, pushSubscriptionsPath ?? Path.Combine(CcStorage.ToolConfig("gateway"), "push-subscriptions.json"));
 
         // Gateway device registration (issue #857): on sign-in (and as a first-launch/retry safety net on
         // the heartbeat) register THIS Gateway as a device with the cloud account and store the issued
@@ -1103,6 +1146,20 @@ public sealed class GatewayHost : IAsyncDisposable
         _turnEndWatcher = new TurnEndWatcher(
             onTurnEnd: signal =>
             {
+                // Governance capture (issue #1771, spine item 3): record this session's cumulative spend at
+                // turn-end from the pushed roster snapshot. Runs for EVERY session (not just voice), and is
+                // isolated so a spend hiccup never breaks the voice refresh below - the failure is logged loud,
+                // not swallowed into a fabricated value.
+                try
+                {
+                    if (PushedSessions.TryLocate(TenantId.Local, signal.SessionId, _streamStaleAfter) is { } spendLoc)
+                        _sessionSpendEmitter.Emit(spendLoc.Session);
+                }
+                catch (Exception ex)
+                {
+                    FileLog.Write($"[GatewayHost] turn-end spend emit FAILED: sid={signal.SessionId}: {ex.Message}");
+                }
+
                 // Voice sessions (issue #531): the turn just finished on its own, so re-make the
                 // spoken summary + audio in the background. It is then "voice ready" in the session
                 // list with no wait. Non-voice sessions do nothing here - the watcher is voice-only.
@@ -1376,6 +1433,10 @@ public sealed class GatewayHost : IAsyncDisposable
             // VoiceDisplay so the screen shows an honest "nothing to read aloud" instead of a Generate
             // button that cannot work - the client no longer rules on this.
             nothingToNarrateFor: sid => _voiceService?.NothingToNarrateFor(sid) == true,
+            // TTS fallback: this session's ready clip was made by the backup voice provider (the primary
+            // was overloaded and the cloud proxy failed over). Feeds the folded VoiceDisplay so the screen
+            // shows the generic backup-voice notice. A success-with-a-note, never an outage state.
+            servedViaFallbackFor: sid => _voiceService?.ServedViaFallbackFor(sid) == true,
             // Issue #218: stamp the Gateway-owned NeedsYouSince entry clock onto each session.
             needsYouStampFor: (sid, isRed) => _needsYouClock.Stamp(sid, isRed),
             // Stamp the orange "Transcribing..." flag while a dictated utterance is being uploaded
@@ -1482,7 +1543,10 @@ public sealed class GatewayHost : IAsyncDisposable
             // Round 4 finding 1: the hold endpoint triggers a prompt display-state push through this ONE
             // channel after a snooze / unsnooze, instead of sending its own second hold command - the single
             // writer of the Director's raw hold.
-            fleetDisplayState: FleetDisplayState);
+            fleetDisplayState: FleetDisplayState,
+            // Workflows mission (phase 4, issue #1771): creating a mission also opens a workflow run of
+            // the built-in "mission" workflow, pinned to its published version - the outcome spine.
+            workflowRuns: _workflowRuns);
 
         // Issue #268: the two raw per-session WebSocket legs (live Terminal stream + dictation)
         // proxied through the Gateway so a remote Cockpit talks same-origin to the Gateway and
@@ -1589,6 +1653,22 @@ public sealed class GatewayHost : IAsyncDisposable
         // each carrying a private copy. Served from the persisted store (built-ins seeded at startup);
         // authoring routes are the next phase. Inherits the host-wide token middleware above.
         Api.WorkflowEndpoints.Map(_app, _workflows);
+
+        // Workflow runs (phase 4, issue #1771): the outcome spine's REST surface. One row per
+        // execution of a workflow, pinned to the exact published version that governed it.
+        Api.WorkflowRunEndpoints.Map(_app, _workflowRuns);
+
+        // The governance event ledger (issue #1771, spine item 2): append-only session/run state
+        // transitions - the duration timeline the weekly Outcome Ledger reads. Append and read only.
+        Api.GovernanceEventEndpoints.Map(_app, _governanceEvents);
+
+        // Honest driver-normalized spend (issue #1771, spine item 3): per-session token effort + billing-mode
+        // label, and the account-level hosted-AI service dollars read from the mirrored credit-debit ledger.
+        Api.GovernanceSpendEndpoints.Map(_app, _sessionSpend, _hostedAiSpend);
+
+        // The governance audit trail (issue #1771, spine item 4): append-only intervention +
+        // permission/sandbox decisions - the safety and attention-burden audit. Append and read only.
+        Api.GovernanceAuditEndpoints.Map(_app, _governanceAudit);
 
         // Gateway Centralization Phase 1 (issue #628): the inbound login-telemetry RELAY. The Director
         // POSTs its login-telemetry event here (instead of the cloud) and the Gateway forwards it on,
@@ -1745,7 +1825,9 @@ public sealed class GatewayHost : IAsyncDisposable
         MachineEndpoints.Map(_app, Launchers, _machineSessionSpawner, SendLauncherCommandAsync,
             // Gateway Cleanup mission (Wave 4b): validate a mission-scoped spawn against the Gateway store and
             // stamp the resolved mission name onto the create request forwarded to the Director.
-            missions: Missions);
+            missions: Missions,
+            // Workflows mission (phase 5b): seat spawns on workflow runs and record participants.
+            workflowRuns: _workflowRuns);
 
         // The Cockpit Settings page surface (docs/architecture/gateway/SETTINGS_OWNERSHIP.md):
         // one snapshot GET plus brain-restart and autostart actions. Reads this host directly

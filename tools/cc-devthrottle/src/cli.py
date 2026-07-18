@@ -16,6 +16,7 @@ from . import mission_ops
 from . import schedule_ops
 from . import settings_ops
 from . import setup_ops
+from . import workflow_ops
 from .session_ops import (
     ask_session,
     hold_session,
@@ -51,6 +52,11 @@ settings_app = typer.Typer(
 schedule_app = typer.Typer(
     help="Manage Gateway schedules.", add_completion=False, no_args_is_help=True
 )
+workflow_app = typer.Typer(
+    help="Read and author fleet Workflows (cross-agent conduct stored on the Gateway).",
+    add_completion=False,
+    no_args_is_help=True,
+)
 setup_app = typer.Typer(
     help="Install, update, and repair DevThrottle.", add_completion=False, no_args_is_help=True
 )
@@ -67,6 +73,7 @@ app.add_typer(mission_app, name="mission")
 app.add_typer(message_app, name="message")
 app.add_typer(settings_app, name="settings")
 app.add_typer(schedule_app, name="schedule")
+app.add_typer(workflow_app, name="workflow")
 app.add_typer(setup_app, name="setup")
 app.add_typer(email_app, name="email")
 app.add_typer(diag_app, name="diag")
@@ -268,6 +275,90 @@ _ACTIONS = [
         "command": "cc-devthrottle schedule endpoint",
         "mutatesState": False,
         "args": [],
+    },
+    {
+        "id": "workflow-list",
+        "description": "List the fleet's Workflows (cross-agent conduct stored on the Gateway).",
+        "command": "cc-devthrottle workflow list",
+        "mutatesState": False,
+        "args": [],
+    },
+    {
+        "id": "workflow-instructions",
+        "description": "Print a Workflow's raw instruction markdown - fetch this and FOLLOW it as your conduct.",
+        "command": "cc-devthrottle workflow instructions <id>",
+        "mutatesState": False,
+        "args": [{"name": "id", "required": True}, {"name": "version", "required": False}],
+    },
+    {
+        "id": "workflow-show",
+        "description": "Show one Workflow's metadata, steps, and outcome criteria.",
+        "command": "cc-devthrottle workflow show <id>",
+        "mutatesState": False,
+        "args": [{"name": "id", "required": True}, {"name": "version", "required": False}],
+    },
+    {
+        "id": "workflow-versions",
+        "description": "Show a Workflow's version history.",
+        "command": "cc-devthrottle workflow versions <id>",
+        "mutatesState": False,
+        "args": [{"name": "id", "required": True}],
+    },
+    {
+        "id": "workflow-pull",
+        "description": "Pull a Workflow into a directory (workflow.json + instructions.md + helpers/) for editing.",
+        "command": 'cc-devthrottle workflow pull <id> --dir "<dir>"',
+        "mutatesState": False,
+        "args": [{"name": "id", "required": True}, {"name": "dir", "required": True}],
+    },
+    {
+        "id": "workflow-push",
+        "description": "Push an edited Workflow directory to the Gateway as a draft (creates the Workflow if new).",
+        "command": 'cc-devthrottle workflow push <id> --dir "<dir>" [--note "<what changed>"]',
+        "mutatesState": True,
+        "args": [{"name": "id", "required": True}, {"name": "dir", "required": True}],
+    },
+    {
+        "id": "workflow-publish",
+        "description": "Publish a Workflow's draft - it becomes the version every machine and agent reads.",
+        "command": "cc-devthrottle workflow publish <id>",
+        "mutatesState": True,
+        "args": [{"name": "id", "required": True}],
+    },
+    {
+        "id": "workflow-materialize",
+        "description": "Write a Workflow's instructions and helper files to this machine's cache and print the paths.",
+        "command": "cc-devthrottle workflow materialize <id>",
+        "mutatesState": True,
+        "args": [{"name": "id", "required": True}, {"name": "version", "required": False}],
+    },
+    {
+        "id": "workflow-runs",
+        "description": "List workflow runs (one row per execution; the governance outcome spine).",
+        "command": "cc-devthrottle workflow runs",
+        "mutatesState": False,
+        "args": [{"name": "workflow", "required": False}, {"name": "status", "required": False}],
+    },
+    {
+        "id": "workflow-run-show",
+        "description": "Show one workflow run: pinned version, lifecycle, acceptance, criteria, participants.",
+        "command": "cc-devthrottle workflow run <run id>",
+        "mutatesState": False,
+        "args": [{"name": "run_id", "required": True}],
+    },
+    {
+        "id": "workflow-reset",
+        "description": "Reset a built-in Workflow to the shipped content (published as a new version).",
+        "command": "cc-devthrottle workflow reset <id>",
+        "mutatesState": True,
+        "args": [{"name": "id", "required": True}],
+    },
+    {
+        "id": "workflow-delete",
+        "description": "Archive a custom Workflow (built-ins can never be deleted; history remains).",
+        "command": "cc-devthrottle workflow delete <id> --yes",
+        "mutatesState": True,
+        "args": [{"name": "id", "required": True}],
     },
     {
         "id": "email-owner",
@@ -556,13 +647,21 @@ def spawn(
         "--mission",
         help="Attach the new session to a Mission by its id at spawn (mission-as-first-class-unit-of-work). "
         "The Mission must already exist (create one with 'cc-devthrottle mission create'); an unknown "
-        "Mission is rejected by the Director.",
+        "Mission is rejected by the Director. A mission spawn also auto-seats the session on the "
+        "mission's workflow run.",
+    ),
+    workflow_run: Optional[str] = typer.Option(
+        None,
+        "--workflow-run",
+        help="Seat the new session on a workflow RUN by its id (Workflows phase 5b). The Gateway "
+        "validates the run and the session's preamble tells the agent to fetch the run's conduct at "
+        "its PINNED version. Unknown run ids are rejected.",
     ),
 ) -> None:
     """Open a new session on the local Director, or on another computer with --machine, and print its id."""
     spawn_session(
         repo, agent, prompt, name, purpose, command, command_args, controlled_by, args, standalone, role,
-        machine, mission,
+        machine, mission, workflow_run,
     )
 
 
@@ -710,6 +809,146 @@ def schedule_main(
 ) -> None:
     """Manage Gateway schedules."""
     schedule_ops.set_gateway_override(gateway)
+
+
+@workflow_app.callback()
+def workflow_main(
+    gateway: Optional[str] = typer.Option(
+        None,
+        "--gateway",
+        help="Override the Gateway base URL.",
+    ),
+) -> None:
+    """Read and author fleet Workflows (cross-agent conduct stored on the Gateway)."""
+    workflow_ops.set_gateway_override(gateway)
+
+
+@workflow_app.command("list")
+def workflow_list(
+    json_output: bool = typer.Option(False, "--json", "-j", help="Output as JSON."),
+) -> None:
+    """List every Workflow the fleet can run."""
+    workflow_ops.list_workflows(json_output)
+
+
+@workflow_app.command("show")
+def workflow_show(
+    workflow_id: str = typer.Argument(..., help="The workflow id (e.g. mission)."),
+    version: Optional[int] = typer.Option(
+        None, "--version", "-v", help="A specific version instead of the published one."
+    ),
+    json_output: bool = typer.Option(False, "--json", "-j", help="Output as JSON."),
+) -> None:
+    """Show one Workflow's metadata, steps, and outcome criteria."""
+    workflow_ops.show_workflow(workflow_id, version, json_output)
+
+
+@workflow_app.command("instructions")
+def workflow_instructions(
+    workflow_id: str = typer.Argument(..., help="The workflow id (e.g. mission)."),
+    version: Optional[int] = typer.Option(
+        None, "--version", "-v", help="A specific pinned version instead of the published one."
+    ),
+) -> None:
+    """Print the Workflow's raw instruction markdown - fetch this and FOLLOW it as your conduct."""
+    workflow_ops.print_instructions(workflow_id, version)
+
+
+@workflow_app.command("versions")
+def workflow_versions(
+    workflow_id: str = typer.Argument(..., help="The workflow id."),
+    json_output: bool = typer.Option(False, "--json", "-j", help="Output as JSON."),
+) -> None:
+    """Show a Workflow's version history, newest first."""
+    workflow_ops.list_versions(workflow_id, json_output)
+
+
+@workflow_app.command("pull")
+def workflow_pull(
+    workflow_id: str = typer.Argument(..., help="The workflow id."),
+    directory: str = typer.Option(..., "--dir", "-d", help="Directory to write the workflow into."),
+    version: Optional[int] = typer.Option(
+        None, "--version", "-v", help="A specific version (default: the draft if one exists, else the published version)."
+    ),
+) -> None:
+    """Pull a Workflow into a directory (workflow.json + instructions.md + helpers/) for editing."""
+    workflow_ops.pull_workflow(workflow_id, directory, version)
+
+
+@workflow_app.command("push")
+def workflow_push(
+    workflow_id: str = typer.Argument(..., help="The workflow id."),
+    directory: str = typer.Option(..., "--dir", "-d", help="Directory holding the workflow files."),
+    note: Optional[str] = typer.Option(None, "--note", help="One line describing what changed."),
+    force: bool = typer.Option(
+        False,
+        "--force",
+        help="Push an update WITHOUT the .workflow-hash sidecar (skips the stale-copy check; "
+        "may overwrite another author's edit).",
+    ),
+) -> None:
+    """Push a Workflow directory to the Gateway as a draft (creates the Workflow if new)."""
+    workflow_ops.push_workflow(workflow_id, directory, note, force)
+
+
+@workflow_app.command("publish")
+def workflow_publish(
+    workflow_id: str = typer.Argument(..., help="The workflow id."),
+) -> None:
+    """Publish the draft - it becomes the version every machine and agent reads."""
+    workflow_ops.publish_workflow(workflow_id)
+
+
+@workflow_app.command("materialize")
+def workflow_materialize(
+    workflow_id: str = typer.Argument(..., help="The workflow id."),
+    version: Optional[int] = typer.Option(
+        None, "--version", "-v", help="A specific published version (default: the current one)."
+    ),
+) -> None:
+    """Write the Workflow's instructions and helper files to this machine's cache and print the paths."""
+    workflow_ops.materialize_workflow(workflow_id, version)
+
+
+@workflow_app.command("runs")
+def workflow_runs(
+    workflow: Optional[str] = typer.Option(
+        None, "--workflow", "-w", help="Only runs of this workflow id."
+    ),
+    status: Optional[str] = typer.Option(
+        None, "--status", "-s",
+        help="Only runs in this lifecycle status (created, active, awaiting-human, succeeded, failed, abandoned).",
+    ),
+    json_output: bool = typer.Option(False, "--json", "-j", help="Output as JSON."),
+) -> None:
+    """List workflow runs (one row per execution of a workflow), newest first."""
+    workflow_ops.list_runs(workflow, status, json_output)
+
+
+@workflow_app.command("run")
+def workflow_run(
+    run_id: str = typer.Argument(..., help="The run id."),
+    json_output: bool = typer.Option(False, "--json", "-j", help="Output as JSON."),
+) -> None:
+    """Show one workflow run: pinned version, lifecycle, acceptance, criteria, participants, proof."""
+    workflow_ops.show_run(run_id, json_output)
+
+
+@workflow_app.command("reset")
+def workflow_reset(
+    workflow_id: str = typer.Argument(..., help="The built-in workflow id (e.g. mission)."),
+) -> None:
+    """Reset a built-in Workflow to the shipped content (published as a new version)."""
+    workflow_ops.reset_workflow(workflow_id)
+
+
+@workflow_app.command("delete")
+def workflow_delete(
+    workflow_id: str = typer.Argument(..., help="The workflow id."),
+    yes: bool = typer.Option(False, "--yes", "-y", help="Skip the confirmation prompt."),
+) -> None:
+    """Archive a custom Workflow (built-ins can never be deleted; version history remains)."""
+    workflow_ops.delete_workflow(workflow_id, yes)
 
 
 @schedule_app.command("list")

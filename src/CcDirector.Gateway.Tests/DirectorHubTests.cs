@@ -1,10 +1,12 @@
 using System.Security.Claims;
 using CcDirector.Core.Tenancy;
 using CcDirector.Gateway.Contracts;
+using CcDirector.Gateway.Data;
 using CcDirector.Gateway.Discovery;
 using CcDirector.Gateway.Snooze;
 using CcDirector.Gateway.Stats;
 using CcDirector.Gateway.Streaming;
+using CcDirector.Gateway.Tests.Data;
 using Microsoft.AspNetCore.Http.Features;
 using Microsoft.AspNetCore.SignalR;
 using Xunit;
@@ -23,7 +25,12 @@ public sealed class DirectorHubTests : IDisposable
     private readonly DirectorRegistry _registry;
     private readonly PushedSessionStore _store;
     private readonly GatewayInputStatsAggregator _inputStats;
+    private readonly GatewayDbTestHarness _h = new();
+    private GatewayDatabase? _db;
+    private GatewayDatabase Db => _db ??= _h.Open();
     private DateTime _now = new(2026, 7, 9, 12, 0, 0, DateTimeKind.Utc);
+
+    private SnoozeRegistry NewReg() => new(Db, _h.LegacyPath(Guid.NewGuid().ToString("N") + ".json"));
 
     public DirectorHubTests()
     {
@@ -37,6 +44,7 @@ public sealed class DirectorHubTests : IDisposable
     public void Dispose()
     {
         _registry.Dispose();
+        _h.Dispose();
         try { Directory.Delete(_tempDir, recursive: true); }
         catch (Exception) { /* best-effort temp cleanup */ }
     }
@@ -64,7 +72,7 @@ public sealed class DirectorHubTests : IDisposable
     [Fact]
     public void ARejectedWorkingPushFromASupersededConnection_DoesNotDeleteAnArmedSnooze()
     {
-        var reg = new SnoozeRegistry(Path.Combine(_tempDir, "snooze-f1a.json"));
+        var reg = NewReg();
         var obs = new SnoozeLandingObserver(reg, () => _now);
 
         var (hub1, _) = NewHub("conn-1", obs);
@@ -86,7 +94,7 @@ public sealed class DirectorHubTests : IDisposable
     [Fact]
     public void ARejectedSettledPushFromASupersededConnection_DoesNotLandADeferral()
     {
-        var reg = new SnoozeRegistry(Path.Combine(_tempDir, "snooze-f1b.json"));
+        var reg = NewReg();
         var obs = new SnoozeLandingObserver(reg, () => _now);
 
         var (hub1, _) = NewHub("conn-1", obs);
@@ -110,7 +118,7 @@ public sealed class DirectorHubTests : IDisposable
         // Inspection round 2, finding 4: the SNAPSHOT path is gated on ApplySnapshot acceptance too, not
         // only the delta path. Reconnect and periodic reseeds arrive as PushSnapshot, so a rejected/stale
         // snapshot must not reach ObserveSnapshot and delete a snooze the current connection owns.
-        var reg = new SnoozeRegistry(Path.Combine(_tempDir, "snooze-f4.json"));
+        var reg = NewReg();
         var obs = new SnoozeLandingObserver(reg, () => _now);
 
         var (hub1, _) = NewHub("conn-1", obs);

@@ -117,6 +117,14 @@ body {
   color: var(--text);
 }
 
+/* TTS fallback: the generic "switched to a backup voice" heads-up. A calm, non-alarming amber note -
+   the voice is working (a success), just via the backup provider. */
+.voice-fallback-note {
+  background: rgba(234, 179, 8, 0.12);
+  border: 1px solid rgba(234, 179, 8, 0.4);
+  color: var(--text);
+}
+
 .banner-action {
   display: flex;
   align-items: center;

@@ -251,6 +251,47 @@ public sealed class CronJobStoreTests : IDisposable
     }
 
     [Fact]
+    public void LegacyJson_RenameFailsAfterImport_NextConstructionRecoversWithoutReimporting()
+    {
+        // The cron rename-recovery gap flagged in review on #1772: a rename that fails AFTER the import
+        // commits used to orphan the legacy file forever (the old cron path threw from RenameAside and had no
+        // recovery branch). The shared recoverable-import plumbing closes it: the first construction imports and
+        // commits, its rename-aside fails because the file is held open, and it does NOT throw; the next
+        // construction sees the table already populated and renames the lingering file aside WITHOUT
+        // re-importing.
+        var legacy = LegacyPath();
+        var seeded = ValidJob();
+        seeded.Id = "cj_recover1";
+        WriteLegacyJobsFile(legacy, seeded);
+
+        var dir = Path.GetDirectoryName(legacy)!;
+        var migratedGlob = Path.GetFileName(legacy) + ".migrated-*";
+
+        // Hold the legacy file open with a share mode that permits a read (so the import can parse it) but
+        // blocks a move (File.Move needs delete-sharing on the source), so the post-commit rename-aside fails.
+        using (new FileStream(legacy, FileMode.Open, FileAccess.Read, FileShare.Read))
+        {
+            // First construction: imports the job (committed), then the rename-aside fails on the locked file.
+            // Best-effort - it is logged, NOT thrown - so the store constructs and holds the imported data.
+            var store1 = new CronJobStore(_h.Open(), legacy);
+            Assert.NotNull(store1.Get("cj_recover1"));
+            Assert.Single(store1.ListAll());
+            // The rename failed, so the legacy file lingers and nothing has been renamed aside yet.
+            Assert.True(File.Exists(legacy));
+            Assert.Empty(Directory.GetFiles(dir, migratedGlob));
+        }
+
+        // The lock is released. The next construction sees the table already populated and the file still
+        // there: it renames the leftover aside (idempotent recovery) WITHOUT re-importing, and does not throw.
+        var store2 = new CronJobStore(_h.Open(), legacy);
+
+        Assert.Single(store2.ListAll());                      // no re-import - still exactly one job
+        Assert.NotNull(store2.Get("cj_recover1"));
+        Assert.False(File.Exists(legacy));                    // the lingering file was recovered (renamed aside)
+        Assert.Single(Directory.GetFiles(dir, migratedGlob)); // exactly one backup, renamed once
+    }
+
+    [Fact]
     public void CorruptLegacyJson_FailsLoud_AndLeavesTheFileInPlace()
     {
         var legacy = LegacyPath();

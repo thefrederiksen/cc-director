@@ -254,9 +254,10 @@ public sealed class ControlApiHost : IAsyncDisposable
     }
 
     /// <summary>
-    /// Download the Gateway-owned injected text into the Director's on-disk cache. Swallows failure on
+    /// Download the Gateway-owned injected text - and the workflow catalog index that rides it
+    /// (Workflows mission, phase 5) - into the Director's on-disk caches. Swallows failure on
     /// purpose - an unreachable Gateway must not crash the host, and a failed refresh leaves the
-    /// last-known cache in place for the launch path to read.
+    /// last-known caches in place for the launch path to read.
     /// </summary>
     private static async Task RefreshInjectedTextAsync()
     {
@@ -267,6 +268,14 @@ public sealed class ControlApiHost : IAsyncDisposable
         catch (Exception ex)
         {
             FileLog.Write($"[ControlApiHost] injected-text refresh FAILED (keeping the last-known cache): {ex.Message}");
+        }
+        try
+        {
+            await new WorkflowIndexStore().RefreshAsync().ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            FileLog.Write($"[ControlApiHost] workflow-index refresh FAILED (keeping the last-known cache): {ex.Message}");
         }
     }
 

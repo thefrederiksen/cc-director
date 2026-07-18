@@ -29,8 +29,10 @@ public static class FleetPreamble
     /// #1357); when null (no one signed in) the user-identity line is omitted cleanly - no blank
     /// line, no "null" artifact.
     /// </summary>
-    public static string Build(string sessionId, string? name, string machine, string repoPath, SignedInUser? user = null)
-        => FleetPreambleRenderer.Render(FleetPreambleTemplate.Default, sessionId, name, machine, repoPath, user);
+    public static string Build(string sessionId, string? name, string machine, string repoPath, SignedInUser? user = null,
+        WorkflowIndexStore? workflowIndex = null)
+        => FleetPreambleRenderer.Render(FleetPreambleTemplate.Default, sessionId, name, machine, repoPath, user,
+            workflowIndex?.ActiveIndex() ?? "");
 
     /// <summary>
     /// Render the text that is ACTUALLY injected into this session - the user's own version when they
@@ -58,10 +60,15 @@ public static class FleetPreamble
         string machine,
         string repoPath,
         SignedInUser? user = null,
-        InjectedTextStore? store = null)
+        InjectedTextStore? store = null,
+        WorkflowIndexStore? workflowIndex = null)
     {
+        // A null workflowIndex renders NO index (the placeholder becomes empty) rather than silently
+        // reading the machine's real cache - the delivery endpoints opt in explicitly, and every
+        // other caller (tests, previews) stays hermetic by default.
         var text = FleetPreambleRenderer.Render(
-            (store ?? new InjectedTextStore()).ActiveTemplate(), sessionId, name, machine, repoPath, user);
+            (store ?? new InjectedTextStore()).ActiveTemplate(), sessionId, name, machine, repoPath, user,
+            workflowIndex?.ActiveIndex() ?? "");
 
         return string.IsNullOrWhiteSpace(text) ? "" : text;
     }

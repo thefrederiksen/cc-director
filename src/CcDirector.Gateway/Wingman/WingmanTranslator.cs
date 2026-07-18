@@ -71,6 +71,15 @@ public sealed class WingmanTranslator
     /// prepend would read it out as "slash" and "hashtag" - exactly what SPEAK FOR THE EAR forbids.
     /// The model naturalizes it; code cannot. It costs a few words against the ~30s budget, which is
     /// why the rule says the title and nothing else about the session.
+    ///
+    /// v5.3 hardens the "never voice an identifier" rule after a narration read a full 40-char
+    /// commit sha out one hex character at a time ("d zero six three zero a five c d ...") - about
+    /// fifteen seconds of useless noise. The old rule already forbade it, but its only example was
+    /// a DASHED guid; a bare continuous hex sha did not match that shape, so the model copied it
+    /// through. v5.3 shows both shapes, tells the model to DROP the reference entirely rather than
+    /// gloss it, and extends the ban to issue/pull-request/bug NUMBERS (say "three bug fixes are
+    /// done", never "eighty-one eleven, eighty-one twelve..."). Prompt-only, per the standing rule
+    /// that LLM behaviour is fixed in the prompt, not with a regex pass.
     /// </summary>
     internal const string FidelityPrompt = """
         You are the wingman: you turn a coding agent's written reply into words a person
@@ -112,15 +121,27 @@ public sealed class WingmanTranslator
           NEVER reduce a technical answer to a vague line like "the agent gave a technical
           explanation" or "it made some changes". Name the specific thing, the cause, and the
           fix - and stop. Depth is not length: three precise sentences beat a paragraph.
-        - NEVER READ OUT IDENTIFIERS OR LONG NUMBERS. A session id, commit hash, request id,
-          port, token, path or long digit string is USELESS to someone listening - they cannot
-          write it down or act on it, and hearing it read out digit by digit is the single
-          most irritating thing you can do. Say that it exists and what it is FOR: "the session
-          id", "a commit hash", "the request id" - never "fe2ec700 dash 458e dash 420e".
-          Round large numbers to what a person would really say out loud:
-          5,254,730 becomes "about five million"; 12,092,444 bytes becomes "about twelve
-          megabytes"; 84 stays 84. Keep a number when it IS the answer - a count, a version, a
-          price, a duration, a size that matters - and round or simply name the rest.
+        - NEVER VOICE AN IDENTIFIER OR A HASH. This is the rule listeners notice most when you
+          break it. A commit hash, session id, request id, token, port, file path, or any long
+          run of letters and digits is USELESS to someone listening: they cannot write it down
+          and cannot act on it, and spelling it out character by character is the single most
+          irritating thing you can do. Catch BOTH shapes: a dashed identifier like
+          "fe2ec700-458e-420e", AND a plain run of hex with no dashes like
+          "d0630a5cd517167516675e0299009" - a bare commit hash will not look like the first
+          example, but it is the same useless thing. Do not voice either. DROP it and say only
+          that the thing happened: "merged at commit d0630a5..." becomes just
+          "the changes were merged" - do not even say "at a commit", the hash adds nothing. If
+          you truly must refer to one, name what it is FOR and stop: "the session id" or
+          "a commit hash".
+        - REFERENCE NUMBERS ARE NOT SPOKEN NUMBERS. A listener cannot use an issue,
+          pull-request, or bug number; reading "eighty-one eleven, eighty-one twelve, eighty-one
+          thirteen" is the same noise as a hash. Say the WORK, counted, not the numbers: "three
+          bug fixes are done", "a pull request is open", "the deploy-protection fix landed".
+          Drop the number unless it genuinely IS the answer to what was asked.
+        - ROUND LARGE NUMBERS to what a person would really say out loud: 5,254,730 becomes
+          "about five million"; 12,092,444 bytes becomes "about twelve megabytes"; 84 stays 84.
+          Keep a number only when it IS the answer - a count, a version, a price, a duration, a
+          size that matters - and round or simply name the rest.
         - IF THE PERSON ASKED FOR SOMETHING TO BE READ IN FULL - a document, a file, a passage
           - read it in full. An explicit request for the whole thing overrides brevity. That is
           the ONLY reason a long narration should exist.
@@ -171,7 +192,7 @@ public sealed class WingmanTranslator
     /// instructions is shown that the recommended default changed and can switch to it. The content
     /// hash is the real identity; this is the human-facing label.
     /// </summary>
-    public const string DefaultInstructionsVersion = "7";
+    public const string DefaultInstructionsVersion = "8";
 
     private readonly Func<WingmanModelRole, CancellationToken, Task<IAgentBrain>> _brainProvider;
     private readonly Action<string> _log;

@@ -64,6 +64,37 @@ public sealed class GatewayDbContext : DbContext
     /// <summary>Helper files belonging to a workflow version (<c>workflow_files</c>).</summary>
     public DbSet<WorkflowFileEntity> WorkflowFiles => Set<WorkflowFileEntity>();
 
+    /// <summary>Workflow runs (<c>workflow_runs</c>) - the governance outcome spine (issue #1771).</summary>
+    public DbSet<WorkflowRunEntity> WorkflowRuns => Set<WorkflowRunEntity>();
+
+    /// <summary>Pending session snoozes (<c>snoozes</c>), keyed by session id.</summary>
+    public DbSet<SnoozeEntity> Snoozes => Set<SnoozeEntity>();
+
+    /// <summary>The append-only governance event ledger (<c>governance_events</c>) - immutable session/run
+    /// state transitions, the duration spine of issue #1771.</summary>
+    public DbSet<GovernanceEventEntity> GovernanceEvents => Set<GovernanceEventEntity>();
+
+    /// <summary>Web Push subscriptions (<c>push_subscriptions</c>), keyed by browser push endpoint.</summary>
+    public DbSet<PushSubscriptionEntity> PushSubscriptions => Set<PushSubscriptionEntity>();
+
+    /// <summary>The wingman instructions state document (<c>wingman_instructions</c>), one row per tenant.</summary>
+    public DbSet<WingmanInstructionEntity> WingmanInstructions => Set<WingmanInstructionEntity>();
+
+    /// <summary>Per-session token effort and honest spend (<c>session_spend</c>) - raw tokens + billing-mode
+    /// label, the driver-normalized spend of issue #1771 (spine item 3).</summary>
+    public DbSet<SessionSpendEntity> SessionSpend => Set<SessionSpendEntity>();
+
+    /// <summary>Account-level hosted-AI service dollars (<c>account_hosted_ai_spend</c>) mirrored from the
+    /// cloud credit-debit ledger - real metered dollars, never pinned to a session or run (issue #1771).</summary>
+    public DbSet<AccountHostedAiSpendEntity> AccountHostedAiSpend => Set<AccountHostedAiSpendEntity>();
+
+    /// <summary>Mission WHY notes (<c>mission_notes</c>), keyed by the normalized mission name.</summary>
+    public DbSet<MissionNoteEntity> MissionNotes => Set<MissionNoteEntity>();
+
+    /// <summary>The append-only governance audit trail (<c>governance_audit_events</c>) - structured
+    /// intervention and permission/sandbox decisions, never inferred from transcripts (issue #1771).</summary>
+    public DbSet<GovernanceAuditEventEntity> GovernanceAuditEvents => Set<GovernanceAuditEventEntity>();
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         base.OnModelCreating(modelBuilder);
@@ -137,6 +168,111 @@ public sealed class GatewayDbContext : DbContext
             b.HasIndex(e => e.VersionId);
         });
 
+        modelBuilder.Entity<WorkflowRunEntity>(b =>
+        {
+            b.ToTable("workflow_runs");
+            b.HasKey(e => e.Id);
+            // The reporting cuts: per-workflow and per-mission run lists. Indexed, never foreign
+            // keys - a run outlives archives and mission cleanup.
+            b.HasIndex(e => e.WorkflowId);
+            b.HasIndex(e => e.MissionId);
+            b.OwnsMany(e => e.CriteriaResults, o => o.ToJson());
+            b.OwnsMany(e => e.ProofLinks, o => o.ToJson());
+            b.OwnsMany(e => e.Participants, o => o.ToJson());
+        });
+
+        modelBuilder.Entity<SnoozeEntity>(b =>
+        {
+            b.ToTable("snoozes");
+            // SessionId is the natural key - a globally unique, ordinally-compared GUID string - so it is the
+            // primary key directly (no surrogate id). SQLite's default BINARY text collation compares it
+            // ordinally, matching the legacy Dictionary(StringComparer.Ordinal). The armed-vs-deferred
+            // invariant is kept in the store, not as a database CHECK (provider-divergent), matching today.
+            b.HasKey(e => e.SessionId);
+        });
+
+        modelBuilder.Entity<GovernanceEventEntity>(b =>
+        {
+            b.ToTable("governance_events");
+            b.HasKey(e => e.Id);
+            // The duration-rollup read paths: a session's transitions over time, a run's, and the weekly
+            // whole-week scan across every subject. Each composite LEADS WITH tenant_id because the global
+            // query filter prepends "tenant_id = @t" to every query - a SessionId/RunId/OccurredUtc-leading
+            // index would force a cross-tenant scan under Phase B multi-tenant load, so these are the
+            // tenant-leading forms that actually serve the filtered query. (ApplyTenantScope adds a
+            // standalone tenant_id index too; these are the query-serving composites.)
+            // SessionId/RunId are value references, never foreign keys - the ledger outlives the run and
+            // the session it records.
+            b.HasIndex(e => new { e.TenantId, e.SessionId, e.OccurredUtc });
+            b.HasIndex(e => new { e.TenantId, e.RunId, e.OccurredUtc });
+            b.HasIndex(e => new { e.TenantId, e.OccurredUtc });
+        });
+
+        modelBuilder.Entity<PushSubscriptionEntity>(b =>
+        {
+            b.ToTable("push_subscriptions");
+            // Endpoint is the natural key - a unique-per-subscription URL compared ordinally (SQLite's default
+            // BINARY collation), matching the legacy Dictionary(StringComparer.Ordinal) - so it is the primary
+            // key directly, no surrogate id. There is no per-user column: the legacy shape had none.
+            b.HasKey(e => e.Endpoint);
+        });
+
+        modelBuilder.Entity<WingmanInstructionEntity>(b =>
+        {
+            b.ToTable("wingman_instructions");
+            b.HasKey(e => e.Id);
+            // The document has no external id; the store keeps one row per tenant under its write lock.
+            // The saved versions are a bounded sub-document: an owned collection serialized to a JSON column
+            // (the cron/workflow "sub-doc -> JSON in a column" pattern), preserving each field and the order.
+            b.OwnsMany(e => e.Versions, o => o.ToJson());
+        });
+
+        modelBuilder.Entity<SessionSpendEntity>(b =>
+        {
+            b.ToTable("session_spend");
+            // SessionId is the natural key - one row per session, globally-unique GUID string - so it is the
+            // primary key directly (the snoozes-table pattern), no surrogate id.
+            b.HasKey(e => e.SessionId);
+            // The reporting cut is a last-observed time window, tenant-leading for the global filter.
+            b.HasIndex(e => new { e.TenantId, e.LastObservedUtc });
+        });
+
+        modelBuilder.Entity<AccountHostedAiSpendEntity>(b =>
+        {
+            b.ToTable("account_hosted_ai_spend");
+            b.HasKey(e => e.Id);
+            // The dedup lookup (kind + amount + transaction-time) and the weekly window sum, both tenant-
+            // leading for the global filter. NOT unique on the dedup tuple on purpose: two genuinely distinct
+            // debits of the same amount at the same instant are rare but real, and a unique index would throw
+            // on one; the store de-duplicates in code and discloses the (rare) undercount instead of crashing.
+            b.HasIndex(e => new { e.TenantId, e.Kind, e.AmountMicros, e.TransactionCreatedUtc });
+            b.HasIndex(e => new { e.TenantId, e.TransactionCreatedUtc });
+        });
+
+        modelBuilder.Entity<MissionNoteEntity>(b =>
+        {
+            b.ToTable("mission_notes");
+            // Key is the natural key - the already-normalized (trim + lower-cased) mission name - compared
+            // ordinally by SQLite's default BINARY collation, matching the legacy Dictionary(StringComparer.
+            // Ordinal) keyed by that same normalized value. It is the primary key directly, no surrogate. No
+            // case-fold question arises: the value is folded BEFORE it becomes the key, so lookup is a plain
+            // ordinal equality (unlike the work-list NAME key, which folds at comparison time).
+            b.HasKey(e => e.Key);
+        });
+
+        modelBuilder.Entity<GovernanceAuditEventEntity>(b =>
+        {
+            b.ToTable("governance_audit_events");
+            b.HasKey(e => e.Id);
+            // The read paths: a session's audit trail over time, a run's, and a category scan (all the
+            // permission decisions, all the interventions) over a window - each tenant-leading for the
+            // global filter. SessionId/RunId are value references, never foreign keys - the trail outlives
+            // the session and run it records.
+            b.HasIndex(e => new { e.TenantId, e.SessionId, e.OccurredUtc });
+            b.HasIndex(e => new { e.TenantId, e.RunId, e.OccurredUtc });
+            b.HasIndex(e => new { e.TenantId, e.Category, e.OccurredUtc });
+        });
+
         // Tenant scoping - the tenant_id column plus the global query filter - applied uniformly to every
         // entity that derives from TenantScopedEntity, so future stores inherit it by deriving from the base.
         ApplyTenantScope<CronJobEntity>(modelBuilder);
@@ -146,6 +282,15 @@ public sealed class GatewayDbContext : DbContext
         ApplyTenantScope<WorkflowEntity>(modelBuilder);
         ApplyTenantScope<WorkflowVersionEntity>(modelBuilder);
         ApplyTenantScope<WorkflowFileEntity>(modelBuilder);
+        ApplyTenantScope<WorkflowRunEntity>(modelBuilder);
+        ApplyTenantScope<SnoozeEntity>(modelBuilder);
+        ApplyTenantScope<GovernanceEventEntity>(modelBuilder);
+        ApplyTenantScope<PushSubscriptionEntity>(modelBuilder);
+        ApplyTenantScope<WingmanInstructionEntity>(modelBuilder);
+        ApplyTenantScope<SessionSpendEntity>(modelBuilder);
+        ApplyTenantScope<AccountHostedAiSpendEntity>(modelBuilder);
+        ApplyTenantScope<MissionNoteEntity>(modelBuilder);
+        ApplyTenantScope<GovernanceAuditEventEntity>(modelBuilder);
 
         ApplyCommonSubsetConventions(modelBuilder);
     }

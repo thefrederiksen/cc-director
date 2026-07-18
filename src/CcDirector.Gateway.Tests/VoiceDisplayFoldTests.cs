@@ -128,4 +128,42 @@ public sealed class VoiceDisplayFoldTests
         Assert.Equal("notReady", d.Kind);
         Assert.True(d.CanGenerate);
     }
+
+    // --- TTS fallback: the generic backup-voice notice (mission Phase 2) ------------------------------
+
+    [Fact]
+    public void ServedViaFallback_IsStillReady_WithTheGenericNotice_NoProviderNamed()
+    {
+        // A backup-served clip is a SUCCESS-with-a-note: a normal green, playable "ready", plus the one
+        // generic notice line. It is NOT an outage state and names no provider.
+        var d = VoiceDisplayFold.Fold(voiceMode: true, agentWorking: false, hasAudio: true, generating: false, unavailable: null, nothingToNarrate: false, servedViaFallback: true);
+        Assert.Equal("ready", d.Kind);
+        Assert.Equal("green", d.Tone);
+        Assert.True(d.CanPlay);
+        Assert.False(d.CanGenerate);
+        Assert.Equal(VoiceDisplayFold.BackupVoiceNotice, d.VoiceFallbackNotice);
+        // Host non-disclosure has no carve-out: the notice must never name the backup provider.
+        Assert.DoesNotContain("openai", d.VoiceFallbackNotice!, System.StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("backup voice", d.VoiceFallbackNotice!, System.StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void NotServedViaFallback_HasNoNotice()
+    {
+        // The normal case: a ready clip made by the primary provider carries no notice.
+        var d = VoiceDisplayFold.Fold(voiceMode: true, agentWorking: false, hasAudio: true, generating: false, unavailable: null, nothingToNarrate: false, servedViaFallback: false);
+        Assert.Equal("ready", d.Kind);
+        Assert.Null(d.VoiceFallbackNotice);
+    }
+
+    [Fact]
+    public void ServedViaFallback_NeverRidesAnOutageState()
+    {
+        // Defensive: a fallback flag with no playable audio must NEVER turn a real outage into a
+        // "ready + notice". The notice only ever attaches to the green ready verdict; an answered
+        // ServiceDown stays ServiceDown with no notice (a fallback SUCCESS never becomes an outage).
+        var d = VoiceDisplayFold.Fold(voiceMode: true, agentWorking: false, hasAudio: false, generating: false, unavailable: HostedAiState.ServiceDown, nothingToNarrate: false, servedViaFallback: true);
+        Assert.Equal("serviceDown", d.Kind);
+        Assert.Null(d.VoiceFallbackNotice);
+    }
 }
