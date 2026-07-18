@@ -338,6 +338,10 @@ public sealed class GatewayHost : IAsyncDisposable
     // The append-only governance event ledger (issue #1771, spine item 2): immutable session/run state
     // transitions, the duration spine no run row can give.
     private readonly Governance.GovernanceEventLedger _governanceEvents;
+    // Honest driver-normalized spend (issue #1771, spine item 3): per-session token effort + billing-mode
+    // label, and the account-level hosted-AI service dollars mirrored from the credit-debit ledger.
+    private readonly Governance.SessionSpendStore _sessionSpend;
+    private readonly Governance.AccountHostedAiSpendStore _hostedAiSpend;
     private readonly CronJobStore _cronJobs;
     private readonly CronRunHistoryStore _cronRuns;
     private readonly Running.CronEngine _cronEngine;
@@ -610,6 +614,10 @@ public sealed class GatewayHost : IAsyncDisposable
         // The governance event ledger (issue #1771, spine item 2): append-only session/run transitions on
         // the EF data layer, so a Gateway restart never loses a recorded transition.
         _governanceEvents = new Governance.GovernanceEventLedger(_gatewayDb);
+        // Honest spend (issue #1771, spine item 3): per-session token effort + billing-mode label, and the
+        // account-level hosted-AI service dollars mirrored from the credit-debit ledger.
+        _sessionSpend = new Governance.SessionSpendStore(_gatewayDb);
+        _hostedAiSpend = new Governance.AccountHostedAiSpendStore(_gatewayDb);
         // Snooze Length mission: the persisted snooze registry (sessionId -> SnoozeUntilUtc), now in the
         // snoozes table of the EF data layer - a Gateway restart re-arms every pending snooze from the
         // database; an entry already past its time simply fires on the first sweep. The path argument is the
@@ -1637,6 +1645,10 @@ public sealed class GatewayHost : IAsyncDisposable
         // The governance event ledger (issue #1771, spine item 2): append-only session/run state
         // transitions - the duration timeline the weekly Outcome Ledger reads. Append and read only.
         Api.GovernanceEventEndpoints.Map(_app, _governanceEvents);
+
+        // Honest driver-normalized spend (issue #1771, spine item 3): per-session token effort + billing-mode
+        // label, and the account-level hosted-AI service dollars read from the mirrored credit-debit ledger.
+        Api.GovernanceSpendEndpoints.Map(_app, _sessionSpend, _hostedAiSpend);
 
         // Gateway Centralization Phase 1 (issue #628): the inbound login-telemetry RELAY. The Director
         // POSTs its login-telemetry event here (instead of the cloud) and the Gateway forwards it on,

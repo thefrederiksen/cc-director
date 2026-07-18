@@ -80,6 +80,14 @@ public sealed class GatewayDbContext : DbContext
     /// <summary>The wingman instructions state document (<c>wingman_instructions</c>), one row per tenant.</summary>
     public DbSet<WingmanInstructionEntity> WingmanInstructions => Set<WingmanInstructionEntity>();
 
+    /// <summary>Per-session token effort and honest spend (<c>session_spend</c>) - raw tokens + billing-mode
+    /// label, the driver-normalized spend of issue #1771 (spine item 3).</summary>
+    public DbSet<SessionSpendEntity> SessionSpend => Set<SessionSpendEntity>();
+
+    /// <summary>Account-level hosted-AI service dollars (<c>account_hosted_ai_spend</c>) mirrored from the
+    /// cloud credit-debit ledger - real metered dollars, never pinned to a session or run (issue #1771).</summary>
+    public DbSet<AccountHostedAiSpendEntity> AccountHostedAiSpend => Set<AccountHostedAiSpendEntity>();
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         base.OnModelCreating(modelBuilder);
@@ -212,6 +220,28 @@ public sealed class GatewayDbContext : DbContext
             b.OwnsMany(e => e.Versions, o => o.ToJson());
         });
 
+        modelBuilder.Entity<SessionSpendEntity>(b =>
+        {
+            b.ToTable("session_spend");
+            // SessionId is the natural key - one row per session, globally-unique GUID string - so it is the
+            // primary key directly (the snoozes-table pattern), no surrogate id.
+            b.HasKey(e => e.SessionId);
+            // The reporting cut is a last-observed time window, tenant-leading for the global filter.
+            b.HasIndex(e => new { e.TenantId, e.LastObservedUtc });
+        });
+
+        modelBuilder.Entity<AccountHostedAiSpendEntity>(b =>
+        {
+            b.ToTable("account_hosted_ai_spend");
+            b.HasKey(e => e.Id);
+            // The dedup lookup (kind + amount + transaction-time) and the weekly window sum, both tenant-
+            // leading for the global filter. NOT unique on the dedup tuple on purpose: two genuinely distinct
+            // debits of the same amount at the same instant are rare but real, and a unique index would throw
+            // on one; the store de-duplicates in code and discloses the (rare) undercount instead of crashing.
+            b.HasIndex(e => new { e.TenantId, e.Kind, e.AmountMicros, e.TransactionCreatedUtc });
+            b.HasIndex(e => new { e.TenantId, e.TransactionCreatedUtc });
+        });
+
         // Tenant scoping - the tenant_id column plus the global query filter - applied uniformly to every
         // entity that derives from TenantScopedEntity, so future stores inherit it by deriving from the base.
         ApplyTenantScope<CronJobEntity>(modelBuilder);
@@ -226,6 +256,8 @@ public sealed class GatewayDbContext : DbContext
         ApplyTenantScope<GovernanceEventEntity>(modelBuilder);
         ApplyTenantScope<PushSubscriptionEntity>(modelBuilder);
         ApplyTenantScope<WingmanInstructionEntity>(modelBuilder);
+        ApplyTenantScope<SessionSpendEntity>(modelBuilder);
+        ApplyTenantScope<AccountHostedAiSpendEntity>(modelBuilder);
 
         ApplyCommonSubsetConventions(modelBuilder);
     }
