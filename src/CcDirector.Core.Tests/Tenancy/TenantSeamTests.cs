@@ -35,6 +35,24 @@ public sealed class TenantSeamTests
     }
 
     [Fact]
+    public void ToLogString_RedactsRealTenants_ButKeepsLocalAndSystemReadable()
+    {
+        // The well-known non-sensitive identities stay readable in logs.
+        Assert.Equal("local", TenantId.Local.ToLogString());
+        Assert.Equal("system", TenantId.System.ToLogString());
+
+        // A real (account) tenant id is redacted to a short one-way tag - the raw id NEVER appears in the log
+        // rendering - and is deterministic so log lines for one tenant stay correlatable.
+        var account = new TenantId("11111111-2222-3333-4444-555555555555");
+        var rendered = account.ToLogString();
+        Assert.StartsWith("t#", rendered);
+        Assert.DoesNotContain(account.Value, rendered);
+        Assert.Equal(rendered, account.ToLogString());
+        // Distinct tenants render distinctly (isolation is still visible in logs).
+        Assert.NotEqual(rendered, new TenantId("99999999-8888-7777-6666-555555555555").ToLogString());
+    }
+
+    [Fact]
     public void Construct_TrimsAndKeepsValue()
     {
         var id = new TenantId("  acme  ");

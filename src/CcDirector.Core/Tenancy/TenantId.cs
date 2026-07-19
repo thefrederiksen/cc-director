@@ -1,4 +1,6 @@
 using System;
+using System.Security.Cryptography;
+using System.Text;
 
 namespace CcDirector.Core.Tenancy;
 
@@ -62,4 +64,19 @@ public readonly record struct TenantId
 
     /// <inheritdoc />
     public override string ToString() => IsValid ? Value : "<invalid-tenant>";
+
+    /// <summary>
+    /// A LOG-SAFE rendering of this tenant. The well-known, non-sensitive identities (<see cref="Local"/> and
+    /// <see cref="System"/>) render as themselves so logs stay readable; a real (account) tenant id renders as
+    /// a short ONE-WAY hash tag (<c>t#</c> + 8 hex) so the raw account tenant id NEVER reaches a log while log
+    /// lines stay correlatable. Use this - never the raw <see cref="Value"/> or <see cref="ToString"/> - when
+    /// writing a tenant to a log.
+    /// </summary>
+    public string ToLogString()
+    {
+        if (!IsValid) return "<invalid-tenant>";
+        if (IsLocal || IsSystem) return Value;
+        var hash = SHA256.HashData(Encoding.UTF8.GetBytes(Value));
+        return "t#" + Convert.ToHexString(hash, 0, 4).ToLowerInvariant();
+    }
 }
