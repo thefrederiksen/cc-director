@@ -88,6 +88,14 @@ you see here came from the cloud copy.
 None of these are things you are doing wrong. They are known, they have owners, and they are
 listed here so nothing surprises you.
 
+> **To whoever maintains this page: do not delete an item below because its fix merged.**
+> Delete it when the fix is **on the deployed cloud gateway and you have seen the thing work**.
+> Merged is not deployed - the cloud runs a container image, and merging to main does not change
+> what is running on it. That distinction has already cost this project real time more than once,
+> including a verification held back specifically because a merged fix was deliberately not yet on
+> the box. An item removed early turns an honest warning into a lie, and the person reading this
+> page has no way to tell.
+
 **There is no cockpit and no phone view on the cloud gateway.** This is the big one. The cloud
 image is deliberately built without the cockpit and mobile web apps, so `https://devthrottle-gw.azurewebsites.net`
 in a browser will not give you a usable page. For now the **desktop window is the only way to see
