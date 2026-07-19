@@ -2771,7 +2771,12 @@ internal static class GatewayEndpoints
     ///    reached from the wingman voice endpoint's request handling, so those voice reads stay inert on
     ///    hosted rather than working. That is deliberate and it is the same precondition as the sweep, but it
     ///    is a REMAINING GAP, not a solved case, and it is booked as its own work;
-    ///  - the dictation completion path, which now resolves the tenant at its route and threads it in.
+    ///  - the dictation completion path, DELIBERATELY LEFT LOCAL. Tenant-scoping only its /complete leg was
+    ///    tried in this pull request and REMOVED in review: it would have activated a route whose upload
+    ///    store is unpartitioned - one global root keyed solely by a caller-supplied upload id, with no
+    ///    tenant on the record, and sibling routes (upload, chunk, ack, abandon) that authorize a device but
+    ///    never check whose upload it is. Reaching the route is not the boundary; a shared identifier space
+    ///    is. Booked as issue #1884, with the same precondition as voice: partition the state first.
     ///
     /// This does NOT make the mistake impossible for the next route, and saying so would overstate it: the
     /// primitive is still internal and a new route could call it with any tenant it liked. What it does is
