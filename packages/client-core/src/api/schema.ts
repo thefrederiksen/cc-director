@@ -7682,6 +7682,7 @@ export interface components {
             remoteThreadUrl?: string;
             remoteRunUrl?: string;
             remoteRunStatus?: string;
+            repoName?: string;
             inputStats?: null | components["schemas"]["InputStatsDto"];
         };
         SessionNumberAllocateRequest: {

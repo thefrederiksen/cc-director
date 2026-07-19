@@ -10,7 +10,7 @@ import {
   type DirectorReachability,
 } from "@devthrottle/client-core/fleet/fleetClient";
 import { useSharedRoster } from "@devthrottle/client-core/fleet/rosterStore";
-import { repoBasename, relativeTime } from "./format";
+import { repoBasename, repoIdentity, relativeTime } from "./format";
 import { agentBadgeText, buildControllerTree } from "./fleetMapFormat";
 import { MissionsBoard, missionCounts } from "../missions/MissionsBoard";
 
@@ -23,9 +23,17 @@ const ReachabilityContext = createContext<DirectorReachability[]>([]);
 // node for the Gateway branching down to grouped "lane" panels of terminal-window session cards,
 // joined by SVG elbow connectors, with one status dot per node. The same fleet is re-laid-out on the
 // fly several ways (the pivot switch): by machine (machine -> Director -> session, the topology), by
-// repository (what we are building), by agent (Claude/Codex/Gemini/... - the workforce), a flat Fleet
-// list, or by Mission - the way the owner actually thinks about the work. Missions used to be its own
-// left-rail page; it is now a pivot of this one page (issue #1405), so the fleet has a single home.
+// repository (the GitHub "owner/repo" we are building - worktrees and clones fold together), by working
+// tree (the on-disk checkout folder - each worktree stands alone), by agent (Claude/Codex/Gemini/... -
+// the workforce), a flat Fleet list, or by Mission - the way the owner actually thinks about the work.
+// Missions used to be its own left-rail page; it is now a pivot of this one page (issue #1405), so the
+// fleet has a single home.
+//
+// "By repository" and "By working tree" are two DIFFERENT truths about the same fleet: a session cut in a
+// worktree at "devthrottle-enroll-fix" belongs to the repository "thefrederiksen/devthrottle" (repository
+// pivot folds it in) yet lives in its own checkout folder (working-tree pivot keeps it separate). The
+// repository identity comes from SessionDto.repoName, which the owning Director resolves from the
+// checkout's git origin remote; the working-tree identity is just the folder leaf of repoPath.
 //
 // It reads the ONE shared fleet roster store (issue #1239) - the same GET /sessions?envelope=true
 // envelope Sessions and Directors read, from a single poll loop - never a Director address - and reuses
@@ -33,11 +41,15 @@ const ReachabilityContext = createContext<DirectorReachability[]>([]);
 // fleet page reads that one store, this map and the Sessions roster always agree on the fleet at the
 // same moment, and a hidden tab makes no roster requests at all.
 
-type Pivot = "machine" | "repo" | "agent" | "list" | "mission";
+type Pivot = "machine" | "repo" | "worktree" | "agent" | "list" | "mission";
 
 const PIVOTS: ReadonlyArray<{ key: Pivot; label: string; kindLabel: string }> = [
   { key: "machine", label: "By machine", kindLabel: "Machine" },
+  // "By repository" groups by the GitHub "owner/repo" (SessionDto.repoName), so every worktree and clone
+  // of one repository rolls up together. "By working tree" groups by the on-disk checkout folder, so each
+  // worktree stands on its own - the two sit side by side because they answer two different questions.
   { key: "repo", label: "By repository", kindLabel: "Repository" },
+  { key: "worktree", label: "By working tree", kindLabel: "Working tree" },
   { key: "agent", label: "By agent", kindLabel: "Agent" },
   // The flat "Fleet list" pivot (issue #1212) absorbs the retired Fleet page: every session once, as
   // the same node card, no lane grouping (machines are already their own pivot).
@@ -50,7 +62,7 @@ const PIVOTS: ReadonlyArray<{ key: Pivot; label: string; kindLabel: string }> = 
 
 // The pivots that lay the fleet out on the node canvas (root -> lanes). "list" is a flat grid and
 // "mission" is its own board; neither uses the canvas or the title search.
-const CANVAS_PIVOTS: ReadonlySet<Pivot> = new Set<Pivot>(["machine", "repo", "agent"]);
+const CANVAS_PIVOTS: ReadonlySet<Pivot> = new Set<Pivot>(["machine", "repo", "worktree", "agent"]);
 
 // The grouping is sticky per browser: the map opens on whatever the user last chose (rather than a
 // "smart" default that guesses from the fleet shape), so returning to the map lands them exactly where
@@ -63,6 +75,7 @@ function initialPivot(): Pivot {
     if (
       saved === "machine" ||
       saved === "repo" ||
+      saved === "worktree" ||
       saved === "agent" ||
       saved === "list" ||
       saved === "mission"
@@ -138,9 +151,11 @@ export function FleetMapView() {
     for (const s of list) set.add((s.machineName ?? "").toLowerCase());
     return set.size;
   }, [list]);
+  // "N repos" counts distinct GitHub repositories, not checkouts: two worktrees of one repository are one
+  // repo here (matching the "By repository" pivot). The "By working tree" pivot is where checkouts split.
   const repoCount = useMemo(() => {
     const set = new Set<string>();
-    for (const s of list) set.add(repoBasename(s.repoPath).toLowerCase());
+    for (const s of list) set.add(repoIdentity(s.repoName, s.repoPath).toLowerCase());
     return set.size;
   }, [list]);
   const redCount = list.filter((s) => effectiveColor(s) === "red").length;
@@ -579,6 +594,12 @@ function buildLanes(sessions: SessionDto[], pivot: Pivot): Lane[] {
       return { key: title.toLowerCase(), title };
     }
     if (pivot === "repo") {
+      // GitHub "owner/repo" identity - worktrees and clones of one repository fold into one lane.
+      const title = repoIdentity(s.repoName, s.repoPath);
+      return { key: title.toLowerCase(), title };
+    }
+    if (pivot === "worktree") {
+      // On-disk checkout folder - each worktree stands alone, even when it belongs to the same repository.
       const title = repoBasename(s.repoPath);
       return { key: title.toLowerCase(), title };
     }
@@ -685,18 +706,27 @@ function cardTags(s: SessionDto, pivot: Pivot): Array<{ k: string; v: string }> 
   const dir = (s.directorId ?? "").trim();
   const machine = (s.machineName ?? "").trim();
   if (pivot === "machine") {
-    // Lane = machine, sub-grouped by Director; the missing coordinate is the repo.
-    return [{ k: "repo", v: repoBasename(s.repoPath) }];
+    // Lane = machine, sub-grouped by Director; the missing coordinate is the repository.
+    return [{ k: "repo", v: repoIdentity(s.repoName, s.repoPath) }];
   }
   if (pivot === "repo") {
-    // Lane = repo; show where it runs (machine + Director) and which agent.
+    // Lane = repository; show where it runs (machine + Director) and which working tree, so two worktrees
+    // of the same repository sharing a lane are still told apart.
     const out: Array<{ k: string; v: string }> = [];
     if (machine.length > 0) out.push({ k: machine, v: dir.length > 0 ? shortDir(dir) : "-" });
+    out.push({ k: "tree", v: repoBasename(s.repoPath) });
     return out;
   }
-  // Lane = agent, or the flat Fleet list (no lane at all); show machine + repo.
+  if (pivot === "worktree") {
+    // Lane = working tree; show where it runs (machine + Director) and which repository it belongs to.
+    const out: Array<{ k: string; v: string }> = [];
+    if (machine.length > 0) out.push({ k: machine, v: dir.length > 0 ? shortDir(dir) : "-" });
+    out.push({ k: "repo", v: repoIdentity(s.repoName, s.repoPath) });
+    return out;
+  }
+  // Lane = agent, or the flat Fleet list (no lane at all); show machine + repository.
   const out: Array<{ k: string; v: string }> = [];
-  if (machine.length > 0) out.push({ k: machine, v: repoBasename(s.repoPath) });
+  if (machine.length > 0) out.push({ k: machine, v: repoIdentity(s.repoName, s.repoPath) });
   return out;
 }
 

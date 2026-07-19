@@ -4,12 +4,28 @@
 // the same way. Session color/order helpers are NOT re-implemented here - those live in the shared
 // client-core/sessions/ordering module and are reused directly.
 
-// The leaf repo name for a card/table cell, e.g. "C:\\repos\\devthrottle" -> "devthrottle".
+// The leaf repo name for a card/table cell, e.g. "C:\\repos\\devthrottle" -> "devthrottle". This is the
+// WORKING-TREE identity: every worktree and every clone of one repository has a different leaf, so a
+// worktree cut at "D:\\ReposFred\\devthrottle-enroll-fix" reads as its own thing here, distinct from the
+// repository it belongs to.
 export function repoBasename(path: string | null | undefined): string {
   if (path === null || path === undefined || path.trim().length === 0) return "(no repo)";
   const norm = path.replace(/\\/g, "/").replace(/\/+$/, "");
   const i = norm.lastIndexOf("/");
   return i >= 0 ? norm.slice(i + 1) : norm;
+}
+
+// The GITHUB REPOSITORY identity for a session: the "owner/repo" name the owning Director resolved from
+// the checkout's git origin remote (SessionDto.repoName). Every worktree and every per-machine clone of
+// one repository shares this, so grouping by it folds a worktree back into the repository it was cut
+// from - unlike repoBasename, which splits them. When the checkout is on no host we recognize (a
+// local-only repo with no GitHub/Azure origin), repoName is empty and we fall back to the working-tree
+// leaf so the session still lands somewhere named rather than in one anonymous bucket. This is the exact
+// rule the DevThrottle Stats repo rollup uses (GatewayInputStatsAggregator: repoName ?? repo leaf), kept
+// identical here so the Fleet Map and the Repos page agree on what "a repository" is.
+export function repoIdentity(repoName: string | null | undefined, repoPath: string | null | undefined): string {
+  if (repoName !== null && repoName !== undefined && repoName.trim().length > 0) return repoName.trim();
+  return repoBasename(repoPath);
 }
 
 // There is deliberately NO humanizeState here. It was a port of the Blazor HumanizeState vocabulary

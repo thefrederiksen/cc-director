@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { portLabel, repoBasename, shortId, uptime } from "./format";
+import { portLabel, repoBasename, repoIdentity, shortId, uptime } from "./format";
 
 // These lock the shared formatting helpers that issue #1261 consolidated: the Wingman and Feedback pages
 // deleted their local copies and now import exactly these, so a regression here would be a regression on
@@ -33,6 +33,40 @@ describe("repoBasename", () => {
   it("names an absent repository plainly", () => {
     expect(repoBasename("")).toBe("(no repo)");
     expect(repoBasename(null)).toBe("(no repo)");
+  });
+});
+
+describe("repoIdentity", () => {
+  it("uses the GitHub owner/repo when present, ignoring the checkout folder", () => {
+    // A worktree cut at "devthrottle-enroll-fix" still belongs to the repository it was cut from, so it
+    // rolls up under the repoName - this is the whole point of the "By repository" pivot.
+    expect(repoIdentity("thefrederiksen/devthrottle", "D:\\ReposFred\\devthrottle-enroll-fix")).toBe(
+      "thefrederiksen/devthrottle",
+    );
+    expect(repoIdentity("thefrederiksen/devthrottle", "D:\\ReposFred\\devthrottle")).toBe(
+      "thefrederiksen/devthrottle",
+    );
+  });
+
+  it("folds two worktrees of one repository to the same identity", () => {
+    const a = repoIdentity("thefrederiksen/devthrottle", "D:\\ReposFred\\devthrottle");
+    const b = repoIdentity("thefrederiksen/devthrottle", "D:\\ReposFred\\devthrottle-enroll-fix");
+    expect(a).toBe(b);
+  });
+
+  it("falls back to the working-tree leaf when there is no recognized remote", () => {
+    expect(repoIdentity("", "D:\\ReposFred\\local-only")).toBe("local-only");
+    expect(repoIdentity(null, "/home/soren/scratch/")).toBe("scratch");
+    expect(repoIdentity(undefined, "D:\\ReposFred\\local-only")).toBe("local-only");
+  });
+
+  it("trims whitespace-only repoName and treats it as absent", () => {
+    expect(repoIdentity("   ", "D:\\ReposFred\\devthrottle")).toBe("devthrottle");
+  });
+
+  it("names a session with neither remote nor path plainly", () => {
+    expect(repoIdentity("", "")).toBe("(no repo)");
+    expect(repoIdentity(null, null)).toBe("(no repo)");
   });
 });
 
