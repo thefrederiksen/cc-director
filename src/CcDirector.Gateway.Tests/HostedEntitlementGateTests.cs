@@ -194,6 +194,26 @@ public sealed class HostedEntitlementGateTests : IDisposable
         AssertNothingWasGivenAway(tenants);
     }
 
+    [Fact]
+    public void A_payment_being_retried_is_refused_AT_the_exact_instant_the_paid_period_ends()
+    {
+        // THE BOUNDARY ITSELF, which the two tests above deliberately straddle without ever landing on. One
+        // probes three days inside the window and the other one second past it, so an inclusive comparison
+        // at the end instant passes both of them while granting access on an entitlement that has expired.
+        // At exactly CurrentPeriodEnd the paid period has ended - that is what the field means - so this is
+        // a refusal. Small in duration, but it is a grant in the deny-OPEN direction, and an untested
+        // boundary is where a policy quietly becomes the opposite of what it says.
+        var now = new DateTime(2026, 7, 19, 12, 0, 0, DateTimeKind.Utc);
+        var db = OpenWithEntitlements(EntitlementRegistry.StatusPastDue, now);
+        var (devices, tenants, validator) = Wire(db);
+
+        var result = HostedEnrollmentEndpoint.Enroll(Token(), Req(), devices, tenants, validator,
+            new EntitlementRegistry(db, requireLivemode: false), now);
+
+        Assert.Equal(402, result.Status);
+        AssertNothingWasGivenAway(tenants);
+    }
+
     [Theory]
     [InlineData("canceled")]
     [InlineData("incomplete_expired")]

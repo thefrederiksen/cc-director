@@ -145,9 +145,15 @@ public sealed class EntitlementRegistry
 
         // The dunning grace window: a payment that failed is being retried, and the customer has paid for
         // the period already. Entitled until that period ends, and not one moment after.
+        //
+        // The comparison is STRICTLY LESS THAN, so the end instant itself is already outside the window. At
+        // exactly CurrentPeriodEnd the paid period HAS ended - that is what the field means - and an
+        // inclusive comparison would grant on an expired entitlement. It is one tick of access, but it is a
+        // grant in the deny-OPEN direction, and this gate's whole job is to never guess in the paying
+        // direction. Boundaries are where a policy is decided, so this one is pinned by its own test.
         if (string.Equals(status, StatusPastDue, StringComparison.OrdinalIgnoreCase)
             && row.CurrentPeriodEnd is { } periodEnd
-            && nowUtc <= periodEnd)
+            && nowUtc < periodEnd)
         {
             FileLog.Write("[EntitlementRegistry] LookupBySubject: ENTITLED within the payment-retry grace window (payment is past due, the paid period has not ended)");
             return EntitlementOutcome.Entitled;
