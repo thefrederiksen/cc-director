@@ -37,6 +37,89 @@ public sealed class GatewayTestSuiteLockTests
         Assert.NotNull(refused);
     }
 
+    /// <summary>
+    /// The regression test for a DEMONSTRATED defect, not a hypothesis. The lock path was originally derived
+    /// from <see cref="Path.GetTempPath"/>, which reads TEMP and TMP from the process environment. Two runs
+    /// launched with different TEMP values computed two different lock files, so neither could see the
+    /// other: both reported acquiring the lock in the same second and both ran concurrently. The whole
+    /// mechanism was inert one environment variable away from its intended use.
+    ///
+    /// This asserts the property that closes it - the lock's identity does not move when the environment
+    /// moves - on whatever platform the tests run on, including platforms the author could not reach.
+    /// </summary>
+    [Fact]
+    public void TheLockPathDoesNotMoveWhenTheTemporaryDirectoryEnvironmentMoves()
+    {
+        var original = GatewayTestSuiteLock.ComputeLockFilePath();
+        var names = new[] { "TEMP", "TMP", "TMPDIR" };
+        var saved = names.ToDictionary(n => n, Environment.GetEnvironmentVariable);
+
+        try
+        {
+            foreach (var name in names)
+                Environment.SetEnvironmentVariable(name, Path.Combine(Path.GetTempPath(), "moved-" + name));
+
+            Assert.Equal(original, GatewayTestSuiteLock.ComputeLockFilePath());
+        }
+        finally
+        {
+            foreach (var (name, value) in saved)
+                Environment.SetEnvironmentVariable(name, value);
+        }
+    }
+
+    /// <summary>
+    /// The end-to-end half of the same defect, against the REAL lock this run is really holding.
+    ///
+    /// A second run launched with a different TEMP would compute its lock path, then open it. This does
+    /// exactly that - recomputes the path under a changed environment, then attempts the same exclusive
+    /// open a second run would attempt - and requires it to be REFUSED. Under the defect the recomputed
+    /// path was a different file and the open succeeded, which is precisely how two suites ran side by
+    /// side.
+    /// </summary>
+    [Fact]
+    public void ARunWithADifferentTemporaryDirectoryStillCollidesWithThisHeldLock()
+    {
+        var names = new[] { "TEMP", "TMP", "TMPDIR" };
+        var saved = names.ToDictionary(n => n, Environment.GetEnvironmentVariable);
+        var elsewhere = Path.Combine(Path.GetTempPath(), "another-runs-temp-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(elsewhere);
+
+        try
+        {
+            foreach (var name in names)
+                Environment.SetEnvironmentVariable(name, elsewhere);
+
+            var asAnotherRunWouldComputeIt = GatewayTestSuiteLock.ComputeLockFilePath();
+
+            // Same file this run holds - that is the property being pinned.
+            Assert.Equal(GatewayTestSuiteLock.LockFilePath, asAnotherRunWouldComputeIt);
+
+            Assert.ThrowsAny<IOException>(() =>
+            {
+                using var _ = new FileStream(
+                    asAnotherRunWouldComputeIt, FileMode.OpenOrCreate, FileAccess.Write, FileShare.Read);
+            });
+        }
+        finally
+        {
+            foreach (var (name, value) in saved)
+                Environment.SetEnvironmentVariable(name, value);
+            try { Directory.Delete(elsewhere, recursive: true); } catch (IOException) { /* best effort */ }
+        }
+    }
+
+    [Fact]
+    public void TheLockDoesNotLiveUnderTheEnvironmentSettableTemporaryDirectory()
+    {
+        // Stated as its own fact because it is the shape of the defect: anything under the temporary
+        // directory is relocatable by whoever launches the run, and a relocatable lock is not a lock.
+        Assert.False(
+            GatewayTestSuiteLock.LockFilePath.StartsWith(Path.GetTempPath(), StringComparison.OrdinalIgnoreCase),
+            $"The lock lives at {GatewayTestSuiteLock.LockFilePath}, under the environment-settable "
+            + "temporary directory, so two runs with different TEMP values would not see each other.");
+    }
+
     [Fact]
     public void TheLockFileNamesThisProcess_SoABlockedRunCanSayWhoIsBlockingIt()
     {

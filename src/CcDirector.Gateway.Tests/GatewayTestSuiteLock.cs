@@ -99,12 +99,58 @@ internal static class GatewayTestSuiteLock
     /// <summary>Exit code used when this run refuses to start because a live holder never let go.</summary>
     internal const int BlockedExitCode = 99;
 
-    /// <summary>The lock file every run of this assembly contends for, whatever working tree it was built
-    /// from. Under the temporary directory because that is the one location every account is guaranteed to
-    /// be able to write; note that on Windows this is per-user, so the lock serializes all runs by one user
-    /// account - which is the contention actually observed here.</summary>
-    internal static string LockFilePath { get; } =
-        Path.Combine(Path.GetTempPath(), "cc-director-gateway-test-suite.lock");
+    /// <summary>Exit code used when the lock location itself is unusable - a setup failure, not contention.</summary>
+    internal const int SetupFailureExitCode = 98;
+
+    /// <summary>The file name every run of this assembly contends for, whatever working tree it was built
+    /// from.</summary>
+    private const string LockFileName = "gateway-test-suite.lock";
+
+    /// <summary>The lock file every run of this assembly contends for.</summary>
+    internal static string LockFilePath { get; } = ComputeLockFilePath();
+
+    /// <summary>
+    /// Derives the lock path from a location the PROCESS ENVIRONMENT CANNOT MOVE.
+    ///
+    /// This is the difference between a lock and a decoration, and it was got wrong first time round. The
+    /// original used <see cref="Path.GetTempPath"/>, which reads TEMP and TMP from the environment. Two runs
+    /// launched with different TEMP values computed different lock files, so neither ever saw the other:
+    /// both printed "Acquired" in the same second and both ran concurrently. That was demonstrated, not
+    /// theorised. It is also the worst possible way to fail, because the environments most likely to differ
+    /// are precisely the ones this exists to serialize - different agents, different shells, different
+    /// working trees, a scheduled task against an interactive session.
+    ///
+    /// The rule this now follows: a lock's identity may depend on the MACHINE and the USER, never on
+    /// anything the caller can set. On Windows the shell folder API supplies the per-user local application
+    /// data directory from the user profile, and ignores the LOCALAPPDATA environment variable even when it
+    /// is overridden - measured, not assumed. Elsewhere the path is a literal, because
+    /// <see cref="Path.GetTempPath"/> reads TMPDIR and the folder API reads XDG_DATA_HOME and HOME; the user
+    /// name goes in the file name instead, since a shared directory needs the per-user split somewhere.
+    ///
+    /// <see cref="GatewayTestSuiteLockTests"/> pins this by mutating TEMP, TMP and TMPDIR and asserting the
+    /// derived path does not move - so the regression is caught on whatever platform the tests run on,
+    /// including ones not available to whoever wrote this.
+    /// </summary>
+    internal static string ComputeLockFilePath()
+    {
+        if (!OperatingSystem.IsWindows())
+            return Path.Combine("/tmp", "cc-director-" + Environment.UserName + "-" + LockFileName);
+
+        var localAppData = Environment.GetFolderPath(
+            Environment.SpecialFolder.LocalApplicationData, Environment.SpecialFolderOption.DoNotVerify);
+
+        if (string.IsNullOrWhiteSpace(localAppData))
+        {
+            // Nothing to fall back to that would still be a lock: every alternative is environment-settable,
+            // which is the defect this method exists to close. Better to stop than to serialize nothing.
+            throw new InvalidOperationException(
+                "Cannot locate the per-user local application data directory, so the machine-wide Gateway "
+                + "test lock has no environment-independent home. Running without it would let two Gateway "
+                + "test runs execute concurrently and corrupt each other. See GatewayTestSuiteLock.");
+        }
+
+        return Path.Combine(localAppData, "cc-director", LockFileName);
+    }
 
     /// <summary>A copy of everything this run printed while acquiring, kept next to the lock so a human
     /// investigating a blocked machine can read the history without a console to look at.</summary>
@@ -129,6 +175,8 @@ internal static class GatewayTestSuiteLock
         var started = DateTime.UtcNow;
         var lastProgress = DateTime.MinValue;
         var announcedWait = false;
+
+        EnsureLockLocationUsable();
 
         while (true)
         {
@@ -198,18 +246,125 @@ internal static class GatewayTestSuiteLock
             stream = new FileStream(
                 LockFilePath, FileMode.OpenOrCreate, FileAccess.Write, FileShare.Read);
         }
-        catch (IOException)
+        catch (IOException ex) when (IsSharingContention(ex))
         {
             return false;
         }
-        catch (UnauthorizedAccessException)
+        catch (Exception ex)
         {
-            return false;
+            // ONLY a sharing conflict means "somebody else is running". Everything else - a permission
+            // failure, a read-only file, a directory at the path, a broken or full disk - is a setup fault,
+            // and treating it as contention is how the wedge we designed this to avoid comes back through
+            // the error path: the run would wait the full timeout while naming a holder that does not
+            // exist, then the next run would do the same, forever. So these stop the run at once, saying
+            // what actually happened.
+            FailSetup("cannot open the lock file", ex);
+            throw; // unreachable: FailSetup ends the process. Present so the compiler sees a terminal path.
         }
 
         _held = stream;
         WriteDiagnostics(stream);
         return true;
+    }
+
+    /// <summary>
+    /// Distinguishes "another process holds this file" from every other input/output failure.
+    ///
+    /// On Windows the operating system names it exactly, so the test is exact: a sharing violation or a
+    /// lock violation, and nothing else. Elsewhere the errno mapping for an advisory-lock conflict is not
+    /// something this code has verified on the platform in question, and guessing at it would be the same
+    /// class of mistake as the temp-path defect - so instead the question is answered with EVIDENCE: a live
+    /// holder grants readers access, so if the file can still be opened for reading, somebody is holding it.
+    /// If it cannot even be read, this is not contention and must not be reported as a holder.
+    /// </summary>
+    private static bool IsSharingContention(IOException ex)
+    {
+        const int SharingViolation = 32;
+        const int LockViolation = 33;
+
+        if (OperatingSystem.IsWindows())
+        {
+            var code = ex.HResult & 0xFFFF;
+            return code is SharingViolation or LockViolation;
+        }
+
+        try
+        {
+            using var probe = new FileStream(
+                LockFilePath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+            return true;
+        }
+        catch (Exception)
+        {
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Checks the lock's home before the acquisition loop starts, so the common setup faults are reported
+    /// precisely rather than as whatever the open call happens to throw. Each of these would otherwise have
+    /// been indistinguishable from a live holder.
+    /// </summary>
+    private static void EnsureLockLocationUsable()
+    {
+        var directory = Path.GetDirectoryName(LockFilePath);
+        if (string.IsNullOrEmpty(directory))
+        {
+            FailSetup($"the lock path '{LockFilePath}' has no containing directory", exception: null);
+            return;
+        }
+
+        try
+        {
+            Directory.CreateDirectory(directory);
+        }
+        catch (Exception ex)
+        {
+            FailSetup($"cannot create the lock directory '{directory}'", ex);
+            return;
+        }
+
+        if (Directory.Exists(LockFilePath))
+        {
+            FailSetup(
+                $"a DIRECTORY sits at the lock file path '{LockFilePath}', so the lock file can never be "
+                + "opened. Remove that directory.",
+                exception: null);
+            return;
+        }
+
+        try
+        {
+            if (File.Exists(LockFilePath)
+                && (File.GetAttributes(LockFilePath) & FileAttributes.ReadOnly) != 0)
+            {
+                FailSetup(
+                    $"the lock file '{LockFilePath}' is marked READ-ONLY, so it can never be opened for "
+                    + "writing. Clear the read-only attribute.",
+                    exception: null);
+            }
+        }
+        catch (Exception ex)
+        {
+            FailSetup($"cannot inspect the lock file '{LockFilePath}'", ex);
+        }
+    }
+
+    /// <summary>
+    /// Stops the run because the lock's home is broken. Deliberately NOT a wait and NOT a retry: a setup
+    /// fault does not clear on its own, so retrying it produces a run that hangs for the full timeout and
+    /// then fails for the wrong reason. This says what is wrong and stops.
+    /// </summary>
+    private static void FailSetup(string what, Exception? exception)
+    {
+        var detail = exception is null ? "" : $" Underlying failure: {exception.GetType().Name}: {exception.Message}.";
+        Say($"[gateway-test-lock] *** CANNOT SET UP THE MACHINE-WIDE GATEWAY TEST LOCK: {what}.{detail} "
+            + "NO TESTS WILL RUN. This is NOT another run holding the lock - it is a fault in the lock's "
+            + "location that will not clear by waiting, so this run stops immediately rather than blocking "
+            + "and then blaming a holder that does not exist. Fix the path above and run again. ***");
+        Console.Out.Flush();
+        Console.Error.Flush();
+        Environment.Exit(SetupFailureExitCode);
     }
 
     /// <summary>
@@ -327,10 +482,14 @@ internal static class GatewayTestSuiteLock
         {
             File.AppendAllText(LogFilePath, stamped + Environment.NewLine);
         }
-        catch (IOException)
+        catch (Exception)
         {
-            // The channels above are the ones that matter; the log is a convenience for a human looking at
-            // a machine with no console attached.
+            // Every failure, not merely IOException. This previously caught IOException alone, which meant
+            // an unwritable or read-only log file threw UnauthorizedAccessException out of a DIAGNOSTIC
+            // write - after the lock was already acquired - and would have aborted every future run. A
+            // channel whose only job is to explain a problem must never be able to cause one. The console
+            // channels above already carry the message; this file is a convenience for reading a machine
+            // afterwards with no console attached.
         }
     }
 
