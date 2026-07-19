@@ -6,9 +6,21 @@ import react from "@vitejs/plugin-react";
 // cockpit is deployed, independently of the Gateway's version. The two can diverge when only the
 // static cockpit files are refreshed (a cockpit-only redeploy), so the Gateway version alone cannot
 // tell you which cockpit you are looking at. The commit is the repo HEAD at build time; the time is
-// the build time. git is present in every build path (dev and the release MSBuild), so this is not
-// wrapped in a fallback - if it cannot read the commit the build fails loudly.
-const cockpitCommit = execSync("git rev-parse --short HEAD").toString().trim();
+// the build time. git is present in a normal build path (dev and the release MSBuild), so that is
+// the default source and it is not wrapped in a fallback - if it cannot read the commit the build
+// fails loudly.
+//
+// One build path genuinely has no git repository to ask: the container image. Its build context
+// excludes .git, and a build run from a git worktree has only a pointer file there anyway, so
+// `git rev-parse` cannot answer inside the image. That path supplies the commit directly through
+// COCKPIT_COMMIT (the repo-root Dockerfile requires it as a build argument). This is a second
+// SOURCE for the same fact, not a fallback to a made-up value: if neither the environment nor git
+// yields a commit, the build still fails and no build is ever stamped "unknown".
+const commitFromEnvironment = process.env.COCKPIT_COMMIT?.trim();
+const cockpitCommit =
+  commitFromEnvironment && commitFromEnvironment.length > 0
+    ? commitFromEnvironment
+    : execSync("git rev-parse --short HEAD").toString().trim();
 const cockpitBuildTime = new Date().toISOString();
 
 // The desktop Cockpit is the Gateway's canonical front door: it is served at the site root "/"
