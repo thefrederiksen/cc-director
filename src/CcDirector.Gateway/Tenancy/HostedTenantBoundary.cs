@@ -48,6 +48,22 @@ public sealed class HostedTenantBoundary
     }
 
     /// <summary>
+    /// Resolve the tenant of a REQUEST from the AUTHENTICATED device key the auth middleware stashed on it
+    /// (Hosted Multi-Tenancy, session-serving). This is the read-side twin of the tunnel's Hello: the cockpit
+    /// and mobile reach the read endpoints with the SAME per-device key (mirrored into the cc-gateway-token
+    /// cookie) that the write path uses, so the read tenant resolves from that key - no account-token
+    /// plumbing. On self-host every request is Local; on hosted it is the key's bound tenant, or null (a DENY:
+    /// the endpoint must return 403, never fall back to Local or SYSTEM).
+    /// </summary>
+    public TenantId? ResolveRequestTenant(Microsoft.AspNetCore.Http.HttpContext ctx)
+    {
+        var key = ctx?.Items.TryGetValue(Util.AuthMiddleware.DeviceKeyItemKey, out var value) == true
+            ? value as string
+            : null;
+        return ResolveForDeviceKey(key);
+    }
+
+    /// <summary>
     /// Enter the scope for an already-resolved tenant (e.g. the tunnel's Hello-bound tenant on each push, or a
     /// resolved HTTP request). On self-host this is a no-op (Local is the ambient answer); on hosted it enters
     /// the ambient scope. The caller must have resolved a valid tenant first (the deny happened at resolution).

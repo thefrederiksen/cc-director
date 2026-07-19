@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using CcDirector.Core.Tenancy;
 using CcDirector.Core.Utilities;
 using CcDirector.Gateway.Contracts;
 
@@ -45,7 +46,12 @@ public sealed class FleetRosterCache
     /// </summary>
     public const int GraceWindowPollCycles = 3;
 
-    private readonly ConcurrentDictionary<string, Entry> _byDirector = new(StringComparer.OrdinalIgnoreCase);
+    // Hosted Multi-Tenancy (session-serving): the cache is partitioned by (tenant, director), so a Director
+    // reachable under one tenant is never served as a "wobbly" last-known-good snapshot to a DIFFERENT tenant
+    // that finds it unreachable. On self-host every caller passes TenantId.Local, so this is one partition and
+    // behavior is identical to before. The DirectorId half stays case-insensitive as it was.
+    private readonly ConcurrentDictionary<(TenantId Tenant, string DirectorId), Entry> _byDirector =
+        new(new KeyComparer());
     private readonly Func<DateTime> _utcNow;
 
     /// <summary>
@@ -61,7 +67,7 @@ public sealed class FleetRosterCache
     /// Record a SUCCESSFUL roster read for a Director: store the last-known-good snapshot, stamp the
     /// last-seen time, and reset the failure streak. Returns the Online projection for the envelope.
     /// </summary>
-    public DirectorRosterProjection RecordReachable(string directorId, IReadOnlyList<SessionDto> sessions)
+    public DirectorRosterProjection RecordReachable(TenantId tenant, string directorId, IReadOnlyList<SessionDto> sessions)
     {
         if (string.IsNullOrEmpty(directorId))
             throw new ArgumentException("directorId is required", nameof(directorId));
@@ -69,7 +75,7 @@ public sealed class FleetRosterCache
             throw new ArgumentNullException(nameof(sessions));
 
         var now = _utcNow();
-        var entry = _byDirector.GetOrAdd(directorId, _ => new Entry());
+        var entry = _byDirector.GetOrAdd((tenant, directorId), _ => new Entry());
         lock (entry.Gate)
         {
             entry.Snapshot = sessions.Select(s => s.Clone()).ToList();
@@ -88,13 +94,13 @@ public sealed class FleetRosterCache
     /// Offline (grace window exhausted, or nothing was ever cached). For Wobbly the returned projection
     /// carries deep copies of the last-known-good sessions to serve; for Offline it carries no sessions.
     /// </summary>
-    public DirectorRosterProjection RecordUnreachable(string directorId, string? error)
+    public DirectorRosterProjection RecordUnreachable(TenantId tenant, string directorId, string? error)
     {
         if (string.IsNullOrEmpty(directorId))
             throw new ArgumentException("directorId is required", nameof(directorId));
 
         var now = _utcNow();
-        var entry = _byDirector.GetOrAdd(directorId, _ => new Entry());
+        var entry = _byDirector.GetOrAdd((tenant, directorId), _ => new Entry());
         lock (entry.Gate)
         {
             entry.ConsecutiveFailures++;
@@ -131,7 +137,17 @@ public sealed class FleetRosterCache
     public void Forget(string directorId)
     {
         if (string.IsNullOrEmpty(directorId)) return;
-        if (_byDirector.TryRemove(directorId, out _))
+        // The removal event (DirectorRegistry.OnDirectorRemoved) carries no tenant, and a Director id is
+        // globally unique across the fleet, so drop every partition's entry for it. On self-host there is only
+        // the Local partition; on hosted a Director lives in exactly one tenant, so this removes that one entry.
+        var removedAny = false;
+        foreach (var key in _byDirector.Keys)
+        {
+            if (string.Equals(key.DirectorId, directorId, StringComparison.OrdinalIgnoreCase)
+                && _byDirector.TryRemove(key, out _))
+                removedAny = true;
+        }
+        if (removedAny)
             FileLog.Write($"[FleetRosterCache] {directorId} forgotten (unregistered/evicted); roster cache cleared");
     }
 
@@ -151,6 +167,17 @@ public sealed class FleetRosterCache
         public List<SessionDto>? Snapshot;
         public DateTime? LastSeenUtc;
         public int ConsecutiveFailures;
+    }
+
+    // Case-insensitive on the DirectorId half (Director ids are treated case-insensitively everywhere), exact
+    // on the TenantId half. Preserves the previous OrdinalIgnoreCase director keying now that the key is a pair.
+    private sealed class KeyComparer : IEqualityComparer<(TenantId Tenant, string DirectorId)>
+    {
+        public bool Equals((TenantId Tenant, string DirectorId) x, (TenantId Tenant, string DirectorId) y)
+            => x.Tenant.Equals(y.Tenant) && string.Equals(x.DirectorId, y.DirectorId, StringComparison.OrdinalIgnoreCase);
+
+        public int GetHashCode((TenantId Tenant, string DirectorId) obj)
+            => HashCode.Combine(obj.Tenant, StringComparer.OrdinalIgnoreCase.GetHashCode(obj.DirectorId));
     }
 }
 

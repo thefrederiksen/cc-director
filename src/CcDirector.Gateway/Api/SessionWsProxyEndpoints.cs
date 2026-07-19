@@ -50,7 +50,8 @@ internal static class SessionWsProxyEndpoints
         Streaming.PushedSessionStore pushedSessions,
         Streaming.GatewayStreamRegistry streamRegistry,
         DirectorCommandRouter.SendDirectorCommandAsync sendCommand,
-        TimeSpan? streamStaleAfter = null)
+        TimeSpan? streamStaleAfter = null,
+        Tenancy.HostedTenantBoundary? tenantBoundary = null)
     {
         var tunnel = new TunnelStreamLegs(streamRegistry, sendCommand);
         var stale = streamStaleAfter ?? TimeSpan.FromSeconds(10);
@@ -59,7 +60,9 @@ internal static class SessionWsProxyEndpoints
         // terminal-input unary verbs. See TunnelStreamLegs for the wire translation.
         app.MapGet("/sessions/{sid}/stream", async (string sid, HttpContext ctx) =>
         {
-            if (pushedSessions.TryLocate(TenantId.Local, sid, stale) is { } loc)
+            var reqTenant = ResolveTenantOrDeny(ctx, tenantBoundary);
+            if (reqTenant is null) return;
+            if (pushedSessions.TryLocate(reqTenant.Value, sid, stale) is { } loc)
             {
                 await tunnel.ServeTerminalAsync(ctx, sid, loc.DirectorId);
                 return;
@@ -71,7 +74,9 @@ internal static class SessionWsProxyEndpoints
         // a Range request re-fetches the whole file (tracked follow-up); never a silent truncation.
         app.MapGet("/sessions/{sid}/file", async (string sid, HttpContext ctx) =>
         {
-            if (pushedSessions.TryLocate(TenantId.Local, sid, stale) is { } loc)
+            var reqTenant = ResolveTenantOrDeny(ctx, tenantBoundary);
+            if (reqTenant is null) return;
+            if (pushedSessions.TryLocate(reqTenant.Value, sid, stale) is { } loc)
             {
                 ctx.Response.Headers["X-Content-Type-Options"] = "nosniff";
                 if (await tunnel.TryServeFileAsync(ctx, sid, loc.DirectorId, ctx.Request.Query["path"].ToString()))
@@ -85,7 +90,9 @@ internal static class SessionWsProxyEndpoints
         // routing key for the machine-wide screenshots folder on the owning Director.
         app.Map("/sessions/{sid}/screenshots/file", async (string sid, HttpContext ctx) =>
         {
-            if (pushedSessions.TryLocate(TenantId.Local, sid, stale) is not { } loc)
+            var reqTenant = ResolveTenantOrDeny(ctx, tenantBoundary);
+            if (reqTenant is null) return;
+            if (pushedSessions.TryLocate(reqTenant.Value, sid, stale) is not { } loc)
             {
                 await RejectAsync(ctx, sid, "shot");
                 return;
@@ -107,7 +114,9 @@ internal static class SessionWsProxyEndpoints
         // caps the newest-first rows.
         app.MapGet("/sessions/{sid}/screenshots", async (string sid, HttpContext ctx) =>
         {
-            if (pushedSessions.TryLocate(TenantId.Local, sid, stale) is not { } loc)
+            var reqTenant = ResolveTenantOrDeny(ctx, tenantBoundary);
+            if (reqTenant is null) return;
+            if (pushedSessions.TryLocate(reqTenant.Value, sid, stale) is not { } loc)
             {
                 await RejectAsync(ctx, sid, "shots");
                 return;
@@ -143,7 +152,12 @@ internal static class SessionWsProxyEndpoints
         var catchAll = new TunnelCatchAllDispatch(sendCommand);
         app.Map("/sessions/{sid}/{**rest}", async (string sid, string? rest, HttpContext ctx) =>
         {
-            if (pushedSessions.TryLocate(TenantId.Local, sid, stale) is not { } loc)
+            // Resolving the tenant at the locate isolates BOTH the read verbs and the write verbs the catch-all
+            // dispatches (resize, clear-context, voice-mode, ...): a wrong-tenant session is never located, so
+            // the dispatch never runs against another account's session.
+            var reqTenant = ResolveTenantOrDeny(ctx, tenantBoundary);
+            if (reqTenant is null) return;
+            if (pushedSessions.TryLocate(reqTenant.Value, sid, stale) is not { } loc)
             {
                 await RejectAsync(ctx, sid, "verb");
                 return;
@@ -153,6 +167,20 @@ internal static class SessionWsProxyEndpoints
             if (!await catchAll.TryDispatchAsync(ctx, sid, loc.DirectorId, rest) && !ctx.Response.HasStarted)
                 ctx.Response.StatusCode = StatusCodes.Status404NotFound;
         });
+    }
+
+    /// <summary>
+    /// Hosted Multi-Tenancy (session-serving PR1): resolve the request's tenant from the authenticated device
+    /// key. On self-host (or when no boundary is wired) this is always Local. On hosted a null means no tenant
+    /// is bound to the request - the leg writes 403 and returns null so the caller denies, never reading the
+    /// Local partition (which on hosted would be a wrong-tenant read that surfaces another account's session).
+    /// </summary>
+    private static TenantId? ResolveTenantOrDeny(HttpContext ctx, Tenancy.HostedTenantBoundary? boundary)
+    {
+        var tenant = boundary is null ? TenantId.Local : boundary.ResolveRequestTenant(ctx);
+        if (tenant is null && !ctx.Response.HasStarted)
+            ctx.Response.StatusCode = StatusCodes.Status403Forbidden;
+        return tenant;
     }
 
     /// <summary>

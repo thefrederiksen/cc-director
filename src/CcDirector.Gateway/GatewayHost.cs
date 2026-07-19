@@ -1130,8 +1130,11 @@ public sealed class GatewayHost : IAsyncDisposable
             {
                 if (generated >= 3) break;          // gentle on the serialized brain
                 if (vs.HasVoice(sid)) continue;     // already cached, nothing to do
+                // Hosted Multi-Tenancy: the voice sweep is a background loop; per-tenant iteration (KnownTenants)
+                // lands in a later slice. For now it serves Local - correct on self-host, and on hosted a Local
+                // read is empty, so the sweep degrades to a no-op (never a wrong-tenant read).
                 var (director, session) = await Api.GatewayEndpoints.LocateSessionAsync(
-                    Registry, sid, PushedSessions, stale, SessionOwners);
+                    Registry, sid, PushedSessions, stale, TenantId.Local, SessionOwners);
                 if (director is null || session is null) continue;   // not owned by any known Director
                 var st = session.ActivityState ?? "";
                 if (st is "Idle" or "WaitingForInput" or "WaitingForPerm")
@@ -1684,7 +1687,10 @@ public sealed class GatewayHost : IAsyncDisposable
             fleetDisplayState: FleetDisplayState,
             // Workflows mission (phase 4, issue #1771): creating a mission also opens a workflow run of
             // the built-in "mission" workflow, pinned to its published version - the outcome spine.
-            workflowRuns: _workflowRuns);
+            workflowRuns: _workflowRuns,
+            // Hosted Multi-Tenancy (session-serving PR1): the read endpoints resolve the request's tenant from
+            // the authenticated device key through this boundary and deny (403) when hosted binds none.
+            tenantBoundary: _tenantBoundary);
 
         // Issue #268: the two raw per-session WebSocket legs (live Terminal stream + dictation)
         // proxied through the Gateway so a remote Cockpit talks same-origin to the Gateway and
@@ -1699,7 +1705,11 @@ public sealed class GatewayHost : IAsyncDisposable
             pushedSessions: PushedSessions,
             streamRegistry: StreamRegistry,
             sendCommand: SendCommandAsync,
-            streamStaleAfter: _streamStaleAfter);
+            streamStaleAfter: _streamStaleAfter,
+            // Hosted Multi-Tenancy (session-serving PR1): the per-session tunnel legs resolve the request's
+            // tenant at the session locate, so a wrong-tenant session is never located and a request with no
+            // bound tenant is denied (403) - never a Local read on hosted.
+            tenantBoundary: _tenantBoundary);
 
         // GET /devices: the host-readable device registry listing. Mapped after the WS proxy so its
         // literal route wins over the catch-all session forwarder, same as the other literal routes.

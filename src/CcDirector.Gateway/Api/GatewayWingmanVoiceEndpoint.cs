@@ -216,7 +216,10 @@ internal static class GatewayWingmanVoiceEndpoint
 
             // Every session the Gateway can see right now, de-duplicated by id. A session belongs to exactly
             // one Director, but the guard keeps a duplicated roster entry from being toggled (and counted) twice.
-            var byDirector = GatewayEndpoints.FleetByDirector(registry, pushedSessions, stale);
+            // Hosted Multi-Tenancy: voice-mode/all is a fleet fan-out WRITE (voice family); a later slice adds
+            // the request context and scopes this to the caller's tenant. For now it serves Local - correct on
+            // self-host, and on hosted the empty Local fleet means it toggles nothing (degrades, never leaks).
+            var byDirector = GatewayEndpoints.FleetByDirector(registry, pushedSessions, stale, TenantId.Local);
             var targets = new List<(string DirectorId, string Machine, string Sid, string? Name)>();
             var seen = new HashSet<string>(StringComparer.Ordinal);
             foreach (var (directorId, sessions) in byDirector)

@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Text.RegularExpressions;
+using CcDirector.Core.Tenancy;
 using CcDirector.Core.Utilities;
 using CcDirector.Gateway.Contracts;
 using CcDirector.Gateway.Discovery;
@@ -60,7 +61,10 @@ internal static class ExesEndpoints
                 // The universe is the WHOLE fleet, not the local Directors this page lists: a local Worker's
                 // Manager can be on another machine, and asking "is my controller alive?" of the local
                 // machine only would re-create defect 13 on a new page.
-                var byDirector = GatewayEndpoints.FleetByDirector(registry, pushedSessions, streamStale);
+                // Hosted Multi-Tenancy: /exes/list is a LOCAL dev diagnostics page, not the cockpit read path;
+                // it serves Local. Correct on self-host; on hosted the Local partition is empty so the page
+                // degrades to no sessions rather than reading another tenant's fleet (never a leak).
+                var byDirector = GatewayEndpoints.FleetByDirector(registry, pushedSessions, streamStale, TenantId.Local);
                 var fleet = byDirector.Values.SelectMany(x => x).ToList();
 
                 // needsYouStampFor is NOT passed: the needs-you clock is entry/exit and belongs to the roster

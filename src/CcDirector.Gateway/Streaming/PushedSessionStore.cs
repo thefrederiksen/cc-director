@@ -62,6 +62,28 @@ public sealed class PushedSessionStore
     }
 
     /// <summary>
+    /// The tenants that currently have partitions in the store (Hosted Multi-Tenancy, session-serving). A
+    /// background loop that must act across all tenants - the fold, the role/display sweeps - iterates THESE
+    /// on the hosted Gateway (entering each tenant's scope in turn) instead of a single Local pass, and
+    /// without a per-tick database scan. A snapshot of the live keys; a tenant that appears or disappears
+    /// between calls is picked up on the next sweep, which is the same eventual-consistency the sweeps already
+    /// rely on. On self-host this is just the single Local partition.
+    /// </summary>
+    public IReadOnlyCollection<TenantId> KnownTenants() => _byTenant.Keys.ToArray();
+
+    /// <summary>
+    /// The director ids that have a partition entry under <paramref name="tenant"/> (Hosted Multi-Tenancy,
+    /// session-serving). A director enters a tenant's partition when it binds a stream connection under that
+    /// tenant (<see cref="RegisterConnection"/>) and STAYS after it disconnects (the entry is retained so a
+    /// reconnect keeps roster continuity). So this is exactly "the directors this tenant owns" - the set a
+    /// tenant's roster read must scope its Director list to on the hosted Gateway, so a request never even
+    /// NAMES another tenant's directors: not as sessions, and not as "unreachable" machineError / reachability
+    /// rows (which would otherwise leak another account's director ids and machine names). On self-host the
+    /// registry already IS the single Local tenant's directors, so the roster does not consult this.
+    /// </summary>
+    public IReadOnlyCollection<string> DirectorIdsFor(TenantId tenant) => DirectorsFor(tenant).Keys.ToArray();
+
+    /// <summary>
     /// Mark <paramref name="connectionId"/> as the active stream connection for <paramref name="directorId"/>
     /// within <paramref name="tenant"/>. Existing cached sessions are kept (so a fast reconnect keeps roster
     /// continuity), but the sequence baseline resets so the new connection's first message - at any sequence -
