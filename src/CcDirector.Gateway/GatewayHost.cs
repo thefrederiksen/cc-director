@@ -1428,24 +1428,14 @@ public sealed class GatewayHost : IAsyncDisposable
         // SendLauncherCommandAsync share this one connection registry.
         builder.Services.AddSingleton(LauncherConnections);
 
-        // Honor X-Forwarded-Proto/Host/For from a Tailscale Serve front-end so
-        // ctx.Request.Scheme reflects the public scheme the user actually used.
-        // Without this, every request appears as plain "http" to the Gateway
-        // (Tailscale terminates TLS at :443 and forwards plaintext to loopback),
-        // and ViewUrl ends up with the wrong scheme on the phone.
-        //
-        // Trust only loopback as a forwarding proxy: anything else must not be
-        // allowed to claim "I'm HTTPS" by spoofing the header.
-        builder.Services.Configure<ForwardedHeadersOptions>(o =>
-        {
-            o.ForwardedHeaders = ForwardedHeaders.XForwardedFor
-                               | ForwardedHeaders.XForwardedProto
-                               | ForwardedHeaders.XForwardedHost;
-            o.KnownProxies.Clear();
-            o.KnownProxies.Add(IPAddress.Loopback);
-            o.KnownProxies.Add(IPAddress.IPv6Loopback);
-            o.KnownIPNetworks.Clear();
-        });
+        // Honor X-Forwarded-Proto/Host/For from the TLS-terminating front end so ctx.Request.Scheme
+        // reflects the public scheme the user actually used. Which senders may be believed differs
+        // between the two deployments - self-host trusts loopback only (Tailscale Serve), hosted must
+        // also accept the Azure App Service front end, which forwards from a non-loopback platform
+        // address (issue #1870). See ForwardedHeadersPolicy for why that is safe there and only there.
+        var isHostedDeployment = _tenantBoundary.IsHosted;
+        builder.Services.Configure<ForwardedHeadersOptions>(
+            o => Tenancy.ForwardedHeadersPolicy.Apply(o, isHostedDeployment));
 
         _app = builder.Build();
 
