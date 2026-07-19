@@ -5,7 +5,9 @@ using System.Runtime.CompilerServices;
 namespace CcDirector.Gateway.Tests;
 
 /// <summary>
-/// Serializes runs of THIS test assembly across the whole machine, automatically, before any test runs.
+/// Serializes runs of THIS test assembly for one user on one machine, automatically, before any test runs.
+/// The exact scope is stated below and is deliberately narrower than "machine-wide" - do not widen the
+/// wording without widening the mechanism.
 ///
 /// WHY THIS EXISTS - READ THIS BEFORE YOU DELETE IT.
 ///
