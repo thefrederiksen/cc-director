@@ -44,11 +44,18 @@ export interface DirectorInfo {
   controlEndpoint: string;
 }
 
-/** GET /healthz - what the running Gateway reports about itself. Backs the mobile About screen. */
+/**
+ * GET /healthz - what the running Gateway reports about itself. Backs the mobile About screen.
+ *
+ * `directors` and `sessions` are OPTIONAL: the hosted Gateway omits them entirely, because /healthz is
+ * public and carries no credential, so it has no tenant and a fleet-global count would span every
+ * account. Render an absent count as "not reported" - never coerce it, or `String(undefined)` puts the
+ * literal text "undefined" on the screen and a `?? 0` would claim the fleet is empty.
+ */
 export interface GatewayHealth {
   status: string;
-  directors: number;
-  sessions: number;
+  directors?: number;
+  sessions?: number;
   version: string;
   serverTime: string;
 }

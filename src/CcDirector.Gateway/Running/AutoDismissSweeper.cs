@@ -24,20 +24,37 @@ internal sealed class AutoDismissSweeper
 {
     private readonly Func<IReadOnlyList<(string DirectorId, SessionDto Session)>> _snapshot;
     private readonly DirectorCommandRouter.SendDirectorCommandAsync _sendCommand;
+    private readonly Func<string?> _tenantKey;
 
     // Sessions we have already issued a kill for, so a session that lingers one extra sweep (before its
     // removal tombstone propagates up the stream) is not killed twice. Pruned opportunistically each sweep.
+    //
+    // Hosted Multi-Tenancy (session-serving PR2): keyed by (TENANT, session id), not session id alone. This
+    // sweeper now runs ONE PASS PER TENANT, and each pass prunes marks against ITS OWN snapshot - so a
+    // session-id-only key would have every tenant's pass delete every other tenant's marks, destroying the
+    // duplicate-kill protection entirely, and would let two tenants that happen to use the same session id
+    // suppress each other's close. The tenant prefix keeps each tenant's marks private to its own pass.
     private readonly ConcurrentDictionary<string, byte> _closing = new(StringComparer.Ordinal);
 
     /// <param name="snapshot">Returns the fresh pushed sessions across all stream-connected Directors (PushedSessionStore.SnapshotFresh).</param>
     /// <param name="sendCommand">The down-channel command sender (GatewayHost.SendCommandAsync); required - the feature only runs with the stream on.</param>
+    /// <param name="tenantKey">Hosted Multi-Tenancy: identifies the tenant of the pass currently running, so
+    /// the close-marks below are partitioned per tenant. It may RETURN null, which means no tenant is in
+    /// scope - a DENY: the sweep does nothing rather than coining a partition. Omitting the parameter
+    /// entirely means the single-tenant shape (one constant partition), which is self-host and the unit
+    /// tests.</param>
     public AutoDismissSweeper(
         Func<IReadOnlyList<(string DirectorId, SessionDto Session)>> snapshot,
-        DirectorCommandRouter.SendDirectorCommandAsync sendCommand)
+        DirectorCommandRouter.SendDirectorCommandAsync sendCommand,
+        Func<string?>? tenantKey = null)
     {
         _snapshot = snapshot ?? throw new ArgumentNullException(nameof(snapshot));
         _sendCommand = sendCommand ?? throw new ArgumentNullException(nameof(sendCommand));
+        _tenantKey = tenantKey ?? (static () => "local");
     }
+
+    /// <summary>The close-mark key for a session within <paramref name="tenant"/>.</summary>
+    private static string MarkKey(string tenant, string sessionId) => tenant + "|" + sessionId;
 
     /// <summary>The verdict string (see <c>Session.DismissVerdict</c>) that authorizes an auto-close.</summary>
     public const string VerdictDone = "done";
@@ -88,16 +105,28 @@ internal sealed class AutoDismissSweeper
     /// </summary>
     public async Task<int> SweepAsync(CancellationToken ct)
     {
-        var snapshot = _snapshot();
-        PruneClosing(snapshot);
+        // Hosted Multi-Tenancy: resolve the tenant of THIS pass first. A null is a DENY - the sweep does
+        // nothing rather than coining a partition to file its close-marks under. This mirrors
+        // GatewayHost.SendCommandAsync: everywhere else in this path an unresolved tenant refuses, so this
+        // must refuse too rather than being the one place that invents a key and relies on the caller's
+        // snapshot happening to be empty.
+        var tenant = _tenantKey();
+        if (string.IsNullOrEmpty(tenant))
+        {
+            FileLog.Write("[AutoDismissSweeper] sweep DENIED: no tenant in scope");
+            return 0;
+        }
 
-        var picks = SelectDismissable(snapshot, sid => _closing.ContainsKey(sid));
+        var snapshot = _snapshot();
+        PruneClosing(tenant, snapshot);
+
+        var picks = SelectDismissable(snapshot, sid => _closing.ContainsKey(MarkKey(tenant, sid)));
         var closed = 0;
         foreach (var (directorId, session) in picks)
         {
             ct.ThrowIfCancellationRequested();
             // Mark before sending so a slow round-trip cannot let the next sweep issue a duplicate kill.
-            _closing.TryAdd(session.SessionId, 0);
+            _closing.TryAdd(MarkKey(tenant, session.SessionId), 0);
             try
             {
                 var result = await DirectorCommandRouter.TrySendAsync(
@@ -105,7 +134,7 @@ internal sealed class AutoDismissSweeper
                 if (result is null)
                 {
                     // No active stream right now; drop the mark so a later sweep retries once the stream is back.
-                    _closing.TryRemove(session.SessionId, out _);
+                    _closing.TryRemove(MarkKey(tenant, session.SessionId), out _);
                     FileLog.Write($"[AutoDismissSweeper] session={session.SessionId} director={directorId}: no stream, will retry");
                     continue;
                 }
@@ -123,7 +152,7 @@ internal sealed class AutoDismissSweeper
             }
             catch (Exception ex)
             {
-                _closing.TryRemove(session.SessionId, out _);
+                _closing.TryRemove(MarkKey(tenant, session.SessionId), out _);
                 FileLog.Write($"[AutoDismissSweeper] close FAILED: session={session.SessionId} director={directorId}: {ex.Message}");
             }
         }
@@ -133,16 +162,21 @@ internal sealed class AutoDismissSweeper
         return closed;
     }
 
-    /// <summary>Forget close-marks for sessions no longer present in the snapshot (they are gone, or their Director dropped).</summary>
-    private void PruneClosing(IReadOnlyList<(string DirectorId, SessionDto Session)> snapshot)
+    /// <summary>
+    /// Forget close-marks for sessions no longer present in the snapshot (they are gone, or their Director
+    /// dropped). Scoped to THIS PASS'S TENANT: the snapshot only ever contains that tenant's sessions, so
+    /// pruning across the whole map would delete every other tenant's marks on every pass.
+    /// </summary>
+    private void PruneClosing(string tenant, IReadOnlyList<(string DirectorId, SessionDto Session)> snapshot)
     {
         if (_closing.IsEmpty)
             return;
-        var present = new HashSet<string>(snapshot.Select(t => t.Session.SessionId), StringComparer.Ordinal);
-        foreach (var sid in _closing.Keys)
+        var prefix = tenant + "|";
+        var present = new HashSet<string>(snapshot.Select(t => MarkKey(tenant, t.Session.SessionId)), StringComparer.Ordinal);
+        foreach (var key in _closing.Keys)
         {
-            if (!present.Contains(sid))
-                _closing.TryRemove(sid, out _);
+            if (key.StartsWith(prefix, StringComparison.Ordinal) && !present.Contains(key))
+                _closing.TryRemove(key, out _);
         }
     }
 }

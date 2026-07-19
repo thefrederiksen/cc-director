@@ -1,0 +1,112 @@
+using System;
+using System.Collections.Generic;
+using CcDirector.Core.Tenancy;
+
+namespace CcDirector.Gateway.Tenancy;
+
+/// <summary>
+/// The BACKGROUND-LOOP tenant seam (Hosted Multi-Tenancy, session-serving PR2) - the loop-side twin of
+/// <see cref="HostedTenantBoundary.ResolveRequestTenant"/>.
+///
+/// A background loop (a sweep, an aggregator, a reconcile poll) is not on a request and not on a tunnel
+/// connection, so unlike every other caller it has NO tenant of its own to resolve. Before this seam the
+/// Gateway's loops papered over that by hard-coding <see cref="TenantId.Local"/> - which is correct on
+/// self-host but on the hosted Gateway means every loop runs one pass against a single implicit tenant
+/// that owns nothing. This seam replaces that single implicit pass with ONE PASS PER TENANT, each inside
+/// that tenant's own scope, so a sweep sees exactly one tenant's fleet at a time and never reaches across.
+///
+/// SELF-HOST IS UNCHANGED BY CONSTRUCTION: there is exactly one tenant (Local), so
+/// <see cref="ForEachTenant"/> runs exactly one pass and <see cref="Current"/> is always Local - the same
+/// single unscoped pass against the same partition the loops run today.
+///
+/// DENY-BY-DEFAULT: on hosted, <see cref="Current"/> is NULL when no scope has been entered. A caller that
+/// gets null must do nothing (an empty read, an undelivered command) - it must never substitute
+/// <see cref="TenantId.Local"/> or <see cref="TenantId.System"/>, which is precisely the fallback that
+/// would turn one tenant's loop into a read of another tenant's partition.
+/// </summary>
+public interface ITenantPass
+{
+    /// <summary>
+    /// Run <paramref name="pass"/> once per tenant, inside that tenant's scope. Self-host runs it exactly
+    /// once (Local). Hosted runs it once per live tenant; with no live tenants it runs zero times, which is
+    /// the correct answer - there is no fleet to sweep - and never a Local pass.
+    /// </summary>
+    void ForEachTenant(Action pass);
+
+    /// <summary>
+    /// The tenant of the unit of work currently running: the pass <see cref="ForEachTenant"/> entered, or
+    /// the request / tunnel-connection scope the caller is already inside. Null ONLY on hosted with no scope
+    /// in effect, and that null is a DENY - never Local, never System.
+    /// </summary>
+    TenantId? Current { get; }
+}
+
+/// <summary>
+/// The single-tenant <see cref="ITenantPass"/>: exactly one pass, always <see cref="TenantId.Local"/>. This
+/// is the self-host shape and the default a component falls back to when no seam is supplied (the unit
+/// tests), so omitting the seam can never accidentally produce hosted behavior.
+/// </summary>
+public sealed class SingleTenantPass : ITenantPass
+{
+    public static readonly SingleTenantPass Instance = new();
+
+    /// <inheritdoc />
+    public TenantId? Current => TenantId.Local;
+
+    /// <inheritdoc />
+    public void ForEachTenant(Action pass)
+    {
+        if (pass is null) throw new ArgumentNullException(nameof(pass));
+        pass();
+    }
+}
+
+/// <summary>
+/// The production <see cref="ITenantPass"/>. It reads its tenant list from the live push store
+/// (<c>PushedSessionStore.KnownTenants</c>), which is exactly the set of tenants with a Director bound to
+/// the tunnel - the only tenants whose fleet a push-store-driven sweep could act on - and so costs no
+/// per-tick database scan. A tenant that appears or disappears between ticks is picked up on the next
+/// sweep, the same eventual consistency the sweeps already rely on.
+/// </summary>
+public sealed class TenantPass : ITenantPass
+{
+    private readonly HostedTenantBoundary _boundary;
+    private readonly AsyncLocalTenantContext? _ambient;
+    private readonly Func<IReadOnlyCollection<TenantId>> _knownTenants;
+
+    /// <param name="boundary">The auth-boundary binder; its <c>IsHosted</c> decides single-pass vs per-tenant.</param>
+    /// <param name="ambient">The hosted ambient context (null on self-host), read for <see cref="Current"/>.</param>
+    /// <param name="knownTenants">The live tenant list - <c>PushedSessionStore.KnownTenants</c> in production.</param>
+    public TenantPass(
+        HostedTenantBoundary boundary,
+        AsyncLocalTenantContext? ambient,
+        Func<IReadOnlyCollection<TenantId>> knownTenants)
+    {
+        _boundary = boundary ?? throw new ArgumentNullException(nameof(boundary));
+        _ambient = ambient;
+        _knownTenants = knownTenants ?? throw new ArgumentNullException(nameof(knownTenants));
+    }
+
+    /// <inheritdoc />
+    public TenantId? Current => _ambient is null ? TenantId.Local : _ambient.CurrentOrNull;
+
+    /// <inheritdoc />
+    public void ForEachTenant(Action pass)
+    {
+        if (pass is null) throw new ArgumentNullException(nameof(pass));
+
+        // Self-host: exactly one pass, no scope to enter - byte-identical to the single pass today.
+        if (!_boundary.IsHosted)
+        {
+            pass();
+            return;
+        }
+
+        foreach (var tenant in _knownTenants())
+        {
+            if (!tenant.IsValid) continue;
+            using (_boundary.EnterScope(tenant))
+                pass();
+        }
+    }
+}

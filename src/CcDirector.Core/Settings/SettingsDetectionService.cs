@@ -7,7 +7,10 @@ using CcDirector.Core.Utilities;
 namespace CcDirector.Core.Settings;
 
 /// <summary>Result of probing a gateway's /healthz.</summary>
-public sealed record GatewayTestResult(bool Ok, string Message, string? Version, int Directors, int Sessions);
+/// <param name="Directors">Fleet counts, or NULL when the gateway did not report them - the hosted Gateway
+/// omits them from /healthz because a public, tenant-less probe has no honest number to give. Null must be
+/// rendered as "not reported", never coerced to 0, or the absence becomes a claim of an empty fleet.</param>
+public sealed record GatewayTestResult(bool Ok, string Message, string? Version, int? Directors, int? Sessions);
 
 /// <summary>Result of scanning for a gateway: the first reachable URL (or null) and every URL tried.</summary>
 public sealed record GatewayDetectResult(string? Url, IReadOnlyList<string> Scanned);
@@ -40,7 +43,7 @@ public sealed class SettingsDetectionService
     public async Task<GatewayTestResult> TestGatewayAsync(string baseUrl, CancellationToken ct = default)
     {
         if (string.IsNullOrWhiteSpace(baseUrl))
-            return new GatewayTestResult(false, "No gateway URL provided.", null, 0, 0);
+            return new GatewayTestResult(false, "No gateway URL provided.", null, null, null);
 
         var healthz = baseUrl.TrimEnd('/') + "/healthz";
         FileLog.Write($"[SettingsDetectionService] TestGateway: {healthz}");
@@ -52,11 +55,11 @@ public sealed class SettingsDetectionService
         }
         catch (Exception ex)
         {
-            return new GatewayTestResult(false, $"Cannot reach {baseUrl}: {ex.Message}", null, 0, 0);
+            return new GatewayTestResult(false, $"Cannot reach {baseUrl}: {ex.Message}", null, null, null);
         }
 
         if (!resp.IsSuccessStatusCode)
-            return new GatewayTestResult(false, $"Gateway returned {(int)resp.StatusCode} {resp.ReasonPhrase} for {healthz}.", null, 0, 0);
+            return new GatewayTestResult(false, $"Gateway returned {(int)resp.StatusCode} {resp.ReasonPhrase} for {healthz}.", null, null, null);
 
         var json = await resp.Content.ReadAsStringAsync(ct);
         try
@@ -64,16 +67,22 @@ public sealed class SettingsDetectionService
             using var doc = JsonDocument.Parse(json);
             var root = doc.RootElement;
             if (GetStringProp(root, "status") is null)
-                return new GatewayTestResult(false, $"{baseUrl} answered but does not look like a DevThrottle gateway.", null, 0, 0);
+                return new GatewayTestResult(false, $"{baseUrl} answered but does not look like a DevThrottle gateway.", null, null, null);
 
             var version = GetStringProp(root, "version") ?? "?";
+            // Absent counts are reported as absent. The hosted Gateway omits them (a public probe has no
+            // tenant, so it has no correct number), and printing "0 director(s)" for a missing field would
+            // turn "not reported" into "your fleet is empty" on the Test-gateway button.
             var directors = GetIntProp(root, "directors");
             var sessions = GetIntProp(root, "sessions");
-            return new GatewayTestResult(true, $"OK: gateway v{version}, {directors} director(s), {sessions} session(s).", version, directors, sessions);
+            var counts = directors is null && sessions is null
+                ? " (fleet counts not reported)"
+                : $", {directors?.ToString() ?? "?"} director(s), {sessions?.ToString() ?? "?"} session(s)";
+            return new GatewayTestResult(true, $"OK: gateway v{version}{counts}.", version, directors, sessions);
         }
         catch (JsonException)
         {
-            return new GatewayTestResult(false, $"{baseUrl} answered but the response was not valid gateway JSON.", null, 0, 0);
+            return new GatewayTestResult(false, $"{baseUrl} answered but the response was not valid gateway JSON.", null, null, null);
         }
     }
 
@@ -152,11 +161,12 @@ public sealed class SettingsDetectionService
         return null;
     }
 
-    private static int GetIntProp(JsonElement obj, string name)
+    /// <summary>The integer property, or NULL when it is absent (or not a number) - never a coerced 0.</summary>
+    private static int? GetIntProp(JsonElement obj, string name)
     {
         foreach (var p in obj.EnumerateObject())
             if (string.Equals(p.Name, name, StringComparison.OrdinalIgnoreCase) && p.Value.ValueKind == JsonValueKind.Number)
                 return p.Value.GetInt32();
-        return 0;
+        return null;
     }
 }

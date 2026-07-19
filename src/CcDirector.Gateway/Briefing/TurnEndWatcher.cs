@@ -144,9 +144,12 @@ public sealed class TurnEndWatcher : IDisposable
         _ = sweepAll;
         if (_pushedSessions is not null)
         {
-            // Stage 3b: the single-tenant core sweeps the one Local tenant. When more than one tenant
-            // exists (Stage 3c), this background sweep iterates every tenant and addresses each session
-            // with its owning tenant - it never reaches across tenants.
+            // Hosted Multi-Tenancy (session-serving): this reconcile is NOT yet per-tenant.
+            // BLOCKED ON: partitioning TurnEndWatcher._lastActivity by tenant (and NeedsYouClock._stamps,
+            // which the turn-end signal feeds). Both are keyed by session id alone, so a per-tenant pass would
+            // let one tenant's last-seen state suppress - or fabricate - another tenant's turn boundary.
+            // Until then it serves Local: correct on self-host, and on hosted a Local read is empty, so the
+            // reconcile degrades to a no-op (never a wrong-tenant read).
             foreach (var (directorId, session) in _pushedSessions.SnapshotFresh(TenantId.Local, _streamStale))
             {
                 if (_disposed) return Task.CompletedTask;

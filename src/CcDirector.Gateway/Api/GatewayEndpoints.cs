@@ -356,12 +356,36 @@ internal static class GatewayEndpoints
         // ===== REST =====
         app.MapGet("/healthz", () =>
         {
+            // Hosted Multi-Tenancy (session-serving PR2): /healthz is PUBLIC - it is the unauthenticated
+            // liveness probe every Director and endpoint selector dials, so it carries no credential and
+            // therefore has NO TENANT. On the hosted Gateway the fleet counts below are fleet-GLOBAL: an
+            // anonymous caller reading "directors: 2" is reading an aggregate over every account's Directors.
+            // That is a cross-tenant leak, and it cannot be fixed by making the count tenant-aware, because a
+            // request with no tenant has no correct number to print. So on hosted the aggregate is not
+            // computed at all - deny-by-default applies to metrics exactly as it applies to data. Liveness
+            // (status, version, server time) is what a probe actually needs and stays public.
+            //
+            // Self-host is untouched: one tenant, one owner, and the counts are what the Director's own
+            // connectivity self-test and the settings gateway probe read.
+            if (tenantBoundary?.IsHosted == true)
+            {
+                // Directors/Sessions left NULL, which OMITS them from the JSON (HealthDto). Leaving them to
+                // serialize as 0 would state a fleet of zero to every probe on hosted - false rather than
+                // merely absent, and this is the endpoint the Director's connectivity self-test reads.
+                return Results.Json(new HealthDto
+                {
+                    Status = "ok",
+                    Version = version,
+                    ServerTime = DateTime.UtcNow,
+                });
+            }
+
             var directors = registry.ListDirectors();
             // Post-cut: the roster lives ONLY in the push store, so count from there. A Director with no
             // fresh pushed snapshot is not connected to the tunnel and contributes zero.
             int totalSessions = directors.Sum(d =>
             {
-                // Stage 3b: single-tenant core serves the Local tenant (the request's tenant in Stage 3c).
+                // Self-host only (see above): the single tenant is Local.
                 var cached = pushedSessions?.TryGetFresh(TenantId.Local, d.DirectorId, streamStaleResolved);
                 return cached?.Count ?? 0;
             });

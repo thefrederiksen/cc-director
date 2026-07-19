@@ -69,6 +69,40 @@ public sealed class DirectorRegistry : IDisposable
     /// <summary>Raised when a Director disappears (file removed, HTTP unregister, or stale).</summary>
     public event Action<string>? OnDirectorRemoved;
 
+    /// <summary>
+    /// Raise <see cref="OnDirectorRemoved"/> without letting a subscriber kill the process.
+    ///
+    /// This is an ENTRY-POINT boundary in the CodingStyle sense (an external event subscription): every
+    /// caller is either a FileSystemWatcher callback or the stale-sweep timer, both of which run on
+    /// thread-pool threads with NO enclosing try/catch. An exception thrown by a subscriber there is
+    /// UNHANDLED, so it does not merely fail the removal - it terminates the whole Gateway process.
+    ///
+    /// Not hypothetical: a subscriber writes the tenant-scoped snooze store, and when that store's database
+    /// was unavailable the throw came straight up this path and took the process down - observed as a test
+    /// run that ABORTED partway through while still reporting exit code 0. Failing to clear one removed
+    /// Director's snoozes is a bounded, cosmetic loss; losing the Gateway is not. The failure is logged
+    /// LOUD - this catches to keep the process alive, not to hide the fault.
+    ///
+    /// Each subscriber is invoked INDEPENDENTLY. A plain Invoke on a multicast delegate stops at the first
+    /// handler that throws, so one faulting subscriber would silently deprive every later one of the event
+    /// (the session-number release and the roster-cache forget are on this list) - trading a process crash
+    /// for a quiet partial removal, which is harder to notice and just as wrong.
+    /// </summary>
+    private void RaiseDirectorRemoved(string directorId)
+    {
+        foreach (var handler in OnDirectorRemoved?.GetInvocationList() ?? Array.Empty<Delegate>())
+        {
+            try
+            {
+                ((Action<string>)handler)(directorId);
+            }
+            catch (Exception ex)
+            {
+                FileLog.Write($"[DirectorRegistry] OnDirectorRemoved subscriber FAILED for director={directorId}: {ex}");
+            }
+        }
+    }
+
     // ===== HTTP path =====
 
     /// <summary>
@@ -195,7 +229,7 @@ public sealed class DirectorRegistry : IDisposable
         {
             _everReachable.TryRemove(directorId, out _); // graceful goodbye: next process starts blank
             FileLog.Write($"[DirectorRegistry] Remove (http): id={directorId}");
-            OnDirectorRemoved?.Invoke(directorId);
+            RaiseDirectorRemoved(directorId);
             return true;
         }
         return false;
@@ -273,7 +307,7 @@ public sealed class DirectorRegistry : IDisposable
         if (_directors.TryGetValue(id, out var existing) && existing.Source == "file")
         {
             if (_directors.TryRemove(id, out _))
-                OnDirectorRemoved?.Invoke(id);
+                RaiseDirectorRemoved(id);
         }
     }
 
@@ -285,7 +319,7 @@ public sealed class DirectorRegistry : IDisposable
             && existing.Source == "file"
             && _directors.TryRemove(oldId, out _))
         {
-            OnDirectorRemoved?.Invoke(oldId);
+            RaiseDirectorRemoved(oldId);
         }
         TryParseAndAdd(e.FullPath);
     }
@@ -352,7 +386,7 @@ public sealed class DirectorRegistry : IDisposable
                         {
                             _everReachable.TryRemove(kv.Key, out _);
                             FileLog.Write($"[DirectorRegistry] Sweeper removed stale {kv.Value.Source} entry: {kv.Key} (last seen {(now - lastSeen).TotalSeconds:F0}s ago)");
-                            OnDirectorRemoved?.Invoke(kv.Key);
+                            RaiseDirectorRemoved(kv.Key);
                         }
                     }
                     continue;
@@ -365,7 +399,7 @@ public sealed class DirectorRegistry : IDisposable
                     if (_directors.TryRemove(kv.Key, out _))
                     {
                         FileLog.Write($"[DirectorRegistry] Sweeper removed orphan (file gone): {kv.Key}");
-                        OnDirectorRemoved?.Invoke(kv.Key);
+                        RaiseDirectorRemoved(kv.Key);
                     }
                     continue;
                 }
@@ -388,7 +422,7 @@ public sealed class DirectorRegistry : IDisposable
                         if (_directors.TryRemove(kv.Key, out _))
                         {
                             FileLog.Write($"[DirectorRegistry] Sweeper removed orphan (pid {pid} dead): {kv.Key}");
-                            OnDirectorRemoved?.Invoke(kv.Key);
+                            RaiseDirectorRemoved(kv.Key);
                         }
                     }
                     catch { /* permission errors etc - leave it for next pass */ }
