@@ -36,10 +36,28 @@ This is the trap that makes an "isolated" root not isolated.
 On first boot `CcStorageMigration.EnsureMigrated()` copies from **fixed legacy paths** -
 `%LOCALAPPDATA%\CcDirector`, `Environment.SpecialFolder.MyDocuments` + `\CcDirector`,
 `%LOCALAPPDATA%\cc-myvault`, the comm queue - into the current root, whatever `CC_DIRECTOR_ROOT`
-says. So a brand-new test root fills with the machine owner's real accounts, repository list,
-session history and vault. Measured on one machine: **~567 MB**, including **224 session history
-files, 7 of them carrying a `FirstPromptSnippet` and 36 carrying `TurnSummaries`** - real prompt
-text.
+says. So a brand-new test root fills with the machine owner's real accounts, repository list and
+session history.
+
+Measured precisely on one machine, by deleting it again and reading back:
+
+| What migrated | Size |
+|---|---|
+| Director logs (`logs\director`, 187 files, oldest 5 months old) | **118.1 MB** |
+| Session history (`config\director\sessions`, 227 files) | 134 KB |
+| `accounts.json`, `recent-sessions.json`, `repositories.json`, `root-directories.json` | ~7 KB |
+| **Total copied owner data** | **~118 MB** |
+
+The session history is the sensitive part by content rather than size: of those files, **7 carried a
+`FirstPromptSnippet` and 36 carried `TurnSummaries`** - real prompt text, including client-project
+material.
+
+**Do not size this by the test root itself.** That root reached ~568 MB, and an earlier version of
+this document reported the whole figure as copied data. It is not: ~450 MB of it is a Python
+runtime and virtual environment that the Director **provisions itself** on first run. Sizing the
+migration by total root size overstates it roughly five-fold. The vault did not migrate here at
+all, despite being in the migration's source list - so check what actually arrived rather than
+assuming the full list did.
 
 Tracked as issue #1879.
 
