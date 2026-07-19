@@ -496,14 +496,21 @@ public sealed class HostedStatsSelfHostControlTests : IDisposable
     }
 
     /// <summary>
-    /// The mirror of the future-route probe: on self-host the group filter lets a route added to the group
-    /// through untouched. Without this, "the filter refuses everything, always" would pass every hosted test
-    /// in this file.
+    /// THE SECOND HALF OF THE FUTURE-ROUTE PROOF, and the review asked for both halves by name: the probe
+    /// route must be REFUSED on hosted and SERVED with hosted mode EXPLICITLY off. The hosted half is
+    /// <see cref="HostedStatsGroupFilterTests.A_route_added_to_the_group_later_is_refused_on_hosted_with_no_deny_of_its_own"/>;
+    /// this is its mirror, on the SAME probe path, with hosted mode stated rather than assumed - and stated in
+    /// both non-hosted forms, absent and present-but-"0".
+    ///
+    /// Without this half, "the filter refuses everything, always" would pass every hosted test in this file
+    /// while having silently killed the route for self-host too. One direction alone cannot tell a working
+    /// gate apart from a brick.
     /// </summary>
-    [Fact]
-    public async Task A_route_added_to_the_group_still_serves_on_self_host()
+    [Theory]
+    [MemberData(nameof(NonHostedValues))]
+    public async Task A_route_added_to_the_group_still_serves_on_self_host(string? hostedValue)
     {
-        DeclareSelfHost(null);
+        DeclareSelfHost(hostedValue);
 
         var (app, http) = await StatsGroupProbeHost.StartAsync(
             SeededAggregator(),
