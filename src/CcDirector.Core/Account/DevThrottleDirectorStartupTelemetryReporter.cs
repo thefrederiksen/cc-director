@@ -36,7 +36,27 @@ public sealed class DevThrottleDirectorStartupTelemetryReporter : IDirectorStart
 
     // A single shared client (best practice - avoids socket exhaustion). The short timeout keeps a
     // best-effort report from lingering; the caller fires it detached anyway.
-    private static readonly HttpClient SharedClient = new() { Timeout = TimeSpan.FromSeconds(10) };
+    private static readonly HttpClient SharedClient = new(CreateDefaultHandler()) { Timeout = TimeSpan.FromSeconds(10) };
+
+    /// <summary>
+    /// The handler this reporter's own client uses. REDIRECTS ARE DISABLED, and that is a security guard, not
+    /// a performance choice (issue #1855).
+    ///
+    /// The Bearer is attached only when the target host matches the configured Gateway
+    /// (<see cref="TargetIsOwnGateway"/>), but a redirect would move the destination AFTER that check has
+    /// passed: a request that legitimately starts at this Director's own Gateway could be bounced anywhere,
+    /// carrying a key that authenticates every Director-to-Gateway call. Refusing to follow redirects at all
+    /// makes an off-host header leak STRUCTURALLY IMPOSSIBLE rather than merely unlikely, and a fire-and-forget
+    /// telemetry POST has no legitimate reason to follow one.
+    ///
+    /// This deliberately does NOT rest on the fact that .NET strips the Authorization header on a cross-origin
+    /// redirect. That is true today, but it is framework internals: a security guarantee should be explicit and
+    /// visible to a reviewer in this file, not dependent on behaviour a future framework version could change
+    /// and nobody here would notice.
+    ///
+    /// Internal so a test can assert the guard and drive the real no-redirect behaviour.
+    /// </summary>
+    internal static HttpMessageHandler CreateDefaultHandler() => new SocketsHttpHandler { AllowAutoRedirect = false };
 
     private readonly HttpClient _client;
     private readonly string _machineName;
@@ -148,8 +168,12 @@ public sealed class DevThrottleDirectorStartupTelemetryReporter : IDirectorStart
         // swallowed, so the only symptom was an absence, which looks exactly like nobody having started a
         // Director. It surfaced on hosted because hosted is authenticated by construction. The credential is
         // the same per-device key enrollment already wrote to gateway.token and that the tunnel and the
-        // cockpit reads use in the same boot; the Gateway resolves the tenant from it, so the event lands
-        // against the right account with nothing further to plumb.
+        // cockpit reads use in the same boot.
+        //
+        // What this does NOT do: attribute the event to an account. The receiving endpoint does not read the
+        // request's tenant - it writes a process-global record line and enqueues the raw body globally - so
+        // sending the credential makes the report ARRIVE and be recorded, nothing more. Claiming otherwise
+        // was an error in the first version of this change.
         var authenticated = !string.IsNullOrEmpty(_gatewayToken) && TargetIsOwnGateway(endpoint);
         if (authenticated)
             request.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", _gatewayToken);

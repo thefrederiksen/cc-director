@@ -29,6 +29,13 @@ namespace CcDirector.Gateway.Tests;
 /// test previously covered: this route accepts a per-device key exactly like every other gated route, so
 /// sending the credential is sufficient. If that ever stopped being true the client fix would silently stop
 /// working and the failure would again be invisible.
+///
+/// WHAT THEY DELIBERATELY DO NOT PROVE: anything about tenancy. This endpoint does not read the request's
+/// tenant - it writes a process-global record line and, when forwarding is configured, enqueues the raw body
+/// globally with no tenant on it. So the credential here is an ADMISSION check, not an attribution: any valid
+/// key gets in, including one bound to no tenant, and that is the correct behaviour for telemetry that is
+/// global by construction. These tests assert exactly that and no more. Per-account attribution would need a
+/// tenant-aware record and queue contract, which is a separate piece of work.
 /// </summary>
 public sealed class DirectorStartupTelemetryAuthTests : IAsyncLifetime
 {
