@@ -701,7 +701,13 @@ public sealed class GatewayHost : IAsyncDisposable
         // of the EF data layer. The path argument is the LEGACY wingman-instructions.json, imported once on
         // first upgrade then renamed aside. Tests MUST pass an isolated path so they never touch the real file.
         _instructionsStore = new Wingman.WingmanInstructionsStore(_gatewayDb, wingmanInstructionsPath ?? Path.Combine(CcStorage.Root(), "wingman-instructions.json"));
-        Registry.OnDirectorRemoved += id => _snoozeRegistry.ClearForDirector(id);
+        // Skipped when HOSTED (Hosted Multi-Tenancy): this cleanup writes the tenant-scoped snoozes store, but
+        // it fires from the DirectorRegistry stale sweep (a background thread with no ambient tenant), so on
+        // hosted it would fail closed. It is also a per-director-across-tenants operation, which the
+        // session-serving increment makes per-tenant. The other OnDirectorRemoved subscribers (session-number
+        // release, roster-cache forget) are in-memory and stay wired. Skipping it only leaves a removed
+        // Director's snoozes as durable tombstones, bounded by the live-session prune paths.
+        Registry.OnDirectorRemoved += id => { if (!GatewayHostedMode.IsHosted) _snoozeRegistry.ClearForDirector(id); };
         // THE PUSH SEAM where this Gateway drives the hold machine off the facts Directors report. The
         // DirectorHub (constructed per-invocation by SignalR) folds every pushed session through this one
         // instance, exactly as it does the input-stats aggregator.
@@ -2032,8 +2038,20 @@ public sealed class GatewayHost : IAsyncDisposable
 
         // Cron firing sweep (epic #479, #483): wake ~every minute and fire due jobs. The first tick
         // also catches up a fire that came due while the Gateway was down (at most once per job).
-        _cronTimer = new System.Threading.Timer(_ => SweepCron(), null, CronSweepInterval, CronSweepInterval);
-        FileLog.Write($"[GatewayHost] cron sweep started: every {CronSweepInterval.TotalSeconds:0}s");
+        //
+        // Skipped when HOSTED (Hosted Multi-Tenancy): the cron drain reads the tenant-scoped cron_jobs store,
+        // which has no ambient tenant on a background timer and so would fail closed every tick. Firing cron
+        // per-tenant is part of the session-serving increment (the same increment makes these sweeps
+        // fail-loud/observed rather than fire-and-forget). Same guard shape as the NetDiag monitor below.
+        if (!GatewayHostedMode.IsHosted)
+        {
+            _cronTimer = new System.Threading.Timer(_ => SweepCron(), null, CronSweepInterval, CronSweepInterval);
+            FileLog.Write($"[GatewayHost] cron sweep started: every {CronSweepInterval.TotalSeconds:0}s");
+        }
+        else
+        {
+            FileLog.Write("[GatewayHost] cron sweep NOT started (hosted): per-tenant cron firing lands in the session-serving increment");
+        }
 
         // Scheduled-run auto-dismiss (issue #1200): close automated runs that declared themselves done, by
         // sending the kill verb DOWN the Director stream. The close has no REST fallback by design (the
@@ -2083,20 +2101,32 @@ public sealed class GatewayHost : IAsyncDisposable
         // service debits from the cloud credit-debit ledger into account_hosted_ai_spend, so the weekly
         // report shows an honest account-level "Hosted-AI services: $X" figure. Signed out is an expected
         // no-op (no fabricated spend); the store dedups the ledger's rolling window so over-polling is safe.
-        _hostedAiSpendSweep = new Governance.HostedAiSpendSweep(
-            accessToken: () => Account?.GetAccessTokenForForwarding(),
-            credits: new Core.Account.AccountCreditsClient(new HttpClient { Timeout = TimeSpan.FromSeconds(10) }),
-            store: _hostedAiSpend);
-        _hostedAiSpendSweep.Start();
+        // Skipped when HOSTED (Hosted Multi-Tenancy): mirroring writes the tenant-scoped account_hosted_ai_spend
+        // store, which has no ambient tenant on a background timer and would fail closed. Per-tenant/account
+        // spend mirroring lands in the session-serving increment.
+        if (!GatewayHostedMode.IsHosted)
+        {
+            _hostedAiSpendSweep = new Governance.HostedAiSpendSweep(
+                accessToken: () => Account?.GetAccessTokenForForwarding(),
+                credits: new Core.Account.AccountCreditsClient(new HttpClient { Timeout = TimeSpan.FromSeconds(10) }),
+                store: _hostedAiSpend);
+            _hostedAiSpendSweep.Start();
+        }
 
         // Web Push (mobile app-icon "needs you" dot): start the background notifier now that this
         // Gateway's own /sessions endpoint is live on loopback. The notifier reads that endpoint (so its
         // "needs you" verdict is byte-identical to the roster's) and pushes the count to subscribed
         // phones. It self-gates on having at least one subscription, so it is free until a phone opts in.
-        var pushSender = new Push.VapidWebPushSender(
-            _vapidStore.PublicKey, _vapidStore.PrivateKey, "mailto:support@devthrottle.com");
-        _pushNotifier = new Push.WebPushNeedsYouNotifier(_pushSubscriptions, GetNeedsYouCountAsync, pushSender);
-        _pushNotifier.Start();
+        // Skipped when HOSTED (Hosted Multi-Tenancy): the notifier reads the tenant-scoped push_subscriptions
+        // store on its timer, which has no ambient tenant and would fail closed. Per-tenant push lands in the
+        // session-serving increment (which also makes the /sessions roster it reads tenant-aware).
+        if (!GatewayHostedMode.IsHosted)
+        {
+            var pushSender = new Push.VapidWebPushSender(
+                _vapidStore.PublicKey, _vapidStore.PrivateKey, "mailto:support@devthrottle.com");
+            _pushNotifier = new Push.WebPushNeedsYouNotifier(_pushSubscriptions, GetNeedsYouCountAsync, pushSender);
+            _pushNotifier.Start();
+        }
 
         // Network Diagnostics monitor (Network Diagnostics mission, Phase 1): on a timer, watch each
         // connected device's direct-vs-relay path and log persistent home-relay drift QUIETLY. Alert
