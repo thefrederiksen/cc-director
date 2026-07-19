@@ -786,8 +786,8 @@ public sealed class GatewayHost : IAsyncDisposable
             () => PushedSessions.SnapshotFresh(TenantId.Local, AutoDismissStaleAfter),
             sessions => EnrichVoiceThenFoldForPush(
                 sessions,
-                voiceGeneratingFor: sid => _voiceService?.IsGenerating(sid) == true,
-                voiceAudioReadyFor: sid => _voiceService?.HasVoice(sid) == true,
+                voiceGeneratingFor: sid => _voiceService?.IsGenerating(TenantId.Local, sid) == true,
+                voiceAudioReadyFor: sid => _voiceService?.HasVoice(TenantId.Local, sid) == true,
                 needsYouStampFor: (sid, isRed) => _needsYouClock.Stamp(sid, isRed),
                 snoozeRegistry: _snoozeRegistry),
             SendCommandAsync);
@@ -1182,18 +1182,19 @@ public sealed class GatewayHost : IAsyncDisposable
             var stale = TimeSpan.FromSeconds(Core.Configuration.GatewayConfig.DefaultStreamStaleAfterSeconds);
             Api.DirectorCommandRouter.SendDirectorCommandAsync? sendCommand = SendCommandAsync;
             var generated = 0;
-            foreach (var sid in vs.VoiceSessionIds())
+            foreach (var sid in vs.VoiceSessionIds(TenantId.Local))
             {
                 if (generated >= 3) break;          // gentle on the serialized brain
-                if (vs.HasVoice(sid)) continue;     // already cached, nothing to do
+                if (vs.HasVoice(TenantId.Local, sid)) continue;     // already cached, nothing to do
                 // Hosted Multi-Tenancy (session-serving): the voice sweep is NOT yet per-tenant.
-                // BLOCKED ON: partitioning the WingmanVoiceService caches by tenant (its markers, generated
-                // text and audio are all keyed by session id alone) AND tenant-checking /wingman/voice/ready,
-                // which today lists EVERY ready session id. Converting this loop first would ARM a leak rather
-                // than close one: per-tenant generation would fill a process-global cache that the voice read
-                // path serves to any tenant that names an id - and /wingman/voice/ready hands out the ids. A
-                // hosted no-op is strictly safer than a live cross-tenant audio path. Until then it serves
-                // Local: correct on self-host, and on hosted a Local read is empty (never a wrong-tenant read).
+                // The state it fills IS now partitioned (VOICE V1 - WingmanVoiceService holds a separate
+                // bucket and a separate directory per tenant, and every read and mutate takes the tenant),
+                // so the old blocker is gone. What remains is this loop and the /wingman/voice* routes: the
+                // routes still resolve no tenant and pass Local, and /wingman/voice/ready still lists the
+                // Local partition's ready ids. Converting THIS loop before those routes would generate into
+                // per-tenant buckets that no route can read, so it stays on Local until the route work lands:
+                // correct on self-host, and on hosted a Local read is empty (never a wrong-tenant read).
+                // The per-tenant form is a loop over WingmanVoiceService.PartitionedTenants().
                 var (director, session) = await Api.GatewayEndpoints.LocateSessionAsync(
                     Registry, sid, PushedSessions, stale, TenantId.Local, SessionOwners);
                 if (director is null || session is null) continue;   // not owned by any known Director
@@ -1204,7 +1205,7 @@ public sealed class GatewayHost : IAsyncDisposable
                     // A pre-build is not a new turn - generate quietly so an idle session a client
                     // may be listening to is never flipped yellow mid-play (issue #1322).
                     var route = new Api.SessionVerbClient(director, sendCommand);
-                    await vs.GenerateAsync(sid, route, CancellationToken.None, showReadingWindow: false);
+                    await vs.GenerateAsync(TenantId.Local, sid, route, CancellationToken.None, showReadingWindow: false);
                     generated++;
                 }
             }
@@ -1324,7 +1325,7 @@ public sealed class GatewayHost : IAsyncDisposable
                 // Voice sessions (issue #531): the turn just finished on its own, so re-make the
                 // spoken summary + audio in the background. It is then "voice ready" in the session
                 // list with no wait. Non-voice sessions do nothing here - the watcher is voice-only.
-                if (_voiceService is { } vs && vs.IsVoiceSession(signal.SessionId))
+                if (_voiceService is { } vs && vs.IsVoiceSession(TenantId.Local, signal.SessionId))
                 {
                     // Gateway Cleanup mission, Phase 2: reach the owning Director (carried on the signal as
                     // its DirectorId) through the tunnel-first SessionVerbClient - no HTTP dial. The Director
@@ -1337,7 +1338,7 @@ public sealed class GatewayHost : IAsyncDisposable
                     // Show the yellow "wingman reading" hold only for a genuinely new turn; a startup
                     // catch-up of an earlier turn refreshes quietly so a listening client is not
                     // dropped out of the speaking screen (issue #1322).
-                    _ = vs.GenerateAsync(signal.SessionId, route, CancellationToken.None, showReadingWindow: signal.IsNewTurn);
+                    _ = vs.GenerateAsync(TenantId.Local, signal.SessionId, route, CancellationToken.None, showReadingWindow: signal.IsNewTurn);
                 }
             },
             onSessionWorking: sid =>
@@ -1345,7 +1346,7 @@ public sealed class GatewayHost : IAsyncDisposable
                 // Working again: the cached voice/text summary is now stale - clear it so the list
                 // stops showing it ready and nothing stale plays (issue #531). It regenerates on the
                 // next turn-end.
-                _voiceService?.OnSessionWorking(sid);
+                _voiceService?.OnSessionWorking(TenantId.Local, sid);
             },
             // Gateway Cleanup mission, Phase 2: under stream mode the catch-up / reconcile reads the push
             // store instead of HTTP-pulling each Director's session list (no dial).
@@ -1586,7 +1587,7 @@ public sealed class GatewayHost : IAsyncDisposable
                 // summary is stale - clear it (broad net for turns started outside the voice app, e.g.
                 // the desktop cockpit). The voice-turn endpoint also clears deterministically on send.
                 if (string.Equals(newState, "Working", StringComparison.OrdinalIgnoreCase))
-                    _voiceService?.OnSessionWorking(sessionId);
+                    _voiceService?.OnSessionWorking(TenantId.Local, sessionId);
                 if (_turnEndWatcher is null) return;
                 // Gateway Cleanup mission, Phase 2: the doorbell/heartbeat already carries the owning
                 // directorId, so feed THAT to the watcher (the voice-refresh path reaches the Director
@@ -1612,23 +1613,23 @@ public sealed class GatewayHost : IAsyncDisposable
             // Voice mode (issue #531): while the gateway's wingman is producing a session's spoken
             // summary, paint it yellow ("not ready yet") and back to red. Independent of any brief
             // agent and never via the Director's --print explain.
-            voiceGeneratingFor: sid => _voiceService?.IsGenerating(sid) == true,
+            voiceGeneratingFor: sid => _voiceService?.IsGenerating(TenantId.Local, sid) == true,
             // Issue #553: whether the gateway has fetchable, playable cached audio for this session -
             // the single truthful "voice you can play right now" signal. Holds a voice-mode waiting
             // session yellow until this is true, then lets it go red (SessionOrdering.IsVoicePreparing).
-            voiceAudioReadyFor: sid => _voiceService?.HasVoice(sid) == true,
+            voiceAudioReadyFor: sid => _voiceService?.HasVoice(TenantId.Local, sid) == true,
             // Issue #939: when turn-end voice could not be kept because hosted AI is unavailable (out
             // of credits / cap / no key), stamp the shared unavailable state onto the session so the UI
             // shows the consistent add-credit / add-key message instead of a silently missing triangle.
-            voiceUnavailableFor: sid => _voiceService?.VoiceUnavailableFor(sid),
+            voiceUnavailableFor: sid => _voiceService?.VoiceUnavailableFor(TenantId.Local, sid),
             // The last turn has no text reply to read aloud (waiting on a prompt / menu). Feeds the folded
             // VoiceDisplay so the screen shows an honest "nothing to read aloud" instead of a Generate
             // button that cannot work - the client no longer rules on this.
-            nothingToNarrateFor: sid => _voiceService?.NothingToNarrateFor(sid) == true,
+            nothingToNarrateFor: sid => _voiceService?.NothingToNarrateFor(TenantId.Local, sid) == true,
             // TTS fallback: this session's ready clip was made by the backup voice provider (the primary
             // was overloaded and the cloud proxy failed over). Feeds the folded VoiceDisplay so the screen
             // shows the generic backup-voice notice. A success-with-a-note, never an outage state.
-            servedViaFallbackFor: sid => _voiceService?.ServedViaFallbackFor(sid) == true,
+            servedViaFallbackFor: sid => _voiceService?.ServedViaFallbackFor(TenantId.Local, sid) == true,
             // Issue #218: stamp the Gateway-owned NeedsYouSince entry clock onto each session.
             needsYouStampFor: (sid, isRed) => _needsYouClock.Stamp(sid, isRed),
             // Stamp the orange "Transcribing..." flag while a dictated utterance is being uploaded

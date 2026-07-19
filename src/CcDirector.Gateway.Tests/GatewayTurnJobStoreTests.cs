@@ -1,5 +1,6 @@
 using CcDirector.Gateway.Voice;
 using Xunit;
+using CcDirector.Core.Tenancy;
 
 namespace CcDirector.Gateway.Tests;
 
@@ -15,8 +16,8 @@ public sealed class GatewayTurnJobStoreTests
         var store = new GatewayTurnJobStore();
         var uploadId = Guid.NewGuid().ToString("N");
 
-        var job = store.Create("sid-1", uploadId);
-        var found = store.FindTurnByUpload(uploadId);
+        var job = store.Create(TenantId.Local, "sid-1", uploadId);
+        var found = store.FindTurnByUpload(TenantId.Local, uploadId);
 
         Assert.NotNull(found);
         Assert.Equal(job.TurnId, found!.TurnId);
@@ -27,8 +28,8 @@ public sealed class GatewayTurnJobStoreTests
     public void FindTurnByUpload_UnknownOrEmpty_ReturnsNull()
     {
         var store = new GatewayTurnJobStore();
-        Assert.Null(store.FindTurnByUpload(Guid.NewGuid().ToString("N")));
-        Assert.Null(store.FindTurnByUpload(""));
+        Assert.Null(store.FindTurnByUpload(TenantId.Local, Guid.NewGuid().ToString("N")));
+        Assert.Null(store.FindTurnByUpload(TenantId.Local, ""));
     }
 
     [Fact]
@@ -36,22 +37,22 @@ public sealed class GatewayTurnJobStoreTests
     {
         var store = new GatewayTurnJobStore();
         var uploadId = Guid.NewGuid().ToString("N");
-        var job = store.Create("sid-1", uploadId);
+        var job = store.Create(TenantId.Local, "sid-1", uploadId);
 
         // Age the job past its TTL via the documented test seam; the next lookup must drop it.
         job.OverrideCreatedAtForTest(DateTime.UtcNow.AddMinutes(-11), GatewayTurnJobStore.Ttl);
 
-        Assert.Null(store.FindTurnByUpload(uploadId));
+        Assert.Null(store.FindTurnByUpload(TenantId.Local, uploadId));
     }
 
     [Fact]
     public void Create_WithoutUploadId_HasEmptyUploadIdAndNoIndex()
     {
         var store = new GatewayTurnJobStore();
-        var job = store.Create("sid-1");
+        var job = store.Create(TenantId.Local, "sid-1");
 
         Assert.Equal("", job.UploadId);
         // A retried completion with no upload context never collides with this job.
-        Assert.Null(store.FindTurnByUpload(""));
+        Assert.Null(store.FindTurnByUpload(TenantId.Local, ""));
     }
 }

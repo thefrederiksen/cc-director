@@ -8,6 +8,7 @@ using CcDirector.Core;
 using CcDirector.Core.Configuration;
 using CcDirector.Core.HostedAi;
 using CcDirector.Core.Storage;
+using CcDirector.Core.Tenancy;
 using CcDirector.Core.Utilities;
 using CcDirector.Gateway.Api;
 using CcDirector.Gateway.Contracts;
@@ -25,6 +26,21 @@ namespace CcDirector.Gateway.Wingman;
 /// instant (the voice is already made). Since issue #549 the turn-end trigger is the always-running
 /// TurnEndWatcher, which calls <see cref="GenerateAsync"/> directly for voice sessions on turn-end
 /// (the retired turn-brief pipeline no longer mediates it).
+///
+/// PARTITIONED BY TENANT (Hosted Multi-Tenancy, VOICE V1). Everything this service holds is customer
+/// content: the spoken narration text, the reply text it was made from, and the audio clip itself. On the
+/// hosted Gateway one account's narration must never be reachable by another, so the partition is
+/// STRUCTURAL, not a predicate on the read:
+///  - In memory, each tenant gets its own bucket of per-session dictionaries. A read for tenant A is
+///    handed tenant A's bucket and physically cannot name a session id in tenant B's bucket.
+///  - On disk, each tenant gets its own DIRECTORY (<c>tenants/&lt;id&gt;/</c>) holding its own
+///    voice-sessions.json and its own voice-audio folder, so a read cannot open another tenant's clip.
+/// The tenant id is canonicalized before it becomes a bucket key or a path component, and a shape this
+/// system does not mint is REFUSED rather than coerced into something that looks valid - the same rule,
+/// and the same reasoning, as <see cref="Prompts.GatewayPromptLog"/>.
+///
+/// Every public read and mutate takes the tenant as a REQUIRED parameter. There is deliberately no
+/// bare-session-id overload: a bare-id method is a cross-tenant read waiting for its next caller.
 /// </summary>
 public sealed class WingmanVoiceService
 {
@@ -36,19 +52,107 @@ public sealed class WingmanVoiceService
     /// null. Both null means a generic provider error (logged, no shared state).</summary>
     private sealed record TtsResult(byte[]? Audio, string? ContentType, HostedAiState? Unavailable, bool ServedViaFallback = false);
 
+    /// <summary>
+    /// ONE tenant's voice state. Every dictionary here is keyed by session id, and the ONLY way to reach one
+    /// is through <see cref="StateFor"/> with a validated tenant - so a session id alone can never name a
+    /// row. This is the in-memory twin of the per-tenant directory on disk: the isolation is the container,
+    /// not a check performed at the point of read.
+    /// </summary>
+    private sealed class TenantVoiceState
+    {
+        public readonly ConcurrentDictionary<string, byte> VoiceSessions = new();          // sid -> marker
+        public readonly ConcurrentDictionary<string, VoiceReady> Ready = new();            // sid -> spoken+audio
+        public readonly ConcurrentDictionary<string, byte> Generating = new();             // sid -> wingman is running now
+        public readonly ConcurrentDictionary<string, HostedAiState> Unavailable = new();   // sid -> why voice is off (issue #939)
+        public readonly ConcurrentDictionary<string, byte> NothingToNarrate = new();       // sid -> the last turn has no text reply to read aloud (waiting on a prompt)
+        public readonly ConcurrentDictionary<string, DateTime> PreferBackupUntil = new();  // sid -> UTC deadline while this session routes past a silent primary (issue devthrottle_internal#405)
+        public readonly ConcurrentDictionary<string, byte> InFlight = new();               // sid -> a generation is running now
+    }
+
     private readonly WingmanTranslator _translator;
     private readonly KeyVault _vault;
     private readonly WingmanTrainingStore _training;
-    private readonly ConcurrentDictionary<string, byte> _voiceSessions = new();   // sid -> marker
-    private readonly ConcurrentDictionary<string, VoiceReady> _ready = new();      // sid -> spoken+audio
-    private readonly ConcurrentDictionary<string, byte> _generating = new();       // sid -> wingman is running now
-    private readonly ConcurrentDictionary<string, HostedAiState> _voiceUnavailable = new();  // sid -> why voice is off (issue #939)
-    private readonly ConcurrentDictionary<string, byte> _nothingToNarrate = new();  // sid -> the last turn has no text reply to read aloud (waiting on a prompt)
-    private readonly ConcurrentDictionary<string, DateTime> _preferBackupUntil = new();  // sid -> UTC deadline while this session routes past a silent primary (issue devthrottle_internal#405)
-    private readonly string _persistPath;
-    private readonly string _audioDir;
+    /// <summary>Tenant partition key (see <see cref="CanonicalTenantKey"/>) -> that tenant's whole voice
+    /// state. Ordinal, because the key is already canonical and two spellings must NEVER meet here.</summary>
+    private readonly ConcurrentDictionary<string, TenantVoiceState> _tenants = new(StringComparer.Ordinal);
+    /// <summary>The pre-partition file this Gateway used to keep the voice-session set in. Kept only so the
+    /// one-time legacy migration in the constructor can find it; nothing reads or writes it afterwards.</summary>
+    private readonly string _legacyPersistPath;
+    /// <summary>The directory the per-tenant partitions live under.</summary>
+    private readonly string _baseDir;
     private readonly HttpClient? _ttsHttp;   // test seam for TtsAsync (issue #939); the shared static when null
     private readonly Func<string, string?>? _sessionTitleResolver;   // sid -> session title, spoken first
+
+    /// <summary>
+    /// True only for the EXACT form <see cref="Tenancy.TenantRegistry"/> mints: a canonical lowercase GUID.
+    ///
+    /// A tenant id becomes a DIRECTORY NAME and a dictionary key here, so it must be a shape this system
+    /// actually produces - not merely "characters that look harmless". Two structural aliases have already
+    /// been found on this exact boundary in <see cref="Prompts.GatewayPromptLog"/>, and this is the same
+    /// guard for the same reason: <c>".."</c> is built entirely from harmless characters and canonicalizes
+    /// to the PARENT partition, and an id differing only in letter case is a different identity to the
+    /// case-sensitive tenants table while naming the SAME directory on Windows and Azure Files. So this
+    /// accepts ONE spelling: parse strictly, then require the value to equal its own canonical round-trip.
+    /// Anything else is refused rather than normalised - normalising is how two identities quietly share a
+    /// folder, and this folder holds narration audio and reply TEXT.
+    /// </summary>
+    private static bool IsMintedAccountTenant(string value)
+        => Guid.TryParseExact(value, "D", out var parsed)
+           && string.Equals(value, parsed.ToString("D"), StringComparison.Ordinal);
+
+    /// <summary>
+    /// The canonical partition key for a tenant - the single string used BOTH as the in-memory bucket key and
+    /// as the on-disk directory name, so the two can never disagree about which tenant a session belongs to.
+    ///
+    /// <see cref="TenantId.Local"/> is the fixed literal "local" (self-host's one tenant). Every other
+    /// partition must be a minted account tenant; the reserved <see cref="TenantId.System"/> identity is
+    /// deliberately REFUSED rather than given a partition, because no narration belongs to it - the safe
+    /// answer is that it has no voice state at all.
+    /// </summary>
+    private static string CanonicalTenantKey(TenantId tenant)
+    {
+        if (!tenant.IsValid)
+            throw new ArgumentException("Voice state needs a valid tenant; an unresolved tenant is denied, never defaulted.", nameof(tenant));
+        if (tenant.IsLocal)
+            return TenantId.Local.Value;
+        if (!IsMintedAccountTenant(tenant.Value))
+            throw new ArgumentException(
+                $"Tenant '{tenant.ToLogString()}' is not a minted account tenant and cannot name a voice-state partition.",
+                nameof(tenant));
+        return tenant.Value;
+    }
+
+    /// <summary>This tenant's in-memory bucket, created on first touch. The validation runs FIRST, so an
+    /// unminted or unresolved tenant never gets a bucket at all.</summary>
+    private TenantVoiceState StateFor(TenantId tenant)
+        => _tenants.GetOrAdd(CanonicalTenantKey(tenant), _ => new TenantVoiceState());
+
+    /// <summary>
+    /// The directory holding ONE tenant's voice state (its voice-sessions.json and its voice-audio folder).
+    /// The tenant id is a PATH COMPONENT, which is the whole point: a read for tenant A builds a path under
+    /// tenant A's folder and cannot name a file in tenant B's.
+    /// </summary>
+    public string PartitionDirectoryFor(TenantId tenant)
+    {
+        var key = CanonicalTenantKey(tenant);
+        var combined = Path.Combine(_baseDir, "tenants", key);
+
+        // Belt and braces, because the cost of being wrong here is one tenant playing another's narration:
+        // the result must actually LIE INSIDE the partition root. CanonicalTenantKey already excludes
+        // traversal, so this can only fire if that guard is ever loosened - which is exactly when it is wanted.
+        var expectedRoot = Path.GetFullPath(Path.Combine(_baseDir, "tenants")) + Path.DirectorySeparatorChar;
+        if (!Path.GetFullPath(combined).StartsWith(expectedRoot, StringComparison.OrdinalIgnoreCase))
+            throw new ArgumentException(
+                $"Tenant '{tenant.ToLogString()}' resolves outside the voice-state partition root.", nameof(tenant));
+
+        return combined;
+    }
+
+    /// <summary>The file holding one tenant's set of voice sessions.</summary>
+    private string PersistPathFor(TenantId tenant) => Path.Combine(PartitionDirectoryFor(tenant), "voice-sessions.json");
+
+    /// <summary>The folder holding one tenant's cached narration clips and their metadata.</summary>
+    private string AudioDirFor(TenantId tenant) => Path.Combine(PartitionDirectoryFor(tenant), "voice-audio");
 
     /// <summary>
     /// The one HTTP client for the narration speech leg, used whenever no test client is injected.
@@ -81,10 +185,10 @@ public sealed class WingmanVoiceService
     // is recorded as this ONE session's unavailable-state so its UI can say so, and nothing more - it
     // never reaches across to another session. Do NOT reintroduce a shared gate or a constant cap here.
     //
-    // _inFlight stays: it is NOT a fleet gate. It coalesces a single session so two generations for the
-    // SAME session never run at once (a slow turn overlapping the idle sweep would otherwise double the
-    // spend). It never makes one session wait on another.
-    private readonly ConcurrentDictionary<string, byte> _inFlight = new();   // sid -> a generation is running now
+    // The per-session coalescing marker (TenantVoiceState.InFlight) stays: it is NOT a fleet gate. It
+    // coalesces a single session so two generations for the SAME session never run at once (a slow turn
+    // overlapping the idle sweep would otherwise double the spend). It never makes one session wait on
+    // another, and it is per tenant like everything else here.
 
     /// <summary>On-disk shape of one ready session's metadata (the audio bytes live next to it as
     /// an .mp3). Persisted so the play triangle / playability survives a gateway restart (issue #553).</summary>
@@ -109,94 +213,225 @@ public sealed class WingmanVoiceService
         // audio cache is now ALSO durable - it is persisted next to voice-sessions.json under a
         // "voice-audio" folder so the triangle does not vanish-then-reappear-empty across a restart
         // and a tap after restart plays. Tests pass an isolated path so the two never collide.
-        _persistPath = persistPath ?? Path.Combine(CcStorage.Root(), "voice-sessions.json");
-        var baseDir = Path.GetDirectoryName(_persistPath);
+        //
+        // VOICE V1: both now live inside a per-tenant partition under _baseDir/tenants/<id>/. The
+        // constructor argument still names the LEGACY (pre-partition) file, because that is what the
+        // one-time migration below has to find, and because it is how every existing caller and test
+        // points this service at an isolated directory.
+        _legacyPersistPath = persistPath ?? Path.Combine(CcStorage.Root(), "voice-sessions.json");
+        var baseDir = Path.GetDirectoryName(_legacyPersistPath);
         if (string.IsNullOrWhiteSpace(baseDir)) baseDir = CcStorage.Root();
-        _audioDir = Path.Combine(baseDir, "voice-audio");
-        LoadVoiceSessions();
-        LoadReadyAudio();
+        _baseDir = baseDir;
+        MigrateLegacyUnpartitionedState();
+        LoadAllPartitions();
     }
 
-    private void LoadVoiceSessions()
+    /// <summary>
+    /// Deal, once, with the voice state that was written BEFORE this store was partitioned: a single
+    /// voice-sessions.json and a single voice-audio folder shared by whoever happened to be using the
+    /// Gateway. It has no tenant recorded anywhere, so the two deployment modes get OPPOSITE treatment, and
+    /// the mode is read from <see cref="GatewayHostedMode.IsHosted"/> DIRECTLY - never from an argument a
+    /// caller could omit, because an omitted argument would fail open into "keep it".
+    ///
+    ///  - HOSTED: DELETE it. The clip cannot be attributed to an account - the Director that made it may be
+    ///    long gone - and guessing an owner would hand one customer another customer's narration. A cached
+    ///    narration clip is regenerable; a mis-attributed one is a disclosure. Losing it is the cheap outcome.
+    ///  - SELF-HOST: MOVE it into the Local partition. Self-host has exactly one tenant, so attribution is
+    ///    unambiguous and the user keeps every ready clip across the upgrade.
+    ///
+    /// Best-effort and idempotent: a failure is logged and boot continues (a cached narration must never
+    /// stop the Gateway starting), and a second run finds nothing left to do.
+    /// </summary>
+    private void MigrateLegacyUnpartitionedState()
+    {
+        var legacyAudioDir = Path.Combine(_baseDir, "voice-audio");
+        var hasLegacy = File.Exists(_legacyPersistPath) || Directory.Exists(legacyAudioDir);
+        if (!hasLegacy) return;
+
+        if (GatewayHostedMode.IsHosted)
+        {
+            try
+            {
+                if (File.Exists(_legacyPersistPath)) File.Delete(_legacyPersistPath);
+                if (Directory.Exists(legacyAudioDir)) Directory.Delete(legacyAudioDir, recursive: true);
+                FileLog.Write("[WingmanVoiceService] hosted: deleted the pre-partition voice state - it carries no tenant, and a clip whose owner cannot be established is deleted rather than guessed");
+            }
+            catch (Exception ex)
+            {
+                FileLog.Write($"[WingmanVoiceService] hosted: deleting the pre-partition voice state FAILED: {ex.Message}");
+            }
+            return;
+        }
+
+        try
+        {
+            var localDir = PartitionDirectoryFor(TenantId.Local);
+            Directory.CreateDirectory(localDir);
+
+            var targetPersist = PersistPathFor(TenantId.Local);
+            if (File.Exists(_legacyPersistPath) && !File.Exists(targetPersist))
+                File.Move(_legacyPersistPath, targetPersist);
+            else if (File.Exists(_legacyPersistPath))
+                File.Delete(_legacyPersistPath);   // the partition already has its own; the legacy copy is superseded
+
+            var targetAudioDir = AudioDirFor(TenantId.Local);
+            if (Directory.Exists(legacyAudioDir))
+            {
+                Directory.CreateDirectory(targetAudioDir);
+                foreach (var file in Directory.EnumerateFiles(legacyAudioDir))
+                {
+                    var target = Path.Combine(targetAudioDir, Path.GetFileName(file));
+                    if (File.Exists(target)) File.Delete(target);
+                    File.Move(file, target);
+                }
+                Directory.Delete(legacyAudioDir, recursive: true);
+            }
+            FileLog.Write("[WingmanVoiceService] self-host: moved the pre-partition voice state into the local tenant partition (one tenant, so attribution is unambiguous)");
+        }
+        catch (Exception ex)
+        {
+            FileLog.Write($"[WingmanVoiceService] self-host: moving the pre-partition voice state FAILED: {ex.Message}");
+        }
+    }
+
+    /// <summary>Load every tenant partition present on disk. A directory whose name is not a partition key
+    /// this system mints is SKIPPED loudly rather than loaded under some coerced name - the same refusal the
+    /// write path applies, so a hand-made or half-renamed folder can never become a tenant.</summary>
+    private void LoadAllPartitions()
+    {
+        var tenantsRoot = Path.Combine(_baseDir, "tenants");
+        if (!Directory.Exists(tenantsRoot)) return;
+        foreach (var dir in Directory.EnumerateDirectories(tenantsRoot))
+        {
+            var name = Path.GetFileName(dir);
+            TenantId tenant;
+            try
+            {
+                tenant = new TenantId(name);
+                _ = CanonicalTenantKey(tenant);
+            }
+            catch (ArgumentException)
+            {
+                FileLog.Write($"[WingmanVoiceService] skipping voice partition directory '{name}' - not a tenant this system mints");
+                continue;
+            }
+            LoadVoiceSessions(tenant);
+            LoadReadyAudio(tenant);
+        }
+    }
+
+    private void LoadVoiceSessions(TenantId tenant)
     {
         try
         {
-            if (!File.Exists(_persistPath)) return;
-            var ids = JsonSerializer.Deserialize<string[]>(File.ReadAllText(_persistPath));
-            if (ids is not null) foreach (var id in ids) if (!string.IsNullOrWhiteSpace(id)) _voiceSessions[id] = 1;
-            FileLog.Write($"[WingmanVoiceService] loaded {_voiceSessions.Count} voice session(s) from disk");
+            var path = PersistPathFor(tenant);
+            if (!File.Exists(path)) return;
+            var state = StateFor(tenant);
+            var ids = JsonSerializer.Deserialize<string[]>(File.ReadAllText(path));
+            if (ids is not null) foreach (var id in ids) if (!string.IsNullOrWhiteSpace(id)) state.VoiceSessions[id] = 1;
+            FileLog.Write($"[WingmanVoiceService] loaded {state.VoiceSessions.Count} voice session(s) from disk for tenant={tenant.ToLogString()}");
         }
-        catch (Exception ex) { FileLog.Write($"[WingmanVoiceService] load voice sessions FAILED: {ex.Message}"); }
+        catch (Exception ex) { FileLog.Write($"[WingmanVoiceService] load voice sessions FAILED for tenant={tenant.ToLogString()}: {Redact(ex.Message, tenant)}"); }
     }
 
-    private void SaveVoiceSessions()
+    private void SaveVoiceSessions(TenantId tenant)
     {
-        try { File.WriteAllText(_persistPath, JsonSerializer.Serialize(_voiceSessions.Keys.ToArray())); }
-        catch (Exception ex) { FileLog.Write($"[WingmanVoiceService] save voice sessions FAILED: {ex.Message}"); }
+        try
+        {
+            var path = PersistPathFor(tenant);
+            Directory.CreateDirectory(PartitionDirectoryFor(tenant));
+            File.WriteAllText(path, JsonSerializer.Serialize(StateFor(tenant).VoiceSessions.Keys.ToArray()));
+        }
+        catch (Exception ex) { FileLog.Write($"[WingmanVoiceService] save voice sessions FAILED for tenant={tenant.ToLogString()}: {Redact(ex.Message, tenant)}"); }
     }
+
+    /// <summary>
+    /// Replace a tenant's raw account id with its hashed log form anywhere it appears in text bound for the
+    /// log - in practice a file path inside an exception message, since the partition directory IS the
+    /// tenant id. A single exact substitution of a value we hold, not a general-purpose scrub: it is
+    /// complete for the one way the id can get in here, and it keeps the failure LOUD rather than swallowing
+    /// the message to be safe. Same rule as <see cref="Prompts.GatewayPromptLog"/>.
+    /// </summary>
+    private static string Redact(string text, TenantId tenant)
+        => string.IsNullOrEmpty(text) || !tenant.IsValid
+            ? text
+            : text.Replace(tenant.Value, tenant.ToLogString(), StringComparison.Ordinal);
 
     /// <summary>Restore the per-session ready audio cache from disk on startup (issue #553) so
     /// HasVoice / ReadySessionIds survive a gateway restart. A session is only loaded ready when BOTH
     /// its metadata (.json) and its audio (.mp3, non-empty) are present - the "if anything fails,
     /// remove the triangle" rule extends to a half-written or missing cache.</summary>
-    private void LoadReadyAudio()
+    private void LoadReadyAudio(TenantId tenant)
     {
         try
         {
-            if (!Directory.Exists(_audioDir)) return;
+            var audioDir = AudioDirFor(tenant);
+            if (!Directory.Exists(audioDir)) return;
+            var state = StateFor(tenant);
             var loaded = 0;
-            foreach (var metaPath in Directory.EnumerateFiles(_audioDir, "*.json"))
+            foreach (var metaPath in Directory.EnumerateFiles(audioDir, "*.json"))
             {
                 var sid = Path.GetFileNameWithoutExtension(metaPath);
-                var audioPath = Path.Combine(_audioDir, sid + ".mp3");
+                var audioPath = Path.Combine(audioDir, sid + ".mp3");
                 if (!File.Exists(audioPath)) continue;
                 var audio = File.ReadAllBytes(audioPath);
                 if (audio.Length == 0) continue;
                 var meta = JsonSerializer.Deserialize<PersistedVoice>(File.ReadAllText(metaPath));
                 if (meta is null) continue;
                 var contentType = NormalizeContentType(meta.ContentType) ?? DetectAudioContentType(audio);
-                _ready[sid] = new VoiceReady(meta.Spoken, meta.Reply, audio, meta.AtUtc, contentType, meta.ServedViaFallback);
+                state.Ready[sid] = new VoiceReady(meta.Spoken, meta.Reply, audio, meta.AtUtc, contentType, meta.ServedViaFallback);
                 loaded++;
             }
-            FileLog.Write($"[WingmanVoiceService] loaded {loaded} ready voice audio cache(s) from disk");
+            FileLog.Write($"[WingmanVoiceService] loaded {loaded} ready voice audio cache(s) from disk for tenant={tenant.ToLogString()}");
         }
-        catch (Exception ex) { FileLog.Write($"[WingmanVoiceService] load ready audio FAILED: {ex.Message}"); }
+        catch (Exception ex) { FileLog.Write($"[WingmanVoiceService] load ready audio FAILED for tenant={tenant.ToLogString()}: {Redact(ex.Message, tenant)}"); }
     }
 
-    private void SaveReadyAudio(string sid, VoiceReady ready)
+    private void SaveReadyAudio(TenantId tenant, string sid, VoiceReady ready)
     {
         try
         {
-            Directory.CreateDirectory(_audioDir);
+            var audioDir = AudioDirFor(tenant);
+            Directory.CreateDirectory(audioDir);
             // Write the audio first, then the metadata, so a startup load (which requires BOTH the
             // .mp3 and the .json) never sees a session ready before its bytes are on disk.
-            File.WriteAllBytes(Path.Combine(_audioDir, sid + ".mp3"), ready.Audio);
-            File.WriteAllText(Path.Combine(_audioDir, sid + ".json"),
+            File.WriteAllBytes(Path.Combine(audioDir, sid + ".mp3"), ready.Audio);
+            File.WriteAllText(Path.Combine(audioDir, sid + ".json"),
                 JsonSerializer.Serialize(new PersistedVoice(ready.Spoken, ready.Reply, ready.AtUtc, ready.ContentType, ready.ServedViaFallback)));
         }
-        catch (Exception ex) { FileLog.Write($"[WingmanVoiceService] save ready audio FAILED sid={sid}: {ex.Message}"); }
+        catch (Exception ex) { FileLog.Write($"[WingmanVoiceService] save ready audio FAILED tenant={tenant.ToLogString()} sid={sid}: {Redact(ex.Message, tenant)}"); }
     }
 
-    private void DeleteReadyAudio(string sid)
+    private void DeleteReadyAudio(TenantId tenant, string sid)
     {
         try
         {
-            var meta = Path.Combine(_audioDir, sid + ".json");
-            var audio = Path.Combine(_audioDir, sid + ".mp3");
+            var audioDir = AudioDirFor(tenant);
+            var meta = Path.Combine(audioDir, sid + ".json");
+            var audio = Path.Combine(audioDir, sid + ".mp3");
             if (File.Exists(meta)) File.Delete(meta);
             if (File.Exists(audio)) File.Delete(audio);
         }
-        catch (Exception ex) { FileLog.Write($"[WingmanVoiceService] delete ready audio FAILED sid={sid}: {ex.Message}"); }
+        catch (Exception ex) { FileLog.Write($"[WingmanVoiceService] delete ready audio FAILED tenant={tenant.ToLogString()} sid={sid}: {Redact(ex.Message, tenant)}"); }
     }
 
-    /// <summary>This session has had voice used on it at least once.</summary>
-    public bool IsVoiceSession(string sid) => _voiceSessions.ContainsKey(sid);
+    /// <summary>This session has had voice used on it at least once, within this tenant.</summary>
+    public bool IsVoiceSession(TenantId tenant, string sid) => StateFor(tenant).VoiceSessions.ContainsKey(sid);
 
-    /// <summary>Every session the gateway is keeping voice for (the persisted set).</summary>
-    public IReadOnlyCollection<string> VoiceSessionIds() => _voiceSessions.Keys.ToArray();
+    /// <summary>Every session the gateway is keeping voice for, within ONE tenant (the persisted set).</summary>
+    public IReadOnlyCollection<string> VoiceSessionIds(TenantId tenant) => StateFor(tenant).VoiceSessions.Keys.ToArray();
 
-    /// <summary>True when this session currently has a fresh, playable cached summary.</summary>
-    public bool HasVoice(string sid) => _ready.ContainsKey(sid);
+    /// <summary>
+    /// Every tenant this service currently holds voice state for. The ONLY method here that is not scoped to
+    /// a single tenant, and it deliberately returns tenants rather than sessions: a caller that must visit
+    /// all of them (the background narration sweep) iterates tenants and then asks each one for its own
+    /// sessions, so it still never sees a session id outside the tenant it is asking about.
+    /// </summary>
+    public IReadOnlyCollection<TenantId> PartitionedTenants()
+        => _tenants.Keys.Select(k => new TenantId(k)).ToArray();
+
+    /// <summary>True when this session currently has a fresh, playable cached summary, within this tenant.</summary>
+    public bool HasVoice(TenantId tenant, string sid) => StateFor(tenant).Ready.ContainsKey(sid);
 
     /// <summary>The response header the cloud speech proxy sets when it quietly failed the primary
     /// provider over to the backup (Phase 1). Its mere PRESENCE means "served via backup". We key on
@@ -210,7 +445,8 @@ public sealed class WingmanVoiceService
     /// primary was overloaded and the cloud proxy failed over). Fed to <see cref="VoiceDisplayFold"/> so
     /// the Voice screen shows the generic backup-voice notice. False when there is no ready clip, or the
     /// ready clip was served normally. Never an outage signal - a fallback IS a successful narration.</summary>
-    public bool ServedViaFallbackFor(string sid) => _ready.TryGetValue(sid, out var v) && v.ServedViaFallback;
+    public bool ServedViaFallbackFor(TenantId tenant, string sid)
+        => StateFor(tenant).Ready.TryGetValue(sid, out var v) && v.ServedViaFallback;
 
     /// <summary>
     /// Whether a turn-end should (re)generate the spoken narration for this session. True when there is
@@ -223,15 +459,15 @@ public sealed class WingmanVoiceService
     /// Reply text is compared trimmed + ordinal - the two sources (cache vs the live /turns widget) are
     /// the same JSONL text block, so an unchanged turn matches exactly.
     /// </summary>
-    internal bool ShouldRegenerate(string sid, string? currentReply)
+    internal bool ShouldRegenerate(TenantId tenant, string sid, string? currentReply)
     {
         if (string.IsNullOrWhiteSpace(currentReply)) return false;   // nothing to narrate yet
-        if (!_ready.TryGetValue(sid, out var cached)) return true;    // never narrated -> make it
+        if (!StateFor(tenant).Ready.TryGetValue(sid, out var cached)) return true;   // never narrated -> make it
         return !string.Equals(cached.Reply?.Trim(), currentReply.Trim(), StringComparison.Ordinal);
     }
 
-    /// <summary>The sessions that currently have a ready, playable spoken summary.</summary>
-    public IReadOnlyCollection<string> ReadySessionIds() => _ready.Keys.ToArray();
+    /// <summary>The sessions within ONE tenant that currently have a ready, playable spoken summary.</summary>
+    public IReadOnlyCollection<string> ReadySessionIds(TenantId tenant) => StateFor(tenant).Ready.Keys.ToArray();
 
     /// <summary>
     /// True while the wingman is actively producing this session's spoken summary (issue #531
@@ -239,13 +475,13 @@ public sealed class WingmanVoiceService
     /// before flipping back to red when it needs the user again. The gateway surfaces it through
     /// the "Briefing" yellow path in the /sessions aggregation (see GatewayEndpoints voiceGeneratingFor).
     /// </summary>
-    public bool IsGenerating(string sid) => _generating.ContainsKey(sid);
+    public bool IsGenerating(TenantId tenant, string sid) => StateFor(tenant).Generating.ContainsKey(sid);
 
     /// <summary>Mark the wingman as running for this session (turns the session yellow).</summary>
-    public void BeginGenerating(string sid) => _generating[sid] = 1;
+    public void BeginGenerating(TenantId tenant, string sid) => StateFor(tenant).Generating[sid] = 1;
 
     /// <summary>The wingman finished running for this session (back to red / its raw color).</summary>
-    public void EndGenerating(string sid) => _generating.TryRemove(sid, out _);
+    public void EndGenerating(TenantId tenant, string sid) => StateFor(tenant).Generating.TryRemove(sid, out _);
 
     /// <summary>
     /// Why the Gateway could not keep this session's voice, or null when voice is fine (issue #939).
@@ -254,8 +490,8 @@ public sealed class WingmanVoiceService
     /// <c>/sessions</c> aggregation stamps the shared message onto <c>SessionDto.VoiceUnavailable</c>
     /// from this so the owning UI shows the consistent state.
     /// </summary>
-    public HostedAiState? VoiceUnavailableFor(string sid)
-        => _voiceUnavailable.TryGetValue(sid, out var s) ? s : (HostedAiState?)null;
+    public HostedAiState? VoiceUnavailableFor(TenantId tenant, string sid)
+        => StateFor(tenant).Unavailable.TryGetValue(sid, out var s) ? s : (HostedAiState?)null;
 
     /// <summary>
     /// True when this session's latest turn has NO assistant text reply to read aloud - it is waiting for
@@ -265,15 +501,16 @@ public sealed class WingmanVoiceService
     /// when voice is turned off. The <c>/sessions</c> aggregation feeds this to <see cref="VoiceDisplayFold"/>
     /// so the screen shows an honest "nothing to read aloud" instead of a Generate button that cannot work.
     /// </summary>
-    public bool NothingToNarrateFor(string sid) => _nothingToNarrate.ContainsKey(sid);
+    public bool NothingToNarrateFor(TenantId tenant, string sid) => StateFor(tenant).NothingToNarrate.ContainsKey(sid);
 
     /// <summary>Set or clear the "nothing to narrate" fact from a caller that has already read the turn
     /// (the on-demand explain path): true when the last reply is empty (waiting on a prompt), false the
     /// moment a text reply exists. The auto path sets/clears it inline in <c>GenerateOnceAsync</c>.</summary>
-    public void SetNothingToNarrate(string sid, bool nothing)
+    public void SetNothingToNarrate(TenantId tenant, string sid, bool nothing)
     {
-        if (nothing) _nothingToNarrate[sid] = 1;
-        else _nothingToNarrate.TryRemove(sid, out _);
+        var state = StateFor(tenant);
+        if (nothing) state.NothingToNarrate[sid] = 1;
+        else state.NothingToNarrate.TryRemove(sid, out _);
     }
 
     /// <summary>
@@ -284,7 +521,7 @@ public sealed class WingmanVoiceService
     /// successful generation, on the Working transition, and when voice is turned off - exactly like the
     /// speech-leg unavailable state.
     /// </summary>
-    public void NoteRetrying(string sid) => _voiceUnavailable[sid] = HostedAiState.Retrying;
+    public void NoteRetrying(TenantId tenant, string sid) => StateFor(tenant).Unavailable[sid] = HostedAiState.Retrying;
 
     /// <summary>
     /// True when an exception from the model (translation) leg means it DID NOT ANSWER - a bounded
@@ -308,13 +545,13 @@ public sealed class WingmanVoiceService
     internal Task CaptureTrainingAsync(SessionVerbClient route, string sid, string source, string reply, string recentContext, string spoken, double replySeconds, CancellationToken ct = default)
         => _training.CaptureAsync(route, sid, source, reply, recentContext, spoken, replySeconds, ct);
 
-    public VoiceReady? Get(string sid) => _ready.TryGetValue(sid, out var v) ? v : null;
-    public byte[]? GetAudio(string sid) => _ready.TryGetValue(sid, out var v) ? v.Audio : null;
-    public string? GetAudioContentType(string sid) => _ready.TryGetValue(sid, out var v) ? v.ContentType : null;
+    public VoiceReady? Get(TenantId tenant, string sid) => StateFor(tenant).Ready.TryGetValue(sid, out var v) ? v : null;
+    public byte[]? GetAudio(TenantId tenant, string sid) => StateFor(tenant).Ready.TryGetValue(sid, out var v) ? v.Audio : null;
+    public string? GetAudioContentType(TenantId tenant, string sid) => StateFor(tenant).Ready.TryGetValue(sid, out var v) ? v.ContentType : null;
 
     /// <summary>Mark the session as a voice session (persisted, so the gateway keeps its voice fresh
     /// across restarts via the background sweep + turn-end).</summary>
-    public void Mark(string sid) { if (_voiceSessions.TryAdd(sid, 1)) SaveVoiceSessions(); }
+    public void Mark(TenantId tenant, string sid) { if (StateFor(tenant).VoiceSessions.TryAdd(sid, 1)) SaveVoiceSessions(tenant); }
 
     /// <summary>
     /// Stop keeping voice for this session - it is no longer a voice session (issue #859). The user
@@ -327,18 +564,19 @@ public sealed class WingmanVoiceService
     /// voice session. Read-only: this changes only gateway-side voice marking; it sends nothing into
     /// the session. Re-entering voice (the explain path calls <see cref="Mark"/>) starts it again.
     /// </summary>
-    public void Unmark(string sid)
+    public void Unmark(TenantId tenant, string sid)
     {
-        var wasVoice = _voiceSessions.TryRemove(sid, out _);
-        if (wasVoice) SaveVoiceSessions();
-        _generating.TryRemove(sid, out _);
-        _voiceUnavailable.TryRemove(sid, out _);   // voice is off, so its unavailable-state is moot (issue #939)
-        _nothingToNarrate.TryRemove(sid, out _);   // voice is off, so "nothing to narrate" is moot too
-        _preferBackupUntil.TryRemove(sid, out _);  // voice is off, so the backup-routing window is moot too (issue devthrottle_internal#405)
-        if (_ready.TryRemove(sid, out _))
-            DeleteReadyAudio(sid);   // keep the durable cache in step so a stale tap can't 404
+        var state = StateFor(tenant);
+        var wasVoice = state.VoiceSessions.TryRemove(sid, out _);
+        if (wasVoice) SaveVoiceSessions(tenant);
+        state.Generating.TryRemove(sid, out _);
+        state.Unavailable.TryRemove(sid, out _);        // voice is off, so its unavailable-state is moot (issue #939)
+        state.NothingToNarrate.TryRemove(sid, out _);   // voice is off, so "nothing to narrate" is moot too
+        state.PreferBackupUntil.TryRemove(sid, out _);  // voice is off, so the backup-routing window is moot too (issue devthrottle_internal#405)
+        if (state.Ready.TryRemove(sid, out _))
+            DeleteReadyAudio(tenant, sid);   // keep the durable cache in step so a stale tap can't 404
         if (wasVoice)
-            FileLog.Write($"[WingmanVoiceService] voice unmarked (turned off): sid={sid}");
+            FileLog.Write($"[WingmanVoiceService] voice unmarked (turned off): tenant={tenant.ToLogString()} sid={sid}");
     }
 
     /// <summary>
@@ -347,17 +585,18 @@ public sealed class WingmanVoiceService
     /// served or played. The session stays a voice session, so when the turn finishes the turn-end
     /// hook regenerates a fresh summary. Called on the Working transition.
     /// </summary>
-    public void OnSessionWorking(string sid)
+    public void OnSessionWorking(TenantId tenant, string sid)
     {
+        var state = StateFor(tenant);
         // A new turn (blue) supersedes any in-flight generation for the old turn, so drop the
         // yellow "wingman running" marker too - raw activity wins while the agent works.
-        _generating.TryRemove(sid, out _);
-        _voiceUnavailable.TryRemove(sid, out _);   // a fresh turn clears the old unavailable-state (dismissible, issue #939)
-        _nothingToNarrate.TryRemove(sid, out _);   // a fresh turn supersedes "nothing to narrate" - re-evaluated on its turn-end
-        if (_ready.TryRemove(sid, out _))
+        state.Generating.TryRemove(sid, out _);
+        state.Unavailable.TryRemove(sid, out _);        // a fresh turn clears the old unavailable-state (dismissible, issue #939)
+        state.NothingToNarrate.TryRemove(sid, out _);   // a fresh turn supersedes "nothing to narrate" - re-evaluated on its turn-end
+        if (state.Ready.TryRemove(sid, out _))
         {
-            DeleteReadyAudio(sid);   // issue #553: keep the durable cache in step so a stale tap can't 404
-            FileLog.Write($"[WingmanVoiceService] voice + text cache cleared (session working): sid={sid}");
+            DeleteReadyAudio(tenant, sid);   // issue #553: keep the durable cache in step so a stale tap can't 404
+            FileLog.Write($"[WingmanVoiceService] voice + text cache cleared (session working): tenant={tenant.ToLogString()} sid={sid}");
         }
     }
 
@@ -366,26 +605,26 @@ public sealed class WingmanVoiceService
     /// paths), synthesize its audio, and mark the session as a voice session. Best-effort: if the
     /// audio can't be made (no key / outage) the session is still marked, so turn-end retries.
     /// </summary>
-    public async Task StoreSpokenAsync(string sid, string spoken, string reply, CancellationToken ct = default)
+    public async Task StoreSpokenAsync(TenantId tenant, string sid, string spoken, string reply, CancellationToken ct = default)
     {
-        Mark(sid);
+        Mark(tenant, sid);
         if (string.IsNullOrWhiteSpace(spoken)) return;
-        var tts = await TtsAsync(sid, spoken, ct);
+        var tts = await TtsAsync(tenant, sid, spoken, ct);
         // The "if anything fails, remove the triangle" rule: when synthesis returns null/empty we
-        // leave _ready WITHOUT this session, so HasVoice stays false and no triangle shows. Only a
+        // leave this tenant's Ready map WITHOUT this session, so HasVoice stays false and no triangle shows. Only a
         // real, playable summary becomes ready - and is persisted (issue #553) so it survives a restart.
         if (tts.Audio is { Length: > 0 })
         {
-            _voiceUnavailable.TryRemove(sid, out _);   // success clears any prior unavailable-state (dismissible)
-            StoreReady(sid, spoken, reply ?? "", tts.Audio, tts.ContentType, tts.ServedViaFallback);
+            StateFor(tenant).Unavailable.TryRemove(sid, out _);   // success clears any prior unavailable-state (dismissible)
+            StoreReady(tenant, sid, spoken, reply ?? "", tts.Audio, tts.ContentType, tts.ServedViaFallback);
         }
-        else if (tts.Unavailable is HostedAiState state)
+        else if (tts.Unavailable is HostedAiState unavailable)
         {
             // Issue #939: no longer swallowed. Record WHY voice is unavailable so the /sessions
             // aggregation can show the consistent add-credit / add-key state instead of a silently
             // missing triangle. Left as-is until the next successful turn-end generation clears it.
-            _voiceUnavailable[sid] = state;
-            FileLog.Write($"[WingmanVoiceService] voice unavailable sid={sid}: {state}");
+            StateFor(tenant).Unavailable[sid] = unavailable;
+            FileLog.Write($"[WingmanVoiceService] voice unavailable tenant={tenant.ToLogString()} sid={sid}: {unavailable}");
         }
     }
 
@@ -393,20 +632,21 @@ public sealed class WingmanVoiceService
     /// persist it to disk so it survives a gateway restart (issue #553). The single place the success
     /// branch lives - the test seam (<see cref="StoreReadyAudioForTest"/>) reuses it so persistence is
     /// exercised without a live provider call.</summary>
-    private void StoreReady(string sid, string spoken, string reply, byte[] audio, string? contentType, bool servedViaFallback = false)
+    private void StoreReady(TenantId tenant, string sid, string spoken, string reply, byte[] audio, string? contentType, bool servedViaFallback = false)
     {
         var ready = new VoiceReady(spoken, reply, audio, DateTime.UtcNow,
             NormalizeContentType(contentType) ?? DetectAudioContentType(audio), servedViaFallback);
-        _ready[sid] = ready;
-        _nothingToNarrate.TryRemove(sid, out _);   // audio exists, so there was something to narrate after all
-        SaveReadyAudio(sid, ready);
+        var state = StateFor(tenant);
+        state.Ready[sid] = ready;
+        state.NothingToNarrate.TryRemove(sid, out _);   // audio exists, so there was something to narrate after all
+        SaveReadyAudio(tenant, sid, ready);
     }
 
     /// <summary>Test seam: store ready audio exactly as a successful synthesis would (in-memory +
     /// durable), so the persistence round-trip can be tested without calling a provider. The optional
     /// <paramref name="servedViaFallback"/> lets a test store a backup-served clip and assert the notice.</summary>
-    internal void StoreReadyAudioForTest(string sid, string spoken, string reply, byte[] audio, string? contentType = null, bool servedViaFallback = false)
-        => StoreReady(sid, spoken, reply, audio, contentType, servedViaFallback);
+    internal void StoreReadyAudioForTest(TenantId tenant, string sid, string spoken, string reply, byte[] audio, string? contentType = null, bool servedViaFallback = false)
+        => StoreReady(tenant, sid, spoken, reply, audio, contentType, servedViaFallback);
 
     /// <summary>
     /// Regenerate the voice for a session from its latest turn: read the last reply, translate it,
@@ -425,9 +665,9 @@ public sealed class WingmanVoiceService
     /// boundary): show the yellow "wingman reading" hold until the summary lands. False for a
     /// background refresh, a startup catch-up, or an idle pre-build sweep: generate silently so a
     /// session a client is already listening to is never flipped yellow.</param>
-    internal async Task GenerateAsync(string sid, SessionVerbClient route, CancellationToken ct = default, bool showReadingWindow = true)
+    internal async Task GenerateAsync(TenantId tenant, string sid, SessionVerbClient route, CancellationToken ct = default, bool showReadingWindow = true)
     {
-        Mark(sid);
+        Mark(tenant, sid);
 
         // The "already narrated" skip is now IDENTITY-AWARE and lives in GenerateOnceAsync, after the
         // current reply has actually been read (issue #1322 done right). The old guard here was a bare
@@ -450,11 +690,12 @@ public sealed class WingmanVoiceService
         //
         // Coalesce: never run two generations for the SAME session at once (a slow turn overlapping the
         // idle sweep would otherwise double the spend). First caller wins.
-        if (!_inFlight.TryAdd(sid, 1))
+        var state = StateFor(tenant);
+        if (!state.InFlight.TryAdd(sid, 1))
             return;
         try
         {
-            await GenerateOnceAsync(sid, route, ct, showReadingWindow);
+            await GenerateOnceAsync(tenant, sid, route, ct, showReadingWindow);
         }
         catch (WingmanModelRateLimitedException rl)
         {
@@ -462,14 +703,14 @@ public sealed class WingmanVoiceService
             // audio this cycle and retries on its own next turn-end / idle sweep. Record Retrying so its
             // OWN UI says "voice on its way", exactly as the model-leg timeout path does - and it never
             // reaches across to another session (that coupling was the gate we removed).
-            _voiceUnavailable[sid] = HostedAiState.Retrying;
+            state.Unavailable[sid] = HostedAiState.Retrying;
             FileLog.Write($"[WingmanVoiceService] GenerateAsync sid={sid} rate limited (429){(rl.RetryAfter is { } ra ? $" (Retry-After {ra.TotalSeconds:F0}s)" : "")}; no audio this cycle, this session retries on its own");
         }
         catch (Exception ex)
         {
             FileLog.Write($"[WingmanVoiceService] GenerateAsync sid={sid} FAILED: {ex.Message}");
         }
-        finally { _inFlight.TryRemove(sid, out _); }
+        finally { state.InFlight.TryRemove(sid, out _); }
     }
 
     /// <summary>
@@ -483,8 +724,9 @@ public sealed class WingmanVoiceService
     /// no longer needs the distinction now that the shared rate-limit gate is gone, but it is kept because
     /// it honestly reports whether the provider was reached.
     /// </summary>
-    private async Task<bool> GenerateOnceAsync(string sid, SessionVerbClient route, CancellationToken ct, bool showReadingWindow)
+    private async Task<bool> GenerateOnceAsync(TenantId tenant, string sid, SessionVerbClient route, CancellationToken ct, bool showReadingWindow)
     {
+        var state = StateFor(tenant);
         var turns = await route.GetTurnsAsync(sid, ct);
         var widgets = turns?.Widgets ?? new List<TurnWidgetDto>();
         var lastReply = widgets.LastOrDefault(w => w.Kind == "Text")?.Content;
@@ -493,16 +735,16 @@ public sealed class WingmanVoiceService
             // No text reply to read aloud - the session is waiting on a prompt / menu. Record the honest
             // "nothing to narrate" fact so the Voice screen (via VoiceDisplayFold) says so, instead of
             // offering a Generate button that would re-run this same empty read and never produce audio.
-            _nothingToNarrate[sid] = 1;
+            state.NothingToNarrate[sid] = 1;
             return false;  // nothing to say yet - the provider was not called
         }
-        _nothingToNarrate.TryRemove(sid, out _);   // there IS a text reply now - clear any stale "nothing to narrate"
+        state.NothingToNarrate.TryRemove(sid, out _);   // there IS a text reply now - clear any stale "nothing to narrate"
         // Identity-aware skip (issue #1322 done right): only skip when the CURRENT last reply is the
         // exact one already narrated. Unlike the old bare HasVoice guard this does not depend on having
         // observed the Working transition, so a genuinely new/changed reply is never suppressed by a
         // stale cache the missed edge left behind - while the same reply stays quiet (no re-mint, no
         // yellow flip), preserving the "never disturb a listener mid-play" guarantee.
-        if (!ShouldRegenerate(sid, lastReply))
+        if (!ShouldRegenerate(tenant, sid, lastReply))
         {
             FileLog.Write($"[WingmanVoiceService] GenerateOnce skip (same reply already narrated): sid={sid}");
             return false;   // nothing to do - the provider was not called, so we know nothing new about it
@@ -512,7 +754,7 @@ public sealed class WingmanVoiceService
         // The wingman is now running for this session - show it yellow until the summary lands, but
         // only for a brand-new turn. A background refresh / catch-up stays quiet so a session a phone
         // may be listening to is never flipped yellow mid-play (issue #1322).
-        if (showReadingWindow) BeginGenerating(sid);
+        if (showReadingWindow) BeginGenerating(tenant, sid);
         try
         {
             WingmanTranslation t;
@@ -531,16 +773,16 @@ public sealed class WingmanVoiceService
                 // A rate-limit (WingmanModelRateLimitedException) is NOT caught here - it stays thrown so
                 // GenerateAsync's handler records THIS session's Retrying state (it does not reach any
                 // other session; the shared cooldown that used to do so is gone).
-                _voiceUnavailable[sid] = HostedAiState.Retrying;
+                state.Unavailable[sid] = HostedAiState.Retrying;
                 FileLog.Write($"[WingmanVoiceService] model did not answer for sid={sid}: {ex.Message} - Retrying (audio on its way); the session retries on its own");
                 return false;   // nothing produced; the provider was not usefully reached
             }
-            await StoreSpokenAsync(sid, t.Spoken, lastReply, ct);
+            await StoreSpokenAsync(tenant, sid, t.Spoken, lastReply, ct);
             // Log the TRUE outcome: StoreSpokenAsync only makes the session playable when the
             // text-to-speech synthesis actually returned audio. Logging "voice ready"
             // unconditionally (the old behavior) hid every failed synthesis behind a success
             // line, which made a text-to-speech outage look like it was working in the log.
-            if (HasVoice(sid))
+            if (HasVoice(tenant, sid))
                 FileLog.Write($"[WingmanVoiceService] voice ready: sid={sid}, spokenLen={t.Spoken.Length}");
             else
                 FileLog.Write($"[WingmanVoiceService] voice NOT ready (text-to-speech produced no audio): sid={sid}, spokenLen={t.Spoken.Length}");
@@ -552,7 +794,7 @@ public sealed class WingmanVoiceService
             // provider was reached (no caller acts on it now that the shared gate is gone).
             return true;
         }
-        finally { if (showReadingWindow) EndGenerating(sid); }
+        finally { if (showReadingWindow) EndGenerating(tenant, sid); }
     }
 
     /// <summary>
@@ -569,14 +811,14 @@ public sealed class WingmanVoiceService
 
     /// <summary>True while this session should route past a silent primary straight to the backup
     /// (the window armed by a recent hang has not yet expired).</summary>
-    private bool PrefersBackup(string sid)
-        => _preferBackupUntil.TryGetValue(sid, out var until) && until > DateTime.UtcNow;
+    private bool PrefersBackup(TenantId tenant, string sid)
+        => StateFor(tenant).PreferBackupUntil.TryGetValue(sid, out var until) && until > DateTime.UtcNow;
 
     /// <summary>Arm the "route to the backup" window for this session after the primary went silent.
     /// Overwrites any existing deadline (a fresh hang restarts the full window).</summary>
-    private void ArmPreferBackup(string sid)
+    private void ArmPreferBackup(TenantId tenant, string sid)
     {
-        _preferBackupUntil[sid] = DateTime.UtcNow + PreferBackupWindow;
+        StateFor(tenant).PreferBackupUntil[sid] = DateTime.UtcNow + PreferBackupWindow;
         FileLog.Write($"[WingmanVoiceService] primary voice provider went silent on sid={sid}; " +
                       $"routing this session to the backup provider for {PreferBackupWindow.TotalMinutes:0} min (issue devthrottle_internal#405)");
     }
@@ -590,7 +832,7 @@ public sealed class WingmanVoiceService
     /// condition is returned as a typed <see cref="HostedAiState"/> instead of a silent null, so the
     /// caller can surface the consistent unavailable state.
     /// </summary>
-    private async Task<TtsResult> TtsAsync(string sid, string text, CancellationToken ct)
+    private async Task<TtsResult> TtsAsync(TenantId tenant, string sid, string text, CancellationToken ct)
     {
         var mode = TranscriptionModeConfig.Get();
         var tts = TranscriptionEndpointResolver.ResolveTts(mode);
@@ -624,7 +866,7 @@ public sealed class WingmanVoiceService
         // If this session recently saw the primary go silent, ask the proxy to skip it and serve from the
         // backup (issue devthrottle_internal#405). A hang is invisible to the proxy's own failover, so this is how a hang
         // becomes a failover: the Gateway saw it, the proxy did not. The window expires on its own.
-        var preferBackup = PrefersBackup(sid);
+        var preferBackup = PrefersBackup(tenant, sid);
         // Time the whole synthesis call (request sent -> response in hand), so how long a narration
         // actually took is in the log next to transcription's transcribeMs. A healthy call is a second
         // or two; the per-attempt deadline caps it at <=108s, so any elapsedMs over ~108s means the
@@ -707,7 +949,7 @@ public sealed class WingmanVoiceService
             // idle-sweep retry (issue devthrottle_internal#405, Option B). A transport failure (HttpRequestException) is a
             // DIFFERENT fault - the proxy itself was unreachable, which does not implicate the primary -
             // so it does not arm the backup route.
-            if (ex is TimeoutException) ArmPreferBackup(sid);
+            if (ex is TimeoutException) ArmPreferBackup(tenant, sid);
             return new TtsResult(null, null, HostedAiState.Retrying);
         }
         // NOTE: no `finally { http.Dispose(); }`. `http` is now either the caller's injected client or
