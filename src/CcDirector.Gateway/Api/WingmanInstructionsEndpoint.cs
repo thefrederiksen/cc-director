@@ -14,16 +14,85 @@ namespace CcDirector.Gateway.Api;
 /// this exposes viewing, editing (new version), version history + revert, and the managed-default
 /// flow (see the dev team's changes, switch to the latest default). Backed by
 /// <see cref="WingmanInstructionsStore"/>.
+///
+/// DENIED IN WHOLE ON HOSTED (issue #1853, read side). Every route in this file is refused on the hosted
+/// Gateway, for two independent reasons that both land on the same answer.
+///
+/// FIRST, THE CONTENT. GET /gateway/wingman/instructions/records pages the wingman training capture, and
+/// each of those records holds up to <see cref="WingmanTrainingStore.MaxTerminalChars"/> characters of raw
+/// session TERMINAL output plus the agent's reply, written to one shared directory with no tenant in it.
+/// A record is addressed by a POSITIONAL identifier - "&lt;filename&gt;#&lt;lineindex&gt;" - so a caller does not
+/// even have to guess: it can walk the index. POST /gateway/wingman/instructions/test then hands those same
+/// records back in full (<c>reply</c> and <c>oldSpoken</c> per record) to whoever asked. Issue #1853 set out
+/// to deny the training WRITE on hosted, but a write deny does nothing about records already on disk, and
+/// nothing about the read. This closes the read.
+///
+/// SECOND, THE OWNERSHIP. The instructions themselves are a single-owner control over the whole box, the
+/// same class as the /gateway settings group: a Gateway has ONE active wingman prompt, and it is the prompt
+/// every account's wingman speaks through. A tenant that saves a version, reverts a version or switches to
+/// default is not editing its own copy - there is no own copy - it is rewriting what the machine says to
+/// everybody. There is nothing to partition by, so a per-tenant answer would mean inventing state the
+/// schema does not have.
+///
+/// The A/B test route is a third strike on its own: it spends up to <see cref="MaxTestRecords"/> real brain
+/// calls per request on shared infrastructure, driven by attacker-chosen draft text.
+///
+/// It is a DENY OF THE WHOLE GROUP because the read and the write are equally damaging here and a
+/// route-by-route guard rots - the next route added to this file would be open by default.
+///
+/// It REFUSES rather than returning an empty record list. "You have no training records" is a FALSE
+/// statement on a box that has them; a refusal is merely an absent one.
+///
+/// Self-host is COMPLETELY unchanged, and that is the control. Self-host has one tenant and one owner, so
+/// the records are the owner's own terminal output and the prompt is the owner's own prompt.
 /// </summary>
 internal static class WingmanInstructionsEndpoint
 {
     /// <summary>Cap on records re-run per A/B test - each one is a (serial, sometimes slow) brain call.</summary>
     private const int MaxTestRecords = 5;
 
-    public static void Map(IEndpointRouteBuilder app, WingmanInstructionsStore store,
+    /// <summary>
+    /// The hosted refusal for the whole wingman-instructions group (issue #1853, read side), or null on
+    /// self-host where nothing changes.
+    ///
+    /// Gated on <see cref="GatewayHostedMode.IsHosted"/> - the INDEPENDENT deployment signal - and NOT on a
+    /// boundary or tenant argument being passed in. A security branch that depends on an optional argument
+    /// fails OPEN when a caller omits it, which is exactly how the hosted account-status fix nearly shipped
+    /// a hole: omit the argument and a hosted Gateway silently takes the self-host path. Asking hosted mode
+    /// directly means this group cannot serve captured terminal output on hosted however the host is wired.
+    ///
+    /// 404 rather than 403: on hosted these routes do not exist as a concept - there is no per-tenant
+    /// training pool and no per-tenant wingman prompt - so "not here" is the truthful answer. 403 would
+    /// imply the right credential could reach them, and none can.
+    /// </summary>
+    private static IResult? DenyOnHosted()
+    {
+        if (!GatewayHostedMode.IsHosted) return null;
+
+        FileLog.Write("[WingmanInstructionsEndpoint] DENIED on hosted: the training records hold raw session terminal output in one shared store, and the wingman prompt is a single-owner control with no per-tenant answer");
+        return Results.Json(
+            new { error = "the wingman instructions surface is not available on the hosted gateway" },
+            statusCode: StatusCodes.Status404NotFound);
+    }
+
+    public static void Map(IEndpointRouteBuilder outer, WingmanInstructionsStore store,
         WingmanTrainingStore training, Func<WingmanModelRole, CancellationToken, Task<IAgentBrain>> brainProvider)
     {
         var translator = new WingmanTranslator(brainProvider);
+
+        FileLog.Write($"[WingmanInstructionsEndpoint] mapping /gateway/wingman/instructions; hosted={GatewayHostedMode.IsHosted} - on hosted EVERY route in this group is refused (issue #1853)");
+
+        // The whole group behind ONE filter, rather than a guard line repeated in every handler.
+        // A repeated guard is a thing to forget: the route added next year would be open by default and
+        // nobody would notice. A group filter runs before EVERY route mapped below, including routes that
+        // do not exist yet, so the refusal cannot rot as the group grows. The empty prefix keeps the route
+        // paths written out in full, exactly as before, so the self-host surface is byte-identical.
+        var app = outer.MapGroup("");
+        app.AddEndpointFilter(async (ctx, next) =>
+        {
+            if (DenyOnHosted() is { } denied) return denied;
+            return await next(ctx);
+        });
 
         // Current state: the active instructions, whether they are customized, whether the dev team
         // has shipped a newer default, and the deployed-default identity.

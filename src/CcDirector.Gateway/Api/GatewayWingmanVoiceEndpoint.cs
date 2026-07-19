@@ -82,6 +82,31 @@ internal static class GatewayWingmanVoiceEndpoint
         Results.Json(new { error }, statusCode: StatusCodes.Status413PayloadTooLarge);
 
     /// <summary>
+    /// The hosted refusal for the whole /wingman/utterance upload family (issue #1896), or null on
+    /// self-host where nothing changes.
+    ///
+    /// Gated on <see cref="GatewayHostedMode.IsHosted"/> - the INDEPENDENT deployment signal - and NOT on a
+    /// boundary or tenant argument being passed in. A security branch that depends on an optional argument
+    /// fails OPEN when a caller omits it, which is exactly how the hosted account-status fix nearly shipped
+    /// a hole: omit the argument and a hosted Gateway silently takes the self-host path. Asking hosted mode
+    /// directly means this family cannot serve another account's transcript on hosted however the host is
+    /// wired.
+    ///
+    /// 404 rather than 403: on hosted this upload family does not exist as a concept - an upload id is
+    /// meaningless without a tenant to scope it to, and the store has none - so "not here" is the truthful
+    /// answer. 403 would imply the right credential could reach it, and none can.
+    /// </summary>
+    private static IResult? DenyUtteranceOnHosted()
+    {
+        if (!GatewayHostedMode.IsHosted) return null;
+
+        FileLog.Write("[GatewayWingmanVoice] DENIED on hosted: the utterance upload store is keyed only by a caller-supplied id under one shared root, so an upload id is not a tenant boundary");
+        return Results.Json(
+            new { error = "the wingman utterance upload is not available on the hosted gateway" },
+            statusCode: StatusCodes.Status404NotFound);
+    }
+
+    /// <summary>
     /// Read a request body into memory, giving up the moment it exceeds <paramref name="max"/>.
     ///
     /// The point is the giving up. <c>CopyToAsync(ms)</c> - what these routes used to do - is unbounded
@@ -304,14 +329,43 @@ internal static class GatewayWingmanVoiceEndpoint
         //   POST   /wingman/utterance/upload                  -> { upload_id }
         //   PUT    /wingman/utterance/{id}/chunk/{i}           -> { ok }   (idempotent)
         //   POST   /wingman/utterance/{id}/complete {total}    -> { transcript } | 409 { missing }
-        app.MapPost("/wingman/utterance/upload", (HttpContext ctx) =>
+        //
+        // DENIED IN WHOLE ON HOSTED (issue #1896). None of these three resolves a tenant at all, the upload
+        // id is CALLER-CHOSEN (it arrives as an Idempotency-Key header), the store behind them has one
+        // on-disk root shared across every account with no tenant segment in the path, and `complete`
+        // returns the assembled transcript. So an account can claim another account's upload id and be
+        // handed the words that account spoke - and, before the owner completes, overwrite its chunks.
+        // A caller-supplied identifier is not a tenant boundary: secrecy of an identifier is not
+        // authorization, and upload ids travel through client logs, retries and store-and-forward queues.
+        //
+        // The whole family, not just `complete`: denying only the leg that returns text would leave the
+        // chunk leg able to corrupt another account's recording, which is the same boundary failure with a
+        // different consequence. It is a deny rather than a partition because the staged records carry no
+        // tenant to partition BY - partitioning the store is issue #1896's job and un-denying is gated on
+        // it. It refuses rather than returning an empty transcript, because an empty transcript is a FALSE
+        // statement ("you said nothing") where a refusal is merely an absent one.
+        //
+        // Self-host is COMPLETELY unchanged: one tenant, so a shared root is the owner's own root, and the
+        // phone's record-locally-and-keep-retrying path works exactly as it always has.
+        //
+        // The group prefix reproduces the route paths character for character, so the self-host surface is
+        // byte-identical; the filter also covers legs added to this family later, which a per-route guard
+        // would not.
+        var utterance = app.MapGroup("/wingman/utterance");
+        utterance.AddEndpointFilter(async (ctx, next) =>
+        {
+            if (DenyUtteranceOnHosted() is { } denied) return denied;
+            return await next(ctx);
+        });
+
+        utterance.MapPost("/upload", (HttpContext ctx) =>
         {
             var key = ctx.Request.Headers["Idempotency-Key"].ToString();
             var id = uploads.Register(string.IsNullOrWhiteSpace(key) ? null : key);
             return Results.Json(new { upload_id = id });
         });
 
-        app.MapPut("/wingman/utterance/{uploadId}/chunk/{index:int}", async (string uploadId, int index, HttpContext ctx, CancellationToken ct) =>
+        utterance.MapPut("/{uploadId}/chunk/{index:int}", async (string uploadId, int index, HttpContext ctx, CancellationToken ct) =>
         {
             if (!uploads.Exists(uploadId))
                 return Results.Json(new { error = "unknown upload id (register it first)" }, statusCode: StatusCodes.Status404NotFound);
@@ -350,7 +404,7 @@ internal static class GatewayWingmanVoiceEndpoint
             catch (Exception ex) { return Results.Json(new { error = ex.Message }, statusCode: StatusCodes.Status400BadRequest); }
         });
 
-        app.MapPost("/wingman/utterance/{uploadId}/complete", async (string uploadId, UtteranceCompleteRequest? req, CancellationToken ct) =>
+        utterance.MapPost("/{uploadId}/complete", async (string uploadId, UtteranceCompleteRequest? req, CancellationToken ct) =>
         {
             if (req is null || req.TotalChunks <= 0)
                 return Results.Json(new { error = "totalChunks (>0) is required" }, statusCode: StatusCodes.Status400BadRequest);
