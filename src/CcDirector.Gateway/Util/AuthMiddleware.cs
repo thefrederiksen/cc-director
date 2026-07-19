@@ -58,6 +58,16 @@ internal static class AuthMiddleware
     public const string DeviceTypeItemKey = "cc.stats.DeviceType";
 
     /// <summary>
+    /// HttpContext.Items key under which <see cref="HasValidToken"/> stashes the per-device key that
+    /// authenticated the request, or leaves absent when the caller used the shared machine token (no device).
+    /// The hosted tenant boundary (Hosted Multi-Tenancy increment 1) reads it to resolve the request's tenant
+    /// from the SAME verified key that authenticated the call - the tenant is derived from the authenticated
+    /// credential, never from anything the client claims. The key is already present in the request headers,
+    /// so stashing it in request-scoped Items exposes nothing new.
+    /// </summary>
+    public const string DeviceKeyItemKey = "cc.auth.DeviceKey";
+
+    /// <summary>
     /// The desktop Cockpit's sign-in route (issue #1088): the shared client-core enrollment screen a
     /// signed-out browser navigation is redirected to. Must match the route in apps/cockpit/src/main.tsx.
     /// </summary>
@@ -92,6 +102,11 @@ internal static class AuthMiddleware
         // tailnet/LAN attacker gains nothing), the Gateway signed in (409 otherwise), and an idempotent
         // mint (the #1136 leak guard). Loopback = same machine = already inside the trust boundary.
         "/devices/enroll-signed-in",
+        // Hosted Multi-Tenancy increment 1: the hosted enrollment front door. A fresh REMOTE Director has no
+        // Gateway device key yet, so it cannot pass the token gate; this route carries its OWN authorization -
+        // the caller's verified Supabase ACCOUNT token, which the endpoint validates itself (aud/iss/sig/exp)
+        // before minting a device key. It is exact-match public, exactly like the loopback enroll route above.
+        Api.HostedEnrollmentEndpoint.Path,
         // Issue #1076 (epic #1069): the credential-free cloud sign-in START front door. A signed-out
         // browser must reach this to BEGIN cloud sign-in, so it cannot sit behind the raw-token wall
         // (that is the deadlock the epic breaks). It is exact-match, so ONLY /account/sign-in-start is
@@ -211,6 +226,9 @@ internal static class AuthMiddleware
                 if (deviceType is not null)
                 {
                     ctx.Items[DeviceTypeItemKey] = deviceType;
+                    // Hosted Multi-Tenancy increment 1: stash the authenticated key so the tenant boundary can
+                    // resolve this request's tenant from the same verified credential.
+                    ctx.Items[DeviceKeyItemKey] = provided;
                     return true;
                 }
             }
@@ -235,6 +253,9 @@ internal static class AuthMiddleware
             if (cookieDeviceType is not null)
             {
                 ctx.Items[DeviceTypeItemKey] = cookieDeviceType;
+                // Hosted Multi-Tenancy increment 1: same authenticated-key stash as the Bearer branch (the
+                // live terminal stream authenticates via this cookie).
+                ctx.Items[DeviceKeyItemKey] = cookieValue;
                 return true;
             }
         }

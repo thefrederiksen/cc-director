@@ -27,6 +27,38 @@ public sealed class JwtAccessTokenValidatorAuthorizationTests : IDisposable
         new(TestJwt.SigningSecret, new FakeTimeProvider(Now), _key.PublicKeySetJson(),
             expectedAudience: ExpectedAudience, expectedIssuer: ExpectedIssuer);
 
+    private JwtAccessTokenValidator MakeEs256OnlyValidator() =>
+        new(TestJwt.SigningSecret, new FakeTimeProvider(Now), _key.PublicKeySetJson(),
+            expectedAudience: ExpectedAudience, expectedIssuer: ExpectedIssuer, allowSymmetricHs256: false);
+
+    [Fact]
+    public void ValidateForAuthorization_Hs256_WhenEs256Only_IsNotValid()
+    {
+        // Algorithm-confusion defense: an HS256 token signed with the (possibly public placeholder) secret
+        // must be REFUSED by an ES256-only validator, so a forged symmetric token cannot authorize as any
+        // subject. This is the validator-level fix every hosted account-token authorization path inherits.
+        var forged = TestJwt.CreateAuthorization(Now.AddHours(1), ExpectedAudience, ExpectedIssuer, "attacker",
+            TestJwt.SigningSecret);
+
+        var result = MakeEs256OnlyValidator().ValidateForAuthorization(forged);
+
+        Assert.False(result.IsValid);
+    }
+
+    [Fact]
+    public void ValidateForAuthorization_Hs256_WhenSymmetricAllowed_IsValid()
+    {
+        // Self-host / legacy is UNCHANGED: with HS256 allowed (the default), a properly-signed HS256 token
+        // still validates. Only the hosted authorization validators opt into ES256-only.
+        var token = TestJwt.CreateAuthorization(Now.AddHours(1), ExpectedAudience, ExpectedIssuer, "account-42",
+            TestJwt.SigningSecret);
+
+        var result = MakeValidator().ValidateForAuthorization(token);
+
+        Assert.True(result.IsValid);
+        Assert.Equal("account-42", result.Subject);
+    }
+
     [Fact]
     public void ValidateForAuthorization_FullyValidToken_IsValidAndExposesSubject()
     {

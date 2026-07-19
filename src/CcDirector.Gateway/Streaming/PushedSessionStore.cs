@@ -81,7 +81,7 @@ public sealed class PushedSessionStore
             entry.ActiveConnectionId = connectionId;
             entry.LastSequence = -1;
         }
-        FileLog.Write($"[PushedSessionStore] RegisterConnection: tenant={tenant}, director={directorId}, conn={Short(connectionId)} is now the active connection");
+        FileLog.Write($"[PushedSessionStore] RegisterConnection: tenant={tenant.ToLogString()}, director={directorId}, conn={Short(connectionId)} is now the active connection");
     }
 
     /// <summary>
@@ -105,12 +105,12 @@ public sealed class PushedSessionStore
         {
             if (!string.Equals(entry.ActiveConnectionId, connectionId, StringComparison.Ordinal))
             {
-                FileLog.Write($"[PushedSessionStore] UnregisterConnection IGNORED (not active): tenant={tenant}, director={directorId}, conn={Short(connectionId)}, active={Short(entry.ActiveConnectionId)}");
+                FileLog.Write($"[PushedSessionStore] UnregisterConnection IGNORED (not active): tenant={tenant.ToLogString()}, director={directorId}, conn={Short(connectionId)}, active={Short(entry.ActiveConnectionId)}");
                 return false;
             }
             entry.ActiveConnectionId = null;
         }
-        FileLog.Write($"[PushedSessionStore] UnregisterConnection: tenant={tenant}, director={directorId}, conn={Short(connectionId)} cleared; aggregation will fall back to pull");
+        FileLog.Write($"[PushedSessionStore] UnregisterConnection: tenant={tenant.ToLogString()}, director={directorId}, conn={Short(connectionId)} cleared; aggregation will fall back to pull");
         return true;
     }
 
@@ -329,12 +329,12 @@ public sealed class PushedSessionStore
     {
         if (!string.Equals(entry.ActiveConnectionId, connectionId, StringComparison.Ordinal))
         {
-            FileLog.Write($"[PushedSessionStore] {kind} DROPPED (not the active connection): tenant={tenant}, director={directorId}, conn={Short(connectionId)}, active={Short(entry.ActiveConnectionId)}");
+            FileLog.Write($"[PushedSessionStore] {kind} DROPPED (not the active connection): tenant={tenant.ToLogString()}, director={directorId}, conn={Short(connectionId)}, active={Short(entry.ActiveConnectionId)}");
             return false;
         }
         if (sequence <= entry.LastSequence)
         {
-            FileLog.Write($"[PushedSessionStore] {kind} DROPPED (stale sequence {sequence} <= last {entry.LastSequence}): tenant={tenant}, director={directorId}, conn={Short(connectionId)}");
+            FileLog.Write($"[PushedSessionStore] {kind} DROPPED (stale sequence {sequence} <= last {entry.LastSequence}): tenant={tenant.ToLogString()}, director={directorId}, conn={Short(connectionId)}");
             return false;
         }
         return true;

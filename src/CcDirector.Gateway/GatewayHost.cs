@@ -325,7 +325,19 @@ public sealed class GatewayHost : IAsyncDisposable
     // Hosted Gateway mission, Step 1b: the EF data layer (gateway.db). The host owns ONE instance and the
     // structured stores that have moved off hand-rolled JSON read/write through it. On the single-tenant
     // local install every row is the "local" tenant (SingleTenantContext), so behavior is unchanged.
-    private readonly Core.Tenancy.SingleTenantContext _tenantContext = new();
+    // Hosted Multi-Tenancy increment 1: the tenant context GatewayDatabase reads. On the hosted Gateway it is
+    // the AsyncLocalTenantContext (per-account, fail-closed, set at the auth boundary); on self-host it is the
+    // SingleTenantContext (always Local). Assigned in the constructor from GatewayHostedMode.IsHosted.
+    private readonly Core.Tenancy.ITenantContext _tenantContext;
+    // The concrete ambient context - non-null ONLY on the hosted Gateway - the object the auth boundaries
+    // enter per-account (and the reserved SYSTEM) scopes on. Null on self-host (Local is the ambient answer,
+    // nothing to enter). It is the SAME instance GatewayDatabase reads, so a boundary's scope is what the
+    // stores see.
+    private readonly Core.Tenancy.AsyncLocalTenantContext? _hostedTenant;
+    // The auth-boundary tenant binder (Hosted Multi-Tenancy increment 1): resolves an authenticated device
+    // key to its tenant and enters the scope. Used by the tunnel Hello and the device-key HTTP middleware.
+    // Inert on self-host (every authenticated caller is Local).
+    private readonly Tenancy.HostedTenantBoundary _tenantBoundary;
     private readonly Data.GatewayDatabase _gatewayDb;
 
     /// <summary>
@@ -616,12 +628,42 @@ public sealed class GatewayHost : IAsyncDisposable
         // migrated on open, fail-loud (no JSON fallback). The structured stores that have moved off JSON
         // (work lists, cron) read/write through it, so it is built before them. Tests get an isolated
         // database via CC_DIRECTOR_ROOT, exactly as gateway-stats.db is isolated today.
+        // Hosted Multi-Tenancy increment 1: choose the tenant context. Hosted -> the AsyncLocalTenantContext
+        // (per-account, fail-closed: a tenant-scoped op outside a resolved scope THROWS, never defaults to
+        // local); self-host -> the SingleTenantContext (always Local, unchanged). The same instance is handed
+        // to GatewayDatabase (below) and registered in DI, so a scope entered at an auth boundary is exactly
+        // what the stores read.
+        if (GatewayHostedMode.IsHosted)
+        {
+            _hostedTenant = new Core.Tenancy.AsyncLocalTenantContext();
+            _tenantContext = _hostedTenant;
+        }
+        else
+        {
+            _tenantContext = new Core.Tenancy.SingleTenantContext();
+        }
+
         _gatewayDb = new Data.GatewayDatabase(_tenantContext);
         // The account-to-tenant resolver (Hosted Multi-Tenancy increment 1): owns the tenants mapping table
         // and mints/looks up a tenant from a verified account subject. Built over the EF database; wired into
         // the hosted enrollment boundary (which validates the account token and stamps the resolved tenant on
         // the device) in the follow-up increment. Unused on the single-tenant local install.
         TenantRegistry = new Tenancy.TenantRegistry(_gatewayDb);
+        // The auth-boundary tenant binder (Hosted Multi-Tenancy increment 1): the tunnel Hello and the
+        // device-key HTTP middleware resolve a tenant from the AUTHENTICATED device key through this, and
+        // enter the scope the stores read. Inert on self-host. Built over the same _tenantContext instance
+        // the stores read (so a scope it enters is what they resolve) and the device registry.
+        _tenantBoundary = new Tenancy.HostedTenantBoundary(_tenantContext, Devices);
+        // Hosted Multi-Tenancy increment 1: the store constructors below seed built-ins and import/re-arm from
+        // the database at startup - legitimate SYSTEM operations with no per-account identity. On the hosted
+        // Gateway (fail-closed ambient tenant) they must run inside the reserved SYSTEM scope, or the very
+        // first construction-time read/write would fail closed at boot. On self-host _hostedTenant is null and
+        // this is a no-op (SingleTenantContext already answers Local). The scope is disposed in the finally so
+        // a construction fault cannot leak it, and so per-account and per-request scopes (never SYSTEM) govern
+        // everything after startup.
+        var startupSystemScope = _hostedTenant?.Enter(Core.Tenancy.TenantId.System);
+        try
+        {
         // Named work lists persist across a Gateway restart (issue #301) in the worklists table (stale
         // claims released on load). The path argument is the LEGACY worklists.json, imported once on first
         // upgrade then renamed aside. Tests MUST pass an isolated path so they never touch the real legacy file.
@@ -715,6 +757,11 @@ public sealed class GatewayHost : IAsyncDisposable
         // path the work-list runner uses). The background sweep timer is started in StartAsync. The path
         // argument is the LEGACY cronruns.json, imported once then renamed aside.
         _cronRuns = new CronRunHistoryStore(_gatewayDb, cronRunsPath ?? Path.Combine(CcStorage.Root(), "cronruns.json"));
+        }
+        finally
+        {
+            startupSystemScope?.Dispose();
+        }
         // The Gateway-hosted DevThrottle credential service (issue #636, Gateway Centralization Phase 2
         // foundation). Tests inject their own service over an isolated store; production builds the
         // service over the operating system credential store rooted under the Gateway config directory:
@@ -1288,9 +1335,13 @@ public sealed class GatewayHost : IAsyncDisposable
         builder.Services.AddSingleton(SnoozeLandings);
         builder.Services.AddSingleton(FleetRoles);
         builder.Services.AddSingleton(FleetDisplayState);
-        // Register the tenancy seam. The core ships the single-tenant default (everything resolves to
-        // TenantId.Local), so behavior is unchanged; a resolver can replace this behind the same interface.
-        builder.Services.AddSingleton<CcDirector.Core.Tenancy.ITenantContext, CcDirector.Core.Tenancy.SingleTenantContext>();
+        // Register the tenancy seam as the SAME instance GatewayDatabase reads (Hosted Multi-Tenancy
+        // increment 1), so a scope a SignalR-hosted boundary enters is exactly what the stores resolve. On
+        // self-host this is the SingleTenantContext (always Local); on hosted it is the AsyncLocalTenantContext.
+        builder.Services.AddSingleton<CcDirector.Core.Tenancy.ITenantContext>(_tenantContext);
+        // The auth-boundary tenant binder, so the SignalR-constructed DirectorHub resolves a tenant from the
+        // authenticated device key at Hello and enters that scope on every push (Hosted Multi-Tenancy incr 1).
+        builder.Services.AddSingleton(_tenantBoundary);
         builder.Services.AddSingleton(SessionConcurrency);
         builder.Services.AddSingleton(Registry);
         // launcher-persistent-join: the LauncherHub (constructed per-invocation by SignalR) and
@@ -1372,6 +1423,31 @@ public sealed class GatewayHost : IAsyncDisposable
             // sign-in - see SignedInEnrollmentEndpoint).
             var requireToken = new AuthMiddleware.RequireToken { Token = Token, Devices = Devices };
             _app.Use(async (ctx, next) => await AuthMiddleware.Run(ctx, requireToken, next));
+        }
+
+        // Hosted Multi-Tenancy increment 1: the device-key HTTP boundary. After auth, resolve this request's
+        // tenant from the AUTHENTICATED device key the auth middleware stashed, and enter that scope for the
+        // rest of the pipeline, so tenant-scoped stores read the caller's tenant - derived from the verified
+        // credential, never from client input. Only device-key-authenticated requests carry a key; a
+        // shared-token or public request enters no scope, so any tenant-scoped store access it makes fails
+        // closed on hosted (deny-by-default), while non-tenant endpoints (enrollment, health) still work.
+        // Registered only on the hosted Gateway; on self-host Local is the ambient answer (nothing to enter).
+        if (_tenantBoundary.IsHosted)
+        {
+            _app.Use(async (ctx, next) =>
+            {
+                var key = ctx.Items.TryGetValue(AuthMiddleware.DeviceKeyItemKey, out var k) ? k as string : null;
+                var tenant = key is null ? (Core.Tenancy.TenantId?)null : _tenantBoundary.ResolveForDeviceKey(key);
+                if (tenant is { } resolved)
+                {
+                    using (_tenantBoundary.EnterScope(resolved))
+                        await next();
+                }
+                else
+                {
+                    await next();
+                }
+            });
         }
 
         // Mobile front door (issue #806, docs/architecture/mobile/): a phone browser-navigation
@@ -1616,6 +1692,16 @@ public sealed class GatewayHost : IAsyncDisposable
         // a co-located Director mints its own per-device key by having the Gateway signed in to
         // DevThrottle, gated on a loopback caller. Same-machine only; remote via tailnet is a follow-up.
         Api.SignedInEnrollmentEndpoint.Map(_app, Devices, SignIn, _childMirror);
+
+        // POST /devices/enroll-hosted (Hosted Multi-Tenancy increment 1): the HOSTED counterpart - a REMOTE
+        // Director enrolls by presenting its OWN verified Supabase account token; the Gateway validates it,
+        // resolves the account's tenant, and binds the minted device key to it. Only mapped on the hosted
+        // Gateway (self-host uses the loopback signed-in route above and stays single-tenant Local).
+        if (GatewayHostedMode.IsHosted)
+        {
+            Api.HostedEnrollmentEndpoint.Map(_app, Devices, TenantRegistry,
+                CcDirector.Gateway.Account.GatewayAccountFactory.BuildAuthorizationValidator());
+        }
 
         // Wingman-voice surface for the Cockpit's Voice tab (issue #531): drive one turn of a
         // session and have the persistent wingman brain translate the reply into speakable form,

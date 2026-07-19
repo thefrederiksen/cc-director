@@ -3,6 +3,8 @@ using CcDirector.Core.Utilities;
 using CcDirector.Gateway.Contracts;
 using CcDirector.Gateway.Discovery;
 using CcDirector.Gateway.Stats;
+using CcDirector.Gateway.Tenancy;
+using CcDirector.Gateway.Util;
 using Microsoft.AspNetCore.SignalR;
 
 namespace CcDirector.Gateway.Streaming;
@@ -36,10 +38,15 @@ public sealed class DirectorHub : Hub
     private readonly Snooze.SnoozeLandingObserver? _snoozeLandings;
     private readonly Fleet.FleetRoleObserver? _fleetRoles;
     private readonly Fleet.FleetDisplayStateObserver? _fleetDisplayState;
+    // Hosted Multi-Tenancy increment 1: resolves THIS connection's tenant from the authenticated device key
+    // at Hello and enters that tenant's scope on every push (so the EF-writing observers stamp the right
+    // tenant). Null for older callers/tests -> the self-host Local behavior, unchanged.
+    private readonly HostedTenantBoundary? _tenantBoundary;
 
     public DirectorHub(PushedSessionStore store, DirectorRegistry registry, GatewayInputStatsAggregator inputStats,
         GatewayStreamRegistry streamRegistry, Snooze.SnoozeLandingObserver? snoozeLandings = null,
-        Fleet.FleetRoleObserver? fleetRoles = null, Fleet.FleetDisplayStateObserver? fleetDisplayState = null)
+        Fleet.FleetRoleObserver? fleetRoles = null, Fleet.FleetDisplayStateObserver? fleetDisplayState = null,
+        HostedTenantBoundary? tenantBoundary = null)
     {
         _store = store;
         _registry = registry;
@@ -48,6 +55,7 @@ public sealed class DirectorHub : Hub
         _snoozeLandings = snoozeLandings;
         _fleetRoles = fleetRoles;
         _fleetDisplayState = fleetDisplayState;
+        _tenantBoundary = tenantBoundary;
     }
 
     /// <summary>
@@ -84,11 +92,19 @@ public sealed class DirectorHub : Hub
             return;
         }
 
+        // Hosted Multi-Tenancy increment 1: resolve the tenant this connection belongs to ONCE, here at bind
+        // time, from the AUTHENTICATED device key the auth layer stashed on the negotiate request - NEVER from
+        // the Hello payload. On self-host (or no boundary) this is Local, unchanged. On hosted a device key
+        // with no bound tenant is a DENY: abort rather than bind a wrong or defaulted tenant (deny-by-default).
+        // THIS resolution is the isolation line - reverting it to a fixed tenant makes two accounts share one.
+        var resolved = ResolveConnectionTenant();
+        if (resolved is not { } tenant)
+        {
+            FileLog.Write($"[DirectorHub] Hello REJECTED (hosted: the authenticated device key resolves to no tenant): conn={Short(Context.ConnectionId)}");
+            Context.Abort();
+            return;
+        }
         Context.Items[DirectorIdItemKey] = directorId;
-        // Stage 3b: resolve the tenant this Director's connection belongs to, ONCE, here at bind time, and
-        // carry it on the connection like the directorId. The single-tenant core resolves to Local; the
-        // resolver (Stage 3c) supplies the real tenant from the Director's device key at exactly this point.
-        var tenant = TenantId.Local;
         Context.Items[TenantIdItemKey] = tenant;
         _store.RegisterConnection(tenant, directorId, Context.ConnectionId);
         // Gateway Cleanup mission (tunnel-only): the stream IS the registration now (HTTP register is gone).
@@ -102,6 +118,9 @@ public sealed class DirectorHub : Hub
     public void PushSnapshot(long sequence, SessionDto[] sessions)
     {
         var directorId = RequireBoundDirector();
+        // Hosted Multi-Tenancy increment 1: run the whole handler in the bound tenant's scope, so the
+        // EF-writing observers below (snooze landings, spend) stamp and filter by this connection's tenant.
+        using var tenantScope = EnterBoundTenantScope();
         var set = sessions ?? Array.Empty<SessionDto>();
         var accepted = _store.ApplySnapshot(RequireBoundTenant(), directorId, Context.ConnectionId, sequence, set);
         // DevThrottle Stats: fold each session's input tally into the always-available aggregate.
@@ -136,6 +155,9 @@ public sealed class DirectorHub : Hub
             FileLog.Write($"[DirectorHub] PushDelta ignored (no session id): director={directorId}, conn={Short(Context.ConnectionId)}");
             return;
         }
+        // Hosted Multi-Tenancy increment 1: run the handler in the bound tenant's scope (the landing seam
+        // below writes the snooze/spend EF stores, which must stamp and filter by this connection's tenant).
+        using var tenantScope = EnterBoundTenantScope();
         var accepted = _store.ApplyDelta(RequireBoundTenant(), directorId, Context.ConnectionId, sequence, session);
         // DevThrottle Stats: fold this session's tally into the always-available aggregate.
         _inputStats.Observe(session);
@@ -168,6 +190,9 @@ public sealed class DirectorHub : Hub
             FileLog.Write($"[DirectorHub] RemoveSession ignored (no session id): director={directorId}, conn={Short(Context.ConnectionId)}");
             return;
         }
+        // Hosted Multi-Tenancy increment 1: scope the handler to the bound tenant (the removal re-folds and
+        // can touch tenant-scoped state through the observers below).
+        using var tenantScope = EnterBoundTenantScope();
         _store.ApplyRemove(RequireBoundTenant(), directorId, Context.ConnectionId, sequence, sessionId);
         // DevThrottle Stats: its contribution stays in the totals; drop only its high-water entry.
         _inputStats.Forget(sessionId);
@@ -201,6 +226,34 @@ public sealed class DirectorHub : Hub
         }
         FileLog.Write($"[DirectorHub] disconnected: conn={Short(Context.ConnectionId)}, director={directorId ?? "(unbound)"} ({exception?.Message ?? "clean"})");
         return base.OnDisconnectedAsync(exception);
+    }
+
+    /// <summary>
+    /// Resolve this connection's tenant from the AUTHENTICATED device key the auth layer stashed on the
+    /// negotiate request, via the hosted tenant boundary - NEVER from the Hello payload. Self-host (or no
+    /// boundary) resolves to Local, unchanged. Hosted resolves to the key's bound tenant, or null (a DENY)
+    /// when the key has no binding. This is the isolation resolution the whole design rests on.
+    /// </summary>
+    private TenantId? ResolveConnectionTenant()
+    {
+        if (_tenantBoundary is null)
+            return TenantId.Local;
+
+        var key = Context.GetHttpContext()?.Items.TryGetValue(AuthMiddleware.DeviceKeyItemKey, out var value) == true
+            ? value as string
+            : null;
+        return _tenantBoundary.ResolveForDeviceKey(key);
+    }
+
+    /// <summary>Enter the bound tenant's scope for the duration of a push handler, so the EF-writing observers
+    /// stamp the right tenant. A no-op on self-host (Local is ambient) or when there is no boundary.</summary>
+    private IDisposable EnterBoundTenantScope() =>
+        _tenantBoundary is null ? NoScope.Instance : _tenantBoundary.EnterScope(RequireBoundTenant());
+
+    private sealed class NoScope : IDisposable
+    {
+        public static readonly NoScope Instance = new();
+        public void Dispose() { }
     }
 
     private string? BoundDirectorId() =>

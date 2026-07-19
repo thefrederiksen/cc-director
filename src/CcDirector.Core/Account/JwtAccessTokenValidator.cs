@@ -47,6 +47,7 @@ public sealed class JwtAccessTokenValidator
     private readonly TimeProvider _timeProvider;
     private readonly string? _expectedAudience;
     private readonly string? _expectedIssuer;
+    private readonly bool _allowSymmetricHs256;
 
     /// <summary>One elliptic-curve P-256 public verification key from the configured key set.</summary>
     private sealed record VerificationKey(string? KeyId, ECParameters PublicKey);
@@ -75,12 +76,20 @@ public sealed class JwtAccessTokenValidator
     /// The issuer (<c>iss</c>) value a token must carry to pass authorization-mode validation. Supplied
     /// as configuration, not hard-coded at the call site. Null when only <see cref="Validate"/> is used.
     /// </param>
+    /// <param name="allowSymmetricHs256">
+    /// Whether a symmetric HS256 token is accepted. Defaults to true (the historic behavior). Set FALSE for a
+    /// validator that must ONLY trust asymmetric ES256 tokens - the hosted enrollment boundary does this,
+    /// because the account tokens are Supabase ES256 and the shared HS256 secret can be an unconfigured public
+    /// placeholder; accepting HS256 there would let anyone forge an arbitrary-subject token. When false, an
+    /// HS256 token is rejected regardless of the secret.
+    /// </param>
     public JwtAccessTokenValidator(
         string signingSecret,
         TimeProvider? timeProvider = null,
         string? publicKeySetJson = null,
         string? expectedAudience = null,
-        string? expectedIssuer = null)
+        string? expectedIssuer = null,
+        bool allowSymmetricHs256 = true)
     {
         if (string.IsNullOrEmpty(signingSecret))
             throw new ArgumentException("Signing secret is required", nameof(signingSecret));
@@ -90,6 +99,7 @@ public sealed class JwtAccessTokenValidator
         _timeProvider = timeProvider ?? TimeProvider.System;
         _expectedAudience = expectedAudience;
         _expectedIssuer = expectedIssuer;
+        _allowSymmetricHs256 = allowSymmetricHs256;
     }
 
     /// <summary>
@@ -147,7 +157,9 @@ public sealed class JwtAccessTokenValidator
         var nowUtc = _timeProvider.GetUtcNow().UtcDateTime;
 
         var expiresAtUtc = ReadUnixTimeClaim(root, "exp");
-        if (expiresAtUtc is not null && expiresAtUtc.Value <= nowUtc)
+        if (expiresAtUtc is null)
+            return Reject("token has no exp claim (a non-expiring token is not accepted for authorization)");
+        if (expiresAtUtc.Value <= nowUtc)
             return Reject("token has expired (exp is in the past)");
 
         var notBeforeUtc = ReadUnixTimeClaim(root, "nbf");
@@ -193,7 +205,9 @@ public sealed class JwtAccessTokenValidator
 
         var signatureVerifies = header.Value.Algorithm switch
         {
-            "HS256" => HmacSignatureVerifies(parts[0], parts[1], parts[2]),
+            "HS256" => _allowSymmetricHs256
+                ? HmacSignatureVerifies(parts[0], parts[1], parts[2])
+                : RejectSymmetricHs256(),
             "ES256" => EcdsaSignatureVerifies(header.Value.KeyId, parts[0], parts[1], parts[2]),
             _ => UnsupportedAlgorithm(header.Value.Algorithm),
         };
@@ -237,6 +251,14 @@ public sealed class JwtAccessTokenValidator
     private static bool UnsupportedAlgorithm(string? algorithm)
     {
         FileLog.Write($"[JwtAccessTokenValidator] Validate: unsupported signing algorithm '{algorithm}' (only ES256 and HS256 are supported)");
+        return false;
+    }
+
+    private static bool RejectSymmetricHs256()
+    {
+        // This validator is configured ES256-only (asymmetric): a symmetric HS256 token is refused regardless
+        // of the shared secret, so an unconfigured/public placeholder secret can never forge a valid token.
+        FileLog.Write("[JwtAccessTokenValidator] VerifySignature: HS256 refused - this validator accepts only asymmetric ES256 tokens");
         return false;
     }
 
