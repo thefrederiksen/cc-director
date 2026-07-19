@@ -1,0 +1,85 @@
+using System.Collections.Generic;
+using CcDirector.Gateway.Contracts;
+using Xunit;
+
+namespace CcDirector.Gateway.Tests;
+
+/// <summary>
+/// The display-state PUSH seam (FleetDisplayStateObserver) must fold from the SAME inputs the roster folds
+/// from. The pushed snapshot carries only Director-owned facts; the two voice-readiness booleans
+/// (VoiceGenerating / VoiceAudioReady) are Gateway-only, so <see cref="GatewayHost.EnrichVoiceThenFoldForPush"/>
+/// stamps them onto each session from the live voice lookups BEFORE folding - exactly as the roster handler
+/// does.
+///
+/// The bug these defend against: without the enrichment the push seam sees VoiceAudioReady=false for every
+/// session and, since #1841 made IsVoicePreparing key on <c>!VoiceAudioReady</c>, held every voice-mode
+/// waiting session yellow "Preparing voice" forever - never red once the voice was ready. The roster path
+/// enriched these, so the browsers folded red while the push-only desktop rail stuck yellow. Remove either
+/// enrichment line in EnrichVoiceThenFoldForPush and the matching test below goes red.
+/// </summary>
+public sealed class DisplayPushVoiceEnrichmentTests
+{
+    // A voice-mode session as it arrives in the PUSH snapshot: raw-red (turn ended, waiting) and with the
+    // Gateway-only voice booleans still at their default false - the Director never sets them.
+    private static SessionDto PushedVoiceSession(bool snapshotAudioReady = false) => new()
+    {
+        SessionId = "v",
+        StatusColor = "red",
+        ActivityState = "WaitingForInput",
+        VoiceMode = true,
+        VoiceGenerating = false,
+        VoiceAudioReady = snapshotAudioReady,
+    };
+
+    [Fact]
+    public void PushSeam_WhenGatewayVoiceReady_FoldsRed_NotStuckYellow()
+    {
+        // The Gateway knows the voice is ready (HasVoice == true). The push seam must enrich that fact and
+        // fold RED, the same answer the roster serves. This is the exact stuck-yellow regression.
+        var s = PushedVoiceSession(snapshotAudioReady: false);
+
+        GatewayHost.EnrichVoiceThenFoldForPush(
+            new List<SessionDto> { s },
+            voiceGeneratingFor: _ => false,
+            voiceAudioReadyFor: _ => true,
+            needsYouStampFor: null,
+            snoozeRegistry: null);
+
+        Assert.True(s.VoiceAudioReady);           // enrichment overwrote the snapshot's stale false
+        Assert.Equal("red", s.EffectiveColor);    // -> red, not the frozen yellow
+    }
+
+    [Fact]
+    public void PushSeam_WhenGatewayVoiceNotReady_FoldsYellow()
+    {
+        // The Gateway knows the voice is NOT ready. Even if the snapshot carried a stale audioReady=true,
+        // the enrichment must overwrite it from the live lookup so the seam folds yellow "preparing voice".
+        var s = PushedVoiceSession(snapshotAudioReady: true);
+
+        GatewayHost.EnrichVoiceThenFoldForPush(
+            new List<SessionDto> { s },
+            voiceGeneratingFor: _ => false,
+            voiceAudioReadyFor: _ => false,
+            needsYouStampFor: null,
+            snoozeRegistry: null);
+
+        Assert.False(s.VoiceAudioReady);          // enrichment overwrote the snapshot's stale true
+        Assert.Equal("yellow", s.EffectiveColor);
+    }
+
+    [Fact]
+    public void PushSeam_WhileGenerating_FoldsYellow()
+    {
+        // Actively generating the spoken summary -> yellow, regardless of a stale cached-audio flag.
+        var s = PushedVoiceSession(snapshotAudioReady: false);
+
+        GatewayHost.EnrichVoiceThenFoldForPush(
+            new List<SessionDto> { s },
+            voiceGeneratingFor: _ => true,
+            voiceAudioReadyFor: _ => true,
+            needsYouStampFor: null,
+            snoozeRegistry: null);
+
+        Assert.Equal("yellow", s.EffectiveColor);
+    }
+}
