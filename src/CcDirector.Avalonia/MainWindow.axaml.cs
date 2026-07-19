@@ -505,7 +505,16 @@ public partial class MainWindow : Window
         if (host is null) return;
 
         _gatewayMonitor = host.GatewayMonitor;
-        _gatewayMonitor.Changed += () => Dispatcher.UIThread.Post(UpdateGatewayStatusBox);
+        _gatewayMonitor.Changed += () => Dispatcher.UIThread.Post(() =>
+        {
+            UpdateGatewayStatusBox();
+            // The rail's offline floor (SessionViewModel.EffectiveColor) renders blue/red from local activity
+            // whenever the tunnel is not Connected, and Connected's stamp otherwise. A connect/disconnect
+            // carries none of the per-session events a row hears, so repaint every row from here - the one
+            // place that owns the GatewayConnectionMonitor subscription - or a settled row keeps its old dot
+            // until an unrelated event happens to repaint it.
+            foreach (var vm in _sessions) vm.RefreshGatewayFloor();
+        });
 
         // Same host: wire the Control-API status indicator. The bind may have already failed
         // in the background before we attached, so paint the current state now AND subscribe

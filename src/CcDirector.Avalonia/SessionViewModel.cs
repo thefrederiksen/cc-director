@@ -190,7 +190,58 @@ public class SessionViewModel : INotifyPropertyChanged
     /// unrecognised stamp value still falls through to the magenta sentinel in <see cref="StatusColorBrush"/>,
     /// which is the real fail-loud. (docs/new_architecture/session-state.html.)
     /// </summary>
-    private string EffectiveColor => FoldInput.EffectiveColor ?? "unknown";
+    private string EffectiveColor => RailColor(IsGatewayOffline, FoldInput.EffectiveColor, Session.ActivityState);
+
+    /// <summary>
+    /// The rail dot's colour name. Pure so it is tested without an Avalonia app - the getter above binds the
+    /// three live inputs.
+    ///
+    /// ONLINE (<paramref name="gatewayOffline"/> false): render the Gateway's stamped answer VERBATIM, or a
+    /// neutral placeholder ("unknown" -&gt; grey) when there is no stamp yet. The desktop computes NOTHING; the
+    /// Gateway owns every colour. This is the law.
+    ///
+    /// GATEWAY-OFFLINE FLOOR (owner's ruling, 2026-07-19): the desktop HOSTS these sessions and is the one
+    /// surface that can still tell the truth with no Gateway to ask. When the tunnel is down the Gateway
+    /// stamp is frozen on whatever it last sent (a stale yellow / red / grey), so instead paint the ONE fact
+    /// this Director owns firsthand - is the agent producing terminal output right now - as blue (working) or
+    /// red (idle), and NOTHING else. NEVER run the Gateway fold (SessionOrdering) here: it reads Gateway-only
+    /// facts - VoiceAudioReady, dictation, the snooze clock - that are false/absent on the Director, so a
+    /// local fold would wedge every voice-mode session permanently yellow "Preparing voice". Two colours
+    /// only; every richer state waits for the Gateway to come back and stamp it. The phone and Cockpit keep
+    /// the neutral placeholder when offline because, unlike the Director, they do not host the session and
+    /// cannot know what it is doing. (docs/new_architecture/session-state.html.)
+    /// </summary>
+    internal static string RailColor(bool gatewayOffline, string? gatewayStamp, ActivityState localActivity)
+    {
+        if (gatewayOffline)
+            return localActivity is ActivityState.Working or ActivityState.Starting ? "blue" : "red";
+
+        return gatewayStamp ?? "unknown";
+    }
+
+    /// <summary>
+    /// The owning Director's tunnel to its Gateway is not up, so no fresh fold can arrive and the last stamp
+    /// is stale. <see cref="GatewayConnectionStatus.Connected"/> is the ONLY state that renders the Gateway's
+    /// pushed answer; every other one - dialing, reconnecting, failed, or a local-only Director with no
+    /// Gateway configured at all - falls to the two-colour activity floor in <see cref="EffectiveColor"/>.
+    /// Resolved live off the app's single <see cref="GatewayConnectionMonitor"/> (the same instance the
+    /// sidebar indicator reads). Null (host not started yet) counts as NOT offline, so a just-launched
+    /// Director shows the neutral placeholder until its monitor exists rather than flashing the floor.
+    /// </summary>
+    private static bool IsGatewayOffline
+    {
+        get
+        {
+            var monitor = (global::Avalonia.Application.Current as App)?.ControlApiHost?.GatewayMonitor;
+            return monitor is not null && monitor.Status != GatewayConnectionStatus.Connected;
+        }
+    }
+
+    /// <summary>Repaint the rail dot because the Gateway connection flipped (connected &lt;-&gt; offline).
+    /// The offline floor in <see cref="EffectiveColor"/> reads the connection status, and that status change
+    /// carries none of the per-session events the row already hears - so MainWindow, which owns the one
+    /// <see cref="GatewayConnectionMonitor"/> subscription, calls this on every row when the status changes.</summary>
+    public void RefreshGatewayFloor() => Dispatcher.UIThread.Post(RaiseFoldProjection);
 
     /// <summary>
     /// The sidebar colour strip's brush: the shared fold's colour, mapped through the ONE palette.
