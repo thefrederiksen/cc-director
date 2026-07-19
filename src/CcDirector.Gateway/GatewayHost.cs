@@ -701,7 +701,13 @@ public sealed class GatewayHost : IAsyncDisposable
         // of the EF data layer. The path argument is the LEGACY wingman-instructions.json, imported once on
         // first upgrade then renamed aside. Tests MUST pass an isolated path so they never touch the real file.
         _instructionsStore = new Wingman.WingmanInstructionsStore(_gatewayDb, wingmanInstructionsPath ?? Path.Combine(CcStorage.Root(), "wingman-instructions.json"));
-        Registry.OnDirectorRemoved += id => _snoozeRegistry.ClearForDirector(id);
+        // Skipped when HOSTED (Hosted Multi-Tenancy): this cleanup writes the tenant-scoped snoozes store, but
+        // it fires from the DirectorRegistry stale sweep (a background thread with no ambient tenant), so on
+        // hosted it would fail closed. It is also a per-director-across-tenants operation, which the
+        // session-serving increment makes per-tenant. The other OnDirectorRemoved subscribers (session-number
+        // release, roster-cache forget) are in-memory and stay wired. Skipping it only leaves a removed
+        // Director's snoozes as durable tombstones, bounded by the live-session prune paths.
+        Registry.OnDirectorRemoved += id => { if (!GatewayHostedMode.IsHosted) _snoozeRegistry.ClearForDirector(id); };
         // THE PUSH SEAM where this Gateway drives the hold machine off the facts Directors report. The
         // DirectorHub (constructed per-invocation by SignalR) folds every pushed session through this one
         // instance, exactly as it does the input-stats aggregator.
