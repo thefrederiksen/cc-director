@@ -23,9 +23,25 @@ namespace CcDirector.Gateway.Tests;
 /// no cure but hand-editing the box - see <see cref="A_director_id_may_move_to_another_tenant"/>, which is
 /// that case and must keep working.
 ///
-/// Revert-prove: make <c>DirectorKey</c> equality ignore its tenant (which is precisely the pre-fix registry,
-/// keyed by the bare director id) and <see cref="One_tenants_registration_cannot_overwrite_anothers"/> goes
-/// RED with the victim's machine name replaced by the impostor's, while the controls below stay green.
+/// Revert-prove - USE THIS ONE, and read the note under it before substituting your own. In
+/// <c>RegisterFromStream</c>, immediately after the key is built, drop any OTHER tenant's entry for the same
+/// director id before writing:
+/// <code>
+/// foreach (var other in _directors.Keys.Where(k => k.DirectorId == directorId &amp;&amp; !k.Tenant.Equals(tenant)).ToArray())
+///     _directors.TryRemove(other, out _);
+/// </code>
+/// That is the pre-fix registry's behaviour - the id alone was the key, so the last writer simply took the
+/// entry over. <see cref="One_tenants_registration_cannot_overwrite_anothers"/> then goes RED at the victim
+/// losing its own Director, AFTER both of its positive controls have passed, and the other three tests in this
+/// class stay GREEN.
+///
+/// NOT the revert to use: making <c>DirectorKey</c> equality ignore its tenant. It compiles, and it does go
+/// red, but it goes red FOR THE WRONG REASON and takes three of the four tests with it. ConcurrentDictionary's
+/// indexer replaces a VALUE and keeps the ORIGINAL KEY, so the impostor's write lands on an entry still keyed
+/// to the victim's tenant: the impostor's own list comes back EMPTY and the test dies at the impostor's
+/// positive control, before it ever reaches the takeover assertion. A revert that reddens a test before the
+/// assertion under proof is not evidence about that assertion. Two earlier attempts at this proof failed
+/// exactly this way and were discarded rather than written up.
 ///
 /// These drive the registry directly, with no HTTP and no tunnel, so nothing about the result depends on a
 /// test harness's own registration side effects. The wired end-to-end proof over the real tunnel and the real
