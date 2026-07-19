@@ -4,15 +4,17 @@ DevThrottle runs on Windows and macOS (Apple Silicon) and requires a few prerequ
 
 ## Prerequisites
 
-The DevThrottle **Setup** app checks for these on its Prerequisites screen. Four are required; Tailscale is optional. Each tool below has a setup section with the exact install command and how to confirm it is on your `PATH`.
+The DevThrottle **Setup** app checks for these on its Prerequisites screen. On Windows **only the .NET 10 Runtime is required** - it is what actually runs DevThrottle - and Setup can install it for you. The rest are recommended: Setup offers to install each one on the spot, and you can continue without them and add them later. On macOS nothing is required, because the macOS build carries its own runtime.
 
-| Tool | Required? | Minimum |
-|------|-----------|---------|
-| [.NET 10 Runtime](#net-10-runtime) | Required | 10.0 |
-| [Claude Code](#claude-code) | Required | latest |
-| [Python](#python) | Required | 3.11+ |
-| [Node.js](#nodejs) | Required | 20+ |
-| [Tailscale](#tailscale-optional--remote-access) | Optional | latest |
+| Tool | Required? | Minimum | What you lose without it |
+|------|-----------|---------|--------------------------|
+| [.NET 10 Runtime](#net-10-runtime) | **Required** (Windows only) | 10.0 | DevThrottle will not start |
+| [Claude Code](#claude-code) | Recommended | latest | No coding agent installed yet - but DevThrottle runs seven others |
+| [Python](#python) | Recommended | 3.11+ | Your own Python scripts. The `cc-*` tools bring their own Python and do not need this |
+| [Node.js](#nodejs) | Recommended | 20+ | MCP servers and the browser tools |
+| [Tailscale](#tailscale-optional--remote-access) | Optional | latest | Reaching this gateway's Cockpit from a phone or another computer |
+
+Setup can install every one of these for you on Windows via `winget`; each row shows an **Install automatically** action while the tool is missing. If `winget` is unavailable, use the download link in the same row and click **Re-check**.
 
 > **Just installed one of these and Setup still says "Not found"?** See [If a tool is not detected after installing it](#if-a-tool-is-not-detected-after-installing-it).
 

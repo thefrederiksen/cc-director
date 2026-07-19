@@ -15,29 +15,40 @@ public static class PrerequisiteChecker
 
     public static List<PrerequisiteInfo> CreateChecklist()
     {
+        // NONE of these is required, and this list carries no .NET row because the macOS Director
+        // publishes self-contained (--self-contained true) and needs no shared runtime. Marking
+        // these three required stopped a new user on this screen until they had installed three
+        // programs by hand, and none of them is needed to install DevThrottle or to start it:
+        // the cc-* tools ship their own relocatable CPython, Node.js is MCP and browser tools
+        // only, and Claude Code is one of the eight agent command line tools the Director runs.
+        // They stay checked and shown; what is missing is reported on the Complete screen.
+        //
+        // No winget on macOS, so there is no auto-install here - the install link is the path.
         return
         [
             new PrerequisiteInfo
             {
                 Name = "Claude Code",
-                Description = "AI coding assistant CLI",
-                IsRequired = true,
+                Description = "Recommended: the default coding agent. DevThrottle runs other agents too, "
+                    + "so you can install this later or use a different one.",
+                IsRequired = false,
                 InstallUrl = "https://docs.anthropic.com/en/docs/claude-code/overview",
                 DocsUrl = $"{DocsBase}#claude-code"
             },
             new PrerequisiteInfo
             {
                 Name = "Python",
-                Description = "Python 3.11 or higher",
-                IsRequired = true,
+                Description = "Recommended: Python 3.11 or higher, for your own scripts. The cc-* tools "
+                    + "bring their own Python and do not need this.",
+                IsRequired = false,
                 InstallUrl = "https://www.python.org/downloads/",
                 DocsUrl = $"{DocsBase}#python"
             },
             new PrerequisiteInfo
             {
                 Name = "Node.js",
-                Description = "Node.js 20+ (MCP servers, browser tools)",
-                IsRequired = true,
+                Description = "Recommended: Node.js 20+, needed only for MCP servers and browser tools",
+                IsRequired = false,
                 InstallUrl = "https://nodejs.org/",
                 DocsUrl = $"{DocsBase}#nodejs"
             },
