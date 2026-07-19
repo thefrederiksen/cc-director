@@ -66,7 +66,8 @@ internal static class GatewayDictationEndpoint
         TranscribingSessions transcribingSessions, VoiceUploadStore uploads, Pairing.DeviceRegistry devices,
         Streaming.PushedSessionStore? pushedSessions = null,
         DirectorCommandRouter.SendDirectorCommandAsync? sendCommand = null,
-        TimeSpan? streamStale = null)
+        TimeSpan? streamStale = null,
+        Tenancy.HostedTenantBoundary? tenantBoundary = null)
     {
         // Gateway Cleanup mission, Phase 2 (PR E-B): resolve the owning Director push-store-first and inject
         // the dictation through the tunnel-first SessionVerbClient (the delivery marker rides the PromptRequest
@@ -143,6 +144,16 @@ internal static class GatewayDictationEndpoint
                 return Results.Json(new { error = "sessionId (guid) and totalChunks (>0) are required" },
                     statusCode: StatusCodes.Status400BadRequest);
 
+            // Issue #1869: resolve THIS REQUEST's tenant, here where the request exists, and carry it into
+            // the run. This route is mapped on hosted and authenticated by a per-device key, and it located
+            // its session in the Local partition - so on hosted a correctly enrolled session was simply not
+            // found and every dictation died, the same defect as the per-session routes and just as invisible
+            // on self-host. Deny-by-default: a key bound to no tenant is refused, never served Local.
+            var tenant = tenantBoundary is null ? TenantId.Local : tenantBoundary.ResolveRequestTenant(ctx);
+            if (tenant is null)
+                return Results.Json(new { error = "no tenant is bound to this request" },
+                    statusCode: StatusCodes.Status403Forbidden);
+
             // A completion attempt is progress - keep the orange mark alive across the server-side
             // transcribe so a slow transcribe cannot let it age out mid-flight (issue #1126).
             transcribingSessions.Refresh(req.SessionId!);
@@ -184,7 +195,7 @@ internal static class GatewayDictationEndpoint
             var entry = _completes.GetOrAdd(uploadId, id => new CompleteEntry(
                 new Lazy<Task<DictationOutcome>>(() => RunCompleteCoreAsync(
                     id, req, uploads, registry, owners, transcription, transcribingSessions, deliverySurface,
-                    pushedSessions, sendCommand, stale))));
+                    pushedSessions, sendCommand, stale, tenant.Value))));
 
             DictationOutcome outcome;
             try
@@ -356,7 +367,7 @@ internal static class GatewayDictationEndpoint
         SessionOwnerCache? owners, GatewayTranscriptionService transcription,
         TranscribingSessions transcribingSessions, string? deliverySurface,
         Streaming.PushedSessionStore? pushedSessions, DirectorCommandRouter.SendDirectorCommandAsync? sendCommand,
-        TimeSpan streamStale)
+        TimeSpan streamStale, TenantId tenant)
     {
         var sid = req.SessionId!;
         // Issue #1181, Task 4: this run assembles + transcribes + delivers, so mark the session ACTIVELY
@@ -408,7 +419,7 @@ internal static class GatewayDictationEndpoint
             // Gateway Cleanup mission, Phase 2: resolve the owner push-store-first (no HTTP fan-out) and gate
             // on an exited session, exactly as the old LocateAsync did, then reach it through the tunnel.
             var (director, session) = await GatewayEndpoints.LocateSessionAsync(
-                registry, sid, pushedSessions, streamStale, TenantId.Local, owners);
+                registry, sid, pushedSessions, streamStale, tenant, owners);
             if (director is null || session is null)
                 return DictationOutcome.Error(StatusCodes.Status404NotFound, "session not found");
             if (IsExited(session))
@@ -474,7 +485,7 @@ internal static class GatewayDictationEndpoint
                 // today (today re-baselines by exactly zero) and it is monotonic, so a later failed attempt
                 // can only improve it - but the residual lag window is real and is not closed here.
                 var (_, freshSession) = await GatewayEndpoints.LocateSessionAsync(
-                    registry, sid, pushedSessions, streamStale, TenantId.Local, owners);
+                    registry, sid, pushedSessions, streamStale, tenant, owners);
                 if (freshSession is not null)
                     uploads.RecordFailedDeliveryBaseline(uploadId, freshSession.TotalBufferBytes);
                 FileLog.Write($"[GatewayDictation] complete sid={sid} uploadId={uploadId}: submit FAILED ({err}); " +

@@ -2336,7 +2336,14 @@ internal static class GatewayEndpoints
             if (!string.IsNullOrEmpty(req.ToDirectorId)
                 && !string.Equals(req.ToDirectorId, sourceDirector.DirectorId, StringComparison.OrdinalIgnoreCase))
             {
-                targetDirector = registry.Get(req.ToDirectorId);
+                // Issue #1869: resolve the TARGET Director in the REQUEST'S OWN tenant. The id here is
+                // client-supplied, and the fleet-global lookup this replaced would answer about a Director
+                // belonging to another account - so whether another tenant's Director exists changed this
+                // caller's answer. That mattered little while the route was unreachable on hosted; this change
+                // makes it reachable, so activating it on a fleet-global lookup would open a cross-tenant path
+                // in the act of fixing one. A caller can now only ever name a Director it owns.
+                var targetTenant = ResolveReadTenant(ctx, tenantBoundary);
+                targetDirector = targetTenant is null ? null : registry.Get(targetTenant.Value, req.ToDirectorId);
                 if (targetDirector is null)
                     return Results.NotFound(new { error = "target director not found" });
             }
@@ -2755,10 +2762,22 @@ internal static class GatewayEndpoints
     /// a caller with no tenant owns no sessions. The refusal is logged distinctly so it is never confused with
     /// an ordinary miss.
     ///
-    /// The <see cref="LocateSessionAsync"/> primitive still takes an explicit tenant, because a few callers
-    /// legitimately have no request: the voice sweep and the verb relay run outside any HTTP call and are
-    /// deliberately pinned to Local until the state they mutate is partitioned. Those are the only callers
-    /// that should ever name a tenant themselves.
+    /// The <see cref="LocateSessionAsync"/> primitive still takes an explicit tenant. Its remaining callers,
+    /// named exactly rather than waved at:
+    ///  - the voice sweep in GatewayHost, a background pass with no request, pinned to Local until the voice
+    ///    state it mutates is partitioned (converting it first would ARM a cross-tenant audio path, not close
+    ///    one);
+    ///  - <c>SessionVerbClient.ResolveAsync</c>, also pinned to Local - and it is NOT purely background: it is
+    ///    reached from the wingman voice endpoint's request handling, so those voice reads stay inert on
+    ///    hosted rather than working. That is deliberate and it is the same precondition as the sweep, but it
+    ///    is a REMAINING GAP, not a solved case, and it is booked as its own work;
+    ///  - the dictation completion path, which now resolves the tenant at its route and threads it in.
+    ///
+    /// This does NOT make the mistake impossible for the next route, and saying so would overstate it: the
+    /// primitive is still internal and a new route could call it with any tenant it liked. What it does is
+    /// remove the tenant argument from the path a route would naturally take, and make the omission visible -
+    /// review caught a route that had been left on the primitive precisely because a test existed that would
+    /// have covered it. Enforcing a route-versus-background split in the type system is follow-up work.
     /// </summary>
     internal static Task<(DirectorDto? director, SessionDto? session)> LocateSessionForRequestAsync(
         HttpContext ctx, Tenancy.HostedTenantBoundary? boundary,

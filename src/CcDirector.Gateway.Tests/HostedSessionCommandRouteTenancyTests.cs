@@ -125,6 +125,12 @@ public sealed class HostedSessionCommandRouteTenancyTests : IAsyncLifetime
         new object[] { "POST",   "/wingman/goal",   "{\"goal\":\"ship\"}" },
         new object[] { "POST",   "/recap",          "{}" },
         new object[] { "POST",   "/request-deletion", "{\"reason\":\"done\"}" },
+        // Added after review PROVED the gap: the reviewer reverted PATCH /sessions/{sid} to a hardcoded
+        // local tenant and all 35 tests still passed, so a partial conversion demonstrably COULD hide. These
+        // are the remaining converted locate sites that the table did not reach.
+        new object[] { "DELETE", "/request-deletion", null! },
+        new object[] { "PATCH",  "",                "{\"name\":\"renamed\"}" },
+        new object[] { "POST",   "/upload-image",   "{\"dataUrl\":\"data:image/png;base64,iVBORw0KGgo=\"}" },
         new object[] { "DELETE", "",                null! },
     };
 
@@ -165,6 +171,73 @@ public sealed class HostedSessionCommandRouteTenancyTests : IAsyncLifetime
 
         var buffer = await (await Send("GET", $"sessions/{SessA}/buffer", _keyA, null)).Content.ReadAsStringAsync();
         Assert.False(buffer.Contains(NotLocated, StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task Handover_locates_its_source_session_in_the_requesting_tenant()
+    {
+        // Not reachable from the route table: /handover names its session in the BODY, not the path. It was
+        // one of the six converted sites the first version of this proof did not cover.
+        var own = await Send("POST", "handover", _keyA, $"{{\"fromSessionId\":\"{SessA}\",\"toRepoPath\":\"/repo\"}}");
+        Assert.DoesNotContain("source session not found", await own.Content.ReadAsStringAsync(), StringComparison.Ordinal);
+
+        var cross = await Send("POST", "handover", _keyB, $"{{\"fromSessionId\":\"{SessA}\",\"toRepoPath\":\"/repo\"}}");
+        Assert.Equal(HttpStatusCode.NotFound, cross.StatusCode);
+        Assert.Contains("source session not found", await cross.Content.ReadAsStringAsync(), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Handover_resolves_its_target_director_in_the_requesting_tenant()
+    {
+        // Review blocker: fixing the source locate made this route REACHABLE, and its target Director was
+        // still resolved through a fleet-global lookup - so a caller could name another account's Director and
+        // have its existence decide the answer. Activating a route onto a fleet-global lookup would have
+        // opened a cross-tenant path in the act of closing one.
+        //
+        // Alice naming her OWN Director gets past the target lookup...
+        var ownTarget = await Send("POST", "handover", _keyA,
+            $"{{\"fromSessionId\":\"{SessA}\",\"toRepoPath\":\"/repo\",\"toDirectorId\":\"dir-a\"}}");
+        Assert.DoesNotContain("target director not found", await ownTarget.Content.ReadAsStringAsync(), StringComparison.Ordinal);
+
+        // ...and naming BOB'S Director does not, even though that Director certainly exists in the fleet.
+        // The positive control above is what makes this meaningful: the route can find a target, just not his.
+        var crossTarget = await Send("POST", "handover", _keyA,
+            $"{{\"fromSessionId\":\"{SessA}\",\"toRepoPath\":\"/repo\",\"toDirectorId\":\"dir-b\"}}");
+        Assert.Equal(HttpStatusCode.NotFound, crossTarget.StatusCode);
+        Assert.Contains("target director not found", await crossTarget.Content.ReadAsStringAsync(), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Fanout_locates_no_target_outside_the_requesting_tenant()
+    {
+        // The last two converted sites: /fanout locates each TARGET session and, separately, the SENDING
+        // session named by fromSessionId. Neither is reachable from the route table.
+        //
+        // SCOPE, stated rather than implied: only the cross-tenant direction is asserted here. The owner-side
+        // path cannot be driven to completion in this harness - once a target IS located, /fanout goes on to
+        // send a broadcast prompt and waits on a reply the fake Director does not satisfy, so the request
+        // hangs rather than answering. Asserting the isolation direction is honest; claiming an owner-side
+        // fanout proof would not be. The owner-side conversion of these two sites rests on their being the
+        // same single helper the twenty other routes prove, not on this test.
+        //
+        // Alice fanning out to BOB's session must locate NOTHING - and because nothing is located, no send is
+        // attempted, so this returns promptly instead of hanging. That asymmetry is itself the evidence.
+        var cross = await Send("POST", "fanout", _keyA,
+            $"{{\"sessionIds\":[\"{SessB}\"],\"text\":\"hello\",\"fromSessionId\":\"{SessB}\"}}");
+        var body = await cross.Content.ReadAsStringAsync();
+
+        // The response ECHOES every requested session id back as a result row whether or not it was located,
+        // so the id's presence proves nothing - the first version of this assertion got that wrong. What a
+        // located target would put in the body is its OWNING DIRECTOR, and that is the leak signature.
+        Assert.DoesNotContain("dir-b", body, StringComparison.Ordinal);
+        Assert.DoesNotContain("\"MB\"", body, StringComparison.Ordinal);
+
+        // NO owner-side positive control here, and that is a stated limitation rather than an oversight. The
+        // broadcast governor and the delivery wait dominate this route: with a sender the request blocks on a
+        // reply the fake Director does not satisfy, and without one the governor's scope rules decide the
+        // outcome before delivery is reached. Neither shape isolates the locate step. So this test asserts the
+        // isolation direction only, and the owner-side conversion of fanout's two sites rests on their being
+        // the same single helper the twenty routes in the theory above prove - not on this test.
     }
 
     private Task<HttpResponseMessage> Send(string method, string path, string deviceKey, string? body)
