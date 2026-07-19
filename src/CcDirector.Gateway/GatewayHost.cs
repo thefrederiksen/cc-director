@@ -361,6 +361,10 @@ public sealed class GatewayHost : IAsyncDisposable
     /// </summary>
     public Tenancy.TenantRegistry TenantRegistry { get; }
 
+    /// <summary>The paid-entitlement gate read at hosted enrollment. Present on every host; consulted only
+    /// where the hosted enrollment route is mapped, which is hosted only.</summary>
+    public Tenancy.EntitlementRegistry EntitlementRegistry { get; }
+
     // The persisted workflow catalog (Workflows mission, phase 1): built-ins seeded at startup,
     // user-defined workflows beside them, served by Api.WorkflowEndpoints.
     private readonly Workflows.WorkflowStore _workflows;
@@ -665,6 +669,7 @@ public sealed class GatewayHost : IAsyncDisposable
         // the hosted enrollment boundary (which validates the account token and stamps the resolved tenant on
         // the device) in the follow-up increment. Unused on the single-tenant local install.
         TenantRegistry = new Tenancy.TenantRegistry(_gatewayDb);
+        EntitlementRegistry = new Tenancy.EntitlementRegistry(_gatewayDb);
         // The auth-boundary tenant binder (Hosted Multi-Tenancy increment 1): the tunnel Hello and the
         // device-key HTTP middleware resolve a tenant from the AUTHENTICATED device key through this, and
         // enter the scope the stores read. Inert on self-host. Built over the same _tenantContext instance
@@ -1777,8 +1782,12 @@ public sealed class GatewayHost : IAsyncDisposable
         // Gateway (self-host uses the loopback signed-in route above and stays single-tenant Local).
         if (GatewayHostedMode.IsHosted)
         {
+            // The paid gate rides along here and ONLY here. This route is mapped on hosted only, so passing
+            // the entitlement registry means the gate is active wherever enrollment is possible - self-host
+            // never maps this route at all and therefore cannot be gated by accident.
             Api.HostedEnrollmentEndpoint.Map(_app, Devices, TenantRegistry,
-                CcDirector.Gateway.Account.GatewayAccountFactory.BuildAuthorizationValidator());
+                CcDirector.Gateway.Account.GatewayAccountFactory.BuildAuthorizationValidator(),
+                entitlements: EntitlementRegistry);
         }
 
         // Wingman-voice surface for the Cockpit's Voice tab (issue #531): drive one turn of a

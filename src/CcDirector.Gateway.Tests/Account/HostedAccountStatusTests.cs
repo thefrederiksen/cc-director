@@ -79,11 +79,21 @@ public sealed class HostedAccountStatusTests : IAsyncLifetime
     private readonly string _instancesDir =
         Path.Combine(Path.GetTempPath(), "cc-has-" + Guid.NewGuid().ToString("N"));
     private string? _priorHosted;
+    private string? _priorRoot;
 
     public async Task InitializeAsync()
     {
         _priorHosted = Environment.GetEnvironmentVariable("CC_GATEWAY_HOSTED");
         Environment.SetEnvironmentVariable("CC_GATEWAY_HOSTED", "1");
+
+        // ISOLATE THE STORAGE ROOT. Without this the tenant registry mints into the RUNNING USER'S REAL
+        // storage root, which is shared with every other test class in the assembly - so a subject minted
+        // here with no email and the SAME subject minted elsewhere WITH one become one row, and whichever
+        // class runs first decides the other's answer. That made this class fail in a full-suite run while
+        // passing in isolation, which is the worst shape a test can have: it reads as a product defect.
+        // It is also the same defect the mission is fixing in production - a shared root with no partition.
+        _priorRoot = Environment.GetEnvironmentVariable("CC_DIRECTOR_ROOT");
+        Environment.SetEnvironmentVariable("CC_DIRECTOR_ROOT", _instancesDir);
 
         _gateway = new GatewayHost(port: FreePort(), token: Token, authEnabled: true,
             instancesDirectory: _instancesDir,
@@ -110,6 +120,7 @@ public sealed class HostedAccountStatusTests : IAsyncLifetime
         _http.Dispose();
         await _gateway.StopAsync();
         Environment.SetEnvironmentVariable("CC_GATEWAY_HOSTED", _priorHosted);
+        Environment.SetEnvironmentVariable("CC_DIRECTOR_ROOT", _priorRoot);
         try { if (Directory.Exists(_instancesDir)) Directory.Delete(_instancesDir, true); }
         catch { /* best-effort */ }
     }

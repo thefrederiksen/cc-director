@@ -87,7 +87,17 @@ public sealed class TenantScopeGuardTests : IDisposable
     {
         // The ONLY tables permitted to be global (un-scoped). Growing this set must be deliberate: a new
         // entry here is an author consciously declaring "this table is not tenant data".
-        var allowedGlobalTables = new HashSet<Type> { typeof(TenantEntity) };
+        // Each entry here is a table that is deliberately NOT tenant-scoped, with the reason it cannot be:
+        //
+        //  - TenantEntity is the account-to-tenant mapping itself - the table the tenant filter's values COME
+        //    FROM. It is read by account subject BEFORE any tenant is resolved, so scoping it would be circular.
+        //
+        //  - EntitlementEntity is the paid-entitlement record, read at enrollment for the same reason and at
+        //    the same point: keyed by account subject, consulted BEFORE a tenant is minted, and specifically in
+        //    order to decide whether a tenant may be minted at all. It is also READ-ONLY here - it is written
+        //    by the payment side as the service role and this Gateway holds SELECT and nothing more - and it
+        //    carries no tenant content: one subject, one subscription state, one period end.
+        var allowedGlobalTables = new HashSet<Type> { typeof(TenantEntity), typeof(EntitlementEntity) };
 
         var model = Model();
         var offenders = model.GetEntityTypes()

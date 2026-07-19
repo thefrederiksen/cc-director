@@ -38,8 +38,14 @@ internal static class HostedEnrollmentEndpoint
     /// web host. <see cref="Response"/> is set only on <see cref="Status"/> 200.</summary>
     public sealed record EnrollResult(int Status, DeviceRegistrationResponse? Response, string Error);
 
+    /// <param name="entitlements">
+    /// The paid-entitlement gate. NULL means no gate - that is the self-host case, where there is no billing
+    /// and no boundary, and enrollment behaves exactly as it always has. On hosted this is REQUIRED, and the
+    /// gate is what makes hosted a paid product rather than a free one.
+    /// </param>
     public static void Map(IEndpointRouteBuilder app, DeviceRegistry devices,
-        Tenancy.TenantRegistry tenants, JwtAccessTokenValidator accountTokenValidator)
+        Tenancy.TenantRegistry tenants, JwtAccessTokenValidator accountTokenValidator,
+        Tenancy.EntitlementRegistry? entitlements = null)
     {
         if (devices is null) throw new ArgumentNullException(nameof(devices));
         if (tenants is null) throw new ArgumentNullException(nameof(tenants));
@@ -47,7 +53,7 @@ internal static class HostedEnrollmentEndpoint
 
         app.MapPost(Path, (EnrollSignedInRequest req, HttpContext ctx) =>
         {
-            var result = Enroll(ReadBearer(ctx), req, devices, tenants, accountTokenValidator);
+            var result = Enroll(ReadBearer(ctx), req, devices, tenants, accountTokenValidator, entitlements, DateTime.UtcNow);
             return result.Status == StatusCodes.Status200OK
                 ? Results.Json(result.Response, statusCode: StatusCodes.Status200OK)
                 : Results.Json(new { error = result.Error }, statusCode: result.Status);
@@ -63,7 +69,8 @@ internal static class HostedEnrollmentEndpoint
     /// logged.
     /// </summary>
     public static EnrollResult Enroll(string? bearer, EnrollSignedInRequest? req, DeviceRegistry devices,
-        Tenancy.TenantRegistry tenants, JwtAccessTokenValidator accountTokenValidator)
+        Tenancy.TenantRegistry tenants, JwtAccessTokenValidator accountTokenValidator,
+        Tenancy.EntitlementRegistry? entitlements = null, DateTime? nowUtc = null)
     {
         if (req is null || string.IsNullOrWhiteSpace(req.DeviceId))
             return new EnrollResult(StatusCodes.Status400BadRequest, null, "deviceId is required");
@@ -76,6 +83,42 @@ internal static class HostedEnrollmentEndpoint
         {
             FileLog.Write("[HostedEnrollment] REJECTED: the account token is not authorization-valid (no subject to bind)");
             return new EnrollResult(StatusCodes.Status401Unauthorized, null, "the account token is not valid");
+        }
+
+        // THE PAID GATE, between subject-verification and tenant-mint. It sits here, and not later, because
+        // minting a tenant is itself giving something away: an unpaid account must leave no trace and hold no
+        // key. No device key means no tunnel, no cockpit and no mobile, which is the whole meaning of
+        // "approval before you can use a hosted tenant".
+        //
+        // THREE OUTCOMES, and keeping them apart is the entire correctness of this gate:
+        //  - Entitled     -> fall through and enroll.
+        //  - NotEntitled  -> 402. We LOOKED and the account has no valid entitlement. This is knowledge.
+        //  - Unknown      -> 503 and RETRY. The read FAILED, so we do not know. It must not deny and it must
+        //                    not grant.
+        //
+        // The asymmetry matters in both directions and they are not equally bad. A false 402 locks out a
+        // customer who has paid. A false MINT gives the product away for nothing - and that one is silent,
+        // because a successful enrollment looks exactly like a correct one. So the mint happens ONLY on a
+        // confirmed entitlement: ignorance mints nothing, denies nothing, and says try again.
+        //
+        // Null entitlements is the SELF-HOST case - no gate at all, unchanged behaviour. That is the control.
+        if (entitlements is not null)
+        {
+            var outcome = entitlements.LookupBySubject(validation.Subject, nowUtc ?? DateTime.UtcNow);
+            if (outcome == Tenancy.EntitlementOutcome.Unknown)
+            {
+                FileLog.Write("[HostedEnrollment] RETRY: the entitlement read failed, so entitlement is UNKNOWN - " +
+                              "not enrolling and NOT refusing (no tenant minted, no device key issued)");
+                return new EnrollResult(StatusCodes.Status503ServiceUnavailable, null,
+                    "the entitlement service is temporarily unavailable; please try again");
+            }
+
+            if (outcome == Tenancy.EntitlementOutcome.NotEntitled)
+            {
+                FileLog.Write("[HostedEnrollment] REFUSED: the entitlement read succeeded and this account has no active entitlement (no tenant minted, no device key issued)");
+                return new EnrollResult(StatusCodes.Status402PaymentRequired, null,
+                    "this account does not have an active hosted subscription");
+            }
         }
 
         // The email is DISPLAY METADATA only (never the mapping key). Read it from the same verified token.
