@@ -624,6 +624,20 @@ internal static class GatewayEndpoints
                 .Where(d => string.IsNullOrEmpty(machine) || string.Equals(d.MachineName, machine, StringComparison.OrdinalIgnoreCase))
                 .ToList();
 
+            // Hosted Multi-Tenancy (session-serving PR1): the Director registry is fleet-global, but a tenant's
+            // roster must only ever NAME its own directors. Scope the list to the request tenant's partition so
+            // another tenant's directors never appear - not as sessions, and not as "unreachable"
+            // machineError / reachability rows (which would otherwise leak their ids and machine names in the
+            // ?envelope response). A hosted director reaches the registry only via its tunnel Hello, which first
+            // binds it into its tenant's partition, so scoping to the partition drops nothing of the tenant's
+            // own. On self-host the boundary is inert and the registry already IS the one tenant's directors, so
+            // this is skipped and behavior is unchanged (a registered-but-unpushed director still surfaces).
+            if (tenantBoundary?.IsHosted == true && pushedSessions is not null)
+            {
+                var mine = new HashSet<string>(pushedSessions.DirectorIdsFor(reqTenant.Value), StringComparer.OrdinalIgnoreCase);
+                directors = directors.Where(d => mine.Contains(d.DirectorId)).ToList();
+            }
+
             var includeExitedActual = includeExited ?? false;
             var streamStale = streamStaleResolved;
             var results = directors.Select(d =>

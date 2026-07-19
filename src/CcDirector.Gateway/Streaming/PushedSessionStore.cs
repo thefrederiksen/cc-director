@@ -72,6 +72,18 @@ public sealed class PushedSessionStore
     public IReadOnlyCollection<TenantId> KnownTenants() => _byTenant.Keys.ToArray();
 
     /// <summary>
+    /// The director ids that have a partition entry under <paramref name="tenant"/> (Hosted Multi-Tenancy,
+    /// session-serving). A director enters a tenant's partition when it binds a stream connection under that
+    /// tenant (<see cref="RegisterConnection"/>) and STAYS after it disconnects (the entry is retained so a
+    /// reconnect keeps roster continuity). So this is exactly "the directors this tenant owns" - the set a
+    /// tenant's roster read must scope its Director list to on the hosted Gateway, so a request never even
+    /// NAMES another tenant's directors: not as sessions, and not as "unreachable" machineError / reachability
+    /// rows (which would otherwise leak another account's director ids and machine names). On self-host the
+    /// registry already IS the single Local tenant's directors, so the roster does not consult this.
+    /// </summary>
+    public IReadOnlyCollection<string> DirectorIdsFor(TenantId tenant) => DirectorsFor(tenant).Keys.ToArray();
+
+    /// <summary>
     /// Mark <paramref name="connectionId"/> as the active stream connection for <paramref name="directorId"/>
     /// within <paramref name="tenant"/>. Existing cached sessions are kept (so a fast reconnect keeps roster
     /// continuity), but the sequence baseline resets so the new connection's first message - at any sequence -

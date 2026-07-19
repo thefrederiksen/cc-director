@@ -115,6 +115,23 @@ public sealed class SessionServingReadIsolationTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Sessions_envelope_never_names_another_tenants_director()
+    {
+        // The ?envelope response carries machineErrors + reachability, built from the fleet-global Director
+        // registry. A tenant must never even see that another tenant's Director EXISTS: not as a session, and
+        // not as an "unreachable" row leaking its id / machine name. Read the envelope as tenant A and assert
+        // dir-b (tenant B's Director) appears NOWHERE in it.
+        var resp = await Get("sessions?envelope=true", _keyA);
+        resp.EnsureSuccessStatusCode();
+        var body = await resp.Content.ReadAsStringAsync();
+
+        Assert.Contains(SessA, body);           // A's own session is present
+        Assert.DoesNotContain(SessB, body);     // never B's session
+        Assert.DoesNotContain("dir-b", body);   // never B's director id (machineErrors / reachability)
+        Assert.DoesNotContain("\"MB\"", body);  // never B's machine name
+    }
+
+    [Fact]
     public async Task Session_by_id_is_isolated_across_tenants()
     {
         // B's own key reads B's session; A's key cannot see B's session at all.
