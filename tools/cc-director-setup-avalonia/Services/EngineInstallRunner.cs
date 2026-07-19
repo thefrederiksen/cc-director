@@ -43,12 +43,10 @@ public sealed class EngineInstallRunner
         else dItem.SizeText = FormatSize(dAsset.Size);
         items.Add(dItem); byId["director"] = dItem;
 
-        var bItem = new ToolDownloadItem { Name = PythonToolsInstaller.ComponentId, AssetName = PythonToolsInstaller.ToolsAsset };
-        var pyAsset = release.Manifest.TryGetAsset(PythonToolsInstaller.PythonAsset);
-        var toolsAsset = release.Manifest.TryGetAsset(PythonToolsInstaller.ToolsAsset);
-        if (pyAsset is null || toolsAsset is null) { bItem.Status = "Skipped"; bItem.SizeText = "Not in release"; }
-        else bItem.SizeText = FormatSize(pyAsset.Size + toolsAsset.Size);
-        items.Add(bItem); byId[PythonToolsInstaller.ComponentId] = bItem;
+        // The shared-venv cc-* Python tools bundle is deliberately NOT an install-time row anymore: the
+        // installer no longer provisions it (that ~334 MB download + venv build was the dominant install
+        // time). The app provisions the bundle from nothing on first launch (ToolReconciler startup
+        // reconcile), so the Install screen shows an honest "finishes on first launch" note instead.
 
         // The launcher installs on macOS only in THIS wizard: the Windows wizard (the WPF one)
         // already installs it there. Older releases have no macOS launcher asset - skip cleanly.
@@ -78,7 +76,11 @@ public sealed class EngineInstallRunner
         ArgumentNullException.ThrowIfNull(prep);
 
         var directorOk = await PlaceDirectorAsync(prep, status, ct);
-        var toolCount = await InstallPythonToolsAsync(prep, status, ct);
+        // The installer does NOT provision the Python tools bundle - the app provisions it from nothing on
+        // first launch (see InstallerToolsProvisioning). The real provisioner is wired but deliberately not
+        // invoked, so re-enabling it is a one-line revert pinned by InstallerToolsProvisioningTests.
+        var toolCount = await InstallerToolsProvisioning.ProvisionDuringInstallAsync(
+            innerCt => InstallPythonToolsAsync(prep, status, innerCt), ct);
         var launcherOk = await InstallLauncherAsync(prep, status, ct);
         FinalizeInstall();
 

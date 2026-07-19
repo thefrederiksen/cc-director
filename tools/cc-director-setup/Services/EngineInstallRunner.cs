@@ -84,18 +84,10 @@ public sealed class EngineInstallRunner
             byId[c.Id] = item;
         }
 
-        // One row for all cc-* Python tools (the shared-venv bundle).
-        var bundleItem = new ToolDownloadItem
-        {
-            Name = PythonToolsInstaller.ComponentId,
-            AssetName = PythonToolsInstaller.ToolsAsset,
-        };
-        var pyAsset = release.Manifest.TryGetAsset(PythonToolsInstaller.PythonAsset);
-        var toolsAsset = release.Manifest.TryGetAsset(PythonToolsInstaller.ToolsAsset);
-        if (pyAsset is null || toolsAsset is null) { bundleItem.Status = "Skipped"; bundleItem.SizeText = "Not in release"; }
-        else bundleItem.SizeText = FormatSize(pyAsset.Size + toolsAsset.Size);
-        items.Add(bundleItem);
-        byId[PythonToolsInstaller.ComponentId] = bundleItem;
+        // The shared-venv cc-* Python tools bundle is deliberately NOT an install-time row anymore: the
+        // installer no longer provisions it (that ~334 MB download + venv build was the dominant install
+        // time). The app provisions the bundle from nothing on first launch (ToolReconciler startup
+        // reconcile), so the Install screen shows an honest "finishes on first launch" note instead.
 
         var reader = new InstalledStateReader(_layout);
         var installedDirector = reader.Read(ComponentRegistry.Director).Version;
@@ -161,8 +153,11 @@ public sealed class EngineInstallRunner
             Set(prep, r.ComponentId, status, r.Error);
         }
 
-        // Install every Python tool as one shared venv (no-ops cleanly if the release has no bundle).
-        var toolCount = await InstallPythonToolsAsync(prep, ct);
+        // The installer does NOT provision the Python tools bundle - the app provisions it from nothing on
+        // first launch (see InstallerToolsProvisioning). The real provisioner is wired but deliberately not
+        // invoked, so re-enabling it is a one-line revert pinned by InstallerToolsProvisioningTests.
+        var toolCount = await InstallerToolsProvisioning.ProvisionDuringInstallAsync(
+            innerCt => InstallPythonToolsAsync(prep, innerCt), ct);
 
         MigrateLegacyDirector();
         PathManager.AddToPath(_layout.BinDir);

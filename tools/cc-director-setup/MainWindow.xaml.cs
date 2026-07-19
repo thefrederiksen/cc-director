@@ -304,7 +304,6 @@ public partial class MainWindow : Window
         var runner = new EngineInstallRunner
         {
             OnProcessBlocking = OnProcessBlockingAsync,
-            OnToolsInstalled = c => Dispatcher.BeginInvoke(() => _installStep?.SetToolsInstalledCount(c)),
         };
         _installPath = runner.BinDir;
         _directorExePath = runner.AppExePath;
@@ -395,7 +394,6 @@ public partial class MainWindow : Window
         var runner = new EngineInstallRunner
         {
             OnProcessBlocking = OnProcessBlockingAsync,
-            OnToolsInstalled = c => Dispatcher.BeginInvoke(() => _installStep?.SetToolsInstalledCount(c)),
         };
         _installPath = runner.BinDir;
         _directorExePath = runner.AppExePath;

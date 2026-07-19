@@ -83,6 +83,27 @@ public sealed class ToolReconciler
         FileLog.Write("[ToolReconciler] ReconcileAsync: detecting tool drift");
         try
         {
+            // (d) EMPTY tools state (the first-run trigger the snappy install relies on): the installer no
+            //     longer provisions the shared-venv cc-* tools bundle, so a fresh install arrives here with
+            //     NOTHING - no recorded bundle version and no venv on disk. Provision the full bundle FROM
+            //     NOTHING via the same release-backed heavy path, under the machine-wide mutex so two
+            //     first-launch Directors never provision the shared venv at once. This runs BEFORE the
+            //     shim/venv drift checks below, which all assume an already-provisioned venv.
+            if (ToolsBundleAbsent())
+            {
+                FileLog.Write("[ToolReconciler] no Python tools bundle present (fresh install); provisioning from nothing");
+                var provisionActions = new List<string>();
+                var provisionFailure = await EscalateHeavyRepairAsync(
+                    provisionActions, ct,
+                    logReason: "no Python tools bundle present; provisioning it from nothing",
+                    successAction: "provisioned the Python tools bundle from nothing (first run)");
+                if (provisionFailure is { } failed)
+                    return failed;
+                var provisionOutcome = provisionActions.Count > 0 ? ReconcileOutcome.Reconciled : ReconcileOutcome.InSync;
+                FileLog.Write($"[ToolReconciler] ReconcileAsync done: outcome={provisionOutcome}, actions={provisionActions.Count}");
+                return new ReconcileResult(provisionOutcome, provisionActions);
+            }
+
             // --- DETECT (pure reads, no mutation) -----------------------------------------------------
             var installer = new PythonToolsInstaller(_layout);
             var catalog = new ToolCatalogService(_layout.BinDir);
@@ -147,7 +168,10 @@ public sealed class ToolReconciler
             //     the machine-wide mutex so two Directors never rebuild the shared venv at once.
             if (venvBroken)
             {
-                var heavy = await EscalateHeavyRepairAsync(actions, ct);
+                var heavy = await EscalateHeavyRepairAsync(
+                    actions, ct,
+                    logReason: "venv is broken; escalating to the release-backed repair",
+                    successAction: "rebuilt the shared Python tools venv");
                 if (heavy is { } failure)
                     return failure; // heavy repair failed -> Failed (light actions already recorded)
                 if (actions.Count > 0)
@@ -179,6 +203,12 @@ public sealed class ToolReconciler
     {
         try
         {
+            // (d) EMPTY tools state (fresh install): nothing to shim/repair yet, but the reconcile WILL
+            //     provision the bundle from nothing - so the active indicator must show "Syncing tools..."
+            //     and drive a reconcile. Mirrors ReconcileAsync's case (d).
+            if (ToolsBundleAbsent())
+                return true;
+
             var installer = new PythonToolsInstaller(_layout);
             var catalog = new ToolCatalogService(_layout.BinDir);
             var descriptors = catalog.GetCatalog();
@@ -210,12 +240,28 @@ public sealed class ToolReconciler
     }
 
     /// <summary>
-    /// Run the heavy release-backed venv repair under the machine-wide mutex. Returns null on success (the
-    /// action is appended to <paramref name="actions"/>) or a skip-note; returns a Failed result when the
-    /// repair itself failed. If another Director already holds the mutex, we do NOT force - we log the skip
-    /// and leave the rebuild to the holder.
+    /// True when NO shared-venv Python tools bundle is provisioned yet - the truly-empty fresh-install state
+    /// the (snappy) installer now leaves behind. Empty means NONE of the "the bundle exists in some form"
+    /// signals are present: no bundle version recorded in the installed manifest, no recorded expected-scripts
+    /// sidecar (written after a healthy install), and no venv interpreter on disk. A pure read. When this is
+    /// true the reconcile provisions the bundle from nothing; once any of those signals exists, this is false
+    /// and the ordinary drift/health checks (a)/(b)/(c) govern instead.
     /// </summary>
-    private async Task<ReconcileResult?> EscalateHeavyRepairAsync(List<string> actions, CancellationToken ct)
+    private bool ToolsBundleAbsent()
+        => InstalledManifest.Load(_layout).Get(PythonToolsInstaller.ComponentId) is null
+           && PythonToolsState.LoadScripts(_layout).Count == 0
+           && !PythonToolsInstaller.IsVenvPresent(_layout);
+
+    /// <summary>
+    /// Run the heavy release-backed venv work under the machine-wide mutex - either a repair of a broken venv
+    /// or a from-nothing provision on first run. Returns null on success (the action is appended to
+    /// <paramref name="actions"/>) or a skip-note; returns a Failed result when the work itself failed. If
+    /// another Director already holds the mutex, we do NOT force - we log the skip and leave the work to the
+    /// holder. <paramref name="logReason"/> and <paramref name="successAction"/> tailor the wording so the log
+    /// and the reported action distinguish a repair from a first-run provision.
+    /// </summary>
+    private async Task<ReconcileResult?> EscalateHeavyRepairAsync(
+        List<string> actions, CancellationToken ct, string logReason, string successAction)
     {
         using var mutex = new Mutex(initiallyOwned: false, HeavyRepairMutexName, out _);
         var held = false;
@@ -227,20 +273,20 @@ public sealed class ToolReconciler
             if (!held)
             {
                 FileLog.Write("[ToolReconciler] reconcile skipped - another Director is reconciling");
-                actions.Add("heavy venv repair skipped - another Director is reconciling");
+                actions.Add("heavy venv work skipped - another Director is reconciling");
                 return null;
             }
 
-            FileLog.Write("[ToolReconciler] venv is broken; escalating to the release-backed repair");
+            FileLog.Write($"[ToolReconciler] {logReason}");
             var repair = await _heavyRepairAsync(ct);
             if (!repair.Success)
             {
-                FileLog.Write($"[ToolReconciler] heavy venv repair FAILED: {repair.Message}");
+                FileLog.Write($"[ToolReconciler] heavy venv work FAILED: {repair.Message}");
                 return new ReconcileResult(ReconcileOutcome.Failed, actions, repair.Message);
             }
 
-            FileLog.Write($"[ToolReconciler] heavy venv repair succeeded: {repair.Message}");
-            actions.Add($"rebuilt the shared Python tools venv ({repair.Message})");
+            FileLog.Write($"[ToolReconciler] heavy venv work succeeded: {repair.Message}");
+            actions.Add($"{successAction} ({repair.Message})");
             return null;
         }
         finally

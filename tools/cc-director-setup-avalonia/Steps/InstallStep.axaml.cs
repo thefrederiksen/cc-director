@@ -14,7 +14,6 @@ namespace CcDirectorSetup.Steps;
 public partial class InstallStep : UserControl
 {
     private ToolDownloadItem? _directorItem;
-    private List<ToolDownloadItem> _toolItems = [];
     private List<SkillItem> _skillItems = [];
 
     public InstallStep()
@@ -89,10 +88,9 @@ public partial class InstallStep : UserControl
     public void SetItems(List<ToolDownloadItem> items)
     {
         _directorItem = items.FirstOrDefault(i => i.Name == "cc-director");
-        _toolItems = items.Where(i => i.Name != "cc-director").ToList();
 
-        ToolList.ItemsSource = _toolItems;
-        ToolsSummary.Text = $"{_toolItems.Count} tools";
+        // The cc-* tools are no longer installed here (the app provisions them on first launch), so the
+        // Tools card is a static note - there are no tool rows to bind or track.
 
         // Set up skills list
         _skillItems = ToolInstaller.SkillNames
@@ -124,21 +122,6 @@ public partial class InstallStep : UserControl
                 });
             };
         }
-
-        // Track overall tool progress. Status drives the summary text; Progress (set live by the
-        // download byte counter and pip streaming inside PythonToolsInstaller) drives the bar so
-        // the user sees motion during the multi-minute python-tools step.
-        foreach (var tool in _toolItems)
-        {
-            var capturedTool = tool;
-            capturedTool.PropertyChanged += (_, e) =>
-            {
-                if (e.PropertyName == nameof(ToolDownloadItem.Status))
-                    Dispatcher.UIThread.Post(UpdateToolsSummaryStatus);
-                else if (e.PropertyName == nameof(ToolDownloadItem.Progress))
-                    Dispatcher.UIThread.Post(() => ToolsOverallProgress.Value = capturedTool.Progress);
-            };
-        }
     }
 
     public event Action? OnRepairRequested;
@@ -160,8 +143,6 @@ public partial class InstallStep : UserControl
 
         DirectorStatus.Text = "Up to date";
         DirectorStatus.Foreground = upToDateBrush;
-        ToolsStatus.Text = "Up to date";
-        ToolsStatus.Foreground = upToDateBrush;
         SkillsStatus.Text = "Up to date";
         SkillsStatus.Foreground = upToDateBrush;
     }
@@ -181,7 +162,6 @@ public partial class InstallStep : UserControl
     public void ShowProgress()
     {
         DirectorProgress.IsVisible = true;
-        ToolsOverallProgress.IsVisible = true;
     }
 
     public List<SkillItem> GetSkillItems() => _skillItems;
@@ -192,34 +172,5 @@ public partial class InstallStep : UserControl
         SkillsStatus.Text = $"{done} installed";
         SkillsStatus.Foreground = SolidColorBrush.Parse("#22C55E");
         SkillsSummary.Text = $"{done}/{_skillItems.Count} skills installed";
-    }
-
-    private void UpdateToolsSummaryStatus()
-    {
-        var done = _toolItems.Count(t => t.Status == "Done");
-        var failed = _toolItems.Count(t => t.Status == "Failed");
-        var locked = _toolItems.Count(t => t.Status == "Locked");
-        var skipped = _toolItems.Count(t => t.Status == "Skipped");
-        var total = _toolItems.Count;
-        var processed = done + failed + locked + skipped;
-
-        if (processed == total)
-        {
-            ToolsStatus.Text = $"{done} installed";
-            ToolsStatus.Foreground = SolidColorBrush.Parse("#22C55E");
-            ToolsSummary.Text = skipped > 0
-                ? $"{done} installed, {skipped} not yet released"
-                : $"{done} installed";
-            ToolsOverallProgress.IsVisible = false;
-        }
-        else
-        {
-            // Surface the bundle row's live Status (e.g. "Downloading 118.2 MB / 334.5 MB") so the
-            // user sees motion even when the details Expander is collapsed. Bar value is driven from
-            // the row's Progress property (download bytes + pip streaming) — don't overwrite it here.
-            var active = _toolItems.FirstOrDefault(
-                t => t.Status is not "Pending" and not "Done" and not "Failed" and not "Locked" and not "Skipped");
-            ToolsStatus.Text = active?.Status ?? "Installing...";
-        }
     }
 }

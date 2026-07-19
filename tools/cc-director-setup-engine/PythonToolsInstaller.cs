@@ -389,6 +389,19 @@ public sealed class PythonToolsInstaller
     }
 
     /// <summary>
+    /// True when the shared venv interpreter is present on disk - the earliest "the tools bundle has been
+    /// provisioned" signal (the venv python is created before any console script or manifest record). A pure
+    /// read used by <see cref="ToolReconciler"/> to tell a truly-empty fresh install (no venv at all) apart
+    /// from an installed-but-possibly-drifted one, so the reconcile knows when to provision from nothing.
+    /// </summary>
+    public static bool IsVenvPresent(InstallLayout layout)
+    {
+        ArgumentNullException.ThrowIfNull(layout);
+        var venvPython = Path.Combine(layout.PyenvBinDir, OperatingSystem.IsWindows() ? "python.exe" : "python3");
+        return File.Exists(venvPython);
+    }
+
+    /// <summary>
     /// The retired per-tool fleet commands that were consolidated into the single cc-devthrottle command
     /// (issue #823): cc-send, cc-ask, cc-spawn, cc-sessions, cc-whoami, cc-settings, cc-cron,
     /// cc-fleet-selftest. Their executables no longer ship in the venv, so any bin shim an older install
