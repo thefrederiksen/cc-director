@@ -1,6 +1,5 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
-using System.Text.RegularExpressions;
 using CcDirector.Core.Storage;
 using CcDirector.Core.Tenancy;
 using CcDirector.Core.Utilities;
@@ -44,16 +43,29 @@ public sealed class GatewayPromptLog
         DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
     };
 
-    // A tenant id becomes a DIRECTORY NAME, so it must be one of the shapes this system actually mints -
-    // not merely "characters that look harmless". The earlier rule here was ^[A-Za-z0-9._-]{1,64}$, which
-    // accepts ".." - and Path.Combine(root, "tenants", "..") canonicalizes to exactly root, the LOCAL
-    // partition. A character allow-list that permits a path segment with MEANING is not a validator; the
-    // dangerous values here are structural, not exotic. So this matches the real domain instead: an account
-    // tenant is a code-generated GUID (see TenantRegistry), and the two well-known words are handled
-    // separately below.
-    private static readonly Regex AccountTenantId = new(
-        "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
-        RegexOptions.Compiled);
+    /// <summary>
+    /// True only for the EXACT form <see cref="Tenancy.TenantRegistry"/> mints: a canonical lowercase GUID.
+    ///
+    /// A tenant id becomes a DIRECTORY NAME, so it must be a shape this system actually produces - not merely
+    /// "characters that look harmless". Two structural aliases have already been found here, and both were
+    /// the same class of defect:
+    ///
+    ///  - The first rule was <c>^[A-Za-z0-9._-]{1,64}$</c>, which accepts <c>".."</c> - and combining the root
+    ///    with <c>tenants</c> and <c>".."</c> canonicalizes to exactly the root, the LOCAL partition.
+    ///  - The second accepted <c>A-F</c> as well as <c>a-f</c>. The registry mints canonical LOWERCASE guids
+    ///    and the tenants table uses a CASE-SENSITIVE collation, so two ids differing only in case are
+    ///    DIFFERENT IDENTITIES to the database - while Windows and Azure Files name the SAME directory for
+    ///    both. That is one tenant reading another's prompt text through a casing alias.
+    ///
+    /// The lesson both times: at a path boundary the dangerous values are built from harmless characters, and
+    /// a collision does not need a special character - it needs two accepted spellings of one path. So this
+    /// accepts ONE spelling: parse strictly, then require the value to equal its own canonical round-trip.
+    /// Anything else is refused rather than normalised, because normalising is how two identities quietly
+    /// share a folder.
+    /// </summary>
+    private static bool IsMintedAccountTenant(string value)
+        => Guid.TryParseExact(value, "D", out var parsed)
+           && string.Equals(value, parsed.ToString("D"), StringComparison.Ordinal);
 
     private readonly object _gate = new();
     private readonly string _directory;
@@ -93,10 +105,11 @@ public sealed class GatewayPromptLog
         if (tenant.IsLocal)
             return _directory;
 
-        // Every other partition must be a minted account tenant. A value that is not one is REFUSED, never
-        // coerced: this folder holds prompt TEXT, and scrubbing a bad name is how two tenants quietly end up
-        // sharing a folder.
-        if (!AccountTenantId.IsMatch(tenant.Value))
+        // Every other partition must be a minted account tenant - including the reserved SYSTEM tenant, which
+        // is deliberately REFUSED here rather than given a folder: no prompt text belongs to it, so the safe
+        // answer is that it has no partition at all. A value that is not a minted account is refused, never
+        // coerced: this folder holds prompt TEXT, and scrubbing a bad name is how two tenants share a folder.
+        if (!IsMintedAccountTenant(tenant.Value))
             throw new ArgumentException(
                 $"Tenant '{tenant.ToLogString()}' is not a minted account tenant and cannot name a prompt-log partition.",
                 nameof(tenant));

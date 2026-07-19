@@ -254,12 +254,35 @@ public sealed class PromptLogTenantIsolationTests : IAsyncLifetime
         var log = new CcDirector.Gateway.Prompts.GatewayPromptLog(
             Path.Combine(Path.GetTempPath(), "cc-plog-" + Guid.NewGuid().ToString("N")));
 
-        foreach (var bad in new[] { "..", ".", "a/b", "a\b", "not-a-guid", "tenants" })
-            Assert.ThrowsAny<ArgumentException>(() => log.DirectoryFor(new CcDirector.Core.Tenancy.TenantId(bad)));
+        // NOTE the verbatim string on the separator case. It was written "a\b" first, which in C# is a
+        // BACKSPACE character, not a backslash - so that canary tested a control character and would have
+        // passed however broken the separator handling was. A dead canary looks exactly like coverage.
+        foreach (var bad in new[]
+        {
+            "..", ".", "a/b", @"a\b", "not-a-guid", "tenants",
+            // The casing alias. The registry mints canonical LOWERCASE guids and the tenants table uses a
+            // case-sensitive collation, so this is a DIFFERENT IDENTITY to the database - while Windows and
+            // Azure Files name the SAME directory as its lowercase twin. Accepting it is one tenant reading
+            // another's prompt text, with no special character involved at all.
+            // NOTE the letters. This canary was first written against 1111...-5555, which is ALL DIGITS, so
+            // ToUpperInvariant was a no-op and the "uppercase" case was really the valid lowercase id - the
+            // test caught it by reporting that id as accepted. A casing canary needs a value that HAS a case.
+            "AAAAAAAA-BBBB-4CCC-8DDD-EEEEEEEEEEEE",
+            "aaaaaaaa-bbbb-4ccc-8ddd-EEEEEEEEEEEE",
+            // Other spellings of a real guid that are not the minted form.
+            "{11111111-2222-3333-4444-555555555555}",
+            "11111111222233334444555555555555",
+            // The reserved system tenant owns no prompt text, so it gets no partition rather than a folder.
+            CcDirector.Core.Tenancy.TenantId.System.Value,
+        })
+        {
+            var ex = Record.Exception(() => log.DirectoryFor(new CcDirector.Core.Tenancy.TenantId(bad)));
+            Assert.True(ex is ArgumentException, $"tenant id {bad} was ACCEPTED as a partition name");
+        }
 
         // Positive controls, so this is not passing because DirectoryFor refuses everything: the two shapes
         // that ARE real still work, and land in different places.
-        var minted = new CcDirector.Core.Tenancy.TenantId("11111111-2222-3333-4444-555555555555");
+        var minted = new CcDirector.Core.Tenancy.TenantId("aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee");
         Assert.NotEqual(log.DirectoryFor(CcDirector.Core.Tenancy.TenantId.Local),
                         log.DirectoryFor(minted));
         Assert.Contains(minted.Value, log.DirectoryFor(minted), StringComparison.Ordinal);
