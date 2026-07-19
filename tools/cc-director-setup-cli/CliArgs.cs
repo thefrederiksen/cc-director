@@ -12,7 +12,7 @@ public sealed class CliArgs
     private readonly HashSet<string> _flags;
 
     private static readonly HashSet<string> KnownFlags =
-        new(StringComparer.OrdinalIgnoreCase) { "json", "dry-run", "help" };
+        new(StringComparer.OrdinalIgnoreCase) { "json", "dry-run", "help", "hosted" };
 
     private CliArgs(string command, List<string> positionals, Dictionary<string, string> options, HashSet<string> flags)
     {
