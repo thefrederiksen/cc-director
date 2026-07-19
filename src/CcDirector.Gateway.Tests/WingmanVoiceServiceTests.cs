@@ -21,14 +21,38 @@ namespace CcDirector.Gateway.Tests;
 /// </summary>
 public sealed class WingmanVoiceServiceTests
 {
+    /// <summary>
+    /// A persist path inside a DIRECTORY unique to this call - never a unique filename in the shared machine
+    /// temp directory.
+    ///
+    /// This distinction is the whole isolation guarantee, and it is worth spelling out because the harness
+    /// that preceded it was not careless - it was correct, and then quietly stopped being correct without a
+    /// line of it changing. It randomized the persist FILENAME, which was sufficient while the file was the
+    /// deepest thing the service derived anything from. Then the voice state was partitioned by tenant, and
+    /// the service began deriving its per-tenant root from that file's PARENT directory. Every instance
+    /// pointed at a bare temp filename now resolves to ONE shared tenants/local partition under the machine
+    /// temp path, so a clip written for "sid-1" by one test is loaded by the next test's fresh service (the
+    /// constructor loads every partition), and tests start passing or failing on each other's leftovers.
+    ///
+    /// The rule to carry: a test's isolation is only as deep as the deepest path component the production
+    /// code derives from. Randomize the DIRECTORY, so the isolation survives the next time something moves
+    /// the derivation up a level. Callers that need two service instances to see the SAME state (the
+    /// gateway-restart cases) must call this ONCE and share the result deliberately.
+    /// </summary>
+    private static string TempPersist()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "wmvs-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        return Path.Combine(dir, "voice-sessions.json");
+    }
+
     private static WingmanVoiceService NewService()
     {
         // The flag methods never touch the brain; a provider that throws proves that.
         Func<WingmanModelRole, CancellationToken, Task<IAgentBrain>> brain =
             (_, _) => throw new InvalidOperationException("brain must not be called for flag state");
         var vaultPath = Path.Combine(Path.GetTempPath(), "wmvs-" + Guid.NewGuid().ToString("N") + ".vault");
-        var persistPath = Path.Combine(Path.GetTempPath(), "wmvs-" + Guid.NewGuid().ToString("N") + ".json");
-        return new WingmanVoiceService(brain, new KeyVault(vaultPath), persistPath);
+        return new WingmanVoiceService(brain, new KeyVault(vaultPath), TempPersist());
     }
 
     [Fact]
@@ -80,14 +104,16 @@ public sealed class WingmanVoiceServiceTests
         return new WingmanVoiceService(brain, new KeyVault(vaultPath), persistPath);
     }
 
+    /// <summary>Remove the whole per-test directory. It deletes the DIRECTORY rather than picking out the
+    /// individual files it expects, because <see cref="TempPersist"/> owns that directory outright, and a
+    /// cleanup that enumerates known filenames goes stale the moment the layout underneath changes - which
+    /// is exactly what happened when the per-tenant partition was introduced under it.</summary>
     private static void Cleanup(string persistPath)
     {
         try
         {
             var dir = Path.GetDirectoryName(persistPath);
-            if (dir is not null && Directory.Exists(Path.Combine(dir, "voice-audio")))
-                Directory.Delete(Path.Combine(dir, "voice-audio"), recursive: true);
-            if (File.Exists(persistPath)) File.Delete(persistPath);
+            if (dir is not null && Directory.Exists(dir)) Directory.Delete(dir, recursive: true);
         }
         catch { /* best-effort cleanup */ }
     }
@@ -117,7 +143,9 @@ public sealed class WingmanVoiceServiceTests
     {
         // A successful synthesis is durable: a fresh service over the same persist path reloads the
         // ready audio, so the triangle/playability survives a gateway restart and a tap still plays.
-        var persistPath = Path.Combine(Path.GetTempPath(), "wmvs-" + Guid.NewGuid().ToString("N") + ".json");
+        // ONE root, shared DELIBERATELY by the two service instances below: this test is the gateway-restart
+        // case, and a second instance that could not see what the first wrote would not be testing anything.
+        var persistPath = TempPersist();
         try
         {
             var svc = ServiceAt(persistPath);
@@ -146,11 +174,20 @@ public sealed class WingmanVoiceServiceTests
     {
         // Older cache metadata had no content type. Kokoro can return WAV bytes, so reload must detect
         // RIFF instead of serving those bytes as audio/mpeg.
-        var persistPath = Path.Combine(Path.GetTempPath(), "wmvs-" + Guid.NewGuid().ToString("N") + ".json");
+        //
+        // The seed goes in the LOCAL TENANT PARTITION, which is where the service actually reads its cache
+        // from now. It used to be written to <root>/voice-audio, the pre-partition location. That kept
+        // passing after the partition landed - but only because the self-host legacy migration moved the
+        // file into the partition before the load ran, which is not what this test is about. It would have
+        // gone on passing with the partition deleted entirely, so it was proving nothing about it while
+        // silently testing a different code path than its name claims. Seeding the real location keeps this
+        // test on content-type detection; the migration has its own coverage in
+        // WingmanVoiceTenantPartitionTests.
+        var persistPath = TempPersist();
         try
         {
             var dir = Path.GetDirectoryName(persistPath)!;
-            var audioDir = Path.Combine(dir, "voice-audio");
+            var audioDir = Path.Combine(dir, "tenants", "local", "voice-audio");
             Directory.CreateDirectory(audioDir);
             File.WriteAllBytes(Path.Combine(audioDir, "sid-1.mp3"), new byte[] { (byte)'R', (byte)'I', (byte)'F', (byte)'F', 1, 2, 3 });
             File.WriteAllText(Path.Combine(audioDir, "sid-1.json"),
@@ -170,7 +207,9 @@ public sealed class WingmanVoiceServiceTests
     {
         // A new turn drops the stale audio from disk too, so a 5s-stale list row cannot point at
         // audio that no longer exists (which would 404 on /audio).
-        var persistPath = Path.Combine(Path.GetTempPath(), "wmvs-" + Guid.NewGuid().ToString("N") + ".json");
+        // ONE root, shared DELIBERATELY by the two service instances below: this test is the gateway-restart
+        // case, and a second instance that could not see what the first wrote would not be testing anything.
+        var persistPath = TempPersist();
         try
         {
             var svc = ServiceAt(persistPath);
@@ -547,7 +586,9 @@ public sealed class WingmanVoiceServiceTests
     {
         // The removal is durable: a gateway restart must NOT bring the session back as a voice
         // session (otherwise turn-end re-narration would resume on its own after a restart).
-        var persistPath = Path.Combine(Path.GetTempPath(), "wmvs-" + Guid.NewGuid().ToString("N") + ".json");
+        // ONE root, shared DELIBERATELY by the two service instances below: this test is the gateway-restart
+        // case, and a second instance that could not see what the first wrote would not be testing anything.
+        var persistPath = TempPersist();
         try
         {
             var svc = ServiceAt(persistPath);
@@ -632,7 +673,9 @@ public sealed class WingmanVoiceServiceTests
         Func<WingmanModelRole, CancellationToken, Task<IAgentBrain>> brain =
             (_, _) => throw new InvalidOperationException("brain must not be called for the store-spoken path");
         var vaultPath = Path.Combine(Path.GetTempPath(), "wmvs-" + Guid.NewGuid().ToString("N") + ".vault");
-        var persistPath = Path.Combine(Path.GetTempPath(), "wmvs-" + Guid.NewGuid().ToString("N") + ".json");
+        // A fresh root per CALL. Each invocation of this helper builds an independent service, so they must
+        // not share state; the restart tests get their sharing by calling TempPersist() once themselves.
+        var persistPath = TempPersist();
         var vault = new KeyVault(vaultPath);
         vault.Set("OPENAI_API_KEY", "sk-test");
         vault.Set("DEVTHROTTLE_API_KEY", "dt_live_test");
@@ -715,7 +758,9 @@ public sealed class WingmanVoiceServiceTests
         Func<WingmanModelRole, CancellationToken, Task<IAgentBrain>> brain =
             (_, _) => throw new InvalidOperationException("brain must not be called for the store-spoken path");
         var vaultPath = Path.Combine(Path.GetTempPath(), "wmvs-" + Guid.NewGuid().ToString("N") + ".vault");
-        var persistPath = Path.Combine(Path.GetTempPath(), "wmvs-" + Guid.NewGuid().ToString("N") + ".json");
+        // A fresh root per CALL. Each invocation of this helper builds an independent service, so they must
+        // not share state; the restart tests get their sharing by calling TempPersist() once themselves.
+        var persistPath = TempPersist();
         var vault = new KeyVault(vaultPath);
         vault.Set("OPENAI_API_KEY", "sk-test");
         vault.Set("DEVTHROTTLE_API_KEY", "dt_live_test");

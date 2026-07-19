@@ -16,47 +16,67 @@ namespace CcDirector.Gateway.Tests;
 /// empty answer proves nothing on its own: a seed that silently failed also returns empty, and that reads as
 /// isolation. The control is what separates "isolated" from "nothing was ever stored".
 ///
-/// REVERT-PROOF RECIPE. Do NOT neutralise a guard with <c>if (false)</c>: unreachable code is a build error
-/// in this repository, the build then fails, and a test run after a failed build executes the STALE binary
-/// and reports a false pass. DELETE the guard, and CONFIRM the build line says succeeded before believing
-/// any result. Run the WHOLE Gateway suite, not a filter on this class - a filter cannot see whether an
-/// existing test elsewhere already covered the behaviour, nor whether removing a guard broke something
-/// unrelated. The Gateway suite is serialized on the build machine; a run that ends with no summary line is
-/// contention, not a result.
+/// The cross-tenant question is deliberately asked BEFORE its control in every test. That ordering is not
+/// cosmetic - see the laundering note in the recipe below.
 ///
-/// ONE run removes all four guards at once, because each one has its own test with its own assertion, so
-/// their reds stay individually attributable:
+/// REVERT-PROOF RECIPE.
 ///
-///  1. <c>WingmanVoiceService.CanonicalTenantKey</c> - DELETE the <c>IsMintedAccountTenant</c> refusal.
-///  2. <c>VoiceTurnArchive.PartitionDirectoryFor</c> - DELETE its <c>IsMintedAccountTenant</c> refusal.
-///  3. <c>WingmanVoiceService.MigrateLegacyUnpartitionedState</c> - DELETE the whole body, BOTH the hosted
-///     delete branch and the self-host move.
-///  4. <c>VoiceTurnArchive.MigrateLegacyUnpartitionedTurns</c> - DELETE the whole body, both directions.
+/// WHY THIS RECIPE LOOKS THE WAY IT DOES. An earlier version reverted four things: the two minted-shape
+/// refusals and the two migration bodies. Eight tests went red and the isolation tests all stayed green,
+/// and that green was written up as "the control". It was not a control - it was the finding. Those four
+/// reverts are the PERIMETER (shape validation and one-time migration); none of them touches the
+/// partitioning itself, so every isolation test stayed green because nothing they test had been mutated.
+/// A revert-proof whose core assertions never move has shown you where the guard ISN'T. The rule this cost
+/// us: A CONTROL HAS TO BE SHOWN TO BE SENSITIVE TO SOMETHING, OR IT IS JUST A TEST THAT ALWAYS PASSES.
 ///
-/// Deleting both branches of a migration still distinguishes its two directions, and that is not an
-/// accident - it is why the two migration tests assert in the order they do. The hosted test leads with
-/// "the clip is GONE", the self-host test leads with "the clip ARRIVED in the local partition". With no
-/// migration at all they therefore fail on OPPOSITE claims about different files, not on one shared
-/// assertion. Had both led with "gone from the old location" they would have failed identically and the
-/// run would have proved only "something broke". If a future edit makes these two fail for the same
-/// reason, the pair has stopped being a two-direction proof - split the run rather than accept it.
+/// So the recipe below mutates the BOUNDARY - the four places that actually make one tenant's state
+/// unreachable from another - and the perimeter reverts are kept as a secondary group.
 ///
-/// OBSERVED with all four deleted (build succeeded; 8 RED, and each red names its own guard):
-///   Assert.Throws, no exception thrown - the tenant-shape guards:
-///     Case_variant_of_a_minted_tenant_is_refused_rather_than_aliased_to_the_same_partition   (guard 1)
-///     System_tenant_is_refused_a_voice_partition                                             (guard 1)
-///     Traversal_tenant_is_refused_rather_than_resolved_to_the_parent_partition               (guard 1)
-///     Turn_archive_refuses_a_traversal_tenant                                                (guard 2)
-///   Assert.False failure, "it is still there" - the HOSTED delete direction:
-///     Hosted_deletes_the_pre_partition_voice_state_rather_than_guessing_an_owner             (guard 3)
-///     Hosted_deletes_pre_partition_archived_turns                                            (guard 4)
-///   Assert.True / Assert.NotNull failure, "it never arrived" - the SELF-HOST move direction:
-///     Self_host_moves_the_pre_partition_voice_state_into_the_local_partition                 (guard 3)
-///     Self_host_moves_pre_partition_archived_turns_into_the_local_partition                  (guard 4)
+/// MECHANICS. Do NOT neutralise anything with <c>if (false)</c>: unreachable code is a build error here, so
+/// the build fails and the run then executes a STALE binary and reports a false pass. Make the mutation
+/// real, and CONFIRM the build line says succeeded before believing any result. Run the WHOLE Gateway
+/// assembly - never a filter, which cannot see whether some other test already covered the behaviour or
+/// whether the mutation broke something unrelated. Every Gateway run needs the serialized lane; a run that
+/// ends with no summary line is contention, not a result.
 ///
-/// The eleven isolation tests stayed GREEN throughout, which is the control: they use a valid tenant and
-/// seed their own state, so no deleted guard is on their path. Restoring all four returns the suite to
-/// green.
+/// NO EXCEPTION-ONLY LAUNDERING. A mutation that makes a test die on a NullReferenceException or an
+/// input/output error BEFORE its distinguishing assertion has proved that the harness crashed, not that
+/// isolation holds. Every test in this class is therefore written so the cross-tenant question is asked
+/// FIRST, while nothing can have thrown, and every dereference is guarded by an explicit null assertion.
+/// If a mutation below produces a stack trace instead of a failed assertion, that result does not count -
+/// fix the test's ordering and re-run.
+///
+/// GROUP ONE - THE BOUNDARY. Each mutation keeps the tenant validation call (so the shape tests stay green
+/// and attribution stays clean) and only collapses the partition:
+///
+///  B1. <c>WingmanVoiceService.StateFor</c> - return one shared bucket for every tenant.
+///      EXPECTED RED: the six in-memory A/B tests (ready audio, voice-session marking, generating and
+///      unavailable and nothing-to-narrate, served-via-fallback, cross-tenant clearing, regeneration
+///      decision) plus Clips_reload_into_the_tenant_that_owned_them.
+///  B2. <c>WingmanVoiceService.PartitionDirectoryFor</c> - return one shared directory for every tenant.
+///      EXPECTED RED: Each_tenants_clips_live_in_its_own_directory (on the production-derived NotEqual and
+///      the per-file byte assertions), Voice_session_set_reloads_into_the_tenant_that_owned_it, and
+///      Self_host_moves_the_pre_partition_voice_state_into_the_local_partition.
+///  B3. <c>VoiceTurnArchive.PartitionDirectoryFor</c> / <c>DirFor</c> - collapse to one directory.
+///      EXPECTED RED: Turn_archive_is_partitioned_and_a_turn_id_alone_does_not_read_it and
+///      Self_host_moves_pre_partition_archived_turns_into_the_local_partition.
+///  B4. <c>GatewayTurnJobStore.StateFor</c> - return one shared bucket.
+///      EXPECTED RED: Turn_job_store_is_partitioned_and_a_turn_id_alone_does_not_read_it.
+///
+/// GROUP TWO - THE PERIMETER (the original four; real, but they are not the boundary):
+///
+///  P1. <c>WingmanVoiceService.CanonicalTenantKey</c> - delete the <c>IsMintedAccountTenant</c> refusal.
+///  P2. <c>VoiceTurnArchive.PartitionDirectoryFor</c> - delete its <c>IsMintedAccountTenant</c> refusal.
+///  P3. <c>WingmanVoiceService.MigrateLegacyUnpartitionedState</c> - delete the whole body, both directions.
+///  P4. <c>VoiceTurnArchive.MigrateLegacyUnpartitionedTurns</c> - delete the whole body, both directions.
+///
+/// Deleting both branches of a migration still distinguishes its two directions, and that is by design: the
+/// hosted test leads with "the clip is GONE", the self-host test leads with "the clip ARRIVED in the local
+/// partition", so with no migration at all they fail on opposite claims about different files rather than
+/// on one shared assertion. If a future edit makes those two fail for the same reason, the pair has stopped
+/// being a two-direction proof - split the run rather than accept it.
+///
+/// RESULTS: recorded when the lane is granted. Nothing is recorded here from a filtered run.
 /// </summary>
 public sealed class WingmanVoiceTenantPartitionTests
 {
@@ -88,18 +108,25 @@ public sealed class WingmanVoiceTenantPartitionTests
         var svc = ServiceAt(NewBaseDir());
         svc.StoreReadyAudioForTest(TenantA, "s1", "spoken A", "reply A", Mp3("A"));
 
-        // CONTROL: the same call on the owning tenant DOES see it, so an empty answer below is isolation
-        // and not a failed seed.
-        Assert.True(svc.HasVoice(TenantA, "s1"));
-        Assert.Equal(Mp3("A"), svc.GetAudio(TenantA, "s1"));
-        Assert.Equal("spoken A", svc.Get(TenantA, "s1")!.Spoken);
-        Assert.Contains("s1", svc.ReadySessionIds(TenantA));
-
-        // The other tenant names the SAME session id and gets nothing.
+        // The DISTINGUISHING assertions come FIRST: the other tenant names the SAME session id and gets
+        // nothing. Ordering matters here for the same reason it matters in the migration pair - if the
+        // control ran first and a mutation made it null, the test would die on a null dereference before it
+        // ever asked the question it exists to ask, and a crash would be laundered as a pass-turned-red for
+        // the wrong reason. Ask the real question while nothing can have thrown yet.
         Assert.False(svc.HasVoice(TenantB, "s1"));
         Assert.Null(svc.GetAudio(TenantB, "s1"));
         Assert.Null(svc.Get(TenantB, "s1"));
         Assert.Empty(svc.ReadySessionIds(TenantB));
+
+        // CONTROL, second: the same calls on the OWNING tenant do see it, so an empty answer above is
+        // isolation and not a failed seed. Every dereference is guarded by an explicit null assertion, so a
+        // broken partition reports a failed assertion rather than a NullReferenceException.
+        Assert.True(svc.HasVoice(TenantA, "s1"));
+        Assert.Equal(Mp3("A"), svc.GetAudio(TenantA, "s1"));
+        var ownRead = svc.Get(TenantA, "s1");
+        Assert.NotNull(ownRead);
+        Assert.Equal("spoken A", ownRead!.Spoken);
+        Assert.Contains("s1", svc.ReadySessionIds(TenantA));
     }
 
     [Fact]
@@ -172,26 +199,62 @@ public sealed class WingmanVoiceTenantPartitionTests
 
     // ===== the partition is PHYSICAL and survives a restart =================================
 
+    /// <summary>
+    /// PRIMARY CANARY for <c>WingmanVoiceService.PartitionDirectoryFor</c>. Two tenants store a clip under
+    /// the SAME session id; each must land in its own directory on disk.
+    ///
+    /// The directories are read back from the production method, NOT recomputed by the test. An earlier
+    /// version of this test asserted <c>Assert.NotEqual(aDir, bDir)</c> over two paths the TEST had built
+    /// from the two tenant ids - which is true by arithmetic no matter what the production code does, and
+    /// would have stayed green with the partition deleted entirely. An assertion that cannot fail is not
+    /// coverage.
+    /// </summary>
     [Fact]
-    public void Each_tenants_clips_live_in_its_own_directory_and_reload_into_its_own_partition()
+    public void Each_tenants_clips_live_in_its_own_directory()
     {
         var baseDir = NewBaseDir();
         var svc = ServiceAt(baseDir);
         svc.StoreReadyAudioForTest(TenantA, "s1", "spoken A", "reply A", Mp3("A"));
         svc.StoreReadyAudioForTest(TenantB, "s1", "spoken B", "reply B", Mp3("B"));
 
-        var aDir = Path.Combine(baseDir, "tenants", TenantA.Value, "voice-audio");
-        var bDir = Path.Combine(baseDir, "tenants", TenantB.Value, "voice-audio");
-        Assert.True(File.Exists(Path.Combine(aDir, "s1.mp3")));
-        Assert.True(File.Exists(Path.Combine(bDir, "s1.mp3")));
-        // The tenant id is a PATH COMPONENT: the two identically-named sessions are different files.
+        // Production-derived, so this moves when the partitioning moves.
+        var aDir = Path.Combine(svc.PartitionDirectoryFor(TenantA), "voice-audio");
+        var bDir = Path.Combine(svc.PartitionDirectoryFor(TenantB), "voice-audio");
         Assert.NotEqual(aDir, bDir);
 
+        // Each tenant's clip is a SEPARATE FILE, and each holds its own bytes - so one did not overwrite
+        // the other at a shared path.
+        Assert.True(File.Exists(Path.Combine(aDir, "s1.mp3")));
+        Assert.True(File.Exists(Path.Combine(bDir, "s1.mp3")));
+        Assert.Equal(Mp3("A"), File.ReadAllBytes(Path.Combine(aDir, "s1.mp3")));
+        Assert.Equal(Mp3("B"), File.ReadAllBytes(Path.Combine(bDir, "s1.mp3")));
+    }
+
+    /// <summary>
+    /// PRIMARY CANARY for the restart path: a clip must reload into the tenant that owned it, not into a
+    /// shared bucket where the second tenant's load overwrites the first. Sensitive to BOTH
+    /// <c>StateFor</c> and <c>PartitionDirectoryFor</c>, which is stated rather than hidden.
+    /// </summary>
+    [Fact]
+    public void Clips_reload_into_the_tenant_that_owned_them()
+    {
+        var baseDir = NewBaseDir();
+        var svc = ServiceAt(baseDir);
+        svc.StoreReadyAudioForTest(TenantA, "s1", "spoken A", "reply A", Mp3("A"));
+        svc.StoreReadyAudioForTest(TenantB, "s1", "spoken B", "reply B", Mp3("B"));
+
         var reloaded = ServiceAt(baseDir);
-        Assert.Equal(Mp3("A"), reloaded.GetAudio(TenantA, "s1"));   // control
-        Assert.Equal(Mp3("B"), reloaded.GetAudio(TenantB, "s1"));   // control
-        Assert.Equal("spoken A", reloaded.Get(TenantA, "s1")!.Spoken);
-        Assert.Equal("spoken B", reloaded.Get(TenantB, "s1")!.Spoken);
+        // Byte comparisons first: a null or a wrong-tenant clip both fail as a plain assertion, never as a
+        // dereference of null.
+        Assert.Equal(Mp3("A"), reloaded.GetAudio(TenantA, "s1"));
+        Assert.Equal(Mp3("B"), reloaded.GetAudio(TenantB, "s1"));
+
+        var a = reloaded.Get(TenantA, "s1");
+        var b = reloaded.Get(TenantB, "s1");
+        Assert.NotNull(a);
+        Assert.NotNull(b);
+        Assert.Equal("spoken A", a!.Spoken);
+        Assert.Equal("spoken B", b!.Spoken);
     }
 
     [Fact]
@@ -320,17 +383,26 @@ public sealed class WingmanVoiceTenantPartitionTests
             Transcript = "transcript A", Summary = "summary A", HasAudio = true, CreatedAtUtc = DateTime.UtcNow,
         }, Mp3("A"));
 
-        // CONTROL: the owning tenant reads it on every path.
-        Assert.Equal("summary A", archive.Get(TenantA, turnId)!.Summary);
-        Assert.Equal(Mp3("A"), archive.GetAudio(TenantA, turnId));
-        Assert.Single(archive.ListForSession(TenantA, "s1"));
-        Assert.NotNull(archive.FindByUpload(TenantA, "u1"));
-
-        // The other tenant holds the exact turn id and still gets nothing.
+        // DISTINGUISHING first: the other tenant holds the exact turn id and still gets nothing on every
+        // path. Asked before anything can have thrown, so a broken partition reports these assertions
+        // rather than dying on a null dereference in the control below.
         Assert.Null(archive.Get(TenantB, turnId));
         Assert.Null(archive.GetAudio(TenantB, turnId));
         Assert.Empty(archive.ListForSession(TenantB, "s1"));
         Assert.Null(archive.FindByUpload(TenantB, "u1"));
+
+        // CONTROL, second: the owning tenant reads it on every path, so the emptiness above is isolation
+        // and not a failed save. The dereference is guarded.
+        var own = archive.Get(TenantA, turnId);
+        Assert.NotNull(own);
+        Assert.Equal("summary A", own!.Summary);
+        Assert.Equal(Mp3("A"), archive.GetAudio(TenantA, turnId));
+        Assert.Single(archive.ListForSession(TenantA, "s1"));
+        Assert.NotNull(archive.FindByUpload(TenantA, "u1"));
+
+        // And the partition is PHYSICAL: the two tenants resolve to different directories, read back from
+        // the production method rather than recomputed by the test.
+        Assert.NotEqual(archive.PartitionDirectoryFor(TenantA), archive.PartitionDirectoryFor(TenantB));
     }
 
     [Fact]
@@ -348,11 +420,14 @@ public sealed class WingmanVoiceTenantPartitionTests
         var store = new GatewayTurnJobStore();
         var job = store.Create(TenantA, "s1", "u1");
 
-        Assert.NotNull(store.Get(TenantA, job.TurnId));                 // control
-        Assert.NotNull(store.FindTurnByUpload(TenantA, "u1"));          // control
-
+        // DISTINGUISHING first, for the same anti-laundering reason as the stores above.
         Assert.Null(store.Get(TenantB, job.TurnId));
         Assert.Null(store.FindTurnByUpload(TenantB, "u1"));
+
+        // CONTROL second: the owning tenant does find it, so the nulls above are isolation, not a job that
+        // was never created.
+        Assert.NotNull(store.Get(TenantA, job.TurnId));
+        Assert.NotNull(store.FindTurnByUpload(TenantA, "u1"));
     }
 
     [Fact]
