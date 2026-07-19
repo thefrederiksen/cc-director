@@ -417,7 +417,14 @@ dictation, the snooze clock - which are false or absent on a Director, so a loca
 "preparing voice" forever and wedge <strong>every voice-mode session permanently yellow</strong>. Two
 colours, no fold. Every richer state waits for the Gateway to come back and stamp it.</p>
 <p><strong>Why the phone and the Cockpit do NOT get a floor:</strong> they do not host the session and
-cannot know what it is doing, so they keep the neutral placeholder. The floor is not a relaxation of law
+cannot know what it is doing, so they keep the neutral placeholder. <strong>PROVEN LIVE 19 July 2026</strong>
+under an owner-approved outage of the production Gateway: dots read from the PIXELS of 60 desktop captures
+showed blue while the agent worked, red once it went idle, and blue again when it resumed - with the
+Gateway unreachable throughout. <strong>But it was floored on the DOT ONLY - see defect 24</strong>, which
+this same proof found. <em>The frequently-quoted "about ten seconds to red" is NOT ESTABLISHED and must not
+be written down: the sampling interval was six to seven seconds and the idle instant was never observed, so
+the transition is bounded to a six-second window and nothing narrower. Whoever measures it properly needs a
+KNOWN idle instant.</em> The floor is not a relaxation of law
 3 - it is law 3 applied honestly: a client renders what it can <em>observe</em>, and the Director is the
 sensor. Note also what is NOT offline: <code>Connected</code> is the only status that renders the pushed
 answer, so dialing, reconnecting, failed, and a local-only Director with no Gateway at all all take the
@@ -835,6 +842,7 @@ or its own hold expiry, so it cannot compute its own colour. It must ask.</p>
 <tr><td>7</td><td>In the Director detail table, the dot and the State cell beside it disagree.</td><td><span class="file">DirectorDetailView.tsx:185</span> uses the Gateway's answer; <span class="file">:195</span> ignores it and re-derives. Same row, two authorities.</td></tr>
 <tr><td>8</td><td>A snoozed, mid-brief, controlled sub-agent renders as plain teal "Idle".</td><td><span class="file">SessionRowViewModel.cs:61</span> receives a fully stamped session off the wire and throws all of it away, re-deriving from raw activity with a private palette where Idle is teal and Exited is red.</td></tr>
 <tr><td>9</td><td>A snoozed session reads "needs you" in the schedule picker.</td><td><span class="file">ScheduleView.tsx:1122</span> - an entire parallel triage fold deriving "needs you" from a timestamp instead of the bucket.</td></tr>
+<tr><td>24</td><td><strong>OPEN, found 19 July 2026 by the live outage proof.</strong> While the Gateway is unreachable, a snoozed session on the desktop rail shows a <span class="dot d-red"></span>red dot beside its own label reading "Snoozed wakes in 7h55m". One row, two sources, two eras - and red MEANS "needs you", so the desktop summons the owner to a session he deliberately deferred. Heals the instant the Gateway returns.</td><td><strong>The offline floor was applied to the dot and not to the words.</strong> <code>EffectiveColor</code> goes through <code>RailColor(IsGatewayOffline, ...)</code> and is floor-aware; <code>ActivityLabel =&gt; FoldInput.StateLabel ?? ""</code> is not, so it renders the frozen stamp. <strong>Note the <code>?? ""</code> fires only on a MISSING stamp and never on a STALE one</strong> - a fix aimed at the missing-stamp path sails straight past this. <strong>And that property's own summary ends "Empty until a Gateway stamps one (the no-Gateway floor)", asserting a coverage it does not have</strong> - a trap comment that must be corrected in the same pass as the fix, or it re-delivers this bug to the next reader. <em>Two questions, not one: extending the floor to the label is mechanical; whether an idle-while-offline session should be red AT ALL is a question about what red means, and is the owner's.</em> <span class="file">SessionViewModel.cs:193, :509</span></td></tr>
 </table>
 
 <h3>The ones you cannot see yet</h3>
@@ -1010,6 +1018,18 @@ disproven: it was NOT a stale desktop build, and it was NOT a surviving local fo
 section 2, layer 3. Same pull request, opposite direction: #1843's first half made the desktop's
 <em>online</em> answer identical to the browsers', and its second half gave the desktop an honest
 <em>offline</em> answer instead of a frozen stale one.</p>
+<p><strong>The voice window, MEASURED rather than asserted - 19 July 2026.</strong> The Gateway was sampled
+every two seconds across two real turn-ends of a voice-mode session. Both cycles folded correctly:
+<span class="dot d-blue"></span>blue while working &rarr; <span class="dot d-yellow"></span>yellow
+"Preparing voice" at turn end &rarr; <span class="dot d-red"></span>red the moment
+<code>VoiceAudioReady</code> flipped. <strong>The two windows were about 115 seconds and about 6 seconds</strong>
+- so this state is emphatically visible, and "I never see yellow" is not evidence that the fold is broken;
+it is far more likely a surface not refreshing, or a phone running a cached bundle. <strong>The 115-second
+cycle also proves the owner's ruling is doing real work:</strong> at 81 seconds <code>VoiceGenerating</code>
+went <em>false</em> while <code>VoiceAudioReady</code> was still false - the gap between retry attempts - and
+the row <strong>stayed yellow</strong> rather than flashing red, which is exactly what the
+<code>|| !VoiceAudioReady</code> hold exists to prevent. <em>A rule narrowed to <code>VoiceGenerating</code>
+alone would have shown red for 55 seconds in the middle of preparing the voice.</em></p>
 <p><strong>MEASURED BY QA, 15 July 2026: the role was ONE OF FIVE, and this item's own closing sentence - "until then, desktop and phone disagree by construction" - was STILL TRUE for the other four until #1746 closed the lot (see the banner above). This was the largest surviving gap in this document, and neither the Architect nor the Manager saw it until it was measured; both had concluded, in writing, that agreement was now "by construction".</strong></p>
 <p><code>ControlEndpoints.Map</code> carries <code>SessionRole</code> and does NOT carry <strong>four other fold inputs</strong>, verified by reading the mapper and by enumerating every verb the Gateway can send a Director - there are exactly <strong>two</strong>, <code>launch</code> and <code>set-resolved-role</code>. So nothing pushes these down, and the fold reads all of them:</p>
 <table>
