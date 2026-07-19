@@ -38,14 +38,21 @@ public sealed class HealthzTenantLeakTests
     [Fact]
     public async Task Hosted_healthz_reports_no_fleet_counts()
     {
-        var health = await ProbeHealthz(hosted: true);
+        var (health, rawJson) = await ProbeHealthz(hosted: true);
+
+        // ABSENT, not zero. The fields were plain ints before, so "not computed" serialized as 0 - which is
+        // not a leak (0 is not the real count) but IS a false statement, and /healthz is what every Director
+        // and endpoint selector dials, so a permanent 0 reads as a dead fleet. Assert on the RAW body: a
+        // deserialized null cannot tell "field absent" from "field present and null".
+        Assert.DoesNotContain("\"directors\"", rawJson);
+        Assert.DoesNotContain("\"sessions\"", rawJson);
 
         // The Gateway HAS a registered Director (see ProbeHealthz) - the hosted probe simply must not say so.
         // This is the assertion that pins the change: with the hosted branch removed, the anonymous probe
-        // reports that Director again. (Sessions is deliberately NOT asserted: it already read the empty Local
-        // partition before this change, so asserting it would pass either way and prove nothing.)
+        // reports that Director again.
         Assert.Equal("ok", health.Status);
-        Assert.Equal(0, health.Directors);
+        Assert.Null(health.Directors);
+        Assert.Null(health.Sessions);
         // Liveness is still answered: a probe needs to know it is alive and what version it is.
         Assert.False(string.IsNullOrWhiteSpace(health.Version));
     }
@@ -57,13 +64,13 @@ public sealed class HealthzTenantLeakTests
         // ONLY difference being CC_GATEWAY_HOSTED, and the counts are still served. This one deliberately does
         // NOT pin the changed line - it exists to prove the hosted assertion above is about the tenancy branch
         // and not about a Gateway that simply has no Directors to count.
-        var health = await ProbeHealthz(hosted: false);
+        var (health, _) = await ProbeHealthz(hosted: false);
 
         Assert.Equal("ok", health.Status);
         Assert.Equal(1, health.Directors);
     }
 
-    private static async Task<HealthDto> ProbeHealthz(bool hosted)
+    private static async Task<(HealthDto Health, string RawJson)> ProbeHealthz(bool hosted)
     {
         var prior = Environment.GetEnvironmentVariable("CC_GATEWAY_HOSTED");
         Environment.SetEnvironmentVariable("CC_GATEWAY_HOSTED", hosted ? "1" : null);
@@ -90,8 +97,11 @@ public sealed class HealthzTenantLeakTests
             using var http = new HttpClient { BaseAddress = new Uri($"http://127.0.0.1:{gateway.Port}/") };
             var resp = await http.GetAsync("healthz");
             resp.EnsureSuccessStatusCode();
-            return await resp.Content.ReadFromJsonAsync<HealthDto>()
-                   ?? throw new InvalidOperationException("healthz returned no body");
+            var raw = await resp.Content.ReadAsStringAsync();
+            var dto = System.Text.Json.JsonSerializer.Deserialize<HealthDto>(raw,
+                          new System.Text.Json.JsonSerializerOptions(System.Text.Json.JsonSerializerDefaults.Web))
+                      ?? throw new InvalidOperationException("healthz returned no body");
+            return (dto, raw);
         }
         finally
         {

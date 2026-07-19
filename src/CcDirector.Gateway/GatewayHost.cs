@@ -2139,7 +2139,8 @@ public sealed class GatewayHost : IAsyncDisposable
             () => AmbientSnapshotFresh(AutoDismissStaleAfter),
             SendCommandAsync,
             // Partition the close-marks by the tenant of the pass currently running (see AutoDismissSweeper).
-            tenantKey: () => _tenantPass.Current?.Value ?? "");
+            // Null (no tenant in scope on hosted) is a DENY inside the sweeper, not an empty prefix.
+            tenantKey: () => _tenantPass.Current?.Value);
         _autoDismissTimer = new System.Threading.Timer(_ => SweepAutoDismiss(), null, AutoDismissSweepInterval, AutoDismissSweepInterval);
         FileLog.Write($"[GatewayHost] auto-dismiss sweep started: every {AutoDismissSweepInterval.TotalSeconds:0}s");
 

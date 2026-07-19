@@ -369,6 +369,9 @@ internal static class GatewayEndpoints
             // connectivity self-test and the settings gateway probe read.
             if (tenantBoundary?.IsHosted == true)
             {
+                // Directors/Sessions left NULL, which OMITS them from the JSON (HealthDto). Leaving them to
+                // serialize as 0 would state a fleet of zero to every probe on hosted - false rather than
+                // merely absent, and this is the endpoint the Director's connectivity self-test reads.
                 return Results.Json(new HealthDto
                 {
                     Status = "ok",
