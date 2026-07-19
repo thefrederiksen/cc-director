@@ -120,6 +120,49 @@ public sealed class AuthMiddlewareTests
         Assert.NotEqual(StatusCodes.Status401Unauthorized, ctx.Response.StatusCode);
     }
 
+    // Hosted Multi-Tenancy increment 2a: the hosted enrollment endpoint is the BOOTSTRAP - a remote Director
+    // has NO gateway token/device key yet; it presents its ACCOUNT (Supabase ES256) token to OBTAIN one, and
+    // the handler validates that token itself. So the host-wide device-key/gateway-token gate must EXEMPT the
+    // route, or it 401s the account token before the handler ever runs. This pins the exemption through the
+    // REAL middleware (not just the handler), which the handler-direct enrollment tests do not cover.
+    [Fact]
+    public async Task Enroll_hosted_is_public_and_reachable_without_a_gateway_credential()
+    {
+        var ctx = new DefaultHttpContext();
+        ctx.Request.Path = "/devices/enroll-hosted";
+        ctx.Request.Method = "POST";
+
+        var passedThrough = false;
+        await AuthMiddleware.Run(
+            ctx,
+            new AuthMiddleware.RequireToken { Token = SharedToken, Devices = TempRegistry() },
+            () => { passedThrough = true; return Task.CompletedTask; });
+
+        Assert.True(passedThrough, "a hosted enroll must reach the handler; it carries its own account-token validation");
+        Assert.NotEqual(StatusCodes.Status401Unauthorized, ctx.Response.StatusCode);
+    }
+
+    // The exact LIVE scenario: the request carries a Bearer ACCOUNT token (an ES256 JWT), which is NEITHER the
+    // shared gateway token NOR a device key, so HasValidToken would reject it. The route must be public so it
+    // reaches the handler regardless of the Bearer contents; the handler does the ES256 validation.
+    [Fact]
+    public async Task Enroll_hosted_with_an_account_bearer_token_is_still_public_and_reaches_the_handler()
+    {
+        var ctx = new DefaultHttpContext();
+        ctx.Request.Path = "/devices/enroll-hosted";
+        ctx.Request.Method = "POST";
+        ctx.Request.Headers["Authorization"] = "Bearer some.account.jwt-not-a-gateway-token-or-device-key";
+
+        var passedThrough = false;
+        await AuthMiddleware.Run(
+            ctx,
+            new AuthMiddleware.RequireToken { Token = SharedToken, Devices = TempRegistry() },
+            () => { passedThrough = true; return Task.CompletedTask; });
+
+        Assert.True(passedThrough, "the account Bearer token must NOT be rejected by the gateway-token/device-key gate");
+        Assert.NotEqual(StatusCodes.Status401Unauthorized, ctx.Response.StatusCode);
+    }
+
     // The corrective half: a DATA endpoint (account status returns email/provider/credits) must STILL be
     // gated - opening enroll-signed-in must not have widened the hole to account data.
     [Fact]
