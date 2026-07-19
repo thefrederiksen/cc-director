@@ -51,6 +51,19 @@ public sealed class HostedAccountStatusTests : IAsyncLifetime
 {
     private const string Token = "test-token";
 
+    // Account subjects UNIQUE to this class. They used to be the shared literals "sub-alice" and
+    // "sub-bob", which several other Gateway test classes also mint - and at least one of them
+    // (PromptLogTenantIsolationTests) mints "sub-bob" WITH an email. MintOrLookupBySubject records
+    // an email on a FRESH MINT ONLY and returns the existing tenant otherwise, so whichever class
+    // ran first decided whether this class's no-email caller actually had an email. That made
+    // Enrolled_without_a_recorded_email... pass or fail purely on test ORDER (issue #1911): green
+    // alone, red in a full suite run, and red or green at random in continuous integration.
+    //
+    // A per-instance subject cannot collide with any other class, present or future. The point of
+    // this fixture is a tenant with NO email, so it must own the identity that carries that fact.
+    private readonly string _subjectWithEmail = "sub-alice-" + Guid.NewGuid().ToString("N");
+    private readonly string _subjectNoEmail = "sub-bob-" + Guid.NewGuid().ToString("N");
+
     private GatewayHost _gateway = null!;
     private HttpClient _http = null!;
 
@@ -82,14 +95,14 @@ public sealed class HostedAccountStatusTests : IAsyncLifetime
 
         // Minted through the REAL registry, exactly as POST /devices/enroll-hosted does it, so the tenant
         // these keys are bound to is a genuine tenant row rather than a string invented by the test.
-        var withEmail = _gateway.TenantRegistry.MintOrLookupBySubject("sub-alice", "alice@example.com");
-        var noEmail = _gateway.TenantRegistry.MintOrLookupBySubject("sub-bob", null);
+        var withEmail = _gateway.TenantRegistry.MintOrLookupBySubject(_subjectWithEmail, "alice@example.com");
+        var noEmail = _gateway.TenantRegistry.MintOrLookupBySubject(_subjectNoEmail, null);
 
         _keyWithEmail = _gateway.Devices.Register("dev-alice", "MA").DeviceKey;
         _keyNoEmail = _gateway.Devices.Register("dev-bob", "MB").DeviceKey;
         _keyUnbound = _gateway.Devices.Register("dev-x", "MX").DeviceKey;
-        _gateway.Devices.SetAccountBinding("dev-alice", "sub-alice", withEmail.Value);
-        _gateway.Devices.SetAccountBinding("dev-bob", "sub-bob", noEmail.Value);
+        _gateway.Devices.SetAccountBinding("dev-alice", _subjectWithEmail, withEmail.Value);
+        _gateway.Devices.SetAccountBinding("dev-bob", _subjectNoEmail, noEmail.Value);
     }
 
     public async Task DisposeAsync()
