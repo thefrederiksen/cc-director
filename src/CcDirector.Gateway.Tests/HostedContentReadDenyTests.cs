@@ -2,7 +2,9 @@ using System.Net;
 using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
+using CcDirector.Core.Storage;
 using CcDirector.Gateway;
+using CcDirector.Gateway.Transcription;
 using Xunit;
 
 namespace CcDirector.Gateway.Tests;
@@ -54,6 +56,18 @@ namespace CcDirector.Gateway.Tests;
 ///   src/CcDirector.Gateway/Api/WingmanInstructionsEndpoint.cs     DenyOnHosted
 ///   src/CcDirector.Gateway/Api/GatewayWingmanVoiceEndpoint.cs     DenyUtteranceOnHosted
 ///   src/CcDirector.Gateway/Api/GatewayDictationEndpoint.cs        DenyOnHosted
+///
+/// MUTATION-RED, AND WHY IT IS NOT OPTIONAL HERE. Removing the guard is only half the proof: it shows the
+/// refusal is what produces the refusal. It does NOT show the test could notice the route going missing.
+/// The Cockpit <c>MapFallback("{*path}")</c> answers ANY unclaimed path and verb - 404 in a Debug test
+/// host, 200 with the HTML shell on a release host - and no 405 is ever raised here. So the second half of
+/// the proof is to RENAME or RE-VERB each route and confirm the matching test goes RED. Both halves are
+/// recorded in the pull request.
+///
+/// The assertions in THIS class survive that fallback by construction: each parses the body and requires
+/// the property set to be exactly one <c>error</c> field with an exact message, so an HTML shell fails to
+/// parse and any other JSON fails the property-set check. The receipts in the self-host class are what
+/// needed rebuilding - they rested on a bare 200.
 ///
 /// The SELF-HOST CONTROLS are <see cref="HostedContentReadSelfHostControlTests"/> in this file, plus the
 /// pre-existing <see cref="VoiceUploadLimitsTests"/> (which drives the real utterance upload family with
@@ -301,16 +315,68 @@ public sealed class HostedContentReadDenyTests : IAsyncLifetime
 /// the two upload families are the phone's voice and dictation lanes. A deny scoped to the wrong signal
 /// would break the shipped product in order to protect the unshipped one, and it would do so silently.
 ///
-/// What is asserted is NOT that a particular payload comes back - these routes legitimately answer many
-/// ways on an empty box (an empty log, an unknown upload id, a missing key) and pinning the exact shape
-/// would make this a change-detector. What is asserted is that the HOSTED REFUSAL IS ABSENT: the route is
-/// still routable (never 404-with-the-refusal-body) and, where it answers, the body is not the refusal.
-/// That is exactly the property the deny must not leak into self-host, and nothing more.
+/// EVERY ASSERTION HERE IS A HANDLER RECEIPT, AND THAT IS NOT A STYLE CHOICE - IT IS THE ONLY THING THAT
+/// WORKS ON THIS GATEWAY. Two route-masking catch-alls exist, and both were read on this branch rather
+/// than assumed:
+///
+///   1. THE ONE THAT APPLIES TO EVERY ROUTE BELOW - the single-page-app fallback.
+///      <c>CockpitReactApp</c> maps <c>MapFallback("{*path}")</c> (CockpitReactApp.cs:125), which matches
+///      ANY path and ANY verb that nothing else claimed, and its own not-found text says
+///      "React Cockpit not built into this Gateway (release build only)". So a deleted, renamed or
+///      re-verbed route answers 404 in a Debug test host but 200 WITH THE HTML SHELL on a release host.
+///      Any assertion resting on "I got a 200" passes on a route that no longer exists.
+///   2. The all-verb session catch-all. <c>SessionWsProxyEndpoints</c> maps
+///      <c>app.Map("/sessions/{sid}/{**rest}")</c> (SessionWsProxyEndpoints.cs:153) - least-specific,
+///      every verb - which swallows a deleted or re-verbed route on any <c>/sessions/{sid}/...</c> path
+///      and answers 503 as <c>application/json</c>, never reaching the fallback, so a <c>text/html</c>
+///      check sails straight past it. NONE of the four families denied here lives under
+///      <c>/sessions/{sid}/</c>, so this one cannot mask THESE routes - it is recorded because it is why
+///      "check the content type" is not a general defence on this Gateway, and the next route added to
+///      this file might well sit under that prefix.
+///
+/// A 405 never occurs on these paths in either condition, so "the verb is wrong" does not announce itself
+/// either. That is why the previous version of this class was unsound: it asserted status 200 plus the
+/// ABSENCE of the refusal strings, and a built Cockpit shell satisfies both. It also drove <c>POST</c> at
+/// the dictation chunk route, which production maps as <c>MapPut</c> ONLY
+/// (GatewayDictationEndpoint.cs:176) - a request that never reached the handler at all, and nothing in the
+/// assertion could notice.
+///
+/// So: every read asserts SEEDED or ROUTE-SPECIFIC JSON that only that handler could have produced, and
+/// every write asserts its own STORE RECEIPT - a state change read back - rather than a status code.
+/// Neither catch-all can fake those.
+///
+/// These are still not change-detectors: what is pinned is the one value this test itself planted, or the
+/// exact top-level property set of a handler whose payload is a stable contract, never an incidental
+/// field a later feature would legitimately move.
+///
+/// Three untouched pre-existing suites are controls too, and they exercise these families with real
+/// payloads: <see cref="VoiceUploadLimitsTests"/> (the real utterance upload family end to end),
+/// <see cref="DictationSessionLockTests"/> and <see cref="DurableDictationDedupeTests"/>.
+///
+/// MUTATION-RED RECIPE (run verbatim; this is the only check that catches both catch-alls, because it
+/// does not depend on predicting what the framework returns):
+///   For each route below, in the production file, either RENAME the path (add "-x") or RE-VERB it
+///   (MapGet -> MapPost, MapPut -> MapPost). Rebuild, check the build line, run this class. The test for
+///   that route must go RED. If it stays GREEN the canary cannot fail and the assertion is worthless -
+///   fix the assertion, not the route. Restore, and confirm green.
 /// </summary>
 [Collection("DirectorRoot")]
 public sealed class HostedContentReadSelfHostControlTests : IAsyncLifetime
 {
     private const string Token = "test-token";
+
+    /// <summary>Planted in the seeded telemetry record and asserted back out of /transcription/turns.</summary>
+    private const string SeededRawText = "seeded raw utterance zqxjv";
+
+    /// <summary>Planted as the cleaned text, so /transcription/words must count this word.</summary>
+    private const string SeededWord = "zqxjvword";
+
+    /// <summary>Planted as a dictionary correction, so /transcription/terms must report this pair.</summary>
+    private const string SeededFind = "zqxjvfind";
+    private const string SeededReplace = "zqxjvreplace";
+
+    /// <summary>Planted in the seeded wingman training record and asserted back out of /records.</summary>
+    private const string SeededReply = "seeded agent reply zqxjv";
 
     private static readonly string[] Refusals =
     {
@@ -352,6 +418,65 @@ public sealed class HostedContentReadSelfHostControlTests : IAsyncLifetime
         await _gateway.StartAsync();
         _http = new HttpClient { BaseAddress = new Uri($"http://127.0.0.1:{_gateway.Port}/") };
         _key = _gateway.Devices.Register("dev-owner", "MA").DeviceKey;
+
+        SeedTranscriptionTelemetry();
+        SeedWingmanTrainingRecord();
+    }
+
+    /// <summary>
+    /// Plant ONE transcription turn in the real on-disk telemetry log, under this test's isolated storage
+    /// root, using the production writer. All four /transcription reads derive from this one record, so
+    /// each of them has something only that handler could return.
+    /// </summary>
+    private static void SeedTranscriptionTelemetry()
+    {
+        new TranscriptionTelemetryLog().Record(new TranscriptionTelemetryRecord
+        {
+            TimestampUtc = DateTime.UtcNow,
+            TurnId = "seed-turn",
+            Outcome = "ok",
+            Mode = "devthrottle",
+            AudioBytes = 4096,
+            TranscriptionMs = 120,
+            CleanupMs = 30,
+            Corrected = true,
+            CleanupApplied = true,
+            ChangedWordCount = 1,
+            Changes = new[] { new TelemetryEdit { Find = SeededFind, Replace = SeededReplace } },
+            CharCount = SeededRawText.Length,
+            WordCount = 4,
+            RawText = SeededRawText,
+            CleanedText = SeededWord,
+        });
+    }
+
+    /// <summary>
+    /// Plant ONE wingman training record, in the exact append-only JSON-lines shape the production writer
+    /// emits, so /records must hand back its positional "&lt;filename&gt;#&lt;lineindex&gt;" id. Written directly
+    /// rather than through the capture path because capture is gated on a setting and needs a live session
+    /// with a terminal - neither of which this control is about.
+    /// </summary>
+    private static void SeedWingmanTrainingRecord()
+    {
+        var dir = CcStorage.WingmanTrainingData();
+        Directory.CreateDirectory(dir);
+        var line = JsonSerializer.Serialize(new
+        {
+            atUtc = DateTime.UtcNow,
+            sessionId = "11111111-1111-1111-1111-111111111111",
+            source = "voice-turn",
+            model = "test-model",
+            terminalChars = 5,
+            terminalTruncated = false,
+            terminal = "lines",
+            reply = SeededReply,
+            recentContext = "context",
+            spoken = "spoken summary",
+            replySeconds = 1.5,
+        });
+        File.AppendAllText(
+            Path.Combine(dir, $"wingman-training-{DateTime.UtcNow:yyyy-MM-dd}.jsonl"),
+            line + "\n");
     }
 
     public async Task DisposeAsync()
@@ -364,74 +489,254 @@ public sealed class HostedContentReadSelfHostControlTests : IAsyncLifetime
         try { if (Directory.Exists(_root)) Directory.Delete(_root, true); } catch { /* best effort */ }
     }
 
-    [Theory]
-    [InlineData("transcription/turns")]
-    [InlineData("transcription/stats")]
-    [InlineData("transcription/terms")]
-    [InlineData("transcription/words")]
-    [InlineData("gateway/wingman/instructions")]
-    [InlineData("gateway/wingman/instructions/records")]
-    [InlineData("gateway/wingman/instructions/versions")]
-    [InlineData("gateway/wingman/instructions/default")]
-    [InlineData("gateway/wingman/instructions/update")]
-    public async Task Self_host_still_serves_every_denied_read(string path)
+    // ===== The transcription analysis reads: each asserts the SEEDED record back out =====
+
+    [Fact]
+    public async Task Self_host_transcription_turns_returns_the_seeded_turn()
+    {
+        var root = await GetJsonAsync("transcription/turns");
+
+        var texts = root.GetProperty("turns").EnumerateArray()
+            .Select(t => t.TryGetProperty("rawText", out var r) ? r.GetString() : null)
+            .ToArray();
+        Assert.Contains(SeededRawText, texts);
+    }
+
+    [Fact]
+    public async Task Self_host_transcription_stats_counts_the_seeded_turn()
+    {
+        var root = await GetJsonAsync("transcription/stats");
+
+        // Exactly one turn was planted into an isolated, otherwise-empty log, so this is an exact figure
+        // rather than a "greater than zero" that an accidental extra record could satisfy.
+        Assert.Equal(1, root.GetProperty("totalTurns").GetInt32());
+        Assert.Equal(1, root.GetProperty("successfulTurns").GetInt32());
+    }
+
+    [Fact]
+    public async Task Self_host_transcription_terms_returns_the_seeded_correction()
+    {
+        var root = await GetJsonAsync("transcription/terms");
+
+        var pairs = root.GetProperty("terms").EnumerateArray()
+            .Select(t => (t.GetProperty("find").GetString(), t.GetProperty("replace").GetString()))
+            .ToArray();
+        Assert.Contains((SeededFind, SeededReplace), pairs);
+    }
+
+    [Fact]
+    public async Task Self_host_transcription_words_counts_the_seeded_word()
+    {
+        var root = await GetJsonAsync("transcription/words");
+
+        var words = root.GetProperty("words").EnumerateArray()
+            .Select(w => w.GetProperty("word").GetString())
+            .ToArray();
+        Assert.Contains(SeededWord, words);
+    }
+
+    // ===== The wingman instructions reads =====
+
+    /// <summary>
+    /// The training-records read - the actual content leak the hosted deny closes - proven still open on
+    /// self-host by returning the seeded record's POSITIONAL id and its reply preview. Nothing but this
+    /// handler reading this store can produce that id.
+    /// </summary>
+    [Fact]
+    public async Task Self_host_wingman_records_returns_the_seeded_training_record()
+    {
+        var root = await GetJsonAsync("gateway/wingman/instructions/records");
+
+        var records = root.GetProperty("records").EnumerateArray().ToArray();
+        var seeded = Assert.Single(records,
+            r => r.GetProperty("id").GetString()!.EndsWith("#0", StringComparison.Ordinal));
+        Assert.StartsWith("wingman-training-", seeded.GetProperty("id").GetString());
+        Assert.Contains(SeededReply, seeded.GetProperty("replyPreview").GetString());
+    }
+
+    /// <summary>
+    /// Saving a version and reading it back is the strongest available receipt for the instructions
+    /// routes: the value asserted is one this test itself planted through the public surface, so no
+    /// catch-all and no shipped default can produce it.
+    /// </summary>
+    [Fact]
+    public async Task Self_host_wingman_instructions_round_trips_a_saved_version()
+    {
+        var content = "seeded wingman instructions zqxjv " + Guid.NewGuid().ToString("N");
+
+        var saved = await Send(HttpMethod.Put, "gateway/wingman/instructions",
+            JsonSerializer.Serialize(new { content }));
+        Assert.Equal(HttpStatusCode.OK, saved.StatusCode);
+
+        var active = await GetJsonAsync("gateway/wingman/instructions");
+        Assert.Equal(content, active.GetProperty("active").GetProperty("content").GetString());
+        Assert.True(active.GetProperty("isCustomized").GetBoolean());
+
+        var versions = await GetJsonAsync("gateway/wingman/instructions/versions");
+        Assert.Contains(versions.GetProperty("versions").EnumerateArray(),
+            v => v.GetProperty("content").GetString() == content);
+
+        // The managed-default review must now report the box as customized - a state change this test
+        // caused, read back through a DIFFERENT route than the one that caused it.
+        var update = await GetJsonAsync("gateway/wingman/instructions/update");
+        Assert.True(update.GetProperty("isCustomized").GetBoolean());
+    }
+
+    /// <summary>
+    /// The deployed default has no seedable value - it ships with the build - so this pins the one thing
+    /// that is genuinely route-specific and contractual: the exact top-level property set, plus non-empty
+    /// content. The Cockpit HTML shell is not JSON at all, and the /sessions catch-all's 503 body has a
+    /// different property set, so neither can satisfy this.
+    /// </summary>
+    [Fact]
+    public async Task Self_host_wingman_default_returns_the_deployed_default_prompt()
+    {
+        var root = await GetJsonAsync("gateway/wingman/instructions/default");
+
+        Assert.Equal(
+            new[] { "version", "hash", "content" },
+            root.EnumerateObject().Select(p => p.Name).ToArray());
+        Assert.False(string.IsNullOrWhiteSpace(root.GetProperty("content").GetString()));
+    }
+
+    // ===== The two upload families: every leg leaves a receipt =====
+
+    /// <summary>
+    /// The owner's phone still registers an utterance upload AND the bytes it sends are staged. The chunk
+    /// leg has no read route, so the receipt is the staged file itself: the whole isolated storage root is
+    /// searched for a file whose CONTENT is the exact payload sent. Searching by content rather than by an
+    /// expected path means the assertion cannot pass by looking in the wrong place, and cannot fail merely
+    /// because the store renames its layout.
+    /// </summary>
+    [Fact]
+    public async Task Self_host_utterance_upload_registers_and_stages_the_chunk_bytes()
+    {
+        var register = await Send(HttpMethod.Post, "wingman/utterance/upload", "");
+        Assert.Equal(HttpStatusCode.OK, register.StatusCode);
+        var id = (await JsonAsync(register)).GetProperty("upload_id").GetString();
+        Assert.False(string.IsNullOrWhiteSpace(id));
+
+        var payload = Encoding.UTF8.GetBytes("utterance-bytes-zqxjv-" + Guid.NewGuid().ToString("N"));
+        var chunk = await SendBytes(HttpMethod.Put, $"wingman/utterance/{id}/chunk/0", payload);
+        Assert.Equal(HttpStatusCode.OK, chunk.StatusCode);
+        Assert.Equal(0, (await JsonAsync(chunk)).GetProperty("index").GetInt32());
+
+        AssertStagedOnDisk(payload);
+    }
+
+    /// <summary>
+    /// The same for the dictation lane. NOTE THE VERB: production maps this chunk route with
+    /// <c>MapPut</c> and nothing else. An earlier version of this test drove <c>POST</c>, which never
+    /// reached the handler - and because no 405 occurs on this path, nothing in a status-based assertion
+    /// could notice. The staged-bytes receipt is what makes the verb matter.
+    /// </summary>
+    [Fact]
+    public async Task Self_host_dictation_upload_registers_and_stages_the_chunk_bytes()
+    {
+        var id = await RegisterDictationAsync(Guid.NewGuid().ToString("N"));
+
+        var payload = Encoding.UTF8.GetBytes("dictation-bytes-zqxjv-" + Guid.NewGuid().ToString("N"));
+        var chunk = await SendBytes(HttpMethod.Put, $"dictation/{id}/chunk/0", payload);
+        Assert.Equal(HttpStatusCode.OK, chunk.StatusCode);
+        Assert.Equal(0, (await JsonAsync(chunk)).GetProperty("index").GetInt32());
+
+        AssertStagedOnDisk(payload);
+    }
+
+    /// <summary>
+    /// The abandon leg gets its own receipt, and it is a durable state change rather than a status:
+    /// abandoning writes a terminal tombstone, so RE-REGISTERING the same upload id afterwards reports it
+    /// dropped. Read back through a different route than the one that caused it, which no catch-all can
+    /// fake.
+    /// </summary>
+    [Fact]
+    public async Task Self_host_dictation_abandon_writes_a_tombstone_read_back_at_register()
+    {
+        var key = Guid.NewGuid().ToString("N");
+        var id = await RegisterDictationAsync(key);
+
+        var abandon = await Send(HttpMethod.Post, $"dictation/{id}/abandon", "");
+        Assert.Equal(HttpStatusCode.OK, abandon.StatusCode);
+        Assert.True((await JsonAsync(abandon)).GetProperty("abandoned").GetBoolean());
+
+        var reRegister = await Send(HttpMethod.Post, "dictation/upload",
+            "{\"sessionId\":\"11111111-1111-1111-1111-111111111111\"}", key);
+        Assert.Equal(HttpStatusCode.OK, reRegister.StatusCode);
+        var again = await JsonAsync(reRegister);
+        Assert.True(again.GetProperty("terminal").GetBoolean());
+        Assert.True(again.GetProperty("dropped").GetBoolean());
+    }
+
+    /// <summary>
+    /// The ack leg gets its own receipt too, and it is a state TRANSITION rather than a single value:
+    /// acking a tombstone retires it, so the first ack reports retired and a second ack on the same id
+    /// reports not-retired. A catch-all answering both calls identically cannot produce that difference.
+    /// </summary>
+    [Fact]
+    public async Task Self_host_dictation_ack_retires_the_tombstone_exactly_once()
+    {
+        var id = await RegisterDictationAsync(Guid.NewGuid().ToString("N"));
+        await Send(HttpMethod.Post, $"dictation/{id}/abandon", "");
+
+        var first = await Send(HttpMethod.Post, $"dictation/{id}/ack", "");
+        Assert.Equal(HttpStatusCode.OK, first.StatusCode);
+        Assert.True((await JsonAsync(first)).GetProperty("retired").GetBoolean());
+
+        var second = await Send(HttpMethod.Post, $"dictation/{id}/ack", "");
+        Assert.Equal(HttpStatusCode.OK, second.StatusCode);
+        Assert.False((await JsonAsync(second)).GetProperty("retired").GetBoolean());
+    }
+
+    // ===== Helpers =====
+
+    /// <summary>
+    /// GET a route and return its parsed JSON body, refusing anything that is not a real JSON object from
+    /// that handler. Parsing is itself part of the check: the Cockpit single-page-app fallback answers a
+    /// deleted GET route with the HTML shell on a release host, and HTML does not parse.
+    /// </summary>
+    private async Task<JsonElement> GetJsonAsync(string path)
     {
         var resp = await Send(HttpMethod.Get, path);
         Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
         await AssertNotTheHostedRefusal(resp);
+        return await JsonAsync(resp);
     }
 
-    /// <summary>
-    /// The owner's phone still registers an utterance upload and gets an id back - the leg the hosted deny
-    /// closes, proven open here. The chunk and complete legs are covered end to end, with real audio, by
-    /// the untouched <see cref="VoiceUploadLimitsTests"/>.
-    /// </summary>
-    [Fact]
-    public async Task Self_host_still_registers_a_wingman_utterance_upload()
+    private static async Task<JsonElement> JsonAsync(HttpResponseMessage resp)
     {
-        var resp = await Send(HttpMethod.Post, "wingman/utterance/upload", "");
-        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
-
-        using var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync());
-        Assert.False(string.IsNullOrWhiteSpace(doc.RootElement.GetProperty("upload_id").GetString()));
+        var body = await resp.Content.ReadAsStringAsync();
+        using var doc = JsonDocument.Parse(body);
+        Assert.Equal(JsonValueKind.Object, doc.RootElement.ValueKind);
+        return doc.RootElement.Clone();
     }
 
-    /// <summary>
-    /// The owner's phone still registers a dictation upload. Same shape as the utterance control; the
-    /// chunk/complete/ack/abandon legs are covered by the untouched
-    /// <see cref="DictationSessionLockTests"/> and <see cref="DurableDictationDedupeTests"/>.
-    /// </summary>
-    [Fact]
-    public async Task Self_host_still_registers_a_dictation_upload()
+    private async Task<string> RegisterDictationAsync(string idempotencyKey)
     {
         var resp = await Send(HttpMethod.Post, "dictation/upload",
-            "{\"sessionId\":\"11111111-1111-1111-1111-111111111111\"}");
+            "{\"sessionId\":\"11111111-1111-1111-1111-111111111111\"}", idempotencyKey);
         Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
-
-        using var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync());
-        Assert.False(string.IsNullOrWhiteSpace(doc.RootElement.GetProperty("upload_id").GetString()));
+        var id = (await JsonAsync(resp)).GetProperty("upload_id").GetString();
+        Assert.False(string.IsNullOrWhiteSpace(id));
+        return id!;
     }
 
-    /// <summary>
-    /// The unknown-id answers on self-host must still be the STORE's own answers, not the hosted refusal.
-    /// This is the case a wrongly-scoped deny would most easily hide behind, because both are a 404.
-    /// </summary>
-    [Theory]
-    [InlineData("PUT", "wingman/utterance/no-such-id/chunk/0", "bytes")]
-    [InlineData("POST", "dictation/no-such-id/chunk/0", "bytes")]
-    [InlineData("POST", "dictation/no-such-id/ack", "")]
-    [InlineData("POST", "dictation/no-such-id/abandon", "")]
-    public async Task Self_host_answers_an_unknown_upload_id_itself_not_with_the_hosted_refusal(
-        string method, string path, string body)
+    /// <summary>The staged-bytes receipt: some file under the isolated root holds exactly these bytes.</summary>
+    private void AssertStagedOnDisk(byte[] payload)
     {
-        var resp = await Send(new HttpMethod(method), path, body);
-        await AssertNotTheHostedRefusal(resp);
+        var found = Directory.EnumerateFiles(_root, "*", SearchOption.AllDirectories)
+            .Any(f =>
+            {
+                try { return File.ReadAllBytes(f).AsSpan().SequenceEqual(payload); }
+                catch { return false; }
+            });
+        Assert.True(found, "the chunk handler did not stage the uploaded bytes anywhere under the storage root");
     }
 
     /// <summary>
     /// Reads the body and fails if it carries ANY of the four hosted refusal messages. Deliberately checks
     /// all four in every case rather than the one belonging to that route: a copy-paste that wired the
-    /// wrong helper onto a group would still be caught.
+    /// wrong helper onto a group would still be caught. This is a floor, not the assertion - every test
+    /// above also proves a handler receipt.
     /// </summary>
     private static async Task AssertNotTheHostedRefusal(HttpResponseMessage resp)
     {
@@ -440,12 +745,23 @@ public sealed class HostedContentReadSelfHostControlTests : IAsyncLifetime
             Assert.DoesNotContain(refusal, body, StringComparison.Ordinal);
     }
 
-    private Task<HttpResponseMessage> Send(HttpMethod method, string path, string? body = null)
+    private Task<HttpResponseMessage> Send(HttpMethod method, string path, string? body = null,
+        string? idempotencyKey = null)
     {
         var req = new HttpRequestMessage(method, path);
         req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", _key);
+        if (idempotencyKey is not null) req.Headers.Add("Idempotency-Key", idempotencyKey);
         if (body is not null)
             req.Content = new StringContent(body, Encoding.UTF8, "application/json");
+        return _http.SendAsync(req);
+    }
+
+    private Task<HttpResponseMessage> SendBytes(HttpMethod method, string path, byte[] payload)
+    {
+        var req = new HttpRequestMessage(method, path);
+        req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", _key);
+        req.Content = new ByteArrayContent(payload);
+        req.Content.Headers.ContentType = new MediaTypeHeaderValue("application/octet-stream");
         return _http.SendAsync(req);
     }
 
@@ -457,3 +773,4 @@ public sealed class HostedContentReadSelfHostControlTests : IAsyncLifetime
         finally { listener.Stop(); }
     }
 }
+
