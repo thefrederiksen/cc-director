@@ -34,26 +34,56 @@ These are not style preferences. Each one has cost real time.
 This is the trap that makes an "isolated" root not isolated.
 
 On first boot `CcStorageMigration.EnsureMigrated()` copies from **fixed legacy paths** -
-`%LOCALAPPDATA%\CcDirector`, `%USERPROFILE%\Documents\CcDirector`, `%LOCALAPPDATA%\cc-myvault`,
-the comm queue - into the current root, whatever `CC_DIRECTOR_ROOT` says. So a brand-new test root
-fills with the machine owner's real accounts, sessions, logs and vault. The Director then reseeds
-a full snapshot to whatever Gateway you pointed it at, so **whatever the migration dragged in
-leaves the machine**.
+`%LOCALAPPDATA%\CcDirector`, `Environment.SpecialFolder.MyDocuments` + `\CcDirector`,
+`%LOCALAPPDATA%\cc-myvault`, the comm queue - into the current root, whatever `CC_DIRECTOR_ROOT`
+says. So a brand-new test root fills with the machine owner's real accounts, repository list,
+session history and vault. Measured on one machine: **~567 MB**, including **224 session history
+files, 7 of them carrying a `FirstPromptSnippet` and 36 carrying `TurnSummaries`** - real prompt
+text.
 
-On the machine this was first run on that was the owner's own account and own tenant, so it was
-not a cross-tenant leak. On a shared Gateway with cross-tenant issues open, it would be.
+Tracked as issue #1879.
+
+**Do not check `%USERPROFILE%\Documents\CcDirector` to decide whether there is anything to
+migrate.** When Documents is OneDrive-redirected, `MyDocuments` resolves somewhere else entirely -
+on the machine this was written on, `D:\Personal\OneDrive\Documents`, which is where the data
+actually was. The literal user-profile path reported "absent" and gave false confidence. Resolve
+the real path instead:
+
+```powershell
+[Environment]::GetFolderPath([Environment+SpecialFolder]::MyDocuments)
+```
 
 **Check what landed in your root BEFORE you start the Director, not after.** Treat any such root as
 containing real user data: do not commit it, do not attach it to a pull request, do not paste its
 contents.
+
+### What actually leaves the machine
+
+The Director reseeds to whatever Gateway that root points at, so the migrated data is *adjacent* to
+the wire. What the reseed sends is narrower than what the migration copies -
+`GatewayStreamClient.ReseedAsync` sends only:
+
+- a `Hello`: director id, version, **machine name**, **username**, pid, started-at
+- `PushSnapshot(seq, <live session list>)`
+
+The session DTO carries no history, no prompt text and no terminal buffer contents
+(`totalBufferBytes` is a count, not content). Session history, the repository list and
+`recent-sessions.json` are **not** in the push path at all.
+
+So on the run recorded below, nothing real was transmitted: the reseed carried zero sessions, and
+the only session that ever reached hosted was the one the test deliberately created. **Treat that
+as a property of today's push payload, not as isolation** - verify it rather than assume it, by
+querying the Gateway's `/sessions` immediately after the reseed line appears in the log.
 
 **To block a specific file from migrating**, pre-create it in the destination. `CopyFileIfNewer`
 skips a destination that already exists, is **10 bytes or larger**, and has a **newer**
 last-write-time than the source. A destination under 10 bytes is treated as empty and gets
 overwritten, so padding matters.
 
-The session roster is the part that reaches the Gateway - `sessions.json`, `recent-sessions.json`,
-`repositories.json` under `config\director`. Pre-seed those first.
+`sessions.json` under `config\director` is the one that reaches the Gateway, so pre-seed it first.
+Note that this technique does **not** scale to the `sessions\` history folder, which is copied
+file by file and ran to 224 files on the machine this was written on - another reason #1879 wants
+a real opt-out rather than a workaround.
 
 ---
 
