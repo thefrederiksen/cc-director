@@ -62,6 +62,16 @@ public sealed class PushedSessionStore
     }
 
     /// <summary>
+    /// The tenants that currently have partitions in the store (Hosted Multi-Tenancy, session-serving). A
+    /// background loop that must act across all tenants - the fold, the role/display sweeps - iterates THESE
+    /// on the hosted Gateway (entering each tenant's scope in turn) instead of a single Local pass, and
+    /// without a per-tick database scan. A snapshot of the live keys; a tenant that appears or disappears
+    /// between calls is picked up on the next sweep, which is the same eventual-consistency the sweeps already
+    /// rely on. On self-host this is just the single Local partition.
+    /// </summary>
+    public IReadOnlyCollection<TenantId> KnownTenants() => _byTenant.Keys.ToArray();
+
+    /// <summary>
     /// Mark <paramref name="connectionId"/> as the active stream connection for <paramref name="directorId"/>
     /// within <paramref name="tenant"/>. Existing cached sessions are kept (so a fast reconnect keeps roster
     /// continuity), but the sequence baseline resets so the new connection's first message - at any sequence -

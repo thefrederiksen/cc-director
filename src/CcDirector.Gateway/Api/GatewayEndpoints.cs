@@ -121,7 +121,12 @@ internal static class GatewayEndpoints
         // command. This makes FleetDisplayStateObserver the single writer of the Director's raw hold. Null
         // (old callers, tests) leaves the endpoint to record the registry only, and the periodic sweep
         // reconciles the desktop.
-        Fleet.FleetDisplayStateObserver? fleetDisplayState = null)
+        Fleet.FleetDisplayStateObserver? fleetDisplayState = null,
+        // Hosted Multi-Tenancy (session-serving PR1): the auth-boundary tenant binder. When non-null on the
+        // hosted Gateway, the request-scoped session reads (/sessions, /sessions/{sid}) resolve the caller's
+        // tenant from its authenticated device key and DENY (403) when it has none - never falling back to
+        // Local. Null (self-host, older callers, tests) keeps the single-tenant Local behavior.
+        Tenancy.HostedTenantBoundary? tenantBoundary = null)
     {
         // The old issue #1188 "session lock" (423 Locked on human input while a PENDING dictation record
         // existed) was removed deliberately (issue #1308). This is a single-operator tool: a collision
@@ -606,6 +611,14 @@ internal static class GatewayEndpoints
                                        string? statusColor, string? machine,
                                        bool? includeExited, string? q, bool? envelope) =>
         {
+            // Hosted Multi-Tenancy (session-serving PR1): serve THIS request's tenant's roster, resolved from
+            // its authenticated device key. On hosted a request with no bound tenant is DENIED (403), never
+            // served the Local partition. Self-host is Local, unchanged.
+            var reqTenant = ResolveReadTenant(ctx, tenantBoundary);
+            if (reqTenant is null)
+                return Results.Json(new { error = "no tenant is bound to this request" },
+                    statusCode: StatusCodes.Status403Forbidden);
+
             var directors = registry.ListDirectors()
                 .Where(d => string.IsNullOrEmpty(director) || string.Equals(d.DirectorId, director, StringComparison.OrdinalIgnoreCase))
                 .Where(d => string.IsNullOrEmpty(machine) || string.Equals(d.MachineName, machine, StringComparison.OrdinalIgnoreCase))
@@ -623,7 +636,7 @@ internal static class GatewayEndpoints
                 // a pushed snapshot, so exited rows are simply absent - there is no HTTP pull to fetch them.)
                 if (pushedSessions is not null)
                 {
-                    var cached = pushedSessions.TryGetFresh(TenantId.Local, d.DirectorId, streamStale);
+                    var cached = pushedSessions.TryGetFresh(reqTenant.Value, d.DirectorId, streamStale);
                     if (cached is not null)
                     {
                         FileLog.Write($"[GatewayEndpoints] /sessions director={d.DirectorId} served=pushed-cache ({cached.Count} sessions)");
@@ -666,7 +679,7 @@ internal static class GatewayEndpoints
                 if (error is null && sessions is not null)
                 {
                     if (rosterCache is not null)
-                        rosterCache.RecordReachable(d.DirectorId, sessions);
+                        rosterCache.RecordReachable(reqTenant.Value, d.DirectorId, sessions);
                     reachability.Add(new DirectorReachabilityDto
                     {
                         DirectorId = d.DirectorId,
@@ -694,7 +707,7 @@ internal static class GatewayEndpoints
                     continue;
                 }
 
-                var projection = rosterCache.RecordUnreachable(d.DirectorId, reason);
+                var projection = rosterCache.RecordUnreachable(reqTenant.Value, d.DirectorId, reason);
                 if (projection.State == FleetReachabilityState.Wobbly && projection.StaleSessions is not null)
                 {
                     reachability.Add(new DirectorReachabilityDto
@@ -1161,11 +1174,18 @@ internal static class GatewayEndpoints
 
         app.MapGet("/sessions/{sid}", async (HttpContext ctx, string sid) =>
         {
+            // Hosted Multi-Tenancy (session-serving PR1): resolve the request's tenant from the authenticated
+            // device key and DENY (403) when hosted returns no bound tenant - a by-id read must never fall back
+            // to Local or SYSTEM. On self-host this is always Local.
+            var reqTenant = ResolveReadTenant(ctx, tenantBoundary);
+            if (reqTenant is null)
+                return Results.Json(new { error = "no tenant is bound to this request" }, statusCode: StatusCodes.Status403Forbidden);
+
             // LocateSessionAsync resolves the OWNING DIRECTOR (and refreshes the ownership record). It also
             // hands back a session copy, which we deliberately drop: that copy is not part of the role
             // universe assembled below, and stamping an instance the role pass never walked would leave
             // SessionRole null and fold a colour from it. We take our instance from the fleet instead.
-            var (director, _) = await LocateSessionAsync(registry, sid, pushedSessions, streamStaleResolved, owners);
+            var (director, _) = await LocateSessionAsync(registry, sid, pushedSessions, streamStaleResolved, reqTenant.Value, owners);
             if (director is null)
                 return Results.NotFound(new { error = "session not found across any director" });
 
@@ -1178,7 +1198,7 @@ internal static class GatewayEndpoints
             // this route - the Cockpit and the phone read the roster and go through client-core, which throws
             // if the fields are missing, and neither app calls this. The fix is justified by the contract the
             // DTO documents, not by a user-visible bug, and no such bug is claimed.
-            var byDirector = FleetByDirector(registry, pushedSessions, streamStaleResolved);
+            var byDirector = FleetByDirector(registry, pushedSessions, streamStaleResolved, reqTenant.Value);
             var fleet = byDirector.Values.SelectMany(x => x).ToList();
             var session = fleet.FirstOrDefault(x => string.Equals(x.SessionId, sid, StringComparison.Ordinal));
             if (session is null)
@@ -1204,7 +1224,7 @@ internal static class GatewayEndpoints
         // Director's own Control API, never through the Gateway.
         app.MapDelete("/sessions/{sid}", async (string sid) =>
         {
-            var (director, session) = await LocateSessionAsync(registry, sid, pushedSessions, streamStaleResolved, owners);
+            var (director, session) = await LocateSessionAsync(registry, sid, pushedSessions, streamStaleResolved, TenantId.Local, owners);
             if (session is null || director is null)
                 return Results.NotFound(new { error = "session not found across any director" });
             // Post-cut: tunnel-only. A null result (Director not connected) stays 502 like a failed kill, but now
@@ -1222,7 +1242,7 @@ internal static class GatewayEndpoints
         // owning Director's reaper does the actual removal. Body is optional ({ "reason": "..." }).
         app.MapPost("/sessions/{sid}/request-deletion", async (string sid, SessionDeletionRequest? body, CancellationToken ct) =>
         {
-            var (director, session) = await LocateSessionAsync(registry, sid, pushedSessions, streamStaleResolved);
+            var (director, session) = await LocateSessionAsync(registry, sid, pushedSessions, streamStaleResolved, TenantId.Local);
             if (session is null || director is null)
                 return Results.NotFound(new { error = "session not found across any director" });
             // Tunnel-only. The Ok result is success and synthesizes the { pendingDeletion } body; a null result
@@ -1236,7 +1256,7 @@ internal static class GatewayEndpoints
         // Forward "cancel the pending deletion" to the owning Director (grace-window undo).
         app.MapDelete("/sessions/{sid}/request-deletion", async (string sid, CancellationToken ct) =>
         {
-            var (director, session) = await LocateSessionAsync(registry, sid, pushedSessions, streamStaleResolved);
+            var (director, session) = await LocateSessionAsync(registry, sid, pushedSessions, streamStaleResolved, TenantId.Local);
             if (session is null || director is null)
                 return Results.NotFound(new { error = "session not found across any director" });
             // Gateway Cleanup (Phase 2, PR C): tunnel-first, HTTP fallback on a null return (byte-identical).
@@ -1251,7 +1271,7 @@ internal static class GatewayEndpoints
         // Session View on the gateway side can render WHY a dot is the color it is.
         app.MapGet("/sessions/{sid}/wingman", async (string sid, CancellationToken ct) =>
         {
-            var (director, session) = await LocateSessionAsync(registry, sid, pushedSessions, streamStaleResolved, owners);
+            var (director, session) = await LocateSessionAsync(registry, sid, pushedSessions, streamStaleResolved, TenantId.Local, owners);
             if (session is null || director is null)
                 return Results.NotFound(new { error = "session not found across any director" });
             // Tunnel-only. The Ok body IS the WingmanViewDto JSON, passed through exactly as the HTTP body.
@@ -1269,7 +1289,7 @@ internal static class GatewayEndpoints
             var explain = string.Equals(req?.Mode, "explain", StringComparison.OrdinalIgnoreCase);
             if (req is null || (!explain && string.IsNullOrWhiteSpace(req.Question)))
                 return Results.BadRequest(new WingmanAskResult { Status = "bad_request", Error = "question is required" });
-            var (director, session) = await LocateSessionAsync(registry, sid, pushedSessions, streamStaleResolved, owners);
+            var (director, session) = await LocateSessionAsync(registry, sid, pushedSessions, streamStaleResolved, TenantId.Local, owners);
             if (session is null || director is null)
                 return Results.NotFound(new { error = "session not found across any director" });
             // Gateway Cleanup (Phase 2, PR C): tunnel-first. This is a SLOW LLM call - the request ct threads
@@ -1288,7 +1308,7 @@ internal static class GatewayEndpoints
         // Forward "set the session goal" to the owning Director. Body forwards verbatim.
         app.MapPost("/sessions/{sid}/wingman/goal", async (string sid, WingmanGoalRequest req, CancellationToken ct) =>
         {
-            var (director, session) = await LocateSessionAsync(registry, sid, pushedSessions, streamStaleResolved, owners);
+            var (director, session) = await LocateSessionAsync(registry, sid, pushedSessions, streamStaleResolved, TenantId.Local, owners);
             if (session is null || director is null)
                 return Results.NotFound(new { error = "session not found across any director" });
             var goalReq = req ?? new WingmanGoalRequest();
@@ -1305,7 +1325,7 @@ internal static class GatewayEndpoints
         // stream first (DirectorCommandRouter), HTTP fallback otherwise. The Ok body is the updated SessionDto.
         app.MapPost("/sessions/{sid}/role", async (string sid, SetRoleRequest req, CancellationToken ct) =>
         {
-            var (director, session) = await LocateSessionAsync(registry, sid, pushedSessions, streamStaleResolved, owners);
+            var (director, session) = await LocateSessionAsync(registry, sid, pushedSessions, streamStaleResolved, TenantId.Local, owners);
             if (session is null || director is null)
                 return Results.NotFound(new { error = "session not found across any director" });
             var roleReq = req ?? new SetRoleRequest();
@@ -1327,7 +1347,7 @@ internal static class GatewayEndpoints
         // The registry mutation stands even if that push times out - the periodic sweep reconciles the rail.
         app.MapPost("/sessions/{sid}/hold", async (string sid, HoldRequest req, CancellationToken ct) =>
         {
-            var (director, session) = await LocateSessionAsync(registry, sid, pushedSessions, streamStaleResolved, owners);
+            var (director, session) = await LocateSessionAsync(registry, sid, pushedSessions, streamStaleResolved, TenantId.Local, owners);
             if (session is null || director is null)
                 return Results.NotFound(new { error = "session not found across any director" });
             var holdReq = req ?? new HoldRequest();
@@ -1437,7 +1457,7 @@ internal static class GatewayEndpoints
         {
             if (transcribingSessions is null)
                 return Results.StatusCode(StatusCodes.Status503ServiceUnavailable);
-            var (director, session) = await LocateSessionAsync(registry, sid, pushedSessions, streamStaleResolved, owners);
+            var (director, session) = await LocateSessionAsync(registry, sid, pushedSessions, streamStaleResolved, TenantId.Local, owners);
             if (session is null || director is null)
                 return Results.NotFound(new { error = "session not found across any director" });
             var transcribing = req?.Transcribing ?? false;
@@ -1453,7 +1473,7 @@ internal static class GatewayEndpoints
             if (req is null)
                 return Results.BadRequest(new { error = "request body is required" });
 
-            var (director, session) = await LocateSessionAsync(registry, sid, pushedSessions, streamStaleResolved, owners);
+            var (director, session) = await LocateSessionAsync(registry, sid, pushedSessions, streamStaleResolved, TenantId.Local, owners);
             if (session is null || director is null)
                 return Results.NotFound(new { error = "session not found across any director" });
 
@@ -1482,7 +1502,7 @@ internal static class GatewayEndpoints
 
         app.MapGet("/sessions/{sid}/buffer", async (string sid, int? lines, bool? raw, long? since, CancellationToken ct) =>
         {
-            var (director, session) = await LocateSessionAsync(registry, sid, pushedSessions, streamStaleResolved, owners);
+            var (director, session) = await LocateSessionAsync(registry, sid, pushedSessions, streamStaleResolved, TenantId.Local, owners);
             if (session is null)
                 return Results.NotFound(new { error = "session not found across any director" });
 
@@ -1514,7 +1534,7 @@ internal static class GatewayEndpoints
             // so it stays null and is correctly excluded.
             req.Surface = (httpCtx.Items.TryGetValue(AuthMiddleware.DeviceTypeItemKey, out var dt) ? dt as string : null) ?? "unknown";
 
-            var (director, session) = await LocateSessionAsync(registry, sid, pushedSessions, streamStaleResolved, owners);
+            var (director, session) = await LocateSessionAsync(registry, sid, pushedSessions, streamStaleResolved, TenantId.Local, owners);
             if (session is null || director is null)
                 return Results.NotFound(new { error = "session not found across any director" });
 
@@ -1579,7 +1599,7 @@ internal static class GatewayEndpoints
 
         app.MapPost("/sessions/{sid}/interrupt", async (string sid) =>
         {
-            var (director, session) = await LocateSessionAsync(registry, sid, pushedSessions, streamStaleResolved, owners);
+            var (director, session) = await LocateSessionAsync(registry, sid, pushedSessions, streamStaleResolved, TenantId.Local, owners);
             if (session is null || director is null)
                 return Results.NotFound(new { error = "session not found across any director" });
 
@@ -1593,7 +1613,7 @@ internal static class GatewayEndpoints
 
         app.MapPost("/sessions/{sid}/escape", async (string sid) =>
         {
-            var (director, session) = await LocateSessionAsync(registry, sid, pushedSessions, streamStaleResolved, owners);
+            var (director, session) = await LocateSessionAsync(registry, sid, pushedSessions, streamStaleResolved, TenantId.Local, owners);
             if (session is null || director is null)
                 return Results.NotFound(new { error = "session not found across any director" });
 
@@ -1610,7 +1630,7 @@ internal static class GatewayEndpoints
         // folder (same machine as the session) and returns the saved absolute path.
         app.MapPost("/sessions/{sid}/upload-image", async (string sid, HttpContext ctx) =>
         {
-            var (director, session) = await LocateSessionAsync(registry, sid, pushedSessions, streamStaleResolved, owners);
+            var (director, session) = await LocateSessionAsync(registry, sid, pushedSessions, streamStaleResolved, TenantId.Local, owners);
             if (session is null || director is null)
                 return Results.NotFound(new { error = "session not found across any director" });
 
@@ -2149,7 +2169,7 @@ internal static class GatewayEndpoints
 
         app.MapGet("/sessions/{sid}/summary", async (string sid, CancellationToken ct) =>
         {
-            var (director, session) = await LocateSessionAsync(registry, sid, pushedSessions, streamStaleResolved, owners);
+            var (director, session) = await LocateSessionAsync(registry, sid, pushedSessions, streamStaleResolved, TenantId.Local, owners);
             if (session is null)
                 return Results.NotFound(new { error = "session not found across any director" });
             // Tunnel-only. The Director's summary core sets DirectorId in its body, so the pass-through matches.
@@ -2176,7 +2196,7 @@ internal static class GatewayEndpoints
                 return Results.Json(new { error = "missing or invalid token" }, statusCode: StatusCodes.Status401Unauthorized);
             // Issue #1240: pass the owner cache so a warm session is resolved with ONE Director probe
             // instead of a full fleet fan-out (the same fast path every other per-session route now uses).
-            var (director, session) = await LocateSessionAsync(registry, sid, pushedSessions, streamStaleResolved, owners);
+            var (director, session) = await LocateSessionAsync(registry, sid, pushedSessions, streamStaleResolved, TenantId.Local, owners);
             if (session is null || director is null)
                 return Results.NotFound(new { error = "session not found across any director" });
             // Tunnel-only (verb "git-status"). The Ok body IS the GitSnapshot JSON, passed through unchanged.
@@ -2197,7 +2217,7 @@ internal static class GatewayEndpoints
         app.MapGet("/sessions/{sid}/handover", async (string sid, CancellationToken ct) =>
         {
             // Issue #1240: resolve the owner through the same cache fast path as every other per-session route.
-            var (director, session) = await LocateSessionAsync(registry, sid, pushedSessions, streamStaleResolved, owners);
+            var (director, session) = await LocateSessionAsync(registry, sid, pushedSessions, streamStaleResolved, TenantId.Local, owners);
             if (session is null || director is null)
                 return Results.NotFound(new { error = "session not found across any director" });
             // Tunnel-only. The Director's handover core sets DirectorId in its body, so the pass-through matches.
@@ -2213,7 +2233,7 @@ internal static class GatewayEndpoints
         // is just routing.
         app.MapGet("/sessions/{sid}/recap", async (string sid, CancellationToken ct) =>
         {
-            var (director, session) = await LocateSessionAsync(registry, sid, pushedSessions, streamStaleResolved, owners);
+            var (director, session) = await LocateSessionAsync(registry, sid, pushedSessions, streamStaleResolved, TenantId.Local, owners);
             if (session is null || director is null)
                 return Results.NotFound(new { error = "session not found across any director" });
             // Tunnel-only (read the cached recap). This is the READ; the slow generate (POST) is handled separately.
@@ -2226,7 +2246,7 @@ internal static class GatewayEndpoints
 
         app.MapPost("/sessions/{sid}/recap", async (string sid, HttpContext ctx) =>
         {
-            var (director, session) = await LocateSessionAsync(registry, sid, pushedSessions, streamStaleResolved, owners);
+            var (director, session) = await LocateSessionAsync(registry, sid, pushedSessions, streamStaleResolved, TenantId.Local, owners);
             if (session is null || director is null)
                 return Results.NotFound(new { error = "session not found across any director" });
             var model = ctx.Request.Query["model"].ToString();
@@ -2260,7 +2280,7 @@ internal static class GatewayEndpoints
 
             FileLog.Write($"[GatewayEndpoints] POST /handover: from={req.FromSessionId} toSid={req.ToSessionId} toRepo={req.ToRepoPath} toDir={req.ToDirectorId}");
 
-            var (sourceDirector, sourceSession) = await LocateSessionAsync(registry, req.FromSessionId, pushedSessions, streamStaleResolved, owners);
+            var (sourceDirector, sourceSession) = await LocateSessionAsync(registry, req.FromSessionId, pushedSessions, streamStaleResolved, TenantId.Local, owners);
             if (sourceSession is null || sourceDirector is null)
                 return Results.NotFound(new { error = "source session not found across any director" });
 
@@ -2367,7 +2387,7 @@ internal static class GatewayEndpoints
             var targetScopes = new List<(string SessionId, BroadcastScope Scope)>();
             foreach (var sid in req.SessionIds)
             {
-                var (d, s) = await LocateSessionAsync(registry, sid, pushedSessions, streamStaleResolved, owners);
+                var (d, s) = await LocateSessionAsync(registry, sid, pushedSessions, streamStaleResolved, TenantId.Local, owners);
                 if (d is not null && s is not null)
                 {
                     directorBySession[sid] = d;
@@ -2383,7 +2403,7 @@ internal static class GatewayEndpoints
             BroadcastScope? senderScope = null;
             if (!string.IsNullOrWhiteSpace(req.FromSessionId))
             {
-                var (sd, ss) = await LocateSessionAsync(registry, req.FromSessionId, pushedSessions, streamStaleResolved, owners);
+                var (sd, ss) = await LocateSessionAsync(registry, req.FromSessionId, pushedSessions, streamStaleResolved, TenantId.Local, owners);
                 if (sd is not null && ss is not null) senderScope = BuildBroadcastScope(sd, ss);
             }
 
@@ -2642,17 +2662,27 @@ internal static class GatewayEndpoints
     /// to the cache.
     /// </summary>
     internal static Dictionary<string, IReadOnlyList<SessionDto>> FleetByDirector(
-        DirectorRegistry registry, Streaming.PushedSessionStore? pushedSessions, TimeSpan streamStale)
+        DirectorRegistry registry, Streaming.PushedSessionStore? pushedSessions, TimeSpan streamStale,
+        TenantId tenant)
     {
         var byDirector = new Dictionary<string, IReadOnlyList<SessionDto>>(StringComparer.Ordinal);
         if (pushedSessions is null) return byDirector;
         foreach (var d in registry.ListDirectors())
         {
-            var cached = pushedSessions.TryGetFresh(TenantId.Local, d.DirectorId, streamStale);
+            var cached = pushedSessions.TryGetFresh(tenant, d.DirectorId, streamStale);
             if (cached is not null) byDirector[d.DirectorId] = cached;
         }
         return byDirector;
     }
+
+    /// <summary>
+    /// Resolve a request's tenant for a session READ (Hosted Multi-Tenancy, session-serving PR1). Null means
+    /// the caller must be DENIED (403): on the hosted Gateway an authenticated request whose device key has no
+    /// bound tenant is refused, NEVER served the Local partition (which would be a wrong-tenant read waiting to
+    /// happen). Self-host, or no boundary (older callers / tests), is always Local - behavior unchanged.
+    /// </summary>
+    private static TenantId? ResolveReadTenant(HttpContext ctx, Tenancy.HostedTenantBoundary? boundary)
+        => boundary is null ? TenantId.Local : boundary.ResolveRequestTenant(ctx);
 
     /// <summary>
     /// THE fold. Resolve every session's role from the WHOLE fleet, then stamp the presentation fold
@@ -2926,11 +2956,12 @@ internal static class GatewayEndpoints
     internal static Task<(DirectorDto? director, SessionDto? session)> LocateSessionAsync(
         DirectorRegistry registry, string sid,
         Streaming.PushedSessionStore? pushedSessions, TimeSpan streamStale,
+        TenantId tenant,
         SessionOwnerCache? owners = null)
     {
         if (pushedSessions is not null)
         {
-            var located = pushedSessions.TryLocate(TenantId.Local, sid, streamStale);
+            var located = pushedSessions.TryLocate(tenant, sid, streamStale);
             if (located is not null)
             {
                 var (directorId, pushedSession) = located.Value;

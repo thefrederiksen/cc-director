@@ -1,3 +1,4 @@
+using CcDirector.Core.Tenancy;
 using CcDirector.Gateway.Contracts;
 using CcDirector.Gateway.Discovery;
 using CcDirector.Gateway.Streaming;
@@ -54,8 +55,11 @@ internal sealed class SessionVerbClient
         PushedSessionStore? pushedSessions, TimeSpan streamStale, SessionOwnerCache? owners,
         DirectorCommandRouter.SendDirectorCommandAsync? sendCommand)
     {
+        // Hosted Multi-Tenancy: SessionVerbClient is the tunnel-only RELAY caller (voice/verb sends); a later
+        // slice threads the request tenant here. For now it serves Local - correct on self-host, and an empty
+        // Local read on hosted means no wrong-tenant session is ever resolved (degrades to null, never leaks).
         var (director, session) = await GatewayEndpoints.LocateSessionAsync(
-            registry, sid, pushedSessions, streamStale, owners);
+            registry, sid, pushedSessions, streamStale, TenantId.Local, owners);
         if (director is null || session is null)
             return null;
         return new SessionVerbClient(director, sendCommand);

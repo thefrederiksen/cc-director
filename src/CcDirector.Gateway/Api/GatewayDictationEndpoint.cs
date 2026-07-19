@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using CcDirector.Core.HostedAi;
 using CcDirector.Core.Storage;
+using CcDirector.Core.Tenancy;
 using CcDirector.Core.Utilities;
 using CcDirector.Gateway.Contracts;
 using CcDirector.Gateway.Discovery;
@@ -407,7 +408,7 @@ internal static class GatewayDictationEndpoint
             // Gateway Cleanup mission, Phase 2: resolve the owner push-store-first (no HTTP fan-out) and gate
             // on an exited session, exactly as the old LocateAsync did, then reach it through the tunnel.
             var (director, session) = await GatewayEndpoints.LocateSessionAsync(
-                registry, sid, pushedSessions, streamStale, owners);
+                registry, sid, pushedSessions, streamStale, TenantId.Local, owners);
             if (director is null || session is null)
                 return DictationOutcome.Error(StatusCodes.Status404NotFound, "session not found");
             if (IsExited(session))
@@ -473,7 +474,7 @@ internal static class GatewayDictationEndpoint
                 // today (today re-baselines by exactly zero) and it is monotonic, so a later failed attempt
                 // can only improve it - but the residual lag window is real and is not closed here.
                 var (_, freshSession) = await GatewayEndpoints.LocateSessionAsync(
-                    registry, sid, pushedSessions, streamStale, owners);
+                    registry, sid, pushedSessions, streamStale, TenantId.Local, owners);
                 if (freshSession is not null)
                     uploads.RecordFailedDeliveryBaseline(uploadId, freshSession.TotalBufferBytes);
                 FileLog.Write($"[GatewayDictation] complete sid={sid} uploadId={uploadId}: submit FAILED ({err}); " +
