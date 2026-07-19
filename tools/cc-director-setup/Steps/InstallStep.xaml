@@ -78,97 +78,20 @@
                     </Grid>
                 </Border>
 
-                <!-- Tools section -->
+                <!-- Tools section: the cc-* command-line tools are provisioned by the app on first launch,
+                     not by the installer (that kept the install snappy). This is an honest note, not a
+                     live install row. -->
                 <Border Background="#2A2D2E" CornerRadius="6" Padding="16">
                     <StackPanel>
-                        <Grid>
-                            <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="*" />
-                                <ColumnDefinition Width="Auto" />
-                            </Grid.ColumnDefinitions>
-
-                            <StackPanel Grid.Column="0">
-                                <TextBlock Text="Tools"
-                                           Foreground="White"
-                                           FontSize="16"
-                                           FontWeight="SemiBold" />
-                                <TextBlock x:Name="ToolsSummary"
-                                           Text="0 tools"
-                                           Foreground="#888888"
-                                           FontSize="12"
-                                           Margin="0,2,0,0" />
-                                <ProgressBar x:Name="ToolsOverallProgress"
-                                             Height="3" Margin="0,8,24,0"
-                                             Background="#3C3C3C" Foreground="#007ACC"
-                                             BorderThickness="0"
-                                             Visibility="Collapsed" />
-                            </StackPanel>
-
-                            <TextBlock x:Name="ToolsStatus"
-                                       Grid.Column="1"
-                                       Text="Pending"
-                                       Foreground="#CCCCCC"
-                                       FontSize="13" FontWeight="SemiBold"
-                                       VerticalAlignment="Center" />
-                        </Grid>
-
-                        <!-- Expandable tool details -->
-                        <Expander x:Name="ToolsExpander"
-                                  Header="Show details"
-                                  Foreground="#888888"
-                                  FontSize="11"
-                                  Margin="0,12,0,0"
-                                  IsExpanded="False">
-                            <ItemsControl x:Name="ToolList" Margin="0,8,0,0">
-                                <ItemsControl.ItemTemplate>
-                                    <DataTemplate>
-                                        <Grid Margin="0,0,0,3">
-                                            <Grid.ColumnDefinitions>
-                                                <ColumnDefinition Width="*" />
-                                                <ColumnDefinition Width="60" />
-                                                <ColumnDefinition Width="70" />
-                                            </Grid.ColumnDefinitions>
-
-                                            <TextBlock Text="{Binding Name}"
-                                                       Foreground="#AAAAAA"
-                                                       FontSize="12" />
-
-                                            <TextBlock Grid.Column="1"
-                                                       Text="{Binding SizeText}"
-                                                       Foreground="#666666"
-                                                       FontSize="11"
-                                                       HorizontalAlignment="Right" />
-
-                                            <TextBlock Grid.Column="2"
-                                                       Text="{Binding Status}"
-                                                       FontSize="11"
-                                                       FontWeight="SemiBold"
-                                                       HorizontalAlignment="Right">
-                                                <TextBlock.Style>
-                                                    <Style TargetType="TextBlock">
-                                                        <Setter Property="Foreground" Value="#666666" />
-                                                        <Style.Triggers>
-                                                            <DataTrigger Binding="{Binding Status}" Value="Done">
-                                                                <Setter Property="Foreground" Value="#22C55E" />
-                                                            </DataTrigger>
-                                                            <DataTrigger Binding="{Binding Status}" Value="Downloading">
-                                                                <Setter Property="Foreground" Value="#007ACC" />
-                                                            </DataTrigger>
-                                                            <DataTrigger Binding="{Binding Status}" Value="Failed">
-                                                                <Setter Property="Foreground" Value="#CC4444" />
-                                                            </DataTrigger>
-                                                            <DataTrigger Binding="{Binding Status}" Value="Locked">
-                                                                <Setter Property="Foreground" Value="#E5A100" />
-                                                            </DataTrigger>
-                                                        </Style.Triggers>
-                                                    </Style>
-                                                </TextBlock.Style>
-                                            </TextBlock>
-                                        </Grid>
-                                    </DataTemplate>
-                                </ItemsControl.ItemTemplate>
-                            </ItemsControl>
-                        </Expander>
+                        <TextBlock Text="Tools"
+                                   Foreground="White"
+                                   FontSize="16"
+                                   FontWeight="SemiBold" />
+                        <TextBlock Text="Your cc-* command-line tools finish setting up the first time you open DevThrottle."
+                                   Foreground="#888888"
+                                   FontSize="12"
+                                   TextWrapping="Wrap"
+                                   Margin="0,2,0,0" />
                     </StackPanel>
                 </Border>
 

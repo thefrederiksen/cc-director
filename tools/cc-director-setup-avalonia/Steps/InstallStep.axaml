@@ -1,10 +1,6 @@
 <UserControl xmlns="https://github.com/avaloniaui"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-             xmlns:converters="clr-namespace:CcDirectorSetup.Converters"
              x:Class="CcDirectorSetup.Steps.InstallStep">
-    <UserControl.Resources>
-        <converters:HexColorToBrushConverter x:Key="HexToBrush" />
-    </UserControl.Resources>
     <DockPanel>
         <StackPanel DockPanel.Dock="Top">
             <TextBlock x:Name="HeadingText"
@@ -82,77 +78,20 @@
                     </Grid>
                 </Border>
 
-                <!-- Tools section -->
+                <!-- Tools section: the cc-* command-line tools are provisioned by the app on first launch,
+                     not by the installer (that kept the install snappy). This is an honest note, not a
+                     live install row. -->
                 <Border Background="#2A2D2E" CornerRadius="6" Padding="16">
                     <StackPanel>
-                        <Grid>
-                            <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="*" />
-                                <ColumnDefinition Width="Auto" />
-                            </Grid.ColumnDefinitions>
-
-                            <StackPanel Grid.Column="0">
-                                <TextBlock Text="Tools"
-                                           Foreground="White"
-                                           FontSize="16"
-                                           FontWeight="SemiBold" />
-                                <TextBlock x:Name="ToolsSummary"
-                                           Text="0 tools"
-                                           Foreground="#888888"
-                                           FontSize="12"
-                                           Margin="0,2,0,0" />
-                                <ProgressBar x:Name="ToolsOverallProgress"
-                                             Height="3" Margin="0,8,24,0"
-                                             Background="#3C3C3C" Foreground="#007ACC"
-                                             IsVisible="False"
-                                             Minimum="0" Maximum="100" />
-                            </StackPanel>
-
-                            <TextBlock x:Name="ToolsStatus"
-                                       Grid.Column="1"
-                                       Text="Pending"
-                                       Foreground="#CCCCCC"
-                                       FontSize="13" FontWeight="SemiBold"
-                                       VerticalAlignment="Center" />
-                        </Grid>
-
-                        <!-- Tool details -->
-                        <Expander Header="Show details"
-                                  Foreground="#888888"
-                                  FontSize="11"
-                                  Margin="0,12,0,0"
-                                  IsExpanded="False">
-                            <ItemsControl x:Name="ToolList" Margin="0,8,0,0">
-                                <ItemsControl.ItemTemplate>
-                                    <DataTemplate>
-                                        <Grid Margin="0,0,0,3">
-                                            <Grid.ColumnDefinitions>
-                                                <ColumnDefinition Width="*" />
-                                                <ColumnDefinition Width="60" />
-                                                <ColumnDefinition Width="70" />
-                                            </Grid.ColumnDefinitions>
-
-                                            <TextBlock Text="{Binding Name}"
-                                                       Foreground="#AAAAAA"
-                                                       FontSize="12" />
-
-                                            <TextBlock Grid.Column="1"
-                                                       Text="{Binding SizeText}"
-                                                       Foreground="#666666"
-                                                       FontSize="11"
-                                                       HorizontalAlignment="Right" />
-
-                                            <TextBlock Grid.Column="2"
-                                                       Text="{Binding Status}"
-                                                       FontSize="11"
-                                                       FontWeight="SemiBold"
-                                                       HorizontalAlignment="Right"
-                                                       Foreground="{Binding StatusColor, Converter={StaticResource HexToBrush}}" />
-                                        </Grid>
-                                    </DataTemplate>
-                                </ItemsControl.ItemTemplate>
-                            </ItemsControl>
-                        </Expander>
+                        <TextBlock Text="Tools"
+                                   Foreground="White"
+                                   FontSize="16"
+                                   FontWeight="SemiBold" />
+                        <TextBlock Text="Your cc-* command-line tools finish setting up the first time you open DevThrottle."
+                                   Foreground="#888888"
+                                   FontSize="12"
+                                   TextWrapping="Wrap"
+                                   Margin="0,2,0,0" />
                     </StackPanel>
                 </Border>
 
