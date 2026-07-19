@@ -117,13 +117,17 @@ public sealed class GatewayAddsAFactTests
         Assert.Equal("None", s.BriefingState);
     }
 
-    /// <summary>No generation, no window. The control: if this ever goes yellow the fix has invented a
-    /// state rather than moved one.</summary>
+    /// <summary>Outside the voice window - nothing generating AND the audio is already ready - the row is
+    /// red "needs you", and the Director's "None" is still readable. The control: a session the Gateway is
+    /// NOT preparing voice for folds red on the Gateway's own rule, not on a hijacked field. (Since the
+    /// 2026-07-19 widening, "not generating" alone is no longer outside the window - a session with no audio
+    /// yet is still yellow; it is READY audio that ends the yellow, so this control pins audioReady=true.)</summary>
     [Fact]
-    public void NotGenerating_IsNotTheGatewayWindow()
+    public void NotGenerating_AudioReady_IsNotTheGatewayWindow()
     {
         var s = VoiceGenerating(directorBriefingState: "None");
         s.VoiceGenerating = false;
+        s.VoiceAudioReady = true;
 
         Assert.Equal("red", SessionOrdering.EffectiveColor(s));
         Assert.Equal("None", s.BriefingState);
