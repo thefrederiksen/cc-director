@@ -136,6 +136,7 @@ public static class Program
               install --role <r>         Install/update all components for a role
               signin                     Sign in (or create a free account); store it for the Gateway (Windows)
               enroll [--gateway <url>]   Join this workstation to its gateway (sign in, then enroll)
+              enroll --hosted            Join DevThrottle's hosted gateway instead of your own
               uninstall --role <r>       Remove install-owned files (preserves your data)
               rollback <component>       Restore the previous build and pin away from current
               version                    Print this CLI's product version
@@ -143,6 +144,7 @@ public static class Program
             Options:
               --role workstation|gateway     Install type (default workstation)
               --gateway <url>                Gateway to enroll against (enroll; else auto-discover)
+              --hosted                       Enroll at DevThrottle's hosted gateway (enroll; not with --gateway)
               --manifest <path|latest>       Release source (default latest)
               --release-dir <dir>            Use a local directory as the release (offline)
               --component <id|all>           Limit update to one component (default all)
