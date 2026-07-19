@@ -39,6 +39,20 @@ namespace CcDirector.Gateway.Api;
 /// the tombstone is retired only by the client ack. Every route is token-gated via
 /// <see cref="AuthMiddleware.HasValidToken"/> so it holds even when the production tray Gateway runs with
 /// the global auth middleware off.
+///
+/// TENANT-KEYED (issue #1884). Authenticating a DEVICE is not the same as authorizing an UPLOAD. Every leg -
+/// upload, chunk, complete, ack, abandon - now resolves the request's tenant from the authenticated device
+/// key and works ONLY inside that tenant's partition of <see cref="VoiceUploadStore"/>, and the two static
+/// in-memory caches below are keyed by tenant as well as upload id. Before this, an upload id was the whole
+/// key: after account A completed upload id X, account B posting with <c>Idempotency-Key: X</c> was handed
+/// A's terminal record - and A's TRANSCRIPT - and before A reached a terminal state B could overwrite A's
+/// chunks, ack or abandon A's record, or race its completion. A GUID is not a tenant boundary; upload ids
+/// travel in client logs, retries and store-and-forward queues.
+///
+/// NOTE, deliberately: this makes the STATE safe, it does not make dictation work on hosted. The session
+/// locate inside the completion still resolves in the LOCAL partition, so a hosted session is not found and
+/// dictation stays dead there exactly as it is today (issue #1884 part (a), held pending a separate ruling).
+/// Partitioning first is the point: converting the route first would ARM this store rather than close it.
 /// </summary>
 internal static class GatewayDictationEndpoint
 {
@@ -47,26 +61,65 @@ internal static class GatewayDictationEndpoint
     // (non-resumed) sends always inject; the 1-hour staging sweep is the hard backstop for staleness.
     private const long MovedOnBufferGrowthBytes = 512;
 
-    // In-memory single-flight for complete, keyed by uploadId: concurrent or retried completes await the
-    // SAME in-flight work so the turn is submitted at most once WHILE this instance holds the entry. The
-    // entry is dropped as soon as the work settles - the DURABLE de-dupe (a delivered/abandoned upload id
-    // never re-injecting, past any age and across a restart) is owned by the on-disk delivery record
-    // (issue #1183), not by this cache, so there is no age-swept idempotency window to reopen the hole.
+    // In-memory single-flight for complete, keyed by TENANT AND uploadId: concurrent or retried completes
+    // await the SAME in-flight work so the turn is submitted at most once WHILE this instance holds the
+    // entry. The entry is dropped as soon as the work settles - the DURABLE de-dupe (a delivered/abandoned
+    // upload id never re-injecting, past any age and across a restart) is owned by the on-disk delivery
+    // record (issue #1183), not by this cache, so there is no age-swept idempotency window to reopen the
+    // hole.
+    //
+    // The TENANT in the key is issue #1884. This dictionary is static (process-wide) and used to be keyed by
+    // upload id alone, so whichever account's complete arrived first supplied the cached run to every other
+    // account posting that id - handing one account's transcript to another through a purely in-memory path
+    // that no on-disk partition can guard. The store partition and this key are two separate defences and
+    // both are needed: the same upload id is now perfectly legal in two tenants at once.
     private sealed record CompleteEntry(Lazy<Task<DictationOutcome>> Task);
     private static readonly ConcurrentDictionary<string, CompleteEntry> _completes = new();
 
-    // uploadId -> sessionId, captured at register so the chunk handler (which only has the uploadId)
-    // can refresh the session's orange "Transcribing..." heartbeat as chunks stream in (issue #1126).
-    // Pruned when the upload reaches a terminal completion; a leaked entry for a never-completed upload
-    // is a single guid-pair and is bounded by real abandoned-upload volume.
+    // (tenant, uploadId) -> sessionId, captured at register so the chunk handler (which only has the
+    // uploadId) can refresh the session's orange "Transcribing..." heartbeat as chunks stream in (issue
+    // #1126). Pruned when the upload reaches a terminal completion; a leaked entry for a never-completed
+    // upload is a single guid-pair and is bounded by real abandoned-upload volume. Tenant-keyed for the same
+    // reason as _completes: it is static, and a session id is not one account's to hand to another.
     private static readonly ConcurrentDictionary<string, string> _uploadSids = new();
+
+    /// <summary>
+    /// The key both static caches use: the owning tenant AND the canonical staging spelling of the upload id.
+    /// The id is canonicalized through the store's own normalizer so two spellings of one GUID cannot become
+    /// two cache entries for one staging directory, and the tenant is first so a key can never be read as
+    /// belonging to a different account by accident.
+    /// </summary>
+    internal static string CacheKey(TenantId tenant, string uploadId)
+        => tenant.Value + "|" + (VoiceUploadStore.NormalizeUploadId(uploadId) ?? "invalid");
+
+    /// <summary>
+    /// Test seam: invoked with the cache key at the moment a single-flight completion entry is CREATED, so a
+    /// test can bind the real call site rather than a helper. Null in production, never assigned outside
+    /// tests. It exists because "the cache is tenant-keyed" is a claim about the GetOrAdd call, and a unit
+    /// test of the key function alone would stay green if that call went back to keying on the upload id.
+    /// </summary>
+    internal static Action<string>? OnCompleteEntryCreatedForTests;
+
+    /// <summary>
+    /// Resolve the request's tenant from the AUTHENTICATED device key the auth layer stashed - the same seam
+    /// the prompt log and the cockpit read path use. Null means DENY: on hosted, an authenticated request
+    /// whose key has no bound tenant is refused, never served the local partition. Self-host, or no boundary
+    /// (older callers and tests), is always Local.
+    /// </summary>
+    private static TenantId? ResolveTenant(HttpContext ctx, Tenancy.HostedTenantBoundary? boundary)
+        => boundary is null ? TenantId.Local : boundary.ResolveRequestTenant(ctx);
+
+    private static IResult NoTenantResult()
+        => Results.Json(new { error = "no tenant is bound to this request" },
+            statusCode: StatusCodes.Status403Forbidden);
 
     public static void Map(IEndpointRouteBuilder app, DirectorRegistry registry,
         SessionOwnerCache? owners, string token, GatewayTranscriptionService transcription,
         TranscribingSessions transcribingSessions, VoiceUploadStore uploads, Pairing.DeviceRegistry devices,
         Streaming.PushedSessionStore? pushedSessions = null,
         DirectorCommandRouter.SendDirectorCommandAsync? sendCommand = null,
-        TimeSpan? streamStale = null)
+        TimeSpan? streamStale = null,
+        Tenancy.HostedTenantBoundary? tenantBoundary = null)
     {
         // Gateway Cleanup mission, Phase 2 (PR E-B): resolve the owning Director push-store-first and inject
         // the dictation through the tunnel-first SessionVerbClient (the delivery marker rides the PromptRequest
@@ -76,6 +129,10 @@ internal static class GatewayDictationEndpoint
         {
             if (!AuthMiddleware.HasValidToken(ctx, token, devices))
                 return Results.Json(new { error = "missing or invalid token" }, statusCode: StatusCodes.Status401Unauthorized);
+            // Authorize the UPLOAD, not just the device (issue #1884): everything below runs inside this
+            // request's own tenant partition, so an upload id from another account is simply not present.
+            if (ResolveTenant(ctx, tenantBoundary) is not { } tenant) return NoTenantResult();
+            var store = uploads.ForTenant(tenant);
             var sid = body?.SessionId ?? "";
             if (!Guid.TryParse(sid, out _))
                 return Results.Json(new { error = "sessionId (guid) is required" }, statusCode: StatusCodes.Status400BadRequest);
@@ -88,11 +145,11 @@ internal static class GatewayDictationEndpoint
             // (delivered or abandoned), do NOT re-open it as a fresh PENDING upload - return the cached
             // outcome so a re-registering client (whose earlier response was lost) drops its on-device copy
             // and acknowledges instead of re-uploading and re-injecting. Survives a restart (on disk).
-            var existing = string.IsNullOrWhiteSpace(key) ? null : uploads.ReadRecord(key);
+            var existing = string.IsNullOrWhiteSpace(key) ? null : store.ReadRecord(key);
             if (existing is { State: DictationDeliveryState.Delivered or DictationDeliveryState.Abandoned })
             {
                 FileLog.Write($"[GatewayDictation] upload re-register of terminal uploadId={key} state={existing.State}");
-                return TerminalRegisterResult(uploads.Register(key), existing);
+                return TerminalRegisterResult(store.Register(key), existing);
             }
             // A PENDING or FAILED record (or none) is (re-)opened as a fresh PENDING upload. Register
             // (re-)opens the staging dir; MarkPending writes the explicit durable PENDING marker carrying the
@@ -101,9 +158,9 @@ internal static class GatewayDictationEndpoint
             // to PENDING - overwriting the FAILED marker while keeping the staged chunks (issue #1185).
             if (existing is { State: DictationDeliveryState.Failed })
                 FileLog.Write($"[GatewayDictation] upload re-register clears FAILED uploadId={key}, retrying");
-            var uploadId = uploads.Register(string.IsNullOrWhiteSpace(key) ? null : key);
-            uploads.MarkPending(uploadId, sid);
-            _uploadSids[uploadId] = sid;
+            var uploadId = store.Register(string.IsNullOrWhiteSpace(key) ? null : key);
+            store.MarkPending(uploadId, sid);
+            _uploadSids[CacheKey(tenant, uploadId)] = sid;
             try { transcribingSessions.Begin(sid); } catch { /* the orange mark is a nicety */ }
             FileLog.Write($"[GatewayDictation] upload registered sid={sid} uploadId={uploadId}");
             return Results.Json(new { upload_id = uploadId });
@@ -113,7 +170,12 @@ internal static class GatewayDictationEndpoint
         {
             if (!AuthMiddleware.HasValidToken(ctx, token, devices))
                 return Results.Json(new { error = "missing or invalid token" }, statusCode: StatusCodes.Status401Unauthorized);
-            if (!uploads.Exists(uploadId))
+            // Issue #1884: an upload id that belongs to another account does not exist in this partition, so
+            // the existing unknown-id guard becomes the authorization - the caller cannot overwrite, extend,
+            // or even confirm the existence of another account's staged audio.
+            if (ResolveTenant(ctx, tenantBoundary) is not { } tenant) return NoTenantResult();
+            var store = uploads.ForTenant(tenant);
+            if (!store.Exists(uploadId))
                 return Results.Json(new { error = "unknown upload id (register it first)" }, statusCode: StatusCodes.Status404NotFound);
 
             var sha = ctx.Request.Headers["X-Chunk-Sha256"].ToString();
@@ -121,10 +183,10 @@ internal static class GatewayDictationEndpoint
             await ctx.Request.Body.CopyToAsync(ms, ctx.RequestAborted);
             try
             {
-                await uploads.StoreChunkAsync(uploadId, index, ms.ToArray(), string.IsNullOrEmpty(sha) ? null : sha, ctx.RequestAborted);
+                await store.StoreChunkAsync(uploadId, index, ms.ToArray(), string.IsNullOrEmpty(sha) ? null : sha, ctx.RequestAborted);
                 // Heartbeat: a stored chunk is progress, so keep the orange mark alive past its idle
                 // backstop for a slow upload that streams over more than the idle window (issue #1126).
-                if (_uploadSids.TryGetValue(uploadId, out var chunkSid))
+                if (_uploadSids.TryGetValue(CacheKey(tenant, uploadId), out var chunkSid))
                     transcribingSessions.Refresh(chunkSid);
                 return Results.Json(new { ok = true, index });
             }
@@ -139,6 +201,11 @@ internal static class GatewayDictationEndpoint
         {
             if (!AuthMiddleware.HasValidToken(ctx, token, devices))
                 return Results.Json(new { error = "missing or invalid token" }, statusCode: StatusCodes.Status401Unauthorized);
+            // Issue #1884: resolve and authorize the tenant BEFORE anything touches the store or the static
+            // single-flight cache, so a caller who does not own this upload id can neither read its record
+            // nor join its in-flight completion run.
+            if (ResolveTenant(ctx, tenantBoundary) is not { } tenant) return NoTenantResult();
+            var store = uploads.ForTenant(tenant);
             if (req is null || req.TotalChunks <= 0 || !Guid.TryParse(req.SessionId ?? "", out _))
                 return Results.Json(new { error = "sessionId (guid) and totalChunks (>0) are required" },
                     statusCode: StatusCodes.Status400BadRequest);
@@ -159,11 +226,11 @@ internal static class GatewayDictationEndpoint
             // window and even after a Gateway restart (the record and this check both live on disk). This
             // handles the SEQUENTIAL/after-restart retry; the in-memory single-flight below handles two
             // CONCURRENT completes racing before the first tombstone is written (they share one run).
-            var settled = uploads.ReadRecord(uploadId);
+            var settled = store.ReadRecord(uploadId);
             if (settled is { State: DictationDeliveryState.Delivered or DictationDeliveryState.Abandoned })
             {
                 EndTranscribing(transcribingSessions, req.SessionId!);
-                _uploadSids.TryRemove(uploadId, out _);
+                _uploadSids.TryRemove(CacheKey(tenant, uploadId), out _);
                 FileLog.Write($"[GatewayDictation] complete uploadId={uploadId}: cached terminal outcome " +
                     $"state={settled.State} (no re-injection)");
                 return TerminalOutcome(settled).ToResult();
@@ -173,7 +240,7 @@ internal static class GatewayDictationEndpoint
             // chunks) and re-drive the real work below.
             if (settled is { State: DictationDeliveryState.Failed })
             {
-                uploads.ClearFailed(uploadId);
+                store.ClearFailed(uploadId);
                 FileLog.Write($"[GatewayDictation] complete uploadId={uploadId}: cleared FAILED, retrying");
             }
 
@@ -181,10 +248,14 @@ internal static class GatewayDictationEndpoint
             // still-PENDING id is assembled + transcribed + injected at most once even under a concurrent
             // race. The entry is dropped once the run settles (below); the durable tombstone owns de-dupe
             // from then on, so there is no age-swept cache window.
-            var entry = _completes.GetOrAdd(uploadId, id => new CompleteEntry(
-                new Lazy<Task<DictationOutcome>>(() => RunCompleteCoreAsync(
-                    id, req, uploads, registry, owners, transcription, transcribingSessions, deliverySurface,
-                    pushedSessions, sendCommand, stale))));
+            var completeKey = CacheKey(tenant, uploadId);
+            var entry = _completes.GetOrAdd(completeKey, _ =>
+            {
+                OnCompleteEntryCreatedForTests?.Invoke(completeKey);
+                return new CompleteEntry(new Lazy<Task<DictationOutcome>>(() => RunCompleteCoreAsync(
+                    uploadId, req, store, registry, owners, transcription, transcribingSessions, deliverySurface,
+                    pushedSessions, sendCommand, stale)));
+            });
 
             DictationOutcome outcome;
             try
@@ -193,7 +264,7 @@ internal static class GatewayDictationEndpoint
             }
             catch (Exception ex)
             {
-                _completes.TryRemove(uploadId, out _); // transient: let a retry re-run
+                _completes.TryRemove(completeKey, out _); // transient: let a retry re-run
                 return Results.Json(new { error = ex.Message }, statusCode: StatusCodes.Status502BadGateway);
             }
 
@@ -207,13 +278,13 @@ internal static class GatewayDictationEndpoint
             if (!outcome.IsIncomplete)
             {
                 EndTranscribing(transcribingSessions, req.SessionId!);
-                _uploadSids.TryRemove(uploadId, out _);
+                _uploadSids.TryRemove(completeKey, out _);
             }
             // Drop the in-memory single-flight entry once the run settles. A terminal run has already
             // written the durable tombstone (inside the core), so a later retry short-circuits on the
             // ReadRecord check above; a non-terminal run (transient error, incomplete upload, out-of-credits)
             // leaves no tombstone, so the next complete re-runs the real work (issue #1183).
-            _completes.TryRemove(uploadId, out _);
+            _completes.TryRemove(completeKey, out _);
             return outcome.ToResult();
         });
 
@@ -227,7 +298,11 @@ internal static class GatewayDictationEndpoint
         {
             if (!AuthMiddleware.HasValidToken(ctx, token, devices))
                 return Results.Json(new { error = "missing or invalid token" }, statusCode: StatusCodes.Status401Unauthorized);
-            var retired = uploads.Acknowledge(uploadId);
+            // Issue #1884: an ack RETIRES a record - it deletes state. Scoped to the caller's own partition,
+            // so acking an id another account owns finds nothing and reports retired=false, leaving that
+            // account's tombstone (and therefore its de-dupe guarantee) untouched.
+            if (ResolveTenant(ctx, tenantBoundary) is not { } tenant) return NoTenantResult();
+            var retired = uploads.ForTenant(tenant).Acknowledge(uploadId);
             FileLog.Write($"[GatewayDictation] ack uploadId={uploadId} retired={retired}");
             return Results.Json(new { ok = true, retired });
         });
@@ -238,21 +313,26 @@ internal static class GatewayDictationEndpoint
         // Idempotent and safe against a race with delivery: if the turn already DELIVERED we do NOT abandon
         // (it landed) and say so; otherwise the id becomes ABANDONED. The client that still holds the audio
         // reconciles on its next contact - a re-register / re-complete of an abandoned id returns dropped, so
-        // it drops its on-device copy with no resurrection and no duplicate. Abandon may target ANY surface's
-        // dictation because it addresses the durable upload id, not the caller.
+        // it drops its on-device copy with no resurrection and no duplicate. Abandon may target ANY SURFACE'S
+        // dictation - phone, cockpit, desktop - because it addresses the durable upload id rather than the
+        // device that recorded it. Issue #1884 draws the line that "any surface" always meant: any surface OF
+        // THE SAME ACCOUNT. It is scoped to the caller's own partition, so it can no longer discard another
+        // account's staged audio or resolve its pending record.
         app.MapPost("/dictation/{uploadId}/abandon", (string uploadId, HttpContext ctx) =>
         {
             if (!AuthMiddleware.HasValidToken(ctx, token, devices))
                 return Results.Json(new { error = "missing or invalid token" }, statusCode: StatusCodes.Status401Unauthorized);
+            if (ResolveTenant(ctx, tenantBoundary) is not { } tenant) return NoTenantResult();
+            var store = uploads.ForTenant(tenant);
 
-            var existing = uploads.ReadRecord(uploadId);
+            var existing = store.ReadRecord(uploadId);
             if (existing is { State: DictationDeliveryState.Delivered })
             {
                 FileLog.Write($"[GatewayDictation] abandon uploadId={uploadId}: already DELIVERED, not abandoning");
                 return Results.Json(new { ok = true, upload_id = uploadId, abandoned = false, already_delivered = true });
             }
 
-            uploads.MarkAbandoned(uploadId, "user_abandoned");
+            store.MarkAbandoned(uploadId, "user_abandoned");
             // Clear the in-memory transcribing marks so the roster un-oranges at once (the durable PENDING
             // marker - the "Uploading from phone" source - is already gone via MarkAbandoned).
             var sid = existing?.SessionId;
@@ -407,6 +487,12 @@ internal static class GatewayDictationEndpoint
 
             // Gateway Cleanup mission, Phase 2: resolve the owner push-store-first (no HTTP fan-out) and gate
             // on an exited session, exactly as the old LocateAsync did, then reach it through the tunnel.
+            //
+            // DELIBERATELY STILL TenantId.Local (issue #1884). Scoping this locate to the request's tenant is
+            // what would make dictation work on the hosted Gateway, and that is held pending a separate
+            // ruling - so it stays local and a hosted session is not found, exactly as today. This pull
+            // request makes the STATE safe so that re-enabling the route later is not the thing that arms a
+            // leak; it does not re-enable the route.
             var (director, session) = await GatewayEndpoints.LocateSessionAsync(
                 registry, sid, pushedSessions, streamStale, TenantId.Local, owners);
             if (director is null || session is null)

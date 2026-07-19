@@ -1846,7 +1846,8 @@ public sealed class GatewayHost : IAsyncDisposable
         GatewayDictationEndpoint.Map(_app, Registry, SessionOwners, Token,
             _dictationTranscription ?? new Transcription.GatewayTranscriptionService(_keyVault, telemetry: _transcriptionTelemetry, audioArchive: _transcriptionAudioArchive), _transcribingSessions, _dictationUploads, Devices,
             pushedSessions: PushedSessions,
-            sendCommand: SendCommandAsync);
+            sendCommand: SendCommandAsync,
+            tenantBoundary: _tenantBoundary);
         // Durable per-upload-id dictation record (issue #1183): a PENDING upload's chunks are retained
         // until it becomes DELIVERED or ABANDONED, and the delivered/abandoned tombstone (the durable
         // de-dupe marker) is retained until the client acknowledges it - so an undelivered dictation
