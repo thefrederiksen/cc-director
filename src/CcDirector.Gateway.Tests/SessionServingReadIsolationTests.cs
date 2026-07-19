@@ -132,6 +132,74 @@ public sealed class SessionServingReadIsolationTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Directors_list_serves_only_the_requesting_tenants_directors()
+    {
+        // Issue #1847: the ENUMERATION surface. GET /directors was fleet-global while the by-id legs were
+        // gated, so any authenticated account read back every other account's Director - id, machine name,
+        // operating system user, process id, client version, liveness - and, holding the id, could address it.
+        //
+        // Revert-prove: change the handler back to registry.ListDirectors() (the fleet-global overload) and
+        // A sees dir-b -> the DoesNotContain assertions go RED.
+        var seenByA = await DirectorIds(_keyA);
+        var seenByB = await DirectorIds(_keyB);
+
+        Assert.Contains("dir-a", seenByA);
+        Assert.DoesNotContain("dir-b", seenByA);
+
+        Assert.Contains("dir-b", seenByB);
+        Assert.DoesNotContain("dir-a", seenByB);
+
+        // Not merely the ids: none of the other tenant's host or identity facts may appear in the body either.
+        var bodyForA = await (await Get("directors", _keyA)).Content.ReadAsStringAsync();
+        Assert.DoesNotContain("dir-b", bodyForA);
+        Assert.DoesNotContain("\"MB\"", bodyForA);
+    }
+
+    [Fact]
+    public async Task Directors_list_denies_a_device_key_with_no_bound_tenant()
+    {
+        // Deny-by-default: an authenticated but tenant-unbound key is refused outright. It must never be
+        // served the Local partition, and never the fleet-global list.
+        Assert.Equal(HttpStatusCode.Forbidden, (await Get("directors", _keyUnbound)).StatusCode);
+    }
+
+    [Fact]
+    public async Task A_tenants_hello_cannot_overwrite_another_tenants_director_of_the_same_id()
+    {
+        // Issue #1847, the WRITE half - the worst of it. The tunnel Hello's director id is chosen by the
+        // CLIENT, and the registry used to be keyed by that id alone, so tenant B - holding its own perfectly
+        // valid device key - could say Hello naming tenant A's director id and overwrite A's entry with B's
+        // machine name, operating system user, process id and client version. Keying the registry by
+        // (tenant, id) makes that structurally impossible: B's Hello can only ever reach B's own partition.
+        //
+        // Revert-prove: change DirectorKey back to a bare director id (or drop the tenant from the key used by
+        // RegisterFromStream) and B's Hello lands on A's entry -> the "A still reads MA" assertion goes RED.
+
+        // Positive control BEFORE the attack: A really does have dir-a, and it really does say MA. Without
+        // this, an assertion that A's entry is untouched would also pass if A had no entry at all.
+        Assert.Equal("MA", (await DirectorFor(_keyA, "dir-a")).MachineName);
+
+        // The attack: tenant B, authenticated as itself, claims tenant A's director id.
+        await using var impostor = await FakeTunnelDirector.StartAsync(_gateway, _keyB, "dir-a", "MB-TAKEOVER");
+
+        // Positive control ON THE ATTACK: the impostor's Hello really was accepted and really did register -
+        // under B's OWN tenant. This is what stops the test passing merely because the impostor silently
+        // failed to connect, which would make every "A is untouched" assertion vacuous.
+        await WaitUntil(async () => (await DirectorFor(_keyB, "dir-a")).MachineName == "MB-TAKEOVER");
+
+        // The takeover: A's entry still carries A's own facts, not B's.
+        var aAfter = await DirectorFor(_keyA, "dir-a");
+        Assert.Equal("MA", aAfter.MachineName);
+
+        // The denial of service: A's Director has not been moved out of A's own list either.
+        Assert.Contains("dir-a", await DirectorIds(_keyA));
+
+        // And nothing of B's leaked into what A is served.
+        var bodyForA = await (await Get("directors", _keyA)).Content.ReadAsStringAsync();
+        Assert.DoesNotContain("MB-TAKEOVER", bodyForA);
+    }
+
+    [Fact]
     public async Task Session_by_id_is_isolated_across_tenants()
     {
         // B's own key reads B's session; A's key cannot see B's session at all.
@@ -188,6 +256,38 @@ public sealed class SessionServingReadIsolationTests : IAsyncLifetime
         resp.EnsureSuccessStatusCode();
         var sessions = await resp.Content.ReadFromJsonAsync<List<SessionDto>>(JsonOpts) ?? new();
         return sessions.Select(s => s.SessionId!).ToArray();
+    }
+
+    private async Task<string[]> DirectorIds(string deviceKey)
+    {
+        var resp = await Get("directors", deviceKey);
+        resp.EnsureSuccessStatusCode();
+        var directors = await resp.Content.ReadFromJsonAsync<List<DirectorDto>>(JsonOpts) ?? new();
+        return directors.Select(d => d.DirectorId!).ToArray();
+    }
+
+    private async Task<DirectorDto> DirectorFor(string deviceKey, string directorId)
+    {
+        var resp = await Get("directors", deviceKey);
+        resp.EnsureSuccessStatusCode();
+        var directors = await resp.Content.ReadFromJsonAsync<List<DirectorDto>>(JsonOpts) ?? new();
+        return Assert.Single(directors, d => d.DirectorId == directorId);
+    }
+
+    /// <summary>
+    /// Readiness barrier for a condition the Gateway reaches asynchronously. A timeout is a HARD FAILURE, never
+    /// a quiet pass - a barrier that gives up silently turns the assertion it guards into decoration.
+    /// </summary>
+    private static async Task WaitUntil(Func<Task<bool>> condition)
+    {
+        var deadline = DateTime.UtcNow.AddSeconds(10);
+        while (DateTime.UtcNow < deadline)
+        {
+            try { if (await condition()) return; }
+            catch (Xunit.Sdk.XunitException) { /* not there yet */ }
+            await Task.Delay(50);
+        }
+        Assert.Fail("the condition was never reached before the deadline");
     }
 
     private static SessionDto Sample(string sid) => new()

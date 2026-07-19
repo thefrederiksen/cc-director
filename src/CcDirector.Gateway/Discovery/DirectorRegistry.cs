@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using System.Text.Json;
 using CcDirector.Core.Storage;
+using CcDirector.Core.Tenancy;
 using CcDirector.Core.Utilities;
 using CcDirector.Gateway.Contracts;
 
@@ -19,9 +20,14 @@ namespace CcDirector.Gateway.Discovery;
 ///      <see cref="Upsert"/> on startup, calls <see cref="Heartbeat"/> every 15 s, and
 ///      DELETEs via <see cref="Remove"/> on graceful shutdown.
 ///
-/// De-duplication: keys are <c>directorId</c>. If both paths report the same id,
-/// the HTTP entry wins because it carries <see cref="DirectorDto.TailnetEndpoint"/>
+/// De-duplication: keys are <c>(tenantId, directorId)</c> - see <see cref="DirectorKey"/> for why the
+/// tenant is part of the key and not merely recorded beside the entry. If both paths report the same id
+/// within one tenant, the HTTP entry wins because it carries <see cref="DirectorDto.TailnetEndpoint"/>
 /// which the FSW path cannot provide.
+///
+/// A client request is served <see cref="ListDirectors(TenantId)"/> or <see cref="Get(TenantId, string)"/>,
+/// which answer from one tenant's partition only. The no-tenant <see cref="ListDirectors()"/> and
+/// <see cref="Get(string)"/> overloads are fleet-global internal views and are NOT an answer to a client.
 /// </summary>
 public sealed class DirectorRegistry : IDisposable
 {
@@ -47,7 +53,62 @@ public sealed class DirectorRegistry : IDisposable
     // cooldown, unreachable-evict) and the advertised-endpoint re-verification state machine are DELETED.
     // Liveness is the tunnel connection itself now, not an HTTP probe, so there is nothing to circuit-break.
 
-    private readonly ConcurrentDictionary<string, DirectorDto> _directors = new();
+    /// <summary>
+    /// Issue #1847: the registry key. It is COMPOSITE - the owning tenant AND the director id - so a write
+    /// naming a director id can only ever reach the entry belonging to the tenant doing the writing.
+    ///
+    /// This is the whole fix for the cross-tenant WRITE. The tunnel Hello's director id is chosen by the
+    /// client, and the entry used to be keyed by that id alone, so tenant A saying Hello with tenant B's
+    /// director id (enumerated from the then-fleet-global <c>GET /directors</c>) overwrote B's machine name,
+    /// operating system user, process id and client version. Keying by (tenant, id) makes naming another
+    /// tenant's entry STRUCTURALLY IMPOSSIBLE rather than merely refused, so there is no id-ownership
+    /// judgement to make and - the reason this shape was chosen over rejecting the Hello - no lockout: a
+    /// machine re-enrolled from one account to another keeps its local director id and simply registers a
+    /// fresh entry under its new tenant, instead of having every Hello aborted forever.
+    ///
+    /// It matches the composite tenant primary keys this codebase already adopted for workflows, workflow
+    /// versions and mission notes.
+    /// </summary>
+    private readonly record struct DirectorKey(TenantId Tenant, string DirectorId);
+
+    private readonly ConcurrentDictionary<DirectorKey, DirectorDto> _directors = new();
+
+    /// <summary>
+    /// LEGACY bare-director-id resolution, for the accessors that still take an id with NO tenant beside it.
+    /// It answers with the freshest matching entry - the one seen most recently - which reproduces what the
+    /// single-keyed registry used to hold, because there the last writer for an id simply replaced every
+    /// earlier one. On a single tenant (every self-host install, and any hosted id held by one account) there
+    /// is only ever one match and this is an ordinary lookup.
+    ///
+    /// It deliberately does NOT fail closed on a collision. Failing closed looked safer and is not: the
+    /// credential-less POST /directors/register path can create a Local-tenant entry for ANY id, so a
+    /// refusal-on-collision would let an unauthenticated caller disable every by-id route for a chosen
+    /// Director - trading the cross-tenant write this issue closes for a cross-tenant denial of service.
+    ///
+    /// The remaining callers are the /directors/{id}/... routes, which resolve a Director from a
+    /// client-supplied id with no tenant at all. Those are ALREADY addressable by any caller today and are the
+    /// same defect as this issue in a different hat; they are booked as their own work, and each is converted
+    /// to <see cref="Get(TenantId, string)"/> as its route learns whose Director it means. Nothing on the
+    /// tenant-aware session-serving path uses this.
+    /// </summary>
+    private bool TryResolveLegacyKey(string directorId, out DirectorKey key)
+    {
+        key = default;
+        if (string.IsNullOrEmpty(directorId)) return false;
+
+        var best = DateTime.MinValue;
+        var found = false;
+        foreach (var kv in _directors)
+        {
+            if (!string.Equals(kv.Key.DirectorId, directorId, StringComparison.Ordinal)) continue;
+            var seen = kv.Value.LastSeen ?? DateTime.MinValue;
+            if (found && seen <= best) continue;
+            best = seen;
+            key = kv.Key;
+            found = true;
+        }
+        return found;
+    }
 
     /// <summary>
     /// Directors that have answered at least one fleet probe (issue #197). Deliberately
@@ -58,7 +119,10 @@ public sealed class DirectorRegistry : IDisposable
     /// graceful unregister and when the heartbeat-stale sweep removes a dead process -
     /// a future process under the same id starts with a truthful blank slate.
     /// </summary>
+    /// Keyed by BARE director id, not by the composite key: it records what a Director PROCESS has ever
+    /// done, it is never served to a client, and keeping it bare leaves its lifecycle exactly as it was.
     private readonly ConcurrentDictionary<string, bool> _everReachable = new();
+
     private FileSystemWatcher? _watcher;
     private Timer? _sweeper;
     private bool _disposed;
@@ -103,6 +167,16 @@ public sealed class DirectorRegistry : IDisposable
         }
     }
 
+    /// <summary>
+    /// THE single removal seam. Every path that drops a Director - graceful unregister, the stale sweep, the
+    /// instance-file delete/rename - goes through here, so there is ONE place that knows how an entry leaves
+    /// the registry. Returns true when an entry was actually present. It deliberately does NOT touch
+    /// <c>_everReachable</c>: that flag's clear-on-graceful-goodbye lifecycle is the callers' (see the note on
+    /// the field) and centralising it here would silently change it.
+    /// </summary>
+    private bool TryRemoveEntry(DirectorKey key, out DirectorDto? removed)
+        => _directors.TryRemove(key, out removed);
+
     // ===== HTTP path =====
 
     /// <summary>
@@ -134,8 +208,12 @@ public sealed class DirectorRegistry : IDisposable
             Source = "http",
         };
 
-        var existed = _directors.TryGetValue(req.DirectorId, out _);
-        _directors[req.DirectorId] = dto;
+        // The HTTP register path is the same-machine / self-host path; it carries no account credential, so
+        // its entries belong to the single Local tenant. On hosted, where a request's tenant is a real
+        // account, a Local-keyed entry is therefore served to no account - which is the correct answer.
+        var key = new DirectorKey(TenantId.Local, req.DirectorId);
+        var existed = _directors.TryGetValue(key, out _);
+        _directors[key] = dto;
         FileLog.Write(dto.EndpointUnreachableReason is null
             ? $"[DirectorRegistry] Upsert (http): id={dto.DirectorId}, endpoint={dto.TailnetEndpoint}, existed={existed}"
             : $"[DirectorRegistry] Upsert (http, FLAGGED no reachable endpoint): id={dto.DirectorId}, existed={existed}, reason={dto.EndpointUnreachableReason}");
@@ -150,17 +228,27 @@ public sealed class DirectorRegistry : IDisposable
     /// Director's presence. Stamped <c>Source="stream"</c> with an EMPTY control/tailnet endpoint - the Gateway
     /// never dials a Director, it only reaches it down this stream. Marks it state-reporting so the reconcile
     /// poll skips it. Idempotent; refreshes LastSeen on every Hello (connect + reconnect + periodic re-push).
+    ///
+    /// Issue #1847: <paramref name="tenant"/> is the tenant the Hello's AUTHENTICATED device key resolved to,
+    /// and it is REQUIRED - it is half of the registry key, so this call can only ever create or refresh THIS
+    /// tenant's own entry and is structurally incapable of naming another tenant's, however the client chose
+    /// its director id. It is never read from the Hello payload, and there is no default: an unresolved tenant
+    /// is a rejected Hello at the hub, not a registration under a guessed owner.
     /// </summary>
-    public DirectorDto RegisterFromStream(string directorId, string machineName, string user, string version, int pid, DateTime startedAt)
+    public DirectorDto RegisterFromStream(string directorId, string machineName, string user, string version, int pid, DateTime startedAt, TenantId tenant)
     {
         if (string.IsNullOrEmpty(directorId))
             throw new ArgumentException("directorId is required", nameof(directorId));
+        if (!tenant.IsValid)
+            throw new ArgumentException("a valid tenant is required to register a Director", nameof(tenant));
 
         var now = DateTime.UtcNow;
-        // Merge with any existing entry: a Hello field that arrives empty must not wipe a value the entry
-        // already carries (e.g. a file-discovered entry's machine name). Production Hellos always carry the
-        // full identity; this just makes re-registration and mixed-source ordering safe.
-        _directors.TryGetValue(directorId, out var existing);
+        var key = new DirectorKey(tenant, directorId);
+        // Merge with any existing entry - THIS TENANT'S entry for this id, never another's. A Hello field that
+        // arrives empty must not wipe a value the entry already carries (e.g. a file-discovered entry's machine
+        // name). Production Hellos always carry the full identity; this just makes re-registration and
+        // mixed-source ordering safe.
+        _directors.TryGetValue(key, out var existing);
         var dto = new DirectorDto
         {
             DirectorId = directorId,
@@ -176,7 +264,7 @@ public sealed class DirectorRegistry : IDisposable
             Source = "stream",
         };
         var existed = existing is not null;
-        _directors[directorId] = dto;
+        _directors[key] = dto;
         _stateReporting.TryAdd(directorId, true);
         if (!existed)
         {
@@ -192,8 +280,8 @@ public sealed class DirectorRegistry : IDisposable
     /// </summary>
     public bool Heartbeat(string directorId)
     {
-        if (string.IsNullOrEmpty(directorId)) return false;
-        if (!_directors.TryGetValue(directorId, out var existing)) return false;
+        if (!TryResolveLegacyKey(directorId, out var key)) return false;
+        if (!_directors.TryGetValue(key, out var existing)) return false;
         existing.LastSeen = DateTime.UtcNow;
         return true;
     }
@@ -216,7 +304,10 @@ public sealed class DirectorRegistry : IDisposable
     public bool IsStateReporting(string directorId)
         => !string.IsNullOrEmpty(directorId) && _stateReporting.ContainsKey(directorId);
 
-    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, bool> _stateReporting = new();
+    /// Keyed by BARE director id, like _everReachable: it is a capability flag about a Director PROCESS (does
+    /// it push its own session state, so the reconcile poll can skip it), it is never served to a client, and
+    /// no session content or identity rides on it. Keeping it bare leaves its behaviour untouched.
+    private readonly ConcurrentDictionary<string, bool> _stateReporting = new();
 
     /// <summary>
     /// Remove a Director from the registry (HTTP graceful shutdown). Returns true if
@@ -224,8 +315,8 @@ public sealed class DirectorRegistry : IDisposable
     /// </summary>
     public bool Remove(string directorId)
     {
-        if (string.IsNullOrEmpty(directorId)) return false;
-        if (_directors.TryRemove(directorId, out _))
+        if (!TryResolveLegacyKey(directorId, out var key)) return false;
+        if (TryRemoveEntry(key, out _))
         {
             _everReachable.TryRemove(directorId, out _); // graceful goodbye: next process starts blank
             FileLog.Write($"[DirectorRegistry] Remove (http): id={directorId}");
@@ -261,13 +352,51 @@ public sealed class DirectorRegistry : IDisposable
         _sweeper = new Timer(_ => SweepStale(), null, TimeSpan.FromSeconds(30), TimeSpan.FromSeconds(30));
     }
 
-    /// <summary>Snapshot of all currently-known Directors.</summary>
+    /// <summary>
+    /// Snapshot of all currently-known Directors, FLEET-GLOBAL - every tenant's. This is the internal
+    /// aggregation view (the roster fan-out, the reconcile poll); it must NEVER be the answer to a client
+    /// request. Serving a client is <see cref="ListDirectors(TenantId)"/>.
+    /// </summary>
     public IReadOnlyCollection<DirectorDto> ListDirectors()
         => _directors.Values.ToList().AsReadOnly();
 
-    /// <summary>Look up by Director ID. Null if unknown.</summary>
+    /// <summary>
+    /// Issue #1847: the Directors ONE tenant owns - what a client request is served. Before this, the
+    /// <c>GET /directors</c> list was fleet-global while the by-id legs were gated, so any authenticated
+    /// account could enumerate every other account's Directors and read back their machine name, operating
+    /// system user, process id, client version and liveness - and, having the id, address them.
+    ///
+    /// Deny by default: an entry whose owning tenant was never recorded matches nobody. There is no
+    /// fall-back to the fleet-global list for any caller, tenant, or deployment.
+    /// </summary>
+    public IReadOnlyCollection<DirectorDto> ListDirectors(TenantId tenant)
+        => _directors
+            .Where(kv => kv.Key.Tenant.Equals(tenant))
+            .Select(kv => kv.Value)
+            .ToList()
+            .AsReadOnly();
+
+    /// <summary>
+    /// Look up ONE tenant's Director by id. Null if that tenant has no such Director. This is the honest
+    /// lookup: the caller says whose Director it means, so no other tenant's entry can answer.
+    /// </summary>
+    public DirectorDto? Get(TenantId tenant, string directorId)
+        => !string.IsNullOrEmpty(directorId) && _directors.TryGetValue(new DirectorKey(tenant, directorId), out var d)
+            ? d
+            : null;
+
+    /// <summary>
+    /// LEGACY look-up by bare Director ID, with no tenant. Null if unknown; on the (hosted-only) chance that
+    /// two tenants hold the same id it answers with the freshest entry - see <see cref="TryResolveLegacyKey"/>
+    /// for why that, and not a refusal, is the safe choice.
+    ///
+    /// Every remaining caller of this overload is a route that resolves a Director from a client-supplied id
+    /// WITHOUT a tenant beside it. Those are the same defect as #1847 in a different hat and are recorded as
+    /// their own work; this overload exists so they keep behaving exactly as they do today while they are
+    /// converted to <see cref="Get(TenantId, string)"/> one at a time.
+    /// </summary>
     public DirectorDto? Get(string directorId)
-        => _directors.TryGetValue(directorId, out var d) ? d : null;
+        => TryResolveLegacyKey(directorId, out var key) && _directors.TryGetValue(key, out var d) ? d : null;
 
     private void LoadExisting()
     {
@@ -304,9 +433,12 @@ public sealed class DirectorRegistry : IDisposable
         if (string.IsNullOrEmpty(id)) return;
         // Only remove if the entry came from the FSW path. An HTTP entry must not be
         // wiped by a stray file delete - it lives by its own heartbeat lifecycle.
-        if (_directors.TryGetValue(id, out var existing) && existing.Source == "file")
+        // A file-discovered entry is always keyed to the Local tenant (see TryParseAndAdd), so a file event
+        // can only ever reach the Local partition - it can never disturb a hosted account's Director.
+        var key = new DirectorKey(TenantId.Local, id);
+        if (_directors.TryGetValue(key, out var existing) && existing.Source == "file")
         {
-            if (_directors.TryRemove(id, out _))
+            if (TryRemoveEntry(key, out _))
                 RaiseDirectorRemoved(id);
         }
     }
@@ -314,10 +446,11 @@ public sealed class DirectorRegistry : IDisposable
     private void OnFileRenamed(object sender, RenamedEventArgs e)
     {
         var oldId = Path.GetFileNameWithoutExtension(e.OldName ?? "");
+        var oldKey = new DirectorKey(TenantId.Local, oldId);
         if (!string.IsNullOrEmpty(oldId)
-            && _directors.TryGetValue(oldId, out var existing)
+            && _directors.TryGetValue(oldKey, out var existing)
             && existing.Source == "file"
-            && _directors.TryRemove(oldId, out _))
+            && TryRemoveEntry(oldKey, out _))
         {
             RaiseDirectorRemoved(oldId);
         }
@@ -338,9 +471,14 @@ public sealed class DirectorRegistry : IDisposable
             });
             if (dto is null || string.IsNullOrEmpty(dto.DirectorId)) return false;
 
+            // A file-discovered Director is by definition on THIS machine and carries no account credential,
+            // so it is keyed to the Local tenant (see the note on Upsert) - a file appearing on the Gateway's
+            // disk can therefore never write into a hosted account's partition.
+            var key = new DirectorKey(TenantId.Local, dto.DirectorId);
+
             // If an HTTP-registered entry exists for the same id, leave it alone.
             // HTTP carries the tailnet endpoint which FSW cannot supply.
-            if (_directors.TryGetValue(dto.DirectorId, out var existing) && existing.Source == "http")
+            if (_directors.TryGetValue(key, out var existing) && existing.Source == "http")
             {
                 FileLog.Write($"[DirectorRegistry] Skipping FSW upsert for id={dto.DirectorId}: HTTP entry already present");
                 return true;
@@ -348,8 +486,8 @@ public sealed class DirectorRegistry : IDisposable
 
             dto.LastSeen = DateTime.UtcNow;
             dto.Source = "file";
-            var wasNew = !_directors.ContainsKey(dto.DirectorId);
-            _directors[dto.DirectorId] = dto;
+            var wasNew = !_directors.ContainsKey(key);
+            _directors[key] = dto;
             if (wasNew) OnDirectorAdded?.Invoke(dto);
             FileLog.Write($"[DirectorRegistry] Added (file): id={dto.DirectorId}, endpoint={dto.ControlEndpoint}");
             return true;
@@ -382,24 +520,24 @@ public sealed class DirectorRegistry : IDisposable
                     var lastSeen = kv.Value.LastSeen ?? DateTime.MinValue;
                     if (now - lastSeen > HttpHeartbeatTimeout)
                     {
-                        if (_directors.TryRemove(kv.Key, out _))
+                        if (TryRemoveEntry(kv.Key, out _))
                         {
-                            _everReachable.TryRemove(kv.Key, out _);
-                            FileLog.Write($"[DirectorRegistry] Sweeper removed stale {kv.Value.Source} entry: {kv.Key} (last seen {(now - lastSeen).TotalSeconds:F0}s ago)");
-                            RaiseDirectorRemoved(kv.Key);
+                            _everReachable.TryRemove(kv.Key.DirectorId, out _);
+                            FileLog.Write($"[DirectorRegistry] Sweeper removed stale {kv.Value.Source} entry: {kv.Key.DirectorId} (last seen {(now - lastSeen).TotalSeconds:F0}s ago)");
+                            RaiseDirectorRemoved(kv.Key.DirectorId);
                         }
                     }
                     continue;
                 }
 
                 // FSW path: file gone or PID dead.
-                var f = Path.Combine(WatchDirectory, $"{kv.Key}.json");
+                var f = Path.Combine(WatchDirectory, $"{kv.Key.DirectorId}.json");
                 if (!File.Exists(f))
                 {
-                    if (_directors.TryRemove(kv.Key, out _))
+                    if (TryRemoveEntry(kv.Key, out _))
                     {
-                        FileLog.Write($"[DirectorRegistry] Sweeper removed orphan (file gone): {kv.Key}");
-                        RaiseDirectorRemoved(kv.Key);
+                        FileLog.Write($"[DirectorRegistry] Sweeper removed orphan (file gone): {kv.Key.DirectorId}");
+                        RaiseDirectorRemoved(kv.Key.DirectorId);
                     }
                     continue;
                 }
@@ -417,12 +555,12 @@ public sealed class DirectorRegistry : IDisposable
                         try { File.Delete(f); }
                         catch (Exception ex)
                         {
-                            FileLog.Write($"[DirectorRegistry] Sweeper could not delete instance file for {kv.Key} (pid {pid} dead); orphan sweep will retry: {ex.Message}");
+                            FileLog.Write($"[DirectorRegistry] Sweeper could not delete instance file for {kv.Key.DirectorId} (pid {pid} dead); orphan sweep will retry: {ex.Message}");
                         }
-                        if (_directors.TryRemove(kv.Key, out _))
+                        if (TryRemoveEntry(kv.Key, out _))
                         {
-                            FileLog.Write($"[DirectorRegistry] Sweeper removed orphan (pid {pid} dead): {kv.Key}");
-                            RaiseDirectorRemoved(kv.Key);
+                            FileLog.Write($"[DirectorRegistry] Sweeper removed orphan (pid {pid} dead): {kv.Key.DirectorId}");
+                            RaiseDirectorRemoved(kv.Key.DirectorId);
                         }
                     }
                     catch { /* permission errors etc - leave it for next pass */ }
@@ -465,7 +603,8 @@ public sealed class DirectorRegistry : IDisposable
         {
             var id = Path.GetFileNameWithoutExtension(f);
             // A file backing a still-known Director is the in-memory sweep's responsibility; leave it.
-            if (!string.IsNullOrEmpty(id) && _directors.ContainsKey(id))
+            // Local-keyed: an instance file on this disk only ever backs a Local-tenant entry.
+            if (!string.IsNullOrEmpty(id) && _directors.ContainsKey(new DirectorKey(TenantId.Local, id)))
                 continue;
 
             int pid;

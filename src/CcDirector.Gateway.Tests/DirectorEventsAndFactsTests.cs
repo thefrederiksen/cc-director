@@ -5,6 +5,7 @@ using System.Net.Sockets;
 using CcDirector.ControlApi;
 using CcDirector.Core.Configuration;
 using CcDirector.Core.Sessions;
+using CcDirector.Core.Tenancy;
 using CcDirector.Gateway.Contracts;
 using Xunit;
 
@@ -119,7 +120,7 @@ public sealed class DirectorEventsAndFactsTests : IAsyncLifetime
 
         // In production the Director is registered via its tunnel Hello before it rings the doorbell; this
         // test drives only the GatewayClient doorbell leg, so register it the same way (tunnel-only Source).
-        _gateway.Registry.RegisterFromStream(id, Environment.MachineName, "test", "9.9.9-test", 1, DateTime.UtcNow);
+        _gateway.Registry.RegisterFromStream(id, Environment.MachineName, "test", "9.9.9-test", 1, DateTime.UtcNow, TenantId.Local);
 
         client.NotifySessionState(sid, "Starting", DoorbellEvents.SessionCreated);
 
