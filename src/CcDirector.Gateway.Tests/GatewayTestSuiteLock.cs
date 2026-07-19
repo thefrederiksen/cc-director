@@ -56,6 +56,18 @@ namespace CcDirector.Gateway.Tests;
 /// They exist so a blocked run can name its blocker - a blocked run that cannot say who is blocking it is
 /// indistinguishable from a hang, and somebody will kill the wrong thing. They never decide ownership.
 ///
+/// EVERY RUN OF THIS ASSEMBLY IS SERIALIZED, FILTERED OR NOT. That is a feature, not an oversight, and it
+/// is the first thing somebody will try to "optimise" - a filtered run looks small and harmless, so surely
+/// it can be let through. It cannot, because nobody can show that it is harmless. A filtered run of this
+/// assembly still loads the whole assembly, still boots real hosts, still touches shared machine state, and
+/// is still exposed to the host-crash mode that has never been proven purely intra-process. Each test class
+/// does redirect its storage root to a unique temporary path, so roots do not collide - but that is the
+/// only isolation anybody has actually demonstrated, and "no collision was found" is not "no collision
+/// exists". The lock takes the strong position deliberately: serialize everything, and let anyone who wants
+/// an exemption produce the evidence first. This is also why the acquisition sits in a module initializer
+/// rather than anywhere test-shaped - a module initializer cannot see the filter, and therefore cannot be
+/// talked into making an exception it has no basis for.
+///
 /// WHY A MODULE INITIALIZER. It runs on assembly load, before any test, it is independent of the xUnit
 /// version (assembly-level fixtures are a v3 feature and this project is on xunit 2.9), and it works for
 /// every runner - "dotnet test", the development-environment runner, and anything else that loads this
