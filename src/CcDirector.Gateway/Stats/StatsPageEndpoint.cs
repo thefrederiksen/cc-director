@@ -18,6 +18,28 @@ namespace CcDirector.Gateway.Stats;
 ///
 /// Only counts and ratios are ever served - never the text of anything typed or said (mission decision 5).
 /// The page states plainly which input paths are counted and which are not-captured (no-fallback rule).
+///
+/// DENIED ON HOSTED (issue #1848). Both routes are refused on the hosted Gateway. This is the OWNER'S
+/// private view of HIS OWN gateway, and on shared hosted infrastructure "the owner" does not survive as a
+/// concept - so there is no correct per-tenant answer to serve here, only a disclosure to close. What the
+/// feed actually carries makes that concrete: every repository name the fleet has driven, the per-agent and
+/// per-model tallies, and the token SPEND - all fleet-global, and reachable by any tenant's device key
+/// through the host-wide gate.
+///
+/// It is a DENY rather than a partition because there is nothing to partition BY. These are pre-aggregated
+/// fleet totals with no tenant anywhere in the schema, so a per-tenant answer would have to be recomputed
+/// from an attribution that was never recorded - and inventing one is a half-partition, which is worse than
+/// an honest refusal. The store behind it is also the SQLite-plus-write-ahead-log-on-a-file-share hazard
+/// booked as #1861, so a per-tenant partition would either multiply that hazard per tenant or force a
+/// schema change for a dashboard nobody has asked to be multi-tenant. Per-tenant stats are booked as a
+/// deferred product decision, blocked on that.
+///
+/// The refusal is a REFUSAL, not an empty dashboard. Serving zeroed or empty series would be a false
+/// statement rather than an absent one - the same mistake /healthz made when it zeroed its fleet counts and
+/// anything monitoring them read a permanently dead fleet. A caller is told the route is not available
+/// here; it is never shown a dashboard implying no work has been done.
+///
+/// Self-host is COMPLETELY unchanged, and that is the control.
 /// </summary>
 public static class StatsPageEndpoint
 {
@@ -32,13 +54,37 @@ public static class StatsPageEndpoint
         "Surface (phone / cockpit) for remote input is read from the signed-in device. Remote input with no device identity (a shared-token or fleet call) is not counted as an operator surface.",
     };
 
+    /// <summary>
+    /// The hosted refusal for both stats routes (issue #1848), or null on self-host where nothing changes.
+    ///
+    /// Gated on <see cref="GatewayHostedMode.IsHosted"/> - the INDEPENDENT signal - and not on a boundary
+    /// or tenant argument being passed in. A security branch that depends on an optional argument fails
+    /// OPEN when a caller forgets it, which is exactly how the hosted account-status fix nearly shipped a
+    /// hole: omit the argument and a hosted Gateway silently takes the self-host path. Asking hosted mode
+    /// directly means these routes cannot serve the fleet-global feed on hosted however this is wired.
+    ///
+    /// 404 rather than 403: on hosted this route does not exist as a concept, so "not here" is the truthful
+    /// answer. 403 would imply the right credential could reach it, and none can - there is no owner.
+    /// </summary>
+    private static IResult? DenyOnHosted()
+    {
+        if (!GatewayHostedMode.IsHosted) return null;
+
+        FileLog.Write("[StatsPageEndpoint] DENIED on hosted: the stats feed is fleet-global and has no per-tenant answer to serve");
+        return Results.Json(
+            new { error = "the stats dashboard is not available on the hosted gateway" },
+            statusCode: StatusCodes.Status404NotFound);
+    }
+
     public static void Map(IEndpointRouteBuilder app, GatewayInputStatsAggregator aggregator,
         GatewaySessionConcurrencyStats? concurrency = null)
     {
         FileLog.Write("[StatsPageEndpoint] serving /stats (embedded, always available)");
 
-        app.MapGet("/stats/data", () =>
+        app.MapGet("/stats/data", (HttpContext ctx) =>
         {
+            if (DenyOnHosted() is { } denied) return denied;
+
             var totals = aggregator.CurrentTotals();
             return Results.Json(new
             {
@@ -94,6 +140,8 @@ public static class StatsPageEndpoint
 
         app.MapGet("/stats", (HttpContext ctx) =>
         {
+            if (DenyOnHosted() is { } denied) return denied.ExecuteAsync(ctx);
+
             ctx.Response.Headers.CacheControl = "no-cache";
             ctx.Response.ContentType = "text/html; charset=utf-8";
             return ctx.Response.WriteAsync(PageHtml);
