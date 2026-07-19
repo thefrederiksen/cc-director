@@ -48,6 +48,16 @@ On the always-on Gateway box, in a store **outside git** (same principle as toda
 | `PUT /vault/keys/{name}` `{ value }` | set / update a key |
 | `DELETE /vault/keys/{name}` | remove a key |
 
+**SELF-HOST ONLY. Every route in the table above is refused on the hosted Gateway** (404, body
+`{ "error": "the key vault is not available on the hosted gateway" }`). The store is one global vault
+file at the shared storage root with no tenant in the file, the store, or the routes, and the routes sit
+behind only the host-wide authentication gate - which admits any enrolled device key from any account. So
+on shared hosted infrastructure the value read is credential theft, the write is tampering with another
+account's paid service, and the delete disables it. The refusal is gated on the hosted deployment signal
+(`GatewayHostedMode.IsHosted`), applied as one filter over the whole route group, so self-host behavior is
+byte-identical to what is documented here. The routes come back one at a time when the vault is
+partitioned per account.
+
 ## 5. How Directors get keys
 
 **Pull on demand.** When a Director feature needs a key (dictation -> `OPENAI_API_KEY`), it `GET`s it from the Gateway and **caches it in memory only** - never writes it to local disk. On a cache miss (or a provider rejecting the key), it re-fetches.
