@@ -1913,7 +1913,11 @@ public sealed class GatewayHost : IAsyncDisposable
         // not-signed-in. Issue #1357: it also resolves the signed-in user's chosen nickname (cached,
         // best-effort) through the cloud nickname client, so a session's preamble can name the human;
         // the identity email/provider path stays entirely local.
-        AccountStatusEndpoint.Map(_app, Account, new Core.Account.AccountNicknameClient(new HttpClient { Timeout = TimeSpan.FromSeconds(10) }));
+        // Issue #1856: the boundary and the tenant registry make this endpoint tenant-bearing on hosted, where
+        // it must answer about the CALLER's enrollment rather than about a Gateway credential hosted does not
+        // hold. On self-host the boundary reports not-hosted and the endpoint behaves exactly as before.
+        AccountStatusEndpoint.Map(_app, Account, new Core.Account.AccountNicknameClient(new HttpClient { Timeout = TimeSpan.FromSeconds(10) }),
+            tenantBoundary: _tenantBoundary, tenants: TenantRegistry);
 
         // Gateway Centralization Phase 3 (issue #648): POST /account/logout CLEARS the Gateway-hosted
         // DevThrottle credential through the same reused DevThrottleAccountService (Account). The account

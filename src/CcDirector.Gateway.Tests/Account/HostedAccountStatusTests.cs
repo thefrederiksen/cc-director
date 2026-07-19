@@ -1,0 +1,215 @@
+using System;
+using System.IO;
+using System.Linq;
+using System.Net;
+using System.Net.Http;
+using System.Net.Http.Headers;
+using System.Net.Sockets;
+using System.Text.Json;
+using System.Threading.Tasks;
+using CcDirector.Gateway;
+using CcDirector.Gateway.Api;
+using Microsoft.Extensions.Logging;
+using Xunit;
+
+namespace CcDirector.Gateway.Tests.Account;
+
+/// <summary>
+/// Issue #1856: on the HOSTED Gateway, <c>GET /account/status</c> must answer about the CALLER, not about
+/// the Gateway.
+///
+/// The defect it closes: the endpoint asked <c>account.IsLoggedIn()</c>, which means "does THIS GATEWAY hold
+/// a signed-in credential". Hosted holds none by design - it is one shared multi-tenant Gateway and identity
+/// arrives per device - so a machine that had enrolled CORRECTLY (device key issued, tunnel up, roster served
+/// back tenant-scoped) was told it was signed OUT. That is a product-facing lie about the one thing the user
+/// had just done, and it reads as a failed setup, so people start undoing work that was correct.
+///
+/// THE RULE THESE TESTS EXIST TO HOLD: on hosted, <c>signedIn=false</c> is never the answer to an
+/// authenticated tenant-bound caller. When the identity cannot be resolved the answer is
+/// <c>signedIn=true</c> with the identity ABSENT - never a confident false. An unresolvable identity and a
+/// signed-out user are different answers and must not share a code path. That branch has its own test below
+/// (<see cref="Enrolled_without_a_recorded_email_is_signed_in_with_the_identity_absent"/>) because it is the
+/// one most easily written as a quiet false, and it is not a rare corner: the tenant row records an email on
+/// a FRESH MINT ONLY, so any older or null-email tenant reaches it.
+///
+/// Revert-prove, two of them, each reddening a DIFFERENT thing:
+///  - Delete the hosted early return in <c>AccountStatusEndpoint.Map</c> so hosted falls through to the
+///    Gateway-credential path, and both signed-in tests go RED with <c>signedIn:false</c> - the reported bug.
+///  - Change the selector from <c>GatewayHostedMode.IsHosted</c> back to <c>tenantBoundary is { IsHosted: true }</c>
+///    and ONLY <see cref="A_hosted_gateway_with_no_tenant_boundary_refuses_rather_than_reporting_signed_out"/>
+///    goes RED, with 200 in place of 503 - the fail-open under miswiring.
+/// Both were run and watched; a revert that reddens is not the same as a revert that reddens the assertion
+/// under proof.
+///
+/// This drives a REAL GatewayHost through REAL HTTP and the REAL auth middleware, with the REAL tenant
+/// registry, so the binding under test is the one enrollment actually creates. Self-host behaviour is
+/// unchanged and is covered by <see cref="AccountStatusEndpointTests"/>, which maps the endpoint with no
+/// boundary at all - those are the control for this change. The assembly runs sequentially, so toggling
+/// CC_GATEWAY_HOSTED here is safe; it is restored in DisposeAsync.
+/// </summary>
+public sealed class HostedAccountStatusTests : IAsyncLifetime
+{
+    private const string Token = "test-token";
+
+    private GatewayHost _gateway = null!;
+    private HttpClient _http = null!;
+
+    /// <summary>Enrolled, with an email recorded on its tenant row.</summary>
+    private string _keyWithEmail = "";
+
+    /// <summary>Enrolled and perfectly valid, but its tenant row carries no email.</summary>
+    private string _keyNoEmail = "";
+
+    /// <summary>Authenticated, but bound to no tenant at all.</summary>
+    private string _keyUnbound = "";
+
+    private readonly string _instancesDir =
+        Path.Combine(Path.GetTempPath(), "cc-has-" + Guid.NewGuid().ToString("N"));
+    private string? _priorHosted;
+
+    public async Task InitializeAsync()
+    {
+        _priorHosted = Environment.GetEnvironmentVariable("CC_GATEWAY_HOSTED");
+        Environment.SetEnvironmentVariable("CC_GATEWAY_HOSTED", "1");
+
+        _gateway = new GatewayHost(port: FreePort(), token: Token, authEnabled: true,
+            instancesDirectory: _instancesDir,
+            workListsPath: Path.Combine(_instancesDir, "worklists", "worklists.json"),
+            snoozePath: Path.Combine(_instancesDir, "snooze", "snooze.json"),
+            streamMode: true);
+        await _gateway.StartAsync();
+        _http = new HttpClient { BaseAddress = new Uri($"http://127.0.0.1:{_gateway.Port}/") };
+
+        // Minted through the REAL registry, exactly as POST /devices/enroll-hosted does it, so the tenant
+        // these keys are bound to is a genuine tenant row rather than a string invented by the test.
+        var withEmail = _gateway.TenantRegistry.MintOrLookupBySubject("sub-alice", "alice@example.com");
+        var noEmail = _gateway.TenantRegistry.MintOrLookupBySubject("sub-bob", null);
+
+        _keyWithEmail = _gateway.Devices.Register("dev-alice", "MA").DeviceKey;
+        _keyNoEmail = _gateway.Devices.Register("dev-bob", "MB").DeviceKey;
+        _keyUnbound = _gateway.Devices.Register("dev-x", "MX").DeviceKey;
+        _gateway.Devices.SetAccountBinding("dev-alice", "sub-alice", withEmail.Value);
+        _gateway.Devices.SetAccountBinding("dev-bob", "sub-bob", noEmail.Value);
+    }
+
+    public async Task DisposeAsync()
+    {
+        _http.Dispose();
+        await _gateway.StopAsync();
+        Environment.SetEnvironmentVariable("CC_GATEWAY_HOSTED", _priorHosted);
+        try { if (Directory.Exists(_instancesDir)) Directory.Delete(_instancesDir, true); }
+        catch { /* best-effort */ }
+    }
+
+    [Fact]
+    public async Task An_enrolled_hosted_caller_is_signed_in_as_itself()
+    {
+        var root = await StatusFor(_keyWithEmail);
+
+        Assert.True(root.GetProperty("signedIn").GetBoolean());
+        Assert.Equal("alice@example.com", root.GetProperty("email").GetString());
+    }
+
+    [Fact]
+    public async Task Enrolled_without_a_recorded_email_is_signed_in_with_the_identity_absent()
+    {
+        // The branch most likely to be quietly written as a false. This caller is fully enrolled - its key is
+        // bound to a real tenant - but its tenant row has no email, which is ORDINARY: the registry records an
+        // email on a fresh mint only. The honest answer is "signed in, I cannot tell you as whom", never
+        // "signed out". An absent field is honest where a false one is not - the same lesson /healthz taught
+        // when a zeroed fleet count read as a permanently dead fleet.
+        var root = await StatusFor(_keyNoEmail);
+
+        Assert.True(root.GetProperty("signedIn").GetBoolean());
+        Assert.False(root.TryGetProperty("email", out _));      // omitted, not null, not fabricated
+        Assert.False(root.TryGetProperty("provider", out _));
+    }
+
+    [Fact]
+    public async Task A_caller_with_no_bound_tenant_is_denied_and_never_told_it_is_signed_out()
+    {
+        // Deny-by-default, as on the other tenant-bearing reads. "I will not answer you" and "you are signed
+        // out" are different statements and only one of them is true; answering signedIn=false here would
+        // recreate the reported bug for this caller under a different code path.
+        var resp = await Get(_keyUnbound);
+        Assert.Equal(HttpStatusCode.Forbidden, resp.StatusCode);
+        Assert.DoesNotContain("signedIn", await resp.Content.ReadAsStringAsync());
+    }
+
+    [Fact]
+    public async Task An_unauthenticated_caller_is_still_rejected()
+    {
+        // Control: the hosted fold must not have opened the route up. Without a key the host-wide auth
+        // middleware still refuses, so the branch under test is only ever reached by a proven caller.
+        var resp = await _http.GetAsync("account/status");
+        Assert.Equal(HttpStatusCode.Unauthorized, resp.StatusCode);
+    }
+
+    [Fact]
+    public async Task The_response_carries_no_credential_material()
+    {
+        // Control carried over from the self-host contract: the status body is a verdict and an identity, and
+        // never a token. Folding it from the device key must not have put the key itself into the answer.
+        var body = await (await Get(_keyWithEmail)).Content.ReadAsStringAsync();
+        Assert.DoesNotContain(_keyWithEmail, body);
+        Assert.DoesNotContain(Token, body);
+    }
+
+    [Fact]
+    public async Task A_hosted_gateway_with_no_tenant_boundary_refuses_rather_than_reporting_signed_out()
+    {
+        // The adversarial case: a hosted Gateway MISWIRED so the endpoint has no tenant boundary. The boundary
+        // argument is optional, so omitting it is a one-word mistake, and selecting the hosted path on the
+        // boundary itself would fail OPEN - falling through to the self-host path and answering signedIn=false
+        // again. That is the very lie this endpoint exists to stop, restored by configuration rather than by
+        // design, and with no test it would be invisible.
+        //
+        // So hosted mode is asked directly, and a hosted host with no usable boundary FAILS CLOSED. The answer
+        // is "I cannot tell you", never "you are signed out". Note the account service passed here holds no
+        // credential, which is exactly the condition that used to produce a confident 200 signedIn:false.
+        //
+        // Revert-prove: change the selector in Map back to `tenantBoundary is { IsHosted: true }` and this goes
+        // RED with a 200 carrying signedIn:false - the reported bug, reached by a different route.
+        var builder = Microsoft.AspNetCore.Builder.WebApplication.CreateBuilder();
+        builder.Logging.ClearProviders();
+        var app = builder.Build();
+        app.Urls.Add("http://127.0.0.1:0");
+        AccountStatusEndpoint.Map(app, account: null);   // hosted mode is on; no boundary, no registry
+        await app.StartAsync();
+        try
+        {
+            using var http = new HttpClient { BaseAddress = new Uri(app.Urls.First()) };
+            var resp = await http.GetAsync("/account/status");
+
+            Assert.Equal(HttpStatusCode.ServiceUnavailable, resp.StatusCode);
+            Assert.DoesNotContain("signedIn", await resp.Content.ReadAsStringAsync());
+        }
+        finally
+        {
+            await app.StopAsync();
+        }
+    }
+
+    private Task<HttpResponseMessage> Get(string deviceKey)
+    {
+        var req = new HttpRequestMessage(HttpMethod.Get, "account/status");
+        req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", deviceKey);
+        return _http.SendAsync(req);
+    }
+
+    private async Task<JsonElement> StatusFor(string deviceKey)
+    {
+        var resp = await Get(deviceKey);
+        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+        var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync());
+        return doc.RootElement.Clone();
+    }
+
+    private static int FreePort()
+    {
+        var listener = new TcpListener(IPAddress.Loopback, 0);
+        listener.Start();
+        try { return ((IPEndPoint)listener.LocalEndpoint).Port; }
+        finally { listener.Stop(); }
+    }
+}

@@ -9,6 +9,11 @@ namespace CcDirector.Core.Account;
 /// <see cref="GatewayAccountStatusClient"/>. The account credential lives on the Gateway (issue #651),
 /// so the Director never holds a token of its own - it asks the Gateway.
 ///
+/// What that answer MEANS differs by deployment (issue #1856), and this type is deliberately indifferent to
+/// which: on self-host the Gateway reports its own signed-in account; on hosted it reports whether the
+/// CALLING device is enrolled, folded from that device's own key, because a hosted Gateway holds no account
+/// credential of its own. Either way this reads a verdict the Gateway owns rather than deciding one.
+///
 /// A short-lived in-memory cache keeps this off the hot path: the preamble endpoint is fetched at
 /// session start (and re-fetched by some agents on /clear), and the Pi launch path reads the cached
 /// snapshot synchronously so session creation never blocks on the network. On a cold or stale cache
