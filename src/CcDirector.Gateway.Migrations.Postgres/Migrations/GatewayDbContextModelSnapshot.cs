@@ -59,6 +59,10 @@ namespace CcDirector.Gateway.Migrations.Postgres.Migrations
 
             modelBuilder.Entity("CcDirector.Gateway.Data.Entities.CronJobEntity", b =>
                 {
+                    b.Property<string>("TenantId")
+                        .HasColumnType("text")
+                        .HasColumnName("tenant_id");
+
                     b.Property<string>("Id")
                         .HasColumnType("text");
 
@@ -101,16 +105,11 @@ namespace CcDirector.Gateway.Migrations.Postgres.Migrations
                         .IsRequired()
                         .HasColumnType("text");
 
-                    b.Property<string>("TenantId")
-                        .IsRequired()
-                        .HasColumnType("text")
-                        .HasColumnName("tenant_id");
-
                     b.Property<string>("TimeZoneId")
                         .IsRequired()
                         .HasColumnType("text");
 
-                    b.HasKey("Id");
+                    b.HasKey("TenantId", "Id");
 
                     b.HasIndex("TenantId");
 
@@ -744,6 +743,9 @@ namespace CcDirector.Gateway.Migrations.Postgres.Migrations
                 {
                     b.OwnsOne("CcDirector.Gateway.Contracts.CronJobAction", "Action", b1 =>
                         {
+                            b1.Property<string>("CronJobEntityTenantId")
+                                .HasColumnType("text");
+
                             b1.Property<string>("CronJobEntityId")
                                 .HasColumnType("text");
 
@@ -761,18 +763,21 @@ namespace CcDirector.Gateway.Migrations.Postgres.Migrations
                             b1.Property<string>("WorkListName")
                                 .HasColumnType("text");
 
-                            b1.HasKey("CronJobEntityId");
+                            b1.HasKey("CronJobEntityTenantId", "CronJobEntityId");
 
                             b1.ToTable("cron_jobs", "gateway");
 
                             b1.ToJson("Action");
 
                             b1.WithOwner()
-                                .HasForeignKey("CronJobEntityId");
+                                .HasForeignKey("CronJobEntityTenantId", "CronJobEntityId");
                         });
 
                     b.OwnsOne("CcDirector.Gateway.Contracts.CronJobTarget", "Target", b1 =>
                         {
+                            b1.Property<string>("CronJobEntityTenantId")
+                                .HasColumnType("text");
+
                             b1.Property<string>("CronJobEntityId")
                                 .HasColumnType("text");
 
@@ -780,14 +785,14 @@ namespace CcDirector.Gateway.Migrations.Postgres.Migrations
                                 .IsRequired()
                                 .HasColumnType("text");
 
-                            b1.HasKey("CronJobEntityId");
+                            b1.HasKey("CronJobEntityTenantId", "CronJobEntityId");
 
                             b1.ToTable("cron_jobs", "gateway");
 
                             b1.ToJson("Target");
 
                             b1.WithOwner()
-                                .HasForeignKey("CronJobEntityId");
+                                .HasForeignKey("CronJobEntityTenantId", "CronJobEntityId");
                         });
 
                     b.Navigation("Action")

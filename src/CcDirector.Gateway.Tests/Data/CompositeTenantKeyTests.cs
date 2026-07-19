@@ -100,6 +100,52 @@ public sealed class CompositeTenantKeyTests
         Assert.Equal("bob why", ReadWhy(db, ambient, tenantB, "shared-mission"));
     }
 
+    [Fact]
+    public void TwoTenants_MintTheSameCronJobId_BothSucceed_AndStayIsolated()
+    {
+        using var harness = new GatewayDbTestHarness();
+        var ambient = new AsyncLocalTenantContext();
+        var db = harness.Open(ambient);
+
+        var tenantA = new TenantId(Guid.NewGuid().ToString());
+        var tenantB = new TenantId(Guid.NewGuid().ToString());
+
+        // CronJobStore mints a short cj_ id checked per tenant, so two tenants CAN mint the same id. The
+        // composite (tenant_id, Id) must let both coexist rather than collide on a global Id PK.
+        WriteCronJob(db, ambient, tenantA, "cj_shared", "alice-job");
+        WriteCronJob(db, ambient, tenantB, "cj_shared", "bob-job");
+
+        Assert.Equal("alice-job", ReadCronName(db, ambient, tenantA, "cj_shared"));
+        Assert.Equal("bob-job", ReadCronName(db, ambient, tenantB, "cj_shared"));
+    }
+
+    private static void WriteCronJob(CcDirector.Gateway.Data.GatewayDatabase db, AsyncLocalTenantContext ambient,
+        TenantId tenant, string id, string name)
+    {
+        using (ambient.Enter(tenant))
+        using (var ctx = db.CreateContext())
+        {
+            ctx.CronJobs.Add(new CronJobEntity
+            {
+                Id = id,
+                Name = name,
+                TenantId = ctx.ActiveTenant!,
+                ScheduleKind = "cron",
+                TimeZoneId = "UTC",
+                CreatedUtc = DateTime.UtcNow,
+            });
+            ctx.SaveChanges();
+        }
+    }
+
+    private static string? ReadCronName(CcDirector.Gateway.Data.GatewayDatabase db, AsyncLocalTenantContext ambient,
+        TenantId tenant, string id)
+    {
+        using (ambient.Enter(tenant))
+        using (var ctx = db.CreateContext())
+            return ctx.CronJobs.Where(j => j.Id == id).Select(j => j.Name).SingleOrDefault();
+    }
+
     private static void WriteNote(CcDirector.Gateway.Data.GatewayDatabase db, AsyncLocalTenantContext ambient,
         TenantId tenant, string key, string why)
     {

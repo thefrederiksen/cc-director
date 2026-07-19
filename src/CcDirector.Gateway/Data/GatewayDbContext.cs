@@ -108,7 +108,11 @@ public sealed class GatewayDbContext : DbContext
         modelBuilder.Entity<CronJobEntity>(b =>
         {
             b.ToTable("cron_jobs");
-            b.HasKey(e => e.Id);
+            // COMPOSITE primary key (tenant_id, Id) - Hosted Multi-Tenancy. CronJobStore mints a SHORT id
+            // (cj_ + 24 bits) whose uniqueness it checks THROUGH the tenant query filter (per tenant), and the
+            // legacy import preserves caller-supplied short ids, so two tenants can hold the same id; scoping
+            // the key by tenant lets each tenant own its id space (the store already treats it as per-tenant).
+            b.HasKey(e => new { e.TenantId, e.Id });
             b.Property(e => e.Id);
             // The nested target/action are bulky sub-documents: map each as an owned type serialized to a
             // JSON column rather than its own table (the reusable "sub-doc -> JSON in a column" pattern).
