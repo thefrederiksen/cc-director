@@ -56,10 +56,13 @@ namespace CcDirector.Gateway.Tests;
 /// answer "do my new tests fire?"; it cannot see whether some existing test already covered the behaviour,
 /// and it cannot see collateral damage elsewhere.
 ///
-/// Observed with the filter deleted: 9 failed, 2947 passed, 10 skipped, 2966 total. The 9 decompose as the
-/// 8 guard canaries below plus one KNOWN pre-existing failure unrelated to this change
-/// (<c>Account.HostedAccountStatusTests.Enrolled_without_a_recorded_email_is_signed_in_with_the_identity_absent</c>,
-/// tracked as #1894 / #1905 / #1911), which reproduces on unmodified origin/main:
+/// Observed with the filter deleted, on a box verified to have no other Gateway-assembly run anywhere in the
+/// process tree: 9 failed, 2947 passed, 10 skipped, 2966 total. The 9 decomposed as the 8 guard canaries
+/// below plus one pre-existing failure unrelated to this change
+/// (<c>Account.HostedAccountStatusTests.Enrolled_without_a_recorded_email_is_signed_in_with_the_identity_absent</c>),
+/// which reproduced on unmodified origin/main at that time and has since been FIXED by #1916. A revert run
+/// repeated at or after #1916 should therefore show exactly the 8 below and nothing else - that failure is no
+/// longer an allowance, and if it appears it is a real defect. The 8:
 ///
 ///   HostedStatsDenyTests.The_stats_feed_is_refused_to_an_enrolled_tenant
 ///   HostedStatsDenyTests.The_refusal_carries_nothing_but_the_refusal (both cases)
