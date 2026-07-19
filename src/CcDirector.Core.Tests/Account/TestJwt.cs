@@ -67,6 +67,32 @@ internal static class TestJwt
         return $"{signingInput}.{signature}";
     }
 
+    /// <summary>Creates a valid HS256 token carrying authorization-mode claims (audience, issuer, subject,
+    /// exp), so an authorization validator that ACCEPTS HS256 would pass it - used to prove an ES256-only
+    /// validator refuses the same well-formed symmetric token.</summary>
+    public static string CreateAuthorization(DateTime expiresAtUtc, string audience, string issuer, string subject,
+        string secret = SigningSecret)
+    {
+        var header = Base64Url(JsonSerializer.SerializeToUtf8Bytes(new Dictionary<string, object>
+        {
+            ["alg"] = "HS256",
+            ["typ"] = "JWT",
+        }));
+
+        var payload = Base64Url(JsonSerializer.SerializeToUtf8Bytes(new Dictionary<string, object>
+        {
+            ["sub"] = subject,
+            ["aud"] = audience,
+            ["iss"] = issuer,
+            ["exp"] = new DateTimeOffset(expiresAtUtc, TimeSpan.Zero).ToUnixTimeSeconds(),
+        }));
+
+        var signingInput = $"{header}.{payload}";
+        using var hmac = new HMACSHA256(Encoding.UTF8.GetBytes(secret));
+        var signature = Base64Url(hmac.ComputeHash(Encoding.ASCII.GetBytes(signingInput)));
+        return $"{signingInput}.{signature}";
+    }
+
     /// <summary>Returns the token with its final signature byte flipped, so the signature no longer verifies.</summary>
     public static string Tamper(string token)
     {

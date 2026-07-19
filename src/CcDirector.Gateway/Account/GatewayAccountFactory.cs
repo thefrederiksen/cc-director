@@ -135,7 +135,14 @@ public static class GatewayAccountFactory
 
         var validator = new JwtAccessTokenValidator(
             ResolveSigningSecret(),
-            publicKeySetJson: DevThrottleSigningKeys.ResolvePublicKeySet());
+            publicKeySetJson: DevThrottleSigningKeys.ResolvePublicKeySet(),
+            // Defense in depth (Hosted Multi-Tenancy increment 2a): in HOSTED mode this account/membership
+            // validator is ES256-only too, so ANY hosted account-token authorization path - not just
+            // enrollment - refuses a symmetric HS256 token forged against the (possibly public placeholder)
+            // signing secret. Self-host is unaffected (HS256 stays allowed) so legacy non-hosted behavior does
+            // not change. The audience/issuer are unset here (this is the membership validator, not the
+            // authorization-mode enrollment validator), so this only hardens the signature-algorithm surface.
+            allowSymmetricHs256: !GatewayHostedMode.IsHosted);
         var eventLog = new AuthEventLog(authEventsLogPath);
         // Issue #640 / #876: the real Gateway-owned token refresher. It exchanges the cached refresh
         // token for a fresh pair against the embedded production backend (environment override for

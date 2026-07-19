@@ -87,18 +87,26 @@ internal static class HostedEnrollmentEndpoint
         // The device id is CLIENT-supplied, so it must NEVER be the registry key on its own: two different
         // accounts presenting the same deviceId would otherwise collide, and RegisterIfAbsent's idempotency
         // would hand one account the OTHER's key (which SetAccountBinding then rebinds to the new tenant) -
-        // letting a pre-enroller keep a key that becomes bound to the victim's tenant. Namespacing the
-        // registry id with the VERIFIED subject makes cross-account collision impossible: each account gets
-        // its own device space, so RegisterIfAbsent only ever returns THIS account's own key, and the binding
-        // is always to this account's tenant. The subject is a fixed Supabase id (prepended), so no
-        // client-supplied suffix can make one account's id collide with another's.
-        var scopedDeviceId = validation.Subject + "|" + req.DeviceId;
+        // letting a pre-enroller keep a key that becomes bound to the victim's tenant. Namespacing the registry
+        // id with a ONE-WAY HASH of the resolved tenant makes cross-account collision impossible (different
+        // accounts -> different tenants -> different hashes -> different device spaces) while staying
+        // idempotent for one account (same tenant -> same hash). The hash - not the subject and not the raw
+        // tenant id, both of which must never be logged - is what the device registry logs as the device id.
+        var scopedDeviceId = NamespaceHash(tenant.Value) + "|" + req.DeviceId;
         var response = devices.RegisterIfAbsent(scopedDeviceId, req.MachineName, req.Platform, req.DeviceType);
         devices.SetAccountBinding(scopedDeviceId, validation.Subject, tenant.Value);
 
         FileLog.Write($"[HostedEnrollment] enrolled deviceId={req.DeviceId}, machine={req.MachineName} " +
                       $"-> bound to its account tenant (no subject/email logged), deviceCount={response.DeviceCount}");
         return new EnrollResult(StatusCodes.Status200OK, response, "");
+    }
+
+    /// <summary>A one-way SHA-256 hex hash used to namespace the device registry id per tenant WITHOUT ever
+    /// putting the subject or the raw tenant id into a value the device registry logs.</summary>
+    private static string NamespaceHash(string value)
+    {
+        var bytes = System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(value));
+        return Convert.ToHexString(bytes).ToLowerInvariant();
     }
 
     private static string? ReadBearer(HttpContext ctx)
