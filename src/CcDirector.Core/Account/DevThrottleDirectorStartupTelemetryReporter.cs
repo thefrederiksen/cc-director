@@ -20,8 +20,20 @@ namespace CcDirector.Core.Account;
 /// Issue #1855: the report is AUTHENTICATED, with the same <c>gateway.token</c> Bearer every other
 /// Director-to-Gateway call carries. It previously sent no credential at all, so a Gateway with its
 /// host-wide gate on refused it 401 - and because the caller swallows failures by design, the only symptom
-/// was startup telemetry that silently never arrived. The credential rides ONLY to this Director's own
-/// configured Gateway, never to an address the <see cref="EndpointEnvVar"/> override names.
+/// was startup telemetry that silently never arrived. The credential rides ONLY to a target that IS this
+/// Director's own configured Gateway - which an <see cref="EndpointEnvVar"/> override naming that same
+/// Gateway still is, and which an override naming any other address is not.
+///
+/// SCOPE, so nobody reads more into this than it does: authenticating the hop makes the report ARRIVE. It
+/// does NOT make it attributed to an account. The receiving endpoint records a process-global line and, when
+/// forwarding is configured, enqueues the body globally with no tenant on it, so this is GLOBAL OPERATIONAL
+/// telemetry by design - a ruled scope, not an oversight.
+///
+/// That is safe ONLY because there is no tenant-facing read route for this telemetry: nothing serves one
+/// account's startup record to another, so there is nothing to isolate. IF ANYONE EVER ADDS SUCH A READ,
+/// ATTRIBUTION MUST COME FIRST - at that point this stops being operational data and becomes tenant data.
+/// The deferred attribution work, and the unsolved part of it (how a hosted Gateway authenticates a
+/// per-account forward to the cloud when it holds no account token), are recorded on issue #1875.
 /// </summary>
 public sealed class DevThrottleDirectorStartupTelemetryReporter : IDirectorStartupTelemetryReporter
 {
