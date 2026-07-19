@@ -8,6 +8,12 @@ using System.Net.Sockets;
 using System.Text.Json;
 using System.Threading.Tasks;
 using CcDirector.Gateway;
+using CcDirector.Gateway.Contracts;
+using CcDirector.Gateway.Stats;
+using Microsoft.AspNetCore.Builder;
+using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Routing;
+using Microsoft.Extensions.Logging;
 using Xunit;
 
 namespace CcDirector.Gateway.Tests;
@@ -33,11 +39,49 @@ namespace CcDirector.Gateway.Tests;
 /// nothing else - rather than as an absence of known payload keys. A deny-list of today's keys was tried and
 /// review broke it in one move; see the note on that test for why an allow-list is the only shape that holds.
 ///
-/// Revert-prove: delete the <c>DenyOnHosted()</c> guard from either route and that route's tests go RED -
-/// the data route with a 200 carrying the fleet-global keys, the page route with the HTML dashboard.
+/// ONE GROUP FILTER, NOT A GUARD PER ROUTE. The refusal is an endpoint filter on the group both routes are
+/// mapped into, so it runs before every route in that group INCLUDING ROUTES THAT DO NOT EXIST YET. A guard
+/// repeated in each handler rots by construction: the moment somebody adds a route to that file it is
+/// undefended and nothing fails. <see cref="HostedStatsGroupFilterTests"/> proves the difference by mapping a
+/// brand-new probe route onto the group and finding it already refused with no deny written for it.
 ///
-/// Self-host is the control and is covered by <see cref="StatsPageEndpointTests"/>, which run with hosted
-/// mode off and are untouched by this change.
+/// REVERT-PROOF - THE RECIPE ACTUALLY RUN, against the final head, on a box verified to have no other
+/// Gateway suite executing. In <c>src/CcDirector.Gateway/Stats/StatsPageEndpoint.cs</c> DELETE the
+/// <c>app.AddEndpointFilter(...)</c> block outright, leaving <c>var app = outer.MapGroup("");</c> in place so
+/// the group still exists and the file still compiles - the hosted deny is then absent ENTIRELY, with no
+/// per-route guard put back in its place. Deleting is the only correct way to revert here: wrapping the
+/// filter in <c>if (false)</c> leaves unreachable code, which is a BUILD ERROR in this repository, and a test
+/// run after a failed build silently executes the previous binary and reports a false pass. Rebuild, CONFIRM
+/// ZERO ERRORS, then run the FULL suite - not a filter over this class. A filtered revert-proof can only
+/// answer "do my new tests fire?"; it cannot see whether some existing test already covered the behaviour,
+/// and it cannot see collateral damage elsewhere.
+///
+/// Observed with the filter deleted: 9 failed, 2947 passed, 10 skipped, 2966 total. The 9 decompose as the
+/// 8 guard canaries below plus one KNOWN pre-existing failure unrelated to this change
+/// (<c>Account.HostedAccountStatusTests.Enrolled_without_a_recorded_email_is_signed_in_with_the_identity_absent</c>,
+/// tracked as #1894 / #1905 / #1911), which reproduces on unmodified origin/main:
+///
+///   HostedStatsDenyTests.The_stats_feed_is_refused_to_an_enrolled_tenant
+///   HostedStatsDenyTests.The_refusal_carries_nothing_but_the_refusal (both cases)
+///   HostedStatsDenyTests.The_stats_page_is_refused_too
+///   HostedStatsDenyTests.The_refusal_is_not_a_zeroed_dashboard
+///   HostedStatsGroupFilterTests.A_route_added_to_the_group_later_is_refused_on_hosted_with_no_deny_of_its_own
+///   HostedStatsGroupFilterTests.Both_stats_routes_are_refused_on_hosted_through_the_group_filter (both cases)
+///
+/// TWO THINGS THAT RUN PROVED BEYOND "the tests fire". No test ANYWHERE ELSE in the suite reddened, so this
+/// behaviour was NOT already covered - before this change nothing in the Gateway suite would have noticed the
+/// stats dashboard serving fleet-global totals on hosted. And there was no collateral red, so the guard is
+/// not entangled with unrelated behaviour.
+///
+/// The unauthenticated control, <see cref="HostedStatsGroupFilterTests.A_route_outside_the_group_still_serves_on_hosted"/>
+/// and the whole of <see cref="HostedStatsSelfHostControlTests"/> stayed GREEN through the revert - they are
+/// the controls, and a control that moves with the change under test is not a control. Restore the block,
+/// rebuild, run the full suite again, confirm green.
+///
+/// SELF-HOST IS PROVED, NOT INHERITED. <see cref="HostedStatsSelfHostControlTests"/> EXPLICITLY clears
+/// <c>CC_GATEWAY_HOSTED</c> and asserts both routes still serve their real payloads. Leaning on
+/// <see cref="StatsPageEndpointTests"/> would prove nothing about self-host, because those rest on the test
+/// runner's ambient default: if that default ever flips they keep passing while self-host is broken.
 /// </summary>
 public sealed class HostedStatsDenyTests : IAsyncLifetime
 {
@@ -161,5 +205,313 @@ public sealed class HostedStatsDenyTests : IAsyncLifetime
         listener.Start();
         try { return ((IPEndPoint)listener.LocalEndpoint).Port; }
         finally { listener.Stop(); }
+    }
+}
+
+/// <summary>
+/// Boots ONLY the stats group on an ephemeral port, exactly as <see cref="StatsPageEndpointTests"/> does, and
+/// hands the caller the route group back so a test can map routes onto it. That is what makes the
+/// future-route proof possible at all: the group is created inside <c>StatsPageEndpoint.Map</c>, so nothing
+/// outside that method could otherwise state a property about routes added to it.
+/// </summary>
+internal static class StatsGroupProbeHost
+{
+    public static async Task<(WebApplication app, HttpClient http)> StartAsync(
+        GatewayInputStatsAggregator aggregator,
+        Action<RouteGroupBuilder>? mapIntoGroup = null,
+        Action<IEndpointRouteBuilder>? mapOutsideGroup = null)
+    {
+        var builder = WebApplication.CreateBuilder();
+        builder.Logging.ClearProviders();
+        var app = builder.Build();
+        app.Urls.Add("http://127.0.0.1:0");
+
+        var group = StatsPageEndpoint.Map(app, aggregator);
+        mapIntoGroup?.Invoke(group);
+        mapOutsideGroup?.Invoke(app);
+
+        await app.StartAsync();
+        var http = new HttpClient { BaseAddress = new Uri(app.Urls.First()) };
+        return (app, http);
+    }
+
+    /// <summary>
+    /// Asserts the body is the hosted refusal and NOTHING ELSE, by parsing the JSON and comparing the whole
+    /// property set to a one-name allow-list. A substring check cannot see an extra leaked field; enumerating
+    /// the property set reddens automatically on anything extra, without this file being touched.
+    /// </summary>
+    public static async Task AssertBodyIsNothingButTheRefusal(HttpResponseMessage resp)
+    {
+        var body = await resp.Content.ReadAsStringAsync();
+
+        using var doc = JsonDocument.Parse(body);
+        Assert.Equal(JsonValueKind.Object, doc.RootElement.ValueKind);
+
+        var properties = doc.RootElement.EnumerateObject().Select(p => p.Name).ToArray();
+        Assert.Equal(new[] { "error" }, properties);
+        Assert.Equal("the stats dashboard is not available on the hosted gateway",
+            doc.RootElement.GetProperty("error").GetString());
+    }
+}
+
+/// <summary>
+/// THE POINT OF THE WHOLE CHANGE: the hosted refusal is a filter on the stats route GROUP, so it covers
+/// routes that have not been written yet.
+///
+/// A guard line repeated in every handler passes exactly the same tests as a group filter for the routes that
+/// exist today, which is precisely why it is dangerous - the difference only shows up on the route somebody
+/// adds NEXT, when it is open by default and nothing fails. That difference is not observable by driving
+/// /stats and /stats/data, so this class maps a BRAND-NEW probe route onto the group and asserts it is
+/// refused with no deny of its own written anywhere. That single test is the one that distinguishes the two
+/// implementations, and it is the reason <c>StatsPageEndpoint.Map</c> returns its group.
+///
+/// The revert recipe and the full expected-red list live on <see cref="HostedStatsDenyTests"/>.
+/// </summary>
+public sealed class HostedStatsGroupFilterTests : IDisposable
+{
+    private const string ProbePayloadSentinel = "probe-payload-that-must-never-be-served-on-hosted";
+
+    private readonly string _dir;
+    private readonly string? _priorHosted;
+
+    public HostedStatsGroupFilterTests()
+    {
+        _dir = Path.Combine(Path.GetTempPath(), "cc-stats-group-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(_dir);
+
+        // EXPLICIT, not ambient: this class asserts hosted behaviour, so it states hosted mode itself rather
+        // than inheriting whatever the runner happened to leave set.
+        _priorHosted = Environment.GetEnvironmentVariable("CC_GATEWAY_HOSTED");
+        Environment.SetEnvironmentVariable("CC_GATEWAY_HOSTED", "1");
+        Assert.True(GatewayHostedMode.IsHosted);
+    }
+
+    public void Dispose()
+    {
+        Environment.SetEnvironmentVariable("CC_GATEWAY_HOSTED", _priorHosted);
+        try { Directory.Delete(_dir, recursive: true); } catch (Exception) { /* best effort */ }
+    }
+
+    private GatewayInputStatsAggregator Aggregator() =>
+        new(Path.Combine(_dir, "s-" + Guid.NewGuid().ToString("N") + ".db"));
+
+    /// <summary>
+    /// A route that did not exist when the refusal was written is refused anyway. NOTHING in
+    /// <c>StatsPageEndpoint</c> mentions this path, and no guard is written for it here - the only thing
+    /// standing between the caller and the probe payload is the group filter. Delete the filter and this test
+    /// serves the probe payload with a 200, which is the future-route hole stated out loud.
+    /// </summary>
+    [Fact]
+    public async Task A_route_added_to_the_group_later_is_refused_on_hosted_with_no_deny_of_its_own()
+    {
+        var (app, http) = await StatsGroupProbeHost.StartAsync(
+            Aggregator(),
+            mapIntoGroup: group => group.MapGet("/stats/added-after-the-deny-was-written",
+                () => Results.Json(new { probe = ProbePayloadSentinel })));
+        try
+        {
+            var resp = await http.GetAsync("/stats/added-after-the-deny-was-written");
+
+            Assert.Equal(HttpStatusCode.NotFound, resp.StatusCode);
+            await StatsGroupProbeHost.AssertBodyIsNothingButTheRefusal(resp);
+            Assert.DoesNotContain(ProbePayloadSentinel, await resp.Content.ReadAsStringAsync(),
+                StringComparison.Ordinal);
+        }
+        finally { http.Dispose(); await app.DisposeAsync(); }
+    }
+
+    /// <summary>
+    /// The two production routes, refused through that same filter rather than through a guard of their own.
+    /// </summary>
+    [Theory]
+    [InlineData("/stats")]
+    [InlineData("/stats/data")]
+    public async Task Both_stats_routes_are_refused_on_hosted_through_the_group_filter(string path)
+    {
+        var (app, http) = await StatsGroupProbeHost.StartAsync(Aggregator());
+        try
+        {
+            var resp = await http.GetAsync(path);
+            Assert.Equal(HttpStatusCode.NotFound, resp.StatusCode);
+            await StatsGroupProbeHost.AssertBodyIsNothingButTheRefusal(resp);
+        }
+        finally { http.Dispose(); await app.DisposeAsync(); }
+    }
+
+    /// <summary>
+    /// CONTROL: the filter is scoped to the stats group, not a blanket refusal on the whole application. A
+    /// route mapped OUTSIDE the group still serves on hosted, so the passing tests above are the filter
+    /// doing its job and not the host refusing everything.
+    /// </summary>
+    [Fact]
+    public async Task A_route_outside_the_group_still_serves_on_hosted()
+    {
+        var (app, http) = await StatsGroupProbeHost.StartAsync(
+            Aggregator(),
+            mapOutsideGroup: routes => routes.MapGet("/not-a-stats-route", () => Results.Json(new { ok = true })));
+        try
+        {
+            var resp = await http.GetAsync("/not-a-stats-route");
+            Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+            Assert.Contains("true", await resp.Content.ReadAsStringAsync(), StringComparison.Ordinal);
+        }
+        finally { http.Dispose(); await app.DisposeAsync(); }
+    }
+}
+
+/// <summary>
+/// THE SELF-HOST CONTROL, STATED EXPLICITLY.
+///
+/// Self-host is the control for this entire hosted-tenancy mission, so it has to be PROVEN rather than
+/// INHERITED. <see cref="StatsPageEndpointTests"/> does not prove it: those tests never mention
+/// <c>CC_GATEWAY_HOSTED</c> and pass only because the runner happens to leave it unset. If that ambient
+/// default ever flipped - one leaked environment variable, one continuous-integration image change, one test
+/// that forgot to restore it - they would keep passing while self-host was completely broken, because they
+/// assert nothing about which mode they are in.
+///
+/// So this class sets the variable itself, to BOTH non-hosted values that occur in practice: absent, and
+/// present-but-not-"1". It then asserts the routes serve their REAL PAYLOADS - the seeded counts, the ranked
+/// repository, the honesty caveats, the dashboard markup - and not merely that the refusal string is absent.
+/// An empty-but-successful response would satisfy "the refusal is absent" while still being a broken
+/// self-host, so absence of the refusal is not the assertion.
+///
+/// These tests must stay GREEN through the revert described on <see cref="HostedStatsDenyTests"/>. A control
+/// that moves with the change under test is not a control.
+/// </summary>
+public sealed class HostedStatsSelfHostControlTests : IDisposable
+{
+    private readonly string _dir;
+    private readonly string? _priorHosted;
+
+    public HostedStatsSelfHostControlTests()
+    {
+        _dir = Path.Combine(Path.GetTempPath(), "cc-stats-selfhost-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(_dir);
+        _priorHosted = Environment.GetEnvironmentVariable("CC_GATEWAY_HOSTED");
+    }
+
+    public void Dispose()
+    {
+        Environment.SetEnvironmentVariable("CC_GATEWAY_HOSTED", _priorHosted);
+        try { Directory.Delete(_dir, recursive: true); } catch (Exception) { /* best effort */ }
+    }
+
+    /// <summary>
+    /// Puts the process into a stated non-hosted mode and proves it took, so no test below can silently be
+    /// running in the mode it thinks it is not in.
+    /// </summary>
+    private static void DeclareSelfHost(string? value)
+    {
+        Environment.SetEnvironmentVariable("CC_GATEWAY_HOSTED", value);
+        Assert.False(GatewayHostedMode.IsHosted);
+    }
+
+    private GatewayInputStatsAggregator SeededAggregator()
+    {
+        var agg = new GatewayInputStatsAggregator(Path.Combine(_dir, "s-" + Guid.NewGuid().ToString("N") + ".db"));
+        agg.Observe(new SessionDto
+        {
+            SessionId = "s1",
+            RepoPath = @"D:\ReposFred\devthrottle",
+            InputStats = new InputStatsDto
+            {
+                Buckets = { new InputStatBucketDto { Modality = "voice", Surface = "phone", Turns = 7, Characters = 700 } },
+            },
+        });
+        return agg;
+    }
+
+    /// <summary>
+    /// null = the variable is absent. "0" = the variable is present and explicitly not hosted. Both are real
+    /// non-hosted deployments and both must serve.
+    /// </summary>
+    public static TheoryData<string?> NonHostedValues => new() { null, "0" };
+
+    [Theory]
+    [MemberData(nameof(NonHostedValues))]
+    public async Task The_stats_page_still_serves_its_real_dashboard_on_self_host(string? hostedValue)
+    {
+        DeclareSelfHost(hostedValue);
+
+        var (app, http) = await StatsGroupProbeHost.StartAsync(SeededAggregator());
+        try
+        {
+            var resp = await http.GetAsync("/stats");
+            Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+            Assert.StartsWith("text/html", resp.Content.Headers.ContentType!.ToString());
+
+            // The REAL page, asserted by what it contains - not by the refusal being absent. An empty 200
+            // would pass "no refusal" and still be a dead dashboard.
+            var html = await resp.Content.ReadAsStringAsync();
+            Assert.Contains("Your Throttle", html);
+            Assert.Contains("/stats/data", html);
+            Assert.Contains("What you have spent", html);
+        }
+        finally { http.Dispose(); await app.DisposeAsync(); }
+    }
+
+    [Theory]
+    [MemberData(nameof(NonHostedValues))]
+    public async Task The_stats_feed_still_serves_its_real_totals_on_self_host(string? hostedValue)
+    {
+        DeclareSelfHost(hostedValue);
+
+        var (app, http) = await StatsGroupProbeHost.StartAsync(SeededAggregator());
+        try
+        {
+            var resp = await http.GetAsync("/stats/data");
+            Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+
+            using var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync());
+            var root = doc.RootElement;
+
+            // The refusal envelope has exactly one property named "error". Proving the real feed means
+            // proving the payload it actually carries is here, one field at a time.
+            var properties = root.EnumerateObject().Select(p => p.Name).ToArray();
+            Assert.DoesNotContain("error", properties);
+            foreach (var expected in new[]
+                     {
+                         "buckets", "hourlyTurns", "wingman", "repos", "agents", "models",
+                         "tokenSpend", "tokenSpendByHour", "tokenSpendByModel", "notCaptured",
+                     })
+                Assert.Contains(expected, properties);
+
+            // The seeded numbers themselves, so an empty-but-shaped payload cannot pass as "serving".
+            var bucket = Assert.Single(root.GetProperty("buckets").EnumerateArray());
+            Assert.Equal("voice", bucket.GetProperty("modality").GetString());
+            Assert.Equal("phone", bucket.GetProperty("surface").GetString());
+            Assert.Equal(7, bucket.GetProperty("turns").GetInt64());
+            Assert.Equal(700, bucket.GetProperty("characters").GetInt64());
+
+            var repo = Assert.Single(root.GetProperty("repos").EnumerateArray());
+            Assert.Equal("devthrottle", repo.GetProperty("repoName").GetString());
+            Assert.Equal(7, repo.GetProperty("turns").GetInt64());
+
+            Assert.True(root.GetProperty("notCaptured").GetArrayLength() > 0);
+        }
+        finally { http.Dispose(); await app.DisposeAsync(); }
+    }
+
+    /// <summary>
+    /// The mirror of the future-route probe: on self-host the group filter lets a route added to the group
+    /// through untouched. Without this, "the filter refuses everything, always" would pass every hosted test
+    /// in this file.
+    /// </summary>
+    [Fact]
+    public async Task A_route_added_to_the_group_still_serves_on_self_host()
+    {
+        DeclareSelfHost(null);
+
+        var (app, http) = await StatsGroupProbeHost.StartAsync(
+            SeededAggregator(),
+            mapIntoGroup: group => group.MapGet("/stats/added-after-the-deny-was-written",
+                () => Results.Json(new { probe = "served" })));
+        try
+        {
+            var resp = await http.GetAsync("/stats/added-after-the-deny-was-written");
+            Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+            Assert.Contains("served", await resp.Content.ReadAsStringAsync(), StringComparison.Ordinal);
+        }
+        finally { http.Dispose(); await app.DisposeAsync(); }
     }
 }

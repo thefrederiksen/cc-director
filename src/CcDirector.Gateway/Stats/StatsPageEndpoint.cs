@@ -20,7 +20,9 @@ namespace CcDirector.Gateway.Stats;
 /// Only counts and ratios are ever served - never the text of anything typed or said (mission decision 5).
 /// The page states plainly which input paths are counted and which are not-captured (no-fallback rule).
 ///
-/// DENIED ON HOSTED (issue #1848). Both routes are refused on the hosted Gateway. This is the OWNER'S
+/// DENIED IN WHOLE ON HOSTED (issue #1848). EVERY route in this group is refused on the hosted Gateway,
+/// through ONE group filter rather than a guard repeated per route - so a route added here later is refused
+/// too, without anyone remembering to defend it. This is the OWNER'S
 /// private view of HIS OWN gateway, and on shared hosted infrastructure "the owner" does not survive as a
 /// concept - so there is no correct per-tenant answer to serve here, only a disclosure to close. What the
 /// feed actually carries makes that concrete: every repository name the fleet has driven, the per-agent and
@@ -77,15 +79,31 @@ public static class StatsPageEndpoint
             statusCode: StatusCodes.Status404NotFound);
     }
 
-    public static void Map(IEndpointRouteBuilder app, GatewayInputStatsAggregator aggregator,
+    /// <summary>
+    /// Maps the stats group and returns it, so the refusal can be proved to cover routes that do not exist
+    /// yet: a test maps a NEW probe route onto the returned group and finds it already refused on hosted,
+    /// without anyone having written a deny for it. Returning the group is the only way to state that
+    /// property from outside this file.
+    /// </summary>
+    public static RouteGroupBuilder Map(IEndpointRouteBuilder outer, GatewayInputStatsAggregator aggregator,
         GatewaySessionConcurrencyStats? concurrency = null)
     {
-        FileLog.Write($"[StatsPageEndpoint] mapping /stats (embedded); hosted={GatewayHostedMode.IsHosted} - on hosted BOTH routes are refused (issue #1848)");
+        FileLog.Write($"[StatsPageEndpoint] mapping /stats (embedded); hosted={GatewayHostedMode.IsHosted} - on hosted EVERY route in this group is refused (issue #1848)");
 
-        app.MapGet("/stats/data", (HttpContext ctx) =>
+        // The whole group behind ONE filter, rather than a guard line repeated in every handler.
+        // A repeated guard is a thing to forget: the route added to this file next year would be open by
+        // default and nothing would fail. A group filter runs before EVERY route mapped below, including
+        // routes that do not exist yet, so the refusal cannot rot as the group grows. The empty prefix keeps
+        // the route paths written out in full, exactly as before, so the self-host surface is unchanged.
+        var app = outer.MapGroup("");
+        app.AddEndpointFilter(async (ctx, next) =>
         {
             if (DenyOnHosted() is { } denied) return denied;
+            return await next(ctx);
+        });
 
+        app.MapGet("/stats/data", () =>
+        {
             var totals = aggregator.CurrentTotals();
             return Results.Json(new
             {
@@ -141,12 +159,12 @@ public static class StatsPageEndpoint
 
         app.MapGet("/stats", (HttpContext ctx) =>
         {
-            if (DenyOnHosted() is { } denied) return denied.ExecuteAsync(ctx);
-
             ctx.Response.Headers.CacheControl = "no-cache";
             ctx.Response.ContentType = "text/html; charset=utf-8";
             return ctx.Response.WriteAsync(PageHtml);
         });
+
+        return app;
     }
 
     // Self-contained: all CSS and JavaScript inline, no external requests, ASCII only. Light/dark aware.
