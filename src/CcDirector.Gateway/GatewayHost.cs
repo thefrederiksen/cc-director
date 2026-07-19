@@ -737,11 +737,22 @@ public sealed class GatewayHost : IAsyncDisposable
         // roster serves from (StampFleetRolesAndFold with THIS host's NeedsYouClock and snooze registry), so
         // the answer pushed to the desktop is byte-identical to the answer every browser gets - one fold, one
         // authority. Like FleetRoles it holds the change gate that stops the stamp echoing back up forever.
+        //
+        // The snapshot carries only Director-owned facts (it is what the Director pushed up); the two voice
+        // readiness booleans are Gateway-only (_voiceService), so they MUST be enriched onto each session
+        // here BEFORE the fold - exactly as the roster handler does before its own StampFleetRolesAndFold
+        // call - or the push seam folds VoiceAudioReady=false for every session and holds every voice-mode
+        // session permanently "Preparing voice" (yellow), never moving it to red once the voice is ready.
+        // The voice-ready flip arrives on no Director push, so only the 5s backstop sweep would catch it -
+        // and without this enrichment the sweep re-derives the same yellow every tick and the change gate
+        // suppresses the update forever. The roster path enriched these (GatewayHost roster map below), so
+        // the browsers folded red while the push-only desktop stuck yellow. Same source, same answer.
         FleetDisplayState = new Fleet.FleetDisplayStateObserver(
             () => PushedSessions.SnapshotFresh(TenantId.Local, AutoDismissStaleAfter),
-            sessions => Api.GatewayEndpoints.StampFleetRolesAndFold(
+            sessions => EnrichVoiceThenFoldForPush(
                 sessions,
-                sessions,
+                voiceGeneratingFor: sid => _voiceService?.IsGenerating(sid) == true,
+                voiceAudioReadyFor: sid => _voiceService?.HasVoice(sid) == true,
                 needsYouStampFor: (sid, isRed) => _needsYouClock.Stamp(sid, isRed),
                 snoozeRegistry: _snoozeRegistry),
             SendCommandAsync);
@@ -2182,6 +2193,35 @@ public sealed class GatewayHost : IAsyncDisposable
     /// The cron sweep timer callback (a boundary - it owns the try/catch so a sweep failure never
     /// crashes the timer thread). Fires due jobs; per-job failures are isolated inside the engine.
     /// </summary>
+    /// <summary>
+    /// The stamp delegate for the display-state PUSH seam (FleetDisplayStateObserver). The pushed snapshot
+    /// carries only Director-owned facts, but the color fold reads two Gateway-only voice booleans
+    /// (VoiceGenerating / VoiceAudioReady from _voiceService). This enriches each session with them BEFORE
+    /// folding - the same order the roster handler uses (GatewayEndpoints roster map) - so the push seam and
+    /// the roster fold IDENTICAL inputs and therefore the identical color.
+    ///
+    /// Without this the push seam sees VoiceAudioReady=false for every session and, since #1841 made
+    /// IsVoicePreparing key on <c>!VoiceAudioReady</c>, holds every voice-mode waiting session yellow
+    /// ("Preparing voice") forever, never moving to red once the voice is ready. The voice-ready flip
+    /// arrives on no Director push, so only the 5s backstop sweep could carry it - and unenriched the sweep
+    /// re-derives the same yellow every tick and the change gate suppresses the update permanently. This is
+    /// exercised directly by the tests so the enrichment cannot silently regress again.
+    /// </summary>
+    internal static void EnrichVoiceThenFoldForPush(
+        List<SessionDto> sessions,
+        Func<string, bool> voiceGeneratingFor,
+        Func<string, bool> voiceAudioReadyFor,
+        Func<string, bool, DateTime?>? needsYouStampFor,
+        Snooze.SnoozeRegistry? snoozeRegistry)
+    {
+        foreach (var s in sessions)
+        {
+            s.VoiceGenerating = voiceGeneratingFor(s.SessionId);
+            s.VoiceAudioReady = voiceAudioReadyFor(s.SessionId);
+        }
+        Api.GatewayEndpoints.StampFleetRolesAndFold(sessions, sessions, needsYouStampFor, snoozeRegistry);
+    }
+
     private void SweepCron()
     {
         try
