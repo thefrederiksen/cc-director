@@ -253,7 +253,7 @@ internal static class AccountStatusEndpoint
     /// response carries no identity fields. This type intentionally carries NO token field, so the
     /// response can never include the access or refresh token (security rule DT-05).
     /// </summary>
-    /// <param name="SignedIn">Whether the Gateway holds a valid DevThrottle credential.</param>
+    /// <param name="SignedIn">SELF-HOST: whether the Gateway holds a valid DevThrottle credential. HOSTED (issue #1856): whether the CALLING device is enrolled - that is, its authenticated device key resolves to a tenant. The hosted Gateway holds no credential of its own by design, so the self-host meaning would answer about the wrong thing there.</param>
     /// <param name="Email">The signed-in user's email, or null (omitted) when not signed in / unavailable.</param>
     /// <param name="Provider">The authentication provider, or null (omitted) when not signed in / unavailable.</param>
     /// <param name="Nickname">The chosen account nickname (issue #1357), or null (omitted) when not signed in / unset / unresolved.</param>
