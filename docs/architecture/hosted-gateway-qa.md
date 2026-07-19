@@ -346,6 +346,11 @@ dotnet publish src/CcDirector.Gateway.Host/CcDirector.Gateway.Host.csproj \
   CcDirector.Gateway.Host.runtimeconfig.json targets Microsoft.AspNetCore.App
 ```
 
+Note (issue #1892): the publish command above is the one that was run for THIS piece of work, and it is
+no longer the command in the Dockerfile. The image now builds the cockpit and the mobile app into
+`wwwroot/c` and `wwwroot/m`, so the three `Run*` properties are `true` and the runtime-identifier flags
+are gone. Read the Dockerfile for the current command.
+
 Boot smoke test (`GatewayHostBootSmokeTests`):
 - `PostgresMigrationSet_ResolvesByAssemblyName_WithoutDatabase` (always runs, no database): loads the
   migration set by the assembly name the host wires (`GetMigrations()`, which does not connect) and asserts
