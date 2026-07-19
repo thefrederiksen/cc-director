@@ -172,6 +172,27 @@ public sealed class SessionServingLoopIsolationTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task AutoDismiss_sweep_denies_when_no_tenant_is_in_scope()
+    {
+        // DENY-BY-DEFAULT for the sweeper itself. Calling SweepAsync directly with NO tenant scope is the
+        // shape an unconverted background caller would have. It must refuse outright and close nothing -
+        // not coin a partition to file its close-marks under and rely on the snapshot happening to be empty.
+        // (PR2 shipped an empty-string prefix here; benign only because the snapshot was empty in that state,
+        // which is safety that depends on a DIFFERENT function not changing.)
+        var closed = 0;
+        var sweeper = new Running.AutoDismissSweeper(
+            snapshot: () => new[] { ("dir-a", Sample(SessA, autoDismiss: true)) },
+            sendCommand: (_, _, _) => { closed++; return Task.FromResult<DirectorCommandResult?>(DirectorCommandResult.Success("{}")); },
+            tenantKey: () => null);
+
+        var result = await sweeper.SweepAsync(CancellationToken.None);
+
+        // A fully dismissable session is offered and still nothing is closed - the deny, not an empty fleet.
+        Assert.Equal(0, result);
+        Assert.Equal(0, closed);
+    }
+
+    [Fact]
     public async Task AutoDismiss_close_marks_are_partitioned_per_tenant()
     {
         // The sweeper keeps a "already issued a kill" mark so a session lingering one extra sweep is not

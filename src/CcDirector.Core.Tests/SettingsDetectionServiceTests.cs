@@ -35,6 +35,25 @@ public class SettingsDetectionServiceTests
     }
 
     [Fact]
+    public async Task TestGatewayAsync_AbsentCounts_ReportsThemAbsent_NotZero()
+    {
+        // Hosted Multi-Tenancy: the hosted Gateway OMITS directors/sessions from /healthz, because that probe
+        // is public and tenant-less and a fleet-global aggregate would span every account. A missing field
+        // must therefore read as "not reported", never be coerced to 0 - "0 director(s)" on the Test-gateway
+        // button turns an absence into a claim that the person's fleet is empty.
+        var svc = WithResponse(HttpStatusCode.OK, """{"status":"ok","version":"1.5.0"}""");
+
+        var r = await svc.TestGatewayAsync("http://gw:7878");
+
+        Assert.True(r.Ok);
+        Assert.Equal("1.5.0", r.Version);
+        Assert.Null(r.Directors);
+        Assert.Null(r.Sessions);
+        Assert.DoesNotContain("0 director(s)", r.Message);
+        Assert.Contains("not reported", r.Message);
+    }
+
+    [Fact]
     public async Task TestGatewayAsync_CaseInsensitiveKeys_StillParses()
     {
         var svc = WithResponse(HttpStatusCode.OK,
