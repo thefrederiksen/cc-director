@@ -11,12 +11,47 @@ public static class CcStorageMigration
     private static int _migrated;
 
     /// <summary>
-    /// Run migration if not already done. Safe to call multiple times.
+    /// The environment variable that pins storage to an explicit root. When it is set, this migration
+    /// does not run - see <see cref="ShouldMigrate"/>.
+    /// </summary>
+    private const string PinnedRootVariable = "CC_DIRECTOR_ROOT";
+
+    /// <summary>
+    /// Whether the legacy migration should run for this process, given the value of
+    /// <c>CC_DIRECTOR_ROOT</c>. It runs ONLY for the default root - an explicitly pinned root is
+    /// somebody deliberately asking for separate storage, and copying the machine owner's real data
+    /// into it is the opposite of what they asked for (issue #1879).
+    ///
+    /// This matters beyond tidiness. The migration reads from FIXED legacy paths that
+    /// <c>CC_DIRECTOR_ROOT</c> cannot redirect, so before this guard every alternate root filled on
+    /// first boot with the owner's real accounts, repository list and session history - and that history
+    /// carries first-prompt snippets and turn summaries, i.e. real prompt text. Worse, it re-fired:
+    /// <see cref="CopyFileIfNewer"/> copies whenever the destination is MISSING, so deleting the copied
+    /// data did not stop it coming back on the next start. A root cleaned today refilled tomorrow.
+    ///
+    /// The one-time move of legacy data into the real install is what this migration is for, and that
+    /// case is unaffected: the default root does not set the variable.
+    /// </summary>
+    /// <param name="pinnedRoot">The raw <c>CC_DIRECTOR_ROOT</c> value; null or blank means the default root.</param>
+    public static bool ShouldMigrate(string? pinnedRoot) => string.IsNullOrWhiteSpace(pinnedRoot);
+
+    /// <summary>
+    /// Run migration if not already done. Safe to call multiple times. Does nothing when storage has been
+    /// pinned to an explicit root via <c>CC_DIRECTOR_ROOT</c> - see <see cref="ShouldMigrate"/>.
     /// </summary>
     public static void EnsureMigrated()
     {
         if (Interlocked.CompareExchange(ref _migrated, 1, 0) != 0)
             return;
+
+        var pinnedRoot = Environment.GetEnvironmentVariable(PinnedRootVariable);
+        if (!ShouldMigrate(pinnedRoot))
+        {
+            FileLog.Write($"[CcStorageMigration] EnsureMigrated: SKIPPED - storage is pinned by {PinnedRootVariable}. " +
+                          "The legacy migration only ever targets the default root; it will not copy the machine " +
+                          "owner's data into a root that was deliberately kept separate.");
+            return;
+        }
 
         FileLog.Write("[CcStorageMigration] EnsureMigrated: checking for legacy data");
 
