@@ -519,9 +519,19 @@ internal static class GatewayEndpoints
             });
         });
 
-        app.MapGet("/directors", () =>
+        // Issue #1847: serve THIS request's tenant's Directors, resolved from its authenticated device key -
+        // the same seam the session read path uses. The list used to be fleet-global while the by-id legs
+        // were gated, which made it the ENUMERATION surface: any authenticated account could read back every
+        // other account's Director id, machine name, operating system user, process id, client version and
+        // liveness. A request with no bound tenant is DENIED (403), never served the Local partition.
+        app.MapGet("/directors", (HttpContext ctx) =>
         {
-            return Results.Json(registry.ListDirectors());
+            var reqTenant = ResolveReadTenant(ctx, tenantBoundary);
+            if (reqTenant is null)
+                return Results.Json(new { error = "no tenant is bound to this request" },
+                    statusCode: StatusCodes.Status403Forbidden);
+
+            return Results.Json(registry.ListDirectors(reqTenant.Value));
         });
 
         // ===== HTTP discovery (Phase 1) =====
@@ -3003,7 +3013,11 @@ internal static class GatewayEndpoints
             if (located is not null)
             {
                 var (directorId, pushedSession) = located.Value;
-                var owner = registry.Get(directorId);
+                // Issue #1847: resolve the owning Director IN THE SAME TENANT the session was located under.
+                // The pushed store is already tenant-scoped, but the registry lookup used to be by bare id, so
+                // once the registry could hold that id for more than one tenant, this line could stamp ANOTHER
+                // tenant's machine name, operating system user and version onto the session being served here.
+                var owner = registry.Get(tenant, directorId);
                 if (owner is not null)
                 {
                     FileLog.Write($"[GatewayEndpoints] LocateSessionAsync: sid={sid} located=pushed-cache, director={directorId}");
