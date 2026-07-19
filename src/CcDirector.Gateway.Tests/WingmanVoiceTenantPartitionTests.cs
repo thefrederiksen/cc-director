@@ -16,42 +16,47 @@ namespace CcDirector.Gateway.Tests;
 /// empty answer proves nothing on its own: a seed that silently failed also returns empty, and that reads as
 /// isolation. The control is what separates "isolated" from "nothing was ever stored".
 ///
-/// REVERT-PROOF RECIPE - the four steps below were ACTUALLY RUN against this branch before it was
-/// committed, and the results recorded are the ones observed, not the ones expected. Re-run them whenever
-/// these guards are touched. Do NOT neutralise a guard with <c>if (false)</c>: unreachable code is a build
-/// error in this repository, the build then fails, and a test run after a failed build executes the STALE
-/// binary and reports a false pass. DELETE the guard, and CONFIRM the build line says succeeded / 0 errors
-/// before believing any result.
+/// REVERT-PROOF RECIPE. Do NOT neutralise a guard with <c>if (false)</c>: unreachable code is a build error
+/// in this repository, the build then fails, and a test run after a failed build executes the STALE binary
+/// and reports a false pass. DELETE the guard, and CONFIRM the build line says succeeded before believing
+/// any result. Run the WHOLE Gateway suite, not a filter on this class - a filter cannot see whether an
+/// existing test elsewhere already covered the behaviour, nor whether removing a guard broke something
+/// unrelated. The Gateway suite is serialized on the build machine; a run that ends with no summary line is
+/// contention, not a result.
 ///
-///  1. In <c>WingmanVoiceService.CanonicalTenantKey</c>, DELETE the <c>IsMintedAccountTenant</c> refusal so
-///     any tenant string is accepted as a partition name.
-///     OBSERVED: build succeeded; 3 RED, 16 green -
-///       Case_variant_of_a_minted_tenant_is_refused_rather_than_aliased_to_the_same_partition
-///       System_tenant_is_refused_a_voice_partition
-///       Traversal_tenant_is_refused_rather_than_resolved_to_the_parent_partition
-///     Turn_archive_refuses_a_traversal_tenant stayed GREEN, correctly: it exercises the archive's OWN
-///     copy of the guard, which this step did not touch. Every isolation test stayed GREEN too - they use a
-///     valid tenant, so the guard is not on their path. That is the control saying the three went red for
-///     the guard and not for the edit.
+/// ONE run removes all four guards at once, because each one has its own test with its own assertion, so
+/// their reds stay individually attributable:
 ///
-///  2. Restore step 1. In <c>VoiceTurnArchive.PartitionDirectoryFor</c>, DELETE its
-///     <c>IsMintedAccountTenant</c> refusal.
-///     OBSERVED: build succeeded; 1 RED, 18 green - Turn_archive_refuses_a_traversal_tenant. Exactly the
-///     mirror of step 1, which is what proves the two stores are guarded independently.
+///  1. <c>WingmanVoiceService.CanonicalTenantKey</c> - DELETE the <c>IsMintedAccountTenant</c> refusal.
+///  2. <c>VoiceTurnArchive.PartitionDirectoryFor</c> - DELETE its <c>IsMintedAccountTenant</c> refusal.
+///  3. <c>WingmanVoiceService.MigrateLegacyUnpartitionedState</c> - DELETE the whole body, BOTH the hosted
+///     delete branch and the self-host move.
+///  4. <c>VoiceTurnArchive.MigrateLegacyUnpartitionedTurns</c> - DELETE the whole body, both directions.
 ///
-///  3. Restore step 2. In <c>WingmanVoiceService.MigrateLegacyUnpartitionedState</c>, DELETE the whole
-///     <c>if (GatewayHostedMode.IsHosted)</c> DELETE branch, so hosted falls through to the self-host move.
-///     OBSERVED: build succeeded; 1 RED, 18 green -
-///       Hosted_deletes_the_pre_partition_voice_state_rather_than_guessing_an_owner
-///     while Self_host_moves_the_pre_partition_voice_state_into_the_local_partition stayed GREEN.
+/// Deleting both branches of a migration still distinguishes its two directions, and that is not an
+/// accident - it is why the two migration tests assert in the order they do. The hosted test leads with
+/// "the clip is GONE", the self-host test leads with "the clip ARRIVED in the local partition". With no
+/// migration at all they therefore fail on OPPOSITE claims about different files, not on one shared
+/// assertion. Had both led with "gone from the old location" they would have failed identically and the
+/// run would have proved only "something broke". If a future edit makes these two fail for the same
+/// reason, the pair has stopped being a two-direction proof - split the run rather than accept it.
 ///
-///  4. Restore step 3, then DELETE the self-host MOVE block instead (the opposite direction).
-///     OBSERVED: build succeeded; 1 RED, 18 green -
-///       Self_host_moves_the_pre_partition_voice_state_into_the_local_partition
-///     while the hosted test stayed GREEN. Steps 3 and 4 together prove the pair really tests two opposite
-///     behaviours; a single shared path could not redden one test at a time in both directions.
+/// OBSERVED with all four deleted (build succeeded; 8 RED, and each red names its own guard):
+///   Assert.Throws, no exception thrown - the tenant-shape guards:
+///     Case_variant_of_a_minted_tenant_is_refused_rather_than_aliased_to_the_same_partition   (guard 1)
+///     System_tenant_is_refused_a_voice_partition                                             (guard 1)
+///     Traversal_tenant_is_refused_rather_than_resolved_to_the_parent_partition               (guard 1)
+///     Turn_archive_refuses_a_traversal_tenant                                                (guard 2)
+///   Assert.False failure, "it is still there" - the HOSTED delete direction:
+///     Hosted_deletes_the_pre_partition_voice_state_rather_than_guessing_an_owner             (guard 3)
+///     Hosted_deletes_pre_partition_archived_turns                                            (guard 4)
+///   Assert.True / Assert.NotNull failure, "it never arrived" - the SELF-HOST move direction:
+///     Self_host_moves_the_pre_partition_voice_state_into_the_local_partition                 (guard 3)
+///     Self_host_moves_pre_partition_archived_turns_into_the_local_partition                  (guard 4)
 ///
-///  5. Restore everything. Build succeeded; all 19 GREEN.
+/// The eleven isolation tests stayed GREEN throughout, which is the control: they use a valid tenant and
+/// seed their own state, so no deleted guard is on their path. Restoring all four returns the suite to
+/// green.
 /// </summary>
 public sealed class WingmanVoiceTenantPartitionTests
 {
@@ -281,13 +286,20 @@ public sealed class WingmanVoiceTenantPartitionTests
         try
         {
             var svc = ServiceAt(baseDir);
-            // Moved: gone from the shared location, present in the local partition, and STILL READABLE.
-            Assert.False(File.Exists(Path.Combine(baseDir, "voice-sessions.json")));
-            Assert.False(Directory.Exists(Path.Combine(baseDir, "voice-audio")));
+            // ARRIVED is asserted FIRST, deliberately, and this ordering is load-bearing. Its twin above
+            // asserts the opposite outcome (the clip is GONE). If both tests led with "gone from the old
+            // location", then deleting the whole migration would fail BOTH on the same assertion for the
+            // same reason, and a revert run could no longer tell the two directions apart - it would prove
+            // only "something broke". Leading with the direction-specific claim keeps the pair honest:
+            // with no migration at all, the hosted twin fails on "still there" and this one fails on
+            // "never arrived", which are different assertions about different files.
             Assert.True(File.Exists(Path.Combine(baseDir, "tenants", "local", "voice-audio", "s1.mp3")));
             Assert.True(svc.IsVoiceSession(TenantId.Local, "s1"));
             Assert.True(svc.HasVoice(TenantId.Local, "s1"));
             Assert.Equal(Mp3("legacy"), svc.GetAudio(TenantId.Local, "s1"));
+            // ...and only then that it was MOVED rather than copied.
+            Assert.False(File.Exists(Path.Combine(baseDir, "voice-sessions.json")));
+            Assert.False(Directory.Exists(Path.Combine(baseDir, "voice-audio")));
             // It landed in LOCAL only - it was not fanned out to an account tenant.
             Assert.False(svc.HasVoice(TenantA, "s1"));
         }
@@ -376,8 +388,13 @@ public sealed class WingmanVoiceTenantPartitionTests
         try
         {
             var archive = new VoiceTurnArchive(root);
+            // ARRIVED first, for the same reason as the voice-state twin above: leading with the
+            // direction-specific claim keeps this test distinguishable from its hosted opposite when the
+            // whole migration is deleted in a revert run.
+            var moved = archive.Get(TenantId.Local, turnId.ToString());
+            Assert.NotNull(moved);
+            Assert.Equal("legacy summary", moved!.Summary);
             Assert.False(Directory.Exists(legacyTurn));
-            Assert.Equal("legacy summary", archive.Get(TenantId.Local, turnId.ToString())!.Summary);
             Assert.Null(archive.Get(TenantA, turnId.ToString()));
         }
         finally { Environment.SetEnvironmentVariable("CC_GATEWAY_HOSTED", prior); }
