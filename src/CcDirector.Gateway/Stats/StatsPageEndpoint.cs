@@ -6,13 +6,14 @@ using Microsoft.AspNetCore.Routing;
 namespace CcDirector.Gateway.Stats;
 
 /// <summary>
-/// The DevThrottle Stats private dashboard: the always-available page the owner opens on the Gateway to
+/// The DevThrottle Stats private dashboard: the page the owner opens on his OWN Gateway to
 /// see, from real usage, how much of his development is spoken vs typed and how much comes from the phone,
 /// the desktop, or the cockpit. Served as a SELF-CONTAINED page embedded in this binary (not a wwwroot
 /// React route), so it works even on a plain dev build where the React apps are not built (mission
 /// New build B, core finding 8). It reads the Gateway's own aggregated totals with no cloud round-trip.
 ///
-/// Two routes, both behind the normal Gateway auth (the owner's signed-in browser reaches them):
+/// Two routes, both behind the normal Gateway auth (the owner's signed-in browser reaches them) - and both
+/// REFUSED on hosted, so "always available" describes self-host only:
 ///   GET /stats       - the HTML dashboard (this embedded page).
 ///   GET /stats/data  - the aggregated totals as JSON, which the page fetches and refreshes.
 ///
@@ -79,7 +80,7 @@ public static class StatsPageEndpoint
     public static void Map(IEndpointRouteBuilder app, GatewayInputStatsAggregator aggregator,
         GatewaySessionConcurrencyStats? concurrency = null)
     {
-        FileLog.Write("[StatsPageEndpoint] serving /stats (embedded, always available)");
+        FileLog.Write($"[StatsPageEndpoint] mapping /stats (embedded); hosted={GatewayHostedMode.IsHosted} - on hosted BOTH routes are refused (issue #1848)");
 
         app.MapGet("/stats/data", (HttpContext ctx) =>
         {

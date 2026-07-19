@@ -3,7 +3,9 @@ using System.IO;
 using System.Net;
 using System.Net.Http;
 using System.Net.Http.Headers;
+using System.Linq;
 using System.Net.Sockets;
+using System.Text.Json;
 using System.Threading.Tasks;
 using CcDirector.Gateway;
 using Xunit;
@@ -27,8 +29,9 @@ namespace CcDirector.Gateway.Tests;
 ///
 /// IT IS A REFUSAL, NOT AN EMPTY DASHBOARD. Serving zeroed series would be a FALSE statement rather than an
 /// absent one - the same mistake /healthz made when it zeroed its fleet counts and anything monitoring them
-/// read a permanently dead fleet. The tests below assert the refusal AND the absence of the payload keys, so
-/// a future "helpful" empty-shape response fails here rather than passing as a deny.
+/// read a permanently dead fleet. The refusal body is asserted as an EXACT PROPERTY SET - one error field and
+/// nothing else - rather than as an absence of known payload keys. A deny-list of today's keys was tried and
+/// review broke it in one move; see the note on that test for why an allow-list is the only shape that holds.
 ///
 /// Revert-prove: delete the <c>DenyOnHosted()</c> guard from either route and that route's tests go RED -
 /// the data route with a 200 carrying the fleet-global keys, the page route with the HTML dashboard.
@@ -84,16 +87,33 @@ public sealed class HostedStatsDenyTests : IAsyncLifetime
         Assert.Equal(HttpStatusCode.NotFound, resp.StatusCode);
     }
 
-    [Fact]
-    public async Task The_stats_feed_discloses_none_of_its_payload()
+    [Theory]
+    [InlineData("stats/data")]
+    [InlineData("stats")]
+    public async Task The_refusal_carries_nothing_but_the_refusal(string path)
     {
-        // Asserting the status alone would let a future "helpful" change serve an empty-but-shaped payload
-        // under some other code and still pass. These are the keys that carry the disclosure - repository
-        // names, agent and model tallies, token spend - and none of them may appear in any form.
-        var body = await (await Get("stats/data", _key)).Content.ReadAsStringAsync();
+        // AN ALLOW-LIST, NOT A DENY-LIST, and the difference is the whole test.
+        //
+        // This first asserted that a handful of known payload keys were absent. Review broke it in one move:
+        // a denial envelope carrying generatedAtUtc, timeZone, concurrency and notCaptured passed all five
+        // tests. Worse, the real feed has keys a substring deny-list silently misses - "tokenSpendByHour"
+        // does not contain the string "tokenSpend" once the closing quote is included - so a data-bearing
+        // partial dashboard could pass while every listed key was "absent".
+        //
+        // A deny-list also rots by construction: it protects against the payload as it is TODAY, and every
+        // field added to the feed later is unprotected until someone remembers to add it here. Asserting the
+        // property set is EXACTLY one error field inverts that - anything empty-shaped, anything new, and
+        // anything metadata-looking reddens automatically without this test being touched.
+        var resp = await Get(path, _key);
+        var body = await resp.Content.ReadAsStringAsync();
 
-        foreach (var key in new[] { "repos", "agents", "models", "tokenSpend", "hourlyTurns", "buckets", "wingman" })
-            Assert.DoesNotContain($"\"{key}\"", body, StringComparison.Ordinal);
+        using var doc = JsonDocument.Parse(body);
+        Assert.Equal(JsonValueKind.Object, doc.RootElement.ValueKind);
+
+        var properties = doc.RootElement.EnumerateObject().Select(p => p.Name).ToArray();
+        Assert.Equal(new[] { "error" }, properties);
+        Assert.Equal("the stats dashboard is not available on the hosted gateway",
+            doc.RootElement.GetProperty("error").GetString());
     }
 
     [Fact]
@@ -111,6 +131,8 @@ public sealed class HostedStatsDenyTests : IAsyncLifetime
     {
         // The /healthz lesson, applied here on purpose: a zeroed count is a FALSE statement where an absent
         // one is merely absent. A caller must not be handed a dashboard that reads "no work has been done".
+        // The exact-property-set test above is what actually enforces this; this one states the intent in the
+        // terms the mistake was originally made in, so the reason survives even if the shape of the check changes.
         var body = await (await Get("stats/data", _key)).Content.ReadAsStringAsync();
 
         Assert.DoesNotContain("\"turns\":0", body, StringComparison.Ordinal);
