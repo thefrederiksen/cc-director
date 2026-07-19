@@ -43,11 +43,19 @@ public partial class PrerequisitesStep : UserControl
 
         RefreshButton.IsEnabled = true;
 
-        var allRequiredMet = _items.Where(p => p.IsRequired).All(p => p.IsFound);
+        // On macOS NOTHING is required (the build is self-contained), so this branch is always
+        // taken. Saying "all prerequisites found" while three rows read Not found would be a
+        // flat lie against the screen the user is looking at - and macOS has no winget, so it is
+        // the platform where a user is most likely to finish with none of them installed.
+        var allRequiredMet = PrerequisiteChecker.AllRequiredMet(_items);
+        var missingRecommended = _items.Count(p => p.IsRecommended && !p.IsFound);
         if (allRequiredMet)
         {
-            SubtitleText.Text = "All required prerequisites found. You can install now.";
-            SuccessBanner.IsVisible = true;
+            SubtitleText.Text = missingRecommended == 0
+                ? "All prerequisites found. You can install now."
+                : $"Ready to install. {missingRecommended} recommended item(s) are missing - "
+                  + "install them from the links here, or later.";
+            SuccessBanner.IsVisible = missingRecommended == 0;
         }
         else
         {

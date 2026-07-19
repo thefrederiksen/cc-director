@@ -102,7 +102,7 @@
                                                 </Style.Triggers>
                                             </Style>
                                         </Border.Style>
-                                        <TextBlock Text="Optional"
+                                        <TextBlock Text="{Binding ImportanceLabel}"
                                                    Foreground="#888888"
                                                    FontSize="10"
                                                    FontWeight="SemiBold" />

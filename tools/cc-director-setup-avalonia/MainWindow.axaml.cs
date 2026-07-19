@@ -113,7 +113,7 @@ public partial class MainWindow : Window
             StepSkills => _skillsStep ??= new SkillsStep(_isUpdate),
             StepInstall => _installStep ??= new InstallStep(),
             StepGateway => _gatewayStep ??= CreateGatewayStep(),
-            StepComplete => _completeStep ??= new CompleteStep(_installedCount, _skippedCount, _installPath, _isUpdate, _alreadyUpToDate, _latestVersion),
+            StepComplete => _completeStep ??= new CompleteStep(_installedCount, _skippedCount, _installPath, _isUpdate, _alreadyUpToDate, _latestVersion, BuildCapabilityNotice()),
             _ => null
         };
 
@@ -223,8 +223,21 @@ public partial class MainWindow : Window
     private void UpdateNextButtonForPrereqs()
     {
         if (_currentStep != StepPrereq) return;
-        var allRequiredMet = _prerequisites.Count == 0 || _prerequisites.Where(p => p.IsRequired).All(p => p.IsFound);
-        NextButton.IsEnabled = allRequiredMet;
+        NextButton.IsEnabled = PrerequisiteChecker.AllRequiredMet(_prerequisites);
+    }
+
+    /// <summary>
+    /// The Complete-screen line about recommended prerequisites the user did not install. Shared
+    /// with the Windows wizard (<see cref="CapabilityNotice"/>) so both say the same words. Null
+    /// when nothing is missing.
+    /// </summary>
+    private string? BuildCapabilityNotice()
+    {
+        var recommended = _prerequisites
+            .Where(p => p.IsRecommended)
+            .Select(p => new CapabilityStatus(p.Name, p.IsFound))
+            .ToList();
+        return CapabilityNotice.Describe(recommended, AgentPresence.AnyOtherAgent());
     }
 
     private async Task RunInstallAsync()

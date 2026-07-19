@@ -39,10 +39,16 @@ public partial class PrerequisitesStep : UserControl
 
         RefreshButton.IsEnabled = true;
 
-        var allRequiredMet = _items.Where(p => p.IsRequired).All(p => p.IsFound);
+        var allRequiredMet = PrerequisiteChecker.AllRequiredMet(_items);
+        var missingRecommended = _items.Count(p => p.IsRecommended && !p.IsFound);
         if (allRequiredMet)
         {
-            SubtitleText.Text = "All required prerequisites found.";
+            // Honest about the recommended ones: they no longer block, but saying only "all
+            // found" while three rows sit unfound would read as a lie against the screen.
+            SubtitleText.Text = missingRecommended == 0
+                ? "All prerequisites found."
+                : $"Ready to install. {missingRecommended} recommended item(s) are missing - "
+                  + "you can install them here, or later.";
             SuccessBanner.Visibility = Visibility.Visible;
         }
         else
@@ -76,7 +82,7 @@ public partial class PrerequisitesStep : UserControl
             RefreshButton.IsEnabled = false;
             item.Status = "Installing...";
 
-            var result = await RuntimeInstaller.InstallAsync(item.WingetId);
+            var result = await RuntimeInstaller.InstallAsync(item.WingetId, item.Name);
             SetupLog.Write($"[PrerequisitesStep] InstallButton_Click: success={result.Success}, {result.Message}");
 
             if (result.Success)

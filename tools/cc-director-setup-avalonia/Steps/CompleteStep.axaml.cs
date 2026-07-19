@@ -23,9 +23,19 @@ public partial class CompleteStep : UserControl
         InitializeComponent();
     }
 
-    public CompleteStep(int installed, int skipped, string installPath, bool isUpdate, bool alreadyUpToDate = false, string? version = null)
+    public CompleteStep(int installed, int skipped, string installPath, bool isUpdate, bool alreadyUpToDate = false, string? version = null, string? capabilityNotice = null)
     {
         InitializeComponent();
+
+        // Recommended prerequisites no longer block the wizard, so this is where the user is told
+        // what they skipped and what it costs them - at the end, next to what they can do about it.
+        if (!string.IsNullOrWhiteSpace(capabilityNotice))
+        {
+            CapabilityNoticeText.Text = capabilityNotice;
+            CapabilityPanel.IsVisible = true;
+            SetupLog.Write($"[CompleteStep] capability notice shown: {capabilityNotice}");
+        }
+
         _installPath = installPath;
         _installed = installed;
         _skipped = skipped;

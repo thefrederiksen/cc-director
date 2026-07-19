@@ -194,7 +194,7 @@ public partial class MainWindow : Window
             StepPrivacy => _privacyStep ??= BuildPrivacyStep(),
             6 => _skillsStep ??= new SkillsStep(_isUpdate),
             StepInstall => _installStep ??= new InstallStep(),
-            StepComplete => _completeStep ??= new CompleteStep(_installedCount, _skippedCount, _installPath, _directorExePath, _isUpdate, _alreadyUpToDate, _cachedPrep?.Version, _gatewayFailureReason),
+            StepComplete => _completeStep ??= new CompleteStep(_installedCount, _skippedCount, _installPath, _directorExePath, _isUpdate, _alreadyUpToDate, _cachedPrep?.Version, _gatewayFailureReason, BuildCapabilityNotice()),
             _ => null
         };
 
@@ -292,9 +292,25 @@ public partial class MainWindow : Window
     {
         if (_currentStep != 2) return;
 
-        var allRequiredMet = _prerequisites.Count == 0 ||
-            _prerequisites.Where(p => p.IsRequired).All(p => p.IsFound);
-        NextButton.IsEnabled = allRequiredMet;
+        NextButton.IsEnabled = PrerequisiteChecker.AllRequiredMet(_prerequisites);
+    }
+
+    /// <summary>
+    /// The Complete-screen line about recommended prerequisites the user did not install. Left to
+    /// the shared <see cref="CcDirector.Setup.Engine.CapabilityNotice"/> so both wizards say the
+    /// same thing and one test can prove the words. Null when nothing is missing.
+    /// </summary>
+    private string? BuildCapabilityNotice()
+    {
+        // IsRecommended, NOT !IsRequired: Tailscale is optional (a deliberate choice, not a gap)
+        // and its own row already says which leg is not ready, so it must never appear here.
+        var recommended = _prerequisites
+            .Where(p => p.IsRecommended)
+            .Select(p => new CcDirector.Setup.Engine.CapabilityStatus(p.Name, p.IsFound))
+            .ToList();
+        return CcDirector.Setup.Engine.CapabilityNotice.Describe(
+            recommended,
+            CcDirector.Setup.Engine.AgentPresence.AnyOtherAgent());
     }
 
     private async Task RunInstallAsync()

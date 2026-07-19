@@ -11,6 +11,21 @@ public class PrerequisiteInfo : INotifyPropertyChanged
     public required string Name { get; init; }
     public required string Description { get; init; }
     public required bool IsRequired { get; init; }
+
+    /// <summary>
+    /// True for a row that is checked, offered and explained, but never gates the wizard - the
+    /// user is told on the Complete screen what skipping it costs. Distinct from merely
+    /// "not required": Tailscale is optional (a deliberate choice, not a gap) and is NOT
+    /// recommended, so it never appears in the Complete-screen capability notice.
+    /// </summary>
+    public bool IsRecommended { get; init; }
+
+    /// <summary>
+    /// The badge the user reads first: Required / Recommended / Optional. Bound by the row so the
+    /// badge can never disagree with the classification (it used to say "Optional" for every
+    /// non-required row, which made Claude Code indistinguishable from Tailscale).
+    /// </summary>
+    public string ImportanceLabel => IsRequired ? "Required" : (IsRecommended ? "Recommended" : "Optional");
     public required string InstallUrl { get; init; }
 
     /// <summary>True when Setup can install this prerequisite itself (via winget).</summary>

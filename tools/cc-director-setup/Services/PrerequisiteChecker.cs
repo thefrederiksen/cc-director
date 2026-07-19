@@ -7,19 +7,28 @@ public static class PrerequisiteChecker
 {
     public static List<PrerequisiteInfo> CreateChecklist(CcDirector.Setup.Engine.InstallRole role)
     {
-        // Tailscale is NOT a product requirement on a workstation - the tunnel-only
-        // architecture means every Director and launcher dials OUT to the Gateway and no
-        // inbound port is ever opened, so a workstation shows no Tailscale row at all.
-        // The one optional use left is on the GATEWAY machine itself: phones and browsers
-        // reaching the Cockpit off-machine need a secure (HTTPS) address, which Tailscale
-        // can provide for free. Everything on the gateway machine itself works at
-        // localhost over plain HTTP without it.
+        // EXACTLY ONE prerequisite is genuinely required: the .NET runtime, because the Windows
+        // Director publishes framework-dependent (--self-contained false) and will not start
+        // without it. It is also the one item Setup can install itself, so the required gate is
+        // satisfiable without the user ever leaving the wizard.
+        //
+        // The other three were marked required and gated the Next button, which stopped a new user
+        // on this screen until they went away and installed three programs by hand. None of them
+        // is needed to install DevThrottle or to start it:
+        //   - Python: the cc-* tools ship their OWN relocatable CPython (cc-python-win-x64.zip,
+        //     staged by PythonToolsInstaller). They never use the system interpreter.
+        //   - Node.js: MCP servers and browser tools only.
+        //   - Claude Code: only the Claude agent. The Director runs eight agent command line
+        //     tools (see src/CcDirector.Core/Agents/), so requiring this one stopped a user who
+        //     came for Codex or Gemini for not having a different vendor's tool.
+        // They are still checked, still shown, and now installable with one click - but they no
+        // longer gate. What is missing is reported on the Complete screen instead (CapabilityNotice).
         var checklist = new List<PrerequisiteInfo>
         {
             new PrerequisiteInfo
             {
-                Name = ".NET 10 Runtime",
-                Description = "ASP.NET Core Runtime 10 (runs DevThrottle)",
+                Name = CcDirector.Setup.Engine.PrerequisiteNames.DotNetRuntime,
+                Description = "ASP.NET Core Runtime 10 - required: DevThrottle will not start without it",
                 IsRequired = true,
                 CanAutoInstall = true,
                 WingetId = "Microsoft.DotNet.AspNetCore.10",
@@ -27,32 +36,50 @@ public static class PrerequisiteChecker
             },
             new PrerequisiteInfo
             {
-                Name = "Claude Code",
-                Description = "AI coding assistant CLI",
-                IsRequired = true,
+                Name = CcDirector.Setup.Engine.PrerequisiteNames.ClaudeCode,
+                IsRecommended = true,
+                Description = "Recommended: the default coding agent. DevThrottle runs other agents too, "
+                    + "so you can install this later or use a different one.",
+                IsRequired = false,
+                CanAutoInstall = true,
+                WingetId = "Anthropic.ClaudeCode",
                 InstallUrl = "https://docs.anthropic.com/en/docs/claude-code/overview"
             },
             new PrerequisiteInfo
             {
-                Name = "Python",
-                Description = "Python 3.11 or higher",
-                IsRequired = true,
+                Name = CcDirector.Setup.Engine.PrerequisiteNames.Python,
+                IsRecommended = true,
+                Description = "Recommended: Python 3.11 or higher, for your own scripts. The cc-* tools "
+                    + "bring their own Python and do not need this.",
+                IsRequired = false,
+                CanAutoInstall = true,
+                WingetId = "Python.Python.3.12",
                 InstallUrl = "https://www.python.org/downloads/"
             },
             new PrerequisiteInfo
             {
-                Name = "Node.js",
-                Description = "Node.js 20+ (MCP servers, browser tools)",
-                IsRequired = true,
+                Name = CcDirector.Setup.Engine.PrerequisiteNames.NodeJs,
+                IsRecommended = true,
+                Description = "Recommended: Node.js 20+, needed only for MCP servers and browser tools",
+                IsRequired = false,
+                CanAutoInstall = true,
+                WingetId = "OpenJS.NodeJS.LTS",
                 InstallUrl = "https://nodejs.org/"
             },
         };
 
+        // Tailscale is NOT a product requirement on a workstation - the tunnel-only
+        // architecture means every Director and launcher dials OUT to the Gateway and no
+        // inbound port is ever opened, so a workstation shows no Tailscale row at all.
+        // The one optional use left is on the GATEWAY machine itself: phones and browsers
+        // reaching the Cockpit off-machine need a secure (HTTPS) address, which Tailscale
+        // can provide for free. Everything on the gateway machine itself works at
+        // localhost over plain HTTP without it.
         if (role == CcDirector.Setup.Engine.InstallRole.Gateway)
         {
             checklist.Add(new PrerequisiteInfo
             {
-                Name = "Tailscale",
+                Name = CcDirector.Setup.Engine.PrerequisiteNames.Tailscale,
                 Description = "Optional, gateway machine only: lets your phone and browsers on "
                     + "other computers reach this gateway's Cockpit over a secure (HTTPS) "
                     + "connection. Directors and launchers connect to the gateway on their own "
@@ -66,6 +93,17 @@ public static class PrerequisiteChecker
         }
 
         return checklist;
+    }
+
+    /// <summary>
+    /// The wizard's gate: may the user continue past the Prerequisites screen? One place decides,
+    /// so the Next button and the screen's own subtitle can never disagree. An empty list means
+    /// nothing has been checked yet and is treated as met, exactly as before.
+    /// </summary>
+    public static bool AllRequiredMet(IEnumerable<PrerequisiteInfo> items)
+    {
+        ArgumentNullException.ThrowIfNull(items);
+        return items.Where(p => p.IsRequired).All(p => p.IsFound);
     }
 
     public static async Task CheckAllAsync(List<PrerequisiteInfo> items)
