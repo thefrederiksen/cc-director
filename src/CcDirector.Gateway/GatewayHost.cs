@@ -750,8 +750,15 @@ public sealed class GatewayHost : IAsyncDisposable
         // (constructed per-invocation by SignalR) folds every pushed session through this ONE instance -
         // which matters here more than anywhere: the instance holds the change gate that stops the stamp
         // echoing back up and re-triggering itself forever.
+        // Hosted Multi-Tenancy (session-serving): NOT yet converted to the per-tenant pass.
+        // BLOCKED ON: partitioning FleetRoleObserver._lastSent by tenant. That change gate is keyed by session
+        // id alone and is PRUNED against the current pass's snapshot, so running this once per tenant would
+        // have each tenant's pass delete every other tenant's gate entries - inverting a suppressed no-op into
+        // a role-stamp storm every sweep. Converting the loop before partitioning the state it MUTATES makes
+        // things worse, not better. Until then it stays on Local: correct on self-host, and on hosted a Local
+        // read is empty, so it degrades to a no-op exactly as today (never a wrong-tenant read).
         FleetRoles = new Fleet.FleetRoleObserver(
-            () => AmbientSnapshotFresh(AutoDismissStaleAfter),
+            () => PushedSessions.SnapshotFresh(TenantId.Local, AutoDismissStaleAfter),
             SendCommandAsync);
         // The fold push seam: stamps each session's folded display state down to its owning Director, so the
         // desktop rail stops re-folding from local facts it cannot see. Folds through the SAME method the
@@ -768,8 +775,12 @@ public sealed class GatewayHost : IAsyncDisposable
         // and without this enrichment the sweep re-derives the same yellow every tick and the change gate
         // suppresses the update forever. The roster path enriched these (GatewayHost roster map below), so
         // the browsers folded red while the push-only desktop stuck yellow. Same source, same answer.
+        // Hosted Multi-Tenancy (session-serving): NOT yet converted to the per-tenant pass.
+        // BLOCKED ON: partitioning FleetDisplayStateObserver._lastSent by tenant - same shape as FleetRoles
+        // above (session-id-keyed, pruned against the current pass's snapshot), so a per-tenant pass would
+        // turn the display-state fold into a stamp storm every 5 seconds.
         FleetDisplayState = new Fleet.FleetDisplayStateObserver(
-            () => AmbientSnapshotFresh(AutoDismissStaleAfter),
+            () => PushedSessions.SnapshotFresh(TenantId.Local, AutoDismissStaleAfter),
             sessions => EnrichVoiceThenFoldForPush(
                 sessions,
                 voiceGeneratingFor: sid => _voiceService?.IsGenerating(sid) == true,
@@ -1144,7 +1155,7 @@ public sealed class GatewayHost : IAsyncDisposable
 
     private string? ResolveSessionTitle(string sessionId)
     {
-        var located = AmbientTryLocate(sessionId, _streamStaleAfter);
+        var located = PushedSessions.TryLocate(TenantId.Local, sessionId, _streamStaleAfter);
         var name = located?.Session.Name;
         return string.IsNullOrWhiteSpace(name) ? null : name;
     }
@@ -1166,18 +1177,22 @@ public sealed class GatewayHost : IAsyncDisposable
             // fan-out) and reach it through the tunnel-only SessionVerbClient - an unconnected Director yields
             // an error, never an HTTP dial.
             var stale = TimeSpan.FromSeconds(Core.Configuration.GatewayConfig.DefaultStreamStaleAfterSeconds);
-            // Hosted Multi-Tenancy (session-serving PR2): the voice sweep is a background loop, so it runs
-            // inside a per-tenant pass and locates within THAT tenant. No scope on hosted is a deny - the pass
-            // supplies no tenant, so this sweeps nothing rather than reading a partition it does not own.
-            if (_tenantPass.Current is not { } voiceTenant) return;
             Api.DirectorCommandRouter.SendDirectorCommandAsync? sendCommand = SendCommandAsync;
             var generated = 0;
             foreach (var sid in vs.VoiceSessionIds())
             {
                 if (generated >= 3) break;          // gentle on the serialized brain
                 if (vs.HasVoice(sid)) continue;     // already cached, nothing to do
+                // Hosted Multi-Tenancy (session-serving): the voice sweep is NOT yet per-tenant.
+                // BLOCKED ON: partitioning the WingmanVoiceService caches by tenant (its markers, generated
+                // text and audio are all keyed by session id alone) AND tenant-checking /wingman/voice/ready,
+                // which today lists EVERY ready session id. Converting this loop first would ARM a leak rather
+                // than close one: per-tenant generation would fill a process-global cache that the voice read
+                // path serves to any tenant that names an id - and /wingman/voice/ready hands out the ids. A
+                // hosted no-op is strictly safer than a live cross-tenant audio path. Until then it serves
+                // Local: correct on self-host, and on hosted a Local read is empty (never a wrong-tenant read).
                 var (director, session) = await Api.GatewayEndpoints.LocateSessionAsync(
-                    Registry, sid, PushedSessions, stale, voiceTenant, SessionOwners);
+                    Registry, sid, PushedSessions, stale, TenantId.Local, SessionOwners);
                 if (director is null || session is null) continue;   // not owned by any known Director
                 var st = session.ActivityState ?? "";
                 if (st is "Idle" or "WaitingForInput" or "WaitingForPerm")
@@ -1295,7 +1310,7 @@ public sealed class GatewayHost : IAsyncDisposable
                 // not swallowed into a fabricated value.
                 try
                 {
-                    if (AmbientTryLocate(signal.SessionId, _streamStaleAfter) is { } spendLoc)
+                    if (PushedSessions.TryLocate(TenantId.Local, signal.SessionId, _streamStaleAfter) is { } spendLoc)
                         _sessionSpendEmitter.Emit(spendLoc.Session);
                 }
                 catch (Exception ex)
@@ -1331,10 +1346,7 @@ public sealed class GatewayHost : IAsyncDisposable
             },
             // Gateway Cleanup mission, Phase 2: under stream mode the catch-up / reconcile reads the push
             // store instead of HTTP-pulling each Director's session list (no dial).
-            pushedSessions: PushedSessions,
-            streamStale: null,
-            // Hosted Multi-Tenancy (session-serving PR2): the reconcile sweep runs one pass per tenant.
-            tenantPass: _tenantPass);
+            pushedSessions: PushedSessions);
         // First tick = the startup catch-up sweep; then the 15s reconcile poll for
         // Directors that never push (file-discovered locals, old builds).
         _turnEndWatcher.Start();
@@ -1822,11 +1834,7 @@ public sealed class GatewayHost : IAsyncDisposable
         // background sweep regenerates voice for any idle voice session that is missing it, so the
         // list shows it ready BEFORE you enter - including after a gateway restart (the voice-session
         // set is persisted). Turn-end regeneration + the deterministic voice-turn path also feed it.
-        // Hosted Multi-Tenancy (session-serving PR2): one pass per tenant. The async sweep captures the
-        // ambient scope at the point of the call and carries it across its awaits, so each pass stays inside
-        // the tenant it was started for even though the pass itself returns immediately.
-        _voiceSweepTimer = new System.Threading.Timer(
-            _ => _tenantPass.ForEachTenant(() => { _ = SweepVoiceSessionsAsync(); }), null,
+        _voiceSweepTimer = new System.Threading.Timer(_ => { _ = SweepVoiceSessionsAsync(); }, null,
             TimeSpan.FromSeconds(20), TimeSpan.FromSeconds(45));
 
         // Durable, server-owned dictation upload (issue #1006): the phone streams recorded audio here
@@ -2129,19 +2137,17 @@ public sealed class GatewayHost : IAsyncDisposable
         // Gateway owns session lifecycle and reaches the Director through its stream).
         _autoDismissSweeper = new Running.AutoDismissSweeper(
             () => AmbientSnapshotFresh(AutoDismissStaleAfter),
-            SendCommandAsync);
+            SendCommandAsync,
+            // Partition the close-marks by the tenant of the pass currently running (see AutoDismissSweeper).
+            tenantKey: () => _tenantPass.Current?.Value ?? "");
         _autoDismissTimer = new System.Threading.Timer(_ => SweepAutoDismiss(), null, AutoDismissSweepInterval, AutoDismissSweepInterval);
         FileLog.Write($"[GatewayHost] auto-dismiss sweep started: every {AutoDismissSweepInterval.TotalSeconds:0}s");
 
         // The fold push backstop: re-fold the fleet and stamp changed answers down, catching the Gateway-only
         // overlays (voice, transcription, dictation, snooze expiry) that arrive on no Director push. Never
         // throws into the timer.
-        // Hosted Multi-Tenancy (session-serving PR2): one fold pass per tenant, each inside that tenant's
-        // scope - so the fold reads that tenant's fleet and its own snooze rows, and stamps down only to its
-        // own Directors. The try/catch stays INSIDE the per-tenant pass so one tenant's fold failing does not
-        // skip the remaining tenants.
         _displayStateSweepTimer = new System.Threading.Timer(
-            _ => _tenantPass.ForEachTenant(() => { try { FleetDisplayState.Sweep(); } catch (Exception ex) { FileLog.Write($"[GatewayHost] display-state sweep error: {ex.Message}"); } }),
+            _ => { try { FleetDisplayState.Sweep(); } catch (Exception ex) { FileLog.Write($"[GatewayHost] display-state sweep error: {ex.Message}"); } },
             null, DisplayStateSweepInterval, DisplayStateSweepInterval);
         FileLog.Write($"[GatewayHost] display-state sweep started: every {DisplayStateSweepInterval.TotalSeconds:0}s");
 

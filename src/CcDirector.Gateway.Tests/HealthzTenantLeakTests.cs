@@ -40,10 +40,12 @@ public sealed class HealthzTenantLeakTests
     {
         var health = await ProbeHealthz(hosted: true);
 
-        // The Gateway HAS a registered Director (see RunAsync) - the hosted probe simply must not say so.
+        // The Gateway HAS a registered Director (see ProbeHealthz) - the hosted probe simply must not say so.
+        // This is the assertion that pins the change: with the hosted branch removed, the anonymous probe
+        // reports that Director again. (Sessions is deliberately NOT asserted: it already read the empty Local
+        // partition before this change, so asserting it would pass either way and prove nothing.)
         Assert.Equal("ok", health.Status);
         Assert.Equal(0, health.Directors);
-        Assert.Equal(0, health.Sessions);
         // Liveness is still answered: a probe needs to know it is alive and what version it is.
         Assert.False(string.IsNullOrWhiteSpace(health.Version));
     }
@@ -52,7 +54,9 @@ public sealed class HealthzTenantLeakTests
     public async Task Selfhost_healthz_still_reports_its_fleet_counts()
     {
         // POSITIVE CONTROL for the test above, and the self-host-untouched proof: identical arrangement, the
-        // ONLY difference being CC_GATEWAY_HOSTED, and the counts are still served.
+        // ONLY difference being CC_GATEWAY_HOSTED, and the counts are still served. This one deliberately does
+        // NOT pin the changed line - it exists to prove the hosted assertion above is about the tenancy branch
+        // and not about a Gateway that simply has no Directors to count.
         var health = await ProbeHealthz(hosted: false);
 
         Assert.Equal("ok", health.Status);
@@ -93,8 +97,10 @@ public sealed class HealthzTenantLeakTests
         {
             await gateway.StopAsync();
             Environment.SetEnvironmentVariable("CC_GATEWAY_HOSTED", prior);
-            try { if (Directory.Exists(instancesDir)) Directory.Delete(instancesDir, true); }
-            catch { /* best-effort */ }
+            // Deliberately NOT deleting instancesDir. Registering a Director writes a discovery file there, and
+            // deleting the directory raises a FileSystemWatcher delete event on a thread-pool thread that can
+            // land AFTER the host is torn down - reaching a disposed database and killing the whole test
+            // process (the run aborts mid-suite). The directory is a unique temp path the OS reclaims.
         }
     }
 

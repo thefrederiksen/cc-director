@@ -37,6 +37,9 @@ namespace CcDirector.Gateway.Tests;
 ///    direct call (the pre-PR2 implicit single pass) and
 ///    <see cref="AutoDismiss_sweep_runs_one_pass_per_tenant_and_closes_only_that_tenants_sessions"/> goes RED -
 ///    the unscoped pass reads no tenant's fleet, so neither session is closed.
+///  - <c>AutoDismissSweeper.MarkKey</c>: drop the tenant prefix (back to a session-id-only close-mark) and
+///    <see cref="AutoDismiss_close_marks_are_partitioned_per_tenant"/> goes RED - the second tenant's pass
+///    finds the first tenant's mark and skips its own close.
 ///
 /// The assembly runs sequentially (TestParallelization), so toggling CC_GATEWAY_HOSTED here is safe; it is
 /// reset in DisposeAsync.
@@ -112,6 +115,16 @@ public sealed class SessionServingLoopIsolationTests : IAsyncLifetime
         Assert.NotNull(sameTenant);
         Assert.Contains(_seenByA, c => c.PayloadJson.Contains("hello-a") == true);
 
+        // SECOND POSITIVE CONTROL, for the B side: tenant B CAN drive its OWN Director. Without this, the
+        // "B never received the cross-tenant command" assertion below would also be satisfied by a tenant B
+        // that simply cannot receive anything at all.
+        DirectorCommandResult? sameTenantB;
+        using (_gateway.TenantBoundary.EnterScope(TenantB))
+            sameTenantB = await _gateway.SendCommandAsync("dir-b", Prompt("hello-b"));
+
+        Assert.NotNull(sameTenantB);
+        Assert.Contains(_seenByB, c => c.PayloadJson.Contains("hello-b") == true);
+
         // ABSENCE: inside tenant B's scope, the SAME command aimed at tenant A's Director resolves nothing.
         // The connection lookup runs in B's partition, which holds no dir-a, so the send is denied - B can
         // never drive A's Director even by naming its id directly.
@@ -156,6 +169,30 @@ public sealed class SessionServingLoopIsolationTests : IAsyncLifetime
         // list, and the down-channel send could not have reached the wrong Director anyway.
         Assert.DoesNotContain(_seenByA, c => c.SessionId == SessB);
         Assert.DoesNotContain(_seenByB, c => c.SessionId == SessA);
+    }
+
+    [Fact]
+    public async Task AutoDismiss_close_marks_are_partitioned_per_tenant()
+    {
+        // The sweeper keeps a "already issued a kill" mark so a session lingering one extra sweep is not
+        // killed twice. Running the sweep once PER TENANT makes that gate a cross-tenant hazard: keyed by
+        // session id alone, tenant A's mark suppresses tenant B's close, and each pass prunes the other
+        // tenants' marks against its own snapshot.
+        //
+        // Two tenants using the SAME session id is the case that separates a partitioned gate from a shared
+        // one - and session ids are not globally unique across accounts, so this is a real arrangement, not a
+        // contrived one. BOTH must be closed.
+        const string Shared = "shared-sid";
+        await _dirA.PushSnapshotAsync(Sample(Shared, autoDismiss: true));
+        await _dirB.PushSnapshotAsync(Sample(Shared, autoDismiss: true));
+
+        _gateway.SweepAutoDismiss();
+
+        // Each tenant's OWN Director must have been told to kill its OWN session of that id. With a
+        // session-id-only mark, whichever tenant's pass ran second finds the mark already set and skips - so
+        // exactly one of these two goes null.
+        Assert.NotNull(await WaitForKill(_seenByA, Shared));
+        Assert.NotNull(await WaitForKill(_seenByB, Shared));
     }
 
     /// <summary>
