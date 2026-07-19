@@ -150,9 +150,13 @@ public partial class SettingsDialog : Window
 
         if (!configured)
         {
-            // No Gateway configured: there is nothing to read an identity from. This is informational,
-            // never a gate - the Director still runs.
-            GatewayIdentityText.Text = "No Gateway configured. Connect this Director to a Gateway on the Gateway tab.";
+            // No gateway configured: this is the Director's OWN local account state, so the Director
+            // decides it (there is no Gateway to rule it; two-step install, Slice A). Render the provider
+            // verdict verbatim - a gateway-less Director that holds its own credential now reads "Signed
+            // in to DevThrottle - connect a gateway to use AI" instead of the old blanket "No Gateway
+            // configured." The read is scoped so a failure reading the local credential degrades ONLY
+            // this identity line and never takes down the Settings dialog (see ResolveLocalAccountLine).
+            GatewayIdentityText.Text = ResolveLocalAccountLine(gatewayUrl);
             return;
         }
 
@@ -162,6 +166,31 @@ public partial class SettingsDialog : Window
         // signed-out states are surfaced as plain text on the identity line, never as a blocking error.
         var config = new GatewayConfig { Url = gatewayUrl, Token = gatewayToken };
         _ = LoadGatewayIdentityAsync(config);
+    }
+
+    /// <summary>
+    /// The Director's OWN local account line when no gateway is configured (two-step install, Slice A):
+    /// the provider decides the state and this returns the verbatim string for it. The read is SCOPED -
+    /// any failure reading the local credential store degrades this one informational line to a safe
+    /// message and is logged, so a corrupt or wrong-user Director credential can never take down the
+    /// Settings dialog (responsive-UI rule). This is not a problem-hiding fallback: the failure is logged
+    /// and the line says the status is unavailable, while the dialog stays usable. On a non-Windows host
+    /// there is no per-user Data Protection store, so it reads as not signed in locally.
+    /// </summary>
+    private static string ResolveLocalAccountLine(string gatewayUrl)
+    {
+        try
+        {
+            var state = OperatingSystem.IsWindows()
+                ? DirectorAccountStateProvider.ResolveForWindows(new GatewayConfig { Url = gatewayUrl })
+                : DirectorAccountState.NotSignedIn;
+            return DirectorAccountStateProvider.DescribeNoGateway(state);
+        }
+        catch (Exception ex)
+        {
+            FileLog.Write($"[SettingsDialog] ResolveLocalAccountLine: could not read the local Director account state -> degrading this identity line only (dialog stays usable): {ex.Message}");
+            return "Account status unavailable. This Director is running; connect a Gateway on the Gateway tab.";
+        }
     }
 
     /// <summary>
