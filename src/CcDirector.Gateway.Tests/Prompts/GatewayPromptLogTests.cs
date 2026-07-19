@@ -1,3 +1,4 @@
+using CcDirector.Core.Tenancy;
 using CcDirector.Gateway.Contracts;
 using CcDirector.Gateway.Prompts;
 using Xunit;
@@ -46,10 +47,10 @@ public sealed class GatewayPromptLogTests : IDisposable
     {
         var ts = new DateTime(2026, 7, 14, 9, 30, 0, DateTimeKind.Utc);
 
-        var written = _log.Append(new[] { Rec(ts, "fix the login bug") });
+        var written = _log.Append(TenantId.Local, new[] { Rec(ts, "fix the login bug") });
 
         Assert.Equal(1, written);
-        var only = Assert.Single(_log.Read(ts, ts));
+        var only = Assert.Single(_log.Read(TenantId.Local, ts, ts));
         Assert.Equal("fix the login bug", only.Text);
         Assert.Equal("SOREN_NORTH", only.Machine);
         Assert.Equal("ctx-1", only.ContextId);
@@ -61,10 +62,10 @@ public sealed class GatewayPromptLogTests : IDisposable
     public void Append_adds_to_what_is_already_there()
     {
         var ts = new DateTime(2026, 7, 14, 9, 30, 0, DateTimeKind.Utc);
-        _log.Append(new[] { Rec(ts, "first") });
-        _log.Append(new[] { Rec(ts.AddMinutes(1), "second", "assistant") });
+        _log.Append(TenantId.Local, new[] { Rec(ts, "first") });
+        _log.Append(TenantId.Local, new[] { Rec(ts.AddMinutes(1), "second", "assistant") });
 
-        Assert.Equal(new[] { "first", "second" }, _log.Read(ts, ts).Select(r => r.Text));
+        Assert.Equal(new[] { "first", "second" }, _log.Read(TenantId.Local, ts, ts).Select(r => r.Text));
     }
 
     /// <summary>
@@ -77,11 +78,11 @@ public sealed class GatewayPromptLogTests : IDisposable
         var day1 = new DateTime(2026, 7, 14, 23, 59, 0, DateTimeKind.Utc);
         var day2 = new DateTime(2026, 7, 15, 0, 1, 0, DateTimeKind.Utc);
 
-        var written = _log.Append(new[] { Rec(day1, "before midnight"), Rec(day2, "after midnight") });
+        var written = _log.Append(TenantId.Local, new[] { Rec(day1, "before midnight"), Rec(day2, "after midnight") });
 
         Assert.Equal(2, written);
-        Assert.Equal("before midnight", Assert.Single(_log.Read(day1, day1)).Text);
-        Assert.Equal("after midnight", Assert.Single(_log.Read(day2, day2)).Text);
+        Assert.Equal("before midnight", Assert.Single(_log.Read(TenantId.Local, day1, day1)).Text);
+        Assert.Equal("after midnight", Assert.Single(_log.Read(TenantId.Local, day2, day2)).Text);
     }
 
     [Fact]
@@ -89,27 +90,27 @@ public sealed class GatewayPromptLogTests : IDisposable
     {
         var day1 = new DateTime(2026, 7, 14, 9, 0, 0, DateTimeKind.Utc);
         var day3 = new DateTime(2026, 7, 16, 9, 0, 0, DateTimeKind.Utc);
-        _log.Append(new[] { Rec(day1, "monday"), Rec(day3, "wednesday") });
+        _log.Append(TenantId.Local, new[] { Rec(day1, "monday"), Rec(day3, "wednesday") });
 
-        Assert.Equal(new[] { "monday", "wednesday" }, _log.Read(day1, day3).Select(r => r.Text));
+        Assert.Equal(new[] { "monday", "wednesday" }, _log.Read(TenantId.Local, day1, day3).Select(r => r.Text));
     }
 
     [Fact]
     public void Read_of_a_day_with_nothing_in_it_is_empty_rather_than_throwing()
     {
         var ts = new DateTime(2026, 7, 14, 9, 0, 0, DateTimeKind.Utc);
-        Assert.Empty(_log.Read(ts, ts));
+        Assert.Empty(_log.Read(TenantId.Local, ts, ts));
     }
 
     [Fact]
     public void A_corrupt_line_does_not_hide_the_good_ones()
     {
         var ts = new DateTime(2026, 7, 14, 9, 0, 0, DateTimeKind.Utc);
-        _log.Append(new[] { Rec(ts, "good one") });
-        File.AppendAllText(_log.FileFor(ts), "{ this is not json" + Environment.NewLine);
-        _log.Append(new[] { Rec(ts.AddMinutes(1), "good two") });
+        _log.Append(TenantId.Local, new[] { Rec(ts, "good one") });
+        File.AppendAllText(_log.FileFor(TenantId.Local, ts), "{ this is not json" + Environment.NewLine);
+        _log.Append(TenantId.Local, new[] { Rec(ts.AddMinutes(1), "good two") });
 
-        Assert.Equal(new[] { "good one", "good two" }, _log.Read(ts, ts).Select(r => r.Text));
+        Assert.Equal(new[] { "good one", "good two" }, _log.Read(TenantId.Local, ts, ts).Select(r => r.Text));
     }
 
     [Fact]
@@ -117,9 +118,9 @@ public sealed class GatewayPromptLogTests : IDisposable
     {
         var ts = new DateTime(2026, 7, 14, 9, 0, 0, DateTimeKind.Utc);
         var text = "line one\nline two\nline three";
-        _log.Append(new[] { Rec(ts, text) });
+        _log.Append(TenantId.Local, new[] { Rec(ts, text) });
 
-        Assert.Equal(text, Assert.Single(_log.Read(ts, ts)).Text);
+        Assert.Equal(text, Assert.Single(_log.Read(TenantId.Local, ts, ts)).Text);
     }
 
     [Fact]
@@ -128,10 +129,10 @@ public sealed class GatewayPromptLogTests : IDisposable
         var ts = new DateTime(2026, 7, 14, 9, 0, 0, DateTimeKind.Utc);
 
         // The whole point of the log living on the Gateway: it holds the fleet, not one machine.
-        _log.Append(new[] { Rec(ts, "from north", machine: "SOREN_NORTH") });
-        _log.Append(new[] { Rec(ts.AddMinutes(1), "from laptop", machine: "SOREN_LAPTOP") });
+        _log.Append(TenantId.Local, new[] { Rec(ts, "from north", machine: "SOREN_NORTH") });
+        _log.Append(TenantId.Local, new[] { Rec(ts.AddMinutes(1), "from laptop", machine: "SOREN_LAPTOP") });
 
-        var records = _log.Read(ts, ts);
+        var records = _log.Read(TenantId.Local, ts, ts);
         Assert.Equal(2, records.Count);
         Assert.Equal(new[] { "SOREN_NORTH", "SOREN_LAPTOP" }, records.Select(r => r.Machine));
     }
@@ -139,6 +140,6 @@ public sealed class GatewayPromptLogTests : IDisposable
     [Fact]
     public void Appending_nothing_writes_nothing()
     {
-        Assert.Equal(0, _log.Append(Array.Empty<PromptRecord>()));
+        Assert.Equal(0, _log.Append(TenantId.Local, Array.Empty<PromptRecord>()));
     }
 }

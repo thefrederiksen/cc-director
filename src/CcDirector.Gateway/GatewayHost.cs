@@ -456,7 +456,7 @@ public sealed class GatewayHost : IAsyncDisposable
     // uses it, so a tenant id can reach the storage layer in a later pull request. Same default paths as
     // the retired statics; no behavior change. The voice-turn upload store (VoiceTurnUploads root) is
     // distinct from _dictationUploads above (DictationUploads root) - two roots, two subsystems.
-    private readonly Prompts.GatewayPromptLog _promptLog = new();
+    private readonly Prompts.GatewayPromptLog _promptLog;
     private readonly Transcription.TranscriptionTelemetryLog _transcriptionTelemetry = new();
     private readonly Transcription.TranscriptionAudioArchive _transcriptionAudioArchive = new();
     private readonly Voice.VoiceUploadStore _voiceTurnUploads = new();
@@ -570,7 +570,7 @@ public sealed class GatewayHost : IAsyncDisposable
     /// Shared instances that write to the real user's directories). Production omits it and the host builds
     /// the service over its own key vault, exactly as before.
     /// </param>
-    public GatewayHost(int port = DefaultPort, string? token = null, bool? authEnabled = null, string? instancesDirectory = null, string? turnBriefDirectory = null, string? keyVaultPath = null, string? workListsPath = null, string? cronJobsPath = null, string? cronRunsPath = null, string? devicesPath = null, string? telemetryQueuePath = null, int? telemetryQueueMaxSize = null, TimeSpan? telemetryRetryInterval = null, Core.Account.DevThrottleAccountService? account = null, bool? streamMode = null, string? inputStatsPath = null, string? snoozePath = null, string? pushSubscriptionsPath = null, string? wingmanInstructionsPath = null, string? missionsPath = null, string? missionNotesPath = null, Transcription.GatewayTranscriptionService? dictationTranscription = null, Core.Agents.AgentKind? brainTool = null)
+    public GatewayHost(int port = DefaultPort, string? token = null, bool? authEnabled = null, string? instancesDirectory = null, string? turnBriefDirectory = null, string? keyVaultPath = null, string? workListsPath = null, string? cronJobsPath = null, string? cronRunsPath = null, string? devicesPath = null, string? telemetryQueuePath = null, int? telemetryQueueMaxSize = null, TimeSpan? telemetryRetryInterval = null, Core.Account.DevThrottleAccountService? account = null, bool? streamMode = null, string? inputStatsPath = null, string? promptLogPath = null, string? snoozePath = null, string? pushSubscriptionsPath = null, string? wingmanInstructionsPath = null, string? missionsPath = null, string? missionNotesPath = null, Transcription.GatewayTranscriptionService? dictationTranscription = null, Core.Agents.AgentKind? brainTool = null)
     {
         // Resolve and VALIDATE the warm-brain tool up front, before any resource is opened: a brain tool
         // that cannot be hosted is a configuration error that must fail loudly at construction, not
@@ -593,6 +593,7 @@ public sealed class GatewayHost : IAsyncDisposable
         Missions = new Core.Sessions.MissionStore(missionsPath ?? Path.Combine(CcStorage.Root(), "missions.json"));
         StreamRegistry = new Streaming.GatewayStreamRegistry();
         InputStats = new Stats.GatewayInputStatsAggregator(inputStatsPath);
+        _promptLog = new Prompts.GatewayPromptLog(promptLogPath);
         SessionConcurrency = new Stats.GatewaySessionConcurrencyStats();
         RosterCache = new Discovery.FleetRosterCache();
         // Issue #1215: when a Director is unregistered or evicted from the registry, forget its cached
@@ -2093,7 +2094,7 @@ public sealed class GatewayHost : IAsyncDisposable
         // wanting history reads GET /prompts. It lives here, not on a Director, because the Gateway is
         // what the whole fleet reports to - so the history is already present rather than scattered
         // across machines - and because the Gateway is what moves to the server.
-        Prompts.PromptEndpoints.Map(_app, _promptLog);
+        Prompts.PromptEndpoints.Map(_app, _promptLog, _tenantBoundary);
 
         Mobile.MobileApp.Map(_app, Token);
 

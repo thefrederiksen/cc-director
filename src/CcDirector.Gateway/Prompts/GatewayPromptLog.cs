@@ -1,6 +1,7 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using CcDirector.Core.Storage;
+using CcDirector.Core.Tenancy;
 using CcDirector.Core.Utilities;
 using CcDirector.Gateway.Contracts;
 
@@ -23,6 +24,13 @@ namespace CcDirector.Gateway.Prompts;
 ///
 /// One JSON line per message in a daily file: base/prompt-log/conversation-yyyyMMdd.jsonl.
 ///
+/// PARTITIONED BY TENANT (issue #1848). Prompt text is customer content, so on the hosted Gateway one
+/// account's messages must never be readable by another. The partition is the DIRECTORY, not a predicate on
+/// the read: a tenant's history lives in its own folder, so a read physically cannot open another tenant's
+/// file. <see cref="TenantId.Local"/> keeps today's path exactly (self-host is unchanged and nothing
+/// migrates); a hosted account tenant lands under tenants/&lt;id&gt;/. The tenant is always supplied by the
+/// caller, which resolved it from the authenticated device key at the boundary - this type never guesses one.
+///
 /// Retention is unbounded. The point is looking back across weeks and months, and the text is small.
 /// (Contrast TurnReviewLog, which holds terminal SCREENS and expires at 7 days.) Nothing prunes this.
 ///
@@ -34,6 +42,30 @@ public sealed class GatewayPromptLog
     {
         DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
     };
+
+    /// <summary>
+    /// True only for the EXACT form <see cref="Tenancy.TenantRegistry"/> mints: a canonical lowercase GUID.
+    ///
+    /// A tenant id becomes a DIRECTORY NAME, so it must be a shape this system actually produces - not merely
+    /// "characters that look harmless". Two structural aliases have already been found here, and both were
+    /// the same class of defect:
+    ///
+    ///  - The first rule was <c>^[A-Za-z0-9._-]{1,64}$</c>, which accepts <c>".."</c> - and combining the root
+    ///    with <c>tenants</c> and <c>".."</c> canonicalizes to exactly the root, the LOCAL partition.
+    ///  - The second accepted <c>A-F</c> as well as <c>a-f</c>. The registry mints canonical LOWERCASE guids
+    ///    and the tenants table uses a CASE-SENSITIVE collation, so two ids differing only in case are
+    ///    DIFFERENT IDENTITIES to the database - while Windows and Azure Files name the SAME directory for
+    ///    both. That is one tenant reading another's prompt text through a casing alias.
+    ///
+    /// The lesson both times: at a path boundary the dangerous values are built from harmless characters, and
+    /// a collision does not need a special character - it needs two accepted spellings of one path. So this
+    /// accepts ONE spelling: parse strictly, then require the value to equal its own canonical round-trip.
+    /// Anything else is refused rather than normalised, because normalising is how two identities quietly
+    /// share a folder.
+    /// </summary>
+    private static bool IsMintedAccountTenant(string value)
+        => Guid.TryParseExact(value, "D", out var parsed)
+           && string.Equals(value, parsed.ToString("D"), StringComparison.Ordinal);
 
     private readonly object _gate = new();
     private readonly string _directory;
@@ -47,16 +79,65 @@ public sealed class GatewayPromptLog
     /// <summary>The Gateway's prompt-log directory.</summary>
     public static string DefaultDirectory() => CcStorage.PromptLog();
 
-    /// <summary>The daily file a message at <paramref name="utcNow"/> lands in.</summary>
-    public string FileFor(DateTime utcNow)
-        => Path.Combine(_directory, $"conversation-{utcNow:yyyyMMdd}.jsonl");
+    /// <summary>
+    /// Replace a tenant's raw account id with its hashed log form anywhere it appears in text bound for the
+    /// log - in practice a file path inside an exception message, since the partition directory IS the tenant
+    /// id. This is a single exact substitution of a value we hold, not a general-purpose scrub: it is
+    /// complete for the one way the id can get in here, and it keeps the failure LOUD rather than swallowing
+    /// the message to be safe.
+    /// </summary>
+    private static string Redact(string text, TenantId tenant)
+        => string.IsNullOrEmpty(text) || !tenant.IsValid
+            ? text
+            : text.Replace(tenant.Value, tenant.ToLogString(), StringComparison.Ordinal);
 
     /// <summary>
-    /// Append messages pushed by a Director. Returns how many were written. Never throws: a logging
-    /// failure must not fail the Director's push.
+    /// The directory one tenant's daily files live in. The local tenant keeps the root directory it has
+    /// always used; every other tenant gets its own folder beneath it. A tenant id that is not a plain
+    /// identifier is refused loudly rather than scrubbed - scrubbing is how two tenants quietly share a
+    /// folder, and this folder holds prompt TEXT.
     /// </summary>
-    public int Append(IEnumerable<PromptRecord> records)
+    public string DirectoryFor(TenantId tenant)
     {
+        if (!tenant.IsValid)
+            throw new ArgumentException("A prompt-log partition needs a valid tenant; an unresolved tenant is denied, never defaulted.", nameof(tenant));
+        // The local tenant is the root directory it has always used - self-host unchanged, nothing migrates.
+        if (tenant.IsLocal)
+            return _directory;
+
+        // Every other partition must be a minted account tenant - including the reserved SYSTEM tenant, which
+        // is deliberately REFUSED here rather than given a folder: no prompt text belongs to it, so the safe
+        // answer is that it has no partition at all. A value that is not a minted account is refused, never
+        // coerced: this folder holds prompt TEXT, and scrubbing a bad name is how two tenants share a folder.
+        if (!IsMintedAccountTenant(tenant.Value))
+            throw new ArgumentException(
+                $"Tenant '{tenant.ToLogString()}' is not a minted account tenant and cannot name a prompt-log partition.",
+                nameof(tenant));
+
+        var combined = Path.Combine(_directory, "tenants", tenant.Value);
+
+        // Belt and braces, because the cost of being wrong here is one tenant reading another's prompts: the
+        // result must actually LIE INSIDE the partition root. The pattern above already excludes traversal,
+        // so this can only fire if that pattern is ever loosened - which is exactly when it is wanted.
+        var expectedRoot = Path.GetFullPath(Path.Combine(_directory, "tenants")) + Path.DirectorySeparatorChar;
+        if (!Path.GetFullPath(combined).StartsWith(expectedRoot, StringComparison.OrdinalIgnoreCase))
+            throw new ArgumentException(
+                $"Tenant '{tenant.ToLogString()}' resolves outside the prompt-log partition root.", nameof(tenant));
+
+        return combined;
+    }
+
+    /// <summary>The daily file a message at <paramref name="utcNow"/> lands in, for one tenant.</summary>
+    public string FileFor(TenantId tenant, DateTime utcNow)
+        => Path.Combine(DirectoryFor(tenant), $"conversation-{utcNow:yyyyMMdd}.jsonl");
+
+    /// <summary>
+    /// Append messages pushed by a Director, into that Director's tenant partition. Returns how many were
+    /// written. Never throws: a logging failure must not fail the Director's push.
+    /// </summary>
+    public int Append(TenantId tenant, IEnumerable<PromptRecord> records)
+    {
+        var directory = DirectoryFor(tenant);
         var written = 0;
         try
         {
@@ -65,10 +146,10 @@ public sealed class GatewayPromptLog
             foreach (var day in records.GroupBy(r => r.TsUtc.Date))
             {
                 var lines = day.Select(r => JsonSerializer.Serialize(r, JsonOpts)).ToList();
-                var path = FileFor(day.Key);
+                var path = FileFor(tenant, day.Key);
                 lock (_gate)
                 {
-                    Directory.CreateDirectory(_directory);
+                    Directory.CreateDirectory(directory);
                     File.AppendAllLines(path, lines);
                 }
                 written += lines.Count;
@@ -76,21 +157,25 @@ public sealed class GatewayPromptLog
         }
         catch (Exception ex)
         {
-            FileLog.Write($"[GatewayPromptLog] Append FAILED (swallowed): {ex.Message}");
+            // The exception message from a file operation carries the FULL PATH, and on hosted that path
+            // contains the tenant's raw account id - so logging it verbatim would print account identifiers
+            // into a log that is otherwise free of them. Redacted, not dropped: the failure still says what
+            // went wrong and which partition, in the same hashed form every other tenant-bearing log uses.
+            FileLog.Write($"[GatewayPromptLog] Append FAILED (swallowed) for tenant={tenant.ToLogString()}: {Redact(ex.Message, tenant)}");
         }
         return written;
     }
 
     /// <summary>
-    /// Read every message in the inclusive UTC day range, oldest first. Skips unparseable lines rather
-    /// than failing the whole read, so one bad line cannot hide a month of work.
+    /// Read every message in the inclusive UTC day range for ONE tenant, oldest first. Skips unparseable
+    /// lines rather than failing the whole read, so one bad line cannot hide a month of work.
     /// </summary>
-    public IReadOnlyList<PromptRecord> Read(DateTime fromUtc, DateTime toUtc)
+    public IReadOnlyList<PromptRecord> Read(TenantId tenant, DateTime fromUtc, DateTime toUtc)
     {
         var results = new List<PromptRecord>();
         for (var day = fromUtc.Date; day <= toUtc.Date; day = day.AddDays(1))
         {
-            var path = FileFor(day);
+            var path = FileFor(tenant, day);
             if (!File.Exists(path)) continue;
             string[] lines;
             try
@@ -99,7 +184,9 @@ public sealed class GatewayPromptLog
             }
             catch (Exception ex)
             {
-                FileLog.Write($"[GatewayPromptLog] Read FAILED for {path}: {ex.Message}");
+                // Same reason as Append: the path itself names the tenant on hosted. The daily FILE name is
+                // safe and is what actually identifies which read failed.
+                FileLog.Write($"[GatewayPromptLog] Read FAILED for tenant={tenant.ToLogString()} file={Path.GetFileName(path)}: {Redact(ex.Message, tenant)}");
                 continue;
             }
             foreach (var line in lines)
