@@ -28,7 +28,8 @@ public static class PrerequisiteChecker
         [
             new PrerequisiteInfo
             {
-                Name = "Claude Code",
+                Name = PrerequisiteNames.ClaudeCode,
+                IsRecommended = true,
                 Description = "Recommended: the default coding agent. DevThrottle runs other agents too, "
                     + "so you can install this later or use a different one.",
                 IsRequired = false,
@@ -37,7 +38,8 @@ public static class PrerequisiteChecker
             },
             new PrerequisiteInfo
             {
-                Name = "Python",
+                Name = PrerequisiteNames.Python,
+                IsRecommended = true,
                 Description = "Recommended: Python 3.11 or higher, for your own scripts. The cc-* tools "
                     + "bring their own Python and do not need this.",
                 IsRequired = false,
@@ -46,13 +48,26 @@ public static class PrerequisiteChecker
             },
             new PrerequisiteInfo
             {
-                Name = "Node.js",
+                Name = PrerequisiteNames.NodeJs,
+                IsRecommended = true,
                 Description = "Recommended: Node.js 20+, needed only for MCP servers and browser tools",
                 IsRequired = false,
                 InstallUrl = "https://nodejs.org/",
                 DocsUrl = $"{DocsBase}#nodejs"
             },
         ];
+    }
+
+    /// <summary>
+    /// The wizard's gate: may the user continue past the Prerequisites screen? One place decides,
+    /// so the Next button and the screen's own subtitle can never disagree. On macOS nothing is
+    /// required, so this is always true - which is correct, and is exactly why the subtitle must
+    /// speak for itself about the recommended rows.
+    /// </summary>
+    public static bool AllRequiredMet(IEnumerable<PrerequisiteInfo> items)
+    {
+        ArgumentNullException.ThrowIfNull(items);
+        return items.Where(p => p.IsRequired).All(p => p.IsFound);
     }
 
     public static async Task CheckAllAsync(List<PrerequisiteInfo> items)

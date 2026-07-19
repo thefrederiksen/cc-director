@@ -302,11 +302,15 @@ public partial class MainWindow : Window
     /// </summary>
     private string? BuildCapabilityNotice()
     {
+        // IsRecommended, NOT !IsRequired: Tailscale is optional (a deliberate choice, not a gap)
+        // and its own row already says which leg is not ready, so it must never appear here.
         var recommended = _prerequisites
-            .Where(p => !p.IsRequired)
+            .Where(p => p.IsRecommended)
             .Select(p => new CcDirector.Setup.Engine.CapabilityStatus(p.Name, p.IsFound))
             .ToList();
-        return CcDirector.Setup.Engine.CapabilityNotice.Describe(recommended);
+        return CcDirector.Setup.Engine.CapabilityNotice.Describe(
+            recommended,
+            CcDirector.Setup.Engine.AgentPresence.AnyOtherAgent());
     }
 
     private async Task RunInstallAsync()

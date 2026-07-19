@@ -84,4 +84,52 @@ public class PrerequisiteClassificationTests
     {
         Assert.True(PrerequisiteChecker.AllRequiredMet(new List<PrerequisiteInfo>()));
     }
+
+    [Fact]
+    public void CreateChecklist_RecommendedRowsAreExactlyTheThree()
+    {
+        var recommended = PrerequisiteChecker.CreateChecklist(InstallRole.Gateway)
+            .Where(p => p.IsRecommended).Select(p => p.Name).ToList();
+
+        Assert.Equal(PrerequisiteNames.Recommended, recommended);
+    }
+
+    [Fact]
+    public void CreateChecklist_TailscaleIsOptionalNotRecommended()
+    {
+        // Tailscale is a deliberate choice, not a gap, and its own row already says which leg is
+        // not ready. Sweeping it in with !IsRequired would put "Tailscale: ..." on the Complete
+        // screen for a gateway that has Tailscale installed but MagicDNS switched off.
+        var tailscale = PrerequisiteChecker.CreateChecklist(InstallRole.Gateway)
+            .Single(p => p.Name == PrerequisiteNames.Tailscale);
+
+        Assert.False(tailscale.IsRequired);
+        Assert.False(tailscale.IsRecommended);
+        Assert.Equal("Optional", tailscale.ImportanceLabel);
+    }
+
+    [Fact]
+    public void ImportanceLabel_DistinguishesAllThreeStates()
+    {
+        var checklist = PrerequisiteChecker.CreateChecklist(InstallRole.Gateway);
+
+        // The badge is the first thing a user reads; it used to say "Optional" for every
+        // non-required row, making Claude Code indistinguishable from Tailscale.
+        Assert.Equal("Required", checklist.Single(p => p.Name == PrerequisiteNames.DotNetRuntime).ImportanceLabel);
+        Assert.Equal("Recommended", checklist.Single(p => p.Name == PrerequisiteNames.ClaudeCode).ImportanceLabel);
+        Assert.Equal("Optional", checklist.Single(p => p.Name == PrerequisiteNames.Tailscale).ImportanceLabel);
+    }
+
+    [Fact]
+    public async Task RuntimeInstaller_FailureNamesTheToolTheUserClicked()
+    {
+        // The class was written for the .NET row and hardcoded ".NET 10" in its failure text.
+        // With four rows able to auto-install, clicking Install on Python must not tell the user
+        // to go and download .NET 10.
+        var result = await RuntimeInstaller.InstallAsync("Definitely.Not.A.Real.Package", PrerequisiteNames.Python);
+
+        Assert.False(result.Success);
+        Assert.Contains(PrerequisiteNames.Python, result.Message);
+        Assert.DoesNotContain(".NET 10", result.Message);
+    }
 }

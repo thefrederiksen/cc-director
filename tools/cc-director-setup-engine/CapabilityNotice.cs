@@ -1,6 +1,28 @@
 namespace CcDirector.Setup.Engine;
 
-/// <summary>One recommended prerequisite and whether the checker found it.</summary>
+/// <summary>
+/// The canonical prerequisite row names. Both wizards build their checklists from these and
+/// <see cref="CapabilityNotice"/> keys off them, so a rename cannot silently detach a row from its
+/// consequence text (which is what a plain magic string would do, with every test still green).
+/// </summary>
+public static class PrerequisiteNames
+{
+    public const string DotNetRuntime = ".NET 10 Runtime";
+    public const string ClaudeCode = "Claude Code";
+    public const string Python = "Python";
+    public const string NodeJs = "Node.js";
+    public const string Tailscale = "Tailscale";
+
+    /// <summary>The rows that are recommended - checked and offered, but never gating.</summary>
+    public static readonly IReadOnlyList<string> Recommended = [ClaudeCode, Python, NodeJs];
+}
+
+/// <summary>One recommended prerequisite and whether the checker accepted it.</summary>
+/// <param name="Name">One of <see cref="PrerequisiteNames"/>.</param>
+/// <param name="IsFound">
+/// The checker's verdict, which means "present AND acceptable" - a Python 3.9 or a Node 18 is
+/// reported as not found. The notice wording must therefore not assert "not installed".
+/// </param>
 public sealed record CapabilityStatus(string Name, bool IsFound);
 
 /// <summary>
@@ -12,18 +34,28 @@ public sealed record CapabilityStatus(string Name, bool IsFound);
 /// about it - not as a wall on screen two.
 ///
 /// This is deliberately UI-free so both wizards render the same words and one test can prove
-/// them. The screen renders this verdict and never decides for itself what a missing item means.
+/// them. A screen renders this verdict and never decides for itself what a missing item means.
 /// </summary>
 public static class CapabilityNotice
 {
-    /// <summary>What each recommended item costs the user when it is absent.</summary>
-    private static string Consequence(string name) => name switch
+    /// <summary>
+    /// What each recommended item costs the user when it is absent or too old.
+    ///
+    /// <paramref name="anotherAgentPresent"/> exists because the whole point of the
+    /// re-classification is that DevThrottle runs eight agent command line tools. Telling a user
+    /// who runs Codex or Gemini that their "board has nothing to run" would repeat, in words, the
+    /// very mistake the classification change removed.
+    /// </summary>
+    private static string Consequence(string name, bool anotherAgentPresent) => name switch
     {
-        "Claude Code" => "no coding agent is installed yet, so your board has nothing to run",
-        "Python" => "your own Python scripts will not run (the cc-* tools bring their own Python)",
-        "Node.js" => "MCP servers and the browser tools are unavailable",
-        "Tailscale" => "phones and other computers cannot reach this gateway's Cockpit over a secure address "
-            + "(everything on this machine still works)",
+        PrerequisiteNames.ClaudeCode when anotherAgentPresent =>
+            "the Claude agent is unavailable - your other coding agent still works",
+        PrerequisiteNames.ClaudeCode =>
+            "no coding agent is set up yet, so your board has nothing to run",
+        PrerequisiteNames.Python =>
+            "your own Python scripts will not run (the cc-* tools bring their own Python)",
+        PrerequisiteNames.NodeJs =>
+            "MCP servers and the browser tools are unavailable",
         _ => "some features are unavailable",
     };
 
@@ -31,7 +63,13 @@ public static class CapabilityNotice
     /// The Complete-screen notice, or null when nothing is missing. Order follows the caller's
     /// list so the wizard's own ordering is the one the user reads.
     /// </summary>
-    public static string? Describe(IEnumerable<CapabilityStatus> recommended)
+    /// <param name="recommended">
+    /// The recommended rows only. Optional rows (Tailscale) must NOT be passed: they are a
+    /// deliberate choice rather than a gap, and their own row already explains which part is not
+    /// ready.
+    /// </param>
+    /// <param name="anotherAgentPresent">True when a non-Claude agent command line tool is on PATH.</param>
+    public static string? Describe(IEnumerable<CapabilityStatus> recommended, bool anotherAgentPresent = false)
     {
         ArgumentNullException.ThrowIfNull(recommended);
 
@@ -39,8 +77,11 @@ public static class CapabilityNotice
         if (missing.Count == 0)
             return null;
 
-        var parts = missing.Select(m => $"{m.Name}: {Consequence(m.Name)}");
-        return "Not installed - " + string.Join("; ", parts)
+        var parts = missing.Select(m => $"{m.Name}: {Consequence(m.Name, anotherAgentPresent)}");
+
+        // "Missing or out of date", never "Not installed": IsFound is false for a Python 3.9 that
+        // is very much installed, and claiming otherwise would contradict the row the user just read.
+        return "Missing or out of date - " + string.Join("; ", parts)
             + ". You can install any of these at any time and DevThrottle will pick them up.";
     }
 }

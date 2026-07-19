@@ -118,6 +118,16 @@
             </Border>
 
             <!-- Note about terminal PATH -->
+            <!-- What is missing because a recommended prerequisite was skipped. One shared place
+                 computes the wording (CapabilityNotice); this screen only renders it. -->
+            <Border x:Name="CapabilityPanel" Background="#2A2D2E" CornerRadius="6" Padding="12"
+                    Margin="0,0,0,12" IsVisible="False">
+                <TextBlock x:Name="CapabilityNoticeText"
+                           Foreground="#E0A030"
+                           FontSize="12"
+                           TextWrapping="Wrap" />
+            </Border>
+
             <TextBlock x:Name="PathNote"
                        Text="NOTE: Open a new terminal for cc-* commands to be available on PATH."
                        Foreground="#666666"

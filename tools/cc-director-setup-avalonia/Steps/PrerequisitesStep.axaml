@@ -115,7 +115,7 @@
                                             Background="#2A2F38"
                                             VerticalAlignment="Center"
                                             IsVisible="{Binding !IsRequired}">
-                                        <TextBlock Text="Optional"
+                                        <TextBlock Text="{Binding ImportanceLabel}"
                                                    Foreground="#8AA0B8"
                                                    FontSize="10"
                                                    FontWeight="SemiBold" />

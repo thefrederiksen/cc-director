@@ -40,7 +40,7 @@ public partial class PrerequisitesStep : UserControl
         RefreshButton.IsEnabled = true;
 
         var allRequiredMet = PrerequisiteChecker.AllRequiredMet(_items);
-        var missingRecommended = _items.Count(p => !p.IsRequired && !p.IsFound);
+        var missingRecommended = _items.Count(p => p.IsRecommended && !p.IsFound);
         if (allRequiredMet)
         {
             // Honest about the recommended ones: they no longer block, but saying only "all
@@ -82,7 +82,7 @@ public partial class PrerequisitesStep : UserControl
             RefreshButton.IsEnabled = false;
             item.Status = "Installing...";
 
-            var result = await RuntimeInstaller.InstallAsync(item.WingetId);
+            var result = await RuntimeInstaller.InstallAsync(item.WingetId, item.Name);
             SetupLog.Write($"[PrerequisitesStep] InstallButton_Click: success={result.Success}, {result.Message}");
 
             if (result.Success)

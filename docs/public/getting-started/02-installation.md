@@ -14,7 +14,7 @@ The DevThrottle **Setup** app checks for these on its Prerequisites screen. On W
 | [Node.js](#nodejs) | Recommended | 20+ | MCP servers and the browser tools |
 | [Tailscale](#tailscale-optional--remote-access) | Optional | latest | Reaching this gateway's Cockpit from a phone or another computer |
 
-Setup can install every one of these for you on Windows via `winget`; each row shows an **Install automatically** action while the tool is missing. If `winget` is unavailable, use the download link in the same row and click **Re-check**.
+On **Windows**, Setup can install every one of these for you via `winget`: each row shows an **Install automatically** action while the tool is missing. If `winget` is unavailable -- it is absent on some locked-down machines -- use the download link in the same row and click **Re-check**. On **macOS** there is no `winget`, so the links are the install path.
 
 > **Just installed one of these and Setup still says "Not found"?** See [If a tool is not detected after installing it](#if-a-tool-is-not-detected-after-installing-it).
 
@@ -29,9 +29,9 @@ Confirm: `dotnet --list-runtimes` includes a `Microsoft.AspNetCore.App 10.x` lin
 
 ### Claude Code
 
-The Anthropic CLI. Use the official **native installer** -- **do not use `npm`**, which is the usual cause of "`claude` command not found" and PATH problems.
+The Anthropic CLI. **The easiest route on Windows is to let Setup do it** -- the Claude Code row has an **Install automatically** action that runs `winget install Anthropic.ClaudeCode` silently. To install it yourself, use the official **native installer** -- **do not use `npm`**, which is the usual cause of "`claude` command not found" and PATH problems.
 
-- **Windows (PowerShell):** `irm https://claude.ai/install.ps1 | iex`
+- **Windows (PowerShell):** `irm https://claude.ai/install.ps1 | iex`, or `winget install Anthropic.ClaudeCode`
 - **macOS / Linux:** `curl -fsSL https://claude.ai/install.sh | bash`
 
 Then run `claude` once to sign in (requires a paid Claude plan -- Pro, Max, Team, or Enterprise).

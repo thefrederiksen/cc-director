@@ -13,7 +13,9 @@ public sealed record RuntimeInstallResult(bool Success, string Message);
 /// </summary>
 public static class RuntimeInstaller
 {
-    public static async Task<RuntimeInstallResult> InstallAsync(string wingetId)
+    /// <param name="displayName">The row's name, so a failure names the tool the user clicked on
+    /// rather than the one this class was originally written for.</param>
+    public static async Task<RuntimeInstallResult> InstallAsync(string wingetId, string displayName = "this prerequisite")
     {
         SetupLog.Write($"[RuntimeInstaller] InstallAsync: wingetId={wingetId}");
 
@@ -22,7 +24,7 @@ public static class RuntimeInstaller
         {
             SetupLog.Write("[RuntimeInstaller] winget not available");
             return new RuntimeInstallResult(false,
-                "winget (the Windows Package Manager) was not found. Use the download link to install .NET 10 manually, then click Re-check.");
+                $"winget (the Windows Package Manager) was not found. Use the download link to install {displayName} manually, then click Re-check.");
         }
 
         var args =
@@ -37,7 +39,7 @@ public static class RuntimeInstaller
 
         SetupLog.Write($"[RuntimeInstaller] install failed: exit={exitCode}; {Trim(output)}");
         return new RuntimeInstallResult(false,
-            $"winget could not install {wingetId} (exit {exitCode}). Use the download link to install .NET 10 manually, then click Re-check.");
+            $"winget could not install {displayName} (exit {exitCode}). Use the download link to install it manually, then click Re-check.");
     }
 
     /// <summary>

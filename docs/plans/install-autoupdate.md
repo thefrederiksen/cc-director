@@ -91,7 +91,8 @@ reinventing it.
 | D6 | Trigger | **Resident apps orchestrate** - Director (while open) and Gateway (always) run the CLI updater for all present components |
 | D7 | Gateway update privilege | **Self-updating service** - the LocalSystem service swaps + restarts its own build; no UAC after first install |
 | D8 | Update failure handling | **Keep `.old` backups + manual rollback** (`...setup rollback <component>`); no auto-rollback/health-check |
-| D9 | Framework bootstrap | **Detect + guide** (link to Claude Code / Codex official installer + Re-check); we never own their install mechanics |
+| D9 | Framework bootstrap | ~~**Detect + guide** (link to Claude Code / Codex official installer + Re-check); we never own their install mechanics~~ **SUPERSEDED (see D9a)** |
+| D9a | Framework bootstrap, revised | **Detect + offer + guide.** The graphical wizard offers a one-click `winget` install for a missing agent, and the download link stays as the fallback. Detect-and-guide alone was the single largest block in the path from download to a first agent: it stopped a new user on the Prerequisites screen and sent them off to install three programs by hand. We still do not *own* the install mechanics - we invoke the vendor's own published package (`Anthropic.ClaudeCode`), the user chooses to click, and the manual link is untouched. The headless CLI keeps detect-and-guide unchanged. |
 | D10 | Code signing | **Stay unsigned, document** the SmartScreen "More info -> Run anyway" step; revisit for external users |
 
 ---
@@ -237,10 +238,14 @@ read commands for agent consumption. No window in CLI mode.
 
 ### 4.8 Framework bootstrap (D9)
 
-`PrerequisiteChecker` detects Claude Code / Codex. If missing: the UI shows the
-official install link + a "Re-check" button; the CLI prints the link and exits
-with a distinct "prerequisite missing" code. The installer never runs the
-framework's installer itself.
+`PrerequisiteChecker` detects Claude Code / Codex. If missing: the graphical wizard
+shows an **Install automatically** action (the vendor's own `winget` package, run
+silently) **and** the official install link + a "Re-check" button. The CLI is
+unchanged - it prints the link and exits with a distinct "prerequisite missing" code.
+
+Superseded D9 (detect-and-guide only): the agent is no longer a required
+prerequisite either, so a missing agent never blocks the install. What the user gave
+up is reported on the Complete screen by `CapabilityNotice`.
 
 ---
 

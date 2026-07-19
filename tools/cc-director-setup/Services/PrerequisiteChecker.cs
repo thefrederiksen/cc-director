@@ -27,7 +27,7 @@ public static class PrerequisiteChecker
         {
             new PrerequisiteInfo
             {
-                Name = ".NET 10 Runtime",
+                Name = CcDirector.Setup.Engine.PrerequisiteNames.DotNetRuntime,
                 Description = "ASP.NET Core Runtime 10 - required: DevThrottle will not start without it",
                 IsRequired = true,
                 CanAutoInstall = true,
@@ -36,7 +36,8 @@ public static class PrerequisiteChecker
             },
             new PrerequisiteInfo
             {
-                Name = "Claude Code",
+                Name = CcDirector.Setup.Engine.PrerequisiteNames.ClaudeCode,
+                IsRecommended = true,
                 Description = "Recommended: the default coding agent. DevThrottle runs other agents too, "
                     + "so you can install this later or use a different one.",
                 IsRequired = false,
@@ -46,7 +47,8 @@ public static class PrerequisiteChecker
             },
             new PrerequisiteInfo
             {
-                Name = "Python",
+                Name = CcDirector.Setup.Engine.PrerequisiteNames.Python,
+                IsRecommended = true,
                 Description = "Recommended: Python 3.11 or higher, for your own scripts. The cc-* tools "
                     + "bring their own Python and do not need this.",
                 IsRequired = false,
@@ -56,7 +58,8 @@ public static class PrerequisiteChecker
             },
             new PrerequisiteInfo
             {
-                Name = "Node.js",
+                Name = CcDirector.Setup.Engine.PrerequisiteNames.NodeJs,
+                IsRecommended = true,
                 Description = "Recommended: Node.js 20+, needed only for MCP servers and browser tools",
                 IsRequired = false,
                 CanAutoInstall = true,
@@ -76,7 +79,7 @@ public static class PrerequisiteChecker
         {
             checklist.Add(new PrerequisiteInfo
             {
-                Name = "Tailscale",
+                Name = CcDirector.Setup.Engine.PrerequisiteNames.Tailscale,
                 Description = "Optional, gateway machine only: lets your phone and browsers on "
                     + "other computers reach this gateway's Cockpit over a secure (HTTPS) "
                     + "connection. Directors and launchers connect to the gateway on their own "
