@@ -1,4 +1,5 @@
 using CcDirector.Core.Account;
+using CcDirector.Core.Configuration;
 using Xunit;
 
 namespace CcDirector.Core.Tests.Account;
@@ -65,6 +66,61 @@ public sealed class DevThrottleCredentialMigrationTests : IDisposable
 
         Assert.True(first);
         Assert.False(second);
+        Assert.False(File.Exists(_blobPath));
+    }
+
+    // --- Two-step install, Slice A: the delete is GATED on gateway presence -------------------------
+
+    // The gate decision itself: with no gateway configured (IsEnabled == false) the Director keeps its
+    // own credential, so the migration must NOT delete it. This is the production method App.axaml.cs
+    // calls; making it return true unconditionally reds the "blob kept when no gateway" seam test below.
+    [Fact]
+    public void ShouldDeleteDirectorCredential_NoGatewayConfigured_ReturnsFalse()
+    {
+        var config = new GatewayConfig { Url = "" };
+        Assert.False(config.IsEnabled);
+
+        Assert.False(DevThrottleCredentialMigration.ShouldDeleteDirectorCredential(config));
+    }
+
+    // The gate decision: with a gateway configured (IsEnabled == true) the Gateway is the account
+    // authority and the stale Director copy must still be deleted (issue #642/#651 unchanged).
+    [Fact]
+    public void ShouldDeleteDirectorCredential_GatewayConfigured_ReturnsTrue()
+    {
+        var config = new GatewayConfig { Url = "https://gateway.example.com" };
+        Assert.True(config.IsEnabled);
+
+        Assert.True(DevThrottleCredentialMigration.ShouldDeleteDirectorCredential(config));
+    }
+
+    // Revert-proof #1 (the seam): reproduce the exact startup decision - "if
+    // ShouldDeleteDirectorCredential(config) then DeleteStaleDirectorCredential(blob)" - and prove that
+    // with NO gateway a present Director blob is KEPT. Reverting the production
+    // ShouldDeleteDirectorCredential to => true reds this test.
+    [Fact]
+    public void StartupDecision_NoGateway_KeepsPresentDirectorBlob()
+    {
+        File.WriteAllBytes(_blobPath, new byte[] { 1, 2, 3, 4 });
+        var config = new GatewayConfig { Url = "" };
+
+        if (DevThrottleCredentialMigration.ShouldDeleteDirectorCredential(config))
+            DevThrottleCredentialMigration.DeleteStaleDirectorCredential(_blobPath);
+
+        Assert.True(File.Exists(_blobPath));
+    }
+
+    // Control (Manager point #3): the gateway-PRESENT path still deletes the stale Director blob, so the
+    // #642/#651 authority behavior is provably NOT broken by the gate.
+    [Fact]
+    public void StartupDecision_GatewayPresent_DeletesStaleDirectorBlob()
+    {
+        File.WriteAllBytes(_blobPath, new byte[] { 1, 2, 3, 4 });
+        var config = new GatewayConfig { Url = "https://gateway.example.com" };
+
+        if (DevThrottleCredentialMigration.ShouldDeleteDirectorCredential(config))
+            DevThrottleCredentialMigration.DeleteStaleDirectorCredential(_blobPath);
+
         Assert.False(File.Exists(_blobPath));
     }
 }

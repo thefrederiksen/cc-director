@@ -1,3 +1,4 @@
+using CcDirector.Core.Configuration;
 using CcDirector.Core.Storage;
 using CcDirector.Core.Utilities;
 
@@ -29,6 +30,27 @@ public static class DevThrottleCredentialMigration
     /// temporary path so the migration is provable without touching the real install.
     /// </param>
     /// <returns>True when a stale blob was present and deleted; false when none existed.</returns>
+    /// <summary>
+    /// Decides whether the startup migration should delete the Director's own credential blob, given the
+    /// current gateway configuration (two-step install, Slice A). The deletion is correct ONLY when a
+    /// gateway is present: then the Gateway is the single account authority (issue #642/#651) and the
+    /// Director copy is genuinely stale. When no gateway is configured the Director blob is the LIVE
+    /// credential a gateway-less Director legitimately keeps, so it must NOT be deleted.
+    ///
+    /// This is the production line the "delete is gated on gateway presence" revert-proof pins:
+    /// <c>App.axaml.cs</c> calls exactly this method, and making it return <c>true</c> unconditionally
+    /// reds the "blob kept when no gateway" test.
+    /// </summary>
+    /// <param name="config">The current gateway configuration (config.json). <c>IsEnabled</c> is true when a gateway URL is set.</param>
+    /// <returns>True when a gateway is present and the stale Director blob should be deleted; false when no gateway is configured and the credential must be kept.</returns>
+    public static bool ShouldDeleteDirectorCredential(GatewayConfig config)
+    {
+        if (config is null)
+            throw new ArgumentNullException(nameof(config));
+
+        return config.IsEnabled;
+    }
+
     public static bool DeleteStaleDirectorCredential(string? blobPath = null)
     {
         var path = blobPath ?? CcStorage.DevThrottleCredentialBlob();

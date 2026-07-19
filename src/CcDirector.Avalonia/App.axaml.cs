@@ -249,22 +249,30 @@ public partial class App : Application
         WorkspaceStore = new WorkspaceStore();
         log("Workspace store initialized");
 
-        // Gateway Centralization Phase 2 migration (issue #642): the Gateway is the single account
-        // authority, so the Director holds NO credential of its own (issue #651: the Director no longer
-        // builds a local credential service or startup gate at all). Delete any stale local credential
-        // blob an older build left behind, with a log line. A failure here only logs (it must never
-        // block startup).
+        // Gateway Centralization Phase 2 migration (issue #642), with the two-step install exception
+        // (Slice A): the deletion of the Director's own credential blob is GATED on gateway presence.
+        // With a gateway configured the Gateway is the single account authority (issue #651) and the
+        // Director copy is genuinely stale, so it is deleted exactly as before. With NO gateway the
+        // Director blob is the LIVE credential a gateway-less Director legitimately keeps, so it is kept.
+        // A failure here only logs (it must never block startup).
         UpdateSplashStatus(splash, "Checking account...");
         try
         {
-            var deleted = DevThrottleCredentialMigration.DeleteStaleDirectorCredential();
-            log(deleted
-                ? "DevThrottle credential migration: deleted a stale Director credential blob (Gateway is the authority now, issue #642)"
-                : "DevThrottle credential migration: no stale Director credential blob to delete (issue #642)");
+            if (DevThrottleCredentialMigration.ShouldDeleteDirectorCredential(GatewayConfig.Load()))
+            {
+                var deleted = DevThrottleCredentialMigration.DeleteStaleDirectorCredential();
+                log(deleted
+                    ? "DevThrottle credential migration: deleted a stale Director credential blob (Gateway is the authority now, issue #642)"
+                    : "DevThrottle credential migration: no stale Director credential blob to delete (issue #642)");
+            }
+            else
+            {
+                log("DevThrottle credential migration: no gateway configured -> keeping the Director's own credential (Slice A exception to issue #642 for a gateway-less Director)");
+            }
         }
         catch (Exception ex)
         {
-            log($"DevThrottle credential migration FAILED (ignored, the Director holds no credential regardless): {ex.Message}");
+            log($"DevThrottle credential migration FAILED (ignored, startup must not block): {ex.Message}");
         }
 
         UpdateSplashStatus(splash, "Starting engine...");

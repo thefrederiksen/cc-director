@@ -150,9 +150,16 @@ public partial class SettingsDialog : Window
 
         if (!configured)
         {
-            // No Gateway configured: there is nothing to read an identity from. This is informational,
-            // never a gate - the Director still runs.
-            GatewayIdentityText.Text = "No Gateway configured. Connect this Director to a Gateway on the Gateway tab.";
+            // No gateway configured: this is the Director's OWN local account state, so the Director
+            // decides it (there is no Gateway to rule it; two-step install, Slice A). Ask the local
+            // account-state provider and render its verdict verbatim - a gateway-less Director that holds
+            // its own credential now reads "Signed in to DevThrottle - connect a gateway to use AI"
+            // instead of the old blanket "No Gateway configured." On a non-Windows host there is no
+            // per-user DPAPI credential store, so it is treated as not signed in locally.
+            var localState = OperatingSystem.IsWindows()
+                ? DirectorAccountStateProvider.ResolveForWindows(new GatewayConfig { Url = gatewayUrl })
+                : DirectorAccountState.NotSignedIn;
+            GatewayIdentityText.Text = DirectorAccountStateProvider.DescribeNoGateway(localState);
             return;
         }
 
