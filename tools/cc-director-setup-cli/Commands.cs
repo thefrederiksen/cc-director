@@ -176,6 +176,11 @@ internal static class Commands
     /// that address (proven reachable first); without it, it discovers the account's gateways and joins the one
     /// it finds. Idempotent: a machine already connected reports so and succeeds. Device keys are never printed
     /// or logged (security rule DT-05).
+    ///
+    /// With <c>--hosted</c> it joins DevThrottle's HOSTED gateway instead of one the account runs itself: the
+    /// same browser sign-in, but the account token goes straight to the hosted gateway, which mints this
+    /// machine's key bound to the account's tenant. There is no address to give and nothing to discover, so
+    /// <c>--hosted</c> and <c>--gateway</c> are mutually exclusive.
     /// </summary>
     public static async Task<int> EnrollAsync(CliArgs args, bool json)
     {
@@ -195,11 +200,26 @@ internal static class Commands
         var machineName = Environment.MachineName;
         var runner = new GatewayAccountEnrollRunner();
         var gatewayUrl = args.Option("gateway");
+        var hosted = args.HasFlag("hosted");
+
+        // Hosted has no address to give and nothing to discover, so naming a gateway alongside it is a
+        // contradiction, not a preference to resolve silently.
+        if (hosted && !string.IsNullOrWhiteSpace(gatewayUrl))
+            throw new UsageException("--hosted joins DevThrottle's hosted gateway, so it cannot be combined with --gateway <url>.");
 
         if (!json)
         {
             Console.WriteLine("Opening your browser to sign in to DevThrottle...");
             Console.WriteLine("Sign in - or create a free account - in the browser. Waiting for you to finish (up to 5 minutes)...");
+        }
+
+        // Hosted: the account token goes straight to the hosted gateway, which mints this machine's key bound
+        // to the account's tenant. No address to prove reachable and no discovery - enrolling IS the join.
+        if (hosted)
+        {
+            if (!json) Console.WriteLine("Joining the DevThrottle hosted gateway...");
+            var host = await runner.SignInAndEnrollHostedAsync(deviceId, machineName);
+            return ReportEnroll(host.Success, host.ErrorMessage, json);
         }
 
         // A given gateway URL is proven reachable BEFORE we sign in against it (wizard parity: never register

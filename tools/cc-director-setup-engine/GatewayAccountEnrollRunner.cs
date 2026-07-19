@@ -283,6 +283,183 @@ public sealed class GatewayAccountEnrollRunner
     }
 
     /// <summary>
+    /// Join this machine to DevThrottle's HOSTED gateway instead of a gateway the account runs itself: sign in
+    /// with the DevThrottle account and enroll at <see cref="HostedGateway"/> for a local, revocable device
+    /// key bound to this account's tenant. On success it persists the hosted URL + issued key exactly as the
+    /// self-hosted paths do, so everything downstream - the Director's stream connection, the local cc-* tools -
+    /// is unchanged.
+    ///
+    /// THIS PATH IS SHORTER THAN THE SELF-HOSTED ONE, AND DELIBERATELY SO. Self-hosted registers the machine in
+    /// the account DEVICE REGISTRY to obtain a cloud device key, then exchanges THAT key at the target gateway
+    /// via <c>/m/enroll</c>, because a gateway the account runs has no way to judge an account token itself. The
+    /// hosted gateway does: <c>POST /devices/enroll-hosted</c> takes the ACCOUNT ACCESS TOKEN directly, verifies
+    /// it (signature, expiry, audience, issuer), maps its subject to a tenant, and mints the per-device key in
+    /// ONE step. So there is no device-registry exchange here - not a missing step, an unnecessary one. There is
+    /// also nothing to provision and nothing to discover: hosted is ONE shared multi-tenant gateway, and
+    /// enrolling is what makes this account a tenant on it.
+    ///
+    /// The captured account token is held in memory ONLY for the duration of this call and is never persisted or
+    /// logged (security rule DT-05), matching the self-hosted paths - a workstation holds no account credential.
+    /// </summary>
+    /// <param name="deviceId">This machine's stable device/install id, sent as the hosted device id.</param>
+    /// <param name="machineName">A human-readable device name recorded on the hosted gateway.</param>
+    /// <param name="ct">Cancelled by the caller while the sign-in or enroll is in flight.</param>
+    public async Task<OperationResult<MobileEnrollmentResponse>> SignInAndEnrollHostedAsync(
+        string deviceId, string machineName, CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(deviceId))
+            return OperationResult<MobileEnrollmentResponse>.Fail("This machine has no device id.");
+
+        string hostedUrl;
+        try
+        {
+            hostedUrl = HostedGateway.ResolveUrl();
+        }
+        catch (Exception ex)
+        {
+            EngineLog.Write($"[GatewayAccountEnrollRunner] SignInAndEnrollHostedAsync: hosted address unusable: {ex.Message}");
+            return OperationResult<MobileEnrollmentResponse>.Fail(ex.Message);
+        }
+
+        EngineLog.Write($"[GatewayAccountEnrollRunner] SignInAndEnrollHostedAsync: hosted={hostedUrl}, deviceId={deviceId}, machine={machineName}");
+
+        DevThrottleTokens tokens;
+        try
+        {
+            tokens = await _signIn(ct).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+            EngineLog.Write("[GatewayAccountEnrollRunner] SignInAndEnrollHostedAsync: sign-in cancelled before a credential arrived");
+            return OperationResult<MobileEnrollmentResponse>.Fail(
+                "Sign-in was cancelled. Click \"Sign in to DevThrottle\" to try again.");
+        }
+        catch (Exception ex)
+        {
+            EngineLog.Write($"[GatewayAccountEnrollRunner] SignInAndEnrollHostedAsync: sign-in failed: {ex.Message}");
+            return OperationResult<MobileEnrollmentResponse>.Fail(
+                "Sign-in did not complete. Please return to your browser and finish signing in, then try again.");
+        }
+
+        if (tokens is null || string.IsNullOrWhiteSpace(tokens.AccessToken))
+            return OperationResult<MobileEnrollmentResponse>.Fail(
+                "Sign-in did not return a usable credential. Please try again.");
+
+        return await EnrollAtHostedGatewayAsync(hostedUrl, tokens.AccessToken, deviceId, machineName, ct).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Enroll at the HOSTED gateway using the account token already captured by a preceding
+    /// <see cref="SignInAndDiscoverGatewaysAsync"/> in the same run - the seam for a chooser that offers
+    /// "DevThrottle hosted" alongside the account's own gateways, so picking hosted costs no second sign-in.
+    /// Fails with a clear reason if no captured token is held, rather than silently signing in again.
+    /// </summary>
+    /// <param name="deviceId">This machine's stable device/install id.</param>
+    /// <param name="machineName">A human-readable device name recorded on the hosted gateway.</param>
+    /// <param name="ct">Cancels the enroll call.</param>
+    public async Task<OperationResult<MobileEnrollmentResponse>> EnrollWithHostedGatewayAsync(
+        string deviceId, string machineName, CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(deviceId))
+            return OperationResult<MobileEnrollmentResponse>.Fail("This machine has no device id.");
+
+        var tokens = _pendingTokens;
+        if (tokens is null || string.IsNullOrWhiteSpace(tokens.AccessToken))
+            return OperationResult<MobileEnrollmentResponse>.Fail(
+                "Please sign in to DevThrottle first.");
+
+        string hostedUrl;
+        try
+        {
+            hostedUrl = HostedGateway.ResolveUrl();
+        }
+        catch (Exception ex)
+        {
+            EngineLog.Write($"[GatewayAccountEnrollRunner] EnrollWithHostedGatewayAsync: hosted address unusable: {ex.Message}");
+            return OperationResult<MobileEnrollmentResponse>.Fail(ex.Message);
+        }
+
+        EngineLog.Write($"[GatewayAccountEnrollRunner] EnrollWithHostedGatewayAsync: hosted={hostedUrl}, deviceId={deviceId}, machine={machineName}");
+        return await EnrollAtHostedGatewayAsync(hostedUrl, tokens.AccessToken, deviceId, machineName, ct).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// POST the ACCOUNT ACCESS TOKEN to the hosted gateway's <c>/devices/enroll-hosted</c> and map the reply to
+    /// a success-or-reason result, persisting the hosted URL + issued local device key on success ONLY. A
+    /// transport failure, a 401 (the account token was not accepted), any other non-2xx, or a 2xx carrying no
+    /// device key all return a clear reason and persist NOTHING - so a machine can never end up pointed at the
+    /// hosted gateway without a key that the hosted gateway actually issued. Neither the account token nor the
+    /// issued device key is ever logged (security rule DT-05).
+    /// </summary>
+    private async Task<OperationResult<MobileEnrollmentResponse>> EnrollAtHostedGatewayAsync(
+        string hostedUrl, string accountAccessToken, string deviceId, string machineName, CancellationToken ct)
+    {
+        var request = new EnrollSignedInRequest
+        {
+            DeviceId = deviceId,
+            MachineName = machineName,
+            Platform = WorkstationPlatform,
+            DeviceType = WorkstationDeviceType,
+        };
+
+        using var http = new HttpClient(_handlerFactory(), disposeHandler: true) { Timeout = _httpTimeout };
+        http.BaseAddress = new Uri(hostedUrl.TrimEnd('/') + "/");
+        http.DefaultRequestHeaders.Authorization =
+            new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", accountAccessToken);
+
+        HttpResponseMessage resp;
+        try
+        {
+            resp = await http.PostAsJsonAsync("devices/enroll-hosted", request, ct).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            EngineLog.Write($"[GatewayAccountEnrollRunner] EnrollAtHostedGatewayAsync transport FAILED: {ex.Message}");
+            return OperationResult<MobileEnrollmentResponse>.Fail(
+                $"Could not reach the DevThrottle hosted gateway at {hostedUrl}. Please check your connection and try again.");
+        }
+
+        if (resp.StatusCode == HttpStatusCode.Unauthorized)
+        {
+            EngineLog.Write("[GatewayAccountEnrollRunner] EnrollAtHostedGatewayAsync rejected: HTTP 401 (account token not accepted)");
+            return OperationResult<MobileEnrollmentResponse>.Fail(
+                "The DevThrottle hosted gateway did not accept your sign-in. Please sign in again and try once more.");
+        }
+        if (!resp.IsSuccessStatusCode)
+        {
+            EngineLog.Write($"[GatewayAccountEnrollRunner] EnrollAtHostedGatewayAsync failed: HTTP {(int)resp.StatusCode} {resp.ReasonPhrase}");
+            return OperationResult<MobileEnrollmentResponse>.Fail(
+                $"The DevThrottle hosted gateway refused the enrollment: HTTP {(int)resp.StatusCode} {resp.ReasonPhrase}.");
+        }
+
+        DeviceRegistrationResponse? body;
+        try
+        {
+            body = await resp.Content.ReadFromJsonAsync<DeviceRegistrationResponse>(ct).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            EngineLog.Write($"[GatewayAccountEnrollRunner] EnrollAtHostedGatewayAsync: could not read reply: {ex.Message}");
+            return OperationResult<MobileEnrollmentResponse>.Fail(
+                "The DevThrottle hosted gateway accepted the sign-in but its reply could not be read.");
+        }
+
+        if (body is null || string.IsNullOrWhiteSpace(body.DeviceKey))
+        {
+            EngineLog.Write("[GatewayAccountEnrollRunner] EnrollAtHostedGatewayAsync: 2xx with no device key in reply");
+            return OperationResult<MobileEnrollmentResponse>.Fail(
+                "The DevThrottle hosted gateway accepted the sign-in but returned no device key.");
+        }
+
+        _persist(hostedUrl, body.DeviceKey);
+        EngineLog.Write($"[GatewayAccountEnrollRunner] EnrollAtHostedGatewayAsync: persisted hosted url + local per-device key (machine={machineName})");
+
+        // The hosted reply carries the registry echo as well as the key; the callers of every enroll path only
+        // need the key, so it is handed back in the same shape the self-hosted paths return.
+        return OperationResult<MobileEnrollmentResponse>.Ok(new MobileEnrollmentResponse { DeviceKey = body.DeviceKey });
+    }
+
+    /// <summary>
     /// Test that a gateway is actually reachable at a user-entered address BEFORE the install commits to it
     /// (issue #1233 - the mandatory Test gate). Accepts either a bare computer name plus <paramref name="port"/>
     /// (built into <c>http://name:port</c> - the primary manual form) or a full address pasted into
