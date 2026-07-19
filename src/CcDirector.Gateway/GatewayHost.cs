@@ -338,7 +338,20 @@ public sealed class GatewayHost : IAsyncDisposable
     // key to its tenant and enters the scope. Used by the tunnel Hello and the device-key HTTP middleware.
     // Inert on self-host (every authenticated caller is Local).
     private readonly Tenancy.HostedTenantBoundary _tenantBoundary;
+    // The background-loop tenant seam (Hosted Multi-Tenancy, session-serving PR2). A sweep is on no request
+    // and no tunnel connection, so it has no tenant of its own: it runs ONE PASS PER TENANT through this,
+    // instead of the single implicit TenantId.Local pass the loops used to hard-code. Self-host runs exactly
+    // one Local pass (unchanged); hosted enters each live tenant's scope in turn. Its Current is also what
+    // every Gateway-internal store read and every down-channel command resolves to - null on hosted with no
+    // scope, which is a DENY, never a fall back to Local.
+    private readonly Tenancy.ITenantPass _tenantPass;
     private readonly Data.GatewayDatabase _gatewayDb;
+
+    /// <summary>
+    /// The auth-boundary tenant binder. Exposed to the test assembly so an isolation test can enter the same
+    /// tenant scope a real request or tunnel connection would, and drive the production loop code inside it.
+    /// </summary>
+    internal Tenancy.HostedTenantBoundary TenantBoundary => _tenantBoundary;
 
     /// <summary>
     /// The account-to-tenant resolver (Hosted Multi-Tenancy increment 1): owns the tenants mapping table and
@@ -654,6 +667,14 @@ public sealed class GatewayHost : IAsyncDisposable
         // enter the scope the stores read. Inert on self-host. Built over the same _tenantContext instance
         // the stores read (so a scope it enters is what they resolve) and the device registry.
         _tenantBoundary = new Tenancy.HostedTenantBoundary(_tenantContext, Devices);
+        // The background-loop seam (Hosted Multi-Tenancy, session-serving PR2). Its tenant list is the live
+        // push-store partition set - exactly the tenants with a Director bound to the tunnel, which is the
+        // only fleet a push-store-driven sweep could act on - so a sweep costs no per-tick database scan.
+        // (Loops driven by a DATABASE table rather than the push store - cron, hosted-AI spend mirroring,
+        // web-push - are NOT converted here: KnownTenants would silently skip every tenant whose Director is
+        // offline, which is the tenant most likely to need a scheduled job. They stay hosted-disabled until a
+        // database-backed tenant enumeration and a fairness order exist. That is its own increment.)
+        _tenantPass = new Tenancy.TenantPass(_tenantBoundary, _hostedTenant, PushedSessions.KnownTenants);
         // Hosted Multi-Tenancy increment 1: the store constructors below seed built-ins and import/re-arm from
         // the database at startup - legitimate SYSTEM operations with no per-account identity. On the hosted
         // Gateway (fail-closed ambient tenant) they must run inside the reserved SYSTEM scope, or the very
@@ -730,7 +751,7 @@ public sealed class GatewayHost : IAsyncDisposable
         // which matters here more than anywhere: the instance holds the change gate that stops the stamp
         // echoing back up and re-triggering itself forever.
         FleetRoles = new Fleet.FleetRoleObserver(
-            () => PushedSessions.SnapshotFresh(TenantId.Local, AutoDismissStaleAfter),
+            () => AmbientSnapshotFresh(AutoDismissStaleAfter),
             SendCommandAsync);
         // The fold push seam: stamps each session's folded display state down to its owning Director, so the
         // desktop rail stops re-folding from local facts it cannot see. Folds through the SAME method the
@@ -748,7 +769,7 @@ public sealed class GatewayHost : IAsyncDisposable
         // suppresses the update forever. The roster path enriched these (GatewayHost roster map below), so
         // the browsers folded red while the push-only desktop stuck yellow. Same source, same answer.
         FleetDisplayState = new Fleet.FleetDisplayStateObserver(
-            () => PushedSessions.SnapshotFresh(TenantId.Local, AutoDismissStaleAfter),
+            () => AmbientSnapshotFresh(AutoDismissStaleAfter),
             sessions => EnrichVoiceThenFoldForPush(
                 sessions,
                 voiceGeneratingFor: sid => _voiceService?.IsGenerating(sid) == true,
@@ -1100,9 +1121,30 @@ public sealed class GatewayHost : IAsyncDisposable
     /// narration - whereas inventing something ("unknown session", the raw id) would either mislead
     /// or read out an identifier, which the same instructions explicitly forbid.
     /// </summary>
+    /// <summary>
+    /// The fresh fleet snapshot for the tenant of the CURRENT unit of work (Hosted Multi-Tenancy,
+    /// session-serving PR2) - the request scope, the tunnel connection scope, or the per-tenant background
+    /// pass. Self-host always resolves Local, so this is the same read as before. On hosted with no scope in
+    /// effect it is EMPTY, which is the deny: a sweep with no tenant sweeps nothing rather than reading a
+    /// partition that is not its own.
+    /// </summary>
+    private IReadOnlyList<(string DirectorId, SessionDto Session)> AmbientSnapshotFresh(TimeSpan staleAfter)
+        => _tenantPass.Current is { } tenant
+            ? PushedSessions.SnapshotFresh(tenant, staleAfter)
+            : Array.Empty<(string DirectorId, SessionDto Session)>();
+
+    /// <summary>
+    /// Locate a session within the tenant of the CURRENT unit of work (see <see cref="AmbientSnapshotFresh"/>).
+    /// Null when no tenant is in scope on hosted - the deny - as well as when the session is simply unknown.
+    /// </summary>
+    private (string DirectorId, SessionDto Session)? AmbientTryLocate(string sessionId, TimeSpan staleAfter)
+        => _tenantPass.Current is { } tenant
+            ? PushedSessions.TryLocate(tenant, sessionId, staleAfter)
+            : null;
+
     private string? ResolveSessionTitle(string sessionId)
     {
-        var located = PushedSessions.TryLocate(TenantId.Local, sessionId, _streamStaleAfter);
+        var located = AmbientTryLocate(sessionId, _streamStaleAfter);
         var name = located?.Session.Name;
         return string.IsNullOrWhiteSpace(name) ? null : name;
     }
@@ -1124,17 +1166,18 @@ public sealed class GatewayHost : IAsyncDisposable
             // fan-out) and reach it through the tunnel-only SessionVerbClient - an unconnected Director yields
             // an error, never an HTTP dial.
             var stale = TimeSpan.FromSeconds(Core.Configuration.GatewayConfig.DefaultStreamStaleAfterSeconds);
+            // Hosted Multi-Tenancy (session-serving PR2): the voice sweep is a background loop, so it runs
+            // inside a per-tenant pass and locates within THAT tenant. No scope on hosted is a deny - the pass
+            // supplies no tenant, so this sweeps nothing rather than reading a partition it does not own.
+            if (_tenantPass.Current is not { } voiceTenant) return;
             Api.DirectorCommandRouter.SendDirectorCommandAsync? sendCommand = SendCommandAsync;
             var generated = 0;
             foreach (var sid in vs.VoiceSessionIds())
             {
                 if (generated >= 3) break;          // gentle on the serialized brain
                 if (vs.HasVoice(sid)) continue;     // already cached, nothing to do
-                // Hosted Multi-Tenancy: the voice sweep is a background loop; per-tenant iteration (KnownTenants)
-                // lands in a later slice. For now it serves Local - correct on self-host, and on hosted a Local
-                // read is empty, so the sweep degrades to a no-op (never a wrong-tenant read).
                 var (director, session) = await Api.GatewayEndpoints.LocateSessionAsync(
-                    Registry, sid, PushedSessions, stale, TenantId.Local, SessionOwners);
+                    Registry, sid, PushedSessions, stale, voiceTenant, SessionOwners);
                 if (director is null || session is null) continue;   // not owned by any known Director
                 var st = session.ActivityState ?? "";
                 if (st is "Idle" or "WaitingForInput" or "WaitingForPerm")
@@ -1252,7 +1295,7 @@ public sealed class GatewayHost : IAsyncDisposable
                 // not swallowed into a fabricated value.
                 try
                 {
-                    if (PushedSessions.TryLocate(TenantId.Local, signal.SessionId, _streamStaleAfter) is { } spendLoc)
+                    if (AmbientTryLocate(signal.SessionId, _streamStaleAfter) is { } spendLoc)
                         _sessionSpendEmitter.Emit(spendLoc.Session);
                 }
                 catch (Exception ex)
@@ -1288,7 +1331,10 @@ public sealed class GatewayHost : IAsyncDisposable
             },
             // Gateway Cleanup mission, Phase 2: under stream mode the catch-up / reconcile reads the push
             // store instead of HTTP-pulling each Director's session list (no dial).
-            pushedSessions: PushedSessions);
+            pushedSessions: PushedSessions,
+            streamStale: null,
+            // Hosted Multi-Tenancy (session-serving PR2): the reconcile sweep runs one pass per tenant.
+            tenantPass: _tenantPass);
         // First tick = the startup catch-up sweep; then the 15s reconcile poll for
         // Directors that never push (file-discovered locals, old builds).
         _turnEndWatcher.Start();
@@ -1776,7 +1822,11 @@ public sealed class GatewayHost : IAsyncDisposable
         // background sweep regenerates voice for any idle voice session that is missing it, so the
         // list shows it ready BEFORE you enter - including after a gateway restart (the voice-session
         // set is persisted). Turn-end regeneration + the deterministic voice-turn path also feed it.
-        _voiceSweepTimer = new System.Threading.Timer(_ => { _ = SweepVoiceSessionsAsync(); }, null,
+        // Hosted Multi-Tenancy (session-serving PR2): one pass per tenant. The async sweep captures the
+        // ambient scope at the point of the call and carries it across its awaits, so each pass stays inside
+        // the tenant it was started for even though the pass itself returns immediately.
+        _voiceSweepTimer = new System.Threading.Timer(
+            _ => _tenantPass.ForEachTenant(() => { _ = SweepVoiceSessionsAsync(); }), null,
             TimeSpan.FromSeconds(20), TimeSpan.FromSeconds(45));
 
         // Durable, server-owned dictation upload (issue #1006): the phone streams recorded audio here
@@ -2078,7 +2128,7 @@ public sealed class GatewayHost : IAsyncDisposable
         // sending the kill verb DOWN the Director stream. The close has no REST fallback by design (the
         // Gateway owns session lifecycle and reaches the Director through its stream).
         _autoDismissSweeper = new Running.AutoDismissSweeper(
-            () => PushedSessions.SnapshotFresh(TenantId.Local, AutoDismissStaleAfter),
+            () => AmbientSnapshotFresh(AutoDismissStaleAfter),
             SendCommandAsync);
         _autoDismissTimer = new System.Threading.Timer(_ => SweepAutoDismiss(), null, AutoDismissSweepInterval, AutoDismissSweepInterval);
         FileLog.Write($"[GatewayHost] auto-dismiss sweep started: every {AutoDismissSweepInterval.TotalSeconds:0}s");
@@ -2086,8 +2136,12 @@ public sealed class GatewayHost : IAsyncDisposable
         // The fold push backstop: re-fold the fleet and stamp changed answers down, catching the Gateway-only
         // overlays (voice, transcription, dictation, snooze expiry) that arrive on no Director push. Never
         // throws into the timer.
+        // Hosted Multi-Tenancy (session-serving PR2): one fold pass per tenant, each inside that tenant's
+        // scope - so the fold reads that tenant's fleet and its own snooze rows, and stamps down only to its
+        // own Directors. The try/catch stays INSIDE the per-tenant pass so one tenant's fold failing does not
+        // skip the remaining tenants.
         _displayStateSweepTimer = new System.Threading.Timer(
-            _ => { try { FleetDisplayState.Sweep(); } catch (Exception ex) { FileLog.Write($"[GatewayHost] display-state sweep error: {ex.Message}"); } },
+            _ => _tenantPass.ForEachTenant(() => { try { FleetDisplayState.Sweep(); } catch (Exception ex) { FileLog.Write($"[GatewayHost] display-state sweep error: {ex.Message}"); } }),
             null, DisplayStateSweepInterval, DisplayStateSweepInterval);
         FileLog.Write($"[GatewayHost] display-state sweep started: every {DisplayStateSweepInterval.TotalSeconds:0}s");
 
@@ -2249,16 +2303,22 @@ public sealed class GatewayHost : IAsyncDisposable
     /// failure never crashes the timer thread). Closes automated runs that declared themselves done, over the
     /// Director stream. Fire-and-forget: the async sweep runs on the thread pool so the timer thread returns.
     /// </summary>
-    private void SweepAutoDismiss()
+    internal void SweepAutoDismiss()
     {
-        try
+        // Hosted Multi-Tenancy (session-serving PR2): one pass per tenant, each inside that tenant's scope,
+        // so the sweeper reads that tenant's fleet and its kill verbs go down that tenant's own Directors.
+        // The try/catch is INSIDE the pass so one tenant failing does not skip the rest.
+        _tenantPass.ForEachTenant(() =>
         {
-            _ = _autoDismissSweeper?.SweepAsync(CancellationToken.None);
-        }
-        catch (Exception ex)
-        {
-            FileLog.Write($"[GatewayHost] auto-dismiss sweep FAILED: {ex.Message}");
-        }
+            try
+            {
+                _ = _autoDismissSweeper?.SweepAsync(CancellationToken.None);
+            }
+            catch (Exception ex)
+            {
+                FileLog.Write($"[GatewayHost] auto-dismiss sweep FAILED: {ex.Message}");
+            }
+        });
     }
 
     /// <summary>
@@ -2299,7 +2359,18 @@ public sealed class GatewayHost : IAsyncDisposable
     {
         if (command is null) throw new ArgumentNullException(nameof(command));
 
-        var connectionId = PushedSessions.GetActiveConnectionId(TenantId.Local, directorId);
+        // Hosted Multi-Tenancy (session-serving PR2): resolve the Director's stream connection within the
+        // tenant of the CURRENT unit of work - the request scope, the tunnel connection scope, or the
+        // per-tenant background pass - never a hard-coded TenantId.Local. Local here would be a genuine
+        // cross-tenant hazard, not just a wrong answer: it is the single lookup EVERY down-channel command
+        // routes through, so one tenant's sweep resolving Local could address a Director it does not own.
+        // No scope on hosted is a DENY: send nothing, exactly as an unconnected Director behaves.
+        if (_tenantPass.Current is not { } commandTenant)
+        {
+            FileLog.Write($"[GatewayHost] SendCommandAsync: DENIED (no tenant in scope) director={directorId}, verb={command.Verb}");
+            return null;
+        }
+        var connectionId = PushedSessions.GetActiveConnectionId(commandTenant, directorId);
         var hub = _app?.Services.GetService(typeof(Microsoft.AspNetCore.SignalR.IHubContext<Streaming.DirectorHub>))
             as Microsoft.AspNetCore.SignalR.IHubContext<Streaming.DirectorHub>;
         if (connectionId is null || hub is null)

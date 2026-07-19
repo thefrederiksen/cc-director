@@ -53,6 +53,7 @@ public sealed class TurnEndWatcher : IDisposable
     private readonly Action<TurnEndSignal> _onTurnEnd;
     private readonly Action<string> _onSessionWorking;
     private readonly TimeSpan _interval;
+    private readonly Tenancy.ITenantPass _tenantPass;
     private readonly ConcurrentDictionary<string, string> _lastActivity = new();
     private Timer? _timer;
     private int _polling;
@@ -63,14 +64,19 @@ public sealed class TurnEndWatcher : IDisposable
     /// push store instead of HTTP-pulling it, so the watcher no longer dials the Director. A Director that
     /// never pushes (stream mode off / file-discovered legacy) is still pulled over HTTP, byte-identical.</param>
     /// <param name="streamStale">Freshness window for the push store read; defaults to the roster's window.</param>
+    /// <param name="tenantPass">Hosted Multi-Tenancy (session-serving PR2): the background-loop tenant seam
+    /// the reconcile sweep iterates. Omitted (null) means the single-tenant pass - exactly one Local pass -
+    /// which is what self-host and the unit tests want.</param>
     public TurnEndWatcher(
         Action<TurnEndSignal> onTurnEnd,
         Action<string> onSessionWorking,
         TimeSpan? reconcileInterval = null,
         PushedSessionStore? pushedSessions = null,
-        TimeSpan? streamStale = null)
+        TimeSpan? streamStale = null,
+        Tenancy.ITenantPass? tenantPass = null)
     {
         _pushedSessions = pushedSessions;
+        _tenantPass = tenantPass ?? Tenancy.SingleTenantPass.Instance;
         _streamStale = streamStale ?? TimeSpan.FromSeconds(Core.Configuration.GatewayConfig.DefaultStreamStaleAfterSeconds);
         _onTurnEnd = onTurnEnd ?? throw new ArgumentNullException(nameof(onTurnEnd));
         _onSessionWorking = onSessionWorking ?? throw new ArgumentNullException(nameof(onSessionWorking));
@@ -144,14 +150,20 @@ public sealed class TurnEndWatcher : IDisposable
         _ = sweepAll;
         if (_pushedSessions is not null)
         {
-            // Stage 3b: the single-tenant core sweeps the one Local tenant. When more than one tenant
-            // exists (Stage 3c), this background sweep iterates every tenant and addresses each session
-            // with its owning tenant - it never reaches across tenants.
-            foreach (var (directorId, session) in _pushedSessions.SnapshotFresh(TenantId.Local, _streamStale))
+            // Hosted Multi-Tenancy (session-serving PR2): this reconcile is a background loop, so it runs ONE
+            // PASS PER TENANT through the tenant seam and reads each pass inside that tenant's own scope,
+            // instead of the single implicit TenantId.Local pass it used to hard-code. Self-host has exactly
+            // one tenant (Local) and so runs exactly one pass - the same read as before. A pass with no tenant
+            // in scope on hosted reads NOTHING (the deny), never another tenant's partition.
+            _tenantPass.ForEachTenant(() =>
             {
-                if (_disposed) return Task.CompletedTask;
-                Observe(session.SessionId, session.ActivityState, directorId);
-            }
+                if (_tenantPass.Current is not { } tenant) return;
+                foreach (var (directorId, session) in _pushedSessions.SnapshotFresh(tenant, _streamStale))
+                {
+                    if (_disposed) return;
+                    Observe(session.SessionId, session.ActivityState, directorId);
+                }
+            });
         }
         return Task.CompletedTask;
     }
