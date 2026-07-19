@@ -56,6 +56,23 @@ namespace CcDirector.Gateway.Tests;
 /// They exist so a blocked run can name its blocker - a blocked run that cannot say who is blocking it is
 /// indistinguishable from a hang, and somebody will kill the wrong thing. They never decide ownership.
 ///
+/// THE GUARANTEE IS PER-USER-PER-MACHINE. Not machine-wide - say it precisely, because someone will
+/// eventually rely on the words. Two runs by the SAME operating-system user on the SAME machine cannot
+/// overlap. Two runs by DIFFERENT users on one machine are NOT serialized by this, and on Windows they
+/// cannot be, because the lock lives under the per-user local application data directory.
+///
+/// That scope was chosen, not overlooked. Every process that actually contends here runs as the same user:
+/// each agent is a subprocess of a session running under that account, and that was verified rather than
+/// assumed. A machine-shared home would have to sit somewhere writable by every account, which brings
+/// permission and cleanup failures of its own - and those failures are themselves wedge risks, which is the
+/// exact class of problem this mechanism exists to remove. Buying protection against a collision we do not
+/// have, at the cost of new ways to jam, is a bad trade.
+///
+/// REVISIT THIS if a second operating-system user ever runs this suite on one machine - a service account,
+/// a continuous-integration agent alongside an interactive login, a second person on a shared box. At that
+/// point the scope is genuinely too narrow and the home must move somewhere shared, with the permission
+/// model worked out deliberately. Until then, this is the observed contention boundary.
+///
 /// EVERY RUN OF THIS ASSEMBLY IS SERIALIZED, FILTERED OR NOT. That is a feature, not an oversight, and it
 /// is the first thing somebody will try to "optimise" - a filtered run looks small and harmless, so surely
 /// it can be let through. It cannot, because nobody can show that it is harmless. A filtered run of this
@@ -107,10 +124,41 @@ internal static class GatewayTestSuiteLock
     private const string LockFileName = "gateway-test-suite.lock";
 
     /// <summary>The lock file every run of this assembly contends for.</summary>
-    internal static string LockFilePath { get; } = ComputeLockFilePath();
+    internal static string LockFilePath { get; } = ComputeLockFilePath(ReadAmbient());
 
     /// <summary>
-    /// Derives the lock path from a location the PROCESS ENVIRONMENT CANNOT MOVE.
+    /// Everything the lock path could conceivably be derived from, captured as VALUES.
+    ///
+    /// The temporary-directory variables are carried here despite the derivation never using them, and that
+    /// is the point: it lets a test hand over a hostile environment and assert the answer does not move.
+    /// A property proved by passing arguments needs no global state mutated to prove it.
+    /// </summary>
+    internal readonly record struct AmbientEnvironment(
+        string? Temp,
+        string? Tmp,
+        string? TmpDir,
+        string? LocalAppDataVariable,
+        string LocalApplicationDataFolder,
+        string UserName,
+        bool IsWindows);
+
+    /// <summary>
+    /// The ONE place that touches process-global state. Everything downstream is a pure function of what
+    /// this returns, so nothing else in the lock can be perturbed by whatever else is running in the process.
+    /// </summary>
+    internal static AmbientEnvironment ReadAmbient() => new(
+        Temp: Environment.GetEnvironmentVariable("TEMP"),
+        Tmp: Environment.GetEnvironmentVariable("TMP"),
+        TmpDir: Environment.GetEnvironmentVariable("TMPDIR"),
+        LocalAppDataVariable: Environment.GetEnvironmentVariable("LOCALAPPDATA"),
+        LocalApplicationDataFolder: Environment.GetFolderPath(
+            Environment.SpecialFolder.LocalApplicationData, Environment.SpecialFolderOption.DoNotVerify),
+        UserName: Environment.UserName,
+        IsWindows: OperatingSystem.IsWindows());
+
+    /// <summary>
+    /// Derives the lock path from a location the PROCESS ENVIRONMENT CANNOT MOVE. A pure function of its
+    /// argument - it reads no ambient state, which is what makes the claim testable rather than assertable.
     ///
     /// This is the difference between a lock and a decoration, and it was got wrong first time round. The
     /// original used <see cref="Path.GetTempPath"/>, which reads TEMP and TMP from the environment. Two runs
@@ -123,33 +171,41 @@ internal static class GatewayTestSuiteLock
     /// The rule this now follows: a lock's identity may depend on the MACHINE and the USER, never on
     /// anything the caller can set. On Windows the shell folder API supplies the per-user local application
     /// data directory from the user profile, and ignores the LOCALAPPDATA environment variable even when it
-    /// is overridden - measured, not assumed. Elsewhere the path is a literal, because
+    /// is overridden - measured, not assumed. Elsewhere the path is a fixed literal, because
     /// <see cref="Path.GetTempPath"/> reads TMPDIR and the folder API reads XDG_DATA_HOME and HOME; the user
-    /// name goes in the file name instead, since a shared directory needs the per-user split somewhere.
+    /// name goes into the file name instead, since a shared directory needs the per-user split somewhere.
     ///
-    /// <see cref="GatewayTestSuiteLockTests"/> pins this by mutating TEMP, TMP and TMPDIR and asserting the
-    /// derived path does not move - so the regression is caught on whatever platform the tests run on,
-    /// including ones not available to whoever wrote this.
+    /// Because the platform is an INPUT rather than something read from the running process,
+    /// <see cref="GatewayTestSuiteLockTests"/> exercises BOTH branches on either platform - so the Unix
+    /// branch is covered by a Windows developer's run, and not left to be discovered by continuous
+    /// integration on a machine that developer never sees.
     /// </summary>
-    internal static string ComputeLockFilePath()
+    internal static string ComputeLockFilePath(AmbientEnvironment ambient)
     {
-        if (!OperatingSystem.IsWindows())
-            return Path.Combine("/tmp", "cc-director-" + Environment.UserName + "-" + LockFileName);
+        if (!ambient.IsWindows)
+        {
+            // Built by hand rather than with Path.Combine, which would join with a backslash when this
+            // branch is evaluated on Windows and produce a path no Unix machine would ever resolve. The
+            // separator belongs to the TARGET platform, not the running one.
+            return "/tmp/cc-director-" + ambient.UserName + "-" + LockFileName;
+        }
 
-        var localAppData = Environment.GetFolderPath(
-            Environment.SpecialFolder.LocalApplicationData, Environment.SpecialFolderOption.DoNotVerify);
-
-        if (string.IsNullOrWhiteSpace(localAppData))
+        if (string.IsNullOrWhiteSpace(ambient.LocalApplicationDataFolder))
         {
             // Nothing to fall back to that would still be a lock: every alternative is environment-settable,
             // which is the defect this method exists to close. Better to stop than to serialize nothing.
             throw new InvalidOperationException(
-                "Cannot locate the per-user local application data directory, so the machine-wide Gateway "
+                "Cannot locate the per-user local application data directory, so the per-user Gateway "
                 + "test lock has no environment-independent home. Running without it would let two Gateway "
                 + "test runs execute concurrently and corrupt each other. See GatewayTestSuiteLock.");
         }
 
-        return Path.Combine(localAppData, "cc-director", LockFileName);
+        // A clearly-namespaced subdirectory rather than sitting beside product state. The parent directory
+        // holds the owner's live fleet data - missions, cron jobs, the key vault - and something enumerating
+        // it should never have to wonder whether a stray ".lock" file is product data or test scaffolding.
+        // The name says what it is and who put it there.
+        return Path.Combine(
+            ambient.LocalApplicationDataFolder, "cc-director", "test-locks", LockFileName);
     }
 
     /// <summary>A copy of everything this run printed while acquiring, kept next to the lock so a human
@@ -182,7 +238,7 @@ internal static class GatewayTestSuiteLock
         {
             if (TryOpenExclusively())
             {
-                Say($"[gateway-test-lock] Acquired the machine-wide Gateway test lock. Starting the run. "
+                Say($"[gateway-test-lock] Acquired the per-user Gateway test lock. Starting the run. "
                     + $"Lock file: {LockFilePath}");
                 return;
             }
@@ -194,7 +250,7 @@ internal static class GatewayTestSuiteLock
                 announcedWait = true;
                 lastProgress = DateTime.UtcNow;
                 Say($"[gateway-test-lock] WAITING. Another run of CcDirector.Gateway.Tests holds the "
-                    + $"machine-wide test lock, and this suite is destroyed by concurrent runs, so this run "
+                    + $"per-user test lock, and this suite is destroyed by concurrent runs, so this run "
                     + $"is queued rather than started. THIS IS NOT A HANG. Holder: {Describe(holder)}. "
                     + $"Lock file: {LockFilePath}. When the holder's process ends the lock is released by "
                     + $"the operating system and this run starts on its own. If the holder is still alive "
@@ -210,7 +266,7 @@ internal static class GatewayTestSuiteLock
 
             if (DateTime.UtcNow - started >= MaxWait)
             {
-                Say($"[gateway-test-lock] *** REFUSING TO RUN. A live process has held the machine-wide "
+                Say($"[gateway-test-lock] *** REFUSING TO RUN. A live process has held the per-user "
                     + $"Gateway test lock for {MaxWait.TotalMinutes:0} minutes. NO TESTS WILL RUN. This run "
                     + $"stops instead of starting alongside it, because two concurrent runs of this suite "
                     + $"corrupt each other's results, and a run that quietly overlapped would report "
@@ -358,7 +414,7 @@ internal static class GatewayTestSuiteLock
     private static void FailSetup(string what, Exception? exception)
     {
         var detail = exception is null ? "" : $" Underlying failure: {exception.GetType().Name}: {exception.Message}.";
-        Say($"[gateway-test-lock] *** CANNOT SET UP THE MACHINE-WIDE GATEWAY TEST LOCK: {what}.{detail} "
+        Say($"[gateway-test-lock] *** CANNOT SET UP THE PER-USER GATEWAY TEST LOCK: {what}.{detail} "
             + "NO TESTS WILL RUN. This is NOT another run holding the lock - it is a fault in the lock's "
             + "location that will not clear by waiting, so this run stops immediately rather than blocking "
             + "and then blaming a holder that does not exist. Fix the path above and run again. ***");
