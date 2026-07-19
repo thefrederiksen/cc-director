@@ -276,18 +276,18 @@ internal static class GatewayTestSuiteLock
             + $"owner {session}, working directory {dir}";
     }
 
-    /// <summary>Identifies the run for a human reading a blocked run's error message.</summary>
+    /// <summary>
+    /// Identifies the run for a human reading a blocked run's error message. Every fleet-launched session
+    /// carries CC_SESSION_ID, which is the case that matters - it names a session somebody can go and talk
+    /// to. A run started outside the fleet has no session to name, and says so rather than inventing one;
+    /// the working directory recorded alongside this is what identifies those.
+    /// </summary>
     private static string SessionIdentifier()
     {
         var id = Environment.GetEnvironmentVariable("CC_SESSION_ID");
-        if (!string.IsNullOrWhiteSpace(id))
-            return "cc-director session " + id;
-
-        id = Environment.GetEnvironmentVariable("CLAUDE_CODE_SESSION_ID");
-        if (!string.IsNullOrWhiteSpace(id))
-            return "coding-agent session " + id;
-
-        return "(no session identifier in this run's environment)";
+        return string.IsNullOrWhiteSpace(id)
+            ? "(no session identifier in this run's environment - identify it by the working directory below)"
+            : "cc-director session " + id;
     }
 
     /// <summary>
