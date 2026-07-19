@@ -27,6 +27,23 @@ public class CliArgsTests
         Assert.True(args.HasFlag("json"));
     }
 
+    /// <summary>
+    /// --hosted takes no value, so it must be declared as a known flag rather than relying on what happens
+    /// to follow it. Undeclared, it is only read as a flag when the next token starts with "--" or the
+    /// command ends there: anything else following it is silently swallowed as its "value", --hosted is
+    /// never seen, and the enroll quietly falls through to the SELF-HOSTED discovery path - a machine
+    /// joining a different gateway than the one the operator asked for, with no error.
+    /// </summary>
+    [Fact]
+    public void Parse_HostedIsAFlag_EvenWhenFollowedByAnotherArgument()
+    {
+        var args = CliArgs.Parse(["enroll", "--hosted", "extra"]);
+
+        Assert.True(args.HasFlag("hosted"));
+        Assert.Null(args.Option("hosted"));
+        Assert.Equal("extra", Assert.Single(args.Positionals));
+    }
+
     [Fact]
     public void Parse_DefaultsToHelp()
     {
