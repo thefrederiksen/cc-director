@@ -1,6 +1,8 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using System.Text.RegularExpressions;
 using CcDirector.Core.Storage;
+using CcDirector.Core.Tenancy;
 using CcDirector.Core.Utilities;
 using CcDirector.Gateway.Contracts;
 
@@ -23,6 +25,13 @@ namespace CcDirector.Gateway.Prompts;
 ///
 /// One JSON line per message in a daily file: base/prompt-log/conversation-yyyyMMdd.jsonl.
 ///
+/// PARTITIONED BY TENANT (issue #1848). Prompt text is customer content, so on the hosted Gateway one
+/// account's messages must never be readable by another. The partition is the DIRECTORY, not a predicate on
+/// the read: a tenant's history lives in its own folder, so a read physically cannot open another tenant's
+/// file. <see cref="TenantId.Local"/> keeps today's path exactly (self-host is unchanged and nothing
+/// migrates); a hosted account tenant lands under tenants/&lt;id&gt;/. The tenant is always supplied by the
+/// caller, which resolved it from the authenticated device key at the boundary - this type never guesses one.
+///
 /// Retention is unbounded. The point is looking back across weeks and months, and the text is small.
 /// (Contrast TurnReviewLog, which holds terminal SCREENS and expires at 7 days.) Nothing prunes this.
 ///
@@ -34,6 +43,10 @@ public sealed class GatewayPromptLog
     {
         DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
     };
+
+    // A tenant id becomes a directory name, so it must be a plain identifier. Real ids are the well-known
+    // "local"/"system" words or an account GUID; anything else is refused rather than scrubbed.
+    private static readonly Regex SafeTenantId = new("^[A-Za-z0-9._-]{1,64}$", RegexOptions.Compiled);
 
     private readonly object _gate = new();
     private readonly string _directory;
@@ -47,16 +60,33 @@ public sealed class GatewayPromptLog
     /// <summary>The Gateway's prompt-log directory.</summary>
     public static string DefaultDirectory() => CcStorage.PromptLog();
 
-    /// <summary>The daily file a message at <paramref name="utcNow"/> lands in.</summary>
-    public string FileFor(DateTime utcNow)
-        => Path.Combine(_directory, $"conversation-{utcNow:yyyyMMdd}.jsonl");
+    /// <summary>
+    /// The directory one tenant's daily files live in. The local tenant keeps the root directory it has
+    /// always used; every other tenant gets its own folder beneath it. A tenant id that is not a plain
+    /// identifier is refused loudly rather than scrubbed - scrubbing is how two tenants quietly share a
+    /// folder, and this folder holds prompt TEXT.
+    /// </summary>
+    public string DirectoryFor(TenantId tenant)
+    {
+        if (!tenant.IsValid)
+            throw new ArgumentException("A prompt-log partition needs a valid tenant; an unresolved tenant is denied, never defaulted.", nameof(tenant));
+        if (!SafeTenantId.IsMatch(tenant.Value))
+            throw new ArgumentException($"Tenant '{tenant.ToLogString()}' is not a plain identifier and cannot name a prompt-log partition.", nameof(tenant));
+
+        return tenant.IsLocal ? _directory : Path.Combine(_directory, "tenants", tenant.Value);
+    }
+
+    /// <summary>The daily file a message at <paramref name="utcNow"/> lands in, for one tenant.</summary>
+    public string FileFor(TenantId tenant, DateTime utcNow)
+        => Path.Combine(DirectoryFor(tenant), $"conversation-{utcNow:yyyyMMdd}.jsonl");
 
     /// <summary>
-    /// Append messages pushed by a Director. Returns how many were written. Never throws: a logging
-    /// failure must not fail the Director's push.
+    /// Append messages pushed by a Director, into that Director's tenant partition. Returns how many were
+    /// written. Never throws: a logging failure must not fail the Director's push.
     /// </summary>
-    public int Append(IEnumerable<PromptRecord> records)
+    public int Append(TenantId tenant, IEnumerable<PromptRecord> records)
     {
+        var directory = DirectoryFor(tenant);
         var written = 0;
         try
         {
@@ -65,10 +95,10 @@ public sealed class GatewayPromptLog
             foreach (var day in records.GroupBy(r => r.TsUtc.Date))
             {
                 var lines = day.Select(r => JsonSerializer.Serialize(r, JsonOpts)).ToList();
-                var path = FileFor(day.Key);
+                var path = FileFor(tenant, day.Key);
                 lock (_gate)
                 {
-                    Directory.CreateDirectory(_directory);
+                    Directory.CreateDirectory(directory);
                     File.AppendAllLines(path, lines);
                 }
                 written += lines.Count;
@@ -82,15 +112,15 @@ public sealed class GatewayPromptLog
     }
 
     /// <summary>
-    /// Read every message in the inclusive UTC day range, oldest first. Skips unparseable lines rather
-    /// than failing the whole read, so one bad line cannot hide a month of work.
+    /// Read every message in the inclusive UTC day range for ONE tenant, oldest first. Skips unparseable
+    /// lines rather than failing the whole read, so one bad line cannot hide a month of work.
     /// </summary>
-    public IReadOnlyList<PromptRecord> Read(DateTime fromUtc, DateTime toUtc)
+    public IReadOnlyList<PromptRecord> Read(TenantId tenant, DateTime fromUtc, DateTime toUtc)
     {
         var results = new List<PromptRecord>();
         for (var day = fromUtc.Date; day <= toUtc.Date; day = day.AddDays(1))
         {
-            var path = FileFor(day);
+            var path = FileFor(tenant, day);
             if (!File.Exists(path)) continue;
             string[] lines;
             try
