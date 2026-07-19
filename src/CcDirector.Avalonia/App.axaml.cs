@@ -258,17 +258,16 @@ public partial class App : Application
         UpdateSplashStatus(splash, "Checking account...");
         try
         {
-            if (DevThrottleCredentialMigration.ShouldDeleteDirectorCredential(GatewayConfig.Load()))
+            var outcome = DevThrottleCredentialMigration.RunStartupMigration(GatewayConfig.Load());
+            log(outcome switch
             {
-                var deleted = DevThrottleCredentialMigration.DeleteStaleDirectorCredential();
-                log(deleted
-                    ? "DevThrottle credential migration: deleted a stale Director credential blob (Gateway is the authority now, issue #642)"
-                    : "DevThrottle credential migration: no stale Director credential blob to delete (issue #642)");
-            }
-            else
-            {
-                log("DevThrottle credential migration: no gateway configured -> keeping the Director's own credential (Slice A exception to issue #642 for a gateway-less Director)");
-            }
+                DirectorCredentialStartupOutcome.DeletedStaleBlob =>
+                    "DevThrottle credential migration: deleted a stale Director credential blob (Gateway is the authority now, issue #642)",
+                DirectorCredentialStartupOutcome.NoBlobToDelete =>
+                    "DevThrottle credential migration: no stale Director credential blob to delete (issue #642)",
+                _ =>
+                    "DevThrottle credential migration: no gateway configured -> keeping the Director's own credential (Slice A exception to issue #642 for a gateway-less Director)",
+            });
         }
         catch (Exception ex)
         {

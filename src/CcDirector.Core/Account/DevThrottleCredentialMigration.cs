@@ -5,6 +5,22 @@ using CcDirector.Core.Utilities;
 namespace CcDirector.Core.Account;
 
 /// <summary>
+/// What the startup credential migration did on this launch (two-step install, Slice A), so the caller
+/// can log the outcome without re-deriving the gate decision.
+/// </summary>
+public enum DirectorCredentialStartupOutcome
+{
+    /// <summary>No gateway configured: the Director's own credential was KEPT (the Slice A exception).</summary>
+    KeptNoGateway,
+
+    /// <summary>A gateway is configured and a stale Director blob was present, so it was deleted (issue #642/#651).</summary>
+    DeletedStaleBlob,
+
+    /// <summary>A gateway is configured but there was no stale Director blob to delete.</summary>
+    NoBlobToDelete,
+}
+
+/// <summary>
 /// Migrates a Director that still holds a local DevThrottle credential onto the Gateway-centralized
 /// model (Gateway Centralization Phase 2, issue #642). The Gateway is the single account authority now,
 /// so the Director must hold NO credential of its own: any pre-existing
@@ -49,6 +65,34 @@ public static class DevThrottleCredentialMigration
             throw new ArgumentNullException(nameof(config));
 
         return config.IsEnabled;
+    }
+
+    /// <summary>
+    /// The complete startup credential-migration WIRING (two-step install, Slice A): the single method
+    /// <c>App.axaml.cs</c> calls at boot. It runs the gate and the delete together - deleting the stale
+    /// Director blob only when <see cref="ShouldDeleteDirectorCredential"/> says a gateway is present, and
+    /// keeping the Director's own credential when no gateway is configured - and returns what it did so
+    /// the caller can log it. The <c>if</c> lives HERE, in one production place a test pins directly, so
+    /// the wiring is never duplicated in a test: reverting this <c>if</c> to an unconditional delete reds
+    /// the "no gateway keeps the blob" test.
+    /// </summary>
+    /// <param name="config">The current gateway configuration (config.json).</param>
+    /// <param name="blobPath">The credential blob to act on. Defaults to the Director's credential path; tests inject a temporary path.</param>
+    /// <returns>What the migration did on this launch.</returns>
+    public static DirectorCredentialStartupOutcome RunStartupMigration(GatewayConfig config, string? blobPath = null)
+    {
+        if (config is null)
+            throw new ArgumentNullException(nameof(config));
+
+        if (!ShouldDeleteDirectorCredential(config))
+        {
+            FileLog.Write("[DevThrottleCredentialMigration] RunStartupMigration: no gateway configured -> keeping the Director's own credential (Slice A exception to issue #642)");
+            return DirectorCredentialStartupOutcome.KeptNoGateway;
+        }
+
+        return DeleteStaleDirectorCredential(blobPath)
+            ? DirectorCredentialStartupOutcome.DeletedStaleBlob
+            : DirectorCredentialStartupOutcome.NoBlobToDelete;
     }
 
     public static bool DeleteStaleDirectorCredential(string? blobPath = null)

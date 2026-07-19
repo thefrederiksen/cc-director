@@ -124,7 +124,7 @@
                             <StackPanel Spacing="8">
                                 <TextBlock Classes="sectionTitle" Margin="0" Text="DevThrottle account" />
                                 <TextBlock Classes="hint"
-                                           Text="Your account is managed by your Gateway. This Director no longer signs in or out on its own - sign-in, identity, and the usage-sharing choice are handled centrally by the Gateway your Directors connect to. This panel just shows what the Gateway reports." />
+                                           Text="When this Director is connected to a Gateway, your account is managed there - sign-in, identity, and the usage-sharing choice are handled centrally by the Gateway. With no Gateway connected, this panel shows this Director's own DevThrottle sign-in. Either way it is informational; manage the connection and sign-in from the Gateway tab." />
 
                                 <Grid ColumnDefinitions="110,*" Margin="0,8,0,0" RowDefinitions="Auto,Auto">
                                     <TextBlock Grid.Row="0" Grid.Column="0" Classes="fieldLabel" Text="Gateway" VerticalAlignment="Center" />

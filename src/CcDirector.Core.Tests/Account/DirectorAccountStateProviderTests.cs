@@ -81,6 +81,44 @@ public sealed class DirectorAccountStateProviderTests
         Assert.Equal(DirectorAccountState.DeferToGateway, state);
     }
 
+    // Finding 1 (HIGH) regression: the verdict is presence-only and must NEVER decrypt the credential.
+    // A present-but-unreadable blob (a corrupt token or a wrong-user DPAPI blob) throws at decrypt; the
+    // real hazard was an unused identity read decrypting it and taking down the whole Settings dialog.
+    // This store reports present but throws if anything tries to decrypt (Load). ResolveFromStore must
+    // return SignedInLocalNoGateway WITHOUT throwing - proving it reads HasTokens only. Re-adding a
+    // decrypt/identity read to the verdict path reds this test.
+    [Fact]
+    public void ResolveFromStore_PresentButUnreadableCredential_ReportsSignedInLocalWithoutDecrypting()
+    {
+        var config = new GatewayConfig { Url = "" };
+        var store = new ThrowOnLoadTokenStore(hasTokens: true);
+
+        var state = DirectorAccountStateProvider.ResolveFromStore(config, store);
+
+        Assert.Equal(DirectorAccountState.SignedInLocalNoGateway, state);
+        Assert.False(store.LoadWasCalled);
+    }
+
+    // A store that reports a present credential but throws the moment anything tries to decrypt it,
+    // standing in for a corrupt token or a wrong-user DPAPI blob.
+    private sealed class ThrowOnLoadTokenStore : IProtectedTokenStore
+    {
+        public ThrowOnLoadTokenStore(bool hasTokens) => HasTokens = hasTokens;
+
+        public bool HasTokens { get; }
+        public bool LoadWasCalled { get; private set; }
+
+        public void Save(DevThrottleTokens tokens) => throw new InvalidOperationException("not used");
+
+        public DevThrottleTokens? Load()
+        {
+            LoadWasCalled = true;
+            throw new InvalidOperationException("the credential blob could not be decrypted (corrupt or wrong user)");
+        }
+
+        public void Clear() => throw new InvalidOperationException("not used");
+    }
+
     // --- The verbatim display strings the surface renders --------------------------------------------
 
     // Revert-proof #2 (the render): the signed-in-local state maps to the exact signed-in-local string

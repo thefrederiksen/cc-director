@@ -94,33 +94,46 @@ public sealed class DevThrottleCredentialMigrationTests : IDisposable
         Assert.True(DevThrottleCredentialMigration.ShouldDeleteDirectorCredential(config));
     }
 
-    // Revert-proof #1 (the seam): reproduce the exact startup decision - "if
-    // ShouldDeleteDirectorCredential(config) then DeleteStaleDirectorCredential(blob)" - and prove that
-    // with NO gateway a present Director blob is KEPT. Reverting the production
-    // ShouldDeleteDirectorCredential to => true reds this test.
+    // Revert-proof #1 (the real startup wiring, NOT a copy of it): drive the ONE production method
+    // App.axaml.cs calls - RunStartupMigration - and prove that with NO gateway a present Director blob
+    // is KEPT. The if-then wiring lives inside RunStartupMigration, so reverting that if to an
+    // unconditional delete (the real production line) reds this test; the test does not re-implement the
+    // glue.
     [Fact]
-    public void StartupDecision_NoGateway_KeepsPresentDirectorBlob()
+    public void RunStartupMigration_NoGateway_KeepsPresentDirectorBlob()
     {
         File.WriteAllBytes(_blobPath, new byte[] { 1, 2, 3, 4 });
         var config = new GatewayConfig { Url = "" };
 
-        if (DevThrottleCredentialMigration.ShouldDeleteDirectorCredential(config))
-            DevThrottleCredentialMigration.DeleteStaleDirectorCredential(_blobPath);
+        var outcome = DevThrottleCredentialMigration.RunStartupMigration(config, _blobPath);
 
+        Assert.Equal(DirectorCredentialStartupOutcome.KeptNoGateway, outcome);
         Assert.True(File.Exists(_blobPath));
     }
 
-    // Control (Manager point #3): the gateway-PRESENT path still deletes the stale Director blob, so the
-    // #642/#651 authority behavior is provably NOT broken by the gate.
+    // Control (Manager point #3): the gateway-PRESENT path still deletes the stale Director blob through
+    // the same production method, so the #642/#651 authority behavior is provably NOT broken by the gate.
     [Fact]
-    public void StartupDecision_GatewayPresent_DeletesStaleDirectorBlob()
+    public void RunStartupMigration_GatewayPresent_DeletesStaleDirectorBlob()
     {
         File.WriteAllBytes(_blobPath, new byte[] { 1, 2, 3, 4 });
         var config = new GatewayConfig { Url = "https://gateway.example.com" };
 
-        if (DevThrottleCredentialMigration.ShouldDeleteDirectorCredential(config))
-            DevThrottleCredentialMigration.DeleteStaleDirectorCredential(_blobPath);
+        var outcome = DevThrottleCredentialMigration.RunStartupMigration(config, _blobPath);
 
+        Assert.Equal(DirectorCredentialStartupOutcome.DeletedStaleBlob, outcome);
+        Assert.False(File.Exists(_blobPath));
+    }
+
+    // The gateway-present path with no stale blob is a harmless no-op through the production method.
+    [Fact]
+    public void RunStartupMigration_GatewayPresentNoBlob_ReportsNoBlobToDelete()
+    {
+        var config = new GatewayConfig { Url = "https://gateway.example.com" };
+
+        var outcome = DevThrottleCredentialMigration.RunStartupMigration(config, _blobPath);
+
+        Assert.Equal(DirectorCredentialStartupOutcome.NoBlobToDelete, outcome);
         Assert.False(File.Exists(_blobPath));
     }
 }

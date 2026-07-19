@@ -31,11 +31,13 @@ public enum DirectorAccountState
 /// it, so the dumb-client rule that governs Gateway verdicts does not apply here), and the surface only
 /// renders what this provider decides.
 ///
-/// The read seam revives the desktop credential service that issue #651 neutered: it builds the existing
-/// <see cref="DevThrottleAccountService"/> through <see cref="DevThrottleAccountFactory.Build(IProtectedTokenStore, string)"/>
-/// over the Director's own credential store and reads whether a credential is present. The token is never
-/// read into a log and is never returned from this provider (security rule DT-05); only the resolved
-/// state and a present/absent boolean ever leave it.
+/// The read seam revives the Director-side credential read that issue #651 removed: over its OWN
+/// credential store (<see cref="WindowsProtectedTokenStore"/> on Windows) it reads whether a credential
+/// is PRESENT via <see cref="IProtectedTokenStore.HasTokens"/>. It never decrypts the blob or parses a
+/// token for the verdict - a corrupt or wrong-user credential would throw at decrypt, and this feeds an
+/// informational surface that must not be taken down by a bad credential (token validity is Slice B's
+/// concern). The token is never read into a log and is never returned from this provider (security rule
+/// DT-05); only the resolved state and a present/absent boolean ever leave it.
 /// </summary>
 public static class DirectorAccountStateProvider
 {
@@ -66,10 +68,12 @@ public static class DirectorAccountStateProvider
     /// <summary>
     /// Resolves the Director's account state over an explicit credential store (the unit-testable seam).
     /// With a gateway configured it returns <see cref="DirectorAccountState.DeferToGateway"/> without
-    /// reading the local credential. With no gateway it revives the desktop credential service over the
-    /// supplied store and reads whether a credential is present. The stored token is never logged or
-    /// returned (DT-05); this reads only presence and, when present, exercises the revived local read by
-    /// decoding the cached identity claims (no network, no token in the log) so the seam is proven live.
+    /// touching the local credential. With no gateway it reads the Director's OWN store for whether a
+    /// credential is PRESENT - the presence check (<see cref="IProtectedTokenStore.HasTokens"/>) only,
+    /// which never decrypts the blob or parses a token. The verdict is deliberately presence-only: it
+    /// must never decrypt (a corrupt or wrong-user DPAPI blob would throw at decrypt, and this read feeds
+    /// an informational surface that must not be taken down by a bad credential). Token validity is a
+    /// later concern (Slice B). The stored token is never logged or returned from here (DT-05).
     /// </summary>
     public static DirectorAccountState ResolveFromStore(GatewayConfig config, IProtectedTokenStore store)
     {
@@ -84,25 +88,12 @@ public static class DirectorAccountStateProvider
             return DirectorAccountState.DeferToGateway;
         }
 
-        // Revive the desktop credential service (dead since issue #651): the factory reconstitutes the
-        // validator, event log, and refresher over the Director's OWN store, so a gateway-less Director
-        // can read the credential it now legitimately keeps (Slice A). No network at construction.
-        var service = DevThrottleAccountFactory.Build(store, CcStorage.DevThrottleAuthEventsLog());
-
+        // Presence only: HasTokens is a file-existence check that never decrypts the blob or parses a
+        // token, so a corrupt/wrong-user credential can never throw here. This IS the Director-side read
+        // that issue #651 removed - a gateway-less Director reading the credential it now legitimately
+        // keeps (Slice A).
         var present = store.HasTokens;
-        if (present)
-        {
-            // Exercise the revived read end to end without exposing the token: GetIdentity decodes the
-            // cached claims locally (no network call, and the token is never written to the log; DT-05),
-            // which confirms the read seam is live for the signed-in-local Director.
-            var identity = service.GetIdentity();
-            FileLog.Write($"[DirectorAccountStateProvider] ResolveFromStore: no gateway; director credential present (identity {(identity is null ? "unavailable" : "resolved")})");
-        }
-        else
-        {
-            FileLog.Write("[DirectorAccountStateProvider] ResolveFromStore: no gateway and no director credential present -> not signed in");
-        }
-
+        FileLog.Write($"[DirectorAccountStateProvider] ResolveFromStore: no gateway; director credential present={present} (presence only; the token is never read into a log)");
         return Resolve(config.IsEnabled, present);
     }
 
