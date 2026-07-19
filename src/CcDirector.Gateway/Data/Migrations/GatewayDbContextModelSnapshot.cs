@@ -260,17 +260,16 @@ namespace CcDirector.Gateway.Data.Migrations
 
             modelBuilder.Entity("CcDirector.Gateway.Data.Entities.MissionNoteEntity", b =>
                 {
+                    b.Property<string>("TenantId")
+                        .HasColumnType("TEXT")
+                        .HasColumnName("tenant_id");
+
                     b.Property<string>("Key")
                         .HasColumnType("TEXT");
 
                     b.Property<string>("Mission")
                         .IsRequired()
                         .HasColumnType("TEXT");
-
-                    b.Property<string>("TenantId")
-                        .IsRequired()
-                        .HasColumnType("TEXT")
-                        .HasColumnName("tenant_id");
 
                     b.Property<DateTime>("UpdatedAtUtc")
                         .HasColumnType("TEXT");
@@ -279,7 +278,7 @@ namespace CcDirector.Gateway.Data.Migrations
                         .IsRequired()
                         .HasColumnType("TEXT");
 
-                    b.HasKey("Key");
+                    b.HasKey("TenantId", "Key");
 
                     b.HasIndex("TenantId");
 
@@ -513,6 +512,10 @@ namespace CcDirector.Gateway.Data.Migrations
 
             modelBuilder.Entity("CcDirector.Gateway.Data.Entities.WorkflowEntity", b =>
                 {
+                    b.Property<string>("TenantId")
+                        .HasColumnType("TEXT")
+                        .HasColumnName("tenant_id");
+
                     b.Property<string>("Id")
                         .HasColumnType("TEXT");
 
@@ -539,15 +542,10 @@ namespace CcDirector.Gateway.Data.Migrations
                     b.Property<string>("ShippedContentHash")
                         .HasColumnType("TEXT");
 
-                    b.Property<string>("TenantId")
-                        .IsRequired()
-                        .HasColumnType("TEXT")
-                        .HasColumnName("tenant_id");
-
                     b.Property<DateTime>("UpdatedUtc")
                         .HasColumnType("TEXT");
 
-                    b.HasKey("Id");
+                    b.HasKey("TenantId", "Id");
 
                     b.HasIndex("TenantId");
 
@@ -724,7 +722,7 @@ namespace CcDirector.Gateway.Data.Migrations
 
                     b.HasIndex("TenantId");
 
-                    b.HasIndex("WorkflowId", "Version")
+                    b.HasIndex("TenantId", "WorkflowId", "Version")
                         .IsUnique();
 
                     b.ToTable("workflow_versions", (string)null);

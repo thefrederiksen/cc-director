@@ -149,7 +149,13 @@ public sealed class GatewayDbContext : DbContext
         modelBuilder.Entity<WorkflowEntity>(b =>
         {
             b.ToTable("workflows");
-            b.HasKey(e => e.Id);
+            // COMPOSITE primary key (tenant_id, Id) - Hosted Multi-Tenancy. The built-in workflow seed uses a
+            // FIXED id per built-in (Id = definition.Id), so with Id ALONE as the key two tenants seeding the
+            // same built-in collide at the database (the SYSTEM seed vs leftover 'local' built-ins crashed
+            // startup). Scoping the key by tenant lets each tenant - and the reserved SYSTEM tenant - hold its
+            // own copy of a built-in, and makes an existing single-tenant gateway upgrade automatically (the
+            // 'local' and SYSTEM built-ins coexist, the tenant-filtered seed is idempotent).
+            b.HasKey(e => new { e.TenantId, e.Id });
             b.Property(e => e.Id);
             // The owner's switch defaults ON at the DATABASE level too, so the migration that adds
             // the column backfills every pre-existing workflow as in-force - upgrading must never
@@ -161,8 +167,12 @@ public sealed class GatewayDbContext : DbContext
         {
             b.ToTable("workflow_versions");
             b.HasKey(e => e.Id);
-            // A workflow's versions are unique per number; lookups go through (WorkflowId, Version).
-            b.HasIndex(e => new { e.WorkflowId, e.Version }).IsUnique();
+            // A workflow's versions are unique per number; lookups go through (WorkflowId, Version). The
+            // uniqueness must be PER TENANT (Hosted Multi-Tenancy): a built-in's WorkflowId + Version=1 is the
+            // same across tenants, so a GLOBAL unique index would collide when the SYSTEM seed and a leftover
+            // 'local' built-in both hold v1. Scoping the unique index by tenant lets each tenant hold its own
+            // v1 of a built-in. (The PK stays the random-Guid Id; only the uniqueness rule is tenant-scoped.)
+            b.HasIndex(e => new { e.TenantId, e.WorkflowId, e.Version }).IsUnique();
             // Steps and outcome criteria are bounded sub-documents: owned types serialized to a JSON
             // column each (the cron store's "sub-doc -> JSON in a column" pattern).
             b.OwnsMany(e => e.Steps, o => o.ToJson());
@@ -267,7 +277,11 @@ public sealed class GatewayDbContext : DbContext
             // Ordinal) keyed by that same normalized value. It is the primary key directly, no surrogate. No
             // case-fold question arises: the value is folded BEFORE it becomes the key, so lookup is a plain
             // ordinal equality (unlike the work-list NAME key, which folds at comparison time).
-            b.HasKey(e => e.Key);
+            //
+            // COMPOSITE primary key (tenant_id, Key) - Hosted Multi-Tenancy. The mission NAME is namespaced per
+            // tenant, so with Key ALONE as the key two tenants naming a mission the same thing would collide at
+            // the database. Scoping the key by tenant lets each tenant own its own note for a given name.
+            b.HasKey(e => new { e.TenantId, e.Key });
         });
 
         modelBuilder.Entity<GovernanceAuditEventEntity>(b =>
