@@ -402,6 +402,29 @@ instead.</strong></p>
 client that cannot get a stamped answer fails loudly rather than guessing - that rule already exists in
 <span class="file">packages/client-core/src/sessions/ordering.ts</span> and it works.</p>
 
+<div class="callout warn">
+<p><strong>The ONE exception, and it is deliberately two colours wide - the gateway-offline floor
+(owner's ruling, 19 July 2026, #1843).</strong> When the owning Director's tunnel to its Gateway is not
+up, the last stamp is <em>frozen</em> on whatever the Gateway happened to send last - a stale yellow, red
+or grey that gets less true every minute. The desktop is the only surface that can still tell the truth
+without asking, because <strong>it hosts the sessions</strong>. So while the Gateway is unreachable the
+rail paints the single fact this Director owns firsthand - is the agent producing terminal output right
+now - as <span class="dot d-blue"></span>blue (working) or <span class="dot d-red"></span>red (not), and
+<strong>nothing else</strong>. <span class="file">SessionViewModel.RailColor</span></p>
+<p><strong>Read the negative half, it is the whole design:</strong> the offline path must NEVER run the
+Gateway fold locally. <code>SessionOrdering</code> reads Gateway-only facts - <code>VoiceAudioReady</code>,
+dictation, the snooze clock - which are false or absent on a Director, so a local fold would answer
+"preparing voice" forever and wedge <strong>every voice-mode session permanently yellow</strong>. Two
+colours, no fold. Every richer state waits for the Gateway to come back and stamp it.</p>
+<p><strong>Why the phone and the Cockpit do NOT get a floor:</strong> they do not host the session and
+cannot know what it is doing, so they keep the neutral placeholder. The floor is not a relaxation of law
+3 - it is law 3 applied honestly: a client renders what it can <em>observe</em>, and the Director is the
+sensor. Note also what is NOT offline: <code>Connected</code> is the only status that renders the pushed
+answer, so dialing, reconnecting, failed, and a local-only Director with no Gateway at all all take the
+floor; a Director whose host has not started yet counts as online, so a fresh launch shows the neutral
+placeholder rather than flashing the floor.</p>
+</div>
+
 <h3>Every state, listed</h3>
 
 <p>This is the complete inventory. If a state is not in this table, it does not exist. The single most
@@ -966,6 +989,27 @@ longer forgets a snooze (defect 22), and a dead session reads Exited (defect 21)
 <li><span class="good">DONE 14 July 2026 - defect 5.</span> <strong>Send the session role down to the desktop</strong> so it stops being the one screen that cannot suppress a worker's red. The Gateway resolves the role from the whole fleet and pushes it down over the <code>set-resolved-role</code> verb; <code>ControlEndpoints.Map</code> reads it back off <code>Session.GatewayResolvedRole</code>. Proved end to end through the real verb, the real mapper and the real fold, with nothing hand-set, by <span class="file">DesktopRoleStampWireProofTests</span>.
 <div class="callout warn">
 <p><strong class="good">CLOSED 16 July 2026 - #1746 (a1d7471a).</strong> The owner made the scope decision this callout reserved for him, and it shipped: <strong>the desktop no longer folds at all.</strong> It renders the Gateway's stamped answer, pushed down over a new <code>set-display-state</code> verb by <span class="file">FleetDisplayStateObserver</span> - <code>EffectiveColor</code>, <code>StateLabel</code>, <code>TriageBucket</code>, <code>NeedsYouSince</code>, <code>SnoozeUntil</code> and <code>SnoozeExpired</code>, folded through the SAME <code>StampFleetRolesAndFold</code> the roster serves from, so the pushed answer is byte-identical to every browser's. <strong>All FIVE divergences below are gone</strong> - the rail, the phone and the Cockpit read one answer by construction, not by pushing four more fields down. The fold observer is change-gated (no echo) and records a rejection instead of re-storming, so a Gateway-ahead-of-Directors rollout is quiet. Verified end to end: <strong>zero <code>SessionOrdering.EffectiveColor/StateLabel/Classify</code> calls remain in the Avalonia app</strong> - the rail (<span class="file">SessionViewModel</span>), the voice-takeover queue (<span class="file">FifoWindow.BuildQueue</span>) and the fleet map all render <code>Session.EffectiveColor</code>/<code>StateLabel</code>/<code>TriageBucket</code> verbatim. The measurement below is kept as the record of the gap that was closed.</p>
+<p><strong class="bad">AND #1746 SHIPPED WITH A HOLE IN IT, FOUND 19 JULY 2026, FIXED BY #1843.</strong>
+The push seam folded <strong>without the two Gateway-only voice facts.</strong> The roster path enriched
+each session with <code>VoiceGenerating</code> and <code>VoiceAudioReady</code> before calling
+<code>StampFleetRolesAndFold</code>; <span class="file">FleetDisplayStateObserver</span> called the same
+fold on un-enriched sessions. So the two paths were <em>not</em> byte-identical after all: the browsers
+folded the true voice facts and moved on to red, while the desktop folded <code>VoiceAudioReady=false</code>
+and was held at <span class="dot d-yellow"></span>yellow "Preparing voice" <strong>forever</strong> - the
+stamp never changed, so the change-gate never pushed again. Fixed by
+<code>GatewayHost.EnrichVoiceThenFoldForPush</code>, which enriches then folds, in that order, on the push
+side too. <span class="file">GatewayHost.cs</span></p>
+<p><strong>The lesson is the one this document keeps paying for, in a new costume:</strong> "byte-identical,
+by construction" was true of <em>the fold</em> and false of <em>its inputs</em>. Sharing the function is not
+sharing the answer - a second caller that assembles the arguments differently is a second implementation
+wearing the first one's name. <strong>When you claim two paths agree, name the INPUTS you proved equal, not
+the function they both call.</strong> Two obvious wrong diagnoses were entertained first and both were
+disproven: it was NOT a stale desktop build, and it was NOT a surviving local fold in the Avalonia app
+(there are still zero). Defended by <span class="file">DisplayPushVoiceEnrichmentTests</span>.</p>
+<p><strong class="good">Shipped alongside it: the gateway-offline floor</strong> - see the callout in
+section 2, layer 3. Same pull request, opposite direction: #1843's first half made the desktop's
+<em>online</em> answer identical to the browsers', and its second half gave the desktop an honest
+<em>offline</em> answer instead of a frozen stale one.</p>
 <p><strong>MEASURED BY QA, 15 July 2026: the role was ONE OF FIVE, and this item's own closing sentence - "until then, desktop and phone disagree by construction" - was STILL TRUE for the other four until #1746 closed the lot (see the banner above). This was the largest surviving gap in this document, and neither the Architect nor the Manager saw it until it was measured; both had concluded, in writing, that agreement was now "by construction".</strong></p>
 <p><code>ControlEndpoints.Map</code> carries <code>SessionRole</code> and does NOT carry <strong>four other fold inputs</strong>, verified by reading the mapper and by enumerating every verb the Gateway can send a Director - there are exactly <strong>two</strong>, <code>launch</code> and <code>set-resolved-role</code>. So nothing pushes these down, and the fold reads all of them:</p>
 <table>
