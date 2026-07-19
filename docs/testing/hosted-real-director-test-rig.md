@@ -57,7 +57,11 @@ the real path instead:
 containing real user data: do not commit it, do not attach it to a pull request, do not paste its
 contents.
 
-### What actually leaves the machine
+### What actually leaves the machine - this is a DISK problem, not a network one
+
+Read this part before you act on the warning above. The migration copies real data onto **disk**,
+into a root you thought was empty. It does **not** put that data on the wire. Someone who reads
+only the warning will reasonably assume the worse thing, and the worse thing is not what happens.
 
 The Director reseeds to whatever Gateway that root points at, so the migrated data is *adjacent* to
 the wire. What the reseed sends is narrower than what the migration copies -
@@ -71,9 +75,14 @@ The session DTO carries no history, no prompt text and no terminal buffer conten
 `recent-sessions.json` are **not** in the push path at all.
 
 So on the run recorded below, nothing real was transmitted: the reseed carried zero sessions, and
-the only session that ever reached hosted was the one the test deliberately created. **Treat that
-as a property of today's push payload, not as isolation** - verify it rather than assume it, by
-querying the Gateway's `/sessions` immediately after the reseed line appears in the log.
+the only session that ever reached hosted was the one the test deliberately created. The only real
+identifiers that left the machine were the **machine name** and the **Windows username**, in
+`Hello`.
+
+**Treat that as a property of today's push payload, not as isolation** - verify it rather than
+assume it, by querying the Gateway's `/sessions` immediately after the reseed line appears in the
+log. If a future change puts history or prompt text on the DTO, the disk problem becomes a network
+problem without anything in this procedure changing.
 
 **To block a specific file from migrating**, pre-create it in the destination. `CopyFileIfNewer`
 skips a destination that already exists, is **10 bytes or larger**, and has a **newer**
