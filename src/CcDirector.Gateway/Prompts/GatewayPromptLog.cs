@@ -44,9 +44,16 @@ public sealed class GatewayPromptLog
         DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
     };
 
-    // A tenant id becomes a directory name, so it must be a plain identifier. Real ids are the well-known
-    // "local"/"system" words or an account GUID; anything else is refused rather than scrubbed.
-    private static readonly Regex SafeTenantId = new("^[A-Za-z0-9._-]{1,64}$", RegexOptions.Compiled);
+    // A tenant id becomes a DIRECTORY NAME, so it must be one of the shapes this system actually mints -
+    // not merely "characters that look harmless". The earlier rule here was ^[A-Za-z0-9._-]{1,64}$, which
+    // accepts ".." - and Path.Combine(root, "tenants", "..") canonicalizes to exactly root, the LOCAL
+    // partition. A character allow-list that permits a path segment with MEANING is not a validator; the
+    // dangerous values here are structural, not exotic. So this matches the real domain instead: an account
+    // tenant is a code-generated GUID (see TenantRegistry), and the two well-known words are handled
+    // separately below.
+    private static readonly Regex AccountTenantId = new(
+        "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
+        RegexOptions.Compiled);
 
     private readonly object _gate = new();
     private readonly string _directory;
@@ -82,10 +89,29 @@ public sealed class GatewayPromptLog
     {
         if (!tenant.IsValid)
             throw new ArgumentException("A prompt-log partition needs a valid tenant; an unresolved tenant is denied, never defaulted.", nameof(tenant));
-        if (!SafeTenantId.IsMatch(tenant.Value))
-            throw new ArgumentException($"Tenant '{tenant.ToLogString()}' is not a plain identifier and cannot name a prompt-log partition.", nameof(tenant));
+        // The local tenant is the root directory it has always used - self-host unchanged, nothing migrates.
+        if (tenant.IsLocal)
+            return _directory;
 
-        return tenant.IsLocal ? _directory : Path.Combine(_directory, "tenants", tenant.Value);
+        // Every other partition must be a minted account tenant. A value that is not one is REFUSED, never
+        // coerced: this folder holds prompt TEXT, and scrubbing a bad name is how two tenants quietly end up
+        // sharing a folder.
+        if (!AccountTenantId.IsMatch(tenant.Value))
+            throw new ArgumentException(
+                $"Tenant '{tenant.ToLogString()}' is not a minted account tenant and cannot name a prompt-log partition.",
+                nameof(tenant));
+
+        var combined = Path.Combine(_directory, "tenants", tenant.Value);
+
+        // Belt and braces, because the cost of being wrong here is one tenant reading another's prompts: the
+        // result must actually LIE INSIDE the partition root. The pattern above already excludes traversal,
+        // so this can only fire if that pattern is ever loosened - which is exactly when it is wanted.
+        var expectedRoot = Path.GetFullPath(Path.Combine(_directory, "tenants")) + Path.DirectorySeparatorChar;
+        if (!Path.GetFullPath(combined).StartsWith(expectedRoot, StringComparison.OrdinalIgnoreCase))
+            throw new ArgumentException(
+                $"Tenant '{tenant.ToLogString()}' resolves outside the prompt-log partition root.", nameof(tenant));
+
+        return combined;
     }
 
     /// <summary>The daily file a message at <paramref name="utcNow"/> lands in, for one tenant.</summary>

@@ -73,8 +73,14 @@ public sealed class PromptLogTenantIsolationTests : IAsyncLifetime
         _keyA = _gateway.Devices.Register("dev-a", "MA").DeviceKey;
         _keyB = _gateway.Devices.Register("dev-b", "MB").DeviceKey;
         _keyUnbound = _gateway.Devices.Register("dev-x", "MX").DeviceKey;
-        _gateway.Devices.SetAccountBinding("dev-a", "sub-alice", "tenant-alice");
-        _gateway.Devices.SetAccountBinding("dev-b", "sub-bob", "tenant-bob");
+        // Bound to tenants MINTED BY THE REAL REGISTRY, exactly as POST /devices/enroll-hosted does, rather
+        // than to invented strings. That matters here specifically: the prompt log turns a tenant id into a
+        // DIRECTORY NAME and now enforces the real minted shape, so a test binding a made-up id would be
+        // testing a partition production can never create.
+        var tenantA = _gateway.TenantRegistry.MintOrLookupBySubject("sub-alice", "alice@example.com");
+        var tenantB = _gateway.TenantRegistry.MintOrLookupBySubject("sub-bob", "bob@example.com");
+        _gateway.Devices.SetAccountBinding("dev-a", "sub-alice", tenantA.Value);
+        _gateway.Devices.SetAccountBinding("dev-b", "sub-bob", tenantB.Value);
     }
 
     public async Task DisposeAsync()
@@ -129,8 +135,11 @@ public sealed class PromptLogTenantIsolationTests : IAsyncLifetime
         // - a directory standing where the daily file should be, so the file read genuinely throws - rather
         // than by unit-testing the redaction helper, which would prove the helper and not the call site.
         //
-        // Revert-prove: put {path} and the raw {ex.Message} back into either catch block in GatewayPromptLog
-        // and this goes RED on the raw tenant id appearing in the log.
+        // Revert-prove: put {path} and the raw {ex.Message} back into the READ catch in GatewayPromptLog and
+        // this goes RED on the raw tenant id appearing in the log. An earlier version of this comment said
+        // "either catch block", which was FALSE - review reverted only the Append catch and all three tests
+        // still passed, so that second leak could have regressed unnoticed. The Append catch has its own
+        // test below now; a comment claiming coverage is not coverage.
         var root = Path.Combine(Path.GetTempPath(), "cc-plog-" + Guid.NewGuid().ToString("N"));
         var tenant = new CcDirector.Core.Tenancy.TenantId("11111111-2222-3333-4444-555555555555");
         try
@@ -170,6 +179,90 @@ public sealed class PromptLogTenantIsolationTests : IAsyncLifetime
         {
             try { if (Directory.Exists(root)) Directory.Delete(root, true); } catch { /* best-effort */ }
         }
+    }
+
+    [Fact]
+    public void A_failed_append_never_writes_the_raw_tenant_id_to_the_log()
+    {
+        // The SECOND raw-account-id leak, and it existed unprotected while a comment claimed otherwise. Append
+        // swallows its failure by design - a logging failure must not fail a Director's push - so the only
+        // trace is the log line, and that line carried an exception message containing the full path, which on
+        // hosted IS the account id.
+        //
+        // Driven the same way as the read proof: a real exclusive lock on the tenant's own daily file, so the
+        // real Append catch runs, through the real log writer.
+        //
+        // Revert-prove: put the raw {ex.Message} back in the Append catch and this goes RED on the raw id.
+        var root = Path.Combine(Path.GetTempPath(), "cc-plog-" + Guid.NewGuid().ToString("N"));
+        var tenant = new CcDirector.Core.Tenancy.TenantId("11111111-2222-3333-4444-555555555555");
+        try
+        {
+            var log = new CcDirector.Gateway.Prompts.GatewayPromptLog(root);
+            var day = DateTime.UtcNow;
+            var file = log.FileFor(tenant, day);
+            Directory.CreateDirectory(Path.GetDirectoryName(file)!);
+            File.WriteAllText(file, "");
+
+            IReadOnlyList<string> lines;
+            var written = 0;
+            using (var hold = new FileStream(file, FileMode.Open, FileAccess.Write, FileShare.None))
+            using (var capture = CcDirector.Core.Utilities.FileLog.RedirectForTests())
+            {
+                written = log.Append(tenant, new[] { new PromptRecord
+                {
+                    TsUtc = day,
+                    Machine = "MA",
+                    SessionId = "session-1",
+                    ContextId = "ctx-1",
+                    RepoPath = "/repo",
+                    Agent = "ClaudeCode",
+                    Role = "user",
+                    TimestampFromAgent = true,
+                    CharCount = 5,
+                    WordCount = 1,
+                    Text = "hello",
+                } });
+                lines = capture.DrainAndReadLines();
+            }
+
+            // Positive control FIRST: the append really did fail and really did log. Without this, "the id is
+            // absent" would also hold if the write had quietly succeeded.
+            Assert.Equal(0, written);
+            var failures = lines.Where(l => l.Contains("Append FAILED", StringComparison.Ordinal)).ToList();
+            Assert.NotEmpty(failures);
+
+            Assert.DoesNotContain(lines, l => l.Contains(tenant.Value, StringComparison.OrdinalIgnoreCase));
+            Assert.Contains(failures, l => l.Contains(tenant.ToLogString(), StringComparison.Ordinal));
+        }
+        finally
+        {
+            try { if (Directory.Exists(root)) Directory.Delete(root, true); } catch { /* best-effort */ }
+        }
+    }
+
+    [Fact]
+    public void A_tenant_id_that_is_not_a_minted_account_cannot_name_a_partition()
+    {
+        // Traversal canary. The validator used to be a character allow-list that accepted "..", and
+        // Path.Combine(root, "tenants", "..") canonicalizes to exactly root - the LOCAL partition. So a tenant
+        // id of ".." would have read and written the local tenant's prompt text. The dangerous values here are
+        // STRUCTURAL, not exotic, which is why a "looks harmless" character rule is not a validator.
+        //
+        // Hosted mints GUIDs today, but this is a storage boundary taking the general TenantId type and device
+        // bindings persist arbitrary strings, so the boundary enforces its own domain rather than trusting its
+        // callers.
+        var log = new CcDirector.Gateway.Prompts.GatewayPromptLog(
+            Path.Combine(Path.GetTempPath(), "cc-plog-" + Guid.NewGuid().ToString("N")));
+
+        foreach (var bad in new[] { "..", ".", "a/b", "a\b", "not-a-guid", "tenants" })
+            Assert.ThrowsAny<ArgumentException>(() => log.DirectoryFor(new CcDirector.Core.Tenancy.TenantId(bad)));
+
+        // Positive controls, so this is not passing because DirectoryFor refuses everything: the two shapes
+        // that ARE real still work, and land in different places.
+        var minted = new CcDirector.Core.Tenancy.TenantId("11111111-2222-3333-4444-555555555555");
+        Assert.NotEqual(log.DirectoryFor(CcDirector.Core.Tenancy.TenantId.Local),
+                        log.DirectoryFor(minted));
+        Assert.Contains(minted.Value, log.DirectoryFor(minted), StringComparison.Ordinal);
     }
 
     [Fact]
