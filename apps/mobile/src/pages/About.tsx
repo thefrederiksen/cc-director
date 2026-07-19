@@ -50,8 +50,8 @@ export function About() {
         <AboutRow label="Mobile bundle" value={bundle} />
         <AboutRow label="Gateway status" value={health?.status ?? "Loading..."} />
         <AboutRow label="Gateway time" value={formatTime(health?.serverTime)} />
-        <AboutRow label="Directors" value={health ? String(health.directors) : "Loading..."} />
-        <AboutRow label="Sessions" value={health ? String(health.sessions) : "Loading..."} />
+        <AboutRow label="Directors" value={formatCount(health, health?.directors)} />
+        <AboutRow label="Sessions" value={formatCount(health, health?.sessions)} />
         <AboutRow label="Service worker" value={sw} />
         <AboutRow label="Display" value={displayMode} />
       </section>
@@ -93,6 +93,18 @@ function shortSha(version: string): string {
   const plus = version.indexOf("+");
   if (plus < 0) return "";
   return version.substring(plus + 1, plus + 8);
+}
+
+/**
+ * A fleet count for the About list. Three genuinely different states, told apart honestly:
+ * health not fetched yet -> "Loading..."; the Gateway answered but OMITTED the count (the hosted
+ * Gateway does, because a public tenant-less probe has no correct number to give) -> "Not reported";
+ * otherwise the number. Never String(undefined), and never a substituted 0 - a zero here would read
+ * as "your fleet is empty" when the truth is "this Gateway does not say".
+ */
+function formatCount(health: unknown, value: number | undefined): string {
+  if (!health) return "Loading...";
+  return value === undefined || value === null ? "Not reported" : String(value);
 }
 
 function formatTime(value: string | undefined): string {
