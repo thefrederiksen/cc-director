@@ -1844,10 +1844,9 @@ public sealed class GatewayHost : IAsyncDisposable
         // in resumable chunks and the Gateway assembles → transcribes → injects the turn into the
         // owning session itself, so a refresh / dropped connection cannot lose a recorded utterance.
         GatewayDictationEndpoint.Map(_app, Registry, SessionOwners, Token,
-            _dictationTranscription ?? new Transcription.GatewayTranscriptionService(_keyVault, telemetry: _transcriptionTelemetry, audioArchive: _transcriptionAudioArchive), _transcribingSessions, _dictationUploads, Devices,
+            _dictationTranscription ?? new Transcription.GatewayTranscriptionService(_keyVault, telemetry: _transcriptionTelemetry, audioArchive: _transcriptionAudioArchive), _transcribingSessions, _dictationUploads, Devices, _tenantBoundary,
             pushedSessions: PushedSessions,
-            sendCommand: SendCommandAsync,
-            tenantBoundary: _tenantBoundary);
+            sendCommand: SendCommandAsync);
         // Durable per-upload-id dictation record (issue #1183): a PENDING upload's chunks are retained
         // until it becomes DELIVERED or ABANDONED, and the delivered/abandoned tombstone (the durable
         // de-dupe marker) is retained until the client acknowledges it - so an undelivered dictation

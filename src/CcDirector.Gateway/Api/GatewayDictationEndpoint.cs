@@ -102,24 +102,53 @@ internal static class GatewayDictationEndpoint
 
     /// <summary>
     /// Resolve the request's tenant from the AUTHENTICATED device key the auth layer stashed - the same seam
-    /// the prompt log and the cockpit read path use. Null means DENY: on hosted, an authenticated request
-    /// whose key has no bound tenant is refused, never served the local partition. Self-host, or no boundary
-    /// (older callers and tests), is always Local.
+    /// the prompt log and the cockpit read path use. Null means DENY.
+    ///
+    /// GATED ON <see cref="GatewayHostedMode.IsHosted"/> ITSELF, never on whether a boundary was passed in.
+    /// Deciding on the argument fails OPEN, and this is the fail-open that matters most on this endpoint: the
+    /// boundary is a SECURITY argument, so a hosted call site, test, or future rewire that does not supply one
+    /// would be answered <see cref="TenantId.Local"/>, and every leg below would then operate on the shared
+    /// self-host root - reopening transcript reads, chunk overwrite, ack, abandon, and completion-cache
+    /// joining, silently, with nothing failing loud to say so. An optional security argument is
+    /// indistinguishable from a resolved one at the call site, which is exactly why that mistake survives.
+    ///
+    /// So on hosted this NEVER substitutes a tenant. A missing boundary, a boundary that is not hosted-wired
+    /// (its ambient context is the single-tenant one, so it can only ever answer Local), and a key with no
+    /// bound tenant all resolve to null, and null is a REFUSAL - never Local, never SYSTEM. Off hosted mode
+    /// the answer is Local exactly as it has always been, so self-host behaviour is byte-identical.
+    ///
+    /// The second defence is that <see cref="Map"/> takes the boundary as a REQUIRED argument, so omitting it
+    /// is a compile error rather than a runtime downgrade. Belt and braces is deliberate: this makes the
+    /// runtime safe, the required argument makes the mistake unrepresentable.
     /// </summary>
     private static TenantId? ResolveTenant(HttpContext ctx, Tenancy.HostedTenantBoundary? boundary)
-        => boundary is null ? TenantId.Local : boundary.ResolveRequestTenant(ctx);
+    {
+        if (!GatewayHostedMode.IsHosted)
+            return boundary is null ? TenantId.Local : boundary.ResolveRequestTenant(ctx);
+        if (boundary is null || !boundary.IsHosted)
+            return null;
+        return boundary.ResolveRequestTenant(ctx);
+    }
 
     private static IResult NoTenantResult()
         => Results.Json(new { error = "no tenant is bound to this request" },
             statusCode: StatusCodes.Status403Forbidden);
 
+    /// <param name="tenantBoundary">
+    /// The hosted tenant boundary - the ONE seam that turns this request's AUTHENTICATED device key into the
+    /// tenant whose partition these five legs work in. REQUIRED, deliberately: it used to be an optional
+    /// nullable argument, which made forgetting it a one-word mistake that silently sent every leg to the
+    /// shared self-host root. It is non-optional so that omission is a COMPILE error, and
+    /// <see cref="ResolveTenant"/> refuses at runtime on hosted regardless, so a caller that forces a null
+    /// through still cannot be served another account's audio.
+    /// </param>
     public static void Map(IEndpointRouteBuilder app, DirectorRegistry registry,
         SessionOwnerCache? owners, string token, GatewayTranscriptionService transcription,
         TranscribingSessions transcribingSessions, VoiceUploadStore uploads, Pairing.DeviceRegistry devices,
+        Tenancy.HostedTenantBoundary tenantBoundary,
         Streaming.PushedSessionStore? pushedSessions = null,
         DirectorCommandRouter.SendDirectorCommandAsync? sendCommand = null,
-        TimeSpan? streamStale = null,
-        Tenancy.HostedTenantBoundary? tenantBoundary = null)
+        TimeSpan? streamStale = null)
     {
         // Gateway Cleanup mission, Phase 2 (PR E-B): resolve the owning Director push-store-first and inject
         // the dictation through the tunnel-first SessionVerbClient (the delivery marker rides the PromptRequest
