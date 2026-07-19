@@ -62,6 +62,35 @@ namespace CcDirector.Gateway.Tests;
 /// REVERT-PROVE: restore <c>ResolveTenant</c> to <c>boundary is null ? TenantId.Local : ...</c> and all five
 /// tests below go RED - the unwired legs answer 200 and the register leg hands back the seeded secret.
 ///
+/// HOW THE THIRTEEN LINES OF THIS CHANGE ARE ATTRIBUTED, because a reader must not infer more from the
+/// combined revert than it can carry. Each line was reverted ALONE, built, and run filtered, and that is
+/// what attributes it. The combined all-lines revert answers two DIFFERENT questions - did this break
+/// something else in the suite, and was any of it already covered elsewhere - and it answers those
+/// regardless of how many lines were pulled at once.
+///
+/// The combined run does NOT separately prove L1, L2, L4, L5, L8 and L10. Reverting
+/// <c>VoiceUploadStore.PartitionRootFor</c> (L7) collapses every tenant onto one root, which makes the
+/// per-leg <c>ForTenant</c> calls irrelevant and reddens those lines' tests by itself; three of its
+/// failures are NullReferenceException or IOException, which never reach the distinguishing assertion at
+/// all. Those six are attributed by their single-line filtered probes and by nothing else.
+///
+///   L1  register leg ForTenant   - register leaks the seeded transcript
+///   L2  chunk leg ForTenant      - local staged audio is overwritten
+///   L3  complete leg ForTenant   - complete leaks the seeded transcript
+///   L4  ack leg ForTenant        - a foreign ack retires the record
+///   L5  abandon leg ForTenant    - a foreign abandon resolves the record
+///   L6  CacheKey at GetOrAdd     - both tenants observe one identical cache key
+///   L7  PartitionRootFor         - 17 red, and the subsumer described above
+///   L8  IsMintedAccountTenant    - the uppercase casing alias is no longer refused
+///   L8b path containment         - NO CANARY, unreachable by construction (documented at the guard)
+///   L9  record stamp/BelongsHere - a foreign record is returned; the session lock crosses
+///   L10 SweepAbandoned skip      - the sweep eats another tenant's staging
+///   L10b pending-projection skip - NO CANARY, redundant with BelongsHere (documented at the guard)
+///   L11 ResolveTenant gate       - the five tests below
+///
+/// The two no-canary lines are recorded as such on purpose. Neither got a test invented for it, because the
+/// only test either could have is one that cannot fail.
+///
 /// The assembly runs sequentially (TestParallelization), so toggling CC_GATEWAY_HOSTED and the storage root
 /// here is safe; both are restored in DisposeAsync.
 /// </summary>

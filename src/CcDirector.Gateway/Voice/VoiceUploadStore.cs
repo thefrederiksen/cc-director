@@ -137,6 +137,19 @@ public sealed class VoiceUploadStore
         // Belt and braces, because the cost of being wrong here is one account reading another's dictation:
         // the result must actually LIE INSIDE the partition container. The rule above already excludes
         // traversal, so this can only fire if that rule is ever loosened - which is exactly when it is wanted.
+        //
+        // THIS GUARD HAS NO CANARY, DELIBERATELY, AND THAT IS NOT A COVERAGE GAP TO FILL. Measured, not
+        // assumed: deleting these three lines and running the tenant-partition and dictation suites reddens
+        // NOTHING. It cannot redden, because IsMintedAccountTenant above already refuses every value that
+        // could escape the root - ".." and "../.." and "a/b" and any non-GUID - so no input this method can
+        // legally receive reaches here with a combined path outside the container. It is unreachable by
+        // construction, which is the whole reason it is belt and braces rather than the primary defence.
+        //
+        // So do NOT write a test for it: the only test that could exist here is one that cannot fail, and a
+        // test that cannot fail is worse than no test - it reads as coverage. The condition under which this
+        // guard becomes reachable, and therefore the condition under which it becomes testable and MUST be
+        // given a canary, is precisely the moment someone loosens IsMintedAccountTenant. If you are here
+        // because you just did that, this guard is now live and needs a test that fails when you remove it.
         var expectedRoot =
             Path.GetFullPath(Path.Combine(_partitionBase, TenantPartitionDirectoryName)) + Path.DirectorySeparatorChar;
         if (!Path.GetFullPath(combined).StartsWith(expectedRoot, StringComparison.OrdinalIgnoreCase))
@@ -455,6 +468,18 @@ public sealed class VoiceUploadStore
         }
         foreach (var dir in dirs)
         {
+            // The partition container is not an upload, so skip it rather than probing it for a record.
+            //
+            // NO CANARY HERE EITHER, and for a different reason than the containment guard in
+            // PartitionRootFor - this one is REDUNDANT rather than unreachable. Measured: removing this line
+            // reddens nothing. It cannot, because the container directory holds other tenants' partitions and
+            // no record.json of its own, so ReadRecordFile returns null and the pattern match already declines
+            // it; and even if a record were somehow found there, BelongsHere on the same line refuses a record
+            // belonging to another tenant. Two independent things downstream already give the right answer.
+            //
+            // It stays because it says what is true - a partition container is not an upload - and because it
+            // stops a pointless file probe per partition on every projection. It is clarity and cost, not a
+            // security boundary; the security boundary on this line is BelongsHere, and THAT one has canaries.
             if (IsPartitionContainer(dir)) continue;
             if (ReadRecordFile(RecordPath(dir)) is { State: DictationDeliveryState.Pending } rec && BelongsHere(rec))
                 yield return rec;
