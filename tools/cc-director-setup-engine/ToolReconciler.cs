@@ -240,17 +240,20 @@ public sealed class ToolReconciler
     }
 
     /// <summary>
-    /// True when NO shared-venv Python tools bundle is provisioned yet - the truly-empty fresh-install state
-    /// the (snappy) installer now leaves behind. Empty means NONE of the "the bundle exists in some form"
-    /// signals are present: no bundle version recorded in the installed manifest, no recorded expected-scripts
-    /// sidecar (written after a healthy install), and no venv interpreter on disk. A pure read. When this is
-    /// true the reconcile provisions the bundle from nothing; once any of those signals exists, this is false
-    /// and the ordinary drift/health checks (a)/(b)/(c) govern instead.
+    /// True when NO shared-venv Python tools bundle has been SUCCESSFULLY provisioned - the state the (snappy)
+    /// installer now leaves behind, AND the residue a FAILED first provision leaves. It keys ONLY off the two
+    /// post-success records that <see cref="PythonToolsInstaller.InstallAsync"/> writes together and only after
+    /// pip fully succeeds and every console script is verified: the installed-manifest bundle version and the
+    /// expected-scripts sidecar. It deliberately does NOT treat a bare venv interpreter as "provisioned":
+    /// the installer creates the interpreter BEFORE pip runs, so a pip failure/timeout leaves an interpreter
+    /// with neither record - if that suppressed provisioning, a transient first-run failure would brick the
+    /// tools until manual repair (the broken-venv check can't see it either, since it needs the sidecar). A
+    /// pure read. When true the reconcile provisions from nothing and RETRIES after a partial failure; once a
+    /// healthy install writes its records, this is false and the ordinary drift/health checks (a)/(b)/(c) govern.
     /// </summary>
     private bool ToolsBundleAbsent()
         => InstalledManifest.Load(_layout).Get(PythonToolsInstaller.ComponentId) is null
-           && PythonToolsState.LoadScripts(_layout).Count == 0
-           && !PythonToolsInstaller.IsVenvPresent(_layout);
+           && PythonToolsState.LoadScripts(_layout).Count == 0;
 
     /// <summary>
     /// Run the heavy release-backed venv work under the machine-wide mutex - either a repair of a broken venv

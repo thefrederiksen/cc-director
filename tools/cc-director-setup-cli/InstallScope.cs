@@ -9,18 +9,34 @@ namespace CcDirector.Setup.Cli;
 public static class InstallScope
 {
     /// <summary>
+    /// True when the install is narrowed to a single component (<c>--component &lt;id&gt;</c>) rather than a
+    /// full install. <c>--component all</c> (or no option) is NOT narrowing. This is the single source of
+    /// truth both the plan narrowing and the Python-tools gate read, so "is this a scoped sub-install?" is
+    /// decided in exactly one place.
+    /// </summary>
+    public static bool IsComponentScoped(string? componentOption) =>
+        !string.IsNullOrWhiteSpace(componentOption)
+        && !componentOption.Equals("all", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>
     /// Whether this pass installs the per-user Python tools bundle (the shared venv that carries
-    /// every cc-* tool). True for an install of EITHER role on either platform: the Gateway is a
+    /// every cc-* tool). True for a FULL install of EITHER role on either platform: the Gateway is a
     /// per-user tray app (no elevation), so a Gateway install is a true SUPERSET of a Workstation
     /// install and must include the tools too (INSTALLATION.md section 1), and the release ships
     /// macOS bundles (cc-python-macos-arm64 / cc-tools-pyenv-macos-arm64) that the platform-aware
     /// PythonToolsInstaller consumes - the old Windows-only gate silently skipped the tools on a
     /// macOS install (issue #1445). It is deliberately role-INDEPENDENT; <paramref name="role"/>
     /// is kept in the signature to document and lock that fact.
+    ///
+    /// FALSE for a COMPONENT-SCOPED install (<paramref name="componentScoped"/>): the tools bundle is not
+    /// a narrowable component, so <c>--component &lt;id&gt;</c> is asking for that one component only. This
+    /// is what the GUI's Gateway sub-install (<c>install --role gateway --component gateway</c>) relies on -
+    /// without it the GUI would still pay the multi-minute bundle install through the CLI subprocess, and
+    /// the app-provisions-on-first-launch slice would be defeated for every Gateway install.
     /// </summary>
-    public static bool InstallsPythonTools(InstallRole role, bool installMode, bool dryRun)
+    public static bool InstallsPythonTools(InstallRole role, bool installMode, bool dryRun, bool componentScoped)
     {
         _ = role; // role-independent by design (see summary); both roles get the tools bundle.
-        return installMode && !dryRun;
+        return installMode && !dryRun && !componentScoped;
     }
 }

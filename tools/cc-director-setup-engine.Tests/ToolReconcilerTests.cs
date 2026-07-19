@@ -54,6 +54,47 @@ public sealed class ToolReconcilerTests : IDisposable
 
     private string ShimPath(string name) => Path.Combine(_layout.BinDir, name + ".cmd");
 
+    /// <summary>
+    /// Place ONLY the venv interpreter (no manifest, no sidecar, no console scripts) - the residue a FAILED
+    /// first provision leaves: PythonToolsInstaller creates the interpreter before pip runs, and pip can then
+    /// fail, so the post-success records are never written.
+    /// </summary>
+    private void PlaceVenvInterpreter()
+    {
+        Directory.CreateDirectory(_layout.PyenvBinDir);
+        File.WriteAllText(Path.Combine(_layout.PyenvBinDir, "python.exe"), "fake-python");
+    }
+
+    /// <summary>
+    /// A heavy-repair delegate that records its calls and, on success, writes exactly what a real successful
+    /// provision writes (console script + shim + installed manifest + expected-scripts sidecar) so a later
+    /// reconcile can tell a recovered install from a still-empty one.
+    /// </summary>
+    private sealed class RecordingHeavyRepair
+    {
+        private readonly InstallLayout _layout;
+        private readonly bool _success;
+        public int Calls { get; private set; }
+        public RecordingHeavyRepair(InstallLayout layout, bool success) { _layout = layout; _success = success; }
+
+        public Task<PythonToolsResult> InvokeAsync(CancellationToken ct)
+        {
+            Calls++;
+            if (_success)
+            {
+                Directory.CreateDirectory(_layout.PyenvScriptsDir);
+                File.WriteAllText(PythonToolsInstaller.ConsoleScriptPath(_layout, "cc-pdf"), "fake-exe");
+                new PythonToolsInstaller(_layout).WriteShims(new[] { "cc-pdf" });
+                var manifest = InstalledManifest.Load(_layout);
+                manifest.Set(PythonToolsInstaller.ComponentId, "1.0.0");
+                manifest.Save(_layout);
+                PythonToolsState.SaveScripts(_layout, new[] { "cc-pdf" });
+            }
+            return Task.FromResult(new PythonToolsResult(
+                _success, _success ? "provisioned" : "provision failed", Array.Empty<string>(), _success ? 1 : 0, _success ? "1.0.0" : null));
+        }
+    }
+
     /// <summary>A heavy-repair delegate that records whether it was called and returns a fixed result.</summary>
     private sealed class FakeHeavyRepair
     {
@@ -322,6 +363,47 @@ public sealed class ToolReconcilerTests : IDisposable
             release.Set();
             holderThread.Join();
         }
+    }
+
+    // Retry-safety: a FAILED first provision leaves a bare venv interpreter but neither post-success record.
+    // The reconcile must still provision (retry) - the partial interpreter must NOT be read as "installed".
+    // Revert-proof: re-add `&& !PythonToolsInstaller.IsVenvPresent(_layout)` to ToolsBundleAbsent (the exact
+    // bug) -> the partial interpreter suppresses provision, heavy.Calls == 0, and this reds.
+    [Fact]
+    public async Task ReconcileAsync_PartialVenvInterpreterNoRecords_StillProvisions()
+    {
+        PlaceVenvInterpreter(); // interpreter present, but no manifest and no sidecar (pip failed on first run)
+        var heavy = new FakeHeavyRepair(success: true);
+
+        var result = await new ToolReconciler(_layout, heavy.InvokeAsync).ReconcileAsync();
+
+        Assert.Equal(1, heavy.Calls); // the partial interpreter did NOT suppress the retry
+        Assert.Equal(ReconcileOutcome.Reconciled, result.Outcome);
+        Assert.Contains(result.Actions, a => a.Contains("bundle", StringComparison.OrdinalIgnoreCase));
+    }
+
+    // Full lifecycle: a failed first provision leaves an interpreter; the next reconcile retries even though
+    // the first still fails; a later succeeding provision recovers (writes the post-success records); once
+    // recovered, further reconciles do NOT re-provision.
+    [Fact]
+    public async Task ReconcileAsync_FailedFirstProvision_RetriesUntilRecovery_ThenStops()
+    {
+        PlaceVenvInterpreter();
+
+        var stillFailing = new FakeHeavyRepair(success: false);
+        var firstRetry = await new ToolReconciler(_layout, stillFailing.InvokeAsync).ReconcileAsync();
+        Assert.Equal(1, stillFailing.Calls);                 // retried despite the leftover interpreter
+        Assert.Equal(ReconcileOutcome.Failed, firstRetry.Outcome);
+
+        var recovering = new RecordingHeavyRepair(_layout, success: true);
+        var recovered = await new ToolReconciler(_layout, recovering.InvokeAsync).ReconcileAsync();
+        Assert.Equal(1, recovering.Calls);                   // retried AGAIN and this time succeeded
+        Assert.Equal(ReconcileOutcome.Reconciled, recovered.Outcome);
+
+        var afterRecovery = new RecordingHeavyRepair(_layout, success: true);
+        var steady = await new ToolReconciler(_layout, afterRecovery.InvokeAsync).ReconcileAsync();
+        Assert.Equal(0, afterRecovery.Calls);                // records now present -> no more re-provision
+        Assert.Equal(ReconcileOutcome.InSync, steady.Outcome);
     }
 
     [Fact]

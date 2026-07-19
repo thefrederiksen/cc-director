@@ -309,7 +309,7 @@ internal static class Commands
 
         // Optionally narrow to one component.
         var only = args.Option("component");
-        if (!string.IsNullOrWhiteSpace(only) && !only.Equals("all", StringComparison.OrdinalIgnoreCase))
+        if (InstallScope.IsComponentScoped(only))
         {
             var filtered = plan.Items.Where(i => i.ComponentId.Equals(only, StringComparison.OrdinalIgnoreCase)).ToList();
             if (filtered.Count == 0) throw new UsageException($"--component '{only}' is not in scope.");
@@ -400,7 +400,8 @@ internal static class Commands
         // old workstation-only gate dated from when the Gateway was an elevated Windows service that
         // ran as admin while the venv belonged in the logged-in user's profile; that model is retired.
         var toolsInstalled = false;
-        if (InstallScope.InstallsPythonTools(Role(args), installMode, args.HasFlag("dry-run")))
+        if (InstallScope.InstallsPythonTools(Role(args), installMode, args.HasFlag("dry-run"),
+                InstallScope.IsComponentScoped(args.Option("component"))))
         {
             var py = await new PythonToolsInstaller(layout).InstallAsync(release, source);
             if (json)
