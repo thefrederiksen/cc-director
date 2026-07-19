@@ -293,6 +293,10 @@ namespace CcDirector.Gateway.Migrations.Postgres.Migrations
 
             modelBuilder.Entity("CcDirector.Gateway.Data.Entities.PushSubscriptionEntity", b =>
                 {
+                    b.Property<string>("TenantId")
+                        .HasColumnType("text")
+                        .HasColumnName("tenant_id");
+
                     b.Property<string>("Endpoint")
                         .HasColumnType("text")
                         .UseCollation("C");
@@ -308,12 +312,7 @@ namespace CcDirector.Gateway.Migrations.Postgres.Migrations
                         .IsRequired()
                         .HasColumnType("text");
 
-                    b.Property<string>("TenantId")
-                        .IsRequired()
-                        .HasColumnType("text")
-                        .HasColumnName("tenant_id");
-
-                    b.HasKey("Endpoint");
+                    b.HasKey("TenantId", "Endpoint");
 
                     b.HasIndex("TenantId");
 
@@ -322,6 +321,10 @@ namespace CcDirector.Gateway.Migrations.Postgres.Migrations
 
             modelBuilder.Entity("CcDirector.Gateway.Data.Entities.SessionSpendEntity", b =>
                 {
+                    b.Property<string>("TenantId")
+                        .HasColumnType("text")
+                        .HasColumnName("tenant_id");
+
                     b.Property<string>("SessionId")
                         .HasColumnType("text")
                         .UseCollation("C");
@@ -361,15 +364,10 @@ namespace CcDirector.Gateway.Migrations.Postgres.Migrations
                     b.Property<string>("RepoPath")
                         .HasColumnType("text");
 
-                    b.Property<string>("TenantId")
-                        .IsRequired()
-                        .HasColumnType("text")
-                        .HasColumnName("tenant_id");
-
                     b.Property<bool>("TokensCaptured")
                         .HasColumnType("boolean");
 
-                    b.HasKey("SessionId");
+                    b.HasKey("TenantId", "SessionId");
 
                     b.HasIndex("TenantId");
 
@@ -380,6 +378,10 @@ namespace CcDirector.Gateway.Migrations.Postgres.Migrations
 
             modelBuilder.Entity("CcDirector.Gateway.Data.Entities.SnoozeEntity", b =>
                 {
+                    b.Property<string>("TenantId")
+                        .HasColumnType("text")
+                        .HasColumnName("tenant_id");
+
                     b.Property<string>("SessionId")
                         .HasColumnType("text")
                         .UseCollation("C");
@@ -396,12 +398,7 @@ namespace CcDirector.Gateway.Migrations.Postgres.Migrations
                     b.Property<DateTime?>("SnoozeUntilUtc")
                         .HasColumnType("timestamp with time zone");
 
-                    b.Property<string>("TenantId")
-                        .IsRequired()
-                        .HasColumnType("text")
-                        .HasColumnName("tenant_id");
-
-                    b.HasKey("SessionId");
+                    b.HasKey("TenantId", "SessionId");
 
                     b.HasIndex("TenantId");
 

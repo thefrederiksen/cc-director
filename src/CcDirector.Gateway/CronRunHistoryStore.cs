@@ -114,7 +114,6 @@ public sealed class CronRunHistoryStore
 
     private static CronRunEntity ToEntity(string jobId, CronRunRecord r, long sequence, string tenantId) => new()
     {
-        Id = Guid.NewGuid(),
         JobId = jobId,
         Sequence = sequence,
         TenantId = tenantId,

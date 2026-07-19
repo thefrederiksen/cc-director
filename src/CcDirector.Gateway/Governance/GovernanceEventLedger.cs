@@ -213,7 +213,6 @@ public sealed class GovernanceEventLedger
 
         return new GovernanceEventEntity
         {
-            Id = Guid.NewGuid(),
             TenantId = tenant,
             SubjectKind = subject,
             SessionId = sessionId,

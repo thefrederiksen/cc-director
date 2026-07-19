@@ -23,11 +23,8 @@ namespace CcDirector.Gateway.Data.Entities;
 /// column) so reorder and targeted remove stay exact and queryable - the same child-table pattern the cron
 /// run history uses.
 /// </summary>
-public sealed class WorkListEntity : TenantScopedEntity
+public sealed class WorkListEntity : GatewayMintedKeyEntity
 {
-    /// <summary>Surrogate primary key. A GUID generated in code (never a database default).</summary>
-    public Guid Id { get; set; }
-
     /// <summary>The list's human name, in its original case.</summary>
     public string Name { get; set; } = "";
 

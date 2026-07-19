@@ -18,11 +18,8 @@ namespace CcDirector.Gateway.Data.Entities;
 /// path opens a run beside the Mission record and references it (<see cref="MissionId"/>) - a
 /// reference, not a merge, because standalone runs have no Mission.
 /// </summary>
-public sealed class WorkflowRunEntity : TenantScopedEntity
+public sealed class WorkflowRunEntity : GatewayMintedKeyEntity
 {
-    /// <summary>Primary key, minted in code - never a database default.</summary>
-    public Guid Id { get; set; }
-
     /// <summary>The workflow definition this run executes. Indexed.</summary>
     public string WorkflowId { get; set; } = "";
 

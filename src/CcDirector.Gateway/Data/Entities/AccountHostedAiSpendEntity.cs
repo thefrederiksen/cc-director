@@ -20,11 +20,8 @@ namespace CcDirector.Gateway.Data.Entities;
 /// the cloud returns without a created_at cannot be de-duplicated and is therefore skipped rather than risk
 /// double-counting real money (the honest choice - an undercount that is disclosed, never a silent overcount).
 /// </summary>
-public sealed class AccountHostedAiSpendEntity : TenantScopedEntity
+public sealed class AccountHostedAiSpendEntity : GatewayMintedKeyEntity
 {
-    /// <summary>Primary key, minted in code - never a database default.</summary>
-    public Guid Id { get; set; }
-
     /// <summary>The debit magnitude in micro-dollars (1_000_000 = $1), stored POSITIVE (the cloud returns a
     /// debit as a negative amount; we mirror its magnitude). Integer smallest-units, never a bare decimal.</summary>
     public long AmountMicros { get; set; }

@@ -214,11 +214,20 @@ public sealed class GatewayDbContext : DbContext
         modelBuilder.Entity<SnoozeEntity>(b =>
         {
             b.ToTable("snoozes");
-            // SessionId is the natural key - a globally unique, ordinally-compared GUID string - so it is the
-            // primary key directly (no surrogate id). SQLite's default BINARY text collation compares it
-            // ordinally, matching the legacy Dictionary(StringComparer.Ordinal). The armed-vs-deferred
-            // invariant is kept in the store, not as a database CHECK (provider-divergent), matching today.
-            b.HasKey(e => e.SessionId);
+            // SessionId is the natural key - an ordinally-compared GUID string - so there is no surrogate id.
+            // SQLite's default BINARY text collation compares it ordinally, matching the legacy
+            // Dictionary(StringComparer.Ordinal). The armed-vs-deferred invariant is kept in the store, not as
+            // a database CHECK (provider-divergent), matching today.
+            //
+            // COMPOSITE primary key (tenant_id, SessionId) - Hosted Multi-Tenancy. The session id is
+            // CALLER-SUPPLIED (it arrives on the snooze request from a Director), so it is a value one tenant
+            // hands us, never something the Gateway mints and guarantees globally unique. The store upserts by
+            // reading THROUGH the tenant query filter and adding when it finds nothing, so on a SessionId-only
+            // key a second tenant presenting an id the first tenant already holds finds nothing, inserts, and
+            // hits a PRIMARY KEY violation: a cross-tenant SQUAT (the second tenant cannot use that id at all)
+            // and an EXISTENCE ORACLE (the failure tells it the first tenant holds it). Scoping the key by
+            // tenant gives each tenant its own session-id space, which is what the store already assumes.
+            b.HasKey(e => new { e.TenantId, e.SessionId });
         });
 
         modelBuilder.Entity<GovernanceEventEntity>(b =>
@@ -241,10 +250,17 @@ public sealed class GatewayDbContext : DbContext
         modelBuilder.Entity<PushSubscriptionEntity>(b =>
         {
             b.ToTable("push_subscriptions");
-            // Endpoint is the natural key - a unique-per-subscription URL compared ordinally (SQLite's default
-            // BINARY collation), matching the legacy Dictionary(StringComparer.Ordinal) - so it is the primary
-            // key directly, no surrogate id. There is no per-user column: the legacy shape had none.
-            b.HasKey(e => e.Endpoint);
+            // Endpoint is the natural key - a per-subscription URL compared ordinally (SQLite's default BINARY
+            // collation), matching the legacy Dictionary(StringComparer.Ordinal) - so there is no surrogate
+            // id. There is no per-user column: the legacy shape had none.
+            //
+            // COMPOSITE primary key (tenant_id, Endpoint) - Hosted Multi-Tenancy. The endpoint is the browser's
+            // push URL, entirely CALLER-SUPPLIED, and it is the whole key. The store upserts by reading THROUGH
+            // the tenant query filter and adding when it finds nothing, so on an Endpoint-only key a second
+            // tenant presenting an endpoint the first tenant already holds finds nothing, inserts, and hits a
+            // PRIMARY KEY violation: a cross-tenant SQUAT plus an EXISTENCE ORACLE, exactly as for snoozes.
+            // Scoping the key by tenant lets each tenant own its own subscription for a given endpoint.
+            b.HasKey(e => new { e.TenantId, e.Endpoint });
         });
 
         modelBuilder.Entity<WingmanInstructionEntity>(b =>
@@ -260,9 +276,13 @@ public sealed class GatewayDbContext : DbContext
         modelBuilder.Entity<SessionSpendEntity>(b =>
         {
             b.ToTable("session_spend");
-            // SessionId is the natural key - one row per session, globally-unique GUID string - so it is the
-            // primary key directly (the snoozes-table pattern), no surrogate id.
-            b.HasKey(e => e.SessionId);
+            // SessionId is the natural key - one row per session per tenant - so there is no surrogate id.
+            //
+            // COMPOSITE primary key (tenant_id, SessionId) - Hosted Multi-Tenancy, the snoozes-table reasoning
+            // exactly: the session id is CALLER-SUPPLIED (it arrives on the record-spend request), the store
+            // upserts through the tenant query filter, so a SessionId-only key would let one tenant SQUAT an id
+            // for every other tenant and would leak the fact that it holds it.
+            b.HasKey(e => new { e.TenantId, e.SessionId });
             // The reporting cut is a last-observed time window, tenant-leading for the global filter.
             b.HasIndex(e => new { e.TenantId, e.LastObservedUtc });
         });

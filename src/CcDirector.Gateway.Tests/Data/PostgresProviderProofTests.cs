@@ -153,12 +153,12 @@ public sealed class PostgresProviderProofTests
     {
         EnsureMigrated();
 
-        var id = Guid.NewGuid();
+        // The key is minted by GatewayMintedKeyEntity, not chosen here - read it back off the row we added.
+        Guid id;
         using (var ctx = NewContext())
         {
-            ctx.WorkflowVersions.Add(new WorkflowVersionEntity
+            var row = new WorkflowVersionEntity
             {
-                Id = id,
                 TenantId = TenantId.Local.Value,
                 WorkflowId = "wf-json-proof",
                 Version = 1,
@@ -179,8 +179,10 @@ public sealed class PostgresProviderProofTests
                 ContentHash = "hash",
                 AuthoredBy = "test",
                 CreatedUtc = DateTime.UtcNow,
-            });
+            };
+            ctx.WorkflowVersions.Add(row);
             ctx.SaveChanges();
+            id = row.Id;
         }
 
         using (var ctx = NewContext())

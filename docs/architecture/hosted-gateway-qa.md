@@ -445,3 +445,93 @@ The hosted Gateway is validated end to end: a real Director authenticates and tu
 URL, a real operation persists through it into the isolated Supabase gateway schema, state survives an App
 Service restart, and the tunnel holds past the idle cap. The isolated test Director (pid 38432) and its
 scratch CC_DIRECTOR_ROOT were torn down after the run.
+
+## Tenant scoping - the PRIMARY KEY half (snoozes, session_spend, push_subscriptions)
+
+Date: 2026-07-19
+
+Issue #1840 made `cron_jobs`, `workflows`, `workflow_versions` and `mission_notes` tenant-composite. A
+persistence census afterwards found three tenant-scoped tables still keyed on CALLER-SUPPLIED input with
+`tenant_id` present only as a data column:
+
+- `snoozes` - primary key `SessionId` (the session id a Director presents on a snooze request)
+- `session_spend` - primary key `SessionId` (the session id on a record-spend request)
+- `push_subscriptions` - primary key `Endpoint` (the browser's push URL)
+
+### Why that is a defect, not a style point
+
+Every store upserts the same way: read THROUGH the tenant query filter, and add when the read finds nothing.
+So a second tenant presenting an identifier the first tenant already holds reads nothing (the filter hides the
+other tenant's row), takes the insert branch, and the database rejects it on the primary key. That is a
+cross-tenant SQUAT (the second tenant cannot use that identifier at all, because another tenant has it) and an
+EXISTENCE ORACLE (the failure discloses that another tenant holds it). No row content crosses the boundary,
+but the key space does.
+
+Reproduced before the fix by driving the REAL stores (`SnoozeRegistry`, `SessionSpendStore`,
+`PushSubscriptionStore`) with two tenants over one database - three tests, three failures, each
+`SQLite Error 19: 'UNIQUE constraint failed: <table>.<key>'`.
+
+### The fix
+
+`GatewayDbContext` now gives all three a composite primary key, following #1840 exactly:
+`(tenant_id, SessionId)`, `(tenant_id, SessionId)`, `(tenant_id, Endpoint)`. No store code changed - every
+lookup already goes through a filtered LINQ query, never `Find(key)`.
+
+### The guard that should have caught it
+
+`TenantScopeGuardTests` asserted the tenant COLUMN and the query FILTER, and is structurally blind to the KEY -
+which is exactly how these three passed it. A third assertion,
+`EveryTenantScopedTable_HasTenantIdInItsPrimaryKey_UnlessTheGatewayMintsTheKeyItself`, now requires every
+tenant-scoped table's primary key to include `tenant_id`, unless the key is one the Gateway itself mints.
+
+That exemption is a TYPE, not a written list. The first attempt was an allowlist of ten table names, each with a
+sentence asserting "this store mints the key with `Guid.NewGuid()`", re-checked by asserting the key was still a
+single `Guid`. That check could not fail for the change it existed to catch: a store switching from minting its
+key to accepting one from the caller keeps the key a single `Guid`, so the guard stayed green in precisely the
+dangerous case - which is worse than no guard, because it reads as protection and stops anyone downstream from
+looking.
+
+The exemption is now `GatewayMintedKeyEntity`, whose `Id` has a PRIVATE setter and is minted by the base class
+itself. The ten entities derive from it and no longer declare their own `Id`. Assigning a caller-supplied value
+to one of these keys is not a test failure found later - it does not compile. The three ways to escape that are
+each closed by construction:
+
+| Escape | What stops it |
+|---|---|
+| Assign a caller-supplied value to the key | Compile error `CS0272` - the setter is inaccessible |
+| Widen the setter so that compiles again | `TheGatewayMintedKey_CanOnlyBeWrittenByTheBaseClassThatMintsIt` turns red |
+| Re-declare a settable `Id` on the derived entity, or drop the base class | The primary-key test requires the mapped key property to be DECLARED ON `GatewayMintedKeyEntity`, so it turns red |
+
+Each of those three was verified by making the change and watching the failure, and both guards were confirmed
+green again once it was reverted.
+
+### The migration, and what it does to existing rows
+
+One migration per provider, generated from the same model:
+`Data/Migrations/20260719201700_CallerSuppliedKeysScopedByTenant` (SQLite) and
+`Migrations/20260719201740_CallerSuppliedKeysScopedByTenant` (Postgres). Each drops the three single-column
+primary keys and adds the composite ones. `dotnet ef migrations has-pending-model-changes` reports no pending
+changes on BOTH providers.
+
+Existing rows are preserved, and that is established by RUNNING the upgrade, not by reading the operations.
+`CallerSuppliedKeyUpgradePreservesRowsTests` migrates a database to the migration immediately before this one,
+inserts rows through raw SQL the way a database in the field holds them, migrates the rest of the way, and
+asserts every row and every column value is unchanged. It also asserts the migration actually ran - by name out
+of `__EFMigrationsHistory`, and by the key really being composite afterwards - so a migration that silently did
+nothing cannot pass by leaving the rows undisturbed. A second test shows the upgrade delivers what it is for:
+before it, a second tenant reusing a session id is refused on the primary key; after it, both rows coexist.
+
+This matters because the reasoning below is NOT sufficient on its own. On SQLite a primary key cannot be altered
+in place, so EF turns each operation pair into a table rebuild, and whether the copy carries every row and every
+column value is a property of that generated rebuild rather than of the three lines anyone reads in the
+migration file. The supporting reasons:
+
+- No row is deleted, inserted, or edited. On SQLite a primary-key change is a table REBUILD (EF creates the new
+  table, copies every row, drops the old, renames); on Postgres it is `ALTER TABLE ... DROP CONSTRAINT` plus
+  `ADD PRIMARY KEY`, with no table rewrite.
+- Uniqueness cannot be violated by existing data: the OLD key already made the second column unique on its own,
+  so `(tenant_id, <that column>)` is unique a fortiori. There is no possible duplicate to trip on.
+- `tenant_id` is already NOT NULL on all three tables (`ApplyTenantScope` marks it required), which a primary-key
+  column must be, so no backfill and no nullability change is needed.
+- On a single-tenant install every row is `tenant_id = 'local'`, so the composite key behaves identically to the
+  old one and the upgrade is invisible.
