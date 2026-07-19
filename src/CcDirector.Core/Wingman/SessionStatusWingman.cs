@@ -177,15 +177,16 @@ public sealed class SessionStatusWingman : IDisposable
     // once". It was shared with nothing: it had ZERO production callers - only its own five tests - and its
     // comment's claim that "the Gateway's SessionOrdering.EffectiveColor and the /m client's effColor apply
     // the same rule" was false in both halves. The /m client has no such rule at all, and the Gateway
-    // applies a strictly NARROWER one on purpose: this copy still held yellow while `!voiceAudioReady`, and
-    // a text-to-speech failure produces no audio, so voiceAudioReady stayed false and the session wedged
-    // YELLOW forever. SessionOrdering.IsVoicePreparing gates on VoiceGenerating ALONE precisely so the rule
-    // has a terminal exit - it says so in its own comment, and it has said so since 8 July.
+    // applies its own on the roster.
     //
-    // So this was a dead copy of a rule, carrying the bug the live one had already fixed, while claiming to
-    // agree with it. Its five tests asserted the wedge and were green. Deleted rather than corrected: a
-    // shared rule definition that nothing shares is just a corpse with a footnote, and the next agent to
-    // read it would have copied the bug back out. The live rule is SessionOrdering.IsVoicePreparing.
+    // So this was a dead copy of a rule that nothing shared - deleted rather than corrected, because a
+    // shared rule definition that nothing shares is just a corpse with a footnote. The live rule is
+    // SessionOrdering.IsVoicePreparing.
+    //
+    // NOTE (owner's ruling, 2026-07-19): the live rule DOES hold yellow while `!voiceAudioReady` - by
+    // design, so a voice-mode session never flashes red before its voice is ready. Do not read this
+    // tombstone as evidence that "yellow until audio" is a bug; the wedge it once caused is now prevented by
+    // voice-generation reliability, not by narrowing the color. See IsVoicePreparing's own summary.
 
     public void Dispose()
     {

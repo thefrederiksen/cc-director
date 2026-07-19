@@ -252,13 +252,14 @@ public sealed class SessionOrderingTests
     };
 
     [Fact]
-    public void EffectiveColor_VoiceWaiting_NoAudio_NotGenerating_IsRed_NotStuckYellow()
+    public void EffectiveColor_VoiceWaiting_NoAudio_NotGenerating_IsYellow_UntilAudioReady()
     {
-        // Regression (2026-07-08): a text-to-speech failure (DeepInfra 504/timeout) produces no
-        // audio, so a voice-mode waiting session ends with audioReady=false and nothing generating.
-        // This must resolve to red "needs you" - NOT the old permanent yellow/orange wedge that had
-        // no exit when audio never arrived. The hold is now gated on VoiceGenerating alone.
-        Assert.Equal("red", SessionOrdering.EffectiveColor(
+        // Owner's ruling (2026-07-19): a voice-mode waiting session with no audio yet is YELLOW
+        // "preparing voice", held across the gaps between generation attempts - NOT red. In voice
+        // mode the user must never see red until the voice is available. (This deliberately reverses
+        // the 2026-07-08 "red when not generating" narrowing; the wedge that change feared is now a
+        // voice-reliability concern, not a color rule - see IsVoicePreparing's summary.)
+        Assert.Equal("yellow", SessionOrdering.EffectiveColor(
             Voice("red", "WaitingForInput", generating: false, audioReady: false)));
     }
 
@@ -304,13 +305,22 @@ public sealed class SessionOrderingTests
     }
 
     [Fact]
-    public void Classify_VoiceWaiting_NoAudio_NotGenerating_IsNeedsYou()
+    public void Classify_VoiceWaiting_NoAudio_NotGenerating_IsActive_PreparingVoice()
     {
-        // Regression (2026-07-08): once generation has ended with no audio (text-to-speech failed),
-        // the session genuinely needs the user - it must surface in NEEDS YOU, not hide in Active
-        // behind a stuck "preparing voice" state forever.
-        Assert.Equal(SessionOrdering.TriageBucket.NeedsYou, SessionOrdering.Classify(
+        // Owner's ruling (2026-07-19): a voice-mode waiting session with no audio yet is "preparing
+        // voice" (yellow), so it triages Active, not NeedsYou - there is nothing to act on until the
+        // voice is ready. It only enters NeedsYou once audio is ready (see the AudioReady test below).
+        Assert.Equal(SessionOrdering.TriageBucket.Active, SessionOrdering.Classify(
             Voice("red", "WaitingForInput", generating: false, audioReady: false)));
+    }
+
+    [Fact]
+    public void Classify_VoiceWaiting_AudioReady_IsNeedsYou()
+    {
+        // Voice is ready - now there is something to play and act on, so the session genuinely needs
+        // the user and surfaces in NEEDS YOU. This is the terminal exit from the yellow hold.
+        Assert.Equal(SessionOrdering.TriageBucket.NeedsYou, SessionOrdering.Classify(
+            Voice("red", "WaitingForInput", generating: false, audioReady: true)));
     }
 
     // Classify_RedWhileExplaining_IsActive_NotNeedsYou lived here and is deleted with the rule it covered

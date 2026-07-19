@@ -237,21 +237,44 @@ public sealed class AgreementCheckFaultInjectionTests
     }
 
     [Fact]
-    public void VoiceBeingPrepared_IsYellowOnTheGatewayAndRedOnTheDesktop_AndIsReported()
+    public void VoiceAudioReady_IsRedOnTheGatewayAndYellowOnTheDesktop_AndIsReported()
     {
-        // THIS IS NOW THE ROW THE LIVE GATEWAY ACTUALLY SERVES, which it was not when this was written.
-        // A companion test used to sit below this one arguing that the real Gateway stamps BriefingState
-        // ="Briefing" in the same breath as VoiceGenerating, so this row was a shape production never
-        // emitted. That stamp is deleted (gap 5) - the Gateway adds VoiceGenerating and nothing else - so
-        // this row is exactly what the fleet serves, and the companion went with the stamp it described.
-        var row = Waiting("voice");
+        // THE VOICE DIVERGENCE, as it stands since the 2026-07-19 widening of IsVoicePreparing (yellow while
+        // !VoiceAudioReady). A voice-mode session whose audio the Gateway HAS ready folds red "needs you" on
+        // the Gateway - VoiceGenerating false, VoiceAudioReady true, so it is no longer preparing. The desktop
+        // cannot see the Gateway's audio store, so it still folds yellow "preparing voice". Gateway red,
+        // desktop yellow - a real divergence, and VoiceAudioReady is the Gateway-only fact behind it.
+        var row = Waiting("voice-ready");
         row.VoiceMode = true;
-        row.VoiceGenerating = true;
+        row.VoiceAudioReady = true;   // the GATEWAY holds playable audio; the desktop cannot see it
+        AsGatewayServesIt(row);
+        Assert.Equal("red", row.EffectiveColor);
+
+        var findings = Run(row);
+        Assert.Contains(findings, f => f.Kind == "desktop-vs-gateway");
+        Assert.Contains(findings, f => f.Detail.Contains("voice audio ready", StringComparison.Ordinal));
+        Assert.Equal("yellow", SessionOrdering.EffectiveColor(AgreementCheck.ToDesktopInput(row)));
+    }
+
+    /// <summary>
+    /// The behaviour change of 2026-07-19 made visible: voice BEING PREPARED (generating, or simply no audio
+    /// yet) now AGREES across the two surfaces. Because IsVoicePreparing holds yellow while !VoiceAudioReady,
+    /// and the desktop reconstruction also has no audio, BOTH fold yellow. This row used to be the divergence
+    /// (its yellow came only from the Gateway-only VoiceGenerating); it is now the agreement, because the
+    /// yellow no longer depends on a fact only the Gateway can see. VoiceAudioReady (the test above) is now
+    /// the fact that actually diverges.
+    /// </summary>
+    [Fact]
+    public void VoiceBeingPrepared_NowAgrees_BecauseNoAudioFoldsYellowOnBothSurfaces()
+    {
+        var row = Waiting("voice-preparing");
+        row.VoiceMode = true;
+        row.VoiceGenerating = true;   // Gateway-only, but stripping it still leaves !VoiceAudioReady -> yellow
         AsGatewayServesIt(row);
         Assert.Equal("yellow", row.EffectiveColor);
 
-        Assert.Contains(Run(row), f => f.Kind == "desktop-vs-gateway");
-        Assert.Equal("red", SessionOrdering.EffectiveColor(AgreementCheck.ToDesktopInput(row)));
+        Assert.Empty(Run(row));
+        Assert.Equal("yellow", SessionOrdering.EffectiveColor(AgreementCheck.ToDesktopInput(row)));
     }
     /// <summary>
     /// The control for the one above, and the reason it is not just "report everything with a briefing
@@ -366,6 +389,7 @@ public sealed class AgreementCheckFaultInjectionTests
         row.IsTranscribing = true;
         row.VoiceMode = true;
         row.VoiceGenerating = true;
+        row.VoiceAudioReady = true;
         row.BriefingState = "Briefing";
         AsGatewayServesIt(row);
 

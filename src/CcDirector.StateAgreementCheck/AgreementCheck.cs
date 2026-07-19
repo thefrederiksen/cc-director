@@ -438,12 +438,18 @@ public static class AgreementCheck
     /// StatusColor - and SessionRole, read from Session.GatewayResolvedRole, written ONLY by the Gateway's
     /// set-resolved-role verb (defect 5's fix).
     ///
-    /// It does NOT carry these four, which the Gateway stamps in its roster loop (GatewayEndpoints.cs
+    /// It does NOT carry these five, which the Gateway stamps in its roster loop (GatewayEndpoints.cs
     /// ~:770-790) and which NOTHING pushes down - the Gateway sends exactly two verbs to a Director,
     /// "launch" and "set-resolved-role". Each is a fold input, so each is a real divergence:
     ///   * DictationStatus - the durable phone-dictation record. Gateway: orange. Desktop: cannot see it.
     ///   * Transcribing - the Gateway's active-run mark. Gateway: orange. Desktop: cannot see it.
-    ///   * VoiceGenerating - drives IsVoicePreparing. Gateway: yellow. Desktop: cannot see it.
+    ///   * VoiceGenerating - drives IsVoicePreparing (yellow). Gateway can see it; desktop cannot. Note that
+    ///     since the 2026-07-19 widening of IsVoicePreparing to "yellow while !VoiceAudioReady", stripping
+    ///     VoiceGenerating no longer flips the desktop fold on its own: with no audio either, the desktop
+    ///     still folds yellow. VoiceAudioReady (below) is now the voice fact that actually diverges.
+    ///   * VoiceAudioReady - the Gateway holds playable audio (VoiceGenerating false, !VoiceAudioReady false),
+    ///     so it folds RED "needs you". The desktop cannot see the Gateway's audio, so it still folds YELLOW
+    ///     "preparing voice". Gateway: red. Desktop: yellow. A real divergence, reported below.
     ///   * The OnHold expiry overlay - the Gateway owns the snooze clock and overlays OnHold=false BEFORE
     ///     the fold. The desktop reads the Director's raw hold. This one is TRANSIENT, not structural: the
     ///     reliable display-state channel reconciles the Director's raw hold at fold cadence (there is no
@@ -490,6 +496,11 @@ public static class AgreementCheck
         copy.DictationStatus = null;
         copy.Transcribing = false;
         copy.VoiceGenerating = false;
+        // The Gateway stamps VoiceAudioReady from its own voice store (GatewayEndpoints -> _voiceService
+        // .HasVoice); the Director never sets it. Since IsVoicePreparing now reads !VoiceAudioReady, the
+        // desktop's real value (false) must drive the reconstruction, not the Gateway's - otherwise a row
+        // whose voice is READY would look identical on both screens when the desktop actually cannot see it.
+        copy.VoiceAudioReady = false;
 
         // Un-apply the Gateway's expiry overlay: it set OnHold=false and flagged SnoozeExpired, so the
         // Director's own hold still reads Held until the sweep's nudge reaches it.
@@ -520,6 +531,8 @@ public static class AgreementCheck
             reasons.Add("the Gateway can see its own transcription mark and the desktop cannot");
         if (row.VoiceGenerating)
             reasons.Add("the Gateway can see voice being prepared and the desktop cannot");
+        if (row.VoiceAudioReady)
+            reasons.Add("the Gateway has this session's voice audio ready (so it reads red 'needs you') and the desktop cannot see it (so it still reads yellow 'preparing voice')");
         if (row.SnoozeExpired)
             reasons.Add("the Gateway's snooze clock has expired and the Director has not been nudged off hold yet");
         return reasons.Count == 0

@@ -105,18 +105,28 @@ public static class SessionOrdering
         string.IsNullOrWhiteSpace(s.DictationStatus) ? null : s.DictationStatus;
 
     /// <summary>
-    /// Issue #553: true while a VOICE-MODE waiting session is ACTIVELY generating its spoken summary,
-    /// so the roster holds yellow ("preparing voice") rather than flashing red mid-generation. Once
-    /// generation ends the session shows its real color - red "needs you", with the roster play
-    /// triangle appearing separately when <see cref="SessionDto.VoiceAudioReady"/> is true.
+    /// Issue #553: true while a VOICE-MODE waiting session does not yet have playable audio - either it is
+    /// actively generating its spoken summary (<see cref="SessionDto.VoiceGenerating"/>) OR there is simply
+    /// no audio ready yet (<c>!VoiceAudioReady</c>). The roster holds YELLOW ("preparing voice") the WHOLE
+    /// time - across the gaps between generation attempts, not just while one is in flight - until the audio
+    /// is ready.
     ///
-    /// This used to ALSO hold yellow whenever audio was not yet ready (<c>|| !VoiceAudioReady</c>),
-    /// on the assumption that audio always eventually arrives. It does not: a text-to-speech
-    /// failure (a DevThrottle/DeepInfra 504 or timeout) produces NO audio, so <c>VoiceAudioReady</c>
-    /// stayed false with nothing generating - and the session was stuck yellow/orange FOREVER while
-    /// it actually needed the user (the "stuck orange, says needs you" report, 2026-07-08). Gating
-    /// the hold on <see cref="SessionDto.VoiceGenerating"/> alone gives a terminal exit: when a turn's
-    /// voice fails, the session correctly becomes red/needs-you instead of a permanent wedge.
+    /// Voice mode is a FIRST-CLASS state, not an overlay on a red session. A voice session that has finished
+    /// its turn does need the user, but until the voice is ready there is nothing to act on - so it presents
+    /// as "needs you, preparing voice" (yellow), and you can read the text if you choose. It becomes red only
+    /// once <see cref="SessionDto.VoiceAudioReady"/> is true - now there is something to play and act on.
+    ///
+    /// OWNER'S RULING, 2026-07-19: in voice mode the user must NEVER see red until the voice is available.
+    /// This restores the <c>|| !VoiceAudioReady</c> hold that was removed on 2026-07-08. That removal narrowed
+    /// the hold to <see cref="SessionDto.VoiceGenerating"/> ALONE to make it wedge-proof - the yellow could
+    /// never get stuck - but it fell back to red in EVERY gap between retry attempts, so a phone in voice mode
+    /// flashed red while its voice was still on the way. The wedge the 2026-07-08 change feared (a permanent
+    /// text-to-speech failure sitting yellow forever, because "no audio yet" and "gave up" were the same
+    /// value) is NOT re-introduced by widening this COLOR rule. It is prevented where it belongs: by making
+    /// voice generation reliable (a sub-minute average; anything over three minutes is an exception to be
+    /// flagged and fixed) and, separately, by giving voice a terminal "gave up" state. So do NOT re-narrow
+    /// this to VoiceGenerating alone to "fix" a session stuck yellow - a stuck session is a voice-reliability
+    /// bug, not a color bug, and narrowing the color only hides it behind a red flicker again.
     ///
     /// Gated on raw red and on WaitingForInput/WaitingForPerm so a working (blue) session is untouched.
     /// </summary>
@@ -138,7 +148,10 @@ public static class SessionOrdering
         var waiting = string.Equals(state, "WaitingForInput", StringComparison.OrdinalIgnoreCase)
                    || string.Equals(state, "WaitingForPerm", StringComparison.OrdinalIgnoreCase);
         if (!waiting) return false;
-        return s.VoiceGenerating;
+        // Yellow while generating OR while there is simply no audio yet - held across the gaps between
+        // attempts, until VoiceAudioReady flips true. See the summary for why this is not the 2026-07-08
+        // wedge: a permanently failing voice is a reliability bug to fix at the source, not a color to hide.
+        return s.VoiceGenerating || !s.VoiceAudioReady;
     }
 
     /// <summary>
