@@ -20,7 +20,7 @@ namespace CcDirector.Gateway.Api;
 ///   POST /devices/enroll-hosted
 ///     Authorization: Bearer &lt;the caller's Supabase access token&gt;
 ///     { deviceId, machineName, platform, deviceType }
-///   -&gt; 200 { deviceKey, ... }   mint (or return, if already present) this device's key, bound to the tenant
+///   -&gt; 200 { deviceKey, ... }   issue this device's key (a fresh one if it is already enrolled), bound to the tenant
 ///   -&gt; 400                       deviceId missing
 ///   -&gt; 401                       missing / invalid / expired account token (no verified subject to bind)
 ///
@@ -128,9 +128,9 @@ internal static class HostedEnrollmentEndpoint
         var tenant = tenants.MintOrLookupBySubject(validation.Subject, email);
 
         // The device id is CLIENT-supplied, so it must NEVER be the registry key on its own: two different
-        // accounts presenting the same deviceId would otherwise collide, and RegisterIfAbsent's idempotency
-        // would hand one account the OTHER's key (which SetAccountBinding then rebinds to the new tenant) -
-        // letting a pre-enroller keep a key that becomes bound to the victim's tenant. Namespacing the registry
+        // accounts presenting the same deviceId would otherwise collide on ONE registry entry, and enrolling
+        // would hand one account a working key on the OTHER's record (which SetAccountBinding then rebinds to
+        // the new tenant) - letting a pre-enroller take over the victim's device entry. Namespacing the registry
         // id with a ONE-WAY HASH of the resolved tenant makes cross-account collision impossible (different
         // accounts -> different tenants -> different hashes -> different device spaces) while staying
         // idempotent for one account (same tenant -> same hash). The hash - not the subject and not the raw

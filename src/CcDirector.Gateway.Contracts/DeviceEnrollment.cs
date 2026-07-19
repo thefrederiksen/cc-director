@@ -3,8 +3,9 @@ namespace CcDirector.Gateway.Contracts;
 /// <summary>
 /// A co-located Director's request to enroll with its own Gateway using the DevThrottle account
 /// sign-in instead of a pairing code (issue #1069). The Director POSTs this to
-/// <c>/devices/enroll-signed-in</c>; the Gateway mints (or, if this device already has one, returns)
-/// the Director's own per-device key - gated on the Gateway being signed in to DevThrottle AND the
+/// <c>/devices/enroll-signed-in</c>; the Gateway issues the Director's own per-device key - a fresh one
+/// if this device is already enrolled, since the registry keeps only a hash of the key it issued and so
+/// has no plaintext to hand back (issue #1878) - gated on the Gateway being signed in to DevThrottle AND the
 /// caller being a loopback same-machine connection. There is no pairing code: signing in is the
 /// authorization. Carries no credential of its own; the loopback origin plus the Gateway's signed-in
 /// account are the proof.

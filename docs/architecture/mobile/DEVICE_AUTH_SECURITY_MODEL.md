@@ -25,6 +25,35 @@ token injected into the page**, so reaching the URL (or viewing page source) was
 unrevocable fleet control. That token is gone from the shell. The phone now holds only (C) - a local,
 per-device, individually revocable key that is not the master token and not a cloud credential.
 
+### 1a. The device registry is a high-value store (issue #1878)
+
+`DeviceRegistry` persists to `config/director/devices.json` under `CC_DIRECTOR_ROOT`. That one file is
+both the Gateway's credential store for credential (C) and, on the hosted Gateway, the authoritative
+device-to-account-to-tenant map for every tenant on the box - and on hosted it sits on a mounted Azure
+Files share. It must be treated as a high-value store wherever it is discussed, on self-host and on
+hosted alike.
+
+It used to hold each device key in **plaintext**, so anything that could read the file could impersonate
+every enrolled device - which is also what made a process spawned with a working directory on that same
+share (issue #1863) a credential-exfiltration problem rather than only a code-execution one.
+
+Each key is now stored **only as a one-way SHA-256 hash**. The Gateway never needs the key itself: it
+issues the plaintext to its owner once at enrollment and thereafter only VERIFIES a presented key, the
+same way a password store does. A read of `devices.json` therefore yields no usable credential. Two
+consequences follow and are deliberate:
+
+- The hash is a plain SHA-256, not a slow password-stretching function, because the secret is a 256-bit
+  value the Gateway generated with a cryptographic random number generator, not a human-chosen password.
+  There is no guessable search space to stretch against, and this lookup runs on the hot path of every
+  authenticated request.
+- A device that re-enrolls is issued a **fresh** key in place - the registry has no plaintext to hand
+  back. Its entry, its account and tenant binding, and its cloud mapping are all preserved, and it still
+  has exactly one valid key. A device that simply keeps using the key it already holds is unaffected: a
+  registry file written before the change is migrated on load, so keys issued before this keep working.
+
+The file remains a real target for its non-secret contents (which accounts and tenants exist, and which
+machines are enrolled). Hashing removes the bearer secret from it, not the metadata.
+
 ---
 
 ## 2. Trust boundaries (what crosses which line)
@@ -130,6 +159,7 @@ forever unseen.
 | A leaked phone key compromises the account/fleet | (C) is one revocable device key; it is not (A), (B), (D), or the master token |
 | A stolen/lost phone keeps access | Revoke the one device from the website; the reconcile sweep drops (C) |
 | Cloud outage locks the phone out | Steady-state validation of (C) is fully local; no cloud dependency after enrollment |
+| Reading the Gateway's registry file yields every device's key | (C) is stored only as a one-way hash, so `devices.json` holds no usable credential (issue #1878, section 1a) |
 
 ---
 

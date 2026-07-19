@@ -9,9 +9,9 @@ namespace CcDirector.Gateway.Tests;
 /// <summary>
 /// Proves the two load-bearing guardrails of the sign-in enrollment path (issue #1069):
 /// the AUTH gate (POST /devices/enroll-signed-in only mints for a proven-loopback caller when the
-/// Gateway is signed in) and the IDEMPOTENT mint (a device that already holds a key gets the SAME key
-/// back, never a fresh one). The idempotency test pins the guardrail against the #1136 auto-mint key
-/// leak: enrolling the same device twice must not rotate or multiply keys.
+/// Gateway is signed in) and the ONE-KEY-PER-DEVICE rule (a device that already holds a key ends up with
+/// one registry entry and exactly one key that validates). The second pins the guardrail against the
+/// #1136 auto-mint key leak: enrolling the same device repeatedly must never MULTIPLY working keys.
 /// </summary>
 public sealed class SignedInEnrollmentTests
 {
@@ -72,10 +72,16 @@ public sealed class SignedInEnrollmentTests
             SignedInEnrollmentEndpoint.Evaluate(IPAddress.Parse("10.0.0.5"), isSignedIn: false, identity: null));
     }
 
-    // ---- Idempotent mint (DeviceRegistry.RegisterIfAbsent) -------------------------------------
+    // ---- One entry, exactly one valid key (DeviceRegistry.RegisterIfAbsent) --------------------
+    //
+    // Before issue #1878 the registry stored the plaintext key and handed the SAME key back on a repeat
+    // enrollment. It now stores only a hash, so there is no plaintext to return and a repeat enrollment
+    // re-issues the key in place. The #1136 property being defended is unchanged and is what these tests
+    // assert: enrollment can never ACCUMULATE credentials - one device identity, one registry entry, and
+    // exactly one key that validates at any moment.
 
     [Fact]
-    public void RegisterIfAbsent_SameDeviceTwice_ReturnsTheSameKey_NoReMint()
+    public void RegisterIfAbsent_SameDeviceTwice_LeavesOneEntryAndOneValidKey()
     {
         using var temp = new TempStore();
         var registry = new DeviceRegistry(temp.Path);
@@ -84,23 +90,28 @@ public sealed class SignedInEnrollmentTests
         var second = registry.RegisterIfAbsent("device-1", "MACHINE_A", "windows", "workstation");
 
         Assert.False(string.IsNullOrEmpty(first.DeviceKey));
-        Assert.Equal(first.DeviceKey, second.DeviceKey); // idempotent: the SAME key, not a fresh one
+        Assert.False(string.IsNullOrEmpty(second.DeviceKey));
         Assert.Equal(1, registry.Count); // exactly one device, no duplicates
+        Assert.True(registry.IsValidDeviceKey(second.DeviceKey));
+        Assert.False(registry.IsValidDeviceKey(first.DeviceKey), "the previous key must be retired, not left working alongside the new one");
     }
 
     [Fact]
-    public void RegisterIfAbsent_ManyCalls_MintOnlyOnce()
+    public void RegisterIfAbsent_ManyCalls_NeverAccumulateDevicesOrKeys()
     {
-        // The poll loop is guarded to never call enroll repeatedly, but the server is idempotent anyway:
-        // even ten calls yield one key and one device (the #1136 guardrail).
+        // The poll loop is guarded to never call enroll repeatedly, but the server holds the line anyway:
+        // even ten calls yield one device and one working key (the #1136 guardrail).
         using var temp = new TempStore();
         var registry = new DeviceRegistry(temp.Path);
 
-        var key = registry.RegisterIfAbsent("device-1", "MACHINE_A").DeviceKey;
+        var issued = new List<string> { registry.RegisterIfAbsent("device-1", "MACHINE_A").DeviceKey };
         for (var i = 0; i < 10; i++)
-            Assert.Equal(key, registry.RegisterIfAbsent("device-1", "MACHINE_A").DeviceKey);
+            issued.Add(registry.RegisterIfAbsent("device-1", "MACHINE_A").DeviceKey);
 
         Assert.Equal(1, registry.Count);
+        var live = issued.Where(registry.IsValidDeviceKey).ToList();
+        Assert.Single(live);
+        Assert.Equal(issued[^1], live[0]);
     }
 
     [Fact]
