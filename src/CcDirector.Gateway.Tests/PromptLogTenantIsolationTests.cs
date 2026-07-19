@@ -1,5 +1,7 @@
 using System;
 using System.Collections.Generic;
+using System.IO;
+using System.Linq;
 using System.Net;
 using System.Net.Http;
 using System.Net.Http.Headers;
@@ -39,6 +41,7 @@ public sealed class PromptLogTenantIsolationTests : IAsyncLifetime
 
     // The thing one account must never be able to read out of the other.
     private const string SecretTextA = "alpha-account-secret-prompt-text";
+    private const string SecretTextB = "bravo-account-secret-prompt-text";
 
     private GatewayHost _gateway = null!;
     private HttpClient _http = null!;
@@ -86,22 +89,87 @@ public sealed class PromptLogTenantIsolationTests : IAsyncLifetime
     [Fact]
     public async Task One_account_never_reads_another_accounts_prompt_text()
     {
+        // BIDIRECTIONAL, on purpose. An earlier version of this test asserted only that B could not see A's
+        // text. An implementation that leaked A's read while keeping B correctly scoped would have passed it
+        // unnoticed - and a leak conditional on tenant, key or enrollment order hides in exactly the
+        // direction you did not check. Every absence claim in this work is checked both ways.
         var today = DateTime.UtcNow;
         Assert.Equal(HttpStatusCode.OK, (await PostPrompt(_keyA, SecretTextA, today)).StatusCode);
-        Assert.Equal(HttpStatusCode.OK, (await PostPrompt(_keyB, "bravo-account-prompt-text", today)).StatusCode);
+        Assert.Equal(HttpStatusCode.OK, (await PostPrompt(_keyB, SecretTextB, today)).StatusCode);
 
-        // The account that wrote it reads its own text back...
-        var ownBody = await ReadPromptsBody(_keyA, today);
-        Assert.Contains(SecretTextA, ownBody);
+        var bodyA = await ReadPromptsBody(_keyA, today);
+        var bodyB = await ReadPromptsBody(_keyB, today);
 
-        // ...and the OTHER account can read neither the text nor the record. This is the whole defect: the
-        // handler used to have no request context, so this body was every account's log.
-        var otherBody = await ReadPromptsBody(_keyB, today);
-        Assert.DoesNotContain(SecretTextA, otherBody);
-        Assert.Contains("bravo-account-prompt-text", otherBody);
+        // Positive control in FRONT of each absence claim: each account really does read its own text back.
+        // Without these, "A cannot see B's text" would also hold if the read returned nothing at all.
+        Assert.Contains(SecretTextA, bodyA);
+        Assert.Contains(SecretTextB, bodyB);
 
-        using var doc = JsonDocument.Parse(otherBody);
-        Assert.Equal(1, doc.RootElement.GetProperty("count").GetInt32());
+        // The absence claims, both directions. This is the whole defect: neither handler took an HttpContext,
+        // so neither could resolve a tenant even in principle and this body was every account's prompt TEXT.
+        Assert.DoesNotContain(SecretTextB, bodyA);   // A cannot see B
+        Assert.DoesNotContain(SecretTextA, bodyB);   // B cannot see A
+
+        // And neither read merely FILTERED a shared set down: each account sees exactly its own one record,
+        // so nothing of the other's is present in any form - not the text, not the record.
+        using var docA = JsonDocument.Parse(bodyA);
+        using var docB = JsonDocument.Parse(bodyB);
+        Assert.Equal(1, docA.RootElement.GetProperty("count").GetInt32());
+        Assert.Equal(1, docB.RootElement.GetProperty("count").GetInt32());
+    }
+
+    [Fact]
+    public void A_failed_read_never_writes_the_raw_tenant_id_to_the_log()
+    {
+        // The prompt-log partition IS the tenant's account id - it is a directory name - so any failure that
+        // logs a path, or an exception message containing one, prints account identifiers into a log that is
+        // otherwise free of them. Every other tenant-bearing log line uses the hashed form; these two did not.
+        //
+        // Driven behaviourally through the REAL log writer via its test seam, and through a REAL failing read
+        // - a directory standing where the daily file should be, so the file read genuinely throws - rather
+        // than by unit-testing the redaction helper, which would prove the helper and not the call site.
+        //
+        // Revert-prove: put {path} and the raw {ex.Message} back into either catch block in GatewayPromptLog
+        // and this goes RED on the raw tenant id appearing in the log.
+        var root = Path.Combine(Path.GetTempPath(), "cc-plog-" + Guid.NewGuid().ToString("N"));
+        var tenant = new CcDirector.Core.Tenancy.TenantId("11111111-2222-3333-4444-555555555555");
+        try
+        {
+            var log = new CcDirector.Gateway.Prompts.GatewayPromptLog(root);
+            var day = DateTime.UtcNow;
+            // Make the daily file exist but be genuinely unreadable - another process holding it exclusively,
+            // which is the ordinary way a real read fails. A directory in its place would NOT do: Read checks
+            // File.Exists first and would skip the day without ever attempting a read, so nothing would be
+            // logged and this test would pass while proving nothing. The positive control below caught exactly
+            // that on the first attempt.
+            var file = log.FileFor(tenant, day);
+            Directory.CreateDirectory(Path.GetDirectoryName(file)!);
+            File.WriteAllText(file, "{}");
+
+            IReadOnlyList<string> lines;
+            using (var hold = new FileStream(file, FileMode.Open, FileAccess.Read, FileShare.None))
+            using (var capture = CcDirector.Core.Utilities.FileLog.RedirectForTests())
+            {
+                log.Read(tenant, day, day);
+                lines = capture.DrainAndReadLines();
+            }
+
+            // Positive control FIRST: the failure really was logged. Without this, "the id is absent" would
+            // also hold if nothing had been written at all - which is the shape of a vacuous privacy check.
+            var failures = lines.Where(l => l.Contains("Read FAILED", StringComparison.Ordinal)).ToList();
+            Assert.NotEmpty(failures);
+
+            // The id itself never appears, in the path or inside the exception message.
+            Assert.DoesNotContain(lines, l => l.Contains(tenant.Value, StringComparison.OrdinalIgnoreCase));
+
+            // And the line is still USEFUL - it names the partition in hashed form, so a failure is
+            // diagnosable. Redacted, not silenced.
+            Assert.Contains(failures, l => l.Contains(tenant.ToLogString(), StringComparison.Ordinal));
+        }
+        finally
+        {
+            try { if (Directory.Exists(root)) Directory.Delete(root, true); } catch { /* best-effort */ }
+        }
     }
 
     [Fact]

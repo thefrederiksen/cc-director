@@ -61,6 +61,18 @@ public sealed class GatewayPromptLog
     public static string DefaultDirectory() => CcStorage.PromptLog();
 
     /// <summary>
+    /// Replace a tenant's raw account id with its hashed log form anywhere it appears in text bound for the
+    /// log - in practice a file path inside an exception message, since the partition directory IS the tenant
+    /// id. This is a single exact substitution of a value we hold, not a general-purpose scrub: it is
+    /// complete for the one way the id can get in here, and it keeps the failure LOUD rather than swallowing
+    /// the message to be safe.
+    /// </summary>
+    private static string Redact(string text, TenantId tenant)
+        => string.IsNullOrEmpty(text) || !tenant.IsValid
+            ? text
+            : text.Replace(tenant.Value, tenant.ToLogString(), StringComparison.Ordinal);
+
+    /// <summary>
     /// The directory one tenant's daily files live in. The local tenant keeps the root directory it has
     /// always used; every other tenant gets its own folder beneath it. A tenant id that is not a plain
     /// identifier is refused loudly rather than scrubbed - scrubbing is how two tenants quietly share a
@@ -106,7 +118,11 @@ public sealed class GatewayPromptLog
         }
         catch (Exception ex)
         {
-            FileLog.Write($"[GatewayPromptLog] Append FAILED (swallowed): {ex.Message}");
+            // The exception message from a file operation carries the FULL PATH, and on hosted that path
+            // contains the tenant's raw account id - so logging it verbatim would print account identifiers
+            // into a log that is otherwise free of them. Redacted, not dropped: the failure still says what
+            // went wrong and which partition, in the same hashed form every other tenant-bearing log uses.
+            FileLog.Write($"[GatewayPromptLog] Append FAILED (swallowed) for tenant={tenant.ToLogString()}: {Redact(ex.Message, tenant)}");
         }
         return written;
     }
@@ -129,7 +145,9 @@ public sealed class GatewayPromptLog
             }
             catch (Exception ex)
             {
-                FileLog.Write($"[GatewayPromptLog] Read FAILED for {path}: {ex.Message}");
+                // Same reason as Append: the path itself names the tenant on hosted. The daily FILE name is
+                // safe and is what actually identifies which read failed.
+                FileLog.Write($"[GatewayPromptLog] Read FAILED for tenant={tenant.ToLogString()} file={Path.GetFileName(path)}: {Redact(ex.Message, tenant)}");
                 continue;
             }
             foreach (var line in lines)
