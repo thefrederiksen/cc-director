@@ -28,6 +28,13 @@ namespace CcDirector.Gateway.Api;
 /// the boolean and the identity. The tokens are never written to the log on any path either; the log
 /// records only the outcome (signed in / not signed in).
 ///
+/// HOSTED (issue #1856): all of the above describes the SELF-HOST shape, where the Gateway holds one
+/// account and can report it. The hosted Gateway holds no credential by design - it is one shared
+/// multi-tenant Gateway and identity arrives per device - so on hosted the verdict is folded from the
+/// CALLER'S own authenticated device-key binding instead (see <see cref="HostedStatus"/>). Self-host
+/// behaviour is completely unchanged: with no hosted boundary this endpoint runs exactly the path it
+/// always did.
+///
 /// When Gateway auth is enabled, this endpoint inherits the host-wide Gateway token middleware exactly
 /// like the other Gateway endpoints (it is not on the public-paths allow-list), so a call with no token
 /// is answered 401 by that middleware before this delegate runs.
@@ -50,7 +57,19 @@ internal static class AccountStatusEndpoint
     /// email/provider path is unchanged and stays entirely local. Resolution is cached per account so the
     /// hard-polled status read makes at most one cloud call per <see cref="NicknameCacheTtl"/>.
     /// </param>
-    public static void Map(IEndpointRouteBuilder app, DevThrottleAccountService? account, AccountNicknameClient? nickname = null)
+    /// <param name="tenantBoundary">
+    /// The hosted tenant boundary (issue #1856). Null, or present-but-not-hosted, leaves the self-host
+    /// answer below completely untouched. On hosted it is what makes this endpoint tenant-bearing: the
+    /// verdict is folded from the CALLER'S OWN device-key binding instead of from a Gateway credential that
+    /// hosted does not have.
+    /// </param>
+    /// <param name="tenants">
+    /// The account-to-tenant registry (issue #1856), read on hosted for the caller tenant's display email.
+    /// Null disables that lookup, which yields a signed-in answer with the identity absent - never a
+    /// signed-out one.
+    /// </param>
+    public static void Map(IEndpointRouteBuilder app, DevThrottleAccountService? account, AccountNicknameClient? nickname = null,
+        Tenancy.HostedTenantBoundary? tenantBoundary = null, Tenancy.TenantRegistry? tenants = null)
     {
         // Per-account nickname cache so this hard-polled endpoint hits the cloud at most once per TTL.
         // Captured in the closure (Map runs once per host) and guarded by its own lock.
@@ -58,6 +77,27 @@ internal static class AccountStatusEndpoint
 
         app.MapGet("/account/status", async (HttpContext ctx) =>
         {
+            // Issue #1856: on HOSTED, answer about the CALLER, not about this Gateway.
+            //
+            // Everything below this block asks account.IsLoggedIn(), which means "does THIS GATEWAY hold a
+            // signed-in DevThrottle credential". The hosted Gateway holds none BY DESIGN - it is one shared
+            // multi-tenant Gateway and identity arrives per device, bound to the device key at enrollment. So
+            // that question is answered truthfully about the Gateway and MEANINGLESSLY for the caller, and a
+            // correctly enrolled machine - device key issued, tunnel up, roster served back tenant-scoped -
+            // was told it was signed OUT. That is a product-facing lie about the one thing the user just did:
+            // they read it as a failed setup and start undoing work that was correct.
+            //
+            // Per CLAUDE.md rule 7 the Gateway owns the verdict, so it is folded here from the caller's own
+            // device-key binding. THE RULE THAT MATTERS: on hosted, signedIn=false is NEVER the answer to an
+            // authenticated tenant-bound caller. When the identity cannot be resolved - which is ordinary,
+            // because the tenant row records an email on a fresh mint only - the answer is signedIn=true with
+            // the identity ABSENT. An unresolvable identity and a signed-out user are DIFFERENT ANSWERS and
+            // must not share a code path. This mission already paid for that lesson on /healthz: a zeroed
+            // count read as a permanently dead fleet exactly as a confident false reads as a failed setup, and
+            // an absent field is honest where a false one is not.
+            if (tenantBoundary is { IsHosted: true })
+                return HostedStatus(ctx, tenantBoundary, tenants);
+
             // No credential service on this host (a non-Windows host where the operating-system
             // credential store is not yet implemented): the Gateway holds no account credential, so the
             // truthful answer is not-signed-in with no identity.
@@ -83,6 +123,42 @@ internal static class AccountStatusEndpoint
             FileLog.Write($"[AccountStatusEndpoint] GET /account/status: signedIn=true (identity {(identity is null ? "unavailable" : "resolved")}, nickname {(resolvedNickname is null ? "unset" : "resolved")})");
             return Results.Json(new AccountStatusResponse(true, identity?.Email, identity?.Provider, resolvedNickname));
         });
+    }
+
+    /// <summary>
+    /// The HOSTED verdict (issue #1856), folded from the CALLER'S OWN authenticated device key and from
+    /// nothing else - never from a Gateway credential, and never from anything the caller supplies in the
+    /// request, so a caller cannot name an identity it does not hold.
+    ///
+    /// Three outcomes, and the middle one is the whole point:
+    ///
+    ///  - No tenant bound to the request: DENIED, 403. This is deny-by-default, the same answer the other
+    ///    tenant-bearing read routes give, and it is deliberately NOT signedIn=false - "I will not answer
+    ///    you" and "you are signed out" are different statements and only one of them is true.
+    ///  - Tenant bound, no email on its row: signedIn=TRUE with the identity omitted. The caller IS enrolled;
+    ///    we simply cannot say as whom. See <see cref="Tenancy.TenantRegistry.EmailForTenant"/> for why a
+    ///    null email is ordinary rather than a fault.
+    ///  - Tenant bound, email present: signedIn=true, as them.
+    ///
+    /// Provider and nickname are omitted on hosted rather than guessed. Provider is not recorded on the
+    /// tenant row, and the nickname read needs an account token this Gateway does not hold for the caller -
+    /// using its OWN would answer with the wrong person's nickname.
+    /// </summary>
+    private static IResult HostedStatus(HttpContext ctx, Tenancy.HostedTenantBoundary boundary, Tenancy.TenantRegistry? tenants)
+    {
+        var tenant = boundary.ResolveRequestTenant(ctx);
+        if (tenant is null)
+        {
+            FileLog.Write("[AccountStatusEndpoint] GET /account/status (hosted): DENIED - no tenant is bound to this request");
+            return Results.Json(new { error = "no tenant is bound to this request" },
+                statusCode: StatusCodes.Status403Forbidden);
+        }
+
+        var email = tenants?.EmailForTenant(tenant.Value);
+        // Logged as resolved / unavailable only - the email is user identity and is never written to the log,
+        // and neither is the tenant id.
+        FileLog.Write($"[AccountStatusEndpoint] GET /account/status (hosted): signedIn=true (identity {(email is null ? "unavailable" : "resolved")})");
+        return Results.Json(new AccountStatusResponse(true, email, null, null));
     }
 
     /// <summary>How long a resolved nickname is reused before the next status read re-reads the cloud.</summary>

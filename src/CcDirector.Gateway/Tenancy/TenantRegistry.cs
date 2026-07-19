@@ -113,4 +113,26 @@ public sealed class TenantRegistry
         var existing = ctx.Tenants.AsNoTracking().FirstOrDefault(t => t.AccountSubject == subject);
         return existing is null ? null : new TenantId(existing.Id);
     }
+
+    /// <summary>
+    /// The display email recorded on a tenant's row, or null when there is none (issue #1856). Read-only:
+    /// it neither mints nor writes.
+    ///
+    /// NULL IS ORDINARY HERE, NOT AN ERROR. <see cref="MintOrLookupBySubject"/> records the email on a FRESH
+    /// MINT ONLY, so a tenant minted before the email was captured, or from a token that carried none, simply
+    /// has no email - while being a perfectly valid, fully enrolled tenant. A caller must therefore treat a
+    /// null as "this identity is not available" and NEVER as "there is no such tenant" or "nobody is signed
+    /// in": those are different answers and a caller that folds them together states a falsehood. The email
+    /// is personally identifying and is never logged.
+    /// </summary>
+    public string? EmailForTenant(TenantId tenant)
+    {
+        if (!tenant.IsValid)
+            return null;
+
+        var id = tenant.Value;
+        using var ctx = _db.CreateUnscopedContext();
+        var row = ctx.Tenants.AsNoTracking().FirstOrDefault(t => t.Id == id);
+        return string.IsNullOrWhiteSpace(row?.Email) ? null : row!.Email;
+    }
 }
