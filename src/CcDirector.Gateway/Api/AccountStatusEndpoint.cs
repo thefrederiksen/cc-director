@@ -31,9 +31,11 @@ namespace CcDirector.Gateway.Api;
 /// HOSTED (issue #1856): all of the above describes the SELF-HOST shape, where the Gateway holds one
 /// account and can report it. The hosted Gateway holds no credential by design - it is one shared
 /// multi-tenant Gateway and identity arrives per device - so on hosted the verdict is folded from the
-/// CALLER'S own authenticated device-key binding instead (see <see cref="HostedStatus"/>). Self-host
-/// behaviour is completely unchanged: with no hosted boundary this endpoint runs exactly the path it
-/// always did.
+/// CALLER'S own authenticated device-key binding instead (see <see cref="HostedStatus"/>). Which path runs
+/// is decided by <see cref="GatewayHostedMode.IsHosted"/>, NOT by whether a boundary was passed in, so a
+/// hosted Gateway can never fall through to the self-host answer; a hosted host missing its boundary fails
+/// CLOSED. Self-host behaviour is completely unchanged: off hosted mode this endpoint runs exactly the path
+/// it always did.
 ///
 /// When Gateway auth is enabled, this endpoint inherits the host-wide Gateway token middleware exactly
 /// like the other Gateway endpoints (it is not on the public-paths allow-list), so a call with no token
@@ -58,10 +60,10 @@ internal static class AccountStatusEndpoint
     /// hard-polled status read makes at most one cloud call per <see cref="NicknameCacheTtl"/>.
     /// </param>
     /// <param name="tenantBoundary">
-    /// The hosted tenant boundary (issue #1856). Null, or present-but-not-hosted, leaves the self-host
-    /// answer below completely untouched. On hosted it is what makes this endpoint tenant-bearing: the
-    /// verdict is folded from the CALLER'S OWN device-key binding instead of from a Gateway credential that
-    /// hosted does not have.
+    /// The hosted tenant boundary (issue #1856). REQUIRED on a hosted Gateway - it is what makes this
+    /// endpoint tenant-bearing, folding the verdict from the CALLER'S OWN device-key binding instead of from a
+    /// Gateway credential hosted does not have. Omitting it on hosted does NOT quietly fall back to the
+    /// self-host answer; the endpoint refuses to answer at all. Ignored off hosted mode.
     /// </param>
     /// <param name="tenants">
     /// The account-to-tenant registry (issue #1856), read on hosted for the caller tenant's display email.
@@ -95,7 +97,14 @@ internal static class AccountStatusEndpoint
             // must not share a code path. This mission already paid for that lesson on /healthz: a zeroed
             // count read as a permanently dead fleet exactly as a confident false reads as a failed setup, and
             // an absent field is honest where a false one is not.
-            if (tenantBoundary is { IsHosted: true })
+            // GATED ON HOSTED MODE ITSELF, not on the boundary having been passed in. Selecting the hosted
+            // path with `tenantBoundary is { IsHosted: true }` fails OPEN: a hosted Gateway whose boundary was
+            // not wired here - the argument is optional, so omitting it is a one-word mistake - would fall
+            // straight through to the self-host path and answer signedIn=false again, which is the very lie
+            // this endpoint exists to stop, restored by miswiring and with no test to catch it. Asking the
+            // independent hosted-mode signal instead means a hosted Gateway can never silently take the
+            // self-host answer; if the boundary is missing it FAILS CLOSED inside HostedStatus.
+            if (GatewayHostedMode.IsHosted)
                 return HostedStatus(ctx, tenantBoundary, tenants);
 
             // No credential service on this host (a non-Windows host where the operating-system
@@ -144,8 +153,20 @@ internal static class AccountStatusEndpoint
     /// tenant row, and the nickname read needs an account token this Gateway does not hold for the caller -
     /// using its OWN would answer with the wrong person's nickname.
     /// </summary>
-    private static IResult HostedStatus(HttpContext ctx, Tenancy.HostedTenantBoundary boundary, Tenancy.TenantRegistry? tenants)
+    private static IResult HostedStatus(HttpContext ctx, Tenancy.HostedTenantBoundary? boundary, Tenancy.TenantRegistry? tenants)
     {
+        // FAIL CLOSED on a miswired host. This Gateway is in hosted mode but has no usable tenant boundary, so
+        // it cannot tell who is asking. There is no honest answer to give and there is certainly not a
+        // signedIn=false one - answering that would recreate the exact lie this endpoint exists to stop, from a
+        // configuration mistake rather than a design one. Say the server cannot answer, and say it LOUD: this
+        // is a deployment fault that will not recover on its own.
+        if (boundary is not { IsHosted: true })
+        {
+            FileLog.Write("[AccountStatusEndpoint] GET /account/status (hosted): MISWIRED - this Gateway is in hosted mode but has no hosted tenant boundary, so it cannot resolve who is asking. Refusing to answer rather than reporting a false signed-out state.");
+            return Results.Json(new { error = "this hosted gateway cannot resolve the caller's tenant" },
+                statusCode: StatusCodes.Status503ServiceUnavailable);
+        }
+
         var tenant = boundary.ResolveRequestTenant(ctx);
         if (tenant is null)
         {

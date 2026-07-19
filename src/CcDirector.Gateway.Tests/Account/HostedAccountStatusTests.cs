@@ -8,6 +8,8 @@ using System.Net.Sockets;
 using System.Text.Json;
 using System.Threading.Tasks;
 using CcDirector.Gateway;
+using CcDirector.Gateway.Api;
+using Microsoft.Extensions.Logging;
 using Xunit;
 
 namespace CcDirector.Gateway.Tests.Account;
@@ -30,9 +32,14 @@ namespace CcDirector.Gateway.Tests.Account;
 /// one most easily written as a quiet false, and it is not a rare corner: the tenant row records an email on
 /// a FRESH MINT ONLY, so any older or null-email tenant reaches it.
 ///
-/// Revert-prove: delete the hosted branch in <c>AccountStatusEndpoint.Map</c> (the
-/// <c>tenantBoundary is { IsHosted: true }</c> early return) so hosted falls through to the Gateway-credential
-/// path again, and both signed-in tests go RED with <c>signedIn:false</c> - which is exactly the reported bug.
+/// Revert-prove, two of them, each reddening a DIFFERENT thing:
+///  - Delete the hosted early return in <c>AccountStatusEndpoint.Map</c> so hosted falls through to the
+///    Gateway-credential path, and both signed-in tests go RED with <c>signedIn:false</c> - the reported bug.
+///  - Change the selector from <c>GatewayHostedMode.IsHosted</c> back to <c>tenantBoundary is { IsHosted: true }</c>
+///    and ONLY <see cref="A_hosted_gateway_with_no_tenant_boundary_refuses_rather_than_reporting_signed_out"/>
+///    goes RED, with 200 in place of 503 - the fail-open under miswiring.
+/// Both were run and watched; a revert that reddens is not the same as a revert that reddens the assertion
+/// under proof.
 ///
 /// This drives a REAL GatewayHost through REAL HTTP and the REAL auth middleware, with the REAL tenant
 /// registry, so the binding under test is the one enrollment actually creates. Self-host behaviour is
@@ -146,6 +153,41 @@ public sealed class HostedAccountStatusTests : IAsyncLifetime
         var body = await (await Get(_keyWithEmail)).Content.ReadAsStringAsync();
         Assert.DoesNotContain(_keyWithEmail, body);
         Assert.DoesNotContain(Token, body);
+    }
+
+    [Fact]
+    public async Task A_hosted_gateway_with_no_tenant_boundary_refuses_rather_than_reporting_signed_out()
+    {
+        // The adversarial case: a hosted Gateway MISWIRED so the endpoint has no tenant boundary. The boundary
+        // argument is optional, so omitting it is a one-word mistake, and selecting the hosted path on the
+        // boundary itself would fail OPEN - falling through to the self-host path and answering signedIn=false
+        // again. That is the very lie this endpoint exists to stop, restored by configuration rather than by
+        // design, and with no test it would be invisible.
+        //
+        // So hosted mode is asked directly, and a hosted host with no usable boundary FAILS CLOSED. The answer
+        // is "I cannot tell you", never "you are signed out". Note the account service passed here holds no
+        // credential, which is exactly the condition that used to produce a confident 200 signedIn:false.
+        //
+        // Revert-prove: change the selector in Map back to `tenantBoundary is { IsHosted: true }` and this goes
+        // RED with a 200 carrying signedIn:false - the reported bug, reached by a different route.
+        var builder = Microsoft.AspNetCore.Builder.WebApplication.CreateBuilder();
+        builder.Logging.ClearProviders();
+        var app = builder.Build();
+        app.Urls.Add("http://127.0.0.1:0");
+        AccountStatusEndpoint.Map(app, account: null);   // hosted mode is on; no boundary, no registry
+        await app.StartAsync();
+        try
+        {
+            using var http = new HttpClient { BaseAddress = new Uri(app.Urls.First()) };
+            var resp = await http.GetAsync("/account/status");
+
+            Assert.Equal(HttpStatusCode.ServiceUnavailable, resp.StatusCode);
+            Assert.DoesNotContain("signedIn", await resp.Content.ReadAsStringAsync());
+        }
+        finally
+        {
+            await app.StopAsync();
+        }
     }
 
     private Task<HttpResponseMessage> Get(string deviceKey)
