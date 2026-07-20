@@ -155,6 +155,7 @@ switch ($Verb) {
                 throw "A baseline declares no mutations. A run that carries a mutation is an arm."
             }
             if ($null -ne $existing) {
+                # CONTROL (preventing). Test: TheScriptRefusesToPinABaselineOverAnActivePin.
                 Write-Host "CANNOT PIN A BASELINE: this working tree already has an active pin." -ForegroundColor Red
                 Write-Host ("    proof:       " + $existing['proofId'])
                 Write-Host ("    phase:       " + $existing['phase'])
@@ -169,6 +170,7 @@ switch ($Verb) {
             if ($changes.Count -gt 0) {
                 # Refused HERE as well as at run time, because pinning a contaminated tree would record a
                 # false starting point and the run-time refusal would then look like a mystery.
+                # CONTROL (preventing). Test: TheScriptRefusesToPinABaselineOnADirtyTree.
                 Write-Host "CANNOT PIN A BASELINE: this working tree already carries uncommitted changes." -ForegroundColor Red
                 $changes | ForEach-Object { Write-Host "    $_" -ForegroundColor Red }
                 Write-Host ""
@@ -189,6 +191,7 @@ switch ($Verb) {
                 # An arm with no baseline before it has nothing to be compared against. Minting a fresh pin
                 # here would create a proof whose "baseline" was never taken - and it would look identical
                 # to a correct one.
+                # CONTROL (preventing). Test: TheScriptRefusesAnArmWithNoBaselineBeforeIt.
                 Write-Host "CANNOT SET AN ARM: this working tree has no active baseline pin." -ForegroundColor Red
                 Write-Host ""
                 Write-Host "A mutation arm only means something next to a baseline taken at the same commit. Pin the"
@@ -198,6 +201,7 @@ switch ($Verb) {
             }
 
             if ($existing['pinnedHead'] -ne $currentHead) {
+                # CONTROL (preventing). Test: TheScriptRefusesAnArmTransitionAfterTheHeadMoves_AndLeavesThePinOnTheBaselineHead.
                 Write-Host "CANNOT SET AN ARM: the head has moved since this proof's baseline was pinned." -ForegroundColor Red
                 Write-Host ("    proof:        " + $existing['proofId'])
                 Write-Host ("    pinned head:  " + $existing['pinnedHead'] + "   (what the baseline measured)")

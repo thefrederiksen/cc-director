@@ -310,6 +310,7 @@ internal static class MutationProofPinGuard
                 return new Verdict(true, "No mutation-proof pin is active for this working tree.");
 
             case PinOutcome.CouldNotDetermine:
+                // CONTROL (preventing) - pinned state unknown. Test: OnlyASettledAbsenceAdmits.
                 return new Verdict(
                     false,
                     "CANNOT ESTABLISH WHETHER A MUTATION PROOF IS ACTIVE IN THIS WORKING TREE: "
@@ -347,6 +348,8 @@ internal static class MutationProofPinGuard
 
         if (!tree.Read)
         {
+            // CONTROL (preventing) - a pinned run whose tree cannot be read. Test:
+            // AnActivePinIsNeverTreatedAsAbsentWhenGitIsUnavailable, APinnedRunThatCannotReadTheTreeIsRefused.
             return new Verdict(
                 false,
                 "This run is declared part of a mutation proof (" + Describe(active) + "), but the state of "
@@ -360,6 +363,8 @@ internal static class MutationProofPinGuard
 
         if (!ledger.Read)
         {
+            // CONTROL (preventing) - protects the moved-pin control below, which cannot run without a
+            // history. Test: AProofHistoryThatCannotBeReadRefuses_RatherThanReadingAsNoHistory.
             // The history is what proves this proof's pinned head has not moved. Without it that check
             // cannot run, and an unreadable history silently disabling a safety mechanism is exactly the
             // shape this guard exists to refuse.
@@ -375,6 +380,9 @@ internal static class MutationProofPinGuard
         switch (publication.Outcome)
         {
             case HeadPublication.NotPublished:
+                // CONTROL (VISIBILITY, not preventing) - does NOT stop a stashed repair; makes the commit
+                // the numbers are attributed to fetchable, so a missing repair is visible in the record
+                // rather than only on this machine. Test: APinnedCommitThatWasNeverPushedIsRefused.
                 problems.Add(
                     "THE PINNED COMMIT HAS NOT BEEN PUSHED, so the numbers this run produces would be "
                     + "attributed to a commit nobody else can fetch or read."
@@ -408,12 +416,17 @@ internal static class MutationProofPinGuard
                 break;
         }
 
+        // CONTROL (preventing) - the second mechanism, catching a pin that names a different head
+        // however it came to say so. Test: AProofWhoseHeadMovedSinceAnEarlierRunOfTheSameProofIsRefused,
+        // APinReWrittenToANewHeadIsRefusedFromDisk_EvenThoughTheTreeMatchesItExactly.
         var moved = DetectMovedPin(active, priorLedgerLines);
         if (moved is not null)
             problems.Add(moved);
 
         if (!string.Equals(active.PinnedHead, tree.Head, StringComparison.OrdinalIgnoreCase))
         {
+            // CONTROL (preventing) - baseline and arm must be the same commit. Test:
+            // ABaselineOnATreeWhoseHeadHasMovedIsRefused_AndNamesBothHeads.
             problems.Add(
                 "THE HEAD HAS MOVED. This proof pinned " + active.PinnedHead + ", and the working tree is "
                 + "now at " + tree.Head + ". A baseline and its mutation arm must be taken at the same "
@@ -434,6 +447,8 @@ internal static class MutationProofPinGuard
 
         if (undeclared.Count > 0)
         {
+            // CONTROL (preventing) - the 2026-07-19 event. Test:
+            // ABaselineOverAnUncommittedlyDeletedGuardBlockIsRefused_AndTheRefusalNamesTheFile.
             problems.Add(
                 "THE WORKING TREE CARRIES " + undeclared.Count.ToString(CultureInfo.InvariantCulture)
                 + " CHANGE(S) THIS PROOF DID NOT DECLARE:"
@@ -452,6 +467,8 @@ internal static class MutationProofPinGuard
 
         if (missing.Count > 0)
         {
+            // CONTROL (preventing) - an arm with no mutation is a second baseline. Test:
+            // AnArmWhoseDeclaredMutationIsAbsentIsRefused_BecauseItIsASecondBaselineInDisguise.
             problems.Add(
                 "THE DECLARED MUTATION IS NOT IN THE WORKING TREE:"
                 + Environment.NewLine
@@ -1599,6 +1616,11 @@ internal static class MutationProofPinGuard
     /// </summary>
     private static void Record(string workingTreeRoot, PinReading pin, TreeReading tree, Verdict verdict)
     {
+        // CONTROL (VISIBILITY, not preventing) - stops nothing; makes what each run verified answerable
+        // afterwards, by someone else, once this working tree is gone. Judge it by whether the failure it
+        // exposes has another way of being seen, not by whether it prevents one. Tests:
+        // AnAdmittedBaselineIsRecordedAsAPositiveVerifiedFact_NotAsAnAbsenceOfComplaint,
+        // TheLedgerLivesOutsideEveryWorkingTree_SoWorktreeRemovalCannotDestroyIt.
         try
         {
             var line = FormatRunRecord(new RunRecord(

@@ -867,6 +867,82 @@ public sealed class MutationProofPinGuardTests
         Assert.True(verdict.Admitted, verdict.Message);
     }
 
+    // -------------------------------------------------------------------------------------------------
+    // THE SCRIPT'S OTHER REFUSALS.
+    //
+    // Found by auditing this unit's controls one at a time rather than reading its own summary. The script
+    // has four refusal branches; only one of them had a test. The other three were enforcement nobody had
+    // ever watched work - which is the same failure shape as an untested guard, and would let a future
+    // edit remove them silently while the pull request still described them.
+    // -------------------------------------------------------------------------------------------------
+
+    [Fact]
+    public void TheScriptRefusesToPinABaselineOverAnActivePin()
+    {
+        var shell = RequirePowerShell();
+        var script = RequirePinScript();
+
+        using var repository = TemporaryGitRepository.Create();
+        repository.WriteAndCommit("src/RequestHandler.cs", FileWithTheGuardBlock, "add the tenant guard");
+
+        Assert.Equal(0, RunScript(shell, script, repository.Root, "set -Phase baseline").ExitCode);
+
+        var second = RunScript(shell, script, repository.Root, "set -Phase baseline");
+
+        Assert.False(
+            second.ExitCode == 0,
+            "A second baseline was pinned over a live one. That silently starts a new proof at a possibly "
+            + "different commit while the numbers already collected still claim to belong to the first. "
+            + second.Output + second.Error);
+        Assert.Contains("already has an active pin", second.Output, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void TheScriptRefusesToPinABaselineOnADirtyTree()
+    {
+        var shell = RequirePowerShell();
+        var script = RequirePinScript();
+
+        using var repository = TemporaryGitRepository.Create();
+        repository.WriteAndCommit("src/RequestHandler.cs", FileWithTheGuardBlock, "add the tenant guard");
+
+        // The 2026-07-19 event, present before the baseline is even taken.
+        repository.Write("src/RequestHandler.cs", FileWithTheGuardBlockDeleted);
+
+        var result = RunScript(shell, script, repository.Root, "set -Phase baseline");
+
+        Assert.False(
+            result.ExitCode == 0,
+            "A baseline was pinned over uncommitted changes, which records a false starting point and "
+            + "leaves the run-time refusal looking like a mystery. " + result.Output + result.Error);
+        Assert.Contains("uncommitted changes", result.Output, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("src/RequestHandler.cs", result.Output, StringComparison.Ordinal);
+
+        // And it must not have written a pin on its way out.
+        Assert.False(File.Exists(MutationProofPinGuard.ResolvePinFilePath(repository.Root)!));
+    }
+
+    [Fact]
+    public void TheScriptRefusesAnArmWithNoBaselineBeforeIt()
+    {
+        var shell = RequirePowerShell();
+        var script = RequirePinScript();
+
+        using var repository = TemporaryGitRepository.Create();
+        repository.WriteAndCommit("src/RequestHandler.cs", FileWithTheGuardBlock, "add the tenant guard");
+
+        var result = RunScript(
+            shell, script, repository.Root, "set -Phase arm -Mutates src/RequestHandler.cs");
+
+        Assert.False(
+            result.ExitCode == 0,
+            "An arm was declared with no baseline before it. That mints a proof whose baseline was never "
+            + "taken, and it looks identical to a correct one. " + result.Output + result.Error);
+        Assert.Contains("no active baseline pin", result.Output, StringComparison.OrdinalIgnoreCase);
+
+        Assert.False(File.Exists(MutationProofPinGuard.ResolvePinFilePath(repository.Root)!));
+    }
+
     /// <summary>
     /// The arming check, driven through the real script rather than by reproducing its algorithm: a pin the
     /// SCRIPT wrote must be found and understood by the GUARD. This is the property that was false off
