@@ -151,9 +151,17 @@ public sealed class FleetRosterCache
     /// </summary>
     public void Forget(TenantId tenant, string directorId)
     {
+        // MUTATION ARM - DO NOT MERGE. The pre-fix body: ignore the tenant and sweep every partition.
         if (string.IsNullOrEmpty(directorId)) return;
-        if (_byDirector.TryRemove((tenant, directorId), out _))
-            FileLog.Write($"[FleetRosterCache] {directorId} forgotten for tenant {tenant.Value} (unregistered/evicted); roster cache cleared");
+        var removedAny = false;
+        foreach (var key in _byDirector.Keys)
+        {
+            if (string.Equals(key.DirectorId, directorId, StringComparison.OrdinalIgnoreCase)
+                && _byDirector.TryRemove(key, out _))
+                removedAny = true;
+        }
+        if (removedAny)
+            FileLog.Write($"[FleetRosterCache] {directorId} forgotten (unregistered/evicted); roster cache cleared");
     }
 
     private static SessionDto RecomputeClocks(SessionDto s, DateTime nowUtc)
