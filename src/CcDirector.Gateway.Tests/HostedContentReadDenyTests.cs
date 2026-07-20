@@ -36,6 +36,17 @@ internal static class ContentFingerprint
     {
         var body = await resp.Content.ReadAsStringAsync();
 
+        // FORMAT FACT FIRST. The media type is asserted before anything reads the body, because it is
+        // the fact that NAMES what was served: "got text/html" identifies the Cockpit shell exactly,
+        // where a bare status assertion would only say a number changed. Status is deliberately NOT
+        // asserted here - on the hosted rows 404 is the expected value either way, so it distinguishes
+        // nothing, and making it the first failure would prove a route moved rather than proving this
+        // canary can name what answered.
+        var mediaType = resp.Content.Headers.ContentType?.MediaType;
+        Assert.True(mediaType == "application/json",
+            $"{what}: expected application/json from this handler, got {mediaType ?? "no media type"} " +
+            $"(HTTP {(int)resp.StatusCode}). A masking route answered. Body: {Preview(body)}");
+
         JsonDocument? doc = null;
         try { doc = JsonDocument.Parse(body); }
         catch (JsonException) { /* asserted below, never thrown */ }
@@ -76,6 +87,42 @@ internal static class ContentFingerprint
             && v.ValueKind == JsonValueKind.String
             ? v.GetString()
             : null;
+
+    /// <summary>An ARRAY property, kind asserted before <c>EnumerateArray</c>, which would throw.</summary>
+    public static JsonElement Arr(JsonElement root, string name, string what)
+    {
+        var v = Prop(root, name, what);
+        Assert.True(v.ValueKind == JsonValueKind.Array,
+            $"{what}: '{name}' is {v.ValueKind}, not an array, so this is not this handler's payload.");
+        return v;
+    }
+
+    /// <summary>A NUMBER property, kind asserted before <c>GetInt32</c>, which would throw.</summary>
+    public static int Num(JsonElement root, string name, string what)
+    {
+        var v = Prop(root, name, what);
+        Assert.True(v.ValueKind == JsonValueKind.Number,
+            $"{what}: '{name}' is {v.ValueKind}, not a number, so this is not this handler's payload.");
+        return v.GetInt32();
+    }
+
+    /// <summary>A BOOLEAN property, kind asserted before <c>GetBoolean</c>, which would throw.</summary>
+    public static bool Flag(JsonElement root, string name, string what)
+    {
+        var v = Prop(root, name, what);
+        Assert.True(v.ValueKind is JsonValueKind.True or JsonValueKind.False,
+            $"{what}: '{name}' is {v.ValueKind}, not a boolean, so this is not this handler's payload.");
+        return v.GetBoolean();
+    }
+
+    /// <summary>A STRING property, kind asserted before <c>GetString</c>, which would throw.</summary>
+    public static string? Text(JsonElement root, string name, string what)
+    {
+        var v = Prop(root, name, what);
+        Assert.True(v.ValueKind is JsonValueKind.String or JsonValueKind.Null,
+            $"{what}: '{name}' is {v.ValueKind}, not a string, so this is not this handler's payload.");
+        return v.ValueKind == JsonValueKind.Null ? null : v.GetString();
+    }
 
     private static string Preview(string body)
     {
@@ -357,7 +404,7 @@ public sealed class HostedContentReadDenyTests : IAsyncLifetime
 
         var properties = root.EnumerateObject().Select(p => p.Name).ToArray();
         Assert.Equal(new[] { "error" }, properties);
-        Assert.Equal(expected, ContentFingerprint.Prop(root, "error", what).GetString());
+        Assert.Equal(expected, ContentFingerprint.Text(root, "error", what));
     }
 
     private Task<HttpResponseMessage> Send(HttpMethod method, string path, string? body = null,
@@ -571,8 +618,8 @@ public sealed class HostedContentReadSelfHostControlTests : IAsyncLifetime
     {
         var root = await GetJsonAsync("transcription/turns");
 
-        var texts = ContentFingerprint.Prop(root, "turns", "GET transcription/turns").EnumerateArray()
-            .Select(t => t.TryGetProperty("rawText", out var r) ? r.GetString() : null)
+        var texts = ContentFingerprint.Arr(root, "turns", "GET transcription/turns").EnumerateArray()
+            .Select(t => ContentFingerprint.Str(t, "rawText"))
             .ToArray();
         Assert.Contains(SeededRawText, texts);
     }
@@ -584,8 +631,8 @@ public sealed class HostedContentReadSelfHostControlTests : IAsyncLifetime
 
         // Exactly one turn was planted into an isolated, otherwise-empty log, so this is an exact figure
         // rather than a "greater than zero" that an accidental extra record could satisfy.
-        Assert.Equal(1, ContentFingerprint.Prop(root, "totalTurns", "GET transcription/stats").GetInt32());
-        Assert.Equal(1, ContentFingerprint.Prop(root, "successfulTurns", "GET transcription/stats").GetInt32());
+        Assert.Equal(1, ContentFingerprint.Num(root, "totalTurns", "GET transcription/stats"));
+        Assert.Equal(1, ContentFingerprint.Num(root, "successfulTurns", "GET transcription/stats"));
     }
 
     [Fact]
@@ -593,7 +640,7 @@ public sealed class HostedContentReadSelfHostControlTests : IAsyncLifetime
     {
         var root = await GetJsonAsync("transcription/terms");
 
-        var pairs = ContentFingerprint.Prop(root, "terms", "GET transcription/terms").EnumerateArray()
+        var pairs = ContentFingerprint.Arr(root, "terms", "GET transcription/terms").EnumerateArray()
             .Select(t => (ContentFingerprint.Str(t, "find"), ContentFingerprint.Str(t, "replace")))
             .ToArray();
         Assert.Contains((SeededFind, SeededReplace), pairs);
@@ -604,7 +651,7 @@ public sealed class HostedContentReadSelfHostControlTests : IAsyncLifetime
     {
         var root = await GetJsonAsync("transcription/words");
 
-        var words = ContentFingerprint.Prop(root, "words", "GET transcription/words").EnumerateArray()
+        var words = ContentFingerprint.Arr(root, "words", "GET transcription/words").EnumerateArray()
             .Select(w => ContentFingerprint.Str(w, "word"))
             .ToArray();
         Assert.Contains(SeededWord, words);
@@ -622,7 +669,7 @@ public sealed class HostedContentReadSelfHostControlTests : IAsyncLifetime
     {
         var root = await GetJsonAsync("gateway/wingman/instructions/records");
 
-        var records = ContentFingerprint.Prop(root, "records", "GET gateway/wingman/instructions/records")
+        var records = ContentFingerprint.Arr(root, "records", "GET gateway/wingman/instructions/records")
             .EnumerateArray().ToArray();
         var seeded = Assert.Single(records,
             r => (ContentFingerprint.Str(r, "id") ?? "").EndsWith("#0", StringComparison.Ordinal));
@@ -645,25 +692,25 @@ public sealed class HostedContentReadSelfHostControlTests : IAsyncLifetime
         // Fingerprint, not status: re-verbing this route sends the request to the Cockpit fallback, and a
         // status check would redden on 404 rather than on "that was not the save handler answering".
         var savedBody = await JsonAsync(saved, "PUT gateway/wingman/instructions");
-        Assert.Equal(content, ContentFingerprint.Str(
-            ContentFingerprint.Prop(savedBody, "active", "PUT gateway/wingman/instructions"), "content"));
+        Assert.Equal(content, ContentFingerprint.Text(
+            ContentFingerprint.Prop(savedBody, "active", "PUT gateway/wingman/instructions"),
+            "content", "PUT gateway/wingman/instructions"));
 
         var active = await GetJsonAsync("gateway/wingman/instructions");
         var activeVersion = ContentFingerprint.Prop(active, "active", "GET gateway/wingman/instructions");
         Assert.Equal(content,
-            ContentFingerprint.Prop(activeVersion, "content", "GET gateway/wingman/instructions").GetString());
-        Assert.True(ContentFingerprint.Prop(active, "isCustomized", "GET gateway/wingman/instructions").GetBoolean());
+            ContentFingerprint.Text(activeVersion, "content", "GET gateway/wingman/instructions"));
+        Assert.True(ContentFingerprint.Flag(active, "isCustomized", "GET gateway/wingman/instructions"));
 
         var versions = await GetJsonAsync("gateway/wingman/instructions/versions");
         Assert.Contains(
-            ContentFingerprint.Prop(versions, "versions", "GET gateway/wingman/instructions/versions").EnumerateArray(),
-            v => v.TryGetProperty("content", out var c) && c.GetString() == content);
+            ContentFingerprint.Arr(versions, "versions", "GET gateway/wingman/instructions/versions").EnumerateArray(),
+            v => ContentFingerprint.Str(v, "content") == content);
 
         // The managed-default review must now report the box as customized - a state change this test
         // caused, read back through a DIFFERENT route than the one that caused it.
         var update = await GetJsonAsync("gateway/wingman/instructions/update");
-        Assert.True(ContentFingerprint.Prop(update, "isCustomized", "GET gateway/wingman/instructions/update")
-            .GetBoolean());
+        Assert.True(ContentFingerprint.Flag(update, "isCustomized", "GET gateway/wingman/instructions/update"));
     }
 
     /// <summary>
@@ -681,7 +728,7 @@ public sealed class HostedContentReadSelfHostControlTests : IAsyncLifetime
             new[] { "version", "hash", "content" },
             root.EnumerateObject().Select(p => p.Name).ToArray());
         Assert.False(string.IsNullOrWhiteSpace(
-            ContentFingerprint.Prop(root, "content", "GET gateway/wingman/instructions/default").GetString()));
+            ContentFingerprint.Text(root, "content", "GET gateway/wingman/instructions/default")));
     }
 
     // ===== The two upload families: every leg leaves a receipt =====
@@ -698,14 +745,14 @@ public sealed class HostedContentReadSelfHostControlTests : IAsyncLifetime
     {
         var register = await Send(HttpMethod.Post, "wingman/utterance/upload", "");
         var registerBody = await JsonAsync(register, "POST wingman/utterance/upload");
-        var id = ContentFingerprint.Prop(registerBody, "upload_id", "POST wingman/utterance/upload").GetString();
+        var id = ContentFingerprint.Text(registerBody, "upload_id", "POST wingman/utterance/upload");
         Assert.False(string.IsNullOrWhiteSpace(id));
 
         var payload = Encoding.UTF8.GetBytes("utterance-bytes-zqxjv-" + Guid.NewGuid().ToString("N"));
         var chunk = await SendBytes(HttpMethod.Put, $"wingman/utterance/{id}/chunk/0", payload);
         var chunkBody = await JsonAsync(chunk, "PUT wingman/utterance/{uploadId}/chunk/0");
         Assert.Equal(0,
-            ContentFingerprint.Prop(chunkBody, "index", "PUT wingman/utterance/{uploadId}/chunk/0").GetInt32());
+            ContentFingerprint.Num(chunkBody, "index", "PUT wingman/utterance/{uploadId}/chunk/0"));
 
         AssertStagedOnDisk(payload);
     }
@@ -725,7 +772,7 @@ public sealed class HostedContentReadSelfHostControlTests : IAsyncLifetime
         var chunk = await SendBytes(HttpMethod.Put, $"dictation/{id}/chunk/0", payload);
         var chunkBody = await JsonAsync(chunk, "PUT dictation/{uploadId}/chunk/0");
         Assert.Equal(0,
-            ContentFingerprint.Prop(chunkBody, "index", "PUT dictation/{uploadId}/chunk/0").GetInt32());
+            ContentFingerprint.Num(chunkBody, "index", "PUT dictation/{uploadId}/chunk/0"));
 
         AssertStagedOnDisk(payload);
     }
@@ -745,13 +792,13 @@ public sealed class HostedContentReadSelfHostControlTests : IAsyncLifetime
         var abandon = await Send(HttpMethod.Post, $"dictation/{id}/abandon", "");
         var abandonBody = await JsonAsync(abandon, "POST dictation/{uploadId}/abandon");
         Assert.True(
-            ContentFingerprint.Prop(abandonBody, "abandoned", "POST dictation/{uploadId}/abandon").GetBoolean());
+            ContentFingerprint.Flag(abandonBody, "abandoned", "POST dictation/{uploadId}/abandon"));
 
         var reRegister = await Send(HttpMethod.Post, "dictation/upload",
             "{\"sessionId\":\"11111111-1111-1111-1111-111111111111\"}", key);
         var again = await JsonAsync(reRegister, "POST dictation/upload (re-register)");
-        Assert.True(ContentFingerprint.Prop(again, "terminal", "POST dictation/upload (re-register)").GetBoolean());
-        Assert.True(ContentFingerprint.Prop(again, "dropped", "POST dictation/upload (re-register)").GetBoolean());
+        Assert.True(ContentFingerprint.Flag(again, "terminal", "POST dictation/upload (re-register)"));
+        Assert.True(ContentFingerprint.Flag(again, "dropped", "POST dictation/upload (re-register)"));
     }
 
     /// <summary>
@@ -768,12 +815,12 @@ public sealed class HostedContentReadSelfHostControlTests : IAsyncLifetime
         var first = await Send(HttpMethod.Post, $"dictation/{id}/ack", "");
         var firstBody = await JsonAsync(first, "POST dictation/{uploadId}/ack (first)");
         Assert.True(
-            ContentFingerprint.Prop(firstBody, "retired", "POST dictation/{uploadId}/ack (first)").GetBoolean());
+            ContentFingerprint.Flag(firstBody, "retired", "POST dictation/{uploadId}/ack (first)"));
 
         var second = await Send(HttpMethod.Post, $"dictation/{id}/ack", "");
         var secondBody = await JsonAsync(second, "POST dictation/{uploadId}/ack (second)");
         Assert.False(
-            ContentFingerprint.Prop(secondBody, "retired", "POST dictation/{uploadId}/ack (second)").GetBoolean());
+            ContentFingerprint.Flag(secondBody, "retired", "POST dictation/{uploadId}/ack (second)"));
     }
 
     // ===== Helpers =====
@@ -802,7 +849,7 @@ public sealed class HostedContentReadSelfHostControlTests : IAsyncLifetime
         var resp = await Send(HttpMethod.Post, "dictation/upload",
             "{\"sessionId\":\"11111111-1111-1111-1111-111111111111\"}", idempotencyKey);
         var body = await JsonAsync(resp, "POST dictation/upload");
-        var id = ContentFingerprint.Prop(body, "upload_id", "POST dictation/upload").GetString();
+        var id = ContentFingerprint.Text(body, "upload_id", "POST dictation/upload");
         Assert.False(string.IsNullOrWhiteSpace(id));
         return id!;
     }
@@ -810,6 +857,10 @@ public sealed class HostedContentReadSelfHostControlTests : IAsyncLifetime
     /// <summary>The staged-bytes receipt: some file under the isolated root holds exactly these bytes.</summary>
     private void AssertStagedOnDisk(byte[] payload)
     {
+        // Assert the directory exists before enumerating it: EnumerateFiles throws on a missing root,
+        // and a throw here would be a crash rather than a statement about what the handler staged.
+        Assert.True(Directory.Exists(_root), $"the storage root {_root} does not exist, so nothing could stage");
+
         var found = Directory.EnumerateFiles(_root, "*", SearchOption.AllDirectories)
             .Any(f =>
             {
