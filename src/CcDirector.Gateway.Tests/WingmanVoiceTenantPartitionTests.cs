@@ -76,7 +76,44 @@ namespace CcDirector.Gateway.Tests;
 /// on one shared assertion. If a future edit makes those two fail for the same reason, the pair has stopped
 /// being a two-direction proof - split the run rather than accept it.
 ///
-/// RESULTS: recorded when the lane is granted. Nothing is recorded here from a filtered run.
+/// RESULTS - full Gateway assembly at head 103220b0, rebased onto lock-bearing main (e1b8825c), run under
+/// the automatic suite lock. Group one, all four boundary mutations applied together: build succeeded,
+/// 2979 tests, 2953 passed, 16 FAILED, 10 skipped. Restored to that exact head: green.
+///
+/// EVERY ONE OF THE 16 ARRIVED AS AN ASSERTION FAILURE. Not one NullReferenceException, not one
+/// input/output error. That is the result this recipe exists to produce: it converts the claim "these
+/// tests detect a collapsed partition" from hand-tracing into evidence, because a crash would have proved
+/// only that the harness fell over on the way to the question.
+///
+///   B1 <c>WingmanVoiceService.StateFor</c> - 6 reds, all in-memory isolation:
+///     Ready_audio_stored_for_one_tenant_is_invisible_to_another            Assert.False (B saw A's clip)
+///     Voice_session_marking_is_per_tenant                                  Assert.False
+///     Generating_unavailable_and_nothing_to_narrate_are_per_tenant         Assert.False
+///     Served_via_fallback_is_per_tenant                                    Assert.False
+///     Clearing_one_tenants_session_leaves_..._intact                       Assert.True (B's clip died with A's)
+///     Regeneration_decision_reads_only_the_asking_tenants_cached_reply     Assert.True
+///   B2 <c>WingmanVoiceService.PartitionDirectoryFor</c> - 3 reds of mine plus 3 pre-existing (below):
+///     Each_tenants_clips_live_in_its_own_directory                         Assert.NotEqual (paths equal)
+///     Voice_session_set_reloads_into_the_tenant_that_owned_it              Assert.True
+///     Self_host_moves_the_pre_partition_voice_state_into_the_local_partition  Assert.True
+///     Clips_reload_into_the_tenant_that_owned_them                         Assert.Equal (bytes vs null; B1+B2)
+///   B3 <c>VoiceTurnArchive.PartitionDirectoryFor</c> - 2 reds:
+///     Turn_archive_is_partitioned_and_a_turn_id_alone_does_not_read_it     Assert.Null (B read A's record)
+///     Self_host_moves_pre_partition_archived_turns_into_the_local_partition  Assert.Null
+///   B4 <c>GatewayTurnJobStore.StateFor</c> - 1 red:
+///     Turn_job_store_is_partitioned_and_a_turn_id_alone_does_not_read_it   Assert.Null (B read A's job)
+///
+/// THREE TESTS THAT ARE NOT MINE ALSO WENT RED, all on B2, all as assertions:
+///   WingmanVoiceServiceTests.ReadyAudio_PersistsAndReloadsAcrossRestart
+///   WingmanVoiceServiceTests.ReadyAudio_ReloadsLegacyWavCacheWithDetectedContentType
+///   WingmanVoiceFallbackTests.ServedViaFallback_SurvivesAGatewayRestart
+/// This is the answer to a question a filtered run cannot ask: the durable restart path was ALREADY
+/// covered, and that coverage is sensitive to the directory partition. Worth keeping in mind when
+/// changing the on-disk layout - three tests outside this class will notice.
+///
+/// The Assert.NotEqual red on Each_tenants_clips_live_in_its_own_directory is the one to look at hardest,
+/// because that assertion previously compared two paths the TEST had built and could not fail. Rewritten
+/// to read both paths back from the production method, it fired on the first mutation that collapsed them.
 /// </summary>
 public sealed class WingmanVoiceTenantPartitionTests
 {
