@@ -212,6 +212,34 @@ namespace CcDirector.Gateway.Tests;
 /// truncated arm, a crash-red arm, a stayed-green arm) and confirming it returns a distinct non-zero verdict,
 /// and against a clean arm to confirm it does not fire on the happy path. A detector that has only ever been
 /// read is another printout.
+///
+/// WHY ALL THREE ARMS ARE THE FULL SOLUTION, AND NOT THE GATEWAY ASSEMBLY PER ARM. The obvious answer is the
+/// reference graph: of the seven test projects, ONLY CcDirector.Gateway.Tests references
+/// CcDirector.Gateway, so nothing else can even load the mutated code. THAT ANSWER IS WRONG, and it is worth
+/// writing down because it is the answer anyone would give.
+///
+/// CcDirector.Core.Tests contains TEN ARCHITECTURE FITNESS FUNCTIONS THAT READ PRODUCTION SOURCE UNDER src/
+/// AS TEXT, with NO assembly reference to the Gateway at all. One of them,
+/// NoCrossMachineLoopbackGuardTests, carries a PATH-KEYED ALLOWLIST that names
+/// "src/CcDirector.Gateway/Api/MachineEndpoints.cs" EXPLICITLY - THIS FILE'S production twin - and by its own
+/// documentation it fails on a STALE entry, meaning a file that no longer contains the literal. So a source
+/// edit in the Gateway CAN redden a project that does not reference the Gateway. The coupling is TEXTUAL,
+/// OVER THE FILESYSTEM, and the reference graph is structurally blind to it.
+///
+/// For THIS mutation it is settled, and settled for FREE by text rather than by spending a box slot: the
+/// deleted block is five lines of routing code containing ZERO loopback literals, and MachineEndpoints.cs
+/// still contains four afterwards - so the allowlist entry stays honest and that guard cannot flip. Verified
+/// by applying the mutation, grepping, and restoring.
+///
+/// THE DECIDING ARGUMENT IS THE RECONCILIATION GATE, NOT THE COUPLING. Scoping the ARM narrower than the
+/// BASELINE BREAKS the primary truncation detector, because passed plus failed plus skipped is then compared
+/// against a total from a DIFFERENT population and can never match. Preserving the gate under a scoped arm
+/// requires a scoped baseline TOO - which is a FOURTH run, on a contended serial box, to save part of one.
+/// The per-arm saving scales with the NUMBER OF ARMS while the extra full run is FIXED, so the scoping that
+/// is correct for an eight-arm proof INVERTS at three arms: measured against roughly seventeen minutes a full
+/// solution and ten a Gateway suite, three full runs is about fifty minutes, and every scoped variant that
+/// keeps the gate intact lands at forty-seven to fifty-six. There is no saving here to buy, only a detector
+/// to lose.
 /// </summary>
 public sealed class HostedLauncherMachineDenyTests : IAsyncLifetime
 {
