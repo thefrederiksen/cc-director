@@ -28,10 +28,12 @@ namespace CcDirector.Gateway.Api;
 /// one caller's turn timings are never disclosed to another.
 ///
 /// Auth: the routes are not on the public allow-list and are not under /m/, so the host-wide auth gate
-/// already requires the caller's per-device key (or the shared token), per the Gateway auth rule. The
-/// caller's own credential also keys the server-side conversation context, so multi-turn works per device
-/// without any history crossing the wire. The credential is used only as an opaque key and a one-way
-/// device hash, and is never logged (DT-05).
+/// already requires the caller's per-device key (or the shared token), per the Gateway auth rule. THE
+/// CREDENTIAL THE GATE ACCEPTED - not this file's own reading of the request - keys the server-side
+/// conversation context and the telemetry partition, so multi-turn works per device without any history
+/// crossing the wire and a caller cannot be authenticated as one identity while being partitioned as
+/// another. The credential is used only as an opaque key and a one-way device hash, and is never
+/// logged (DT-05).
 /// </summary>
 internal static class CarModeEndpoint
 {
@@ -74,7 +76,10 @@ internal static class CarModeEndpoint
             if (req is null || string.IsNullOrWhiteSpace(req.Text))
                 return Results.Json(new { error = "text is required" }, statusCode: StatusCodes.Status400BadRequest);
 
-            var deviceKey = ExtractCallerCredential(ctx);
+            // The per-device conversation key is the SAME authenticated credential the telemetry partition
+            // uses. It was read from the raw headers here too, which had the same flaw: a caller could be
+            // authenticated on one credential and given another device's conversation context.
+            var deviceKey = AuthenticatedCredential(ctx);
             var text = req.Text.Trim();
             // Offline resilience Phase 4b (issue #1427): the client sends its durable command-audio record id
             // as the Idempotency-Key so an already-sent turn whose result was lost in a dead zone auto-retries
@@ -224,28 +229,35 @@ internal static class CarModeEndpoint
         });
     }
 
-    /// <summary>THE storage partition for Car Mode telemetry: a one-way hash of the caller's OWN credential.
-    ///  Both the write and the data read derive it here, from this one helper, so the write can never file a
-    ///  record under a partition the read would not ask for. It is derived from the request, never from the
-    ///  posted body or a query parameter - a caller-supplied value is not a trusted discriminator.</summary>
-    private static string DevicePartition(HttpContext ctx) => CarModeDeviceHash.Of(ExtractCallerCredential(ctx));
+    /// <summary>
+    /// THE ONE caller identity in this file: THE EXACT CREDENTIAL THE AUTHENTICATION GATE ACCEPTED, which
+    /// <see cref="AuthMiddleware.HasValidToken"/> stashes on the request. It is the storage partition for
+    /// telemetry and the per-device conversation key for a turn.
+    ///
+    /// This route deliberately does NOT read the Authorization header or the cookies itself. It used to, and
+    /// that was the defect: the gate accepts a request if ANY presented credential is valid - it tries the
+    /// Bearer value and then EVERY raw cc-gateway-token cookie - while a second reader here always preferred
+    /// the Bearer. A caller presenting an attacker-chosen Bearer alongside their valid device cookie would
+    /// therefore be authenticated on the cookie and partitioned on the Bearer, letting them read and write a
+    /// partition that was not theirs. Duplicate cookies opened the same gap. Two independent readings of one
+    /// request are two authentication decisions with different rules, and the disagreement between them IS
+    /// the vulnerability. The identity is resolved once, by the gate whose job that is, and passed forward.
+    ///
+    /// Absent means no credential was authenticated at all (the host-wide gate is off in local debug). That
+    /// is not an identity, so it maps to ONE shared anonymous bucket - exactly what a credential-free request
+    /// got before - and never to a second reading of the headers. Never logged.
+    /// </summary>
+    private static string AuthenticatedCredential(HttpContext ctx)
+        => ctx.Items.TryGetValue(AuthMiddleware.AuthenticatedCredentialItemKey, out var credential)
+            ? credential as string ?? ""
+            : "";
 
-    /// <summary>The caller's own credential (Bearer header, else the cc-gateway-token cookie), used only as
-    ///  the opaque per-device conversation key and the one-way device hash. Empty when the auth gate is off
-    ///  (debug), which the store maps to one shared anonymous context. Never logged.</summary>
-    private static string ExtractCallerCredential(HttpContext ctx)
-    {
-        if (ctx.Request.Headers.TryGetValue("Authorization", out var header))
-        {
-            var raw = header.ToString();
-            const string prefix = "Bearer ";
-            if (raw.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
-                return raw[prefix.Length..].Trim();
-        }
-        if (ctx.Request.Cookies.TryGetValue(AuthMiddleware.CookieName, out var cookie) && !string.IsNullOrWhiteSpace(cookie))
-            return cookie;
-        return "";
-    }
+    /// <summary>The telemetry storage partition: a one-way hash of the credential that authenticated this
+    ///  request. Both the write and the data read derive it here, from this one helper, so the write can
+    ///  never file a record under a partition the read would not ask for, and neither can be steered by
+    ///  anything the caller supplies - not the posted body, not a query parameter, and not an unvalidated
+    ///  credential presented alongside the one that actually authenticated.</summary>
+    private static string DevicePartition(HttpContext ctx) => CarModeDeviceHash.Of(AuthenticatedCredential(ctx));
 
     /// <summary>The client's idempotency key for this turn (the durable command-audio record id), from the
     ///  standard <c>Idempotency-Key</c> header. Empty when absent (a legacy caller), which the handler maps

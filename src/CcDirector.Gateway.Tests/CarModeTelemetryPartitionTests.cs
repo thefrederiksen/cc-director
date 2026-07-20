@@ -197,16 +197,53 @@ public sealed class CarModeTelemetryPartitionTests : IDisposable
         File.WriteAllText(_path, mixed);
 
         var store = new CarModeTelemetryStore(_path, _ => { });
-        store.Add(DeviceA, Record("fresh")); // any write persists the store, so the purge reaches the file
 
-        Assert.Equal(new[] { "fresh", "owned" }, store.Recent(DeviceA, 10).Select(r => r.TurnId).ToArray()); // positive control
-        Assert.Empty(store.Recent(DeviceB, 10));
-
-        // The orphan is GONE from the stored document - not merely filtered out of one read path, where it
-        // would sit forever consuming the growth-guard budget and waiting for a future unfiltered reader.
+        // The orphan is GONE FROM THE DURABLE FILE, and nothing in this test wrote to the store to make that
+        // happen: the file is inspected IMMEDIATELY after construction. A test that added a record first
+        // would be performing the flush itself and then crediting the purge with it - it could not fail, and
+        // it would pass just as happily against a purge that only ever removed the record from memory and
+        // left it in the file until some future turn arrived.
         using var doc = JsonDocument.Parse(File.ReadAllText(_path));
         var storedTurnIds = doc.RootElement.EnumerateArray().Select(r => r.GetProperty("TurnId").GetString()).ToArray();
-        Assert.Equal(new[] { "owned", "fresh" }, storedTurnIds);
+        Assert.Equal(new[] { "owned" }, storedTurnIds);
+
+        // And a second store reading that same file agrees, with the surviving record still attributed.
+        var reopened = new CarModeTelemetryStore(_path, _ => { });
+        Assert.Equal(new[] { "owned" }, reopened.Recent(DeviceA, 10).Select(r => r.TurnId).ToArray()); // positive control
+        Assert.Empty(reopened.Recent(DeviceB, 10));
+        Assert.Equal(new[] { "owned" }, store.Recent(DeviceA, 10).Select(r => r.TurnId).ToArray());
+    }
+
+    [Fact]
+    public void Load_PersistsTheRetentionPrune_WithoutWaitingForTheNextWrite()
+    {
+        // Same guarantee for the age sweep: an aged-out record must leave the FILE at load, not linger there
+        // until a later turn happens to flush it. Nothing in this test writes to the store.
+        var aged = $"[{{\"TurnId\":\"ancient\",\"ReceivedAtUtc\":\"{DateTime.UtcNow.AddDays(-120):o}\",\"DeviceHash\":\"{DeviceA}\"}},"
+                 + $"{{\"TurnId\":\"recent\",\"ReceivedAtUtc\":\"{DateTime.UtcNow:o}\",\"DeviceHash\":\"{DeviceA}\"}}]";
+        File.WriteAllText(_path, aged);
+
+        var store = new CarModeTelemetryStore(_path, _ => { });
+
+        using var doc = JsonDocument.Parse(File.ReadAllText(_path));
+        var storedTurnIds = doc.RootElement.EnumerateArray().Select(r => r.GetProperty("TurnId").GetString()).ToArray();
+        Assert.Equal(new[] { "recent" }, storedTurnIds);
+        Assert.Equal(new[] { "recent" }, store.Recent(DeviceA, 10).Select(r => r.TurnId).ToArray()); // positive control
+    }
+
+    [Fact]
+    public void Load_WithNothingToRemove_LeavesTheFileAlone()
+    {
+        // The control for the two tests above: load only rewrites the file when it actually removed
+        // something, so a plain restart is not a write.
+        var clean = $"[{{\"TurnId\":\"owned\",\"ReceivedAtUtc\":\"{DateTime.UtcNow:o}\",\"DeviceHash\":\"{DeviceA}\"}}]";
+        File.WriteAllText(_path, clean);
+        var before = File.ReadAllText(_path);
+
+        var store = new CarModeTelemetryStore(_path, _ => { });
+
+        Assert.Equal(before, File.ReadAllText(_path));
+        Assert.Single(store.Recent(DeviceA, 10)); // positive control: it really did load the record
     }
 
     // ---- Contention: one device must not push another device's records out ----

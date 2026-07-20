@@ -28,6 +28,10 @@ namespace CcDirector.Gateway.CarMode;
 /// microphone, transcode, and playback). Making telemetry follow a person across their devices is a
 /// PRODUCT question, not this security partition, and is deliberately not built here.
 ///
+/// The hash is derived from THE CREDENTIAL THE AUTHENTICATION GATE ACCEPTED, which the endpoint reads from
+/// the request the gate stamped it on - never from a second reading of the raw headers, which would be a
+/// second authentication decision that can disagree with the first.
+///
 /// Both the write and the reads take the partition: <see cref="Add"/> stamps the trusted hash onto the
 /// record it stores (so a record can never be filed under a partition the caller chose), and
 /// <see cref="Recent"/> and <see cref="Count"/> return only that partition. A read-only filter would be a
@@ -142,8 +146,9 @@ public sealed class CarModeTelemetryStore
     }
 
     // Drop records older than the retention window, then, only if still over the growth-guard cap, drop the
-    // oldest until under it. Caller holds the lock.
-    private void PruneLocked(DateTime nowUtc)
+    // oldest until under it. Returns HOW MANY records were removed, so a caller that is not already going to
+    // persist (Load) knows it must. Caller holds the lock.
+    private int PruneLocked(DateTime nowUtc)
     {
         var cutoff = nowUtc.AddDays(-RetentionDays);
         var removedByAge = _records.RemoveAll(r => !WithinRetention(r.ReceivedAtUtc, cutoff));
@@ -166,6 +171,8 @@ public sealed class CarModeTelemetryStore
         }
         if (evicted > 0)
             _log($"[CarModeTelemetry] growth guard: dropped {evicted} record(s) from the largest device partition(s) to stay at {_maxRecords}");
+
+        return removedByAge + evicted;
     }
 
     // The device hash holding the most records right now. Caller holds the lock.
@@ -233,7 +240,20 @@ public sealed class CarModeTelemetryStore
         if (unattributed > 0)
             _log($"[CarModeTelemetry] Load: purged {unattributed} record(s) with no device partition (unattributable; never disclosed)");
 
-        PruneLocked(DateTime.UtcNow);
+        var pruned = PruneLocked(DateTime.UtcNow);
+
+        // The purge and the retention prune are GUARANTEES, so they happen on their own terms: whatever load
+        // removes is written back to the durable file IMMEDIATELY. Removing it from memory only and waiting
+        // for the next write to flush is not cleanup - it is cleanup as a side effect of unrelated activity,
+        // which works whenever something happens to write and never happens on a Gateway where no further
+        // turn arrives. The unattributed record would then sit in the file indefinitely, waiting for a future
+        // unfiltered reader, while the log line claimed it had been purged.
+        if (unattributed + pruned > 0)
+        {
+            Save();
+            _log($"[CarModeTelemetry] Load: rewrote {_path} after removing {unattributed + pruned} record(s)");
+        }
+
         _log($"[CarModeTelemetry] Load: restored {_records.Count} record(s) from {_path}");
     }
 
