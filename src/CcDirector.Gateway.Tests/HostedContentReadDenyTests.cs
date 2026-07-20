@@ -210,6 +210,7 @@ public sealed class HostedContentReadDenyTests : IAsyncLifetime
     private GatewayHost _gateway = null!;
     private HttpClient _http = null!;
     private string _key = "";
+    private string _unboundKey = "";
 
     private readonly string _instancesDir =
         Path.Combine(Path.GetTempPath(), "cc-hosted-content-" + Guid.NewGuid().ToString("N"));
@@ -244,6 +245,11 @@ public sealed class HostedContentReadDenyTests : IAsyncLifetime
         _key = _gateway.Devices.Register("dev-a", "MA").DeviceKey;
         var tenant = _gateway.TenantRegistry.MintOrLookupBySubject("sub-alice", "alice@example.com");
         _gateway.Devices.SetAccountBinding("dev-a", "sub-alice", tenant.Value);
+
+        // A second, enrolled but DELIBERATELY UNBOUND device key: registered, so the host-wide auth gate
+        // lets it through, but tied to no account and therefore to no tenant. See
+        // Every_family_is_refused_to_a_caller_carrying_no_tenant_at_all for why this caller exists.
+        _unboundKey = _gateway.Devices.Register("dev-unbound", "MB").DeviceKey;
     }
 
     public async Task DisposeAsync()
@@ -375,6 +381,40 @@ public sealed class HostedContentReadDenyTests : IAsyncLifetime
             ? Directory.EnumerateFileSystemEntries(_root, "*" + key + "*", SearchOption.AllDirectories).ToArray()
             : Array.Empty<string>();
         Assert.Empty(staged);
+    }
+
+    /// <summary>
+    /// THE GATE MUST NOT DEPEND ON RESOLVING A TENANT, AND THIS IS THE CASE THAT PROVES IT.
+    ///
+    /// The stated reason these denies read <see cref="GatewayHostedMode.IsHosted"/> directly, rather than
+    /// branching on a boundary or tenant argument, is that a security branch resting on an optional input
+    /// FAILS OPEN the moment a caller does not supply it. Every other hosted test here drives a fully
+    /// enrolled, tenant-BOUND device key - so all of them would still pass under a deny that quietly
+    /// depended on tenant resolution succeeding. The property that justifies the design choice is
+    /// invisible to them.
+    ///
+    /// This is that property's case: a device key that is registered (so the host-wide auth gate admits
+    /// it) but bound to NO account and therefore carrying NO tenant - the closest thing this surface has
+    /// to "the caller omitted the argument". It must be refused exactly as the bound caller is, with the
+    /// same body, because the refusal was never about who is asking.
+    /// </summary>
+    [Theory]
+    [InlineData("GET", "transcription/turns", null, TranscriptionRefusal)]
+    [InlineData("GET", "gateway/wingman/instructions/records", null, InstructionsRefusal)]
+    [InlineData("POST", "wingman/utterance/upload", "", UtteranceRefusal)]
+    [InlineData("POST", "dictation/upload", "{\"sessionId\":\"11111111-1111-1111-1111-111111111111\"}", DictationRefusal)]
+    public async Task Every_family_is_refused_to_a_caller_carrying_no_tenant_at_all(
+        string method, string path, string? body, string refusal)
+    {
+        var req = new HttpRequestMessage(new HttpMethod(method), path);
+        req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", _unboundKey);
+        if (body is not null)
+            req.Content = new StringContent(body, Encoding.UTF8, "application/json");
+
+        var resp = await _http.SendAsync(req);
+
+        await AssertBodyIsNothingButTheRefusal(resp, refusal, $"{method} {path} (unbound caller)");
+        Assert.Equal(HttpStatusCode.NotFound, resp.StatusCode);
     }
 
     [Fact]
