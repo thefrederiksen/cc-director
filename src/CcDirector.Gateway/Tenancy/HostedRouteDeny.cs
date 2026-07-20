@@ -161,11 +161,19 @@ public sealed class HostedDenyGroup
     private readonly RouteGroupBuilder _group;
     private readonly HostedDenial _denial;
 
-    // On hosted, one refusal route per PATTERN. A family that maps two verbs on one path (GET /x and PUT /x)
-    // would otherwise produce two verb-less routes on the same pattern, and the matcher throws
-    // AmbiguousMatchException at REQUEST time - a 500 in place of the refusal, on the denied route, which is
-    // the deny failing in the one way nothing would notice until a caller tried it.
-    private readonly Dictionary<string, IEndpointConventionBuilder> _refusals = new(StringComparer.Ordinal);
+    // On hosted, one refusal route per route SHAPE - not per pattern TEXT.
+    //
+    // A family that maps two verbs on one path (GET /x and PUT /x) would otherwise produce two verb-less
+    // routes that tie, and the matcher throws at REQUEST time - a 500 in place of the refusal, on the denied
+    // route, which is the deny failing in the one way nothing notices until a caller tries it.
+    //
+    // Text equality is not enough to prevent that. Two patterns differing only in a parameter NAME -
+    // /x/{id} and /x/{name} - are different strings and the SAME ROUTE, so a text-keyed dictionary maps both
+    // and produces exactly the tie it was meant to prevent. The key is therefore the route SHAPE (see
+    // HostedRefusalPattern.ShapeKey), which is what the matcher actually competes on.
+    private readonly Dictionary<string, RegisteredRefusal> _refusals = new(StringComparer.Ordinal);
+
+    private sealed record RegisteredRefusal(string SourcePattern, IEndpointConventionBuilder Builder);
 
     internal HostedDenyGroup(RouteGroupBuilder group, HostedDenial denial)
     {
@@ -203,64 +211,32 @@ public sealed class HostedDenyGroup
         if (!GatewayHostedMode.IsHosted)
             return mapHandler();
 
-        // The refusal is mapped on the pattern with its inline route CONSTRAINTS removed. Keeping them would
-        // leave a measured hole: a segment that fails a constraint - a non-integer where the real route
-        // declares {id:int} - fails endpoint SELECTION, so a refusal carrying that same constraint is never
-        // selected either and the framework answers its own 404 with the refusal never running. Loosening the
-        // refusal pattern means a value that fails the real constraint still MATCHES the refusal.
+        // The refusal is mapped on the family's pattern with its parameter POLICIES removed, rebuilt from the
+        // parsed route MODEL rather than by editing the pattern text (see HostedRefusalPattern). Keeping a
+        // policy would leave a measured hole: a segment that fails an inline constraint fails endpoint
+        // SELECTION, so a refusal carrying that same constraint is never selected either and the framework
+        // answers instead of the refusal. Everything else - literals, separators, parameter names, optionality,
+        // catch-alls and defaults - is preserved exactly.
         //
-        // Loosening cannot steal a neighbouring route that must keep serving: a literal segment outranks a
-        // parameter segment in route precedence, so a sibling literal on the same path shape still wins. That
-        // is measured, not assumed - over-refusing an undenied route would be an outage, which is the same
-        // defect as under-refusing a denied one, pointed the other way.
-        var refusalPattern = StripInlineConstraints(pattern);
+        // A pattern containing a part the normaliser does not recognise THROWS here, at startup. That is
+        // deliberate: passing it through would map a refusal that still carried a constraint while the
+        // family's author believed the route was covered, which is the false coverage this boundary exists to
+        // remove.
+        var refusalPattern = HostedRefusalPattern.WithoutPolicies(pattern, _denial.Family);
+        var shapeKey = HostedRefusalPattern.ShapeKey(refusalPattern);
 
-        if (_refusals.TryGetValue(refusalPattern, out var existing))
-            return existing;
+        // Same route shape, already refused: a family mapping several verbs on one path needs exactly ONE
+        // verb-less refusal, and mapping a second would tie with the first.
+        if (_refusals.TryGetValue(shapeKey, out var existing))
+            return existing.Builder;
 
-        // Verb-less and handler-less: nothing constrains the match and nothing binds, so every request shape
-        // - including a verb this family never mapped - meets the refusal below.
+        // Verb-less and handler-less: nothing constrains the match and nothing binds, so every request shape -
+        // including a verb this family never mapped - meets the refusal below.
         var refusal = _group.Map(refusalPattern, context => WriteRefusalAsync(context, _denial));
-        _refusals[refusalPattern] = refusal;
+        refusal.WithMetadata(new HostedRefusalMarker(_denial, pattern));
+
+        _refusals[shapeKey] = new RegisteredRefusal(pattern, refusal);
         return refusal;
-    }
-
-    /// <summary>
-    /// Removes the inline constraint from every route parameter: <c>/x/{id:int}</c> becomes <c>/x/{id}</c>.
-    /// A default value or a catch-all marker is left alone - only the constraint portion, everything from the
-    /// first colon to the closing brace, is dropped, because it is the constraint alone that can fail
-    /// selection and leave the refusal unreachable.
-    /// </summary>
-    internal static string StripInlineConstraints(string pattern)
-    {
-        if (pattern.IndexOf(':') < 0) return pattern;
-
-        var result = new System.Text.StringBuilder(pattern.Length);
-        var insideParameter = false;
-        var skipping = false;
-
-        foreach (var c in pattern)
-        {
-            switch (c)
-            {
-                case '{':
-                    insideParameter = true;
-                    skipping = false;
-                    break;
-                case '}':
-                    insideParameter = false;
-                    skipping = false;
-                    break;
-                case ':' when insideParameter:
-                    skipping = true;
-                    continue;
-            }
-
-            if (skipping && c != '}') continue;
-            result.Append(c);
-        }
-
-        return result.ToString();
     }
 
     private static async Task WriteRefusalAsync(HttpContext context, HostedDenial denial)
@@ -269,6 +245,15 @@ public sealed class HostedDenyGroup
                       $"method={context.Request.Method} path={context.Request.Path} reason={denial.Reason}");
 
         context.Response.StatusCode = denial.StatusCode;
+
+        // The media type is set EXPLICITLY, with its charset parameter, because the proof asserts the whole
+        // header value and not just the type: a refusal is a contract about what is served, and "close enough"
+        // on a content type is how a caller ends up parsing something other than what it expected.
+        context.Response.ContentType = "application/json; charset=utf-8";
+
+        // A HEAD request is answered with the refusal's status and headers and no body - the framework
+        // suppresses the body for HEAD. That is correct HTTP and it is stated here so the proof can assert it
+        // deliberately rather than a reader assuming "every request shape" includes a body on HEAD.
         await context.Response.WriteAsJsonAsync(new HostedRefusalBody(denial.Message));
     }
 

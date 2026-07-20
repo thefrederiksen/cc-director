@@ -131,6 +131,47 @@ public sealed class HostedRouteDenyOnHostedTests : IAsyncLifetime
         Assert.Contains("neighbour", await response.Content.ReadAsStringAsync());
     }
 
+    [Fact]
+    public async Task A_HEAD_request_meets_the_refusal_status_with_no_body()
+    {
+        // Stated deliberately rather than folded into "every request shape": HTTP says a HEAD carries the
+        // headers and no body, and the framework enforces that. So the uniformity claim is about the STATUS
+        // and the HEADERS here, not the bytes - and a reader is entitled to see which it is.
+        var response = await _host.SendAsync(HttpMethod.Head, "/family/echo");
+
+        Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
+        Assert.Equal("application/json; charset=utf-8", response.Content.Headers.ContentType?.ToString());
+        Assert.Empty(await response.Content.ReadAsByteArrayAsync());
+    }
+
+    [Theory]
+    [InlineData("/family/multi")]
+    public async Task A_family_mapping_several_verbs_on_one_path_gets_ONE_refusal_and_not_a_tie(string path)
+    {
+        // The multi-verb path adopting families rely on, and it was previously unproved. Two verbs on one
+        // path must produce ONE verb-less refusal: a second would TIE with the first, and a tie surfaces as
+        // a 500 at request time - on the denied route, which is the one nobody exercises until a caller
+        // does. Every verb here must meet the refusal, including one the family never mapped.
+        foreach (var method in new[] { HttpMethod.Get, HttpMethod.Put, HttpMethod.Post, HttpMethod.Delete })
+        {
+            var response = await _host.SendAsync(method, path);
+            await AssertIsExactlyTheRefusal(response);
+        }
+    }
+
+    [Fact]
+    public async Task A_neighbouring_route_with_a_PARAMETER_segment_still_serves()
+    {
+        // The neighbour probe in its second direction. The literal case proves precedence protects a fixed
+        // sibling; this proves the refusal has not widened across a path boundary into a different route
+        // shape entirely. One case tests one thing, and over-refusal is the direction no leak-shaped test
+        // would ever notice.
+        var response = await _host.PostJsonAsync("/family/other/anything", "{\"text\":\"hello\"}");
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Contains("neighbour", await response.Content.ReadAsStringAsync());
+    }
+
     /// <summary>
     /// Asserts the response is the family's refusal and NOTHING ELSE. Status and media type are asserted
     /// BEFORE the body is parsed, deliberately: parsing is itself an assertion about format, so a guard that
@@ -141,7 +182,11 @@ public sealed class HostedRouteDenyOnHostedTests : IAsyncLifetime
     private static async Task AssertIsExactlyTheRefusal(HttpResponseMessage response)
     {
         Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
-        Assert.Equal("application/json", response.Content.Headers.ContentType?.MediaType);
+
+        // The WHOLE header value, parameters included. Asserting only the media type would pass on a
+        // refusal served with a different charset, and a refusal is a contract about exactly what is
+        // served - "close enough" on a content type is how a caller parses something other than it expected.
+        Assert.Equal("application/json; charset=utf-8", response.Content.Headers.ContentType?.ToString());
 
         using var document = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
         Assert.Equal(JsonValueKind.Object, document.RootElement.ValueKind);
@@ -170,6 +215,27 @@ public sealed class HostedRouteDenySelfHostControlTests : IAsyncLifetime
     public async Task InitializeAsync() => _host = await DenyProbeHost.StartAsync(hosted: false);
 
     public Task DisposeAsync() => _host.DisposeAsync().AsTask();
+
+    /// <summary>
+    /// BOTH declared non-hosted forms, explicitly. The variable ABSENT and the variable present but not
+    /// "1" are two different states of the world, and a control exercising one of them proves the guard
+    /// for one of them. The absent case additionally must be SET rather than inherited: a control that
+    /// passes because the runner happened to leave the variable unset is reporting an ambient condition,
+    /// not a property of the code.
+    /// </summary>
+    [Theory]
+    [InlineData(null)]      // absent
+    [InlineData("0")]       // present, not "1"
+    [InlineData("")]        // present, empty
+    public async Task The_family_serves_normally_in_EITHER_non_hosted_form(string? nonHostedForm)
+    {
+        await using var host = await DenyProbeHost.StartAsync(hosted: false, nonHostedForm: nonHostedForm);
+
+        var response = await host.PostJsonAsync("/family/echo", "{\"text\":\"hello\"}");
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Contains("hello", await response.Content.ReadAsStringAsync());
+    }
 
     [Fact]
     public async Task The_family_serves_normally_off_hosted()
@@ -238,14 +304,6 @@ public sealed class HostedDenialValidationTests
             new HostedDenial("family", "message", "reason", "undeny", statusCode: StatusCodes.Status200OK));
     }
 
-    [Theory]
-    [InlineData("/x/{id:int}", "/x/{id}")]
-    [InlineData("/x/{id:int}/y/{name:alpha}", "/x/{id}/y/{name}")]
-    [InlineData("/x/{id}", "/x/{id}")]
-    [InlineData("/x/plain", "/x/plain")]
-    [InlineData("/x/{**rest}", "/x/{**rest}")]
-    public void The_refusal_pattern_drops_inline_constraints_and_nothing_else(string pattern, string expected)
-        => Assert.Equal(expected, HostedDenyGroup.StripInlineConstraints(pattern));
 }
 
 /// <summary>
@@ -278,10 +336,17 @@ internal sealed class DenyProbeHost : IAsyncDisposable
         _priorHosted = priorHosted;
     }
 
-    public static async Task<DenyProbeHost> StartAsync(bool hosted)
+    /// <param name="nonHostedForm">
+    /// WHICH non-hosted form to set when <paramref name="hosted"/> is false. There are TWO declared ways to
+    /// be non-hosted - the variable ABSENT, and the variable present but not "1" - and a control that only
+    /// ever exercises one of them proves the guard for one of them. Worse, a control that leans on the
+    /// variable being absent passes only because the test runner happened to leave it unset, which is an
+    /// ambient condition and not a proof.
+    /// </param>
+    public static async Task<DenyProbeHost> StartAsync(bool hosted, string? nonHostedForm = null)
     {
         var priorHosted = Environment.GetEnvironmentVariable("CC_GATEWAY_HOSTED");
-        Environment.SetEnvironmentVariable("CC_GATEWAY_HOSTED", hosted ? "1" : null);
+        Environment.SetEnvironmentVariable("CC_GATEWAY_HOSTED", hosted ? "1" : nonHostedForm);
 
         var builder = WebApplication.CreateBuilder();
         builder.Logging.ClearProviders();
@@ -314,9 +379,16 @@ internal sealed class DenyProbeHost : IAsyncDisposable
         group.MapPost("/custom", (ObservableBinding probe) => Results.Json(new { probe = probe.Value }));
         group.MapPost("/typed/{id:int}", (int id, EchoBody body) => Results.Json(new { id, body.Text }));
 
-        // A literal sibling under the same path shape, mapped OUTSIDE the family: it is not denied and must
-        // keep serving on hosted. This is the over-refusal direction.
+        // TWO verbs on ONE path: the multi-verb shape adopting families rely on. On hosted these must
+        // collapse to a single verb-less refusal rather than two endpoints that tie.
+        group.MapGet("/multi", () => Results.Json(new { multi = "get" }));
+        group.MapPut("/multi", (EchoBody body) => Results.Json(new { multi = body.Text }));
+
+        // Neighbours mapped OUTSIDE the family: neither is denied and both must keep serving on hosted.
+        // A literal sibling under the same path shape (precedence protects it) and a route on a different
+        // path shape entirely (the refusal must not have widened across a path boundary).
         outer.MapPost("/family/typed/summary", () => Results.Json(new { neighbour = "still serving" }));
+        outer.MapPost("/family/other/{name}", (string name) => Results.Json(new { neighbour = name }));
 
         // Mapped LAST, with a bound body: the future route. A parameterless GET here would prove nothing,
         // because a parameterless GET is the one shape the original defect cannot be seen through.
@@ -330,6 +402,9 @@ internal sealed class DenyProbeHost : IAsyncDisposable
         => _http.PostAsync(path, new StringContent(content, Encoding.UTF8, mediaType));
 
     public Task<HttpResponseMessage> GetAsync(string path) => _http.GetAsync(path);
+
+    public Task<HttpResponseMessage> SendAsync(HttpMethod method, string path)
+        => _http.SendAsync(new HttpRequestMessage(method, path));
 
     public async ValueTask DisposeAsync()
     {
