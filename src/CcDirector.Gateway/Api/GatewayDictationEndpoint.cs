@@ -111,7 +111,11 @@ internal static class GatewayDictationEndpoint
             statusCode: StatusCodes.Status404NotFound);
     }
 
-    public static void Map(IEndpointRouteBuilder outer, DirectorRegistry registry,
+    /// Returns the guarded route group. That return value exists SOLELY so a test can map a brand-new
+    /// route onto the same group and prove it is refused on hosted with no deny written for it - the
+    /// property that distinguishes a group filter from a per-route guard, and which is otherwise
+    /// invisible to any test that only drives the routes existing today.
+    public static RouteGroupBuilder Map(IEndpointRouteBuilder outer, DirectorRegistry registry,
         SessionOwnerCache? owners, string token, GatewayTranscriptionService transcription,
         TranscribingSessions transcribingSessions, VoiceUploadStore uploads, Pairing.DeviceRegistry devices,
         Streaming.PushedSessionStore? pushedSessions = null,
@@ -328,6 +332,8 @@ internal static class GatewayDictationEndpoint
             FileLog.Write($"[GatewayDictation] abandon uploadId={uploadId} sid={sid}: marked ABANDONED, staging discarded");
             return Results.Json(new { ok = true, upload_id = uploadId, abandoned = true });
         });
+
+        return app;
     }
 
     // Map a NON-Ok transcription result to the dictation outcome, or null when the result is Ok and the

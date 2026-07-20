@@ -79,7 +79,11 @@ internal static class TranscriptionAnalysisEndpoint
             statusCode: StatusCodes.Status404NotFound);
     }
 
-    public static void Map(IEndpointRouteBuilder outer, TranscriptionTelemetryReader? reader = null)
+    /// Returns the guarded route group. That return value exists SOLELY so a test can map a brand-new
+    /// route onto the same group and prove it is refused on hosted with no deny written for it - the
+    /// property that distinguishes a group filter from a per-route guard, and which is otherwise
+    /// invisible to any test that only drives the routes existing today.
+    public static RouteGroupBuilder Map(IEndpointRouteBuilder outer, TranscriptionTelemetryReader? reader = null)
     {
         var log = reader ?? new TranscriptionTelemetryReader();
 
@@ -125,6 +129,8 @@ internal static class TranscriptionAnalysisEndpoint
             var top = ClampInt(ctx.Request.Query["top"], DefaultWordTop, 1, 5000);
             return Results.Json(new { words = log.TopWords(top, since) });
         });
+
+        return app;
     }
 
     /// <summary>Resolve the time window: <c>days</c> (last N days) wins, else <c>since</c> (ISO), else null.</summary>

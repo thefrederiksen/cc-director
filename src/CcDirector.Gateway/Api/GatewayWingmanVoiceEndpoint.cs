@@ -130,7 +130,11 @@ internal static class GatewayWingmanVoiceEndpoint
         }
     }
 
-    public static void Map(
+    /// Returns the guarded route group. That return value exists SOLELY so a test can map a brand-new
+    /// route onto the same group and prove it is refused on hosted with no deny written for it - the
+    /// property that distinguishes a group filter from a per-route guard, and which is otherwise
+    /// invisible to any test that only drives the routes existing today.
+    public static RouteGroupBuilder Map(
         IEndpointRouteBuilder app,
         DirectorRegistry registry,
         Func<WingmanModelRole, CancellationToken, Task<IAgentBrain>> brainProvider,
@@ -861,6 +865,10 @@ internal static class GatewayWingmanVoiceEndpoint
         // Pressing menu options (fully hands-free voice-answering) is its own later issue, built with per-agent
         // picker profiles and a screen-version lock on every keypress. The GET /wingman/menu detection above
         // stays (read-only, for the announce step); it never leads to a keypress.
+
+        // The GUARDED group only - not the whole voice surface. Everything else mapped above is deliberately
+        // outside it and must keep serving on hosted, which is itself asserted by a scoping control.
+        return utterance;
     }
 
     /// <summary>
