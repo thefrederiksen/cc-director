@@ -845,12 +845,38 @@ public sealed class HostedContentReadSelfHostControlTests : IAsyncLifetime
     /// The ack leg gets its own receipt too, and it is a state TRANSITION rather than a single value:
     /// acking a tombstone retires it, so the first ack reports retired and a second ack on the same id
     /// reports not-retired. A catch-all answering both calls identically cannot produce that difference.
+    ///
+    /// THE PRECONDITION IS ASSERTED, NOT ASSUMED, AND THAT IS THE WHOLE CORRECTION HERE. An earlier
+    /// version registered, abandoned, then acked twice - and passed IDENTICALLY when the abandon route was
+    /// renamed away, because <c>Acknowledge</c> only requires the staging DIRECTORY to exist and
+    /// registering alone creates it. So the transition it measured was directory-existence, not
+    /// tombstone-retirement: the test never established the tombstone it is named for. The route-mutation
+    /// sweep caught it - renaming POST /dictation/{id}/abandon left this row green when it was declared to
+    /// redden, which is precisely the canary-cannot-fail signal.
+    ///
+    /// It now reads the tombstone back through the register route BEFORE acking, so the abandon is load
+    /// bearing, and reads it back again AFTER to prove the retirement was real rather than a returned
+    /// boolean.
     /// </summary>
     [Fact]
     public async Task Self_host_dictation_ack_retires_the_tombstone_exactly_once()
     {
-        var id = await RegisterDictationAsync(Guid.NewGuid().ToString("N"));
-        await Send(HttpMethod.Post, $"dictation/{id}/abandon", "");
+        const string session = "{\"sessionId\":\"11111111-1111-1111-1111-111111111111\"}";
+        var key = Guid.NewGuid().ToString("N");
+        var id = await RegisterDictationAsync(key);
+
+        var abandon = await Send(HttpMethod.Post, $"dictation/{id}/abandon", "");
+        var abandonBody = await JsonAsync(abandon, "POST dictation/{uploadId}/abandon");
+        Assert.True(
+            ContentFingerprint.Flag(abandonBody, "abandoned", "POST dictation/{uploadId}/abandon"));
+
+        // PRECONDITION: a terminal tombstone really exists now. If the abandon did not happen, this
+        // re-register is an ordinary fresh upload carrying no "terminal" property at all, and this
+        // assertion fails - which is what makes the rest of the test depend on the abandon.
+        var beforeAck = await JsonAsync(
+            await Send(HttpMethod.Post, "dictation/upload", session, key),
+            "POST dictation/upload (before ack)");
+        Assert.True(ContentFingerprint.Flag(beforeAck, "terminal", "POST dictation/upload (before ack)"));
 
         var first = await Send(HttpMethod.Post, $"dictation/{id}/ack", "");
         var firstBody = await JsonAsync(first, "POST dictation/{uploadId}/ack (first)");
@@ -861,6 +887,15 @@ public sealed class HostedContentReadSelfHostControlTests : IAsyncLifetime
         var secondBody = await JsonAsync(second, "POST dictation/{uploadId}/ack (second)");
         Assert.False(
             ContentFingerprint.Flag(secondBody, "retired", "POST dictation/{uploadId}/ack (second)"));
+
+        // AND the retirement was real: the same id now registers as a FRESH upload, with no terminal
+        // outcome to report. A returned "retired: true" alone would not have shown that.
+        var afterAck = await JsonAsync(
+            await Send(HttpMethod.Post, "dictation/upload", session, key),
+            "POST dictation/upload (after ack)");
+        Assert.False(afterAck.TryGetProperty("terminal", out _));
+        Assert.False(string.IsNullOrWhiteSpace(
+            ContentFingerprint.Text(afterAck, "upload_id", "POST dictation/upload (after ack)")));
     }
 
     // ===== Helpers =====
