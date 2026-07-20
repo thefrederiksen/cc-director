@@ -24,7 +24,7 @@ namespace CcDirector.Gateway.Tests;
 /// round-trip); the default is claude + opus when unset; and an unknown agent id is rejected
 /// (no-fallback).
 /// </summary>
-[Collection("DirectorRoot")]
+[Collection("GatewayHostedMode")]
 public sealed class BrainConfigEndpointTests : IAsyncLifetime
 {
     private readonly string _root;

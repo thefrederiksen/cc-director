@@ -34,13 +34,66 @@ namespace CcDirector.Gateway.Api;
 ///   PUT  /gateway/telemetry-consent  body { "enabled": bool } -> { enabled }
 ///   GET  /gateway/injected-text   -> { use_yours, yours, ours, placeholders[] } (what agents get at launch)
 ///   PUT  /gateway/injected-text   body { "use_yours": bool, "yours": string|null } -> same shape
+///
+/// DENIED IN WHOLE ON HOSTED (issue #1863). Every route in this group is refused on a hosted Gateway,
+/// through ONE group filter rather than a guard repeated per route. These routes operate on
+/// PROCESS-GLOBAL configuration with NO TENANT DIMENSION AT ALL: config.json is one file for the whole
+/// process, so every write here is a fleet-wide mutation performed by whichever authenticated caller
+/// happened to send it, and GET /gateway/injected-text hands back the owner's own custom agent-launch
+/// instruction text. On shared hosted infrastructure there is no correct per-tenant answer to serve
+/// here - only a leak to close. Self-host is single-tenant and these are legitimate owner function
+/// there, so on self-host nothing changes.
 /// </summary>
 internal static class SettingsEndpoints
 {
     private static readonly JsonSerializerOptions JsonOpts = new() { PropertyNameCaseInsensitive = true };
 
-    public static void Map(IEndpointRouteBuilder app, GatewayHost host)
+    /// <summary>
+    /// The hosted refusal for every owner-settings route (issue #1863), or null on self-host where nothing
+    /// changes.
+    ///
+    /// Gated on <see cref="GatewayHostedMode.IsHosted"/> DIRECTLY - never on an optional or nullable
+    /// argument being passed in. A security branch that depends on an optional argument fails OPEN the
+    /// moment a caller forgets it, which is exactly how the hosted account-status fix nearly shipped a
+    /// hole. Asking hosted mode directly means these routes cannot mutate fleet-global configuration on
+    /// hosted however this is wired.
+    ///
+    /// 404 rather than 403: on hosted "the owner's settings" does not exist as a concept, so "not here"
+    /// is the truthful answer. 403 would imply the right credential could reach it, and none can.
+    /// </summary>
+    private static IResult? DenyOnHosted()
     {
+        if (!GatewayHostedMode.IsHosted) return null;
+
+        FileLog.Write("[SettingsEndpoints] DENIED on hosted: the owner settings are process-global configuration with no tenant dimension");
+        return Results.Json(
+            new { error = "gateway settings are not available on the hosted gateway" },
+            statusCode: StatusCodes.Status404NotFound);
+    }
+
+    /// <summary>
+    /// Maps the owner-settings group and RETURNS it, so the refusal can be proved to cover routes that do
+    /// not exist yet: a test maps a NEW probe route onto the returned group and finds it already refused on
+    /// hosted, with no deny written for it anywhere. Returning the group is the only way to state that
+    /// property from outside this file, and a per-route guard and a group filter are indistinguishable
+    /// without it.
+    /// </summary>
+    public static RouteGroupBuilder Map(IEndpointRouteBuilder outer, GatewayHost host)
+    {
+        FileLog.Write($"[SettingsEndpoints] mapping the owner settings; hosted={GatewayHostedMode.IsHosted} - on hosted EVERY route in this group is refused (issue #1863)");
+
+        // The whole group behind ONE filter, rather than a guard line repeated in every handler. A repeated
+        // guard is a thing to forget: the route added to this file next year would be open by default on
+        // hosted and nothing would fail. A group filter runs before EVERY route mapped below, including
+        // routes that do not exist yet. The empty prefix keeps every route path written out in full, so the
+        // self-host surface is byte-identical to before and the diff stays readable.
+        var app = outer.MapGroup("");
+        app.AddEndpointFilter(async (ctx, next) =>
+        {
+            if (DenyOnHosted() is { } denied) return denied;
+            return await next(ctx);
+        });
+
         app.MapGet("/gateway/settings", async () =>
         {
             // The Cockpit is served in-process by the Gateway (issue #979 retired the separate Blazor
@@ -212,7 +265,13 @@ internal static class SettingsEndpoints
         // (TelemetryConsentEndpoint) so it can be unit-tested in isolation, but it is part of the one
         // Gateway settings surface and is mapped here alongside the other settings routes. Default ON;
         // gates only the richer usage telemetry - the always-on login/startup events are never gated.
-        TelemetryConsentEndpoint.Map(app);
+        //
+        // Mapped onto OUTER, not onto this group, deliberately (issue #1863). It carries its OWN hosted
+        // group filter, and mapping it here as well would put two filters over the same routes - which
+        // hides a defect rather than adding safety: deleting either filter alone would leave the routes
+        // still refused, so neither filter's revert could be attributed to it. One family, one filter,
+        // one thing to revert.
+        TelemetryConsentEndpoint.Map(outer);
 
         // Network addressing mode (issue #457): "tailscale" (advertise the Tailscale Serve
         // front door) or "lan" (advertise the machine's real LAN IP). Stored as the top-level
@@ -579,6 +638,8 @@ internal static class SettingsEndpoints
                 return Results.BadRequest(new { error = "invalid JSON" });
             }
         });
+
+        return app;
     }
 
     /// <summary>The brain status block - shared by the snapshot GET and the restart POST.</summary>

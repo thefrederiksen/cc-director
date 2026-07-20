@@ -24,14 +24,54 @@ namespace CcDirector.Gateway.Api;
 ///
 /// DevThrottle serves a typed catalog (GET /models?type=chat|speech) where each speech model carries
 /// its own voices.
+///
+/// DENIED IN WHOLE ON HOSTED (issue #1863). Every route in this group is refused on a hosted Gateway,
+/// through ONE group filter rather than a guard repeated per route. The setters write PROCESS-GLOBAL
+/// config.json keys with no tenant dimension, so on shared hosted infrastructure any authenticated
+/// caller would be repointing the wingman, car-mode and speech models for EVERYONE; and the catalog and
+/// test-chat routes spend the deployment's own provider credential on whoever asks. Self-host is
+/// single-tenant and these are legitimate owner function there, so on self-host nothing changes.
 /// </summary>
 internal static class AiModelsEndpoint
 {
     private static readonly JsonSerializerOptions JsonOpts = new() { PropertyNameCaseInsensitive = true };
     private static readonly HttpClient Http = new() { Timeout = TimeSpan.FromSeconds(30) };
 
-    public static void Map(IEndpointRouteBuilder app, KeyVault vault)
+    /// <summary>
+    /// The hosted refusal for every model-settings route (issue #1863), or null on self-host where nothing
+    /// changes. Gated on <see cref="GatewayHostedMode.IsHosted"/> DIRECTLY, never on an optional or
+    /// nullable argument, which fails OPEN when a caller forgets to pass it. 404 rather than 403: on
+    /// hosted these routes do not exist as a concept, and 403 would imply some credential could reach
+    /// them.
+    /// </summary>
+    private static IResult? DenyOnHosted()
     {
+        if (!GatewayHostedMode.IsHosted) return null;
+
+        FileLog.Write("[AiModelsEndpoint] DENIED on hosted: the model settings are process-global configuration with no tenant dimension");
+        return Results.Json(
+            new { error = "the model settings are not available on the hosted gateway" },
+            statusCode: StatusCodes.Status404NotFound);
+    }
+
+    /// <summary>
+    /// Maps the model-settings group and RETURNS it, so a test can map a BRAND-NEW route onto the group
+    /// and find it already refused on hosted with no deny of its own. Without that return value nothing
+    /// outside this file can tell a group filter apart from a guard repeated per route.
+    /// </summary>
+    public static RouteGroupBuilder Map(IEndpointRouteBuilder outer, KeyVault vault)
+    {
+        FileLog.Write($"[AiModelsEndpoint] mapping the model settings; hosted={GatewayHostedMode.IsHosted} - on hosted EVERY route in this group is refused (issue #1863)");
+
+        // ONE filter over the whole group - see the note in SettingsEndpoints for why a per-route guard
+        // rots. The empty prefix leaves every route path written out in full, so self-host is unchanged.
+        var app = outer.MapGroup("");
+        app.AddEndpointFilter(async (ctx, next) =>
+        {
+            if (DenyOnHosted() is { } denied) return denied;
+            return await next(ctx);
+        });
+
         app.MapGet("/gateway/ai/models", async (string? kind, CancellationToken ct) =>
         {
             var k = string.Equals(kind, "speech", StringComparison.OrdinalIgnoreCase) ? "speech" : "chat";
@@ -157,6 +197,8 @@ internal static class AiModelsEndpoint
             }
             catch (JsonException) { return Results.BadRequest(new { error = "invalid JSON" }); }
         });
+
+        return app;
     }
 
     private static string ProviderKeyMissingMessage(TranscriptionMode mode) =>

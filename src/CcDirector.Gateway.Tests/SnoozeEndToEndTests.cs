@@ -35,7 +35,7 @@ namespace CcDirector.Gateway.Tests;
 /// live in an isolated store, never the real one. In the "DirectorRoot" collection so it never runs
 /// alongside other root-redirecting tests.
 /// </summary>
-[Collection("DirectorRoot")]
+[Collection("GatewayHostedMode")]
 public sealed class SnoozeEndToEndTests : IAsyncLifetime
 {
     private const string Token = "test-token";
