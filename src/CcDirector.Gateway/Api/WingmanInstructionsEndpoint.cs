@@ -65,14 +65,22 @@ internal static class WingmanInstructionsEndpoint
     /// training pool and no per-tenant wingman prompt - so "not here" is the truthful answer. 403 would
     /// imply the right credential could reach them, and none can.
     ///
-    /// UN-DENY CONDITION - THE PROMPT WRITE IS STOPPED, THE RECORD WRITE IS NOT, SO THIS IS THE
-    /// ACCUMULATING KIND. Removing this deny requires ALSO purging or partitioning what accumulated behind
-    /// it. The prompt half is genuinely contained: every route that can rewrite the wingman instructions
-    /// (the save, the revert and the switch-to-default) is inside this group and refused with the reads. The
-    /// TRAINING RECORDS are not: they are written by the wingman voice-turn path through
-    /// <c>WingmanVoiceService</c> -> <c>WingmanTrainingStore.CaptureAsync</c>, which this group does not
-    /// touch and issue #1853's separate interim write deny has not landed. Raw session terminal output from
-    /// every account therefore keeps piling into one untenanted store while this refusal stands.
+    /// UN-DENY CONDITION - REMOVING THIS DENY REQUIRES ALSO PURGING OR PARTITIONING WHAT ACCUMULATED BEHIND
+    /// IT. Two SEPARATE questions, and here the first one already fails.
+    ///
+    /// (a) DOES ANYTHING STILL WRITE IT? YES, for the training records - and the writer is worse than a
+    /// route. The prompt half IS contained: every route that can rewrite the wingman instructions (save,
+    /// revert, switch-to-default) is in this group and refused with the reads. The RECORDS are written by
+    /// <c>WingmanVoiceService.GenerateOnceAsync</c> through <c>WingmanTrainingStore.CaptureAsync</c>, and
+    /// that path is reached by the Gateway's OWN voice sweep timer (<c>GatewayHost.SweepVoiceSessionsAsync</c>
+    /// pre-builds voice for idle sessions on an interval). So raw session terminal output keeps landing in
+    /// one untenanted store on hosted WITH NO REQUEST FROM ANYBODY - an unattended background writer, not
+    /// merely a route this deny happens not to cover. Issue #1853's separate interim write deny has not
+    /// landed. Looking only at the denied routes would have missed this entirely.
+    ///
+    /// (b) WHAT ALREADY EXISTS? Records from before the deny, plus everything the timer adds while it
+    /// stands. They carry no tenant, so they cannot be attributed after the fact: the choice is deletion or
+    /// quarantine, never a later migration.
     /// </summary>
     private static IResult? DenyOnHosted()
     {
@@ -107,6 +115,30 @@ internal static class WingmanInstructionsEndpoint
             return await next(ctx);
         });
 
+        // THE ROUTES ARE MAPPED WHERE `outer` IS NOT IN SCOPE - deliberately, and that is the only reason
+        // MapRoutes exists as a separate method. Copied from the key-vault deny (pull request #1904), which
+        // is the reviewed instance of this pattern.
+        //
+        // Written inline here, beside both builders, each of these NINE routes could INDIVIDUALLY be mapped
+        // onto `outer` instead of onto `app` - a one-word edit that compiles, passes every existing test,
+        // and opens exactly that route on hosted while the other eight stay correctly denied. That is nine
+        // independently bypassable primitives, and under the bypassability rule each would owe its own
+        // full-suite security run. Handing the guarded group to a method that never receives the ungrouped
+        // builder makes the mistake INEXPRESSIBLE rather than merely unlikely: inside MapRoutes there is
+        // nothing to map onto except the guarded group. The count falls by DESIGN, not by an argument about
+        // how careful the next author will be.
+        MapRoutes(app, store, training, translator);
+        return app;
+    }
+
+    /// <summary>
+    /// The nine wingman-instructions routes. Takes the GUARDED group and nothing else - see the note at the
+    /// call site: the ungrouped route builder is deliberately out of scope here, so no route in this family
+    /// can be mapped around the hosted filter.
+    /// </summary>
+    private static void MapRoutes(RouteGroupBuilder app, WingmanInstructionsStore store,
+        WingmanTrainingStore training, WingmanTranslator translator)
+    {
         // Current state: the active instructions, whether they are customized, whether the dev team
         // has shipped a newer default, and the deployed-default identity.
         app.MapGet("/gateway/wingman/instructions", () =>
@@ -233,8 +265,6 @@ internal static class WingmanInstructionsEndpoint
             }
             return Results.Json(new { results, ranCount = results.Count, capped = req.RecordIds.Length > MaxTestRecords });
         });
-
-        return app;
     }
 
     private static object Project(WingmanInstructionsStore.InstructionVersion v) => new

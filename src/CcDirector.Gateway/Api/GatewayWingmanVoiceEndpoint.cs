@@ -96,13 +96,24 @@ internal static class GatewayWingmanVoiceEndpoint
     /// meaningless without a tenant to scope it to, and the store has none - so "not here" is the truthful
     /// answer. 403 would imply the right credential could reach it, and none can.
     ///
-    /// UN-DENY CONDITION - THE WRITE IS STOPPED. Nothing accumulates behind this refusal, so lifting it does
-    /// not expose a history built up while it stood. The three legs in this group are the ONLY writers into
-    /// the voice-turn <c>VoiceUploadStore</c>: the store instance is constructed once in <c>GatewayHost</c>
-    /// and handed to this endpoint alone, and every <c>uploads.</c> call in this file sits inside the guarded
-    /// group. Registering, staging a chunk and assembling a transcript are all refused, so on hosted no
-    /// utterance bytes and no assembled transcript are written at all. (Whatever predates the deny is a
-    /// separate matter, and is covered by the partitioning gate in issue #1896.)
+    /// UN-DENY CONDITION. Two SEPARATE questions, because answering only the first is how a deny gets
+    /// mistaken for a clean slate. "Does anything still write this state" and "what is already sitting
+    /// there" have different answers, and the second one does not improve while the deny stands.
+    ///
+    /// (a) DOES ANYTHING STILL WRITE IT? No - and this was checked by enumerating WRITERS, not by looking at
+    /// the denied routes. Every construction of a <c>VoiceUploadStore</c> in the repository was listed: the
+    /// only production one on this root is the instance <c>GatewayHost</c> holds as <c>_voiceTurnUploads</c>
+    /// and hands to this endpoint alone. Every <c>uploads.</c> call in this file is inside the guarded group.
+    /// <c>SweepAbandoned</c> - the one background-shaped mutator on the type - has NO production caller at
+    /// all, only a test. So on hosted no utterance bytes and no assembled transcript are written. The one
+    /// residual write is the store constructor calling <c>CcStorage.VoiceTurnUploads()</c>, which ENSURES the
+    /// directory exists: an empty directory, never content.
+    ///
+    /// (b) WHAT ALREADY EXISTS? Unknown, and presumed contaminated. Stopping the accumulation says nothing
+    /// about the shared root as it stands today, which may hold pre-deny cross-tenant staged audio and
+    /// assembled transcripts written before this refusal was hung. SO THE UN-DENY STILL REQUIRES PURGING OR
+    /// QUARANTINING THE LEGACY ROOT, on top of issue #1896's tenant-keying of the store - "the write is
+    /// stopped" is not "the root is clean" and must never be read as the whole condition.
     /// </summary>
     private static IResult? DenyUtteranceOnHosted()
     {
@@ -370,104 +381,22 @@ internal static class GatewayWingmanVoiceEndpoint
             return await next(ctx);
         });
 
-        utterance.MapPost("/upload", (HttpContext ctx) =>
-        {
-            var key = ctx.Request.Headers["Idempotency-Key"].ToString();
-            var id = uploads.Register(string.IsNullOrWhiteSpace(key) ? null : key);
-            return Results.Json(new { upload_id = id });
-        });
-
-        utterance.MapPut("/{uploadId}/chunk/{index:int}", async (string uploadId, int index, HttpContext ctx, CancellationToken ct) =>
-        {
-            if (!uploads.Exists(uploadId))
-                return Results.Json(new { error = "unknown upload id (register it first)" }, statusCode: StatusCodes.Status404NotFound);
-
-            // Refuse an oversized chunk BEFORE reading a byte of it, when the client declares its size.
-            // This is the cheap door: no allocation, no read, and the client learns immediately.
-            if (ctx.Request.ContentLength is { } declared && declared > VoiceUploadLimits.MaxChunkBytes)
-            {
-                FileLog.Write($"[GatewayWingmanVoice] chunk rejected: declared {declared} bytes > {VoiceUploadLimits.MaxChunkBytes} cap (upload={uploadId}, index={index})");
-                return TooLarge($"chunk is {declared} bytes; the limit is {VoiceUploadLimits.MaxChunkBytes}");
-            }
-
-            var sha = ctx.Request.Headers["X-Chunk-Sha256"].ToString();
-
-            // Content-Length is the client's CLAIM. It can be absent (chunked transfer-encoding) and it
-            // can be wrong, so the read itself is bounded too: this stops the moment the body exceeds
-            // the cap instead of faithfully buffering however much someone chooses to send.
-            var bytes = await ReadBoundedAsync(ctx.Request.Body, VoiceUploadLimits.MaxChunkBytes, ct);
-            if (bytes is null)
-            {
-                FileLog.Write($"[GatewayWingmanVoice] chunk rejected: body exceeded the {VoiceUploadLimits.MaxChunkBytes}-byte cap (upload={uploadId}, index={index})");
-                return TooLarge($"chunk exceeded the {VoiceUploadLimits.MaxChunkBytes}-byte limit");
-            }
-
-            // Total across the whole upload. Excluding THIS index is what keeps a resend free: the
-            // client's retry replaces chunk N, it does not add a second copy of it, and retrying is the
-            // normal case on this path.
-            var staged = uploads.StagedBytes(uploadId, excludeIndex: index);
-            if (staged + bytes.Length > VoiceUploadLimits.MaxTotalUploadBytes)
-            {
-                FileLog.Write($"[GatewayWingmanVoice] chunk rejected: upload total would be {staged + bytes.Length} > {VoiceUploadLimits.MaxTotalUploadBytes} cap (upload={uploadId})");
-                return TooLarge($"upload would exceed the {VoiceUploadLimits.MaxTotalUploadBytes}-byte total limit");
-            }
-
-            try { await uploads.StoreChunkAsync(uploadId, index, bytes, string.IsNullOrEmpty(sha) ? null : sha, ct); return Results.Json(new { ok = true, index }); }
-            catch (Exception ex) { return Results.Json(new { error = ex.Message }, statusCode: StatusCodes.Status400BadRequest); }
-        });
-
-        utterance.MapPost("/{uploadId}/complete", async (string uploadId, UtteranceCompleteRequest? req, CancellationToken ct) =>
-        {
-            if (req is null || req.TotalChunks <= 0)
-                return Results.Json(new { error = "totalChunks (>0) is required" }, statusCode: StatusCodes.Status400BadRequest);
-            if (!uploads.Exists(uploadId))
-                return Results.Json(new { error = "unknown upload id (register it first)" }, statusCode: StatusCodes.Status404NotFound);
-
-            // The configured mode's key must be present (issue #887: both modes are key-bearing). The
-            // single transcription owner resolves this; check it BEFORE assembling so a no-key request
-            // does not pay the reassembly cost.
-            var routing = transcription.Resolve();
-            if (routing.Key is null)
-                return Results.Json(new { error = $"no key configured for transcription mode {routing.Mode.ToConfigString()}" }, statusCode: StatusCodes.Status503ServiceUnavailable);
-
-            AssembleResult assembled;
-            try { assembled = await uploads.AssembleAsync(uploadId, req.TotalChunks, ct); }
-            catch (Exception ex) { return Results.Json(new { error = ex.Message }, statusCode: StatusCodes.Status400BadRequest); }
-
-            if (assembled.Status == "unknown_upload")
-                return Results.Json(new { error = "unknown upload id" }, statusCode: StatusCodes.Status404NotFound);
-            if (assembled.Status == "incomplete")
-                return Results.Json(new { status = "incomplete", missing = assembled.Missing }, statusCode: StatusCodes.Status409Conflict);
-
-            var assembledAudio = assembled.Audio;
-            if (assembledAudio is null || assembledAudio.Length == 0)
-            {
-                uploads.Delete(uploadId);
-                return Results.Json(new { error = "assembled recording was empty" }, statusCode: StatusCodes.Status502BadGateway);
-            }
-
-            // Transcribe through the single owner WITH the validated dictionary correction applied (the
-            // SAME engine every other surface uses; fails open to raw in local mode or on any error).
-            var result = await transcription.TranscribeAsync(
-                assembledAudio, "audio." + (req.Ext ?? "webm"), req.Mime ?? "audio/webm", applyCorrection: true, ct);
-            uploads.Delete(uploadId);
-            // Out of credits / monthly cap (issue #939): map to the shared 402 state (branch by code)
-            // instead of flattening it into a generic 502 - so the client shows the consistent
-            // add-credits message and keeps the recording, not "transcription failed".
-            if (result.Outcome == Transcription.TranscriptionOutcome.OutOfCredits)
-                return HostedAiHttp.PaymentRequiredResult(HostedAiErrorMapper.MapCode(result.Code));
-            if (result.Outcome != Transcription.TranscriptionOutcome.Ok)
-                return Results.Json(new { error = result.Error }, statusCode: StatusCodes.Status502BadGateway);
-            FileLog.Write($"[GatewayWingmanVoice] utterance complete {uploadId}: mode={result.Mode}, chars={result.Text?.Length ?? 0}");
-
-            // Capture-health persistence (issue #863): when the mobile dialog sent its measurements,
-            // record the audio-loss deficit (recording wall-clock vs decoded audio duration) into the
-            // same dictation session log the desktop and overlay write, tagged Source="mobile". The
-            // assembled WAV byte count is the audio the server actually transcribed. Fire-and-forget.
-            PersistMobileCaptureHealth(uploadId, req, assembledAudio.Length, result.Text);
-
-            return Results.Json(new { transcript = result.Text });
-        });
+        // THE ROUTES ARE MAPPED WHERE THE UNFILTERED `app` IS NOT IN SCOPE - deliberately, and that is the
+        // only reason MapUtteranceRoutes exists as a separate method. Copied from the key-vault deny (pull
+        // request #1904), which is the reviewed instance of this pattern.
+        //
+        // This file is the sharpest case of the problem, because unlike the other three families the
+        // unfiltered builder is LEGITIMATELY here: the voice-turn, text-to-speech, transcribe, explain, ask
+        // and menu routes below are not part of the denied family and must stay on `app`. That is exactly
+        // what made the bypass cheap - both builders in scope at the same mapping site, so each of these
+        // THREE utterance legs could INDIVIDUALLY be mapped onto `app` instead of onto `utterance`, a
+        // one-word edit that compiles, passes every existing test, and opens that leg on hosted while the
+        // other two stay correctly denied. Three independently bypassable primitives, each owing its own
+        // full-suite security run under the bypassability rule. Handing the guarded group to a method that
+        // never receives `app` makes the mistake INEXPRESSIBLE rather than merely unlikely: inside
+        // MapUtteranceRoutes there is nothing to map onto except the guarded group. The count falls by
+        // DESIGN, not by an argument about how careful the next author will be.
+        MapUtteranceRoutes(utterance, uploads, transcription);
 
         // Text-to-speech for the mobile Voice screen + Cockpit: turn the wingman's spoken summary into
         // natural-sounding audio (the browser's own voice is robotic). Returns audio/mpeg bytes the
@@ -877,6 +806,114 @@ internal static class GatewayWingmanVoiceEndpoint
         // The GUARDED group only - not the whole voice surface. Everything else mapped above is deliberately
         // outside it and must keep serving on hosted, which is itself asserted by a scoping control.
         return utterance;
+    }
+
+    /// <summary>
+    /// The three /wingman/utterance upload legs. Takes the GUARDED group and nothing else - see the note
+    /// at the call site: the unfiltered route builder that the rest of this file legitimately uses is
+    /// deliberately out of scope here, so no leg of this family can be mapped around the hosted filter.
+    /// </summary>
+    private static void MapUtteranceRoutes(RouteGroupBuilder utterance, VoiceUploadStore uploads,
+        Transcription.GatewayTranscriptionService transcription)
+    {
+        utterance.MapPost("/upload", (HttpContext ctx) =>
+        {
+            var key = ctx.Request.Headers["Idempotency-Key"].ToString();
+            var id = uploads.Register(string.IsNullOrWhiteSpace(key) ? null : key);
+            return Results.Json(new { upload_id = id });
+        });
+
+        utterance.MapPut("/{uploadId}/chunk/{index:int}", async (string uploadId, int index, HttpContext ctx, CancellationToken ct) =>
+        {
+            if (!uploads.Exists(uploadId))
+                return Results.Json(new { error = "unknown upload id (register it first)" }, statusCode: StatusCodes.Status404NotFound);
+
+            // Refuse an oversized chunk BEFORE reading a byte of it, when the client declares its size.
+            // This is the cheap door: no allocation, no read, and the client learns immediately.
+            if (ctx.Request.ContentLength is { } declared && declared > VoiceUploadLimits.MaxChunkBytes)
+            {
+                FileLog.Write($"[GatewayWingmanVoice] chunk rejected: declared {declared} bytes > {VoiceUploadLimits.MaxChunkBytes} cap (upload={uploadId}, index={index})");
+                return TooLarge($"chunk is {declared} bytes; the limit is {VoiceUploadLimits.MaxChunkBytes}");
+            }
+
+            var sha = ctx.Request.Headers["X-Chunk-Sha256"].ToString();
+
+            // Content-Length is the client's CLAIM. It can be absent (chunked transfer-encoding) and it
+            // can be wrong, so the read itself is bounded too: this stops the moment the body exceeds
+            // the cap instead of faithfully buffering however much someone chooses to send.
+            var bytes = await ReadBoundedAsync(ctx.Request.Body, VoiceUploadLimits.MaxChunkBytes, ct);
+            if (bytes is null)
+            {
+                FileLog.Write($"[GatewayWingmanVoice] chunk rejected: body exceeded the {VoiceUploadLimits.MaxChunkBytes}-byte cap (upload={uploadId}, index={index})");
+                return TooLarge($"chunk exceeded the {VoiceUploadLimits.MaxChunkBytes}-byte limit");
+            }
+
+            // Total across the whole upload. Excluding THIS index is what keeps a resend free: the
+            // client's retry replaces chunk N, it does not add a second copy of it, and retrying is the
+            // normal case on this path.
+            var staged = uploads.StagedBytes(uploadId, excludeIndex: index);
+            if (staged + bytes.Length > VoiceUploadLimits.MaxTotalUploadBytes)
+            {
+                FileLog.Write($"[GatewayWingmanVoice] chunk rejected: upload total would be {staged + bytes.Length} > {VoiceUploadLimits.MaxTotalUploadBytes} cap (upload={uploadId})");
+                return TooLarge($"upload would exceed the {VoiceUploadLimits.MaxTotalUploadBytes}-byte total limit");
+            }
+
+            try { await uploads.StoreChunkAsync(uploadId, index, bytes, string.IsNullOrEmpty(sha) ? null : sha, ct); return Results.Json(new { ok = true, index }); }
+            catch (Exception ex) { return Results.Json(new { error = ex.Message }, statusCode: StatusCodes.Status400BadRequest); }
+        });
+
+        utterance.MapPost("/{uploadId}/complete", async (string uploadId, UtteranceCompleteRequest? req, CancellationToken ct) =>
+        {
+            if (req is null || req.TotalChunks <= 0)
+                return Results.Json(new { error = "totalChunks (>0) is required" }, statusCode: StatusCodes.Status400BadRequest);
+            if (!uploads.Exists(uploadId))
+                return Results.Json(new { error = "unknown upload id (register it first)" }, statusCode: StatusCodes.Status404NotFound);
+
+            // The configured mode's key must be present (issue #887: both modes are key-bearing). The
+            // single transcription owner resolves this; check it BEFORE assembling so a no-key request
+            // does not pay the reassembly cost.
+            var routing = transcription.Resolve();
+            if (routing.Key is null)
+                return Results.Json(new { error = $"no key configured for transcription mode {routing.Mode.ToConfigString()}" }, statusCode: StatusCodes.Status503ServiceUnavailable);
+
+            AssembleResult assembled;
+            try { assembled = await uploads.AssembleAsync(uploadId, req.TotalChunks, ct); }
+            catch (Exception ex) { return Results.Json(new { error = ex.Message }, statusCode: StatusCodes.Status400BadRequest); }
+
+            if (assembled.Status == "unknown_upload")
+                return Results.Json(new { error = "unknown upload id" }, statusCode: StatusCodes.Status404NotFound);
+            if (assembled.Status == "incomplete")
+                return Results.Json(new { status = "incomplete", missing = assembled.Missing }, statusCode: StatusCodes.Status409Conflict);
+
+            var assembledAudio = assembled.Audio;
+            if (assembledAudio is null || assembledAudio.Length == 0)
+            {
+                uploads.Delete(uploadId);
+                return Results.Json(new { error = "assembled recording was empty" }, statusCode: StatusCodes.Status502BadGateway);
+            }
+
+            // Transcribe through the single owner WITH the validated dictionary correction applied (the
+            // SAME engine every other surface uses; fails open to raw in local mode or on any error).
+            var result = await transcription.TranscribeAsync(
+                assembledAudio, "audio." + (req.Ext ?? "webm"), req.Mime ?? "audio/webm", applyCorrection: true, ct);
+            uploads.Delete(uploadId);
+            // Out of credits / monthly cap (issue #939): map to the shared 402 state (branch by code)
+            // instead of flattening it into a generic 502 - so the client shows the consistent
+            // add-credits message and keeps the recording, not "transcription failed".
+            if (result.Outcome == Transcription.TranscriptionOutcome.OutOfCredits)
+                return HostedAiHttp.PaymentRequiredResult(HostedAiErrorMapper.MapCode(result.Code));
+            if (result.Outcome != Transcription.TranscriptionOutcome.Ok)
+                return Results.Json(new { error = result.Error }, statusCode: StatusCodes.Status502BadGateway);
+            FileLog.Write($"[GatewayWingmanVoice] utterance complete {uploadId}: mode={result.Mode}, chars={result.Text?.Length ?? 0}");
+
+            // Capture-health persistence (issue #863): when the mobile dialog sent its measurements,
+            // record the audio-loss deficit (recording wall-clock vs decoded audio duration) into the
+            // same dictation session log the desktop and overlay write, tagged Source="mobile". The
+            // assembled WAV byte count is the audio the server actually transcribed. Fire-and-forget.
+            PersistMobileCaptureHealth(uploadId, req, assembledAudio.Length, result.Text);
+
+            return Results.Json(new { transcript = result.Text });
+        });
     }
 
     /// <summary>

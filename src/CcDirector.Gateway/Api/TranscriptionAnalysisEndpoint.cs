@@ -69,13 +69,19 @@ internal static class TranscriptionAnalysisEndpoint
     /// per-tenant log for it to read - so "not here" is the truthful answer. 403 would imply the right
     /// credential could reach it, and none can.
     ///
-    /// UN-DENY CONDITION - THIS IS A READ DENY AND THE WRITE IS NOT STOPPED. Removing this deny requires
-    /// ALSO purging or partitioning what accumulated behind it. The telemetry log keeps being written on
-    /// hosted the whole time this refusal stands: <c>GatewayTranscriptionService</c> records a turn on every
-    /// transcription, and the routes that reach it are not in this group. So the file this deny hides goes
-    /// on mixing every account's raw and cleaned speech, and the day the refusal is lifted it would expose a
-    /// contaminated history rather than a clean start. Records written with no tenant on them cannot be
-    /// attributed afterwards - the choice is deletion or quarantine, not a later migration.
+    /// UN-DENY CONDITION - REMOVING THIS DENY REQUIRES ALSO PURGING OR PARTITIONING WHAT ACCUMULATED BEHIND
+    /// IT. Two SEPARATE questions, and here the first one fails outright.
+    ///
+    /// (a) DOES ANYTHING STILL WRITE IT? YES. <c>GatewayTranscriptionService</c> records a turn into the one
+    /// shared log on EVERY transcription, and the surfaces that reach it - the recording endpoints, the
+    /// batch transcription endpoint and the wingman transcribe route - are all outside this group. This is a
+    /// READ deny only, the same shape as the merged stats deny #1888. The file this refusal hides therefore
+    /// goes on mixing every account's raw and cleaned speech for as long as it stands.
+    ///
+    /// (b) WHAT ALREADY EXISTS? A log of every account's speech from before the deny, growing the whole
+    /// time. Records written with no tenant on them cannot be attributed afterwards, so the choice is
+    /// deletion or quarantine, never a later migration. Un-denying on a partitioned WRITER alone would
+    /// expose the contaminated history underneath it.
     /// </summary>
     private static IResult? DenyOnHosted()
     {
@@ -109,6 +115,29 @@ internal static class TranscriptionAnalysisEndpoint
             return await next(ctx);
         });
 
+        // THE ROUTES ARE MAPPED WHERE `outer` IS NOT IN SCOPE - deliberately, and that is the only reason
+        // MapRoutes exists as a separate method. Copied from the key-vault deny (pull request #1904), which
+        // is the reviewed instance of this pattern.
+        //
+        // Written inline here, beside both builders, each of these four routes could INDIVIDUALLY be mapped
+        // onto `outer` instead of onto `app` - a one-word edit that compiles, passes every existing test,
+        // and opens exactly that route on hosted while the other three stay correctly denied. That is four
+        // independently bypassable primitives, and under the bypassability rule each would owe its own
+        // full-suite security run. Handing the guarded group to a method that never receives the ungrouped
+        // builder makes the mistake INEXPRESSIBLE rather than merely unlikely: inside MapRoutes there is
+        // nothing to map onto except the guarded group. The count falls by DESIGN, not by an argument about
+        // how careful the next author will be.
+        MapRoutes(app, log);
+        return app;
+    }
+
+    /// <summary>
+    /// The four transcription-analysis routes. Takes the GUARDED group and nothing else - see the note at
+    /// the call site: the ungrouped route builder is deliberately out of scope here, so no route in this
+    /// family can be mapped around the hosted filter.
+    /// </summary>
+    private static void MapRoutes(RouteGroupBuilder app, TranscriptionTelemetryReader log)
+    {
         app.MapGet("/transcription/stats", (HttpContext ctx) =>
         {
             var since = ResolveSince(ctx);
@@ -137,8 +166,6 @@ internal static class TranscriptionAnalysisEndpoint
             var top = ClampInt(ctx.Request.Query["top"], DefaultWordTop, 1, 5000);
             return Results.Json(new { words = log.TopWords(top, since) });
         });
-
-        return app;
     }
 
     /// <summary>Resolve the time window: <c>days</c> (last N days) wins, else <c>since</c> (ISO), else null.</summary>

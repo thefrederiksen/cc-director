@@ -101,17 +101,28 @@ internal static class GatewayDictationEndpoint
     /// meaningless without a tenant to scope it to, and the store has none - so "not here" is the truthful
     /// answer. 403 would imply the right credential could reach it, and none can.
     ///
-    /// UN-DENY CONDITION - THE WRITE IS STOPPED. Nothing accumulates behind this refusal into the dictation
-    /// store, so lifting it does not expose a history built up while it stood. The five legs in this group
-    /// are the ONLY writers into the dictation <c>VoiceUploadStore</c>: the instance is constructed once in
-    /// <c>GatewayHost</c> against the dictation-uploads root and reaches this endpoint plus one read-only
-    /// status query, and every <c>uploads.</c> mutation in this file - register, mark pending, store chunk,
-    /// mark delivered, mark failed, acknowledge, mark abandoned - sits inside the guarded group. The static
-    /// <c>_completes</c> cache is filled only by the completion leg, which is refused too. NOTE THE
-    /// BOUNDARY OF THAT CLAIM: it is about THIS store. A completed dictation also used to write a turn into
-    /// the shared transcription telemetry log, and that log is the transcription-analysis family's problem,
-    /// not this one's - see the un-deny condition on <c>TranscriptionAnalysisEndpoint</c>, which is the
-    /// accumulating kind.
+    /// UN-DENY CONDITION. Two SEPARATE questions, because answering only the first is how a deny gets
+    /// mistaken for a clean slate.
+    ///
+    /// (a) DOES ANYTHING STILL WRITE IT? No - checked by enumerating WRITERS rather than by looking at the
+    /// denied routes, which is the question that actually matters. Every <c>VoiceUploadStore</c> construction
+    /// in the repository was listed: the only production one on the dictation-uploads root is the instance
+    /// <c>GatewayHost</c> holds as <c>_dictationUploads</c>, which reaches this endpoint plus one READ-only
+    /// status query (<c>DictationStatusFor</c>); <c>DictationLockReader</c> in Core also only reads.
+    /// Every <c>uploads.</c> mutation in this file - register, mark pending, store chunk, mark delivered,
+    /// mark failed, acknowledge, mark abandoned - is inside the guarded group, and the static
+    /// <c>_completes</c> cache is filled only by the completion leg, which is refused too.
+    /// <c>SweepAbandoned</c> has no production caller. The only residual write is the constructor ensuring
+    /// the directory exists: an empty directory, never content.
+    ///
+    /// (b) WHAT ALREADY EXISTS? Unknown, and presumed contaminated. The shared dictation-uploads root may
+    /// hold pre-deny cross-tenant staged audio, delivery records and transcripts. SO THE UN-DENY STILL
+    /// REQUIRES PURGING OR QUARANTINING THE LEGACY ROOT, on top of issue #1884's tenant-keying of the store,
+    /// the record and the <c>_completes</c> cache.
+    ///
+    /// NOTE THE BOUNDARY OF THE (a) CLAIM: it is about THIS store. A completed dictation also writes a turn
+    /// into the shared transcription telemetry log, and that log has live writers outside any deny - see the
+    /// un-deny condition on <c>TranscriptionAnalysisEndpoint</c>, which is the accumulating kind.
     /// </summary>
     private static IResult? DenyOnHosted()
     {
@@ -152,6 +163,36 @@ internal static class GatewayDictationEndpoint
         // the dictation through the tunnel-first SessionVerbClient (the delivery marker rides the PromptRequest
         // DeliveryUploadId field, not an HTTP header), so this path no longer HTTP-dials the Director.
         var stale = streamStale ?? TimeSpan.FromSeconds(Core.Configuration.GatewayConfig.DefaultStreamStaleAfterSeconds);
+
+        // THE ROUTES ARE MAPPED WHERE `outer` IS NOT IN SCOPE - deliberately, and that is the only reason
+        // MapRoutes exists as a separate method. Copied from the key-vault deny (pull request #1904), which
+        // is the reviewed instance of this pattern.
+        //
+        // Written inline here, beside both builders, each of these FIVE routes could INDIVIDUALLY be mapped
+        // onto `outer` instead of onto `app` - a one-word edit that compiles, passes every existing test,
+        // and opens exactly that route on hosted while the other four stay correctly denied. That is five
+        // independently bypassable primitives, and under the bypassability rule each would owe its own
+        // full-suite security run. Handing the guarded group to a method that never receives the ungrouped
+        // builder makes the mistake INEXPRESSIBLE rather than merely unlikely: inside MapRoutes there is
+        // nothing to map onto except the guarded group. The count falls by DESIGN, not by an argument about
+        // how careful the next author will be.
+        MapRoutes(app, registry, owners, token, transcription, transcribingSessions, uploads, devices,
+            pushedSessions, sendCommand, stale);
+        return app;
+    }
+
+    /// <summary>
+    /// The five dictation upload routes. Takes the GUARDED group and nothing else - see the note at the call
+    /// site: the ungrouped route builder is deliberately out of scope here, so no route in this family can be
+    /// mapped around the hosted filter.
+    /// </summary>
+    private static void MapRoutes(RouteGroupBuilder app, DirectorRegistry registry,
+        SessionOwnerCache? owners, string token, GatewayTranscriptionService transcription,
+        TranscribingSessions transcribingSessions, VoiceUploadStore uploads, Pairing.DeviceRegistry devices,
+        Streaming.PushedSessionStore? pushedSessions,
+        DirectorCommandRouter.SendDirectorCommandAsync? sendCommand,
+        TimeSpan stale)
+    {
         app.MapPost("/dictation/upload", (DictationUploadRequest? body, HttpContext ctx) =>
         {
             if (!AuthMiddleware.HasValidToken(ctx, token, devices))
@@ -344,8 +385,6 @@ internal static class GatewayDictationEndpoint
             FileLog.Write($"[GatewayDictation] abandon uploadId={uploadId} sid={sid}: marked ABANDONED, staging discarded");
             return Results.Json(new { ok = true, upload_id = uploadId, abandoned = true });
         });
-
-        return app;
     }
 
     // Map a NON-Ok transcription result to the dictation outcome, or null when the result is Ok and the
