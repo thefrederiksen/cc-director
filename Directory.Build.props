@@ -40,6 +40,26 @@
   <ItemGroup Condition="$(MSBuildProjectName.EndsWith('.Tests'))">
     <Compile Include="$(MSBuildThisFileDirectory)src\TestInfrastructure\MutationProofPinGuard.cs"
              Link="TestInfrastructure\MutationProofPinGuard.cs" />
+    <!--
+      The per-assembly sentinel, and ONLY the sentinel. Every assembly must prove its own copy of the
+      module initializer woke up, because one that silently does not run leaves no trace and every other
+      test in the assembly still passes.
+
+      The guard's BEHAVIOURAL suite is deliberately NOT here - it builds real git repositories and launches
+      real processes, and running that seven times buys no coverage while changing the load and the test
+      scheduling in assemblies that have nothing to do with this mechanism. See
+      MutationProofPinGuardArmedTests for the incident that prompted the split.
+    -->
+    <Compile Include="$(MSBuildThisFileDirectory)src\TestInfrastructure\MutationProofPinGuardArmedTests.cs"
+             Link="TestInfrastructure\MutationProofPinGuardArmedTests.cs" />
+  </ItemGroup>
+
+  <!--
+    The guard's behavioural suite, compiled into exactly one assembly. Core.Tests because it is the
+    fastest of the seven to build and run, has no user-interface threading requirements, and is where
+    this unit's proofs have been driven throughout.
+  -->
+  <ItemGroup Condition="'$(MSBuildProjectName)' == 'CcDirector.Core.Tests'">
     <Compile Include="$(MSBuildThisFileDirectory)src\TestInfrastructure\MutationProofPinGuardTests.cs"
              Link="TestInfrastructure\MutationProofPinGuardTests.cs" />
   </ItemGroup>

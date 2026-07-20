@@ -48,17 +48,8 @@ public sealed class MutationProofPinGuardTests
     /// every test here drives the decision directly. So the fact that the mechanism actually executed in
     /// this process is asserted separately from the decision it makes.
     /// </summary>
-    [Fact]
-    public void TheGuardRanInThisProcess()
-    {
-        Assert.True(
-            MutationProofPinGuard.HasRun,
-            "The mutation-proof pin guard's module initializer did not run in this test process, so "
-            + "nothing checked whether this run's working tree is the tree a proof pinned. See "
-            + "MutationProofPinGuard.");
-
-        Assert.NotEqual("(the guard has not run)", MutationProofPinGuard.LastVerdictSummary);
-    }
+    // The per-assembly sentinel lives in MutationProofPinGuardArmedTests, which is linked into every
+    // test assembly. See that file for why the behavioural suite below is not.
 
     // -------------------------------------------------------------------------------------------------
     // 1. The event of 2026-07-19, replayed against a real git repository.
