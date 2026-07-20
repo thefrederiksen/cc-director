@@ -14,7 +14,7 @@ namespace CcDirector.Avalonia;
 /// referencing that canonical map compile-time IS sharing the Gateway's own source of truth, not a
 /// second copy that can drift. (A change to the canonical hex therefore needs a desktop rebuild; the
 /// two ship together as one solution, so a colour never lands on one and not the other.) This class
-/// stays because the rail, the fleet map, the FIFO window and the turn review still need Avalonia
+/// stays because the rail, the FIFO window and the turn review still need Avalonia
 /// brushes and the magenta sentinel; only its VALUES moved to the canonical map.
 ///
 /// The web/mobile client (packages/client-core/src/sessions/ordering.ts) cannot reference C#, so it
