@@ -18,6 +18,21 @@ namespace CcDirector.Gateway.CarMode;
 /// exactly like <see cref="Stats.GatewayInputStatsAggregator"/>.
 ///
 /// Only timings and small counts are ever kept - never the text of what was said or heard.
+///
+/// PARTITIONED BY DEVICE CREDENTIAL. Every record belongs to exactly one device partition - the short
+/// one-way hash of the caller's own credential that <see cref="CarModeDeviceHash"/> derives from the
+/// request, never from the posted body. The device credential is the safe discriminator here for three
+/// reasons: it is trusted (the Gateway derives it from the authenticated request), the other Car Mode
+/// stores - conversation, pending action, subject - are already keyed the same way, so this is consistent
+/// rather than novel, and telemetry is per-device operational data (a turn's timings describe THAT phone's
+/// microphone, transcode, and playback). Making telemetry follow a person across their devices is a
+/// PRODUCT question, not this security partition, and is deliberately not built here.
+///
+/// Both the write and the reads take the partition: <see cref="Add"/> stamps the trusted hash onto the
+/// record it stores (so a record can never be filed under a partition the caller chose), and
+/// <see cref="Recent"/> and <see cref="Count"/> return only that partition. A read-only filter would be a
+/// deferred leak - unpartitioned records would keep accumulating behind it - so the write records the
+/// partition too. The caller-supplied <c>TurnId</c> is never used as a discriminator.
 /// </summary>
 public sealed class CarModeTelemetryStore
 {
@@ -27,12 +42,14 @@ public sealed class CarModeTelemetryStore
     private const int RetentionDays = 90;
 
     /// <summary>An unbounded-growth guard only - far above any realistic 90-day volume. When the store
-    ///  somehow exceeds this, the oldest records are dropped first so the newest are always kept.</summary>
+    ///  somehow exceeds this, records are evicted from the LARGEST device partition first (see
+    ///  <see cref="PruneLocked"/>), so one busy device can never push another device's records out.</summary>
     private const int MaxRecords = 10000;
 
     private readonly string _path;
     private readonly object _lock = new();
     private readonly Action<string> _log;
+    private readonly int _maxRecords;
 
     // Newest last (append order). Reads hand back a newest-first copy for the dashboard.
     private readonly List<CarModeTelemetryRecord> _records = new();
@@ -41,47 +58,87 @@ public sealed class CarModeTelemetryStore
     ///  storage root, beside the other Gateway stores.</param>
     /// <param name="log">Log sink; <see cref="FileLog.Write"/> when null.</param>
     public CarModeTelemetryStore(string? path = null, Action<string>? log = null)
+        : this(path, log, MaxRecords)
     {
+    }
+
+    /// <summary>Test seam: the same store with a small growth-guard cap, so the partition-fair eviction can
+    ///  be driven with a handful of records instead of ten thousand.</summary>
+    internal CarModeTelemetryStore(string? path, Action<string>? log, int maxRecords)
+    {
+        if (maxRecords <= 0) throw new ArgumentOutOfRangeException(nameof(maxRecords));
         _path = string.IsNullOrWhiteSpace(path)
             ? Path.Combine(CcStorage.Root(), "carmode-telemetry.json")
             : path!;
         _log = log ?? FileLog.Write;
+        _maxRecords = maxRecords;
         Load();
     }
 
-    /// <summary>Record one turn's timing, then prune by age (and the growth-guard cap) and persist. A null
-    ///  record is ignored. The stored count after the add is returned so the endpoint can log it.</summary>
-    public int Add(CarModeTelemetryRecord? record)
+    /// <summary>Record one turn's timing INTO <paramref name="deviceHash"/>'s partition, then prune by age
+    ///  (and the growth-guard cap) and persist. The stored record's device hash is taken from
+    ///  <paramref name="deviceHash"/> and nothing else, so the write always records the partition and a
+    ///  caller can never file a record under another device. A null record is ignored. The count held for
+    ///  THAT device after the add is returned so the endpoint can report it.</summary>
+    /// <param name="deviceHash">The trusted, credential-derived partition from
+    ///  <see cref="CarModeDeviceHash.Of"/>. Blank is a programming error and throws - it is never quietly
+    ///  turned into a shared bucket, because that would silently un-partition the write.</param>
+    public int Add(string deviceHash, CarModeTelemetryRecord? record)
     {
-        if (record is null) return Count();
+        if (string.IsNullOrWhiteSpace(deviceHash))
+            throw new ArgumentException("A telemetry write needs the caller's device partition.", nameof(deviceHash));
+        if (record is null) return Count(deviceHash);
+        var owned = record with { DeviceHash = deviceHash };
         lock (_lock)
         {
-            _records.Add(record);
+            _records.Add(owned);
             PruneLocked(DateTime.UtcNow);
             Save();
-            _log($"[CarModeTelemetry] recorded turn {record.TurnId}: total={record.TotalTurnMs:F0}ms, brain={record.BrainMs:F0}ms, "
-                + $"fleetReads={record.FleetReadCount}, models={record.ModelCallCount}; store now holds {_records.Count}");
-            return _records.Count;
+            var held = MineNewestFirstLocked(deviceHash).Count;
+            _log($"[CarModeTelemetry] recorded turn {owned.TurnId}: total={owned.TotalTurnMs:F0}ms, brain={owned.BrainMs:F0}ms, "
+                + $"fleetReads={owned.FleetReadCount}, models={owned.ModelCallCount}; this device now holds {held} of {_records.Count}");
+            return held;
         }
     }
 
-    /// <summary>The most recent <paramref name="limit"/> records, newest first, for the dashboard.</summary>
-    public IReadOnlyList<CarModeTelemetryRecord> Recent(int limit)
+    /// <summary>The most recent <paramref name="limit"/> records BELONGING TO <paramref name="deviceHash"/>,
+    ///  newest first, for the dashboard. Another device's records are never returned.</summary>
+    /// <param name="deviceHash">The trusted, credential-derived partition from
+    ///  <see cref="CarModeDeviceHash.Of"/>. Blank is a programming error and throws, so a missing partition
+    ///  can never widen the read to every device.</param>
+    public IReadOnlyList<CarModeTelemetryRecord> Recent(string deviceHash, int limit)
     {
+        if (string.IsNullOrWhiteSpace(deviceHash))
+            throw new ArgumentException("A telemetry read needs the caller's device partition.", nameof(deviceHash));
         if (limit <= 0) limit = 100;
         lock (_lock)
         {
-            var start = Math.Max(0, _records.Count - limit);
-            var slice = _records.GetRange(start, _records.Count - start);
-            slice.Reverse();
-            return slice;
+            var mine = MineNewestFirstLocked(deviceHash);
+            return mine.Count <= limit ? mine : mine.GetRange(0, limit);
         }
     }
 
-    /// <summary>How many records are held right now.</summary>
-    public int Count()
+    /// <summary>How many records <paramref name="deviceHash"/> holds right now. Deliberately per-device:
+    ///  a process-wide total is another device's data, disclosed as an aggregate.</summary>
+    public int Count(string deviceHash)
     {
-        lock (_lock) return _records.Count;
+        if (string.IsNullOrWhiteSpace(deviceHash))
+            throw new ArgumentException("A telemetry read needs the caller's device partition.", nameof(deviceHash));
+        lock (_lock) return MineNewestFirstLocked(deviceHash).Count;
+    }
+
+    /// <summary>THE ONE PLACE a device's records are selected. Every read - the record list and the count -
+    ///  goes through this single filter, so the partition cannot be right in one read and wrong in another,
+    ///  and there is exactly one line to get right. Newest first. Caller holds the lock.</summary>
+    private List<CarModeTelemetryRecord> MineNewestFirstLocked(string deviceHash)
+    {
+        var mine = new List<CarModeTelemetryRecord>();
+        for (var i = _records.Count - 1; i >= 0; i--)
+        {
+            if (string.Equals(_records[i].DeviceHash, deviceHash, StringComparison.Ordinal))
+                mine.Add(_records[i]);
+        }
+        return mine;
     }
 
     // Drop records older than the retention window, then, only if still over the growth-guard cap, drop the
@@ -93,12 +150,42 @@ public sealed class CarModeTelemetryStore
         if (removedByAge > 0)
             _log($"[CarModeTelemetry] pruned {removedByAge} record(s) older than {RetentionDays} days");
 
-        if (_records.Count > MaxRecords)
+        // Growth guard, partition-fair. The cap is on the FILE, but the eviction is never allowed to let one
+        // device push another device's records out - that would be suppression across the partition, not just
+        // a size guard. So each eviction takes the OLDEST record of whichever device currently holds the MOST
+        // records: a device can only lose a record while it is the largest partition, which is exactly the
+        // device that is over its share. Ties break on the device hash so the choice is deterministic.
+        var evicted = 0;
+        while (_records.Count > _maxRecords)
         {
-            var overflow = _records.Count - MaxRecords;
-            _records.RemoveRange(0, overflow);
-            _log($"[CarModeTelemetry] growth guard: dropped {overflow} oldest record(s) to stay at {MaxRecords}");
+            var largest = LargestPartitionLocked();
+            var index = _records.FindIndex(r => string.Equals(r.DeviceHash, largest, StringComparison.Ordinal));
+            if (index < 0) break; // unreachable: the largest partition has at least one record.
+            _records.RemoveAt(index);
+            evicted++;
         }
+        if (evicted > 0)
+            _log($"[CarModeTelemetry] growth guard: dropped {evicted} record(s) from the largest device partition(s) to stay at {_maxRecords}");
+    }
+
+    // The device hash holding the most records right now. Caller holds the lock.
+    private string LargestPartitionLocked()
+    {
+        var counts = new Dictionary<string, int>(StringComparer.Ordinal);
+        foreach (var r in _records)
+            counts[r.DeviceHash] = counts.TryGetValue(r.DeviceHash, out var n) ? n + 1 : 1;
+
+        var bestKey = "";
+        var bestCount = -1;
+        foreach (var pair in counts)
+        {
+            if (pair.Value > bestCount || (pair.Value == bestCount && string.CompareOrdinal(pair.Key, bestKey) < 0))
+            {
+                bestKey = pair.Key;
+                bestCount = pair.Value;
+            }
+        }
+        return bestKey;
     }
 
     /// <summary>True when a record's received-at stamp is at or after the cutoff. A record with an
@@ -135,6 +222,17 @@ public sealed class CarModeTelemetryStore
         }
 
         _records.AddRange(parsed);
+
+        // Records already on disk carry the device hash the SERVER stamped on them when they were written -
+        // it has been a server-filled field since the store shipped - so partitioning the reads attributes
+        // nothing that was not already recorded. There is no migration to run and nothing to invent.
+        // A record with a BLANK hash is the one case with no recorded attribution: it belongs to no device,
+        // no partitioned read could ever return it, and guessing an owner for it would be exactly the
+        // invented attribution we refuse. Those are purged here rather than kept as unreachable residue.
+        var unattributed = _records.RemoveAll(r => string.IsNullOrWhiteSpace(r.DeviceHash));
+        if (unattributed > 0)
+            _log($"[CarModeTelemetry] Load: purged {unattributed} record(s) with no device partition (unattributable; never disclosed)");
+
         PruneLocked(DateTime.UtcNow);
         _log($"[CarModeTelemetry] Load: restored {_records.Count} record(s) from {_path}");
     }

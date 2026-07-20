@@ -23,6 +23,10 @@ namespace CcDirector.Gateway.Api;
 ///   GET  /carmode/telemetry       - a self-contained HTML dashboard of recent turns and aggregates.
 ///   GET  /carmode/telemetry/data  - the raw records as JSON, which the dashboard fetches.
 ///
+/// Telemetry is stored and served PER DEVICE. The write files the record under the device hash the server
+/// derives from the caller's own credential, and the data read returns only that same device's records, so
+/// one caller's turn timings are never disclosed to another.
+///
 /// Auth: the routes are not on the public allow-list and are not under /m/, so the host-wide auth gate
 /// already requires the caller's per-device key (or the shared token), per the Gateway auth rule. The
 /// caller's own credential also keys the server-side conversation context, so multi-turn works per device
@@ -140,16 +144,22 @@ internal static class CarModeEndpoint
         // the server timing it received in the turn response; the SERVER fills the received-at time, the
         // device hash (from its own credential extraction, never trusting the client), and the Gateway
         // build, so those cannot be spoofed. A malformed body is a clear 400, never a silent drop.
+        //
+        // The device hash the server derives here is also the STORAGE PARTITION: the write files the record
+        // under this device and the reads below return only this device's records. Nothing from the posted
+        // body is ever used as the discriminator - a caller-supplied value (the turn id in particular) is
+        // not trusted, and the partition is recorded at write time so records can never accumulate
+        // unpartitioned behind a read filter.
         app.MapPost("/carmode/telemetry", (HttpContext ctx, CarModeTelemetryPost? req) =>
         {
             if (req is null || string.IsNullOrWhiteSpace(req.TurnId))
                 return Results.Json(new { error = "turnId is required" }, statusCode: StatusCodes.Status400BadRequest);
 
+            var deviceHash = DevicePartition(ctx);
             var record = new CarModeTelemetryRecord
             {
                 TurnId = req.TurnId,
                 ReceivedAtUtc = DateTime.UtcNow.ToString("o"),
-                DeviceHash = CarModeDeviceHash.Of(ExtractCallerCredential(ctx)),
                 GatewayVersion = AppVersion.Full,
                 PauseToTranscribeMs = req.PauseToTranscribeMs,
                 TranscodeMs = req.TranscodeMs,
@@ -183,22 +193,29 @@ internal static class CarModeEndpoint
                 ActionsCount = req.ActionsCount,
                 PendingConfirmation = req.PendingConfirmation,
             };
-            var held = telemetry.Add(record);
+            var held = telemetry.Add(deviceHash, record);
             return Results.Json(new { recorded = true, held });
         });
 
+        // The dashboard's data read. It is scoped to the CALLER'S OWN device partition, derived from the
+        // caller's credential exactly as the write derives it, so one device's turns are never handed to
+        // another. The held count is this device's count too - a process-wide total would disclose other
+        // devices' activity as an aggregate.
         app.MapGet("/carmode/telemetry/data", (HttpContext ctx) =>
         {
+            var deviceHash = DevicePartition(ctx);
             var limit = 200;
             if (int.TryParse(ctx.Request.Query["limit"], out var q) && q > 0) limit = Math.Min(q, 2000);
             return Results.Json(new
             {
                 generatedAtUtc = DateTime.UtcNow,
-                held = telemetry.Count(),
-                records = telemetry.Recent(limit),
+                held = telemetry.Count(deviceHash),
+                records = telemetry.Recent(deviceHash, limit),
             });
         });
 
+        // The dashboard page itself is a static, record-free document: it carries no telemetry, it fetches
+        // /carmode/telemetry/data in the browser, and that read is partitioned above.
         app.MapGet("/carmode/telemetry", (HttpContext ctx) =>
         {
             ctx.Response.Headers.CacheControl = "no-cache";
@@ -206,6 +223,12 @@ internal static class CarModeEndpoint
             return ctx.Response.WriteAsync(CarModeTelemetryPage.Html);
         });
     }
+
+    /// <summary>THE storage partition for Car Mode telemetry: a one-way hash of the caller's OWN credential.
+    ///  Both the write and the data read derive it here, from this one helper, so the write can never file a
+    ///  record under a partition the read would not ask for. It is derived from the request, never from the
+    ///  posted body or a query parameter - a caller-supplied value is not a trusted discriminator.</summary>
+    private static string DevicePartition(HttpContext ctx) => CarModeDeviceHash.Of(ExtractCallerCredential(ctx));
 
     /// <summary>The caller's own credential (Bearer header, else the cc-gateway-token cookie), used only as
     ///  the opaque per-device conversation key and the one-way device hash. Empty when the auth gate is off
