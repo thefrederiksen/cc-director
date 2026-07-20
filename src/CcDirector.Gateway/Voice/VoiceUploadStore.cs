@@ -23,7 +23,11 @@ namespace CcDirector.Gateway.Voice;
 /// audio-reply turn become one pipeline behind a single Gateway URL.
 ///
 /// Transient by design for the voice-turn path: the per-upload dir is deleted once the turn has been
-/// started (<see cref="Delete"/> + the age-based <see cref="SweepAbandoned"/>).
+/// started (<see cref="Delete"/>), and anything that never got that far is bounded by the age-based
+/// <see cref="SweepAbandoned"/>, which the Gateway host runs on a timer for the voice-turn staging root
+/// (see the voice-turn upload sweep in <c>GatewayHost</c>). Both halves are needed: the success path alone
+/// leaves every refused, dropped or incomplete upload staged forever, which on a hosted Gateway is recorded
+/// speech accumulating with no retention bound at all.
 ///
 /// The durable dictation path (issue #1183) adds a per-upload-id DELIVERY RECORD on top of the same
 /// staging: while an upload is undelivered it stays PENDING (its chunks are retained for resume, never
@@ -35,6 +39,9 @@ namespace CcDirector.Gateway.Voice;
 /// </summary>
 public sealed class VoiceUploadStore
 {
+    /// <summary>The container directory hosting the non-local partitions, directly under the base root.</summary>
+    public const string TenantPartitionDirectoryName = "tenants";
+
     private readonly string _root;
 
     public VoiceUploadStore() : this(CcStorage.VoiceTurnUploads()) { }
@@ -189,6 +196,12 @@ public sealed class VoiceUploadStore
         {
             foreach (var dir in Directory.EnumerateDirectories(_root))
             {
+                // The per-tenant partition container is not an upload; sweeping it by age would delete every
+                // tenant's staging in one go (issue #1884 partitions this staging by tenant under this
+                // container). An upload directory name is a 32-hex identifier, so this name can only ever be
+                // the container. The skip is here BEFORE the partitioning lands as well as after: this sweep
+                // runs on a timer, and a sweep that is only safe once some other change ships is not safe.
+                if (IsPartitionContainer(dir)) continue;
                 try
                 {
                     if (Directory.GetLastWriteTimeUtc(dir) < cutoff)
@@ -625,6 +638,12 @@ public sealed class VoiceUploadStore
     private string GateKey(string uid) => Path.GetFullPath(DirFor(uid));
 
     private string DirFor(string uid) => Path.Combine(_root, uid);
+
+    // True for the directory that HOLDS the other tenants' partitions, which is never itself an upload.
+    private static bool IsPartitionContainer(string dir)
+        => string.Equals(Path.GetFileName(dir.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)),
+            TenantPartitionDirectoryName, StringComparison.OrdinalIgnoreCase);
+
     private static string ChunkPath(string dir, int index) => Path.Combine(dir, $"{index:D5}.part");
     private static string RecordPath(string dir) => Path.Combine(dir, "record.json");
 

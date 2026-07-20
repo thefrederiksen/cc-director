@@ -164,6 +164,36 @@ public sealed class VoiceUploadStoreTests : IDisposable
         Assert.True(_store.Exists(fresh));
     }
 
+    [Fact]
+    public async Task SweepAbandoned_DoesNotDescendIntoThePartitionContainer()
+    {
+        // The per-tenant partition container holds OTHER tenants' staging roots, not uploads. It is a plain
+        // directory under the same root, so an age sweep that treated it as an upload would delete every
+        // tenant's staging in one call the first time the container itself went quiet. The container is aged
+        // well past the cut-off here precisely so that only the skip can keep it alive - and the upload
+        // inside it must survive too, which proves the sweep did not descend into it either.
+        var tenantsDir = Path.Combine(_root, VoiceUploadStore.TenantPartitionDirectoryName);
+        var tenantUpload = Path.Combine(tenantsDir, Guid.NewGuid().ToString("D"), Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(tenantUpload);
+        await File.WriteAllBytesAsync(Path.Combine(tenantUpload, "00000.part"), Bytes("other tenant audio"));
+
+        var stale = _store.Register(null);
+        await _store.StoreChunkAsync(stale, 0, Bytes("old"), null);
+        var staleDir = Path.Combine(_root, Guid.Parse(stale).ToString("N"));
+
+        var longAgo = DateTime.UtcNow.AddHours(-9);
+        Directory.SetLastWriteTimeUtc(staleDir, longAgo);
+        Directory.SetLastWriteTimeUtc(tenantsDir, longAgo);
+
+        var removed = _store.SweepAbandoned(TimeSpan.FromHours(1));
+
+        // Only the real abandoned upload went; the container and everything under it stayed.
+        Assert.Equal(1, removed);
+        Assert.False(_store.Exists(stale));
+        Assert.True(Directory.Exists(tenantsDir));
+        Assert.True(File.Exists(Path.Combine(tenantUpload, "00000.part")));
+    }
+
     // ===== durable delivery record (issue #1183) =====================================================
 
     [Fact]

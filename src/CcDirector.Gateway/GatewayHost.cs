@@ -412,6 +412,36 @@ public sealed class GatewayHost : IAsyncDisposable
     // StopAsync.
     private System.Threading.Timer? _displayStateSweepTimer;
     private static readonly TimeSpan DisplayStateSweepInterval = TimeSpan.FromSeconds(5);
+
+    // Voice-turn upload staging retention. The staging directory for a voice turn is deleted on the SUCCESS
+    // path only, so every upload that ends any other way - a size refusal, a dropped connection, an assembly
+    // that never completed, a caller that simply walked away - stays on disk with its recorded audio until
+    // something removes it. This timer is that something; without it the staging grows without bound and
+    // holds recorded speech for as long as the Gateway lives.
+    private System.Threading.Timer? _voiceTurnUploadSweepTimer;
+    private static readonly TimeSpan VoiceTurnUploadSweepInterval = TimeSpan.FromMinutes(15);
+    // WHY FOUR HOURS, from what the staging is for rather than from a round number. A voice-turn staging
+    // directory exists only between a register and that same upload's own complete: the phone records one
+    // push-to-talk utterance, streams it in chunks, and the Gateway assembles it immediately. In normal
+    // operation that whole life is seconds to a couple of minutes, and the worst legitimate case - a phone
+    // on a failing mobile link retrying chunks with backoff - is minutes, tens of minutes at the extreme.
+    // Four hours is an order of magnitude beyond that extreme, so no upload that is still genuinely trying
+    // can be cut off, while abandoned audio has a hard retention ceiling measured in hours rather than in
+    // the lifetime of the process. The sweep judges by LAST WRITE, not by creation, so an upload that is
+    // still receiving chunks keeps resetting its own clock and only ages out once nothing has touched it
+    // for the full window - which is precisely the definition of abandoned.
+    private static readonly TimeSpan VoiceTurnUploadMaxAge = TimeSpan.FromHours(4);
+    /// <summary>
+    /// Test seam: overrides the voice-turn upload sweep schedule (both the first tick and the period).
+    /// Null in production and never assigned outside tests.
+    ///
+    /// It exists so the WIRING can be tested rather than assumed. The sweep method itself already had a
+    /// direct unit test while nothing in production called it at all - which is exactly how an unbounded
+    /// staging directory sat behind what read like coverage. A test that boots a real Gateway and watches
+    /// stale staging disappear on its own can only pass when the timer below is really started, so removing
+    /// the timer turns it red.
+    /// </summary>
+    internal static TimeSpan? VoiceTurnUploadSweepScheduleForTests;
     private readonly Running.WorkListRunnerManager _runnerManager = new();
     // Issue #218: Gateway-owned clock for when each session entered the red / NEEDS-YOU state.
     private readonly NeedsYouClock _needsYouClock = new();
@@ -1862,8 +1892,12 @@ public sealed class GatewayHost : IAsyncDisposable
         // deliberately NO age sweep here: a fixed age cut would reopen exactly the hole this closes - a
         // phone out of signal for longer than the cut would lose its already-uploaded chunks, or re-inject
         // an already-delivered turn. The record is retired only by the client ack
-        // (POST /dictation/{uploadId}/ack). The unrelated voice-turn upload staging keeps its own
-        // transient SweepAbandoned; only the dictation record changed.
+        // (POST /dictation/{uploadId}/ack). The unrelated voice-turn upload staging is transient and IS age
+        // swept - by the timer started in StartAsync (see the voice-turn upload sweep there). That sweep was
+        // written long before it was ever started: for its whole life this comment said the voice-turn
+        // staging "keeps its own transient SweepAbandoned" while nothing in production called the method, so
+        // a reader checking whether the staging was bounded found a confident answer here and stopped
+        // looking. It is bounded now because a timer runs it, not because a method exists.
 
         // Central key vault (docs/architecture/gateway/GATEWAY_KEY_VAULT.md): set keys once
         // here (via the Cockpit Keys page); Directors pull them on demand. Inherits the
@@ -2167,6 +2201,22 @@ public sealed class GatewayHost : IAsyncDisposable
             null, DisplayStateSweepInterval, DisplayStateSweepInterval);
         FileLog.Write($"[GatewayHost] display-state sweep started: every {DisplayStateSweepInterval.TotalSeconds:0}s");
 
+        // Voice-turn upload staging retention. The success path deletes an upload's staging directory when
+        // the turn starts; everything else - a refused, dropped or never-completed upload - is bounded here
+        // and only here. It runs on every deployment, self-host and hosted alike, because the audio it
+        // removes is recorded speech and there is no deployment where keeping it forever is right.
+        var voiceTurnUploadSchedule = VoiceTurnUploadSweepScheduleForTests ?? VoiceTurnUploadSweepInterval;
+        _voiceTurnUploadSweepTimer = new System.Threading.Timer(
+            _ =>
+            {
+                try { _voiceTurnUploads.SweepAbandoned(VoiceTurnUploadMaxAge); }
+                catch (Exception ex) { FileLog.Write($"[GatewayHost] voice-turn upload sweep error: {ex.Message}"); }
+            },
+            null, voiceTurnUploadSchedule, voiceTurnUploadSchedule);
+        FileLog.Write($"[GatewayHost] voice-turn upload sweep started: every " +
+            $"{voiceTurnUploadSchedule.TotalMinutes:0.###}min, removing staging idle longer than " +
+            $"{VoiceTurnUploadMaxAge.TotalHours:0.###}h");
+
         // Issue #629: start the durable telemetry retry-queue flusher. It drains any events restored
         // from disk on construction (so a backend outage that spanned the previous run's lifetime now
         // delivers) and every event the relay enqueues going forward, in FIFO order, retrying with
@@ -2439,6 +2489,8 @@ public sealed class GatewayHost : IAsyncDisposable
         _autoDismissTimer = null;
         try { _displayStateSweepTimer?.Dispose(); } catch (Exception ex) { FileLog.Write($"[GatewayHost] display-state sweep timer dispose error: {ex.Message}"); }
         _displayStateSweepTimer = null;
+        try { _voiceTurnUploadSweepTimer?.Dispose(); } catch (Exception ex) { FileLog.Write($"[GatewayHost] voice-turn upload sweep timer dispose error: {ex.Message}"); }
+        _voiceTurnUploadSweepTimer = null;
 
 
         // Issue #640: stop the background token refresh timer.
