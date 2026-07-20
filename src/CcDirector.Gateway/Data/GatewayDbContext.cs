@@ -313,7 +313,19 @@ public sealed class GatewayDbContext : DbContext
             // and writes it as the service role; this Gateway holds SELECT and nothing more. Describing its
             // shape lets us read it; emitting a migration for it would have us create or alter a table we do
             // not own, on a schema boundary that is deliberate.
-            b.ToTable("entitlements", t => t.ExcludeFromMigrations());
+            //
+            // Schema-qualify the table EXPLICITLY on Postgres so the generated SELECT emits
+            // gateway.entitlements and never resolves the relation through the connection's search_path. This
+            // table is excluded from migrations, so it is NOT covered by the migration set that pins every
+            // owned table to the gateway schema; pinning it here makes its qualification an explicit property
+            // of this one go-live-critical read rather than an incidental consequence of the model-wide
+            // HasDefaultSchema below. SQLite is schemaless (one file, no schema namespace) and takes no schema
+            // argument - so this is a provider CONDITIONAL, decided by the same IsNpgsql() signal the rest of
+            // the Postgres-only model shape uses, never a try/catch fallback.
+            if (Database.IsNpgsql())
+                b.ToTable("entitlements", "gateway", t => t.ExcludeFromMigrations());
+            else
+                b.ToTable("entitlements", t => t.ExcludeFromMigrations());
             b.HasKey(e => e.Subject);
             b.Property(e => e.Subject).HasColumnName("subject").IsRequired();
             b.Property(e => e.Status).HasColumnName("status").IsRequired();
