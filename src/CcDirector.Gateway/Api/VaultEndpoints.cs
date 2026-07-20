@@ -74,7 +74,16 @@ internal static class VaultEndpoints
             statusCode: StatusCodes.Status404NotFound);
     }
 
-    public static void Map(IEndpointRouteBuilder outer, KeyVault vault)
+    /// <summary>
+    /// Maps the key-vault routes and RETURNS the group they were mapped into.
+    ///
+    /// The return value exists solely so the future-route property is statable from outside this file: the
+    /// group is created in here, so without handing it back, no test could map a brand-new route onto it and
+    /// show that the refusal already covers routes nobody has written yet. That is the one property which
+    /// distinguishes a group filter from a guard repeated in each handler - the two behave identically on
+    /// every route that exists today.
+    /// </summary>
+    public static RouteGroupBuilder Map(IEndpointRouteBuilder outer, KeyVault vault)
     {
         FileLog.Write($"[VaultEndpoints] mapping /vault/keys; hosted={GatewayHostedMode.IsHosted} - on hosted EVERY route in this group is refused");
 
@@ -121,6 +130,8 @@ internal static class VaultEndpoints
 
         app.MapDelete("/vault/keys/{name}", (string name) =>
             Results.Json(new { name, deleted = vault.Delete(name) }));
+
+        return app;
     }
 
     private sealed record VaultKeyBody(string? Value);
