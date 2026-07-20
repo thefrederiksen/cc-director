@@ -41,6 +41,13 @@ namespace CcDirector.Gateway.Api;
 /// written down on the pull request: when the vault is properly partitioned per account, these routes come
 /// back one at a time.
 ///
+/// THE WRITE IS STOPPED, not only the read. The deny covers PUT and DELETE alongside the two reads, so no key
+/// material accumulates in the global vault file behind this refusal while it is in force. That is what makes
+/// un-denying a one-condition job - the per-account namespace - with no contaminated history to purge first.
+/// A read-only deny would have been a DEFERRED LEAK: data keeps piling up behind it and the day it is lifted
+/// it discloses everything that accrued. Anyone lifting this deny needs the namespace and nothing else; anyone
+/// lifting a read-only deny needs the namespace AND a purge.
+///
 /// Self-host is COMPLETELY unchanged, and that is the control. Self-host is single-tenant, the owner sets
 /// his own keys here from the Cockpit and his own Director reads them back, and a deny scoped to the wrong
 /// signal would break the shipped product to protect the unshipped one.
@@ -92,13 +99,34 @@ internal static class VaultEndpoints
         // default. A group filter runs before EVERY route mapped below, including routes that do not exist
         // yet, so the refusal cannot rot as the group grows. The empty prefix keeps the route paths written
         // out in full, exactly as before, so the self-host surface is byte-identical.
-        var app = outer.MapGroup("");
-        app.AddEndpointFilter(async (ctx, next) =>
+        var guarded = outer.MapGroup("");
+        guarded.AddEndpointFilter(async (ctx, next) =>
         {
             if (DenyOnHosted() is { } denied) return denied;
             return await next(ctx);
         });
 
+        // THE ROUTES ARE MAPPED WHERE `outer` IS NOT IN SCOPE - deliberately, and this is the only reason
+        // MapRoutes exists as a separate method.
+        //
+        // If the routes were written here beside the guarded group, each of the four could INDIVIDUALLY be
+        // mapped onto `outer` instead of onto `guarded` - a one-character edit that bypasses the filter for
+        // that route alone while every other route stays correctly denied. That is four independently
+        // bypassable primitives, each of which would owe its own proof run. Handing the group to a method
+        // that never receives the ungrouped builder makes that mistake INEXPRESSIBLE rather than merely
+        // unlikely: inside MapRoutes there is nothing to map onto except the guarded group. The bypass count
+        // is reduced by design, not by argument about how careful the next author will be.
+        MapRoutes(guarded, vault);
+        return guarded;
+    }
+
+    /// <summary>
+    /// The four key-vault routes. Takes the GUARDED group and nothing else - see the note at the call site:
+    /// the ungrouped route builder is deliberately out of scope here so no route can be mapped around the
+    /// hosted filter.
+    /// </summary>
+    private static void MapRoutes(RouteGroupBuilder app, KeyVault vault)
+    {
         app.MapGet("/vault/keys", () => Results.Json(new { names = vault.ListNames() }));
 
         app.MapGet("/vault/keys/{name}", (string name) =>
@@ -130,8 +158,6 @@ internal static class VaultEndpoints
 
         app.MapDelete("/vault/keys/{name}", (string name) =>
             Results.Json(new { name, deleted = vault.Delete(name) }));
-
-        return app;
     }
 
     private sealed record VaultKeyBody(string? Value);

@@ -58,9 +58,23 @@ namespace CcDirector.Gateway.Tests;
 /// <see cref="SelfHostVaultGroupControlTests"/>. Without those, "it survived" is a claim about a request that
 /// might never have been capable of destroying anything.
 ///
+/// ONE BYPASSABLE PRIMITIVE, BY DESIGN. The proof-run count is set by how many things can be individually
+/// wrong while everything else stays correct and isolation still breaks. Here that number is ONE: a single
+/// <c>AddEndpointFilter</c> on a single <c>MapGroup</c> created at a single <c>VaultEndpoints.Map</c> call
+/// site (<c>GatewayHost.cs</c>, one call - checked, not assumed), with NO route carrying a guard of its own,
+/// so deleting the filter fails all four routes together. The obvious second family - mapping one of the four
+/// routes onto the UNGROUPED builder, bypassing the filter for that route alone - was four more independently
+/// bypassable primitives, and it was removed by DESIGN rather than argued away: the routes now live in
+/// <c>VaultEndpoints.MapRoutes</c>, which receives the guarded group and never receives the ungrouped builder,
+/// so that mistake is not expressible. That is a compile-time property, which is why no test here asserts it;
+/// a test could not. Removing the hosted check from <c>DenyOnHosted</c> is NOT a third primitive: it makes the
+/// group refuse ALWAYS, which breaks the shipped self-host product rather than isolation, and the self-host
+/// controls below are what redden on it.
+///
 /// REVERT-PROOF - the recipe to RUN, not to describe. In <c>src/CcDirector.Gateway/Api/VaultEndpoints.cs</c>
-/// DELETE the <c>app.AddEndpointFilter(...)</c> block outright, leaving <c>var app = outer.MapGroup("");</c>
-/// in place so the group still exists and the file still compiles, with NO per-route guard put back - the
+/// DELETE the <c>guarded.AddEndpointFilter(...)</c> block outright, leaving
+/// <c>var guarded = outer.MapGroup("");</c> in place so the group still exists and the file still compiles,
+/// with NO per-route guard put back - the
 /// hosted deny is then absent entirely. Never <c>if (false)</c>: unreachable code is a build error here.
 /// That is ONE primitive mutated and nothing else, so every red is attributable to it. Rebuild, CONFIRM ZERO
 /// ERRORS (a run after a failed build executes the previous binary and reports a false pass), then run the
@@ -154,7 +168,13 @@ public sealed class HostedVaultDenyTests : IAsyncLifetime
     public async Task The_refused_read_did_not_leak_the_secret_value_anywhere_in_the_body()
     {
         var resp = await Send(HttpMethod.Get, "vault/keys/" + SecretName);
-        Assert.Equal(HttpStatusCode.NotFound, resp.StatusCode);
+
+        // The refusal is asserted FIRST, and the absence check comes after it. On its own,
+        // "the body does not contain the secret" is an absence-only claim that a 404 from the single-page-app
+        // fallback - or any other body that simply is not the vault - would satisfy just as well as a working
+        // deny. Pinning the exact refusal first is what makes this test a statement about the guard rather
+        // than a statement about the string.
+        await AssertBodyIsNothingButTheRefusal(resp);
         Assert.DoesNotContain(SecretValue, await resp.Content.ReadAsStringAsync(), StringComparison.Ordinal);
     }
 
@@ -180,7 +200,7 @@ public sealed class HostedVaultDenyTests : IAsyncLifetime
         // (SelfHostVaultGroupControlTests.The_same_write_overwrites_an_existing_key_on_self_host), so this is
         // a capable operation being stopped, not a no-op passing by construction.
         var resp = await Send(HttpMethod.Put, "vault/keys/" + SecretName, "{\"value\":\"attacker-owned\"}");
-        Assert.Equal(HttpStatusCode.NotFound, resp.StatusCode);
+        await AssertBodyIsNothingButTheRefusal(resp);
 
         Assert.Equal(SecretValue, new KeyVault(_vaultPath).Get(SecretName));
     }
@@ -189,7 +209,7 @@ public sealed class HostedVaultDenyTests : IAsyncLifetime
     public async Task The_refused_write_of_a_new_name_did_not_create_it()
     {
         var resp = await Send(HttpMethod.Put, "vault/keys/PLANTED_KEY", "{\"value\":\"planted\"}");
-        Assert.Equal(HttpStatusCode.NotFound, resp.StatusCode);
+        await AssertBodyIsNothingButTheRefusal(resp);
 
         Assert.Null(new KeyVault(_vaultPath).Get("PLANTED_KEY"));
     }
@@ -200,7 +220,7 @@ public sealed class HostedVaultDenyTests : IAsyncLifetime
         // DESTRUCTIBILITY CONTROL: the identical delete DOES destroy this same seeded key on self-host
         // (SelfHostVaultGroupControlTests.The_same_delete_destroys_an_existing_key_on_self_host).
         var resp = await Send(HttpMethod.Delete, "vault/keys/" + SecretName);
-        Assert.Equal(HttpStatusCode.NotFound, resp.StatusCode);
+        await AssertBodyIsNothingButTheRefusal(resp);
 
         Assert.Equal(SecretValue, new KeyVault(_vaultPath).Get(SecretName));
     }
@@ -422,8 +442,14 @@ public sealed class HostedVaultGroupFilterTests : IDisposable
         try
         {
             var resp = await http.GetAsync("/not-a-vault-route");
+
+            // Format facts before the parse, and then the real payload rather than a substring: "true"
+            // appears in plenty of bodies that are not this handler's answer.
             Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
-            Assert.Contains("true", await resp.Content.ReadAsStringAsync(), StringComparison.Ordinal);
+            Assert.Equal("application/json", resp.Content.Headers.ContentType?.MediaType);
+
+            using var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync());
+            Assert.True(doc.RootElement.GetProperty("ok").GetBoolean());
         }
         finally { http.Dispose(); await app.DisposeAsync(); }
     }
@@ -556,6 +582,13 @@ public sealed class SelfHostVaultGroupControlTests : IDisposable
             var resp = await http.PutAsync("/vault/keys/" + SecretName,
                 new StringContent("{\"value\":\"attacker-owned\"}", Encoding.UTF8, "application/json"));
             Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+            Assert.Equal("application/json", resp.Content.Headers.ContentType?.MediaType);
+
+            using (var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync()))
+            {
+                Assert.Equal(SecretName, doc.RootElement.GetProperty("name").GetString());
+                Assert.True(doc.RootElement.GetProperty("set").GetBoolean());
+            }
 
             Assert.Equal("attacker-owned", vault.Get(SecretName));
         }
@@ -579,6 +612,13 @@ public sealed class SelfHostVaultGroupControlTests : IDisposable
         {
             var resp = await http.DeleteAsync("/vault/keys/" + SecretName);
             Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+            Assert.Equal("application/json", resp.Content.Headers.ContentType?.MediaType);
+
+            using (var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync()))
+            {
+                Assert.Equal(SecretName, doc.RootElement.GetProperty("name").GetString());
+                Assert.True(doc.RootElement.GetProperty("deleted").GetBoolean());
+            }
 
             Assert.Null(vault.Get(SecretName));
         }
@@ -607,8 +647,14 @@ public sealed class SelfHostVaultGroupControlTests : IDisposable
         try
         {
             var resp = await http.GetAsync("/vault/keys/added-after-the-deny-was-written");
+
+            // Format facts before the parse, then the probe handler's OWN payload. A substring check would
+            // also pass on a body that merely mentioned the word, which is not the claim being made.
             Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
-            Assert.Contains("served", await resp.Content.ReadAsStringAsync(), StringComparison.Ordinal);
+            Assert.Equal("application/json", resp.Content.Headers.ContentType?.MediaType);
+
+            using var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync());
+            Assert.Equal("served", doc.RootElement.GetProperty("probe").GetString());
         }
         finally { http.Dispose(); await app.DisposeAsync(); }
     }
@@ -714,6 +760,10 @@ public sealed class SelfHostVaultControlTests : IAsyncLifetime
     {
         var resp = await Send(HttpMethod.Put, "vault/keys/OPENAI_API_KEY", "{\"value\":\"sk-owner-set\"}");
         Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+        Assert.Equal("application/json", resp.Content.Headers.ContentType?.MediaType);
+
+        using (var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync()))
+            Assert.True(doc.RootElement.GetProperty("set").GetBoolean());
 
         Assert.Equal("sk-owner-set", new KeyVault(_vaultPath).Get("OPENAI_API_KEY"));
     }
@@ -723,6 +773,10 @@ public sealed class SelfHostVaultControlTests : IAsyncLifetime
     {
         var resp = await Send(HttpMethod.Delete, "vault/keys/" + SecretName);
         Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+        Assert.Equal("application/json", resp.Content.Headers.ContentType?.MediaType);
+
+        using (var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync()))
+            Assert.True(doc.RootElement.GetProperty("deleted").GetBoolean());
 
         Assert.Null(new KeyVault(_vaultPath).Get(SecretName));
     }

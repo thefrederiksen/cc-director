@@ -55,8 +55,21 @@ behind only the host-wide authentication gate - which admits any enrolled device
 on shared hosted infrastructure the value read is credential theft, the write is tampering with another
 account's paid service, and the delete disables it. The refusal is gated on the hosted deployment signal
 (`GatewayHostedMode.IsHosted`), applied as one filter over the whole route group, so self-host behavior is
-byte-identical to what is documented here. The routes come back one at a time when the vault is
-partitioned per account.
+byte-identical to what is documented here.
+
+**The un-deny condition, stated so it cannot be ticked off by mistake: THE WRITE IS STOPPED.** The deny
+covers `PUT` and `DELETE` as well as the two reads, so no key material accumulates in the global vault file
+behind this refusal while it is in force. Removing the deny therefore requires only that a per-account key
+namespace exists in the vault - it does NOT additionally require purging a contaminated history, because
+there is no history being written. This is the opposite of a read-only deny such as the hosted stats deny
+(pull request #1888), where the data keeps accruing behind the refusal and lifting it would expose what
+piled up. Un-deny the routes one at a time once the namespace exists.
+
+**This deny does not make key material on the hosted Gateway safe, and must not be read as clearance for
+anything else.** It closes one route group. In particular it says nothing about the voice vault key, which
+stays UNCONFIGURED on hosted until the whole voice chain is partitioned: configuring it does not deliver
+voice, it arms a cross-tenant leak, because clips and the plaintext transcript beside each one land in a
+shared directory until that chain is partitioned. Nothing here changes that.
 
 ## 5. How Directors get keys
 
