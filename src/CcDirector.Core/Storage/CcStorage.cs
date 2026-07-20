@@ -138,7 +138,9 @@ public static class CcStorage
     /// <summary>
     /// Resumable upload staging for the Gateway voice-turn front door: base/voice-turn-uploads/&lt;uploadId&gt;/.
     /// Each chunk lands here as it arrives (SHA-checked, idempotent) and the dir is deleted once the
-    /// chunks are assembled and the turn has been started. Owned by the Gateway.
+    /// chunks are assembled and the turn has been started. An upload that never reaches that point is
+    /// removed by the Gateway's voice-turn upload sweep once nothing has written to it for hours, so
+    /// abandoned recorded audio has a retention ceiling. Owned by the Gateway.
     /// </summary>
     public static string VoiceTurnUploads() => Ensure(Path.Combine(Base(), "voice-turn-uploads"));
 
@@ -146,8 +148,10 @@ public static class CcStorage
     /// Resumable upload staging for durable dictation (issue #1006): base/dictation-uploads/&lt;uploadId&gt;/.
     /// The mobile app persists the raw audio locally the instant Send is pressed and streams it here in
     /// SHA-checked chunks; once assembled the Gateway transcribes it and injects the turn into the owning
-    /// session itself, so a dead tab or a dropped connection cannot lose a recorded utterance. Abandoned
-    /// staging dirs are swept after ~1 hour. Owned by the Gateway.
+    /// session itself, so a dead tab or a dropped connection cannot lose a recorded utterance. There is
+    /// deliberately NO age sweep here (unlike the voice-turn staging above): each upload id carries a durable
+    /// delivery record, its chunks are retained while it is undelivered, and the record is retired only by
+    /// the client's acknowledgment. Owned by the Gateway.
     /// </summary>
     public static string DictationUploads() => Ensure(Path.Combine(Base(), "dictation-uploads"));
 

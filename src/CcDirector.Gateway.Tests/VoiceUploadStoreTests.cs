@@ -164,6 +164,137 @@ public sealed class VoiceUploadStoreTests : IDisposable
         Assert.True(_store.Exists(fresh));
     }
 
+    [Fact]
+    public async Task SweepAbandoned_DoesNotDescendIntoThePartitionContainer()
+    {
+        // The per-tenant partition container holds OTHER tenants' staging roots, not uploads. It is a plain
+        // directory under the same root, so an age sweep that treated it as an upload would delete every
+        // tenant's staging in one call the first time the container itself went quiet. The container is aged
+        // well past the cut-off here precisely so that only the skip can keep it alive - and the upload
+        // inside it must survive too, which proves the sweep did not descend into it either.
+        var tenantsDir = Path.Combine(_root, VoiceUploadStore.TenantPartitionDirectoryName);
+        var tenantUpload = Path.Combine(tenantsDir, Guid.NewGuid().ToString("D"), Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(tenantUpload);
+        await File.WriteAllBytesAsync(Path.Combine(tenantUpload, "00000.part"), Bytes("other tenant audio"));
+
+        var stale = _store.Register(null);
+        await _store.StoreChunkAsync(stale, 0, Bytes("old"), null);
+        var staleDir = Path.Combine(_root, Guid.Parse(stale).ToString("N"));
+
+        var longAgo = DateTime.UtcNow.AddHours(-9);
+        Directory.SetLastWriteTimeUtc(staleDir, longAgo);
+        Directory.SetLastWriteTimeUtc(tenantsDir, longAgo);
+
+        var removed = _store.SweepAbandoned(TimeSpan.FromHours(1));
+
+        // Only the real abandoned upload went; the container and everything under it stayed.
+        Assert.Equal(1, removed);
+        Assert.False(_store.Exists(stale));
+        Assert.True(Directory.Exists(tenantsDir));
+        Assert.True(File.Exists(Path.Combine(tenantUpload, "00000.part")));
+    }
+
+    // The idle-age guarantee must hold for the RESUME path, which the first cut got wrong: an upload that a
+    // live client comes back to must never be swept. It holds because EVERY successful operation refreshes
+    // the activity signal - so each operation is pinned in ITS OWN test, exercising ONLY that operation on an
+    // aged upload. Split deliberately: a single test doing several operations would let their touches mask
+    // one another, and a touch that can be individually removed while the test stays green is not proven.
+    // Each of these reddens if and only if its own operation's EnsureFreshStaging touch is removed.
+
+    [Fact]
+    public async Task SweepAbandoned_ReRegisterAlone_KeepsAnAgedUpload()
+    {
+        // Stage an upload, age it past the limit, then do ONLY a re-register of the existing id (no chunk
+        // retry, no assemble). Re-registering is a resume and therefore activity, so the upload must survive.
+        var id = _store.Register(null);
+        await _store.StoreChunkAsync(id, 0, Bytes("hello"), null);
+        var dir = Path.Combine(_root, Guid.Parse(id).ToString("N"));
+        Directory.SetLastWriteTimeUtc(dir, DateTime.UtcNow.AddHours(-9));
+
+        var reopened = _store.Register(id);   // the only operation under test
+        Assert.Equal(Guid.Parse(id).ToString("N"), reopened);
+
+        var removed = _store.SweepAbandoned(TimeSpan.FromHours(4));
+
+        Assert.Equal(0, removed);
+        Assert.True(_store.Exists(id));
+    }
+
+    [Fact]
+    public async Task SweepAbandoned_IdenticalChunkRetryAlone_KeepsAnAgedUpload()
+    {
+        // Stage an upload, age it, then do ONLY an idempotent re-send of the identical chunk (no re-register,
+        // no assemble). The retry writes no byte - it is a no-op on disk - but it IS a live client working,
+        // so it refreshes activity and the upload must survive.
+        var id = _store.Register(null);
+        await _store.StoreChunkAsync(id, 0, Bytes("hello"), null);
+        var dir = Path.Combine(_root, Guid.Parse(id).ToString("N"));
+        Directory.SetLastWriteTimeUtc(dir, DateTime.UtcNow.AddHours(-9));
+
+        await _store.StoreChunkAsync(id, 0, Bytes("hello"), null);   // the only operation under test
+
+        var removed = _store.SweepAbandoned(TimeSpan.FromHours(4));
+
+        Assert.Equal(0, removed);
+        Assert.True(_store.Exists(id));
+    }
+
+    [Fact]
+    public async Task SweepAbandoned_AssembleAlone_KeepsAnAgedUpload()
+    {
+        // Stage a complete single-chunk upload, age it, then do ONLY an assemble/complete (no re-register, no
+        // chunk retry). Completing is a live client finishing its upload, so it refreshes activity and the
+        // staging must survive the sweep that runs alongside the turn it kicks off.
+        var id = _store.Register(null);
+        await _store.StoreChunkAsync(id, 0, Bytes("hello"), null);
+        var dir = Path.Combine(_root, Guid.Parse(id).ToString("N"));
+        Directory.SetLastWriteTimeUtc(dir, DateTime.UtcNow.AddHours(-9));
+
+        var assembled = await _store.AssembleAsync(id, 1);   // the only operation under test
+        Assert.Equal("ok", assembled.Status);
+
+        var removed = _store.SweepAbandoned(TimeSpan.FromHours(4));
+
+        Assert.Equal(0, removed);
+        Assert.True(_store.Exists(id));
+    }
+
+    [Fact]
+    public void SweepAbandoned_KeepsAgedDirectoriesThatAreNotCanonicalUploadIds()
+    {
+        // The sweep deletes only what it can positively identify as a disposable upload - a directory whose
+        // name IS a canonical 32-hex upload id. Anything else survives, aged or not: an unknown name, an
+        // almost-canonical name, a partition container, a future sibling directory. A deny-list that skipped
+        // only one known name would recursively delete every unanticipated directory, including a
+        // future-partition directory with real data under it. Each of these is aged well past the cut-off so
+        // that only the positive admit-test can keep it alive.
+        void AgedDirWithSentinel(string name)
+        {
+            var d = Path.Combine(_root, name);
+            Directory.CreateDirectory(d);
+            File.WriteAllBytes(Path.Combine(d, "sentinel.txt"), Bytes("keep me"));
+            Directory.SetLastWriteTimeUtc(d, DateTime.UtcNow.AddHours(-9));
+        }
+
+        AgedDirWithSentinel("not-an-upload-id");                       // plainly not an id
+        AgedDirWithSentinel(Guid.NewGuid().ToString("D"));            // hyphenated GUID - a spelling this store never writes
+        AgedDirWithSentinel(Guid.NewGuid().ToString("N").ToUpperInvariant()); // upper-cased 32-hex - not the canonical form
+        AgedDirWithSentinel(VoiceUploadStore.TenantPartitionDirectoryName);   // the future-partition container
+
+        var removed = _store.SweepAbandoned(TimeSpan.FromHours(1));
+
+        Assert.Equal(0, removed);
+        foreach (var name in new[]
+                 {
+                     "not-an-upload-id",
+                     VoiceUploadStore.TenantPartitionDirectoryName,
+                 })
+        {
+            Assert.True(Directory.Exists(Path.Combine(_root, name)));
+            Assert.True(File.Exists(Path.Combine(_root, name, "sentinel.txt")));
+        }
+    }
+
     // ===== durable delivery record (issue #1183) =====================================================
 
     [Fact]
