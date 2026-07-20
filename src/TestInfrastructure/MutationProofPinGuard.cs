@@ -843,7 +843,19 @@ internal static class MutationProofPinGuard
         Environment.Exit(ContaminatedTreeExitCode);
     }
 
-    private static PinReading ReadPinFor(string workingTreeRoot)
+    /// <summary>
+    /// Everything the module initializer does to reach a verdict, minus stopping the process: find the pin
+    /// on disk, read the working tree, and decide against the given history.
+    ///
+    /// This exists so the proofs can be TESTS instead of a sequence somebody drove by hand once. The
+    /// end-to-end refusals were originally demonstrated by hand on one machine, which proves the mechanism
+    /// worked that day and protects nothing afterwards - a script or a path can regress and the hand-run
+    /// evidence, being prose in a pull request, cannot notice.
+    /// </summary>
+    internal static Verdict Evaluate(string workingTreeRoot, IReadOnlyList<string> priorLedgerLines) =>
+        Decide(ReadPinFor(workingTreeRoot), ReadTree(workingTreeRoot), priorLedgerLines);
+
+    internal static PinReading ReadPinFor(string workingTreeRoot)
     {
         var path = ResolvePinFilePath(workingTreeRoot);
         if (path is null)
@@ -887,11 +899,18 @@ internal static class MutationProofPinGuard
     /// the moved-pin check it feeds is an ADDITIONAL mechanism - the head comparison against the working
     /// tree still runs regardless.
     /// </summary>
-    private static IReadOnlyList<string> ReadLedger()
+    private static IReadOnlyList<string> ReadLedger() => ReadLedger(LedgerDirectory);
+
+    /// <summary>
+    /// The ledger in a nominated directory. Parameterised so the whole on-disk path - a real pin file, a
+    /// real working tree, a real ledger - can be driven by a test rather than only by a person following a
+    /// sequence by hand. A proof nobody can re-run is not a regression test.
+    /// </summary>
+    internal static IReadOnlyList<string> ReadLedger(string ledgerDirectory)
     {
         try
         {
-            var path = Path.Combine(LedgerDirectory, ProofLedgerFileName);
+            var path = Path.Combine(ledgerDirectory, ProofLedgerFileName);
             if (!File.Exists(path))
                 return Array.Empty<string>();
 

@@ -696,6 +696,324 @@ public sealed class MutationProofPinGuardTests
         Assert.NotNull(problem);
     }
 
+    // -------------------------------------------------------------------------------------------------
+    // THE PROOFS THAT WERE ONCE DRIVEN BY HAND.
+    //
+    // The two refusals below were first demonstrated as a sequence typed at a terminal on one machine on
+    // one night. That proves the mechanism worked that day and protects nothing afterwards: a script, a
+    // path or a parser can regress, and hand-run evidence - being prose in a pull request - cannot notice.
+    // Worse, the hand run happened on Windows only, which is the same blind spot that produced the
+    // platform divergence a reviewer had to find: I could only ever see the arm that worked.
+    //
+    // These drive the REAL pin file, the REAL working tree and the REAL ledger, so they re-run on every
+    // push. See the pull request for what this does and does not close about the platform question.
+    // -------------------------------------------------------------------------------------------------
+
+    /// <summary>
+    /// The whole ledger-memory refusal, on disk, with no hand-typed steps.
+    ///
+    /// This is the case the script fix alone cannot catch, and therefore the one worth mechanising most: a
+    /// pin that names the wrong head, where the working tree matches that wrong head EXACTLY. Every other
+    /// check in the guard passes. Only the proof's own history says the foundation moved.
+    /// </summary>
+    [Fact]
+    public void APinReWrittenToANewHeadIsRefusedFromDisk_EvenThoughTheTreeMatchesItExactly()
+    {
+        using var repository = TemporaryGitRepository.Create();
+        using var ledger = new TemporaryDirectory();
+
+        repository.WriteAndCommit("src/RequestHandler.cs", FileWithTheGuardBlock, "add the tenant guard");
+        var headTheBaselineMeasured = repository.Head();
+
+        var pinPath = MutationProofPinGuard.ResolvePinFilePath(repository.Root)!;
+        WritePin(pinPath, "proof-99", MutationProofPinGuard.BaselinePhase, headTheBaselineMeasured);
+
+        // The baseline runs and is admitted, and the ledger remembers the head it measured.
+        var baseline = MutationProofPinGuard.Evaluate(
+            repository.Root, MutationProofPinGuard.ReadLedger(ledger.Path));
+
+        Assert.True(baseline.Admitted, "the baseline itself must be admitted. " + baseline.Message);
+        AppendLedger(ledger.Path, LedgerLine("proof-99", headTheBaselineMeasured));
+
+        // The head moves, and the pin is REWRITTEN to the new head - what the old script did by itself,
+        // and what a hand edit or a future script regression would do again.
+        repository.WriteAndCommit("src/Other.cs", "namespace Example; public static class Other { }", "later work");
+        var headThePinNowClaims = repository.Head();
+        Assert.NotEqual(headTheBaselineMeasured, headThePinNowClaims);
+
+        WritePin(pinPath, "proof-99", MutationProofPinGuard.BaselinePhase, headThePinNowClaims);
+
+        // The tree is clean and sits exactly on the re-pinned head, so the head comparison AGREES.
+        var tree = MutationProofPinGuard.ReadTree(repository.Root);
+        Assert.Empty(tree.Changes);
+        Assert.Equal(headThePinNowClaims, tree.Head);
+
+        var verdict = MutationProofPinGuard.Evaluate(
+            repository.Root, MutationProofPinGuard.ReadLedger(ledger.Path));
+
+        Assert.False(
+            verdict.Admitted,
+            "A proof was admitted after its pinned head was rewritten to a later commit. The tree matches "
+            + "the new pin exactly, so every other check in this guard passes - the ledger's memory of the "
+            + "baseline is the only thing that can catch it. " + verdict.Message);
+
+        Assert.Contains(headTheBaselineMeasured, verdict.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains(headThePinNowClaims, verdict.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>
+    /// CONTROL for the test above, and it is not optional: without it, a guard that refused every run whose
+    /// ledger was non-empty would pass. Same repository, same ledger, same proof - the pin simply is not
+    /// rewritten.
+    /// </summary>
+    [Fact]
+    public void CONTROL_AProofWhosePinWasNotRewrittenIsAdmittedFromDisk()
+    {
+        using var repository = TemporaryGitRepository.Create();
+        using var ledger = new TemporaryDirectory();
+
+        repository.WriteAndCommit("src/RequestHandler.cs", FileWithTheGuardBlock, "add the tenant guard");
+        var head = repository.Head();
+
+        WritePin(
+            MutationProofPinGuard.ResolvePinFilePath(repository.Root)!,
+            "proof-99", MutationProofPinGuard.BaselinePhase, head);
+
+        AppendLedger(ledger.Path, LedgerLine("proof-99", head));
+
+        var verdict = MutationProofPinGuard.Evaluate(
+            repository.Root, MutationProofPinGuard.ReadLedger(ledger.Path));
+
+        Assert.True(verdict.Admitted, verdict.Message);
+    }
+
+    /// <summary>
+    /// The arm transition, driven through the REAL script.
+    ///
+    /// This is the bypass a reviewer found: "set -Phase arm" recomputed the head, so a head that moved
+    /// between the baseline and the arm was silently re-pinned and the arm admitted. Asserting the script's
+    /// behaviour by reading its source would test my belief about PowerShell; running it tests PowerShell.
+    ///
+    /// Two things are asserted, and the second matters more: the transition is REFUSED, and the pin file
+    /// still names the BASELINE's head afterwards. A refusal that had already overwritten the pin would
+    /// leave the next run to be measured against the wrong commit.
+    /// </summary>
+    [Fact]
+    public void TheScriptRefusesAnArmTransitionAfterTheHeadMoves_AndLeavesThePinOnTheBaselineHead()
+    {
+        var shell = RequirePowerShell();
+        var script = RequirePinScript();
+
+        using var repository = TemporaryGitRepository.Create();
+        repository.WriteAndCommit("src/RequestHandler.cs", FileWithTheGuardBlock, "add the tenant guard");
+
+        var baselineHead = repository.Head();
+
+        var pinned = RunScript(shell, script, repository.Root, "set -Phase baseline -Note \"transition test\"");
+        Assert.True(pinned.ExitCode == 0, "pinning the baseline failed: " + pinned.Output + pinned.Error);
+
+        // The head moves between the baseline run and the arm - the whole condition under test.
+        repository.WriteAndCommit("src/Other.cs", "namespace Example; public static class Other { }", "later work");
+        var movedHead = repository.Head();
+        Assert.NotEqual(baselineHead, movedHead);
+
+        var arm = RunScript(
+            shell, script, repository.Root, "set -Phase arm -Mutates src/RequestHandler.cs");
+
+        Assert.False(
+            arm.ExitCode == 0,
+            "The script accepted an arm transition after the head had moved. That silently re-pins the "
+            + "proof to the new head, and the guard then finds an exact match and admits an arm that "
+            + "measured a different program from its own baseline. Output: " + arm.Output + arm.Error);
+
+        Assert.Contains("the head has moved", arm.Output, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains(baselineHead, arm.Output, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains(movedHead, arm.Output, StringComparison.OrdinalIgnoreCase);
+
+        // And the pin was NOT quietly updated on the way out.
+        var pinText = File.ReadAllText(MutationProofPinGuard.ResolvePinFilePath(repository.Root)!);
+        Assert.Contains("pinnedHead=" + baselineHead, pinText, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("pinnedHead=" + movedHead, pinText, StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>
+    /// CONTROL. The same transition, with the head left alone, must SUCCEED - otherwise the refusal above
+    /// would be satisfied by a script that refuses every arm, which would make the tool unusable for the
+    /// arm half of every proof and would be discovered only by whoever tried to run one.
+    /// </summary>
+    [Fact]
+    public void CONTROL_TheScriptAcceptsAnArmTransitionAtTheBaselineHead()
+    {
+        var shell = RequirePowerShell();
+        var script = RequirePinScript();
+
+        using var repository = TemporaryGitRepository.Create();
+        repository.WriteAndCommit("src/RequestHandler.cs", FileWithTheGuardBlock, "add the tenant guard");
+        var head = repository.Head();
+
+        RunScript(shell, script, repository.Root, "set -Phase baseline");
+
+        // Apply the mutation, exactly as a real arm would, then declare it.
+        repository.Write("src/RequestHandler.cs", FileWithTheGuardBlockDeleted);
+
+        var arm = RunScript(shell, script, repository.Root, "set -Phase arm -Mutates src/RequestHandler.cs");
+
+        Assert.True(
+            arm.ExitCode == 0,
+            "A legitimate arm transition at the pinned head was refused. Output: " + arm.Output + arm.Error);
+
+        var pinText = File.ReadAllText(MutationProofPinGuard.ResolvePinFilePath(repository.Root)!);
+        Assert.Contains("phase=arm", pinText, StringComparison.Ordinal);
+        Assert.Contains("pinnedHead=" + head, pinText, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("mutates=src/RequestHandler.cs", pinText, StringComparison.Ordinal);
+
+        // And the guard admits the run that follows, which is the point of the whole transition.
+        using var ledger = new TemporaryDirectory();
+        var verdict = MutationProofPinGuard.Evaluate(
+            repository.Root, MutationProofPinGuard.ReadLedger(ledger.Path));
+
+        Assert.True(verdict.Admitted, verdict.Message);
+    }
+
+    /// <summary>
+    /// The arming check, driven through the real script rather than by reproducing its algorithm: a pin the
+    /// SCRIPT wrote must be found and understood by the GUARD. This is the property that was false off
+    /// Windows, and running the actual writer is the only way to test the actual writer.
+    /// </summary>
+    [Fact]
+    public void APinWrittenByTheRealScriptIsFoundAndUnderstoodByTheGuard()
+    {
+        var shell = RequirePowerShell();
+        var script = RequirePinScript();
+
+        using var repository = TemporaryGitRepository.Create();
+        repository.WriteAndCommit("src/RequestHandler.cs", FileWithTheGuardBlock, "add the tenant guard");
+
+        var result = RunScript(shell, script, repository.Root, "set -Phase baseline -Note \"arming check\"");
+        Assert.True(result.ExitCode == 0, result.Output + result.Error);
+
+        var reading = MutationProofPinGuard.ReadPinFor(repository.Root);
+
+        Assert.True(
+            reading.Found,
+            "The script reported success but the guard cannot find the pin it wrote. That is the exact "
+            + "shape of the platform divergence a reviewer found: armed according to its own output, inert "
+            + "in fact.");
+        Assert.Null(reading.Problem);
+        Assert.Equal(repository.Head(), reading.Pin!.PinnedHead, ignoreCase: true);
+    }
+
+    private static void WritePin(string path, string proofId, string phase, string head, params string[] mutations)
+    {
+        var text = "proofId=" + proofId + "\nphase=" + phase + "\npinnedHead=" + head + "\n"
+            + string.Concat(mutations.Select(m => "mutates=" + m + "\n"));
+        File.WriteAllText(path, text);
+    }
+
+    private static void AppendLedger(string ledgerDirectory, string line) =>
+        File.AppendAllText(
+            Path.Combine(ledgerDirectory, MutationProofPinGuard.ProofLedgerFileName),
+            line + Environment.NewLine);
+
+    /// <summary>
+    /// The script host, or a LOUD FAILURE.
+    ///
+    /// Deliberately not a silent skip. A skipped test is invisible in a summary line and looks exactly like
+    /// a test that ran - which is the failure mode this entire unit exists to end, reproduced in its own
+    /// test suite. The tests run on Windows, which always has a PowerShell host, and the hosted Linux
+    /// images carry pwsh; a machine with neither cannot check the writer at all, and should be told so
+    /// rather than quietly reassured.
+    /// </summary>
+    private static string RequirePowerShell() =>
+        FindPowerShell()
+        ?? throw new InvalidOperationException(
+            "No PowerShell host (pwsh or powershell) could be executed on this machine, so the pin script "
+            + "cannot be run and the writer half of this mechanism cannot be checked here. This is reported "
+            + "as a failure rather than skipped on purpose: a silent skip would leave the suite looking "
+            + "green while the script that WRITES pins went unchecked.");
+
+    private static string RequirePinScript() =>
+        FindPinScriptPath()
+        ?? throw new InvalidOperationException(
+            "scripts/mutation-proof-pin.ps1 was not found above " + AppContext.BaseDirectory
+            + ", so the writer half of this mechanism cannot be checked. Reported rather than skipped for "
+            + "the same reason as the missing-host case above.");
+
+    private static string? FindPinScriptPath()
+    {
+        var directory = new DirectoryInfo(AppContext.BaseDirectory);
+        while (directory is not null)
+        {
+            var candidate = Path.Combine(directory.FullName, "scripts", "mutation-proof-pin.ps1");
+            if (File.Exists(candidate))
+                return candidate;
+
+            directory = directory.Parent;
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// pwsh first, because it is the cross-platform host and is present on the hosted Linux images;
+    /// powershell second, because Windows always has it. Resolved by running it, not by probing a path -
+    /// a name on the path that cannot execute is not a host.
+    /// </summary>
+    private static string? FindPowerShell()
+    {
+        foreach (var candidate in new[] { "pwsh", "powershell" })
+        {
+            try
+            {
+                using var probe = new Process();
+                probe.StartInfo = new ProcessStartInfo(candidate)
+                {
+                    Arguments = "-NoProfile -Command \"exit 0\"",
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                    UseShellExecute = false,
+                    CreateNoWindow = true,
+                };
+
+                probe.Start();
+                probe.StandardOutput.ReadToEnd();
+                probe.StandardError.ReadToEnd();
+
+                if (probe.WaitForExit(30_000) && probe.ExitCode == 0)
+                    return candidate;
+            }
+            catch (Exception)
+            {
+                // Not present on this machine; try the next.
+            }
+        }
+
+        return null;
+    }
+
+    private readonly record struct ScriptResult(int ExitCode, string Output, string Error);
+
+    private static ScriptResult RunScript(string shell, string scriptPath, string workingDirectory, string arguments)
+    {
+        using var process = new Process();
+        process.StartInfo = new ProcessStartInfo(shell)
+        {
+            Arguments = "-NoProfile -ExecutionPolicy Bypass -File \"" + scriptPath + "\" " + arguments,
+            WorkingDirectory = workingDirectory,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false,
+            CreateNoWindow = true,
+        };
+
+        process.Start();
+        var output = process.StandardOutput.ReadToEnd();
+        var error = process.StandardError.ReadToEnd();
+        process.WaitForExit(120_000);
+
+        return new ScriptResult(process.ExitCode, output, error);
+    }
+
     private static string LedgerLine(string proofId, string pinnedHead) =>
         "when=2026-07-20T00:00:00.0000000Z  verdict=admitted  proofId=" + proofId
         + "  phase=baseline  pinnedHead=" + pinnedHead + "  observedHead=" + pinnedHead
