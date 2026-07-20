@@ -6,18 +6,43 @@ using Microsoft.AspNetCore.Routing;
 namespace CcDirector.Gateway.Stats;
 
 /// <summary>
-/// The DevThrottle Stats private dashboard: the always-available page the owner opens on the Gateway to
+/// The DevThrottle Stats private dashboard: the page the owner opens on his OWN Gateway to
 /// see, from real usage, how much of his development is spoken vs typed and how much comes from the phone,
 /// the desktop, or the cockpit. Served as a SELF-CONTAINED page embedded in this binary (not a wwwroot
 /// React route), so it works even on a plain dev build where the React apps are not built (mission
 /// New build B, core finding 8). It reads the Gateway's own aggregated totals with no cloud round-trip.
 ///
-/// Two routes, both behind the normal Gateway auth (the owner's signed-in browser reaches them):
+/// Two routes, both behind the normal Gateway auth (the owner's signed-in browser reaches them) - and both
+/// REFUSED on hosted, so "always available" describes self-host only:
 ///   GET /stats       - the HTML dashboard (this embedded page).
 ///   GET /stats/data  - the aggregated totals as JSON, which the page fetches and refreshes.
 ///
 /// Only counts and ratios are ever served - never the text of anything typed or said (mission decision 5).
 /// The page states plainly which input paths are counted and which are not-captured (no-fallback rule).
+///
+/// DENIED IN WHOLE ON HOSTED (issue #1848). EVERY route in this group is refused on the hosted Gateway,
+/// through ONE group filter rather than a guard repeated per route - so a route added here later is refused
+/// too, without anyone remembering to defend it. This is the OWNER'S
+/// private view of HIS OWN gateway, and on shared hosted infrastructure "the owner" does not survive as a
+/// concept - so there is no correct per-tenant answer to serve here, only a disclosure to close. What the
+/// feed actually carries makes that concrete: every repository name the fleet has driven, the per-agent and
+/// per-model tallies, and the token SPEND - all fleet-global, and reachable by any tenant's device key
+/// through the host-wide gate.
+///
+/// It is a DENY rather than a partition because there is nothing to partition BY. These are pre-aggregated
+/// fleet totals with no tenant anywhere in the schema, so a per-tenant answer would have to be recomputed
+/// from an attribution that was never recorded - and inventing one is a half-partition, which is worse than
+/// an honest refusal. The store behind it is also the SQLite-plus-write-ahead-log-on-a-file-share hazard
+/// booked as #1861, so a per-tenant partition would either multiply that hazard per tenant or force a
+/// schema change for a dashboard nobody has asked to be multi-tenant. Per-tenant stats are booked as a
+/// deferred product decision, blocked on that.
+///
+/// The refusal is a REFUSAL, not an empty dashboard. Serving zeroed or empty series would be a false
+/// statement rather than an absent one - the same mistake /healthz made when it zeroed its fleet counts and
+/// anything monitoring them read a permanently dead fleet. A caller is told the route is not available
+/// here; it is never shown a dashboard implying no work has been done.
+///
+/// Self-host is COMPLETELY unchanged, and that is the control.
 /// </summary>
 public static class StatsPageEndpoint
 {
@@ -32,10 +57,50 @@ public static class StatsPageEndpoint
         "Surface (phone / cockpit) for remote input is read from the signed-in device. Remote input with no device identity (a shared-token or fleet call) is not counted as an operator surface.",
     };
 
-    public static void Map(IEndpointRouteBuilder app, GatewayInputStatsAggregator aggregator,
+    /// <summary>
+    /// The hosted refusal for both stats routes (issue #1848), or null on self-host where nothing changes.
+    ///
+    /// Gated on <see cref="GatewayHostedMode.IsHosted"/> - the INDEPENDENT signal - and not on a boundary
+    /// or tenant argument being passed in. A security branch that depends on an optional argument fails
+    /// OPEN when a caller forgets it, which is exactly how the hosted account-status fix nearly shipped a
+    /// hole: omit the argument and a hosted Gateway silently takes the self-host path. Asking hosted mode
+    /// directly means these routes cannot serve the fleet-global feed on hosted however this is wired.
+    ///
+    /// 404 rather than 403: on hosted this route does not exist as a concept, so "not here" is the truthful
+    /// answer. 403 would imply the right credential could reach it, and none can - there is no owner.
+    /// </summary>
+    private static IResult? DenyOnHosted()
+    {
+        if (!GatewayHostedMode.IsHosted) return null;
+
+        FileLog.Write("[StatsPageEndpoint] DENIED on hosted: the stats feed is fleet-global and has no per-tenant answer to serve");
+        return Results.Json(
+            new { error = "the stats dashboard is not available on the hosted gateway" },
+            statusCode: StatusCodes.Status404NotFound);
+    }
+
+    /// <summary>
+    /// Maps the stats group and returns it, so the refusal can be proved to cover routes that do not exist
+    /// yet: a test maps a NEW probe route onto the returned group and finds it already refused on hosted,
+    /// without anyone having written a deny for it. Returning the group is the only way to state that
+    /// property from outside this file.
+    /// </summary>
+    public static RouteGroupBuilder Map(IEndpointRouteBuilder outer, GatewayInputStatsAggregator aggregator,
         GatewaySessionConcurrencyStats? concurrency = null)
     {
-        FileLog.Write("[StatsPageEndpoint] serving /stats (embedded, always available)");
+        FileLog.Write($"[StatsPageEndpoint] mapping /stats (embedded); hosted={GatewayHostedMode.IsHosted} - on hosted EVERY route in this group is refused (issue #1848)");
+
+        // The whole group behind ONE filter, rather than a guard line repeated in every handler.
+        // A repeated guard is a thing to forget: the route added to this file next year would be open by
+        // default and nothing would fail. A group filter runs before EVERY route mapped below, including
+        // routes that do not exist yet, so the refusal cannot rot as the group grows. The empty prefix keeps
+        // the route paths written out in full, exactly as before, so the self-host surface is unchanged.
+        var app = outer.MapGroup("");
+        app.AddEndpointFilter(async (ctx, next) =>
+        {
+            if (DenyOnHosted() is { } denied) return denied;
+            return await next(ctx);
+        });
 
         app.MapGet("/stats/data", () =>
         {
@@ -98,6 +163,8 @@ public static class StatsPageEndpoint
             ctx.Response.ContentType = "text/html; charset=utf-8";
             return ctx.Response.WriteAsync(PageHtml);
         });
+
+        return app;
     }
 
     // Self-contained: all CSS and JavaScript inline, no external requests, ASCII only. Light/dark aware.
