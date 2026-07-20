@@ -145,8 +145,28 @@ public sealed class HostedAccountStatusTests : IAsyncLifetime
         var root = await StatusFor(_keyNoEmail);
 
         Assert.True(root.GetProperty("signedIn").GetBoolean());
-        Assert.False(root.TryGetProperty("email", out _));      // omitted, not null, not fabricated
-        Assert.False(root.TryGetProperty("provider", out _));
+
+        // DIAGNOSTIC for issue #1894 - temporary, remove once the source is named.
+        //
+        // This assertion fails intermittently in CI and passes in isolation. The value it rejects has never
+        // been printed, so the source has only ever been reasoned about. It cannot come from this caller's
+        // own tenant row: the subjects are GUID-unique per class instance, the registry looks up strictly on
+        // account_subject under a unique index, and this one is minted fresh with a null email. So when it
+        // is present it came from SOMEWHERE ELSE, and this makes the failure say where instead of leaving
+        // it to be deduced.
+        //
+        // "alice@example.com" would mean the leak is inside this class and is almost certainly benign.
+        // Anything else means it crossed a class boundary, in a suite whose job is to prove that identity
+        // never crosses a tenant boundary.
+        var hasEmail = root.TryGetProperty("email", out var emailProperty);
+        var hasProvider = root.TryGetProperty("provider", out var providerProperty);
+        Assert.False(
+            hasEmail || hasProvider,
+            $"#1894 DIAGNOSTIC: expected the identity to be ABSENT for a tenant with no recorded email. " +
+            $"email={(hasEmail ? $"'{emailProperty.GetString()}'" : "<absent>")}, " +
+            $"provider={(hasProvider ? $"'{providerProperty.GetString()}'" : "<absent>")}. " +
+            $"This subject ({_subjectNoEmail}) is unique to this test instance, so any value here came from " +
+            $"outside this caller's own tenant row. Full response body: {root}");
     }
 
     [Fact]
