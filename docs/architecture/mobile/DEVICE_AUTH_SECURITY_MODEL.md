@@ -58,6 +58,19 @@ short window held **in this process's memory only**: a duplicate or retried enro
 gets the same key back and nothing rotates. It is never serialized and does not survive a restart, so the
 at-rest property is unaffected. Past the window a further enrollment rotates in place as described above.
 
+That in-memory window is a real, if small, exposure, and the thing that makes it acceptable is that it is
+short-lived - so short-livedness is **enforced, not assumed**. The registry starts a recurring eviction pass
+the moment it first retains a key, and that pass drops every issue whose window has closed regardless of
+whether any device ever enrolls again. Plaintext is held for at most one and a half windows, no more than
+seven and a half minutes by default, and shutting the registry down ends it at once.
+
+The subtlety is worth recording, because the first implementation got it wrong in a way that looked right:
+it checked an entry's age only when an already-enrolled device asked to replay. That correctly refuses to
+hand back an expired key, but it does nothing about retention, because the ordinary case - a device that
+enrolls once under its own identifier and never comes back - never reaches the check. Every such key stayed
+resident for the life of the process. Refusing to serve an expired secret and bounding how long the secret
+is kept are two different jobs, and only the second one needs a clock of its own.
+
 The file remains a real target for its non-secret contents (which accounts and tenants exist, and which
 machines are enrolled). Hashing removes the bearer secret from it, not the metadata.
 

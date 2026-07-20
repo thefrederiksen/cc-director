@@ -401,6 +401,142 @@ public sealed class DeviceKeyAtRestTests : IDisposable
         Assert.False(string.IsNullOrEmpty(rePaired));
     }
 
+    // ---- Retention of the replayable plaintext is actually bounded ------------------------------
+    //
+    // The retry-safety window holds an issued key in memory. What made that acceptable is that it is
+    // SHORT-LIVED - and that was the property nothing tested. The first version pruned only when an
+    // already-enrolled device asked to replay, so the ordinary case (a device enrolls once under its own id
+    // and never comes back) never reached the prune and its plaintext key stayed resident for the life of the
+    // process. Checking an entry's age at replay time stops an expired key being RETURNED; it does not bound
+    // RETENTION. These tests assert retention directly rather than inferring it from behaviour that would
+    // still look correct while the plaintext sat in memory.
+    //
+    // A hand-driven scheduler is used so both halves are proven without waiting on a clock: that the registry
+    // SCHEDULES an eviction pass at all, and that the pass RELEASES the plaintext.
+
+    /// <summary>Captures the recurring eviction pass instead of running it on a timer, so a test can fire it
+    /// on demand. Waiting on a real timer would make the result depend on machine load, not on the code.</summary>
+    private sealed class HandDrivenEviction
+    {
+        public TimeSpan? Interval { get; private set; }
+        private Action? _pass;
+        public bool WasScheduled => _pass is not null;
+        public void Schedule(TimeSpan interval, Action pass) { Interval = interval; _pass = pass; }
+        public void RunOnce() => (_pass ?? throw new InvalidOperationException(
+            "the registry never scheduled an eviction pass, so there is nothing to run")).Invoke();
+    }
+
+    [Fact]
+    public void TheRegistry_SchedulesARecurringEvictionPass_AsSoonAsItRetainsAKey()
+    {
+        // Half one: without this, the eviction policy below is dead code that nothing ever calls. The pass
+        // must be running by the time there is any plaintext to release - retention and the clock that bounds
+        // it have to begin together.
+        var eviction = new HandDrivenEviction();
+        using var registry = new DeviceRegistry(StorePath, TimeSpan.FromMinutes(5), eviction.Schedule);
+        Assert.False(eviction.WasScheduled, "nothing is retained yet, so no clock is needed yet");
+
+        registry.RegisterIfAbsent("device-a", "MACHINE-A");
+
+        Assert.True(eviction.WasScheduled,
+            "the registry must schedule its own eviction pass - retention cannot depend on another caller arriving");
+        // Half the window, so worst-case retention is one and a half windows rather than two. The type
+        // documentation states that bound, so the interval that produces it is asserted rather than assumed.
+        Assert.Equal(TimeSpan.FromMinutes(2.5), eviction.Interval);
+    }
+
+    [Fact]
+    public void TheEvictionInterval_IsHalfTheWindow_AndNeverZero()
+    {
+        Assert.Equal(TimeSpan.FromMinutes(2.5), DeviceRegistry.EvictionIntervalFor(TimeSpan.FromMinutes(5)));
+        Assert.Equal(TimeSpan.FromSeconds(30), DeviceRegistry.EvictionIntervalFor(TimeSpan.FromMinutes(1)));
+        // A zero or tiny window must not turn the pass into a busy loop.
+        Assert.Equal(TimeSpan.FromSeconds(1), DeviceRegistry.EvictionIntervalFor(TimeSpan.Zero));
+        Assert.Equal(TimeSpan.FromSeconds(1), DeviceRegistry.EvictionIntervalFor(TimeSpan.FromMilliseconds(10)));
+    }
+
+    [Fact]
+    public void ADeviceThatEnrollsOnceAndNeverReturns_DoesNotRetainItsPlaintextKey()
+    {
+        // The exact path that was broken. One device, one enrollment, a distinct id, and nobody ever calls
+        // RegisterIfAbsent again - so nothing ever "knocks" to trigger a lazy prune.
+        var eviction = new HandDrivenEviction();
+        using var registry = new DeviceRegistry(StorePath, TimeSpan.Zero, eviction.Schedule);
+
+        var issued = registry.RegisterIfAbsent("device-a", "MACHINE-A").DeviceKey;
+        Assert.Equal(1, registry.RetainedReplayableKeyCount); // held, as designed, until the window closes
+
+        eviction.RunOnce();
+
+        Assert.Equal(0, registry.RetainedReplayableKeyCount);
+        Assert.False(string.IsNullOrEmpty(issued));
+        Assert.True(registry.IsValidDeviceKey(issued),
+            "evicting the retained PLAINTEXT must not revoke the device - the stored hash still authenticates it");
+    }
+
+    [Fact]
+    public void ManyDevicesEnrollingOnceUnderDistinctIds_DoNotAccumulatePlaintextKeys()
+    {
+        // The growth half of the same defect: fresh device ids are the ordinary case on a Gateway that runs
+        // for weeks, and each one was leaving a plaintext key behind.
+        var eviction = new HandDrivenEviction();
+        using var registry = new DeviceRegistry(StorePath, TimeSpan.Zero, eviction.Schedule);
+
+        for (var i = 0; i < 25; i++)
+            registry.RegisterIfAbsent($"device-{i}", $"MACHINE-{i}");
+
+        Assert.Equal(25, registry.RetainedReplayableKeyCount);
+        eviction.RunOnce();
+
+        Assert.Equal(0, registry.RetainedReplayableKeyCount);
+        Assert.Equal(25, registry.Count); // the devices themselves are untouched; only the plaintext went
+    }
+
+    [Fact]
+    public void AnExplicitRePairing_DoesNotLeaveTheOlderReplayableKeyResident()
+    {
+        // Register does not go through the replay path, so a re-pairing used to leave the previous entry
+        // sitting there with nothing that would ever collect it.
+        var eviction = new HandDrivenEviction();
+        using var registry = new DeviceRegistry(StorePath, TimeSpan.Zero, eviction.Schedule);
+
+        registry.RegisterIfAbsent("device-a", "MACHINE-A");
+        registry.Register("device-a", "MACHINE-A");
+
+        eviction.RunOnce();
+
+        Assert.Equal(0, registry.RetainedReplayableKeyCount);
+    }
+
+    [Fact]
+    public void EvictionControl_AKeyStillInsideItsWindow_IsNotEvicted()
+    {
+        // The control for the three tests above. Without it, they are all satisfied by an eviction pass that
+        // simply clears everything unconditionally - which would silently destroy the retry-safety the window
+        // exists to provide. Eviction must be driven by the DEADLINE, not by being called.
+        var eviction = new HandDrivenEviction();
+        using var registry = new DeviceRegistry(StorePath, TimeSpan.FromMinutes(5), eviction.Schedule);
+
+        var issued = registry.RegisterIfAbsent("device-a", "MACHINE-A").DeviceKey;
+        eviction.RunOnce();
+
+        Assert.Equal(1, registry.RetainedReplayableKeyCount);
+        Assert.Equal(issued, registry.RegisterIfAbsent("device-a", "MACHINE-A").DeviceKey);
+    }
+
+    [Fact]
+    public void Disposing_DropsEveryRetainedPlaintextKey()
+    {
+        var eviction = new HandDrivenEviction();
+        var registry = new DeviceRegistry(StorePath, TimeSpan.FromMinutes(5), eviction.Schedule);
+        registry.RegisterIfAbsent("device-a", "MACHINE-A");
+        Assert.Equal(1, registry.RetainedReplayableKeyCount);
+
+        registry.Dispose();
+
+        Assert.Equal(0, registry.RetainedReplayableKeyCount);
+    }
+
     [Fact]
     public void DestructibilityControl_ReplayIsNotOfferedAcrossARestart()
     {

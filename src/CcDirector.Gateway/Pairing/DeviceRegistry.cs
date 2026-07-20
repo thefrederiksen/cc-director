@@ -30,6 +30,20 @@ namespace CcDirector.Gateway.Pairing;
 /// <see cref="RegisterIfAbsent"/>). It is never serialized and does not survive a restart, so it does not
 /// weaken the at-rest property above.
 ///
+/// What makes that exception acceptable is that it is SHORT-LIVED, so the short-livedness is enforced by a
+/// clock this type owns rather than merely asserted: a recurring eviction pass, started the moment the first
+/// key is retained, drops every issue whose window has closed - whether or not anything else ever calls in
+/// again. Plaintext is therefore held for at most one and a half replay windows (no more than seven and a
+/// half minutes by default), and <see cref="Dispose"/> ends it immediately.
+///
+/// That was got wrong once and the mistake is worth naming, because it is easy to make again. Checking an
+/// entry's age when somebody asks to replay it stops an expired key being RETURNED, and it looks like it
+/// bounds retention, but it does not: the ordinary case is a device that enrolls once under its own id and
+/// never comes back, and that device never reaches the check at all, so its plaintext key would sit in memory
+/// for the life of the process. Correctness of the reply and boundedness of the retention are two different
+/// jobs; only the second one needs a clock. Eviction has exactly ONE owner so a broken pass cannot be masked
+/// by some other path tidying up on its way past.
+///
 /// The hash is a plain SHA-256 of the key, deliberately NOT a slow password-stretching function: the
 /// secret is a 256-bit value this class generated with a cryptographic random number generator, not a
 /// human-chosen password, so there is no guessable search space for stretching to defend and a
@@ -51,7 +65,7 @@ namespace CcDirector.Gateway.Pairing;
 ///
 /// Thread-safe: registration happens on request threads while GET /devices lists devices.
 /// </summary>
-public sealed class DeviceRegistry
+public sealed class DeviceRegistry : IDisposable
 {
     /// <summary>The status of an actively-enrolled device.</summary>
     public const string StatusActive = "active";
@@ -84,6 +98,16 @@ public sealed class DeviceRegistry
     private readonly ConcurrentDictionary<string, ReplayableIssue> _replayableIssues =
         new(StringComparer.Ordinal);
 
+    /// <summary>The recurring pass that evicts expired replayable keys. Null until the first key is actually
+    /// retained, and again once disposed.</summary>
+    private Timer? _evictionTimer;
+
+    /// <summary>How the eviction pass gets driven; null means production's own <see cref="Timer"/>.</summary>
+    private readonly Action<TimeSpan, Action>? _scheduleEviction;
+
+    /// <summary>Whether the recurring eviction pass has been started. Only ever set under <see cref="_enrollLock"/>.</summary>
+    private bool _evictionStarted;
+
     public DeviceRegistry() : this(null) { }
 
     /// <param name="storePath">Override the registry file (tests pass an isolated temp path);
@@ -96,6 +120,18 @@ public sealed class DeviceRegistry
     /// replayable. Production uses <see cref="DefaultEnrollmentReplayWindow"/>; a test passes
     /// <see cref="TimeSpan.Zero"/> to exercise the behaviour after the window has closed.</param>
     public DeviceRegistry(string? storePath, TimeSpan enrollmentReplayWindow)
+        : this(storePath, enrollmentReplayWindow, scheduleEviction: null) { }
+
+    /// <param name="storePath">Override the registry file (tests pass an isolated temp path);
+    /// production omits it for the shared default under the config root.</param>
+    /// <param name="enrollmentReplayWindow">How long a key issued by <see cref="RegisterIfAbsent"/> stays
+    /// replayable.</param>
+    /// <param name="scheduleEviction">How the recurring eviction pass gets driven. Null - production - starts
+    /// a <see cref="Timer"/> on the replay window. A test passes its own scheduler, captures the callback, and
+    /// fires it by hand, so that BOTH halves of eviction are proven without waiting on a clock: that this type
+    /// actually schedules a pass, and that the pass actually releases the plaintext. Waiting on a real timer
+    /// would make the proof a matter of how loaded the machine is, which is not a proof.</param>
+    internal DeviceRegistry(string? storePath, TimeSpan enrollmentReplayWindow, Action<TimeSpan, Action>? scheduleEviction)
     {
         if (enrollmentReplayWindow < TimeSpan.Zero)
             throw new ArgumentOutOfRangeException(nameof(enrollmentReplayWindow), "the replay window cannot be negative");
@@ -105,6 +141,8 @@ public sealed class DeviceRegistry
             : storePath;
         _replayWindow = enrollmentReplayWindow;
         Load();
+
+        _scheduleEviction = scheduleEviction;
     }
 
     /// <summary>The on-disk registry file path.</summary>
@@ -247,7 +285,6 @@ public sealed class DeviceRegistry
     private bool TryReplayIssuedKey(string deviceId, DeviceRecord existing, out string key)
     {
         key = "";
-        PruneExpiredIssues();
 
         if (!_replayableIssues.TryGetValue(deviceId, out var issue)) return false;
         if (DateTime.UtcNow - issue.IssuedAtUtc >= _replayWindow) return false;
@@ -266,11 +303,48 @@ public sealed class DeviceRegistry
     private void RecordReplayableIssue(string deviceId, string key, string keyHash)
     {
         _replayableIssues[deviceId] = new ReplayableIssue(key, keyHash, DateTime.UtcNow);
+        StartEvictionPassOnce();
     }
 
-    /// <summary>Drops replayable keys whose window has closed, so a plaintext key is not held in memory any
-    /// longer than the retry it exists to absorb.</summary>
-    private void PruneExpiredIssues()
+    /// <summary>
+    /// Starts the recurring eviction pass the first time this registry actually retains a plaintext key.
+    /// Retention is what the pass exists to bound, so it begins when retention begins - a registry that never
+    /// issues a key never needs a clock and never starts one.
+    ///
+    /// The pass runs at HALF the window, which fixes the real retention bound. An entry recorded just after a
+    /// pass waits out its own window and then at most one further interval, so plaintext is held for at most
+    /// one and a half windows - under the default, no more than seven and a half minutes. Running the pass at
+    /// the full window length would have made the true bound TWICE the window, which is not what the
+    /// documentation on this type claims, and the claim is the thing that has to be true.
+    ///
+    /// Called only from <see cref="RecordReplayableIssue"/>, which runs under <see cref="_enrollLock"/>, so
+    /// the once-only start needs no lock of its own.
+    /// </summary>
+    private void StartEvictionPassOnce()
+    {
+        if (_evictionStarted) return;
+        _evictionStarted = true;
+
+        var interval = EvictionIntervalFor(_replayWindow);
+        if (_scheduleEviction is not null)
+            _scheduleEviction(interval, EvictExpiredReplayableIssues);
+        else
+            _evictionTimer = new Timer(_ => EvictExpiredReplayableIssues(), null, interval, interval);
+    }
+
+    /// <summary>
+    /// Drops every replayable key whose window has closed, releasing the last strong reference to that
+    /// plaintext. Driven by the recurring eviction pass this type schedules for itself - NOT by anyone
+    /// happening to call in.
+    ///
+    /// The distinction matters and is the whole point of this method existing separately from the age check
+    /// in <see cref="TryReplayIssuedKey"/>. That age check stops an expired key being RETURNED; it does not
+    /// bound how long the plaintext is RETAINED, because it only runs when an already-enrolled device asks to
+    /// replay. A device that enrolls once under its own id and never comes back - the ordinary fresh
+    /// enrollment - would never reach it, so its key would sit in memory for the life of the process. Two
+    /// different jobs: that one is correctness, this one is retention, and retention needs a clock of its own.
+    /// </summary>
+    internal void EvictExpiredReplayableIssues()
     {
         var now = DateTime.UtcNow;
         foreach (var pair in _replayableIssues)
@@ -278,6 +352,32 @@ public sealed class DeviceRegistry
             if (now - pair.Value.IssuedAtUtc >= _replayWindow)
                 _replayableIssues.TryRemove(pair.Key, out _);
         }
+    }
+
+    /// <summary>
+    /// How many issued plaintext keys this registry is currently holding in memory. Exposed to the test
+    /// assembly so retention can be asserted directly, rather than inferred from behaviour that would still
+    /// look correct while the plaintext stayed resident.
+    /// </summary>
+    internal int RetainedReplayableKeyCount => _replayableIssues.Count;
+
+    /// <summary>
+    /// How often the eviction pass runs for a given replay window: half the window, floored at one second so
+    /// a tiny or zero window (which tests use to reach the post-window branch) cannot turn into a busy loop.
+    /// Half, not the full window, so that the worst-case retention is one and a half windows rather than two.
+    /// </summary>
+    internal static TimeSpan EvictionIntervalFor(TimeSpan replayWindow)
+    {
+        var half = TimeSpan.FromTicks(replayWindow.Ticks / 2);
+        return half < TimeSpan.FromSeconds(1) ? TimeSpan.FromSeconds(1) : half;
+    }
+
+    /// <summary>Stops the recurring eviction pass and drops every retained plaintext key immediately.</summary>
+    public void Dispose()
+    {
+        _evictionTimer?.Dispose();
+        _evictionTimer = null;
+        _replayableIssues.Clear();
     }
 
     /// <summary>A key handed out by <see cref="RegisterIfAbsent"/>, kept in memory only, so that a retry of

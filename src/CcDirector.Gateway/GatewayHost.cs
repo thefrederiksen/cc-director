@@ -2664,6 +2664,11 @@ public sealed class GatewayHost : IAsyncDisposable
         Registry.Dispose();
         Launchers.Dispose();
 
+        // Stops the device registry's replayable-key eviction pass and drops any issued key it is still
+        // holding in memory for enrollment retry-safety (issue #1878). The enrolled devices themselves are
+        // on disk as hashes and are unaffected; only the short-lived plaintext goes.
+        try { Devices.Dispose(); } catch (Exception ex) { FileLog.Write($"[GatewayHost] device registry dispose error: {ex.Message}"); }
+
         if (_app is not null)
         {
             try { await _app.StopAsync(TimeSpan.FromSeconds(2)); }
