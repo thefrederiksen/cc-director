@@ -26,6 +26,34 @@ namespace CcDirector.Gateway.Tests;
 ///     foreign-record refusal goes RED.
 ///   - The partition-container skip in <c>SweepAbandoned</c> - remove it and the sweep deletes every other
 ///     tenant's staging in one pass, which that test goes RED on.
+///
+/// IF YOU ARE ADDING A PARTITION TEST HERE, READ THIS FIRST: A RED MUST BE AN ASSERTION, NEVER A CRASH.
+///
+/// Every test in this file is a canary for a specific mutation, and a canary only pays for itself if its
+/// red can NAME what it caught. A NullReferenceException or an input/output error means the mutation broke
+/// something before the test could ask its question. It still shows up as a red, which is why it is so
+/// easy to accept - but it is evidence that SOMETHING is wrong, not evidence about the line the mutation
+/// was aimed at. Counting it launders the mutation into a proof it did not earn.
+///
+/// Two ways that happens in a PARTITION test specifically, both of which have already bitten this file:
+///
+///  1. DEREFERENCING A RECORD THAT THE MUTATION DELETED. <c>store.ReadRecord(id)!.State</c> reads fine
+///     until a mutation makes the read return null, and then the test dies on the <c>!</c> instead of
+///     failing on the claim. Use <see cref="MustStillExist"/>: it asserts presence, with the sentence the
+///     test is actually making, before anything touches the record.
+///
+///  2. THE SETUP ITSELF THROWING - the subtler one, and the one that looks like an environment fault.
+///     Several tests here copy one tenant's record file into another tenant's partition to stage the
+///     mis-computed-root scenario. When a mutation COLLAPSES the partitions, those two paths become THE
+///     SAME PATH, and copying a file onto itself throws a file-in-use error. The test crashes during
+///     ARRANGE, before a single assertion runs, and the crash tells you nothing about the record check the
+///     test exists for. So ASK THE CROSS-BOUNDARY QUESTION FIRST: assert the two partition paths differ
+///     BEFORE the copy. The same mutation then reddens as a plain assertion that says the partitions
+///     collapsed - which is exactly what happened. That is why those <c>Assert.NotEqual</c> calls are
+///     ordered ahead of the <c>File.Copy</c> calls, and they must stay ahead of them.
+///
+/// The general rule both cases are instances of: put the assertion that states the boundary claim BEFORE
+/// any control, setup, or dereference that a broken boundary could make throw.
 /// </summary>
 public sealed class VoiceUploadStoreTenantPartitionTests : IDisposable
 {
@@ -146,11 +174,11 @@ public sealed class VoiceUploadStoreTenantPartitionTests : IDisposable
         var aFile = Path.Combine(a.Root, Guid.Parse(id).ToString("N"), "record.json");
         var bFile = Path.Combine(b.Root, Guid.Parse(id).ToString("N"), "record.json");
 
-        // ASK THE CROSS-BOUNDARY QUESTION FIRST, before any setup that could throw. If a mutation collapses
-        // the two partitions onto one root these are the SAME path, and File.Copy of a file onto itself
-        // throws an input/output error - a CRASH during setup, which proves nothing about the record check
-        // this test exists for and merely launders the mutation into a red. Asserting the paths differ turns
-        // that same mutation into a plain assertion failure that names what actually went wrong.
+        // ASK THE CROSS-BOUNDARY QUESTION FIRST - see the class comment. Under a mutation that collapses
+        // the partitions these are the SAME path, and File.Copy of a file onto itself throws during ARRANGE,
+        // before any assertion runs, which proves nothing about the record check this test exists for.
+        // Asserting the paths differ turns that mutation into a red that says the partitions collapsed.
+        // This line must stay AHEAD of the copy.
         Assert.NotEqual(aFile, bFile);
         File.Copy(aFile, bFile, overwrite: true);
 
@@ -170,7 +198,9 @@ public sealed class VoiceUploadStoreTenantPartitionTests : IDisposable
         b.Register(pendingId);
         var aPending = Path.Combine(a.Root, Guid.Parse(pendingId).ToString("N"), "record.json");
         var bPending = Path.Combine(b.Root, Guid.Parse(pendingId).ToString("N"), "record.json");
-        Assert.NotEqual(aPending, bPending);   // same reason as above: never let a collapse crash the setup
+        // Ahead of the copy for the reason in the class comment: under a collapse these are the same path
+        // and File.Copy would throw during setup, laundering the mutation into a crash-red.
+        Assert.NotEqual(aPending, bPending);
         File.Copy(aPending, bPending, overwrite: true);
         Assert.False(b.IsSessionLocked(sessionA));
     }
