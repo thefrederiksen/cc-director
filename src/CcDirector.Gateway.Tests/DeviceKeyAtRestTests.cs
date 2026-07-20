@@ -237,15 +237,23 @@ public sealed class DeviceKeyAtRestTests : IDisposable
     }
 
     // ---- Re-enrollment: one entry, exactly one valid key ---------------------------------------
+    //
+    // A registry with a ZERO replay window is a registry in which every call is treated as being past the
+    // window, which is how these tests reach the rotate-in-place branch deterministically. The idempotence
+    // tests below use the default window and the same constructor, so the two branches are exercised by the
+    // same code under two settings rather than by two different code paths.
+
+    private DeviceRegistry PastTheReplayWindow() => new(StorePath, TimeSpan.Zero);
 
     [Fact]
-    public void ReEnrollingADevice_LeavesExactlyOneValidKeyAndOneEntry()
+    public void ReEnrollingADevice_PastTheReplayWindow_LeavesExactlyOneValidKeyAndOneEntry()
     {
-        var registry = new DeviceRegistry(StorePath);
+        var registry = PastTheReplayWindow();
 
         var first = registry.RegisterIfAbsent("device-a", "MACHINE-A").DeviceKey;
         var second = registry.RegisterIfAbsent("device-a", "MACHINE-A").DeviceKey;
 
+        Assert.NotEqual(first, second);
         Assert.Equal(1, registry.Count);
         Assert.True(registry.IsValidDeviceKey(second), "the key just handed to the caller must work");
         Assert.False(registry.IsValidDeviceKey(first),
@@ -255,12 +263,156 @@ public sealed class DeviceKeyAtRestTests : IDisposable
     [Fact]
     public void ReEnrollingADevice_KeepsItsAccountAndTenantBinding()
     {
-        var registry = new DeviceRegistry(StorePath);
+        var registry = PastTheReplayWindow();
         registry.RegisterIfAbsent("device-a", "MACHINE-A");
         registry.SetAccountBinding("device-a", "sub-alice", "tenant-alice");
 
         var reissued = registry.RegisterIfAbsent("device-a", "MACHINE-A").DeviceKey;
 
         Assert.Equal("tenant-alice", registry.TenantForKey(reissued));
+    }
+
+    // ---- Enrollment is safe to retry (the idempotence property) --------------------------------
+    //
+    // Hashing the stored key removed the registry's ability to hand a re-enrolling device its existing key
+    // back, which turned every duplicate enrollment into a ROTATION. A caller that had not yet durably saved
+    // the first response - a lost or delayed response, a double submit, two calls in flight - would then be
+    // holding a key that the later call had already retired, and would be locked out until a human
+    // re-enrolled it. That is a production outage created by a security fix, and it only appears on a retry.
+    //
+    // These tests pin the property that closes it: inside the replay window a duplicate enrollment returns
+    // the SAME key and rotates nothing. Each is paired with the destructibility control below, so that "the
+    // key survived a second call" is read as protection and not as the registry having quietly lost the
+    // ability to retire keys at all.
+
+    [Fact]
+    public void EnrollingTwice_ReturnsTheSameKey_SoARetryCannotLockTheCallerOut()
+    {
+        var registry = new DeviceRegistry(StorePath);
+
+        var first = registry.RegisterIfAbsent("device-a", "MACHINE-A").DeviceKey;
+        var second = registry.RegisterIfAbsent("device-a", "MACHINE-A").DeviceKey;
+
+        Assert.Equal(first, second);
+        Assert.True(registry.IsValidDeviceKey(first),
+            "the key from the FIRST response must still authenticate - a caller may have saved that one and not the second");
+        Assert.Equal(1, registry.Count);
+    }
+
+    [Fact]
+    public void ARetriedEnrollment_DoesNotRetireTheKeyTheCallerAlreadyHolds()
+    {
+        // The lock-out scenario stated directly: the caller keeps the key from the first response, the
+        // enrollment call is retried because the response never arrived, and the held key must keep working.
+        var registry = new DeviceRegistry(StorePath);
+        var keyTheCallerSaved = registry.RegisterIfAbsent("device-a", "MACHINE-A").DeviceKey;
+
+        for (var retry = 0; retry < 5; retry++)
+            registry.RegisterIfAbsent("device-a", "MACHINE-A");
+
+        Assert.True(registry.IsValidDeviceKey(keyTheCallerSaved),
+            "five retried enrollments must not lock out the device that is holding the key from the first response");
+        Assert.Equal(1, registry.Count);
+    }
+
+    [Fact]
+    public void ConcurrentEnrollmentsOfOneDevice_AllResolveToTheSameKey()
+    {
+        // Two (here, sixteen) enrollment calls in flight at once must converge on ONE issued key rather than
+        // racing to rotate, or the losers of the race are handed keys that are dead on arrival.
+        var registry = new DeviceRegistry(StorePath);
+        var issued = new System.Collections.Concurrent.ConcurrentBag<string>();
+
+        Parallel.For(0, 16, _ => issued.Add(registry.RegisterIfAbsent("device-a", "MACHINE-A").DeviceKey));
+
+        var distinct = issued.Distinct(StringComparer.Ordinal).ToList();
+        Assert.Single(distinct);
+        Assert.True(registry.IsValidDeviceKey(distinct[0]));
+        Assert.Equal(1, registry.Count);
+    }
+
+    [Fact]
+    public void EnrollingTwice_StillLeavesExactlyOneValidKey()
+    {
+        // Idempotence must not have been bought by leaving the OLD key working alongside a new one - that is
+        // precisely the #1136 accumulation leak. One device, one key that validates, however many calls.
+        var registry = new DeviceRegistry(StorePath);
+
+        var keys = new List<string>();
+        for (var call = 0; call < 6; call++)
+            keys.Add(registry.RegisterIfAbsent("device-a", "MACHINE-A").DeviceKey);
+
+        var distinct = keys.Distinct(StringComparer.Ordinal).ToList();
+        Assert.Single(distinct);
+        Assert.Single(distinct, registry.IsValidDeviceKey);
+    }
+
+    // ---- Destructibility controls ---------------------------------------------------------------
+    //
+    // Without these, every assertion above is satisfied just as well by a registry that has lost the ability
+    // to retire a key at all. These show the mechanism CAN retire one, on both of the paths that are supposed
+    // to: an explicit re-pairing, and a re-enrollment once the replay window has closed.
+
+    [Fact]
+    public void DestructibilityControl_AnExplicitRePairing_DoesRetireThePreviousKey()
+    {
+        var registry = new DeviceRegistry(StorePath);
+        var enrolled = registry.RegisterIfAbsent("device-a", "MACHINE-A").DeviceKey;
+
+        var rePaired = registry.Register("device-a", "MACHINE-A").DeviceKey;
+
+        Assert.NotEqual(enrolled, rePaired);
+        Assert.True(registry.IsValidDeviceKey(rePaired));
+        Assert.False(registry.IsValidDeviceKey(enrolled),
+            "an explicit re-pairing must retire the previous key - if it does not, the idempotence tests above prove nothing");
+    }
+
+    [Fact]
+    public void DestructibilityControl_OnceTheReplayWindowCloses_ARepeatEnrollmentRetiresThePreviousKey()
+    {
+        var registry = PastTheReplayWindow();
+        var first = registry.RegisterIfAbsent("device-a", "MACHINE-A").DeviceKey;
+
+        var second = registry.RegisterIfAbsent("device-a", "MACHINE-A").DeviceKey;
+
+        Assert.NotEqual(first, second);
+        Assert.False(registry.IsValidDeviceKey(first),
+            "past the replay window a repeat enrollment must rotate - the window bounds the idempotence, it does not remove rotation");
+    }
+
+    [Fact]
+    public void DestructibilityControl_AfterARePairing_TheSupersededKeyIsNotReplayedBack()
+    {
+        // The replay entry must be checked against what the record currently verifies, not handed out on age
+        // alone. An explicit re-pairing rotates the key without going through the replay path, so a following
+        // enrollment must NOT resurrect the key the re-pairing just retired.
+        var registry = new DeviceRegistry(StorePath);
+        var enrolled = registry.RegisterIfAbsent("device-a", "MACHINE-A").DeviceKey;
+        var rePaired = registry.Register("device-a", "MACHINE-A").DeviceKey;
+
+        var afterRePairing = registry.RegisterIfAbsent("device-a", "MACHINE-A").DeviceKey;
+
+        Assert.NotEqual(enrolled, afterRePairing);
+        Assert.False(registry.IsValidDeviceKey(enrolled),
+            "the key the re-pairing retired must stay retired - a stale replay entry must never hand it back");
+        Assert.True(registry.IsValidDeviceKey(afterRePairing));
+        Assert.Equal(1, registry.Count);
+        // The re-paired key is still fine on its own terms; the point is that the SUPERSEDED one is gone.
+        Assert.False(string.IsNullOrEmpty(rePaired));
+    }
+
+    [Fact]
+    public void DestructibilityControl_ReplayIsNotOfferedAcrossARestart()
+    {
+        // The replayable key is memory-only. A registry re-read from disk holds no plaintext to replay, so a
+        // post-restart enrollment rotates - which is also the direct evidence that nothing was persisted.
+        var first = new DeviceRegistry(StorePath).RegisterIfAbsent("device-a", "MACHINE-A").DeviceKey;
+
+        var afterRestart = new DeviceRegistry(StorePath);
+        var second = afterRestart.RegisterIfAbsent("device-a", "MACHINE-A").DeviceKey;
+
+        Assert.NotEqual(first, second);
+        Assert.False(afterRestart.IsValidDeviceKey(first));
+        Assert.DoesNotContain(first, File.ReadAllText(StorePath));
     }
 }

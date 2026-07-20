@@ -75,16 +75,17 @@ public sealed class SignedInEnrollmentTests
     // ---- One entry, exactly one valid key (DeviceRegistry.RegisterIfAbsent) --------------------
     //
     // Before issue #1878 the registry stored the plaintext key and handed the SAME key back on a repeat
-    // enrollment. It now stores only a hash, so there is no plaintext to return and a repeat enrollment
-    // re-issues the key in place. The #1136 property being defended is unchanged and is what these tests
-    // assert: enrollment can never ACCUMULATE credentials - one device identity, one registry entry, and
-    // exactly one key that validates at any moment.
+    // enrollment. It now stores only a hash, so a repeat enrollment is answered from a short in-memory
+    // replay window (same key, nothing rotated) and rotates in place once that window has closed. The #1136
+    // property being defended is unchanged across both branches and is what these tests assert: enrollment
+    // can never ACCUMULATE credentials - one device identity, one registry entry, and exactly one key that
+    // validates at any moment. A zero replay window is how a test reaches the rotate branch deterministically.
 
     [Fact]
     public void RegisterIfAbsent_SameDeviceTwice_LeavesOneEntryAndOneValidKey()
     {
         using var temp = new TempStore();
-        var registry = new DeviceRegistry(temp.Path);
+        var registry = new DeviceRegistry(temp.Path, TimeSpan.Zero);
 
         var first = registry.RegisterIfAbsent("device-1", "MACHINE_A", "windows", "workstation");
         var second = registry.RegisterIfAbsent("device-1", "MACHINE_A", "windows", "workstation");
@@ -97,12 +98,29 @@ public sealed class SignedInEnrollmentTests
     }
 
     [Fact]
+    public void RegisterIfAbsent_SameDeviceTwice_WithinTheReplayWindow_ReturnsTheSameKey()
+    {
+        // The retry-safety property: a duplicate enrollment must not retire a key the caller may already be
+        // holding from a response it did save.
+        using var temp = new TempStore();
+        var registry = new DeviceRegistry(temp.Path);
+
+        var first = registry.RegisterIfAbsent("device-1", "MACHINE_A", "windows", "workstation");
+        var second = registry.RegisterIfAbsent("device-1", "MACHINE_A", "windows", "workstation");
+
+        Assert.Equal(first.DeviceKey, second.DeviceKey);
+        Assert.True(registry.IsValidDeviceKey(first.DeviceKey));
+        Assert.Equal(1, registry.Count);
+    }
+
+    [Fact]
     public void RegisterIfAbsent_ManyCalls_NeverAccumulateDevicesOrKeys()
     {
         // The poll loop is guarded to never call enroll repeatedly, but the server holds the line anyway:
-        // even ten calls yield one device and one working key (the #1136 guardrail).
+        // even ten calls yield one device and one working key (the #1136 guardrail). Run with a zero replay
+        // window so every call rotates - the accumulation guardrail is asserted on the branch that mints.
         using var temp = new TempStore();
-        var registry = new DeviceRegistry(temp.Path);
+        var registry = new DeviceRegistry(temp.Path, TimeSpan.Zero);
 
         var issued = new List<string> { registry.RegisterIfAbsent("device-1", "MACHINE_A").DeviceKey };
         for (var i = 0; i < 10; i++)

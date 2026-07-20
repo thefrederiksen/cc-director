@@ -51,8 +51,32 @@ consequences follow and are deliberate:
   has exactly one valid key. A device that simply keeps using the key it already holds is unaffected: a
   registry file written before the change is migrated on load, so keys issued before this keep working.
 
+Enrollment stays safe to RETRY. Because the registry can no longer hand back a stored key, a repeated
+enrollment would otherwise rotate the key on every call - and a caller that lost or had not yet saved the
+first response would then be holding a retired key and locked out. So an issued key stays replayable for a
+short window held **in this process's memory only**: a duplicate or retried enrollment inside that window
+gets the same key back and nothing rotates. It is never serialized and does not survive a restart, so the
+at-rest property is unaffected. Past the window a further enrollment rotates in place as described above.
+
 The file remains a real target for its non-secret contents (which accounts and tenants exist, and which
 machines are enrolled). Hashing removes the bearer secret from it, not the metadata.
+
+### What the migration does NOT do
+
+The migration rewrites the **live** registry file. That is the limit of the claim, and it should not be
+read as secure erasure. Rewriting a file cannot reach a copy of the old contents that something else
+already took - a storage-share snapshot, a backup, a soft-delete retention window, or file-system history
+all retain whatever the file held before, and no amount of writing from inside the Gateway touches them.
+
+On the hosted Gateway the registry sits on a mounted Azure Files share, where snapshots and soft delete are
+account-level and share-level settings held outside this repository; nothing in the repository configures or
+disables them, so whether pre-change copies are being retained is a property of the deployed storage account
+and has to be checked there rather than inferred from code. Where such retention is found, two things follow
+and both are separate operational work, tracked separately from this change:
+
+1. Purge the retained copies of the pre-change `devices.json`.
+2. Treat every key that appeared in plaintext in those copies as exposed and **rotate it**. Rotation, not
+   file cleanup, is what actually ends the exposure - a copy may already have been read.
 
 ---
 
