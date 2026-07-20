@@ -62,34 +62,44 @@ namespace CcDirector.Gateway.Tests;
 /// REVERT-PROVE: restore <c>ResolveTenant</c> to <c>boundary is null ? TenantId.Local : ...</c> and all five
 /// tests below go RED - the unwired legs answer 200 and the register leg hands back the seeded secret.
 ///
-/// HOW THE THIRTEEN LINES OF THIS CHANGE ARE ATTRIBUTED, because a reader must not infer more from the
-/// combined revert than it can carry. Each line was reverted ALONE, built, and run filtered, and that is
-/// what attributes it. The combined all-lines revert answers two DIFFERENT questions - did this break
-/// something else in the suite, and was any of it already covered elsewhere - and it answers those
-/// regardless of how many lines were pulled at once.
+/// WHAT IS PROVED SEPARATELY, AND WHY THERE ARE EIGHT THINGS RATHER THAN THIRTEEN.
 ///
-/// The combined run does NOT separately prove L1, L2, L4, L5, L8 and L10. Reverting
-/// <c>VoiceUploadStore.PartitionRootFor</c> (L7) collapses every tenant onto one root, which makes the
-/// per-leg <c>ForTenant</c> calls irrelevant and reddens those lines' tests by itself; three of its
-/// failures are NullReferenceException or IOException, which never reach the distinguishing assertion at
-/// all. Those six are attributed by their single-line filtered probes and by nothing else.
+/// The rule this change is held to: mutate every line whose INDIVIDUAL wrongness could break isolation
+/// while everything else stays correct. A line is exempt only when bypass is STRUCTURALLY IMPOSSIBLE -
+/// never merely because its test also reddens under some other primitive's global revert. A global collapse
+/// reddening a leg's test proves the test is sensitive to the collapse; it does not prove the test would
+/// catch THAT LEG ALONE being wrong, and the leg alone being wrong is the realistic defect.
 ///
-///   L1  register leg ForTenant   - register leaks the seeded transcript
-///   L2  chunk leg ForTenant      - local staged audio is overwritten
-///   L3  complete leg ForTenant   - complete leaks the seeded transcript
-///   L4  ack leg ForTenant        - a foreign ack retires the record
-///   L5  abandon leg ForTenant    - a foreign abandon resolves the record
-///   L6  CacheKey at GetOrAdd     - both tenants observe one identical cache key
-///   L7  PartitionRootFor         - 17 red, and the subsumer described above
-///   L8  IsMintedAccountTenant    - the uppercase casing alias is no longer refused
-///   L8b path containment         - NO CANARY, unreachable by construction (documented at the guard)
-///   L9  record stamp/BelongsHere - a foreign record is returned; the session lock crosses
-///   L10 SweepAbandoned skip      - the sweep eats another tenant's staging
-///   L10b pending-projection skip - NO CANARY, redundant with BelongsHere (documented at the guard)
-///   L11 ResolveTenant gate       - the five tests below
+/// The five per-leg scopings USED to be five independent chances to forget - two hand-written lines
+/// repeated per leg, with the raw un-partitioned store sitting in scope beside them. They are now ONE
+/// primitive, and not by argument: <see cref="GatewayDictationEndpoint.Map"/> does not take a
+/// <c>VoiceUploadStore</c> at all, so there is no unscoped store in that file to use, and
+/// <c>DictationTenantGate.TryOpen</c> is the only source of a store and cannot return an unscoped one. The
+/// same was done to the two static caches: the tenant is a required parameter of every cache operation and
+/// the key is composed inside <c>TenantKeyedCache</c>, so an un-tenanted key is not expressible at a call
+/// site. Fewer proof units because the design got safer, not because the proof was argued down.
 ///
-/// The two no-canary lines are recorded as such on purpose. Neither got a test invented for it, because the
-/// only test either could have is one that cannot fail.
+///   P1 DictationTenantGate.TryOpen   - partition selection for all five legs (absorbs the five)
+///   P2 ResolveTenant hosted gate      - whether a request has an owning tenant at all
+///   P3 PartitionRootFor               - which directory a tenant's staging lives in
+///   P4 IsMintedAccountTenant          - whether a tenant id may name a directory
+///   P5 WriteRecordMarker tenant stamp - the owner recorded ON the record
+///   P6 BelongsHere                    - whether a record found here belongs here
+///   P7 TenantKeyedCache key           - the process-wide cache key (absorbs both cache call-site families)
+///   P8 SweepAbandoned container skip  - whether the partition container is an upload
+///
+/// P5 and P6 are two, not one: the stamp can be dropped while the check stays right, and the check can be
+/// neutered while the stamp stays right, and each leaks on its own.
+///
+/// Settled exempt, with reasons recorded at the guards themselves: the pending-projection container skip
+/// (redundant - BelongsHere on the same line is the real boundary and it has canaries) and the containment
+/// belt in PartitionRootFor (unreachable while IsMintedAccountTenant stays strict). Neither got a test
+/// invented for it, because the only test either could have is one that cannot fail.
+///
+/// EVERY RED MUST ARRIVE AS AN ASSERTION, NOT A CRASH. A NullReferenceException or an input/output error
+/// means the mutation broke something upstream before the test could ask its question - that is laundering
+/// and it does not prove the line it was aimed at. Hence MustStillExist instead of bare `!` dereferences,
+/// and hence the cross-boundary question is asked BEFORE any setup step that could throw.
 ///
 /// The assembly runs sequentially (TestParallelization), so toggling CC_GATEWAY_HOSTED and the storage root
 /// here is safe; both are restored in DisposeAsync.
@@ -243,7 +253,8 @@ public sealed class DictationOmittedTenantBoundaryTests : IAsyncLifetime
         var (status, body) = await Read(await _unwired.AckAsync(id));
         AssertRefusal(status, body);
         Assert.NotNull(LocalStore().ReadRecord(id));
-        Assert.Equal(LocalSecretTranscript, LocalStore().ReadRecord(id)!.Transcript);
+        Assert.Equal(LocalSecretTranscript,
+            MustStillExist(LocalStore(), id, "the unwired ack must not have retired the local tombstone").Transcript);
 
         // Positive companion: the wired host's ack really does run - it answers the handler's own shape and
         // reports retired=false for an id that is not in ITS partition, which is a refusal by partition, not
@@ -273,7 +284,8 @@ public sealed class DictationOmittedTenantBoundaryTests : IAsyncLifetime
 
         var (status, body) = await Read(await _unwired.AbandonAsync(id));
         AssertRefusal(status, body);
-        Assert.Equal(DictationDeliveryState.Pending, local.ReadRecord(id)!.State);
+        Assert.Equal(DictationDeliveryState.Pending,
+            MustStillExist(local, id, "the unwired abandon must not have resolved the local record").State);
         Assert.Equal(LocalSecretAudio, await StagedTextAsync(local, id));
         Assert.True(local.IsSessionLocked(sessionId));
 
@@ -282,7 +294,8 @@ public sealed class DictationOmittedTenantBoundaryTests : IAsyncLifetime
         var wired = await Read(await _wired.AbandonAsync(id));
         Assert.Equal(HttpStatusCode.OK, wired.status);
         Assert.True(JsonDocument.Parse(wired.body).RootElement.GetProperty("abandoned").GetBoolean());
-        Assert.Equal(DictationDeliveryState.Pending, local.ReadRecord(id)!.State);
+        Assert.Equal(DictationDeliveryState.Pending,
+            MustStillExist(local, id, "the wired abandon must have stayed inside its own partition").State);
         Assert.True(local.IsSessionLocked(sessionId));
     }
 
@@ -309,6 +322,20 @@ public sealed class DictationOmittedTenantBoundaryTests : IAsyncLifetime
 
     /// <summary>The LOCAL (base, shared, self-host) partition - the one an unwired hosted leg would take.</summary>
     private VoiceUploadStore LocalStore() => new VoiceUploadStore(Harness.UploadRoot(_storageRoot));
+
+
+    /// <summary>
+    /// Read a record the claim under test says MUST still be there, asserting its presence before touching
+    /// it. Dereferencing with <c>!</c> turns an absent record into a NullReferenceException, and a crash is
+    /// not evidence about the line the test was aimed at - it only says something upstream broke before the
+    /// test could ask its question. Every red must be able to name what it caught.
+    /// </summary>
+    private static DictationDeliveryRecord MustStillExist(VoiceUploadStore store, string uploadId, string claim)
+    {
+        var record = store.ReadRecord(uploadId);
+        Assert.True(record is not null, claim + " (the record was absent)");
+        return record!;
+    }
 
     private static async Task<string> StagedTextAsync(VoiceUploadStore store, string uploadId)
     {
@@ -370,9 +397,8 @@ public sealed class DictationOmittedTenantBoundaryTests : IAsyncLifetime
                 token: GatewayToken,
                 transcription,
                 new TranscribingSessions(),
-                uploads,
-                devices,
-                boundary!);
+                new DictationTenantGate(uploads, boundary!),
+                devices);
 
             await app.StartAsync();
             var http = new HttpClient

@@ -169,8 +169,9 @@ public sealed class DictationTenantIsolationTests : IAsyncLifetime
         Assert.False(JsonDocument.Parse(bodyB).RootElement.TryGetProperty("terminal", out var terminal)
                      && terminal.GetBoolean());
         // A's record is untouched by B's register - still delivered, still A's words.
-        Assert.Equal(DictationDeliveryState.Delivered, Store(_tenantA).ReadRecord(id)!.State);
-        Assert.Equal(SecretTranscriptA, Store(_tenantA).ReadRecord(id)!.Transcript);
+        var afterB = MustStillExist(_tenantA, id, "A's delivered record must survive B registering the same upload id");
+        Assert.Equal(DictationDeliveryState.Delivered, afterB.State);
+        Assert.Equal(SecretTranscriptA, afterB.Transcript);
 
         // The mirror direction on a second id owned by B.
         var idB = Guid.NewGuid().ToString();
@@ -268,7 +269,8 @@ public sealed class DictationTenantIsolationTests : IAsyncLifetime
         // injected a second time - is still standing afterwards.
         Assert.False(await AckRetiredAsync(_httpB, id));
         Assert.NotNull(Store(_tenantA).ReadRecord(id));
-        Assert.Equal(SecretTranscriptA, Store(_tenantA).ReadRecord(id)!.Transcript);
+        Assert.Equal(SecretTranscriptA,
+            MustStillExist(_tenantA, id, "B's ack must not have retired A's tombstone").Transcript);
 
         // And A can still retire its own, on the very id B just tried to.
         Assert.True(await AckRetiredAsync(_httpA, id));
@@ -293,7 +295,8 @@ public sealed class DictationTenantIsolationTests : IAsyncLifetime
         var control = Guid.NewGuid().ToString();
         await RegisterAsync(_httpA, control, sessionA);
         Assert.True(await AbandonedAsync(_httpA, control));
-        Assert.Equal(DictationDeliveryState.Abandoned, Store(_tenantA).ReadRecord(control)!.State);
+        Assert.Equal(DictationDeliveryState.Abandoned,
+            MustStillExist(_tenantA, control, "A's own abandon must have written A's tombstone").State);
 
         // A has a live pending dictation, with staged audio, holding its session lock.
         var id = Guid.NewGuid().ToString();
@@ -305,7 +308,8 @@ public sealed class DictationTenantIsolationTests : IAsyncLifetime
         // staged, and its session is still locked. (B's own partition gets B's own tombstone, which is B's
         // business and nobody else's.)
         await AbandonedAsync(_httpB, id);
-        Assert.Equal(DictationDeliveryState.Pending, Store(_tenantA).ReadRecord(id)!.State);
+        Assert.Equal(DictationDeliveryState.Pending,
+            MustStillExist(_tenantA, id, "B's abandon must not have resolved A's pending record").State);
         Assert.Equal(SecretAudioA, await StagedTextAsync(_tenantA, id));
         Assert.True(Store(_tenantA).IsSessionLocked(sessionA));
 
@@ -315,7 +319,8 @@ public sealed class DictationTenantIsolationTests : IAsyncLifetime
         await RegisterAsync(_httpB, idB, sessionB);
         await PutChunkAsync(_httpB, idB, 0, SecretAudioB);
         await AbandonedAsync(_httpA, idB);
-        Assert.Equal(DictationDeliveryState.Pending, Store(_tenantB).ReadRecord(idB)!.State);
+        Assert.Equal(DictationDeliveryState.Pending,
+            MustStillExist(_tenantB, idB, "A's abandon must not have resolved B's pending record").State);
         Assert.Equal(SecretAudioB, await StagedTextAsync(_tenantB, idB));
         Assert.True(Store(_tenantB).IsSessionLocked(sessionB));
     }
@@ -354,6 +359,20 @@ public sealed class DictationTenantIsolationTests : IAsyncLifetime
     // A store bound to ONE tenant's partition of the SAME on-disk dictation root the running Gateway reads
     // (both resolve CcStorage.DictationUploads() under the isolated CC_DIRECTOR_ROOT), so a record written
     // here is the one that tenant's handlers see - and one no other tenant's handlers can.
+
+    /// <summary>
+    /// Read a record the claim under test says MUST still be there, asserting its presence before touching
+    /// it. Dereferencing with <c>!</c> turns an absent record into a NullReferenceException, and a crash is
+    /// not evidence about the line the test was aimed at - it only says something upstream broke before the
+    /// test could ask its question. Every red must be able to name what it caught.
+    /// </summary>
+    private static DictationDeliveryRecord MustStillExist(TenantId tenant, string uploadId, string claim)
+    {
+        var record = Store(tenant).ReadRecord(uploadId);
+        Assert.True(record is not null, claim + " (the record was absent)");
+        return record!;
+    }
+
     private static VoiceUploadStore Store(TenantId tenant)
         => new VoiceUploadStore(CcStorage.DictationUploads()).ForTenant(tenant);
 

@@ -116,9 +116,17 @@ public sealed class VoiceUploadStoreTenantPartitionTests : IDisposable
         Assert.Null(_base.ReadRecord(id));
 
         // The mirror direction, on the same id: B's own terminal record is equally invisible to A.
+        //
+        // Read through MustStillExist rather than dereferencing with `!`. Under a mutation that collapses the
+        // partitions, B's write lands on A's record and A's read then returns null - and a bare `!` turns that
+        // into a NullReferenceException, which is a CRASH, not a proof. A crash says "something upstream
+        // broke"; it does not say "A's transcript survived B writing", which is the claim on this line. Asked
+        // by assertion, the same mutation reddens here with that sentence.
         b.MarkDelivered(id, submitted: true, movedOn: false, transcript: "bravo-secret-transcript");
-        Assert.Equal("bravo-secret-transcript", b.ReadRecord(id)!.Transcript);
-        Assert.Equal("alpha-secret-transcript", a.ReadRecord(id)!.Transcript);
+        Assert.Equal("bravo-secret-transcript",
+            MustStillExist(b, id, "B's own terminal record must be readable in B's partition").Transcript);
+        Assert.Equal("alpha-secret-transcript",
+            MustStillExist(a, id, "A's transcript must survive B writing the same upload id").Transcript);
     }
 
     [Fact]
@@ -137,6 +145,13 @@ public sealed class VoiceUploadStoreTenantPartitionTests : IDisposable
         // Physically place A's record file inside B's partition - the mis-computed-root scenario.
         var aFile = Path.Combine(a.Root, Guid.Parse(id).ToString("N"), "record.json");
         var bFile = Path.Combine(b.Root, Guid.Parse(id).ToString("N"), "record.json");
+
+        // ASK THE CROSS-BOUNDARY QUESTION FIRST, before any setup that could throw. If a mutation collapses
+        // the two partitions onto one root these are the SAME path, and File.Copy of a file onto itself
+        // throws an input/output error - a CRASH during setup, which proves nothing about the record check
+        // this test exists for and merely launders the mutation into a red. Asserting the paths differ turns
+        // that same mutation into a plain assertion failure that names what actually went wrong.
+        Assert.NotEqual(aFile, bFile);
         File.Copy(aFile, bFile, overwrite: true);
 
         // Positive control: the file really is there and really is A's, so the refusal below is a refusal and
@@ -153,10 +168,10 @@ public sealed class VoiceUploadStoreTenantPartitionTests : IDisposable
         a.MarkPending(pendingId, sessionA);
         Assert.True(a.IsSessionLocked(sessionA));  // positive control
         b.Register(pendingId);
-        File.Copy(
-            Path.Combine(a.Root, Guid.Parse(pendingId).ToString("N"), "record.json"),
-            Path.Combine(b.Root, Guid.Parse(pendingId).ToString("N"), "record.json"),
-            overwrite: true);
+        var aPending = Path.Combine(a.Root, Guid.Parse(pendingId).ToString("N"), "record.json");
+        var bPending = Path.Combine(b.Root, Guid.Parse(pendingId).ToString("N"), "record.json");
+        Assert.NotEqual(aPending, bPending);   // same reason as above: never let a collapse crash the setup
+        File.Copy(aPending, bPending, overwrite: true);
         Assert.False(b.IsSessionLocked(sessionA));
     }
 
@@ -239,6 +254,23 @@ public sealed class VoiceUploadStoreTenantPartitionTests : IDisposable
         Assert.False(_base.Exists(localId));
 
         Assert.True(a.Exists(id));
-        Assert.Equal(DictationDeliveryState.Pending, a.ReadRecord(id)!.State);
+        Assert.Equal(DictationDeliveryState.Pending,
+            MustStillExist(a, id, "the sweep must not have destroyed another tenant's pending record").State);
+    }
+
+    /// <summary>
+    /// Read a record that the claim under test says MUST still be there, asserting its presence before
+    /// touching it.
+    ///
+    /// This exists so a mutation reddens by ASSERTION rather than by CRASH. Dereferencing with <c>!</c> turns
+    /// an absent record into a NullReferenceException, and a NullReferenceException is not evidence about the
+    /// line the test was aimed at - it only says something upstream broke before the test could ask its
+    /// question. Every red has to be able to name what it caught.
+    /// </summary>
+    private static DictationDeliveryRecord MustStillExist(VoiceUploadStore store, string uploadId, string claim)
+    {
+        var record = store.ReadRecord(uploadId);
+        Assert.True(record is not null, claim + " (the record was absent)");
+        return record!;
     }
 }
