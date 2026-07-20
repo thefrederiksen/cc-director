@@ -589,7 +589,12 @@ public sealed class GatewayHost : IAsyncDisposable
         // Issue #1292: free a removed Director's session numbers so a Director that died without releasing
         // them does not leak the pool. OnDirectorRemoved fires on graceful unregister and on the registry's
         // own stale/unreachable sweep, so this never fires for a merely momentarily-unreachable Director.
-        Registry.OnDirectorRemoved += directorId => SessionNumbers.ReleaseForDirector(directorId);
+        // The allocator's own store keys assignments by BARE director id with no tenant beside them, so it
+        // cannot yet scope this release even though the event now carries the tenant. That is a real hole of
+        // the same family - one account's disconnect frees another account's session numbers - but closing it
+        // means partitioning the allocator, which is its own unit of work; see the note on
+        // FleetSessionNumberAllocator.ReleaseForDirector.
+        Registry.OnDirectorRemoved += removal => SessionNumbers.ReleaseForDirector(removal.DirectorId);
         PushedSessions = new Streaming.PushedSessionStore();
         // Gateway Cleanup mission (Wave 4b): the Gateway-native mission store, at a Gateway-side file path
         // (CcStorage.Root(), the same location the cron and snooze stores use), NOT the Director's tool-config
@@ -602,7 +607,10 @@ public sealed class GatewayHost : IAsyncDisposable
         RosterCache = new Discovery.FleetRosterCache();
         // Issue #1215: when a Director is unregistered or evicted from the registry, forget its cached
         // roster too so the cache does not grow without bound; a re-registering Director starts clean.
-        Registry.OnDirectorRemoved += id => RosterCache.Forget(id);
+        // Scoped to the tenant the removal names. The cache is partitioned by (tenant, director) and the
+        // removal now carries its owner, so forgetting one account's Director cannot reach another's - which
+        // it could when this event was a bare string and the forget swept every matching partition.
+        Registry.OnDirectorRemoved += removal => RosterCache.Forget(removal.Tenant, removal.DirectorId);
         LauncherConnections = new Streaming.LauncherConnectionRegistry();
         var gatewayConfig = Core.Configuration.GatewayConfig.Load();
         // Gateway Cleanup: the tunnel is mandatory; the streamMode parameter is ignored and retained only for existing test call sites (removed with the test rewrite).
@@ -736,7 +744,7 @@ public sealed class GatewayHost : IAsyncDisposable
         // session-serving increment makes per-tenant. The other OnDirectorRemoved subscribers (session-number
         // release, roster-cache forget) are in-memory and stay wired. Skipping it only leaves a removed
         // Director's snoozes as durable tombstones, bounded by the live-session prune paths.
-        Registry.OnDirectorRemoved += id => { if (!GatewayHostedMode.IsHosted) _snoozeRegistry.ClearForDirector(id); };
+        Registry.OnDirectorRemoved += removal => { if (!GatewayHostedMode.IsHosted) _snoozeRegistry.ClearForDirector(removal.DirectorId); };
         // THE PUSH SEAM where this Gateway drives the hold machine off the facts Directors report. The
         // DirectorHub (constructed per-invocation by SignalR) folds every pushed session through this one
         // instance, exactly as it does the input-stats aggregator.

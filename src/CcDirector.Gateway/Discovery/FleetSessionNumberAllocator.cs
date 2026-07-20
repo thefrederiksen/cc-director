@@ -163,6 +163,14 @@ public sealed class FleetSessionNumberAllocator
     /// unreachable past the evict window) - a Director that died without releasing its sessions' numbers.
     /// This is tied to the registry's own liveness decision, so it never fires for a Director that is
     /// merely momentarily unreachable.
+    ///
+    /// NOT TENANT-SCOPED, and knowingly so. <see cref="DirectorRegistry.OnDirectorRemoved"/> now carries the
+    /// owning tenant, but this allocator's <c>_bySession</c> records only a bare director id beside each
+    /// assignment, so there is nothing here to filter by yet. A director id is unique only within its tenant,
+    /// so one tenant's removal can free another's numbers - which surfaces as a duplicated rail number, not
+    /// as data loss or disclosure. Closing it means partitioning the whole allocator (the pool, the
+    /// assignment record, and every Allocate/Adopt/Release caller) by tenant, which is its own unit of work
+    /// and is booked as such.
     /// </summary>
     public void ReleaseForDirector(string directorId)
     {

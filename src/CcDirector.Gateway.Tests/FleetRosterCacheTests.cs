@@ -171,7 +171,7 @@ public sealed class FleetRosterCacheTests
         cache.RecordReachable(TenantId.Local, "dir-A", new[] { Session("s1") });
 
         // Act - the Director is unregistered/evicted, then a later stray failure is recorded
-        cache.Forget("dir-A");
+        cache.Forget(TenantId.Local, "dir-A");
         var projection = cache.RecordUnreachable(TenantId.Local, "dir-A", "unreachable");
 
         // Assert - no cached snapshot survives, so it reads Offline rather than serving stale sessions
