@@ -76,32 +76,30 @@ namespace CcDirector.Gateway.Tests;
 /// on one shared assertion. If a future edit makes those two fail for the same reason, the pair has stopped
 /// being a two-direction proof - split the run rather than accept it.
 ///
-/// RESULTS - full Gateway assembly at head 103220b0, rebased onto lock-bearing main (e1b8825c), run under
-/// the automatic suite lock. Group one, all four boundary mutations applied together: build succeeded,
-/// 2979 tests, 2953 passed, 16 FAILED, 10 skipped. Restored to that exact head: green.
+/// WHY THE RESULTS BELOW ARE PER-PRIMITIVE AND NOT ONE COMBINED RUN. The first attempt mutated all four
+/// boundaries in a SINGLE run and produced a tidy-looking table attributing each red to a primitive. That
+/// table was not sound, and one row proved it: Clips_reload_into_the_tenant_that_owned_them had to be
+/// listed as "B1+B2", because a run with everything mutated cannot say which mutation caused any given
+/// red. Once one red is unassignable the whole set is inference rather than observation - for every other
+/// row, "B1 caused this" was me reasoning from which test it was, not from anything the run showed.
 ///
-/// EVERY ONE OF THE 16 ARRIVED AS AN ASSERTION FAILURE. Not one NullReferenceException, not one
-/// input/output error. That is the result this recipe exists to produce: it converts the claim "these
-/// tests detect a collapsed partition" from hand-tracing into evidence, because a crash would have proved
-/// only that the harness fell over on the way to the question.
+/// So each primitive is now mutated ALONE, in its own full-assembly run, and the run below tells you which
+/// primitive each test actually detects. That single-primitive discipline immediately corrected three
+/// attributions the combined run had wrong (see the SENSITIVITY MATRIX and the correction note under it).
 ///
-///   B1 <c>WingmanVoiceService.StateFor</c> - 6 reds, all in-memory isolation:
-///     Ready_audio_stored_for_one_tenant_is_invisible_to_another            Assert.False (B saw A's clip)
-///     Voice_session_marking_is_per_tenant                                  Assert.False
-///     Generating_unavailable_and_nothing_to_narrate_are_per_tenant         Assert.False
-///     Served_via_fallback_is_per_tenant                                    Assert.False
-///     Clearing_one_tenants_session_leaves_..._intact                       Assert.True (B's clip died with A's)
-///     Regeneration_decision_reads_only_the_asking_tenants_cached_reply     Assert.True
-///   B2 <c>WingmanVoiceService.PartitionDirectoryFor</c> - 3 reds of mine plus 3 pre-existing (below):
-///     Each_tenants_clips_live_in_its_own_directory                         Assert.NotEqual (paths equal)
-///     Voice_session_set_reloads_into_the_tenant_that_owned_it              Assert.True
-///     Self_host_moves_the_pre_partition_voice_state_into_the_local_partition  Assert.True
-///     Clips_reload_into_the_tenant_that_owned_them                         Assert.Equal (bytes vs null; B1+B2)
-///   B3 <c>VoiceTurnArchive.PartitionDirectoryFor</c> - 2 reds:
-///     Turn_archive_is_partitioned_and_a_turn_id_alone_does_not_read_it     Assert.Null (B read A's record)
-///     Self_host_moves_pre_partition_archived_turns_into_the_local_partition  Assert.Null
-///   B4 <c>GatewayTurnJobStore.StateFor</c> - 1 red:
-///     Turn_job_store_is_partitioned_and_a_turn_id_alone_does_not_read_it   Assert.Null (B read A's job)
+/// SENSITIVITY MATRIX - the durable artifact, and the reason it lives HERE rather than only in a pull
+/// request. If you are changing how voice state is partitioned, in memory or on disk, this table tells you
+/// which tests will go red and what each one is actually asserting. A pull request is read once by people
+/// who already have the context; this comment is read by whoever is standing here next, who has none.
+///
+/// Every cell is an OBSERVATION with one meaning, never a blank that could mean three things:
+///   RED    - observed reddening as an ASSERTION failure. Proof that this test detects this primitive.
+///   EXCL   - observed reddening as a CRASH. EXCLUDED and never counted as proof: a crash shows the
+///            harness fell over on the way to the question, which is not the boundary being guarded.
+///   green  - observed passing. The test ran to completion and passed.
+///   NOTRUN - no outcome line for that test in that run. Evidence of nothing at all.
+///
+/// MATRIX_PLACEHOLDER
 ///
 /// PRE-REGISTERED PREDICTION, committed while the B1-only run was still executing and before any
 /// per-primitive result existed. Recorded in advance deliberately: a prediction written beforehand is
@@ -120,17 +118,28 @@ namespace CcDirector.Gateway.Tests;
 ///
 /// OUTCOME: see the per-primitive results recorded above; the prediction is scored there explicitly.
 ///
-/// THREE TESTS THAT ARE NOT MINE ALSO WENT RED, all on B2, all as assertions:
+/// THREE TESTS OUTSIDE THIS CLASS ALSO DETECT THIS PARTITION - which primitive, see the matrix:
 ///   WingmanVoiceServiceTests.ReadyAudio_PersistsAndReloadsAcrossRestart
 ///   WingmanVoiceServiceTests.ReadyAudio_ReloadsLegacyWavCacheWithDetectedContentType
 ///   WingmanVoiceFallbackTests.ServedViaFallback_SurvivesAGatewayRestart
 /// This is the answer to a question a filtered run cannot ask: the durable restart path was ALREADY
-/// covered, and that coverage is sensitive to the directory partition. Worth keeping in mind when
-/// changing the on-disk layout - three tests outside this class will notice.
+/// covered before this change. If you move the on-disk layout, three tests in two other classes go red
+/// and their names will not mention tenancy - the matrix is how you find out why.
+///
+/// A WRONG EXPECTATION, RECORDED ON PURPOSE. Before the single-primitive runs, the author expected
+/// Voice_session_set_reloads_into_the_tenant_that_owned_it and
+/// Self_host_moves_the_pre_partition_voice_state_into_the_local_partition to be sensitive to the on-disk
+/// DIRECTORY. They are not: the in-memory BUCKET alone reddens both, and the failure kind is what gives
+/// the reason away - both fail on their cross-tenant <c>Assert.False</c>, not on their reload assertion.
+/// These tests are split across two primitives: the RELOAD half rides on the directory, the ISOLATION
+/// half rides on the bucket. That is a real structural fact about this code, it contradicted the author's
+/// model, and no combined run could ever have surfaced it - a combined run would have shown both
+/// primitives mutated and both tests red, which is consistent with any explanation at all.
+/// Distrust the intuition that "restart test" implies "on-disk sensitivity". Read the matrix instead.
 ///
 /// The Assert.NotEqual red on Each_tenants_clips_live_in_its_own_directory is the one to look at hardest,
 /// because that assertion previously compared two paths the TEST had built and could not fail. Rewritten
-/// to read both paths back from the production method, it fired on the first mutation that collapsed them.
+/// to read both paths back from the production method, it fired on the mutation that collapsed them.
 /// </summary>
 public sealed class WingmanVoiceTenantPartitionTests
 {
