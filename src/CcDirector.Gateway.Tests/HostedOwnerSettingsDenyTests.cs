@@ -503,6 +503,14 @@ public sealed class HostedOwnerSettingsGroupFilterTests : IAsyncLifetime
     /// Put together with the POST being refused 404 in
     /// <see cref="HostedOwnerSettingsDenyTests.Every_owner_settings_route_is_refused_on_hosted"/>, the two
     /// say: the route exists on hosted, and the thing turning it away is the deny.
+    ///
+    /// WHAT THIS PROVES, AND WHAT IT DOES NOT. It proves the ROUTE IS REGISTERED. It does NOT exercise the
+    /// HANDLER, and it makes no claim to. Read as a served-payload proof it would be one that fell short;
+    /// read as what it is - a routing-table existence proof that does not depend on any handler behaving -
+    /// it is the correct ceiling for a route whose handler starts a process, and it is the one form of
+    /// existence proof that survives the deny, because no endpoint is ever selected for it to run against.
+    /// Every OTHER route in the group is proved served-side by a real payload, an independently re-read
+    /// effect, or a handler-unique receipt; this is the single exception and it is deliberate.
     /// </summary>
     [Fact]
     public async Task The_brain_restart_route_exists_on_hosted_and_is_reachable_only_as_a_post()

@@ -16,8 +16,16 @@ namespace CcDirector.Gateway.Tests;
 ///      200 into a 404, intermittently and for reasons entirely outside that test file.
 ///
 /// <c>DisableParallelization</c> is what actually delivers rule 2 - the collection runs on its own, so no
-/// other collection can flip the mode underneath it. That also subsumes what <see cref="DirectorRootCollection"/>
-/// does for its members, which is why the classes moved in here no longer carry that attribute.
+/// other collection can flip the mode underneath it. That is STRICTLY STRONGER than what
+/// <see cref="DirectorRootCollection"/> gives its members - running alone subsumes running serially with a
+/// subset - which is why the five classes moved in here no longer carry that attribute. Nothing was
+/// weakened by the move.
+///
+/// WHY THIS SHIPS WITH THE DENY RATHER THAN SEPARATELY. Before issue #1863 these routes answered the same
+/// way in both modes, so none of this was needed. The deny is what creates the need, so the fix belongs in
+/// the change that creates it: shipping the deny without this collection would leave six test classes
+/// nobody here wrote failing intermittently, for reasons entirely outside their own files. A change that
+/// makes someone else's tests flaky is a change that shipped a defect.
 /// </summary>
 [CollectionDefinition("GatewayHostedMode", DisableParallelization = true)]
 public sealed class GatewayHostedModeCollection
