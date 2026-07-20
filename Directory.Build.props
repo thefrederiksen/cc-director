@@ -18,4 +18,29 @@
   <PropertyGroup>
     <Version>1.8.4</Version>
   </PropertyGroup>
+
+  <!--
+    THE MUTATION-PROOF PIN GUARD, linked into every test assembly in the repository.
+
+    It refuses to START a run that has been declared part of a mutation proof - a baseline or a mutation
+    arm - when the working tree is not exactly what that proof pinned, and it records what it verified to a
+    ledger that outlives the working tree. Every other run is admitted untouched. The full reasoning, and
+    the incident that produced it, are at the top of MutationProofPinGuard.cs; read that before changing
+    anything here.
+
+    WHY IT IS LINKED FROM HERE RATHER THAN LISTED IN EACH TEST PROJECT: so a test project added next year
+    is covered without anybody remembering. The guard exists because a rule that has to be remembered is
+    not a mechanism, and wiring that has to be remembered is the same mistake one level down.
+
+    WHY THE CONDITION IS ON THE PROJECT NAME AND NOT ON IsTestProject: one of the seven existing test
+    projects (CcDirector.Terminal.Avalonia.Tests) does not set IsTestProject, so keying on that flag would
+    have silently skipped it - and a guard that silently covers six of seven assemblies looks exactly like
+    a guard that covers all of them.
+  -->
+  <ItemGroup Condition="$(MSBuildProjectName.EndsWith('.Tests'))">
+    <Compile Include="$(MSBuildThisFileDirectory)src\TestInfrastructure\MutationProofPinGuard.cs"
+             Link="TestInfrastructure\MutationProofPinGuard.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)src\TestInfrastructure\MutationProofPinGuardTests.cs"
+             Link="TestInfrastructure\MutationProofPinGuardTests.cs" />
+  </ItemGroup>
 </Project>
