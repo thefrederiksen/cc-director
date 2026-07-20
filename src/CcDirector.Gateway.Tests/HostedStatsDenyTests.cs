@@ -154,6 +154,15 @@ public sealed class HostedStatsDenyTests : IAsyncLifetime
         var resp = await Get(path, _key);
         var body = await resp.Content.ReadAsStringAsync();
 
+        // ASSERT THE STATUS AND THE MEDIA TYPE BEFORE PARSING, so this test reddens as a STATEMENT rather
+        // than as a crash. Without these two lines, deleting the guard makes /stats serve the HTML dashboard
+        // and JsonDocument.Parse dies with "'<' is an invalid start of a value" - the test still goes red, but
+        // it goes red as a JsonReaderException, which proves only that the mutation broke something upstream.
+        // A crash cannot tell you WHAT was served in place of the refusal; an assertion can, and that is the
+        // difference between a revert-proof and a coincidence.
+        Assert.Equal(HttpStatusCode.NotFound, resp.StatusCode);
+        Assert.Equal("application/json", resp.Content.Headers.ContentType?.MediaType);
+
         using var doc = JsonDocument.Parse(body);
         Assert.Equal(JsonValueKind.Object, doc.RootElement.ValueKind);
 
@@ -246,6 +255,11 @@ internal static class StatsGroupProbeHost
     public static async Task AssertBodyIsNothingButTheRefusal(HttpResponseMessage resp)
     {
         var body = await resp.Content.ReadAsStringAsync();
+
+        // Media type first, for the same reason as above: if the guard is gone and the route serves the HTML
+        // dashboard, this must redden as "expected application/json, got text/html" and not as a JSON parser
+        // exception. A red that is a crash proves the mutation landed, not that the guard was what held.
+        Assert.Equal("application/json", resp.Content.Headers.ContentType?.MediaType);
 
         using var doc = JsonDocument.Parse(body);
         Assert.Equal(JsonValueKind.Object, doc.RootElement.ValueKind);
