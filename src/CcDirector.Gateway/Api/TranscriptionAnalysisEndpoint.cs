@@ -72,11 +72,15 @@ internal static class TranscriptionAnalysisEndpoint
     /// UN-DENY CONDITION - REMOVING THIS DENY REQUIRES ALSO PURGING OR PARTITIONING WHAT ACCUMULATED BEHIND
     /// IT. Two SEPARATE questions, and here the first one fails outright.
     ///
-    /// (a) DOES ANYTHING STILL WRITE IT? YES. <c>GatewayTranscriptionService</c> records a turn into the one
-    /// shared log on EVERY transcription, and the surfaces that reach it - the recording endpoints, the
-    /// batch transcription endpoint and the wingman transcribe route - are all outside this group. This is a
-    /// READ deny only, the same shape as the merged stats deny #1888. The file this refusal hides therefore
-    /// goes on mixing every account's raw and cleaned speech for as long as it stands.
+    /// (a) DOES ANYTHING STILL WRITE IT? YES, and unlike the wingman training store this one was checked
+    /// through its gate rather than at its call sites, because a call site proves code exists, not that it
+    /// runs. <c>GatewayTranscriptionService.RecordTelemetry</c> calls <c>TranscriptionTelemetryLog.Record</c>
+    /// on EVERY transcription, and <c>Record</c> is UNCONDITIONAL - it has no enabled-check of any kind. The
+    /// only flag near it is <c>TextEnabled</c>, which merely decides whether the spoken text is included,
+    /// defaults to TRUE, and has no configuration key wired to turn it off ("a future opt-out can gate it").
+    /// So every turn appends a record, WITH the raw and cleaned text in it. The surfaces reaching it - the
+    /// recording endpoints, the batch transcription endpoint and the wingman transcribe route - are all
+    /// outside this group. This is a READ deny only, the same shape as the merged stats deny #1888.
     ///
     /// (b) WHAT ALREADY EXISTS? A log of every account's speech from before the deny, growing the whole
     /// time. Records written with no tenant on them cannot be attributed afterwards, so the choice is
@@ -127,6 +131,13 @@ internal static class TranscriptionAnalysisEndpoint
         // builder makes the mistake INEXPRESSIBLE rather than merely unlikely: inside MapRoutes there is
         // nothing to map onto except the guarded group. The count falls by DESIGN, not by an argument about
         // how careful the next author will be.
+        //
+        // THE LIMIT OF THAT PROPERTY, STATED SO NOBODY OVER-CLAIMS IT: it holds WITHIN THIS MAPPING SITE.
+        // It does not reach across sites. This deny is one of FOUR families, each creating its own group,
+        // attaching its own filter and mapping from its own site, so any one site can be wrong while the
+        // other three stay correct and no compiler notices. That is exactly why the registered proof is
+        // four filter-removal arms and four gate-inversion arms rather than one of each: the split removes
+        // the per-ROUTE bypass inside a family, it does not merge the four families into one primitive.
         MapRoutes(app, log);
         return app;
     }

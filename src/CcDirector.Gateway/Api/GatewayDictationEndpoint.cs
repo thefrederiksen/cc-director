@@ -104,21 +104,25 @@ internal static class GatewayDictationEndpoint
     /// UN-DENY CONDITION. Two SEPARATE questions, because answering only the first is how a deny gets
     /// mistaken for a clean slate.
     ///
-    /// (a) DOES ANYTHING STILL WRITE IT? No - checked by enumerating WRITERS rather than by looking at the
-    /// denied routes, which is the question that actually matters. Every <c>VoiceUploadStore</c> construction
-    /// in the repository was listed: the only production one on the dictation-uploads root is the instance
-    /// <c>GatewayHost</c> holds as <c>_dictationUploads</c>, which reaches this endpoint plus one READ-only
-    /// status query (<c>DictationStatusFor</c>); <c>DictationLockReader</c> in Core also only reads.
-    /// Every <c>uploads.</c> mutation in this file - register, mark pending, store chunk, mark delivered,
-    /// mark failed, acknowledge, mark abandoned - is inside the guarded group, and the static
-    /// <c>_completes</c> cache is filled only by the completion leg, which is refused too.
-    /// <c>SweepAbandoned</c> has no production caller. The only residual write is the constructor ensuring
-    /// the directory exists: an empty directory, never content.
+    /// (a) DOES ANYTHING STILL WRITE IT? No. Checked by sweeping the COMPLETE MUTATING SURFACE of the state
+    /// rather than the routes that touch it: every <c>VoiceUploadStore</c> construction in the repository,
+    /// then every production caller of every mutating method on the type, and finally any raw file writer
+    /// into the root that bypasses the type. The only production instance on the dictation-uploads root is
+    /// the one <c>GatewayHost</c> holds as <c>_dictationUploads</c>, which reaches this endpoint plus one
+    /// READ-only status query (<c>DictationStatusFor</c>); Core's <c>DictationLockReader</c> also only reads.
+    /// Every mutation - register, mark pending, store chunk, assemble, delete, mark delivered, mark failed,
+    /// clear failed, record baseline, acknowledge, mark abandoned - is inside the guarded group or inside a
+    /// private helper (<c>RunCompleteCoreAsync</c>, <c>MapNonOkTranscription</c>) whose only caller is the
+    /// completion leg, which is itself refused. The static <c>_completes</c> cache is filled only by that
+    /// same leg. <c>SweepAbandoned</c> has no production caller. Nothing writes the root outside the store.
+    /// The only residual write is the constructor ensuring the directory exists: an empty directory, never
+    /// content.
     ///
-    /// (b) WHAT ALREADY EXISTS? Unknown, and presumed contaminated. The shared dictation-uploads root may
-    /// hold pre-deny cross-tenant staged audio, delivery records and transcripts. SO THE UN-DENY STILL
-    /// REQUIRES PURGING OR QUARANTINING THE LEGACY ROOT, on top of issue #1884's tenant-keying of the store,
-    /// the record and the <c>_completes</c> cache.
+    /// (b) WHAT ALREADY EXISTS? A SEPARATE QUESTION, and it is not answered by (a). NO NEW WRITES IS A
+    /// STATEMENT ABOUT THE FUTURE, NOT EVIDENCE ABOUT THE PAST. The shared dictation-uploads root may hold
+    /// pre-deny cross-tenant staged audio, delivery records and transcripts. SO THE UN-DENY STILL REQUIRES
+    /// PURGING OR QUARANTINING THE LEGACY ROOT, on top of issue #1884's tenant-keying of the store, the
+    /// record and the <c>_completes</c> cache.
     ///
     /// NOTE THE BOUNDARY OF THE (a) CLAIM: it is about THIS store. A completed dictation also writes a turn
     /// into the shared transcription telemetry log, and that log has live writers outside any deny - see the
@@ -176,6 +180,13 @@ internal static class GatewayDictationEndpoint
         // builder makes the mistake INEXPRESSIBLE rather than merely unlikely: inside MapRoutes there is
         // nothing to map onto except the guarded group. The count falls by DESIGN, not by an argument about
         // how careful the next author will be.
+        //
+        // THE LIMIT OF THAT PROPERTY, STATED SO NOBODY OVER-CLAIMS IT: it holds WITHIN THIS MAPPING SITE.
+        // It does not reach across sites. This deny is one of FOUR families, each creating its own group,
+        // attaching its own filter and mapping from its own site, so any one site can be wrong while the
+        // other three stay correct and no compiler notices. That is exactly why the registered proof is
+        // four filter-removal arms and four gate-inversion arms rather than one of each: the split removes
+        // the per-ROUTE bypass inside a family, it does not merge the four families into one primitive.
         MapRoutes(app, registry, owners, token, transcription, transcribingSessions, uploads, devices,
             pushedSessions, sendCommand, stale);
         return app;

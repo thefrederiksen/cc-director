@@ -68,19 +68,29 @@ internal static class WingmanInstructionsEndpoint
     /// UN-DENY CONDITION - REMOVING THIS DENY REQUIRES ALSO PURGING OR PARTITIONING WHAT ACCUMULATED BEHIND
     /// IT. Two SEPARATE questions, and here the first one already fails.
     ///
-    /// (a) DOES ANYTHING STILL WRITE IT? YES, for the training records - and the writer is worse than a
-    /// route. The prompt half IS contained: every route that can rewrite the wingman instructions (save,
-    /// revert, switch-to-default) is in this group and refused with the reads. The RECORDS are written by
-    /// <c>WingmanVoiceService.GenerateOnceAsync</c> through <c>WingmanTrainingStore.CaptureAsync</c>, and
-    /// that path is reached by the Gateway's OWN voice sweep timer (<c>GatewayHost.SweepVoiceSessionsAsync</c>
-    /// pre-builds voice for idle sessions on an interval). So raw session terminal output keeps landing in
-    /// one untenanted store on hosted WITH NO REQUEST FROM ANYBODY - an unattended background writer, not
-    /// merely a route this deny happens not to cover. Issue #1853's separate interim write deny has not
-    /// landed. Looking only at the denied routes would have missed this entirely.
+    /// (a) DOES ANYTHING STILL WRITE IT? The prompt half IS contained: every route that can rewrite the
+    /// wingman instructions (save, revert, switch-to-default) is in this group and refused with the reads.
+    /// For the training RECORDS the honest answer is LATENT, NOT ACTIVE, and an earlier version of this note
+    /// got that wrong by reading call sites instead of following the gate.
     ///
-    /// (b) WHAT ALREADY EXISTS? Records from before the deny, plus everything the timer adds while it
-    /// stands. They carry no tenant, so they cannot be attributed after the fact: the choice is deletion or
-    /// quarantine, never a later migration.
+    /// There are three writers, none of them in this group: the voice-turn route, the explain route, and
+    /// <c>WingmanVoiceService.GenerateOnceAsync</c> - which is reached by the Gateway's OWN voice sweep
+    /// timer, so it needs no request from anybody. But ALL THREE funnel through
+    /// <c>WingmanTrainingStore.CaptureAsync</c>, whose first statement is <c>if (!Enabled) return;</c>, and
+    /// <c>Enabled</c> reads <c>WingmanTrainingCaptureConfig</c> - the <c>wingman_training_capture</c> key,
+    /// which is OPT-IN and DEFAULTS TO FALSE. On a hosted box that has never set it, nothing writes here at
+    /// all. A CALL SITE PROVES CODE EXISTS, NOT THAT IT RUNS.
+    ///
+    /// So the accurate statement is conditional: while that setting is off nothing accumulates, and the
+    /// moment it is turned on, three writers - one of them an unattended timer - begin appending raw session
+    /// terminal output to one untenanted store, and this deny covers none of them. Issue #1853's separate
+    /// interim write deny still has not landed.
+    ///
+    /// (b) WHAT ALREADY EXISTS? A SEPARATE QUESTION, and the one that decides the un-deny. "Nothing writes
+    /// today" is a statement about the future; it is not evidence about the past. Records may already be on
+    /// disk from any period when the setting was on, or carried in from a self-host box. They carry no
+    /// tenant, so they cannot be attributed after the fact: the choice is deletion or quarantine, never a
+    /// later migration. This is why the READ deny is worth having even while the writers are dormant.
     /// </summary>
     private static IResult? DenyOnHosted()
     {
@@ -127,6 +137,13 @@ internal static class WingmanInstructionsEndpoint
         // builder makes the mistake INEXPRESSIBLE rather than merely unlikely: inside MapRoutes there is
         // nothing to map onto except the guarded group. The count falls by DESIGN, not by an argument about
         // how careful the next author will be.
+        //
+        // THE LIMIT OF THAT PROPERTY, STATED SO NOBODY OVER-CLAIMS IT: it holds WITHIN THIS MAPPING SITE.
+        // It does not reach across sites. This deny is one of FOUR families, each creating its own group,
+        // attaching its own filter and mapping from its own site, so any one site can be wrong while the
+        // other three stay correct and no compiler notices. That is exactly why the registered proof is
+        // four filter-removal arms and four gate-inversion arms rather than one of each: the split removes
+        // the per-ROUTE bypass inside a family, it does not merge the four families into one primitive.
         MapRoutes(app, store, training, translator);
         return app;
     }

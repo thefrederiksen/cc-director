@@ -100,20 +100,25 @@ internal static class GatewayWingmanVoiceEndpoint
     /// mistaken for a clean slate. "Does anything still write this state" and "what is already sitting
     /// there" have different answers, and the second one does not improve while the deny stands.
     ///
-    /// (a) DOES ANYTHING STILL WRITE IT? No - and this was checked by enumerating WRITERS, not by looking at
-    /// the denied routes. Every construction of a <c>VoiceUploadStore</c> in the repository was listed: the
-    /// only production one on this root is the instance <c>GatewayHost</c> holds as <c>_voiceTurnUploads</c>
-    /// and hands to this endpoint alone. Every <c>uploads.</c> call in this file is inside the guarded group.
-    /// <c>SweepAbandoned</c> - the one background-shaped mutator on the type - has NO production caller at
-    /// all, only a test. So on hosted no utterance bytes and no assembled transcript are written. The one
-    /// residual write is the store constructor calling <c>CcStorage.VoiceTurnUploads()</c>, which ENSURES the
-    /// directory exists: an empty directory, never content.
+    /// (a) DOES ANYTHING STILL WRITE IT? No. Checked by sweeping the COMPLETE MUTATING SURFACE of the state
+    /// rather than the routes that touch it: every construction of a <c>VoiceUploadStore</c> in the
+    /// repository, then every production caller of every mutating method on the type (<c>Register</c>,
+    /// <c>StoreChunkAsync</c>, <c>AssembleAsync</c>, <c>Delete</c>, <c>MarkPending</c>,
+    /// <c>MarkDelivered</c>, <c>MarkAbandoned</c>, <c>MarkFailed</c>, <c>ClearFailed</c>,
+    /// <c>RecordFailedDeliveryBaseline</c>, <c>Acknowledge</c>, <c>SweepAbandoned</c>), and finally any raw
+    /// file writer into the root that bypasses the type entirely. The only production instance on this root
+    /// is the one <c>GatewayHost</c> holds as <c>_voiceTurnUploads</c> and hands to this endpoint alone;
+    /// every mutating call reached from this file is inside the guarded group; <c>SweepAbandoned</c> has NO
+    /// production caller at all, only a test; nothing writes the root outside the store. The one residual
+    /// write is the constructor calling <c>CcStorage.VoiceTurnUploads()</c>, which ENSURES the directory
+    /// exists: an empty directory, never content.
     ///
-    /// (b) WHAT ALREADY EXISTS? Unknown, and presumed contaminated. Stopping the accumulation says nothing
-    /// about the shared root as it stands today, which may hold pre-deny cross-tenant staged audio and
-    /// assembled transcripts written before this refusal was hung. SO THE UN-DENY STILL REQUIRES PURGING OR
-    /// QUARANTINING THE LEGACY ROOT, on top of issue #1896's tenant-keying of the store - "the write is
-    /// stopped" is not "the root is clean" and must never be read as the whole condition.
+    /// (b) WHAT ALREADY EXISTS? A SEPARATE QUESTION, and it is not answered by (a). NO NEW WRITES IS A
+    /// STATEMENT ABOUT THE FUTURE, NOT EVIDENCE ABOUT THE PAST. The shared root may hold pre-deny
+    /// cross-tenant staged audio and assembled transcripts, written before this refusal was hung and
+    /// untouched by it. SO THE UN-DENY STILL REQUIRES PURGING OR QUARANTINING THE LEGACY ROOT, on top of
+    /// issue #1896's tenant-keying of the store - "the write is stopped" is not "the root is clean" and must
+    /// never be read as the whole condition.
     /// </summary>
     private static IResult? DenyUtteranceOnHosted()
     {
@@ -396,6 +401,13 @@ internal static class GatewayWingmanVoiceEndpoint
         // never receives `app` makes the mistake INEXPRESSIBLE rather than merely unlikely: inside
         // MapUtteranceRoutes there is nothing to map onto except the guarded group. The count falls by
         // DESIGN, not by an argument about how careful the next author will be.
+        //
+        // THE LIMIT OF THAT PROPERTY, STATED SO NOBODY OVER-CLAIMS IT: it holds WITHIN THIS MAPPING SITE.
+        // It does not reach across sites. This deny is one of FOUR families, each creating its own group,
+        // attaching its own filter and mapping from its own site, so any one site can be wrong while the
+        // other three stay correct and no compiler notices. That is exactly why the registered proof is
+        // four filter-removal arms and four gate-inversion arms rather than one of each: the split removes
+        // the per-ROUTE bypass inside a family, it does not merge the four families into one primitive.
         MapUtteranceRoutes(utterance, uploads, transcription);
 
         // Text-to-speech for the mobile Voice screen + Cockpit: turn the wingman's spoken summary into
