@@ -118,12 +118,25 @@ would have activated a path whose upload store is keyed only by a caller-supplie
 tenant on it, so one account could have claimed another's upload id and been handed its transcript.
 Off is the correct state until that is fixed.
 
-### The cockpit and phone both show "Offline"
+### The cockpit and phone both show "Offline" - and the connection is fine
 
 Visible in both screenshots: an **Offline** badge in the sidebar and phone header, while the same
-page is successfully listing live sessions from the cloud. The indicator disagrees with the page it
-sits on. Cosmetic, but it is the kind of thing that makes a working system look broken. **Not yet
-booked** - it needs a few minutes to find which check drives it before filing something accurate.
+page is successfully listing live sessions from the cloud and streaming a live terminal.
+
+Chased rather than left as a cosmetic note. The status pill polls two endpoints and reports
+`Offline` if **either** throws. Measured against hosted:
+
+| Endpoint | Result |
+|---|---|
+| `GET /diag/echo` | 200, sensible data |
+| `GET /diag/network` | **500** `{"error":"internal error"}` |
+
+`/diag/network` collects **Tailscale** diagnostics unconditionally, and the hosted gateway is a
+Linux container with no Tailscale, so it throws. Self-host has Tailscale, which is why this has
+never been seen before.
+
+So nothing is actually offline: a diagnostic that *cannot run* is being reported as a connection
+that is *down*. Booked as **#1927**.
 
 ### `/login` rejects a valid device key
 
