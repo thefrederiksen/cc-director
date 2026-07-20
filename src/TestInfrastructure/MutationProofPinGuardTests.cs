@@ -1130,6 +1130,153 @@ public sealed class MutationProofPinGuardTests
         Assert.True(verdict.Admitted, verdict.Message);
     }
 
+    // -------------------------------------------------------------------------------------------------
+    // ONLY A COMPLETED, ERROR-FREE NOT-FOUND MAY CONSTRUCT THE ADMITTING STATE.
+    //
+    // The three-state outcome was necessary and not sufficient. A reviewer found the collapse it was meant
+    // to end still happening one level down: absence was being ESTABLISHED with File.Exists and
+    // Directory.Exists, which answer false for an access failure, an invalid path or an input-output error
+    // exactly as they do for a file that genuinely is not there. By the time the value reached the enum,
+    // "could not look" and "there is nothing there" were already the same boolean - and no downstream
+    // typing can recover what a predicate threw away. The surrounding try/catch blocks saw nothing,
+    // because those APIs are documented to return false rather than throw.
+    //
+    // A three-state type is only as good as the narrowest source feeding it. Predicates destroy error
+    // information; operations preserve it. These pin the repair at the level where it now lives.
+    // -------------------------------------------------------------------------------------------------
+
+    /// <summary>
+    /// A pin path that cannot be READ but is certainly there, on a real filesystem: a DIRECTORY sitting
+    /// where the pin file belongs.
+    ///
+    /// This is the reviewer finding made concrete without needing permissions or an injected filesystem.
+    /// File.Exists answers FALSE for a directory, so the old lookup concluded "no pin" and ADMITTED, while
+    /// opening it raises an access error that says plainly that something is there and unreadable.
+    /// </summary>
+    [Fact]
+    public void APinPathThatCannotBeReadIsIndeterminate_NotAProvenAbsence()
+    {
+        using var repository = TemporaryGitRepository.Create();
+        repository.WriteAndCommit("src/RequestHandler.cs", FileWithTheGuardBlock, "add the tenant guard");
+
+        var pinPath = MutationProofPinGuard.ResolvePinFilePath(repository.Root)!;
+        Directory.CreateDirectory(pinPath);
+
+        // The predicate the old code trusted says there is no pin here.
+        Assert.False(File.Exists(pinPath));
+
+        var reading = MutationProofPinGuard.ReadPinFor(repository.Root);
+
+        Assert.Equal(MutationProofPinGuard.PinOutcome.CouldNotDetermine, reading.Outcome);
+
+        var verdict = MutationProofPinGuard.Decide(
+            reading,
+            MutationProofPinGuard.ReadTree(repository.Root),
+            Array.Empty<string>());
+
+        Assert.False(
+            verdict.Admitted,
+            "An unreadable pin path was treated as a proven absence and the run was ADMITTED. File.Exists "
+            + "answers false for an inaccessible path exactly as it does for a missing one, which is how "
+            + "a live proof can be skipped silently. " + verdict.Message);
+    }
+
+    /// <summary>
+    /// CONTROL. The same repository with a genuinely missing pin must still admit, or the test above is
+    /// satisfied by refusing every unpinned run - which is the blanket behaviour the Architect ruled out.
+    /// </summary>
+    [Fact]
+    public void CONTROL_AGenuinelyMissingPinIsAnAbsenceAndAdmits()
+    {
+        using var repository = TemporaryGitRepository.Create();
+        repository.WriteAndCommit("src/RequestHandler.cs", FileWithTheGuardBlock, "add the tenant guard");
+
+        var reading = MutationProofPinGuard.ReadPinFor(repository.Root);
+
+        Assert.Equal(MutationProofPinGuard.PinOutcome.NoPinPresent, reading.Outcome);
+        Assert.True(
+            MutationProofPinGuard.Decide(
+                reading, MutationProofPinGuard.ReadTree(repository.Root), Array.Empty<string>()).Admitted);
+    }
+
+    /// <summary>
+    /// A repository marker that cannot be EXAMINED must not be walked past.
+    ///
+    /// Walking past it ends at "no repository", which is the admitting state - so an unreadable `.git`
+    /// would silently skip a live proof. The probe is injected because a path the operating system refuses
+    /// to describe cannot be created portably, and a branch that only runs on someone else's machine is a
+    /// branch nobody has watched work.
+    /// </summary>
+    [Fact]
+    public void ARepositoryMarkerThatCannotBeExaminedIsIndeterminate_NotAbsent()
+    {
+        using var scratch = new TemporaryDirectory();
+        var deep = Path.Combine(scratch.Path, "a", "b");
+        Directory.CreateDirectory(deep);
+
+        var located = MutationProofPinGuard.LocatePin(
+            deep,
+            path => path.EndsWith(".git", StringComparison.Ordinal)
+                ? new MutationProofPinGuard.Probe(
+                    MutationProofPinGuard.ProbeOutcome.CouldNotTell, false, "access is denied")
+                : MutationProofPinGuard.ProbePath(path));
+
+        Assert.Equal(MutationProofPinGuard.PinLocationOutcome.Indeterminate, located.Outcome);
+
+        Assert.Equal(
+            MutationProofPinGuard.PinOutcome.CouldNotDetermine,
+            MutationProofPinGuard.ReadPin(located).Outcome);
+    }
+
+    /// <summary>
+    /// CONTROL for the probe. When every probe answers a definite NOT THERE, the walk completes and the
+    /// answer is a genuine absence - otherwise the test above would be satisfied by a lookup that never
+    /// concludes anything, and no ordinary run outside a repository could proceed.
+    /// </summary>
+    [Fact]
+    public void CONTROL_AWalkWhereEveryProbeSaysNotThereIsACompletedSearch()
+    {
+        using var scratch = new TemporaryDirectory();
+        var deep = Path.Combine(scratch.Path, "a", "b");
+        Directory.CreateDirectory(deep);
+
+        var located = MutationProofPinGuard.LocatePin(
+            deep,
+            _ => new MutationProofPinGuard.Probe(
+                MutationProofPinGuard.ProbeOutcome.DoesNotExist, false, null));
+
+        Assert.Equal(MutationProofPinGuard.PinLocationOutcome.NotInARepository, located.Outcome);
+        Assert.Equal(
+            MutationProofPinGuard.PinOutcome.NoPinPresent,
+            MutationProofPinGuard.ReadPin(located).Outcome);
+    }
+
+    /// <summary>
+    /// The probe itself must distinguish the two, on the real filesystem of whatever machine runs this.
+    /// Everything above rests on it.
+    /// </summary>
+    [Fact]
+    public void TheProbeTellsAMissingPathFromOneItCannotDescribe()
+    {
+        using var scratch = new TemporaryDirectory();
+
+        var missing = MutationProofPinGuard.ProbePath(Path.Combine(scratch.Path, "nothing-here"));
+        Assert.Equal(MutationProofPinGuard.ProbeOutcome.DoesNotExist, missing.Outcome);
+
+        var directory = MutationProofPinGuard.ProbePath(scratch.Path);
+        Assert.Equal(MutationProofPinGuard.ProbeOutcome.Exists, directory.Outcome);
+        Assert.True(directory.IsDirectory);
+
+        var file = Path.Combine(scratch.Path, "a-file");
+        File.WriteAllText(file, "x");
+        var probedFile = MutationProofPinGuard.ProbePath(file);
+        Assert.Equal(MutationProofPinGuard.ProbeOutcome.Exists, probedFile.Outcome);
+        Assert.False(probedFile.IsDirectory);
+
+        // An input the operating system will not describe at all. It must NOT come back as "not there".
+        Assert.Equal(MutationProofPinGuard.ProbeOutcome.CouldNotTell, MutationProofPinGuard.ProbePath("").Outcome);
+    }
+
     /// <summary>A git that is certainly not installed, so the run genuinely cannot reach git.</summary>
     private const string GitThatDoesNotExist = "git-not-installed-on-this-machine-b6f2a1";
 
