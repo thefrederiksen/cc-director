@@ -1,7 +1,9 @@
 # Hosted Gateway process-global collection census
 
-**Audit snapshot:** `f5bb926f18c0023e86fc7b212ab02d425ff9cc50` (`origin/main` on 20 July 2026)  
-**Scope:** retained collection state declared by the Gateway, including singleton instance fields and static fields  
+**Audit snapshot:** `f5bb926f18c0023e86fc7b212ab02d425ff9cc50` (`origin/main` on 20 July 2026)
+
+**Scope:** retained collection state declared by the Gateway, including singleton instance fields and static fields
+
 **Status:** enumeration audit only; this document does not claim that the findings are fixed
 
 ## Headline
