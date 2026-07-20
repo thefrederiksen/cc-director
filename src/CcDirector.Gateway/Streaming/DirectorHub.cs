@@ -65,12 +65,31 @@ public sealed class DirectorHub : Hub
     /// sink with pull-then-forward backpressure, so a slow browser blocks the pull, which - with a small
     /// StreamBufferCapacity - blocks the Director's producer. One primitive serves both the live terminal and a
     /// finite file/screenshot read (keyed by the stream id). Requires the connection be bound first (Hello).
+    ///
+    /// Issue #1923: binding proves WHO is calling; it does not prove the caller owns THIS stream. The bound
+    /// identity (tenant resolved from the authenticated device key at Hello, plus the bound Director id) is
+    /// handed to the registry, which authorizes it against the owner recorded when the stream was opened and
+    /// REFUSES a caller that does not match. Without that, any authenticated account that learned or guessed a
+    /// live stream id could write frames into another account's terminal, claim the stream ahead of the real
+    /// Director, or tear it down.
     /// </summary>
-    public Task StreamUp(string streamId, IAsyncEnumerable<DirectorStreamFrame> frames)
+    public async Task StreamUp(string streamId, IAsyncEnumerable<DirectorStreamFrame> frames)
     {
         var directorId = RequireBoundDirector();
+        var caller = new StreamOwner(RequireBoundTenant(), directorId);
         FileLog.Write($"[DirectorHub] StreamUp: director={directorId}, stream={streamId}, conn={Short(Context.ConnectionId)}");
-        return _streamRegistry.ConsumeAsync(streamId, frames, Context.ConnectionAborted);
+        try
+        {
+            await _streamRegistry.ConsumeAsync(streamId, caller, frames, Context.ConnectionAborted);
+        }
+        catch (StreamOwnershipDeniedException ex)
+        {
+            // Surface the refusal to the calling Director as a hub error (HubException is the one exception
+            // type SignalR relays verbatim). A refusal is never swallowed: an operator reading either side's
+            // log must be able to tell a cross-account injection attempt from an ordinary closed-stream race.
+            FileLog.Write($"[DirectorHub] StreamUp REFUSED: director={directorId}, stream={streamId}, conn={Short(Context.ConnectionId)}");
+            throw new HubException(ex.Message);
+        }
     }
 
     /// <summary>Bind this connection to a Director. Must be the first message; aborts the connection on a bad id.</summary>

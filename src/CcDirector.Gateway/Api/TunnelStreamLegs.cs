@@ -1,4 +1,5 @@
 using System.Net.WebSockets;
+using CcDirector.Core.Tenancy;
 using CcDirector.Core.Utilities;
 using CcDirector.Gateway.Contracts;
 using CcDirector.Gateway.Streaming;
@@ -40,7 +41,7 @@ internal sealed class TunnelStreamLegs
     /// upgrade is accepted (the caller already committed to the tunnel because the owner is stream-connected);
     /// an open failure closes the socket with a reason and the browser reconnects.
     /// </summary>
-    public async Task ServeTerminalAsync(HttpContext ctx, string sid, string directorId)
+    public async Task ServeTerminalAsync(HttpContext ctx, string sid, TenantId tenant, string directorId)
     {
         if (!ctx.WebSockets.IsWebSocketRequest)
         {
@@ -55,7 +56,9 @@ internal sealed class TunnelStreamLegs
 
         var streamId = Guid.NewGuid().ToString("N");
         var sink = new WebSocketStreamSink(ws);
-        var teardown = _registry.Register(streamId, sink);
+        // Issue #1923: record WHO owns this stream - the tenant that located the session and the Director the
+        // open command below is sent to. Only that identity may stream frames back up under this id.
+        var teardown = _registry.Register(streamId, new StreamOwner(tenant, directorId), sink);
 
         // The browser is "gone" when the request aborts OR the keystroke receive loop ends (a close frame or a
         // socket fault). Either tears the stream down and sends close-stream.
@@ -143,22 +146,25 @@ internal sealed class TunnelStreamLegs
     /// (streamed, or answered 404/400); false ONLY when nothing was written and the caller should fall back to
     /// the HTTP proxy path (the owning Director's stream was lost between resolution and open).
     /// </summary>
-    public Task<bool> TryServeFileAsync(HttpContext ctx, string sid, string directorId, string? path) =>
-        TryServeReadAsync(ctx, sid, directorId, "read-file", new OpenStreamRequest { StreamId = "", Path = path }, "file");
+    public Task<bool> TryServeFileAsync(HttpContext ctx, string sid, TenantId tenant, string directorId, string? path) =>
+        TryServeReadAsync(ctx, sid, tenant, directorId, "read-file", new OpenStreamRequest { StreamId = "", Path = path }, "file");
 
     /// <summary>
     /// Serve <c>GET /sessions/{sid}/screenshots/file?name=...</c> over the tunnel (screenshot-file). Same
     /// contract as <see cref="TryServeFileAsync"/>.
     /// </summary>
-    public Task<bool> TryServeScreenshotAsync(HttpContext ctx, string sid, string directorId, string? name) =>
-        TryServeReadAsync(ctx, sid, directorId, "screenshot-file", new OpenStreamRequest { StreamId = "", ScreenshotId = name }, "screenshot");
+    public Task<bool> TryServeScreenshotAsync(HttpContext ctx, string sid, TenantId tenant, string directorId, string? name) =>
+        TryServeReadAsync(ctx, sid, tenant, directorId, "screenshot-file", new OpenStreamRequest { StreamId = "", ScreenshotId = name }, "screenshot");
 
-    private async Task<bool> TryServeReadAsync(HttpContext ctx, string sid, string directorId, string verb, OpenStreamRequest req, string label)
+    private async Task<bool> TryServeReadAsync(HttpContext ctx, string sid, TenantId tenant, string directorId, string verb, OpenStreamRequest req, string label)
     {
         var streamId = Guid.NewGuid().ToString("N");
         req.StreamId = streamId;
         var sink = new HttpResponseStreamSink(ctx.Response);
-        var teardown = _registry.Register(streamId, sink);
+        // Issue #1923: same ownership record as the terminal leg - the finite reads are the same primitive and
+        // are injectable in exactly the same way (a screenshot or file body written into another account's
+        // response), so they carry the same owner.
+        var teardown = _registry.Register(streamId, new StreamOwner(tenant, directorId), sink);
 
         FileLog.Write($"[TunnelStreamLegs] {label} open sid={sid} director={directorId} stream={streamId}");
         DirectorCommandResult? open;

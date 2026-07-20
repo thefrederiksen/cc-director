@@ -8,6 +8,7 @@ using CcDirector.Gateway.Streaming;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Http.Features;
 using Xunit;
+using CcDirector.Core.Tenancy;
 
 namespace CcDirector.Gateway.Tests;
 
@@ -37,7 +38,7 @@ public sealed class TunnelStreamLegsTests
             {
                 case "read-file":
                     var req = JsonSerializer.Deserialize<OpenStreamRequest>(command.PayloadJson, Json)!;
-                    _ = registry.ConsumeAsync(req.StreamId, FileFrames(req.StreamId, fileBytes), CancellationToken.None);
+                    _ = registry.ConsumeAsync(req.StreamId, new StreamOwner(TenantId.Local, "dir1"), FileFrames(req.StreamId, fileBytes), CancellationToken.None);
                     return Ok(new OpenReadResponse { TotalBytes = fileBytes.Length, ContentType = "text/plain" });
                 case "close-stream":
                     closeStreamSent.Add(JsonSerializer.Deserialize<CloseStreamRequest>(command.PayloadJson, Json)!.StreamId);
@@ -50,7 +51,7 @@ public sealed class TunnelStreamLegsTests
         var legs = new TunnelStreamLegs(registry, send);
         var (ctx, body) = NewHttpContext();
 
-        var handled = await legs.TryServeFileAsync(ctx, Guid.NewGuid().ToString(), "dir1", "/some/abs/path.txt");
+        var handled = await legs.TryServeFileAsync(ctx, Guid.NewGuid().ToString(), TenantId.Local, "dir1", "/some/abs/path.txt");
 
         Assert.True(handled);
         Assert.Equal("text/plain", ctx.Response.ContentType);
@@ -69,7 +70,7 @@ public sealed class TunnelStreamLegsTests
         var legs = new TunnelStreamLegs(registry, send);
         var (ctx, _) = NewHttpContext();
 
-        var handled = await legs.TryServeFileAsync(ctx, Guid.NewGuid().ToString(), "dir1", "/missing");
+        var handled = await legs.TryServeFileAsync(ctx, Guid.NewGuid().ToString(), TenantId.Local, "dir1", "/missing");
 
         Assert.True(handled);
         Assert.Equal(StatusCodes.Status404NotFound, ctx.Response.StatusCode);
@@ -84,7 +85,7 @@ public sealed class TunnelStreamLegsTests
         var legs = new TunnelStreamLegs(registry, send);
         var (ctx, body) = NewHttpContext();
 
-        var handled = await legs.TryServeFileAsync(ctx, Guid.NewGuid().ToString(), "dir1", "/x");
+        var handled = await legs.TryServeFileAsync(ctx, Guid.NewGuid().ToString(), TenantId.Local, "dir1", "/x");
 
         Assert.False(handled); // caller falls back to the HTTP proxy path
         Assert.Empty(body.ToArray());
@@ -103,7 +104,7 @@ public sealed class TunnelStreamLegsTests
         var stub = new StubServerWebSocket();
         var ctx = NewWebSocketContext(stub);
 
-        await legs.ServeTerminalAsync(ctx, Guid.NewGuid().ToString(), "dir1");
+        await legs.ServeTerminalAsync(ctx, Guid.NewGuid().ToString(), TenantId.Local, "dir1");
 
         Assert.Contains(stub.SentText, t => t.Contains("\"type\":\"closed\"") && t.Contains("session not found"));
         Assert.Equal(0, registry.LiveStreamCount);
@@ -124,7 +125,7 @@ public sealed class TunnelStreamLegsTests
                     var req = JsonSerializer.Deserialize<OpenStreamRequest>(command.PayloadJson, Json)!;
                     _ = Task.Run(async () =>
                     {
-                        try { await registry.ConsumeAsync(req.StreamId, TerminalForever(req.StreamId), CancellationToken.None); }
+                        try { await registry.ConsumeAsync(req.StreamId, new StreamOwner(TenantId.Local, "dir1"), TerminalForever(req.StreamId), CancellationToken.None); }
                         finally { producerEnded.TrySetResult(); }
                     });
                     return Ok();
@@ -140,7 +141,7 @@ public sealed class TunnelStreamLegsTests
         var stub = new StubServerWebSocket();
         var ctx = NewWebSocketContext(stub);
 
-        var serve = legs.ServeTerminalAsync(ctx, Guid.NewGuid().ToString(), "dir1");
+        var serve = legs.ServeTerminalAsync(ctx, Guid.NewGuid().ToString(), TenantId.Local, "dir1");
 
         await WaitUntil(() => stub.SentBinaryCount > 0, TimeSpan.FromSeconds(3));
         Assert.Equal(1, registry.LiveStreamCount);

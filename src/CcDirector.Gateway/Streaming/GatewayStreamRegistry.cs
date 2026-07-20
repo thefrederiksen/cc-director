@@ -27,6 +27,14 @@ public sealed class GatewayStreamRegistry
     {
         public required IStreamSink Sink { get; init; }
         public required CancellationTokenSource Cts { get; init; }
+        /// <summary>
+        /// Issue #1923: the identity allowed to stream frames into this sink - the tenant that opened the
+        /// stream and the Director the open command was sent to. Recorded at registration; checked on every
+        /// claim/write. Without it the bare stream id was the only key, so any authenticated caller that
+        /// learned or guessed another account's id could WRITE into that account's terminal, claim the stream
+        /// before the real Director, or tear it down.
+        /// </summary>
+        public required StreamOwner Owner { get; init; }
         public Timer? OpenTimeout { get; set; }
         public int Claimed;
     }
@@ -52,18 +60,28 @@ public sealed class GatewayStreamRegistry
     /// StreamUp-never-arrives timeout. Returns a token that fires when the stream is torn down (a browser
     /// disconnect via <see cref="Close"/>, the timeout, or natural completion) so the caller can stop waiting.
     /// A duplicate stream id is a fail-loud error (ids are fresh Guids and must be unique).
+    ///
+    /// Issue #1923: the caller MUST supply the <paramref name="owner"/> - the tenant whose request opened this
+    /// stream and the Director the open command is being sent to. That pair is recorded on the entry and is
+    /// what <see cref="ConsumeAsync"/> authorizes every incoming StreamUp against, so a stream can only ever be
+    /// claimed, written, or ended by the Director it was opened on, inside the account that opened it.
     /// </summary>
-    public CancellationToken Register(string streamId, IStreamSink sink)
+    public CancellationToken Register(string streamId, StreamOwner owner, IStreamSink sink)
     {
         if (string.IsNullOrEmpty(streamId)) throw new ArgumentException("streamId is required", nameof(streamId));
         if (sink is null) throw new ArgumentNullException(nameof(sink));
+        // Fail loud on an unusable owner rather than recording one that would authorize nobody (or, worse,
+        // anybody). An invalid tenant or a blank Director id means the caller does not actually know who owns
+        // this stream, and a stream whose owner is unknown must never be opened.
+        if (!owner.Tenant.IsValid) throw new ArgumentException("stream owner tenant is required", nameof(owner));
+        if (string.IsNullOrWhiteSpace(owner.DirectorId)) throw new ArgumentException("stream owner directorId is required", nameof(owner));
 
-        var entry = new Entry { Sink = sink, Cts = new CancellationTokenSource() };
+        var entry = new Entry { Sink = sink, Cts = new CancellationTokenSource(), Owner = owner };
         if (!_streams.TryAdd(streamId, entry))
             throw new InvalidOperationException($"stream id already registered (ids must be fresh and unique): {streamId}");
 
         entry.OpenTimeout = new Timer(_ => TimeoutUnclaimed(streamId), null, _openTimeout, Timeout.InfiniteTimeSpan);
-        FileLog.Write($"[GatewayStreamRegistry] registered stream {streamId} (live={_streams.Count})");
+        FileLog.Write($"[GatewayStreamRegistry] registered stream {streamId} ({owner.ToLogString()}, live={_streams.Count})");
         return entry.Cts.Token;
     }
 
@@ -83,8 +101,15 @@ public sealed class GatewayStreamRegistry
     /// on the Closed frame, natural completion, cancellation (a browser disconnect via <see cref="Close"/>), or
     /// the hub connection aborting. If no sink is registered for this id the frames are dropped and the method
     /// returns at once (StreamUp-after-sink-gone: the browser is already gone).
+    ///
+    /// Issue #1923 - AUTHORIZATION, not just authentication. <paramref name="caller"/> is the identity the hub
+    /// resolved for the connection sending these frames (its bound tenant and its bound Director id). It is
+    /// checked against the owner recorded at <see cref="Register"/>, and a mismatch REFUSES the call by
+    /// throwing - the frames never reach the sink, the stream is not claimed, and it is not torn down. Proving
+    /// WHO the caller is (which the hub's Hello binding already does) is not proving the caller owns THIS
+    /// stream; this method is where the second question is answered.
     /// </summary>
-    public async Task ConsumeAsync(string streamId, IAsyncEnumerable<DirectorStreamFrame> frames, CancellationToken hubCancellation)
+    public async Task ConsumeAsync(string streamId, StreamOwner caller, IAsyncEnumerable<DirectorStreamFrame> frames, CancellationToken hubCancellation)
     {
         if (frames is null) throw new ArgumentNullException(nameof(frames));
 
@@ -94,6 +119,16 @@ public sealed class GatewayStreamRegistry
             // is nothing to pump into; return immediately so the Director's producer is not consumed further.
             FileLog.Write($"[GatewayStreamRegistry] StreamUp for unknown/closed stream {streamId}; dropping (sink already gone)");
             return;
+        }
+
+        if (!entry.Owner.Matches(caller))
+        {
+            // REFUSE - loudly. A silent drop here would be indistinguishable from the legitimate no-op above,
+            // which is exactly what would let a cross-account injection attempt look like an ordinary race in
+            // the log. Nothing is claimed and nothing is torn down: the real owner's stream is untouched, so a
+            // wrong caller cannot deny it service either.
+            FileLog.Write($"[GatewayStreamRegistry] StreamUp REFUSED for stream {streamId}: caller ({caller.ToLogString()}) does not own it (owner {entry.Owner.ToLogString()})");
+            throw new StreamOwnershipDeniedException($"stream {streamId} is not owned by the calling Director");
         }
 
         Interlocked.Exchange(ref entry.Claimed, 1);
@@ -127,7 +162,18 @@ public sealed class GatewayStreamRegistry
         }
     }
 
-    /// <summary>Tear a stream down from the browser-facing side (the browser disconnected). Idempotent.</summary>
+    /// <summary>
+    /// Tear a stream down from the BROWSER-FACING side (the browser disconnected). Idempotent.
+    ///
+    /// Issue #1923 - why this one takes no owner. Every caller of this method is the Gateway leg that called
+    /// <see cref="Register"/> for that very stream id, inside the same request (see
+    /// <c>TunnelStreamLegs</c>); the id never leaves that method's local scope on this side. No Director,
+    /// device, or browser can reach it - the Director-facing surface is the hub, whose only stream method is
+    /// StreamUp, and the Director's own "close-stream" travels the OTHER way (Gateway to Director) and never
+    /// re-enters this registry. So there is no untrusted caller to authorize here. The teardown that IS
+    /// reachable by a Director runs in <see cref="ConsumeAsync"/>'s finally, behind the ownership check above.
+    /// If a caller-supplied close is ever added, it must carry and check an owner exactly as ConsumeAsync does.
+    /// </summary>
     public void Close(string streamId) => Teardown(streamId, "closed");
 
     private void Teardown(string streamId, string? reason)
