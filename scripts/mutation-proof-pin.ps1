@@ -149,7 +149,12 @@ switch ($Verb) {
             "# Written by scripts/mutation-proof-pin.ps1. Read MutationProofPinGuard.cs before editing by hand.",
             "phase=$Phase",
             "pinnedHead=$head",
-            "pinnedUtc=" + [DateTime]::UtcNow.ToString('o'),
+            # Parenthesised deliberately: in PowerShell the comma binds tighter than "+", so without these
+            # brackets this element parses as "pinnedUtc=" + (<timestamp>, "tree=...") and the timestamp
+            # lands on a line of its own. The guard then refuses the whole proof as a malformed pin, which
+            # is the correct behaviour and is exactly how this defect was found - but it is not what was
+            # meant, and it would have stopped the first proof anybody tried to run.
+            ("pinnedUtc=" + [DateTime]::UtcNow.ToString('o')),
             "tree=$root"
         )
         foreach ($m in $Mutates) { $lines += ("mutates=" + ($m -replace '\\', '/').Trim()) }
