@@ -57,6 +57,25 @@ public sealed class HostedContentDenyGroupFilterTests
 {
     private const string ProbeBody = "probe-served-zqxjv";
 
+    /// <summary>
+    /// The URL prefix of each family's guarded group, because they are NOT all the same and assuming they
+    /// were is what broke this rig on its first run. Three families map their group with an EMPTY prefix
+    /// (the route paths are written out in full inside the group, so the self-host surface stays
+    /// byte-identical); the utterance family maps its group at "/wingman/utterance" and writes its routes
+    /// relative to that. A probe mapped onto a group is reachable only under that group's prefix, so the
+    /// prefix has to come from the production code rather than from an assumption about it.
+    /// </summary>
+    private static string PrefixFor(string family) => family switch
+    {
+        "transcription" => "",
+        "instructions" => "",
+        "utterance" => "wingman/utterance/",
+        "dictation" => "",
+        _ => throw new ArgumentOutOfRangeException(nameof(family)),
+    };
+
+    private static string ProbePath(string family) => PrefixFor(family) + "probe-added-later";
+
     private const string TranscriptionRefusal = "transcription analysis is not available on the hosted gateway";
     private const string InstructionsRefusal = "the wingman instructions surface is not available on the hosted gateway";
     private const string UtteranceRefusal = "the wingman utterance upload is not available on the hosted gateway";
@@ -85,7 +104,7 @@ public sealed class HostedContentDenyGroupFilterTests
 
         await using var rig = await Rig.StartAsync(family);
 
-        var resp = await rig.Http.GetAsync("probe-added-later");
+        var resp = await rig.Http.GetAsync(ProbePath(family));
 
         var root = await ContentFingerprint.AsJsonObjectAsync(resp, $"{family} probe on hosted");
         Assert.Equal(new[] { "error" }, root.EnumerateObject().Select(p => p.Name).ToArray());
@@ -112,11 +131,11 @@ public sealed class HostedContentDenyGroupFilterTests
 
         await using var rig = await Rig.StartAsync(family);
 
-        var resp = await rig.Http.GetAsync("probe-added-later");
+        var resp = await rig.Http.GetAsync(ProbePath(family));
         var body = await resp.Content.ReadAsStringAsync();
 
-        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
         Assert.Equal(ProbeBody, body);
+        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
     }
 
     // ===== 3. SCOPING CONTROL: a route OUTSIDE the group still serves on hosted =====
