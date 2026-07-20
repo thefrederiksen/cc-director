@@ -100,6 +100,18 @@ internal static class GatewayDictationEndpoint
     /// 404 rather than 403: on hosted this upload family does not exist as a concept - an upload id is
     /// meaningless without a tenant to scope it to, and the store has none - so "not here" is the truthful
     /// answer. 403 would imply the right credential could reach it, and none can.
+    ///
+    /// UN-DENY CONDITION - THE WRITE IS STOPPED. Nothing accumulates behind this refusal into the dictation
+    /// store, so lifting it does not expose a history built up while it stood. The five legs in this group
+    /// are the ONLY writers into the dictation <c>VoiceUploadStore</c>: the instance is constructed once in
+    /// <c>GatewayHost</c> against the dictation-uploads root and reaches this endpoint plus one read-only
+    /// status query, and every <c>uploads.</c> mutation in this file - register, mark pending, store chunk,
+    /// mark delivered, mark failed, acknowledge, mark abandoned - sits inside the guarded group. The static
+    /// <c>_completes</c> cache is filled only by the completion leg, which is refused too. NOTE THE
+    /// BOUNDARY OF THAT CLAIM: it is about THIS store. A completed dictation also used to write a turn into
+    /// the shared transcription telemetry log, and that log is the transcription-analysis family's problem,
+    /// not this one's - see the un-deny condition on <c>TranscriptionAnalysisEndpoint</c>, which is the
+    /// accumulating kind.
     /// </summary>
     private static IResult? DenyOnHosted()
     {

@@ -64,6 +64,15 @@ internal static class WingmanInstructionsEndpoint
     /// 404 rather than 403: on hosted these routes do not exist as a concept - there is no per-tenant
     /// training pool and no per-tenant wingman prompt - so "not here" is the truthful answer. 403 would
     /// imply the right credential could reach them, and none can.
+    ///
+    /// UN-DENY CONDITION - THE PROMPT WRITE IS STOPPED, THE RECORD WRITE IS NOT, SO THIS IS THE
+    /// ACCUMULATING KIND. Removing this deny requires ALSO purging or partitioning what accumulated behind
+    /// it. The prompt half is genuinely contained: every route that can rewrite the wingman instructions
+    /// (the save, the revert and the switch-to-default) is inside this group and refused with the reads. The
+    /// TRAINING RECORDS are not: they are written by the wingman voice-turn path through
+    /// <c>WingmanVoiceService</c> -> <c>WingmanTrainingStore.CaptureAsync</c>, which this group does not
+    /// touch and issue #1853's separate interim write deny has not landed. Raw session terminal output from
+    /// every account therefore keeps piling into one untenanted store while this refusal stands.
     /// </summary>
     private static IResult? DenyOnHosted()
     {

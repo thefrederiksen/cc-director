@@ -68,6 +68,14 @@ internal static class TranscriptionAnalysisEndpoint
     /// 404 rather than 403: on hosted this analysis surface does not exist as a concept - there is no
     /// per-tenant log for it to read - so "not here" is the truthful answer. 403 would imply the right
     /// credential could reach it, and none can.
+    ///
+    /// UN-DENY CONDITION - THIS IS A READ DENY AND THE WRITE IS NOT STOPPED. Removing this deny requires
+    /// ALSO purging or partitioning what accumulated behind it. The telemetry log keeps being written on
+    /// hosted the whole time this refusal stands: <c>GatewayTranscriptionService</c> records a turn on every
+    /// transcription, and the routes that reach it are not in this group. So the file this deny hides goes
+    /// on mixing every account's raw and cleaned speech, and the day the refusal is lifted it would expose a
+    /// contaminated history rather than a clean start. Records written with no tenant on them cannot be
+    /// attributed afterwards - the choice is deletion or quarantine, not a later migration.
     /// </summary>
     private static IResult? DenyOnHosted()
     {

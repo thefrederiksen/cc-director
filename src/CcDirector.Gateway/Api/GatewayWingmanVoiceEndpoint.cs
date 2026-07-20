@@ -95,6 +95,14 @@ internal static class GatewayWingmanVoiceEndpoint
     /// 404 rather than 403: on hosted this upload family does not exist as a concept - an upload id is
     /// meaningless without a tenant to scope it to, and the store has none - so "not here" is the truthful
     /// answer. 403 would imply the right credential could reach it, and none can.
+    ///
+    /// UN-DENY CONDITION - THE WRITE IS STOPPED. Nothing accumulates behind this refusal, so lifting it does
+    /// not expose a history built up while it stood. The three legs in this group are the ONLY writers into
+    /// the voice-turn <c>VoiceUploadStore</c>: the store instance is constructed once in <c>GatewayHost</c>
+    /// and handed to this endpoint alone, and every <c>uploads.</c> call in this file sits inside the guarded
+    /// group. Registering, staging a chunk and assembling a transcript are all refused, so on hosted no
+    /// utterance bytes and no assembled transcript are written at all. (Whatever predates the deny is a
+    /// separate matter, and is covered by the partitioning gate in issue #1896.)
     /// </summary>
     private static IResult? DenyUtteranceOnHosted()
     {
