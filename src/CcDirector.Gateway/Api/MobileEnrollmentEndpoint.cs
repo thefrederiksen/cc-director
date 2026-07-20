@@ -35,20 +35,30 @@ internal static class MobileEnrollmentEndpoint
     {
         if (service is null) throw new ArgumentNullException(nameof(service));
 
+        // FAIL CLOSED, at startup, on a miswired hosted host. The hosted-vs-self-host path is decided by the
+        // INDEPENDENT hosted-mode signal (GatewayHostedMode.IsHosted read directly in the delegate), never by
+        // whether this optional argument was passed - deciding on arg-presence FAILS OPEN, silently routing a
+        // hosted deployment through the self-host device-key-in-body path on a one-word omission. So a hosted
+        // Gateway mapped without its mint dependencies refuses to START rather than degrade unseen.
+        if (GatewayHostedMode.IsHosted && hosted is null)
+            throw new InvalidOperationException(
+                "This Gateway is in hosted mode but /m/enroll was mapped without hosted enrollment dependencies. Refusing to start rather than fall through to the self-host device-key-in-body path.");
+
         app.MapPost("/m/enroll", async (MobileEnrollmentRequest? req, HttpContext ctx) =>
         {
             try
             {
                 FileLog.Write($"[MobileEnrollment] POST /m/enroll: deviceId={req?.DeviceId}, platform={req?.Platform} (device key not logged)");
 
-                // HOSTED: this is a HUMAN account sign-in, not a cloud-device-key exchange. The account access
-                // token rides in the Authorization: Bearer header (a public pre-auth route, so AuthMiddleware
-                // does not pre-validate it as a device key - this endpoint reads it as the account token). It is
-                // turned into a tenant-scoped device key by the ONE hosted mint - the same single mint path the
-                // hosted Cockpit callback and a hosted Director use. The self-host device-key-in-body path below
-                // is untouched.
-                if (hosted is not null)
-                    return CompleteHostedEnroll(ctx, req, hosted);
+                // HOSTED (decided by the INDEPENDENT hosted-mode signal, not by the argument): this is a HUMAN
+                // account sign-in, not a cloud-device-key exchange. The account access token rides in the
+                // Authorization: Bearer header (a public pre-auth route, so AuthMiddleware does not pre-validate
+                // it as a device key - this endpoint reads it as the account token). It is turned into a
+                // tenant-scoped device key by the ONE hosted mint - the same single mint path the hosted Cockpit
+                // callback and a hosted Director use. hosted is non-null here by the map-time fail-closed guard.
+                // The self-host device-key-in-body path below is untouched.
+                if (GatewayHostedMode.IsHosted)
+                    return CompleteHostedEnroll(ctx, req, hosted!);
 
                 var outcome = await service
                     .EnrollAsync(req?.DeviceKey, req?.DeviceId, req?.Name, req?.Platform, ctx.RequestAborted)

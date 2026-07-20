@@ -1,8 +1,6 @@
-using System;
 using CcDirector.Core.Account;
 using CcDirector.Core.Utilities;
 using CcDirector.Gateway.Account;
-using CcDirector.Gateway.Contracts;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
@@ -92,14 +90,7 @@ internal static class AccountSignInCallbackEndpoint
     /// </summary>
     /// <param name="app">The route builder.</param>
     /// <param name="signIn">The Gateway-hosted DevThrottle sign-in flow (issue #637), or null on a host with no credential service.</param>
-    /// <param name="hosted">
-    /// The hosted-mint dependencies. NON-NULL only on a HOSTED Gateway: a human signing in there does not store
-    /// a single-owner credential (there is none) - the callback runs the ONE hosted mint
-    /// (<see cref="HostedEnrollmentEndpoint.Enroll"/>) and hands the browser a tenant-scoped device key in the
-    /// session cookie. NULL is the self-host case, where the callback stores the captured credential through
-    /// <paramref name="signIn"/> exactly as before (byte-unchanged).
-    /// </param>
-    public static void Map(IEndpointRouteBuilder app, GatewaySignInService? signIn, HostedEnrollDependencies? hosted = null)
+    public static void Map(IEndpointRouteBuilder app, GatewaySignInService? signIn)
     {
         // GET: the browser lands here after cloud sign-in. New shape (issue #1082): the token pair is in the
         // URL FRAGMENT (never sent to the server), so a plain GET with no token in the query serves the shared
@@ -108,17 +99,6 @@ internal static class AccountSignInCallbackEndpoint
         // migrate to the fragment shape without breaking sign-in.
         app.MapGet(Path, (HttpContext ctx) =>
         {
-            // HOSTED: there is no single-owner credential service to store into; a human sign-in MINTS a
-            // tenant-scoped device key instead. Serve the same fragment hand-back page, whose script reads the
-            // account access token from the URL fragment (never the query - no token on any URL or log) and
-            // POSTs it back same-origin, where the POST handler runs the one hosted mint. The device-id-carrying
-            // page script is finalized with the hosted Cockpit login user interface.
-            if (hosted is not null)
-            {
-                FileLog.Write("[AccountSignInCallbackEndpoint] GET /account/sign-in-callback (hosted): served the fragment hand-back page (awaiting the same-origin POST that mints the tenant-scoped key)");
-                return Results.Content(CredentialHandbackPage.BuildHtml(), "text/html; charset=utf-8");
-            }
-
             // No sign-in flow on this host: there is nothing to store a credential into, so report it
             // explicitly instead of silently discarding the hand-back.
             if (signIn is null)
@@ -166,21 +146,15 @@ internal static class AccountSignInCallbackEndpoint
         // a retry message); the response echoes no token (DT-05).
         app.MapPost(Path, async (HttpContext ctx) =>
         {
-            string body;
-            using (var reader = new StreamReader(ctx.Request.Body))
-                body = await reader.ReadToEndAsync().ConfigureAwait(false);
-
-            // HOSTED: run the ONE hosted mint. The body carries the account access token and a browser-generated
-            // device id; the account token is verified, gated on entitlement, and turned into a tenant-scoped
-            // device key by HostedEnrollmentEndpoint.Enroll - the same single mint path a hosted Director uses.
-            if (hosted is not null)
-                return CompleteHostedSignIn(ctx, body, hosted);
-
             if (signIn is null)
             {
                 FileLog.Write("[AccountSignInCallbackEndpoint] POST /account/sign-in-callback: no sign-in flow on this host -> not available");
                 return Results.Json(new { ok = false }, statusCode: StatusCodes.Status400BadRequest);
             }
+
+            string body;
+            using (var reader = new StreamReader(ctx.Request.Body))
+                body = await reader.ReadToEndAsync().ConfigureAwait(false);
 
             if (!CredentialHandbackPage.TryParseJsonBody(body, out var accessToken, out var refreshToken))
             {
@@ -198,50 +172,6 @@ internal static class AccountSignInCallbackEndpoint
             FileLog.Write("[AccountSignInCallbackEndpoint] POST /account/sign-in-callback: sign-in completed - credential stored on the Gateway (fragment hand-back, no token in the URL)");
             return Results.Json(new { ok = true });
         });
-    }
-
-    /// <summary>
-    /// Completes a HOSTED human sign-in: parse the account access token and browser-generated device id from the
-    /// posted hand-back body, run the ONE hosted mint (<see cref="HostedEnrollmentEndpoint.Enroll"/>), and on a
-    /// successful mint set the tenant-scoped device key as the session cookie. This method does NOT validate the
-    /// token, gate on entitlement, or mint a tenant/key itself - every one of those decisions is inherited from
-    /// the single <c>Enroll</c> call, so a bad token (401), an unentitled account (402), or an unknown
-    /// entitlement read (503) each returns from <c>Enroll</c> and sets NO cookie and mints NOTHING. The account
-    /// access token is used only to verify the account subject and is then DISCARDED - never stored (the
-    /// long-lived credential is the minted device key) and never logged (security rule DT-05).
-    /// </summary>
-    private static IResult CompleteHostedSignIn(HttpContext ctx, string body, HostedEnrollDependencies hosted)
-    {
-        if (!CredentialHandbackPage.TryParseHostedBody(body, out var accessToken, out var deviceId))
-        {
-            FileLog.Write("[AccountSignInCallbackEndpoint] POST /account/sign-in-callback (hosted): the hand-back is missing the account token or the device id -> failing loud (nothing minted)");
-            return Results.Json(new { ok = false }, statusCode: StatusCodes.Status400BadRequest);
-        }
-
-        // The browser device id flows INTO Enroll so Enroll namespaces it with the resolved tenant hash (two
-        // accounts presenting the same device id cannot collide). We do NOT hash or scope it here.
-        var req = new EnrollSignedInRequest
-        {
-            DeviceId = deviceId,
-            MachineName = "",                                   // a roster label only; a browser has no machine name
-            Platform = MobileDeviceEnrollmentService.BrowserDeviceType,
-            DeviceType = MobileDeviceEnrollmentService.BrowserDeviceType,
-        };
-
-        var result = HostedEnrollmentEndpoint.Enroll(accessToken, req, hosted.Devices, hosted.Tenants,
-            hosted.AccountTokenValidator, hosted.Entitlements, DateTime.UtcNow);
-
-        if (result.Status != StatusCodes.Status200OK || result.Response is null)
-        {
-            FileLog.Write($"[AccountSignInCallbackEndpoint] POST /account/sign-in-callback (hosted): the hosted mint did not enroll -> {result.Status} (no cookie set, account token discarded)");
-            return Results.Json(new { ok = false }, statusCode: result.Status);
-        }
-
-        // The one credential the browser keeps is the tenant-scoped device key, set here through the single
-        // cookie helper. The account access token is discarded (never persisted on hosted).
-        GatewayTokenCookie.Set(ctx, result.Response.DeviceKey);
-        FileLog.Write("[AccountSignInCallbackEndpoint] POST /account/sign-in-callback (hosted): signed in - minted a tenant-scoped device key and set the session cookie (account token discarded, not logged)");
-        return Results.Json(new { ok = true });
     }
 
     /// <summary>Builds a 200 text/html status page with the given single line of user-safe status text (no token).</summary>

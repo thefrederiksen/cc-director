@@ -26,13 +26,19 @@ namespace CcDirector.Gateway.Tests;
 /// <c>POST /m/enroll</c> on a hosted Gateway reads the human's account access token from the Authorization Bearer
 /// header (a public pre-auth route, so the middleware does not pre-validate it as a device key) and MINTS a
 /// tenant-scoped device key through the ONE mint <see cref="HostedEnrollmentEndpoint.Enroll"/> - never through a
-/// second token path.
+/// second token path. This is the ONLY hosted human sign-in entry point (the hosted /account/sign-in-callback was
+/// descoped as unreached; all hosted clients use the /device-callback -> /m/enroll flow).
 ///
-/// The proofs mirror the callback's: a valid token mints a tenant-scoped key and sets the session cookie; a
-/// forged, expired, or wrong-audience Bearer each returns 401 and mints NOTHING; the paid gate returns 402 on
-/// NotEntitled and 503-retry on Unknown and mints on NEITHER; and the self-host device-key-in-body path is
-/// unchanged (the control, asserted positively). Every refusal checks BOTH halves - the status AND that no cookie
-/// was set and no tenant was minted. The account token is never echoed (security rule DT-05).
+/// The hosted path is selected by the INDEPENDENT hosted-mode signal (<c>CC_GATEWAY_HOSTED</c>) read directly by
+/// the endpoint, NOT by whether a dependency argument was passed - so these set that variable on (the assembly
+/// runs sequentially, so toggling it here is safe; restored in <see cref="Dispose"/>). A hosted Gateway mapped
+/// without its mint dependencies must refuse to start (finding 2, proven by
+/// <see cref="HostedMode_WithoutDependencies_RefusesToStart"/>).
+///
+/// Each refusal checks EVERY half - the status, no cookie, no tenant mapping, AND (mission #474 rework) that the
+/// device registry is byte-for-byte UNCHANGED (no device key minted OR PERSISTED). A 401 that still persisted a
+/// key would satisfy a status/cookie/tenant assertion while leaking the credential the boundary protects, so the
+/// registry-unchanged assertion is stated directly (finding 1). The account token is never echoed (DT-05).
 /// </summary>
 public sealed class HostedMobileAccountEnrollTests : IDisposable
 {
@@ -42,12 +48,39 @@ public sealed class HostedMobileAccountEnrollTests : IDisposable
     private readonly GatewayDbTestHarness _harness = new();
     private readonly string _devPath = Path.Combine(Path.GetTempPath(), $"hma-dev-{Guid.NewGuid():N}.json");
     private readonly TestEs256Key _key = new();
+    private readonly string? _priorHosted;
+
+    public HostedMobileAccountEnrollTests()
+    {
+        // These tests exercise the HOSTED path, which the endpoint selects on GatewayHostedMode.IsHosted read
+        // directly. The assembly runs sequentially (TestParallelization disabled), so setting it here is safe;
+        // Dispose restores the prior value.
+        _priorHosted = Environment.GetEnvironmentVariable("CC_GATEWAY_HOSTED");
+        Environment.SetEnvironmentVariable("CC_GATEWAY_HOSTED", "1");
+    }
 
     public void Dispose()
     {
+        Environment.SetEnvironmentVariable("CC_GATEWAY_HOSTED", _priorHosted);
         _harness.Dispose();
         _key.Dispose();
         if (File.Exists(_devPath)) File.Delete(_devPath);
+    }
+
+    /// <summary>Runs a block with hosted mode forced OFF (the self-host control), restoring the prior value after.</summary>
+    private static IDisposable SelfHostMode() => new EnvScope("CC_GATEWAY_HOSTED", null);
+
+    private sealed class EnvScope : IDisposable
+    {
+        private readonly string _name;
+        private readonly string? _prior;
+        public EnvScope(string name, string? value)
+        {
+            _name = name;
+            _prior = Environment.GetEnvironmentVariable(name);
+            Environment.SetEnvironmentVariable(name, value);
+        }
+        public void Dispose() => Environment.SetEnvironmentVariable(_name, _prior);
     }
 
     private GatewayDatabase OpenWithEntitlements(string subject, bool entitled)
@@ -85,6 +118,15 @@ public sealed class HostedMobileAccountEnrollTests : IDisposable
         var hosted = new HostedEnrollDependencies(devices, tenants, validator, new EntitlementRegistry(db, requireLivemode: false));
         return (devices, tenants, hosted);
     }
+
+    /// <summary>
+    /// A full snapshot of the device registry's observable state - the live device count AND the persisted store
+    /// file's exact bytes. A refusal that wrongly minted or PERSISTED a key changes one or both, so asserting this
+    /// unchanged across a refusal is the direct proof that nothing was given away (mission #474 rework: a status +
+    /// cookie + tenant proof does NOT prove no key was persisted).
+    /// </summary>
+    private (int count, string file) RegistrySnapshot(DeviceRegistry devices) =>
+        (devices.Count, File.Exists(_devPath) ? File.ReadAllText(_devPath) : "");
 
     /// <summary>A stand-in enrollment service; on the hosted branch it is never called, and on the self-host
     /// control it reports NotSignedIn (no cloud account), which is enough to prove the self-host path was taken.</summary>
@@ -137,6 +179,8 @@ public sealed class HostedMobileAccountEnrollTests : IDisposable
 
     private string Token(string subject) => _key.Token(subject, subject + "@example.com", Audience, Issuer);
 
+    // -------- The positive control every refusal below is measured against. --------
+
     [Fact]
     public async Task ValidBearerToken_ReturnsTenantScopedKey_SetsHttpOnlyCookie_NoTokenEchoed()
     {
@@ -183,128 +227,168 @@ public sealed class HostedMobileAccountEnrollTests : IDisposable
         finally { http.Dispose(); await app.DisposeAsync(); }
     }
 
+    // -------- Bad tokens: each 401, NO cookie, NOTHING minted OR PERSISTED. --------
+
     [Fact]
-    public async Task ForgedHs256Bearer_401_NoCookie_NothingMinted()
+    public async Task ForgedHs256Bearer_401_NoCookie_RegistryUnchanged()
     {
         var db = OpenWithEntitlements("sub-attacker", entitled: true);
-        var (_, tenants, hosted) = WireHosted(db);
+        var (devices, tenants, hosted) = WireHosted(db);
         var forged = TestEs256Key.Hs256Token("test-signing-secret", "sub-attacker", Audience, Issuer);
         var (app, http) = await StartHostedAsync(hosted);
         try
         {
+            var before = RegistrySnapshot(devices);
             var resp = await PostBearerAsync(http, forged, "dev-a");
             Assert.Equal(HttpStatusCode.Unauthorized, resp.StatusCode);
             Assert.Null(GatewayCookieValue(resp));
             Assert.Null(tenants.LookupBySubject("sub-attacker"));
+            Assert.Equal(before, RegistrySnapshot(devices));   // no device key minted or persisted
         }
         finally { http.Dispose(); await app.DisposeAsync(); }
     }
 
     [Fact]
-    public async Task ExpiredBearer_401_NoCookie_NothingMinted()
+    public async Task ExpiredBearer_401_NoCookie_RegistryUnchanged()
     {
         var db = OpenWithEntitlements("sub-alice", entitled: true);
-        var (_, tenants, hosted) = WireHosted(db);
+        var (devices, tenants, hosted) = WireHosted(db);
         var (app, http) = await StartHostedAsync(hosted);
         try
         {
+            var before = RegistrySnapshot(devices);
             var resp = await PostBearerAsync(http, _key.ExpiredToken("sub-alice", "a@x.com", Audience, Issuer), "dev-a");
             Assert.Equal(HttpStatusCode.Unauthorized, resp.StatusCode);
             Assert.Null(GatewayCookieValue(resp));
             Assert.Null(tenants.LookupBySubject("sub-alice"));
+            Assert.Equal(before, RegistrySnapshot(devices));
         }
         finally { http.Dispose(); await app.DisposeAsync(); }
     }
 
     [Fact]
-    public async Task WrongAudienceBearer_401_NoCookie_NothingMinted()
+    public async Task WrongAudienceBearer_401_NoCookie_RegistryUnchanged()
     {
         var db = OpenWithEntitlements("sub-alice", entitled: true);
-        var (_, tenants, hosted) = WireHosted(db);
+        var (devices, tenants, hosted) = WireHosted(db);
         var (app, http) = await StartHostedAsync(hosted);
         try
         {
+            var before = RegistrySnapshot(devices);
             var resp = await PostBearerAsync(http, _key.Token("sub-alice", "a@x.com", audience: "some-other-audience", issuer: Issuer), "dev-a");
             Assert.Equal(HttpStatusCode.Unauthorized, resp.StatusCode);
             Assert.Null(GatewayCookieValue(resp));
             Assert.Null(tenants.LookupBySubject("sub-alice"));
+            Assert.Equal(before, RegistrySnapshot(devices));
         }
         finally { http.Dispose(); await app.DisposeAsync(); }
     }
 
     [Fact]
-    public async Task MissingBearer_401_NoCookie()
+    public async Task MissingBearer_401_NoCookie_RegistryUnchanged()
     {
         var db = OpenWithEntitlements("sub-alice", entitled: true);
-        var (_, tenants, hosted) = WireHosted(db);
+        var (devices, tenants, hosted) = WireHosted(db);
         var (app, http) = await StartHostedAsync(hosted);
         try
         {
+            var before = RegistrySnapshot(devices);
             var resp = await PostBearerAsync(http, bearer: null, "dev-a");
             Assert.Equal(HttpStatusCode.Unauthorized, resp.StatusCode);
             Assert.Null(GatewayCookieValue(resp));
             Assert.Null(tenants.LookupBySubject("sub-alice"));
+            Assert.Equal(before, RegistrySnapshot(devices));
         }
         finally { http.Dispose(); await app.DisposeAsync(); }
     }
 
+    // -------- The paid gate: 402 on NotEntitled, 503-retry on Unknown, NOTHING minted OR PERSISTED on either. --------
+
     [Fact]
-    public async Task NotEntitled_402_NoCookie_NothingMinted()
+    public async Task NotEntitled_402_NoCookie_RegistryUnchanged()
     {
         var db = OpenWithEntitlements("sub-alice", entitled: false);
-        var (_, tenants, hosted) = WireHosted(db);
+        var (devices, tenants, hosted) = WireHosted(db);
         var (app, http) = await StartHostedAsync(hosted);
         try
         {
+            var before = RegistrySnapshot(devices);
             var resp = await PostBearerAsync(http, Token("sub-alice"), "dev-a");
             Assert.Equal(HttpStatusCode.PaymentRequired, resp.StatusCode);
             Assert.Null(GatewayCookieValue(resp));
             Assert.Null(tenants.LookupBySubject("sub-alice"));
+            Assert.Equal(before, RegistrySnapshot(devices));
         }
         finally { http.Dispose(); await app.DisposeAsync(); }
     }
 
     [Fact]
-    public async Task UnknownEntitlement_503Retry_NoCookie_NothingMinted()
+    public async Task UnknownEntitlement_503Retry_NoCookie_RegistryUnchanged()
     {
         var db = _harness.Open();   // no entitlements table -> the read fails -> Unknown
-        var (_, tenants, hosted) = WireHosted(db);
+        var (devices, tenants, hosted) = WireHosted(db);
         var (app, http) = await StartHostedAsync(hosted);
         try
         {
+            var before = RegistrySnapshot(devices);
             var resp = await PostBearerAsync(http, Token("sub-alice"), "dev-a");
             Assert.Equal(HttpStatusCode.ServiceUnavailable, resp.StatusCode);
             Assert.NotEqual(HttpStatusCode.PaymentRequired, resp.StatusCode);
             Assert.Null(GatewayCookieValue(resp));
             Assert.Null(tenants.LookupBySubject("sub-alice"));
+            Assert.Equal(before, RegistrySnapshot(devices));
         }
         finally { http.Dispose(); await app.DisposeAsync(); }
     }
 
     [Fact]
-    public async Task MissingDeviceId_400_NothingMinted()
+    public async Task MissingDeviceId_400_RegistryUnchanged()
     {
         var db = OpenWithEntitlements("sub-alice", entitled: true);
-        var (_, tenants, hosted) = WireHosted(db);
+        var (devices, tenants, hosted) = WireHosted(db);
         var (app, http) = await StartHostedAsync(hosted);
         try
         {
+            var before = RegistrySnapshot(devices);
             var resp = await PostBearerAsync(http, Token("sub-alice"), deviceId: "   ");
             Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
             Assert.Null(GatewayCookieValue(resp));
             Assert.Null(tenants.LookupBySubject("sub-alice"));
+            Assert.Equal(before, RegistrySnapshot(devices));
         }
         finally { http.Dispose(); await app.DisposeAsync(); }
     }
 
+    // -------- Finding 2 (fail-closed): hosted mode WITHOUT the mint dependencies must refuse to start. --------
+
+    [Fact]
+    public async Task HostedMode_WithoutDependencies_RefusesToStart()
+    {
+        // The map-time fail-closed guard: a Gateway in hosted mode mapped without hosted enrollment dependencies
+        // must THROW rather than silently fall through to the self-host device-key-in-body path (the fail-open the
+        // law forbids). CC_GATEWAY_HOSTED is "1" (class ctor), so mapping with hosted=null must throw. This is the
+        // finding-2 guard; deleting the guard in MobileEnrollmentEndpoint reddens this test (proven at rework).
+        var builder = WebApplication.CreateBuilder();
+        builder.Logging.ClearProviders();
+        var app = builder.Build();
+        try
+        {
+            Assert.Throws<InvalidOperationException>(() => MobileEnrollmentEndpoint.Map(app, UnusedService(), hosted: null));
+        }
+        finally { await app.DisposeAsync(); }
+    }
+
+    // -------- The self-host control, asserted POSITIVELY: the hosted mint path is gated on the hosted signal. --------
+
     [Fact]
     public async Task SelfHost_IgnoresBearer_TakesDeviceKeyInBodyPath_Unchanged()
     {
-        // THE CONTROL, asserted positively. With NO hosted dependencies, /m/enroll is the self-host
-        // device-key-in-body path: the Bearer account token is NOT treated as an account token, no tenant-scoped
-        // mint runs, and the request flows to the enrollment service. With no cloud account wired that service
-        // answers NotSignedIn (409) - which is precisely NOT the hosted mint's 200/401/402/503, so it proves the
-        // hosted mint never engaged on self-host.
+        // THE CONTROL, asserted positively. With hosted mode OFF, /m/enroll is the self-host device-key-in-body
+        // path: the Bearer account token is NOT treated as an account token, no tenant-scoped mint runs, and the
+        // request flows to the enrollment service. With no cloud account wired that service answers NotSignedIn
+        // (409) - which is precisely NOT the hosted mint's 200/401/402/503, so it proves the hosted mint never
+        // engaged on self-host.
+        using var _ = SelfHostMode();
         var (app, http) = await StartHostedAsync(hosted: null);
         try
         {

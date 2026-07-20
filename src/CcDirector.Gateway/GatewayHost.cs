@@ -1818,11 +1818,11 @@ public sealed class GatewayHost : IAsyncDisposable
         Api.SignedInEnrollmentEndpoint.Map(_app, Devices, SignIn, _childMirror);
 
         // The hosted-mint dependencies, built ONCE for every hosted entry point that mints a tenant-scoped
-        // device key: the hosted Director enrollment below, the human account sign-in callback, and the hosted
-        // /m/enroll branch all pass this same bundle into the ONE mint (HostedEnrollmentEndpoint.Enroll).
-        // Non-null only on a hosted Gateway; null keeps every entry point on its self-host single-owner path.
-        // Building the account-token validator here once means all three share the identical
-        // signature/audience/issuer configuration - there is no second place that validates an account token.
+        // device key: the hosted Director enrollment below and the hosted /m/enroll branch both pass this same
+        // bundle into the ONE mint (HostedEnrollmentEndpoint.Enroll). Non-null only on a hosted Gateway; null
+        // keeps every entry point on its self-host path. Building the account-token validator here once means
+        // both share the identical signature/audience/issuer configuration - there is no second place that
+        // validates an account token.
         Api.HostedEnrollDependencies? hostedEnrollDeps = GatewayHostedMode.IsHosted
             ? new Api.HostedEnrollDependencies(
                 Devices, TenantRegistry,
@@ -2048,10 +2048,7 @@ public sealed class GatewayHost : IAsyncDisposable
         // token never leaves the Gateway and is never logged (security rule DT-05 - the access logger below
         // redacts this path's query so the handed-back credential never reaches the gateway log). On a host
         // with no sign-in flow (SignIn null) it reports an explicit "not available" result.
-        // On a HOSTED Gateway (hostedEnrollDeps non-null) this callback runs the ONE hosted mint instead of
-        // storing a single-owner credential: a human's account access token becomes a tenant-scoped device key
-        // in the session cookie. Self-host (null) stores the captured credential through SignIn exactly as before.
-        AccountSignInCallbackEndpoint.Map(_app, SignIn, hostedEnrollDeps);
+        AccountSignInCallbackEndpoint.Map(_app, SignIn);
 
         // The single Gateway speech-to-text endpoint (issue #839): a caller POSTs raw audio and gets
         // text back. The phone Notes worker, the Settings "Test it" button, and on-device mode all go
