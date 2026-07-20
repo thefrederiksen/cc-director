@@ -1,4 +1,5 @@
 using System;
+using System.Linq;
 using CcDirector.Core.Tenancy;
 using Xunit;
 
@@ -125,6 +126,67 @@ public sealed class TenantSessionKeyTests
     {
         // Given by character code rather than as an escaped literal, so no control character sits in source.
         Assert.Throws<ArgumentException>(() => TenantSessionKey.For(TenantA, "has" + control + "control"));
+    }
+
+    // ===== SAME-TENANT IDENTITY =====
+    // The tenancy dimension is only half the job. Within ONE tenant this type must keep distinct raw
+    // identifiers distinct, or the partition it builds merges the very things it exists to separate.
+
+    [Theory]
+    [InlineData(" leading")]
+    [InlineData("trailing ")]
+    [InlineData(" both ")]
+    public void SurroundingWhitespace_IsRefused_NotTrimmed(string sessionId)
+    {
+        // Trimming would map "x", " x" and "x " onto ONE entry, so a write for one would overwrite,
+        // suppress or delete another. Refusal keeps the injectivity promise instead of tidying input.
+        Assert.Throws<ArgumentException>(() => TenantSessionKey.For(TenantA, sessionId));
+        Assert.False(TenantSessionKey.TryFor(TenantA, sessionId, out _));
+    }
+
+    [Fact]
+    public void SameTenant_NearMissIdentifiers_AreNeverMergedIntoOneKey()
+    {
+        // The three that a trim would collapse. Exactly one of them is a valid identifier; the other two
+        // are refused. What must NOT happen is all three arriving at one key.
+        const string bare = "sess-near-miss";
+
+        var accepted = TenantSessionKey.For(TenantA, bare);
+
+        Assert.Throws<ArgumentException>(() => TenantSessionKey.For(TenantA, " " + bare));
+        Assert.Throws<ArgumentException>(() => TenantSessionKey.For(TenantA, bare + " "));
+        Assert.Equal(bare, accepted.SessionId);
+    }
+
+    [Fact]
+    public void SameTenant_DistinctIdentifiers_AlwaysDeriveDistinctKeys()
+    {
+        // The injectivity property stated directly: not-equal in, never-equal out. Deliberately includes
+        // pairs a normalizing implementation would fold - case, an inner space, a trailing digit.
+        var identifiers = new[]
+        {
+            "sess-1", "sess-2", "sess-10", "sess_1", "Sess-1", "SESS-1",
+            "sess 1", "sess  1", "a", "aa", "sess-1-", "-sess-1",
+        };
+
+        var keys = identifiers.Select(id => TenantSessionKey.For(TenantA, id)).ToList();
+
+        Assert.Equal(identifiers.Length, keys.Select(k => k.Value).Distinct(StringComparer.Ordinal).Count());
+        Assert.Equal(identifiers.Length, keys.Distinct().Count());
+        Assert.Equal(identifiers.Length, keys.Select(k => k.SessionId).Distinct(StringComparer.Ordinal).Count());
+    }
+
+    [Fact]
+    public void SessionIdentifier_IsStoredByteForByte_WithNoNormalization()
+    {
+        // An inner space is legitimate and must survive: it is neither leading nor trailing, so it is not
+        // the collision case, and altering it would change the identifier every external protocol carries.
+        const string inner = "sess with inner space";
+
+        var key = TenantSessionKey.For(TenantA, inner);
+
+        Assert.Equal(inner, key.SessionId);
+        Assert.EndsWith(inner, key.Value, StringComparison.Ordinal);
     }
 
     [Fact]

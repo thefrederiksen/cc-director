@@ -1,5 +1,6 @@
 using System;
 using System.Linq;
+using System.Threading;
 using System.Threading.Tasks;
 using CcDirector.Core.Tenancy;
 using Xunit;
@@ -240,6 +241,126 @@ public sealed class TenantSessionMapTests
 
         Assert.True(map.ContainsKey(KeyA));
         Assert.Equal("tenant A value", map.GetValueOrDefault(KeyA));
+    }
+
+    // ===== SAME-TENANT IDENTITY =====
+    // The tenancy dimension is only half of what a keyed collection owes. Inside ONE tenant, two sessions
+    // must not share an entry either.
+
+    [Fact]
+    public void SameTenant_DistinctSessions_AreSeparateEntries()
+    {
+        var map = new TenantSessionMap<string>();
+        var one = TenantSessionKey.For(TenantA, "sess-1");
+        var two = TenantSessionKey.For(TenantA, "sess-2");
+
+        map.Set(one, "first");
+        map.Set(two, "second");
+
+        Assert.Equal("first", map.GetValueOrDefault(one));
+        Assert.Equal("second", map.GetValueOrDefault(two));
+        Assert.True(map.TryRemove(one, out _));
+        Assert.Equal("second", map.GetValueOrDefault(two));
+    }
+
+    // ===== CONCURRENCY ON ONE KEY =====
+    // Both tests below carry a WITNESS assertion that the race actually interleaved. A concurrency test
+    // that never interleaves is dead coverage that reads as a pass, so a run that failed to produce the
+    // contended condition fails loudly rather than reporting success.
+
+    [Fact]
+    public async Task Contend_UpdateRacingRemoval_NeverResurrectsTheRemovedEntry()
+    {
+        // TryUpdateExisting promises to keep a live mark alive and NEVER to bring a cleared one back. A
+        // check-then-assign implementation breaks that promise: a removal landing between the check and
+        // the assignment turns the assignment into an insert. This drives that exact interleaving.
+        const int rounds = 4000;
+        var map = new TenantSessionMap<string>();
+        var key = TenantSessionKey.For(TenantA, "sess-race");
+
+        using var barrier = new Barrier(2);
+        var resurrections = 0;
+        var bothSucceeded = 0;
+        var removeResult = false;
+        var updateResult = false;
+
+        var remover = Task.Run(() =>
+        {
+            for (var i = 0; i < rounds; i++)
+            {
+                map.Set(key, "live");
+                barrier.SignalAndWait();
+                removeResult = map.TryRemove(key, out _);
+                barrier.SignalAndWait();
+
+                if (removeResult && updateResult) bothSucceeded++;
+                if (removeResult && map.ContainsKey(key)) resurrections++;
+                map.Remove(key); // reset for the next round regardless of outcome
+                barrier.SignalAndWait();
+            }
+        });
+
+        var updater = Task.Run(() =>
+        {
+            for (var i = 0; i < rounds; i++)
+            {
+                barrier.SignalAndWait();
+                updateResult = map.TryUpdateExisting(key, "updated");
+                barrier.SignalAndWait();
+                barrier.SignalAndWait();
+            }
+        });
+
+        await Task.WhenAll(remover, updater);
+
+        Assert.True(bothSucceeded > 0,
+            "the update and the removal never both succeeded in one round, so the interleaving under test " +
+            "never occurred and this test proved nothing");
+        Assert.Equal(0, resurrections);
+    }
+
+    [Fact]
+    public async Task Contend_GetOrAddOnOneKey_HasExactlyOneWinnerPerRound()
+    {
+        // The first-seen / seed marker contract: exactly one caller is told it created the entry. Using the
+        // concurrent dictionary's own get-or-add with a flag set inside the factory breaks this, because it
+        // may run the factory in several racing callers while keeping only one value - so several callers
+        // are told they were first.
+        const int rounds = 500;
+        var workers = Math.Max(4, Environment.ProcessorCount);
+        var map = new TenantSessionMap<int>();
+        var key = TenantSessionKey.For(TenantA, "sess-seed");
+
+        using var barrier = new Barrier(workers);
+        var winners = new int[rounds];
+        var factoryRuns = new int[rounds];
+
+        var tasks = Enumerable.Range(0, workers).Select(worker => Task.Run(() =>
+        {
+            for (var round = 0; round < rounds; round++)
+            {
+                barrier.SignalAndWait();
+                map.GetOrAdd(key, _ =>
+                {
+                    Interlocked.Increment(ref factoryRuns[round]);
+                    return worker;
+                }, out var added);
+                if (added) Interlocked.Increment(ref winners[round]);
+                barrier.SignalAndWait();
+
+                if (worker == 0) map.Remove(key); // reset for the next round
+                barrier.SignalAndWait();
+            }
+        })).ToArray();
+
+        await Task.WhenAll(tasks);
+
+        // The witness: at least one round genuinely contended, meaning more than one caller reached the
+        // factory. Without this, a serialized run would report a clean pass having tested nothing.
+        Assert.True(factoryRuns.Any(runs => runs > 1),
+            "no round ever ran the value factory more than once, so the callers never actually contended " +
+            "for the same key and this test proved nothing");
+        Assert.All(winners, w => Assert.Equal(1, w));
     }
 
     // ===== DENY BY DEFAULT =====

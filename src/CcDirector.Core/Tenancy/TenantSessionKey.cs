@@ -83,6 +83,13 @@ public readonly record struct TenantSessionKey
     /// Derive the canonical key for one tenant's session. Fails loud on an invalid tenant or an unusable
     /// session identifier rather than carrying a half-scoped key forward - an unresolved tenant is denied,
     /// never defaulted.
+    ///
+    /// THE INJECTIVITY PROPERTY, which is the whole job of a partition key: within one tenant, two raw
+    /// identifiers that are not equal NEVER produce one key. Nothing here normalizes the identifier -
+    /// there is no trimming, no case folding, no substitution - because every normalization is a rule for
+    /// merging two distinct things, and merging is precisely the failure this type exists to prevent. An
+    /// identifier that is not in usable form is REFUSED, exactly as one containing a separator is, so
+    /// there is one canonical form and it is the caller's own.
     /// </summary>
     /// <param name="tenant">The tenant from authenticated request state or bound-connection state. Never
     /// from the payload.</param>
@@ -91,33 +98,32 @@ public readonly record struct TenantSessionKey
     {
         if (!tenant.IsValid)
             throw new ArgumentException("A TenantSessionKey needs a valid tenant; an unresolved tenant is denied, not defaulted.", nameof(tenant));
-        if (string.IsNullOrWhiteSpace(sessionId))
+        if (string.IsNullOrEmpty(sessionId))
             throw new ArgumentException("A TenantSessionKey needs a non-empty session identifier.", nameof(sessionId));
 
-        var raw = sessionId.Trim();
-        var rejected = FirstUnusableReason(raw);
+        var rejected = FirstUnusableReason(sessionId);
         if (rejected is not null)
             throw new ArgumentException($"This session identifier cannot be namespaced: {rejected}.", nameof(sessionId));
 
-        var value = string.Concat(NamespaceHash(tenant.Value), Separator, Domain, Separator, raw);
-        return new TenantSessionKey(tenant, raw, value);
+        var value = string.Concat(NamespaceHash(tenant.Value), Separator, Domain, Separator, sessionId);
+        return new TenantSessionKey(tenant, sessionId, value);
     }
 
     /// <summary>
     /// The non-throwing form, for the observation paths that today silently ignore an empty session
     /// identifier and must keep doing so. Returns false and yields an invalid key rather than throwing.
+    /// It refuses exactly what <see cref="For"/> refuses - it is not a lenient variant.
     /// </summary>
     public static bool TryFor(TenantId tenant, string? sessionId, out TenantSessionKey key)
     {
         key = default;
-        if (!tenant.IsValid || string.IsNullOrWhiteSpace(sessionId))
+        if (!tenant.IsValid || string.IsNullOrEmpty(sessionId))
             return false;
 
-        var raw = sessionId.Trim();
-        if (FirstUnusableReason(raw) is not null)
+        if (FirstUnusableReason(sessionId) is not null)
             return false;
 
-        key = new TenantSessionKey(tenant, raw, string.Concat(NamespaceHash(tenant.Value), Separator, Domain, Separator, raw));
+        key = new TenantSessionKey(tenant, sessionId, string.Concat(NamespaceHash(tenant.Value), Separator, Domain, Separator, sessionId));
         return true;
     }
 
@@ -131,13 +137,20 @@ public readonly record struct TenantSessionKey
 
     /// <summary>
     /// Why this identifier cannot be namespaced, or null when it is usable. Rejecting rather than escaping
-    /// keeps one canonical form: two identifiers can never be sanitized into the same key, and a key that is
-    /// later used as a directory name cannot climb out of its parent.
+    /// or normalizing keeps one canonical form: two identifiers can never be reduced to the same key, and a
+    /// key that is later used as a directory name cannot climb out of its parent.
+    ///
+    /// SURROUNDING WHITESPACE IS REFUSED, not trimmed. Trimming would map "s", " s" and "s " onto ONE
+    /// partition entry, so a write for one would overwrite, suppress or delete another - the exact
+    /// collision this type exists to make impossible, reintroduced under the guise of tidying input. An
+    /// identifier with surrounding whitespace is not a valid identifier; it is not one to be cleaned.
     /// </summary>
     private static string? FirstUnusableReason(string raw)
     {
         if (raw is "." or "..")
             return "it is a relative-path element";
+        if (char.IsWhiteSpace(raw[0]) || char.IsWhiteSpace(raw[^1]))
+            return "it has leading or trailing whitespace, which is refused rather than trimmed so that two distinct identifiers can never become one key";
         foreach (var c in raw)
         {
             if (c == Separator) return "it contains the key separator";

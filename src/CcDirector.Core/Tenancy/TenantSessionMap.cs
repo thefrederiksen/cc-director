@@ -62,33 +62,62 @@ public sealed class TenantSessionMap<TValue>
 
     /// <summary>
     /// Read this session's value, creating it from <paramref name="factory"/> when absent.
-    /// <paramref name="added"/> reports whether THIS call created it - the entry/hold distinction the
-    /// needs-you clock and the statistics seed markers both turn on.
+    /// <paramref name="added"/> reports whether THIS call is the one that INSERTED it - the entry/hold
+    /// distinction the needs-you clock and the statistics seed markers both turn on.
+    ///
+    /// EXACTLY ONE WINNER, even under contention. This deliberately does not use
+    /// <c>ConcurrentDictionary.GetOrAdd</c> with a flag set inside the factory: that dictionary may run
+    /// the factory in several racing callers while keeping only one value, so every one of them would be
+    /// told it created the entry. For a first-seen or seed marker that is not a cosmetic difference - it
+    /// is several callers each believing they own the first sighting, which is the accounting the marker
+    /// exists to make unique. Insertion is decided by <see cref="ConcurrentDictionary{TKey,TValue}.TryAdd"/>,
+    /// which has one winner by construction.
+    ///
+    /// The factory MAY run more than once under contention; the losers' values are discarded. Keep it free
+    /// of side effects - a timestamp, a counter seed, an empty record.
     /// </summary>
     public TValue GetOrAdd(TenantSessionKey key, Func<TenantSessionKey, TValue> factory, out bool added)
     {
         if (factory is null) throw new ArgumentNullException(nameof(factory));
-        var created = false;
-        var value = Writable(Require(key)).GetOrAdd(key.SessionId, _ =>
+        var partition = Writable(Require(key));
+        while (true)
         {
-            created = true;
-            return factory(key);
-        });
-        added = created;
-        return value;
+            if (partition.TryGetValue(key.SessionId, out var existing))
+            {
+                added = false;
+                return existing;
+            }
+
+            var candidate = factory(key);
+            if (partition.TryAdd(key.SessionId, candidate))
+            {
+                added = true;
+                return candidate;
+            }
+        }
     }
 
     /// <summary>
     /// Replace this session's value ONLY if it already has one. False when the session is absent. This is
     /// the "keep a live mark alive, never resurrect a cleared one" operation - an unconditional write in
     /// its place lets a progress update race a clear and re-create what the clear just removed.
+    ///
+    /// THE TEST-THEN-WRITE IS NOT ENOUGH. Checking presence and then assigning through the indexer is two
+    /// operations, and a removal landing between them makes the assignment an INSERT - so the entry the
+    /// clear just deleted comes straight back, which is the one thing this method promises never to do.
+    /// The update is therefore a compare-and-swap retry loop: it can only ever replace a value that was
+    /// still there at the instant of the swap.
     /// </summary>
     public bool TryUpdateExisting(TenantSessionKey key, TValue value)
     {
         if (Readable(Require(key)) is not { } partition) return false;
-        if (!partition.ContainsKey(key.SessionId)) return false;
-        partition[key.SessionId] = value;
-        return true;
+        while (partition.TryGetValue(key.SessionId, out var current))
+        {
+            if (partition.TryUpdate(key.SessionId, value, current))
+                return true;
+            // The value moved under us. Re-read: if the entry is gone, the loop exits and reports false.
+        }
+        return false;
     }
 
     /// <summary>Remove this session's value, yielding what was removed.</summary>
