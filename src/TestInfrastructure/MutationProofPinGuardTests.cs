@@ -233,7 +233,7 @@ public sealed class MutationProofPinGuardTests
         var tree = MutationProofPinGuard.ReadTree(repository.Root);
         Assert.True(tree.Changes.Count >= 3, "the tree under test must actually be dirty for this control to mean anything");
 
-        var noPin = new MutationProofPinGuard.PinReading(false, null, null);
+        var noPin = MutationProofPinGuard.PinReading.NoPin();
         var verdict = MutationProofPinGuard.Decide(noPin, tree);
 
         Assert.True(
@@ -329,7 +329,8 @@ public sealed class MutationProofPinGuardTests
     {
         var reading = MutationProofPinGuard.ParsePin(text, "C:/pins/example.pin");
 
-        Assert.True(reading.Found, "a pin file that exists must never be reported as absent");
+        Assert.NotEqual(MutationProofPinGuard.PinOutcome.NoPinPresent, reading.Outcome);
+        Assert.Equal(MutationProofPinGuard.PinOutcome.CouldNotDetermine, reading.Outcome);
         Assert.Null(reading.Pin);
         Assert.NotNull(reading.Problem);
         Assert.Contains(expectedDetail, reading.Problem!, StringComparison.Ordinal);
@@ -393,7 +394,7 @@ public sealed class MutationProofPinGuardTests
     [Fact]
     public void CONTROL_AnUnpinnedRunThatCannotReadTheTreeIsStillAdmitted()
     {
-        var noPin = new MutationProofPinGuard.PinReading(false, null, null);
+        var noPin = MutationProofPinGuard.PinReading.NoPin();
         var unreadable = new MutationProofPinGuard.TreeReading(
             false, "", Array.Empty<MutationProofPinGuard.ChangedPath>(), "git is not on the path");
 
@@ -894,14 +895,252 @@ public sealed class MutationProofPinGuardTests
 
         var reading = MutationProofPinGuard.ReadPinFor(repository.Root);
 
-        Assert.True(
-            reading.Found,
-            "The script reported success but the guard cannot find the pin it wrote. That is the exact "
-            + "shape of the platform divergence a reviewer found: armed according to its own output, inert "
-            + "in fact.");
+        Assert.Equal(MutationProofPinGuard.PinOutcome.PinActive, reading.Outcome);
         Assert.Null(reading.Problem);
         Assert.Equal(repository.Head(), reading.Pin!.PinnedHead, ignoreCase: true);
     }
+
+    // -------------------------------------------------------------------------------------------------
+    // FAILING OPEN: the guard must never admit because it FAILED TO LOOK.
+    //
+    // A reviewer found that it did. Resolving the pin's location launched git; any failure - git missing
+    // from the path, a timeout, a broken install - returned null, which became "no pin found", which
+    // ADMITTED. So on a machine without git a contaminated baseline ran to completion while the pin file
+    // sat in the git directory the whole time, silently.
+    //
+    // The two directions of a guard's failure are not symmetric. Refusing wrongly is loud and
+    // self-correcting; somebody complains within the hour. Admitting wrongly is silent and
+    // self-concealing, and it is worse precisely because the guard's existence stops everyone checking.
+    // These pin the repair, each against the control that stops it being satisfied by refusing everything.
+    // -------------------------------------------------------------------------------------------------
+
+    /// <summary>
+    /// The exact bypass, end to end: a REAL pin on disk, and git genuinely unavailable to the run.
+    ///
+    /// The pre-existing test for an unreadable tree could not catch this, and the reason is worth keeping:
+    /// it built a PinReading that was already "found" and called Decide directly. The defect lived in the
+    /// wiring BETWEEN the lookup and the decision, where an active pin never reached that state at all. A
+    /// test that hands a decision its inputs cannot test how those inputs are obtained.
+    /// </summary>
+    [Fact]
+    public void AnActivePinIsNeverTreatedAsAbsentWhenGitIsUnavailable()
+    {
+        using var repository = TemporaryGitRepository.Create();
+        repository.WriteAndCommit("src/RequestHandler.cs", FileWithTheGuardBlock, "add the tenant guard");
+
+        WritePin(
+            MutationProofPinGuard.ResolvePinFilePath(repository.Root)!,
+            "proof-77", MutationProofPinGuard.BaselinePhase, repository.Head());
+
+        // A contaminant, so that if this run were admitted it would be a genuinely corrupt baseline rather
+        // than a harmless one.
+        repository.Write("src/RequestHandler.cs", FileWithTheGuardBlockDeleted);
+
+        var verdict = MutationProofPinGuard.Evaluate(
+            repository.Root, Array.Empty<string>(), GitThatDoesNotExist);
+
+        Assert.False(
+            verdict.Admitted,
+            "A proof run was ADMITTED while a pin file sat in the git directory, because git could not be "
+            + "launched to locate it. That is the worst direction for this guard to fail in: the run "
+            + "proceeds, the numbers look complete, and nothing anywhere says the tree was never checked. "
+            + verdict.Message);
+    }
+
+    /// <summary>
+    /// THE CONTROL, and without it the test above is satisfied by a guard that refuses whenever git is
+    /// missing - which would be a blanket refusal on every ordinary run on such a machine, exactly the
+    /// scope the Architect ruled against. Same repository, same absent git, no pin.
+    /// </summary>
+    [Fact]
+    public void CONTROL_AnUnpinnedRunIsStillAdmittedWhenGitIsUnavailable()
+    {
+        using var repository = TemporaryGitRepository.Create();
+        repository.WriteAndCommit("src/RequestHandler.cs", FileWithTheGuardBlock, "add the tenant guard");
+
+        // Dirty, unpinned, and git unavailable: the mid-rework worker on a machine without git.
+        repository.Write("src/RequestHandler.cs", FileWithTheGuardBlockDeleted);
+
+        Assert.False(File.Exists(MutationProofPinGuard.ResolvePinFilePath(repository.Root)!));
+
+        var verdict = MutationProofPinGuard.Evaluate(
+            repository.Root, Array.Empty<string>(), GitThatDoesNotExist);
+
+        Assert.True(
+            verdict.Admitted,
+            "An ordinary unpinned run was refused because git was unavailable. The pin lookup must not "
+            + "need git at all, or every run on such a machine is blocked and the guard is switched off "
+            + "within a day. " + verdict.Message);
+    }
+
+    /// <summary>
+    /// The lookup answers from the filesystem, so "is a proof active here" no longer depends on launching
+    /// a subprocess. Asserted directly, because it is the property that makes the two tests above possible
+    /// rather than an implementation detail of them.
+    /// </summary>
+    [Fact]
+    public void ThePinLookupDoesNotNeedGitAtAll()
+    {
+        using var repository = TemporaryGitRepository.Create();
+        repository.WriteAndCommit("src/RequestHandler.cs", FileWithTheGuardBlock, "add the tenant guard");
+
+        WritePin(
+            MutationProofPinGuard.ResolvePinFilePath(repository.Root)!,
+            "proof-77", MutationProofPinGuard.BaselinePhase, repository.Head());
+
+        // No git executable is named here at all - this is a pure filesystem answer.
+        var reading = MutationProofPinGuard.ReadPinFor(repository.Root);
+
+        Assert.Equal(MutationProofPinGuard.PinOutcome.PinActive, reading.Outcome);
+        Assert.Equal("proof-77", reading.Pin!.ProofId);
+    }
+
+    /// <summary>
+    /// The filesystem answer must agree with git's own, in BOTH repository shapes - a plain checkout where
+    /// ".git" is a directory, and a worktree where it is a file naming somewhere else. This is what keeps
+    /// the lookup from becoming a second, drifting derivation of the location the pin script computes: the
+    /// script asks git, this reads what git wrote, and if they ever disagree this reddens.
+    /// </summary>
+    [Fact]
+    public void TheFileSystemLookupAgreesWithGitsOwnAnswer_InAPlainCheckoutAndInAWorktree()
+    {
+        using var repository = TemporaryGitRepository.Create();
+        repository.WriteAndCommit("src/RequestHandler.cs", FileWithTheGuardBlock, "add the tenant guard");
+
+        AssertLookupMatchesGit(repository, repository.Root);
+
+        var secondRoot = Path.Combine(repository.ScratchPath, "second-worktree");
+        repository.Git("worktree add \"" + secondRoot + "\" -b second");
+
+        AssertLookupMatchesGit(repository, secondRoot);
+    }
+
+    private static void AssertLookupMatchesGit(TemporaryGitRepository repository, string workingTreeRoot)
+    {
+        var asGitSaysIt = Path.Combine(
+            repository.GitIn(workingTreeRoot, "rev-parse --absolute-git-dir").Trim(),
+            MutationProofPinGuard.PinFileName);
+
+        var located = MutationProofPinGuard.LocatePin(workingTreeRoot);
+
+        Assert.Equal(MutationProofPinGuard.PinLocationOutcome.Located, located.Outcome);
+        Assert.Equal(Path.GetFullPath(asGitSaysIt), Path.GetFullPath(located.PinFilePath!));
+    }
+
+    /// <summary>
+    /// A repository marker that exists but cannot be understood is INDETERMINATE, and indeterminate
+    /// refuses. Under the old shape this resolved to "no pin" and admitted - the same collapse of "could
+    /// not look" into "nothing there".
+    /// </summary>
+    [Fact]
+    public void AnUnreadableRepositoryMarkerRefuses_RatherThanReadingAsNoPin()
+    {
+        using var scratch = new TemporaryDirectory();
+        var root = Path.Combine(scratch.Path, "tree");
+        Directory.CreateDirectory(root);
+        File.WriteAllText(Path.Combine(root, ".git"), "this is not a gitdir pointer");
+
+        var located = MutationProofPinGuard.LocatePin(root);
+        Assert.Equal(MutationProofPinGuard.PinLocationOutcome.Indeterminate, located.Outcome);
+
+        var verdict = MutationProofPinGuard.Decide(
+            MutationProofPinGuard.ReadPinFor(root),
+            new MutationProofPinGuard.TreeReading(false, "", Array.Empty<MutationProofPinGuard.ChangedPath>(), "n/a"),
+            Array.Empty<string>());
+
+        Assert.False(verdict.Admitted, verdict.Message);
+        Assert.Contains("CANNOT ESTABLISH", verdict.Message, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// A marker naming a git directory that is not one must also refuse. Without the HEAD check the guard
+    /// would build a pin path under a wrong directory, find no pin there, and admit - looking in the wrong
+    /// place is indistinguishable from finding nothing.
+    /// </summary>
+    [Fact]
+    public void AMarkerNamingSomethingThatIsNotAGitDirectoryRefuses()
+    {
+        using var scratch = new TemporaryDirectory();
+        var root = Path.Combine(scratch.Path, "tree");
+        var decoy = Path.Combine(scratch.Path, "not-a-git-directory");
+        Directory.CreateDirectory(root);
+        Directory.CreateDirectory(decoy);
+        File.WriteAllText(Path.Combine(root, ".git"), "gitdir: " + decoy);
+
+        var located = MutationProofPinGuard.LocatePin(root);
+
+        Assert.Equal(MutationProofPinGuard.PinLocationOutcome.Indeterminate, located.Outcome);
+        Assert.Contains("HEAD", located.Problem!, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// CONTROL for the two above: outside any repository there is no pin and no repository, which is a
+    /// COMPLETED search rather than a failure, and it admits. Without this the indeterminate cases could be
+    /// satisfied by refusing everything that is not a pristine repository.
+    /// </summary>
+    [Fact]
+    public void CONTROL_OutsideARepositoryTheAnswerIsNoPin_NotIndeterminate()
+    {
+        using var scratch = new TemporaryDirectory();
+        var deep = Path.Combine(scratch.Path, "a", "b");
+        Directory.CreateDirectory(deep);
+
+        var located = MutationProofPinGuard.LocatePin(deep);
+
+        // The scratch directory is not inside a repository. If some ancestor ever were one, the walk would
+        // legitimately find it, so the assertion allows that and forbids only the indeterminate answer.
+        Assert.NotEqual(MutationProofPinGuard.PinLocationOutcome.Indeterminate, located.Outcome);
+    }
+
+    /// <summary>
+    /// The structural claim, asserted rather than left to prose: every pin state OTHER than a settled
+    /// absence refuses. If a state is ever added, this fails until somebody decides what it means - which
+    /// is the point, since the defect being repaired was a new failure quietly reusing the admit path.
+    /// </summary>
+    [Fact]
+    public void OnlyASettledAbsenceAdmits()
+    {
+        // Enumerated rather than listed, so that ADDING a state is caught here instead of silently
+        // inheriting whatever the fall-through happens to do. That is precisely how the defect arose: a new
+        // way of failing reused the existing "not found" value, and "not found" admitted.
+        var everyOtherState = Enum.GetValues<MutationProofPinGuard.PinOutcome>()
+            .Where(o => o != MutationProofPinGuard.PinOutcome.NoPinPresent)
+            .ToList();
+
+        Assert.NotEmpty(everyOtherState);
+
+        foreach (var outcome in everyOtherState)
+        {
+            var verdict = MutationProofPinGuard.Decide(
+                new MutationProofPinGuard.PinReading(outcome, null, "unreadable for this test"),
+                new MutationProofPinGuard.TreeReading(
+                    true, "1111111111111111111111111111111111111111",
+                    Array.Empty<MutationProofPinGuard.ChangedPath>(), null),
+                Array.Empty<string>());
+
+            Assert.False(
+                verdict.Admitted,
+                "The pin state '" + outcome + "' ADMITTED. Only a settled absence may admit: every other "
+                + "state means the guard does not know whether a proof is active, and admitting on a "
+                + "not-known is how this guard failed open. " + verdict.Message);
+        }
+    }
+
+    [Fact]
+    public void CONTROL_ASettledAbsenceDoesAdmit()
+    {
+        var verdict = MutationProofPinGuard.Decide(
+            MutationProofPinGuard.PinReading.NoPin(),
+            new MutationProofPinGuard.TreeReading(
+                true, "1111111111111111111111111111111111111111",
+                Array.Empty<MutationProofPinGuard.ChangedPath>(), null),
+            Array.Empty<string>());
+
+        Assert.True(verdict.Admitted, verdict.Message);
+    }
+
+    /// <summary>A git that is certainly not installed, so the run genuinely cannot reach git.</summary>
+    private const string GitThatDoesNotExist = "git-not-installed-on-this-machine-b6f2a1";
 
     private static void WritePin(string path, string proofId, string phase, string head, params string[] mutations)
     {
@@ -1150,7 +1389,7 @@ public sealed class MutationProofPinGuardTests
     [Fact]
     public void AnUnpinnedRunIsRecordedAsHavingVerifiedNothing_NotAsVerified()
     {
-        var noPin = new MutationProofPinGuard.PinReading(false, null, null);
+        var noPin = MutationProofPinGuard.PinReading.NoPin();
         var tree = new MutationProofPinGuard.TreeReading(
             true,
             "0123456789abcdef0123456789abcdef01234567",
@@ -1232,20 +1471,16 @@ public sealed class MutationProofPinGuardTests
     // -------------------------------------------------------------------------------------------------
 
     private static MutationProofPinGuard.PinReading BaselinePinAt(string head) =>
-        new(
-            true,
+        MutationProofPinGuard.PinReading.Active(
             new MutationProofPinGuard.ProofPin(
                 "proof-42", MutationProofPinGuard.BaselinePhase, head, "2026-07-20T00:00:00Z",
-                Array.Empty<string>(), "test", "C:/pins/example.pin"),
-            null);
+                Array.Empty<string>(), "test", "C:/pins/example.pin"));
 
     private static MutationProofPinGuard.PinReading ArmPinAt(string head, params string[] mutations) =>
-        new(
-            true,
+        MutationProofPinGuard.PinReading.Active(
             new MutationProofPinGuard.ProofPin(
                 "proof-42", MutationProofPinGuard.ArmPhase, head, "2026-07-20T00:00:00Z",
-                mutations, "test", "C:/pins/example.pin"),
-            null);
+                mutations, "test", "C:/pins/example.pin"));
 
     /// <summary>A scratch directory that removes itself.</summary>
     private sealed class TemporaryDirectory : IDisposable
@@ -1340,6 +1575,33 @@ public sealed class MutationProofPinGuardTests
         }
 
         public string Head() => Git("rev-parse HEAD").Trim().ToLowerInvariant();
+
+        /// <summary>Runs git in a nominated working tree - used to ask git about a second worktree.</summary>
+        public string GitIn(string workingDirectory, string arguments)
+        {
+            using var process = new Process();
+            process.StartInfo = new ProcessStartInfo("git")
+            {
+                Arguments = "-C \"" + workingDirectory + "\" " + arguments,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                UseShellExecute = false,
+                CreateNoWindow = true,
+            };
+
+            process.Start();
+            var output = process.StandardOutput.ReadToEnd();
+            var error = process.StandardError.ReadToEnd();
+            process.WaitForExit();
+
+            if (process.ExitCode != 0)
+            {
+                throw new InvalidOperationException(
+                    "git " + arguments + " failed in '" + workingDirectory + "': " + error);
+            }
+
+            return output;
+        }
 
         public string Git(string arguments)
         {

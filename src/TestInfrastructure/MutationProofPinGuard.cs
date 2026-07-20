@@ -187,11 +187,50 @@ internal static class MutationProofPinGuard
         string PinFilePath);
 
     /// <summary>
-    /// The result of looking for a pin. A pin that EXISTS but cannot be understood is not the same as no
-    /// pin, and must never be treated as one - a typo in a pin file would otherwise silently disarm the
-    /// guard for the whole proof.
+    /// What the guard KNOWS about this working tree's pin. Three states, not two, and the third is the
+    /// whole point.
+    ///
+    /// "There is no pin" and "I could not find out whether there is a pin" are different facts, and
+    /// collapsing them is how this guard failed open. The first version had a boolean: a pin was Found or
+    /// it was not. Every way of FAILING TO LOOK - git missing from the path, a timeout, an unreadable
+    /// directory - had to be expressed as NOT FOUND, and not-found meant ADMIT. So a machine without git
+    /// would run a contaminated proof to completion while the pin file sat in the git directory the whole
+    /// time, and nothing said a word.
+    ///
+    /// A guard's two failure directions are not symmetric. Refusing wrongly is loud, visible and
+    /// self-correcting: somebody complains within the hour. Admitting wrongly is silent and
+    /// self-concealing, and it is worse precisely because the guard's existence stops everyone else
+    /// checking. So the type makes the dangerous direction unreachable: <see cref="PinOutcome.NoPinPresent"/>
+    /// is only constructible after LOOKING AND FINDING NOTHING, and it is the only state
+    /// <see cref="Decide"/> will admit.
     /// </summary>
-    internal sealed record PinReading(bool Found, ProofPin? Pin, string? Problem);
+    internal enum PinOutcome
+    {
+        /// <summary>Looked, and there is definitely no pin. The ONLY state that admits.</summary>
+        NoPinPresent,
+
+        /// <summary>A pin was found and understood.</summary>
+        PinActive,
+
+        /// <summary>Could not establish either way. Refuses - see the remarks above.</summary>
+        CouldNotDetermine,
+    }
+
+    /// <summary>
+    /// The result of looking for a pin. Built through the factories below rather than directly, so a
+    /// failure cannot be spelled as an absence.
+    /// </summary>
+    internal sealed record PinReading(PinOutcome Outcome, ProofPin? Pin, string? Problem)
+    {
+        /// <summary>Looked, found nothing. Only reachable from a completed search.</summary>
+        internal static PinReading NoPin() => new(PinOutcome.NoPinPresent, null, null);
+
+        internal static PinReading Active(ProofPin pin) => new(PinOutcome.PinActive, pin, null);
+
+        /// <summary>Could not establish whether a proof is active. Refuses.</summary>
+        internal static PinReading Indeterminate(string reason) =>
+            new(PinOutcome.CouldNotDetermine, null, reason);
+    }
 
     /// <summary>
     /// What git says about the working tree. Reading can fail - git missing from the path, a corrupt
@@ -218,22 +257,52 @@ internal static class MutationProofPinGuard
     /// </summary>
     internal static Verdict Decide(PinReading pin, TreeReading tree, IReadOnlyList<string> priorLedgerLines)
     {
-        if (pin.Problem is not null)
+        // THE ONLY ADMIT IN THIS METHOD IS THE ONE BELOW, AND IT IS REACHABLE FROM ONE STATE.
+        //
+        // Everything else - a pin that cannot be parsed, a location that cannot be resolved, a state this
+        // switch does not recognise - lands on a refusal. That is deliberate, and it is the repair for a
+        // defect a reviewer found: the guard used to admit whenever it FAILED TO LOOK, because failing to
+        // look and finding nothing were the same value.
+        switch (pin.Outcome)
+        {
+            case PinOutcome.NoPinPresent:
+                // The ordinary case, and the scope limit the whole design turns on: no pin, no opinion. A
+                // worker mid-rework is legitimately dirty and is not this guard's business. Reachable only
+                // after a completed search - see PinOutcome.
+                return new Verdict(true, "No mutation-proof pin is active for this working tree.");
+
+            case PinOutcome.CouldNotDetermine:
+                return new Verdict(
+                    false,
+                    "CANNOT ESTABLISH WHETHER A MUTATION PROOF IS ACTIVE IN THIS WORKING TREE: "
+                    + (pin.Problem ?? "(no detail)")
+                    + Environment.NewLine
+                    + "    This is NOT the same as there being no pin, and is deliberately not treated as "
+                    + "one. If a proof IS active, admitting this run would let a baseline or a mutation arm "
+                    + "execute against an unverified tree and report numbers nobody could trust - "
+                    + "silently, because a guard that admits wrongly leaves no trace and stops everyone "
+                    + "else checking." + Environment.NewLine
+                    + "    Fix the cause above, or release the pin if no proof is running: "
+                    + "powershell -File scripts/mutation-proof-pin.ps1 release");
+
+            case PinOutcome.PinActive:
+                break;
+
+            default:
+                // Unreachable today. Present so that ADDING a state cannot silently create a new way to
+                // admit: an unhandled outcome refuses rather than falling through.
+                return new Verdict(
+                    false,
+                    "The mutation-proof pin guard does not recognise the pin state '" + pin.Outcome
+                    + "', so it cannot say whether a proof is active and refuses rather than guessing.");
+        }
+
+        if (pin.Pin is null)
         {
             return new Verdict(
                 false,
-                "A mutation-proof pin file exists for this working tree but cannot be understood: "
-                + pin.Problem
-                + " A pin that cannot be read is NOT the same as no pin, and is not treated as one - "
-                + "a proof whose declaration is unreadable has declared nothing. Fix or release the pin "
-                + "(scripts/mutation-proof-pin.ps1 release) and start the proof again.");
-        }
-
-        if (!pin.Found || pin.Pin is null)
-        {
-            // The ordinary case, and the scope limit the whole design turns on: no pin, no opinion. A
-            // worker mid-rework is legitimately dirty and is not this guard's business.
-            return new Verdict(true, "No mutation-proof pin is active for this working tree.");
+                "The mutation-proof pin guard reports an active proof with no pin attached, which it "
+                + "cannot check. Refusing rather than admitting an unverifiable run.");
         }
 
         var active = pin.Pin;
@@ -537,16 +606,19 @@ internal static class MutationProofPinGuard
                 + "history. Release this pin and set it again with the current script.");
         }
 
-        return new PinReading(
-            true,
+        return PinReading.Active(
             new ProofPin(
                 proofId, phase, head.ToLowerInvariant(), pinnedUtc ?? "(not recorded)",
-                mutations, note, pinFilePath),
-            null);
+                mutations, note, pinFilePath));
     }
 
+    /// <summary>
+    /// A pin file that EXISTS but cannot be understood. Indeterminate, never absent: a proof whose
+    /// declaration is unreadable has declared nothing, and reading that as "no pin" would disarm the guard
+    /// for exactly the proof that most needs it.
+    /// </summary>
     private static PinReading Malformed(string pinFilePath, string detail) =>
-        new(true, null, "the pin file '" + pinFilePath + "' is not usable - " + detail);
+        PinReading.Indeterminate("the pin file '" + pinFilePath + "' is not usable - " + detail);
 
     private static bool LooksLikeCommitId(string value) =>
         value.Length == 40 && value.All(Uri.IsHexDigit);
@@ -618,22 +690,129 @@ internal static class MutationProofPinGuard
     /// The pin dying with "git worktree remove" is correct: a proof in a removed worktree is over. The
     /// LEDGER is what must outlive the tree, and it lives elsewhere - see <see cref="LedgerDirectory"/>.
     /// </summary>
-    internal static string? ResolveGitDirectory(string workingTreeRoot)
+    /// <summary>Whether the pin location could be established, and if not, why.</summary>
+    internal enum PinLocationOutcome
     {
-        var result = RunGit(workingTreeRoot, "--no-optional-locks rev-parse --absolute-git-dir");
-        if (result.ExitCode != 0)
-            return null;
+        /// <summary>The pin path is known. It may or may not exist on disk.</summary>
+        Located,
 
-        var path = result.Output.Trim();
-        return path.Length == 0 ? null : path;
+        /// <summary>There is no repository above the starting point, so no pin can exist.</summary>
+        NotInARepository,
+
+        /// <summary>A repository marker exists but the location could not be worked out. Refuses.</summary>
+        Indeterminate,
     }
 
-    /// <summary>The pin file for the working tree rooted at the given path, or null when git cannot say.</summary>
-    internal static string? ResolvePinFilePath(string workingTreeRoot)
+    internal sealed record PinLocation(PinLocationOutcome Outcome, string? PinFilePath, string? Problem);
+
+    /// <summary>
+    /// Works out where the pin lives WITHOUT LAUNCHING GIT.
+    ///
+    /// This replaced a call to "git rev-parse --absolute-git-dir", and the reason is the defect that call
+    /// produced. Launching a subprocess can fail for reasons that have nothing to do with whether a proof
+    /// is running - git missing from the path, a timeout under load, a broken installation - and every one
+    /// of those failures was reported as "no pin", which ADMITTED the run. The safety-critical question
+    /// "is a proof active here" was being answered by the least reliable mechanism in the file.
+    ///
+    /// So the question is now answered by reading what git has already WRITTEN, which is what the
+    /// subprocess would have gone and read anyway. The on-disk format is git own and is stable: ".git" is
+    /// either the directory itself, or - in a worktree, which is how every mission here runs - a file
+    /// whose contents name the real git directory.
+    ///
+    /// THE RESOLVED DIRECTORY IS THEN VERIFIED, by requiring it to contain a HEAD file. That check is what
+    /// stops this from becoming a second, drifting derivation of the location the script computes: if this
+    /// ever resolves somewhere git would not, the answer is INDETERMINATE and the run is refused - rather
+    /// than the guard looking for a pin in the wrong place, not finding one, and admitting. Agreement with
+    /// git own answer is pinned by tests against a real repository and a real worktree.
+    /// </summary>
+    internal static PinLocation LocatePin(string startDirectory)
     {
-        var gitDirectory = ResolveGitDirectory(workingTreeRoot);
-        return gitDirectory is null ? null : Path.Combine(gitDirectory, PinFileName);
+        try
+        {
+            var directory = new DirectoryInfo(startDirectory);
+            while (directory is not null)
+            {
+                var marker = Path.Combine(directory.FullName, ".git");
+
+                if (Directory.Exists(marker))
+                    return VerifyGitDirectory(marker, marker);
+
+                if (File.Exists(marker))
+                {
+                    // A worktree, a submodule, or any other linked checkout. The file names the real git
+                    // directory, and the path it names may be relative to the directory holding the file.
+                    var text = File.ReadAllText(marker).Trim();
+                    const string prefix = "gitdir:";
+
+                    if (!text.StartsWith(prefix, StringComparison.Ordinal))
+                    {
+                        return new PinLocation(
+                            PinLocationOutcome.Indeterminate, null,
+                            "the repository marker " + marker + " is a file that does not begin with "
+                            + "gitdir:, so the real git directory - and therefore the pin - cannot be "
+                            + "located.");
+                    }
+
+                    var named = text[prefix.Length..].Trim();
+                    var resolved = Path.IsPathRooted(named)
+                        ? named
+                        : Path.GetFullPath(Path.Combine(directory.FullName, named));
+
+                    return VerifyGitDirectory(resolved, marker);
+                }
+
+                directory = directory.Parent;
+            }
+
+            // Walked to the top of the filesystem without finding a repository. A COMPLETED search, not a
+            // failure: no repository means no pin can exist, so admitting is correct.
+            return new PinLocation(PinLocationOutcome.NotInARepository, null, null);
+        }
+        catch (Exception ex)
+        {
+            // The walk touched the filesystem and it refused. Nothing is known, so nothing is claimed -
+            // and "nothing is known" refuses.
+            return new PinLocation(
+                PinLocationOutcome.Indeterminate, null,
+                "the repository could not be located from " + startDirectory + ": "
+                + ex.GetType().Name + ": " + ex.Message);
+        }
     }
+
+    /// <summary>
+    /// Requires the resolved directory to look like a git directory before a pin path is built from it. A
+    /// wrong answer here would send the guard looking for a pin somewhere no pin is ever written, where it
+    /// would find nothing and admit - the failure this whole repair is about.
+    /// </summary>
+    private static PinLocation VerifyGitDirectory(string gitDirectory, string marker)
+    {
+        if (!Directory.Exists(gitDirectory))
+        {
+            return new PinLocation(
+                PinLocationOutcome.Indeterminate, null,
+                "the repository marker " + marker + " names a git directory at " + gitDirectory
+                + " which does not exist, so the pin cannot be located.");
+        }
+
+        if (!File.Exists(Path.Combine(gitDirectory, "HEAD")))
+        {
+            return new PinLocation(
+                PinLocationOutcome.Indeterminate, null,
+                gitDirectory + " does not contain a HEAD file, so it is not the git directory this guard "
+                + "expected and the pin location cannot be trusted.");
+        }
+
+        return new PinLocation(
+            PinLocationOutcome.Located, Path.Combine(gitDirectory, PinFileName), null);
+    }
+
+    /// <summary>
+    /// The pin file for a working tree, or null when its location could not be established. Retained for
+    /// tests and callers that only need the happy path; anything making a SAFETY decision must use
+    /// <see cref="LocatePin"/> so it can tell "no pin" from "could not tell".
+    /// </summary>
+    internal static string? ResolvePinFilePath(string workingTreeRoot) =>
+        LocatePin(workingTreeRoot).PinFilePath;
 
     /// <summary>
     /// Where the LEDGER lives - deliberately NOT in the git directory, because it has the opposite
@@ -673,9 +852,21 @@ internal static class MutationProofPinGuard
     /// business contending for the index lock. The porcelain format is requested explicitly with a version
     /// number, because the default format is documented as subject to change and this parser is not.
     /// </summary>
-    internal static TreeReading ReadTree(string workingTreeRoot)
+    internal static TreeReading ReadTree(string workingTreeRoot) => ReadTree(workingTreeRoot, GitExecutable);
+
+    /// <summary>
+    /// The same, with the git program named explicitly.
+    ///
+    /// Parameterised so a test can run the guard with git GENUINELY UNAVAILABLE and observe what it does,
+    /// rather than construct a "tree could not be read" value by hand and assert about that. The
+    /// difference is not cosmetic: the fail-open defect lived in the wiring BETWEEN the pin lookup and the
+    /// decision, so a test that hands Decide its inputs cannot see it. A parameter rather than a settable
+    /// global, because these assemblies run tests in parallel and a global would let one test change
+    /// another test git.
+    /// </summary>
+    internal static TreeReading ReadTree(string workingTreeRoot, string gitExecutable)
     {
-        var head = RunGit(workingTreeRoot, "--no-optional-locks rev-parse HEAD");
+        var head = RunGit(workingTreeRoot, "--no-optional-locks rev-parse HEAD", gitExecutable);
         if (head.ExitCode != 0)
         {
             return new TreeReading(
@@ -684,7 +875,9 @@ internal static class MutationProofPinGuard
         }
 
         var status = RunGit(
-            workingTreeRoot, "--no-optional-locks status --porcelain=v1 --untracked-files=normal -z");
+            workingTreeRoot,
+            "--no-optional-locks status --porcelain=v1 --untracked-files=normal -z",
+            gitExecutable);
         if (status.ExitCode != 0)
         {
             return new TreeReading(
@@ -740,12 +933,15 @@ internal static class MutationProofPinGuard
 
     private readonly record struct GitResult(int ExitCode, string Output, string Error);
 
-    private static GitResult RunGit(string workingTreeRoot, string arguments)
+    /// <summary>The git program. A constant in production; a parameter so tests can remove it.</summary>
+    internal const string GitExecutable = "git";
+
+    private static GitResult RunGit(string workingTreeRoot, string arguments, string gitExecutable)
     {
         try
         {
             using var process = new Process();
-            process.StartInfo = new ProcessStartInfo("git")
+            process.StartInfo = new ProcessStartInfo(gitExecutable)
             {
                 Arguments = "-C \"" + workingTreeRoot + "\" " + arguments,
                 RedirectStandardOutput = true,
@@ -784,25 +980,45 @@ internal static class MutationProofPinGuard
     {
         HasRun = true;
 
-        string? root;
+        // NOTHING RETURNS EARLY WITH AN ADMISSION. Every path reaches Decide, which has exactly one admit.
+        //
+        // This method used to hold two admissions of its own: a failure to locate the working tree root
+        // admitted, and so did a null root. Both were written as though "I could not look" were a reason
+        // to proceed. A reviewer reported the same shape in the pin lookup; these two were the same defect
+        // in a different place, which is why the repair is structural rather than a patch at the reported
+        // site.
+        string root;
         try
         {
-            root = FindWorkingTreeRoot(AppContext.BaseDirectory);
+            var located = FindWorkingTreeRoot(AppContext.BaseDirectory);
+
+            if (located is null)
+            {
+                // A COMPLETED search: walked to the top of the filesystem and found no repository. No
+                // repository means no pin can exist, so this is a genuine absence and admits.
+                Finish(
+                    AppContext.BaseDirectory,
+                    PinReading.NoPin(),
+                    new TreeReading(false, "", Array.Empty<ChangedPath>(), "not inside a repository"),
+                    new Verdict(true, "This run is not inside a git working tree, so no mutation proof "
+                        + "can be active for it."));
+                return;
+            }
+
+            root = located;
         }
         catch (Exception ex)
         {
-            // Walking to the root touched the file system and it refused. There is no pin this run can be
-            // measured against, so it is admitted - but it is admitted LOUDLY, because a guard that goes
-            // quiet on an unexpected input is how a guard stops guarding without anybody noticing.
-            LastVerdictSummary = "admitted: the working tree root could not be located (" + ex.Message + ")";
-            Say("[mutation-proof-pin] Could not locate the working tree root, so no mutation-proof pin "
-                + "could be checked for this run: " + ex.Message);
-            return;
-        }
+            // The walk touched the filesystem and it refused, so whether a proof is active is UNKNOWN.
+            // Unknown refuses. This used to admit "loudly", which is a contradiction in terms: the run
+            // went ahead regardless of how loudly it said so.
+            var unknown = PinReading.Indeterminate(
+                "the working tree root could not be located from " + AppContext.BaseDirectory + ": "
+                + ex.GetType().Name + ": " + ex.Message);
+            var unreadable = new TreeReading(false, "", Array.Empty<ChangedPath>(), ex.Message);
 
-        if (root is null)
-        {
-            LastVerdictSummary = "admitted: this run is not inside a git working tree";
+            Finish(AppContext.BaseDirectory, unknown, unreadable,
+                Decide(unknown, unreadable, Array.Empty<string>()));
             return;
         }
 
@@ -811,22 +1027,35 @@ internal static class MutationProofPinGuard
 
         // Read only when a pin is active. An unpinned run has no proof identity to compare against, and
         // reading the ledger on every ordinary run would be cost for nothing.
-        var priorLedgerLines = pin.Found ? ReadLedger() : Array.Empty<string>();
+        var priorLedgerLines = pin.Outcome == PinOutcome.NoPinPresent
+            ? Array.Empty<string>()
+            : ReadLedger();
 
-        var verdict = Decide(pin, tree, priorLedgerLines);
+        Finish(root, pin, tree, Decide(pin, tree, priorLedgerLines));
+    }
 
+    /// <summary>
+    /// THE ONE EXIT. Records the run, then either returns or stops the process.
+    ///
+    /// Every path through <see cref="Check"/> ends here, so there is no way to reach the end of the guard
+    /// without a verdict having been recorded and enforced. That is the structural half of the repair: the
+    /// previous version let two paths return early, and an early return is an admission that never appears
+    /// in the ledger either - invisible twice over.
+    /// </summary>
+    private static void Finish(string workingTreeRoot, PinReading pin, TreeReading tree, Verdict verdict)
+    {
         LastVerdictSummary = (verdict.Admitted ? "admitted" : "refused") + ": " + verdict.Message;
 
         // Recorded for EVERY run, admitted or refused, pinned or not - see the remarks on the ledger. An
         // admission is the fact worth keeping; a log that only writes on refusal cannot afterwards tell
         // "verified clean" from "the guard never ran".
-        Record(root, pin, tree, verdict);
+        Record(workingTreeRoot, pin, tree, verdict);
 
         if (verdict.Admitted)
         {
             // An unpinned run says nothing at all. There are thousands of them and they are not this
             // guard's business; a line of output on each one is how a mechanism trains people to ignore it.
-            if (pin.Found)
+            if (pin.Outcome != PinOutcome.NoPinPresent)
                 Say("[mutation-proof-pin] " + verdict.Message);
 
             return;
@@ -853,23 +1082,41 @@ internal static class MutationProofPinGuard
     /// evidence, being prose in a pull request, cannot notice.
     /// </summary>
     internal static Verdict Evaluate(string workingTreeRoot, IReadOnlyList<string> priorLedgerLines) =>
-        Decide(ReadPinFor(workingTreeRoot), ReadTree(workingTreeRoot), priorLedgerLines);
+        Evaluate(workingTreeRoot, priorLedgerLines, GitExecutable);
+
+    /// <summary>The same, with the git program named - see <see cref="ReadTree(string, string)"/>.</summary>
+    internal static Verdict Evaluate(
+        string workingTreeRoot, IReadOnlyList<string> priorLedgerLines, string gitExecutable) =>
+        Decide(ReadPinFor(workingTreeRoot), ReadTree(workingTreeRoot, gitExecutable), priorLedgerLines);
 
     internal static PinReading ReadPinFor(string workingTreeRoot)
     {
-        var path = ResolvePinFilePath(workingTreeRoot);
-        if (path is null)
+        var location = LocatePin(workingTreeRoot);
+
+        switch (location.Outcome)
         {
-            // Git could not name its own directory. There is no pin to find and no way to know whether one
-            // exists, so nothing is claimed - the run is admitted, and the ledger records that this run
-            // verified nothing rather than that it was clean.
-            return new PinReading(false, null, null);
+            case PinLocationOutcome.NotInARepository:
+                // A completed search: no repository, so no pin can exist. This is the one failure-shaped
+                // input that is genuinely an ABSENCE rather than an unknown.
+                return PinReading.NoPin();
+
+            case PinLocationOutcome.Indeterminate:
+                return PinReading.Indeterminate(location.Problem ?? "the pin location is unknown.");
+
+            case PinLocationOutcome.Located:
+                break;
+
+            default:
+                return PinReading.Indeterminate(
+                    "the pin location outcome " + location.Outcome + " is not one this guard handles.");
         }
+
+        var path = location.PinFilePath!;
 
         try
         {
             if (!File.Exists(path))
-                return new PinReading(false, null, null);
+                return PinReading.NoPin();
 
             return ParsePin(File.ReadAllText(path), path);
         }
@@ -877,7 +1124,8 @@ internal static class MutationProofPinGuard
         {
             // A pin file that EXISTS but cannot be read is a refusal, not an absence. Treating it as an
             // absence would disarm the guard for exactly the proof that most needs it.
-            return new PinReading(true, null, "the pin file '" + path + "' could not be read: " + ex.Message);
+            return PinReading.Indeterminate(
+                "the pin file '" + path + "' could not be read: " + ex.Message);
         }
     }
 
@@ -1057,7 +1305,7 @@ internal static class MutationProofPinGuard
             TrimIfLarge(allRuns);
             Append(allRuns, line);
 
-            if (pin.Found)
+            if (pin.Outcome != PinOutcome.NoPinPresent)
             {
                 // Never trimmed. It only grows by one line per proof run, and a ledger that discards its
                 // oldest entries is exactly useless for the question it exists to answer, which is always
