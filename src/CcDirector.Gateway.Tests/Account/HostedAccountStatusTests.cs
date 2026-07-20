@@ -146,18 +146,23 @@ public sealed class HostedAccountStatusTests : IAsyncLifetime
 
         Assert.True(root.GetProperty("signedIn").GetBoolean());
 
-        // DIAGNOSTIC for issue #1894 - temporary, remove once the source is named.
+        // The identity must be ABSENT here. This assertion reports the value it rejects, deliberately and
+        // permanently - an assertion that rejects a value should say what the value was.
         //
-        // This assertion fails intermittently in CI and passes in isolation. The value it rejects has never
-        // been printed, so the source has only ever been reasoned about. It cannot come from this caller's
-        // own tenant row: the subjects are GUID-unique per class instance, the registry looks up strictly on
-        // account_subject under a unique index, and this one is minted fresh with a null email. So when it
-        // is present it came from SOMEWHERE ELSE, and this makes the failure say where instead of leaving
-        // it to be deduced.
+        // It is written this way because of issue #1894. This test failed intermittently in CI while passing
+        // in isolation, and the rejected value had never been printed, so its source was only ever reasoned
+        // about and was never named. The value cannot come from this caller's own tenant row: the subjects
+        // are GUID-unique per class instance, TenantRegistry looks up strictly on account_subject under a
+        // unique index, and this subject is minted fresh with a null email. So when an email is present it
+        // came from SOMEWHERE ELSE.
         //
-        // "alice@example.com" would mean the leak is inside this class and is almost certainly benign.
-        // Anything else means it crossed a class boundary, in a suite whose job is to prove that identity
-        // never crosses a tenant boundary.
+        // If this fails again, read the message rather than re-running:
+        //   "alice@example.com"  -> the leak is inside this class, and is almost certainly benign
+        //   anything else        -> it crossed a class boundary, in a suite whose job is to prove that
+        //                           identity never crosses a TENANT boundary
+        //
+        // #1894 stays open until that source is named and fixed. A subsequent green run does not discharge
+        // it: a passing run with no named cause is the instrument certifying itself.
         var hasEmail = root.TryGetProperty("email", out var emailProperty);
         var hasProvider = root.TryGetProperty("provider", out var providerProperty);
         Assert.False(
