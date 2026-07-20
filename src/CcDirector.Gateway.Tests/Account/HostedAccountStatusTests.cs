@@ -145,8 +145,33 @@ public sealed class HostedAccountStatusTests : IAsyncLifetime
         var root = await StatusFor(_keyNoEmail);
 
         Assert.True(root.GetProperty("signedIn").GetBoolean());
-        Assert.False(root.TryGetProperty("email", out _));      // omitted, not null, not fabricated
-        Assert.False(root.TryGetProperty("provider", out _));
+
+        // The identity must be ABSENT here. This assertion reports the value it rejects, deliberately and
+        // permanently - an assertion that rejects a value should say what the value was.
+        //
+        // It is written this way because of issue #1894. This test failed intermittently in CI while passing
+        // in isolation, and the rejected value had never been printed, so its source was only ever reasoned
+        // about and was never named. The value cannot come from this caller's own tenant row: the subjects
+        // are GUID-unique per class instance, TenantRegistry looks up strictly on account_subject under a
+        // unique index, and this subject is minted fresh with a null email. So when an email is present it
+        // came from SOMEWHERE ELSE.
+        //
+        // If this fails again, read the message rather than re-running:
+        //   "alice@example.com"  -> the leak is inside this class, and is almost certainly benign
+        //   anything else        -> it crossed a class boundary, in a suite whose job is to prove that
+        //                           identity never crosses a TENANT boundary
+        //
+        // #1894 stays open until that source is named and fixed. A subsequent green run does not discharge
+        // it: a passing run with no named cause is the instrument certifying itself.
+        var hasEmail = root.TryGetProperty("email", out var emailProperty);
+        var hasProvider = root.TryGetProperty("provider", out var providerProperty);
+        Assert.False(
+            hasEmail || hasProvider,
+            $"#1894 DIAGNOSTIC: expected the identity to be ABSENT for a tenant with no recorded email. " +
+            $"email={(hasEmail ? $"'{emailProperty.GetString()}'" : "<absent>")}, " +
+            $"provider={(hasProvider ? $"'{providerProperty.GetString()}'" : "<absent>")}. " +
+            $"This subject ({_subjectNoEmail}) is unique to this test instance, so any value here came from " +
+            $"outside this caller's own tenant row. Full response body: {root}");
     }
 
     [Fact]
