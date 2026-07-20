@@ -35,17 +35,21 @@ namespace CcDirector.Gateway.Tests;
 ///   - its REAL PAYLOAD, field by field (the eleven read routes);
 ///   - an INDEPENDENTLY RE-READ EFFECT - the value is written over the wire and then read back out of the
 ///     configuration store through the Core config class, not out of the response (thirteen write routes);
-///   - a SEEDED TRANSITION, where a plain re-read could not tell a real write from a no-op: transcription
-///     mode, whose only accepted value is also the default, and the provider, whose effect is a RESET
-///     rather than a stored value (two routes);
+///   - a SEEDED TRANSITION off a sentinel the effect cannot produce, where the effect is a RESET rather
+///     than a stored value (the provider, one route);
+///   - SERVED-AND-REACHES-A-HANDLER, the deliberately NARROWED claim for the one route that can carry no
+///     stronger one: transcription mode is SINGLE-VALUED BY CONSTRUCTION, so no stored state differs from
+///     what it writes and no seeding could distinguish it from a no-op. That is proved, not asserted, by
+///     The_transcription_mode_setting_is_single_valued_so_no_write_is_observable - which also reddens the
+///     day a second mode is added, so the narrowing cannot go stale (one route);
 ///   - a HANDLER-UNIQUE RECEIPT: a status and message only that one handler can produce, where the route
 ///     has no readable effect to assert - brain config, the two credential-resolution routes, autostart
 ///     (four routes);
 ///   - an INJECTED-SEAM RECEIPT with a destructibility control, for the one route whose real work is to
 ///     start a process: brain restart. It is driven on its exact path AND verb; only the process spawn is
 ///     replaced.
-/// Eleven plus thirteen plus two plus four plus one is thirty-one. No route is left over, and none is
-/// proved only by the absence of the refusal.
+/// Eleven plus thirteen plus one plus one plus four plus one is thirty-one. No route is left over, and
+/// none is proved only by the absence of the refusal.
 ///
 /// These tests must stay GREEN through the revert. A control that moves with the change under test is not
 /// a control.
@@ -323,28 +327,47 @@ public sealed class HostedOwnerSettingsSelfHostControlTests : IAsyncLifetime
     }
 
     /// <summary>
-    /// <c>PUT /gateway/transcription-mode</c> on its own, proved by a SEEDED TRANSITION.
+    /// WHY <c>PUT /gateway/transcription-mode</c> CANNOT HAVE AN OBSERVABLE WRITE EFFECT - proved, not
+    /// asserted, so the narrower claim made for that route below rests on a checked fact.
     ///
-    /// This route was previously the one write whose served-side positive did not actually prove anything:
-    /// the endpoint accepts only <c>"devthrottle"</c>, which is also the default, so writing it and reading
-    /// it back returns the same answer whether the handler wrote or did nothing at all. The reviewer was
-    /// right that echoing the sole accepted value cannot distinguish a real write from a no-op.
+    /// The reviewer's finding was that writing the sole accepted value, which is also the default, cannot
+    /// distinguish a real write from a no-op, and offered two ways out: seed a persistent transition, or
+    /// narrow the claim if the route has no distinguishable mutation. The first was ATTEMPTED FIRST and
+    /// FAILED, which is what established the second is correct: seeding the store to the other enum value
+    /// and reading it back returns DevThrottle, because the setting is SINGLE-VALUED BY CONSTRUCTION.
     ///
-    /// The claim did not need narrowing, though - it needed a starting point. The endpoint only ACCEPTS
-    /// "devthrottle", but the underlying setting is a two-valued one and the configuration store happily
-    /// holds <c>"byo"</c>. So this seeds the store to "byo" through the Core config class, proves the seed
-    /// took, then drives the route and proves the stored value MOVED. A handler that accepted the request
-    /// and wrote nothing leaves it on "byo" and this test reddens.
+    /// Both halves of that are pinned here. Every value the type can serialize writes "devthrottle", and
+    /// every value it will parse - including all the legacy provider strings - resolves to DevThrottle. So
+    /// no reachable stored state differs from the one the route writes, and no seeding strategy could
+    /// distinguish the handler from a no-op. That is a property of the setting, not a gap in the test.
+    ///
+    /// THIS TEST IS ALSO THE EXPIRY DATE ON THAT CAVEAT. If a second real transcription mode is ever added,
+    /// this reddens immediately and tells whoever added it that the route now needs a genuine
+    /// seeded-transition proof, rather than leaving a stale narrowing in place forever.
+    /// </summary>
+    [Fact]
+    public void The_transcription_mode_setting_is_single_valued_so_no_write_is_observable()
+    {
+        foreach (var mode in Enum.GetValues<TranscriptionMode>())
+            Assert.Equal("devthrottle", mode.ToConfigString());
+
+        foreach (var stored in new string?[] { null, "", "  ", "devthrottle", "byo", "openai", "local" })
+            Assert.Equal(TranscriptionMode.DevThrottle, TranscriptionModeExtensions.Parse(stored));
+    }
+
+    /// <summary>
+    /// <c>PUT /gateway/transcription-mode</c> - the NARROWED claim, stated as exactly what it proves.
+    ///
+    /// It proves the route is SERVED on self-host and reaches a handler that answers with the setting's
+    /// value. It does NOT prove a store mutation, and the test above is why no test could. Calling this an
+    /// independently re-read effect - as the previous revision's table did - would be claiming more than
+    /// the evidence supports, which is the thing this whole review has been about.
     /// </summary>
     [Theory]
     [MemberData(nameof(NonHostedForms))]
-    public async Task The_transcription_mode_write_really_moves_the_stored_value_on_self_host(string? hostedForm)
+    public async Task The_transcription_mode_route_is_served_on_self_host(string? hostedForm)
     {
         DeclareSelfHost(hostedForm);
-
-        // Seed the OPPOSITE value, so "unchanged" and "written" cannot be confused.
-        TranscriptionModeConfig.Set(TranscriptionMode.Byo);
-        Assert.Equal(TranscriptionMode.Byo, TranscriptionModeConfig.Get());
 
         var response = await OwnerSettingsRoutes.SendAsync(_http, "PUT", "gateway/transcription-mode",
             "{\"mode\":\"devthrottle\"}");
@@ -352,9 +375,11 @@ public sealed class HostedOwnerSettingsSelfHostControlTests : IAsyncLifetime
         Assert.Equal("application/json", response.Content.Headers.ContentType?.MediaType);
 
         using var document = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        Assert.Equal(new[] { "mode" }, document.RootElement.EnumerateObject().Select(p => p.Name).ToArray());
         Assert.Equal("devthrottle", document.RootElement.GetProperty("mode").GetString());
 
-        // The independently re-read effect: the stored value MOVED off the seed.
+        // Not a transition - see the single-valued proof above. This states the post-condition that IS
+        // checkable: the store holds the value the route reports.
         Assert.Equal(TranscriptionMode.DevThrottle, TranscriptionModeConfig.Get());
     }
 
