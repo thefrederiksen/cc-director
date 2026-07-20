@@ -41,7 +41,8 @@ working tree is checked - the baseline, the arm, and any re-run of either.
 
 #    Run the suite. Record the numbers against the pinned head it printed.
 
-# 2. Apply the mutation, then re-declare as the arm, naming what it touches.
+# 2. Apply the mutation, then declare the arm, naming what it touches. This does NOT re-pin: it carries
+#    the baseline's head forward, and refuses if the tree has moved off it.
 ./scripts/mutation-proof-pin.ps1 set -Phase arm -Mutates src/CcDirector.Gateway/Api/GatewayEndpoints.cs
 
 #    Run the suite again. Reconcile.
@@ -65,10 +66,38 @@ declared changes:
 
 A baseline is simply an arm that declares no mutations, so one rule runs both phases.
 
-**With no pin, the guard has no opinion at all.** A worker mid-rework is legitimately dirty and must be able
-to run whatever it likes. This is deliberate and is not an oversight to be tidied up later: a blanket
-refusal on any dirty tree would be switched off within a day, and a guard that gets switched off protects
-nothing.
+**With no pin, no run is ever refused.** A worker mid-rework is legitimately dirty and must be able to run
+whatever it likes. This is deliberate and is not an oversight to be tidied up later: a blanket refusal on
+any dirty tree would be switched off within a day, and a guard that gets switched off protects nothing.
+
+### The pinned head never moves, and that is enforced twice
+
+A proof's pinned head is its identity. A baseline and its arm must be taken at the same commit, or the
+reconciliation compares two different programs and the arithmetic means nothing while still adding up.
+
+The first version of this tool got that wrong in the most dangerous possible way: every `set` recomputed
+`git rev-parse HEAD`, so the documented baseline-to-arm transition silently **re-pinned** to the new head
+whenever HEAD had moved between the two runs. The guard then compared the arm against the new head, found
+an exact match, and admitted it. The supported happy path walked into the exact event the guard exists to
+refuse.
+
+Two mechanisms now hold it:
+
+1. `set -Phase arm` **carries the baseline's head forward** and never recomputes it. If the tree has moved
+   off the pinned head it refuses, naming both. Setting an arm with no baseline refuses too, and pinning a
+   baseline over an existing pin refuses - re-pinning requires an explicit `release`, which is loud and
+   discards the old proof identity along with its numbers.
+2. The pin carries a **proof identity**, and every run records it to the ledger with the head it measured.
+   If any earlier run of the same proof was measured against a different head, the run is refused - however
+   the pin file came to say what it says. That covers a hand-edited pin, a copied file, and a future change
+   to this script. Fixing the script fixes the instance; this covers the class.
+
+### What an unpinned run costs
+
+It is not free, and an earlier version of this document wrongly said it was. Every run of every test
+assembly invokes git twice and appends one line to a log outside the tree - roughly a fifth of a second per
+assembly against a suite measured in minutes. That is the deliberate price of the ledger below: it is the
+entire reason a **forgotten** pin is still answerable afterwards.
 
 ## The second job: the record outlives the tree
 
@@ -80,7 +109,15 @@ Those proofs were run in worktrees, and the worktrees were removed after merging
 hygiene, and it destroyed the only artifact that could have answered the question. Those four are recorded
 as unknown and will stay unknown.
 
-So every run appends a line to a ledger that lives **outside every working tree**, under the per-user local
+The **pin** lives in the repository's git directory, found by asking `git rev-parse --absolute-git-dir` -
+the same question the guard asks, so there is no second derivation to disagree with. (There used to be one,
+computed from the working tree path in both PowerShell and C#, and the two copies did not agree off
+Windows: the tool printed `PINNED` while the guard read nothing at all. Continuous integration runs on
+Linux.) That location is per-worktree by construction, is invisible to `git status` so the pin cannot dirty
+the tree it guards, and survives `git clean -xdf`.
+
+The **ledger** has the opposite requirement - it must outlive the tree - so every run appends a line to a
+file **outside every working tree**, under the per-user local
 application data directory alongside the suite lock's own state. `git worktree remove`, `git clean -xdf`,
 and deleting the whole checkout cannot reach it.
 

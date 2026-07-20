@@ -51,8 +51,15 @@ namespace CcDirector.TestInfrastructure;
 /// A worker halfway through a rework is legitimately dirty and must be able to run whatever it likes,
 /// whenever it likes. Only a baseline and a mutation arm carry a MEANING that depends on the tree being
 /// exactly the pinned head. A blanket guard would be switched off inside a day, and a guard that gets
-/// switched off protects nothing at all. So the guard is inert - it does not even invoke git - unless the
-/// tree has an active pin.
+/// switched off protects nothing at all. So an unpinned run is never REFUSED, whatever state its tree is in.
+///
+/// WHAT AN UNPINNED RUN DOES COST, stated plainly because an earlier version of this comment claimed the
+/// guard was "inert" and did "not even invoke git" unless pinned, and that was simply untrue. Every run of
+/// every test assembly invokes git twice - once for the head, once for the working tree's changes - and
+/// appends one line to a log outside the tree. That is roughly a fifth of a second per assembly against a
+/// suite measured in minutes, and it is deliberate: it is the entire reason a FORGOTTEN pin is still
+/// answerable afterwards. But it is a real cost on every ordinary run, it is not nothing, and anybody
+/// weighing this mechanism should weigh what it actually does.
 ///
 /// HOW A RUN DECLARES ITSELF PART OF A PROOF, AND WHY THAT IS HARD TO FORGET.
 ///
@@ -162,8 +169,16 @@ internal static class MutationProofPinGuard
         public override string ToString() => StatusCode + " " + Path;
     }
 
-    /// <summary>A proof's declaration for one working tree.</summary>
+    /// <summary>
+    /// A proof's declaration for one working tree.
+    ///
+    /// <c>ProofId</c> is the proof's identity, minted once when the baseline is pinned and CARRIED
+    /// UNCHANGED through the phase transition to the arm. It exists so that the one property this whole
+    /// design rests on - that the pinned head does not move for the life of a proof - can be CHECKED rather
+    /// than assumed. See <see cref="DetectMovedPin"/>.
+    /// </summary>
     internal sealed record ProofPin(
+        string ProofId,
         string Phase,
         string PinnedHead,
         string PinnedUtc,
@@ -189,10 +204,19 @@ internal static class MutationProofPinGuard
     internal sealed record Verdict(bool Admitted, string Message);
 
     /// <summary>
+    /// Convenience for the many cases where no proof has run before, so there is no history to check.
+    /// </summary>
+    internal static Verdict Decide(PinReading pin, TreeReading tree) =>
+        Decide(pin, tree, Array.Empty<string>());
+
+    /// <summary>
     /// The rule, in one place. Collects EVERY problem rather than stopping at the first, so a worker fixes
     /// the tree in one pass instead of discovering the second fault after another nine-minute run.
+    ///
+    /// <paramref name="priorLedgerLines"/> is this machine's record of every earlier proof run. It is what
+    /// lets the guard check its own foundation - see <see cref="DetectMovedPin"/>.
     /// </summary>
-    internal static Verdict Decide(PinReading pin, TreeReading tree)
+    internal static Verdict Decide(PinReading pin, TreeReading tree, IReadOnlyList<string> priorLedgerLines)
     {
         if (pin.Problem is not null)
         {
@@ -226,6 +250,10 @@ internal static class MutationProofPinGuard
         }
 
         var problems = new List<string>();
+
+        var moved = DetectMovedPin(active, priorLedgerLines);
+        if (moved is not null)
+            problems.Add(moved);
 
         if (!string.Equals(active.PinnedHead, tree.Head, StringComparison.OrdinalIgnoreCase))
         {
@@ -305,6 +333,86 @@ internal static class MutationProofPinGuard
             + "powershell -File scripts/mutation-proof-pin.ps1 release");
     }
 
+    /// <summary>
+    /// Checks the one property this entire design rests on: THAT THE PINNED HEAD DOES NOT MOVE FOR THE LIFE
+    /// OF A PROOF.
+    ///
+    /// WHY THIS EXISTS, AND WHY IT IS NOT A RESTATEMENT OF THE SCRIPT'S BEHAVIOUR.
+    ///
+    /// A pinned head is what makes a baseline and its arm comparable. Everything else here - the refusal on
+    /// an undeclared change, the refusal on a missing mutation - is worthless if the pin itself can shift
+    /// underneath the proof, because then the two runs are simply measured against whatever each happened
+    /// to see.
+    ///
+    /// That property was the one thing nothing checked, and the reason it was missed is worth writing down:
+    /// the pin not moving is the PREMISE, so no test was aimed at it. The property that justifies a design
+    /// is the property nothing exercises, precisely because the whole design assumes it. A reviewer then
+    /// found that the supported workflow BROKE it - "set -Phase arm" recomputed the head, so a head that
+    /// moved between the baseline and the arm was silently re-pinned and the arm ADMITTED. The guard's
+    /// documented happy path walked into the exact event the guard exists to refuse.
+    ///
+    /// The script is fixed. This is the SECOND mechanism, and it is here because fixing the script only
+    /// fixes the instance. This one holds no matter how the pin file came to say what it says - a future
+    /// edit to the script, a hand-edited pin, a copied file, a tool nobody has written yet. The identity is
+    /// the proof id; the ledger is the memory. If any earlier run of THIS proof was measured against a
+    /// different head, this proof's foundation moved, and every number it produced is incomparable.
+    ///
+    /// It fails CLOSED on a malformed prior line: a ledger entry that names this proof but whose head
+    /// cannot be read is treated as a mismatch, because the alternative is to skip the check on exactly the
+    /// input that is already wrong.
+    /// </summary>
+    internal static string? DetectMovedPin(ProofPin pin, IReadOnlyList<string> priorLedgerLines)
+    {
+        if (string.IsNullOrWhiteSpace(pin.ProofId))
+            return null;
+
+        foreach (var line in priorLedgerLines)
+        {
+            var proofId = ReadLedgerField(line, "proofId");
+            if (proofId is null || !string.Equals(proofId, pin.ProofId, StringComparison.Ordinal))
+                continue;
+
+            var earlierHead = ReadLedgerField(line, "pinnedHead");
+            if (earlierHead is not null
+                && string.Equals(earlierHead, pin.PinnedHead, StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            return "THIS PROOF'S PINNED HEAD HAS MOVED SINCE AN EARLIER RUN OF THE SAME PROOF. Proof "
+                + pin.ProofId + " was measured against " + (earlierHead ?? "(a head this ledger line does "
+                + "not record)") + " at " + (ReadLedgerField(line, "when") ?? "an earlier run")
+                + ", and the pin now says " + pin.PinnedHead + "."
+                + Environment.NewLine
+                + "    A proof's pinned head is its identity: a baseline and its mutation arm must be taken "
+                + "at the SAME commit or the reconciliation compares two different programs and means "
+                + "nothing. Re-pinning midway is not a correction, it is a new proof - so the numbers "
+                + "already collected under this proof id cannot be reconciled against anything collected "
+                + "now." + Environment.NewLine
+                + "    Start again: release the pin, return the tree to the head you intend to measure, and "
+                + "pin a fresh baseline.";
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// Reads one key from a ledger line. The line is key=value pairs joined by two spaces, so a value may
+    /// contain single spaces (paths do) but never two - which is what makes this readable by eye and
+    /// parseable without quoting.
+    /// </summary>
+    internal static string? ReadLedgerField(string line, string key)
+    {
+        foreach (var field in line.Split("  ", StringSplitOptions.RemoveEmptyEntries))
+        {
+            var split = field.IndexOf('=');
+            if (split > 0 && string.Equals(field[..split].Trim(), key, StringComparison.Ordinal))
+                return field[(split + 1)..].Trim();
+        }
+
+        return null;
+    }
+
     private static string Describe(ProofPin pin)
     {
         var mutations = pin.DeclaredMutations.Count == 0
@@ -334,6 +442,7 @@ internal static class MutationProofPinGuard
         string? phase = null;
         string? head = null;
         string? pinnedUtc = null;
+        string? proofId = null;
         var note = "";
         var mutations = new List<string>();
 
@@ -360,6 +469,9 @@ internal static class MutationProofPinGuard
                     break;
                 case "pinnedUtc":
                     pinnedUtc = value;
+                    break;
+                case "proofId":
+                    proofId = value;
                     break;
                 case "mutates":
                     if (value.Length > 0)
@@ -412,9 +524,24 @@ internal static class MutationProofPinGuard
                 + "any tree at all, which is the opposite of what this guard is for.");
         }
 
+        if (string.IsNullOrWhiteSpace(proofId))
+        {
+            // Required, and a refusal rather than a default, because the proof id is what lets the guard
+            // check that this proof's head never moved. Inventing one here would mint a NEW identity on
+            // every run, and the moved-pin check would then never fire while appearing to be in force -
+            // the guard would be reporting on a proof that, as far as it could tell, had just begun.
+            return Malformed(
+                pinFilePath,
+                "it declares no proofId. That identity is what lets the guard detect a pinned head that "
+                + "moved midway through a proof, so a pin without one cannot be checked against its own "
+                + "history. Release this pin and set it again with the current script.");
+        }
+
         return new PinReading(
             true,
-            new ProofPin(phase, head.ToLowerInvariant(), pinnedUtc ?? "(not recorded)", mutations, note, pinFilePath),
+            new ProofPin(
+                proofId, phase, head.ToLowerInvariant(), pinnedUtc ?? "(not recorded)",
+                mutations, note, pinFilePath),
             null);
     }
 
@@ -453,60 +580,87 @@ internal static class MutationProofPinGuard
     }
 
     /// <summary>
-    /// The pin file for one working tree. The key is a hash of the tree's path so that two working trees of
-    /// the same repository - which is how every mission here is run - hold independent pins.
-    ///
-    /// SHA-256 rather than a runtime hash code, because this name is written to disk and must mean the same
-    /// thing in the next process. The leaf directory name is kept in front of the hash so a human reading
-    /// the pins directory can tell at a glance which tree each pin belongs to.
+    /// The pin file's name inside the repository's git directory. Read by this guard, WRITTEN by
+    /// scripts/mutation-proof-pin.ps1, and therefore the one string the two must agree on - which is why
+    /// TheScriptAndTheGuardAgreeOnThePinFileName reads the script's own text and compares it against this
+    /// constant.
     /// </summary>
-    internal static string ComputePinFilePath(string pinsDirectory, string workingTreeRoot)
+    internal const string PinFileName = "cc-director-mutation-proof.pin";
+
+    /// <summary>
+    /// The pin lives inside the repository's GIT DIRECTORY, and both the writer and this reader locate it
+    /// by asking git the same question.
+    ///
+    /// THIS REPLACED A DERIVATION, AND THE REASON IS THE BUG IT REMOVES. The first version computed the
+    /// pin's location from the working tree path - a per-user directory, a sanitized leaf name and a
+    /// SHA-256 - which meant the PowerShell writer and this C# reader each carried their own copy of that
+    /// derivation. A reviewer found that the two copies did not agree: the writer used one location on
+    /// every platform while this reader used a different one on Linux and macOS, so on those platforms the
+    /// supported tooling printed "PINNED" while the guard read no pin at all and admitted contaminated
+    /// baselines. Armed according to its own output, inert in fact.
+    ///
+    /// Aligning the two derivations would have fixed that instance and left the CLASS in place: any future
+    /// edit to either copy re-opens it, and the failure is silent in the direction that matters, because a
+    /// guard reading a pin that is not there looks exactly like a guard with nothing to do.
+    ///
+    /// So there is no derivation left to diverge. "git rev-parse --absolute-git-dir" is one question with
+    /// one answer, asked by both sides, on every platform. Four properties come free with it:
+    ///
+    ///   - PER WORKING TREE, BY CONSTRUCTION. In a git worktree this returns .git/worktrees/&lt;name&gt;, so two
+    ///     worktrees of one repository hold independent pins with no hashing and nothing to key.
+    ///   - OUTSIDE THE WORKING TREE. The git directory is not part of "git status", so the pin cannot dirty
+    ///     the tree it is guarding, and needs no exemption from its own rule - an exemption would be a hole.
+    ///   - BEYOND "git clean -xdf", which does not touch the git directory. That is housekeeping a worker
+    ///     runs in the middle of a proof.
+    ///   - NOT MOVABLE BY THE ENVIRONMENT. The answer belongs to the repository, not to whoever launched
+    ///     the run - the property the per-user suite lock had to be repaired to obtain.
+    ///
+    /// The pin dying with "git worktree remove" is correct: a proof in a removed worktree is over. The
+    /// LEDGER is what must outlive the tree, and it lives elsewhere - see <see cref="LedgerDirectory"/>.
+    /// </summary>
+    internal static string? ResolveGitDirectory(string workingTreeRoot)
     {
-        var normalized = workingTreeRoot.Replace('\\', '/').TrimEnd('/').ToLowerInvariant();
-        var digest = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(normalized)))
-            .ToLowerInvariant();
+        var result = RunGit(workingTreeRoot, "--no-optional-locks rev-parse --absolute-git-dir");
+        if (result.ExitCode != 0)
+            return null;
 
-        var leaf = new string(Path.GetFileName(normalized.TrimEnd('/'))
-            .Select(c => char.IsLetterOrDigit(c) || c is '-' or '_' ? c : '-')
-            .ToArray());
+        var path = result.Output.Trim();
+        return path.Length == 0 ? null : path;
+    }
 
-        if (leaf.Length > 40)
-            leaf = leaf[..40];
-
-        return Path.Combine(pinsDirectory, leaf + "-" + digest[..16] + ".pin");
+    /// <summary>The pin file for the working tree rooted at the given path, or null when git cannot say.</summary>
+    internal static string? ResolvePinFilePath(string workingTreeRoot)
+    {
+        var gitDirectory = ResolveGitDirectory(workingTreeRoot);
+        return gitDirectory is null ? null : Path.Combine(gitDirectory, PinFileName);
     }
 
     /// <summary>
-    /// Where pins live: beside the per-user suite lock, under the per-user local application data
-    /// directory, and NOT anywhere the process environment can move - for the same reason the suite lock
-    /// is derived that way. A pin the launching environment can relocate is a pin two runs of the same
-    /// proof would not share.
+    /// Where the LEDGER lives - deliberately NOT in the git directory, because it has the opposite
+    /// requirement to the pin: it must survive "git worktree remove", which is exactly what destroyed the
+    /// evidence for four already-merged proofs.
+    ///
+    /// ONE RULE ON EVERY PLATFORM, and no branch on the operating system. The branch is what the reviewer
+    /// caught in the pin path, and it is not worth keeping here for a different reason: the framework's
+    /// local-application-data folder is defined on every platform this runs on, and both this reader and
+    /// the script obtain it by calling that same framework method rather than by each spelling out a
+    /// platform's convention.
     /// </summary>
-    internal static string ComputePinsDirectory(bool isWindows, string localApplicationDataFolder, string userName)
+    internal static string ComputeLedgerDirectory(string localApplicationDataFolder)
     {
-        if (!isWindows)
-        {
-            // Built by hand: the separator belongs to the target platform, not the running one.
-            return "/tmp/cc-director-" + userName + "-mutation-proof-pins";
-        }
-
         if (string.IsNullOrWhiteSpace(localApplicationDataFolder))
         {
             throw new InvalidOperationException(
-                "Cannot locate the per-user local application data directory, so mutation-proof pins have "
-                + "no environment-independent home. Every alternative location is settable by whoever "
-                + "launched the run, which would let the baseline and the mutation arm read different "
-                + "pins. See MutationProofPinGuard.");
+                "Cannot locate the per-user local application data directory, so the mutation-proof ledger "
+                + "has no home. See MutationProofPinGuard.");
         }
 
         return Path.Combine(localApplicationDataFolder, "cc-director", "mutation-proof-pins");
     }
 
-    private static string PinsDirectory => ComputePinsDirectory(
-        OperatingSystem.IsWindows(),
+    private static string LedgerDirectory => ComputeLedgerDirectory(
         Environment.GetFolderPath(
-            Environment.SpecialFolder.LocalApplicationData, Environment.SpecialFolderOption.DoNotVerify),
-        Environment.UserName);
+            Environment.SpecialFolder.LocalApplicationData, Environment.SpecialFolderOption.DoNotVerify));
 
     // ---------------------------------------------------------------------------------------------------
     // Reading the tree, via git.
@@ -654,7 +808,12 @@ internal static class MutationProofPinGuard
 
         var pin = ReadPinFor(root);
         var tree = ReadTree(root);
-        var verdict = Decide(pin, tree);
+
+        // Read only when a pin is active. An unpinned run has no proof identity to compare against, and
+        // reading the ledger on every ordinary run would be cost for nothing.
+        var priorLedgerLines = pin.Found ? ReadLedger() : Array.Empty<string>();
+
+        var verdict = Decide(pin, tree, priorLedgerLines);
 
         LastVerdictSummary = (verdict.Admitted ? "admitted" : "refused") + ": " + verdict.Message;
 
@@ -686,14 +845,13 @@ internal static class MutationProofPinGuard
 
     private static PinReading ReadPinFor(string workingTreeRoot)
     {
-        string path;
-        try
+        var path = ResolvePinFilePath(workingTreeRoot);
+        if (path is null)
         {
-            path = ComputePinFilePath(PinsDirectory, workingTreeRoot);
-        }
-        catch (Exception ex)
-        {
-            return new PinReading(true, null, "the pins directory could not be located: " + ex.Message);
+            // Git could not name its own directory. There is no pin to find and no way to know whether one
+            // exists, so nothing is claimed - the run is admitted, and the ledger records that this run
+            // verified nothing rather than that it was clean.
+            return new PinReading(false, null, null);
         }
 
         try
@@ -713,6 +871,49 @@ internal static class MutationProofPinGuard
 
     /// <summary>The name of the ledger every pinned run in every working tree appends to.</summary>
     internal const string ProofLedgerFileName = "mutation-proof-ledger.log";
+
+    /// <summary>
+    /// Every run, pinned or not - the high-volume record, trimmed. This is where a FORGOTTEN pin is
+    /// reconstructed from: it says whether the tree was dirty when a baseline ran even though nobody
+    /// declared that run a baseline.
+    /// </summary>
+    internal const string AllRunsFileName = "mutation-proof-all-runs.log";
+
+    /// <summary>
+    /// This machine's record of every proof run, oldest first.
+    ///
+    /// Read with full sharing, because several test assemblies start at once and one of them may be
+    /// appending. An unreadable ledger returns nothing rather than throwing: it must never break a run, and
+    /// the moved-pin check it feeds is an ADDITIONAL mechanism - the head comparison against the working
+    /// tree still runs regardless.
+    /// </summary>
+    private static IReadOnlyList<string> ReadLedger()
+    {
+        try
+        {
+            var path = Path.Combine(LedgerDirectory, ProofLedgerFileName);
+            if (!File.Exists(path))
+                return Array.Empty<string>();
+
+            using var stream = new FileStream(
+                path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+            using var reader = new StreamReader(stream);
+
+            var lines = new List<string>();
+            string? line;
+            while ((line = reader.ReadLine()) is not null)
+            {
+                if (line.Length > 0)
+                    lines.Add(line);
+            }
+
+            return lines;
+        }
+        catch (Exception)
+        {
+            return Array.Empty<string>();
+        }
+    }
 
     /// <summary>
     /// Everything about one run that a person reading the ledger in six months needs, gathered as VALUES so
@@ -775,8 +976,11 @@ internal static class MutationProofPinGuard
 
         return string.Join("  ", new[]
         {
-            record.WhenUtc,
+            "when=" + record.WhenUtc,
             "verdict=" + (record.Verdict.Admitted ? "admitted" : "refused"),
+            // The proof's identity, and the reason the ledger is more than a diary: it is what a later run
+            // of the SAME proof compares its pinned head against, so a head that moved midway is caught.
+            "proofId=" + (pin?.ProofId ?? "(none)"),
             "phase=" + phase,
             "pinnedHead=" + pinnedHead,
             "observedHead=" + observedHead,
@@ -823,12 +1027,16 @@ internal static class MutationProofPinGuard
                 Tree: tree,
                 Verdict: verdict));
 
-            var directory = PinsDirectory;
+            var directory = LedgerDirectory;
             Directory.CreateDirectory(directory);
 
-            var perTree = ComputePinFilePath(directory, workingTreeRoot) + ".runs.log";
-            TrimIfLarge(perTree);
-            Append(perTree, line);
+            // Every run, pinned or not, in one file. It used to be split per working tree by a hashed file
+            // name; that hash was the derivation the PowerShell writer had to reproduce, and reproducing it
+            // is what diverged. Every line already carries "tree=", so the split bought nothing that a
+            // search does not, and removing it removed a whole class of disagreement.
+            var allRuns = Path.Combine(directory, AllRunsFileName);
+            TrimIfLarge(allRuns);
+            Append(allRuns, line);
 
             if (pin.Found)
             {

@@ -64,40 +64,54 @@ function Get-WorkingTreeRoot {
     return ($root -replace '\\', '/').TrimEnd('/')
 }
 
-function Get-PinsDirectory {
+function Get-LedgerDirectory {
     $local = [Environment]::GetFolderPath('LocalApplicationData')
     if ([string]::IsNullOrWhiteSpace($local)) {
-        throw "Cannot locate the per-user local application data directory, so the pin has no environment-independent home."
+        throw "Cannot locate the per-user local application data directory, so the ledger has no home."
     }
     return (Join-Path (Join-Path $local 'cc-director') 'mutation-proof-pins')
 }
 
+# The pin file's name. This ONE string is all the script and the guard have to agree on, and the test
+# TheScriptAndTheGuardAgreeOnThePinFileName reads this very line and compares it against the guard's
+# constant - so a change to either side reddens a test instead of silently disarming the guard.
+$script:PinFileName = 'cc-director-mutation-proof.pin'
+
 function Get-PinPath([string] $root) {
-    # Must match MutationProofPinGuard.ComputePinFilePath EXACTLY, or the script writes a pin the guard
-    # never reads and the whole mechanism is inert while appearing to work. The C# side of this derivation
-    # is frozen by a golden value in MutationProofPinGuardTests
-    # (ThePinFileNameIsAGoldenValue_BecauseAScriptDerivesTheSameNameSeparately) - if you change either
-    # side, run that test and reconcile both, because a silent divergence here disarms the guard.
+    # ASK GIT, DO NOT DERIVE. The first version of this script computed the pin's location from the working
+    # tree path with a hash and a per-user directory, and the guard computed it again in C#. A reviewer
+    # found the two copies did not agree on non-Windows platforms: this script printed "PINNED" while the
+    # guard looked elsewhere, found nothing, and admitted contaminated baselines. Armed by its own output,
+    # inert in fact - and continuous integration runs on Linux.
     #
-    # SHA256::Create rather than SHA256::HashData: HashData does not exist on Windows PowerShell 5.1, which
-    # is the shell this repository's scripts are driven from.
-    $normalized = $root.ToLowerInvariant()
-    $hasher = [System.Security.Cryptography.SHA256]::Create()
-    try {
-        $sha = $hasher.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($normalized))
+    # Aligning the two derivations would have fixed that instance and kept the class. There is now no
+    # derivation to diverge: one question to git, one answer, both sides. In a worktree this returns
+    # .git/worktrees/<name>, so trees are separated with nothing to key on; the git directory is outside
+    # "git status" so the pin cannot dirty the tree it guards; and "git clean -xdf" does not reach it.
+    $gitDir = (git -C $root --no-optional-locks rev-parse --absolute-git-dir 2>$null)
+    if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($gitDir)) {
+        throw "git could not name its own directory for '$root', so the pin has nowhere to live."
     }
-    finally {
-        $hasher.Dispose()
+    return (Join-Path $gitDir.Trim() $script:PinFileName)
+}
+
+function Read-Pin([string] $path) {
+    if (-not (Test-Path $path)) { return $null }
+    $fields = @{}
+    foreach ($line in (Get-Content $path)) {
+        $trimmed = $line.Trim()
+        if ($trimmed.Length -eq 0 -or $trimmed.StartsWith('#')) { continue }
+        $split = $trimmed.IndexOf('=')
+        if ($split -le 0) { continue }
+        $key = $trimmed.Substring(0, $split).Trim()
+        $value = $trimmed.Substring($split + 1).Trim()
+        if ($key -eq 'mutates') {
+            if (-not $fields.ContainsKey('mutates')) { $fields['mutates'] = @() }
+            $fields['mutates'] += $value
+        }
+        else { $fields[$key] = $value }
     }
-    $digest = ([System.BitConverter]::ToString($sha) -replace '-', '').ToLowerInvariant()
-
-    $leafSource = Split-Path -Leaf $normalized
-    $leaf = -join ($leafSource.ToCharArray() | ForEach-Object {
-        if ([char]::IsLetterOrDigit($_) -or $_ -eq '-' -or $_ -eq '_') { $_ } else { '-' }
-    })
-    if ($leaf.Length -gt 40) { $leaf = $leaf.Substring(0, 40) }
-
-    return (Join-Path (Get-PinsDirectory) ("$leaf-" + $digest.Substring(0, 16) + '.pin'))
+    return $fields
 }
 
 function Get-WorkingTreeChanges([string] $root) {
@@ -116,12 +130,41 @@ switch ($Verb) {
             throw "Specify -Phase baseline (the tree must be unmodified) or -Phase arm (the tree must carry exactly the declared mutation)."
         }
 
-        $head = (git -C $root rev-parse HEAD).Trim().ToLowerInvariant()
+        $currentHead = (git -C $root rev-parse HEAD).Trim().ToLowerInvariant()
         $changes = Get-WorkingTreeChanges $root
+        $existing = Read-Pin $pinPath
+
+        # ------------------------------------------------------------------------------------------------
+        # THE PINNED HEAD IS WRITTEN ONCE, WHEN THE BASELINE IS PINNED, AND IS NEVER RECOMPUTED AFTERWARDS.
+        #
+        # This is the defect a reviewer found in the first version, and it defeated the guard rather than
+        # weakening it. Every "set" recomputed "git rev-parse HEAD" and overwrote the pinned head - so the
+        # documented workflow, which is "set -Phase baseline, run, set -Phase arm, run", silently re-pinned
+        # to the new head whenever HEAD had moved between the two runs. The guard then compared the arm
+        # against the NEW head, found an exact match, and admitted it. The baseline and the arm had measured
+        # two different programs, which is precisely the condition this guard exists to refuse, and the
+        # supported happy path walked straight into it.
+        #
+        # A proof's pinned head is its identity. Changing it is not a correction, it is a different proof.
+        # So the arm transition CARRIES the baseline's head forward and refuses if the tree has moved off
+        # it; re-pinning requires an explicit release, which is loud and throws the old numbers away.
+        # ------------------------------------------------------------------------------------------------
 
         if ($Phase -eq 'baseline') {
             if ($Mutates.Count -gt 0) {
                 throw "A baseline declares no mutations. A run that carries a mutation is an arm."
+            }
+            if ($null -ne $existing) {
+                Write-Host "CANNOT PIN A BASELINE: this working tree already has an active pin." -ForegroundColor Red
+                Write-Host ("    proof:       " + $existing['proofId'])
+                Write-Host ("    phase:       " + $existing['phase'])
+                Write-Host ("    pinned head: " + $existing['pinnedHead'])
+                Write-Host ""
+                Write-Host "Overwriting it would start a second proof at a possibly different commit while the numbers"
+                Write-Host "already collected still claim to belong to this one. If that proof is finished or abandoned,"
+                Write-Host "say so explicitly and the old identity is retired:"
+                Write-Host "    ./scripts/mutation-proof-pin.ps1 release"
+                exit 1
             }
             if ($changes.Count -gt 0) {
                 # Refused HERE as well as at run time, because pinning a contaminated tree would record a
@@ -141,12 +184,45 @@ switch ($Verb) {
             if ($Mutates.Count -eq 0) {
                 throw "An arm must declare which paths its mutation touches (-Mutates src/...). An arm that declares nothing would admit any tree at all."
             }
+
+            if ($null -eq $existing) {
+                # An arm with no baseline before it has nothing to be compared against. Minting a fresh pin
+                # here would create a proof whose "baseline" was never taken - and it would look identical
+                # to a correct one.
+                Write-Host "CANNOT SET AN ARM: this working tree has no active baseline pin." -ForegroundColor Red
+                Write-Host ""
+                Write-Host "A mutation arm only means something next to a baseline taken at the same commit. Pin the"
+                Write-Host "baseline first and run it, then set the arm:"
+                Write-Host "    ./scripts/mutation-proof-pin.ps1 set -Phase baseline"
+                exit 1
+            }
+
+            if ($existing['pinnedHead'] -ne $currentHead) {
+                Write-Host "CANNOT SET AN ARM: the head has moved since this proof's baseline was pinned." -ForegroundColor Red
+                Write-Host ("    proof:        " + $existing['proofId'])
+                Write-Host ("    pinned head:  " + $existing['pinnedHead'] + "   (what the baseline measured)")
+                Write-Host ("    current head: " + $currentHead + "   (what an arm would measure now)")
+                Write-Host ""
+                Write-Host "The pinned head is NOT being updated to the current one. That is the whole point: a baseline"
+                Write-Host "and its arm must be taken at the same commit, or the reconciliation compares two different"
+                Write-Host "programs and the arithmetic means nothing while still adding up."
+                Write-Host ""
+                Write-Host "Either return the tree to the pinned commit and set the arm again, or abandon this proof"
+                Write-Host "and start over:  ./scripts/mutation-proof-pin.ps1 release"
+                exit 1
+            }
         }
 
-        New-Item -ItemType Directory -Force -Path (Get-PinsDirectory) | Out-Null
+        # Carried forward, never recomputed, for anything other than a brand-new baseline.
+        $proofId = if ($null -ne $existing) { $existing['proofId'] } else { [Guid]::NewGuid().ToString('N') }
+        $head = if ($null -ne $existing) { $existing['pinnedHead'] } else { $currentHead }
+        $pinnedUtc = if ($null -ne $existing) { $existing['pinnedUtc'] } else { [DateTime]::UtcNow.ToString('o') }
+
+        New-Item -ItemType Directory -Force -Path (Get-LedgerDirectory) | Out-Null
 
         $lines = @(
             "# Written by scripts/mutation-proof-pin.ps1. Read MutationProofPinGuard.cs before editing by hand.",
+            "proofId=$proofId",
             "phase=$Phase",
             "pinnedHead=$head",
             # Parenthesised deliberately: in PowerShell the comma binds tighter than "+", so without these
@@ -154,7 +230,7 @@ switch ($Verb) {
             # lands on a line of its own. The guard then refuses the whole proof as a malformed pin, which
             # is the correct behaviour and is exactly how this defect was found - but it is not what was
             # meant, and it would have stopped the first proof anybody tried to run.
-            ("pinnedUtc=" + [DateTime]::UtcNow.ToString('o')),
+            ("pinnedUtc=" + $pinnedUtc),
             "tree=$root"
         )
         foreach ($m in $Mutates) { $lines += ("mutates=" + ($m -replace '\\', '/').Trim()) }
@@ -164,6 +240,7 @@ switch ($Verb) {
 
         Write-Host "PINNED. Every test run in this working tree is now checked until the pin is released." -ForegroundColor Green
         Write-Host "    tree:        $root"
+        Write-Host "    proof:       $proofId"
         Write-Host "    phase:       $Phase"
         Write-Host "    pinned head: $head"
         if ($Mutates.Count -gt 0) { Write-Host ("    mutates:     " + ($Mutates -join ', ')) }
@@ -199,11 +276,11 @@ switch ($Verb) {
         Remove-Item $pinPath -Force
         Write-Host "Pin released. Test runs in this tree are no longer checked." -ForegroundColor Green
         Write-Host "The ledger of what each proof run verified is kept, and outlives this working tree:"
-        Write-Host ("    " + (Join-Path (Get-PinsDirectory) 'mutation-proof-ledger.log'))
+        Write-Host ("    " + (Join-Path (Get-LedgerDirectory) 'mutation-proof-ledger.log'))
     }
 
     'ledger' {
-        $ledger = Join-Path (Get-PinsDirectory) 'mutation-proof-ledger.log'
+        $ledger = Join-Path (Get-LedgerDirectory) 'mutation-proof-ledger.log'
         if (-not (Test-Path $ledger)) {
             Write-Host "No proof runs have been recorded on this machine yet: $ledger"
             exit 0

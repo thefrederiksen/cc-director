@@ -354,6 +354,7 @@ public sealed class MutationProofPinGuardTests
     {
         var reading = MutationProofPinGuard.ParsePin(
             "# a comment\n"
+            + "proofId=7f3c\n"
             + "phase=arm\n"
             + "pinnedHead=0123456789ABCDEF0123456789abcdef01234567\n"
             + "pinnedUtc=2026-07-20T00:00:00.0000000Z\n"
@@ -365,7 +366,8 @@ public sealed class MutationProofPinGuardTests
 
         Assert.Null(reading.Problem);
         Assert.NotNull(reading.Pin);
-        Assert.Equal(MutationProofPinGuard.ArmPhase, reading.Pin!.Phase);
+        Assert.Equal("7f3c", reading.Pin!.ProofId);
+        Assert.Equal(MutationProofPinGuard.ArmPhase, reading.Pin.Phase);
         Assert.Equal("0123456789abcdef0123456789abcdef01234567", reading.Pin.PinnedHead);
         Assert.Equal(new[] { "src/A.cs", "src/B.cs" }, reading.Pin.DeclaredMutations);
         Assert.Equal("removing the tenant comparison", reading.Pin.Note);
@@ -438,78 +440,275 @@ public sealed class MutationProofPinGuardTests
     // Where the pin lives.
     // -------------------------------------------------------------------------------------------------
 
-    /// <summary>
-    /// Two working trees of the same repository - which is how every mission here runs - must hold
-    /// independent pins. A shared pin would mean one worker's proof declaration silently governing another
-    /// worker's tree.
-    /// </summary>
-    [Fact]
-    public void TwoWorkingTreesOfOneRepositoryGetDifferentPins()
-    {
-        var first = MutationProofPinGuard.ComputePinFilePath("C:/pins", "D:/ReposFred/_wt/w-alpha");
-        var second = MutationProofPinGuard.ComputePinFilePath("C:/pins", "D:/ReposFred/_wt/w-beta");
-
-        Assert.NotEqual(first, second);
-    }
-
-    /// <summary>
-    /// The same tree must resolve to the same pin however its path was spelled, or the run that WRITES the
-    /// pin and the run that READS it can miss each other and the guard silently does nothing.
-    /// </summary>
-    [Fact]
-    public void OneWorkingTreeResolvesToOnePinHoweverItsPathIsSpelled()
-    {
-        var canonical = MutationProofPinGuard.ComputePinFilePath("C:/pins", "D:/ReposFred/_wt/w-alpha");
-
-        Assert.Equal(canonical, MutationProofPinGuard.ComputePinFilePath("C:/pins", "D:\\ReposFred\\_wt\\w-alpha"));
-        Assert.Equal(canonical, MutationProofPinGuard.ComputePinFilePath("C:/pins", "D:/ReposFred/_wt/w-alpha/"));
-        Assert.Equal(canonical, MutationProofPinGuard.ComputePinFilePath("C:/pins", "D:/ReposFred/_WT/W-Alpha"));
-    }
+    // -------------------------------------------------------------------------------------------------
+    // IS THE GUARD ACTUALLY ARMED ON THE PLATFORM IT IS RUNNING ON?
+    //
+    // A reviewer found that it was not, on Linux and macOS. The pin's location was DERIVED twice - once in
+    // PowerShell to write it, once in C# to read it - and the two derivations disagreed off Windows. The
+    // script printed "PINNED" while the guard looked somewhere else, found nothing, and admitted
+    // contaminated baselines. Armed according to its own output, inert in fact. Continuous integration runs
+    // on Linux, so the platform where it was dead is the platform nobody watches.
+    //
+    // These run on WHATEVER PLATFORM executes them, so the Linux answer is checked by the Linux run rather
+    // than reasoned about from Windows.
+    // -------------------------------------------------------------------------------------------------
 
     /// <summary>
-    /// A GOLDEN VALUE, and the reason it is worth freezing: scripts/mutation-proof-pin.ps1 derives this
-    /// same file name INDEPENDENTLY, in another language, because it has to write the pin the guard will
-    /// later read. If the two derivations ever drift apart the script writes a pin nothing reads, and the
-    /// guard is inert while every command still reports success - the exact failure shape this whole file
-    /// exists to prevent, reproduced in its own plumbing.
+    /// The end-to-end arming check: a pin placed where the SCRIPT puts it must be found by the GUARD, here,
+    /// on this operating system.
     ///
-    /// A change here is not wrong, but it is never one-sided: change this value and the script's
-    /// Get-PinPath together, and re-derive both.
+    /// The script's location is reproduced the way the script gets it - by asking git, in this process, in
+    /// a real repository - rather than by restating a path. That is the whole repair: there is no longer a
+    /// derivation on either side to disagree about, only one question with one answer.
     /// </summary>
     [Fact]
-    public void ThePinFileNameIsAGoldenValue_BecauseAScriptDerivesTheSameNameSeparately()
+    public void TheGuardFindsAPinWrittenWhereTheScriptWritesIt_OnThisPlatform()
     {
+        using var repository = TemporaryGitRepository.Create();
+        repository.WriteAndCommit("src/RequestHandler.cs", FileWithTheGuardBlock, "add the tenant guard");
+
+        // Exactly what scripts/mutation-proof-pin.ps1 does to find the pin's home.
+        var asTheScriptResolvesIt = Path.Combine(
+            repository.Git("rev-parse --absolute-git-dir").Trim(),
+            MutationProofPinGuard.PinFileName);
+
+        var asTheGuardResolvesIt = MutationProofPinGuard.ResolvePinFilePath(repository.Root);
+
+        Assert.NotNull(asTheGuardResolvesIt);
         Assert.Equal(
-            Path.Combine("C:/pins", "w-example-d324397e599abb89.pin"),
-            MutationProofPinGuard.ComputePinFilePath("C:/pins", "D:/ReposFred/_wt/w-example"));
+            Path.GetFullPath(asTheScriptResolvesIt),
+            Path.GetFullPath(asTheGuardResolvesIt!));
+
+        // And a pin written there is genuinely readable as a pin, rather than merely landing at a matching
+        // path. A path that agrees but content that does not parse would be the same silence.
+        File.WriteAllText(
+            asTheScriptResolvesIt,
+            "proofId=abc123\nphase=baseline\npinnedHead=" + repository.Head() + "\n");
+
+        var reading = MutationProofPinGuard.ParsePin(
+            File.ReadAllText(asTheGuardResolvesIt!), asTheGuardResolvesIt!);
+
+        Assert.Null(reading.Problem);
+        Assert.Equal("abc123", reading.Pin!.ProofId);
     }
 
     /// <summary>
-    /// The pins directory must not be movable by whoever launched the run - the same defect the per-user
-    /// suite lock was repaired for. If the baseline run and the arm run compute different homes, each reads
-    /// its own pin and the guard serializes nothing.
+    /// The pin must not sit anywhere "git status" can see, or the guard would trip over its own
+    /// declaration and need an exemption - and an exemption is a hole.
     /// </summary>
-    [Theory]
-    [InlineData(true)]
-    [InlineData(false)]
-    public void ThePinsDirectoryIsNotRelocatableByWhoeverLaunchesTheRun(bool isWindows)
+    [Fact]
+    public void ThePinDoesNotDirtyTheTreeItGuards()
     {
-        var directory = MutationProofPinGuard.ComputePinsDirectory(
-            isWindows, "C:/Users/example/AppData/Local", "example");
+        using var repository = TemporaryGitRepository.Create();
+        repository.WriteAndCommit("src/RequestHandler.cs", FileWithTheGuardBlock, "add the tenant guard");
 
-        Assert.DoesNotContain("relocated", directory, StringComparison.Ordinal);
+        File.WriteAllText(
+            MutationProofPinGuard.ResolvePinFilePath(repository.Root)!,
+            "proofId=abc123\nphase=baseline\npinnedHead=" + repository.Head() + "\n");
 
-        if (isWindows)
-            Assert.StartsWith("C:/Users/example/AppData/Local", directory, StringComparison.Ordinal);
-        else
-            Assert.StartsWith("/tmp/cc-director-example", directory, StringComparison.Ordinal);
+        Assert.Empty(MutationProofPinGuard.ReadTree(repository.Root).Changes);
+    }
+
+    /// <summary>
+    /// Two worktrees of one repository - how every mission here runs - must hold independent pins. A shared
+    /// pin would mean one worker's proof declaration silently governing another worker's tree. This is now
+    /// a property of git's own answer rather than of a hash we maintain, so it is checked against a REAL
+    /// second worktree.
+    /// </summary>
+    [Fact]
+    public void TwoWorktreesOfOneRepositoryGetDifferentPins()
+    {
+        using var repository = TemporaryGitRepository.Create();
+        repository.WriteAndCommit("src/RequestHandler.cs", FileWithTheGuardBlock, "add the tenant guard");
+
+        var secondRoot = Path.Combine(repository.ScratchPath, "second-worktree");
+        repository.Git("worktree add \"" + secondRoot + "\" -b second");
+
+        var first = MutationProofPinGuard.ResolvePinFilePath(repository.Root);
+        var second = MutationProofPinGuard.ResolvePinFilePath(secondRoot);
+
+        Assert.NotNull(first);
+        Assert.NotNull(second);
+        Assert.NotEqual(Path.GetFullPath(first!), Path.GetFullPath(second!));
+    }
+
+    /// <summary>
+    /// The one string the script and the guard still have to agree on, checked by reading the script's own
+    /// text. The previous version froze a golden file NAME while the two sides disagreed about the
+    /// DIRECTORY, which is precisely the gap the reviewer walked through - so this asserts the location
+    /// primitive as well, not just the name.
+    /// </summary>
+    [Fact]
+    public void TheScriptAndTheGuardAgreeOnThePinFileName()
+    {
+        var script = ReadPinScript();
+        if (script is null)
+            return; // Not run from a checkout that carries the script; the arming test above still applies.
+
+        Assert.Contains(
+            "$script:PinFileName = '" + MutationProofPinGuard.PinFileName + "'",
+            script,
+            StringComparison.Ordinal);
+
+        // Both sides must locate the pin by asking git the same question. If either ever goes back to
+        // deriving a path, this is the line that should stop it.
+        Assert.Contains("rev-parse --absolute-git-dir", script, StringComparison.Ordinal);
+    }
+
+    private static string? ReadPinScript()
+    {
+        var directory = new DirectoryInfo(AppContext.BaseDirectory);
+        while (directory is not null)
+        {
+            var candidate = Path.Combine(directory.FullName, "scripts", "mutation-proof-pin.ps1");
+            if (File.Exists(candidate))
+                return File.ReadAllText(candidate);
+
+            directory = directory.Parent;
+        }
+
+        return null;
     }
 
     [Fact]
-    public void WithNoLocalApplicationDataFolder_ItRefusesRatherThanFallingBack()
+    public void WithNoLocalApplicationDataFolder_TheLedgerRefusesRatherThanFallingBack()
     {
         Assert.Throws<InvalidOperationException>(
-            () => MutationProofPinGuard.ComputePinsDirectory(isWindows: true, "", "example"));
+            () => MutationProofPinGuard.ComputeLedgerDirectory(""));
+    }
+
+    // -------------------------------------------------------------------------------------------------
+    // THE PROPERTY THAT JUSTIFIES THE WHOLE DESIGN: THE PINNED HEAD DOES NOT MOVE.
+    //
+    // Nothing tested this in the first round, and the reason is worth keeping: the pin being fixed is the
+    // PREMISE, so no test was aimed at it. A reviewer then found the supported workflow broke it - every
+    // "set", including the baseline-to-arm transition, recomputed HEAD and overwrote the pin, so a head
+    // that moved between the two runs was silently re-pinned and the arm ADMITTED. The documented happy
+    // path walked into the exact event the guard exists to refuse.
+    //
+    // The script is fixed. These pin the SECOND mechanism, which holds however the pin file came to say
+    // what it says: a hand edit, a copied file, a future script change, a tool nobody has written yet.
+    // -------------------------------------------------------------------------------------------------
+
+    [Fact]
+    public void AProofWhoseHeadMovedSinceAnEarlierRunOfTheSameProofIsRefused()
+    {
+        const string headTheBaselineMeasured = "1111111111111111111111111111111111111111";
+        const string headThePinNowClaims = "2222222222222222222222222222222222222222";
+
+        var priorBaselineRun = LedgerLine("proof-42", headTheBaselineMeasured);
+
+        // The arm, at a tree that exactly matches the RE-PINNED head - so every other check in this guard
+        // passes. Only the proof's own history shows that its foundation moved.
+        var pin = ArmPinAt(headThePinNowClaims, "src/RequestHandler.cs");
+        var tree = new MutationProofPinGuard.TreeReading(
+            true,
+            headThePinNowClaims,
+            new[] { new MutationProofPinGuard.ChangedPath(" M", "src/RequestHandler.cs") },
+            null);
+
+        var verdict = MutationProofPinGuard.Decide(pin, tree, new[] { priorBaselineRun });
+
+        Assert.False(
+            verdict.Admitted,
+            "A proof was admitted whose pinned head had moved since its own baseline ran. Every other check "
+            + "passes in this state - the tree matches the new pin exactly - so this is the only thing "
+            + "standing between a silently re-pinned proof and a clean-looking result. " + verdict.Message);
+
+        Assert.Contains(headTheBaselineMeasured, verdict.Message, StringComparison.Ordinal);
+        Assert.Contains(headThePinNowClaims, verdict.Message, StringComparison.Ordinal);
+        Assert.Contains("PINNED HEAD HAS MOVED", verdict.Message, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// CONTROL. The same proof, run again at the same head, must be admitted - otherwise the check above
+    /// would pass by refusing every second run of every proof, and the mechanism would be discarded.
+    /// </summary>
+    [Fact]
+    public void CONTROL_AProofRunAgainAtItsOwnPinnedHeadIsAdmitted()
+    {
+        const string head = "1111111111111111111111111111111111111111";
+
+        var verdict = MutationProofPinGuard.Decide(
+            ArmPinAt(head, "src/RequestHandler.cs"),
+            new MutationProofPinGuard.TreeReading(
+                true, head,
+                new[] { new MutationProofPinGuard.ChangedPath(" M", "src/RequestHandler.cs") }, null),
+            new[] { LedgerLine("proof-42", head), LedgerLine("proof-42", head) });
+
+        Assert.True(verdict.Admitted, verdict.Message);
+    }
+
+    /// <summary>
+    /// CONTROL. A DIFFERENT proof at a different head is somebody else's business. Without this, the check
+    /// could pass by refusing any run that followed any earlier proof, which would stop the second proof
+    /// ever run on a machine.
+    /// </summary>
+    [Fact]
+    public void CONTROL_AnEarlierUnRELATEDProofAtAnotherHeadDoesNotRefuseThisOne()
+    {
+        const string head = "1111111111111111111111111111111111111111";
+
+        var verdict = MutationProofPinGuard.Decide(
+            BaselinePinAt(head),
+            new MutationProofPinGuard.TreeReading(
+                true, head, Array.Empty<MutationProofPinGuard.ChangedPath>(), null),
+            new[]
+            {
+                LedgerLine("some-other-proof", "9999999999999999999999999999999999999999"),
+                LedgerLine("another-proof", "8888888888888888888888888888888888888888"),
+            });
+
+        Assert.True(verdict.Admitted, verdict.Message);
+    }
+
+    /// <summary>
+    /// A pin with no proof identity cannot be checked against its own history at all, so it is refused
+    /// outright rather than admitted with the moved-head check quietly skipped. Minting an identity here
+    /// instead would be worse than doing nothing: every run would look like the first run of a brand-new
+    /// proof, and the mechanism would report itself in force while never firing.
+    /// </summary>
+    [Fact]
+    public void APinWithNoProofIdentityIsRefused_RatherThanCheckedAgainstNothing()
+    {
+        var reading = MutationProofPinGuard.ParsePin(
+            "phase=baseline\npinnedHead=1111111111111111111111111111111111111111\n",
+            "C:/pins/example.pin");
+
+        Assert.NotNull(reading.Problem);
+        Assert.Contains("declares no proofId", reading.Problem!, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// A prior run that names this proof but whose head cannot be read is treated as a MISMATCH. Skipping
+    /// it would mean the check is skipped on exactly the input that is already wrong.
+    /// </summary>
+    [Fact]
+    public void AProofsHistoryThatCannotBeReadIsTreatedAsAMismatch_NotAsAgreement()
+    {
+        var problem = MutationProofPinGuard.DetectMovedPin(
+            new MutationProofPinGuard.ProofPin(
+                "proof-42", MutationProofPinGuard.BaselinePhase,
+                "1111111111111111111111111111111111111111", "when",
+                Array.Empty<string>(), "", "C:/pins/example.pin"),
+            new[] { "when=2026-07-20T00:00:00Z  verdict=admitted  proofId=proof-42  phase=baseline" });
+
+        Assert.NotNull(problem);
+    }
+
+    private static string LedgerLine(string proofId, string pinnedHead) =>
+        "when=2026-07-20T00:00:00.0000000Z  verdict=admitted  proofId=" + proofId
+        + "  phase=baseline  pinnedHead=" + pinnedHead + "  observedHead=" + pinnedHead
+        + "  headVerified=yes  tree=D:/ReposFred/_wt/w-example";
+
+    [Fact]
+    public void LedgerFieldsAreReadableEvenWhenAValueContainsSpaces()
+    {
+        const string line = "when=2026-07-20T00:00:00Z  proofId=proof-42  observedChanges= M src/a file.cs  tree=D:/x";
+
+        Assert.Equal("proof-42", MutationProofPinGuard.ReadLedgerField(line, "proofId"));
+        Assert.Equal("M src/a file.cs", MutationProofPinGuard.ReadLedgerField(line, "observedChanges"));
+        Assert.Null(MutationProofPinGuard.ReadLedgerField(line, "absent"));
     }
 
     // -------------------------------------------------------------------------------------------------
@@ -664,18 +863,21 @@ public sealed class MutationProofPinGuardTests
     {
         const string workingTree = "D:/ReposFred/_wt/w-example";
 
-        var directory = MutationProofPinGuard.ComputePinsDirectory(
-            isWindows: true, "C:/Users/example/AppData/Local", "example");
+        var directory = MutationProofPinGuard.ComputeLedgerDirectory("C:/Users/example/AppData/Local");
         var ledger = Path.Combine(directory, MutationProofPinGuard.ProofLedgerFileName);
-        var perTree = MutationProofPinGuard.ComputePinFilePath(directory, workingTree);
+        var allRuns = Path.Combine(directory, MutationProofPinGuard.AllRunsFileName);
 
-        foreach (var path in new[] { ledger, perTree })
+        foreach (var path in new[] { ledger, allRuns })
         {
             Assert.DoesNotContain(
                 workingTree,
                 path.Replace('\\', '/'),
                 StringComparison.OrdinalIgnoreCase);
             Assert.DoesNotContain("_wt", path.Replace('\\', '/'), StringComparison.OrdinalIgnoreCase);
+
+            // And not in the git directory either, which is where the PIN lives. The pin is per-worktree
+            // and dies with it, correctly; the ledger has the opposite requirement and must not.
+            Assert.DoesNotContain(".git", path.Replace('\\', '/'), StringComparison.OrdinalIgnoreCase);
         }
 
         // And it is one file for the whole machine, so "every proof run ever taken here" is one read
@@ -695,15 +897,16 @@ public sealed class MutationProofPinGuardTests
     [Fact]
     public void TheLedgerDoesNotMoveWithTheWorkingTreeThatWroteToIt()
     {
-        var directory = MutationProofPinGuard.ComputePinsDirectory(
-            isWindows: true, "C:/Users/example/AppData/Local", "example");
-
+        // One rule on every platform, and no branch on the operating system - the branch is what diverged
+        // from the writer last time.
         Assert.Equal(
-            Path.Combine(directory, MutationProofPinGuard.ProofLedgerFileName),
-            Path.Combine(
-                MutationProofPinGuard.ComputePinsDirectory(
-                    isWindows: true, "C:/Users/example/AppData/Local", "example"),
-                MutationProofPinGuard.ProofLedgerFileName));
+            MutationProofPinGuard.ComputeLedgerDirectory("C:/Users/example/AppData/Local"),
+            MutationProofPinGuard.ComputeLedgerDirectory("C:/Users/example/AppData/Local"));
+
+        Assert.Contains(
+            "cc-director",
+            MutationProofPinGuard.ComputeLedgerDirectory("/home/example/.local/share").Replace('\\', '/'),
+            StringComparison.Ordinal);
     }
 
     // -------------------------------------------------------------------------------------------------
@@ -714,7 +917,7 @@ public sealed class MutationProofPinGuardTests
         new(
             true,
             new MutationProofPinGuard.ProofPin(
-                MutationProofPinGuard.BaselinePhase, head, "2026-07-20T00:00:00Z",
+                "proof-42", MutationProofPinGuard.BaselinePhase, head, "2026-07-20T00:00:00Z",
                 Array.Empty<string>(), "test", "C:/pins/example.pin"),
             null);
 
@@ -722,7 +925,7 @@ public sealed class MutationProofPinGuardTests
         new(
             true,
             new MutationProofPinGuard.ProofPin(
-                MutationProofPinGuard.ArmPhase, head, "2026-07-20T00:00:00Z",
+                "proof-42", MutationProofPinGuard.ArmPhase, head, "2026-07-20T00:00:00Z",
                 mutations, "test", "C:/pins/example.pin"),
             null);
 
@@ -775,6 +978,9 @@ public sealed class MutationProofPinGuardTests
 
         public string Root { get; }
 
+        /// <summary>The directory holding the tree, so a second worktree can be created beside it.</summary>
+        public string ScratchPath => _scratch.Path;
+
         private TemporaryGitRepository(TemporaryDirectory scratch)
         {
             _scratch = scratch;
@@ -817,7 +1023,7 @@ public sealed class MutationProofPinGuardTests
 
         public string Head() => Git("rev-parse HEAD").Trim().ToLowerInvariant();
 
-        private string Git(string arguments)
+        public string Git(string arguments)
         {
             using var process = new Process();
             process.StartInfo = new ProcessStartInfo("git")
