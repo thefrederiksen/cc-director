@@ -338,6 +338,7 @@ internal static class MutationProofPinGuard
 
         if (pin.Pin is null)
         {
+            // CONTROL (preventing) - defensive; should be unreachable. Test: AnActiveProofWithNoPinAttachedRefuses.
             return new Verdict(
                 false,
                 "The mutation-proof pin guard reports an active proof with no pin attached, which it "
@@ -1005,6 +1006,7 @@ internal static class MutationProofPinGuard
                     }
                     catch (Exception ex)
                     {
+                        // CONTROL (preventing). Test: ARepositoryMarkerThatExistsButCannotBeReadIsIndeterminate.
                         return new PinLocation(
                             PinLocationOutcome.Indeterminate, null, null,
                             "the repository marker " + marker + " exists but could not be read, so the "
@@ -1414,6 +1416,7 @@ internal static class MutationProofPinGuard
         {
             // The git directory was confirmed moments ago, so its disappearance now is a change underneath
             // this run, not a settled absence.
+            // CONTROL (preventing). Test: APinWhoseDirectoryHasVanishedIsIndeterminate_NotAbsent.
             return PinReading.Indeterminate(
                 "the pin file " + path + " could not be read because its directory is gone: " + ex.Message);
         }

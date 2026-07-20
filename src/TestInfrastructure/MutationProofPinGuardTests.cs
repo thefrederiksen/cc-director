@@ -1505,6 +1505,91 @@ public sealed class MutationProofPinGuardTests
             MutationProofPinGuard.LedgerReading.Of(Array.Empty<string>()),
             new MutationProofPinGuard.HeadPublicationReading(publication, null));
 
+    // -------------------------------------------------------------------------------------------------
+    // THE REMAINDER OF THE SITE-BY-SITE AUDIT.
+    //
+    // Having just criticised this unit's own script for controls that were right but never watched, these
+    // close the same state in the guard. Each is a refusal that existed and had no test naming it - one
+    // edit away from not happening, with nothing going red on the way. None of them found a bug; they
+    // convert four claims into four facts, which is the whole point of the exercise.
+    // -------------------------------------------------------------------------------------------------
+
+    /// <summary>
+    /// A marker file that exists but cannot be read must be indeterminate. Under a predicate this looked
+    /// like any other unreadable path; the danger is that failing to read it and concluding "no repository"
+    /// lands on the admitting state.
+    /// </summary>
+    [Fact]
+    public void ARepositoryMarkerThatExistsButCannotBeReadIsIndeterminate()
+    {
+        using var scratch = new TemporaryDirectory();
+        var deep = Path.Combine(scratch.Path, "a", "b");
+        Directory.CreateDirectory(deep);
+
+        // The probe reports a marker FILE that is not actually on disk, so the read that follows fails -
+        // which is the shape of a marker that exists and refuses to be read.
+        var located = MutationProofPinGuard.LocatePin(
+            deep,
+            path => path.EndsWith(".git", StringComparison.Ordinal)
+                ? new MutationProofPinGuard.Probe(MutationProofPinGuard.ProbeOutcome.Exists, false, null)
+                : MutationProofPinGuard.ProbePath(path));
+
+        Assert.Equal(MutationProofPinGuard.PinLocationOutcome.Indeterminate, located.Outcome);
+        Assert.Contains("could not be read", located.Problem!, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// A pin whose directory has vanished between locating it and reading it is a change underneath the
+    /// run, not a settled absence.
+    /// </summary>
+    [Fact]
+    public void APinWhoseDirectoryHasVanishedIsIndeterminate_NotAbsent()
+    {
+        using var scratch = new TemporaryDirectory();
+
+        var reading = MutationProofPinGuard.ReadPin(
+            new MutationProofPinGuard.PinLocation(
+                MutationProofPinGuard.PinLocationOutcome.Located,
+                scratch.Path,
+                Path.Combine(scratch.Path, "a-directory-that-is-not-there", MutationProofPinGuard.PinFileName),
+                null));
+
+        Assert.Equal(MutationProofPinGuard.PinOutcome.CouldNotDetermine, reading.Outcome);
+    }
+
+    /// <summary>
+    /// The defensive branch: an active proof with no pin attached cannot be checked, so it refuses. It
+    /// should be unreachable, and an unreachable refusal that was never exercised is indistinguishable
+    /// from one that admits.
+    /// </summary>
+    [Fact]
+    public void AnActiveProofWithNoPinAttachedRefuses()
+    {
+        var verdict = MutationProofPinGuard.Decide(
+            new MutationProofPinGuard.PinReading(MutationProofPinGuard.PinOutcome.PinActive, null, null),
+            CleanTreeAt("1111111111111111111111111111111111111111"),
+            MutationProofPinGuard.LedgerReading.Of(Array.Empty<string>()));
+
+        Assert.False(verdict.Admitted, verdict.Message);
+        Assert.Contains("no pin attached", verdict.Message, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// The probe's other not-found shape: a missing intermediate DIRECTORY rather than a missing file. It
+    /// raises a different exception, and it must classify the same way or a path under a directory that
+    /// does not exist would read as unknown and refuse every ordinary run beneath it.
+    /// </summary>
+    [Fact]
+    public void TheProbeTreatsAMissingIntermediateDirectoryAsNotFound()
+    {
+        using var scratch = new TemporaryDirectory();
+
+        var probe = MutationProofPinGuard.ProbePath(
+            Path.Combine(scratch.Path, "no-such-directory", "no-such-file"));
+
+        Assert.Equal(MutationProofPinGuard.ProbeOutcome.DoesNotExist, probe.Outcome);
+    }
+
     /// <summary>A git that is certainly not installed, so the run genuinely cannot reach git.</summary>
     private const string GitThatDoesNotExist = "git-not-installed-on-this-machine-b6f2a1";
 
