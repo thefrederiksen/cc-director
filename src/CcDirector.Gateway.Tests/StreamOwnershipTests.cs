@@ -120,6 +120,69 @@ public sealed class StreamOwnershipTests : IDisposable
         Assert.DoesNotContain(victimSink.Frames, f => f.Data is { Length: > 0 } d && d[0] == 0xBB);
     }
 
+    [Fact]
+    public async Task Hosted_TwoTenantsUsingTheSameDirectorId_CrossTenantStreamUp_IsRefused()
+    {
+        // THIS is the test that makes the TENANT half of the owner load-bearing, and it exists because the
+        // test above cannot do that job. There the owner was (tenantA, "dir-a") and the attacker was
+        // (tenantB, "dir-b") - BOTH halves differ, so the Director comparison alone refuses it and the test
+        // stays green even if tenant equality is deleted outright. The property that JUSTIFIES the composite
+        // key was the one property with no failing test.
+        //
+        // So: both accounts run a Director calling itself THE SAME THING. A Director id is chosen by the
+        // client in its Hello payload, so an attacker picks it freely - this is not a coincidence to engineer,
+        // it is the obvious move. With the ids equal, tenant equality is the ONLY thing left that can refuse,
+        // which is exactly what separates this design from the single-key one it replaced.
+        const string sharedDirectorId = "dir-shared";
+
+        var devices = new DeviceRegistry(_devPath);
+        var boundary = new HostedTenantBoundary(new AsyncLocalTenantContext(), devices);
+        Assert.True(boundary.IsHosted);
+
+        var tenantA = new TenantId(Guid.NewGuid().ToString());
+        var tenantB = new TenantId(Guid.NewGuid().ToString());
+        Assert.NotEqual(tenantA.Value, tenantB.Value);
+        var keyA = devices.Register("dev-a", "MA").DeviceKey;
+        var keyB = devices.Register("dev-b", "MB").DeviceKey;
+        devices.SetAccountBinding("dev-a", "sub-alice", tenantA.Value);
+        devices.SetAccountBinding("dev-b", "sub-bob", tenantB.Value);
+
+        var store = new PushedSessionStore(() => DateTime.UtcNow);
+        var registry = new GatewayStreamRegistry();
+        var hubA = NewHub("conn-a", keyA, boundary, store, registry);
+        var hubB = NewHub("conn-b", keyB, boundary, store, registry);
+
+        // Both Hellos declare the SAME Director id and BOTH must bind - the id is not unique across accounts,
+        // and if B's bind were rejected the refusal below would prove nothing about ownership.
+        hubA.Hello(new DirectorStreamHello { DirectorId = sharedDirectorId, Version = "t" });
+        hubB.Hello(new DirectorStreamHello { DirectorId = sharedDirectorId, Version = "t" });
+        Assert.Equal(new[] { "sess-a" }, PushAndRead(hubA, store, tenantA, "sess-a"));
+        Assert.Equal(new[] { "sess-b" }, PushAndRead(hubB, store, tenantB, "sess-b"));
+
+        // ---- POSITIVE CONTROL: tenant A's own write to its own stream lands. ----
+        var sink = new RecordingSink();
+        registry.Register("shared-id-stream", new StreamOwner(tenantA, sharedDirectorId), sink);
+        await hubA.StreamUp("shared-id-stream", Frames("shared-id-stream", 0xC1));
+        AssertFramesArrived(sink, "shared-id-stream", 0xC1);
+
+        // ---- THE ATTACK: a DIFFERENT ACCOUNT whose Director carries the SAME id. ----
+        // The Director halves are equal here, so only tenant equality can refuse this.
+        var victimSink = new RecordingSink();
+        registry.Register("shared-id-victim", new StreamOwner(tenantA, sharedDirectorId), victimSink);
+
+        var denied = await Assert.ThrowsAsync<HubException>(
+            () => hubB.StreamUp("shared-id-victim", Frames("shared-id-victim", 0xCB)));
+        Assert.Contains("shared-id-victim", denied.Message);
+        Assert.Empty(victimSink.Frames);
+        Assert.False(victimSink.Completed);
+        Assert.Equal(1, registry.LiveStreamCount);
+
+        // ---- DESTRUCTIBILITY CONTROL: the owner writes to THAT SAME sink and it lands. ----
+        await hubA.StreamUp("shared-id-victim", Frames("shared-id-victim", 0xC2));
+        AssertFramesArrived(victimSink, "shared-id-victim", 0xC2);
+        Assert.DoesNotContain(victimSink.Frames, f => f.Data is { Length: > 0 } d && d[0] == 0xCB);
+    }
+
     // ------------------------------------------------------------------- self-host is unchanged ----
 
     [Fact]
@@ -152,6 +215,11 @@ public sealed class StreamOwnershipTests : IDisposable
     {
         // The owner is the PAIR. One account can run many Directors, and one of its Directors has no business
         // writing into a stream opened on another - the id is still not a capability.
+        //
+        // This is the DIRECTOR-HALF detector, the twin of Hosted_TwoTenantsUsingTheSameDirectorId_...: the
+        // tenants are equal here, so only the Director comparison can refuse. Between the two, each half of the
+        // composite key has a test that fails when THAT half alone is deleted, which is what lets three
+        // separate one-primitive mutation runs attribute a red to the clause that caused it.
         var tenant = new TenantId(Guid.NewGuid().ToString());
         var registry = new GatewayStreamRegistry();
         var sink = new RecordingSink();
