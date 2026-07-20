@@ -25,7 +25,8 @@ namespace CcDirector.Gateway.Api;
 /// Retention pruning is per tenant for the same reason - one tenant's clock-driven prune must not reach
 /// into another's history.
 ///
-/// PRE-PARTITION FILES ARE PURGED, NOT MIGRATED AND NOT QUARANTINED. See <see cref="PurgePrePartitionFile"/>.
+/// A PRE-PARTITION FILE IS DELETED FROM THE LIVE STORE, NOT MIGRATED AND NOT QUARANTINED - and that claim
+/// stops at the live path. See <see cref="DeletePrePartitionFile"/>.
 /// </summary>
 public sealed class NetDiagRollupStore
 {
@@ -181,7 +182,7 @@ public sealed class NetDiagRollupStore
         /// <summary>Canonical tenant key -> hour key -> bucket. NULL after deserializing a PRE-PARTITION
         /// file, which is exactly how <see cref="Load"/> tells the two shapes apart: the old document has no
         /// <c>tenants</c> property at all, and read into the new shape it would otherwise arrive as a silent
-        /// empty rather than as the purge case it is.</summary>
+        /// empty rather than as the delete-and-start-empty case it is.</summary>
         public Dictionary<string, Dictionary<string, HourBucket>>? Tenants { get; set; }
     }
 
@@ -212,7 +213,7 @@ public sealed class NetDiagRollupStore
 
         if (parsed.Tenants is null)
         {
-            PurgePrePartitionFile();
+            DeletePrePartitionFile();
             return;
         }
 
@@ -232,7 +233,14 @@ public sealed class NetDiagRollupStore
     }
 
     /// <summary>
-    /// DELETE a pre-partition (global, tenant-less) rollup file and start empty.
+    /// DELETE THE LIVE pre-partition (global, tenant-less) rollup file and start empty.
+    ///
+    /// WHAT THIS DOES AND DOES NOT CLAIM. It removes the file at <see cref="_path"/> - the live store this
+    /// process reads and writes - and nothing more. A hosted deployment keeps this file on an Azure Files
+    /// share (the App Service <c>/home</c> mount), so a share snapshot, a soft-deleted file, a backup, or
+    /// filesystem history could hold the same cross-tenant sums after this call returns. Erasing those is
+    /// operational work on the storage account, not something code at this layer can perform or verify, and
+    /// it is tracked separately. Deletion from the live representation is not deletion.
     ///
     /// WHY DELETE AND NOT MIGRATE. Each old bucket is a SUM over every tenant that folded into that hour,
     /// with no per-tenant attribution recorded anywhere - the addends cannot be separated after the fact.
@@ -242,16 +250,16 @@ public sealed class NetDiagRollupStore
     ///
     /// WHY DELETE AND NOT QUARANTINE. Quarantine is for a file that could not be READ - it preserves the
     /// evidence of a bug. This file reads perfectly; its problem is that its contents are a cross-tenant
-    /// mixture. Renaming it aside would leave that live liability on disk indefinitely for no benefit,
-    /// because nothing will ever be able to attribute it.
+    /// mixture. Renaming it aside would keep it in the live store indefinitely for no benefit, because
+    /// nothing will ever be able to attribute it.
     ///
     /// WHY THE COST IS NOTHING REAL. This is ephemeral operational telemetry with no durability contract -
-    /// a self-pruning quality trend, not a record anything is owed. Purge, and partition forward.
+    /// a self-pruning quality trend, not a record anything is owed. Delete, and partition forward.
     /// </summary>
-    private void PurgePrePartitionFile()
+    private void DeletePrePartitionFile()
     {
         File.Delete(_path);
-        FileLog.Write($"[NetDiagRollupStore] Load: PURGED pre-partition rollup file at {_path} - its buckets are cross-tenant sums with no per-tenant attribution recorded, so they cannot be migrated without inventing one; starting empty.");
+        FileLog.Write($"[NetDiagRollupStore] Load: DELETED the live pre-partition rollup file at {_path} - its buckets are cross-tenant sums with no per-tenant attribution recorded, so they cannot be migrated without inventing one; starting empty. This removes the live file only; any snapshot, soft-deleted copy or backup of the same path is outside this process and is purged as separate operational work.");
     }
 
     private void Quarantine(string reason)

@@ -18,6 +18,69 @@ using Xunit;
 namespace CcDirector.Gateway.Tests;
 
 /// <summary>
+/// The two account tenants these tests partition between, and - the point of this type existing at all -
+/// the NON-CANONICAL SPELLINGS of one, WITH THE FIXTURE'S OWN PREMISE ASSERTED.
+///
+/// WHY THIS IS A TYPE AND NOT TWO CONSTANTS. The first version of these tests built an "uppercase alias" by
+/// calling <c>ToUpperInvariant()</c> on an ALL-NUMERIC identifier. Uppercasing a string with no letters in
+/// it changes nothing, so the alias was byte-for-byte the canonical value: the tests asserted that a
+/// non-canonical spelling is refused while never once presenting a non-canonical spelling. They were not
+/// weak tests - their premise never occurred, so they could not fail in the direction they were written to
+/// catch, and they went red for the opposite reason. A fixture is a CLAIM ABOUT THE INPUT, and an unasserted
+/// claim about the input is exactly as unreliable as an unasserted claim about the output.
+///
+/// TWO THINGS FIX IT, AND THE SECOND IS THE ONE THAT LASTS. First, the identifiers now contain hexadecimal
+/// LETTERS, so case actually varies. But choosing better characters is a fact about today's constants that
+/// the next edit can quietly undo, so second - and this is the durable half - <see cref="AliasesOf"/>
+/// ASSERTS ITS OWN PREMISE before returning: every spelling it hands back must differ from the canonical
+/// value, and must still denote the SAME underlying identifier (otherwise the test would be presenting a
+/// different tenant, which the store should refuse for an entirely different reason and would prove nothing
+/// about spelling). If someone later changes these constants back to all-digit values, the fixture fails
+/// LOUDLY at the claim rather than silently ceasing to test anything.
+///
+/// The alias set deliberately includes two forms that differ for ANY identifier - the dash-less "N" form and
+/// the braced "B" form - so the premise no longer depends on the fixture happening to contain letters. That
+/// is the design half of the same fix: make the condition impossible to miss rather than remembering to
+/// choose inputs that hit it.
+/// </summary>
+internal static class NetDiagTenantFixture
+{
+    /// <summary>A canonical minted account tenant, in the EXACT form the registry mints (lowercase "D").
+    /// Contains hexadecimal letters, so case conversion genuinely produces a different string.</summary>
+    public static readonly TenantId TenantA = new("aaaaaaaa-1111-4c1a-8b1a-aaaaaaaaaaaa");
+
+    /// <summary>A second canonical minted account tenant, the one the first must never reach.</summary>
+    public static readonly TenantId TenantB = new("bbbbbbbb-2222-4c2b-8b2b-bbbbbbbbbbbb");
+
+    /// <summary>
+    /// Every non-canonical SPELLING of <paramref name="tenant"/> a test should present to a partition key -
+    /// the same identifier, written a way this system does not mint. The premise is asserted here, once, for
+    /// every caller: each spelling differs from the canonical text (or it is not an alias at all) and each
+    /// parses back to the same identifier (or it is a different tenant, not a different spelling).
+    /// </summary>
+    public static IEnumerable<string> AliasesOf(TenantId tenant)
+    {
+        var canonical = tenant.Value;
+        var parsed = Guid.Parse(canonical);
+
+        var aliases = new[]
+        {
+            canonical.ToUpperInvariant(),  // same identifier, upper case
+            parsed.ToString("N"),          // same identifier, no dashes
+            parsed.ToString("B"),          // same identifier, braced
+        };
+
+        foreach (var alias in aliases)
+        {
+            Assert.NotEqual(canonical, alias);          // it really is a DIFFERENT spelling...
+            Assert.Equal(parsed, Guid.Parse(alias));    // ...of the SAME identifier.
+        }
+
+        return aliases;
+    }
+}
+
+/// <summary>
 /// Unsafe-collection census rows 21 and 22: the diagnostic RESULT store and the hourly quality ROLLUP.
 ///
 /// THE DEFECT. <c>POST /diag/result</c> wrote into one process-global result list and folded into one
@@ -63,16 +126,23 @@ namespace CcDirector.Gateway.Tests;
 ///   M3  GET /diag/rollup passes <c>TenantId.Local</c> instead of the resolved request tenant (read half).
 ///       PREDICT RED: Two_tenants_writing_in_the_same_hour_do_not_share_a_rollup_bucket.
 ///   M4  Delete the three <c>reqTenant is null</c> deny blocks, letting a tenant-less key fall through.
-///       PREDICT RED: A_key_with_no_bound_tenant_is_denied_on_every_diagnostic_route (all three cases).
-///   M5  In both stores, delete the <c>parsed.Tenants is null -> PurgePrePartitionFile()</c> branch.
-///       PREDICT RED: A_pre_partition_result_file_is_purged_not_migrated,
-///       A_pre_partition_rollup_file_is_purged_not_migrated.
+///       PREDICT RED: A_key_with_no_bound_tenant_is_denied_on_every_diagnostic_route (both cases) and
+///       A_key_with_no_bound_tenant_cannot_write_a_diagnostic_result.
+///   M5  In both stores, delete the <c>parsed.Tenants is null -> DeletePrePartitionFile()</c> branch.
+///       PREDICT RED: A_pre_partition_result_file_is_deleted_from_the_live_store_not_migrated,
+///       A_pre_partition_rollup_file_is_deleted_from_the_live_store_not_migrated.
 ///   M6  In <see cref="NetDiagResultStore"/>, prune against the TOTAL record count across partitions rather
 ///       than the writing tenant's own list.
 ///       PREDICT RED: One_tenants_flood_does_not_evict_another_tenants_results.
+///   M7  In both stores' <c>CanonicalTenantKey</c>, drop the ordinal round-trip comparison from
+///       <c>IsMintedAccountTenant</c> so any parseable identifier is accepted in any spelling.
+///       PREDICT RED: An_alternate_spelling_of_a_minted_tenant_is_refused_on_the_write_and_the_read,
+///       An_alternate_spelling_of_a_minted_tenant_is_refused_on_the_fold_and_the_read.
 ///
 /// A predicted red that does not appear is a FINDING, not something to explain away: it means the test does
-/// not actually reach the line the mutation changed.
+/// not actually reach the line the mutation changed. That is not hypothetical here - the FIRST version of the
+/// two alias tests could not reach their own condition at all (see <see cref="NetDiagTenantFixture"/>), which
+/// is why the fixture now asserts its own premise.
 /// </summary>
 public sealed class NetDiagResultStoreTenantPartitionTests : IDisposable
 {
@@ -81,8 +151,8 @@ public sealed class NetDiagResultStoreTenantPartitionTests : IDisposable
 
     private string Path_ => Path.Combine(_dir, "diagnostics-results.json");
 
-    private static readonly TenantId TenantA = new("11111111-1111-1111-1111-111111111111");
-    private static readonly TenantId TenantB = new("22222222-2222-2222-2222-222222222222");
+    private static readonly TenantId TenantA = NetDiagTenantFixture.TenantA;
+    private static readonly TenantId TenantB = NetDiagTenantFixture.TenantB;
 
     public void Dispose()
     {
@@ -151,7 +221,7 @@ public sealed class NetDiagResultStoreTenantPartitionTests : IDisposable
     }
 
     [Fact]
-    public void A_pre_partition_result_file_is_purged_not_migrated()
+    public void A_pre_partition_result_file_is_deleted_from_the_live_store_not_migrated()
     {
         // THE ARCHITECT'S RULING, made executable. The old file is one flat list with NO per-tenant
         // attribution recorded anywhere in it. Migrating it would INVENT an attribution that was never
@@ -177,7 +247,9 @@ public sealed class NetDiagResultStoreTenantPartitionTests : IDisposable
         Assert.Empty(store.Recent(TenantId.Local));
         Assert.Empty(store.Recent(TenantId.System));
 
-        // Not quarantined either: purge means GONE, not renamed aside.
+        // Not quarantined either: the live file is REMOVED, not renamed aside. This states deletion from
+        // the LIVE STORE and nothing wider - a test that writes and deletes a file cannot speak for a share
+        // snapshot, a soft-deleted copy or a backup of the same path, which are outside this process.
         Assert.False(File.Exists(Path_), "the pre-partition file must be deleted, not left in place");
         Assert.Empty(Directory.GetFiles(_dir, "*.corrupt-*"));
 
@@ -188,7 +260,7 @@ public sealed class NetDiagResultStoreTenantPartitionTests : IDisposable
     }
 
     [Fact]
-    public void An_unreadable_file_is_still_quarantined_not_purged()
+    public void An_unreadable_file_is_still_quarantined_not_deleted()
     {
         // CONTROL for the purge: the two paths must stay distinct. A file we could not READ is evidence of a
         // bug and is preserved; a file we read perfectly whose CONTENTS are a cross-tenant mixture is
@@ -214,9 +286,27 @@ public sealed class NetDiagResultStoreTenantPartitionTests : IDisposable
         Assert.Throws<ArgumentException>(() => store.Add(new TenantId("not-a-guid"), Result("x")));
         Assert.Throws<ArgumentException>(() => store.Recent(new TenantId("../escape")));
         Assert.Throws<ArgumentException>(() => store.Add(default, Result("x")));
+    }
 
-        // Upper-case is a DIFFERENT spelling of the same account and must not open a second partition.
-        Assert.Throws<ArgumentException>(() => store.Add(new TenantId(TenantA.Value.ToUpperInvariant()), Result("x")));
+    [Fact]
+    public void An_alternate_spelling_of_a_minted_tenant_is_refused_on_the_write_and_the_read()
+    {
+        // The SAME account written a way this system does not mint must not open a second partition, and
+        // must not reach the first one either. The fixture asserts its own premise - see
+        // NetDiagTenantFixture.AliasesOf - so an alias that is not actually a different spelling fails there
+        // rather than passing here for the wrong reason.
+        var store = new NetDiagResultStore(Path_);
+        store.Add(TenantA, Result("canonical-only"));
+
+        foreach (var alias in NetDiagTenantFixture.AliasesOf(TenantA))
+        {
+            Assert.Throws<ArgumentException>(() => store.Add(new TenantId(alias), Result("x")));
+            Assert.Throws<ArgumentException>(() => store.Recent(new TenantId(alias)));
+        }
+
+        // Positive control: the canonical spelling still works and still holds exactly what was written, so
+        // the refusals above are about the SPELLING and not about the store having become unusable.
+        Assert.Equal(new[] { "canonical-only" }, store.Recent(TenantA).Select(r => r.Verdict));
     }
 }
 
@@ -229,8 +319,8 @@ public sealed class NetDiagRollupStoreTenantPartitionTests : IDisposable
     private static readonly DateTime T0 = new(2026, 7, 20, 12, 30, 0, DateTimeKind.Utc);
     private static readonly DateTime T0SameHour = new(2026, 7, 20, 12, 55, 0, DateTimeKind.Utc);
 
-    private static readonly TenantId TenantA = new("11111111-1111-1111-1111-111111111111");
-    private static readonly TenantId TenantB = new("22222222-2222-2222-2222-222222222222");
+    private static readonly TenantId TenantA = NetDiagTenantFixture.TenantA;
+    private static readonly TenantId TenantB = NetDiagTenantFixture.TenantB;
 
     private readonly string _dir = Path.Combine(
         Path.GetTempPath(), "cc-netdiagroll-part-" + Guid.NewGuid().ToString("N"));
@@ -304,7 +394,7 @@ public sealed class NetDiagRollupStoreTenantPartitionTests : IDisposable
     }
 
     [Fact]
-    public void A_pre_partition_rollup_file_is_purged_not_migrated()
+    public void A_pre_partition_rollup_file_is_deleted_from_the_live_store_not_migrated()
     {
         // Worse than the raw-results case, and the same ruling for a stronger reason: each old bucket is a
         // SUM over every tenant that folded into that hour. The addends cannot be separated after the fact,
@@ -334,7 +424,7 @@ public sealed class NetDiagRollupStoreTenantPartitionTests : IDisposable
     }
 
     [Fact]
-    public void An_unreadable_rollup_file_is_still_quarantined_not_purged()
+    public void An_unreadable_rollup_file_is_still_quarantined_not_deleted()
     {
         Directory.CreateDirectory(_dir);
         File.WriteAllText(Path_, "{ not json at all");
@@ -353,7 +443,23 @@ public sealed class NetDiagRollupStoreTenantPartitionTests : IDisposable
         Assert.Throws<ArgumentException>(() => store.Fold(new TenantId("not-a-guid"), T0, 40, true, true, null, null));
         Assert.Throws<ArgumentException>(() => store.All(new TenantId("../escape")));
         Assert.Throws<ArgumentException>(() => store.Fold(default, T0, 40, true, true, null, null));
-        Assert.Throws<ArgumentException>(() => store.All(new TenantId(TenantA.Value.ToUpperInvariant())));
+    }
+
+    [Fact]
+    public void An_alternate_spelling_of_a_minted_tenant_is_refused_on_the_fold_and_the_read()
+    {
+        var store = new NetDiagRollupStore(Path_);
+        store.Fold(TenantA, T0, 40, true, true, null, null);
+
+        foreach (var alias in NetDiagTenantFixture.AliasesOf(TenantA))
+        {
+            Assert.Throws<ArgumentException>(() => store.Fold(new TenantId(alias), T0, 40, true, true, null, null));
+            Assert.Throws<ArgumentException>(() => store.All(new TenantId(alias)));
+        }
+
+        // Positive control: the canonical spelling still reaches its own single bucket, so the refusals are
+        // about the SPELLING rather than about the store having become unusable.
+        Assert.Equal(1, Assert.Single(store.All(TenantA)).Count);
     }
 }
 
