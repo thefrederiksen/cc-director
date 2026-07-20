@@ -154,12 +154,12 @@ internal static class GatewayWingmanVoiceEndpoint
 
         // Which voice sessions have a ready, playable spoken summary right now (the phone's list
         // shows a play button on these and can play without entering).
-        app.MapGet("/wingman/voice/ready", () => Results.Json(new { sids = voice.ReadySessionIds() }));
+        app.MapGet("/wingman/voice/ready", () => Results.Json(new { sids = voice.ReadySessionIds(TenantId.Local) }));
 
         // The precomputed spoken summary for a session (instant on entry - no re-read needed).
         app.MapGet("/sessions/{sid}/wingman/voice", (string sid) =>
         {
-            var v = voice.Get(sid);
+            var v = voice.Get(TenantId.Local, sid);
             return v is null
                 ? Results.Json(new { ready = false })
                 : Results.Json(new { ready = true, spoken = v.Spoken, reply = v.Reply, generatedAt = v.AtUtc });
@@ -168,9 +168,9 @@ internal static class GatewayWingmanVoiceEndpoint
         // The precomputed audio for a session - streamed so the list can play it with one tap.
         app.MapGet("/sessions/{sid}/wingman/voice/audio", (string sid) =>
         {
-            var audio = voice.GetAudio(sid);
+            var audio = voice.GetAudio(TenantId.Local, sid);
             return audio is { Length: > 0 }
-                ? Results.Bytes(audio, voice.GetAudioContentType(sid) ?? "audio/mpeg", enableRangeProcessing: true)
+                ? Results.Bytes(audio, voice.GetAudioContentType(TenantId.Local, sid) ?? "audio/mpeg", enableRangeProcessing: true)
                 : Results.Json(new { error = "no voice ready for this session" }, statusCode: StatusCodes.Status404NotFound);
         });
 
@@ -185,7 +185,7 @@ internal static class GatewayWingmanVoiceEndpoint
             FileLog.Write($"[GatewayWingmanVoice] voice/stop sid={sid}");
             if (!Guid.TryParse(sid, out _))
                 return Results.Json(new { error = "invalid session id format" }, statusCode: StatusCodes.Status400BadRequest);
-            voice.Unmark(sid);
+            voice.Unmark(TenantId.Local, sid);
             return Results.Json(new { stopped = true });
         });
 
@@ -246,7 +246,7 @@ internal static class GatewayWingmanVoiceEndpoint
                 var ok = result is { Ok: true };
                 if (ok)
                 {
-                    if (enabled) voice.Mark(t.Sid); else voice.Unmark(t.Sid);
+                    if (enabled) voice.Mark(TenantId.Local, t.Sid); else voice.Unmark(TenantId.Local, t.Sid);
                     changed++;
                 }
                 var reason = ok
@@ -541,7 +541,7 @@ internal static class GatewayWingmanVoiceEndpoint
             // Clear them DETERMINISTICALLY here (do not rely on observing the Working state, which is
             // racy for fast turns) - the list stops showing it ready and nothing stale plays. The
             // fresh summary is stored below once the agent replies.
-            voice.OnSessionWorking(sid);
+            voice.OnSessionWorking(TenantId.Local, sid);
 
             // Snapshot the widget list BEFORE sending: gives both (a) the count for the issue #366
             // guard (only read widgets that are new after the send) and (b) the prior conversation
@@ -564,7 +564,7 @@ internal static class GatewayWingmanVoiceEndpoint
             // The agent replied; now the wingman translates it. This is gateway-owned work
             // (CancellationToken.None) so navigating away does not lose the summary, and the
             // session shows YELLOW while the wingman runs, then back to red (issue #531 voice mode).
-            voice.BeginGenerating(sid);
+            voice.BeginGenerating(TenantId.Local, sid);
             try
             {
                 // Full context: prior exchanges from the pre-send snapshot + the current question,
@@ -573,7 +573,7 @@ internal static class GatewayWingmanVoiceEndpoint
                     ? "You: " + req.Text.Trim()
                     : priorContext + "\n\nYou: " + req.Text.Trim();
                 var t = await translator.TranslateAsync(recentContext, reply, SessionTitle(sid), CancellationToken.None);
-                await voice.StoreSpokenAsync(sid, t.Spoken, reply, CancellationToken.None);   // make it a voice session + cache audio
+                await voice.StoreSpokenAsync(TenantId.Local, sid, t.Spoken, reply, CancellationToken.None);   // make it a voice session + cache audio
                 FileLog.Write($"[GatewayWingmanVoice] voice-turn sid={sid}: replyLen={reply.Length}, spokenLen={t.Spoken.Length}");
                 // Training capture (no-op unless the setting is on); fire-and-forget so it adds no latency.
                 _ = voice.CaptureTrainingAsync(route, sid, "voice-turn", reply, recentContext, t.Spoken, t.ReplySeconds, CancellationToken.None);
@@ -585,7 +585,7 @@ internal static class GatewayWingmanVoiceEndpoint
                 return Results.Json(new { error = "wingman translation failed: " + ex.Message },
                     statusCode: StatusCodes.Status502BadGateway);
             }
-            finally { voice.EndGenerating(sid); }
+            finally { voice.EndGenerating(TenantId.Local, sid); }
         });
 
         // Transcription (issue #531 follow-up): the phone records audio locally (survives a bad
@@ -661,13 +661,13 @@ internal static class GatewayWingmanVoiceEndpoint
             // Recent conversation so the wingman can give context to a short/terse reply.
             var recentContext = WingmanTranslator.BuildRecentContext(widgets);
 
-            voice.Mark(sid);   // opening voice on a session makes it a voice session (kept fresh on turn-end)
+            voice.Mark(TenantId.Local, sid);   // opening voice on a session makes it a voice session (kept fresh on turn-end)
             if (string.IsNullOrWhiteSpace(lastReply))
             {
                 // No text reply to read aloud (waiting on a prompt / menu). Record the honest "nothing to
                 // narrate" fact so the Voice screen shows it via VoiceDisplayFold instead of a dead-end
                 // Generate button, then return the truthful canned line - no brain call.
-                voice.SetNothingToNarrate(sid, true);
+                voice.SetNothingToNarrate(TenantId.Local, sid, true);
                 return Results.Json(new
                 {
                     reply = "",
@@ -682,12 +682,12 @@ internal static class GatewayWingmanVoiceEndpoint
             // navigates away or the request is abandoned mid-read - returning to the session then
             // loads the finished summary from cache instead of losing it. Mark the session generating
             // so it shows YELLOW ("not ready yet") for the duration, then back to red.
-            voice.SetNothingToNarrate(sid, false);   // there IS a text reply - clear any stale "nothing to narrate"
-            voice.BeginGenerating(sid);
+            voice.SetNothingToNarrate(TenantId.Local, sid, false);   // there IS a text reply - clear any stale "nothing to narrate"
+            voice.BeginGenerating(TenantId.Local, sid);
             try
             {
                 var t = await translator.TranslateAsync(recentContext, lastReply, SessionTitle(sid), CancellationToken.None);
-                await voice.StoreSpokenAsync(sid, t.Spoken, lastReply, CancellationToken.None);   // cache spoken + audio, ready to play
+                await voice.StoreSpokenAsync(TenantId.Local, sid, t.Spoken, lastReply, CancellationToken.None);   // cache spoken + audio, ready to play
                 FileLog.Write($"[GatewayWingmanVoice] explain sid={sid}: replyLen={lastReply.Length}, spokenLen={t.Spoken.Length}");
                 // Training capture (no-op unless the setting is on); fire-and-forget so it adds no latency.
                 _ = voice.CaptureTrainingAsync(route, sid, "explain", lastReply, recentContext, t.Spoken, t.ReplySeconds, CancellationToken.None);
@@ -701,7 +701,7 @@ internal static class GatewayWingmanVoiceEndpoint
                 // return a benign 200, NOT the 502 the phone used to mislabel "this session's computer looks
                 // offline". Before this, a stalled model hung the request the full 180s and then 502'd, which
                 // is exactly the "I hit generate and nothing happens" the owner reported.
-                voice.NoteRetrying(sid);
+                voice.NoteRetrying(TenantId.Local, sid);
                 FileLog.Write($"[GatewayWingmanVoice] explain sid={sid} model did not answer: {ex.Message} - Retrying (audio on its way)");
                 return Results.Json(new
                 {
@@ -717,7 +717,7 @@ internal static class GatewayWingmanVoiceEndpoint
                 return Results.Json(new { error = "wingman could not summarize: " + ex.Message },
                     statusCode: StatusCodes.Status502BadGateway);
             }
-            finally { voice.EndGenerating(sid); }
+            finally { voice.EndGenerating(TenantId.Local, sid); }
         });
 
         app.MapPost("/wingman/ask-direct", async (WingmanVoiceTurnRequest? req, CancellationToken ct) =>

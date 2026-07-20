@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using CcDirector.Core.Tenancy;
 using CcDirector.Core.Utilities;
 
 namespace CcDirector.Gateway.Voice;
@@ -174,71 +175,114 @@ public readonly record struct TurnJobSnapshot(
 /// expiry is checked lazily on every read and swept opportunistically on create, so no timer
 /// thread is needed. In-memory by design - a Gateway restart drops in-flight turns, and the
 /// phone simply re-submits (the same contract as the rest of the Gateway's in-memory state).
+///
+/// PARTITIONED BY TENANT (Hosted Multi-Tenancy, VOICE V1). A job carries the turn's transcript, its
+/// summary and its reply audio - all customer content - so each tenant gets its OWN pair of dictionaries
+/// and every read and mutate takes the tenant as a REQUIRED parameter. An unguessable turn id is not an
+/// authorization: proving you know an id is not proving you own the turn, so the id is never sufficient
+/// on its own. The tenant is canonicalized the same way the on-disk partitions are, and a shape this
+/// system does not mint is refused rather than coerced.
 /// </summary>
 public sealed class GatewayTurnJobStore
 {
     /// <summary>How long a completed (or in-flight) turn result stays pollable.</summary>
     public static readonly TimeSpan Ttl = TimeSpan.FromMinutes(10);
 
-    private readonly ConcurrentDictionary<string, TurnJob> _jobs = new(StringComparer.Ordinal);
-
-    /// <summary>Maps an upload id to the live turn it started, so a retried completion returns the
-    /// same turn_id instead of launching a duplicate. Bounded by the same TTL sweep as the jobs.</summary>
-    private readonly ConcurrentDictionary<string, string> _byUpload = new(StringComparer.OrdinalIgnoreCase);
-
-    /// <summary>Create and register a new job for <paramref name="sessionId"/> (stage=submitted).
-    /// When <paramref name="uploadId"/> is supplied the job is also indexed by it for idempotency.</summary>
-    public TurnJob Create(string sessionId, string? uploadId = null)
+    /// <summary>ONE tenant's jobs. The only way to reach it is <see cref="StateFor"/> with a validated
+    /// tenant, so a turn id alone can never name a job.</summary>
+    private sealed class TenantJobs
     {
-        SweepExpired();
+        public readonly ConcurrentDictionary<string, TurnJob> Jobs = new(StringComparer.Ordinal);
+
+        /// <summary>Maps an upload id to the live turn it started, so a retried completion returns the
+        /// same turn_id instead of launching a duplicate. Bounded by the same TTL sweep as the jobs.</summary>
+        public readonly ConcurrentDictionary<string, string> ByUpload = new(StringComparer.OrdinalIgnoreCase);
+    }
+
+    private readonly ConcurrentDictionary<string, TenantJobs> _tenants = new(StringComparer.Ordinal);
+
+    /// <summary>
+    /// True only for the EXACT form the tenant registry mints: a canonical lowercase GUID. The same guard
+    /// the on-disk voice partitions use, so the in-memory and on-disk views can never disagree about which
+    /// spelling of a tenant id is that tenant.
+    /// </summary>
+    private static bool IsMintedAccountTenant(string value)
+        => Guid.TryParseExact(value, "D", out var parsed)
+           && string.Equals(value, parsed.ToString("D"), StringComparison.Ordinal);
+
+    private static string CanonicalTenantKey(TenantId tenant)
+    {
+        if (!tenant.IsValid)
+            throw new ArgumentException("A voice-turn job needs a valid tenant; an unresolved tenant is denied, never defaulted.", nameof(tenant));
+        if (tenant.IsLocal) return TenantId.Local.Value;
+        if (!IsMintedAccountTenant(tenant.Value))
+            throw new ArgumentException(
+                $"Tenant '{tenant.ToLogString()}' is not a minted account tenant and cannot own voice-turn jobs.", nameof(tenant));
+        return tenant.Value;
+    }
+
+    private TenantJobs StateFor(TenantId tenant)
+        => _tenants.GetOrAdd(CanonicalTenantKey(tenant), _ => new TenantJobs());
+
+    /// <summary>Create and register a new job for <paramref name="sessionId"/> (stage=submitted) inside
+    /// <paramref name="tenant"/>. When <paramref name="uploadId"/> is supplied the job is also indexed by
+    /// it for idempotency.</summary>
+    public TurnJob Create(TenantId tenant, string sessionId, string? uploadId = null)
+    {
+        var state = StateFor(tenant);
+        SweepExpired(state);
         var job = new TurnJob(Guid.NewGuid().ToString(), sessionId, DateTime.UtcNow, Ttl, uploadId);
-        _jobs[job.TurnId] = job;
+        state.Jobs[job.TurnId] = job;
         if (!string.IsNullOrEmpty(uploadId))
-            _byUpload[uploadId] = job.TurnId;
-        FileLog.Write($"[GatewayTurnJobStore] Create: turnId={job.TurnId}, sid={sessionId}, uploadId={uploadId}, expiresAt={job.ExpiresAt:O}");
+            state.ByUpload[uploadId] = job.TurnId;
+        FileLog.Write($"[GatewayTurnJobStore] Create: tenant={tenant.ToLogString()}, turnId={job.TurnId}, sid={sessionId}, uploadId={uploadId}, expiresAt={job.ExpiresAt:O}");
         return job;
     }
 
-    /// <summary>The live (non-expired) turn started from <paramref name="uploadId"/>, or null. The
-    /// idempotency fast path: an in-flight or recently-finished turn is found without touching disk.</summary>
-    public TurnJob? FindTurnByUpload(string uploadId)
+    /// <summary>The live (non-expired) turn started from <paramref name="uploadId"/> within this tenant, or
+    /// null. The idempotency fast path: an in-flight or recently-finished turn is found without touching disk.</summary>
+    public TurnJob? FindTurnByUpload(TenantId tenant, string uploadId)
     {
         if (string.IsNullOrEmpty(uploadId)) return null;
-        if (!_byUpload.TryGetValue(uploadId, out var turnId)) return null;
-        var job = Get(turnId);
-        if (job is null) _byUpload.TryRemove(uploadId, out _);
+        var state = StateFor(tenant);
+        if (!state.ByUpload.TryGetValue(uploadId, out var turnId)) return null;
+        var job = Get(tenant, turnId);
+        if (job is null) state.ByUpload.TryRemove(uploadId, out _);
         return job;
     }
 
     /// <summary>
-    /// The job for <paramref name="turnId"/>, or null when unknown or expired. An expired job is
-    /// removed on this read (lazy expiry) so the caller's 404 is also the cleanup.
+    /// The job for <paramref name="turnId"/> WITHIN <paramref name="tenant"/>, or null when unknown or
+    /// expired. Another tenant's turn id is simply unknown here - the lookup never leaves this tenant's
+    /// dictionary, so there is no cross-tenant answer to give. An expired job is removed on this read
+    /// (lazy expiry) so the caller's 404 is also the cleanup.
     /// </summary>
-    public TurnJob? Get(string turnId)
+    public TurnJob? Get(TenantId tenant, string turnId)
     {
         if (string.IsNullOrEmpty(turnId)) return null;
-        if (!_jobs.TryGetValue(turnId, out var job)) return null;
+        var state = StateFor(tenant);
+        if (!state.Jobs.TryGetValue(turnId, out var job)) return null;
         if (job.ExpiresAt <= DateTime.UtcNow)
         {
-            _jobs.TryRemove(turnId, out _);
+            state.Jobs.TryRemove(turnId, out _);
             FileLog.Write($"[GatewayTurnJobStore] Get: turnId={turnId} expired (created {job.CreatedAt:O}); removed");
             return null;
         }
         return job;
     }
 
-    /// <summary>Drop every expired job. Called on each create so the dictionary stays bounded
+    /// <summary>Drop every expired job in ONE tenant. Called on each create so the dictionary stays bounded
     /// by the number of turns submitted within one TTL window.</summary>
-    private void SweepExpired()
+    private static void SweepExpired(TenantJobs state)
     {
         var now = DateTime.UtcNow;
-        foreach (var kvp in _jobs)
+        foreach (var kvp in state.Jobs)
         {
             if (kvp.Value.ExpiresAt <= now)
             {
-                _jobs.TryRemove(kvp.Key, out _);
+                state.Jobs.TryRemove(kvp.Key, out _);
                 if (!string.IsNullOrEmpty(kvp.Value.UploadId))
-                    _byUpload.TryRemove(kvp.Value.UploadId, out _);
+                    state.ByUpload.TryRemove(kvp.Value.UploadId, out _);
             }
         }
     }

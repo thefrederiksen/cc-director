@@ -10,6 +10,7 @@ using CcDirector.Gateway.HostedAi;
 using CcDirector.Gateway.Discovery;
 using CcDirector.Gateway.Wingman;
 using Xunit;
+using CcDirector.Core.Tenancy;
 
 namespace CcDirector.Gateway.Tests;
 
@@ -20,40 +21,64 @@ namespace CcDirector.Gateway.Tests;
 /// </summary>
 public sealed class WingmanVoiceServiceTests
 {
+    /// <summary>
+    /// A persist path inside a DIRECTORY unique to this call - never a unique filename in the shared machine
+    /// temp directory.
+    ///
+    /// This distinction is the whole isolation guarantee, and it is worth spelling out because the harness
+    /// that preceded it was not careless - it was correct, and then quietly stopped being correct without a
+    /// line of it changing. It randomized the persist FILENAME, which was sufficient while the file was the
+    /// deepest thing the service derived anything from. Then the voice state was partitioned by tenant, and
+    /// the service began deriving its per-tenant root from that file's PARENT directory. Every instance
+    /// pointed at a bare temp filename now resolves to ONE shared tenants/local partition under the machine
+    /// temp path, so a clip written for "sid-1" by one test is loaded by the next test's fresh service (the
+    /// constructor loads every partition), and tests start passing or failing on each other's leftovers.
+    ///
+    /// The rule to carry: a test's isolation is only as deep as the deepest path component the production
+    /// code derives from. Randomize the DIRECTORY, so the isolation survives the next time something moves
+    /// the derivation up a level. Callers that need two service instances to see the SAME state (the
+    /// gateway-restart cases) must call this ONCE and share the result deliberately.
+    /// </summary>
+    private static string TempPersist()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "wmvs-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        return Path.Combine(dir, "voice-sessions.json");
+    }
+
     private static WingmanVoiceService NewService()
     {
         // The flag methods never touch the brain; a provider that throws proves that.
         Func<WingmanModelRole, CancellationToken, Task<IAgentBrain>> brain =
             (_, _) => throw new InvalidOperationException("brain must not be called for flag state");
         var vaultPath = Path.Combine(Path.GetTempPath(), "wmvs-" + Guid.NewGuid().ToString("N") + ".vault");
-        var persistPath = Path.Combine(Path.GetTempPath(), "wmvs-" + Guid.NewGuid().ToString("N") + ".json");
-        return new WingmanVoiceService(brain, new KeyVault(vaultPath), persistPath);
+        return new WingmanVoiceService(brain, new KeyVault(vaultPath), TempPersist());
     }
 
     [Fact]
     public void IsGenerating_DefaultsFalse()
     {
         var svc = NewService();
-        Assert.False(svc.IsGenerating("sid-1"));
+        Assert.False(svc.IsGenerating(TenantId.Local, "sid-1"));
     }
 
     [Fact]
     public void BeginGenerating_ThenIsGenerating_IsTrue()
     {
         var svc = NewService();
-        svc.BeginGenerating("sid-1");
-        Assert.True(svc.IsGenerating("sid-1"));
+        svc.BeginGenerating(TenantId.Local, "sid-1");
+        Assert.True(svc.IsGenerating(TenantId.Local, "sid-1"));
         // Independent per session: a second session is unaffected.
-        Assert.False(svc.IsGenerating("sid-2"));
+        Assert.False(svc.IsGenerating(TenantId.Local, "sid-2"));
     }
 
     [Fact]
     public void EndGenerating_ClearsTheFlag()
     {
         var svc = NewService();
-        svc.BeginGenerating("sid-1");
-        svc.EndGenerating("sid-1");
-        Assert.False(svc.IsGenerating("sid-1"));
+        svc.BeginGenerating(TenantId.Local, "sid-1");
+        svc.EndGenerating(TenantId.Local, "sid-1");
+        Assert.False(svc.IsGenerating(TenantId.Local, "sid-1"));
     }
 
     [Fact]
@@ -62,9 +87,9 @@ public sealed class WingmanVoiceServiceTests
         // A new turn (blue) supersedes any in-flight wingman run for the previous turn, so the
         // yellow marker must drop - raw activity wins while the agent works.
         var svc = NewService();
-        svc.BeginGenerating("sid-1");
-        svc.OnSessionWorking("sid-1");
-        Assert.False(svc.IsGenerating("sid-1"));
+        svc.BeginGenerating(TenantId.Local, "sid-1");
+        svc.OnSessionWorking(TenantId.Local, "sid-1");
+        Assert.False(svc.IsGenerating(TenantId.Local, "sid-1"));
     }
 
     // ---------- Durable audio cache (issue #553) ----------
@@ -79,14 +104,16 @@ public sealed class WingmanVoiceServiceTests
         return new WingmanVoiceService(brain, new KeyVault(vaultPath), persistPath);
     }
 
+    /// <summary>Remove the whole per-test directory. It deletes the DIRECTORY rather than picking out the
+    /// individual files it expects, because <see cref="TempPersist"/> owns that directory outright, and a
+    /// cleanup that enumerates known filenames goes stale the moment the layout underneath changes - which
+    /// is exactly what happened when the per-tenant partition was introduced under it.</summary>
     private static void Cleanup(string persistPath)
     {
         try
         {
             var dir = Path.GetDirectoryName(persistPath);
-            if (dir is not null && Directory.Exists(Path.Combine(dir, "voice-audio")))
-                Directory.Delete(Path.Combine(dir, "voice-audio"), recursive: true);
-            if (File.Exists(persistPath)) File.Delete(persistPath);
+            if (dir is not null && Directory.Exists(dir)) Directory.Delete(dir, recursive: true);
         }
         catch { /* best-effort cleanup */ }
     }
@@ -97,18 +124,18 @@ public sealed class WingmanVoiceServiceTests
         // No OpenAI key in the vault -> TtsAsync returns null -> the "if anything fails, remove the
         // triangle" rule: the session is a voice session but has NO playable audio, so no triangle.
         var svc = NewService();
-        await svc.StoreSpokenAsync("sid-1", "a spoken summary", "the reply");
-        Assert.True(svc.IsVoiceSession("sid-1"));
-        Assert.False(svc.HasVoice("sid-1"));
-        Assert.DoesNotContain("sid-1", svc.ReadySessionIds());
+        await svc.StoreSpokenAsync(TenantId.Local, "sid-1", "a spoken summary", "the reply");
+        Assert.True(svc.IsVoiceSession(TenantId.Local, "sid-1"));
+        Assert.False(svc.HasVoice(TenantId.Local, "sid-1"));
+        Assert.DoesNotContain("sid-1", svc.ReadySessionIds(TenantId.Local));
     }
 
     [Fact]
     public async Task StoreSpokenAsync_WithEmptySpoken_DoesNotMarkReady()
     {
         var svc = NewService();
-        await svc.StoreSpokenAsync("sid-1", "   ", "the reply");
-        Assert.False(svc.HasVoice("sid-1"));
+        await svc.StoreSpokenAsync(TenantId.Local, "sid-1", "   ", "the reply");
+        Assert.False(svc.HasVoice(TenantId.Local, "sid-1"));
     }
 
     [Fact]
@@ -116,22 +143,24 @@ public sealed class WingmanVoiceServiceTests
     {
         // A successful synthesis is durable: a fresh service over the same persist path reloads the
         // ready audio, so the triangle/playability survives a gateway restart and a tap still plays.
-        var persistPath = Path.Combine(Path.GetTempPath(), "wmvs-" + Guid.NewGuid().ToString("N") + ".json");
+        // ONE root, shared DELIBERATELY by the two service instances below: this test is the gateway-restart
+        // case, and a second instance that could not see what the first wrote would not be testing anything.
+        var persistPath = TempPersist();
         try
         {
             var svc = ServiceAt(persistPath);
             var audio = new byte[] { 1, 2, 3, 4, 5 };
-            svc.StoreReadyAudioForTest("sid-1", "spoken text", "reply text", audio, "audio/wav");
-            Assert.True(svc.HasVoice("sid-1"));
+            svc.StoreReadyAudioForTest(TenantId.Local, "sid-1", "spoken text", "reply text", audio, "audio/wav");
+            Assert.True(svc.HasVoice(TenantId.Local, "sid-1"));
 
             // Simulate a gateway restart: a brand-new service over the same path.
             var reloaded = ServiceAt(persistPath);
-            Assert.True(reloaded.HasVoice("sid-1"));
-            Assert.Contains("sid-1", reloaded.ReadySessionIds());
-            var got = reloaded.GetAudio("sid-1");
+            Assert.True(reloaded.HasVoice(TenantId.Local, "sid-1"));
+            Assert.Contains("sid-1", reloaded.ReadySessionIds(TenantId.Local));
+            var got = reloaded.GetAudio(TenantId.Local, "sid-1");
             Assert.NotNull(got);
             Assert.Equal(audio, got);
-            var ready = reloaded.Get("sid-1");
+            var ready = reloaded.Get(TenantId.Local, "sid-1");
             Assert.NotNull(ready);
             Assert.Equal("spoken text", ready.Spoken);
             Assert.Equal("reply text", ready.Reply);
@@ -145,11 +174,20 @@ public sealed class WingmanVoiceServiceTests
     {
         // Older cache metadata had no content type. Kokoro can return WAV bytes, so reload must detect
         // RIFF instead of serving those bytes as audio/mpeg.
-        var persistPath = Path.Combine(Path.GetTempPath(), "wmvs-" + Guid.NewGuid().ToString("N") + ".json");
+        //
+        // The seed goes in the LOCAL TENANT PARTITION, which is where the service actually reads its cache
+        // from now. It used to be written to <root>/voice-audio, the pre-partition location. That kept
+        // passing after the partition landed - but only because the self-host legacy migration moved the
+        // file into the partition before the load ran, which is not what this test is about. It would have
+        // gone on passing with the partition deleted entirely, so it was proving nothing about it while
+        // silently testing a different code path than its name claims. Seeding the real location keeps this
+        // test on content-type detection; the migration has its own coverage in
+        // WingmanVoiceTenantPartitionTests.
+        var persistPath = TempPersist();
         try
         {
             var dir = Path.GetDirectoryName(persistPath)!;
-            var audioDir = Path.Combine(dir, "voice-audio");
+            var audioDir = Path.Combine(dir, "tenants", "local", "voice-audio");
             Directory.CreateDirectory(audioDir);
             File.WriteAllBytes(Path.Combine(audioDir, "sid-1.mp3"), new byte[] { (byte)'R', (byte)'I', (byte)'F', (byte)'F', 1, 2, 3 });
             File.WriteAllText(Path.Combine(audioDir, "sid-1.json"),
@@ -157,7 +195,7 @@ public sealed class WingmanVoiceServiceTests
 
             var reloaded = ServiceAt(persistPath);
 
-            var ready = reloaded.Get("sid-1");
+            var ready = reloaded.Get(TenantId.Local, "sid-1");
             Assert.NotNull(ready);
             Assert.Equal("audio/wav", ready.ContentType);
         }
@@ -169,19 +207,21 @@ public sealed class WingmanVoiceServiceTests
     {
         // A new turn drops the stale audio from disk too, so a 5s-stale list row cannot point at
         // audio that no longer exists (which would 404 on /audio).
-        var persistPath = Path.Combine(Path.GetTempPath(), "wmvs-" + Guid.NewGuid().ToString("N") + ".json");
+        // ONE root, shared DELIBERATELY by the two service instances below: this test is the gateway-restart
+        // case, and a second instance that could not see what the first wrote would not be testing anything.
+        var persistPath = TempPersist();
         try
         {
             var svc = ServiceAt(persistPath);
-            svc.StoreReadyAudioForTest("sid-1", "spoken", "reply", new byte[] { 9, 9, 9 });
-            Assert.True(svc.HasVoice("sid-1"));
+            svc.StoreReadyAudioForTest(TenantId.Local, "sid-1", "spoken", "reply", new byte[] { 9, 9, 9 });
+            Assert.True(svc.HasVoice(TenantId.Local, "sid-1"));
 
-            svc.OnSessionWorking("sid-1");
-            Assert.False(svc.HasVoice("sid-1"));
+            svc.OnSessionWorking(TenantId.Local, "sid-1");
+            Assert.False(svc.HasVoice(TenantId.Local, "sid-1"));
 
             // A restart must NOT resurrect the dropped audio.
             var reloaded = ServiceAt(persistPath);
-            Assert.False(reloaded.HasVoice("sid-1"));
+            Assert.False(reloaded.HasVoice(TenantId.Local, "sid-1"));
         }
         finally { Cleanup(persistPath); }
     }
@@ -271,13 +311,13 @@ public sealed class WingmanVoiceServiceTests
             var brain = new TimingOutBrain();
             var svc = ServiceWithBrainAndTts(brain, new byte[] { 7, 7, 7 }, persistPath);
 
-            await svc.GenerateAsync("sid-1", RouteFor(director), CancellationToken.None, showReadingWindow: true);
+            await svc.GenerateAsync(TenantId.Local, "sid-1", RouteFor(director), CancellationToken.None, showReadingWindow: true);
 
             Assert.Equal(1, brain.AskCount);                                          // it tried the model
-            Assert.False(svc.HasVoice("sid-1"));                                      // nothing to play
-            Assert.Equal(HostedAiState.Retrying, svc.VoiceUnavailableFor("sid-1"));   // and it says WHY, calmly
-            Assert.NotEqual(HostedAiState.ServiceDown, svc.VoiceUnavailableFor("sid-1")); // a non-answer is not "down"
-            Assert.False(svc.IsGenerating("sid-1"));                                  // the yellow window closed
+            Assert.False(svc.HasVoice(TenantId.Local, "sid-1"));                                      // nothing to play
+            Assert.Equal(HostedAiState.Retrying, svc.VoiceUnavailableFor(TenantId.Local, "sid-1"));   // and it says WHY, calmly
+            Assert.NotEqual(HostedAiState.ServiceDown, svc.VoiceUnavailableFor(TenantId.Local, "sid-1")); // a non-answer is not "down"
+            Assert.False(svc.IsGenerating(TenantId.Local, "sid-1"));                                  // the yellow window closed
         }
         finally { try { Directory.Delete(dir, recursive: true); } catch { /* best-effort cleanup */ } }
     }
@@ -288,9 +328,9 @@ public sealed class WingmanVoiceServiceTests
         // The on-demand "generate" (explain) path calls this when its translation times out, so the phone
         // shows "voice on its way" instead of the old false 502 "this session's computer is offline".
         var svc = NewService();
-        Assert.Null(svc.VoiceUnavailableFor("sid-1"));
-        svc.NoteRetrying("sid-1");
-        Assert.Equal(HostedAiState.Retrying, svc.VoiceUnavailableFor("sid-1"));
+        Assert.Null(svc.VoiceUnavailableFor(TenantId.Local, "sid-1"));
+        svc.NoteRetrying(TenantId.Local, "sid-1");
+        Assert.Equal(HostedAiState.Retrying, svc.VoiceUnavailableFor(TenantId.Local, "sid-1"));
     }
 
     // ---------- "Nothing to narrate": the session is waiting on a prompt, no text reply to read ----------
@@ -309,11 +349,11 @@ public sealed class WingmanVoiceServiceTests
             var brain = new RecordingBrain();
             var svc = ServiceWithBrainAndTts(brain, new byte[] { 1 }, persistPath);
 
-            await svc.GenerateAsync("sid-1", RouteFor(director), CancellationToken.None, showReadingWindow: true);
+            await svc.GenerateAsync(TenantId.Local, "sid-1", RouteFor(director), CancellationToken.None, showReadingWindow: true);
 
-            Assert.True(svc.NothingToNarrateFor("sid-1"));
-            Assert.False(svc.HasVoice("sid-1"));
-            Assert.Null(svc.VoiceUnavailableFor("sid-1"));   // NOT a failure - no Retrying/ServiceDown
+            Assert.True(svc.NothingToNarrateFor(TenantId.Local, "sid-1"));
+            Assert.False(svc.HasVoice(TenantId.Local, "sid-1"));
+            Assert.Null(svc.VoiceUnavailableFor(TenantId.Local, "sid-1"));   // NOT a failure - no Retrying/ServiceDown
             Assert.Equal(0, brain.AskCount);                 // nothing to translate, so the model was never called
         }
         finally { try { Directory.Delete(dir, recursive: true); } catch { /* best-effort */ } }
@@ -330,12 +370,12 @@ public sealed class WingmanVoiceServiceTests
         {
             var brain = new RecordingBrain();
             var svc = ServiceWithBrainAndTts(brain, new byte[] { 9, 9, 9 }, persistPath);
-            svc.SetNothingToNarrate("sid-1", true);   // a stale marker from an earlier empty read
+            svc.SetNothingToNarrate(TenantId.Local, "sid-1", true);   // a stale marker from an earlier empty read
 
-            await svc.GenerateAsync("sid-1", RouteFor(director), CancellationToken.None, showReadingWindow: false);
+            await svc.GenerateAsync(TenantId.Local, "sid-1", RouteFor(director), CancellationToken.None, showReadingWindow: false);
 
-            Assert.False(svc.NothingToNarrateFor("sid-1"));   // cleared - there IS text now
-            Assert.True(svc.HasVoice("sid-1"));
+            Assert.False(svc.NothingToNarrateFor(TenantId.Local, "sid-1"));   // cleared - there IS text now
+            Assert.True(svc.HasVoice(TenantId.Local, "sid-1"));
         }
         finally { try { Directory.Delete(dir, recursive: true); } catch { /* best-effort */ } }
     }
@@ -344,11 +384,11 @@ public sealed class WingmanVoiceServiceTests
     public void SetNothingToNarrate_TogglesTheFact()
     {
         var svc = NewService();
-        Assert.False(svc.NothingToNarrateFor("s"));
-        svc.SetNothingToNarrate("s", true);
-        Assert.True(svc.NothingToNarrateFor("s"));
-        svc.SetNothingToNarrate("s", false);
-        Assert.False(svc.NothingToNarrateFor("s"));
+        Assert.False(svc.NothingToNarrateFor(TenantId.Local, "s"));
+        svc.SetNothingToNarrate(TenantId.Local, "s", true);
+        Assert.True(svc.NothingToNarrateFor(TenantId.Local, "s"));
+        svc.SetNothingToNarrate(TenantId.Local, "s", false);
+        Assert.False(svc.NothingToNarrateFor(TenantId.Local, "s"));
     }
 
     [Fact]
@@ -356,19 +396,19 @@ public sealed class WingmanVoiceServiceTests
     {
         // A new turn supersedes the old "nothing to narrate" verdict - it is re-evaluated on the next turn-end.
         var svc = NewService();
-        svc.SetNothingToNarrate("s", true);
-        svc.OnSessionWorking("s");
-        Assert.False(svc.NothingToNarrateFor("s"));
+        svc.SetNothingToNarrate(TenantId.Local, "s", true);
+        svc.OnSessionWorking(TenantId.Local, "s");
+        Assert.False(svc.NothingToNarrateFor(TenantId.Local, "s"));
     }
 
     [Fact]
     public void Unmark_ClearsNothingToNarrate()
     {
         var svc = NewService();
-        svc.Mark("s");
-        svc.SetNothingToNarrate("s", true);
-        svc.Unmark("s");
-        Assert.False(svc.NothingToNarrateFor("s"));
+        svc.Mark(TenantId.Local, "s");
+        svc.SetNothingToNarrate(TenantId.Local, "s", true);
+        svc.Unmark(TenantId.Local, "s");
+        Assert.False(svc.NothingToNarrateFor(TenantId.Local, "s"));
     }
 
     /// <summary>A voice service wired to a recording brain and a text-to-speech stub that returns
@@ -417,13 +457,13 @@ public sealed class WingmanVoiceServiceTests
         {
             var brain = new RecordingBrain();
             var svc = ServiceWithBrainAndTts(brain, new byte[] { 4, 4, 4 }, persistPath);
-            svc.StoreReadyAudioForTest("sid-1", "old spoken", "the OLD interim reply", new byte[] { 1, 2, 3 });
-            Assert.True(svc.HasVoice("sid-1"));
+            svc.StoreReadyAudioForTest(TenantId.Local, "sid-1", "old spoken", "the OLD interim reply", new byte[] { 1, 2, 3 });
+            Assert.True(svc.HasVoice(TenantId.Local, "sid-1"));
 
-            await svc.GenerateAsync("sid-1", RouteFor(director), CancellationToken.None, showReadingWindow: false);
+            await svc.GenerateAsync(TenantId.Local, "sid-1", RouteFor(director), CancellationToken.None, showReadingWindow: false);
 
             Assert.Equal(1, brain.AskCount);                          // it regenerated (translated the new reply)
-            var ready = svc.Get("sid-1");
+            var ready = svc.Get(TenantId.Local, "sid-1");
             Assert.NotNull(ready);
             Assert.Equal("the NEW final answer", ready!.Reply);       // the cache now holds the CURRENT reply
         }
@@ -443,16 +483,16 @@ public sealed class WingmanVoiceServiceTests
         {
             var brain = new RecordingBrain();
             var svc = ServiceWithBrainAndTts(brain, new byte[] { 9, 9 }, persistPath);
-            svc.StoreReadyAudioForTest("sid-1", "old spoken", "the same reply", new byte[] { 1, 2, 3 });
-            Assert.True(svc.HasVoice("sid-1"));
+            svc.StoreReadyAudioForTest(TenantId.Local, "sid-1", "old spoken", "the same reply", new byte[] { 1, 2, 3 });
+            Assert.True(svc.HasVoice(TenantId.Local, "sid-1"));
 
-            await svc.GenerateAsync("sid-1", RouteFor(director), CancellationToken.None, showReadingWindow: true);
+            await svc.GenerateAsync(TenantId.Local, "sid-1", RouteFor(director), CancellationToken.None, showReadingWindow: true);
 
             Assert.Equal(0, brain.AskCount);              // never regenerated
             Assert.True(director.Hits >= 1);              // but it DID fetch to compare (identity-aware, not blind)
-            Assert.True(svc.HasVoice("sid-1"));           // the existing clip is untouched
-            Assert.False(svc.IsGenerating("sid-1"));      // and it never flipped the session yellow
-            Assert.Equal(new byte[] { 1, 2, 3 }, svc.GetAudio("sid-1"));   // same original audio, not re-minted
+            Assert.True(svc.HasVoice(TenantId.Local, "sid-1"));           // the existing clip is untouched
+            Assert.False(svc.IsGenerating(TenantId.Local, "sid-1"));      // and it never flipped the session yellow
+            Assert.Equal(new byte[] { 1, 2, 3 }, svc.GetAudio(TenantId.Local, "sid-1"));   // same original audio, not re-minted
         }
         finally { try { Directory.Delete(dir, recursive: true); } catch { /* best-effort cleanup */ } }
     }
@@ -463,7 +503,7 @@ public sealed class WingmanVoiceServiceTests
     public void ShouldRegenerate_NoCachedNarration_IsTrue()
     {
         var svc = NewService();
-        Assert.True(svc.ShouldRegenerate("sid-x", "a reply to narrate"));
+        Assert.True(svc.ShouldRegenerate(TenantId.Local, "sid-x", "a reply to narrate"));
     }
 
     [Fact]
@@ -471,16 +511,16 @@ public sealed class WingmanVoiceServiceTests
     {
         // Nothing to narrate yet - do not touch or regenerate.
         var svc = NewService();
-        Assert.False(svc.ShouldRegenerate("sid-x", null));
-        Assert.False(svc.ShouldRegenerate("sid-x", "   "));
+        Assert.False(svc.ShouldRegenerate(TenantId.Local, "sid-x", null));
+        Assert.False(svc.ShouldRegenerate(TenantId.Local, "sid-x", "   "));
     }
 
     [Fact]
     public void ShouldRegenerate_SameReplyAlreadyCached_IsFalse()
     {
         var svc = NewService();
-        svc.StoreReadyAudioForTest("sid-1", "spoken", "the reply text", new byte[] { 1 });
-        Assert.False(svc.ShouldRegenerate("sid-1", "the reply text"));
+        svc.StoreReadyAudioForTest(TenantId.Local, "sid-1", "spoken", "the reply text", new byte[] { 1 });
+        Assert.False(svc.ShouldRegenerate(TenantId.Local, "sid-1", "the reply text"));
     }
 
     [Fact]
@@ -489,8 +529,8 @@ public sealed class WingmanVoiceServiceTests
         // The two sources are the same JSONL text block; incidental leading/trailing whitespace must
         // not force a needless re-mint (which would restart a listener's clip).
         var svc = NewService();
-        svc.StoreReadyAudioForTest("sid-1", "spoken", "the reply text", new byte[] { 1 });
-        Assert.False(svc.ShouldRegenerate("sid-1", "  the reply text\n"));
+        svc.StoreReadyAudioForTest(TenantId.Local, "sid-1", "spoken", "the reply text", new byte[] { 1 });
+        Assert.False(svc.ShouldRegenerate(TenantId.Local, "sid-1", "  the reply text\n"));
     }
 
     [Fact]
@@ -499,8 +539,8 @@ public sealed class WingmanVoiceServiceTests
         // The exact bug: an interim reply was narrated, then the real answer landed. A changed reply
         // must regenerate even though a cached clip exists.
         var svc = NewService();
-        svc.StoreReadyAudioForTest("sid-1", "spoken", "the interim reply", new byte[] { 1 });
-        Assert.True(svc.ShouldRegenerate("sid-1", "the FINAL answer"));
+        svc.StoreReadyAudioForTest(TenantId.Local, "sid-1", "spoken", "the interim reply", new byte[] { 1 });
+        Assert.True(svc.ShouldRegenerate(TenantId.Local, "sid-1", "the FINAL answer"));
     }
 
     // ---------- Turn voice off / Unmark (issue #859) ----------
@@ -512,17 +552,17 @@ public sealed class WingmanVoiceServiceTests
         // background sweep (both gate on IsVoiceSession / VoiceSessionIds) skip it - no more per-turn
         // Opus + text-to-speech spend.
         var svc = NewService();
-        svc.Mark("sid-1");
-        svc.Mark("sid-2");
-        Assert.True(svc.IsVoiceSession("sid-1"));
+        svc.Mark(TenantId.Local, "sid-1");
+        svc.Mark(TenantId.Local, "sid-2");
+        Assert.True(svc.IsVoiceSession(TenantId.Local, "sid-1"));
 
-        svc.Unmark("sid-1");
+        svc.Unmark(TenantId.Local, "sid-1");
 
-        Assert.False(svc.IsVoiceSession("sid-1"));
-        Assert.DoesNotContain("sid-1", svc.VoiceSessionIds());
+        Assert.False(svc.IsVoiceSession(TenantId.Local, "sid-1"));
+        Assert.DoesNotContain("sid-1", svc.VoiceSessionIds(TenantId.Local));
         // Independent per session: a second voice session is unaffected.
-        Assert.True(svc.IsVoiceSession("sid-2"));
-        Assert.Contains("sid-2", svc.VoiceSessionIds());
+        Assert.True(svc.IsVoiceSession(TenantId.Local, "sid-2"));
+        Assert.Contains("sid-2", svc.VoiceSessionIds(TenantId.Local));
     }
 
     [Fact]
@@ -531,14 +571,14 @@ public sealed class WingmanVoiceServiceTests
         // After unmark, GET /wingman/voice/ready (ReadySessionIds) must no longer list the session,
         // so the roster/phone stop offering a stale clip.
         var svc = NewService();
-        svc.Mark("sid-1");
-        svc.StoreReadyAudioForTest("sid-1", "spoken", "reply", new byte[] { 1, 2, 3 });
-        Assert.True(svc.HasVoice("sid-1"));
+        svc.Mark(TenantId.Local, "sid-1");
+        svc.StoreReadyAudioForTest(TenantId.Local, "sid-1", "spoken", "reply", new byte[] { 1, 2, 3 });
+        Assert.True(svc.HasVoice(TenantId.Local, "sid-1"));
 
-        svc.Unmark("sid-1");
+        svc.Unmark(TenantId.Local, "sid-1");
 
-        Assert.False(svc.HasVoice("sid-1"));
-        Assert.DoesNotContain("sid-1", svc.ReadySessionIds());
+        Assert.False(svc.HasVoice(TenantId.Local, "sid-1"));
+        Assert.DoesNotContain("sid-1", svc.ReadySessionIds(TenantId.Local));
     }
 
     [Fact]
@@ -546,21 +586,23 @@ public sealed class WingmanVoiceServiceTests
     {
         // The removal is durable: a gateway restart must NOT bring the session back as a voice
         // session (otherwise turn-end re-narration would resume on its own after a restart).
-        var persistPath = Path.Combine(Path.GetTempPath(), "wmvs-" + Guid.NewGuid().ToString("N") + ".json");
+        // ONE root, shared DELIBERATELY by the two service instances below: this test is the gateway-restart
+        // case, and a second instance that could not see what the first wrote would not be testing anything.
+        var persistPath = TempPersist();
         try
         {
             var svc = ServiceAt(persistPath);
-            svc.Mark("sid-1");
-            svc.StoreReadyAudioForTest("sid-1", "spoken", "reply", new byte[] { 7, 7, 7 });
-            Assert.True(svc.IsVoiceSession("sid-1"));
+            svc.Mark(TenantId.Local, "sid-1");
+            svc.StoreReadyAudioForTest(TenantId.Local, "sid-1", "spoken", "reply", new byte[] { 7, 7, 7 });
+            Assert.True(svc.IsVoiceSession(TenantId.Local, "sid-1"));
 
-            svc.Unmark("sid-1");
+            svc.Unmark(TenantId.Local, "sid-1");
 
             // Simulate a gateway restart over the same persist path.
             var reloaded = ServiceAt(persistPath);
-            Assert.False(reloaded.IsVoiceSession("sid-1"));
-            Assert.DoesNotContain("sid-1", reloaded.VoiceSessionIds());
-            Assert.False(reloaded.HasVoice("sid-1")); // and the durable clip is gone too
+            Assert.False(reloaded.IsVoiceSession(TenantId.Local, "sid-1"));
+            Assert.DoesNotContain("sid-1", reloaded.VoiceSessionIds(TenantId.Local));
+            Assert.False(reloaded.HasVoice(TenantId.Local, "sid-1")); // and the durable clip is gone too
         }
         finally { Cleanup(persistPath); }
     }
@@ -570,8 +612,8 @@ public sealed class WingmanVoiceServiceTests
     {
         // Idempotent: unmarking a session that was never a voice session does nothing and does not throw.
         var svc = NewService();
-        svc.Unmark("never-marked");
-        Assert.False(svc.IsVoiceSession("never-marked"));
+        svc.Unmark(TenantId.Local, "never-marked");
+        Assert.False(svc.IsVoiceSession(TenantId.Local, "never-marked"));
     }
 
     // ---------- Voice-unavailable state (issue #939): no more silent turn-end failures ----------
@@ -631,7 +673,9 @@ public sealed class WingmanVoiceServiceTests
         Func<WingmanModelRole, CancellationToken, Task<IAgentBrain>> brain =
             (_, _) => throw new InvalidOperationException("brain must not be called for the store-spoken path");
         var vaultPath = Path.Combine(Path.GetTempPath(), "wmvs-" + Guid.NewGuid().ToString("N") + ".vault");
-        var persistPath = Path.Combine(Path.GetTempPath(), "wmvs-" + Guid.NewGuid().ToString("N") + ".json");
+        // A fresh root per CALL. Each invocation of this helper builds an independent service, so they must
+        // not share state; the restart tests get their sharing by calling TempPersist() once themselves.
+        var persistPath = TempPersist();
         var vault = new KeyVault(vaultPath);
         vault.Set("OPENAI_API_KEY", "sk-test");
         vault.Set("DEVTHROTTLE_API_KEY", "dt_live_test");
@@ -643,7 +687,7 @@ public sealed class WingmanVoiceServiceTests
     public void VoiceUnavailableFor_DefaultsNull()
     {
         var svc = NewService();
-        Assert.Null(svc.VoiceUnavailableFor("sid-1"));
+        Assert.Null(svc.VoiceUnavailableFor(TenantId.Local, "sid-1"));
     }
 
     [Fact]
@@ -652,19 +696,19 @@ public sealed class WingmanVoiceServiceTests
         // Issue #939: a 402 out-of-credits at turn-end must no longer be swallowed - it records the
         // shared NeedsCredits state (and leaves no play triangle).
         var svc = ServiceWithTts(HttpStatusCode.PaymentRequired, "{\"error\":{\"code\":\"insufficient_credits\"}}");
-        await svc.StoreSpokenAsync("sid-1", "a spoken summary", "the reply");
+        await svc.StoreSpokenAsync(TenantId.Local, "sid-1", "a spoken summary", "the reply");
 
-        Assert.Equal(HostedAiState.NeedsCredits, svc.VoiceUnavailableFor("sid-1"));
-        Assert.False(svc.HasVoice("sid-1"));
+        Assert.Equal(HostedAiState.NeedsCredits, svc.VoiceUnavailableFor(TenantId.Local, "sid-1"));
+        Assert.False(svc.HasVoice(TenantId.Local, "sid-1"));
     }
 
     [Fact]
     public async Task StoreSpokenAsync_MonthlyLimit402_RecordsCapReached()
     {
         var svc = ServiceWithTts(HttpStatusCode.PaymentRequired, "{\"error\":{\"code\":\"monthly_limit_reached\"}}");
-        await svc.StoreSpokenAsync("sid-1", "a spoken summary", "the reply");
+        await svc.StoreSpokenAsync(TenantId.Local, "sid-1", "a spoken summary", "the reply");
 
-        Assert.Equal(HostedAiState.CapReached, svc.VoiceUnavailableFor("sid-1"));
+        Assert.Equal(HostedAiState.CapReached, svc.VoiceUnavailableFor(TenantId.Local, "sid-1"));
     }
 
     [Fact]
@@ -673,16 +717,16 @@ public sealed class WingmanVoiceServiceTests
         // A successful synthesis marks the session ready AND clears any prior unavailable-state
         // (dismissible: the next good turn removes the banner).
         var svc = ServiceWithTts(HttpStatusCode.PaymentRequired, "{\"error\":{\"code\":\"insufficient_credits\"}}");
-        await svc.StoreSpokenAsync("sid-1", "spoken", "reply");
-        Assert.Equal(HostedAiState.NeedsCredits, svc.VoiceUnavailableFor("sid-1"));
+        await svc.StoreSpokenAsync(TenantId.Local, "sid-1", "spoken", "reply");
+        Assert.Equal(HostedAiState.NeedsCredits, svc.VoiceUnavailableFor(TenantId.Local, "sid-1"));
 
         var good = ServiceWithTts(HttpStatusCode.OK, "", audio: new byte[] { 1, 2, 3, 4 });
         // Re-run on the SAME service would need a mutable stub; instead prove success on a fresh call
         // clears + marks ready. Seed the unavailable state first via a failing service is covered above;
         // here assert the success path's postconditions directly.
-        await good.StoreSpokenAsync("sid-2", "spoken", "reply");
-        Assert.True(good.HasVoice("sid-2"));
-        Assert.Null(good.VoiceUnavailableFor("sid-2"));
+        await good.StoreSpokenAsync(TenantId.Local, "sid-2", "spoken", "reply");
+        Assert.True(good.HasVoice(TenantId.Local, "sid-2"));
+        Assert.Null(good.VoiceUnavailableFor(TenantId.Local, "sid-2"));
     }
 
     /// <summary>A text-to-speech transport that throws <see cref="OperationCanceledException"/> - the
@@ -714,7 +758,9 @@ public sealed class WingmanVoiceServiceTests
         Func<WingmanModelRole, CancellationToken, Task<IAgentBrain>> brain =
             (_, _) => throw new InvalidOperationException("brain must not be called for the store-spoken path");
         var vaultPath = Path.Combine(Path.GetTempPath(), "wmvs-" + Guid.NewGuid().ToString("N") + ".vault");
-        var persistPath = Path.Combine(Path.GetTempPath(), "wmvs-" + Guid.NewGuid().ToString("N") + ".json");
+        // A fresh root per CALL. Each invocation of this helper builds an independent service, so they must
+        // not share state; the restart tests get their sharing by calling TempPersist() once themselves.
+        var persistPath = TempPersist();
         var vault = new KeyVault(vaultPath);
         vault.Set("OPENAI_API_KEY", "sk-test");
         vault.Set("DEVTHROTTLE_API_KEY", "dt_live_test");
@@ -746,16 +792,16 @@ public sealed class WingmanVoiceServiceTests
 
         // The stalled call fails - one attempt, bounded, and it says so honestly. A timeout is the
         // absence of an answer, so it is Retrying ("audio on its way, trying again"), NOT ServiceDown.
-        await svc.StoreSpokenAsync("sid-retry", "spoken", "reply");
+        await svc.StoreSpokenAsync(TenantId.Local, "sid-retry", "spoken", "reply");
         Assert.Equal(1, handler.Calls);                                        // exactly one attempt: no in-call retry
-        Assert.False(svc.HasVoice("sid-retry"));                               // nothing to play
-        Assert.Equal(HostedAiState.Retrying, svc.VoiceUnavailableFor("sid-retry"));
+        Assert.False(svc.HasVoice(TenantId.Local, "sid-retry"));                               // nothing to play
+        Assert.Equal(HostedAiState.Retrying, svc.VoiceUnavailableFor(TenantId.Local, "sid-retry"));
 
         // The session tries again - the provider is fine now, and it just works.
-        await svc.StoreSpokenAsync("sid-retry", "spoken", "reply");
+        await svc.StoreSpokenAsync(TenantId.Local, "sid-retry", "spoken", "reply");
         Assert.Equal(2, handler.Calls);
-        Assert.True(svc.HasVoice("sid-retry"));
-        Assert.Null(svc.VoiceUnavailableFor("sid-retry"));
+        Assert.True(svc.HasVoice(TenantId.Local, "sid-retry"));
+        Assert.Null(svc.VoiceUnavailableFor(TenantId.Local, "sid-retry"));
     }
 
     [Fact]
@@ -765,10 +811,10 @@ public sealed class WingmanVoiceServiceTests
         // attempts (no infinite spin, no 60-second freeze) and the turn-end records no audio.
         var handler = new TtsTimeoutHandler(timeouts: int.MaxValue);
         var svc = ServiceWithHandler(handler);
-        await svc.StoreSpokenAsync("sid-dead", "spoken", "reply");
+        await svc.StoreSpokenAsync(TenantId.Local, "sid-dead", "spoken", "reply");
 
         Assert.Equal(TtsSynthesis.Attempts, handler.Calls);    // exactly the attempt cap, then stop
-        Assert.False(svc.HasVoice("sid-dead"));
+        Assert.False(svc.HasVoice(TenantId.Local, "sid-dead"));
     }
 
     // ---- The 2026-07-15 outage: the service failed for ~45 minutes and the phone blamed the user's own
@@ -788,10 +834,10 @@ public sealed class WingmanVoiceServiceTests
         // Every one of these used to return a bare null ("other provider error: logged, no shared
         // state"), so the session recorded NOTHING and the phone invented a cause.
         var svc = ServiceWithTts((HttpStatusCode)status, "{\"error\":\"upstream\"}");
-        await svc.StoreSpokenAsync("sid-down", "spoken", "reply");
+        await svc.StoreSpokenAsync(TenantId.Local, "sid-down", "spoken", "reply");
 
-        Assert.False(svc.HasVoice("sid-down"));
-        Assert.Equal(HostedAiState.ServiceDown, svc.VoiceUnavailableFor("sid-down"));
+        Assert.False(svc.HasVoice(TenantId.Local, "sid-down"));
+        Assert.Equal(HostedAiState.ServiceDown, svc.VoiceUnavailableFor(TenantId.Local, "sid-down"));
     }
 
     [Fact]
@@ -805,10 +851,10 @@ public sealed class WingmanVoiceServiceTests
         // this test now guards against.
         var handler = new TtsTimeoutHandler(timeouts: int.MaxValue);
         var svc = ServiceWithHandler(handler);
-        await svc.StoreSpokenAsync("sid-timeout", "spoken", "reply");
+        await svc.StoreSpokenAsync(TenantId.Local, "sid-timeout", "spoken", "reply");
 
-        Assert.Equal(HostedAiState.Retrying, svc.VoiceUnavailableFor("sid-timeout"));
-        Assert.NotEqual(HostedAiState.ServiceDown, svc.VoiceUnavailableFor("sid-timeout"));
+        Assert.Equal(HostedAiState.Retrying, svc.VoiceUnavailableFor(TenantId.Local, "sid-timeout"));
+        Assert.NotEqual(HostedAiState.ServiceDown, svc.VoiceUnavailableFor(TenantId.Local, "sid-timeout"));
     }
 
     // ONE SLOW NARRATION MUST NOT SILENCE THE FLEET - AND NOW IT CANNOT, BY CONSTRUCTION.
@@ -832,10 +878,10 @@ public sealed class WingmanVoiceServiceTests
         var handler = new TtsTimeoutHandler(timeouts: TtsSynthesis.Attempts);
         var svc = ServiceWithHandler(handler);
 
-        await svc.StoreSpokenAsync("sid-slow", "spoken", "reply");
+        await svc.StoreSpokenAsync(TenantId.Local, "sid-slow", "spoken", "reply");
 
-        Assert.Equal(HostedAiState.Retrying, svc.VoiceUnavailableFor("sid-slow"));
-        Assert.Null(svc.VoiceUnavailableFor("sid-other"));   // a session that never called is untouched
+        Assert.Equal(HostedAiState.Retrying, svc.VoiceUnavailableFor(TenantId.Local, "sid-slow"));
+        Assert.Null(svc.VoiceUnavailableFor(TenantId.Local, "sid-other"));   // a session that never called is untouched
     }
 
     [Fact]
@@ -851,16 +897,16 @@ public sealed class WingmanVoiceServiceTests
         var handler = new TtsTimeoutHandler(timeouts: int.MaxValue);
         var svc = ServiceWithHandler(handler);
 
-        await svc.StoreSpokenAsync("sid-a", "spoken", "reply");
-        await svc.StoreSpokenAsync("sid-b", "spoken", "reply");
-        await svc.StoreSpokenAsync("sid-c", "spoken", "reply");
-        await svc.StoreSpokenAsync("sid-d", "spoken", "reply");
-        await svc.StoreSpokenAsync("sid-e", "spoken", "reply");
+        await svc.StoreSpokenAsync(TenantId.Local, "sid-a", "spoken", "reply");
+        await svc.StoreSpokenAsync(TenantId.Local, "sid-b", "spoken", "reply");
+        await svc.StoreSpokenAsync(TenantId.Local, "sid-c", "spoken", "reply");
+        await svc.StoreSpokenAsync(TenantId.Local, "sid-d", "spoken", "reply");
+        await svc.StoreSpokenAsync(TenantId.Local, "sid-e", "spoken", "reply");
 
         // Each session tells the truth about ITSELF: nothing to play yet, retrying - Retrying, never
         // ServiceDown, because none of these calls got an answer from the service.
-        Assert.Equal(HostedAiState.Retrying, svc.VoiceUnavailableFor("sid-a"));
-        Assert.Equal(HostedAiState.Retrying, svc.VoiceUnavailableFor("sid-e"));
+        Assert.Equal(HostedAiState.Retrying, svc.VoiceUnavailableFor(TenantId.Local, "sid-a"));
+        Assert.Equal(HostedAiState.Retrying, svc.VoiceUnavailableFor(TenantId.Local, "sid-e"));
     }
 
     [Fact]
@@ -884,15 +930,15 @@ public sealed class WingmanVoiceServiceTests
             var svc = ServiceWithBrainAndHandler(new RecordingBrain(), handler, persistPath);
 
             // A fails 5xx first - on the OLD code this armed the shared cooldown before B/C ever ask.
-            await svc.GenerateAsync("sid-A", RouteFor(director), CancellationToken.None, showReadingWindow: false);
-            Assert.False(svc.HasVoice("sid-A"));
-            Assert.Equal(HostedAiState.ServiceDown, svc.VoiceUnavailableFor("sid-A"));
+            await svc.GenerateAsync(TenantId.Local, "sid-A", RouteFor(director), CancellationToken.None, showReadingWindow: false);
+            Assert.False(svc.HasVoice(TenantId.Local, "sid-A"));
+            Assert.Equal(HostedAiState.ServiceDown, svc.VoiceUnavailableFor(TenantId.Local, "sid-A"));
 
             // B and C race. Their success-path speech call blocks in the handler, so the ONE the old gate
             // would let through sits in-flight and cannot free the probe slot - making the old code's skip
             // of the other deterministic rather than timing-dependent.
-            var b = svc.GenerateAsync("sid-B", RouteFor(director), CancellationToken.None, showReadingWindow: false);
-            var c = svc.GenerateAsync("sid-C", RouteFor(director), CancellationToken.None, showReadingWindow: false);
+            var b = svc.GenerateAsync(TenantId.Local, "sid-B", RouteFor(director), CancellationToken.None, showReadingWindow: false);
+            var c = svc.GenerateAsync(TenantId.Local, "sid-C", RouteFor(director), CancellationToken.None, showReadingWindow: false);
 
             // Wait - without a fixed sleep - until EITHER both reached the provider (new code) OR one of
             // them returned early having been skipped (old code). Bounded by an overall deadline so a hang
@@ -910,8 +956,8 @@ public sealed class WingmanVoiceServiceTests
             // The whole point: NO session's voice was collateral damage to another session's 5xx. Both
             // reached the provider and both are playable. On the pre-change gated code exactly one of these
             // is false, so this pair of assertions IS the regression.
-            Assert.True(svc.HasVoice("sid-B"), "session B's voice must not be gated by session A's failure");
-            Assert.True(svc.HasVoice("sid-C"), "session C's voice must not be gated by session A's failure");
+            Assert.True(svc.HasVoice(TenantId.Local, "sid-B"), "session B's voice must not be gated by session A's failure");
+            Assert.True(svc.HasVoice(TenantId.Local, "sid-C"), "session C's voice must not be gated by session A's failure");
         }
         finally { try { Directory.Delete(dir, recursive: true); } catch { /* best-effort cleanup */ } }
     }
@@ -922,9 +968,9 @@ public sealed class WingmanVoiceServiceTests
         // The control. 402 is the user's to fix, so it must NOT be swept into ServiceDown - telling
         // someone "not your fault, retrying" when they are out of credit would strand them forever.
         var svc = ServiceWithTts(HttpStatusCode.PaymentRequired, "{\"error\":{\"code\":\"insufficient_credits\"}}");
-        await svc.StoreSpokenAsync("sid-402", "spoken", "reply");
+        await svc.StoreSpokenAsync(TenantId.Local, "sid-402", "spoken", "reply");
 
-        var state = svc.VoiceUnavailableFor("sid-402");
+        var state = svc.VoiceUnavailableFor(TenantId.Local, "sid-402");
         Assert.NotNull(state);
         Assert.NotEqual(HostedAiState.ServiceDown, state);
     }
@@ -950,31 +996,31 @@ public sealed class WingmanVoiceServiceTests
         // Voice must come back BY ITSELF when the service returns (the idle sweep regenerates), so a
         // success has to clear the state - otherwise the phone would keep saying "down" after recovery.
         var svc = ServiceWithTts(HttpStatusCode.OK, "", audio: new byte[] { 1, 2, 3, 4 });
-        await svc.StoreSpokenAsync("sid-back", "spoken", "reply");
+        await svc.StoreSpokenAsync(TenantId.Local, "sid-back", "spoken", "reply");
 
-        Assert.True(svc.HasVoice("sid-back"));
-        Assert.Null(svc.VoiceUnavailableFor("sid-back"));
+        Assert.True(svc.HasVoice(TenantId.Local, "sid-back"));
+        Assert.Null(svc.VoiceUnavailableFor(TenantId.Local, "sid-back"));
     }
 
     [Fact]
     public async Task OnSessionWorking_ClearsVoiceUnavailable()
     {
         var svc = ServiceWithTts(HttpStatusCode.PaymentRequired, "{\"error\":{\"code\":\"insufficient_credits\"}}");
-        await svc.StoreSpokenAsync("sid-1", "spoken", "reply");
-        Assert.Equal(HostedAiState.NeedsCredits, svc.VoiceUnavailableFor("sid-1"));
+        await svc.StoreSpokenAsync(TenantId.Local, "sid-1", "spoken", "reply");
+        Assert.Equal(HostedAiState.NeedsCredits, svc.VoiceUnavailableFor(TenantId.Local, "sid-1"));
 
-        svc.OnSessionWorking("sid-1");
-        Assert.Null(svc.VoiceUnavailableFor("sid-1"));
+        svc.OnSessionWorking(TenantId.Local, "sid-1");
+        Assert.Null(svc.VoiceUnavailableFor(TenantId.Local, "sid-1"));
     }
 
     [Fact]
     public async Task Unmark_ClearsVoiceUnavailable()
     {
         var svc = ServiceWithTts(HttpStatusCode.PaymentRequired, "{\"error\":{\"code\":\"insufficient_credits\"}}");
-        await svc.StoreSpokenAsync("sid-1", "spoken", "reply");
-        Assert.Equal(HostedAiState.NeedsCredits, svc.VoiceUnavailableFor("sid-1"));
+        await svc.StoreSpokenAsync(TenantId.Local, "sid-1", "spoken", "reply");
+        Assert.Equal(HostedAiState.NeedsCredits, svc.VoiceUnavailableFor(TenantId.Local, "sid-1"));
 
-        svc.Unmark("sid-1");
-        Assert.Null(svc.VoiceUnavailableFor("sid-1"));
+        svc.Unmark(TenantId.Local, "sid-1");
+        Assert.Null(svc.VoiceUnavailableFor(TenantId.Local, "sid-1"));
     }
 }

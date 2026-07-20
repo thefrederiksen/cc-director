@@ -1,6 +1,7 @@
 using System.Text;
 using CcDirector.Gateway.Voice;
 using Xunit;
+using CcDirector.Core.Tenancy;
 
 namespace CcDirector.Gateway.Tests;
 
@@ -39,14 +40,14 @@ public sealed class VoiceTurnArchiveTests : IDisposable
     {
         var turnId = Guid.NewGuid().ToString();
         var audio = Encoding.UTF8.GetBytes("ID3-fake-mp3-bytes");
-        _archive.Save(Record(turnId, "sid-1"), audio);
+        _archive.Save(TenantId.Local, Record(turnId, "sid-1"), audio);
 
-        var got = _archive.Get(turnId);
+        var got = _archive.Get(TenantId.Local, turnId);
         Assert.NotNull(got);
         Assert.Equal("It is four.", got!.Summary);
         Assert.Equal("what is two plus two", got.Transcript);
 
-        var gotAudio = _archive.GetAudio(turnId);
+        var gotAudio = _archive.GetAudio(TenantId.Local, turnId);
         Assert.NotNull(gotAudio);
         Assert.Equal(audio, gotAudio);
     }
@@ -57,17 +58,17 @@ public sealed class VoiceTurnArchiveTests : IDisposable
         var turnId = Guid.NewGuid().ToString();
         var rec = Record(turnId, "sid-1");
         rec.HasAudio = false;
-        _archive.Save(rec, replyAudio: null);
+        _archive.Save(TenantId.Local, rec, replyAudio: null);
 
-        Assert.NotNull(_archive.Get(turnId));
-        Assert.Null(_archive.GetAudio(turnId));
+        Assert.NotNull(_archive.Get(TenantId.Local, turnId));
+        Assert.Null(_archive.GetAudio(TenantId.Local, turnId));
     }
 
     [Fact]
     public void Get_UnknownTurn_ReturnsNull()
     {
-        Assert.Null(_archive.Get(Guid.NewGuid().ToString()));
-        Assert.Null(_archive.Get("not-a-guid"));
+        Assert.Null(_archive.Get(TenantId.Local, Guid.NewGuid().ToString()));
+        Assert.Null(_archive.Get(TenantId.Local, "not-a-guid"));
     }
 
     [Fact]
@@ -75,14 +76,14 @@ public sealed class VoiceTurnArchiveTests : IDisposable
     {
         var turnId = Guid.NewGuid().ToString();
         var uploadId = Guid.NewGuid().ToString("N");
-        _archive.Save(Record(turnId, "sid-1", uploadId), null);
+        _archive.Save(TenantId.Local, Record(turnId, "sid-1", uploadId), null);
 
-        var found = _archive.FindByUpload(uploadId);
+        var found = _archive.FindByUpload(TenantId.Local, uploadId);
         Assert.NotNull(found);
         Assert.Equal(turnId, found!.TurnId);
 
-        Assert.Null(_archive.FindByUpload(Guid.NewGuid().ToString("N")));
-        Assert.Null(_archive.FindByUpload(""));
+        Assert.Null(_archive.FindByUpload(TenantId.Local, Guid.NewGuid().ToString("N")));
+        Assert.Null(_archive.FindByUpload(TenantId.Local, ""));
     }
 
     [Fact]
@@ -95,11 +96,11 @@ public sealed class VoiceTurnArchiveTests : IDisposable
         late.Summary = "newer";
         var other = Record(Guid.NewGuid().ToString(), "sid-B");
 
-        _archive.Save(early, null);
-        _archive.Save(late, null);
-        _archive.Save(other, null);
+        _archive.Save(TenantId.Local, early, null);
+        _archive.Save(TenantId.Local, late, null);
+        _archive.Save(TenantId.Local, other, null);
 
-        var list = _archive.ListForSession("sid-A");
+        var list = _archive.ListForSession(TenantId.Local, "sid-A");
         Assert.Equal(2, list.Count);
         Assert.Equal("newer", list[0].Summary);   // newest first
         Assert.Equal("older", list[1].Summary);
@@ -112,10 +113,10 @@ public sealed class VoiceTurnArchiveTests : IDisposable
         var old = Record(Guid.NewGuid().ToString(), "sid-A");
         old.CreatedAtUtc = DateTime.UtcNow.AddHours(-2);
         var fresh = Record(Guid.NewGuid().ToString(), "sid-A");
-        _archive.Save(old, null);
-        _archive.Save(fresh, null);
+        _archive.Save(TenantId.Local, old, null);
+        _archive.Save(TenantId.Local, fresh, null);
 
-        var list = _archive.ListForSession("sid-A", DateTime.UtcNow.AddHours(-1));
+        var list = _archive.ListForSession(TenantId.Local, "sid-A", DateTime.UtcNow.AddHours(-1));
         Assert.Single(list);
         Assert.Equal(fresh.TurnId, list[0].TurnId);
     }

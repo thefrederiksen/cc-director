@@ -4,6 +4,7 @@ using CcDirector.Core;
 using CcDirector.Core.HostedAi;
 using CcDirector.Gateway.Wingman;
 using Xunit;
+using CcDirector.Core.Tenancy;
 
 namespace CcDirector.Gateway.Tests;
 
@@ -61,11 +62,11 @@ public sealed class WingmanVoiceFallbackTests
         // The generic marker "1" is what the cloud proxy now sends (never the provider name).
         var svc = ServiceWith(new SpeechStub(new byte[] { 1, 2, 3 }, withFallbackHeader: true, headerValue: "1"), TempPersist());
 
-        await svc.StoreSpokenAsync("sid-1", "a spoken summary", "the reply");
+        await svc.StoreSpokenAsync(TenantId.Local, "sid-1", "a spoken summary", "the reply");
 
-        Assert.True(svc.HasVoice("sid-1"));                       // a fallback is a real, playable clip
-        Assert.True(svc.ServedViaFallbackFor("sid-1"));           // ...noted as backup-served
-        Assert.Null(svc.VoiceUnavailableFor("sid-1"));            // ...and NEVER an outage/unavailable state
+        Assert.True(svc.HasVoice(TenantId.Local, "sid-1"));                       // a fallback is a real, playable clip
+        Assert.True(svc.ServedViaFallbackFor(TenantId.Local, "sid-1"));           // ...noted as backup-served
+        Assert.Null(svc.VoiceUnavailableFor(TenantId.Local, "sid-1"));            // ...and NEVER an outage/unavailable state
     }
 
     // The Gateway must detect the fallback by the header's PRESENCE alone, never by its value. This
@@ -81,11 +82,11 @@ public sealed class WingmanVoiceFallbackTests
     {
         var svc = ServiceWith(new SpeechStub(new byte[] { 1, 2, 3 }, withFallbackHeader: true, headerValue), TempPersist());
 
-        await svc.StoreSpokenAsync("sid-1", "a spoken summary", "the reply");
+        await svc.StoreSpokenAsync(TenantId.Local, "sid-1", "a spoken summary", "the reply");
 
-        Assert.True(svc.HasVoice("sid-1"));
-        Assert.True(svc.ServedViaFallbackFor("sid-1"));           // fires regardless of the header value
-        Assert.Null(svc.VoiceUnavailableFor("sid-1"));
+        Assert.True(svc.HasVoice(TenantId.Local, "sid-1"));
+        Assert.True(svc.ServedViaFallbackFor(TenantId.Local, "sid-1"));           // fires regardless of the header value
+        Assert.Null(svc.VoiceUnavailableFor(TenantId.Local, "sid-1"));
     }
 
     [Fact]
@@ -93,10 +94,10 @@ public sealed class WingmanVoiceFallbackTests
     {
         var svc = ServiceWith(new SpeechStub(new byte[] { 1, 2, 3 }, withFallbackHeader: false), TempPersist());
 
-        await svc.StoreSpokenAsync("sid-1", "a spoken summary", "the reply");
+        await svc.StoreSpokenAsync(TenantId.Local, "sid-1", "a spoken summary", "the reply");
 
-        Assert.True(svc.HasVoice("sid-1"));
-        Assert.False(svc.ServedViaFallbackFor("sid-1"));
+        Assert.True(svc.HasVoice(TenantId.Local, "sid-1"));
+        Assert.False(svc.ServedViaFallbackFor(TenantId.Local, "sid-1"));
     }
 
     [Fact]
@@ -106,13 +107,13 @@ public sealed class WingmanVoiceFallbackTests
         // does not vanish on a gateway restart while that clip is still the current one.
         var persist = TempPersist();
         var first = ServiceWith(new SpeechStub(Array.Empty<byte>(), withFallbackHeader: false), persist);
-        first.StoreReadyAudioForTest("sid-1", "spoken", "reply", new byte[] { 9, 9, 9 }, "audio/mpeg", servedViaFallback: true);
-        Assert.True(first.ServedViaFallbackFor("sid-1"));
+        first.StoreReadyAudioForTest(TenantId.Local, "sid-1", "spoken", "reply", new byte[] { 9, 9, 9 }, "audio/mpeg", servedViaFallback: true);
+        Assert.True(first.ServedViaFallbackFor(TenantId.Local, "sid-1"));
 
         // A fresh instance from the SAME persist path reloads the durable cache.
         var reloaded = ServiceWith(new SpeechStub(Array.Empty<byte>(), withFallbackHeader: false), persist);
-        Assert.True(reloaded.HasVoice("sid-1"));
-        Assert.True(reloaded.ServedViaFallbackFor("sid-1"));
+        Assert.True(reloaded.HasVoice(TenantId.Local, "sid-1"));
+        Assert.True(reloaded.ServedViaFallbackFor(TenantId.Local, "sid-1"));
     }
 
     /// <summary>A speech upstream that STALLS on its first call (the primary goes silent - a
@@ -151,21 +152,21 @@ public sealed class WingmanVoiceFallbackTests
 
         // First narration: the primary goes silent. No audio, Retrying, and the request did NOT yet ask
         // for the backup (a fresh session has no reason to skip the primary).
-        await svc.StoreSpokenAsync("sid-1", "first summary", "reply one");
-        Assert.False(svc.HasVoice("sid-1"));
-        Assert.Equal(HostedAiState.Retrying, svc.VoiceUnavailableFor("sid-1"));
+        await svc.StoreSpokenAsync(TenantId.Local, "sid-1", "first summary", "reply one");
+        Assert.False(svc.HasVoice(TenantId.Local, "sid-1"));
+        Assert.Equal(HostedAiState.Retrying, svc.VoiceUnavailableFor(TenantId.Local, "sid-1"));
         Assert.Equal(1, stub.Calls);
         Assert.False(stub.LastRequest!.Headers.Contains("X-DevThrottle-TTS-Prefer-Backup"));
 
         // Second narration (same session, inside the armed window): the Gateway routes past the hung
         // primary - the request carries the prefer-backup header, the proxy serves the backup, and the
         // session becomes playable with the backup-voice note.
-        await svc.StoreSpokenAsync("sid-1", "second summary", "reply two");
+        await svc.StoreSpokenAsync(TenantId.Local, "sid-1", "second summary", "reply two");
         Assert.Equal(2, stub.Calls);
         Assert.True(stub.LastRequest!.Headers.Contains("X-DevThrottle-TTS-Prefer-Backup"));
-        Assert.True(svc.HasVoice("sid-1"));
-        Assert.True(svc.ServedViaFallbackFor("sid-1"));
-        Assert.Null(svc.VoiceUnavailableFor("sid-1"));   // a served backup clears the Retrying state
+        Assert.True(svc.HasVoice(TenantId.Local, "sid-1"));
+        Assert.True(svc.ServedViaFallbackFor(TenantId.Local, "sid-1"));
+        Assert.Null(svc.VoiceUnavailableFor(TenantId.Local, "sid-1"));   // a served backup clears the Retrying state
     }
 
     [Fact]
@@ -176,10 +177,10 @@ public sealed class WingmanVoiceFallbackTests
         var stub = new HangThenBackupStub();
         var svc = ServiceWith(stub, TempPersist());
 
-        await svc.StoreSpokenAsync("sid-hang", "summary", "reply");   // sid-hang hits the silent primary
+        await svc.StoreSpokenAsync(TenantId.Local, "sid-hang", "summary", "reply");   // sid-hang hits the silent primary
         Assert.Equal(1, stub.Calls);
 
-        await svc.StoreSpokenAsync("sid-other", "summary", "reply");  // a DIFFERENT session
+        await svc.StoreSpokenAsync(TenantId.Local, "sid-other", "summary", "reply");  // a DIFFERENT session
         Assert.Equal(2, stub.Calls);
         Assert.False(stub.LastRequest!.Headers.Contains("X-DevThrottle-TTS-Prefer-Backup"));   // not armed for sid-other
     }
