@@ -427,9 +427,11 @@ public sealed class GatewayHost : IAsyncDisposable
     // on a failing mobile link retrying chunks with backoff - is minutes, tens of minutes at the extreme.
     // Four hours is an order of magnitude beyond that extreme, so no upload that is still genuinely trying
     // can be cut off, while abandoned audio has a hard retention ceiling measured in hours rather than in
-    // the lifetime of the process. The sweep judges by LAST WRITE, not by creation, so an upload that is
-    // still receiving chunks keeps resetting its own clock and only ages out once nothing has touched it
-    // for the full window - which is precisely the definition of abandoned.
+    // the lifetime of the process. The sweep judges by an EXPLICIT last-activity signal that every
+    // successful operation refreshes - a register or resume, an idempotent chunk, a real chunk, an assemble
+    // (see VoiceUploadStore.EnsureFreshStaging) - not by whether a byte happened to be written, so a client
+    // that resumes an upload without writing new bytes still counts as alive and only truly-idle staging
+    // ages out. That is precisely the definition of abandoned.
     private static readonly TimeSpan VoiceTurnUploadMaxAge = TimeSpan.FromHours(4);
     /// <summary>
     /// Test seam: overrides the voice-turn upload sweep schedule (both the first tick and the period).

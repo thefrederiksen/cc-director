@@ -194,6 +194,68 @@ public sealed class VoiceUploadStoreTests : IDisposable
         Assert.True(File.Exists(Path.Combine(tenantUpload, "00000.part")));
     }
 
+    [Fact]
+    public async Task SweepAbandoned_DoesNotDeleteAResumedUpload_EvenWhenItWasAgedFirst()
+    {
+        // The idle-age guarantee must hold for the RESUME path, which the first cut got wrong: re-registering
+        // an existing id did not touch the staging, and an idempotent chunk returned without writing a byte,
+        // so a genuinely-active client that resumed kept whatever stale timestamp it had and the sweep
+        // deleted it mid-use. Reproduce exactly that: stage a chunk, age the dir nine hours, then perform the
+        // two SUCCESSFUL resume operations - re-register the same id and re-send the identical chunk - and
+        // the upload must survive a four-hour sweep because both operations are activity.
+        var id = _store.Register(null);
+        await _store.StoreChunkAsync(id, 0, Bytes("hello"), null);
+
+        var dir = Path.Combine(_root, Guid.Parse(id).ToString("N"));
+        Directory.SetLastWriteTimeUtc(dir, DateTime.UtcNow.AddHours(-9));
+
+        // Successful resume: re-register the existing id, then re-send the identical (idempotent) chunk.
+        var reopened = _store.Register(id);
+        Assert.Equal(Guid.Parse(id).ToString("N"), reopened);
+        await _store.StoreChunkAsync(id, 0, Bytes("hello"), null);
+
+        var removed = _store.SweepAbandoned(TimeSpan.FromHours(4));
+
+        Assert.Equal(0, removed);
+        Assert.True(_store.Exists(id));
+    }
+
+    [Fact]
+    public void SweepAbandoned_KeepsAgedDirectoriesThatAreNotCanonicalUploadIds()
+    {
+        // The sweep deletes only what it can positively identify as a disposable upload - a directory whose
+        // name IS a canonical 32-hex upload id. Anything else survives, aged or not: an unknown name, an
+        // almost-canonical name, a partition container, a future sibling directory. A deny-list that skipped
+        // only one known name would recursively delete every unanticipated directory, including a
+        // future-partition directory with real data under it. Each of these is aged well past the cut-off so
+        // that only the positive admit-test can keep it alive.
+        void AgedDirWithSentinel(string name)
+        {
+            var d = Path.Combine(_root, name);
+            Directory.CreateDirectory(d);
+            File.WriteAllBytes(Path.Combine(d, "sentinel.txt"), Bytes("keep me"));
+            Directory.SetLastWriteTimeUtc(d, DateTime.UtcNow.AddHours(-9));
+        }
+
+        AgedDirWithSentinel("not-an-upload-id");                       // plainly not an id
+        AgedDirWithSentinel(Guid.NewGuid().ToString("D"));            // hyphenated GUID - a spelling this store never writes
+        AgedDirWithSentinel(Guid.NewGuid().ToString("N").ToUpperInvariant()); // upper-cased 32-hex - not the canonical form
+        AgedDirWithSentinel(VoiceUploadStore.TenantPartitionDirectoryName);   // the future-partition container
+
+        var removed = _store.SweepAbandoned(TimeSpan.FromHours(1));
+
+        Assert.Equal(0, removed);
+        foreach (var name in new[]
+                 {
+                     "not-an-upload-id",
+                     VoiceUploadStore.TenantPartitionDirectoryName,
+                 })
+        {
+            Assert.True(Directory.Exists(Path.Combine(_root, name)));
+            Assert.True(File.Exists(Path.Combine(_root, name, "sentinel.txt")));
+        }
+    }
+
     // ===== durable delivery record (issue #1183) =====================================================
 
     [Fact]

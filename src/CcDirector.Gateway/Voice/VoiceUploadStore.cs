@@ -57,11 +57,16 @@ public sealed class VoiceUploadStore
     /// Begin (or re-open) an upload. The caller supplies a GUID id (it is also the
     /// idempotency key for the resulting turn); a missing/blank id mints a fresh one.
     /// Idempotent: re-registering the same id just ensures the folder exists.
+    ///
+    /// Registering an EXISTING id is a resume, and a resume is activity: it refreshes the upload's
+    /// last-activity signal (see <see cref="EnsureFreshStaging"/>), so a client that comes back to finish an
+    /// upload is never treated as abandoned by <see cref="SweepAbandoned"/>. Without this a resumed upload
+    /// kept whatever stale timestamp it had and the age sweep would delete it out from under a live client.
     /// </summary>
     public string Register(string? uploadId)
     {
         var uid = NormalizeId(uploadId) ?? Guid.NewGuid().ToString("N");
-        Directory.CreateDirectory(DirFor(uid));
+        EnsureFreshStaging(uid);
         FileLog.Write($"[VoiceUploadStore] Register: uploadId={uid}");
         return uid;
     }
@@ -123,11 +128,19 @@ public sealed class VoiceUploadStore
                 $"chunk {index} SHA mismatch: header={expectedSha} actual={actualSha}");
         }
 
+        // Touch FIRST: storing a chunk is activity, so refresh the last-activity signal before doing the
+        // work (this also creates the staging dir if it is new). Doing it up front, not at the end, means the
+        // directory carries a fresh timestamp for the whole duration of the operation, so the age sweep
+        // cannot judge it abandoned while this chunk is being written. It is here on EVERY successful chunk -
+        // including the idempotent no-op below - because a client retrying the same chunk on a flaky link is
+        // as alive as one sending a new one; judging liveness by whether a byte happened to land would cut
+        // off exactly the resuming client this staging exists to serve.
+        EnsureFreshStaging(uid);
+
         var dir = DirFor(uid);
-        Directory.CreateDirectory(dir);
         var path = ChunkPath(dir, index);
 
-        // Idempotent: identical chunk already on disk -> no-op.
+        // Idempotent: identical chunk already on disk -> no-op (still counted as activity, touched above).
         if (File.Exists(path) &&
             string.Equals(Sha256Hex(await File.ReadAllBytesAsync(path, ct)), actualSha, StringComparison.OrdinalIgnoreCase))
         {
@@ -155,6 +168,11 @@ public sealed class VoiceUploadStore
             return AssembleResult.Unknown();
         if (totalChunks <= 0)
             throw new InvalidOperationException("totalChunks must be > 0");
+
+        // Assembling - whether it completes or comes back incomplete asking for more chunks - is a live
+        // client working through its upload, so it is activity: refresh the last-activity signal so a slow
+        // assemble/resend cycle is never judged abandoned mid-flight.
+        EnsureFreshStaging(uid);
 
         // Completeness gate (issue #586 contract, applied here for the phone push-to-talk upload,
         // issue #592): every index 0..totalChunks-1 must be present AND non-empty. A missing OR
@@ -184,9 +202,34 @@ public sealed class VoiceUploadStore
     }
 
     /// <summary>
-    /// Delete staging dirs whose last write is older than <paramref name="maxAge"/> — abandoned uploads
-    /// whose client dropped before completing (the staging is only deleted on success, so without this
-    /// an interrupted upload would leak forever). Best-effort per dir; returns how many were removed.
+    /// Remove ABANDONED voice-turn staging - an upload whose client dropped before completing (the staging is
+    /// deleted on success only, so without this an interrupted upload would leak its recorded audio forever).
+    /// Returns how many were removed.
+    ///
+    /// This is a DESTRUCTIVE sweep over the owner's own recorded audio, so it is deliberately lopsided: a
+    /// wrong DELETE is unrecoverable, a wrong KEEP costs only disk, and the two are not close, so it leans
+    /// entirely toward keeping. It therefore ENUMERATES THE ONE THING IT MAY DELETE and keeps everything
+    /// else - the inverse of a deny-list. A directory is removed only when BOTH of these positively hold:
+    ///
+    ///  1. Its name IS a canonical upload id - the exact 32-hex-lowercase form this store itself writes (see
+    ///     <see cref="IsCanonicalUploadDirName"/>). A malformed name, an almost-canonical one, an
+    ///     upper-cased alias, a partial, the per-tenant partition container, a future sibling directory, or
+    ///     anything else this sweep did not anticipate is NOT provably a disposable upload, so it SURVIVES.
+    ///     Blocking one known name ("tenants") would delete every unknown one; admitting one known shape
+    ///     deletes only what it can identify.
+    ///
+    ///  2. Its last-activity signal is genuinely older than <paramref name="maxAge"/>. Every successful
+    ///     operation on an upload - register (including a resume of an existing id), an idempotent chunk, a
+    ///     real chunk write, an assemble - refreshes that signal through <see cref="EnsureFreshStaging"/>, so
+    ///     "stale" means nothing has touched it for the whole window, which is the definition of abandoned.
+    ///
+    /// RACE WITH A LIVE RESUME. The activity refresh and this age-check-and-delete run under the SAME
+    /// per-upload gate (<see cref="WithRecordLock"/>, keyed by the canonicalized staging directory), and the
+    /// age is RE-READ inside that gate immediately before the delete. So a resume that arrives concurrently
+    /// is serialized against the delete for that one upload: either its refresh commits first and this sweep
+    /// then reads a fresh timestamp and does not delete, or the delete commits first and the resume's own
+    /// register re-creates the staging fresh. There is no window in which an upload is checked-old, then
+    /// touched-by-a-resume, then deleted-anyway - the gate closes it.
     /// </summary>
     public int SweepAbandoned(TimeSpan maxAge)
     {
@@ -196,24 +239,31 @@ public sealed class VoiceUploadStore
         {
             foreach (var dir in Directory.EnumerateDirectories(_root))
             {
-                // The per-tenant partition container is not an upload; sweeping it by age would delete every
-                // tenant's staging in one go (issue #1884 partitions this staging by tenant under this
-                // container). An upload directory name is a 32-hex identifier, so this name can only ever be
-                // the container. The skip is here BEFORE the partitioning lands as well as after: this sweep
-                // runs on a timer, and a sweep that is only safe once some other change ships is not safe.
-                if (IsPartitionContainer(dir)) continue;
-                try
+                var name = Path.GetFileName(dir.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
+
+                // POSITIVELY ADMIT: delete only a directory whose name is exactly a canonical upload id.
+                // Everything else - unknown, reserved, malformed, or a shape from a future change - survives,
+                // aged or not, because none of them can be proven a disposable upload and a false delete is
+                // unrecoverable.
+                if (!IsCanonicalUploadDirName(name)) continue;
+
+                // Under this upload's gate: re-read the age and delete atomically, so a concurrent resume
+                // that refreshes activity cannot be interleaved between the check and the delete (see remarks).
+                WithRecordLock(name, () =>
                 {
-                    if (Directory.GetLastWriteTimeUtc(dir) < cutoff)
+                    try
                     {
-                        Directory.Delete(dir, recursive: true);
-                        removed++;
+                        if (Directory.Exists(dir) && Directory.GetLastWriteTimeUtc(dir) < cutoff)
+                        {
+                            Directory.Delete(dir, recursive: true);
+                            removed++;
+                        }
                     }
-                }
-                catch (Exception ex)
-                {
-                    FileLog.Write($"[VoiceUploadStore] Sweep dir={dir} failed: {ex.Message}");
-                }
+                    catch (Exception ex)
+                    {
+                        FileLog.Write($"[VoiceUploadStore] Sweep dir={dir} failed: {ex.Message}");
+                    }
+                });
             }
             if (removed > 0) FileLog.Write($"[VoiceUploadStore] SweepAbandoned removed={removed} older than {maxAge}");
         }
@@ -223,6 +273,35 @@ public sealed class VoiceUploadStore
         }
         return removed;
     }
+
+    /// <summary>
+    /// Create the staging directory for an upload if it does not exist and stamp its last-activity signal to
+    /// now, ATOMICALLY under the upload's gate. This is the one place activity is recorded, so every caller
+    /// that represents a live client (register, a resume, a chunk, an assemble) refreshes the same signal the
+    /// sweep judges by - liveness is an explicit touch, never an incidental side effect of a byte landing on
+    /// disk. Running under the gate is what lets the sweep's age-check-and-delete not race a resume.
+    /// </summary>
+    private void EnsureFreshStaging(string uid)
+    {
+        WithRecordLock(uid, () =>
+        {
+            var dir = DirFor(uid);
+            Directory.CreateDirectory(dir);
+            Directory.SetLastWriteTimeUtc(dir, DateTime.UtcNow);
+        });
+    }
+
+    /// <summary>
+    /// True only for the EXACT canonical upload-id directory name this store writes: 32 lowercase hex digits,
+    /// no hyphens - the form <see cref="NormalizeId"/> produces. Deliberately strict, because this is the
+    /// admit-test for a destructive delete: an upper-cased or hyphenated GUID would name the SAME upload to a
+    /// human but is not a spelling this store ever creates, so it is not admitted and the directory survives.
+    /// Nothing is lost by that conservatism - the store only ever creates the canonical spelling - and a
+    /// surprising name surviving is exactly the safe outcome.
+    /// </summary>
+    private static bool IsCanonicalUploadDirName(string name)
+        => Guid.TryParseExact(name, "N", out var parsed)
+           && string.Equals(name, parsed.ToString("N"), StringComparison.Ordinal);
 
     /// <summary>Delete the staging dir for an upload. Best-effort; called once the turn is started.</summary>
     public void Delete(string uploadId)
@@ -638,12 +717,6 @@ public sealed class VoiceUploadStore
     private string GateKey(string uid) => Path.GetFullPath(DirFor(uid));
 
     private string DirFor(string uid) => Path.Combine(_root, uid);
-
-    // True for the directory that HOLDS the other tenants' partitions, which is never itself an upload.
-    private static bool IsPartitionContainer(string dir)
-        => string.Equals(Path.GetFileName(dir.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)),
-            TenantPartitionDirectoryName, StringComparison.OrdinalIgnoreCase);
-
     private static string ChunkPath(string dir, int index) => Path.Combine(dir, $"{index:D5}.part");
     private static string RecordPath(string dir) => Path.Combine(dir, "record.json");
 
