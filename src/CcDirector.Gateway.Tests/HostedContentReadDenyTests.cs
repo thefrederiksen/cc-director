@@ -10,6 +10,81 @@ using Xunit;
 namespace CcDirector.Gateway.Tests;
 
 /// <summary>
+/// Turns every way a MASKING ROUTE can answer into an xUnit ASSERTION, never an exception.
+///
+/// This exists because of how these rows are proven. The mutation sweep renames or re-verbs a route and
+/// requires the matching test to redden - but a red only proves the row if it arrives as an assertion
+/// about the thing under test. A red that arrives as a <see cref="JsonException"/> from parsing the
+/// Cockpit HTML shell, or a <see cref="KeyNotFoundException"/> from reading a property off some other
+/// handler's payload, is a CRASH: it says the request went somewhere unexpected, which is laundering, not
+/// proof that this canary detects it.
+///
+/// It also exists because of WHICH assertion must fail first. Checking the status code before the body
+/// would make a renamed route redden on "404 != 200" - which proves a route changed, not that the test
+/// can tell the handler's answer from a masking route's. The fingerprint has to be the first thing that
+/// can fail, so status is never asserted ahead of it.
+/// </summary>
+internal static class ContentFingerprint
+{
+    /// <summary>
+    /// The response body as a JSON object, or an assertion failure naming what was expected and showing
+    /// what actually came back. Handles both masking paths on this Gateway: the Cockpit
+    /// <c>MapFallback("{*path}")</c> shell (HTML - does not parse) and any other handler's JSON (parses,
+    /// but carries different properties, caught by the caller's property checks).
+    /// </summary>
+    public static async Task<JsonElement> AsJsonObjectAsync(HttpResponseMessage resp, string what)
+    {
+        var body = await resp.Content.ReadAsStringAsync();
+
+        JsonDocument? doc = null;
+        try { doc = JsonDocument.Parse(body); }
+        catch (JsonException) { /* asserted below, never thrown */ }
+
+        Assert.True(doc is not null,
+            $"{what}: expected this handler's JSON, but the body does not parse as JSON at all " +
+            $"(HTTP {(int)resp.StatusCode}). A masking route answered - most likely the Cockpit " +
+            $"single-page-app fallback. Body: {Preview(body)}");
+
+        using (doc)
+        {
+            Assert.True(doc!.RootElement.ValueKind == JsonValueKind.Object,
+                $"{what}: expected a JSON object from this handler, got {doc.RootElement.ValueKind}. " +
+                $"Body: {Preview(body)}");
+            return doc.RootElement.Clone();
+        }
+    }
+
+    /// <summary>
+    /// One property of the handler's answer, or an assertion failure listing what the body DID carry.
+    /// Reading it with the indexer instead would throw, and a throw does not prove the row.
+    /// </summary>
+    public static JsonElement Prop(JsonElement root, string name, string what)
+    {
+        Assert.True(root.TryGetProperty(name, out var value),
+            $"{what}: the response has no '{name}' property, so it did not come from this handler. " +
+            $"It carried: [{string.Join(", ", root.EnumerateObject().Select(p => p.Name))}]");
+        return value;
+    }
+
+    /// <summary>
+    /// A string property of one ARRAY ELEMENT, or null. Never throws: an element that lacks the property
+    /// must reach the caller's Assert as a value, not as a KeyNotFoundException, or the resulting red
+    /// would be a crash and would not prove the row.
+    /// </summary>
+    public static string? Str(JsonElement element, string name)
+        => element.ValueKind == JsonValueKind.Object && element.TryGetProperty(name, out var v)
+            && v.ValueKind == JsonValueKind.String
+            ? v.GetString()
+            : null;
+
+    private static string Preview(string body)
+    {
+        var flat = body.Replace('\r', ' ').Replace('\n', ' ').Trim();
+        return flat.Length <= 200 ? flat : flat[..200] + "...";
+    }
+}
+
+/// <summary>
 /// Four route families that serve one account's CONTENT to any other account's authenticated device key
 /// are refused on the hosted Gateway. Issues #1897, #1853 (read side), #1896 and #1884.
 ///
@@ -149,8 +224,10 @@ public sealed class HostedContentReadDenyTests : IAsyncLifetime
     public async Task Transcription_analysis_reads_are_refused_to_an_enrolled_tenant(string path)
     {
         var resp = await Send(HttpMethod.Get, path);
+        // Fingerprint FIRST, status second: a renamed route must redden on "this is not the refusal
+        // body", not on "404 != 404". Asserting status ahead of the body would prove a route changed.
+        await AssertBodyIsNothingButTheRefusal(resp, TranscriptionRefusal, $"GET {path}");
         Assert.Equal(HttpStatusCode.NotFound, resp.StatusCode);
-        await AssertBodyIsNothingButTheRefusal(resp, TranscriptionRefusal);
     }
 
     /// <summary>
@@ -168,8 +245,8 @@ public sealed class HostedContentReadDenyTests : IAsyncLifetime
     public async Task Wingman_instructions_reads_are_refused_to_an_enrolled_tenant(string path)
     {
         var resp = await Send(HttpMethod.Get, path);
+        await AssertBodyIsNothingButTheRefusal(resp, InstructionsRefusal, $"GET {path}");
         Assert.Equal(HttpStatusCode.NotFound, resp.StatusCode);
-        await AssertBodyIsNothingButTheRefusal(resp, InstructionsRefusal);
     }
 
     /// <summary>
@@ -186,8 +263,8 @@ public sealed class HostedContentReadDenyTests : IAsyncLifetime
         string method, string path, string body)
     {
         var resp = await Send(new HttpMethod(method), path, body);
+        await AssertBodyIsNothingButTheRefusal(resp, InstructionsRefusal, $"{method} {path}");
         Assert.Equal(HttpStatusCode.NotFound, resp.StatusCode);
-        await AssertBodyIsNothingButTheRefusal(resp, InstructionsRefusal);
     }
 
     /// <summary>
@@ -203,8 +280,8 @@ public sealed class HostedContentReadDenyTests : IAsyncLifetime
         string method, string path, string body)
     {
         var resp = await Send(new HttpMethod(method), path, body);
+        await AssertBodyIsNothingButTheRefusal(resp, UtteranceRefusal, $"{method} {path}");
         Assert.Equal(HttpStatusCode.NotFound, resp.StatusCode);
-        await AssertBodyIsNothingButTheRefusal(resp, UtteranceRefusal);
     }
 
     /// <summary>
@@ -223,8 +300,8 @@ public sealed class HostedContentReadDenyTests : IAsyncLifetime
         string method, string path, string body)
     {
         var resp = await Send(new HttpMethod(method), path, body);
+        await AssertBodyIsNothingButTheRefusal(resp, DictationRefusal, $"{method} {path}");
         Assert.Equal(HttpStatusCode.NotFound, resp.StatusCode);
-        await AssertBodyIsNothingButTheRefusal(resp, DictationRefusal);
     }
 
     /// <summary>
@@ -273,16 +350,14 @@ public sealed class HostedContentReadDenyTests : IAsyncLifetime
     /// extra, anything new, and anything metadata-looking reddens automatically without this file being
     /// touched.
     /// </summary>
-    private static async Task AssertBodyIsNothingButTheRefusal(HttpResponseMessage resp, string expected)
+    private static async Task AssertBodyIsNothingButTheRefusal(
+        HttpResponseMessage resp, string expected, string what)
     {
-        var body = await resp.Content.ReadAsStringAsync();
+        var root = await ContentFingerprint.AsJsonObjectAsync(resp, what);
 
-        using var doc = JsonDocument.Parse(body);
-        Assert.Equal(JsonValueKind.Object, doc.RootElement.ValueKind);
-
-        var properties = doc.RootElement.EnumerateObject().Select(p => p.Name).ToArray();
+        var properties = root.EnumerateObject().Select(p => p.Name).ToArray();
         Assert.Equal(new[] { "error" }, properties);
-        Assert.Equal(expected, doc.RootElement.GetProperty("error").GetString());
+        Assert.Equal(expected, ContentFingerprint.Prop(root, "error", what).GetString());
     }
 
     private Task<HttpResponseMessage> Send(HttpMethod method, string path, string? body = null,
@@ -496,7 +571,7 @@ public sealed class HostedContentReadSelfHostControlTests : IAsyncLifetime
     {
         var root = await GetJsonAsync("transcription/turns");
 
-        var texts = root.GetProperty("turns").EnumerateArray()
+        var texts = ContentFingerprint.Prop(root, "turns", "GET transcription/turns").EnumerateArray()
             .Select(t => t.TryGetProperty("rawText", out var r) ? r.GetString() : null)
             .ToArray();
         Assert.Contains(SeededRawText, texts);
@@ -509,8 +584,8 @@ public sealed class HostedContentReadSelfHostControlTests : IAsyncLifetime
 
         // Exactly one turn was planted into an isolated, otherwise-empty log, so this is an exact figure
         // rather than a "greater than zero" that an accidental extra record could satisfy.
-        Assert.Equal(1, root.GetProperty("totalTurns").GetInt32());
-        Assert.Equal(1, root.GetProperty("successfulTurns").GetInt32());
+        Assert.Equal(1, ContentFingerprint.Prop(root, "totalTurns", "GET transcription/stats").GetInt32());
+        Assert.Equal(1, ContentFingerprint.Prop(root, "successfulTurns", "GET transcription/stats").GetInt32());
     }
 
     [Fact]
@@ -518,8 +593,8 @@ public sealed class HostedContentReadSelfHostControlTests : IAsyncLifetime
     {
         var root = await GetJsonAsync("transcription/terms");
 
-        var pairs = root.GetProperty("terms").EnumerateArray()
-            .Select(t => (t.GetProperty("find").GetString(), t.GetProperty("replace").GetString()))
+        var pairs = ContentFingerprint.Prop(root, "terms", "GET transcription/terms").EnumerateArray()
+            .Select(t => (ContentFingerprint.Str(t, "find"), ContentFingerprint.Str(t, "replace")))
             .ToArray();
         Assert.Contains((SeededFind, SeededReplace), pairs);
     }
@@ -529,8 +604,8 @@ public sealed class HostedContentReadSelfHostControlTests : IAsyncLifetime
     {
         var root = await GetJsonAsync("transcription/words");
 
-        var words = root.GetProperty("words").EnumerateArray()
-            .Select(w => w.GetProperty("word").GetString())
+        var words = ContentFingerprint.Prop(root, "words", "GET transcription/words").EnumerateArray()
+            .Select(w => ContentFingerprint.Str(w, "word"))
             .ToArray();
         Assert.Contains(SeededWord, words);
     }
@@ -547,11 +622,12 @@ public sealed class HostedContentReadSelfHostControlTests : IAsyncLifetime
     {
         var root = await GetJsonAsync("gateway/wingman/instructions/records");
 
-        var records = root.GetProperty("records").EnumerateArray().ToArray();
+        var records = ContentFingerprint.Prop(root, "records", "GET gateway/wingman/instructions/records")
+            .EnumerateArray().ToArray();
         var seeded = Assert.Single(records,
-            r => r.GetProperty("id").GetString()!.EndsWith("#0", StringComparison.Ordinal));
-        Assert.StartsWith("wingman-training-", seeded.GetProperty("id").GetString());
-        Assert.Contains(SeededReply, seeded.GetProperty("replyPreview").GetString());
+            r => (ContentFingerprint.Str(r, "id") ?? "").EndsWith("#0", StringComparison.Ordinal));
+        Assert.StartsWith("wingman-training-", ContentFingerprint.Str(seeded, "id"));
+        Assert.Contains(SeededReply, ContentFingerprint.Str(seeded, "replyPreview") ?? "");
     }
 
     /// <summary>
@@ -566,20 +642,28 @@ public sealed class HostedContentReadSelfHostControlTests : IAsyncLifetime
 
         var saved = await Send(HttpMethod.Put, "gateway/wingman/instructions",
             JsonSerializer.Serialize(new { content }));
-        Assert.Equal(HttpStatusCode.OK, saved.StatusCode);
+        // Fingerprint, not status: re-verbing this route sends the request to the Cockpit fallback, and a
+        // status check would redden on 404 rather than on "that was not the save handler answering".
+        var savedBody = await JsonAsync(saved, "PUT gateway/wingman/instructions");
+        Assert.Equal(content, ContentFingerprint.Str(
+            ContentFingerprint.Prop(savedBody, "active", "PUT gateway/wingman/instructions"), "content"));
 
         var active = await GetJsonAsync("gateway/wingman/instructions");
-        Assert.Equal(content, active.GetProperty("active").GetProperty("content").GetString());
-        Assert.True(active.GetProperty("isCustomized").GetBoolean());
+        var activeVersion = ContentFingerprint.Prop(active, "active", "GET gateway/wingman/instructions");
+        Assert.Equal(content,
+            ContentFingerprint.Prop(activeVersion, "content", "GET gateway/wingman/instructions").GetString());
+        Assert.True(ContentFingerprint.Prop(active, "isCustomized", "GET gateway/wingman/instructions").GetBoolean());
 
         var versions = await GetJsonAsync("gateway/wingman/instructions/versions");
-        Assert.Contains(versions.GetProperty("versions").EnumerateArray(),
-            v => v.GetProperty("content").GetString() == content);
+        Assert.Contains(
+            ContentFingerprint.Prop(versions, "versions", "GET gateway/wingman/instructions/versions").EnumerateArray(),
+            v => v.TryGetProperty("content", out var c) && c.GetString() == content);
 
         // The managed-default review must now report the box as customized - a state change this test
         // caused, read back through a DIFFERENT route than the one that caused it.
         var update = await GetJsonAsync("gateway/wingman/instructions/update");
-        Assert.True(update.GetProperty("isCustomized").GetBoolean());
+        Assert.True(ContentFingerprint.Prop(update, "isCustomized", "GET gateway/wingman/instructions/update")
+            .GetBoolean());
     }
 
     /// <summary>
@@ -596,7 +680,8 @@ public sealed class HostedContentReadSelfHostControlTests : IAsyncLifetime
         Assert.Equal(
             new[] { "version", "hash", "content" },
             root.EnumerateObject().Select(p => p.Name).ToArray());
-        Assert.False(string.IsNullOrWhiteSpace(root.GetProperty("content").GetString()));
+        Assert.False(string.IsNullOrWhiteSpace(
+            ContentFingerprint.Prop(root, "content", "GET gateway/wingman/instructions/default").GetString()));
     }
 
     // ===== The two upload families: every leg leaves a receipt =====
@@ -612,14 +697,15 @@ public sealed class HostedContentReadSelfHostControlTests : IAsyncLifetime
     public async Task Self_host_utterance_upload_registers_and_stages_the_chunk_bytes()
     {
         var register = await Send(HttpMethod.Post, "wingman/utterance/upload", "");
-        Assert.Equal(HttpStatusCode.OK, register.StatusCode);
-        var id = (await JsonAsync(register)).GetProperty("upload_id").GetString();
+        var registerBody = await JsonAsync(register, "POST wingman/utterance/upload");
+        var id = ContentFingerprint.Prop(registerBody, "upload_id", "POST wingman/utterance/upload").GetString();
         Assert.False(string.IsNullOrWhiteSpace(id));
 
         var payload = Encoding.UTF8.GetBytes("utterance-bytes-zqxjv-" + Guid.NewGuid().ToString("N"));
         var chunk = await SendBytes(HttpMethod.Put, $"wingman/utterance/{id}/chunk/0", payload);
-        Assert.Equal(HttpStatusCode.OK, chunk.StatusCode);
-        Assert.Equal(0, (await JsonAsync(chunk)).GetProperty("index").GetInt32());
+        var chunkBody = await JsonAsync(chunk, "PUT wingman/utterance/{uploadId}/chunk/0");
+        Assert.Equal(0,
+            ContentFingerprint.Prop(chunkBody, "index", "PUT wingman/utterance/{uploadId}/chunk/0").GetInt32());
 
         AssertStagedOnDisk(payload);
     }
@@ -637,8 +723,9 @@ public sealed class HostedContentReadSelfHostControlTests : IAsyncLifetime
 
         var payload = Encoding.UTF8.GetBytes("dictation-bytes-zqxjv-" + Guid.NewGuid().ToString("N"));
         var chunk = await SendBytes(HttpMethod.Put, $"dictation/{id}/chunk/0", payload);
-        Assert.Equal(HttpStatusCode.OK, chunk.StatusCode);
-        Assert.Equal(0, (await JsonAsync(chunk)).GetProperty("index").GetInt32());
+        var chunkBody = await JsonAsync(chunk, "PUT dictation/{uploadId}/chunk/0");
+        Assert.Equal(0,
+            ContentFingerprint.Prop(chunkBody, "index", "PUT dictation/{uploadId}/chunk/0").GetInt32());
 
         AssertStagedOnDisk(payload);
     }
@@ -656,15 +743,15 @@ public sealed class HostedContentReadSelfHostControlTests : IAsyncLifetime
         var id = await RegisterDictationAsync(key);
 
         var abandon = await Send(HttpMethod.Post, $"dictation/{id}/abandon", "");
-        Assert.Equal(HttpStatusCode.OK, abandon.StatusCode);
-        Assert.True((await JsonAsync(abandon)).GetProperty("abandoned").GetBoolean());
+        var abandonBody = await JsonAsync(abandon, "POST dictation/{uploadId}/abandon");
+        Assert.True(
+            ContentFingerprint.Prop(abandonBody, "abandoned", "POST dictation/{uploadId}/abandon").GetBoolean());
 
         var reRegister = await Send(HttpMethod.Post, "dictation/upload",
             "{\"sessionId\":\"11111111-1111-1111-1111-111111111111\"}", key);
-        Assert.Equal(HttpStatusCode.OK, reRegister.StatusCode);
-        var again = await JsonAsync(reRegister);
-        Assert.True(again.GetProperty("terminal").GetBoolean());
-        Assert.True(again.GetProperty("dropped").GetBoolean());
+        var again = await JsonAsync(reRegister, "POST dictation/upload (re-register)");
+        Assert.True(ContentFingerprint.Prop(again, "terminal", "POST dictation/upload (re-register)").GetBoolean());
+        Assert.True(ContentFingerprint.Prop(again, "dropped", "POST dictation/upload (re-register)").GetBoolean());
     }
 
     /// <summary>
@@ -679,12 +766,14 @@ public sealed class HostedContentReadSelfHostControlTests : IAsyncLifetime
         await Send(HttpMethod.Post, $"dictation/{id}/abandon", "");
 
         var first = await Send(HttpMethod.Post, $"dictation/{id}/ack", "");
-        Assert.Equal(HttpStatusCode.OK, first.StatusCode);
-        Assert.True((await JsonAsync(first)).GetProperty("retired").GetBoolean());
+        var firstBody = await JsonAsync(first, "POST dictation/{uploadId}/ack (first)");
+        Assert.True(
+            ContentFingerprint.Prop(firstBody, "retired", "POST dictation/{uploadId}/ack (first)").GetBoolean());
 
         var second = await Send(HttpMethod.Post, $"dictation/{id}/ack", "");
-        Assert.Equal(HttpStatusCode.OK, second.StatusCode);
-        Assert.False((await JsonAsync(second)).GetProperty("retired").GetBoolean());
+        var secondBody = await JsonAsync(second, "POST dictation/{uploadId}/ack (second)");
+        Assert.False(
+            ContentFingerprint.Prop(secondBody, "retired", "POST dictation/{uploadId}/ack (second)").GetBoolean());
     }
 
     // ===== Helpers =====
@@ -697,25 +786,23 @@ public sealed class HostedContentReadSelfHostControlTests : IAsyncLifetime
     private async Task<JsonElement> GetJsonAsync(string path)
     {
         var resp = await Send(HttpMethod.Get, path);
-        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
         await AssertNotTheHostedRefusal(resp);
-        return await JsonAsync(resp);
+        // NO status assertion here, deliberately. If this route is renamed the Cockpit fallback answers,
+        // and a status check would make the row redden on "404 != 200" - proving a route changed rather
+        // than proving this canary can tell the handler's answer from a masking route's. The caller's
+        // fingerprint assertion is the first thing allowed to fail.
+        return await ContentFingerprint.AsJsonObjectAsync(resp, "GET " + path);
     }
 
-    private static async Task<JsonElement> JsonAsync(HttpResponseMessage resp)
-    {
-        var body = await resp.Content.ReadAsStringAsync();
-        using var doc = JsonDocument.Parse(body);
-        Assert.Equal(JsonValueKind.Object, doc.RootElement.ValueKind);
-        return doc.RootElement.Clone();
-    }
+    private static Task<JsonElement> JsonAsync(HttpResponseMessage resp, string what)
+        => ContentFingerprint.AsJsonObjectAsync(resp, what);
 
     private async Task<string> RegisterDictationAsync(string idempotencyKey)
     {
         var resp = await Send(HttpMethod.Post, "dictation/upload",
             "{\"sessionId\":\"11111111-1111-1111-1111-111111111111\"}", idempotencyKey);
-        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
-        var id = (await JsonAsync(resp)).GetProperty("upload_id").GetString();
+        var body = await JsonAsync(resp, "POST dictation/upload");
+        var id = ContentFingerprint.Prop(body, "upload_id", "POST dictation/upload").GetString();
         Assert.False(string.IsNullOrWhiteSpace(id));
         return id!;
     }
