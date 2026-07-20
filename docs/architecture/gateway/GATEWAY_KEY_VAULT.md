@@ -57,13 +57,35 @@ account's paid service, and the delete disables it. The refusal is gated on the 
 (`GatewayHostedMode.IsHosted`), applied as one filter over the whole route group, so self-host behavior is
 byte-identical to what is documented here.
 
-**The un-deny condition, stated so it cannot be ticked off by mistake: THE WRITE IS STOPPED.** The deny
-covers `PUT` and `DELETE` as well as the two reads, so no key material accumulates in the global vault file
-behind this refusal while it is in force. Removing the deny therefore requires only that a per-account key
-namespace exists in the vault - it does NOT additionally require purging a contaminated history, because
-there is no history being written. This is the opposite of a read-only deny such as the hosted stats deny
-(pull request #1888), where the data keeps accruing behind the refusal and lifting it would expose what
-piled up. Un-deny the routes one at a time once the namespace exists.
+**What this deny stops, narrowly: the HTTP ROUTE write and the HTTP ROUTE delete - NOT every write to this
+vault.** An earlier revision of this document claimed "the write is stopped" outright. That was false, and
+the correction is recorded here rather than quietly dropped, because the mistake is the reusable lesson: the
+question asked was "do the DENIED ROUTES write?", and the question that decides an un-deny condition is
+"does ANYTHING write?" plus "what is ALREADY SITTING THERE from before the deny existed?". A deny closes one
+door; it says nothing about the other doors, nor about what accumulated before it was hung.
+
+The other writers to this same global vault, enumerated exhaustively (every `Set`, `SetIfAbsent` and
+`Delete` call in the codebase):
+
+| Writer | Operation | When it fires | Hosted-gated? |
+|---|---|---|---|
+| `GatewayHost.SeedKeyVaultFromEnvironment` | `SetIfAbsent` | Host startup | **No** |
+| `TranscriptionKeyAutoProvisioner.EnsureAsync` | `SetIfAbsent`, `Set` | Every sign-in, and again at startup | **No** |
+| `TranscriptionKeyAutoProvisioner.RevokeMintedKeyAsync` | `Delete` x2 | Every sign-out | **No** |
+
+Key material therefore **still arrives in the global vault while this deny is in force**, by paths that never
+touch the denied routes.
+
+**The un-deny condition, in order, and the purge is REQUIRED:**
+
+1. Tenant-partition every remaining producer in the table above.
+2. **Quarantine, purge or migrate the pre-existing global vault root** - material predating this deny is
+   already in the file, and this change never touched it.
+3. Only then restore a tenant-scoped route, one at a time. **The raw-value `GET` is the last one back.**
+
+Anyone lifting this deny needs the partition **and** the purge. Do not treat step 2 as optional; it is not
+satisfied by any amount of configuration or rollout work, and it cannot be skipped on the grounds that the
+routes were denied.
 
 **This deny does not make key material on the hosted Gateway safe, and must not be read as clearance for
 anything else.** It closes one route group. In particular it says nothing about the voice vault key, which

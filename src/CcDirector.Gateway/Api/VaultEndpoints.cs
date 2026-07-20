@@ -41,12 +41,28 @@ namespace CcDirector.Gateway.Api;
 /// written down on the pull request: when the vault is properly partitioned per account, these routes come
 /// back one at a time.
 ///
-/// THE WRITE IS STOPPED, not only the read. The deny covers PUT and DELETE alongside the two reads, so no key
-/// material accumulates in the global vault file behind this refusal while it is in force. That is what makes
-/// un-denying a one-condition job - the per-account namespace - with no contaminated history to purge first.
-/// A read-only deny would have been a DEFERRED LEAK: data keeps piling up behind it and the day it is lifted
-/// it discloses everything that accrued. Anyone lifting this deny needs the namespace and nothing else; anyone
-/// lifting a read-only deny needs the namespace AND a purge.
+/// WHAT THIS DENY STOPS, NARROWLY: the HTTP ROUTE write and the HTTP ROUTE delete. It does NOT stop every
+/// write to this vault, and an earlier revision of this file claimed it did. That claim was false and the
+/// correction matters more than the deny, so it is recorded here rather than quietly dropped.
+///
+/// The question that produced the false claim was "do the DENIED ROUTES write?" - to which the answer is a
+/// truthful no. The question that decides the un-deny condition is "does ANYTHING write?", and separately
+/// "what is ALREADY SITTING THERE from before this deny existed?". A deny closes ONE door. It says nothing
+/// about the other doors, and nothing about what accumulated before it was hung.
+///
+/// The other doors, enumerated (every mutating call to this vault in the codebase - Set, SetIfAbsent, Delete):
+///   * GatewayHost.SeedKeyVaultFromEnvironment - SetIfAbsent at host startup, NOT hosted-gated.
+///   * Account/TranscriptionKeyAutoProvisioner.EnsureAsync - SetIfAbsent + Set, fired on EVERY sign-in and
+///     again at startup, NOT hosted-gated.
+///   * Account/TranscriptionKeyAutoProvisioner.RevokeMintedKeyAsync - two Deletes, fired on EVERY sign-out.
+/// Key material therefore STILL ARRIVES in the global vault while this deny is in force, by paths that never
+/// touch the denied routes.
+///
+/// So the un-deny condition is NOT "add a per-account namespace". It is, in order: tenant-partition every
+/// remaining producer above, THEN quarantine, purge or migrate the pre-existing global vault root, and only
+/// then restore a tenant-scoped route. The raw-value GET is the LAST one back. Anyone lifting this deny needs
+/// the partition AND the purge - the purge is REQUIRED, not optional, because material predating this deny is
+/// already in the file and this change never touched it.
 ///
 /// Self-host is COMPLETELY unchanged, and that is the control. Self-host is single-tenant, the owner sets
 /// his own keys here from the Cockpit and his own Director reads them back, and a deny scoped to the wrong
