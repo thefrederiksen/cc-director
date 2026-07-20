@@ -86,6 +86,34 @@ namespace CcDirector.TestInfrastructure;
 ///
 /// A baseline is simply an arm that declares no mutations, so both phases run one rule.
 ///
+/// TWO KINDS OF MECHANISM LIVE IN THIS FILE, AND JUDGING ONE BY THE OTHER'S STANDARD GETS IT DELETED.
+///
+/// Some of what follows PREVENTS a failure. The refusal on an undeclared change prevents a contaminated
+/// baseline from running. The refusal on a moved pin prevents an arm being compared against a different
+/// program. Those either work or they do not, and a test can show which.
+///
+/// The rest CANNOT PREVENT ANYTHING. The ledger does not stop a bad proof; it records what each run
+/// verified, so the question can be answered afterwards. The requirement that the pinned commit exist on a
+/// remote does not stop a stashed repair; it makes the commit fetchable, so a reader can see for
+/// themselves what was and was not in it. Neither of these is a preventer, and measuring them as though
+/// they were makes them look like failures - which is exactly how a future reader talks themselves into
+/// removing them.
+///
+/// THE HONEST SENTENCE IS THAT THEY CONVERT A PRIVATE FAILURE INTO A PUBLIC ONE. A contaminated proof that
+/// nobody can detect afterwards is a private failure: it lives on one machine, in one worktree, and it
+/// dies with them. The same failure recorded in a ledger, or attributed to a commit anybody can fetch, is
+/// a public one - still a failure, but now something a second person can find without being told where to
+/// look.
+///
+/// That matters here more than it would elsewhere, because this entire proof structure rests on somebody
+/// ELSE being able to re-derive a claim. Four already-merged proofs cannot now be shown to have been taken
+/// on clean trees, and that is not because a preventer failed - it is because nothing made the failure
+/// visible to anyone but the machine it happened on.
+///
+/// So: do not delete the ledger or the publication requirement because they "do not stop anything". They
+/// are not supposed to. If you want to remove one, the question to answer is whether the failure it makes
+/// visible has some other way of being seen.
+///
 /// THE SECOND JOB: MAKE THE TREE'S STATE AT RUN TIME OUTLIVE THE TREE.
 ///
 /// Refusing a contaminated run is only half of what this mechanism is for. On 2026-07-19 somebody was asked

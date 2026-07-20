@@ -99,6 +99,25 @@ assembly invokes git twice and appends one line to a log outside the tree - roug
 assembly against a suite measured in minutes. That is the deliberate price of the ledger below: it is the
 entire reason a **forgotten** pin is still answerable afterwards.
 
+## Two kinds of mechanism here, and one is easy to delete by mistake
+
+Some of this **prevents** a failure: the refusal on an undeclared change, the refusal on a moved pin. Those
+either work or they do not.
+
+The rest **cannot prevent anything**, and is not meant to. The ledger does not stop a bad proof; it records
+what each run verified so the question can be answered later. Requiring the pinned commit to exist on a
+remote does not stop a stashed repair; it makes the commit fetchable so a reader can see what was in it.
+
+The honest sentence is that they **convert a private failure into a public one**. A contaminated proof
+nobody can detect afterwards lives on one machine and dies with it. The same failure recorded in a ledger,
+or attributed to a commit anyone can fetch, is still a failure — but one a second person can find without
+being told where to look. That matters here more than it would elsewhere, because this whole proof
+structure rests on somebody else being able to re-derive a claim.
+
+So do not remove the ledger or the publication requirement on the grounds that they "do not stop
+anything". They are not supposed to. The question to answer first is whether the failure each one makes
+visible has any other way of being seen.
+
 ## The second job: the record outlives the tree
 
 Refusing a bad run is only half of it.
