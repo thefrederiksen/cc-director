@@ -40,11 +40,13 @@ public enum EnrollGateDecision
 ///   2. Bound to the Gateway's current signed-in account identity (GatewaySignInService.GetIdentity).
 ///      Not signed in -> 409 with a "sign in first" the client maps to opening the browser sign-in.
 ///   3. One key per device (DeviceRegistry.RegisterIfAbsent): a device that already holds an active key
-///      is re-issued a key IN PLACE - one registry entry, exactly one valid key, and the previous key
-///      retired. Enrollment can therefore never ACCUMULATE valid credentials, which is what the #1136
-///      auto-mint key leak did. (Before issue #1878 the existing key was handed back byte-for-byte;
-///      the registry now stores only a hash of it, so there is no plaintext left to return.) Combined
-///      with the client only calling enroll once, never from its polling loop, this stays a one-time act.
+///      ends up with one registry entry, exactly one valid key, and any previous key retired. Enrollment
+///      can therefore never ACCUMULATE valid credentials, which is what the #1136 auto-mint key leak did.
+///      Combined with the client only calling enroll once, never from its polling loop, this stays a
+///      one-time act. (Before issue #1878 the existing key was handed back byte-for-byte; the registry
+///      now stores only a hash of it, so there is no plaintext left to return. Repeat calls are still
+///      SAFE TO RETRY - a duplicate within a short in-memory window gets the same key back rather than
+///      rotating one this endpoint has already returned to a caller that may not have saved it.)
 ///
 /// Every mint is logged with the account identity, device id, and timestamp (guardrail 5) so any leak
 /// is traceable. Remote/headless Directors (not on the Gateway's machine) enroll via the tailnet
