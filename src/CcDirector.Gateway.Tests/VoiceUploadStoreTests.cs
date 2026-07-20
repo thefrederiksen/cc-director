@@ -194,25 +194,64 @@ public sealed class VoiceUploadStoreTests : IDisposable
         Assert.True(File.Exists(Path.Combine(tenantUpload, "00000.part")));
     }
 
+    // The idle-age guarantee must hold for the RESUME path, which the first cut got wrong: an upload that a
+    // live client comes back to must never be swept. It holds because EVERY successful operation refreshes
+    // the activity signal - so each operation is pinned in ITS OWN test, exercising ONLY that operation on an
+    // aged upload. Split deliberately: a single test doing several operations would let their touches mask
+    // one another, and a touch that can be individually removed while the test stays green is not proven.
+    // Each of these reddens if and only if its own operation's EnsureFreshStaging touch is removed.
+
     [Fact]
-    public async Task SweepAbandoned_DoesNotDeleteAResumedUpload_EvenWhenItWasAgedFirst()
+    public async Task SweepAbandoned_ReRegisterAlone_KeepsAnAgedUpload()
     {
-        // The idle-age guarantee must hold for the RESUME path, which the first cut got wrong: re-registering
-        // an existing id did not touch the staging, and an idempotent chunk returned without writing a byte,
-        // so a genuinely-active client that resumed kept whatever stale timestamp it had and the sweep
-        // deleted it mid-use. Reproduce exactly that: stage a chunk, age the dir nine hours, then perform the
-        // two SUCCESSFUL resume operations - re-register the same id and re-send the identical chunk - and
-        // the upload must survive a four-hour sweep because both operations are activity.
+        // Stage an upload, age it past the limit, then do ONLY a re-register of the existing id (no chunk
+        // retry, no assemble). Re-registering is a resume and therefore activity, so the upload must survive.
         var id = _store.Register(null);
         await _store.StoreChunkAsync(id, 0, Bytes("hello"), null);
-
         var dir = Path.Combine(_root, Guid.Parse(id).ToString("N"));
         Directory.SetLastWriteTimeUtc(dir, DateTime.UtcNow.AddHours(-9));
 
-        // Successful resume: re-register the existing id, then re-send the identical (idempotent) chunk.
-        var reopened = _store.Register(id);
+        var reopened = _store.Register(id);   // the only operation under test
         Assert.Equal(Guid.Parse(id).ToString("N"), reopened);
+
+        var removed = _store.SweepAbandoned(TimeSpan.FromHours(4));
+
+        Assert.Equal(0, removed);
+        Assert.True(_store.Exists(id));
+    }
+
+    [Fact]
+    public async Task SweepAbandoned_IdenticalChunkRetryAlone_KeepsAnAgedUpload()
+    {
+        // Stage an upload, age it, then do ONLY an idempotent re-send of the identical chunk (no re-register,
+        // no assemble). The retry writes no byte - it is a no-op on disk - but it IS a live client working,
+        // so it refreshes activity and the upload must survive.
+        var id = _store.Register(null);
         await _store.StoreChunkAsync(id, 0, Bytes("hello"), null);
+        var dir = Path.Combine(_root, Guid.Parse(id).ToString("N"));
+        Directory.SetLastWriteTimeUtc(dir, DateTime.UtcNow.AddHours(-9));
+
+        await _store.StoreChunkAsync(id, 0, Bytes("hello"), null);   // the only operation under test
+
+        var removed = _store.SweepAbandoned(TimeSpan.FromHours(4));
+
+        Assert.Equal(0, removed);
+        Assert.True(_store.Exists(id));
+    }
+
+    [Fact]
+    public async Task SweepAbandoned_AssembleAlone_KeepsAnAgedUpload()
+    {
+        // Stage a complete single-chunk upload, age it, then do ONLY an assemble/complete (no re-register, no
+        // chunk retry). Completing is a live client finishing its upload, so it refreshes activity and the
+        // staging must survive the sweep that runs alongside the turn it kicks off.
+        var id = _store.Register(null);
+        await _store.StoreChunkAsync(id, 0, Bytes("hello"), null);
+        var dir = Path.Combine(_root, Guid.Parse(id).ToString("N"));
+        Directory.SetLastWriteTimeUtc(dir, DateTime.UtcNow.AddHours(-9));
+
+        var assembled = await _store.AssembleAsync(id, 1);   // the only operation under test
+        Assert.Equal("ok", assembled.Status);
 
         var removed = _store.SweepAbandoned(TimeSpan.FromHours(4));
 
