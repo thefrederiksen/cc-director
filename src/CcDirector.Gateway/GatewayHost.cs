@@ -307,6 +307,14 @@ public sealed class GatewayHost : IAsyncDisposable
     // Issue #881: mints/ensures the DevThrottle inference key after sign-in and at startup. Null on a
     // host with no credential service (nothing to sign in to).
     private readonly Account.TranscriptionKeyAutoProvisioner? _transcriptionKeyProvisioner;
+
+    /// <summary>
+    /// The auto-provisioner as actually wired, exposed to the test assembly so a test can assert the WIRING
+    /// rather than re-deriving it: on a hosted Gateway this must be null, because the provisioner's two
+    /// operations write a key vault that is shared across every tenant on the box. Null is also the ordinary
+    /// state on any host with no credential service.
+    /// </summary>
+    internal Account.TranscriptionKeyAutoProvisioner? TranscriptionKeyProvisioner => _transcriptionKeyProvisioner;
     private readonly WorkListStore _workLists;
     // Snooze Length mission: the Gateway-owned, restart-surviving snooze registry (the one piece of
     // new state). An expired snooze comes back on its own with no background timer: HoldStateFor reports
@@ -991,7 +999,16 @@ public sealed class GatewayHost : IAsyncDisposable
             // the vault so hosted transcription/TTS "just work" with zero configuration. The account JWT
             // authenticates the mint; a manual or already-minted vault key short-circuits it (manual
             // override + reuse across restarts, no key sprawl).
-            _transcriptionKeyProvisioner = new Account.TranscriptionKeyAutoProvisioner(
+            // CreateUnlessHosted returns NULL on a hosted Gateway, and that is deliberate: this provisioner
+            // writes and deletes the SHARED, tenant-less key vault, so on hosted the first tenant to sign in
+            // would own the key every later tenant then spends credits on, and any one tenant's sign-out
+            // would revoke the key all the others are using. The refusal reads as "no provisioner", which is
+            // the state hosted is already in today for an unrelated reason (its Linux container has no
+            // credential service at all) - so this changes nothing that runs now and holds the line if that
+            // ever changes. The full reasoning lives at the factory.
+            // Fully qualified: inside this class the bare name "Account" binds to the credential-service
+            // PROPERTY, not to the namespace, so the namespace has to be named from the root here.
+            _transcriptionKeyProvisioner = CcDirector.Gateway.Account.TranscriptionKeyAutoProvisioner.CreateUnlessHosted(
                 _keyVault,
                 accessTokenProvider: Account.GetAccessTokenForForwarding,
                 minter: new Account.AccountInferenceKeyProvisioner());
@@ -1002,7 +1019,8 @@ public sealed class GatewayHost : IAsyncDisposable
                 {
                     if (_deviceRegistration is not null)
                         await _deviceRegistration.EnsureRegisteredAsync(ct);
-                    await _transcriptionKeyProvisioner.EnsureAsync(ct);
+                    if (_transcriptionKeyProvisioner is not null)
+                        await _transcriptionKeyProvisioner.EnsureAsync(ct);
                 });
         }
         else

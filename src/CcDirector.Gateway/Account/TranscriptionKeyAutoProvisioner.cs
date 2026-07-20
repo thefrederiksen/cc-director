@@ -46,12 +46,66 @@ public sealed class TranscriptionKeyAutoProvisioner
     /// </summary>
     private readonly SemaphoreSlim _ensureGate = new(1, 1);
 
+    /// <summary>
+    /// The ONLY way to obtain a provisioner: builds one on a self-hosted Gateway, and returns NULL on a
+    /// HOSTED Gateway. Every caller already handles the null (it is the same "no provisioner" state a host
+    /// with no credential service has always produced), so returning null costs no new code path.
+    ///
+    /// WHY THIS GATE EXISTS - read this before deleting it as redundant. Both of this class's operations
+    /// write the SHARED key vault, which has NO TENANT DIMENSION - one <c>keyvault.json</c> for the whole
+    /// box:
+    ///
+    ///   - <see cref="EnsureAsync"/> writes with SET-IF-ABSENT, so on a multi-tenant Gateway the FIRST
+    ///     tenant to sign in owns the key and every tenant who signs in afterwards silently transcribes on
+    ///     it. Nobody is refused and nothing errors; the usage simply BILLS TO THE FIRST TENANT'S ACCOUNT.
+    ///   - <see cref="RevokeMintedKeyAsync"/> revokes the key in the cloud and DELETES it from that shared
+    ///     vault, so ONE tenant's entirely ordinary sign-out breaks transcription for every other tenant
+    ///     on the box.
+    ///
+    /// On a self-hosted Gateway there is exactly ONE account, so neither can happen and both behaviours are
+    /// the deliberate safeguards their own documentation describes (the manual-key override, and clearing on
+    /// sign-out precisely so the NEXT account on the machine cannot reuse the key).
+    ///
+    /// THIS GATE IS REDUNDANT TODAY, AND THAT IS NOT A REASON TO REMOVE IT. As deployed, the hosted Gateway
+    /// is a Linux container, and <c>GatewayHost</c> builds its credential service only on Windows and macOS -
+    /// so hosted currently has no account component, no sign-in flow, and therefore no caller that could ever
+    /// reach these two methods. The safety is an ACCIDENT OF WHICH PLATFORM HOSTED HAPPENS TO RUN ON. The day
+    /// hosted gains a credential service - a product direction, not a hypothetical - both harms above arm
+    /// themselves, silently, with nothing to notice. This gate makes the safety structural instead of
+    /// platform-conditional, and it is pinned by
+    /// <c>CcDirector.Gateway.Tests.HostedTranscriptionKeyProvisioningGateTests</c>.
+    ///
+    /// The correct hosted answer is not this gate forever - it is a per-tenant credential, the way the hosted
+    /// enrollment path already partitions a shared store by prefixing with the authenticated tenant. Until
+    /// that exists, refusing is the answer that cannot mis-bill anyone.
+    /// </summary>
     /// <param name="vault">The Gateway key vault - where the transcription owner reads the hosted key.</param>
     /// <param name="accessTokenProvider">Supplies the signed-in account JWT (or null when not signed in);
     /// invoked fresh each call so it always reflects the current credential.</param>
     /// <param name="minter">Mints an inference key for the account.</param>
     /// <param name="label">A recognisable name for the minted key (defaults to the machine name).</param>
-    public TranscriptionKeyAutoProvisioner(
+    /// <param name="isHosted">Whether this Gateway is a hosted deployment. Defaults to the real
+    /// <see cref="GatewayHostedMode.IsHosted"/> signal; passed explicitly by tests so they assert on a stated
+    /// value rather than on whatever the runner happens to leave in the environment.</param>
+    public static TranscriptionKeyAutoProvisioner? CreateUnlessHosted(
+        KeyVault vault, Func<string?> accessTokenProvider, IInferenceKeyMinter minter, string? label = null,
+        bool? isHosted = null)
+    {
+        if (isHosted ?? GatewayHostedMode.IsHosted)
+        {
+            FileLog.Write("[TranscriptionKeyAutoProvisioner] CreateUnlessHosted: HOSTED -> no provisioner built; the key vault is shared across tenants, so neither the set-if-absent write nor the sign-out revoke may run here");
+            return null;
+        }
+
+        return new TranscriptionKeyAutoProvisioner(vault, accessTokenProvider, minter, label);
+    }
+
+    /// <summary>
+    /// Private on purpose: <see cref="CreateUnlessHosted"/> is the only way to get an instance, so the
+    /// hosted refusal cannot be bypassed by constructing one directly. Adding a second construction route
+    /// re-opens the hole the factory closes.
+    /// </summary>
+    private TranscriptionKeyAutoProvisioner(
         KeyVault vault, Func<string?> accessTokenProvider, IInferenceKeyMinter minter, string? label = null)
     {
         _vault = vault ?? throw new ArgumentNullException(nameof(vault));
