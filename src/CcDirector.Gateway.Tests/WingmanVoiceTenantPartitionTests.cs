@@ -103,6 +103,23 @@ namespace CcDirector.Gateway.Tests;
 ///   B4 <c>GatewayTurnJobStore.StateFor</c> - 1 red:
 ///     Turn_job_store_is_partitioned_and_a_turn_id_alone_does_not_read_it   Assert.Null (B read A's job)
 ///
+/// PRE-REGISTERED PREDICTION, committed while the B1-only run was still executing and before any
+/// per-primitive result existed. Recorded in advance deliberately: a prediction written beforehand is
+/// evidence about the model that produced it, whereas the same sentence added afterwards is only a
+/// description of what happened.
+///
+///   PREDICTION: the three pre-existing tests below are sensitive to B2 (the on-disk directory), NOT to
+///   B1 (the in-memory bucket). Expected: B1 alone leaves all three GREEN; B2 alone reddens all three.
+///   REASONING: all three are gateway-RESTART tests. They construct a second service over the same root
+///   and assert it reloads what the first wrote. A restart discards the in-memory buckets entirely, so
+///   B1 should be invisible to them, while the directory layout is the only channel by which their state
+///   survives at all.
+///   IF WRONG - if B1 reddens them - that is the more interesting outcome and must be reported just as
+///   plainly: it would mean the in-memory bucket is load-bearing for durable restart in a way none of us
+///   expected, and the reload path would need re-reading before this change is trusted.
+///
+/// OUTCOME: see the per-primitive results recorded above; the prediction is scored there explicitly.
+///
 /// THREE TESTS THAT ARE NOT MINE ALSO WENT RED, all on B2, all as assertions:
 ///   WingmanVoiceServiceTests.ReadyAudio_PersistsAndReloadsAcrossRestart
 ///   WingmanVoiceServiceTests.ReadyAudio_ReloadsLegacyWavCacheWithDetectedContentType
