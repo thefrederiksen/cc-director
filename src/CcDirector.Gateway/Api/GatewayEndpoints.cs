@@ -426,28 +426,67 @@ internal static class GatewayEndpoints
         // what IT saw about the connection, writes one greppable log line, and keeps it in a small ring so
         // an agent can read the recent history at GET /diag/results with no phone. This is the "log all of
         // this so the agent can get to it" piece of the mission.
+        //
+        // TENANT-PARTITIONED (Hosted Multi-Tenancy; unsafe-collection census rows 21 and 22). All three of
+        // these routes carry the SAME obligation, and it has two halves that must both hold: the WRITE
+        // stamps the caller's authenticated tenant onto what it stores, and BOTH READS serve only that
+        // tenant's partition. A write-only fix still leaks on the reads; a read-only filter is a DEFERRED
+        // leak - cross-tenant data would keep accumulating behind it, so the day the filter is lifted it
+        // exposes a contaminated history. Neither half is worth anything without the other.
+        //
+        // The tenant comes from the caller's authenticated device key (ResolveReadTenant), never from the
+        // posted body. A null is a DENY (403): on hosted, an authenticated key with no bound tenant is
+        // refused, never served or credited to the Local partition.
         var netDiagResults = new NetDiagResultStore(Path.Combine(CcStorage.Root(), "diagnostics-results.json"));
         app.MapPost("/diag/result", async (HttpContext ctx, NetDiagResultDto result) =>
         {
+            var reqTenant = ResolveReadTenant(ctx, tenantBoundary);
+            if (reqTenant is null)
+            {
+                FileLog.Write("[NetDiag] POST /diag/result DENIED - the authenticated device key resolves to no tenant, so there is no partition to credit this result to (never Local)");
+                return Results.StatusCode(StatusCodes.Status403Forbidden);
+            }
+
             result.ClientIp = ctx.Connection.RemoteIpAddress?.ToString();
             result.ClientPath = NetDiag.ClassifyClientIp(ctx.Connection.RemoteIpAddress);
             result.ReceivedAt = DateTime.UtcNow;
-            netDiagResults.Add(result);
+            netDiagResults.Add(reqTenant.Value, result);
             // Fold into the hourly quality rollup by the MEASURED path (Direct/IsLanPath the client tagged
-            // from its authoritative self-peer), never the front-door ClientPath.
-            netDiagRollup?.Fold(result.ReceivedAt, result.LatencyMedianMs, result.Direct, result.IsLanPath, result.DownloadMbps, result.UploadMbps);
+            // from its authoritative self-peer), never the front-door ClientPath. Keyed by tenant AND hour:
+            // the hour alone is server time, which every tenant shares, so an unkeyed fold is an addition
+            // into a shared aggregate that nobody can attribute or undo afterwards.
+            netDiagRollup?.Fold(reqTenant.Value, result.ReceivedAt, result.LatencyMedianMs, result.Direct, result.IsLanPath, result.DownloadMbps, result.UploadMbps);
             FileLog.Write(
-                $"[NetDiag] result surface={result.Surface} route={result.Route} clientPath={result.ClientPath} " +
+                $"[NetDiag] result tenant={reqTenant.Value.ToLogString()} surface={result.Surface} route={result.Route} clientPath={result.ClientPath} " +
                 $"client={result.ClientIp} latencyMedian={result.LatencyMedianMs}ms down={result.DownloadMbps}Mbps " +
                 $"up={result.UploadMbps}Mbps rating={result.Rating} loadedFrom={result.LoadedFrom}");
             await Task.CompletedTask;
             return Results.Json(new { ok = true });
         });
-        app.MapGet("/diag/results", () => Results.Json(netDiagResults.Recent()));
+        app.MapGet("/diag/results", (HttpContext ctx) =>
+        {
+            var reqTenant = ResolveReadTenant(ctx, tenantBoundary);
+            if (reqTenant is null)
+            {
+                FileLog.Write("[NetDiag] GET /diag/results DENIED - the authenticated device key resolves to no tenant, so it owns no results (never the Local partition)");
+                return Results.StatusCode(StatusCodes.Status403Forbidden);
+            }
+            return Results.Json(netDiagResults.Recent(reqTenant.Value));
+        });
 
         // GET /diag/rollup: the hourly quality trend (one bucket per UTC hour, oldest first) for the
         // Cockpit dashboard - percent-direct over time, latency trend, and the stored home/away split.
-        app.MapGet("/diag/rollup", () => Results.Json(netDiagRollup?.All() ?? new List<NetDiagRollupStore.HourBucket>()));
+        // Served from the caller's own tenant partition only.
+        app.MapGet("/diag/rollup", (HttpContext ctx) =>
+        {
+            var reqTenant = ResolveReadTenant(ctx, tenantBoundary);
+            if (reqTenant is null)
+            {
+                FileLog.Write("[NetDiag] GET /diag/rollup DENIED - the authenticated device key resolves to no tenant, so it owns no rollup (never the Local partition)");
+                return Results.StatusCode(StatusCodes.Status403Forbidden);
+            }
+            return Results.Json(netDiagRollup?.All(reqTenant.Value) ?? new List<NetDiagRollupStore.HourBucket>());
+        });
 
         // About / diagnostics: product, version, build date, install root, the one Cockpit URL, and
         // the installed component versions (from installed.json on this box). Feeds the Cockpit About

@@ -1,20 +1,31 @@
 using System.Globalization;
 using System.Text.Json;
+using CcDirector.Core.Tenancy;
 using CcDirector.Core.Utilities;
 
 namespace CcDirector.Gateway.Api;
 
 /// <summary>
 /// The hourly quality rollup (Network Diagnostics mission, Phase 1 / Architect Decision 2b as resequenced).
-/// ONE bucket per UTC hour (no per-route key - so no cardinality growth and no route/quality conflation),
-/// but each bucket carries a HOME vs AWAY split keyed on the MEASURED path (isLanPath), never the front-door
-/// ClientPath. That gives home-vs-away quality history from day one for free; P1 STORES the split, the P3
-/// dashboard shows overall percent-direct + latency trend, and P4 just turns on the home/away presentation
-/// over history that is already accumulating.
+/// ONE bucket per UTC hour PER TENANT (no per-route key - so no cardinality growth and no route/quality
+/// conflation), but each bucket carries a HOME vs AWAY split keyed on the MEASURED path (isLanPath), never
+/// the front-door ClientPath. That gives home-vs-away quality history from day one for free; P1 STORES the
+/// split, the P3 dashboard shows overall percent-direct + latency trend, and P4 just turns on the home/away
+/// presentation over history that is already accumulating.
 ///
 /// This is the 90-day durable memory (the raw results ring stays recent-depth). Same atomic write-through +
 /// corrupt-file quarantine contract as <see cref="CronRunHistoryStore"/>; the file stays small (~24 x 90 =
-/// a couple thousand buckets), so a rewrite per fold is cheap.
+/// a couple thousand buckets per tenant), so a rewrite per fold is cheap.
+///
+/// KEYED BY TENANT PLUS HOUR (Hosted Multi-Tenancy; unsafe-collection census row 22). The hour comes from
+/// SERVER TIME, so every tenant writing at the same moment folded into the SAME bucket: a shared aggregate
+/// that any authenticated caller could both read and POISON, because a fold is an addition nobody can
+/// attribute afterwards. There is no caller-supplied identifier to namespace, so the fix is a partition:
+/// <c>tenant -> hour -> bucket</c>, with the tenant a REQUIRED parameter on the fold AND on the read.
+/// Retention pruning is per tenant for the same reason - one tenant's clock-driven prune must not reach
+/// into another's history.
+///
+/// PRE-PARTITION FILES ARE PURGED, NOT MIGRATED AND NOT QUARANTINED. See <see cref="PurgePrePartitionFile"/>.
 /// </summary>
 public sealed class NetDiagRollupStore
 {
@@ -47,7 +58,11 @@ public sealed class NetDiagRollupStore
 
     private readonly object _gate = new();
     private readonly string _path;
-    private readonly Dictionary<string, HourBucket> _buckets = new(StringComparer.Ordinal);
+
+    /// <summary>Canonical tenant key -> that tenant's hour buckets. The ONLY way in is
+    /// <see cref="PartitionFor"/> with a validated tenant, so there is no all-tenants aggregate to read or
+    /// fold into by accident.</summary>
+    private readonly Dictionary<string, Dictionary<string, HourBucket>> _tenants = new(StringComparer.Ordinal);
 
     private static readonly JsonSerializerOptions FileJsonOptions = new()
     {
@@ -65,16 +80,18 @@ public sealed class NetDiagRollupStore
     }
 
     /// <summary>
-    /// Fold one observation into its UTC-hour bucket. <paramref name="isLanPath"/> is the MEASURED path type
-    /// (a LAN-direct address = home); <paramref name="direct"/> is the ping verdict. Down/up are only present
-    /// for client speed-test results (the monitor passes null). Prunes buckets past the 90-day retention.
+    /// Fold one observation into <paramref name="tenant"/>'s UTC-hour bucket. <paramref name="isLanPath"/> is
+    /// the MEASURED path type (a LAN-direct address = home); <paramref name="direct"/> is the ping verdict.
+    /// Down/up are only present for client speed-test results (the monitor passes null). Prunes THAT
+    /// TENANT'S buckets past the 90-day retention.
     /// </summary>
-    public void Fold(DateTime whenUtc, double? latencyMs, bool? direct, bool isLanPath, double? downMbps, double? upMbps)
+    public void Fold(TenantId tenant, DateTime whenUtc, double? latencyMs, bool? direct, bool isLanPath, double? downMbps, double? upMbps)
     {
         var hour = HourKey(whenUtc);
         lock (_gate)
         {
-            if (!_buckets.TryGetValue(hour, out var b)) { b = new HourBucket { Hour = hour }; _buckets[hour] = b; }
+            var buckets = PartitionFor(tenant);
+            if (!buckets.TryGetValue(hour, out var b)) { b = new HourBucket { Hour = hour }; buckets[hour] = b; }
 
             b.Count++;
             if (latencyMs is { } lat) { b.SumLatencyMs += lat; b.MinLatencyMs = Least(b.MinLatencyMs, lat); }
@@ -96,16 +113,18 @@ public sealed class NetDiagRollupStore
                 if (upMbps is { } u) b.SumUpAway += u;
             }
 
-            Prune(whenUtc);
+            Prune(buckets, whenUtc);
             Save();
         }
     }
 
-    /// <summary>All retained buckets, oldest hour first.</summary>
-    public IReadOnlyList<HourBucket> All()
+    /// <summary>All retained buckets BELONGING TO <paramref name="tenant"/>, oldest hour first. There is no
+    /// unfiltered read: the filter IS the partition lookup, so it cannot be forgotten separately from the
+    /// partition.</summary>
+    public IReadOnlyList<HourBucket> All(TenantId tenant)
     {
         lock (_gate)
-            return _buckets.Values.OrderBy(b => b.Hour, StringComparer.Ordinal).ToList();
+            return PartitionFor(tenant).Values.OrderBy(b => b.Hour, StringComparer.Ordinal).ToList();
     }
 
     public static string HourKey(DateTime whenUtc)
@@ -113,18 +132,57 @@ public sealed class NetDiagRollupStore
 
     private static double? Least(double? cur, double v) => cur is null ? v : Math.Min(cur.Value, v);
 
-    private void Prune(DateTime nowUtc)
+    private static void Prune(Dictionary<string, HourBucket> buckets, DateTime nowUtc)
     {
         var cutoff = HourKey(nowUtc - Retention);
-        var stale = _buckets.Keys.Where(k => string.CompareOrdinal(k, cutoff) < 0).ToList();
-        foreach (var k in stale) _buckets.Remove(k);
+        var stale = buckets.Keys.Where(k => string.CompareOrdinal(k, cutoff) < 0).ToList();
+        foreach (var k in stale) buckets.Remove(k);
+    }
+
+    // ---- tenant canonicalization ----
+
+    /// <summary>
+    /// True only for the EXACT form the tenant registry mints: a canonical lowercase GUID. The same guard
+    /// <see cref="Voice.GatewayTurnJobStore"/> uses, so two spellings of one account can never become two
+    /// partitions, nor one partition be reached by two spellings.
+    /// </summary>
+    private static bool IsMintedAccountTenant(string value)
+        => Guid.TryParseExact(value, "D", out var parsed)
+           && string.Equals(value, parsed.ToString("D"), StringComparison.Ordinal);
+
+    private static string CanonicalTenantKey(TenantId tenant)
+    {
+        if (!tenant.IsValid)
+            throw new ArgumentException("A quality rollup needs a valid tenant; an unresolved tenant is denied, never defaulted.", nameof(tenant));
+        if (tenant.IsLocal) return TenantId.Local.Value;
+        if (tenant.IsSystem) return TenantId.System.Value;
+        if (!IsMintedAccountTenant(tenant.Value))
+            throw new ArgumentException(
+                $"Tenant '{tenant.ToLogString()}' is not a minted account tenant and cannot own quality rollups.", nameof(tenant));
+        return tenant.Value;
+    }
+
+    /// <summary>Caller must hold <see cref="_gate"/>.</summary>
+    private Dictionary<string, HourBucket> PartitionFor(TenantId tenant)
+    {
+        var key = CanonicalTenantKey(tenant);
+        if (!_tenants.TryGetValue(key, out var buckets))
+        {
+            buckets = new Dictionary<string, HourBucket>(StringComparer.Ordinal);
+            _tenants[key] = buckets;
+        }
+        return buckets;
     }
 
     // ---- persistence (CronRunHistoryStore precedent) ----
 
     private sealed class StoreFile
     {
-        public Dictionary<string, HourBucket> Buckets { get; set; } = new(StringComparer.Ordinal);
+        /// <summary>Canonical tenant key -> hour key -> bucket. NULL after deserializing a PRE-PARTITION
+        /// file, which is exactly how <see cref="Load"/> tells the two shapes apart: the old document has no
+        /// <c>tenants</c> property at all, and read into the new shape it would otherwise arrive as a silent
+        /// empty rather than as the purge case it is.</summary>
+        public Dictionary<string, Dictionary<string, HourBucket>>? Tenants { get; set; }
     }
 
     private void Load()
@@ -152,11 +210,48 @@ public sealed class NetDiagRollupStore
             return;
         }
 
-        foreach (var (hour, bucket) in parsed.Buckets)
-            if (!string.IsNullOrWhiteSpace(hour) && bucket is not null)
-                _buckets[hour] = bucket;
+        if (parsed.Tenants is null)
+        {
+            PurgePrePartitionFile();
+            return;
+        }
 
-        FileLog.Write($"[NetDiagRollupStore] Load: restored {_buckets.Count} hourly bucket(s) from {_path}");
+        foreach (var (tenantKey, buckets) in parsed.Tenants)
+        {
+            if (string.IsNullOrWhiteSpace(tenantKey) || buckets is null)
+                continue;
+
+            var kept = new Dictionary<string, HourBucket>(StringComparer.Ordinal);
+            foreach (var (hour, bucket) in buckets)
+                if (!string.IsNullOrWhiteSpace(hour) && bucket is not null)
+                    kept[hour] = bucket;
+            _tenants[tenantKey] = kept;
+        }
+
+        FileLog.Write($"[NetDiagRollupStore] Load: restored {_tenants.Values.Sum(v => v.Count)} hourly bucket(s) across {_tenants.Count} tenant partition(s) from {_path}");
+    }
+
+    /// <summary>
+    /// DELETE a pre-partition (global, tenant-less) rollup file and start empty.
+    ///
+    /// WHY DELETE AND NOT MIGRATE. Each old bucket is a SUM over every tenant that folded into that hour,
+    /// with no per-tenant attribution recorded anywhere - the addends cannot be separated after the fact.
+    /// Assigning a bucket to a tenant would INVENT an attribution that was never recorded, which is the
+    /// half-partition this mission forbids; worse than the raw results case, it would hand that tenant a
+    /// number that is provably not its own.
+    ///
+    /// WHY DELETE AND NOT QUARANTINE. Quarantine is for a file that could not be READ - it preserves the
+    /// evidence of a bug. This file reads perfectly; its problem is that its contents are a cross-tenant
+    /// mixture. Renaming it aside would leave that live liability on disk indefinitely for no benefit,
+    /// because nothing will ever be able to attribute it.
+    ///
+    /// WHY THE COST IS NOTHING REAL. This is ephemeral operational telemetry with no durability contract -
+    /// a self-pruning quality trend, not a record anything is owed. Purge, and partition forward.
+    /// </summary>
+    private void PurgePrePartitionFile()
+    {
+        File.Delete(_path);
+        FileLog.Write($"[NetDiagRollupStore] Load: PURGED pre-partition rollup file at {_path} - its buckets are cross-tenant sums with no per-tenant attribution recorded, so they cannot be migrated without inventing one; starting empty.");
     }
 
     private void Quarantine(string reason)
@@ -174,7 +269,7 @@ public sealed class NetDiagRollupStore
             if (!string.IsNullOrEmpty(dir))
                 Directory.CreateDirectory(dir);
 
-            var file = new StoreFile { Buckets = _buckets };
+            var file = new StoreFile { Tenants = _tenants };
             var json = JsonSerializer.Serialize(file, FileJsonOptions);
 
             var tmp = _path + ".tmp";
