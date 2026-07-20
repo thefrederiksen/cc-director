@@ -104,6 +104,26 @@ mode on the session reports `Voice off`, `canGenerate: false`. This is stated as
 than a footnote because of the ruling that voice ships with Pro rather than being marked "coming
 soon". It was moving overnight, so re-check the timestamp before trusting this line.
 
+> ## Do not add the voice key to the vault to "fix" this
+>
+> **That error message is an invitation, and taking it would arm a leak.**
+>
+> It reads like voice is one config step away, and it is true that putting an account key in the
+> gateway vault would turn voice on. **Do not.** The ruling is that the voice key goes into the
+> vault **last** - after the full voice partitioning is merged *and proven live*, never before.
+>
+> Voice *state* was partitioned (#1915), but that is only the first piece. The background sweeps
+> that process clips, the route that serves them, and the upload and transcript store are **not
+> tenant-safe yet**. Produce audio before those land and the clips and **plaintext transcripts**
+> go somewhere another customer can reach.
+>
+> A configuration change must not be the thing that opens a surface the code is not ready for. The
+> risk here is specifically that someone helpful reads the error, sees an easy win, and fixes it.
+>
+> This is the same shape as several other findings in this report - an error message carrying a
+> suggestion the system is not ready to have taken - except this one contains an actual
+> instruction.
+
 ### The security denies are merged, NOT on the box
 
 Four pull requests - the lock, the stats deny, the voice partition and the billing gate - are on
