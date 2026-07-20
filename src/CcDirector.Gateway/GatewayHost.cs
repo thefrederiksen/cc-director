@@ -1817,18 +1817,30 @@ public sealed class GatewayHost : IAsyncDisposable
         // DevThrottle, gated on a loopback caller. Same-machine only; remote via tailnet is a follow-up.
         Api.SignedInEnrollmentEndpoint.Map(_app, Devices, SignIn, _childMirror);
 
+        // The hosted-mint dependencies, built ONCE for every hosted entry point that mints a tenant-scoped
+        // device key: the hosted Director enrollment below, the human account sign-in callback, and the hosted
+        // /m/enroll branch all pass this same bundle into the ONE mint (HostedEnrollmentEndpoint.Enroll).
+        // Non-null only on a hosted Gateway; null keeps every entry point on its self-host single-owner path.
+        // Building the account-token validator here once means all three share the identical
+        // signature/audience/issuer configuration - there is no second place that validates an account token.
+        Api.HostedEnrollDependencies? hostedEnrollDeps = GatewayHostedMode.IsHosted
+            ? new Api.HostedEnrollDependencies(
+                Devices, TenantRegistry,
+                CcDirector.Gateway.Account.GatewayAccountFactory.BuildAuthorizationValidator(),
+                EntitlementRegistry)
+            : null;
+
         // POST /devices/enroll-hosted (Hosted Multi-Tenancy increment 1): the HOSTED counterpart - a REMOTE
         // Director enrolls by presenting its OWN verified Supabase account token; the Gateway validates it,
         // resolves the account's tenant, and binds the minted device key to it. Only mapped on the hosted
         // Gateway (self-host uses the loopback signed-in route above and stays single-tenant Local).
-        if (GatewayHostedMode.IsHosted)
+        if (hostedEnrollDeps is not null)
         {
             // The paid gate rides along here and ONLY here. This route is mapped on hosted only, so passing
             // the entitlement registry means the gate is active wherever enrollment is possible - self-host
             // never maps this route at all and therefore cannot be gated by accident.
-            Api.HostedEnrollmentEndpoint.Map(_app, Devices, TenantRegistry,
-                CcDirector.Gateway.Account.GatewayAccountFactory.BuildAuthorizationValidator(),
-                entitlements: EntitlementRegistry);
+            Api.HostedEnrollmentEndpoint.Map(_app, hostedEnrollDeps.Devices, hostedEnrollDeps.Tenants,
+                hostedEnrollDeps.AccountTokenValidator, entitlements: hostedEnrollDeps.Entitlements);
         }
 
         // Wingman-voice surface for the Cockpit's Voice tab (issue #531): drive one turn of a
@@ -2036,7 +2048,10 @@ public sealed class GatewayHost : IAsyncDisposable
         // token never leaves the Gateway and is never logged (security rule DT-05 - the access logger below
         // redacts this path's query so the handed-back credential never reaches the gateway log). On a host
         // with no sign-in flow (SignIn null) it reports an explicit "not available" result.
-        AccountSignInCallbackEndpoint.Map(_app, SignIn);
+        // On a HOSTED Gateway (hostedEnrollDeps non-null) this callback runs the ONE hosted mint instead of
+        // storing a single-owner credential: a human's account access token becomes a tenant-scoped device key
+        // in the session cookie. Self-host (null) stores the captured credential through SignIn exactly as before.
+        AccountSignInCallbackEndpoint.Map(_app, SignIn, hostedEnrollDeps);
 
         // The single Gateway speech-to-text endpoint (issue #839): a caller POSTs raw audio and gets
         // text back. The phone Notes worker, the Settings "Test it" button, and on-device mode all go
@@ -2141,7 +2156,9 @@ public sealed class GatewayHost : IAsyncDisposable
         // its own authorization (the account-scoped device key), exactly like /devices/register. Mapped
         // before the mobile shell so the explicit POST route wins over the shell's GET catch-all.
         var mobileEnrollmentClient = new Core.Account.DeviceRegistryClient(new HttpClient { Timeout = TimeSpan.FromSeconds(10) });
-        Api.MobileEnrollmentEndpoint.Map(_app, new Account.MobileDeviceEnrollmentService(Account, mobileEnrollmentClient, Devices));
+        // On a HOSTED Gateway (hostedEnrollDeps non-null) /m/enroll takes a human's account access token in the
+        // Bearer header and runs the ONE hosted mint; self-host (null) keeps the cloud-device-key-in-body path.
+        Api.MobileEnrollmentEndpoint.Map(_app, new Account.MobileDeviceEnrollmentService(Account, mobileEnrollmentClient, Devices), hostedEnrollDeps);
 
         // DevThrottle Stats: the always-available private dashboard (/stats) and its JSON (/stats/data).
         // A self-contained embedded page, so it works even on a plain dev build with no React wwwroot.

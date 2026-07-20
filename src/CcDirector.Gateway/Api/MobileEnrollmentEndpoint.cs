@@ -1,3 +1,4 @@
+using System;
 using CcDirector.Core.Utilities;
 using CcDirector.Gateway.Account;
 using CcDirector.Gateway.Contracts;
@@ -30,7 +31,7 @@ namespace CcDirector.Gateway.Api;
 /// </summary>
 internal static class MobileEnrollmentEndpoint
 {
-    public static void Map(IEndpointRouteBuilder app, MobileDeviceEnrollmentService service)
+    public static void Map(IEndpointRouteBuilder app, MobileDeviceEnrollmentService service, HostedEnrollDependencies? hosted = null)
     {
         if (service is null) throw new ArgumentNullException(nameof(service));
 
@@ -39,6 +40,15 @@ internal static class MobileEnrollmentEndpoint
             try
             {
                 FileLog.Write($"[MobileEnrollment] POST /m/enroll: deviceId={req?.DeviceId}, platform={req?.Platform} (device key not logged)");
+
+                // HOSTED: this is a HUMAN account sign-in, not a cloud-device-key exchange. The account access
+                // token rides in the Authorization: Bearer header (a public pre-auth route, so AuthMiddleware
+                // does not pre-validate it as a device key - this endpoint reads it as the account token). It is
+                // turned into a tenant-scoped device key by the ONE hosted mint - the same single mint path the
+                // hosted Cockpit callback and a hosted Director use. The self-host device-key-in-body path below
+                // is untouched.
+                if (hosted is not null)
+                    return CompleteHostedEnroll(ctx, req, hosted);
 
                 var outcome = await service
                     .EnrollAsync(req?.DeviceKey, req?.DeviceId, req?.Name, req?.Platform, ctx.RequestAborted)
@@ -55,13 +65,7 @@ internal static class MobileEnrollmentEndpoint
                 if (outcome.Kind == MobileEnrollmentOutcome.ResultKind.Ok
                     && !string.IsNullOrEmpty(outcome.LocalDeviceKey))
                 {
-                    ctx.Response.Cookies.Append(Util.AuthMiddleware.CookieName, outcome.LocalDeviceKey, new CookieOptions
-                    {
-                        HttpOnly = true,
-                        SameSite = SameSiteMode.Lax,
-                        Expires = DateTimeOffset.UtcNow.AddDays(30),
-                        IsEssential = true,
-                    });
+                    GatewayTokenCookie.Set(ctx, outcome.LocalDeviceKey);
                 }
 
                 return outcome.Kind switch
@@ -85,5 +89,42 @@ internal static class MobileEnrollmentEndpoint
                     statusCode: StatusCodes.Status502BadGateway);
             }
         });
+    }
+
+    /// <summary>
+    /// Completes a HOSTED human sign-in on <c>/m/enroll</c>: read the account access token from the
+    /// Authorization Bearer header, run the ONE hosted mint (<see cref="HostedEnrollmentEndpoint.Enroll"/>) with
+    /// the request's device id, and on a successful mint set the tenant-scoped device key as the session cookie
+    /// and return it. This method does NOT validate the token, gate on entitlement, or mint a tenant/key itself:
+    /// every decision - a missing/forged/expired/wrong-audience token (401), an unentitled account (402), an
+    /// unknown entitlement read (503) - is inherited from the single <c>Enroll</c> call, which sets NO cookie
+    /// and mints NOTHING on any of them. The account token is never logged (security rule DT-05).
+    /// </summary>
+    private static IResult CompleteHostedEnroll(HttpContext ctx, MobileEnrollmentRequest? req, HostedEnrollDependencies hosted)
+    {
+        // The browser device id flows INTO Enroll so Enroll namespaces it with the resolved tenant hash (two
+        // accounts presenting the same device id cannot collide). We do NOT hash or scope it here.
+        var enrollReq = new EnrollSignedInRequest
+        {
+            DeviceId = req?.DeviceId ?? "",
+            MachineName = req?.Name ?? "",
+            Platform = req?.Platform ?? "",
+            DeviceType = MobileDeviceEnrollmentService.DeviceTypeForPlatform(req?.Platform),
+        };
+
+        var result = HostedEnrollmentEndpoint.Enroll(BearerToken.Read(ctx), enrollReq, hosted.Devices,
+            hosted.Tenants, hosted.AccountTokenValidator, hosted.Entitlements, DateTime.UtcNow);
+
+        if (result.Status != StatusCodes.Status200OK || result.Response is null)
+        {
+            FileLog.Write($"[MobileEnrollment] POST /m/enroll (hosted): the hosted mint did not enroll -> {result.Status} (no cookie set)");
+            return Results.Json(new { error = result.Error }, statusCode: result.Status);
+        }
+
+        // The one credential the browser keeps is the tenant-scoped device key, set here through the single
+        // cookie helper - the same cookie the self-host path sets, so both surfaces are set exactly one way.
+        GatewayTokenCookie.Set(ctx, result.Response.DeviceKey);
+        FileLog.Write("[MobileEnrollment] POST /m/enroll (hosted): signed in - minted a tenant-scoped device key and set the session cookie (account token not logged)");
+        return Results.Json(new MobileEnrollmentResponse { DeviceKey = result.Response.DeviceKey });
     }
 }
