@@ -118,13 +118,30 @@ namespace CcDirector.Gateway.Tests;
 ///   refusal is ALSO 404 with application/json, so status and media type still match; what separates them is
 ///   the body, which carries { error, machine } with a different error string instead of { error } alone.
 ///   THAT IS THE SHARPEST PREDICTION IN THIS FILE and it is the reason the refusal is asserted as an exact
-///   property set rather than as a status code: if those four rows came back GREEN under the mutation, it
-///   would mean the deny had been indistinguishable from "no launcher registered on that machine" all along.
+///   property set rather than as a status code.
 ///
-/// DECLARED UNKNOWN, stated as an unknown rather than left open: those four rows depend on the launcher
-/// STREAM arm returning null inside a full GatewayHost booted with streamMode true, so the REST relay arm is
-/// the one that answers. If the stream arm answers instead, they redden on the status assertion rather than
-/// the property set. What is NOT unknown is that they must redden; a green there is a finding, not a pass.
+/// THOSE FOUR ROWS ARE A TRAP DETECTOR, NOT MERELY AN EXPECTATION - AND THE TRAP IS
+/// ABSENCE-PROVED-TWICE-PRESENCE-NEVER. The hosted deny answers 404, and so does the relay's own "no launcher
+/// registered on that machine". Two different absences, identical on the wire except in the body. So:
+///
+///   - If those four come back GREEN under the mutation, the deny was INDISTINGUISHABLE from
+///     no-launcher-registered all along, and every hosted pass on them proved nothing.
+///   - IF THOSE FOUR REDDEN ON THE STATUS ASSERTION RATHER THAN ON THE PROPERTY-SET ASSERTION, THAT IS A
+///     FINDING ABOUT THE DENY'S DISTINGUISHABILITY - NOT A HARMLESS VARIATION IN THE ARM. It means something
+///     other than the body carried the difference, and the property-set assertion - the only thing separating
+///     a deny from a missing route on this family - was never the load-bearing check it is claimed to be.
+///
+/// Write that down, because the failure mode is a READER failure: four reds appear, a reviewer counts four
+/// against a prediction of four, and nobody notices they ARRIVED BY THE WRONG ROUTE. That is the
+/// arrival-classification rule turned on this file's own prediction. A red is classified by WHERE IT ARRIVES,
+/// and that applies to the predicted reds exactly as it applies to the unexpected ones.
+///
+/// DECLARED UNKNOWN, and note WHICH DIMENSION is uncertain - uncertain about the ROUTE, certain about the
+/// OUTCOME. Those four rows depend on the launcher STREAM arm returning null inside a full GatewayHost booted
+/// with streamMode true, so the REST relay arm is the one that answers; whether that holds is what cannot be
+/// predicted from reading alone. What is NOT unknown is that they MUST REDDEN. A blanket "not sure what
+/// happens here" would have been unfalsifiable; naming the one uncertain dimension leaves every other claim
+/// testable, and the status-versus-property-set arrival is then a FINDING rather than a shrug.
 ///
 /// MUST STAY GREEN - the controls, and a control that moves with the change under test is not a control:
 ///   HostedLauncherMachineDenyTests.An_unauthenticated_caller_is_still_rejected
@@ -137,8 +154,12 @@ namespace CcDirector.Gateway.Tests;
 /// finding about every other hosted test in this assembly, not a detail about this one.
 ///
 /// RECONCILE EVERY ARM, INCLUDING BASELINE AND RESTORE: passed plus failed plus skipped must EQUAL the
-/// baseline total. A pre-existing race can truncate a run while still printing a cheerful passed line, and a
-/// truncated arm reads exactly like a mutation that reddened fewer tests than predicted.
+/// baseline total, taken FRESH at this head and never quoted from another run. A pre-existing race can
+/// truncate a run while still printing a cheerful passed line - and a truncated arm reads EXACTLY like a
+/// mutation that reddened fewer tests than predicted. Without the reconciliation, a truncation that swallowed
+/// three of the fifteen would present as a twelve-red arm, which under this pre-registration would have to be
+/// treated as a finding about the deny. Reconcile FIRST, then classify; a total that does not add up
+/// disqualifies the arm before any red in it is worth interpreting.
 /// </summary>
 public sealed class HostedLauncherMachineDenyTests : IAsyncLifetime
 {
