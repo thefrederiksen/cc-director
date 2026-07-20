@@ -248,6 +248,10 @@ internal static class MutationProofPinGuard
     internal static Verdict Decide(PinReading pin, TreeReading tree) =>
         Decide(pin, tree, Array.Empty<string>());
 
+    /// <summary>The same, given a history that was read successfully.</summary>
+    internal static Verdict Decide(PinReading pin, TreeReading tree, IReadOnlyList<string> priorLedgerLines) =>
+        Decide(pin, tree, LedgerReading.Of(priorLedgerLines));
+
     /// <summary>
     /// The rule, in one place. Collects EVERY problem rather than stopping at the first, so a worker fixes
     /// the tree in one pass instead of discovering the second fault after another nine-minute run.
@@ -255,8 +259,14 @@ internal static class MutationProofPinGuard
     /// <paramref name="priorLedgerLines"/> is this machine's record of every earlier proof run. It is what
     /// lets the guard check its own foundation - see <see cref="DetectMovedPin"/>.
     /// </summary>
-    internal static Verdict Decide(PinReading pin, TreeReading tree, IReadOnlyList<string> priorLedgerLines)
+    internal static Verdict Decide(PinReading pin, TreeReading tree, LedgerReading ledger) =>
+        Decide(pin, tree, ledger, new HeadPublicationReading(HeadPublication.NoRemoteConfigured, null));
+
+    /// <summary>The whole rule, including whether the pinned commit is one anybody else can read.</summary>
+    internal static Verdict Decide(
+        PinReading pin, TreeReading tree, LedgerReading ledger, HeadPublicationReading publication)
     {
+        var priorLedgerLines = ledger.Lines;
         // THE ONLY ADMIT IN THIS METHOD IS THE ONE BELOW, AND IT IS REACHABLE FROM ONE STATE.
         //
         // Everything else - a pin that cannot be parsed, a location that cannot be resolved, a state this
@@ -319,6 +329,56 @@ internal static class MutationProofPinGuard
         }
 
         var problems = new List<string>();
+
+        if (!ledger.Read)
+        {
+            // The history is what proves this proof's pinned head has not moved. Without it that check
+            // cannot run, and an unreadable history silently disabling a safety mechanism is exactly the
+            // shape this guard exists to refuse.
+            problems.Add(
+                "THE PROOF HISTORY COULD NOT BE READ, so this run cannot be checked against earlier runs "
+                + "of the same proof: " + (ledger.Problem ?? "(no detail)")
+                + Environment.NewLine
+                + "    That check is the only thing that catches a pinned head which moved midway through "
+                + "a proof, so proceeding without it would mean running with one of this guard's two "
+                + "mechanisms silently switched off.");
+        }
+
+        switch (publication.Outcome)
+        {
+            case HeadPublication.NotPublished:
+                problems.Add(
+                    "THE PINNED COMMIT HAS NOT BEEN PUSHED, so the numbers this run produces would be "
+                    + "attributed to a commit nobody else can fetch or read."
+                    + Environment.NewLine
+                    + "    This guard can verify that the tree matches the pinned head. It cannot know "
+                    + "what that head was SUPPOSED to contain - so a repair that was stashed rather than "
+                    + "committed leaves a perfectly clean tree at exactly the pinned head, and the arm "
+                    + "measures unrepaired source while every count reconciles. Requiring a published "
+                    + "commit does not close that gap, but it makes it visible to somebody else: the "
+                    + "commit can be fetched and the missing repair seen."
+                    + Environment.NewLine
+                    + "    Commit and push the work this proof is about, then pin a fresh baseline.");
+                break;
+
+            case HeadPublication.CouldNotTell:
+                problems.Add(
+                    "WHETHER THE PINNED COMMIT HAS BEEN PUBLISHED COULD NOT BE ESTABLISHED: "
+                    + (publication.Problem ?? "(no detail)")
+                    + Environment.NewLine
+                    + "    Unknown is not the same as published, and is not treated as it.");
+                break;
+
+            case HeadPublication.Published:
+            case HeadPublication.NoRemoteConfigured:
+                break;
+
+            default:
+                problems.Add(
+                    "The publication state " + publication.Outcome + " is not one this guard recognises, "
+                    + "so it cannot say whether the pinned commit is readable by anyone else.");
+                break;
+        }
 
         var moved = DetectMovedPin(active, priorLedgerLines);
         if (moved is not null)
@@ -628,30 +688,6 @@ internal static class MutationProofPinGuard
     // ---------------------------------------------------------------------------------------------------
 
     /// <summary>
-    /// Walks up from a starting directory to the working tree root - the directory holding ".git". In a git
-    /// worktree ".git" is a FILE rather than a directory, which is the normal case for this repository's
-    /// mission work, so both are accepted.
-    ///
-    /// Returns null when there is no repository above the starting point. That is the honest answer for a
-    /// test assembly copied somewhere else entirely, and it means the guard has nothing to key on; it is
-    /// stated here rather than papered over because it is the one way a proof run could sidestep the guard.
-    /// </summary>
-    internal static string? FindWorkingTreeRoot(string startDirectory)
-    {
-        var directory = new DirectoryInfo(startDirectory);
-        while (directory is not null)
-        {
-            var marker = Path.Combine(directory.FullName, ".git");
-            if (Directory.Exists(marker) || File.Exists(marker))
-                return directory.FullName;
-
-            directory = directory.Parent;
-        }
-
-        return null;
-    }
-
-    /// <summary>
     /// The pin file's name inside the repository's git directory. Read by this guard, WRITTEN by
     /// scripts/mutation-proof-pin.ps1, and therefore the one string the two must agree on - which is why
     /// TheScriptAndTheGuardAgreeOnThePinFileName reads the script's own text and compares it against this
@@ -690,6 +726,84 @@ internal static class MutationProofPinGuard
     /// The pin dying with "git worktree remove" is correct: a proof in a removed worktree is over. The
     /// LEDGER is what must outlive the tree, and it lives elsewhere - see <see cref="LedgerDirectory"/>.
     /// </summary>
+    /// <summary>Whether the commit a proof is pinned to has been published to a remote.</summary>
+    internal enum HeadPublication
+    {
+        /// <summary>The pinned commit exists on a remote, so anyone can fetch and read it.</summary>
+        Published,
+
+        /// <summary>The commit is local only. Refuses.</summary>
+        NotPublished,
+
+        /// <summary>No remote is configured, so publication is not a meaningful question here.</summary>
+        NoRemoteConfigured,
+
+        /// <summary>Could not establish either way. Refuses.</summary>
+        CouldNotTell,
+    }
+
+    internal readonly record struct HeadPublicationReading(HeadPublication Outcome, string? Problem);
+
+    /// <summary>
+    /// Establishes whether the pinned commit exists on a remote.
+    ///
+    /// WHY A PROOF SHOULD ONLY BE TAKEN AT A PUBLISHED COMMIT. This came from another unit on this mission,
+    /// which built the same precondition independently and flagged the overlap rather than shipping a
+    /// duplicate. Its case is the one below, and it is a real gap in what this guard could otherwise
+    /// promise.
+    ///
+    /// This guard verifies that the working tree is exactly the pinned head. A reader will hear something
+    /// stronger - "this arm measured the code under review" - and those are different sentences. The gap
+    /// between them is a STASH: a worker who stashes an uncommitted repair presents a perfectly clean tree
+    /// at exactly the pinned head, this guard admits, and the arm runs on unrepaired source while every
+    /// count reconciles beautifully. That unit nearly lost its tree to a stash the same night.
+    ///
+    /// BE PRECISE ABOUT WHAT THIS DOES AND DOES NOT FIX. It cannot close that gap, because nothing here can
+    /// know what a repair was SUPPOSED to contain. What it does is make the claim CHECKABLE BY SOMEBODY
+    /// ELSE: if the pinned commit must exist on a remote, then the head every number is attributed to is
+    /// one a reviewer can fetch and read, and a stashed repair becomes visible as absent from that commit
+    /// rather than invisible on one machine. It also catches the common shape directly, since a stash
+    /// usually leaves the tree on a local commit that was never pushed.
+    ///
+    /// A COPY restores a snapshot, a CHECKOUT restores the last commit, a STASH restores an index state,
+    /// and none of them restores the state before one mutation. Committing first closes all three - and it
+    /// is also what makes an admission here mean anything.
+    /// </summary>
+    internal static HeadPublicationReading ReadHeadPublication(string workingTreeRoot, string gitExecutable)
+    {
+        var remotes = RunGit(workingTreeRoot, "--no-optional-locks remote", gitExecutable);
+        if (remotes.ExitCode != 0)
+        {
+            return new HeadPublicationReading(
+                HeadPublication.CouldNotTell,
+                "the configured remotes could not be listed: " + Describe(remotes));
+        }
+
+        if (remotes.Output.Trim().Length == 0)
+        {
+            // A repository with nowhere to publish to - a scratch clone, a fixture, an offline experiment.
+            // Publication is not a question that has an answer here, so it is not held against the run.
+            return new HeadPublicationReading(HeadPublication.NoRemoteConfigured, null);
+        }
+
+        var containing = RunGit(
+            workingTreeRoot, "--no-optional-locks branch --remotes --contains HEAD", gitExecutable);
+
+        if (containing.ExitCode != 0)
+        {
+            return new HeadPublicationReading(
+                HeadPublication.CouldNotTell,
+                "whether the pinned commit exists on a remote could not be established: "
+                + Describe(containing));
+        }
+
+        return new HeadPublicationReading(
+            containing.Output.Trim().Length > 0
+                ? HeadPublication.Published
+                : HeadPublication.NotPublished,
+            null);
+    }
+
     /// <summary>What a filesystem probe established about one path.</summary>
     internal enum ProbeOutcome
     {
@@ -1125,11 +1239,17 @@ internal static class MutationProofPinGuard
 
         // Read only when a pin is active. An unpinned run has no proof identity to compare against, and
         // reading the ledger on every ordinary run would be cost for nothing.
-        var priorLedgerLines = pin.Outcome == PinOutcome.NoPinPresent
-            ? Array.Empty<string>()
+        var ledger = pin.Outcome == PinOutcome.NoPinPresent
+            ? LedgerReading.Of(Array.Empty<string>())
             : ReadLedger();
 
-        Finish(root, pin, tree, Decide(pin, tree, priorLedgerLines));
+        // Only asked for a run that is actually part of a proof - it costs two git calls, and an
+        // ordinary run has no claim to make about the commit it sits on.
+        var publication = pin.Outcome == PinOutcome.PinActive && location.WorkingTreeRoot is not null
+            ? ReadHeadPublication(root, GitExecutable)
+            : new HeadPublicationReading(HeadPublication.NoRemoteConfigured, null);
+
+        Finish(root, pin, tree, Decide(pin, tree, ledger, publication));
     }
 
     /// <summary>
@@ -1180,12 +1300,21 @@ internal static class MutationProofPinGuard
     /// evidence, being prose in a pull request, cannot notice.
     /// </summary>
     internal static Verdict Evaluate(string workingTreeRoot, IReadOnlyList<string> priorLedgerLines) =>
-        Evaluate(workingTreeRoot, priorLedgerLines, GitExecutable);
+        Evaluate(workingTreeRoot, LedgerReading.Of(priorLedgerLines), GitExecutable);
+
+    /// <summary>The same, given a history that may or may not have been readable.</summary>
+    internal static Verdict Evaluate(string workingTreeRoot, LedgerReading ledger) =>
+        Evaluate(workingTreeRoot, ledger, GitExecutable);
 
     /// <summary>The same, with the git program named - see <see cref="ReadTree(string, string)"/>.</summary>
     internal static Verdict Evaluate(
         string workingTreeRoot, IReadOnlyList<string> priorLedgerLines, string gitExecutable) =>
-        Decide(ReadPinFor(workingTreeRoot), ReadTree(workingTreeRoot, gitExecutable), priorLedgerLines);
+        Evaluate(workingTreeRoot, LedgerReading.Of(priorLedgerLines), gitExecutable);
+
+    /// <summary>The same, with the git program named - see <see cref="ReadTree(string, string)"/>.</summary>
+    internal static Verdict Evaluate(
+        string workingTreeRoot, LedgerReading ledger, string gitExecutable) =>
+        Decide(ReadPinFor(workingTreeRoot), ReadTree(workingTreeRoot, gitExecutable), ledger);
 
     internal static PinReading ReadPinFor(string workingTreeRoot)
     {
@@ -1273,21 +1402,43 @@ internal static class MutationProofPinGuard
     /// the moved-pin check it feeds is an ADDITIONAL mechanism - the head comparison against the working
     /// tree still runs regardless.
     /// </summary>
-    private static IReadOnlyList<string> ReadLedger() => ReadLedger(LedgerDirectory);
+    /// <summary>
+    /// The proof history, and whether it could actually be read.
+    ///
+    /// TYPED FOR THE SAME REASON THE PIN IS. An earlier version returned a bare list and swallowed every
+    /// failure into an empty one, which silently disabled <see cref="DetectMovedPin"/> - the second
+    /// mechanism, the one that exists precisely to catch what the first cannot. A proof whose history
+    /// cannot be read is not a proof with no history.
+    ///
+    /// I found this by applying to my own code the rule a reviewer had just taught me about someone
+    /// else's: the try/catch around it made the failure look handled while converting it into silence.
+    /// </summary>
+    internal sealed record LedgerReading(bool Read, IReadOnlyList<string> Lines, string? Problem)
+    {
+        /// <summary>A successfully read history - including a genuinely empty one.</summary>
+        internal static LedgerReading Of(IReadOnlyList<string> lines) => new(true, lines, null);
+
+        internal static LedgerReading Unreadable(string problem) =>
+            new(false, Array.Empty<string>(), problem);
+    }
+
+    private static LedgerReading ReadLedger() => ReadLedger(LedgerDirectory);
 
     /// <summary>
     /// The ledger in a nominated directory. Parameterised so the whole on-disk path - a real pin file, a
     /// real working tree, a real ledger - can be driven by a test rather than only by a person following a
     /// sequence by hand. A proof nobody can re-run is not a regression test.
+    ///
+    /// Opened rather than tested for existence, for the reason the pin read is: only the operating system
+    /// naming the file as missing means "no history yet". Everything else is unreadable, and unreadable is
+    /// not empty.
     /// </summary>
-    internal static IReadOnlyList<string> ReadLedger(string ledgerDirectory)
+    internal static LedgerReading ReadLedger(string ledgerDirectory)
     {
+        var path = Path.Combine(ledgerDirectory, ProofLedgerFileName);
+
         try
         {
-            var path = Path.Combine(ledgerDirectory, ProofLedgerFileName);
-            if (!File.Exists(path))
-                return Array.Empty<string>();
-
             using var stream = new FileStream(
                 path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
             using var reader = new StreamReader(stream);
@@ -1300,11 +1451,23 @@ internal static class MutationProofPinGuard
                     lines.Add(line);
             }
 
-            return lines;
+            return LedgerReading.Of(lines);
         }
-        catch (Exception)
+        catch (FileNotFoundException)
         {
-            return Array.Empty<string>();
+            // No proof has ever run on this machine. A genuine, completed absence.
+            return LedgerReading.Of(Array.Empty<string>());
+        }
+        catch (DirectoryNotFoundException)
+        {
+            // Likewise: the ledger directory is created on first write.
+            return LedgerReading.Of(Array.Empty<string>());
+        }
+        catch (Exception ex)
+        {
+            return LedgerReading.Unreadable(
+                "the proof ledger " + path + " could not be read: "
+                + ex.GetType().Name + ": " + ex.Message);
         }
     }
 

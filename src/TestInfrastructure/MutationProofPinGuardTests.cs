@@ -1277,6 +1277,158 @@ public sealed class MutationProofPinGuardTests
         Assert.Equal(MutationProofPinGuard.ProbeOutcome.CouldNotTell, MutationProofPinGuard.ProbePath("").Outcome);
     }
 
+    // -------------------------------------------------------------------------------------------------
+    // A HISTORY THAT CANNOT BE READ IS NOT A HISTORY WITH NOTHING IN IT.
+    //
+    // Found by applying to my own code the rule a reviewer had just applied to it: the try/catch around
+    // the ledger read made failure look handled while turning it into an empty list - which silently
+    // disabled DetectMovedPin, the second mechanism, the one built to catch what the first cannot.
+    // -------------------------------------------------------------------------------------------------
+
+    [Fact]
+    public void AProofHistoryThatCannotBeReadRefuses_RatherThanReadingAsNoHistory()
+    {
+        var verdict = MutationProofPinGuard.Decide(
+            BaselinePinAt("1111111111111111111111111111111111111111"),
+            new MutationProofPinGuard.TreeReading(
+                true, "1111111111111111111111111111111111111111",
+                Array.Empty<MutationProofPinGuard.ChangedPath>(), null),
+            MutationProofPinGuard.LedgerReading.Unreadable("access is denied"));
+
+        Assert.False(
+            verdict.Admitted,
+            "A proof ran with its history unreadable, which silently switches off the check that catches a "
+            + "pinned head moving midway through a proof. " + verdict.Message);
+        Assert.Contains("PROOF HISTORY COULD NOT BE READ", verdict.Message, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// CONTROL. A genuinely EMPTY history - the first proof ever run on a machine - must admit, or no
+    /// proof could ever start.
+    /// </summary>
+    [Fact]
+    public void CONTROL_AnEmptyProofHistoryIsFineAndAdmits()
+    {
+        var verdict = MutationProofPinGuard.Decide(
+            BaselinePinAt("1111111111111111111111111111111111111111"),
+            new MutationProofPinGuard.TreeReading(
+                true, "1111111111111111111111111111111111111111",
+                Array.Empty<MutationProofPinGuard.ChangedPath>(), null),
+            MutationProofPinGuard.LedgerReading.Of(Array.Empty<string>()));
+
+        Assert.True(verdict.Admitted, verdict.Message);
+    }
+
+    /// <summary>A missing ledger is an empty history, not an unreadable one - the first run on a machine.</summary>
+    [Fact]
+    public void AMissingLedgerReadsAsAnEmptyHistory_NotAnUnreadableOne()
+    {
+        using var scratch = new TemporaryDirectory();
+
+        var reading = MutationProofPinGuard.ReadLedger(Path.Combine(scratch.Path, "never-written"));
+
+        Assert.True(reading.Read);
+        Assert.Empty(reading.Lines);
+    }
+
+    // -------------------------------------------------------------------------------------------------
+    // THE PINNED COMMIT MUST BE ONE SOMEBODY ELSE CAN READ.
+    //
+    // From another unit on this mission, which built the same precondition independently and flagged the
+    // overlap rather than shipping a duplicate. This guard verifies the tree matches the pinned head; a
+    // reader hears "this arm measured the code under review", and the gap between those two sentences is
+    // a STASH - a stashed repair leaves a perfectly clean tree at exactly the pinned head.
+    //
+    // Requiring a published commit does not close that gap; nothing here can know what a head was SUPPOSED
+    // to contain. It makes the claim checkable by somebody else, and catches the common shape, where the
+    // stash leaves the tree on a local commit that was never pushed.
+    // -------------------------------------------------------------------------------------------------
+
+    [Fact]
+    public void APinnedCommitThatWasNeverPushedIsRefused()
+    {
+        var verdict = DecideWithPublication(MutationProofPinGuard.HeadPublication.NotPublished);
+
+        Assert.False(verdict.Admitted, verdict.Message);
+        Assert.Contains("HAS NOT BEEN PUSHED", verdict.Message, StringComparison.Ordinal);
+        Assert.Contains("stashed", verdict.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void APublicationStateThatCannotBeEstablishedIsRefused()
+    {
+        var verdict = MutationProofPinGuard.Decide(
+            BaselinePinAt("1111111111111111111111111111111111111111"),
+            CleanTreeAt("1111111111111111111111111111111111111111"),
+            MutationProofPinGuard.LedgerReading.Of(Array.Empty<string>()),
+            new MutationProofPinGuard.HeadPublicationReading(
+                MutationProofPinGuard.HeadPublication.CouldNotTell, "the remote could not be listed"));
+
+        Assert.False(verdict.Admitted, verdict.Message);
+        Assert.Contains("COULD NOT BE ESTABLISHED", verdict.Message, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// CONTROL. A published commit admits - otherwise the check above would refuse every proof, which is
+    /// the same blanket failure the Architect ruled out in the original scope.
+    /// </summary>
+    [Fact]
+    public void CONTROL_APublishedPinnedCommitIsAdmitted()
+    {
+        Assert.True(
+            DecideWithPublication(MutationProofPinGuard.HeadPublication.Published).Admitted);
+    }
+
+    /// <summary>
+    /// CONTROL. A repository with no remote at all - a scratch clone, a fixture, an offline experiment -
+    /// has no publication question to answer, and must not be blocked by one.
+    /// </summary>
+    [Fact]
+    public void CONTROL_ARepositoryWithNoRemoteIsNotHeldToPublication()
+    {
+        Assert.True(
+            DecideWithPublication(MutationProofPinGuard.HeadPublication.NoRemoteConfigured).Admitted);
+    }
+
+    /// <summary>
+    /// The real reader, against a real repository with no remote configured - the case every temporary
+    /// fixture in this file is in, so this is also what stops the new check breaking them all.
+    /// </summary>
+    [Fact]
+    public void ARepositoryWithNoRemoteReportsNoRemoteConfigured()
+    {
+        using var repository = TemporaryGitRepository.Create();
+        repository.WriteAndCommit("src/RequestHandler.cs", FileWithTheGuardBlock, "add the tenant guard");
+
+        var reading = MutationProofPinGuard.ReadHeadPublication(
+            repository.Root, MutationProofPinGuard.GitExecutable);
+
+        Assert.Equal(MutationProofPinGuard.HeadPublication.NoRemoteConfigured, reading.Outcome);
+    }
+
+    /// <summary>With git unreachable, publication is unknown - and unknown is never read as published.</summary>
+    [Fact]
+    public void WithGitUnreachableThePublicationStateIsUnknown()
+    {
+        using var repository = TemporaryGitRepository.Create();
+        repository.WriteAndCommit("src/RequestHandler.cs", FileWithTheGuardBlock, "add the tenant guard");
+
+        var reading = MutationProofPinGuard.ReadHeadPublication(repository.Root, GitThatDoesNotExist);
+
+        Assert.Equal(MutationProofPinGuard.HeadPublication.CouldNotTell, reading.Outcome);
+    }
+
+    private static MutationProofPinGuard.TreeReading CleanTreeAt(string head) =>
+        new(true, head, Array.Empty<MutationProofPinGuard.ChangedPath>(), null);
+
+    private static MutationProofPinGuard.Verdict DecideWithPublication(
+        MutationProofPinGuard.HeadPublication publication) =>
+        MutationProofPinGuard.Decide(
+            BaselinePinAt("1111111111111111111111111111111111111111"),
+            CleanTreeAt("1111111111111111111111111111111111111111"),
+            MutationProofPinGuard.LedgerReading.Of(Array.Empty<string>()),
+            new MutationProofPinGuard.HeadPublicationReading(publication, null));
+
     /// <summary>A git that is certainly not installed, so the run genuinely cannot reach git.</summary>
     private const string GitThatDoesNotExist = "git-not-installed-on-this-machine-b6f2a1";
 
@@ -1418,28 +1570,38 @@ public sealed class MutationProofPinGuardTests
     [Fact]
     public void TheWorkingTreeRootIsFoundWhenDotGitIsAFile()
     {
-        using var scratch = new TemporaryDirectory();
-        var root = Path.Combine(scratch.Path, "tree");
-        var deep = Path.Combine(root, "src", "Project", "bin", "Debug", "net10.0");
-        Directory.CreateDirectory(deep);
-        File.WriteAllText(Path.Combine(root, ".git"), "gitdir: ../.git/worktrees/tree");
+        using var repository = TemporaryGitRepository.Create();
+        repository.WriteAndCommit("src/RequestHandler.cs", FileWithTheGuardBlock, "add the tenant guard");
 
-        Assert.Equal(root, MutationProofPinGuard.FindWorkingTreeRoot(deep));
+        // A real worktree, where ".git" is a FILE naming somewhere else - how every mission here runs.
+        var worktree = Path.Combine(repository.ScratchPath, "linked-worktree");
+        repository.Git("worktree add \"" + worktree + "\" -b linked");
+
+        var deep = Path.Combine(worktree, "src", "Project", "bin", "Debug", "net10.0");
+        Directory.CreateDirectory(deep);
+
+        var located = MutationProofPinGuard.LocatePin(deep);
+
+        Assert.Equal(MutationProofPinGuard.PinLocationOutcome.Located, located.Outcome);
+        Assert.Equal(Path.GetFullPath(worktree), Path.GetFullPath(located.WorkingTreeRoot!));
     }
 
     [Fact]
-    public void OutsideAnyRepositoryThereIsNoWorkingTreeRoot()
+    public void OutsideAnyRepositoryTheLookupSaysNotInARepository()
     {
         using var scratch = new TemporaryDirectory();
         var deep = Path.Combine(scratch.Path, "a", "b");
         Directory.CreateDirectory(deep);
 
-        // A temporary directory is not inside this repository, so the walk reaches the drive root and
-        // stops. If some ancestor of the temporary directory ever is a repository this would find it, so
-        // the assertion is on the shape of the answer rather than on a specific null.
-        var found = MutationProofPinGuard.FindWorkingTreeRoot(deep);
+        var located = MutationProofPinGuard.LocatePin(deep);
+
+        // If some ancestor of the temporary directory ever were a repository the walk would legitimately
+        // find it, so the assertion forbids only the answer that matters: it must never be Indeterminate,
+        // and it must never report a root inside the scratch directory, where none was created.
+        Assert.NotEqual(MutationProofPinGuard.PinLocationOutcome.Indeterminate, located.Outcome);
         Assert.True(
-            found is null || !found.StartsWith(scratch.Path, StringComparison.OrdinalIgnoreCase),
+            located.WorkingTreeRoot is null
+            || !located.WorkingTreeRoot.StartsWith(scratch.Path, StringComparison.OrdinalIgnoreCase),
             "no repository was created under the scratch directory, so none may be reported from inside it");
     }
 
