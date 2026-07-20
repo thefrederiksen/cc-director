@@ -118,24 +118,57 @@ namespace CcDirector.Gateway.Tests;
 ///
 /// OUTCOME: see the per-primitive results recorded above; the prediction is scored there explicitly.
 ///
-/// THREE TESTS OUTSIDE THIS CLASS ALSO DETECT THIS PARTITION - which primitive, see the matrix:
+/// IF YOU MOVE THE VOICE ON-DISK LAYOUT: THREE TESTS IN TWO OTHER CLASSES GO RED, AND NONE OF THEM HAS
+/// "TENANT" IN THE NAME.
 ///   WingmanVoiceServiceTests.ReadyAudio_PersistsAndReloadsAcrossRestart
 ///   WingmanVoiceServiceTests.ReadyAudio_ReloadsLegacyWavCacheWithDetectedContentType
 ///   WingmanVoiceFallbackTests.ServedViaFallback_SurvivesAGatewayRestart
-/// This is the answer to a question a filtered run cannot ask: the durable restart path was ALREADY
-/// covered before this change. If you move the on-disk layout, three tests in two other classes go red
-/// and their names will not mention tenancy - the matrix is how you find out why.
+/// They are reddened by the on-disk DIRECTORY primitive and NOT by the in-memory bucket - observed both
+/// ways round, one run per primitive, not inferred. The durable restart path was already covered before
+/// tenant partitioning existed, which is why nothing in those names hints at tenancy and why a filtered
+/// run of this class alone can never tell you they exist. If you are here because one of those three went
+/// red and you were not expecting it, this paragraph is the answer.
 ///
-/// A WRONG EXPECTATION, RECORDED ON PURPOSE. Before the single-primitive runs, the author expected
+/// TWO TESTS STRADDLE TWO PRIMITIVES, AND THE FAILURE KIND IS HOW YOU CAN TELL.
 /// Voice_session_set_reloads_into_the_tenant_that_owned_it and
-/// Self_host_moves_the_pre_partition_voice_state_into_the_local_partition to be sensitive to the on-disk
-/// DIRECTORY. They are not: the in-memory BUCKET alone reddens both, and the failure kind is what gives
-/// the reason away - both fail on their cross-tenant <c>Assert.False</c>, not on their reload assertion.
-/// These tests are split across two primitives: the RELOAD half rides on the directory, the ISOLATION
-/// half rides on the bucket. That is a real structural fact about this code, it contradicted the author's
-/// model, and no combined run could ever have surfaced it - a combined run would have shown both
-/// primitives mutated and both tests red, which is consistent with any explanation at all.
-/// Distrust the intuition that "restart test" implies "on-disk sensitivity". Read the matrix instead.
+/// Self_host_moves_the_pre_partition_voice_state_into_the_local_partition are reddened by the in-memory
+/// bucket AND by the on-disk directory, INDEPENDENTLY - either mutation alone is enough - but they fail
+/// on DIFFERENT assertions in each case:
+///   bucket collapsed    -> fails its cross-tenant <c>Assert.False</c> ("the other tenant must not see it")
+///   directory collapsed -> fails its <c>Assert.True</c>   ("the state must survive the restart")
+/// So one test carries two independent claims: ISOLATION rides on the bucket, RELOAD rides on the
+/// directory. That is a real structural fact about this code and no combined run could surface it - with
+/// everything mutated at once both tests are simply red, which is consistent with any explanation at all.
+///
+/// TWO CORRECTIONS THE AUTHOR OWES, both recorded rather than smoothed away:
+///  1. Before these runs the author expected both tests to be DIRECTORY-sensitive only. The bucket run
+///     reddened them too. Distrust the intuition that "restart test" implies "on-disk sensitivity".
+///  2. After the bucket run - and before the directory run had produced anything - the author wrote that
+///     these two were bucket-sensitive and NOT directory-sensitive. That was also wrong, in the opposite
+///     direction, and for a worse reason: it generalised from a single run while the run that could
+///     refute it had not yet been done. They are sensitive to BOTH. A claim of the form "X and not Y" is
+///     not supported by an experiment that only varied X.
+///
+/// TWO RULES THIS PROOF PAID FOR. Both are general; both nearly produced a wrong published claim here.
+///
+/// RULE ONE - WHEN COMPARING OBSERVATIONS FROM DIFFERENT BUILDS, COMPARE PROPERTIES THAT CANNOT SHIFT.
+/// The temptation was to prove the straddle above from POSITIONS: the bucket run failed at line 306, the
+/// directory run at line 322, therefore different assertions. Invalid. Seventeen lines of COMMENT were
+/// added to this file between the two builds, so 306 in the earlier build maps to about 323 in the later
+/// one - within one line of 322. The line numbers were consistent with "the same assertion" the whole
+/// time and would have been read as proof of the opposite. A change with no behaviour whatsoever was
+/// enough to invert the conclusion. Line numbers, offsets, ordinals and indices all move when a file is
+/// edited; test name, assertion TYPE, message text and explicit identifiers do not. What actually settles
+/// the straddle is <c>Assert.False</c> versus <c>Assert.True</c>: the executable source did not change
+/// between the builds, and one line cannot be both.
+///
+/// RULE TWO - A CLAIM OF THE FORM "X AND NOT Y" IS NOT SUPPORTED BY AN EXPERIMENT THAT ONLY VARIED X.
+/// After the bucket run, and before the directory run existed, the author published "these two tests are
+/// bucket-sensitive and NOT directory-sensitive". The directory run showed both. This is worse than an
+/// ordinary wrong guess in a specific way: it generalises from a single arm while the arm that could
+/// refute it is still unrun, and it arrives dressed as a finding rather than as a hypothesis. The honest
+/// form after one arm is: "X is sufficient; whether Y also suffices is UNTESTED." Say that instead, and
+/// then go and run Y.
 ///
 /// The Assert.NotEqual red on Each_tenants_clips_live_in_its_own_directory is the one to look at hardest,
 /// because that assertion previously compared two paths the TEST had built and could not fail. Rewritten
