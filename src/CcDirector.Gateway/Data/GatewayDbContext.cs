@@ -101,6 +101,12 @@ public sealed class GatewayDbContext : DbContext
     /// from. Unused on the single-tenant local install.</summary>
     public DbSet<TenantEntity> Tenants => Set<TenantEntity>();
 
+    /// <summary>
+    /// The paid-entitlement records the payment side writes and this Gateway only READS. Excluded from
+    /// migrations - see the entity for why this one table is not ours to create.
+    /// </summary>
+    public DbSet<EntitlementEntity> Entitlements => Set<EntitlementEntity>();
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         base.OnModelCreating(modelBuilder);
@@ -299,6 +305,22 @@ public sealed class GatewayDbContext : DbContext
             b.HasIndex(e => new { e.TenantId, e.SessionId, e.OccurredUtc });
             b.HasIndex(e => new { e.TenantId, e.RunId, e.OccurredUtc });
             b.HasIndex(e => new { e.TenantId, e.Category, e.OccurredUtc });
+        });
+
+        modelBuilder.Entity<EntitlementEntity>(b =>
+        {
+            // EXCLUDED FROM MIGRATIONS on purpose. This table belongs to the payment side, which creates it
+            // and writes it as the service role; this Gateway holds SELECT and nothing more. Describing its
+            // shape lets us read it; emitting a migration for it would have us create or alter a table we do
+            // not own, on a schema boundary that is deliberate.
+            b.ToTable("entitlements", t => t.ExcludeFromMigrations());
+            b.HasKey(e => e.Subject);
+            b.Property(e => e.Subject).HasColumnName("subject").IsRequired();
+            b.Property(e => e.Status).HasColumnName("status").IsRequired();
+            b.Property(e => e.CurrentPeriodEnd).HasColumnName("current_period_end");
+            b.Property(e => e.StripeSubscriptionId).HasColumnName("stripe_subscription_id");
+            b.Property(e => e.UpdatedAt).HasColumnName("updated_at");
+            b.Property(e => e.Livemode).HasColumnName("livemode");
         });
 
         modelBuilder.Entity<TenantEntity>(b =>
