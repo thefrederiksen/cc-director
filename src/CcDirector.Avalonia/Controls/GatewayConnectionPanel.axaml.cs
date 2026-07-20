@@ -345,9 +345,16 @@ public partial class GatewayConnectionPanel : UserControl
     // user understands the coming option, but they carry a "coming soon" badge and no click in this slice.
     private static (string Title, string Description) ChoiceCopyFor(GatewayChoiceAction action) => action switch
     {
+        // The tradeoffs are stated on the CARD, where the choice is actually made - not after the
+        // user has committed. Both are capability facts, never privacy claims: self-hosting means
+        // this machine is the Gateway, so it has to be awake, and reaching it from a phone or
+        // another computer needs Tailscale. A user who learns that after provisioning has been
+        // sold something (#1810).
         GatewayChoiceAction.SelfHost => (
             "Self-host a Gateway",
-            "Run your own Gateway on this computer. It stays on your machine, and it is free."),
+            "Run your own Gateway on this computer. Free. This machine has to stay on and awake "
+            + "for your agents to keep running, and reaching it from your phone or another "
+            + "computer needs Tailscale."),
         GatewayChoiceAction.UseHosted => (
             "Use a hosted Gateway",
             "Let DevThrottle run the Gateway for you - always on, and reachable from anywhere."),
@@ -396,9 +403,40 @@ public partial class GatewayConnectionPanel : UserControl
             case GatewayChoiceAction.Skip:
                 HandleSkip();
                 break;
-            // Self-host and Hosted are disabled in this slice and never wire a handler, so they cannot fire.
+            case GatewayChoiceAction.SelfHost:
+                // Routed, but UNREACHABLE in production today: the card is still rendered disabled
+                // and wires no handler, so a user cannot fire this. The route exists so the
+                // transaction behind it is wired and pinned by a test rather than bolted on later
+                // in the same change that first exposes it to a stranger's machine.
+                StartSelfHost();
+                break;
+            // Hosted is disabled in this slice and never wires a handler, so it cannot fire.
         }
     }
+
+    /// <summary>
+    /// Entry point for the self-host provisioning transaction.
+    ///
+    /// The panel does NOT own the sequencing, the ownership rules, or the rollback - those live in
+    /// <see cref="CcDirector.Setup.Engine.SelfHostOrchestrator"/> so they can be proven without a
+    /// machine. This method's only jobs are to start it and to render what it reports.
+    ///
+    /// It is deliberately not reachable from the user interface yet. Provisioning installs and
+    /// starts a real Gateway, which cannot be verified on a developer machine that is already
+    /// running one, so the card stays disabled until a real install proves the path on an isolated
+    /// machine. A disabled card is honest; a button that half-provisions a Gateway is not.
+    /// </summary>
+    private void StartSelfHost()
+    {
+        FileLog.Write("[GatewayConnectionPanel] choice: Self-host -> provisioning transaction");
+        SelfHostRequested?.Invoke(this, EventArgs.Empty);
+    }
+
+    /// <summary>
+    /// Raised when the self-host choice is activated. The consumer owns running the transaction, so
+    /// the panel stays a renderer and the flow can be driven headlessly in a test.
+    /// </summary>
+    public event EventHandler? SelfHostRequested;
 
     // Raise the Skip verdict for the consumer to act on. Onboarding completes local-only (the #1809 seam,
     // done by the wizard, which then closes); Settings/status return to the choice (done here). The panel
@@ -428,6 +466,14 @@ public partial class GatewayConnectionPanel : UserControl
 
     /// <summary>Activate a rendered choice card exactly as a real click would: a disabled/absent card does
     /// nothing (matching IsEnabled=false swallowing pointer input), an enabled card runs its action.</summary>
+    /// <summary>
+    /// Drive the dispatch DIRECTLY, bypassing the card's enabled state, so a test can pin that the
+    /// self-host route is wired correctly while the card that would fire it is still disabled.
+    /// <see cref="ActivateChoiceForTests"/> is the other half of that pair: it goes through the
+    /// card and therefore proves the disabled card cannot fire at all.
+    /// </summary>
+    internal void InvokeChoiceForTests(GatewayChoiceAction action) => InvokeChoiceAction(action);
+
     internal void ActivateChoiceForTests(GatewayChoiceAction action)
     {
         foreach (var child in ChoiceHost.Children)
