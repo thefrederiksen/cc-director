@@ -79,6 +79,13 @@ namespace CcDirector.Gateway.Tests;
 /// the key is composed inside <c>TenantKeyedCache</c>, so an un-tenanted key is not expressible at a call
 /// site. Fewer proof units because the design got safer, not because the proof was argued down.
 ///
+/// Stated precisely, because "no unscoped store identifier exists" and "an unscoped store cannot be passed"
+/// are DIFFERENT claims and only the first was proved: two private helpers on the completion path still take
+/// a bare store in their signatures. They cannot be reached with an unscoped one today because the gate
+/// privately owns the sole raw store, so the guarantee rests on that encapsulation rather than on the type
+/// system at those two signatures. See the note on <c>DictationTenantGate</c> for the stronger form and why
+/// it is deliberately left to a follow-up.
+///
 ///   P1 DictationTenantGate.TryOpen   - partition selection for all five legs (absorbs the five)
 ///   P2 ResolveTenant hosted gate      - whether a request has an owning tenant at all
 ///   P3 PartitionRootFor               - which directory a tenant's staging lives in
@@ -88,8 +95,16 @@ namespace CcDirector.Gateway.Tests;
 ///   P7 TenantKeyedCache key           - the process-wide cache key (absorbs both cache call-site families)
 ///   P8 SweepAbandoned container skip  - whether the partition container is an upload
 ///
-/// P5 and P6 are two, not one: the stamp can be dropped while the check stays right, and the check can be
-/// neutered while the stamp stays right, and each leaks on its own.
+/// P5 and P6 are two, not one, because each is independently bypassable: the stamp can be dropped while the
+/// check stays right, and the check can be neutered while the stamp stays right.
+///
+/// THEIR FAILURE MODES ARE NOT THE SAME, and blurring them across two rows costs exactly the precision this
+/// separation was for. P6 is the DISCLOSURE guard - neuter it and a record sitting in the wrong partition is
+/// handed to the wrong account. P5 is not: with the primary partition intact, dropping the stamp makes
+/// account records unattributed and therefore UNREADABLE - a correctness and availability failure. P5 still
+/// earns its own proof because the accepted design requires the persisted ownership stamp, but a mutation
+/// showing a line is load-bearing does not show it is load-bearing FOR THE SECURITY PROPERTY. Two different
+/// claims; only the one actually observed is ours to make.
 ///
 /// Settled exempt, with reasons recorded at the guards themselves: the pending-projection container skip
 /// (redundant - BelongsHere on the same line is the real boundary and it has canaries) and the containment

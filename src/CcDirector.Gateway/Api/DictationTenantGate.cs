@@ -34,6 +34,28 @@ namespace CcDirector.Gateway.Api;
 /// It also folds the DENY into the same call. Resolving a tenant and refusing when there is none are one
 /// decision, and splitting them across two statements is what let a leg keep the resolve and lose the scope.
 /// Here a caller that does not check the return value has no store to use.
+///
+/// EXACTLY WHAT CARRIES THE GUARANTEE, stated precisely because the exemption from per-leg proof was granted
+/// on structural impossibility and a reader who finds a looser signature will rightly doubt the rest.
+///
+/// What is shown: <see cref="GatewayDictationEndpoint.Map"/> does not accept or capture a
+/// <see cref="VoiceUploadStore"/>, no unscoped store IDENTIFIER exists anywhere in that file, and the five
+/// legs can obtain a store only from <see cref="TryOpen"/>, which cannot return an unscoped one.
+///
+/// What is NOT shown: that an unscoped store could not be PASSED. Two private helpers on the completion path
+/// (<c>RunCompleteCoreAsync</c> and <c>MapNonOkTranscription</c>) still take a bare
+/// <see cref="VoiceUploadStore"/> in their signatures and would accept an unscoped one if such a store were
+/// ever in reach. Today none can be: this gate PRIVATELY OWNS the only raw store and hands out nothing but
+/// partitioned views. So the property holds by THIS TYPE'S ENCAPSULATION, not by the type system at those two
+/// signatures. Both statements are true; only the first was proved by inspection, and they are different
+/// claims.
+///
+/// The stronger form - give <see cref="TryOpen"/> a distinct scoped-handle type, constructible only here, and
+/// take THAT in the two helpers - would move the guarantee into the type system, where it would survive
+/// someone later making a raw store reachable for an unrelated reason. It is deliberately NOT done in this
+/// change: the structure above has been independently inspected and is what the mutation proof runs against,
+/// and altering it now would mean proving something other than what was validated. Worth doing next, when it
+/// is not racing a proof.
 /// </summary>
 internal sealed class DictationTenantGate
 {

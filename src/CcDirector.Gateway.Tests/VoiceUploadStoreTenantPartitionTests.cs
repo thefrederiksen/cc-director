@@ -22,8 +22,15 @@ namespace CcDirector.Gateway.Tests;
 ///     isolation assertions go RED (two accounts share one folder again).
 ///   - <c>VoiceUploadStore.IsMintedAccountTenant</c> - loosen it to a character allow-list and the
 ///     traversal / casing-alias refusals go RED.
-///   - <c>VoiceUploadStore.WriteRecordMarker</c>'s tenant stamp and <c>BelongsHere</c> - drop either and the
-///     foreign-record refusal goes RED.
+///   - <c>VoiceUploadStore.BelongsHere</c> - the independent DISCLOSURE guard. Neuter it (<c>=&gt; true</c>)
+///     and a record physically present in the wrong partition is handed over; the foreign-record refusal
+///     goes RED.
+///   - <c>VoiceUploadStore.WriteRecordMarker</c>'s tenant stamp - a separate line with a DIFFERENT failure
+///     mode, and the distinction is worth keeping crisp. Drop the stamp while <c>BelongsHere</c> stays
+///     strict and nothing is disclosed: with the primary partition intact, account records simply become
+///     unattributed and are therefore REFUSED - a correctness and availability failure, not a disclosure
+///     one. It still earns its own proof, because the accepted design requires the persisted ownership
+///     stamp; it just must not be described as demonstrating cross-tenant disclosure.
 ///   - The partition-container skip in <c>SweepAbandoned</c> - remove it and the sweep deletes every other
 ///     tenant's staging in one pass, which that test goes RED on.
 ///
