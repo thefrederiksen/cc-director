@@ -130,25 +130,30 @@ public sealed class FleetRosterCache
     }
 
     /// <summary>
-    /// Forget a Director entirely (it was unregistered or evicted from the registry). Keeps the cache
-    /// from growing without bound as Directors come and go; a Director that re-registers starts with a
-    /// clean slate, exactly as the registry's own reachability state does.
+    /// Forget ONE tenant's Director (it was unregistered or evicted from that tenant's registry partition).
+    /// Keeps the cache from growing without bound as Directors come and go; a Director that re-registers
+    /// starts with a clean slate, exactly as the registry's own reachability state does.
+    ///
+    /// It removes exactly the one <c>(tenant, director)</c> entry and CANNOT touch another tenant's. That is
+    /// deliberate and it is a security property, not tidiness. This used to take a bare director id and sweep
+    /// every partition that matched it case-insensitively, on the premise - written down in the code - that a
+    /// director id is globally unique across the fleet. It is not: the tunnel Hello takes the id from the
+    /// authenticated client's own payload with no server minting and no namespacing, so two tenants may hold
+    /// the same id at once. Tenant A could therefore register an id it had seen tenant B use, disconnect, and
+    /// let the stale sweep destroy B's cached roster - and if B was inside its grace window, its
+    /// last-known-good sessions were silently destroyed and the next read dropped them instead of serving the
+    /// grace snapshot.
+    ///
+    /// The tenant is REQUIRED rather than optional, and there is no bare-id overload, so the ownerless call
+    /// that caused this cannot be written at all. Do not add one back "for convenience": the caller
+    /// (<see cref="DirectorRegistry.OnDirectorRemoved"/>, carrying a <see cref="DirectorRemoval"/>) always
+    /// knows the tenant.
     /// </summary>
-    public void Forget(string directorId)
+    public void Forget(TenantId tenant, string directorId)
     {
         if (string.IsNullOrEmpty(directorId)) return;
-        // The removal event (DirectorRegistry.OnDirectorRemoved) carries no tenant, and a Director id is
-        // globally unique across the fleet, so drop every partition's entry for it. On self-host there is only
-        // the Local partition; on hosted a Director lives in exactly one tenant, so this removes that one entry.
-        var removedAny = false;
-        foreach (var key in _byDirector.Keys)
-        {
-            if (string.Equals(key.DirectorId, directorId, StringComparison.OrdinalIgnoreCase)
-                && _byDirector.TryRemove(key, out _))
-                removedAny = true;
-        }
-        if (removedAny)
-            FileLog.Write($"[FleetRosterCache] {directorId} forgotten (unregistered/evicted); roster cache cleared");
+        if (_byDirector.TryRemove((tenant, directorId), out _))
+            FileLog.Write($"[FleetRosterCache] {directorId} forgotten for tenant {tenant.Value} (unregistered/evicted); roster cache cleared");
     }
 
     private static SessionDto RecomputeClocks(SessionDto s, DateTime nowUtc)

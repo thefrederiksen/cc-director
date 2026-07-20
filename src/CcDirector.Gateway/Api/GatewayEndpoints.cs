@@ -2610,7 +2610,11 @@ internal static class GatewayEndpoints
             var queue = System.Threading.Channels.Channel.CreateUnbounded<GatewayEvent>();
 
             void OnAdded(DirectorDto d) => queue.Writer.TryWrite(new GatewayEvent("director.added", d.DirectorId));
-            void OnRemoved(string id) => queue.Writer.TryWrite(new GatewayEvent("director.removed", id));
+            // The removal carries its tenant now, but this stream has no tenant of its own to filter against
+            // (it is the fleet-global event feed), so it still announces every removal to every listener. That
+            // is a pre-existing disclosure of other accounts' director ids, booked with the rest of the
+            // not-yet-tenant-aware routes rather than changed here.
+            void OnRemoved(DirectorRemoval removal) => queue.Writer.TryWrite(new GatewayEvent("director.removed", removal.DirectorId));
 
             registry.OnDirectorAdded += OnAdded;
             registry.OnDirectorRemoved += OnRemoved;

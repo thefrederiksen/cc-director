@@ -130,8 +130,22 @@ public sealed class DirectorRegistry : IDisposable
     /// <summary>Raised when a Director appears (file created or HTTP register).</summary>
     public event Action<DirectorDto>? OnDirectorAdded;
 
-    /// <summary>Raised when a Director disappears (file removed, HTTP unregister, or stale).</summary>
-    public event Action<string>? OnDirectorRemoved;
+    /// <summary>
+    /// Raised when a Director disappears (file removed, HTTP unregister, or stale).
+    ///
+    /// It carries a <see cref="DirectorRemoval"/> - the TENANT as well as the id - and not a bare id, and
+    /// that is the whole point of the type. Issue #1847 made the registry's own key composite, so the
+    /// removal itself is already tenant-correct; but the event used to be typed <c>Action&lt;string&gt;</c>,
+    /// so it DISCARDED the tenant the removal path had in its hand and every subscriber inherited the loss.
+    /// The roster cache's forget then had nothing to scope by and swept every tenant's entry whose id
+    /// matched - and because the tunnel Hello's director id is chosen by the CLIENT, tenant A could register
+    /// an id it had seen tenant B use, disconnect, and have the stale sweep destroy B's cached roster. If B
+    /// was inside its grace window that silently destroyed its last-known-good sessions.
+    ///
+    /// A signature that cannot represent the owner is not a smaller problem than a missing check; it is the
+    /// same problem with no place to put the check. Keep the tenant on this event.
+    /// </summary>
+    public event Action<DirectorRemoval>? OnDirectorRemoved;
 
     /// <summary>
     /// Raise <see cref="OnDirectorRemoved"/> without letting a subscriber kill the process.
@@ -152,17 +166,22 @@ public sealed class DirectorRegistry : IDisposable
     /// (the session-number release and the roster-cache forget are on this list) - trading a process crash
     /// for a quiet partial removal, which is harder to notice and just as wrong.
     /// </summary>
-    private void RaiseDirectorRemoved(string directorId)
+    /// <remarks>
+    /// Takes the <see cref="DirectorKey"/> the removal already resolved, so the tenant reaches the
+    /// subscribers rather than being dropped at this signature. Every raise site below holds a key.
+    /// </remarks>
+    private void RaiseDirectorRemoved(DirectorKey key)
     {
+        var removal = new DirectorRemoval(key.Tenant, key.DirectorId);
         foreach (var handler in OnDirectorRemoved?.GetInvocationList() ?? Array.Empty<Delegate>())
         {
             try
             {
-                ((Action<string>)handler)(directorId);
+                ((Action<DirectorRemoval>)handler)(removal);
             }
             catch (Exception ex)
             {
-                FileLog.Write($"[DirectorRegistry] OnDirectorRemoved subscriber FAILED for director={directorId}: {ex}");
+                FileLog.Write($"[DirectorRegistry] OnDirectorRemoved subscriber FAILED for tenant={key.Tenant.Value}, director={key.DirectorId}: {ex}");
             }
         }
     }
@@ -320,7 +339,7 @@ public sealed class DirectorRegistry : IDisposable
         {
             _everReachable.TryRemove(directorId, out _); // graceful goodbye: next process starts blank
             FileLog.Write($"[DirectorRegistry] Remove (http): id={directorId}");
-            RaiseDirectorRemoved(directorId);
+            RaiseDirectorRemoved(key);
             return true;
         }
         return false;
@@ -439,7 +458,7 @@ public sealed class DirectorRegistry : IDisposable
         if (_directors.TryGetValue(key, out var existing) && existing.Source == "file")
         {
             if (TryRemoveEntry(key, out _))
-                RaiseDirectorRemoved(id);
+                RaiseDirectorRemoved(key);
         }
     }
 
@@ -452,7 +471,7 @@ public sealed class DirectorRegistry : IDisposable
             && existing.Source == "file"
             && TryRemoveEntry(oldKey, out _))
         {
-            RaiseDirectorRemoved(oldId);
+            RaiseDirectorRemoved(oldKey);
         }
         TryParseAndAdd(e.FullPath);
     }
@@ -500,7 +519,13 @@ public sealed class DirectorRegistry : IDisposable
         }
     }
 
-    private void SweepStale()
+    /// <remarks>
+    /// Internal rather than private so a test can drive the STALE SWEEP itself - the path that fires
+    /// <see cref="OnDirectorRemoved"/> for a Director whose tunnel died. That is the path a cross-tenant
+    /// removal actually travels, and a test that instead calls the graceful <see cref="Remove"/> would be
+    /// exercising a different, tenant-ambiguous seam. Production still reaches it only via the 30s timer.
+    /// </remarks>
+    internal void SweepStale()
     {
         if (_disposed) return;
         try
@@ -524,7 +549,7 @@ public sealed class DirectorRegistry : IDisposable
                         {
                             _everReachable.TryRemove(kv.Key.DirectorId, out _);
                             FileLog.Write($"[DirectorRegistry] Sweeper removed stale {kv.Value.Source} entry: {kv.Key.DirectorId} (last seen {(now - lastSeen).TotalSeconds:F0}s ago)");
-                            RaiseDirectorRemoved(kv.Key.DirectorId);
+                            RaiseDirectorRemoved(kv.Key);
                         }
                     }
                     continue;
@@ -537,7 +562,7 @@ public sealed class DirectorRegistry : IDisposable
                     if (TryRemoveEntry(kv.Key, out _))
                     {
                         FileLog.Write($"[DirectorRegistry] Sweeper removed orphan (file gone): {kv.Key.DirectorId}");
-                        RaiseDirectorRemoved(kv.Key.DirectorId);
+                        RaiseDirectorRemoved(kv.Key);
                     }
                     continue;
                 }
@@ -560,7 +585,7 @@ public sealed class DirectorRegistry : IDisposable
                         if (TryRemoveEntry(kv.Key, out _))
                         {
                             FileLog.Write($"[DirectorRegistry] Sweeper removed orphan (pid {pid} dead): {kv.Key.DirectorId}");
-                            RaiseDirectorRemoved(kv.Key.DirectorId);
+                            RaiseDirectorRemoved(kv.Key);
                         }
                     }
                     catch { /* permission errors etc - leave it for next pass */ }
