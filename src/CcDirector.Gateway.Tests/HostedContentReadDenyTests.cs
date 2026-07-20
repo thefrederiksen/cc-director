@@ -540,6 +540,12 @@ public sealed class HostedContentReadSelfHostControlTests : IAsyncLifetime
     /// <summary>Planted in the seeded wingman training record and asserted back out of /records.</summary>
     private const string SeededReply = "seeded agent reply zqxjv";
 
+    /// <summary>
+    /// The name of the daily training file this test planted, so a test can build the POSITIONAL
+    /// "&lt;filename&gt;#&lt;lineindex&gt;" id of a record it planted itself rather than guessing one.
+    /// </summary>
+    private string _trainingFileName = "";
+
     private static readonly string[] Refusals =
     {
         "transcription analysis is not available on the hosted gateway",
@@ -613,16 +619,23 @@ public sealed class HostedContentReadSelfHostControlTests : IAsyncLifetime
     }
 
     /// <summary>
-    /// Plant ONE wingman training record, in the exact append-only JSON-lines shape the production writer
-    /// emits, so /records must hand back its positional "&lt;filename&gt;#&lt;lineindex&gt;" id. Written directly
-    /// rather than through the capture path because capture is gated on a setting and needs a live session
-    /// with a terminal - neither of which this control is about.
+    /// Plant TWO wingman training records, in the exact append-only JSON-lines shape the production writer
+    /// emits, so /records must hand back their positional "&lt;filename&gt;#&lt;lineindex&gt;" ids. Written
+    /// directly rather than through the capture path because capture is gated on a setting and needs a live
+    /// session with a terminal - neither of which this control is about.
+    ///
+    /// Line 0 carries an agent reply and is what /records is asserted against. LINE 1 CARRIES NO REPLY ON
+    /// PURPOSE: it is what gives the A/B test route a served-side proof that costs no model call. That route
+    /// distinguishes "this positional id resolved to a record which happens to have no reply" from "no such
+    /// record", and only a handler that actually read THIS file can tell those apart - so an empty reply is
+    /// a seeded fact, not an omission.
     /// </summary>
-    private static void SeedWingmanTrainingRecord()
+    private void SeedWingmanTrainingRecord()
     {
         var dir = CcStorage.WingmanTrainingData();
         Directory.CreateDirectory(dir);
-        var line = JsonSerializer.Serialize(new
+
+        string Line(string reply) => JsonSerializer.Serialize(new
         {
             atUtc = DateTime.UtcNow,
             sessionId = "11111111-1111-1111-1111-111111111111",
@@ -631,14 +644,16 @@ public sealed class HostedContentReadSelfHostControlTests : IAsyncLifetime
             terminalChars = 5,
             terminalTruncated = false,
             terminal = "lines",
-            reply = SeededReply,
+            reply,
             recentContext = "context",
             spoken = "spoken summary",
             replySeconds = 1.5,
         });
+
+        _trainingFileName = $"wingman-training-{DateTime.UtcNow:yyyy-MM-dd}.jsonl";
         File.AppendAllText(
-            Path.Combine(dir, $"wingman-training-{DateTime.UtcNow:yyyy-MM-dd}.jsonl"),
-            line + "\n");
+            Path.Combine(dir, _trainingFileName),
+            Line(SeededReply) + "\n" + Line("") + "\n");
     }
 
     public async Task DisposeAsync()
@@ -769,6 +784,142 @@ public sealed class HostedContentReadSelfHostControlTests : IAsyncLifetime
             root.EnumerateObject().Select(p => p.Name).ToArray());
         Assert.False(string.IsNullOrWhiteSpace(
             ContentFingerprint.Text(root, "content", "GET gateway/wingman/instructions/default")));
+    }
+
+    /// <summary>
+    /// THE REVERT ROUTE, which the hosted deny refuses and which nothing here served-proved until now.
+    ///
+    /// A deny that answers 404 is indistinguishable from a route that was deleted, so every denied path and
+    /// verb needs a self-host fact showing THIS handler answers it. Revert gets the strongest kind: two
+    /// versions are saved through the public surface, the FIRST is made active again by id, and the active
+    /// content is read back through a DIFFERENT route than the one that changed it. Both values were
+    /// planted by this test, so no catch-all and no shipped default can produce them.
+    /// </summary>
+    [Fact]
+    public async Task Self_host_wingman_revert_makes_an_earlier_version_active_again()
+    {
+        var first = "seeded wingman version one zqxjv " + Guid.NewGuid().ToString("N");
+        var second = "seeded wingman version two zqxjv " + Guid.NewGuid().ToString("N");
+
+        var firstId = await SaveInstructionsAsync(first);
+        await SaveInstructionsAsync(second);
+
+        // PRECONDITION, asserted not assumed: the SECOND version is the active one, so the revert below is
+        // load bearing. Without this the test would pass even if revert did nothing at all.
+        var beforeRevert = await GetJsonAsync("gateway/wingman/instructions");
+        Assert.Equal(second, ContentFingerprint.Text(
+            ContentFingerprint.Prop(beforeRevert, "active", "GET gateway/wingman/instructions (before revert)"),
+            "content", "GET gateway/wingman/instructions (before revert)"));
+
+        var reverted = await Send(HttpMethod.Post, "gateway/wingman/instructions/revert",
+            JsonSerializer.Serialize(new { id = firstId }));
+        var revertedBody = await JsonAsync(reverted, "POST gateway/wingman/instructions/revert");
+        Assert.Equal(first, ContentFingerprint.Text(
+            ContentFingerprint.Prop(revertedBody, "active", "POST gateway/wingman/instructions/revert"),
+            "content", "POST gateway/wingman/instructions/revert"));
+
+        // Read back through a different route: the change was durable in the store, not a returned value.
+        var afterRevert = await GetJsonAsync("gateway/wingman/instructions");
+        Assert.Equal(first, ContentFingerprint.Text(
+            ContentFingerprint.Prop(afterRevert, "active", "GET gateway/wingman/instructions (after revert)"),
+            "content", "GET gateway/wingman/instructions (after revert)"));
+    }
+
+    /// <summary>
+    /// THE SWITCH-TO-DEFAULT ROUTE, served-proved the same way: a real state transition, with the
+    /// precondition asserted so the transition cannot be vacuous.
+    ///
+    /// A custom version is saved (so the box is genuinely customized - asserted), the route is called, and
+    /// the box is read back through a DIFFERENT route as no longer customized AND serving the deployed
+    /// default's content rather than the planted one. A handler that did nothing, and a catch-all answering
+    /// both calls identically, both fail that.
+    /// </summary>
+    [Fact]
+    public async Task Self_host_wingman_switch_to_default_drops_the_custom_version()
+    {
+        var custom = "seeded wingman custom zqxjv " + Guid.NewGuid().ToString("N");
+        await SaveInstructionsAsync(custom);
+
+        var deployedDefault = ContentFingerprint.Text(
+            await GetJsonAsync("gateway/wingman/instructions/default"),
+            "content", "GET gateway/wingman/instructions/default");
+        Assert.False(string.IsNullOrWhiteSpace(deployedDefault));
+        Assert.NotEqual(deployedDefault, custom);
+
+        // PRECONDITION: the box really is customized right now, so the switch below has something to undo.
+        var before = await GetJsonAsync("gateway/wingman/instructions");
+        Assert.True(ContentFingerprint.Flag(before, "isCustomized",
+            "GET gateway/wingman/instructions (before switch-to-default)"));
+
+        var switched = await Send(HttpMethod.Post, "gateway/wingman/instructions/switch-to-default", "");
+        var switchedBody = await JsonAsync(switched, "POST gateway/wingman/instructions/switch-to-default");
+        Assert.False(ContentFingerprint.Flag(switchedBody, "isCustomized",
+            "POST gateway/wingman/instructions/switch-to-default"));
+
+        var after = await GetJsonAsync("gateway/wingman/instructions");
+        Assert.False(ContentFingerprint.Flag(after, "isCustomized",
+            "GET gateway/wingman/instructions (after switch-to-default)"));
+        Assert.Equal(deployedDefault, ContentFingerprint.Text(
+            ContentFingerprint.Prop(after, "active", "GET gateway/wingman/instructions (after switch-to-default)"),
+            "content", "GET gateway/wingman/instructions (after switch-to-default)"));
+    }
+
+    /// <summary>
+    /// THE A/B TEST ROUTE, served-proved WITHOUT spending a single model call.
+    ///
+    /// This is the last denied path in the instructions family with no served-side fact, and it is the
+    /// awkward one: its normal success path ends in real brain calls, which this suite stands up no provider
+    /// for and which would make the row depend on a network. It does not need them. The handler resolves
+    /// every requested record against the training store BEFORE any translation, and it reports three
+    /// distinguishable outcomes. Two of them are reachable with no provider at all:
+    ///
+    ///   - a positional id this test PLANTED, on a line deliberately written with no agent reply
+    ///     -> "record has no agent reply to translate". Only a handler that read THIS file can say that;
+    ///        a handler that read nothing would call the record missing.
+    ///   - an id that resolves to nothing -> "record not found".
+    ///
+    /// Telling those two apart is the seeded fact. The exact top-level property set is pinned as well,
+    /// because it is this handler's contract and no other handler on the Gateway emits it.
+    /// </summary>
+    [Fact]
+    public async Task Self_host_wingman_test_resolves_the_seeded_record_without_a_model_call()
+    {
+        const string what = "POST gateway/wingman/instructions/test";
+
+        // Line 1 is the record planted with an empty reply; the second id resolves to no file at all.
+        var seededId = _trainingFileName + "#1";
+        const string missingId = "wingman-training-1970-01-01.jsonl#7";
+
+        var resp = await Send(HttpMethod.Post, "gateway/wingman/instructions/test",
+            JsonSerializer.Serialize(new { content = "draft instructions zqxjv", recordIds = new[] { seededId, missingId } }));
+        var root = await JsonAsync(resp, what);
+
+        Assert.Equal(new[] { "results", "ranCount", "capped" },
+            root.EnumerateObject().Select(p => p.Name).ToArray());
+
+        var results = ContentFingerprint.Arr(root, "results", what).EnumerateArray().ToArray();
+        Assert.Equal(2, results.Length);
+        Assert.Equal(2, ContentFingerprint.Num(root, "ranCount", what));
+        Assert.False(ContentFingerprint.Flag(root, "capped", what));
+
+        var seeded = Assert.Single(results, r => ContentFingerprint.Str(r, "id") == seededId);
+        Assert.Equal("record has no agent reply to translate", ContentFingerprint.Str(seeded, "error"));
+
+        var missing = Assert.Single(results, r => ContentFingerprint.Str(r, "id") == missingId);
+        Assert.Equal("record not found", ContentFingerprint.Str(missing, "error"));
+    }
+
+    /// <summary>Saves a version through the real route and returns its id, asserting the save answered.</summary>
+    private async Task<string> SaveInstructionsAsync(string content)
+    {
+        var resp = await Send(HttpMethod.Put, "gateway/wingman/instructions",
+            JsonSerializer.Serialize(new { content }));
+        var body = await JsonAsync(resp, "PUT gateway/wingman/instructions");
+        var active = ContentFingerprint.Prop(body, "active", "PUT gateway/wingman/instructions");
+        Assert.Equal(content, ContentFingerprint.Text(active, "content", "PUT gateway/wingman/instructions"));
+        var id = ContentFingerprint.Text(active, "id", "PUT gateway/wingman/instructions");
+        Assert.False(string.IsNullOrWhiteSpace(id));
+        return id!;
     }
 
     // ===== The two upload families: every leg leaves a receipt =====
