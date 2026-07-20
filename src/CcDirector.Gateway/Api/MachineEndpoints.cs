@@ -41,6 +41,46 @@ namespace CcDirector.Gateway.Api;
 ///   - Remote launcher (networkAddress set):         dials http://<networkAddress>:<port>/
 /// This enables the Gateway on MACHINE_A to relay lifecycle verbs to the launcher on
 /// EXAMPLE-PC when EXAMPLE-PC's launcher registered with its tailnet hostname.
+///
+/// DENIED IN WHOLE ON HOSTED (issue #1917). EVERY route in this group is refused on the hosted Gateway,
+/// through ONE group filter rather than a guard repeated per route - so a route added here later is refused
+/// too, without anyone remembering to defend it.
+///
+/// THE DEFECT THIS CLOSES. This family is TENANT-BLIND BY CONSTRUCTION: there is no tenant dimension
+/// anywhere in the path. <see cref="LauncherRegistry"/> keys on machine NAME alone,
+/// <see cref="Streaming.LauncherConnectionRegistry"/> keys on machine NAME alone, and
+/// <see cref="Streaming.LauncherHub"/>.Hello binds a connection to a machine name with NO tenant resolution
+/// at all - in direct contrast to <see cref="Streaming.DirectorHub"/>.Hello, which aborts when the device key
+/// resolves to no tenant. So on hosted, ANY authenticated device key could enumerate every tenant's machines
+/// through GET /launchers and then drive the machine routes AGAINST ANOTHER TENANT'S MACHINE: cross-machine
+/// CODE EXECUTION via POST /machines/{machine}/launch, and OUTBOUND-REQUEST FORGERY via
+/// POST /launchers/register, which overwrites a machine's stored token, port and network address and so
+/// re-points the REST relay at an arbitrary host.
+///
+/// WHY THE USUAL PROTECTION DOES NOT APPLY. Elsewhere on the hosted Gateway, bare-identifier Director routes
+/// are inert cross-tenant because the command rides SendCommandAsync, which refuses to resolve a tunnel
+/// connection with no tenant in scope. THAT PROTECTION LIVES IN THE TRANSPORT, NOT IN THE ROUTE. This family
+/// has three dispatch arms and only the Director-tunnel arm is gated: the launcher STREAM arm resolves purely
+/// on machine name, and the launcher REST RELAY - the FALLBACK taken when the stream arm returns null - dials
+/// the launcher's stored address with its stored bearer token. The FAILURE path is the ungated one by design.
+///
+/// IT IS A DENY, NOT A PARTITION. On shared hosted infrastructure A TENANT DOES NOT OWN A MACHINE. There is
+/// no correct per-tenant answer to serve here - only a leak to close. A partition would require inventing an
+/// ownership relation that was never recorded, which is a half-partition: worse than an honest refusal
+/// because it looks like isolation. Nothing is substituted and no empty list is served: an empty
+/// GET /launchers would be a FALSE statement (a fleet with no machines) where a refusal is merely absent.
+///
+/// SELF-HOST IS COMPLETELY UNCHANGED AND IS THE CONTROL. Cross-machine launch is legitimate fleet function
+/// there: one operator, his own machines.
+///
+/// UN-DENY. The permanent fix is a tenant-scoped launcher design that binds machine identity to a tenant at
+/// REGISTRATION and authorizes every launch, lifecycle and relay call against the calling tenant - including
+/// on the REST fallback arm. That unit is NOT enough on its own: this HTTP deny does NOT stop every write.
+/// <see cref="Streaming.LauncherHub"/>.Hello still writes a machine-name-keyed connection row into
+/// <see cref="Streaming.LauncherConnectionRegistry"/> over the /launcher-stream hub, which is not in this
+/// route group, so tenant-blind state can still ACCUMULATE behind the deny. The un-deny is therefore the
+/// tenant-key unit PLUS A PURGE of the launcher and launcher-connection registries. Deny-closed on the safe
+/// side: assume the purge is required until write-coverage is proven complete.
 /// </summary>
 internal static class MachineEndpoints
 {
@@ -52,7 +92,42 @@ internal static class MachineEndpoints
     private static readonly Regex SlotFromPath =
         new(@"cc-director(\d*)\.exe$", RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
-    public static void Map(IEndpointRouteBuilder app, LauncherRegistry launchers,
+    /// <summary>
+    /// The exact refusal every route in this group serves on hosted. One string, asserted verbatim by the
+    /// tests, so the refusal is identifiable as ITSELF - a bare 404 would be indistinguishable from a route
+    /// that does not exist.
+    /// </summary>
+    internal const string HostedRefusal =
+        "machine and launcher control is not available on the hosted gateway";
+
+    /// <summary>
+    /// The hosted refusal for the whole machine/launcher family (issue #1917), or null on self-host where
+    /// nothing changes.
+    ///
+    /// Gated on <see cref="GatewayHostedMode.IsHosted"/> - the INDEPENDENT signal - and not on a boundary or
+    /// tenant argument being passed in. A security branch that depends on an optional argument fails OPEN
+    /// when a caller forgets it, which is exactly how the hosted account-status fix nearly shipped a hole.
+    ///
+    /// 404 rather than 403: on hosted a tenant-owned machine does not exist as a concept, so "not here" is the
+    /// truthful answer. 403 would imply the right credential could reach it, and none can. The BODY is what
+    /// makes this a deny rather than a missing route, so it is always served and always the same.
+    /// </summary>
+    private static IResult? DenyOnHosted()
+    {
+        if (!GatewayHostedMode.IsHosted) return null;
+
+        FileLog.Write("[MachineEndpoints] DENIED on hosted: the launcher and machine-control family is tenant-blind - a tenant does not own a machine on shared infrastructure (issue #1917)");
+        return Results.Json(new { error = HostedRefusal }, statusCode: StatusCodes.Status404NotFound);
+    }
+
+    /// <summary>
+    /// Maps the machine/launcher group and RETURNS it, so the refusal can be proved to cover routes that do
+    /// not exist yet: a test maps a NEW probe route onto the returned group and finds it already refused on
+    /// hosted, without anyone having written a deny for it. Returning the group is the only way to state that
+    /// property from outside this file - and it is the ONLY property that distinguishes a group filter from a
+    /// guard repeated per route, because the two behave identically on every route that exists today.
+    /// </summary>
+    public static RouteGroupBuilder Map(IEndpointRouteBuilder outer, LauncherRegistry launchers,
         MachineSessionSpawner spawner,
         LauncherCommandRouter.SendLauncherCommandAsync? sendLauncherCommand = null,
         // Gateway Cleanup mission (Wave 4b): the Gateway-native mission store. When non-null, a
@@ -70,6 +145,21 @@ internal static class MachineEndpoints
         Workflows.WorkflowRunStore? workflowRuns = null)
     {
         if (spawner is null) throw new ArgumentNullException(nameof(spawner));
+
+        FileLog.Write($"[MachineEndpoints] mapping /launchers + /machines; hosted={GatewayHostedMode.IsHosted} - on hosted EVERY route in this group is refused (issue #1917)");
+
+        // The whole family behind ONE filter, rather than a guard line repeated in every handler.
+        // A repeated guard is a thing to forget: the route added to this file next year would be open by
+        // default and nothing would fail - and on this family "open by default" means cross-machine code
+        // execution. A group filter runs before EVERY route mapped below, including routes that do not exist
+        // yet. The empty prefix keeps the route paths written out in full, exactly as before, so the self-host
+        // surface is byte-identical.
+        var app = outer.MapGroup("");
+        app.AddEndpointFilter(async (ctx, next) =>
+        {
+            if (DenyOnHosted() is { } denied) return denied;
+            return await next(ctx);
+        });
 
         // ===== Launcher self-registration surface =====
 
@@ -314,6 +404,8 @@ internal static class MachineEndpoints
             }
             return result;
         });
+
+        return app;
     }
 
     // -------------------------------------------------------------------------
