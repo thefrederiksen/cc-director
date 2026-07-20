@@ -153,13 +153,39 @@ namespace CcDirector.Gateway.Tests;
 /// them. If one of them reddens, the ambient default is not what it is believed to be - which would be a
 /// finding about every other hosted test in this assembly, not a detail about this one.
 ///
-/// RECONCILE EVERY ARM, INCLUDING BASELINE AND RESTORE: passed plus failed plus skipped must EQUAL the
-/// baseline total, taken FRESH at this head and never quoted from another run. A pre-existing race can
-/// truncate a run while still printing a cheerful passed line - and a truncated arm reads EXACTLY like a
-/// mutation that reddened fewer tests than predicted. Without the reconciliation, a truncation that swallowed
-/// three of the fifteen would present as a twelve-red arm, which under this pre-registration would have to be
-/// treated as a finding about the deny. Reconcile FIRST, then classify; a total that does not add up
-/// disqualifies the arm before any red in it is worth interpreting.
+/// THE RECONCILIATION PROTOCOL. Three rules, in this order, and the ORDER is load-bearing.
+///
+///   1. RECONCILE AGAINST THE BASELINE TOTAL, NOT AGAINST RESTORED PASSED. The tempting identity - passed
+///      plus failed under the mutation equals passed under the restore - holds ONLY IF SKIPPED NEVER MOVES.
+///      Skips in this suite are environment-gated and CAN move, so that identity balances by accident: when a
+///      skip count shifts it either breaks for a reason that will be chased for nothing, or it silently
+///      ABSORBS a real discrepancy. The check with nothing left out is
+///      PASSED + FAILED + SKIPPED == THE BASELINE TOTAL, on every arm including baseline and restore.
+///
+///   2. RECONCILE BEFORE SCORING, NOT AFTER. Reconciliation is a PRECONDITION for the arm counting at all,
+///      not a post-hoc validation of a score already formed. Score first and a truncated run has already been
+///      read as a result by the time the total is checked. A short total means the arm is
+///      UNPROVEN-TRUNCATED: it is not scored in EITHER direction, and it does NOT become "a mutation that
+///      reddened fewer tests than predicted".
+///
+///   3. THE TRUNCATION TRAP BEARS DIRECTLY ON THE FIFTEEN ABOVE. If a run truncates, FEWER THAN FIFTEEN reds
+///      appear. Under the rule this file already holds - a predicted red that does not appear is a FINDING -
+///      a truncated arm would present itself as a finding ABOUT THE DENY. IT IS NOT. It is a finding about
+///      the HARNESS. So the total is checked FIRST and the fifteen are compared only afterwards. A
+///      pre-registration makes truncation MORE dangerous, not less, because it hands truncation a ready-made
+///      story to be mistaken for.
+///
+/// BASELINE PRECONDITIONS, both checked before the first run:
+///   - THE WHOLE SOURCE TREE IS CLEAN, not merely the Gateway project. A lost TEST edit falsifies an arm as
+///     thoroughly as a lost production edit, and a tree-scoped-to-one-project check would not see it.
+///   - THE WORKING HEAD EQUALS THE PUSHED HEAD. Cleanliness alone is not sufficient: a stash leaves the tree
+///     CLEAN at the pinned head, so a tree that looks perfect can be missing the very repair under test, and
+///     a guard checking only cleanliness would ADMIT it.
+///
+/// THE RUN PLAN IS EXACTLY THREE FULL-SUITE RUNS, and the path actually taken is the path registered:
+/// baseline, arm, restore. There is no slice-then-full escalation and no separate canary gate here - all
+/// three arms are the FULL suite, so no ordering can slip a fourth run in behind the registered three. On a
+/// contended serial box a fourth run spends someone else's slot.
 /// </summary>
 public sealed class HostedLauncherMachineDenyTests : IAsyncLifetime
 {
