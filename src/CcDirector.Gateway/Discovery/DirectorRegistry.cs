@@ -172,7 +172,8 @@ public sealed class DirectorRegistry : IDisposable
     /// </remarks>
     private void RaiseDirectorRemoved(DirectorKey key)
     {
-        var removal = new DirectorRemoval(key.Tenant, key.DirectorId);
+        // MUTATION ARM - DO NOT MERGE. Stamp a fixed tenant instead of the removed key's own owner.
+        var removal = new DirectorRemoval(TenantId.Local, key.DirectorId);
         foreach (var handler in OnDirectorRemoved?.GetInvocationList() ?? Array.Empty<Delegate>())
         {
             try
