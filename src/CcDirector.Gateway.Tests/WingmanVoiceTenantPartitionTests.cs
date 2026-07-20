@@ -99,7 +99,55 @@ namespace CcDirector.Gateway.Tests;
 ///   green  - observed passing. The test ran to completion and passed.
 ///   NOTRUN - no outcome line for that test in that run. Evidence of nothing at all.
 ///
-/// MATRIX_PLACEHOLDER
+/// RESULTS - four separate full-assembly runs, one primitive each, every one preceded by a build confirmed
+/// succeeded and by a harness check that exactly ONE production file differed from pristine. Head
+/// aa2bec63 onward, rebased onto lock-bearing main, all under the automatic Gateway suite lock.
+///
+///   Restored baseline: 2979 total, 2969 passed, 0 failed, 10 skipped.
+///
+///   | primitive mutated alone                          | passed | failed | passed+failed | crashes |
+///   |--------------------------------------------------|--------|--------|---------------|---------|
+///   | B1 WingmanVoiceService.StateFor        (bucket)  |  2960  |    9   | 2969 = 2969 OK |    0    |
+///   | B2 WingmanVoiceService.PartitionDirectoryFor(dir)|  2962  |    7   | 2969 = 2969 OK |    0    |
+///   | B3 VoiceTurnArchive.PartitionDirectoryFor  (dir) |  2967  |    2   | 2969 = 2969 OK |    0    |
+///   | B4 GatewayTurnJobStore.StateFor        (bucket)  |  2968  |    1   | 2969 = 2969 OK |    0    |
+///
+/// Four independent reconciliations, four chances to catch a dropped test, none dropped. Nineteen reds in
+/// total and every single one arrived as an ASSERTION - not one crash, in any arm.
+///
+/// THE MATRIX. Rows are tests, columns are the primitive mutated ALONE in that run.
+///
+///   | test                                                             | B1  | B2  | B3  | B4  |
+///   |------------------------------------------------------------------|-----|-----|-----|-----|
+///   | (this class) Ready_audio_stored_for_one_tenant_is_invisible_..    | RED |green|green|green|
+///   | (this class) Voice_session_marking_is_per_tenant                  | RED |green|green|green|
+///   | (this class) Generating_unavailable_and_nothing_to_narrate_..     | RED |green|green|green|
+///   | (this class) Served_via_fallback_is_per_tenant                    | RED |green|green|green|
+///   | (this class) Clearing_one_tenants_session_leaves_..._intact       | RED |green|green|green|
+///   | (this class) Regeneration_decision_reads_only_the_asking_..       | RED |green|green|green|
+///   | (this class) Each_tenants_clips_live_in_its_own_directory         |green| RED |green|green|
+///   | (this class) Clips_reload_into_the_tenant_that_owned_them         | RED | RED |green|green|
+///   | (this class) Voice_session_set_reloads_into_the_tenant_..         | RED | RED |green|green|
+///   | (this class) Self_host_moves_the_pre_partition_voice_state_..     | RED | RED |green|green|
+///   | (this class) Turn_archive_is_partitioned_and_a_turn_id_alone_..   |green|green| RED |green|
+///   | (this class) Self_host_moves_pre_partition_archived_turns_..      |green|green| RED |green|
+///   | (this class) Turn_job_store_is_partitioned_and_a_turn_id_alone_.. |green|green|green| RED |
+///   | WingmanVoiceServiceTests.ReadyAudio_PersistsAndReloadsAcross..    |green| RED |green|green|
+///   | WingmanVoiceServiceTests.ReadyAudio_ReloadsLegacyWavCache..       |green| RED |green|green|
+///   | WingmanVoiceFallbackTests.ServedViaFallback_SurvivesAGateway..    |green| RED |green|green|
+///
+/// Every cell is OBSERVED. There is no EXCL cell (no red anywhere arrived as a crash) and no NOTRUN cell
+/// (every test produced an outcome line in every run, verified BY NAME rather than inferred from a total).
+///
+/// HOW TO READ IT. Every row has at least one RED, so no test here is decorative. Three rows have TWO -
+/// they straddle primitives, see the note below. B3 and B4 are perfectly isolated: two reds and one red
+/// respectively, touching nothing else in the assembly, which is what proves the archive and the job store
+/// are guarded SEPARATELY from the voice state rather than incidentally by it.
+///
+/// AND THE REASON THIS COULD NOT HAVE BEEN ARGUED INSTEAD OF RUN: VoiceTurnArchive and WingmanVoiceService
+/// BOTH expose a method called PartitionDirectoryFor. Under a combined mutation a red in either could be
+/// attributed to "the directory primitive" with a completely straight face - the names agree and the story
+/// is coherent - and it would be wrong half the time. Only separate runs distinguish them.
 ///
 /// PRE-REGISTERED PREDICTION, committed while the B1-only run was still executing and before any
 /// per-primitive result existed. Recorded in advance deliberately: a prediction written beforehand is
@@ -148,6 +196,17 @@ namespace CcDirector.Gateway.Tests;
 ///     direction, and for a worse reason: it generalised from a single run while the run that could
 ///     refute it had not yet been done. They are sensitive to BOTH. A claim of the form "X and not Y" is
 ///     not supported by an experiment that only varied X.
+///
+/// A NOTE ON PARSING, TRANSLATED RATHER THAN COPIED. A sibling pull request established the rule "assert
+/// the status and media type BEFORE parsing the body", after a revert made an endpoint serve HTML and the
+/// test died inside JsonDocument.Parse instead of failing an assertion. The literal rule does not apply
+/// here - these tests make no HTTP calls and parse no bodies - and applying it literally would have been
+/// box-ticking. What the rule is FOR does apply: an operation that THROWS on unexpected shape is making an
+/// unstated assertion, and when it throws you learn only that something upstream broke, never what was
+/// there instead. The filesystem costume of the same rule is used throughout this class: assert
+/// <c>File.Exists</c> on each clip BEFORE <c>ReadAllBytes</c>, and guard every dereference with an
+/// explicit null assertion. That is why a collapsed partition reports "expected not-equal, got equal"
+/// rather than an input/output error, and why every red in the runs below is an assertion.
 ///
 /// TWO RULES THIS PROOF PAID FOR. Both are general; both nearly produced a wrong published claim here.
 ///
