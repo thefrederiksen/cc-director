@@ -125,27 +125,6 @@ public sealed class HostedRefusalPatternTests
             partKinds);
     }
 
-    /// <summary>
-    /// The shape key is what the DUPLICATE check compares, and this is the case text comparison misses:
-    /// two patterns differing only in a parameter NAME are different strings and the same route. Mapping
-    /// both produces endpoints that tie, and the tie surfaces at request time on the denied route.
-    /// </summary>
-    [Theory]
-    [InlineData("/x/{id}", "/x/{name}", true)]              // same route, different spelling
-    [InlineData("/x/{id:int}", "/x/{name:alpha}", true)]    // policies are not part of the shape either
-    [InlineData("/x/{id}", "/x/{id?}", false)]              // optional does not compete with standard
-    [InlineData("/x/{id}", "/x/{**id}", false)]             // nor does a catch-all
-    [InlineData("/x/{id}", "/y/{id}", false)]               // different literal
-    [InlineData("/x/{id}", "/x/{id}/y", false)]             // different length
-    public void The_shape_key_sees_past_names_and_policies_but_not_past_kind_or_literals(
-        string left, string right, bool sameShape)
-    {
-        var leftKey = HostedRefusalPattern.ShapeKey(HostedRefusalPattern.WithoutPolicies(left, "probe"));
-        var rightKey = HostedRefusalPattern.ShapeKey(HostedRefusalPattern.WithoutPolicies(right, "probe"));
-
-        Assert.Equal(sameShape, leftKey == rightKey);
-    }
-
     private static System.Collections.Generic.IEnumerable<RoutePatternParameterPart> AllParameters(RoutePattern pattern)
         => pattern.PathSegments.SelectMany(s => s.Parts).OfType<RoutePatternParameterPart>();
 
@@ -158,17 +137,17 @@ public sealed class HostedRefusalPatternTests
 }
 
 /// <summary>
-/// The FINALISED route space check: the conflicts that only exist once everything has been mapped, and
-/// which the per-group duplicate check cannot see because it can only see its own group.
+/// The finalised route-space check, in the form it took AFTER review disproved the previous one.
 ///
-/// Two conflicts, in opposite directions, and only one of them is a leak:
-///   - refusal against refusal - a denied route answers 500 instead of refusing;
-///   - refusal against a LIVE route - a route nobody denied stops serving. That is an OUTAGE, and no
-///     leak-shaped test in this repository would ever notice it.
+/// The previous version tried to detect whether two patterns would TIE in the matcher, using a hand-rolled
+/// shape key. Three independent route pairs escaped it and returned HTTP 500 at request time. The reason is
+/// worth keeping: the matcher's ambiguity relation is not reachable from public API, so any check for it is
+/// a MODEL of framework semantics rather than the semantics themselves - and that was the SECOND time this
+/// primitive modelled a framework semantic and got it wrong.
 ///
-/// What is NOT a conflict is the ordinary case, and getting that wrong would refuse to start on every
-/// correct arrangement: refusal patterns are deliberately WIDE, so they overlap neighbours constantly, and
-/// route precedence resolves the overlap. Only an exact tie is rejected.
+/// So this no longer detects ambiguity. It checks the one thing that removes the conditions for it and that
+/// can be computed correctly: an EXCLUSIVE-PREFIX family claims a prefix nothing else may serve under, and
+/// that claim is verified by simple PREFIX CONTAINMENT.
 /// </summary>
 public sealed class HostedRefusalRouteSpaceTests
 {
@@ -178,72 +157,59 @@ public sealed class HostedRefusalRouteSpaceTests
         reason: "the probe family exists to prove the route-space check",
         unDenyInstruction: "nothing to un-deny: a test fixture");
 
-    private static readonly HostedDenial OtherDenial = new(
-        family: "other-probe",
-        message: "also not available on the hosted gateway",
-        reason: "a second family, to prove refusal-versus-refusal detection",
-        unDenyInstruction: "nothing to un-deny: a test fixture");
-
     [Fact]
-    public void Two_refusals_on_the_same_route_shape_fail_the_start_rather_than_the_request()
+    public void A_live_route_under_an_exclusively_claimed_prefix_fails_the_start()
     {
-        // Different spelling, same route. This is the pair a text comparison lets through.
+        // The over-refusal direction, which is an OUTAGE rather than a leak: the catch-all would swallow a
+        // route nobody denied. No leak-shaped test in this repository would notice that.
         var endpoints = new[]
         {
-            RefusalEndpoint("/x/{id}", Denial),
-            RefusalEndpoint("/x/{name}", OtherDenial),
+            ExclusiveRefusal("/family"),
+            LiveEndpoint("/family/still-serving"),
         };
 
         var error = Assert.Throws<InvalidOperationException>(() => HostedRefusalRouteSpace.Validate(endpoints));
 
-        Assert.Contains("probe", error.Message);
-        Assert.Contains("other-probe", error.Message);
+        Assert.Contains("EXCLUSIVELY", error.Message);
+        Assert.Contains("still-serving", error.Message);
     }
 
     [Fact]
-    public void A_refusal_tying_with_a_live_route_fails_the_start_because_that_is_an_outage()
+    public void A_prefix_with_nothing_else_underneath_it_is_allowed()
     {
         var endpoints = new[]
         {
-            RefusalEndpoint("/x/{id}", Denial),
-            LiveEndpoint("/x/{slug}"),
-        };
-
-        var error = Assert.Throws<InvalidOperationException>(() => HostedRefusalRouteSpace.Validate(endpoints));
-
-        Assert.Contains("nobody denied", error.Message);
-    }
-
-    /// <summary>
-    /// The case that must NOT fail: a refusal is deliberately wider than the route it replaces, so it
-    /// overlaps live neighbours all the time. Precedence resolves it - a literal outranks a parameter - and
-    /// a validator that rejected overlap rather than ties would refuse to start on the normal arrangement.
-    /// </summary>
-    [Fact]
-    public void A_refusal_overlapping_a_more_specific_live_route_is_allowed()
-    {
-        var endpoints = new[]
-        {
-            RefusalEndpoint("/x/{id}", Denial),
-            LiveEndpoint("/x/summary"),      // literal beats the refusal's parameter
-            LiveEndpoint("/x/{id}/detail"),  // different length
-            LiveEndpoint("/y/{id}"),         // different literal
+            ExclusiveRefusal("/family"),
+            LiveEndpoint("/elsewhere/route"),
+            LiveEndpoint("/familyish/route"),   // shares a text prefix but not a PATH prefix
         };
 
         HostedRefusalRouteSpace.Validate(endpoints);
     }
 
     [Fact]
+    public void The_check_is_case_insensitive_about_the_prefix()
+    {
+        // Literal route matching is case-insensitive, so a containment check that was ordinal would miss a
+        // live route differing only in case - and would then be swallowed at runtime by the catch-all.
+        var endpoints = new[] { ExclusiveRefusal("/family"), LiveEndpoint("/FAMILY/still-serving") };
+
+        Assert.Throws<InvalidOperationException>(() => HostedRefusalRouteSpace.Validate(endpoints));
+    }
+
+    [Fact]
     public void A_route_space_with_no_refusals_is_inert()
         => HostedRefusalRouteSpace.Validate(new[] { LiveEndpoint("/x/{id}"), LiveEndpoint("/y") });
 
-    private static RouteEndpoint RefusalEndpoint(string pattern, HostedDenial denial)
+    private static RouteEndpoint ExclusiveRefusal(string prefix)
         => new(
             _ => Task.CompletedTask,
-            HostedRefusalPattern.WithoutPolicies(pattern, denial.Family),
+            RoutePatternFactory.Parse(prefix + "/{**rest}"),
             order: 0,
-            new EndpointMetadataCollection(new HostedRefusalMarker(denial, pattern)),
-            displayName: pattern);
+            new EndpointMetadataCollection(
+                new HostedRefusalMarker(Denial, prefix),
+                new HostedExclusivePrefixMarker(Denial, prefix)),
+            displayName: prefix);
 
     private static RouteEndpoint LiveEndpoint(string pattern)
         => new(

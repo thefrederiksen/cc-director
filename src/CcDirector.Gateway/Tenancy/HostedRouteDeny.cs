@@ -38,14 +38,22 @@ namespace CcDirector.Gateway.Tenancy;
 /// says it does not. A wrong verb IS a request shape, and the standard being enforced is that the refusal is
 /// uniform across shapes.
 ///
-/// WHY A TYPED HANDLE. The pre-binding property is proven ONCE, here, for every adopting family: an adopter
-/// cannot be attached AND post-binding, because attachment is what maps the refusal in place of the handler.
-/// That puts the whole weight on ATTACHMENT, so attachment is made structurally impossible to get wrong
-/// rather than merely conventional - routes are mapped through <see cref="HostedDenyGroup"/>, a distinct
-/// type obtainable only from <see cref="Group"/>. A family maps into the guarded group or it does not
-/// compile. The earlier shape kept a guarded and an unguarded builder in scope, differing only by variable
-/// name, so one changed receiver silently opened one route on hosted; here that is a signature change rather
-/// than a typo.
+/// WHY A TYPED HANDLE, AND WHAT IT DOES *NOT* GIVE US - corrected after review disproved the stronger claim.
+///
+/// Routes are mapped through <see cref="HostedDenyGroup"/>, a distinct type obtainable only from this class.
+/// It was claimed that this made unguarded mapping structurally UNEXPRESSIBLE, and that claim was FALSE:
+/// review changed one mapping receiver from the guarded group to the outer builder, it compiled with zero
+/// errors, and the hosted assertions reddened. So the handle is a CANARY - the bypass compiles and tests
+/// catch it - not a boundary.
+///
+/// The correction matters because a one-proof discharge for every adopting family rested on it. What
+/// survives is narrower and is stated as such: a family that maps its routes in a private STATIC method
+/// taking only the handle cannot see an outer builder at all, so its routes are not INDIVIDUALLY movable -
+/// redirecting one means changing the signature, which moves all of them together. That earns a family ONE
+/// attachment arm rather than one per route. It does not earn an exemption from arms altogether.
+///
+/// Do not restore the stronger claim without a mechanism that actually enforces the shape - an analyzer,
+/// not a convention. The bypass was measured; it is not hypothetical.
 ///
 /// SELF-HOST IS UNTOUCHED, AND THAT IS THE CONTROL. Off hosted every <c>Map</c> below maps the family's real
 /// handler on the group exactly as an unguarded builder would, and no refusal route is created at all.
@@ -59,9 +67,47 @@ namespace CcDirector.Gateway.Tenancy;
 public static class HostedRouteDeny
 {
     /// <summary>
-    /// Opens a route group whose every route - including routes mapped into it later, by anyone, with no
-    /// deny written for them - is refused on the hosted Gateway, on every request shape, without any
-    /// argument binding taking place. Returns the typed handle the family must map through.
+    /// Opens an EXCLUSIVE-PREFIX denied group: on hosted the family's handlers are not mapped and ONE
+    /// catch-all refusal claims everything under the prefix, including paths that do not exist. Use this
+    /// wherever the family owns its prefix outright - it is the stronger shape, because one refusal cannot
+    /// tie with anything and the exclusivity claim is checked by simple prefix containment at startup
+    /// rather than by reasoning about which patterns compete.
+    ///
+    /// It also gives the family FUTURE-ROUTE coverage for free: a path added under the prefix later is
+    /// already refused, because the catch-all never needed to know the route existed.
+    ///
+    /// The claim is CHECKED, not trusted: if any live route serves under this prefix, the Gateway refuses
+    /// to start, because the catch-all would take that route off the air.
+    /// </summary>
+    public static HostedDenyGroup ExclusiveGroup(IEndpointRouteBuilder outer, string prefix, HostedDenial denial)
+    {
+        ArgumentNullException.ThrowIfNull(outer);
+        ArgumentNullException.ThrowIfNull(denial);
+
+        if (string.IsNullOrWhiteSpace(prefix) || prefix == "/")
+            throw new ArgumentException(
+                $"The hosted denial for '{denial.Family}' asked to claim a prefix exclusively, but gave an empty " +
+                "prefix - which would claim the entire Gateway. An exclusive claim needs a real prefix.",
+                nameof(prefix));
+
+        var group = Group(outer, prefix, denial);
+
+        if (GatewayHostedMode.IsHosted)
+            group.MapExclusiveCatchAll(prefix);
+
+        return group;
+    }
+
+    /// <summary>
+    /// Opens a PER-ROUTE denied group: on hosted each route the family declares gets its own refusal in
+    /// place of its handler. Use this where the family's paths sit under a prefix that also carries LIVE
+    /// routes, so an exclusive claim would take undenied routes off the air.
+    ///
+    /// THE COST, STATED RATHER THAN DISCOVERED: a per-route family does NOT inherit future-route coverage.
+    /// A route added to it later has no refusal unless somebody writes one - which is the very property the
+    /// group mechanism exists to provide. A family using this mode therefore owes a test enumerating its
+    /// own mapped routes and asserting each has a refusal, so that adding one without a refusal REDDENS.
+    /// That converts the lost property from a thing to remember into a thing that fails.
     /// </summary>
     /// <param name="outer">The builder the group hangs off.</param>
     /// <param name="prefix">The group prefix, or <c>""</c> to keep route paths written out in full.</param>
@@ -72,10 +118,30 @@ public static class HostedRouteDeny
         ArgumentNullException.ThrowIfNull(prefix);
         ArgumentNullException.ThrowIfNull(denial);
 
-        FileLog.Write($"[HostedRouteDeny] group family={denial.Family} prefix='{prefix}' hosted={GatewayHostedMode.IsHosted}" +
+        // THE PREFIX IS NORMALISED TOO, on hosted. A group prefix can carry its own parameter policies -
+        // /family/{scope:int} - and a route's full pattern is the prefix plus the local pattern. Normalising
+        // only the local half leaves the constraint-miss hole one level up: a request whose PREFIX segment
+        // fails its policy fails endpoint selection, so the refusal is never selected and the framework
+        // answers instead. That was measured on the previous head, and it is the same defect the local
+        // normalisation exists to close, which is exactly why it was easy to miss - the fix had already been
+        // applied once and looked done.
+        //
+        // Off hosted the prefix is used verbatim, so self-host route matching is byte-identical to a group
+        // created without this primitive at all. Normalising off hosted would WIDEN the family's real routes,
+        // which would be a behaviour change on the control.
+        // Handed to MapGroup as a PATTERN, never re-serialised to text. A text round-trip would need a
+        // fallback for the case where the rebuilt pattern has no raw text - and that fallback would quietly
+        // reinstate the constrained prefix, which is the hole this is closing, restored by the very line
+        // meant to close it.
+        FileLog.Write($"[HostedRouteDeny] group family={denial.Family} prefix='{prefix}' " +
+                      $"hosted={GatewayHostedMode.IsHosted}" +
                       " - on hosted EVERY route in this group is refused on EVERY request shape, with no argument binding");
 
-        return new HostedDenyGroup(outer.MapGroup(prefix), denial);
+        var group = GatewayHostedMode.IsHosted
+            ? outer.MapGroup(HostedRefusalPattern.WithoutPolicies(prefix, denial.Family))
+            : outer.MapGroup(prefix);
+
+        return new HostedDenyGroup(group, denial);
     }
 }
 
@@ -161,16 +227,24 @@ public sealed class HostedDenyGroup
     private readonly RouteGroupBuilder _group;
     private readonly HostedDenial _denial;
 
-    // On hosted, one refusal route per route SHAPE - not per pattern TEXT.
+    // On hosted, one refusal per route shape WITHIN THIS FAMILY - a de-duplication, and nothing more.
     //
-    // A family that maps two verbs on one path (GET /x and PUT /x) would otherwise produce two verb-less
-    // routes that tie, and the matcher throws at REQUEST time - a 500 in place of the refusal, on the denied
-    // route, which is the deny failing in the one way nothing notices until a caller tries it.
+    // WHAT IT IS FOR: a family mapping several verbs on one path needs ONE verb-less refusal, because a
+    // second on the same path would tie with the first and the tie surfaces as a 500 at request time, on the
+    // denied route, which is the one nobody exercises until a caller does.
     //
-    // Text equality is not enough to prevent that. Two patterns differing only in a parameter NAME -
-    // /x/{id} and /x/{name} - are different strings and the SAME ROUTE, so a text-keyed dictionary maps both
-    // and produces exactly the tie it was meant to prevent. The key is therefore the route SHAPE (see
-    // HostedRefusalPattern.ShapeKey), which is what the matcher actually competes on.
+    // WHAT IT IS EXPLICITLY NOT: this key is NOT the matcher's ambiguity relation, and it must never be read
+    // as one. An earlier version of this primitive treated it as one, and review found three route pairs it
+    // called distinct that the live matcher ties - a standard parameter against an optional one on a present
+    // segment, literal case variants, and equal-precedence complex segments differing only by their
+    // separator. The matcher's relation is not reachable from public API, so any check for it here is a MODEL
+    // of framework semantics rather than the semantics, which is the same mistake as hand-scanning pattern
+    // text instead of using the parser.
+    //
+    // The safety of this mode therefore does NOT rest on this key being complete. It rests on refusals
+    // MIRRORING routes the family already declares: nothing is synthesised, so no pattern exists here that
+    // the family did not already have. Two of its routes that tie would already tie in its own production
+    // route table, before any deny existed.
     private readonly Dictionary<string, RegisteredRefusal> _refusals = new(StringComparer.Ordinal);
 
     private sealed record RegisteredRefusal(string SourcePattern, IEndpointConventionBuilder Builder);
@@ -198,6 +272,23 @@ public sealed class HostedDenyGroup
 
     public IEndpointConventionBuilder MapMethods(string pattern, IEnumerable<string> methods, Delegate handler)
         => Map(pattern, handler, () => _group.MapMethods(pattern, methods, handler));
+
+    /// <summary>
+    /// Maps the single catch-all refusal for an exclusive-prefix family, and records the exclusivity claim
+    /// as metadata so the finalised route space can CHECK it rather than take it on trust.
+    /// </summary>
+    internal void MapExclusiveCatchAll(string prefix)
+    {
+        var refusal = _group.Map("/{**hostedDeniedPath}", context => WriteRefusalAsync(context, _denial));
+        refusal.WithMetadata(new HostedRefusalMarker(_denial, prefix + "/{**hostedDeniedPath}"));
+        refusal.WithMetadata(new HostedExclusivePrefixMarker(_denial, prefix));
+
+        // The prefix ITSELF, which the catch-all above does not cover - a request to exactly the prefix has
+        // no remaining segment for the catch-all to match. Without this the family's own root answers from
+        // the fallback rather than from the refusal.
+        var root = _group.Map("", context => WriteRefusalAsync(context, _denial));
+        root.WithMetadata(new HostedRefusalMarker(_denial, prefix));
+    }
 
     /// <summary>
     /// The one decision, in one place: on hosted map the refusal and never the handler; off hosted map the

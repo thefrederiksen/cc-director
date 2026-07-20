@@ -4,42 +4,61 @@ using System.Linq;
 using CcDirector.Core.Utilities;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
-using Microsoft.AspNetCore.Routing.Patterns;
 
 namespace CcDirector.Gateway.Tenancy;
 
 /// <summary>
 /// Marks an endpoint as a hosted refusal, so the FINALISED route space can be checked once everything has
-/// been mapped. Carries the family and the pattern the family actually asked for, which is what makes a
-/// failure message name the two routes a human has to go and look at.
+/// been mapped. Carries the family and the pattern the family asked for, so a failure message names the
+/// two routes a human has to go and look at.
 /// </summary>
 internal sealed record HostedRefusalMarker(HostedDenial Denial, string SourcePattern);
 
 /// <summary>
-/// Validates the route space AFTER every endpoint has been mapped, and fails the Gateway at startup on a
-/// conflict rather than letting it surface as a 500 on a denied route the first time somebody calls it.
+/// Marks a group as claiming a prefix EXCLUSIVELY on hosted - nothing outside the denied family may serve
+/// a path underneath it. Recorded as metadata so the claim is checked against the finalised route space
+/// rather than trusted.
+/// </summary>
+internal sealed record HostedExclusivePrefixMarker(HostedDenial Denial, string Prefix);
+
+/// <summary>
+/// Validates the route space AFTER every endpoint has been mapped, and fails the Gateway at startup rather
+/// than letting a conflict surface as a 500 on a denied route the first time somebody calls it.
 ///
-/// WHY THIS EXISTS SEPARATELY FROM THE PER-GROUP CHECK. <see cref="HostedDenyGroup"/> can only see its own
-/// group: it prevents one family from mapping two refusals that tie. It cannot see
-///   - two DIFFERENT denied families whose refusal patterns land on the same route shape, or
-///   - a refusal that ties with an UNDENIED neighbour mapped somewhere else entirely.
-/// Both are decided by the whole route space, so both can only be checked once the whole route space
-/// exists. The first is a refusal that answers 500 instead of refusing. The second is worse in a different
-/// direction: a tie against a live route is an OUTAGE on something nobody denied.
+/// WHAT THIS CHECKS, AND - MORE IMPORTANTLY - WHAT IT DELIBERATELY NO LONGER TRIES TO CHECK.
 ///
-/// WHY A TIE AND NOT AN OVERLAP. Refusal patterns are deliberately WIDE - policies are stripped, so
-/// <c>/x/{id}</c> refuses where the real route wanted an integer. Widening is the point, and it overlaps
-/// neighbours constantly and harmlessly, because route precedence resolves it: a literal segment outranks a
-/// parameter segment, so a live <c>/x/summary</c> still wins over a refusing <c>/x/{id}</c>. What precedence
-/// CANNOT resolve is an exact tie - the same shape in the same positions - and that is the only case this
-/// validator rejects. Rejecting mere overlap would refuse to start on the normal, correct arrangement.
+/// A previous version of this file tried to detect whether two route patterns would TIE in the matcher, by
+/// comparing a hand-rolled "shape key". It was wrong, and it was wrong in the way that matters: three
+/// independent route pairs escaped it and returned HTTP 500 at request time - a standard parameter against
+/// an optional one on a present segment, literal case variants, and equal-precedence complex segments
+/// differing only by their separator character.
+///
+/// The reason it was wrong is worth keeping, because it is the second time this primitive made the same
+/// mistake: <b>the matcher's ambiguity relation is not reachable from public API, so any check for it is a
+/// MODEL of framework semantics rather than the semantics themselves.</b> The first instance was a
+/// hand-written scan standing in for the route parser; this was a hand-rolled key standing in for the
+/// matcher. Both were correct on the cases their author thought of and wrong on cases the framework
+/// already knew about.
+///
+/// So this no longer models ambiguity. It removes the conditions under which ambiguity can arise:
+///
+///   - an EXCLUSIVE-PREFIX family maps ONE catch-all refusal under a prefix nothing else may serve. One
+///     refusal cannot tie with itself, and exclusivity is checked by simple PREFIX CONTAINMENT - a
+///     comparison this code can actually perform correctly, unlike an ambiguity relation.
+///   - a PER-ROUTE family maps a refusal per route it actually declares. Nothing is synthesised, so no
+///     pattern exists that the family did not already have.
+///
+/// The residual case is stated rather than hidden: normalising a pattern WIDENS it, so two of a family's
+/// own routes that differ only by a parameter policy normalise to the same refusal and are de-duplicated
+/// by exact normalised text. Two routes that tie for some other reason would already tie in that family's
+/// own production route table, before any deny existed.
 /// </summary>
 internal static class HostedRefusalRouteSpace
 {
     /// <summary>
-    /// Reads every endpoint the application has mapped and throws on the first conflict. Call ONCE, after
-    /// all mapping is done and before the host starts serving. A no-op when nothing is refused, so it is
-    /// inert on self-host where no refusal endpoint exists.
+    /// Reads every endpoint the application has mapped and throws on the first violation. Call ONCE, after
+    /// all mapping is done and before the host serves. Inert when nothing is refused, so it does nothing on
+    /// self-host, where no refusal endpoint exists.
     /// </summary>
     public static void Validate(IEnumerable<Endpoint> endpoints)
     {
@@ -47,75 +66,48 @@ internal static class HostedRefusalRouteSpace
 
         var routes = endpoints.OfType<RouteEndpoint>().ToList();
 
-        var refusals = routes
-            .Select(e => (Endpoint: e, Marker: e.Metadata.GetMetadata<HostedRefusalMarker>()))
+        var exclusive = routes
+            .Select(e => (Endpoint: e, Marker: e.Metadata.GetMetadata<HostedExclusivePrefixMarker>()))
             .Where(x => x.Marker is not null)
             .ToList();
 
-        if (refusals.Count == 0)
+        var refusals = routes.Count(e => e.Metadata.GetMetadata<HostedRefusalMarker>() is not null);
+
+        if (refusals == 0 && exclusive.Count == 0)
         {
             FileLog.Write("[HostedRefusalRouteSpace] no hosted refusals mapped - nothing to validate (self-host)");
             return;
         }
 
-        var seen = new Dictionary<string, (HostedRefusalMarker Marker, RouteEndpoint Endpoint)>(StringComparer.Ordinal);
-
-        foreach (var (endpoint, marker) in refusals)
+        foreach (var (endpoint, marker) in exclusive)
         {
-            var key = HostedRefusalPattern.ShapeKey(endpoint.RoutePattern);
+            var prefix = marker!.Prefix.TrimEnd('/');
 
-            // REFUSAL versus REFUSAL. Two families whose refusals land on one shape tie at request time, and
-            // the caller gets a 500 from the route that was supposed to refuse them.
-            if (seen.TryGetValue(key, out var prior))
-            {
-                throw new InvalidOperationException(
-                    $"Two hosted refusals occupy the same route shape and would tie at request time: " +
-                    $"family '{prior.Marker!.Denial.Family}' pattern '{prior.Marker.SourcePattern}' and " +
-                    $"family '{marker!.Denial.Family}' pattern '{marker.SourcePattern}'. " +
-                    "A denied route that answers 500 is not a refusal. Give one family the route, or narrow one pattern.");
-            }
-
-            seen[key] = (marker!, endpoint);
-
-            // REFUSAL versus a LIVE NEIGHBOUR. A tie here is an outage on a route nobody denied - the
-            // over-refusal direction, which no leak-shaped test would ever notice.
+            // EXCLUSIVITY, by prefix containment. Everything under this prefix belongs to the denied family;
+            // a live route there would be swallowed by the catch-all refusal, which is an OUTAGE on a route
+            // nobody denied - the over-refusal direction, and the one no leak-shaped test would notice.
             foreach (var other in routes)
             {
                 if (ReferenceEquals(other, endpoint)) continue;
                 if (other.Metadata.GetMetadata<HostedRefusalMarker>() is not null) continue;
-                if (!SharesShape(endpoint.RoutePattern, other.RoutePattern)) continue;
+                if (other.Metadata.GetMetadata<HostedExclusivePrefixMarker>() is not null) continue;
+
+                var otherPath = "/" + (other.RoutePattern.RawText ?? string.Empty).TrimStart('/');
+                if (!otherPath.StartsWith(prefix + "/", StringComparison.OrdinalIgnoreCase) &&
+                    !string.Equals(otherPath, prefix, StringComparison.OrdinalIgnoreCase))
+                    continue;
 
                 throw new InvalidOperationException(
-                    $"The hosted refusal for family '{marker!.Denial.Family}' (pattern '{marker.SourcePattern}') " +
-                    $"occupies the same route shape as the live route '{other.RoutePattern.RawText}', so the two " +
-                    "would tie at request time and a route nobody denied would stop serving. " +
-                    "Refusing to start: an outage on an undenied route is as much a defect as a leak on a denied one.");
+                    $"The hosted denial for family '{marker.Denial.Family}' claims the prefix '{marker.Prefix}' " +
+                    $"EXCLUSIVELY, but the live route '{other.RoutePattern.RawText}' serves underneath it. The " +
+                    "catch-all refusal would take that route off the air. Refusing to start: an outage on an " +
+                    "undenied route is as much a defect as a leak on a denied one. Either that route belongs to " +
+                    "the denied family, or this family cannot claim the prefix exclusively and owes per-route " +
+                    "refusals instead.");
             }
         }
 
-        FileLog.Write($"[HostedRefusalRouteSpace] validated {refusals.Count} hosted refusal route(s) against " +
-                      $"{routes.Count} mapped route(s) - no ties");
-    }
-
-    /// <summary>
-    /// True when two patterns occupy the SAME shape, which is the only relation route precedence cannot
-    /// resolve. Compared through the shape key so parameter names and policies are ignored - a live
-    /// <c>/x/{name:alpha}</c> ties with a refusing <c>/x/{id}</c>, and the differing name and policy are
-    /// exactly the details that would hide it from a text comparison.
-    /// </summary>
-    private static bool SharesShape(RoutePattern left, RoutePattern right)
-    {
-        try
-        {
-            return string.Equals(HostedRefusalPattern.ShapeKey(left), HostedRefusalPattern.ShapeKey(right),
-                StringComparison.Ordinal);
-        }
-        catch (NotSupportedException)
-        {
-            // A live route may legitimately contain a part shape the refusal normaliser does not model. It
-            // cannot be a refusal (those are built by the normaliser), so it cannot be compared - and an
-            // uncomparable route is not evidence of a tie.
-            return false;
-        }
+        FileLog.Write($"[HostedRefusalRouteSpace] validated {exclusive.Count} exclusive-prefix claim(s) and " +
+                      $"{refusals} refusal route(s) against {routes.Count} mapped route(s)");
     }
 }
