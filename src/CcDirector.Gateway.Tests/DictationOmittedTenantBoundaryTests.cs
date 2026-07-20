@@ -111,6 +111,26 @@ namespace CcDirector.Gateway.Tests;
 /// belt in PartitionRootFor (unreachable while IsMintedAccountTenant stays strict). Neither got a test
 /// invented for it, because the only test either could have is one that cannot fail.
 ///
+/// A SURVIVAL CLAIM NEEDS ITS PRECONDITION ESTABLISHED, NOT ASSUMED - the trap these tests fell into first.
+///
+/// Every leg here asserts that something SURVIVED a refused operation: the tombstone is still there, the
+/// record is still Pending, the audio is unchanged. That is only evidence of a refusal if the operation
+/// would OTHERWISE HAVE DESTROYED IT. The starting state a survival claim depends on is not "a record
+/// exists" - it is "a record exists THAT THIS OPERATION WOULD DESTROY", and the second half is the half
+/// that gets assumed.
+///
+/// As first written, these tests never established it. A no-op ack leg, a no-op abandon leg, or a chunk leg
+/// that stored nothing at all would have left everything standing exactly as a refusal does, and every
+/// assertion would still have passed - a test that cannot fail, wearing the shape of a strong one. Note the
+/// direction of the trap: a refusal test is ASSERTING that nothing happened, so "nothing happened" can
+/// never by itself distinguish the refusal from the operation being inert.
+///
+/// So each leg now closes with a DESTRUCTIBILITY CONTROL: the same operation, permitted, really does retire
+/// the tombstone / resolve the record / overwrite the bytes. They run last because they consume the
+/// fixture. Together with the deny fingerprint - the exact 403 and the exact refusal message, which prove
+/// the request reached the guard rather than a missing route - the pair says: the thing was destructible,
+/// something tried to destroy it, it was refused, and it survived.
+///
 /// EVERY RED MUST ARRIVE AS AN ASSERTION, NOT A CRASH. A NullReferenceException or an input/output error
 /// means the mutation broke something upstream before the test could ask its question - that is laundering
 /// and it does not prove the line it was aimed at. Hence MustStillExist instead of bare `!` dereferences,
@@ -180,6 +200,11 @@ public sealed class DictationOmittedTenantBoundaryTests : IAsyncLifetime
         var id = Guid.NewGuid().ToString();
         LocalStore().MarkDelivered(id, submitted: true, movedOn: false, transcript: LocalSecretTranscript);
 
+        // Establish the starting state: DELIVERED is precisely the state that arms the terminal-register
+        // short-circuit, and the disclosure claim below is meaningless if the record is not in it.
+        Assert.Equal(DictationDeliveryState.Delivered,
+            MustStillExist(LocalStore(), id, "the local record must be terminal before register is attempted").State);
+
         var (status, body) = await Read(await _unwired.RegisterAsync(id));
         AssertRefusal(status, body);
 
@@ -225,6 +250,12 @@ public sealed class DictationOmittedTenantBoundaryTests : IAsyncLifetime
         Assert.Equal(HttpStatusCode.OK, wired.status);
         Assert.True(JsonDocument.Parse(wired.body).RootElement.GetProperty("ok").GetBoolean());
         Assert.Equal(LocalSecretAudio, await StagedTextAsync(local, id));
+
+        // AND PROVE THE LOCAL STAGING WAS OVERWRITABLE ALL ALONG. "The bytes did not change" only means the
+        // write was refused if a write that IS permitted would have changed them - otherwise a chunk leg
+        // that stores nothing at all passes this test. Done last: it consumes the fixture.
+        await local.StoreChunkAsync(id, 0, Encoding.UTF8.GetBytes("rewritten-by-the-control"), null, default);
+        Assert.Equal("rewritten-by-the-control", await StagedTextAsync(local, id));
     }
 
     // ===== leg 3: complete =========================================================================
@@ -237,6 +268,11 @@ public sealed class DictationOmittedTenantBoundaryTests : IAsyncLifetime
         // the self-host partition's in-flight run.
         var id = Guid.NewGuid().ToString();
         LocalStore().MarkDelivered(id, submitted: true, movedOn: false, transcript: LocalSecretTranscript);
+
+        // Same armed starting state as the register leg: the cached-terminal-outcome short-circuit only
+        // fires on a terminal record, so assert it rather than assume the seeding worked.
+        Assert.Equal(DictationDeliveryState.Delivered,
+            MustStillExist(LocalStore(), id, "the local record must be terminal before complete is attempted").State);
 
         var (status, body) = await Read(await _unwired.CompleteAsync(id));
         AssertRefusal(status, body);
@@ -265,6 +301,11 @@ public sealed class DictationOmittedTenantBoundaryTests : IAsyncLifetime
         var id = Guid.NewGuid().ToString();
         LocalStore().MarkDelivered(id, submitted: true, movedOn: false, transcript: LocalSecretTranscript);
 
+        // ESTABLISH THE STARTING STATE, never assume it. The claim below is that the tombstone SURVIVED a
+        // refused ack, and "it is still there" is only evidence of a refusal if it was there to begin with.
+        Assert.Equal(DictationDeliveryState.Delivered,
+            MustStillExist(LocalStore(), id, "the local tombstone must exist before the ack is attempted").State);
+
         var (status, body) = await Read(await _unwired.AckAsync(id));
         AssertRefusal(status, body);
         Assert.NotNull(LocalStore().ReadRecord(id));
@@ -280,6 +321,15 @@ public sealed class DictationOmittedTenantBoundaryTests : IAsyncLifetime
         Assert.True(wiredRoot.GetProperty("ok").GetBoolean());
         Assert.False(wiredRoot.GetProperty("retired").GetBoolean());
         Assert.NotNull(LocalStore().ReadRecord(id));
+
+        // AND PROVE THE TOMBSTONE WAS DESTRUCTIBLE ALL ALONG - the precondition the survival claim above
+        // silently rests on. Without this the test cannot tell "the ack was refused" from "an ack retires
+        // nothing anyway": a no-op ack leg would leave the record standing too, and every assertion above
+        // would still pass. The handler's ack IS this call (store.Acknowledge on the request's partition),
+        // so retiring it here proves the refusal prevented exactly the operation that would have destroyed
+        // it. Done last, because it deliberately consumes the fixture.
+        Assert.True(LocalStore().Acknowledge(id));
+        Assert.Null(LocalStore().ReadRecord(id));
     }
 
     // ===== leg 5: abandon ==========================================================================
@@ -312,6 +362,15 @@ public sealed class DictationOmittedTenantBoundaryTests : IAsyncLifetime
         Assert.Equal(DictationDeliveryState.Pending,
             MustStillExist(local, id, "the wired abandon must have stayed inside its own partition").State);
         Assert.True(local.IsSessionLocked(sessionId));
+
+        // AND PROVE THE LIVE DICTATION WAS RESOLVABLE ALL ALONG - same reasoning as the ack leg. "Still
+        // Pending, still locked" only means the abandon was refused if an abandon that IS permitted would
+        // have resolved it; otherwise a no-op abandon leg passes this test unchanged. The handler's abandon
+        // IS this call on the request's own partition. Done last: it consumes the fixture.
+        local.MarkAbandoned(id, "destructibility_control");
+        Assert.Equal(DictationDeliveryState.Abandoned,
+            MustStillExist(local, id, "the local record must be resolvable by an abandon that is allowed").State);
+        Assert.False(local.IsSessionLocked(sessionId));
     }
 
     // ===== the refusal itself ======================================================================
