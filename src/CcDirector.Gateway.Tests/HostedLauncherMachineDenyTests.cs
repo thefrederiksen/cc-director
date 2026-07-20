@@ -86,6 +86,59 @@ namespace CcDirector.Gateway.Tests;
 /// previous binary and reports a false pass. Rebuild, CONFIRM ZERO ERRORS, verify by diff that the mutation
 /// is actually present in the source, then run the FULL suite - never a filter over these classes, which
 /// could not see whether some existing test already covered the behaviour nor any collateral damage.
+///
+/// THE REDS ARE PRE-REGISTERED BELOW, WRITTEN AND PUSHED BEFORE THE ARM WAS EVER RUN. That ordering is the
+/// whole point: A PREDICTED RED THAT DOES NOT APPEAR IS A FINDING. A list filled in afterwards from what was
+/// observed cannot produce that finding at all - whatever reddens is by definition what was expected, so a
+/// mutation that silently failed to apply, or that reddened the wrong tests, reads as a clean result. It
+/// guards the other direction too: MORE reds than predicted means the filter was carrying something that was
+/// not accounted for, and that is to be understood rather than accepted.
+///
+/// PREDICTION: EXACTLY 15 TEST CASES REDDEN, ALL OF THEM IN THIS FILE, AND NOTHING ELSE IN THE SUITE MOVES.
+///
+///   HostedLauncherMachineDenyTests.Every_launcher_and_machine_route_is_refused_to_an_enrolled_tenant
+///       - ALL NINE theory rows.
+///   HostedLauncherMachineDenyTests.The_launcher_listing_leaks_no_machine_on_hosted
+///   HostedLauncherMachineDenyTests.The_refusal_is_not_an_empty_launcher_list
+///   HostedLauncherMachineGroupFilterTests.A_route_added_to_the_group_later_is_refused_on_hosted_with_no_deny_of_its_own
+///   HostedLauncherMachineGroupFilterTests.A_refused_registration_writes_nothing_into_the_registry
+///   HostedLauncherMachineGroupFilterTests.A_refused_spawn_never_reaches_the_resolver
+///   HostedLauncherMachineGroupFilterTests.A_refused_launch_never_dials_the_launcher
+///
+/// WHERE EACH RED IS PREDICTED TO ARRIVE, because a red that arrives from the fixture is VOID and only a red
+/// that arrives from an assertion about what was served proves anything:
+///
+///   Five of the nine theory rows redden on the STATUS assertion, because with the filter gone the handler's
+///   own answer is a different status: register -> 201 Created, heartbeat on an unregistered machine -> 410
+///   Gone, unregister -> 200 OK, the listing -> 200 OK, and the spawn -> 502 Bad Gateway (no Director on that
+///   machine; the spawner fails loud rather than falling back).
+///
+///   The other FOUR - the three director lifecycle verbs and the generic launch - are predicted to redden on
+///   the PROPERTY-SET assertion and NOT on the status assertion. With no launcher registered, the relay's own
+///   refusal is ALSO 404 with application/json, so status and media type still match; what separates them is
+///   the body, which carries { error, machine } with a different error string instead of { error } alone.
+///   THAT IS THE SHARPEST PREDICTION IN THIS FILE and it is the reason the refusal is asserted as an exact
+///   property set rather than as a status code: if those four rows came back GREEN under the mutation, it
+///   would mean the deny had been indistinguishable from "no launcher registered on that machine" all along.
+///
+/// DECLARED UNKNOWN, stated as an unknown rather than left open: those four rows depend on the launcher
+/// STREAM arm returning null inside a full GatewayHost booted with streamMode true, so the REST relay arm is
+/// the one that answers. If the stream arm answers instead, they redden on the status assertion rather than
+/// the property set. What is NOT unknown is that they must redden; a green there is a finding, not a pass.
+///
+/// MUST STAY GREEN - the controls, and a control that moves with the change under test is not a control:
+///   HostedLauncherMachineDenyTests.An_unauthenticated_caller_is_still_rejected
+///   HostedLauncherMachineGroupFilterTests.A_route_outside_the_group_still_serves_on_hosted
+///   ALL TEN cases of HostedLauncherMachineSelfHostControlTests (five methods, two non-hosted forms each)
+///
+/// AND ZERO REDS ANYWHERE ELSE IN THE SUITE. The twelve existing launcher and machine test files run under
+/// the runner's ambient non-hosted default, where this filter is a pass-through, so deleting it cannot reach
+/// them. If one of them reddens, the ambient default is not what it is believed to be - which would be a
+/// finding about every other hosted test in this assembly, not a detail about this one.
+///
+/// RECONCILE EVERY ARM, INCLUDING BASELINE AND RESTORE: passed plus failed plus skipped must EQUAL the
+/// baseline total. A pre-existing race can truncate a run while still printing a cheerful passed line, and a
+/// truncated arm reads exactly like a mutation that reddened fewer tests than predicted.
 /// </summary>
 public sealed class HostedLauncherMachineDenyTests : IAsyncLifetime
 {
