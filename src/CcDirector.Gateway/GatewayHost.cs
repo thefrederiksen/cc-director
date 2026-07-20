@@ -688,6 +688,9 @@ public sealed class GatewayHost : IAsyncDisposable
             // newing a HostedAgent with an arbitrary registry driver keeps that guard the one and only
             // path to a hosted brain, so a non-hostable tool can never slip through to fail at Start.
             agentFactory: o => CcDirector.HostedAgent.HostedAgent.For(BrainTool, o));
+        // The production behaviour, assigned once here. See BrainRestartAction for why the indirection
+        // exists; nothing in production ever reassigns it.
+        BrainRestartAction = ct => Brain.RestartAsync(ct);
         _turnBriefStore = new GatewayTurnBriefStore(turnBriefDirectory);
         // Production omits keyVaultPath for the shared default; tests pass an isolated path so
         // they never touch the real %LOCALAPPDATA% key store.
@@ -1321,6 +1324,24 @@ public sealed class GatewayHost : IAsyncDisposable
     /// Director dependency. Dormant until first use; RestartAsync is the recovery verb.
     /// </summary>
     public BrainSupervisor Brain { get; }
+
+    /// <summary>
+    /// What <c>POST /gateway/brain/restart</c> actually performs. Defaults to the real warm-brain restart,
+    /// and production never assigns it - the default IS the production behaviour, so this is a seam, not a
+    /// switch, and there is no fallback path hiding behind it.
+    ///
+    /// It exists because that route is the one owner-settings route whose served-side proof could not
+    /// otherwise be honest (issue #1863). Its whole job is to start a coding-agent process, so a test that
+    /// drove the real handler would spawn one on the machine running the suite - which is exactly the
+    /// capability the hosted deny exists to prevent, and not an acceptable thing for a proof harness to do.
+    /// Proving the route by asking for it with the WRONG VERB and reading the 405 was the previous
+    /// compromise, and it proved only that the route was REGISTERED - never that the POST reaches this
+    /// handler.
+    ///
+    /// With this seam a test drives the exact path and verb, gets this handler's own receipt, and starts no
+    /// process. The revert arms can drive it too, so no mutation run leaves a stray agent behind.
+    /// </summary>
+    internal Func<CancellationToken, Task> BrainRestartAction { get; set; }
 
     /// <summary>The agent tool the brain runs as (issue #393), resolved at construction from
     /// config.json "brain_tool" (default: <see cref="BrainToolConfig.Default"/>, Claude Code).

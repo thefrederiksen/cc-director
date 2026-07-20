@@ -87,13 +87,43 @@ internal static class SettingsEndpoints
         // hosted and nothing would fail. A group filter runs before EVERY route mapped below, including
         // routes that do not exist yet. The empty prefix keeps every route path written out in full, so the
         // self-host surface is byte-identical to before and the diff stays readable.
-        var app = outer.MapGroup("");
-        app.AddEndpointFilter(async (ctx, next) =>
+        var guarded = outer.MapGroup("");
+        guarded.AddEndpointFilter(async (ctx, next) =>
         {
             if (DenyOnHosted() is { } denied) return denied;
             return await next(ctx);
         });
 
+        // The telemetry-consent family is mapped onto OUTER, not into this group, deliberately (issue
+        // #1863). It carries its OWN hosted group filter, and mapping it here as well would put two filters
+        // over the same routes - which hides a defect rather than adding safety: deleting either filter
+        // alone would leave the routes still refused, so neither filter's revert could be attributed to it.
+        // One family, one filter, one thing to revert. It is called HERE, in the only method that still
+        // holds `outer`, so that `outer` does not have to stay in scope where the routes are mapped.
+        TelemetryConsentEndpoint.Map(outer);
+
+        // THE ROUTES ARE MAPPED WHERE `outer` IS NOT IN SCOPE - deliberately, and this is the only reason
+        // MapRoutes exists as a separate method.
+        //
+        // If the routes were written here beside the guarded group, each of the twenty-two could
+        // INDIVIDUALLY be mapped onto `outer` instead of onto `guarded` - a one-word edit that bypasses the
+        // filter for that route alone while every other route stays correctly denied. That is twenty-two
+        // independently bypassable primitives, each of which would owe its own proof run. Handing the group
+        // to a method that never receives the ungrouped builder makes that mistake INEXPRESSIBLE rather than
+        // merely unlikely: inside MapRoutes there is nothing to map onto except the guarded group. The
+        // bypass count is reduced by design, not by argument about how careful the next author will be.
+        // This is the shape the key-vault deny uses, in VaultEndpoints.
+        MapRoutes(guarded, host);
+        return guarded;
+    }
+
+    /// <summary>
+    /// The twenty-two owner-settings routes. Takes the GUARDED group and nothing else - see the note at the
+    /// call site: the ungrouped route builder is deliberately out of scope here so no route can be mapped
+    /// around the hosted filter.
+    /// </summary>
+    private static void MapRoutes(RouteGroupBuilder app, GatewayHost host)
+    {
         app.MapGet("/gateway/settings", async () =>
         {
             // The Cockpit is served in-process by the Gateway (issue #979 retired the separate Blazor
@@ -153,12 +183,16 @@ internal static class SettingsEndpoints
 
         // Restart the warm brain (issue #184): the one recovery verb, and doubles as a manual
         // start. Mirrors the old tray-window Restart Brain button, now reachable from the Cockpit.
-        app.MapPost("/gateway/brain/restart", async () =>
+        app.MapPost("/gateway/brain/restart", async (CancellationToken ct) =>
         {
             FileLog.Write("[SettingsEndpoints] POST /gateway/brain/restart");
             try
             {
-                await host.Brain.RestartAsync();
+                // Through the host's restart seam rather than host.Brain.RestartAsync directly. In
+                // production the seam IS host.Brain.RestartAsync - see GatewayHost.BrainRestartAction -
+                // so behaviour here is unchanged; the indirection is what lets a test drive this exact
+                // path and verb for a real receipt without starting a coding-agent process.
+                await host.BrainRestartAction(ct);
                 FileLog.Write($"[SettingsEndpoints] brain restart OK: pid={host.Brain.ProcessId}, session={host.Brain.SessionId}");
                 return Results.Json(new { ok = true, brain = await BrainBlockAsync(host) });
             }
@@ -261,17 +295,11 @@ internal static class SettingsEndpoints
             }
         });
 
-        // The fleet-wide richer-usage-telemetry consent (issue #649). Lives in its own endpoint class
-        // (TelemetryConsentEndpoint) so it can be unit-tested in isolation, but it is part of the one
-        // Gateway settings surface and is mapped here alongside the other settings routes. Default ON;
-        // gates only the richer usage telemetry - the always-on login/startup events are never gated.
-        //
-        // Mapped onto OUTER, not onto this group, deliberately (issue #1863). It carries its OWN hosted
-        // group filter, and mapping it here as well would put two filters over the same routes - which
-        // hides a defect rather than adding safety: deleting either filter alone would leave the routes
-        // still refused, so neither filter's revert could be attributed to it. One family, one filter,
-        // one thing to revert.
-        TelemetryConsentEndpoint.Map(outer);
+        // The fleet-wide richer-usage-telemetry consent (issue #649) lives in its own endpoint class
+        // (TelemetryConsentEndpoint) so it can be unit-tested in isolation, and it is mapped from Map above
+        // rather than here, because it needs the UNGROUPED builder and this method deliberately does not
+        // have one. Default ON; gates only the richer usage telemetry - the always-on login/startup events
+        // are never gated.
 
         // Network addressing mode (issue #457): "tailscale" (advertise the Tailscale Serve
         // front door) or "lan" (advertise the machine's real LAN IP). Stored as the top-level
@@ -638,8 +666,6 @@ internal static class SettingsEndpoints
                 return Results.BadRequest(new { error = "invalid JSON" });
             }
         });
-
-        return app;
     }
 
     /// <summary>The brain status block - shared by the snapshot GET and the restart POST.</summary>

@@ -5,6 +5,7 @@ using System.Net;
 using System.Net.Http;
 using System.Net.Http.Headers;
 using System.Text.Json;
+using System.Threading;
 using System.Threading.Tasks;
 using CcDirector.Core.Configuration;
 using Microsoft.AspNetCore.Builder;
@@ -30,14 +31,21 @@ namespace CcDirector.Gateway.Tests;
 ///
 /// AND IT ASSERTS A POSITIVE FACT PER ROUTE, NOT THE ABSENCE OF THE REFUSAL. "The refusal string is not
 /// in the body" is satisfied by an empty 200, by a single-page-application shell, and by a route that was
-/// deleted - it proves nothing about the route being alive. Every route below is proved by one of:
+/// deleted - it proves nothing about the route being alive. All thirty-one routes are proved by one of:
 ///   - its REAL PAYLOAD, field by field (the eleven read routes);
 ///   - an INDEPENDENTLY RE-READ EFFECT - the value is written over the wire and then read back out of the
-///     configuration store through the Core config class, not out of the response (fourteen write routes);
-///   - a HANDLER-UNIQUE RECEIPT: a status and message that only that one handler can produce, where the
-///     route has no readable effect to assert (four routes).
-/// Together with <see cref="HostedOwnerSettingsGroupFilterTests.The_brain_restart_route_exists_on_hosted_and_is_reachable_only_as_a_post"/>
-/// for the one route whose handler cannot be invoked, that is all thirty-one.
+///     configuration store through the Core config class, not out of the response (thirteen write routes);
+///   - a SEEDED TRANSITION, where a plain re-read could not tell a real write from a no-op: transcription
+///     mode, whose only accepted value is also the default, and the provider, whose effect is a RESET
+///     rather than a stored value (two routes);
+///   - a HANDLER-UNIQUE RECEIPT: a status and message only that one handler can produce, where the route
+///     has no readable effect to assert - brain config, the two credential-resolution routes, autostart
+///     (four routes);
+///   - an INJECTED-SEAM RECEIPT with a destructibility control, for the one route whose real work is to
+///     start a process: brain restart. It is driven on its exact path AND verb; only the process spawn is
+///     replaced.
+/// Eleven plus thirteen plus two plus four plus one is thirty-one. No route is left over, and none is
+/// proved only by the absence of the refusal.
 ///
 /// These tests must stay GREEN through the revert. A control that moves with the change under test is not
 /// a control.
@@ -250,7 +258,8 @@ public sealed class HostedOwnerSettingsSelfHostControlTests : IAsyncLifetime
                 data.Add(hosted, "PUT", "gateway/injected-text", "{\"use_yours\":true,\"yours\":\"words from another tenant\"}", "injected-text", "words from another tenant");
                 data.Add(hosted, "PUT", "gateway/snooze-presets", "{\"presets\":[15,30,60],\"defaultMinutes\":30}", "snooze-presets", "15,30,60");
                 data.Add(hosted, "PUT", "gateway/time-zone", "{\"timeZone\":\"America/New_York\"}", "time-zone", "America/New_York");
-                data.Add(hosted, "PUT", "gateway/transcription-mode", "{\"mode\":\"devthrottle\"}", "transcription-mode", "devthrottle");
+                // transcription-mode is NOT here - it needs a seeded starting value to be distinguishable
+                // from a no-op, so it has its own test below.
                 data.Add(hosted, "PUT", "gateway/tts-voice", "{\"voice\":\"shimmer\"}", "tts-voice", "shimmer");
                 data.Add(hosted, "PUT", "gateway/telemetry-consent", "{\"enabled\":false}", "telemetry-consent", "false");
                 data.Add(hosted, "PUT", "gateway/ai/wingman-model", "{\"model\":\"hosted-wingman\"}", "wingman-model", "hosted-wingman");
@@ -311,6 +320,42 @@ public sealed class HostedOwnerSettingsSelfHostControlTests : IAsyncLifetime
         Assert.DoesNotContain("error", document.RootElement.EnumerateObject().Select(p => p.Name));
 
         Assert.Equal(expected, ReadBack(readBackKey));
+    }
+
+    /// <summary>
+    /// <c>PUT /gateway/transcription-mode</c> on its own, proved by a SEEDED TRANSITION.
+    ///
+    /// This route was previously the one write whose served-side positive did not actually prove anything:
+    /// the endpoint accepts only <c>"devthrottle"</c>, which is also the default, so writing it and reading
+    /// it back returns the same answer whether the handler wrote or did nothing at all. The reviewer was
+    /// right that echoing the sole accepted value cannot distinguish a real write from a no-op.
+    ///
+    /// The claim did not need narrowing, though - it needed a starting point. The endpoint only ACCEPTS
+    /// "devthrottle", but the underlying setting is a two-valued one and the configuration store happily
+    /// holds <c>"byo"</c>. So this seeds the store to "byo" through the Core config class, proves the seed
+    /// took, then drives the route and proves the stored value MOVED. A handler that accepted the request
+    /// and wrote nothing leaves it on "byo" and this test reddens.
+    /// </summary>
+    [Theory]
+    [MemberData(nameof(NonHostedForms))]
+    public async Task The_transcription_mode_write_really_moves_the_stored_value_on_self_host(string? hostedForm)
+    {
+        DeclareSelfHost(hostedForm);
+
+        // Seed the OPPOSITE value, so "unchanged" and "written" cannot be confused.
+        TranscriptionModeConfig.Set(TranscriptionMode.Byo);
+        Assert.Equal(TranscriptionMode.Byo, TranscriptionModeConfig.Get());
+
+        var response = await OwnerSettingsRoutes.SendAsync(_http, "PUT", "gateway/transcription-mode",
+            "{\"mode\":\"devthrottle\"}");
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal("application/json", response.Content.Headers.ContentType?.MediaType);
+
+        using var document = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        Assert.Equal("devthrottle", document.RootElement.GetProperty("mode").GetString());
+
+        // The independently re-read effect: the stored value MOVED off the seed.
+        Assert.Equal(TranscriptionMode.DevThrottle, TranscriptionModeConfig.Get());
     }
 
     /// <summary>
@@ -389,6 +434,79 @@ public sealed class HostedOwnerSettingsSelfHostControlTests : IAsyncLifetime
 
         using var document = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
         Assert.Equal(expectedMessage, document.RootElement.GetProperty("error").GetString());
+    }
+
+    /// <summary>
+    /// <c>POST /gateway/brain/restart</c> - the exact path AND verb, reaching its own handler, proved by a
+    /// receipt only that handler produces, and starting NO process.
+    ///
+    /// This route previously had no served-side handler proof at all. It was covered by asking for it with
+    /// the wrong verb and reading the 405 with <c>Allow: POST</c>, which proves the route is REGISTERED and
+    /// nothing more - the POST could have been wired to any handler, or to none. The reviewer was right to
+    /// call that insufficient, and right that driving the live path in a test would spawn a coding-agent
+    /// process on the machine running the suite.
+    ///
+    /// So the restart action is now an injected seam on the host (<c>GatewayHost.BrainRestartAction</c>,
+    /// which in production IS the real warm-brain restart). Here it is replaced with one that starts nothing
+    /// and records that it ran. Both halves are asserted: the handler's own success envelope comes back,
+    /// AND the seam was actually invoked - so this cannot pass against a handler that returns the right
+    /// shape without doing the work.
+    /// </summary>
+    [Theory]
+    [MemberData(nameof(NonHostedForms))]
+    public async Task The_brain_restart_route_reaches_its_handler_on_self_host_without_starting_a_process(
+        string? hostedForm)
+    {
+        DeclareSelfHost(hostedForm);
+
+        var invoked = 0;
+        _gateway.BrainRestartAction = _ =>
+        {
+            Interlocked.Increment(ref invoked);
+            return Task.CompletedTask;
+        };
+
+        var response = await OwnerSettingsRoutes.SendAsync(_http, "POST", "gateway/brain/restart", "");
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal("application/json", response.Content.Headers.ContentType?.MediaType);
+
+        using var document = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        var root = document.RootElement;
+
+        // The receipt is this handler's own: { ok, brain: { ... } }. A refusal is a 404 whose single
+        // property is "error", so the two cannot be confused.
+        Assert.Equal(new[] { "ok", "brain" }, root.EnumerateObject().Select(p => p.Name).ToArray());
+        Assert.True(root.GetProperty("ok").GetBoolean());
+        Assert.True(root.GetProperty("brain").TryGetProperty("agents", out _));
+
+        // The handler did the work, not merely answer in the right shape.
+        Assert.Equal(1, invoked);
+    }
+
+    /// <summary>
+    /// The DESTRUCTIBILITY CONTROL for the receipt above. A test that only ever sees success cannot tell an
+    /// asserted receipt apart from a constant: if the handler ignored the seam entirely, the success case
+    /// would look identical. So the seam is made to FAIL, and the handler's own error envelope - a different
+    /// status and a different property set, carrying the exact failure text - must come back.
+    /// </summary>
+    [Theory]
+    [MemberData(nameof(NonHostedForms))]
+    public async Task The_brain_restart_route_reports_its_own_failure_on_self_host(string? hostedForm)
+    {
+        DeclareSelfHost(hostedForm);
+
+        const string Sentinel = "sentinel-restart-failure-no-other-code-path-says-this";
+        _gateway.BrainRestartAction = _ => throw new InvalidOperationException(Sentinel);
+
+        var response = await OwnerSettingsRoutes.SendAsync(_http, "POST", "gateway/brain/restart", "");
+        Assert.Equal(HttpStatusCode.InternalServerError, response.StatusCode);
+        Assert.Equal("application/json", response.Content.Headers.ContentType?.MediaType);
+
+        using var document = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        var root = document.RootElement;
+        Assert.Equal(new[] { "ok", "error" }, root.EnumerateObject().Select(p => p.Name).ToArray());
+        Assert.False(root.GetProperty("ok").GetBoolean());
+        Assert.Equal(Sentinel, root.GetProperty("error").GetString());
     }
 
     /// <summary>

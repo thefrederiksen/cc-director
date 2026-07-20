@@ -65,13 +65,28 @@ internal static class AiModelsEndpoint
 
         // ONE filter over the whole group - see the note in SettingsEndpoints for why a per-route guard
         // rots. The empty prefix leaves every route path written out in full, so self-host is unchanged.
-        var app = outer.MapGroup("");
-        app.AddEndpointFilter(async (ctx, next) =>
+        var guarded = outer.MapGroup("");
+        guarded.AddEndpointFilter(async (ctx, next) =>
         {
             if (DenyOnHosted() is { } denied) return denied;
             return await next(ctx);
         });
 
+        // THE ROUTES ARE MAPPED WHERE `outer` IS NOT IN SCOPE - see the note in SettingsEndpoints.Map. Each
+        // of these seven routes could otherwise be mapped onto `outer` instead of `guarded` by a one-word
+        // edit, bypassing the filter for that route alone while the rest stayed denied. Handing the group to
+        // a method that never receives the ungrouped builder makes that INEXPRESSIBLE, and collapses seven
+        // independently bypassable primitives into one.
+        MapRoutes(guarded, vault);
+        return guarded;
+    }
+
+    /// <summary>
+    /// The seven model-settings routes. Takes the GUARDED group and nothing else, deliberately, so no route
+    /// can be mapped around the hosted filter.
+    /// </summary>
+    private static void MapRoutes(RouteGroupBuilder app, KeyVault vault)
+    {
         app.MapGet("/gateway/ai/models", async (string? kind, CancellationToken ct) =>
         {
             var k = string.Equals(kind, "speech", StringComparison.OrdinalIgnoreCase) ? "speech" : "chat";
@@ -197,8 +212,6 @@ internal static class AiModelsEndpoint
             }
             catch (JsonException) { return Results.BadRequest(new { error = "invalid JSON" }); }
         });
-
-        return app;
     }
 
     private static string ProviderKeyMissingMessage(TranscriptionMode mode) =>

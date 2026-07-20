@@ -202,6 +202,7 @@ public sealed class HostedOwnerSettingsDenyTests : IAsyncLifetime
     private GatewayHost _gateway = null!;
     private HttpClient _http = null!;
     private string _deviceKey = "";
+    private int _brainRestartInvocations;
 
     public HostedOwnerSettingsDenyTests()
     {
@@ -224,6 +225,21 @@ public sealed class HostedOwnerSettingsDenyTests : IAsyncLifetime
             snoozePath: Path.Combine(_instancesDir, "snooze", "snooze.json"));
         await _gateway.StartAsync();
         _http = new HttpClient { BaseAddress = new Uri($"http://127.0.0.1:{_gateway.Port}/") };
+
+        // POST /gateway/brain/restart must not start a coding-agent process from a test - not here, and
+        // ESPECIALLY not on a revert arm, where the deny is deliberately removed and the request would
+        // reach the live handler. Replacing the restart action with one that starts nothing means no
+        // mutation run can leave a stray agent behind. The route is still driven for real, and the
+        // refusal asserted, exactly like the other thirty.
+        //
+        // It also records whether it ran, which is what makes the deny claim STRONGER rather than weaker:
+        // the assertion below is that the refusal happened AND the action was never invoked - a filter
+        // that answered 404 after letting the handler run would be invisible without it.
+        _gateway.BrainRestartAction = _ =>
+        {
+            Interlocked.Increment(ref _brainRestartInvocations);
+            return Task.CompletedTask;
+        };
 
         // A fully enrolled, tenant-bound device key - the strongest caller hosted has. The point is that
         // even this one is refused: no credential makes an owner's control panel correct on shared
@@ -301,6 +317,24 @@ public sealed class HostedOwnerSettingsDenyTests : IAsyncLifetime
         Assert.Equal(voiceBefore, TtsVoiceConfig.Resolve(TranscriptionModeConfig.Get()));
         Assert.Equal(carModelBefore, CarModeModelConfig.Get());
         Assert.Equal(consentBefore, TelemetryConsentConfig.Get());
+    }
+
+    /// <summary>
+    /// The refused ACTION never ran. `POST /gateway/brain/restart` is not a disclosure but a process spawn,
+    /// so for it "the response was a 404" is the weaker half of the claim - the stronger half is that the
+    /// thing it would have done did not happen. Asserted against the injected restart seam, which counts its
+    /// own invocations, so a filter that answered 404 only AFTER letting the handler run would redden here
+    /// while looking perfect from outside.
+    /// </summary>
+    [Fact]
+    public async Task The_refused_brain_restart_never_invokes_the_restart_action()
+    {
+        Assert.Equal(0, Volatile.Read(ref _brainRestartInvocations));
+
+        var response = await OwnerSettingsRoutes.SendAsync(_http, "POST", "gateway/brain/restart", "");
+        await OwnerSettingsRoutes.AssertIsNothingButTheRefusal(response, OwnerSettingsRoutes.SettingsRefusal);
+
+        Assert.Equal(0, Volatile.Read(ref _brainRestartInvocations));
     }
 
     /// <summary>
@@ -489,31 +523,24 @@ public sealed class HostedOwnerSettingsGroupFilterTests : IAsyncLifetime
     }
 
     /// <summary>
-    /// THE SERVED-SIDE POSITIVE FACT FOR <c>POST /gateway/brain/restart</c>, and the answer to the fact
-    /// that a 404 deny is INDISTINGUISHABLE from a route that was never mapped.
+    /// A SUPPLEMENTARY fact about <c>POST /gateway/brain/restart</c>: the route is registered on hosted at
+    /// that exact path, and only for POST.
     ///
-    /// This is the one route in the group whose handler cannot be invoked in a test: its whole job is to
-    /// start a coding-agent process on the machine, so calling it on the served side would spawn one. So
-    /// instead of running the handler, this proves the route is REALLY THERE on hosted by asking for it
-    /// with the wrong verb. A GET reaches routing, finds a path that exists with no GET on it, and is
-    /// answered 405 with an <c>Allow: POST</c> header - a POSITIVE statement, emitted by the routing
-    /// table, that a POST endpoint is registered at that exact path. The endpoint filter never runs,
-    /// because no endpoint was selected, which is exactly why the 405 survives the deny.
+    /// THIS IS NO LONGER THE SERVED-SIDE PROOF FOR THAT ROUTE, and it was wrong to lean on it as one. A GET
+    /// answered 405 with <c>Allow: POST</c> proves the routing table has a POST endpoint registered there;
+    /// it says NOTHING about which handler that POST reaches, or whether it reaches one at all. The real
+    /// served-side proof now drives the exact path and verb and asserts the handler's own receipt, through
+    /// an injected restart seam so no process is started - see
+    /// <see cref="HostedOwnerSettingsSelfHostControlTests.The_brain_restart_route_reaches_its_handler_on_self_host_without_starting_a_process"/>
+    /// and its destructibility control.
     ///
-    /// Put together with the POST being refused 404 in
-    /// <see cref="HostedOwnerSettingsDenyTests.Every_owner_settings_route_is_refused_on_hosted"/>, the two
-    /// say: the route exists on hosted, and the thing turning it away is the deny.
-    ///
-    /// WHAT THIS PROVES, AND WHAT IT DOES NOT. It proves the ROUTE IS REGISTERED. It does NOT exercise the
-    /// HANDLER, and it makes no claim to. Read as a served-payload proof it would be one that fell short;
-    /// read as what it is - a routing-table existence proof that does not depend on any handler behaving -
-    /// it is the correct ceiling for a route whose handler starts a process, and it is the one form of
-    /// existence proof that survives the deny, because no endpoint is ever selected for it to run against.
-    /// Every OTHER route in the group is proved served-side by a real payload, an independently re-read
-    /// effect, or a handler-unique receipt; this is the single exception and it is deliberate.
+    /// It is kept because it still answers a real question the receipt does not: a 404 deny is
+    /// indistinguishable from a route that was never mapped, and this shows the path is genuinely
+    /// registered ON HOSTED, where the deny is active. The 405 survives the deny because no endpoint is
+    /// selected for a verb that does not exist, so the filter never runs.
     /// </summary>
     [Fact]
-    public async Task The_brain_restart_route_exists_on_hosted_and_is_reachable_only_as_a_post()
+    public async Task The_brain_restart_route_is_registered_on_hosted_and_only_as_a_post()
     {
         var (app, http) = await OwnerSettingsProbeHost.StartAsync(Family("settings"));
         try

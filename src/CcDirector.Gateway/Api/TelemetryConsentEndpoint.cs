@@ -56,13 +56,27 @@ internal static class TelemetryConsentEndpoint
     {
         FileLog.Write($"[TelemetryConsentEndpoint] mapping telemetry consent; hosted={GatewayHostedMode.IsHosted} - on hosted EVERY route in this group is refused (issue #1863)");
 
-        var app = outer.MapGroup("");
-        app.AddEndpointFilter(async (ctx, next) =>
+        var guarded = outer.MapGroup("");
+        guarded.AddEndpointFilter(async (ctx, next) =>
         {
             if (DenyOnHosted() is { } denied) return denied;
             return await next(ctx);
         });
 
+        // THE ROUTES ARE MAPPED WHERE `outer` IS NOT IN SCOPE - see the note in SettingsEndpoints.Map.
+        // Either of these two routes could otherwise be mapped onto `outer` by a one-word edit, opening it
+        // alone while the other stayed denied. Handing the group to a method that never receives the
+        // ungrouped builder makes that INEXPRESSIBLE.
+        MapRoutes(guarded);
+        return guarded;
+    }
+
+    /// <summary>
+    /// The two telemetry-consent routes. Takes the GUARDED group and nothing else, deliberately, so neither
+    /// route can be mapped around the hosted filter.
+    /// </summary>
+    private static void MapRoutes(RouteGroupBuilder app)
+    {
         app.MapGet("/gateway/telemetry-consent", () =>
         {
             var enabled = TelemetryConsentConfig.Get();
@@ -89,8 +103,6 @@ internal static class TelemetryConsentEndpoint
                 return Results.BadRequest(new { error = "invalid JSON" });
             }
         });
-
-        return app;
     }
 
     private sealed record TelemetryConsentBody(bool Enabled);
