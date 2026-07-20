@@ -185,7 +185,33 @@ namespace CcDirector.Gateway.Tests;
 /// THE RUN PLAN IS EXACTLY THREE FULL-SUITE RUNS, and the path actually taken is the path registered:
 /// baseline, arm, restore. There is no slice-then-full escalation and no separate canary gate here - all
 /// three arms are the FULL suite, so no ordering can slip a fourth run in behind the registered three. On a
-/// contended serial box a fourth run spends someone else's slot.
+/// contended serial box a fourth run spends someone else's slot. THAT COUNT WAS OBSERVED BY EXECUTING the
+/// driver against a counting stub, not by reading it: three test invocations, counted. Reading a driver has
+/// been wrong repeatedly tonight; executing it has not.
+///
+/// A FINDING THAT DOES NOT CHANGE THE VERDICT IS NOT A FINDING, IT IS A COMMENT. The first version of this
+/// unit's driver had EIGHT things that would have been described as controls and ZERO that could stop it:
+/// the clean-tree check printed, the mutation diff printed, the build exit codes were masked by pipes, and
+/// the reconciliation and red-classification existed only as prose. Every one of them reported into a void,
+/// because THE LOG IS WHAT NOBODY RE-READS ONCE THE EXIT CODE IS GREEN. Being confidently wrong about which
+/// checks can actually stop you is worse than having fewer checks. So the three questions, answered:
+///
+///   1. A PREDICTED RED THAT ARRIVES AS A CRASH DOES NOT COUNT TOWARD THE FIFTEEN, and the arm is NOT
+///      proven. Crediting a crash to the prediction - so a parse exception satisfies the expectation and
+///      keeps its row out of the not-reddened set - is precisely the laundering the arrival rule exists to
+///      prevent, happening inside the mechanism written to enforce it.
+///   2. A PREDICTED ROW THAT STAYS GREEN CHANGES THE VERDICT TO UNPROVEN. It does not become a line in a
+///      report filed beside a passing score. This is already registered for the four relay rows, where a
+///      green means the deny was indistinguishable from no-launcher-registered; the SAME rule covers all
+///      fifteen.
+///   3. A TOTAL THAT DOES NOT MATCH STOPS THE ARM BEING SCORED AT ALL. It is not mentioned alongside a score
+///      already formed. Reconcile FIRST; a short total is UNPROVEN-TRUNCATED, scored in NEITHER direction.
+///
+/// Those three, plus the controls-must-not-move check and the nothing-else-may-redden check, are five
+/// PREVENTING controls - each one validated by EXECUTING it against a synthetic arm built to trip it (a
+/// truncated arm, a crash-red arm, a stayed-green arm) and confirming it returns a distinct non-zero verdict,
+/// and against a clean arm to confirm it does not fire on the happy path. A detector that has only ever been
+/// read is another printout.
 /// </summary>
 public sealed class HostedLauncherMachineDenyTests : IAsyncLifetime
 {
