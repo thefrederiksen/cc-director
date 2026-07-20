@@ -898,6 +898,50 @@ public sealed class HostedContentReadSelfHostControlTests : IAsyncLifetime
             ContentFingerprint.Text(afterAck, "upload_id", "POST dictation/upload (after ack)")));
     }
 
+    /// <summary>
+    /// THE TWO COMPLETE LEGS GET A SERVED-SIDE PROOF TOO, AND THEY NEEDED ONE.
+    ///
+    /// A deny that answers 404 is indistinguishable from a route that does not exist. So a hosted
+    /// refusal, on its own, is satisfied just as well by the route having been deleted - which means
+    /// every denied path needs a self-host proof that THIS handler answers it. The other legs get that
+    /// from their store receipts. These two had nothing, because completing an upload ends in a
+    /// transcription call and this suite stands up no provider.
+    ///
+    /// It turns out not to need one. Both handlers validate their body BEFORE resolving any provider,
+    /// and each rejects with a message no other handler in the Gateway emits. That message is a
+    /// handler-positive fingerprint on exactly the path and verb that is denied on hosted, and it is
+    /// deterministic: it depends on no key, no vault state and no network.
+    /// </summary>
+    [Fact]
+    public async Task Self_host_utterance_complete_answers_from_its_own_handler()
+    {
+        // Body check first, before the upload is even looked up - so this needs no registration.
+        var badBody = await Send(HttpMethod.Post, "wingman/utterance/any-id/complete", "{}");
+        var badBodyJson = await JsonAsync(badBody, "POST wingman/utterance/{uploadId}/complete (bad body)");
+        Assert.Equal("totalChunks (>0) is required",
+            ContentFingerprint.Text(badBodyJson, "error", "POST wingman/utterance/{uploadId}/complete"));
+
+        // And a second message from the same handler, one step further in, proving the upload lookup runs.
+        var unknown = await Send(HttpMethod.Post, "wingman/utterance/not-a-real-upload/complete",
+            "{\"totalChunks\":1}");
+        var unknownJson = await JsonAsync(unknown, "POST wingman/utterance/{uploadId}/complete (unknown id)");
+        Assert.Equal("unknown upload id (register it first)",
+            ContentFingerprint.Text(unknownJson, "error", "POST wingman/utterance/{uploadId}/complete"));
+    }
+
+    /// <summary>
+    /// The same served-side proof for the dictation completion leg, for the same reason: its hosted
+    /// refusal is a 404, and without this nothing distinguishes that refusal from an absent route.
+    /// </summary>
+    [Fact]
+    public async Task Self_host_dictation_complete_answers_from_its_own_handler()
+    {
+        var badBody = await Send(HttpMethod.Post, "dictation/any-id/complete", "{}");
+        var badBodyJson = await JsonAsync(badBody, "POST dictation/{uploadId}/complete (bad body)");
+        Assert.Equal("sessionId (guid) and totalChunks (>0) are required",
+            ContentFingerprint.Text(badBodyJson, "error", "POST dictation/{uploadId}/complete"));
+    }
+
     // ===== Helpers =====
 
     /// <summary>
