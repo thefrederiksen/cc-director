@@ -246,15 +246,20 @@
                         Cursor="Hand"
                         PointerPressed="GatewayStatusBox_PointerPressed">
                     <StackPanel Spacing="6">
-                        <!-- Line 1: Gateway reachable (the two-way handshake). -->
-                        <StackPanel Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
+                        <!-- Line 1: WHICH gateway this Director is pointed at. The marker (green check /
+                             amber ring / red cross) carries connected / connecting / failed, so the line text
+                             names the gateway host instead of repeating "Connected"; the four-color box border
+                             carries the visual state. With no gateway selected yet (brand new) the host is empty
+                             and this whole row is hidden from code-behind so the box does not pretend a verdict
+                             it cannot have. -->
+                        <StackPanel x:Name="GatewayConnectedRow" Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
                             <Viewbox Width="15" Height="15" VerticalAlignment="Center">
                                 <Path x:Name="GatewayConnectedMarker"
                                       Fill="#F0B848"
                                       Data="M8,1 A7,7 0 1 0 8,15 A7,7 0 1 0 8,1 Z M8,3 A5,5 0 1 1 8,13 A5,5 0 1 1 8,3 Z" />
                             </Viewbox>
                             <TextBlock x:Name="GatewayConnectedLine"
-                                       Text="Connect to Gateway"
+                                       Text=""
                                        FontSize="11" FontWeight="SemiBold"
                                        Foreground="#F0B848"
                                        TextWrapping="Wrap" MaxWidth="176"

@@ -6,11 +6,12 @@ namespace CcDirector.Core.Tests.GatewayConnection;
 /// <summary>
 /// Proves the single status box's presenter (design spec section 6): the pure mapping that turns a live
 /// verification snapshot into the box's four visual states and its two check lines. These tests pin the
-/// four looks and the load-bearing line-text rules the Architect confirmed for Phase 3: amber covers BOTH
-/// not-configured (line 1 "Connect to Gateway") and connected-not-signed-in (line 1 "Connected", line 2
-/// "Sign in"); yellow is "Connecting..."; green shows the account email on line 2; and red names the
-/// failing leg on line 1 for both the first-time failure and the was-working-now-unreachable case. The
-/// presenter has no UI and no I/O, so it is fully unit-tested here.
+/// four looks and the Connected-line rule: the marker carries the verdict (green check / amber ring / red
+/// cross) and the line names WHICH gateway - the host in every state where a gateway is configured
+/// (connected, connecting, AND failed, so the person can see which gateway is unreachable), and empty when
+/// no gateway is selected yet. Line 2 still shows the account identity or the "Sign in" nudge. The named
+/// failing leg moved off the box into the tooltip and the panel's repair banner. The presenter has no UI
+/// and no I/O, so it is fully unit-tested here.
 /// </summary>
 public sealed class GatewayStatusBoxPresenterTests
 {
@@ -26,8 +27,10 @@ public sealed class GatewayStatusBoxPresenterTests
     // ---- The four visual states -----------------------------------------------------------------
 
     [Fact]
-    public void Describe_NotConfigured_IsAmber_BothLinesShowNextAction()
+    public void Describe_NotConfigured_IsAmber_ConnectedLineEmptySignInNudge()
     {
+        // Brand new: no gateway selected yet. Line 1 carries no verdict it cannot have - it is left empty
+        // (the surface hides the row), so the box does not pretend a connection state. Line 2 still nudges.
         var inputs = new GatewayConnectionInputs(
             GatewayConfigured: false,
             Connection: GatewayConnectionVerification.Unknown,
@@ -40,7 +43,7 @@ public sealed class GatewayStatusBoxPresenterTests
 
         Assert.Equal(GatewayStatusBoxVisual.Amber, content.Visual);
         Assert.Equal(GatewayCheckState.Pending, content.Connected.Marker);
-        Assert.Equal("Connect to Gateway", content.Connected.Text);
+        Assert.Equal(string.Empty, content.Connected.Text);
         Assert.Equal("Sign in", content.SignedIn.Text);
     }
 
@@ -58,7 +61,8 @@ public sealed class GatewayStatusBoxPresenterTests
 
         Assert.Equal(GatewayStatusBoxVisual.Amber, content.Visual);
         Assert.Equal(GatewayCheckState.Passed, content.Connected.Marker);
-        Assert.Equal("Connected", content.Connected.Text);
+        // Line 1 names WHICH gateway; the green checkmarker carries "connected".
+        Assert.Equal("SOREN_NORTH", content.Connected.Text);
         Assert.Equal(GatewayCheckState.Pending, content.SignedIn.Marker);
         Assert.Equal("Sign in", content.SignedIn.Text);
     }
@@ -77,7 +81,8 @@ public sealed class GatewayStatusBoxPresenterTests
 
         Assert.Equal(GatewayStatusBoxVisual.Yellow, content.Visual);
         Assert.Equal(GatewayCheckState.Working, content.Connected.Marker);
-        Assert.Equal("Connecting...", content.Connected.Text);
+        // The amber working-ring carries "connecting"; the line names the gateway.
+        Assert.Equal("SOREN_NORTH", content.Connected.Text);
     }
 
     [Fact]
@@ -88,7 +93,7 @@ public sealed class GatewayStatusBoxPresenterTests
 
         Assert.Equal(GatewayStatusBoxVisual.Green, content.Visual);
         Assert.Equal(GatewayCheckState.Passed, content.Connected.Marker);
-        Assert.Equal("Connected", content.Connected.Text);
+        Assert.Equal("SOREN_NORTH", content.Connected.Text);
         Assert.Equal(GatewayCheckState.Passed, content.SignedIn.Marker);
         Assert.Equal("Signed in: soren@centerconsulting.com", content.SignedIn.Text);
     }
@@ -103,10 +108,13 @@ public sealed class GatewayStatusBoxPresenterTests
         Assert.Equal("Signed in", content.SignedIn.Text);
     }
 
+    // Both red states show WHICH gateway is unreachable on line 1 - the named failing leg moved off the
+    // line into the tooltip and the panel's repair banner; the red cross marker carries "failed".
+
     [Fact]
-    public void Describe_ConnectFailedCallback_IsRed_NamesTheCallbackLeg()
+    public void Describe_ConnectFailed_IsRed_ConnectedLineShowsGatewayHost()
     {
-        // A first-time connect failure on the callback leg: red, and the failing leg named (decision 11).
+        // A first-time connect failure: red, line 1 names the (unreachable) gateway, not the leg.
         var inputs = AllGreenInputs() with
         {
             Connection = GatewayConnectionVerification.Failed,
@@ -120,13 +128,13 @@ public sealed class GatewayStatusBoxPresenterTests
 
         Assert.Equal(GatewayStatusBoxVisual.Red, content.Visual);
         Assert.Equal(GatewayCheckState.Failed, content.Connected.Marker);
-        Assert.Equal("Gateway cannot reach this Director back", content.Connected.Text);
+        Assert.Equal("SOREN_NORTH", content.Connected.Text);
     }
 
     [Fact]
-    public void Describe_WasConnectedNowUnreachable_IsRed_NamesOutboundLeg()
+    public void Describe_WasConnectedNowUnreachable_IsRed_ConnectedLineShowsGatewayHost()
     {
-        // Mid-session Gateway drop: was working this run, now the handshake fails on the outbound leg.
+        // Mid-session Gateway drop: was working this run, now unreachable. Same line-1 rule: name the gateway.
         var inputs = AllGreenInputs() with
         {
             Connection = GatewayConnectionVerification.Failed,
@@ -139,7 +147,7 @@ public sealed class GatewayStatusBoxPresenterTests
 
         Assert.Equal(GatewayStatusBoxVisual.Red, content.Visual);
         Assert.Equal(GatewayCheckState.Failed, content.Connected.Marker);
-        Assert.Equal("Cannot reach the Gateway", content.Connected.Text);
+        Assert.Equal("SOREN_NORTH", content.Connected.Text);
     }
 
     // ---- Load-bearing rules ---------------------------------------------------------------------

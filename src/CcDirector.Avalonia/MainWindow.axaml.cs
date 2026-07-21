@@ -484,6 +484,12 @@ public partial class MainWindow : Window
     /// </summary>
     private void WireGatewayStatusBox()
     {
+        // Seed the gateway host the box shows on line 1 from config NOW, rather than waiting for the first
+        // account-status poll to populate _boxGatewayHost. Without this a configured-Director startup
+        // would briefly paint line 1 empty (looking brand-new) until the poll returns; the poll later
+        // refreshes these same fields authoritatively.
+        SeedGatewayConfigFields();
+
         // Line 2 of the box (account signed-in) is fed by a heartbeat poll of the Gateway's
         // GET /account/status; line 1 (Gateway reachable) is fed by the GatewayConnectionMonitor
         // attached below. Both repaint the one box through GatewayStatusBoxPresenter.
@@ -496,6 +502,23 @@ public partial class MainWindow : Window
         _gatewayAttachTimer.Tick += (_, _) => TryAttachGatewayMonitor();
         _gatewayAttachTimer.Start();
         TryAttachGatewayMonitor();
+    }
+
+    // Read the configured gateway right now so line 1 of the box knows WHICH gateway to name before any
+    // network read returns. Cheap config-file read (same one RefreshAccountStatusAsync does on the UI
+    // thread); account fields are left untouched - the poll owns those.
+    private void SeedGatewayConfigFields()
+    {
+        try
+        {
+            var config = GatewayConfig.Load();
+            _boxGatewayConfigured = !string.IsNullOrWhiteSpace(config.Url);
+            _boxGatewayHost = SafeHost(config.Url);
+        }
+        catch (Exception ex)
+        {
+            FileLog.Write($"[MainWindow] SeedGatewayConfigFields FAILED: {ex.Message}");
+        }
     }
 
     private void TryAttachGatewayMonitor()
@@ -613,6 +636,10 @@ public partial class MainWindow : Window
         GatewayStatusBox.BorderBrush = Brush.Parse(border);
         PaintCheckLine(GatewayConnectedMarker, GatewayConnectedLine, content.Connected);
         PaintCheckLine(GatewaySignedInMarker, GatewaySignedInLine, content.SignedIn);
+        // Line 1 names WHICH gateway; when none is selected yet the line is empty and the whole row is
+        // hidden so a brand-new box does not show a marker with no verdict. (Line 2 never goes empty, so
+        // the same rule never collapses the Sign in nudge.)
+        GatewayConnectedRow.IsVisible = !string.IsNullOrEmpty(content.Connected.Text);
         ToolTip.SetTip(GatewayStatusBox, content.Tooltip);
 
         // A missing gateway is NOT an error (a legitimate local-only Director); only the red failure

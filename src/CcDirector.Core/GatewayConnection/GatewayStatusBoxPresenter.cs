@@ -57,9 +57,12 @@ public sealed record GatewayStatusBoxContent(
 ///   - The four visual states collapse the six resolver states: NotConfigured and ConnectedNotSignedIn are
 ///     both amber (needs attention); Connecting is yellow; AllGreen is green; ConnectFailed and
 ///     WasConnectedNowUnreachable are both red.
-///   - Each line shows the proven fact when passed, and the next action when pending - so a brand-new box
-///     reads "Connect to Gateway" / "Sign in", and a finished box reads "Connected" / "Signed in: email".
-///   - A failed handshake names the failing leg on the Connected line (decision 11, no fallback).
+///   - The Connected line shows WHICH gateway, not the verdict: the marker (green check / amber ring /
+///     red cross) carries connected / connecting / failed, so the word "Connected" beside a checkmark was
+///     redundant. The gateway host is shown in every state where a gateway is configured - failed included
+///     - so the person can see WHICH gateway is unreachable; the named failing leg stays in the tooltip and
+///     the panel's repair banner. With no gateway selected (brand new, NotConfigured) the line is left
+///     empty and the surface hides the row.
 ///   - A muted/unknown account line is "cannot tell yet", never a false sign-out (decision 3).
 /// </summary>
 public static class GatewayStatusBoxPresenter
@@ -68,14 +71,15 @@ public static class GatewayStatusBoxPresenter
     /// Describe how the single status box should paint for the given live snapshot.
     /// </summary>
     /// <param name="inputs">The full verification snapshot (the same inputs the panel resolves).</param>
-    /// <param name="gatewayHost">The Gateway host name, shown in the tooltip when connected (may be null).</param>
+    /// <param name="gatewayHost">The Gateway host name, shown on the Connected line and in the tooltip when
+    /// a gateway is configured (may be null when no gateway is selected yet).</param>
     /// <param name="accountEmail">The signed-in account email, shown on the signed-in line when green (may be null).</param>
     public static GatewayStatusBoxContent Describe(
         GatewayConnectionInputs inputs, string? gatewayHost, string? accountEmail)
     {
         var resolved = GatewayConnectionStateResolver.Resolve(inputs);
         var visual = VisualFor(resolved.State);
-        var connected = ConnectedLine(resolved.ConnectedCheck, inputs.FailedLeg);
+        var connected = ConnectedLine(resolved.ConnectedCheck, gatewayHost);
         var signedIn = SignedInLine(resolved.SignedInCheck, accountEmail);
         var tooltip = Tooltip(resolved.State, gatewayHost, accountEmail);
         return new GatewayStatusBoxContent(visual, connected, signedIn, tooltip);
@@ -92,23 +96,16 @@ public static class GatewayStatusBoxPresenter
         _ => GatewayStatusBoxVisual.Amber,
     };
 
-    // The Connected line reads the proven fact when passed, the next action when pending, "Connecting..."
-    // while verifying, and the named leg when it failed (decision 11).
-    private static GatewayStatusLine ConnectedLine(GatewayCheckState check, GatewayConnectionFailedLeg leg) => check switch
+    // The Connected line shows the gateway host when one is configured, whatever the marker state (the
+    // marker carries connected / connecting / failed). With no gateway selected the host is null and the
+    // line is left empty - the surface hides the row - so a brand-new box does not pretend a verdict it
+    // cannot have. The named failing leg has moved off this line into the tooltip and the panel repair
+    // banner; the box itself names WHICH gateway, not WHY it failed.
+    private static GatewayStatusLine ConnectedLine(GatewayCheckState check, string? gatewayHost)
     {
-        GatewayCheckState.Passed => new GatewayStatusLine(check, "Connected"),
-        GatewayCheckState.Working => new GatewayStatusLine(check, "Connecting..."),
-        GatewayCheckState.Failed => new GatewayStatusLine(check, FailedLegText(leg)),
-        // Pending and Unknown both show the next action; there is nothing to report yet.
-        _ => new GatewayStatusLine(check, "Connect to Gateway"),
-    };
-
-    private static string FailedLegText(GatewayConnectionFailedLeg leg) => leg switch
-    {
-        GatewayConnectionFailedLeg.Callback => "Gateway cannot reach this Director back",
-        GatewayConnectionFailedLeg.OutboundReach => "Cannot reach the Gateway",
-        _ => "Connection failed",
-    };
+        var text = string.IsNullOrWhiteSpace(gatewayHost) ? string.Empty : gatewayHost;
+        return new GatewayStatusLine(check, text);
+    }
 
     // The Signed-in line shows the identity when green, the next action when pending, and a muted
     // "Checking account..." while the read is in flight or cannot be told yet (never a false sign-out).
