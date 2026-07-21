@@ -40,8 +40,8 @@ public class GatewayChoiceStateMachineTests
 
         // Self-host: disabled where the OS supports it, absent where it does not.
         Assert.Equal(expectedSelfHost, plan.AvailabilityOf(GatewayChoiceAction.SelfHost));
-        // Hosted is a disabled "coming" action everywhere in this slice.
-        Assert.Equal(GatewayChoiceAvailability.Disabled, plan.AvailabilityOf(GatewayChoiceAction.UseHosted));
+        // Hosted is now functional - a browser account sign-in enrolls this machine at the hosted Gateway.
+        Assert.Equal(GatewayChoiceAvailability.Enabled, plan.AvailabilityOf(GatewayChoiceAction.UseHosted));
         // Join and Skip are always enabled.
         Assert.Equal(GatewayChoiceAvailability.Enabled, plan.AvailabilityOf(GatewayChoiceAction.JoinExisting));
         Assert.Equal(GatewayChoiceAvailability.Enabled, plan.AvailabilityOf(GatewayChoiceAction.Skip));
@@ -50,10 +50,10 @@ public class GatewayChoiceStateMachineTests
     }
 
     [Fact]
-    public void SelfHostAndHosted_AreDisabledComingActions_WithAReason_NeverEnabled()
+    public void SelfHost_IsADisabledComingAction_WithAReason_NeverEnabled()
     {
-        // On a host that can self-host, both not-yet-built provisioning actions are shown DISABLED with a
-        // reason - never live buttons that would no-op (dumb-client rule). The reason pin is the value this
+        // On a host that can self-host, the not-yet-built provisioning action is shown DISABLED with a
+        // reason - never a live button that would no-op (dumb-client rule). The reason pin is the value this
         // adds beyond the matrix availability.
         var plan = GatewayChoiceStateMachine.Resolve(
             new GatewayChoiceContext(GatewayChoiceConsumer.Settings, SelfHostSupported: true));
@@ -61,12 +61,19 @@ public class GatewayChoiceStateMachineTests
         var selfHost = Assert.Single(plan.Options, o => o.Action == GatewayChoiceAction.SelfHost);
         Assert.Equal(GatewayChoiceAvailability.Disabled, selfHost.Availability);
         Assert.Equal(GatewayChoiceStateMachine.ComingSoonReason, selfHost.DisabledReason);
+        Assert.NotEqual(GatewayChoiceAvailability.Enabled, selfHost.Availability);
+    }
+
+    [Fact]
+    public void Hosted_IsEnabled_WithNoDisabledReason()
+    {
+        // Hosted is functional now: a browser account sign-in enrolls this machine at the one shared hosted
+        // Gateway, which mints its tenant-scoped device key. It is offered ENABLED (no "coming" reason).
+        var plan = GatewayChoiceStateMachine.Resolve(
+            new GatewayChoiceContext(GatewayChoiceConsumer.Settings, SelfHostSupported: true));
 
         var hosted = Assert.Single(plan.Options, o => o.Action == GatewayChoiceAction.UseHosted);
-        Assert.Equal(GatewayChoiceAvailability.Disabled, hosted.Availability);
-        Assert.Equal(GatewayChoiceStateMachine.ComingSoonReason, hosted.DisabledReason);
-
-        Assert.NotEqual(GatewayChoiceAvailability.Enabled, selfHost.Availability);
-        Assert.NotEqual(GatewayChoiceAvailability.Enabled, hosted.Availability);
+        Assert.Equal(GatewayChoiceAvailability.Enabled, hosted.Availability);
+        Assert.Null(hosted.DisabledReason);
     }
 }

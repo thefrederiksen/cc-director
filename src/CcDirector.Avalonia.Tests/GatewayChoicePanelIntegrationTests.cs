@@ -154,17 +154,130 @@ public class GatewayChoicePanelIntegrationTests
     // ---- R2(b): rendered card actionability + Mac omission ---------------------------------------
 
     [AvaloniaFact]
-    public void Choice_OnWindows_RendersDisabledSelfHostAndHosted_NonActionable_JoinAndSkipActionable()
+    public void Choice_OnWindows_RendersDisabledSelfHost_HostedJoinAndSkipActionable()
     {
         var panel = GatewayConnectionPanel.CreateForCurrentState(GatewayChoiceConsumer.Onboarding);
         // Force a self-host-capable (Windows) context regardless of the test host.
         panel.SetChoiceContextForTests(new GatewayChoiceContext(GatewayChoiceConsumer.Onboarding, SelfHostSupported: true));
         panel.ShowChoiceForTests();
 
+        // Self-host is still a disabled "coming" card; hosted is now a live, actionable card.
         Assert.False(CardFor(panel, GatewayChoiceAction.SelfHost).IsEnabled);
-        Assert.False(CardFor(panel, GatewayChoiceAction.UseHosted).IsEnabled);
+        Assert.True(CardFor(panel, GatewayChoiceAction.UseHosted).IsEnabled);
         Assert.True(CardFor(panel, GatewayChoiceAction.JoinExisting).IsEnabled);
         Assert.True(CardFor(panel, GatewayChoiceAction.Skip).IsEnabled);
+    }
+
+    // ---- Hosted choice: the enabled card runs the SAME proven hosted enroll the CLI uses ----------
+
+    [AvaloniaFact]
+    public async Task HostedChoice_EnabledCard_RunsHostedEnroll_WithThisDeviceId()
+    {
+        await WithTempRootAsync(async () =>
+        {
+            var panel = GatewayConnectionPanel.CreateForCurrentState(GatewayChoiceConsumer.Settings);
+            panel.SetChoiceContextForTests(new GatewayChoiceContext(GatewayChoiceConsumer.Settings, SelfHostSupported: true));
+            panel.ShowChoiceForTests();
+            panel.DirectorIdOverride = "test-director-id";
+
+            string? seenDeviceId = null;
+            var calls = 0;
+            // Injected hosted-enroll seam: no browser, no network. Fail so nothing re-applies or handshakes.
+            panel.HostedEnrollSeam = (deviceId, _, _) =>
+            {
+                calls++;
+                seenDeviceId = deviceId;
+                return Task.FromResult(OperationResult<MobileEnrollmentResponse>.Fail("not this time"));
+            };
+
+            // The hosted card is enabled, so activating it EXACTLY as a click would must fire the enroll.
+            Assert.True(CardFor(panel, GatewayChoiceAction.UseHosted).IsEnabled);
+            await panel.HostedEnrollAndHandshakeAsync();
+
+            Assert.Equal(1, calls);
+            Assert.Equal("test-director-id", seenDeviceId);
+        });
+    }
+
+    [AvaloniaFact]
+    public async Task HostedChoice_FailedEnroll_DoesNotReapply_AndDoesNotMutateConfig()
+    {
+        await WithTempRootAsync(async () =>
+        {
+            SaveOldGatewayConnection();
+
+            var panel = GatewayConnectionPanel.CreateForCurrentState(GatewayChoiceConsumer.Settings);
+            var reapplied = false;
+            panel.DirectorIdOverride = "test-director-id";
+            panel.ReapplyGatewaySeam = () => { reapplied = true; return Task.CompletedTask; };
+            panel.HostedEnrollSeam = (_, _, _) =>
+                Task.FromResult(OperationResult<MobileEnrollmentResponse>.Fail("hosted enroll failed"));
+
+            await panel.HostedEnrollAndHandshakeAsync();
+
+            // A failed hosted enroll persists nothing and never re-applies: the old connection is untouched.
+            var config = GatewayConfig.Load();
+            Assert.Equal(OldUrl, config.Url);
+            Assert.Equal(OldToken, config.Token);
+            Assert.False(reapplied);
+        });
+    }
+
+    [AvaloniaFact]
+    public async Task HostedChoice_SuccessfulEnroll_ReAppliesTheVerifiedCredential()
+    {
+        await WithTempRootAsync(async () =>
+        {
+            const string hostedUrl = "https://devthrottle-gw.azurewebsites.net";
+            var panel = GatewayConnectionPanel.CreateForCurrentState(GatewayChoiceConsumer.Settings);
+            var reapplied = false;
+            panel.DirectorIdOverride = "test-director-id";
+            panel.ReapplyGatewaySeam = () => { reapplied = true; return Task.CompletedTask; };
+            // Mirror the runner's verified-success persistence (it owns the atomic hosted-url+key write).
+            panel.HostedEnrollSeam = (_, _, _) =>
+            {
+                CcDirectorConfigService.MergePatch(new JsonObject
+                {
+                    ["gateway"] = new JsonObject { ["url"] = hostedUrl, ["token"] = "hosted-verified-key" },
+                });
+                return Task.FromResult(OperationResult<MobileEnrollmentResponse>.Ok(
+                    new MobileEnrollmentResponse { DeviceKey = "hosted-verified-key" }));
+            };
+
+            await panel.HostedEnrollAndHandshakeAsync();
+
+            Assert.True(reapplied);
+            Assert.Equal(hostedUrl, GatewayConfig.Load().Url);
+        });
+    }
+
+    // ---- Change gateway: disconnect clears the stored connection, then re-shows the choice --------
+
+    [AvaloniaFact]
+    public async Task ChangeGateway_Disconnect_ClearsTheStoredConnection_ReAppliesAndShowsChoice()
+    {
+        await WithTempRootAsync(async () =>
+        {
+            SaveOldGatewayConnection();
+            Assert.True(GatewayConfig.Load().IsEnabled); // connected to a gateway
+
+            var panel = GatewayConnectionPanel.CreateForCurrentState(GatewayChoiceConsumer.Settings);
+            var reapplied = false;
+            panel.ReapplyGatewaySeam = () => { reapplied = true; return Task.CompletedTask; };
+
+            await panel.DisconnectAndShowChoiceAsync();
+
+            // The stored connection is cleared: url + token gone, so the Director is local-only again.
+            var config = GatewayConfig.Load();
+            Assert.False(config.IsEnabled);
+            Assert.Equal("", config.Url);
+            Assert.Equal("", config.Token);
+            // The running client was re-applied so it drops the old connection, and the choice is shown so a
+            // different gateway can be connected.
+            Assert.True(reapplied);
+            Assert.NotNull(CardFor(panel, GatewayChoiceAction.JoinExisting));
+            Assert.NotNull(CardFor(panel, GatewayChoiceAction.UseHosted));
+        });
     }
 
     [AvaloniaFact]

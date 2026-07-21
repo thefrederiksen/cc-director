@@ -292,6 +292,17 @@
                     </StackPanel>
                 </StackPanel>
             </Border>
+
+            <!-- Change gateway: disconnect this Director from the current Gateway and reconnect to a
+                 different one (local OR hosted). The click confirms, then clears the stored connection
+                 and returns to the step-0 choice. -->
+            <StackPanel Spacing="6" Margin="0,4,0,0">
+                <Button x:Name="ChangeGatewayButton" Classes="secondaryButton" Content="Change gateway"
+                        HorizontalAlignment="Left" Click="ChangeGateway_Click"
+                        ToolTip.Tip="Disconnect this Director and connect it to a different Gateway" />
+                <TextBlock Classes="body" FontSize="11.5" Foreground="#888888" TextWrapping="Wrap"
+                           Text="Disconnect from this Gateway and connect to a different one - local or hosted." />
+            </StackPanel>
         </StackPanel>
 
         <!-- STEP 1e: named failure -->

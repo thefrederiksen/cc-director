@@ -65,4 +65,43 @@ public static class GatewayCredentialStore
         CcDirectorConfigService.MergePatch(patch);
         FileLog.Write($"[GatewayCredentialStore] Recorded gateway url + per-device key + streamMode=true in config.json (url={gatewayUrl})");
     }
+
+    /// <summary>
+    /// Disconnect this Director from its Gateway: the inverse of <see cref="SaveEnrolledKey"/>. Deletes the
+    /// local per-device credential file (the key that binds this Director to the Gateway) and clears the
+    /// gateway block in config.json - the active <c>url</c>, the discovered <c>urls</c> fallback list, the
+    /// <c>token</c>, the <c>tailnetEndpoint</c> override, and turns the persistent stream off. After this,
+    /// <see cref="GatewayConfig.Load"/> reports local-only (<see cref="GatewayConfig.IsEnabled"/> is false),
+    /// so the Director stops presenting a per-device key and the connect flow can point it at a different
+    /// Gateway (local or hosted).
+    ///
+    /// The credential-file path is computed fresh (not the cached <see cref="CredentialFile"/> static) so a
+    /// test's <c>CC_DIRECTOR_ROOT</c> redirect is honored. MergePatch cannot remove keys, so the connection
+    /// fields are blanked rather than deleted; a blank <c>url</c> is exactly what local-only mode reads.
+    /// </summary>
+    public static void ClearConnection()
+    {
+        FileLog.Write("[GatewayCredentialStore] ClearConnection: disconnecting this Director from its Gateway");
+
+        var credentialFile = Path.Combine(CcStorage.Config(), "director", "gateway-token.txt");
+        if (File.Exists(credentialFile))
+        {
+            File.Delete(credentialFile);
+            FileLog.Write($"[GatewayCredentialStore] Deleted per-device key file {credentialFile}");
+        }
+
+        var patch = new JsonObject
+        {
+            ["gateway"] = new JsonObject
+            {
+                ["url"] = "",
+                ["urls"] = new JsonArray(),
+                ["token"] = "",
+                ["tailnetEndpoint"] = "",
+                ["streamMode"] = false,
+            },
+        };
+        CcDirectorConfigService.MergePatch(patch);
+        FileLog.Write("[GatewayCredentialStore] Cleared gateway url + urls + token + tailnetEndpoint + streamMode in config.json (disconnected)");
+    }
 }
