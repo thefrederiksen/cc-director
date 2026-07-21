@@ -11,23 +11,23 @@ public enum GatewayStatusBoxVisual
     /// <summary>Needs attention: NotConfigured or ConnectedNotSignedIn. One or both lines show the next action.</summary>
     Amber,
 
-    /// <summary>Working: a handshake is verifying. "Connecting...".</summary>
+    /// <summary>Working: the gateway host is shown with a "Connecting..." suffix.</summary>
     Yellow,
 
     /// <summary>All good: handshake proven AND the Gateway reports signed in. Both lines filled.</summary>
     Green,
 
-    /// <summary>Was working and is now broken (or a first-time connect failed): the failing leg is named.</summary>
+    /// <summary>Was working and is now broken (or a first-time connect failed).</summary>
     Red,
 }
 
 /// <summary>
 /// One of the two check lines the status box shows (spec section 6). The <see cref="Marker"/> is the paint
 /// state of the line (filled / hollow / working / failed / muted) which the surface maps to a glyph and
-/// color; the <see cref="Text"/> is the plain-English label - either the proven fact or the next action.
+/// color; the <see cref="Text"/> is the finished plain-English label the surface renders verbatim.
 /// </summary>
 /// <param name="Marker">The paint state of this line's marker.</param>
-/// <param name="Text">The plain-English label for this line.</param>
+/// <param name="Text">The finished plain-English label for this line.</param>
 public sealed record GatewayStatusLine(GatewayCheckState Marker, string Text);
 
 /// <summary>
@@ -57,12 +57,12 @@ public sealed record GatewayStatusBoxContent(
 ///   - The four visual states collapse the six resolver states: NotConfigured and ConnectedNotSignedIn are
 ///     both amber (needs attention); Connecting is yellow; AllGreen is green; ConnectFailed and
 ///     WasConnectedNowUnreachable are both red.
-///   - The Connected line shows WHICH gateway, not the verdict: the marker (green check / amber ring /
-///     red cross) carries connected / connecting / failed, so the word "Connected" beside a checkmark was
-///     redundant. The gateway host is shown in every state where a gateway is configured - failed included
-///     - so the person can see WHICH gateway is unreachable; the named failing leg stays in the tooltip and
-///     the panel's repair banner. With no gateway selected (brand new, NotConfigured) the line is left
-///     empty and the surface hides the row.
+///   - The Connected line shows WHICH gateway plus the verdict: the marker (green check / amber ring /
+///     red cross) reinforces connected / connecting / failed. The gateway host is shown first in every state
+///     where a gateway is configured - failed included - and the resolved state follows in parentheses so
+///     the verdict remains readable without relying on the glyph or color. The named failing leg stays in
+///     the tooltip and the panel's repair banner. With no gateway selected (brand new, NotConfigured) the
+///     line is left empty and the surface hides the row.
 ///   - A muted/unknown account line is "cannot tell yet", never a false sign-out (decision 3).
 /// </summary>
 public static class GatewayStatusBoxPresenter
@@ -79,9 +79,9 @@ public static class GatewayStatusBoxPresenter
     {
         var resolved = GatewayConnectionStateResolver.Resolve(inputs);
         var visual = VisualFor(resolved.State);
-        var connected = ConnectedLine(resolved.ConnectedCheck, gatewayHost);
+        var connected = ConnectedLine(resolved, inputs.GatewayConfigured, gatewayHost);
         var signedIn = SignedInLine(resolved.SignedInCheck, accountEmail);
-        var tooltip = Tooltip(resolved.State, gatewayHost, accountEmail);
+        var tooltip = Tooltip(resolved.State, inputs.FailedLeg, gatewayHost, accountEmail);
         return new GatewayStatusBoxContent(visual, connected, signedIn, tooltip);
     }
 
@@ -96,15 +96,32 @@ public static class GatewayStatusBoxPresenter
         _ => GatewayStatusBoxVisual.Amber,
     };
 
-    // The Connected line shows the gateway host when one is configured, whatever the marker state (the
-    // marker carries connected / connecting / failed). With no gateway selected the host is null and the
-    // line is left empty - the surface hides the row - so a brand-new box does not pretend a verdict it
-    // cannot have. The named failing leg has moved off this line into the tooltip and the panel repair
-    // banner; the box itself names WHICH gateway, not WHY it failed.
-    private static GatewayStatusLine ConnectedLine(GatewayCheckState check, string? gatewayHost)
+    // The Connected line names the configured gateway first, then states the resolver's finished verdict in
+    // parentheses. The marker remains resolver-owned reinforcement, not the only way to learn the verdict.
+    // No configured gateway means no line. A configured gateway without a displayable host is an invalid
+    // presenter input and fails explicitly instead of silently painting the box as if it were brand new.
+    private static GatewayStatusLine ConnectedLine(
+        GatewayConnectionResolved resolved, bool gatewayConfigured, string? gatewayHost)
     {
-        var text = string.IsNullOrWhiteSpace(gatewayHost) ? string.Empty : gatewayHost;
-        return new GatewayStatusLine(check, text);
+        if (!gatewayConfigured)
+            return new GatewayStatusLine(resolved.ConnectedCheck, string.Empty);
+
+        if (string.IsNullOrWhiteSpace(gatewayHost))
+            throw new InvalidOperationException(
+                $"Gateway host is required when the resolved state is {resolved.State} and a gateway is configured");
+
+        var stateText = resolved.State switch
+        {
+            GatewayConnectionState.Connecting => "Connecting...",
+            GatewayConnectionState.ConnectFailed => "Connection failed",
+            GatewayConnectionState.WasConnectedNowUnreachable => "Unreachable",
+            GatewayConnectionState.ConnectedNotSignedIn => "Connected",
+            GatewayConnectionState.AllGreen => "Connected",
+            GatewayConnectionState.NotConfigured => throw new InvalidOperationException(
+                "A configured gateway cannot resolve to NotConfigured"),
+            _ => throw new ArgumentOutOfRangeException(nameof(resolved), resolved.State, "Unknown gateway connection state"),
+        };
+        return new GatewayStatusLine(resolved.ConnectedCheck, $"{gatewayHost.Trim()} ({stateText})");
     }
 
     // The Signed-in line shows the identity when green, the next action when pending, and a muted
@@ -122,9 +139,14 @@ public static class GatewayStatusBoxPresenter
     private static string SignedInText(string? accountEmail) =>
         string.IsNullOrWhiteSpace(accountEmail) ? "Signed in" : $"Signed in: {accountEmail}";
 
-    private static string Tooltip(GatewayConnectionState state, string? gatewayHost, string? accountEmail)
+    private static string Tooltip(
+        GatewayConnectionState state,
+        GatewayConnectionFailedLeg failedLeg,
+        string? gatewayHost,
+        string? accountEmail)
     {
         var host = string.IsNullOrWhiteSpace(gatewayHost) ? "the Gateway" : $"Gateway on {gatewayHost}";
+        var failure = FailedLegText(failedLeg);
         return state switch
         {
             GatewayConnectionState.NotConfigured =>
@@ -132,7 +154,7 @@ public static class GatewayStatusBoxPresenter
             GatewayConnectionState.Connecting =>
                 $"Connecting to {host}. Click to see progress.",
             GatewayConnectionState.ConnectFailed =>
-                $"Could not connect to {host}. Click to see the failing leg and the fix.",
+                $"Could not connect to {host}. {failure} Click to see the fix.",
             GatewayConnectionState.ConnectedNotSignedIn =>
                 $"Connected to {host}, but this device is not signed in. Click to sign in with DevThrottle.",
             GatewayConnectionState.AllGreen =>
@@ -140,8 +162,15 @@ public static class GatewayStatusBoxPresenter
                     ? $"Connected to {host} and signed in. Click for details."
                     : $"Connected to {host} and signed in as {accountEmail}. Click for details.",
             GatewayConnectionState.WasConnectedNowUnreachable =>
-                $"Was connected to {host}, now unreachable. Click to reconnect.",
+                $"Was connected to {host}, now unreachable. {failure} Click to reconnect.",
             _ => "Click to open the Gateway connection panel.",
         };
     }
+
+    private static string FailedLegText(GatewayConnectionFailedLeg leg) => leg switch
+    {
+        GatewayConnectionFailedLeg.Callback => "The Gateway cannot reach this Director back.",
+        GatewayConnectionFailedLeg.OutboundReach => "This Director cannot reach the Gateway.",
+        _ => "The connection failed.",
+    };
 }

@@ -3,6 +3,7 @@ using System.IO;
 using System.Net.Http;
 using System.Net.Http.Json;
 using Avalonia;
+using Avalonia.Automation;
 using Avalonia.Controls;
 using Avalonia.Controls.Primitives;
 using Avalonia.Input;
@@ -484,11 +485,9 @@ public partial class MainWindow : Window
     /// </summary>
     private void WireGatewayStatusBox()
     {
-        // Seed the gateway host the box shows on line 1 from config NOW, rather than waiting for the first
-        // account-status poll to populate _boxGatewayHost. Without this a configured-Director startup
-        // would briefly paint line 1 empty (looking brand-new) until the poll returns; the poll later
-        // refreshes these same fields authoritatively.
-        SeedGatewayConfigFields();
+        // Seed the gateway host the box shows on line 1 from config NOW. Without this a configured-Director
+        // startup would briefly paint line 1 empty (looking brand-new) before the monitor attaches.
+        RefreshGatewayConfigFields();
 
         // Line 2 of the box (account signed-in) is fed by a heartbeat poll of the Gateway's
         // GET /account/status; line 1 (Gateway reachable) is fed by the GatewayConnectionMonitor
@@ -507,18 +506,11 @@ public partial class MainWindow : Window
     // Read the configured gateway right now so line 1 of the box knows WHICH gateway to name before any
     // network read returns. Cheap config-file read (same one RefreshAccountStatusAsync does on the UI
     // thread); account fields are left untouched - the poll owns those.
-    private void SeedGatewayConfigFields()
+    private void RefreshGatewayConfigFields()
     {
-        try
-        {
-            var config = GatewayConfig.Load();
-            _boxGatewayConfigured = !string.IsNullOrWhiteSpace(config.Url);
-            _boxGatewayHost = SafeHost(config.Url);
-        }
-        catch (Exception ex)
-        {
-            FileLog.Write($"[MainWindow] SeedGatewayConfigFields FAILED: {ex.Message}");
-        }
+        var config = GatewayConfig.Load();
+        _boxGatewayConfigured = config.IsEnabled;
+        _boxGatewayHost = SafeHost(config.Url);
     }
 
     private void TryAttachGatewayMonitor()
@@ -530,13 +522,25 @@ public partial class MainWindow : Window
         _gatewayMonitor = host.GatewayMonitor;
         _gatewayMonitor.Changed += () => Dispatcher.UIThread.Post(() =>
         {
-            UpdateGatewayStatusBox();
-            // The rail's offline floor (SessionViewModel.EffectiveColor) renders blue/red from local activity
-            // whenever the tunnel is not Connected, and Connected's stamp otherwise. A connect/disconnect
-            // carries none of the per-session events a row hears, so repaint every row from here - the one
-            // place that owns the GatewayConnectionMonitor subscription - or a settled row keeps its old dot
-            // until an unrelated event happens to repaint it.
-            foreach (var vm in _sessions) vm.RefreshGatewayFloor();
+            try
+            {
+                // ReapplyGatewayAsync resets this same monitor after loading the new config. Refresh the
+                // display identity before repainting so a change or disconnect can never pair the new verdict
+                // with the previous gateway host. The account poll deliberately does not own these fields.
+                RefreshGatewayConfigFields();
+                UpdateGatewayStatusBox();
+                // The rail's offline floor (SessionViewModel.EffectiveColor) renders blue/red from local activity
+                // whenever the tunnel is not Connected, and Connected's stamp otherwise. A connect/disconnect
+                // carries none of the per-session events a row hears, so repaint every row from here - the one
+                // place that owns the GatewayConnectionMonitor subscription - or a settled row keeps its old dot
+                // until an unrelated event happens to repaint it.
+                foreach (var vm in _sessions) vm.RefreshGatewayFloor();
+            }
+            catch (Exception ex)
+            {
+                FileLog.Write($"[MainWindow] Gateway monitor change handling FAILED: {ex}");
+                ShowNotification("Gateway status could not be refreshed. Open Gateway settings for details.");
+            }
         });
 
         // Same host: wire the Control-API status indicator. The bind may have already failed
@@ -546,6 +550,7 @@ public partial class MainWindow : Window
 
         _gatewayAttachTimer?.Stop();
         _gatewayAttachTimer = null;
+        RefreshGatewayConfigFields();
         UpdateGatewayStatusBox();
         UpdateControlApiIndicator();
         FileLog.Write("[MainWindow] Gateway status box attached to GatewayConnectionMonitor");
@@ -641,6 +646,11 @@ public partial class MainWindow : Window
         // the same rule never collapses the Sign in nudge.)
         GatewayConnectedRow.IsVisible = !string.IsNullOrEmpty(content.Connected.Text);
         ToolTip.SetTip(GatewayStatusBox, content.Tooltip);
+        var accessibleName = string.IsNullOrEmpty(content.Connected.Text)
+            ? content.SignedIn.Text
+            : $"{content.Connected.Text}. {content.SignedIn.Text}";
+        AutomationProperties.SetName(GatewayStatusBox, accessibleName);
+        AutomationProperties.SetHelpText(GatewayStatusBox, content.Tooltip);
 
         // A missing gateway is NOT an error (a legitimate local-only Director); only the red failure
         // states count against readiness and surface a problem row on the status screen.
@@ -699,7 +709,7 @@ public partial class MainWindow : Window
     {
         GatewayCheckState.Passed => (GatewayIconCheck, "#22C55E"),   // green filled check
         GatewayCheckState.Working => (GatewayIconRing, "#F0B848"),   // amber ring, in progress
-        GatewayCheckState.Failed => (GatewayIconCross, "#EF4444"),   // red cross, named leg
+        GatewayCheckState.Failed => (GatewayIconCross, "#EF4444"),   // red cross, connection failed
         GatewayCheckState.Pending => (GatewayIconRing, "#F0B848"),   // amber ring, the actionable nudge
         _ => (GatewayIconRing, "#777777"),                           // muted ring, cannot tell yet
     };
@@ -709,7 +719,7 @@ public partial class MainWindow : Window
         GatewayStatusBoxVisual.Green => ("#1B3A2A", "#22C55E"),
         GatewayStatusBoxVisual.Red => ("#3A1B1B", "#DC2626"),
         // Amber (needs attention) and Yellow (verifying) share the warm scheme; the line content and
-        // markers carry the distinction (line 1 "Connecting..." with a working ring for yellow).
+        // markers carry the distinction (line 1 appends "(Connecting...)" for yellow).
         _ => ("#3A331B", "#F0B848"),
     };
 
@@ -728,7 +738,23 @@ public partial class MainWindow : Window
         }
         catch (Exception ex)
         {
-            FileLog.Write($"[MainWindow] GatewayStatusBox_PointerPressed FAILED: {ex.Message}");
+            FileLog.Write($"[MainWindow] GatewayStatusBox_PointerPressed FAILED: {ex}");
+        }
+    }
+
+    private void GatewayStatusBox_KeyDown(object? sender, KeyEventArgs e)
+    {
+        if (e.Key is not (Key.Enter or Key.Space)) return;
+
+        e.Handled = true;
+        try
+        {
+            FileLog.Write("[MainWindow] GatewayStatusBox keyboard activation; opening the connection panel on its current step");
+            OpenGatewayConnectionPanel();
+        }
+        catch (Exception ex)
+        {
+            FileLog.Write($"[MainWindow] GatewayStatusBox_KeyDown FAILED: {ex}");
         }
     }
 
@@ -833,18 +859,17 @@ public partial class MainWindow : Window
 
     /// <summary>
     /// Fold the Gateway's account status into the status box's line-2 inputs and repaint (spec sections 4,
-    /// 6): the signed-in state, the email (shown on the green line only), whether this device holds its own
-    /// token, whether a Gateway is configured, and the Gateway host for the tooltip. An unreachable or
-    /// not-configured Gateway maps to a MUTED "cannot tell yet" - never a false sign-out (decision 3). The
-    /// email is used only to render the identity; no token ever reaches the box (security DT-05).
+    /// 6): the signed-in state, the email (shown on the green line only), and whether this device holds its
+    /// own token. Gateway configuration and host are refreshed with the connection monitor so an older
+    /// account read can never overwrite line one after a gateway change. An unreachable or not-configured
+    /// Gateway maps to a MUTED "cannot tell yet" - never a false sign-out (decision 3). The email is used
+    /// only to render the identity; no token ever reaches the box (security DT-05).
     /// </summary>
     private void ApplyAccountStatus(GatewayConfig config, GatewayAccountStatus status)
     {
         _boxAccount = MapAccount(status);
         _boxAccountEmail = status.SignedIn ? status.Email : null;
         _boxDeviceKeyPresent = !string.IsNullOrWhiteSpace(config.Token);
-        _boxGatewayConfigured = status.GatewayConfigured;
-        _boxGatewayHost = SafeHost(config.Url);
 
         // Log the state and booleans, never the email (PII; CodingStyle Section 4 / 12).
         FileLog.Write($"[MainWindow] ApplyAccountStatus: account={_boxAccount}, deviceKey={_boxDeviceKeyPresent}, configured={status.GatewayConfigured}, reachable={status.Reachable}");

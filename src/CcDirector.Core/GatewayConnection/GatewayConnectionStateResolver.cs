@@ -131,7 +131,7 @@ public enum GatewayCheckState
     /// <summary>Proven - a filled marker. Green.</summary>
     Passed,
 
-    /// <summary>The leg failed - named on the line. Red.</summary>
+    /// <summary>The connection failed. Red; the named detail appears in the tooltip and repair panel.</summary>
     Failed,
 
     /// <summary>Cannot tell yet - muted, explicitly NOT an alarm (an Unavailable Gateway, decision 3).</summary>

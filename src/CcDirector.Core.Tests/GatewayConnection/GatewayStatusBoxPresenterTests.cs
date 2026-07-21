@@ -6,8 +6,8 @@ namespace CcDirector.Core.Tests.GatewayConnection;
 /// <summary>
 /// Proves the single status box's presenter (design spec section 6): the pure mapping that turns a live
 /// verification snapshot into the box's four visual states and its two check lines. These tests pin the
-/// four looks and the Connected-line rule: the marker carries the verdict (green check / amber ring / red
-/// cross) and the line names WHICH gateway - the host in every state where a gateway is configured
+/// four looks and the Connected-line rule: the marker reinforces the verdict (green check / amber ring / red
+/// cross) and the line names WHICH gateway plus the resolved state - the host in every configured state
 /// (connected, connecting, AND failed, so the person can see which gateway is unreachable), and empty when
 /// no gateway is selected yet. Line 2 still shows the account identity or the "Sign in" nudge. The named
 /// failing leg moved off the box into the tooltip and the panel's repair banner. The presenter has no UI
@@ -61,8 +61,7 @@ public sealed class GatewayStatusBoxPresenterTests
 
         Assert.Equal(GatewayStatusBoxVisual.Amber, content.Visual);
         Assert.Equal(GatewayCheckState.Passed, content.Connected.Marker);
-        // Line 1 names WHICH gateway; the green checkmarker carries "connected".
-        Assert.Equal("SOREN_NORTH", content.Connected.Text);
+        Assert.Equal("SOREN_NORTH (Connected)", content.Connected.Text);
         Assert.Equal(GatewayCheckState.Pending, content.SignedIn.Marker);
         Assert.Equal("Sign in", content.SignedIn.Text);
     }
@@ -81,8 +80,7 @@ public sealed class GatewayStatusBoxPresenterTests
 
         Assert.Equal(GatewayStatusBoxVisual.Yellow, content.Visual);
         Assert.Equal(GatewayCheckState.Working, content.Connected.Marker);
-        // The amber working-ring carries "connecting"; the line names the gateway.
-        Assert.Equal("SOREN_NORTH", content.Connected.Text);
+        Assert.Equal("SOREN_NORTH (Connecting...)", content.Connected.Text);
     }
 
     [Fact]
@@ -93,7 +91,7 @@ public sealed class GatewayStatusBoxPresenterTests
 
         Assert.Equal(GatewayStatusBoxVisual.Green, content.Visual);
         Assert.Equal(GatewayCheckState.Passed, content.Connected.Marker);
-        Assert.Equal("SOREN_NORTH", content.Connected.Text);
+        Assert.Equal("SOREN_NORTH (Connected)", content.Connected.Text);
         Assert.Equal(GatewayCheckState.Passed, content.SignedIn.Marker);
         Assert.Equal("Signed in: soren@centerconsulting.com", content.SignedIn.Text);
     }
@@ -108,13 +106,13 @@ public sealed class GatewayStatusBoxPresenterTests
         Assert.Equal("Signed in", content.SignedIn.Text);
     }
 
-    // Both red states show WHICH gateway is unreachable on line 1 - the named failing leg moved off the
-    // line into the tooltip and the panel's repair banner; the red cross marker carries "failed".
+    // Both red states show WHICH gateway is unreachable plus a compact verdict on line 1. The named failing
+    // leg stays in the tooltip and panel repair banner; the red cross reinforces the failure.
 
     [Fact]
     public void Describe_ConnectFailed_IsRed_ConnectedLineShowsGatewayHost()
     {
-        // A first-time connect failure: red, line 1 names the (unreachable) gateway, not the leg.
+        // A first-time connect failure: red, line 1 names the gateway and compact verdict, not the leg.
         var inputs = AllGreenInputs() with
         {
             Connection = GatewayConnectionVerification.Failed,
@@ -128,13 +126,14 @@ public sealed class GatewayStatusBoxPresenterTests
 
         Assert.Equal(GatewayStatusBoxVisual.Red, content.Visual);
         Assert.Equal(GatewayCheckState.Failed, content.Connected.Marker);
-        Assert.Equal("SOREN_NORTH", content.Connected.Text);
+        Assert.Equal("SOREN_NORTH (Connection failed)", content.Connected.Text);
+        Assert.Contains("The Gateway cannot reach this Director back.", content.Tooltip);
     }
 
     [Fact]
     public void Describe_WasConnectedNowUnreachable_IsRed_ConnectedLineShowsGatewayHost()
     {
-        // Mid-session Gateway drop: was working this run, now unreachable. Same line-1 rule: name the gateway.
+        // Mid-session Gateway drop: was working this run, now unreachable. Same line-1 rule: host first.
         var inputs = AllGreenInputs() with
         {
             Connection = GatewayConnectionVerification.Failed,
@@ -147,7 +146,64 @@ public sealed class GatewayStatusBoxPresenterTests
 
         Assert.Equal(GatewayStatusBoxVisual.Red, content.Visual);
         Assert.Equal(GatewayCheckState.Failed, content.Connected.Marker);
-        Assert.Equal("SOREN_NORTH", content.Connected.Text);
+        Assert.Equal("SOREN_NORTH (Unreachable)", content.Connected.Text);
+        Assert.Contains("This Director cannot reach the Gateway.", content.Tooltip);
+    }
+
+    [Fact]
+    public void Describe_ConfiguredPending_ShowsGatewayHostAndConnectingVerdict()
+    {
+        var inputs = new GatewayConnectionInputs(
+            GatewayConfigured: true,
+            Connection: GatewayConnectionVerification.Unknown,
+            FailedLeg: GatewayConnectionFailedLeg.None,
+            WasEverConnected: false,
+            DeviceKeyPresent: false,
+            Account: GatewayAccountSignInState.Unknown);
+
+        var content = GatewayStatusBoxPresenter.Describe(inputs, gatewayHost: "SOREN_NORTH", accountEmail: null);
+
+        Assert.Equal(GatewayStatusBoxVisual.Yellow, content.Visual);
+        Assert.Equal(GatewayCheckState.Pending, content.Connected.Marker);
+        Assert.Equal("SOREN_NORTH (Connecting...)", content.Connected.Text);
+    }
+
+    [Fact]
+    public void Describe_NotConfiguredWithStaleHost_ConnectedLineStillEmpty()
+    {
+        var inputs = new GatewayConnectionInputs(
+            GatewayConfigured: false,
+            Connection: GatewayConnectionVerification.Unknown,
+            FailedLeg: GatewayConnectionFailedLeg.None,
+            WasEverConnected: false,
+            DeviceKeyPresent: false,
+            Account: GatewayAccountSignInState.Unknown);
+
+        var content = GatewayStatusBoxPresenter.Describe(inputs, gatewayHost: "OLD_GATEWAY", accountEmail: null);
+
+        Assert.Equal(string.Empty, content.Connected.Text);
+    }
+
+    [Theory]
+    [InlineData(GatewayConnectionVerification.Unknown)]
+    [InlineData(GatewayConnectionVerification.Verifying)]
+    [InlineData(GatewayConnectionVerification.Connected)]
+    [InlineData(GatewayConnectionVerification.Failed)]
+    public void Describe_ConfiguredWithoutHost_ThrowsInvalidOperationException(
+        GatewayConnectionVerification connection)
+    {
+        var inputs = new GatewayConnectionInputs(
+            GatewayConfigured: true,
+            Connection: connection,
+            FailedLeg: connection == GatewayConnectionVerification.Failed
+                ? GatewayConnectionFailedLeg.OutboundReach
+                : GatewayConnectionFailedLeg.None,
+            WasEverConnected: false,
+            DeviceKeyPresent: false,
+            Account: GatewayAccountSignInState.Unknown);
+
+        Assert.Throws<InvalidOperationException>(() =>
+            GatewayStatusBoxPresenter.Describe(inputs, gatewayHost: null, accountEmail: null));
     }
 
     // ---- Load-bearing rules ---------------------------------------------------------------------
