@@ -157,6 +157,36 @@ describe("runEnrollmentCallback dispatch", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
+  it("does NOT let a state survive a denied callback to verify a later replay (state consumed on every path)", async () => {
+    const fetchMock = vi.fn(async () => jsonResponse(200, { deviceKey: "attacker-tenant-key" }));
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+
+    // This browser minted exactly one nonce before leaving. An attacker who knows that value first
+    // delivers a declined callback carrying it, then replays the SAME value with their own token.
+    const state = newEnrollState();
+
+    // First callback: declined at the site, echoing the live nonce. Must consume the nonce even
+    // though it returns "denied" without enrolling.
+    const denied = await runEnrollmentCallback(
+      new URLSearchParams(`error=access_denied&state=${state}`),
+      COCKPIT_ENROLLMENT_PROFILE,
+      "install-9",
+    );
+    expect(denied).toEqual({ kind: "denied" });
+    expect(fetchMock).not.toHaveBeenCalled();
+
+    // Second callback: the attacker replays the SAME state with their access token. Because the nonce
+    // was spent by the first (denied) callback, the saved state is now gone and the replay cannot
+    // verify - it must be rejected without any fetch/enroll.
+    const replay = await runEnrollmentCallback(
+      new URLSearchParams(`access_token=attacker-token&state=${state}`),
+      COCKPIT_ENROLLMENT_PROFILE,
+      "install-9",
+    );
+    expect(replay).toEqual({ kind: "unverified" });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it("reports 'noCredential' for an ambiguous verified fragment carrying BOTH credentials (finding 3)", async () => {
     const fetchMock = vi.fn(async () => jsonResponse(200, { deviceKey: "k" }));
     globalThis.fetch = fetchMock as unknown as typeof fetch;

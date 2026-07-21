@@ -28,16 +28,23 @@ export type EnrollCallbackOutcome =
  * Process the callback fragment and, when everything checks out, enroll this device.
  *
  * Order is deliberate and every gate runs BEFORE either enroll call:
+ *   0. CONSUME THE NONCE FIRST, ON EVERY PATH: the saved anti-forgery state is taken-and-removed
+ *      (takeEnrollState) before ANY branch below - denied, unverified, noCredential, or enroll. A
+ *      one-time nonce must be spent by whichever callback outcome reaches it first, or it is not
+ *      one-time. If the "denied"/error branch returned before consuming it, an attacker who knows a
+ *      stale state could send `error=access_denied&state=S` (leaves S live) then
+ *      `access_token=theirs&state=S` and REPLAY the still-live nonce to enroll. Taking it up front
+ *      makes S dead the instant the first callback (of any outcome) sees it.
  *   1. An explicit `error` in the fragment (the person declined at devthrottle.com) -> "denied".
- *   2. ANTI-FORGERY, FAIL CLOSED: proceed ONLY when we still hold the exact nonce we minted before
- *      leaving (takeEnrollState) AND the site echoed that same nonce back in `state`. A missing saved
- *      state (storage unavailable), a missing returned state, or a mismatch all mean we cannot prove
- *      this callback answers a sign-in THIS browser started, so we reject ("unverified") rather than
- *      enroll. Both the self-host and hosted branches are held to this same bar: the website echoes
- *      `state` for both callback shapes and SignIn always mints it, so a legitimate callback of either
- *      kind always carries a matching state. This closes the hosted login-CSRF path where an attacker
- *      delivers a callback carrying THEIR OWN account access token and enrolls a victim into the
- *      attacker's tenant.
+ *   2. ANTI-FORGERY, FAIL CLOSED: proceed ONLY when we still held the exact nonce we minted before
+ *      leaving (consumed in step 0) AND the site echoed that same nonce back in `state`. A missing
+ *      saved state (storage unavailable), a missing returned state, or a mismatch all mean we cannot
+ *      prove this callback answers a sign-in THIS browser started, so we reject ("unverified") rather
+ *      than enroll. Both the self-host and hosted branches are held to this same bar: the website
+ *      echoes `state` for both callback shapes and SignIn always mints it, so a legitimate callback of
+ *      either kind always carries a matching state. This closes the hosted login-CSRF path where an
+ *      attacker delivers a callback carrying THEIR OWN account access token and enrolls a victim into
+ *      the attacker's tenant.
  *   3. A credential must be present and unambiguous (readEnrollCredential) -> otherwise "noCredential".
  *   4. Enroll with the request bound to the credential kind.
  *
@@ -50,12 +57,15 @@ export async function runEnrollmentCallback(
   deviceId: string,
   signal?: AbortSignal,
 ): Promise<EnrollCallbackOutcome> {
+  // Spend the one-time nonce FIRST, before any branch - so a declined/error callback (or any other
+  // outcome) cannot leave it live in storage for a later callback to replay. See step 0 above.
+  const expectedState = takeEnrollState();
+
   if (params.get("error")) {
     return { kind: "denied" };
   }
 
   const returnedState = params.get("state");
-  const expectedState = takeEnrollState();
   if (!expectedState || !returnedState || returnedState !== expectedState) {
     return { kind: "unverified" };
   }
