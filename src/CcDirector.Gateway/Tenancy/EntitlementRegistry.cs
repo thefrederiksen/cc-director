@@ -112,6 +112,19 @@ public sealed class EntitlementRegistry
             // persistent failure here stops every enrollment on the box and must not be quiet.
             FileLog.Write($"[EntitlementRegistry] LookupBySubject: READ FAILED ({ex.GetType().Name}) - answering UNKNOWN, " +
                           "which must be retried and must NEVER be treated as unpaid or as paid");
+
+            // DIAGNOSTIC. On a PostgreSQL failure, add the two fields that let the server's OWN error be read
+            // from the log - the SQLSTATE code and the server's message text - whether the PostgresException
+            // arrived directly or wrapped by EF. These are the difference between "the box is down" and "the
+            // read reached the server but the row/column/relation was not what the query expected" (for
+            // example SQLSTATE 42P01 undefined_table, 42703 undefined_column, or 42804 datatype_mismatch).
+            // Without them the generic type name alone cannot tell those apart. NEITHER field carries PII for
+            // a schema, relation or column error - no subject, no email, no row data - so the
+            // never-log-the-subject rule is preserved: the subject is still never written here.
+            var pg = ex as Npgsql.PostgresException ?? ex.InnerException as Npgsql.PostgresException;
+            if (pg is not null)
+                FileLog.Write($"[EntitlementRegistry] LookupBySubject: PostgreSQL error SqlState={pg.SqlState} MessageText={pg.MessageText}");
+
             return EntitlementOutcome.Unknown;
         }
 
