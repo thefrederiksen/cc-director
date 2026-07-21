@@ -937,7 +937,10 @@ public sealed class GatewayHost : IAsyncDisposable
                 return d is null ? null : (d.TailnetEndpoint ?? d.ControlEndpoint);
             },
             $"http://127.0.0.1:{Port}",
-            new HttpClient { Timeout = TimeSpan.FromSeconds(10) });
+            new HttpClient { Timeout = TimeSpan.FromSeconds(10) },
+            // MTR-01 (Codex round 1): file the run-complete event into the current cron pass's OWN tenant ring,
+            // the same per-tenant seam the deep-link resolver above reads. On self-host this is always Local.
+            resolveTenant: () => _tenantPass.Current);
         _cronEngine = new Running.CronEngine(
             _cronJobs, _cronRuns, new Running.DirectorCronSessionStarter(_machineSessionSpawner),
             cronWorkListRunner, cronNotifier, new Running.SystemClock());
@@ -1810,6 +1813,9 @@ public sealed class GatewayHost : IAsyncDisposable
             pushedSessions: PushedSessions,
             streamRegistry: StreamRegistry,
             sendCommand: SendCommandAsync,
+            // MTR-01 (Codex round 1): the director-scoped backfill leg resolves the owned Director in the
+            // request's tenant before dispatch, so it needs the registry.
+            registry: Registry,
             streamStaleAfter: _streamStaleAfter,
             // Hosted Multi-Tenancy (session-serving PR1): the per-session tunnel legs resolve the request's
             // tenant at the session locate, so a wrong-tenant session is never located and a request with no

@@ -124,8 +124,8 @@ public sealed class DirectorEventsAndFactsTests : IAsyncLifetime
 
         client.NotifySessionState(sid, "Starting", DoorbellEvents.SessionCreated);
 
-        await WaitFor(() => Task.FromResult(_gateway.DirectorEvents.For(id).Count > 0), TimeSpan.FromSeconds(5));
-        var ev = Assert.Single(_gateway.DirectorEvents.For(id));
+        await WaitFor(() => Task.FromResult(_gateway.DirectorEvents.For(TenantId.Local, id).Count > 0), TimeSpan.FromSeconds(5));
+        var ev = Assert.Single(_gateway.DirectorEvents.For(TenantId.Local, id));
         Assert.Equal(sid, ev.SessionId);
         Assert.Equal(DoorbellEvents.SessionCreated, ev.Event);
         Assert.Equal("Starting", ev.State);

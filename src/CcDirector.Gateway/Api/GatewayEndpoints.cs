@@ -547,6 +547,15 @@ internal static class GatewayEndpoints
 
         app.MapPost("/directors/register", (DirectorRegistrationRequest req) =>
         {
+            // MTR-01 (Codex round 1): the HTTP register/heartbeat/doorbell/unregister legs are the legacy
+            // SAME-MACHINE discovery plane - a self-host-only concept. A hosted Director reaches the Gateway
+            // over the tunnel, never these HTTP legs, and every entry this plane writes is keyed to the Local
+            // tenant. Left open on hosted, POST /directors/register is exactly the Local-shadow path: a hosted
+            // caller could fabricate a Local registration for an arbitrary director id and then read that id's
+            // Local event ring. Make the whole plane explicitly UNAVAILABLE on hosted (403) so the shadow can
+            // never be created; self-host is unchanged.
+            if (tenantBoundary?.IsHosted == true)
+                return LegacyDiscoveryPlaneUnavailable();
             if (req is null || string.IsNullOrEmpty(req.DirectorId))
                 return Results.BadRequest(new { error = "directorId is required" });
             // Issue #324: a Director with no resolvable tailnet identity may register FLAGGED -
@@ -562,6 +571,11 @@ internal static class GatewayEndpoints
 
         app.MapPost("/directors/{id}/heartbeat", async (string id, HttpContext ctx) =>
         {
+            // MTR-01 (Codex round 1): part of the legacy same-machine discovery plane - unavailable on hosted
+            // (see /directors/register). This also replaces the pre-fix 410 that an unbound hosted request got
+            // here with the correct 403 for a plane that does not serve hosted accounts.
+            if (tenantBoundary?.IsHosted == true)
+                return LegacyDiscoveryPlaneUnavailable();
             var ok = registry.Heartbeat(id);
             if (!ok)
             {
@@ -602,9 +616,12 @@ internal static class GatewayEndpoints
         // the pre-#330 shape and records nothing.
         app.MapPost("/directors/{id}/doorbell", (string id, DoorbellRequest req) =>
         {
-            // MTR-01: the doorbell is part of the same-machine HTTP discovery plane, whose entries are always
-            // keyed to the Local tenant (see DirectorRegistry.Upsert). Resolve within Local - never a bare,
-            // cross-tenant scan - so this stays behavior-identical on self-host and serves no hosted account.
+            // MTR-01 (Codex round 1): the doorbell is a leg of the legacy same-machine HTTP discovery plane -
+            // unavailable on hosted (see /directors/register), where leaving it open would let a hosted caller
+            // inject into a bare-id event ring. On self-host its entries are always keyed to the Local tenant
+            // (see DirectorRegistry.Upsert), so it resolves within Local and records under Local.
+            if (tenantBoundary?.IsHosted == true)
+                return LegacyDiscoveryPlaneUnavailable();
             if (registry.Get(TenantId.Local, id) is null)
                 return Results.StatusCode(StatusCodes.Status410Gone);
             if (req is null || string.IsNullOrEmpty(req.SessionId) || string.IsNullOrEmpty(req.NewState))
@@ -612,7 +629,7 @@ internal static class GatewayEndpoints
 
             registry.MarkStateReporting(id);
             if (directorEvents is not null && !string.IsNullOrEmpty(req.Event))
-                directorEvents.Record(id, req.SessionId, req.Event, req.NewState);
+                directorEvents.Record(TenantId.Local, id, req.SessionId, req.Event, req.NewState);
             onSessionState?.Invoke(id, req.SessionId, req.NewState);
             return Results.Json(new { ok = true });
         });
@@ -621,15 +638,20 @@ internal static class GatewayEndpoints
         // (session-created/session-exited/prompt-detected) the Gateway has recorded for a
         // KNOWN director, oldest first. This is the minimal Phase-1 observable sink; the
         // real consumer (the SSE/WS event hub) is Phase 3.
-        app.MapGet("/directors/{id}/events", (string id) =>
+        app.MapGet("/directors/{id}/events", (string id, HttpContext ctx) =>
         {
-            // MTR-01: the per-director doorbell-event ring is keyed by bare director id and fed by the Local
-            // discovery plane; resolve the director within Local rather than by a cross-tenant bare scan. This
-            // debug surface is unchanged on self-host and empty for a hosted account (its Local partition is
-            // served to no account) - deny-by-default.
-            if (registry.Get(TenantId.Local, id) is null)
+            // MTR-01 (Codex round 1): this is a CLIENT-serving read, so it resolves the request's OWN tenant
+            // and reads only that tenant's ring for this id. 403 when no tenant is bound (deny-by-default,
+            // never the Local partition), 404 when the id is not the caller's Director. Because the ring is now
+            // keyed by (tenant, id), a hosted account can never read another account's ring - even for the same
+            // id, and even if a Local shadow of the id existed, the caller's tenant reads a different queue.
+            var reqTenant = ResolveReadTenant(ctx, tenantBoundary);
+            if (reqTenant is null)
+                return Results.Json(new { error = "no tenant is bound to this request" },
+                    statusCode: StatusCodes.Status403Forbidden);
+            if (registry.Get(reqTenant.Value, id) is null)
                 return Results.NotFound(new { error = "director not found" });
-            var events = directorEvents?.For(id) ?? (IReadOnlyList<DirectorEventDto>)Array.Empty<DirectorEventDto>();
+            var events = directorEvents?.For(reqTenant.Value, id) ?? (IReadOnlyList<DirectorEventDto>)Array.Empty<DirectorEventDto>();
             return Results.Json(new { directorId = id, events });
         });
 
@@ -640,6 +662,11 @@ internal static class GatewayEndpoints
 
         app.MapDelete("/directors/{id}/registration", (string id) =>
         {
+            // MTR-01 (Codex round 1): part of the legacy same-machine discovery plane - unavailable on hosted
+            // (see /directors/register). Left open, an unbound hosted caller holding the shared machine token
+            // could remove a Local registration; on hosted there is no such plane to unregister from.
+            if (tenantBoundary?.IsHosted == true)
+                return LegacyDiscoveryPlaneUnavailable();
             FileLog.Write($"[GatewayEndpoints] DELETE /directors/{id}/registration");
             var removed = registry.Remove(id);
             return removed
@@ -2754,6 +2781,16 @@ internal static class GatewayEndpoints
     /// </summary>
     private static TenantId? ResolveReadTenant(HttpContext ctx, Tenancy.HostedTenantBoundary? boundary)
         => boundary is null ? TenantId.Local : boundary.ResolveRequestTenant(ctx);
+
+    /// <summary>
+    /// MTR-01 (Codex round 1): the answer for the legacy same-machine HTTP discovery plane (register /
+    /// heartbeat / doorbell / unregister) when this is the hosted Gateway. That plane is a self-host-only
+    /// concept - hosted Directors ride the tunnel - and every entry it writes is Local-keyed, so leaving it
+    /// reachable on hosted is the Local-shadow registration / event-ring injection path. 403, explicit.
+    /// </summary>
+    private static IResult LegacyDiscoveryPlaneUnavailable()
+        => Results.Json(new { error = "the same-machine HTTP discovery plane is not available on the hosted Gateway" },
+            statusCode: StatusCodes.Status403Forbidden);
 
     /// <summary>
     /// MTR-01: resolve a per-director route's target Director IN THE REQUEST'S OWN TENANT. Every client-serving

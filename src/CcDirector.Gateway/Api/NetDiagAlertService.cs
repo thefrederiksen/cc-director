@@ -1,3 +1,4 @@
+using CcDirector.Core.Tenancy;
 using CcDirector.Core.Utilities;
 using CcDirector.Gateway.Contracts;
 using CcDirector.Gateway.Events;
@@ -25,6 +26,13 @@ public sealed class NetDiagAlertService
     // A fixed ring key for these gateway-originated network events (they are not tied to a Director/session).
     private const string RingKey = "network";
 
+    // MTR-01 (Codex round 1): these are same-machine, gateway-originated network signals with no per-account
+    // credential, so - like the doorbell/discovery plane - they file under the Local tenant. The event ring is
+    // now keyed by (tenant, id); recording under Local keeps self-host behavior identical and, on hosted, files
+    // into a ring no account's tenant reads (the reader keys by the request tenant, never Local), so this can
+    // never surface to another account.
+    private static readonly TenantId RingTenant = TenantId.Local;
+
     private readonly DirectorEventLog _events;
     private readonly Func<string, string, string, Task<bool>> _sendEmail; // (token, subject, bodyText) -> sent?
     private readonly Func<string?> _getToken;
@@ -51,7 +59,7 @@ public sealed class NetDiagAlertService
     /// <summary>Persistent home drift for <paramref name="deviceName"/>: doorbell always; owner email if signed in + under the daily cap.</summary>
     public void OnDrift(string deviceName)
     {
-        try { _events.Record(RingKey, "", DoorbellEvents.NetworkDrift, deviceName); }
+        try { _events.Record(RingTenant, RingKey, "", DoorbellEvents.NetworkDrift, deviceName); }
         catch (Exception ex) { FileLog.Write($"[NetDiagAlert] doorbell drift failed: {ex.Message}"); }
 
         // 401 FIRST, before touching the cap or the episode set. If not signed in we send only the doorbell
@@ -85,7 +93,7 @@ public sealed class NetDiagAlertService
     /// <summary>Observed recovery for <paramref name="deviceName"/>: doorbell always; a "recovered" email ONLY if we emailed a drift for it.</summary>
     public void OnResolve(string deviceName)
     {
-        try { _events.Record(RingKey, "", DoorbellEvents.NetworkRecovered, deviceName); }
+        try { _events.Record(RingTenant, RingKey, "", DoorbellEvents.NetworkRecovered, deviceName); }
         catch (Exception ex) { FileLog.Write($"[NetDiagAlert] doorbell recovered failed: {ex.Message}"); }
 
         bool weWarned;

@@ -1,6 +1,7 @@
 using System.Net;
 using System.Net.Http.Json;
 using System.Text.Json;
+using CcDirector.Core.Tenancy;
 using CcDirector.Gateway;
 using CcDirector.Gateway.Contracts;
 using CcDirector.Gateway.Data;
@@ -213,7 +214,7 @@ public sealed class CronNotifyTests : IDisposable
 
         // Leg 1: it landed on the EXISTING per-Director event ring under the resolved director, with
         // the cron-run-completed event name (the fleet channel, not a new mechanism). AC5.
-        var ring = events.For("director-1");
+        var ring = events.For(TenantId.Local, "director-1");
         Assert.Single(ring);
         Assert.Equal(DoorbellEvents.CronRunCompleted, ring[0].Event);
         Assert.Equal("sid-1", ring[0].SessionId);
@@ -258,7 +259,7 @@ public sealed class CronNotifyTests : IDisposable
         await notifier.NotifyRunCompletedAsync(job, "", payload, CancellationToken.None);
 
         // No director resolved -> the failed run is still observable, filed under the job id.
-        var ring = events.For("cj_fail");
+        var ring = events.For(TenantId.Local, "cj_fail");
         Assert.Single(ring);
         Assert.Equal(DoorbellEvents.CronRunCompleted, ring[0].Event);
         Assert.Equal("not-started", ring[0].State);
@@ -283,7 +284,7 @@ public sealed class CronNotifyTests : IDisposable
 
         await notifier.NotifyRunCompletedAsync(job, "director-1", payload, CancellationToken.None);
 
-        Assert.Single(events.For("director-1"));     // ring still gets it
+        Assert.Single(events.For(TenantId.Local, "director-1"));     // ring still gets it
         Assert.Null(capture.LastBody);               // no webhook posted
     }
 

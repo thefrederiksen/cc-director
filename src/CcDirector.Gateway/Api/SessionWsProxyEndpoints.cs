@@ -50,6 +50,7 @@ internal static class SessionWsProxyEndpoints
         Streaming.PushedSessionStore pushedSessions,
         Streaming.GatewayStreamRegistry streamRegistry,
         DirectorCommandRouter.SendDirectorCommandAsync sendCommand,
+        Discovery.DirectorRegistry registry,
         TimeSpan? streamStaleAfter = null,
         Tenancy.HostedTenantBoundary? tenantBoundary = null)
     {
@@ -133,6 +134,20 @@ internal static class SessionWsProxyEndpoints
         // straight over the tunnel - unreachable/unknown Director -> 503.
         app.MapPost("/directors/{id}/backfill-numbers", async (string id, HttpContext ctx) =>
         {
+            // MTR-01 (Codex round 1): this is a client-facing per-director COMMAND surface, so it must resolve
+            // the owned Director in the REQUEST's own tenant before dispatching - the same boundary contract
+            // every other /directors/{id}/... route holds. 403 when no tenant is bound (deny-by-default), 404
+            // when the id is not the caller's Director. Gating BEFORE the dispatch is what guarantees no verb
+            // ever reaches another tenant's Director over the tunnel, and it routes the id through the only
+            // registry accessor there is (Get(tenant, id)) - there is no bare-id path to evade.
+            var reqTenant = ResolveTenantOrDeny(ctx, tenantBoundary);
+            if (reqTenant is null) return;
+            if (registry.Get(reqTenant.Value, id) is null)
+            {
+                ctx.Response.StatusCode = StatusCodes.Status404NotFound;
+                await ctx.Response.WriteAsJsonAsync(new { error = "director not found" });
+                return;
+            }
             FileLog.Write($"[SessionWsProxy] backfill-numbers director={id} client={ctx.Connection.RemoteIpAddress}");
             var result = await DirectorCommandRouter.TrySendAsync(sendCommand, id, "backfill-numbers", "", payload: null, ctx.RequestAborted);
             await WriteVerbJsonAsync(ctx, result, "backfill-numbers");

@@ -7,6 +7,7 @@ using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Net.Sockets;
 using System.Threading.Tasks;
+using CcDirector.Core.Tenancy;
 using CcDirector.Gateway;
 using CcDirector.Gateway.Contracts;
 using Xunit;
@@ -169,6 +170,117 @@ public sealed class DirectorRouteTenantScopingTests : IAsyncLifetime
         Assert.DoesNotContain("interrupted-list", _bOnlyVerbs);    // nor B's other Director
     }
 
+    // ===== Codex round 1: the three MISSED surfaces =====
+
+    [Fact]
+    public async Task Backfill_on_a_shared_director_id_reaches_only_the_callers_own_director()
+    {
+        // The director-scoped command surface POST /directors/{id}/backfill-numbers used to dispatch the bare
+        // id straight over the tunnel. Gated on the owned Director, A's backfill lands on A's OWN dir-shared and
+        // never on B's same-id Director.
+        var resp = await PostEmpty("directors/dir-shared/backfill-numbers", _keyA);
+
+        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+        Assert.Contains("backfill-numbers", _aSharedVerbs);
+        Assert.DoesNotContain("backfill-numbers", _bSharedVerbs);
+    }
+
+    [Fact]
+    public async Task Backfill_on_a_foreign_director_id_is_404_and_no_command_is_sent()
+    {
+        // An id that exists only in tenant B. A naming it is refused at the registry gate (404) BEFORE dispatch,
+        // so B's Director is never sent the backfill verb over the tunnel.
+        var resp = await PostEmpty("directors/dir-b-only/backfill-numbers", _keyA);
+
+        Assert.Equal(HttpStatusCode.NotFound, resp.StatusCode);
+        Assert.DoesNotContain("backfill-numbers", _bOnlyVerbs);
+
+        // Positive control: B's own key reaches its Director, proving the id is real and routable.
+        var sameTenant = await PostEmpty("directors/dir-b-only/backfill-numbers", _keyB);
+        Assert.Equal(HttpStatusCode.OK, sameTenant.StatusCode);
+        Assert.Contains("backfill-numbers", _bOnlyVerbs);
+    }
+
+    [Fact]
+    public async Task Backfill_with_no_bound_tenant_is_denied()
+    {
+        // Deny-by-default: an authenticated but tenant-unbound key never falls back to the Local partition on
+        // the backfill command surface, and no verb is dispatched.
+        var resp = await PostEmpty("directors/dir-shared/backfill-numbers", _keyUnbound);
+        Assert.Equal(HttpStatusCode.Forbidden, resp.StatusCode);
+        Assert.DoesNotContain("backfill-numbers", _aSharedVerbs);
+        Assert.DoesNotContain("backfill-numbers", _bSharedVerbs);
+    }
+
+    [Fact]
+    public async Task Event_ring_is_isolated_by_tenant_for_the_same_director_id()
+    {
+        // The Local-shadow read: the event ring was one global queue per bare id, so tenant A could read tenant
+        // B's ring for the same id. Keyed by (tenant, id), A's ring and B's ring for the IDENTICAL id
+        // "dir-shared" are distinct queues. Seed both, then prove each account reads only its own.
+        _gateway.DirectorEvents.Record(new TenantId("tenant-alice"), "dir-shared", "sess-alice", DoorbellEvents.CronRunCompleted, "started");
+        _gateway.DirectorEvents.Record(new TenantId("tenant-bob"), "dir-shared", "sess-bob", DoorbellEvents.CronRunCompleted, "started");
+
+        var aBody = await (await Get("directors/dir-shared/events", _keyA)).Content.ReadAsStringAsync();
+        Assert.Contains("sess-alice", aBody);
+        Assert.DoesNotContain("sess-bob", aBody);
+
+        var bBody = await (await Get("directors/dir-shared/events", _keyB)).Content.ReadAsStringAsync();
+        Assert.Contains("sess-bob", bBody);
+        Assert.DoesNotContain("sess-alice", bBody);
+    }
+
+    [Fact]
+    public async Task Event_ring_read_on_a_foreign_director_id_is_404()
+    {
+        // Even with a seeded ring for the foreign id under B, A naming dir-b-only is refused at the registry
+        // gate (404) - A does not own that Director, so it can never reach that ring.
+        _gateway.DirectorEvents.Record(new TenantId("tenant-bob"), "dir-b-only", "sess-bob", DoorbellEvents.CronRunCompleted, "started");
+
+        Assert.Equal(HttpStatusCode.NotFound, (await Get("directors/dir-b-only/events", _keyA)).StatusCode);
+
+        // Positive control: B's own key reads its own ring for that id.
+        var bBody = await (await Get("directors/dir-b-only/events", _keyB)).Content.ReadAsStringAsync();
+        Assert.Contains("sess-bob", bBody);
+    }
+
+    [Fact]
+    public async Task Event_ring_read_with_no_bound_tenant_is_denied()
+    {
+        Assert.Equal(HttpStatusCode.Forbidden, (await Get("directors/dir-shared/events", _keyUnbound)).StatusCode);
+    }
+
+    [Fact]
+    public async Task Legacy_discovery_plane_is_unavailable_on_hosted_and_leaves_no_shadow()
+    {
+        // The discovery legs (register / heartbeat / doorbell / unregister) are the same-machine HTTP plane and
+        // the Local-shadow registration path. On hosted they are explicitly unavailable (403), which closes the
+        // shadow: a hosted caller cannot fabricate a Local registration of another tenant's id, nor inject into
+        // or delete a Local registration.
+        var register = await Post("directors/register", _keyA, new DirectorRegistrationRequest
+        {
+            DirectorId = "shadow-x",
+            TailnetEndpoint = "http://127.0.0.1:9/",
+            MachineName = "attacker",
+            Pid = 1,
+            Version = "x",
+            StartedAt = DateTime.UtcNow,
+        });
+        Assert.Equal(HttpStatusCode.Forbidden, register.StatusCode);
+
+        // No-side-effect: the shadow id was never registered, in the attacker's tenant OR in Local.
+        Assert.Null(_gateway.Registry.Get(new TenantId("tenant-alice"), "shadow-x"));
+        Assert.Null(_gateway.Registry.Get(TenantId.Local, "shadow-x"));
+
+        Assert.Equal(HttpStatusCode.Forbidden,
+            (await Post("directors/dir-shared/heartbeat", _keyA, new { })).StatusCode);
+        Assert.Equal(HttpStatusCode.Forbidden,
+            (await Post("directors/dir-shared/doorbell", _keyA,
+                new DoorbellRequest { SessionId = "s", NewState = "Working", Event = DoorbellEvents.SessionCreated })).StatusCode);
+        Assert.Equal(HttpStatusCode.Forbidden,
+            (await Delete("directors/dir-shared/registration", _keyA)).StatusCode);
+    }
+
     // A dispatch that RECORDS every verb the Gateway sends this Director, then answers the read/create verbs
     // this test drives with an OK body so a route that DID reach it returns success (the positive controls).
     // The point is the verb log, not the body.
@@ -204,6 +316,20 @@ public sealed class DirectorRouteTenantScopingTests : IAsyncLifetime
     private Task<HttpResponseMessage> Post(string path, string deviceKey, object body)
     {
         var req = new HttpRequestMessage(HttpMethod.Post, path) { Content = JsonContent.Create(body) };
+        req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", deviceKey);
+        return _http.SendAsync(req);
+    }
+
+    private Task<HttpResponseMessage> PostEmpty(string path, string deviceKey)
+    {
+        var req = new HttpRequestMessage(HttpMethod.Post, path);
+        req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", deviceKey);
+        return _http.SendAsync(req);
+    }
+
+    private Task<HttpResponseMessage> Delete(string path, string deviceKey)
+    {
+        var req = new HttpRequestMessage(HttpMethod.Delete, path);
         req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", deviceKey);
         return _http.SendAsync(req);
     }
