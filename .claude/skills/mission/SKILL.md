@@ -167,6 +167,44 @@ each piece all the way to a merged pull request, deletes the branch, and parks t
 
 ---
 
+## Keep the Architect lean. Reset the Manager and Inspector freely.
+
+**The Architect is a coordinator, not a doer. Its context must stay small and must not grow much over
+the whole mission.** It holds the design, the brief, the rulings, and the whole picture - and it holds
+those in DURABLE FILES (the brief, the mission doc, a short running state note), never only in its own
+conversation. Everything the Architect knows can be reconstructed from those files. That is what makes
+the next rule safe.
+
+**Reset the Manager at every boundary - it is cheap and it is expected.** A Manager's context grows
+fast: it drives Workers, reads their output, argues about proofs. The moment a phase ends, or the
+Manager surfaces to report to the Architect, or a back-and-forth has bloated its context, the
+Architect **kills that Manager and seats a fresh one**. The Manager is disposable ON PURPOSE. Do not
+nurse a large Manager context along to "save" its state - its state does not live in its head, it
+lives in the branch and the files.
+
+**How the reset works - the compact handoff:**
+
+- The Architect keeps a short, current handoff note on disk (a few lines: the phase, the branch, what
+  is done and pushed, what the next Worker task is, the acceptance row it proves). This note is the
+  ONLY thing a fresh Manager needs.
+- To reset: make the outgoing Manager commit and push everything first (law 2 - never kill
+  uncommitted work), kill it, seat a new Manager named `Mission - Manager`, and hand it ONLY the
+  compact note plus a pointer to the mission brief and this workflow. Not the transcript. Not the
+  history. Just enough to keep going.
+- The Inspector is even more disposable: seated fresh for each inspection, given the diff to inspect
+  and the sharp questions, and gone when its written review lands. Never keep an Inspector idle
+  between phases.
+
+**Why this is a law and not a preference.** A mission runs for hours or overnight. If the Architect's
+context grows with every exchange, it rots and starts contradicting its own earlier rulings; if the
+Manager's context grows, it invents work and mis-remembers what was proven. The fix is structural: the
+Architect stays small by pushing state to files, and the Manager and Inspector are thrown away and
+rebuilt from those files as often as it takes. Killing a Manager mid-mission is not a failure or a
+loss - it is the intended maintenance of the machine. A mission that ends with one giant Manager
+context that ran the whole thing did it wrong, even if the work shipped.
+
+---
+
 ## Writing a mission brief
 
 The brief describes the WORK and nothing else. It does not grant, it does not restate these laws, it

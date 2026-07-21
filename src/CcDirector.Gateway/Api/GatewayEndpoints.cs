@@ -493,6 +493,9 @@ internal static class GatewayEndpoints
         // the installed component versions (from installed.json on this box). Feeds the Cockpit About
         // page; loopback-reachable like the rest of the read API.
         // Route is /gateway/about so the /about path passes through to the Cockpit's Blazor page.
+        // CockpitUrl comes from GatewayPublicUrl.ResolveCockpit(): {base}/cockpit, where base is the
+        // configured public URL in hosted mode and the tailnet front door (null when Tailscale is down)
+        // self-hosted. One derivation rule, both modes (owner ruling 2026-07-20).
         app.MapGet("/gateway/about", () => Results.Json(new AboutDto
         {
             Product = AboutInfo.ProductName,
@@ -500,20 +503,22 @@ internal static class GatewayEndpoints
             BuildDate = AboutInfo.BuildDate()?.ToString("yyyy-MM-dd HH:mm:ss"),
             MachineName = Environment.MachineName,
             InstallRoot = AboutInfo.InstallRoot,
-            CockpitUrl = TailscaleIdentity.TryGetFrontDoorBaseUrl() is { } fd ? fd + "/" : null,
+            CockpitUrl = GatewayPublicUrl.ResolveCockpit(),
             InstalledComponents = new Dictionary<string, string>(AboutInfo.InstalledComponents()),
             ServerTime = DateTime.UtcNow,
         }));
 
-        // Where is this machine's Cockpit? ONE URL: the React Cockpit is served in-process by the
-        // Gateway itself at the site root (issue #979 retired the separate Blazor Cockpit), so the
-        // answer is the front-door base URL. Url is null when Tailscale is unavailable; the caller
-        // surfaces that. Port is the Gateway port and Up is true whenever the Gateway is answering.
+        // Where is this machine's Cockpit? Url is resolved on the Gateway by GatewayPublicUrl from the ONE
+        // public base: Url = {base}/cockpit. In hosted mode (CC_GATEWAY_HOSTED=1) the base is the configured
+        // public base; self-hosted it is the tailnet front door (Url null when Tailscale is unavailable, and
+        // the caller surfaces that). The desktop Cockpit button opens Url verbatim - a dumb client never
+        // composes a path onto Url (the Gateway owns the URL - CLAUDE.md rule 7). Port is the Gateway port
+        // and Up is true whenever answering.
         app.MapGet("/cockpit", (HttpContext ctx) =>
         {
             return Results.Json(new CockpitInfoDto
             {
-                Url = TailscaleIdentity.TryGetFrontDoorBaseUrl() is { } b ? b + "/" : null,
+                Url = GatewayPublicUrl.ResolveCockpit(),
                 Port = ctx.Connection.LocalPort,
                 Up = true,
             });

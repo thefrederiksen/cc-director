@@ -64,7 +64,11 @@ internal static class SettingsEndpoints
                 {
                     port = cockpitPort,
                     up = cockpitUp,
-                    url = TailscaleIdentity.TryGetFrontDoorBaseUrl() is { } b ? b + "/" : null,
+                    // ONE derivation rule (owner ruling 2026-07-20): {base}/cockpit via GatewayPublicUrl -
+                    // the configured public base in hosted mode, the tailnet front door self-hosted (null
+                    // when Tailscale is down). The /gateway/settings cockpit block hands out the SAME URL
+                    // as GET /cockpit and /gateway/about, never the raw front-door root it used before.
+                    url = GatewayPublicUrl.ResolveCockpit(),
                 },
                 brain = await BrainBlockAsync(host),
                 autostart = new

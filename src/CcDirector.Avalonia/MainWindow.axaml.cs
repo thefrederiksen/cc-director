@@ -749,18 +749,6 @@ public partial class MainWindow : Window
     /// <summary>How often line 2 of the status box re-reads the Gateway's signed-in status.</summary>
     private static readonly TimeSpan AccountPollInterval = TimeSpan.FromSeconds(30);
 
-    /// <summary>The Cockpit Account page route (issue #852). Appended to the Gateway-resolved
-    /// Cockpit front-door URL. Retained for <see cref="BuildAccountUrl"/>, which is still unit-tested.</summary>
-    private const string CockpitAccountRoute = "/account";
-
-    /// <summary>
-    /// Build the Cockpit Account page URL from the gateway's Tailscale front-door URL (issue #852):
-    /// {frontDoor}/account, with a single clean separator so a front door ending in a slash never
-    /// yields "//account". Pure string building, so it is unit-testable without a UI thread.
-    /// </summary>
-    internal static string BuildAccountUrl(string frontDoorUrl) =>
-        frontDoorUrl.TrimEnd('/') + CockpitAccountRoute;
-
     /// <summary>
     /// Wire the account line of the status box (spec section 6, line 2): a heartbeat poll that reads the
     /// connected Gateway's <c>GET /account/status</c> off the UI thread, caches the line-2 inputs, and
@@ -2535,16 +2523,17 @@ public partial class MainWindow : Window
         try
         {
             using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(8) };
-            var info = await http.GetFromJsonAsync<global::CcDirector.Gateway.Contracts.CockpitInfoDto>(
-                baseUrl + "/cockpit");
-            if (info?.Url is { } url)
+            // The entire fetch -> select -> OPEN decision lives in OpenCockpitAsync, off this async-void
+            // handler: it fetches the DTO, and when the Gateway hands back a URL it opens THAT url verbatim
+            // through the injected OpenUrlInBrowser. This handler keeps NO cockpit-URL logic and makes NO
+            // browser-open call of its own, so there is nothing left here for a future edit to quietly
+            // re-compose (e.g. appending "/learn"). It only decides which DIALOG to show when nothing opened.
+            var url = await OpenCockpitAsync(
+                () => http.GetFromJsonAsync<global::CcDirector.Gateway.Contracts.CockpitInfoDto>(baseUrl + "/cockpit"),
+                OpenUrlInBrowser);
+            if (url is null)
             {
-                FileLog.Write($"[MainWindow] BtnCockpit_Click: opening {url} (up={info.Up}, baseUrl={baseUrl})");
-                OpenUrlInBrowser(url);
-            }
-            else
-            {
-                FileLog.Write($"[MainWindow] BtnCockpit_Click: gateway at {baseUrl} returned no Tailscale URL (Tailscale unavailable); opening nothing. cc-director never opens a localhost URL.");
+                FileLog.Write($"[MainWindow] BtnCockpit_Click: gateway at {baseUrl} returned no Tailscale URL (Tailscale unavailable); opened nothing. cc-director never opens a localhost URL.");
                 await new MessageDialog(
                     "Cannot Open Cockpit",
                     "Tailscale is unavailable on this machine, so there is no tailnet URL for the " +
@@ -2566,69 +2555,47 @@ public partial class MainWindow : Window
         }
     }
 
-    // Builds the "could not reach the gateway" message shared by the Cockpit and Learn buttons
-    // (#475). The "is the Gateway tray app running on THIS machine?" hint only makes sense for
-    // the loopback default; for a configured remote gateway the failure is about reachability
-    // (the remote gateway is down, or the tailnet is unreachable). Pure string building, so it
-    // is unit-testable without a UI thread.
+    // The dumb client opens EXACTLY the Url the Gateway hands back on GET /cockpit - it never composes a
+    // path onto it (the Gateway owns the URL, CLAUDE.md rule 7). This seam pins that: OpenCockpitAsync
+    // opens SelectCockpitOpenUrl(info), and a desktop test reddens if a subpath is ever appended (the
+    // regression that made the old Learn button point at the non-route {base}/cockpit/learn once Url
+    // became {base}/cockpit). Pure, so it is unit-testable without a UI thread.
+    internal static string? SelectCockpitOpenUrl(global::CcDirector.Gateway.Contracts.CockpitInfoDto info)
+        => info.Url;
+
+    // The whole fetch -> select -> OPEN decision for the Cockpit button, lifted OFF the async-void
+    // BtnCockpit_Click handler so no cockpit-URL logic AND no browser-open call are left inside it to
+    // mutate. It fetches the CockpitInfoDto, and when the Gateway hands back a URL it OPENS that URL -
+    // info.Url VERBATIM via SelectCockpitOpenUrl - through the injected open action; it opens nothing and
+    // returns null when the Gateway hands back no URL (Tailscale down self-hosted) so the caller can say
+    // so. Because the open() call itself lives HERE, a desktop test injects a fake open that captures its
+    // argument and reddens if the opened URL ever gains a subpath - the exact consumer-boundary regression
+    // that appending "/learn" at the browser boundary would be (CLAUDE.md rule 7). Static, fetch-injected
+    // and open-injected, so it is unit-testable without a UI thread, a live Gateway, or a real browser.
+    internal static async Task<string?> OpenCockpitAsync(
+        Func<Task<global::CcDirector.Gateway.Contracts.CockpitInfoDto?>> fetch,
+        Action<string?> open)
+    {
+        var info = await fetch();
+        var url = info is { } i ? SelectCockpitOpenUrl(i) : null;
+        if (url is { } u)
+        {
+            FileLog.Write($"[MainWindow] OpenCockpitAsync: opening {u}");
+            open(u);
+        }
+        return url;
+    }
+
+    // Builds the "could not reach the gateway" message for the Cockpit button (#475). The "is the
+    // Gateway tray app running on THIS machine?" hint only makes sense for the loopback default; for a
+    // configured remote gateway the failure is about reachability (the remote gateway is down, or the
+    // tailnet is unreachable). Pure string building, so it is unit-testable without a UI thread.
     internal static string BuildGatewayUnreachableMessage(string baseUrl, string error)
     {
         var hint = CockpitUrlResolver.IsLocalhostDefault(baseUrl)
             ? "\n\nIs the Gateway tray app (devthrottle-gateway) running on this machine?"
             : "\n\nIs the Gateway running on that machine and reachable over your tailnet?";
         return $"Could not reach the gateway at {baseUrl}: {error}{hint}";
-    }
-
-    // Builds the Cockpit Learning page URL from the gateway's Tailscale front-door URL (#475).
-    // Appends the Learning route (#472) with a single, clean separator so a front door that
-    // ends in a slash never yields "//learn". Pure string building, so it is unit-testable.
-    internal static string BuildLearnUrl(string frontDoorUrl) =>
-        frontDoorUrl.TrimEnd('/') + CockpitLearnRoute;
-
-    // The Cockpit Learning page route (#472). Appended to the Cockpit front-door URL
-    // resolved through the gateway, so the Learn button lands on {frontDoor}/learn.
-    private const string CockpitLearnRoute = "/learn";
-
-    // Open the Cockpit Learning page (#475). This reuses the SAME resolution as the Cockpit
-    // button -- we ASK THE CONFIGURED GATEWAY (GET {base}/cockpit) for the Tailscale front-door
-    // URL rather than hardcoding a host/port -- then open {frontDoor}/learn. cc-director never
-    // opens a localhost URL: when the gateway has no tailnet URL (Tailscale down) or cannot be
-    // reached at all, we surface the explicit "is the Gateway running?" hint and open nothing,
-    // never a silent no-op and never a loopback URL that only works on this machine.
-    private async void BtnLearn_Click(object? sender, RoutedEventArgs e)
-    {
-        var baseUrl = CockpitUrlResolver.ResolveCockpitBase(GatewayConfig.Load());
-        FileLog.Write($"[MainWindow] BtnLearn_Click: asking gateway for Cockpit URL, baseUrl={baseUrl}");
-        try
-        {
-            using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(8) };
-            var info = await http.GetFromJsonAsync<global::CcDirector.Gateway.Contracts.CockpitInfoDto>(
-                baseUrl + "/cockpit");
-            if (info?.Url is { } frontDoor)
-            {
-                var learnUrl = BuildLearnUrl(frontDoor);
-                FileLog.Write($"[MainWindow] BtnLearn_Click: opening {learnUrl} (up={info.Up}, baseUrl={baseUrl})");
-                OpenUrlInBrowser(learnUrl);
-            }
-            else
-            {
-                FileLog.Write($"[MainWindow] BtnLearn_Click: gateway at {baseUrl} returned no Tailscale URL (Tailscale unavailable); opening nothing. cc-director never opens a localhost URL.");
-                await new MessageDialog(
-                    "Cannot Open Learning Page",
-                    "Tailscale is unavailable on this machine, so there is no tailnet URL for the " +
-                    "Cockpit Learning page. Bring Tailscale up and try again. Director never opens " +
-                    "a localhost URL because it would only work on this one machine.")
-                    .ShowDialog<bool?>(this);
-            }
-        }
-        catch (Exception ex)
-        {
-            FileLog.Write($"[MainWindow] BtnLearn_Click FAILED (baseUrl={baseUrl}): {ex.Message}");
-            await new MessageDialog(
-                "Cannot Open Learning Page",
-                BuildGatewayUnreachableMessage(baseUrl, ex.Message))
-                .ShowDialog<bool?>(this);
-        }
     }
 
     private static void OpenUrlInBrowser(string? url)
