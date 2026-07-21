@@ -75,19 +75,20 @@ public static class GatewayCredentialStore
     /// so the Director stops presenting a per-device key and the connect flow can point it at a different
     /// Gateway (local or hosted).
     ///
-    /// The credential-file path is computed fresh (not the cached <see cref="CredentialFile"/> static) so a
-    /// test's <c>CC_DIRECTOR_ROOT</c> redirect is honored. MergePatch cannot remove keys, so the connection
+    /// It is the exact inverse of <see cref="SaveEnrolledKey"/>, so it deletes the SAME
+    /// <see cref="CredentialFile"/> that save wrote (not a freshly-recomputed path): the credential a save
+    /// persisted is precisely the one a clear removes. MergePatch cannot remove keys, so the connection
     /// fields are blanked rather than deleted; a blank <c>url</c> is exactly what local-only mode reads.
     /// </summary>
     public static void ClearConnection()
     {
         FileLog.Write("[GatewayCredentialStore] ClearConnection: disconnecting this Director from its Gateway");
 
-        var credentialFile = Path.Combine(CcStorage.Config(), "director", "gateway-token.txt");
-        if (File.Exists(credentialFile))
+        // The SAME file SaveEnrolledKey writes - so save and clear are a true inverse pair on one path.
+        if (File.Exists(CredentialFile))
         {
-            File.Delete(credentialFile);
-            FileLog.Write($"[GatewayCredentialStore] Deleted per-device key file {credentialFile}");
+            File.Delete(CredentialFile);
+            FileLog.Write($"[GatewayCredentialStore] Deleted per-device key file {CredentialFile}");
         }
 
         var patch = new JsonObject

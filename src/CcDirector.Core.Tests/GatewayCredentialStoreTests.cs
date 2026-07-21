@@ -95,34 +95,26 @@ public sealed class GatewayCredentialStoreTests : IDisposable
             GatewayCredentialStore.SaveEnrolledKey("https://gw.example.ts.net", ""));
     }
 
-    // Seed the credential file at the CURRENT CC_DIRECTOR_ROOT path (computed fresh). The production
-    // SaveEnrolledKey writes to the cached-static CredentialFile, whose root is locked at first access
-    // assembly-wide; ClearConnection computes the path fresh, so the test must seed the fresh path to match.
-    private static string SeedCredentialFileAtFreshPath(string key)
-    {
-        var path = Path.Combine(CcStorage.Config(), "director", "gateway-token.txt");
-        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
-        File.WriteAllText(path, key);
-        return path;
-    }
-
     [Fact]
-    public void ClearConnection_DeletesCredentialFile_AndClearsConfig()
+    public void ClearConnection_IsTheInverseOfSaveEnrolledKey_ClearsTheSavedFileAndConfig()
     {
-        // Arrange: a connected Director - credential file present and config.json gateway block populated.
-        var credentialFile = SeedCredentialFileAtFreshPath("test-per-device-key-abcdef0123456789");
-        var configPath = CcStorage.ConfigJson();
-        Directory.CreateDirectory(Path.GetDirectoryName(configPath)!);
-        File.WriteAllText(configPath,
-            """{ "gateway": { "url": "https://gw.example.ts.net", "token": "k", "streamMode": true } }""");
-        Assert.True(File.Exists(credentialFile));
+        // A GENUINE save -> clear inverse: SAVE writes the credential to the CredentialFile static path (whose
+        // root is locked at first assembly access) and records the gateway block; CLEAR must remove the SAME
+        // file the save wrote and blank the gateway block. Asserting on GatewayCredentialStore.CredentialFile
+        // (the static path) pins the static-path-cache gotcha: if ClearConnection recomputed a fresh-root path
+        // instead, it would delete a DIFFERENT file and the saved one would survive - reddening this test.
+        const string url = "https://gw.example.ts.net";
+        const string key = "test-per-device-key-abcdef0123456789";
+
+        GatewayCredentialStore.SaveEnrolledKey(url, key);
+        Assert.True(File.Exists(GatewayCredentialStore.CredentialFile),
+            "SaveEnrolledKey must write the per-device key file");
         Assert.True(GatewayConfig.Load().IsEnabled);
 
-        // Act: disconnect.
         GatewayCredentialStore.ClearConnection();
 
-        // Assert: the per-device key file is gone and the Director is local-only again.
-        Assert.False(File.Exists(credentialFile), "the per-device credential file must be deleted on disconnect");
+        Assert.False(File.Exists(GatewayCredentialStore.CredentialFile),
+            "ClearConnection must delete the SAME credential file SaveEnrolledKey wrote");
         var config = GatewayConfig.Load();
         Assert.False(config.IsEnabled);
         Assert.Equal("", config.Url);

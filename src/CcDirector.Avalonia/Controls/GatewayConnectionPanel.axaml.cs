@@ -501,6 +501,14 @@ public partial class GatewayConnectionPanel : UserControl
     internal void EmitTerminalForTests()
         => ShowDone(GatewayConfig.Load(), GatewayAccountStatus.NotConfigured());
 
+    // ---- Test hooks: which step sub-panel is currently shown, and the surfaced failure text. These let a
+    // test pin the VISIBLE outcome (a failure is actually shown, disconnect actually returns to the choice)
+    // rather than just inspecting hidden state - so removing ShowFailure / ShowChoice reddens.
+    internal bool IsShowingChoiceForTests => ChoicePanel.IsVisible;
+    internal bool IsShowingConnectingForTests => ConnectingPanel.IsVisible;
+    internal bool IsShowingFailureForTests => FailedPanel.IsVisible;
+    internal string FailureSummaryForTests => FailureSummaryText.Text ?? string.Empty;
+
     // ---- Step 1a: scan --------------------------------------------------------------------------
 
     private async void StartScan()
@@ -1181,7 +1189,22 @@ public partial class GatewayConnectionPanel : UserControl
             ShowFailure("The Control API is not running yet, so this Director cannot finish connecting.", null);
             return;
         }
-        await reapply();
+        // OBSERVE the re-apply. The verified credential is ALREADY persisted, so if reapply faults the awaited
+        // Task would fault unobserved in this fire-and-forget flow, leaving the panel spinning on "Connecting".
+        // Catch it and land on a named failure that says the enroll succeeded but could not be applied live,
+        // with a retry affordance - never a stuck spinner.
+        try
+        {
+            await reapply();
+        }
+        catch (Exception ex)
+        {
+            FileLog.Write($"[GatewayConnectionPanel] remote enroll: re-apply after enroll FAILED: {ex.Message}");
+            ShowFailure(
+                "Signed in and enrolled with the Gateway, but this Director could not apply the new connection right now.",
+                "Try again, or restart the Director to finish connecting.");
+            return;
+        }
         _ = TimeoutAsync(attempt);
     }
 
@@ -1276,7 +1299,22 @@ public partial class GatewayConnectionPanel : UserControl
             ShowFailure("The Control API is not running yet, so this Director cannot finish connecting.", null);
             return;
         }
-        await reapply();
+        // OBSERVE the re-apply. The hosted credential is ALREADY persisted at this point, so if reapply faults
+        // the awaited Task would fault unobserved in this fire-and-forget flow, leaving the panel spinning on
+        // "Connecting" with partial live state. Catch it and land on a named failure that says the enroll
+        // succeeded but could not be applied live, with a retry affordance - never a stuck spinner.
+        try
+        {
+            await reapply();
+        }
+        catch (Exception ex)
+        {
+            FileLog.Write($"[GatewayConnectionPanel] hosted enroll: re-apply after enroll FAILED: {ex.Message}");
+            ShowFailure(
+                "Signed in and enrolled with the hosted Gateway, but this Director could not apply the new connection right now.",
+                "Try again, or restart the Director to finish connecting.");
+            return;
+        }
         _ = TimeoutAsync(attempt);
     }
 
@@ -1679,11 +1717,24 @@ public partial class GatewayConnectionPanel : UserControl
         await Task.Run(GatewayCredentialStore.ClearConnection);
 
         // Re-apply so the running Gateway client picks up the now-empty config and stops presenting the old
-        // per-device key. Uses the same re-apply seam the connect paths use (injectable for tests).
+        // per-device key. Uses the same re-apply seam the connect paths use (injectable for tests). OBSERVE a
+        // reapply fault here: the connection is ALREADY cleared (config emptied, credential deleted), so a
+        // reapply failure does NOT undo the disconnect - log it and still return to the choice rather than
+        // reporting a false "could not disconnect" or leaving the user stuck. (A ClearConnection failure DOES
+        // propagate, so the caller surfaces it: nothing was cleared in that case.)
         var reapply = ReapplyGatewaySeam
             ?? ((global::Avalonia.Application.Current as App)?.ControlApiHost is { } host ? host.ReapplyGatewayAsync : null);
         if (reapply is not null)
-            await reapply();
+        {
+            try
+            {
+                await reapply();
+            }
+            catch (Exception ex)
+            {
+                FileLog.Write($"[GatewayConnectionPanel] disconnect: re-apply after clear FAILED (connection already cleared): {ex.Message}");
+            }
+        }
 
         FileLog.Write("[GatewayConnectionPanel] disconnected; showing the gateway choice");
         ShowChoice();
