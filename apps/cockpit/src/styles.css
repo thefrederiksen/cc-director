@@ -227,20 +227,19 @@ body {
   white-space: nowrap;
 }
 
-/* The xterm host. flex:1 so it takes all height under the bar; the exact-size PTY grid is anchored
-   to the BOTTOM (justify-content: flex-end) so a PTY shorter than the pane keeps its live input box
-   at the bottom edge - and a PTY taller than the pane scrolls within xterm's own viewport.
-
-   The engine mirrors the PTY grid EXACTLY (both cols and rows) to avoid TUI ghosting, so when the
-   PTY is wider than this host the grid overflows horizontally. overflow-x:auto makes that overflow
-   SCROLLABLE rather than silently clipped (issue #1022) - the full row is always reachable, never
-   cut off. overflow-y stays hidden because xterm owns vertical scrolling within its own viewport. */
+/* The xterm host. flex:1 so it takes all height under the bar. The engine mirrors the PTY grid
+   EXACTLY (both cols and rows) to avoid TUI ghosting, and then scales the FONT so the whole grid
+   fits this host in both axes (InteractiveTerminal.fitFont, issue #1962). Because the grid fits,
+   xterm's OWN viewport is the single scroll surface: its scrollbar sits at this host's right edge
+   (never overlapped by content that would otherwise overflow past it), it is grabbable, and its
+   native stick-to-bottom-on-new-output works. So this host does not scroll - overflow stays hidden
+   on both axes; the only scrolling is xterm's viewport inside it. justify-content:flex-end keeps the
+   live input box on the bottom edge when the fitted grid is a touch shorter than the host. */
 .term-host {
   flex: 1 1 auto;
   min-height: 0;
   background: #1e1e1e;
-  overflow-x: auto;
-  overflow-y: hidden;
+  overflow: hidden;
   display: flex;
   flex-direction: column;
   justify-content: flex-end;

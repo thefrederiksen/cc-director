@@ -49,7 +49,15 @@ import { findLineLinks, type LineLink } from "./lineLinks";
 // Code - no ligatures, crisper glyphs), then the same macOS/Linux fallbacks; 14px with lineHeight 1.2.
 const FONT_FAMILY =
   '"Cascadia Mono", Consolas, Menlo, "DejaVu Sans Mono", "Courier New", monospace';
+// The PREFERRED font size. It is the ceiling: the grid renders at this size whenever the whole PTY
+// grid fits the pane. When the PTY grid (which mirrors the owning terminal EXACTLY - see fitFont) is
+// bigger than the cockpit pane, the font shrinks toward MIN_FONT_SIZE so the grid still fits, rather
+// than overflowing the pane. It never grows past this size (readability ceiling).
 const FONT_SIZE = 14;
+// The floor for the auto-fit. Below this the text is too small to read, so a grid that still would
+// not fit at this size is allowed to overflow (xterm's own viewport then scrolls it) rather than
+// shrinking into illegibility. In practice a normal desktop terminal fits well above this.
+const MIN_FONT_SIZE = 8;
 const LINE_HEIGHT = 1.2;
 const SCROLLBACK = 5000;
 
@@ -102,6 +110,9 @@ export class InteractiveTerminal {
   private term: Xterm | null = null;
   private ws: WebSocket | null = null;
   private reconnectTimer: number | null = null;
+  // Watches the host for size changes (pane resize, window resize, layout shifts) so the auto-fit
+  // font size is recomputed and the grid keeps fitting the pane. Disposed with the terminal.
+  private resizeObserver: ResizeObserver | null = null;
   // The registered xterm link provider (Local Files, Phase 2), disposed with the terminal.
   private linkProvider: IDisposable | null = null;
   // The pending animation frame that waits for the host to be laid out before opening the terminal.
@@ -177,6 +188,15 @@ export class InteractiveTerminal {
     });
     term.open(this.hostEl);
     this.term = term;
+
+    // Recompute the auto-fit font whenever the host changes size (pane resize, window resize, a
+    // sibling panel opening/closing). Without this the grid only fits the size the pane had at open
+    // and overflows again after any resize. ResizeObserver fires once on observe with the current
+    // size, so the initial fit is covered too. Guarded by wantOpen so a torn-down instance is inert.
+    this.resizeObserver = new ResizeObserver(() => {
+      if (this.wantOpen) this.fitFont();
+    });
+    this.resizeObserver.observe(this.hostEl);
 
     // Forward every keystroke (raw bytes incl. Esc/Ctrl+C/arrows/the slash-command UI) to the owning
     // Director's PTY via a REST call to the Gateway - appendEnter:false writes the bytes verbatim (no
@@ -288,6 +308,14 @@ export class InteractiveTerminal {
   dispose(): void {
     this.wantOpen = false;
     this.pendingInput = ""; // drop any keystrokes not yet sent; the pump exits on its next check
+    if (this.resizeObserver !== null) {
+      try {
+        this.resizeObserver.disconnect();
+      } catch {
+        /* already gone */
+      }
+      this.resizeObserver = null;
+    }
     if (this.bringUpFrame !== null) {
       // Disposed before the host was ever laid out (the StrictMode throwaway mount): cancel the
       // pending open so no terminal is ever created for this instance.
@@ -350,9 +378,10 @@ export class InteractiveTerminal {
     }
   }
 
-  // Mirror the PTY grid EXACTLY - both cols and rows from the size message. Vertical placement within
-  // a too-tall pane is CSS's job (.term-host anchors the grid to the bottom); scrolling history is
-  // xterm's. Preserve the viewport's at-bottom position across the resize.
+  // Mirror the PTY grid EXACTLY - both cols and rows from the size message. The grid dimensions must
+  // match the owning terminal's or Claude Code's TUI ghosts (see the header note), so they are NEVER
+  // derived from the pane; the pane is made to fit the grid instead, by scaling the FONT (fitFont).
+  // Preserve the viewport's at-bottom position across the resize.
   private fit(): void {
     const t = this.term;
     if (!t || this.lastCols <= 0 || this.lastRows <= 0) return;
@@ -364,6 +393,70 @@ export class InteractiveTerminal {
     } catch {
       /* transient */
     }
+    // The grid changed dimensions, so re-fit the font so the (possibly larger) grid still fits the
+    // pane (pane-size changes are handled separately by the ResizeObserver). fitFont re-anchors to the
+    // bottom itself when it changes the font; when it leaves the font unchanged we restore the
+    // at-bottom position after the resize.
+    if (!this.fitFont() && atBottom) {
+      try {
+        t.scrollToBottom();
+      } catch {
+        /* transient */
+      }
+    }
+  }
+
+  // Scale the font so the WHOLE PTY grid fits the pane in both axes. The grid's cols and rows mirror
+  // the owning terminal exactly (fit) and must not change, so the only free variable is the font
+  // size: shrink it until cols*cellWidth <= pane width AND rows*cellHeight <= pane height. This makes
+  // xterm's own viewport the single, correctly-sized scroll surface - its scrollbar sits at the pane
+  // edge (never overlapped by content that overflows past it) and its native "stick to the bottom on
+  // new output unless the user scrolled up" behaviour works, because the viewport is no longer taller
+  // than the visible pane. Without this the grid overflowed the pane: the top rows were clipped and
+  // unreachable, and the scrollbar was painted over by the overflowing screen and could not be
+  // grabbed (issue #1962).
+  //
+  // The font never grows past FONT_SIZE (readability ceiling) and never shrinks below MIN_FONT_SIZE
+  // (a grid too big even then is left to overflow rather than become illegible). Cell metrics are
+  // read from the rendered DOM (screen width / cols, screen height / rows) rather than xterm private
+  // internals, so this stays correct across xterm versions. Returns true when it changed the font.
+  private fitFont(): boolean {
+    const t = this.term;
+    if (!t || this.lastCols <= 0 || this.lastRows <= 0) return false;
+    const screen = this.hostEl.querySelector<HTMLElement>(".xterm-screen");
+    if (!screen) return false;
+
+    // The available box is the host's content area (its padding is not usable for glyphs). A 2px
+    // safety margin per axis absorbs sub-pixel rounding so the fitted grid never overflows by a
+    // hair and reintroduces the scrollbar overlap.
+    const style = window.getComputedStyle(this.hostEl);
+    const padX = parseFloat(style.paddingLeft) + parseFloat(style.paddingRight);
+    const padY = parseFloat(style.paddingTop) + parseFloat(style.paddingBottom);
+    const availW = this.hostEl.clientWidth - padX - 2;
+    const availH = this.hostEl.clientHeight - padY - 2;
+    if (availW <= 0 || availH <= 0) return false;
+
+    const currentFont = t.options.fontSize ?? FONT_SIZE;
+    // Cell size AT THE CURRENT FONT, measured from what xterm actually rendered.
+    const cellW = screen.scrollWidth / this.lastCols;
+    const cellH = screen.scrollHeight / this.lastRows;
+    if (cellW <= 0 || cellH <= 0) return false;
+
+    // Largest font (per axis) whose grid still fits, derived by scaling the current cell metrics.
+    const fontByWidth = (currentFont * (availW / this.lastCols)) / cellW;
+    const fontByHeight = (currentFont * (availH / this.lastRows)) / cellH;
+    let target = Math.floor(Math.min(fontByWidth, fontByHeight, FONT_SIZE));
+    if (target < MIN_FONT_SIZE) target = MIN_FONT_SIZE;
+    if (target === currentFont) return false;
+
+    const buf = t.buffer.active;
+    const atBottom = buf.viewportY >= buf.baseY;
+    try {
+      t.options.fontSize = target;
+    } catch {
+      return false;
+    }
+    // Changing the font re-lays out the grid; keep the live input box in view if we were at the bottom.
     if (atBottom) {
       try {
         t.scrollToBottom();
@@ -371,6 +464,7 @@ export class InteractiveTerminal {
         /* transient */
       }
     }
+    return true;
   }
 
   // The first frame of a LIVE stream (a size header or PTY bytes) proves the whole
