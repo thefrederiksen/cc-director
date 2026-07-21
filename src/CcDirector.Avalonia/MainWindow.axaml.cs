@@ -2523,12 +2523,15 @@ public partial class MainWindow : Window
         try
         {
             using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(8) };
-            var info = await http.GetFromJsonAsync<global::CcDirector.Gateway.Contracts.CockpitInfoDto>(
-                baseUrl + "/cockpit");
-            if (info is { } i && SelectCockpitOpenUrl(i) is { } url)
+            // The entire fetch -> select -> URL decision lives in ResolveCockpitOpenUrlAsync, off this
+            // async-void handler, so there is NO cockpit-URL logic left here for a future edit to quietly
+            // re-compose (e.g. appending "/learn"). This handler only opens the resolved URL verbatim.
+            var url = await ResolveCockpitOpenUrlAsync(() =>
+                http.GetFromJsonAsync<global::CcDirector.Gateway.Contracts.CockpitInfoDto>(baseUrl + "/cockpit"));
+            if (url is { } u)
             {
-                FileLog.Write($"[MainWindow] BtnCockpit_Click: opening {url} (up={info.Up}, baseUrl={baseUrl})");
-                OpenUrlInBrowser(url);
+                FileLog.Write($"[MainWindow] BtnCockpit_Click: opening {u} (baseUrl={baseUrl})");
+                OpenUrlInBrowser(u);
             }
             else
             {
@@ -2561,6 +2564,21 @@ public partial class MainWindow : Window
     // became {base}/cockpit). Pure, so it is unit-testable without a UI thread.
     internal static string? SelectCockpitOpenUrl(global::CcDirector.Gateway.Contracts.CockpitInfoDto info)
         => info.Url;
+
+    // The whole fetch -> select -> open decision for the Cockpit button, lifted OFF the async-void
+    // BtnCockpit_Click handler so there is no cockpit-URL logic left inside it to mutate. It fetches the
+    // CockpitInfoDto and returns the URL to open - info.Url VERBATIM via SelectCockpitOpenUrl - or null
+    // when the Gateway hands back no URL (Tailscale down self-hosted) so the caller can say so and open
+    // nothing. A desktop test drives THIS method with a fake fetch and reddens if the returned URL ever
+    // gains a subpath - the exact consumer-boundary regression that appending "/learn" would be
+    // (CLAUDE.md rule 7). Static and fetch-injected, so it is unit-testable without a UI thread or a live
+    // Gateway.
+    internal static async Task<string?> ResolveCockpitOpenUrlAsync(
+        Func<Task<global::CcDirector.Gateway.Contracts.CockpitInfoDto?>> fetch)
+    {
+        var info = await fetch();
+        return info is { } i ? SelectCockpitOpenUrl(i) : null;
+    }
 
     // Builds the "could not reach the gateway" message for the Cockpit button (#475). The "is the
     // Gateway tray app running on THIS machine?" hint only makes sense for the loopback default; for a

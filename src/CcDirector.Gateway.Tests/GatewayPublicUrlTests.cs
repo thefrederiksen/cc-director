@@ -142,6 +142,25 @@ public class GatewayPublicUrlTests
     }
 
     [Fact]
+    public void ResolveCockpit_LiveWrapper_SelfHost_DerivesExactlyFromInjectedFrontDoor()
+    {
+        WithEnv(hosted: null, publicBase: PublicBase, () =>
+        {
+            // The self-host LIVE path, driven with a KNOWN front door. The real tailnet provider is null on
+            // a build host, so this injected-provider seam is the ONLY way to pin the self-host live wrapper
+            // to an EXACT value. The result must be EXACTLY {frontDoor}/cockpit - so a self-host-only hardcode
+            // (retain the real resolver when hosted, but return https://gateway.devthrottle.com/cockpit when
+            // self-hosted) reddens here instead of sliding past a "not the fixture base, ends in /cockpit"
+            // predicate. This closes the guard gap the both-mode live-wrapper coverage was meant to close.
+            Assert.Equal(FrontDoor + "/cockpit", GatewayPublicUrl.ResolveCockpit(() => FrontDoor));
+
+            // Provider returns null (Tailscale down self-hosted): null out, never a fabricated or hardcoded
+            // URL. A prod-constant hardcode would return non-null here and redden this line too.
+            Assert.Null(GatewayPublicUrl.ResolveCockpit(() => null));
+        });
+    }
+
+    [Fact]
     public void ResolveCockpit_LiveWrapper_SelfHost_IgnoresStrayHostedBase()
     {
         WithEnv(hosted: null, publicBase: PublicBase, () =>

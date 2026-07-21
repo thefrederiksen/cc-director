@@ -1,3 +1,5 @@
+using System;
+using System.Threading.Tasks;
 using CcDirector.Avalonia;
 using CcDirector.Gateway.Contracts;
 using Xunit;
@@ -36,6 +38,31 @@ public class CockpitButtonUrlTests
         var info = new CockpitInfoDto { Url = null, Up = true };
 
         Assert.Null(MainWindow.SelectCockpitOpenUrl(info));
+    }
+
+    [Fact]
+    public async Task ResolveCockpitOpenUrlAsync_ReturnsHandedBackUrlVerbatim_NoSubpathAppended()
+    {
+        // Drive the CONSUMER boundary, not just the pure helper. This is the method BtnCockpit_Click
+        // delegates its ENTIRE fetch->select->open decision to; the handler keeps no cockpit-URL logic of
+        // its own. A fake fetch hands back a known CockpitInfoDto and the method must return info.Url
+        // VERBATIM. If the consumer ever re-composes a subpath (e.g. info.Url + "/learn"), this reddens -
+        // closing the gap where the async-void handler could bypass SelectCockpitOpenUrl (CLAUDE.md rule 7).
+        var info = new CockpitInfoDto { Url = "https://gateway.devthrottle.com/cockpit", Up = true };
+
+        var opened = await MainWindow.ResolveCockpitOpenUrlAsync(() => Task.FromResult<CockpitInfoDto?>(info));
+
+        Assert.Equal("https://gateway.devthrottle.com/cockpit", opened);
+    }
+
+    [Fact]
+    public async Task ResolveCockpitOpenUrlAsync_NullInfo_ReturnsNull()
+    {
+        // Gateway unreachable or empty body: null in -> null out, so the caller shows "cannot open" and
+        // opens nothing - never a fabricated URL.
+        var opened = await MainWindow.ResolveCockpitOpenUrlAsync(() => Task.FromResult<CockpitInfoDto?>(null));
+
+        Assert.Null(opened);
     }
 
     [Fact]

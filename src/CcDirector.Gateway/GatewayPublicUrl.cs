@@ -48,6 +48,17 @@ public static class GatewayPublicUrl
     public static string? ResolveCockpit() => Resolve(CockpitPath);
 
     /// <summary>
+    /// Cockpit live wrapper with the self-host front-door source injected, so the self-host branch can be
+    /// driven against a KNOWN front door. The real tailnet provider returns null on a build host with no
+    /// tailnet, so the pure fixture cannot pin the self-host LIVE path to an exact value; this seam can.
+    /// The no-arg <see cref="ResolveCockpit()"/> passes the real
+    /// <see cref="TailscaleIdentity.TryGetFrontDoorBaseUrl"/>. A self-host-only hardcode reddens the
+    /// injected-front-door test because the result is no longer exactly <c>{frontDoor}/cockpit</c>.
+    /// </summary>
+    internal static string? ResolveCockpit(Func<string?> frontDoorProvider)
+        => Resolve(CockpitPath, frontDoorProvider);
+
+    /// <summary>
     /// Resolve the full public URL for the mobile-app surface (<c>{base}/mobile</c>) against the live
     /// environment. Same base rule as <see cref="ResolveCockpit"/>; the surface path is the only difference.
     ///
@@ -68,9 +79,20 @@ public static class GatewayPublicUrl
     /// <param name="surfacePath">The surface path, e.g. <see cref="CockpitPath"/> or <see cref="MobilePath"/>.</param>
     /// <returns>The full URL (base + path), or null in self-host mode when Tailscale is down.</returns>
     public static string? Resolve(string surfacePath)
+        => Resolve(surfacePath, TailscaleIdentity.TryGetFrontDoorBaseUrl);
+
+    /// <summary>
+    /// Live surface resolver with the self-host front-door source injected. Hosted mode reads the
+    /// configured public base from the environment (and fails loud when unset); self-host mode uses
+    /// <paramref name="frontDoorProvider"/>, which the no-arg wrapper supplies as the real
+    /// <see cref="TailscaleIdentity.TryGetFrontDoorBaseUrl"/>. Shells the tailscale CLI only via the
+    /// provider on the self-host branch (never in hosted mode). The seam exists so a test can drive the
+    /// self-host LIVE path with a KNOWN front door and assert the exact <c>{frontDoor}{path}</c> result.
+    /// </summary>
+    internal static string? Resolve(string surfacePath, Func<string?> frontDoorProvider)
         => GatewayHostedMode.IsHosted
             ? Resolve(true, Environment.GetEnvironmentVariable(PublicBaseUrlEnvVar), selfHostFrontDoor: null, surfacePath)
-            : Resolve(false, hostedConfiguredBase: null, TailscaleIdentity.TryGetFrontDoorBaseUrl(), surfacePath);
+            : Resolve(false, hostedConfiguredBase: null, frontDoorProvider(), surfacePath);
 
     /// <summary>
     /// Pure resolver - fully unit-testable without touching the real environment or shelling tailscale.
