@@ -29,9 +29,12 @@ namespace CcDirector.Gateway.Tests;
 public sealed class CockpitUrlEndpointTests
 {
     private const string Token = "test-token";
-    private const string PublicBase = "https://gateway.devthrottle.com";
+
+    // A deliberately NON-production, clearly-fake base. The endpoint must hand back values DERIVED from
+    // this configured base, so replacing ResolveCockpit() with a hardcoded production constant
+    // (https://gateway.devthrottle.com/cockpit) reddens these tests instead of coincidentally matching.
+    private const string PublicBase = "https://gw.test.invalid";
     private const string ExpectedCockpit = PublicBase + "/cockpit";
-    private const string ExpectedLearn = PublicBase + "/learn";
 
     [Fact]
     public async Task Hosted_cockpit_returns_configured_public_cockpit_url()
@@ -44,22 +47,6 @@ public sealed class CockpitUrlEndpointTests
             // (absent) tailnet front door.
             Assert.Equal(ExpectedCockpit, info.Url);
             Assert.True(info.Up);
-        });
-    }
-
-    [Fact]
-    public async Task Hosted_cockpit_returns_learn_url_at_base_learn_not_under_cockpit()
-    {
-        await WithHostedGateway(PublicBase, async (http, _) =>
-        {
-            var info = await GetJson<CockpitInfoDto>(http, "cockpit", auth: false);
-
-            // The desktop Learn button opens info.LearnUrl VERBATIM (CLAUDE.md rule 7). It must be the
-            // {base}/learn ROOT route, never {base}/cockpit/learn - the exact regression the client-side
-            // "info.Url + /learn" composition caused once Url became {base}/cockpit. Reverting the LearnUrl
-            // call site to the front door (or to Url + "/learn") turns this red.
-            Assert.Equal(ExpectedLearn, info.LearnUrl);
-            Assert.NotEqual(ExpectedCockpit + "/learn", info.LearnUrl);
         });
     }
 

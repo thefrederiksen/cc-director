@@ -2525,7 +2525,7 @@ public partial class MainWindow : Window
             using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(8) };
             var info = await http.GetFromJsonAsync<global::CcDirector.Gateway.Contracts.CockpitInfoDto>(
                 baseUrl + "/cockpit");
-            if (info?.Url is { } url)
+            if (info is { } i && SelectCockpitOpenUrl(i) is { } url)
             {
                 FileLog.Write($"[MainWindow] BtnCockpit_Click: opening {url} (up={info.Up}, baseUrl={baseUrl})");
                 OpenUrlInBrowser(url);
@@ -2554,58 +2554,24 @@ public partial class MainWindow : Window
         }
     }
 
-    // Builds the "could not reach the gateway" message shared by the Cockpit and Learn buttons
-    // (#475). The "is the Gateway tray app running on THIS machine?" hint only makes sense for
-    // the loopback default; for a configured remote gateway the failure is about reachability
-    // (the remote gateway is down, or the tailnet is unreachable). Pure string building, so it
-    // is unit-testable without a UI thread.
+    // The dumb client opens EXACTLY the Url the Gateway hands back on GET /cockpit - it never composes a
+    // path onto it (the Gateway owns the URL, CLAUDE.md rule 7). This seam pins that: BtnCockpit_Click
+    // opens SelectCockpitOpenUrl(info), and a desktop test reddens if a subpath is ever appended (the
+    // regression that made the old Learn button point at the non-route {base}/cockpit/learn once Url
+    // became {base}/cockpit). Pure, so it is unit-testable without a UI thread.
+    internal static string? SelectCockpitOpenUrl(global::CcDirector.Gateway.Contracts.CockpitInfoDto info)
+        => info.Url;
+
+    // Builds the "could not reach the gateway" message for the Cockpit button (#475). The "is the
+    // Gateway tray app running on THIS machine?" hint only makes sense for the loopback default; for a
+    // configured remote gateway the failure is about reachability (the remote gateway is down, or the
+    // tailnet is unreachable). Pure string building, so it is unit-testable without a UI thread.
     internal static string BuildGatewayUnreachableMessage(string baseUrl, string error)
     {
         var hint = CockpitUrlResolver.IsLocalhostDefault(baseUrl)
             ? "\n\nIs the Gateway tray app (devthrottle-gateway) running on this machine?"
             : "\n\nIs the Gateway running on that machine and reachable over your tailnet?";
         return $"Could not reach the gateway at {baseUrl}: {error}{hint}";
-    }
-
-    // Open the Cockpit Learning page (#475). We ASK THE CONFIGURED GATEWAY (GET {base}/cockpit) and open
-    // the LearnUrl it hands back VERBATIM. The client no longer composes the URL: the Gateway owns it
-    // (CLAUDE.md rule 7), and LearnUrl is {base}/learn - a sibling ROOT route, not {base}/cockpit/learn.
-    // cc-director never opens a localhost URL: when the gateway has no tailnet URL (Tailscale down) or
-    // cannot be reached at all, we surface the explicit "is the Gateway running?" hint and open nothing,
-    // never a silent no-op and never a loopback URL that only works on this machine.
-    private async void BtnLearn_Click(object? sender, RoutedEventArgs e)
-    {
-        var baseUrl = CockpitUrlResolver.ResolveCockpitBase(GatewayConfig.Load());
-        FileLog.Write($"[MainWindow] BtnLearn_Click: asking gateway for Cockpit URL, baseUrl={baseUrl}");
-        try
-        {
-            using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(8) };
-            var info = await http.GetFromJsonAsync<global::CcDirector.Gateway.Contracts.CockpitInfoDto>(
-                baseUrl + "/cockpit");
-            if (info?.LearnUrl is { } learnUrl)
-            {
-                FileLog.Write($"[MainWindow] BtnLearn_Click: opening {learnUrl} (up={info.Up}, baseUrl={baseUrl})");
-                OpenUrlInBrowser(learnUrl);
-            }
-            else
-            {
-                FileLog.Write($"[MainWindow] BtnLearn_Click: gateway at {baseUrl} returned no Tailscale URL (Tailscale unavailable); opening nothing. cc-director never opens a localhost URL.");
-                await new MessageDialog(
-                    "Cannot Open Learning Page",
-                    "Tailscale is unavailable on this machine, so there is no tailnet URL for the " +
-                    "Cockpit Learning page. Bring Tailscale up and try again. Director never opens " +
-                    "a localhost URL because it would only work on this one machine.")
-                    .ShowDialog<bool?>(this);
-            }
-        }
-        catch (Exception ex)
-        {
-            FileLog.Write($"[MainWindow] BtnLearn_Click FAILED (baseUrl={baseUrl}): {ex.Message}");
-            await new MessageDialog(
-                "Cannot Open Learning Page",
-                BuildGatewayUnreachableMessage(baseUrl, ex.Message))
-                .ShowDialog<bool?>(this);
-        }
     }
 
     private static void OpenUrlInBrowser(string? url)

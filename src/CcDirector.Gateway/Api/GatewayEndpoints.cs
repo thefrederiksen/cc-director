@@ -508,20 +508,17 @@ internal static class GatewayEndpoints
             ServerTime = DateTime.UtcNow,
         }));
 
-        // Where is this machine's Cockpit? URLs resolved on the Gateway by GatewayPublicUrl from the ONE
-        // public base: Url = {base}/cockpit and LearnUrl = {base}/learn (a sibling ROOT route, NOT a child
-        // of /cockpit). In hosted mode (CC_GATEWAY_HOSTED=1) the base is the configured public base;
-        // self-hosted it is the tailnet front door (both fields null when Tailscale is unavailable, and the
-        // caller surfaces that). The desktop Cockpit button opens Url and the Learn button opens LearnUrl,
-        // each verbatim - a dumb client never composes a path onto Url (that is why LearnUrl exists: the
-        // old Url + "/learn" now yields the non-route {base}/cockpit/learn). Port is the Gateway port and
-        // Up is true whenever answering.
+        // Where is this machine's Cockpit? Url is resolved on the Gateway by GatewayPublicUrl from the ONE
+        // public base: Url = {base}/cockpit. In hosted mode (CC_GATEWAY_HOSTED=1) the base is the configured
+        // public base; self-hosted it is the tailnet front door (Url null when Tailscale is unavailable, and
+        // the caller surfaces that). The desktop Cockpit button opens Url verbatim - a dumb client never
+        // composes a path onto Url (the Gateway owns the URL - CLAUDE.md rule 7). Port is the Gateway port
+        // and Up is true whenever answering.
         app.MapGet("/cockpit", (HttpContext ctx) =>
         {
             return Results.Json(new CockpitInfoDto
             {
                 Url = GatewayPublicUrl.ResolveCockpit(),
-                LearnUrl = GatewayPublicUrl.ResolveLearn(),
                 Port = ctx.Connection.LocalPort,
                 Up = true,
             });

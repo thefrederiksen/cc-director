@@ -18,17 +18,25 @@ namespace CcDirector.Gateway.Tests;
 ///    null. The base-resolution branch is byte-identical to before this resolver existed.
 ///  - HOSTED: the configured public base (normalized to no trailing slash) with the surface path
 ///    appended; and NO fallback - a hosted Gateway with the base unset FAILS LOUD, never a null or guess.
+///
+/// The pure overload cannot prove the LIVE wrapper (<see cref="GatewayPublicUrl.ResolveCockpit"/>, which
+/// reads the real environment via <see cref="GatewayPublicUrl.Resolve(string)"/>) is actually connected to
+/// it. The two "live wrapper" cases below drive <c>ResolveCockpit()</c> through the real env for BOTH modes,
+/// so replacing it with a hardcoded constant reddens. Env vars are process-global; the whole assembly runs
+/// sequentially (see TestParallelization.cs), and each case saves/restores in a finally.
+///
+/// The configured base here is a deliberately NON-production, clearly-fake host, so a hardcoded production
+/// constant (https://gateway.devthrottle.com/...) does not coincidentally match the expectation.
 /// </summary>
 public class GatewayPublicUrlTests
 {
     private const string FrontDoor = "https://machine-a.tail0123.ts.net";
-    private const string PublicBase = "https://gateway.devthrottle.com";
+    private const string PublicBase = "https://gw.test.invalid";
 
     // ---- SELF-HOST: front door + surface path, byte-identical base resolution --------------------
 
     [Theory]
     [InlineData(GatewayPublicUrl.CockpitPath, FrontDoor + "/cockpit")]
-    [InlineData(GatewayPublicUrl.LearnPath, FrontDoor + "/learn")]
     [InlineData(GatewayPublicUrl.MobilePath, FrontDoor + "/mobile")]
     public void SelfHost_FrontDoorPresent_AppendsSurfacePath(string surfacePath, string expected)
     {
@@ -43,7 +51,6 @@ public class GatewayPublicUrlTests
 
     [Theory]
     [InlineData(GatewayPublicUrl.CockpitPath)]
-    [InlineData(GatewayPublicUrl.LearnPath)]
     [InlineData(GatewayPublicUrl.MobilePath)]
     public void SelfHost_FrontDoorNull_ReturnsNull(string surfacePath)
     {
@@ -70,7 +77,6 @@ public class GatewayPublicUrlTests
 
     [Theory]
     [InlineData(GatewayPublicUrl.CockpitPath, PublicBase + "/cockpit")]
-    [InlineData(GatewayPublicUrl.LearnPath, PublicBase + "/learn")]
     [InlineData(GatewayPublicUrl.MobilePath, PublicBase + "/mobile")]
     public void Hosted_ConfiguredBase_AppendsSurfacePath(string surfacePath, string expected)
     {
@@ -118,31 +124,67 @@ public class GatewayPublicUrlTests
         Assert.Contains(GatewayPublicUrl.PublicBaseUrlEnvVar, ex.Message);
     }
 
-    // ---- convenience wrappers append the right surface path --------------------------------------
+    // ---- LIVE WRAPPER: ResolveCockpit() reads the real environment -------------------------------
+    // These prove the wrapper is actually WIRED to the pure resolver (not stubbed or hardcoded). They drive
+    // ResolveCockpit() through the real env for BOTH modes. Replacing ResolveCockpit() with a hardcoded
+    // constant reddens the hosted case (it pins the exact fake-base value) and would break the self-host
+    // case's independence from the hosted var. Assembly runs sequentially; env saved/restored in finally.
 
     [Fact]
-    public void ResolveCockpit_ResolveLearn_ResolveMobile_UseTheirSurfacePaths()
+    public void ResolveCockpit_LiveWrapper_Hosted_DerivesFromConfiguredBase()
     {
-        // ResolveCockpit()/ResolveLearn()/ResolveMobile() are thin wrappers over Resolve(surfacePath) that
-        // read the live environment. They cannot be pinned without the environment, but the surface
-        // constants they pass are what the pure tests above pin - so a swap of any constant flips a case.
-        Assert.Equal("/cockpit", GatewayPublicUrl.CockpitPath);
-        Assert.Equal("/learn", GatewayPublicUrl.LearnPath);
-        Assert.Equal("/mobile", GatewayPublicUrl.MobilePath);
+        WithEnv(hosted: "1", publicBase: PublicBase, () =>
+        {
+            // Deterministic: hosted needs no tailnet. The wrapper must return {configured base}/cockpit, the
+            // NON-production value - so a hardcoded ResolveCockpit() constant (prod or otherwise) reddens.
+            Assert.Equal(PublicBase + "/cockpit", GatewayPublicUrl.ResolveCockpit());
+        });
     }
 
     [Fact]
-    public void Learn_IsASiblingRootRoute_NotAChildOfCockpit()
+    public void ResolveCockpit_LiveWrapper_SelfHost_IgnoresStrayHostedBase()
     {
-        // The regression this guards: Learn is {base}/learn, a SIBLING of {base}/cockpit - never
-        // {base}/cockpit/learn (which is not a route). Composing a path onto the cockpit URL is the bug;
-        // resolving /learn from the base is the fix.
-        var cockpit = GatewayPublicUrl.Resolve(isHosted: true,
-            hostedConfiguredBase: PublicBase, selfHostFrontDoor: null, GatewayPublicUrl.CockpitPath);
-        var learn = GatewayPublicUrl.Resolve(isHosted: true,
-            hostedConfiguredBase: PublicBase, selfHostFrontDoor: null, GatewayPublicUrl.LearnPath);
+        WithEnv(hosted: null, publicBase: PublicBase, () =>
+        {
+            // Not hosted: the wrapper takes the self-host branch, which reads the tailnet front door (null on
+            // a build host with no tailnet) and NEVER the hosted env var. So the result is either null or a
+            // {tailnet}/cockpit URL - but never the stray hosted base. This proves the wrapper routes through
+            // Resolve()'s hosted gate rather than reading CC_GATEWAY_PUBLIC_URL directly, for both outcomes.
+            var result = GatewayPublicUrl.ResolveCockpit();
 
-        Assert.Equal(PublicBase + "/learn", learn);
-        Assert.NotEqual(cockpit + "/learn", learn);
+            Assert.NotEqual(PublicBase + "/cockpit", result);
+            if (result is not null)
+                Assert.EndsWith("/cockpit", result);
+        });
+    }
+
+    // ---- convenience wrappers append the right surface path --------------------------------------
+
+    [Fact]
+    public void ResolveCockpit_ResolveMobile_UseTheirSurfacePaths()
+    {
+        // ResolveCockpit()/ResolveMobile() are thin wrappers over Resolve(surfacePath) that read the live
+        // environment. The surface constants they pass are what the pure tests above pin - so a swap of any
+        // constant flips a case.
+        Assert.Equal("/cockpit", GatewayPublicUrl.CockpitPath);
+        Assert.Equal("/mobile", GatewayPublicUrl.MobilePath);
+    }
+
+    // Save/restore the two process-global env vars the resolver reads, then run body under the given values.
+    private static void WithEnv(string? hosted, string? publicBase, Action body)
+    {
+        var priorHosted = Environment.GetEnvironmentVariable("CC_GATEWAY_HOSTED");
+        var priorBase = Environment.GetEnvironmentVariable(GatewayPublicUrl.PublicBaseUrlEnvVar);
+        Environment.SetEnvironmentVariable("CC_GATEWAY_HOSTED", hosted);
+        Environment.SetEnvironmentVariable(GatewayPublicUrl.PublicBaseUrlEnvVar, publicBase);
+        try
+        {
+            body();
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("CC_GATEWAY_HOSTED", priorHosted);
+            Environment.SetEnvironmentVariable(GatewayPublicUrl.PublicBaseUrlEnvVar, priorBase);
+        }
     }
 }
