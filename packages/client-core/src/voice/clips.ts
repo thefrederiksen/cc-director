@@ -120,7 +120,7 @@ function hasCaches(): boolean {
 }
 
 function cacheKey(sid: string, generatedAt: string): string {
-  return `/m/__voice-clip/${encodeURIComponent(sid)}/${encodeURIComponent(generatedAt)}`;
+  return `/mobile/__voice-clip/${encodeURIComponent(sid)}/${encodeURIComponent(generatedAt)}`;
 }
 
 async function readCache(sid: string, generatedAt: string): Promise<ArrayBuffer | null> {

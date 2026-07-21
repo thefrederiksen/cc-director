@@ -7,7 +7,7 @@ namespace CcDirector.Setup.Engine.Tests;
 
 /// <summary>
 /// Issue #809: when the running Gateway stages a newer exe for a self-update, it must ALSO stage the
-/// matching mobile app zip next to it so the update helper can lay wwwroot/m beside the swapped exe
+/// matching mobile app zip next to it so the update helper can lay wwwroot/mobile beside the swapped exe
 /// with no download. These tests prove StageAsync stages both, and that a release without the mobile
 /// asset clears any stale staged zip.
 /// </summary>

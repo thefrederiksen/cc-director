@@ -2,7 +2,7 @@
 // verifying the round trip when it returns (issue #908, generalized for the desktop Cockpit browser in
 // issue #1088).
 //
-// TWO shells share this one flow: the mobile PWA (served under /m) and the desktop Cockpit (served at
+// TWO shells share this one flow: the mobile PWA (served under /mobile) and the desktop Cockpit (served at
 // the site root). Each shell installs its own EnrollmentShellProfile at startup via
 // configureEnrollment - the same per-shell injection pattern configureUnauthorizedRedirect uses
 // (issue #1024) - so shared client-core hardcodes neither shell's routes or device identity. The
@@ -20,8 +20,14 @@
 // eslint-disable-next-line no-restricted-syntax -- documented Gateway-only-ingress exception (#967/#968)
 export const SITE_BASE: string = (import.meta.env.VITE_DT_SITE_BASE as string | undefined) || "https://devthrottle.com";
 
-// The path the site hands the MOBILE shell's device key back to. Must match the mobile router route
-// and the site's MOBILE_CALLBACK_PATH (website/src/lib/loopback.js).
+// The path the site hands the MOBILE shell's device key back to. This stays /m/device-callback even
+// though the app itself re-based from /m to /mobile: the devthrottle.com website validates redirect_uri
+// against a STRICT allow-list (website/src/lib/loopback.js: MOBILE_CALLBACK_PATH = '/m/device-callback'),
+// which lives in a different repo and is not changed here. The Gateway 301-redirects /m/device-callback
+// to /mobile/device-callback, and the browser re-attaches the URL fragment (the device key / access
+// token) across that redirect, so the callback lands on the app's /mobile/device-callback route. Fully
+// canonicalizing this to /mobile/device-callback is a follow-up that also needs the website allow-list
+// updated (cross-repo #1081).
 export const DEVICE_CALLBACK_PATH = "/m/device-callback";
 
 // The path the site hands the DESKTOP Cockpit browser's device key back to (issue #1088). Must match
@@ -50,7 +56,7 @@ export interface EnrollmentShellProfile {
   signInPath: string;
   /** The in-router route to land on after enrollment when no specific route was requested. */
   defaultLanding: string;
-  /** The router basename this shell is served under ("/m" for mobile, "" for the Cockpit). */
+  /** The router basename this shell is served under ("/mobile" for mobile, "" for the Cockpit). */
   basename: string;
 }
 
@@ -105,7 +111,7 @@ export const MOBILE_ENROLLMENT_PROFILE: EnrollmentShellProfile = {
   deviceLabel: "phone",
   signInPath: "/signin",
   defaultLanding: "/",
-  basename: "/m",
+  basename: "/mobile",
 };
 
 /** The desktop Cockpit's profile (issue #1088), installed by apps/cockpit at startup. */

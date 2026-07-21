@@ -57,7 +57,7 @@ describe("runEnrollmentCallback dispatch", () => {
     expect(outcome).toEqual({ kind: "enrolled", localKey: "tenant-scoped-key" });
     expect(fetchMock).toHaveBeenCalledTimes(1);
     const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
-    expect(url).toBe("/m/enroll");
+    expect(url).toBe("/mobile/enroll");
     const headers = init.headers as Record<string, string>;
     // The hosted arm MUST use enrollDeviceHosted. Reverting it to enrollDevice (the old shape) drops
     // the Authorization header and puts the token in the body, failing every assertion below.
@@ -80,7 +80,7 @@ describe("runEnrollmentCallback dispatch", () => {
     expect(outcome).toEqual({ kind: "enrolled", localKey: "local-key" });
     expect(fetchMock).toHaveBeenCalledTimes(1);
     const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
-    expect(url).toBe("/m/enroll");
+    expect(url).toBe("/mobile/enroll");
     const headers = init.headers as Record<string, string>;
     expect(headers.Authorization).toBeUndefined();
     const body = JSON.parse(init.body as string) as Record<string, unknown>;

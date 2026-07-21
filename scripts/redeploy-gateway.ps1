@@ -214,10 +214,10 @@ function Assert-RunningGatewaySha {
 
 # Copy the published Gateway PAYLOAD (the exe AND its wwwroot tree) from the publish stage dir into
 # the install dir. Issue #809: the single-file exe does NOT contain wwwroot, so copying ONLY the exe
-# drops the mobile app and GET /m/ 404s. A Release publish stages devthrottle-gateway.exe plus
-# wwwroot\m beside it, so we carry the whole wwwroot tree and /m serves with no manual copy. Asserts
-# wwwroot\m\index.html landed beside the exe (fail loud - a Release build must have staged the mobile
-# app). Replaces any prior wwwroot so a redeploy never leaves a stale hashed asset behind.
+# drops the mobile app and GET /mobile/ 404s. A Release publish stages devthrottle-gateway.exe plus
+# wwwroot\mobile beside it, so we carry the whole wwwroot tree and /mobile serves with no manual copy.
+# Asserts wwwroot\mobile\index.html landed beside the exe (fail loud - a Release build must have staged
+# the mobile app). Replaces any prior wwwroot so a redeploy never leaves a stale hashed asset behind.
 function Copy-GatewayPayload {
     [CmdletBinding()]
     param(
@@ -231,13 +231,13 @@ function Copy-GatewayPayload {
     Copy-Item $exe $GatewayDir -Force
 
     $srcWww     = Join-Path $StageDir 'wwwroot'
-    $srcIndex   = Join-Path $srcWww 'm\index.html'
+    $srcIndex   = Join-Path $srcWww 'mobile\index.html'
     $srcCockpit = Join-Path $srcWww 'c\index.html'
     if (-not (Test-Path $srcIndex)) {
-        throw "Copy-GatewayPayload: mobile app missing in publish output ($srcIndex). A Release publish must stage wwwroot\m (issue #809)."
+        throw "Copy-GatewayPayload: mobile app missing in publish output ($srcIndex). A Release publish must stage wwwroot\mobile (issue #809)."
     }
     # Issue #979: the React Cockpit is served in-process at the site root and ships as wwwroot\c staged
-    # by the release-gated BuildCockpitApp target. A Release publish must stage it beside wwwroot\m.
+    # by the release-gated BuildCockpitApp target. A Release publish must stage it beside wwwroot\mobile.
     if (-not (Test-Path $srcCockpit)) {
         throw "Copy-GatewayPayload: Cockpit missing in publish output ($srcCockpit). A Release publish must stage wwwroot\c (issue #979)."
     }
@@ -245,15 +245,15 @@ function Copy-GatewayPayload {
     if (Test-Path $dstWww) { Remove-Item -Recurse -Force $dstWww }
     Copy-Item $srcWww $GatewayDir -Recurse -Force
 
-    $dstIndex = Join-Path $GatewayDir 'wwwroot\m\index.html'
+    $dstIndex = Join-Path $GatewayDir 'wwwroot\mobile\index.html'
     if (-not (Test-Path $dstIndex)) {
-        throw "Copy-GatewayPayload: wwwroot\m\index.html not present beside the exe after copy ($dstIndex)"
+        throw "Copy-GatewayPayload: wwwroot\mobile\index.html not present beside the exe after copy ($dstIndex)"
     }
     $dstCockpit = Join-Path $GatewayDir 'wwwroot\c\index.html'
     if (-not (Test-Path $dstCockpit)) {
         throw "Copy-GatewayPayload: wwwroot\c\index.html not present beside the exe after copy ($dstCockpit)"
     }
-    Write-Host "[redeploy-gateway] copied Gateway payload (exe + wwwroot\m + wwwroot\c) -> $GatewayDir"
+    Write-Host "[redeploy-gateway] copied Gateway payload (exe + wwwroot\mobile + wwwroot\c) -> $GatewayDir"
 }
 
 # Read the configured gateway auth token (config.json gateway.token) so the deploy can present it on
@@ -355,7 +355,7 @@ try {
         throw "[redeploy-gateway] the running Gateway did not exit after POST /shutdown (it still holds $gwDir\devthrottle-gateway.exe). If auth is enforced, verify config.json gateway.token; otherwise stop the tray Gateway and re-run."
     }
 
-    # Issue #809: copy the exe AND its wwwroot tree (mobile app) - not just the exe - so /m serves.
+    # Issue #809: copy the exe AND its wwwroot tree (mobile app) - not just the exe - so /mobile serves.
     Copy-GatewayPayload -StageDir $stage -GatewayDir $gwDir
 
     # Issue #1186: lay the pinned ffmpeg.exe beside the exe (from a local cache) so the long-clip
@@ -375,10 +375,16 @@ try {
     # Smoke check: a Gateway answers /cockpit (existing gate, preserved).
     Invoke-RestMethod 'http://127.0.0.1:7878/cockpit'
 
-    # Issue #809: the mobile app must serve after the redeploy with no manual copy step.
-    $mobile = Invoke-WebRequest 'http://127.0.0.1:7878/m/' -UseBasicParsing -TimeoutSec 10
-    if ($mobile.StatusCode -ne 200) { throw "[redeploy-gateway] GET /m/ returned $($mobile.StatusCode); the mobile app did not deploy." }
-    Write-Host "[redeploy-gateway] GET /m/ -> 200 (mobile app served)"
+    # Issue #809: the mobile app must serve after the redeploy with no manual copy step. It serves at
+    # /mobile now (re-based from /m); the old /m still 301-redirects there for installed PWAs.
+    $mobile = Invoke-WebRequest 'http://127.0.0.1:7878/mobile/' -UseBasicParsing -TimeoutSec 10
+    if ($mobile.StatusCode -ne 200) { throw "[redeploy-gateway] GET /mobile/ returned $($mobile.StatusCode); the mobile app did not deploy." }
+    Write-Host "[redeploy-gateway] GET /mobile/ -> 200 (mobile app served)"
+
+    # The legacy /m must 301 to /mobile so installed phone PWAs and bookmarks keep working.
+    $legacy = Invoke-WebRequest 'http://127.0.0.1:7878/m/' -UseBasicParsing -TimeoutSec 10 -MaximumRedirection 0 -SkipHttpErrorCheck
+    if ($legacy.StatusCode -ne 301) { throw "[redeploy-gateway] GET /m/ returned $($legacy.StatusCode); expected a 301 redirect to /mobile/." }
+    Write-Host "[redeploy-gateway] GET /m/ -> 301 (legacy mount redirects to /mobile)"
 
     # Build-identity gate (issue #290): prove the RUNNING Gateway is the commit we just published,
     # not a stale one. Fails loud (non-zero exit via $ErrorActionPreference=Stop) on mismatch.

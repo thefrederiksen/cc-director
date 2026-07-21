@@ -8,10 +8,15 @@ namespace CcDirector.Gateway.Tests;
 
 /// <summary>
 /// Issue #806 (mobile foundation), AC5: the mobile app renders with global Gateway auth either
-/// on or off. With auth ON, the app shell at /m loads WITHOUT a credential (it carries the
+/// on or off. With auth ON, the app shell at /mobile loads WITHOUT a credential (it carries the
 /// injected token, not a secret), while the data endpoint /sessions stays Bearer-gated - so the
 /// injected token is exactly what makes the roster load. This boots a Gateway with auth ON and
 /// proves both halves.
+///
+/// It also covers the /m -> /mobile re-base (Phase D): the canonical /mobile shell is the public,
+/// non-auth-gated surface, and the legacy /m mount 301-redirects to /mobile (with the sub-path and
+/// query string preserved) while STAYING public - so an installed phone PWA on the old path is
+/// redirected, never auth-walled.
 /// </summary>
 public sealed class MobileAuthServingTests : IAsyncLifetime
 {
@@ -62,19 +67,61 @@ public sealed class MobileAuthServingTests : IAsyncLifetime
     [Fact]
     public async Task Mobile_shell_is_public_and_not_login_gated_when_auth_is_on()
     {
-        // The /m shell is exempt from the global gate, so it reaches the mobile handler instead of
-        // being 302-redirected to /login. Whether the mobile app is staged into wwwroot/m depends on
+        // The /mobile shell is exempt from the global gate, so it reaches the mobile handler instead of
+        // being 302-redirected to /login. Whether the mobile app is staged into wwwroot/mobile depends on
         // the build: a bare test build serves nothing there (404), while a build that staged the app
         // serves the shell (200). EITHER outcome proves the request was NOT auth-gated; the states
         // this rules out are a redirect to /login or a 401. (Asserting 404 specifically was brittle -
         // it broke once CI builds began staging the app, issue #818.)
-        using var res = await _http.GetAsync("/m");
+        using var res = await _http.GetAsync("/mobile");
         Assert.NotEqual(HttpStatusCode.Redirect, res.StatusCode);
         Assert.NotEqual(HttpStatusCode.Found, res.StatusCode);
+        Assert.NotEqual(HttpStatusCode.MovedPermanently, res.StatusCode);
         Assert.NotEqual(HttpStatusCode.Unauthorized, res.StatusCode);
         Assert.True(
             res.StatusCode is HttpStatusCode.OK or HttpStatusCode.NotFound,
-            $"/m must be served (200) or absent (404), never auth-gated; got {(int)res.StatusCode} {res.StatusCode}");
+            $"/mobile must be served (200) or absent (404), never auth-gated; got {(int)res.StatusCode} {res.StatusCode}");
+    }
+
+    [Fact]
+    public async Task Legacy_m_301_redirects_to_mobile_and_is_not_auth_gated()
+    {
+        // The legacy /m mount is public (so the redirect is reachable before any credential) AND answers
+        // a 301 to /mobile - never a 302 to /login and never a 401. This is what keeps an installed phone
+        // PWA / bookmark on /m working after the re-base.
+        using var res = await _http.GetAsync("/m");
+        Assert.Equal(HttpStatusCode.MovedPermanently, res.StatusCode);
+        Assert.Equal("/mobile/", res.Headers.Location?.OriginalString);
+    }
+
+    [Fact]
+    public async Task Legacy_m_subpath_301_preserves_the_path_and_query()
+    {
+        // A deep link on the old mount (the sign-in callback devthrottle.com still hands back to, plus any
+        // bookmarked route) redirects to the same route under /mobile, carrying the query string. The URL
+        // fragment (the device key / access token) is re-attached by the browser across the 301, which no
+        // server test can observe - it never reaches the server - so this asserts the server half: path +
+        // query preserved, Location carries no fragment of its own.
+        using var res = await _http.GetAsync("/m/device-callback?state=abc");
+        Assert.Equal(HttpStatusCode.MovedPermanently, res.StatusCode);
+        Assert.Equal("/mobile/device-callback?state=abc", res.Headers.Location?.OriginalString);
+    }
+
+    [Fact]
+    public async Task Both_enroll_mounts_are_public_reaching_the_endpoint_not_the_gate()
+    {
+        // POST /mobile/enroll is the canonical mint seam and POST /m/enroll is its back-compat alias; both
+        // are exempt from the global gate so a credential-less device reaches the enrollment endpoint (which
+        // carries its own account-scoped authorization) rather than being 401'd or redirected to /login. An
+        // empty body makes the endpoint answer a 4xx/5xx of its own - the point here is only that the gate
+        // did NOT reject the request, i.e. it is never 401 Unauthorized and never a /login redirect.
+        foreach (var path in new[] { "/mobile/enroll", "/m/enroll" })
+        {
+            using var res = await _http.PostAsync(path, new StringContent("{}", System.Text.Encoding.UTF8, "application/json"));
+            Assert.NotEqual(HttpStatusCode.Unauthorized, res.StatusCode);
+            Assert.NotEqual(HttpStatusCode.Redirect, res.StatusCode);
+            Assert.NotEqual(HttpStatusCode.Found, res.StatusCode);
+        }
     }
 
     private static int FreePort()

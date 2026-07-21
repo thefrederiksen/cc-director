@@ -7,7 +7,7 @@ namespace CcDirector.Gateway.Api;
 /// The ONE place the Gateway writes the browser session-credential cookie (<c>cc-gateway-token</c>). Every
 /// surface that hands a browser its per-device key sets the cookie THROUGH here - the mobile/Cockpit device
 /// enrollment (<see cref="MobileEnrollmentEndpoint"/>) and both hosted human-account sign-in entry points (the
-/// account sign-in callback and the hosted <c>/m/enroll</c> branch) - so the credential is set exactly one
+/// account sign-in callback and the hosted <c>/mobile/enroll</c> branch) - so the credential is set exactly one
 /// way: <c>HttpOnly</c>, <c>SameSite=Lax</c>, a thirty-day lifetime, marked essential, and <c>Secure</c> when
 /// hosted.
 ///

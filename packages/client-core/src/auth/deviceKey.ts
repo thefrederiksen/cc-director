@@ -1,7 +1,7 @@
 // The shared per-device credential store (issue #908 for the phone, issue #1088 for the desktop
 // Cockpit). The app never receives a master token from the page (the shell carries no secret).
 // Instead it holds the per-device key it obtained by signing in on devthrottle.com and enrolling with
-// the Gateway (POST /m/enroll). That key lives here, in localStorage, scoped to this origin (the
+// the Gateway (POST /mobile/enroll). That key lives here, in localStorage, scoped to this origin (the
 // Gateway), and is sent as the Bearer on every API call. Both shells share this one store: a browser
 // enrolled through either shell is enrolled for the origin.
 //
@@ -47,7 +47,7 @@ export function hasDeviceKey(): boolean {
 
 /**
  * The phone's stable, self-generated install id, created once and persisted. Used as install_id at
- * devthrottle.com and as deviceId at /m/enroll so both sides map to one device. Falls back to a
+ * devthrottle.com and as deviceId at /mobile/enroll so both sides map to one device. Falls back to a
  * non-persisted id only if storage is unavailable (the flow still works for this session).
  */
 export function getInstallId(): string {

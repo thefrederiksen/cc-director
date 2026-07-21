@@ -4,27 +4,27 @@ namespace CcDirector.Setup.Engine;
 
 /// <summary>
 /// Handles the mobile app's archive asset (devthrottle-gateway-mobile-win-x64.zip): the built React
-/// PWA (issue #806) the Gateway serves at <c>/m</c>. The single-file Gateway exe carries NO loose
-/// content, so a delivery of only the exe drops the mobile app and <c>/m</c> answers 404 on every
+/// PWA (issue #806) the Gateway serves at <c>/mobile</c>. The single-file Gateway exe carries NO loose
+/// content, so a delivery of only the exe drops the mobile app and <c>/mobile</c> answers 404 on every
 /// installed / self-updated / redeployed Gateway (issue #809). The build ships the mobile app as a
 /// side-car zip (the side-car-zip delivery pattern) that the setup engine unpacks
-/// into <c>wwwroot/m</c> BESIDE the Gateway exe - exactly where
-/// <c>MobileApp.WebRoot</c> (<c>AppContext.BaseDirectory/wwwroot/m</c>, see
+/// into <c>wwwroot/mobile</c> BESIDE the Gateway exe - exactly where
+/// <c>MobileApp.WebRoot</c> (<c>AppContext.BaseDirectory/wwwroot/mobile</c>, see
 /// <see cref="InstallLayout.GatewayMobileDir"/>) looks. Kept separate from the Windows-only tray work
 /// so extraction is testable on any OS without elevation.
 /// </summary>
 public static class MobilePackage
 {
-    /// <summary>The release asset carrying the built mobile app (the contents of wwwroot/m).</summary>
+    /// <summary>The release asset carrying the built mobile app (the contents of wwwroot/mobile).</summary>
     public const string AssetName = "devthrottle-gateway-mobile-win-x64.zip";
 
     private const string IndexFile = "index.html";
 
     /// <summary>
-    /// Download + SHA-256 verify the mobile zip and extract it into <c>wwwroot/m</c> beside the
-    /// Gateway exe (the clean-install path). Returns the <c>wwwroot/m</c> directory, or <c>null</c>
+    /// Download + SHA-256 verify the mobile zip and extract it into <c>wwwroot/mobile</c> beside the
+    /// Gateway exe (the clean-install path). Returns the <c>wwwroot/mobile</c> directory, or <c>null</c>
     /// when the release carries no mobile asset (a release that predates issue #806 - the Gateway
-    /// simply serves no <c>/m</c>). Throws on a SHA-256 mismatch or a missing <c>index.html</c> after
+    /// simply serves no <c>/mobile</c>). Throws on a SHA-256 mismatch or a missing <c>index.html</c> after
     /// extraction (no silent degrade).
     /// </summary>
     public static async Task<string?> ExtractAsync(
@@ -37,7 +37,7 @@ public static class MobilePackage
         var asset = release.Manifest.TryGetAsset(AssetName);
         if (asset is null)
         {
-            EngineLog.Write($"[MobilePackage] release has no {AssetName}; the Gateway will serve no /m (release predates #806)");
+            EngineLog.Write($"[MobilePackage] release has no {AssetName}; the Gateway will serve no /mobile (release predates #806)");
             return null;
         }
 
@@ -61,7 +61,7 @@ public static class MobilePackage
     /// Extract an ALREADY-staged-and-verified mobile zip (the self-update path: the running Gateway
     /// staged + SHA-verified it via <see cref="GatewayUpdater.StagedMobileZipPath"/> before launching
     /// the update helper, so no download or release source is needed here). Returns the
-    /// <c>wwwroot/m</c> directory, or <c>null</c> when no staged zip is present (a release without the
+    /// <c>wwwroot/mobile</c> directory, or <c>null</c> when no staged zip is present (a release without the
     /// mobile asset - nothing to apply). Throws on a missing <c>index.html</c> after extraction.
     /// </summary>
     public static string? ExtractStagedZip(InstallLayout layout, string stagedZipPath)
@@ -71,7 +71,7 @@ public static class MobilePackage
 
         if (!File.Exists(stagedZipPath))
         {
-            EngineLog.Write($"[MobilePackage] no staged mobile zip at {stagedZipPath}; leaving wwwroot/m unchanged");
+            EngineLog.Write($"[MobilePackage] no staged mobile zip at {stagedZipPath}; leaving wwwroot/mobile unchanged");
             return null;
         }
 
@@ -81,8 +81,8 @@ public static class MobilePackage
     }
 
     /// <summary>
-    /// Replace <c>wwwroot/m</c> beside the Gateway exe with the zip's contents. The zip's root is the
-    /// contents of <c>wwwroot/m</c> (<c>index.html</c> + the hashed <c>assets/</c>), so it extracts
+    /// Replace <c>wwwroot/mobile</c> beside the Gateway exe with the zip's contents. The zip's root is the
+    /// contents of <c>wwwroot/mobile</c> (<c>index.html</c> + the hashed <c>assets/</c>), so it extracts
     /// directly into the mobile dir. Cleans the target first so a re-install never leaves a stale
     /// hashed asset behind (the Cockpit-extract precedent).
     /// </summary>

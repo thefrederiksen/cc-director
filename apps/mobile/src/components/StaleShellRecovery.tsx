@@ -8,7 +8,7 @@ import { Outlet, isRouteErrorResponse, useRouteError } from "react-router-dom";
 // returning browser can still be served the PREVIOUSLY cached shell for a load (the service worker
 // serves cache-first, and a new worker only takes control on a later load). If that cached shell's
 // router does not know the route being navigated to - the device-enrollment callback
-// (/m/device-callback) is the one that bit us - React Router renders its raw "404 Not Found" and the
+// (/mobile/device-callback) is the one that bit us - React Router renders its raw "404 Not Found" and the
 // user dead-ends, unable to sign in.
 //
 // skipWaiting + clientsClaim (already on via registerType: "autoUpdate") do NOT prevent this: the old
@@ -113,7 +113,7 @@ export function RouteRecoveryBoundary() {
         type="button"
         onClick={() => {
           clearRecovered();
-          window.location.assign("/m/");
+          window.location.assign("/mobile/");
         }}
         style={{ padding: "0.8rem 1.25rem", fontSize: "1rem", fontWeight: 600, borderRadius: 10, border: "none", cursor: "pointer" }}
       >

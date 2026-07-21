@@ -14,7 +14,7 @@ namespace CcDirector.Gateway.Tests.Account;
 
 /// <summary>
 /// Issue #1088 (epic #1069): the desktop Cockpit browser enrolls through the SAME generalized
-/// <c>/m/enroll</c> seam the phone uses - the platform decides the recorded device type ("browser"
+/// <c>/mobile/enroll</c> seam the phone uses - the platform decides the recorded device type ("browser"
 /// for the desktop, "phone" for android/ios), and everything else is identical: the account-scoped
 /// verify, the issued LOCAL device key the enforced gate accepts, the cloud roster id mapping, and the
 /// website-revoke round trip that drops the key on the next reconcile sweep. Runs against an

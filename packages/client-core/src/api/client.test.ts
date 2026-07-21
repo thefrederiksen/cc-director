@@ -10,7 +10,7 @@ import {
 
 // The shell-aware mid-session 401 redirect (issue #1024, retargeted by issue #1088). A 401 on the
 // DESKTOP Cockpit must re-gate through the desktop's own /signin route - the shared client-core
-// device-enrollment flow - NOT hard-navigate the whole app to the mobile PWA's /m/signin enrollment
+// device-enrollment flow - NOT hard-navigate the whole app to the mobile PWA's /mobile/signin enrollment
 // screen (which ejected the user from the desktop shell), and NOT to the retired /login token wall
 // (issue #1088: after a website revoke the desktop returns to the shared sign-in flow, never to
 // login.html). Each shell installs its own redirect at startup (configureUnauthorizedRedirect); these
@@ -22,7 +22,7 @@ describe("shell-aware unauthorized redirect", () => {
   // Restore the mobile default so one test's configuration never leaks into another.
   afterEach(() => configureUnauthorizedRedirect(mobileSignInRedirect));
 
-  it("desktop 401 routes to the Cockpit /signin (with next=), never to /m/signin or /login", () => {
+  it("desktop 401 routes to the Cockpit /signin (with next=), never to /mobile/signin or /login", () => {
     // What apps/cockpit/src/main.tsx installs at startup.
     configureUnauthorizedRedirect(cockpitSignInRedirect);
 
@@ -30,8 +30,8 @@ describe("shell-aware unauthorized redirect", () => {
 
     expect(target).toBe(`/signin?next=${encodeURIComponent("/session/abc?tab=terminal")}`);
     // The bug #1024 fixed: the desktop path must NOT land on the mobile enrollment route.
-    expect(target).not.toContain("/m/signin");
-    expect(target.startsWith("/m/")).toBe(false);
+    expect(target).not.toContain("/mobile/signin");
+    expect(target.startsWith("/mobile/")).toBe(false);
     // The #1088 acceptance: a 401 returns to the shared sign-in flow, never to the token wall.
     expect(target.startsWith("/login")).toBe(false);
   });
@@ -45,16 +45,16 @@ describe("shell-aware unauthorized redirect", () => {
     );
   });
 
-  it("mobile 401 still routes to /m/signin", () => {
+  it("mobile 401 still routes to /mobile/signin", () => {
     // What apps/mobile/src/main.tsx installs at startup.
     configureUnauthorizedRedirect(mobileSignInRedirect);
 
-    expect(resolveSignInTarget({ pathname: "/m/session/abc", search: "" })).toBe("/m/signin");
+    expect(resolveSignInTarget({ pathname: "/mobile/session/abc", search: "" })).toBe("/mobile/signin");
   });
 
   it("defaults to the mobile route when a shell installs nothing", () => {
-    // The mobile shell historically owned client-core, so the unconfigured default stays /m/signin.
-    expect(resolveSignInTarget({ pathname: "/m", search: "" })).toBe("/m/signin");
+    // The mobile shell historically owned client-core, so the unconfigured default stays /mobile/signin.
+    expect(resolveSignInTarget({ pathname: "/mobile", search: "" })).toBe("/mobile/signin");
   });
 });
 

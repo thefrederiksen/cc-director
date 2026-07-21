@@ -27,7 +27,7 @@ namespace CcDirector.Gateway.Account;
 /// mirrors up any child not yet mirrored, pulls the cloud roster (GET /devices returns only non-revoked
 /// devices), drops the local pairing key of any child this Gateway mirrored that is now absent from the
 /// roster (revoked on the account page), and advances each surviving child's last-seen with a heartbeat.
-/// A device enrolled via <c>/m/enroll</c> is recorded with its cloud roster id exactly like a paired child,
+/// A device enrolled via <c>/mobile/enroll</c> is recorded with its cloud roster id exactly like a paired child,
 /// so it is subject to the same revoke-down removal. Persistent reconcile failures are surfaced via
 /// <see cref="HasPersistentReconcileFailure"/> (issue #924) rather than being retried forever in silence.
 /// </item>

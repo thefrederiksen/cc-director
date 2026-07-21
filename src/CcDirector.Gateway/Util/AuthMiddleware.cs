@@ -13,8 +13,10 @@ namespace CcDirector.Gateway.Util;
 ///                     guards, so a token-less fresh device can earn its first key), the credential-free
 ///                     cloud sign-in start front door /account/sign-in-start (issue #1076, GET + POST -
 ///                     it reads/returns no credential and no account data), the mobile app
-///                     shell /m + everything under /m/ (which includes the enroll path
-///                     POST /m/enroll - it carries its own account-scoped authorization), the desktop
+///                     shell /mobile + everything under /mobile/ (which includes the enroll path
+///                     POST /mobile/enroll - it carries its own account-scoped authorization) plus the
+///                     legacy /m + /m/ mount it re-based from (still public so the Gateway's 301 to
+///                     /mobile and the back-compat POST /m/enroll stay reachable pre-credential), the desktop
 ///                     Cockpit sign-in surface /signin + /device-callback and the shell's static
 ///                     assets under /assets/ (issue #1088 - see below), and the JSON /cockpit endpoint
 ///                     (a program GET, NOT a browser navigation - see below).
@@ -148,14 +150,21 @@ internal static class AuthMiddleware
 
         if (!isCockpitBrowserShell && PublicPaths.Contains(path)) { await next(); return; }
 
-        // Issue #806 / #908: the mobile app shell (/m and its built assets) carries no secret. It must
-        // load without the global gate so the Sign in screen can render before the phone has any
-        // credential; the phone then enrolls (POST /m/enroll, itself under /m/ and carrying its own
-        // authorization - an account-scoped device key) and authenticates its OWN API calls (e.g.
+        // Issue #806 / #908: the mobile app shell (/mobile and its built assets) carries no secret. It
+        // must load without the global gate so the Sign in screen can render before the phone has any
+        // credential; the phone then enrolls (POST /mobile/enroll, itself under /mobile/ and carrying its
+        // own authorization - an account-scoped device key) and authenticates its OWN API calls (e.g.
         // /sessions) with the per-device key it receives. The master token is no longer injected into
-        // the shell (issue #908), so reaching /m grants no access on its own - the data endpoints stay
+        // the shell (issue #908), so reaching /mobile grants no access on its own - the data endpoints stay
         // Bearer/cookie-gated on that per-device key.
-        if (string.Equals(path, "/m", StringComparison.OrdinalIgnoreCase)
+        //
+        // The legacy /m mount stays public too: the app re-based from /m to /mobile (owner ruling
+        // 2026-07-20), and the Gateway 301s /m -> /mobile and keeps POST /m/enroll as a back-compat route.
+        // Both the redirect and that route must be reachable before the device holds any credential,
+        // exactly as /mobile is - so an installed phone PWA still on the old path is not walled out.
+        if (string.Equals(path, "/mobile", StringComparison.OrdinalIgnoreCase)
+            || path.StartsWith("/mobile/", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(path, "/m", StringComparison.OrdinalIgnoreCase)
             || path.StartsWith("/m/", StringComparison.OrdinalIgnoreCase))
         {
             await next();

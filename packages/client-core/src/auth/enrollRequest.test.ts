@@ -35,9 +35,14 @@ describe("enrollment shell profile", () => {
   it("defaults to the mobile profile (the phone behavior must not regress)", () => {
     const profile = enrollmentProfile();
     expect(profile).toBe(MOBILE_ENROLLMENT_PROFILE);
+    // The router basename re-based from /m to /mobile with the app mount...
+    expect(profile.basename).toBe("/mobile");
+    // ...but the callback path the website is told (redirect_uri) STAYS /m/device-callback: the
+    // devthrottle.com allow-list (a different repo) still pins it, and the Gateway 301s that path to
+    // /mobile/device-callback with the fragment intact. Guards against a well-meaning "canonicalize
+    // this too" edit that would fail the website's strict redirect_uri check and break sign-in.
     expect(profile.callbackPath).toBe("/m/device-callback");
     expect(profile.deviceLabel).toBe("phone");
-    expect(profile.basename).toBe("/m");
     expect(profile.defaultLanding).toBe("/");
   });
 

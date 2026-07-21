@@ -20,7 +20,7 @@ var NEEDS_YOU_TAG = 'devthrottle-needs-you';
 // The DevThrottle logo the Gateway already serves for the mobile app, reused so the desktop
 // notification carries the brand mark without shipping a second copy of the asset. Same-origin; if a
 // build has no mobile app the browser simply shows its default icon (a notification needs no icon).
-var NOTIFICATION_ICON = '/m/icon-192.png';
+var NOTIFICATION_ICON = '/mobile/icon-192.png';
 
 self.addEventListener('push', function (event) {
   var count = 0;
@@ -152,7 +152,7 @@ function focusOrOpen(url) {
 function isCockpitWindow(client) {
   try {
     var path = new URL(client.url).pathname;
-    return path.indexOf('/m/') !== 0 && path !== '/m';
+    return path.indexOf('/mobile/') !== 0 && path !== '/mobile';
   } catch (e) {
     return true;
   }

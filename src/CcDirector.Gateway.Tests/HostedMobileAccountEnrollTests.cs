@@ -23,11 +23,11 @@ namespace CcDirector.Gateway.Tests;
 
 /// <summary>
 /// HTTP wire tests for the HOSTED human account sign-in on the phone/browser enrollment seam (mission #474):
-/// <c>POST /m/enroll</c> on a hosted Gateway reads the human's account access token from the Authorization Bearer
+/// <c>POST /mobile/enroll</c> on a hosted Gateway reads the human's account access token from the Authorization Bearer
 /// header (a public pre-auth route, so the middleware does not pre-validate it as a device key) and MINTS a
 /// tenant-scoped device key through the ONE mint <see cref="HostedEnrollmentEndpoint.Enroll"/> - never through a
 /// second token path. This is the ONLY hosted human sign-in entry point (the hosted /account/sign-in-callback was
-/// descoped as unreached; all hosted clients use the /device-callback -> /m/enroll flow).
+/// descoped as unreached; all hosted clients use the /device-callback -> /mobile/enroll flow).
 ///
 /// The hosted path is selected by the INDEPENDENT hosted-mode signal (<c>CC_GATEWAY_HOSTED</c>) read directly by
 /// the endpoint, NOT by whether a dependency argument was passed - so these set that variable on (the assembly
@@ -183,10 +183,14 @@ public sealed class HostedMobileAccountEnrollTests : IDisposable
         && cookies.Any(c => c.StartsWith(Util.AuthMiddleware.CookieName + "=", StringComparison.Ordinal)
                             && c.Split(';').Any(a => a.Trim().Equals("secure", StringComparison.OrdinalIgnoreCase)));
 
-    /// <summary>POSTs /m/enroll with the account token in the Bearer header and the device id in the body.</summary>
-    private static async Task<HttpResponseMessage> PostBearerAsync(HttpClient http, string? bearer, string deviceId, string platform = "android")
+    /// <summary>
+    /// POSTs the enrollment seam with the account token in the Bearer header and the device id in the body.
+    /// Defaults to the canonical <c>/mobile/enroll</c> (re-based from /m in Phase D); <paramref name="path"/>
+    /// lets the back-compat test drive the legacy <c>/m/enroll</c> alias through the SAME mint.
+    /// </summary>
+    private static async Task<HttpResponseMessage> PostBearerAsync(HttpClient http, string? bearer, string deviceId, string platform = "android", string path = "/mobile/enroll")
     {
-        var msg = new HttpRequestMessage(HttpMethod.Post, "/m/enroll")
+        var msg = new HttpRequestMessage(HttpMethod.Post, path)
         {
             Content = JsonContent.Create(new Dictionary<string, string?> { ["deviceId"] = deviceId, ["platform"] = platform, ["name"] = "phone" }),
         };
@@ -227,10 +231,33 @@ public sealed class HostedMobileAccountEnrollTests : IDisposable
     }
 
     [Fact]
+    public async Task LegacyMEnrollAlias_MintsThroughTheSameHostedPath()
+    {
+        // Phase D re-based the seam to /mobile/enroll, but the Gateway keeps POST /m/enroll mapped to the
+        // SAME handler so an installed phone PWA still on the previous bundle keeps enrolling. This proves
+        // the legacy alias mints a tenant-scoped key identically. Unmapping /m/enroll in
+        // MobileEnrollmentEndpoint.Map reddens this (fails-on-purpose proof of the back-compat route).
+        const string subject = SubjectAlice;
+        var db = OpenWithEntitlements(subject, entitled: true);
+        var (devices, tenants, hosted) = WireHosted(db);
+        var (app, http) = await StartHostedAsync(hosted);
+        try
+        {
+            var resp = await PostBearerAsync(http, Token(subject), "dev-a", path: "/m/enroll");
+            Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+            var cookieKey = GatewayCookieValue(resp);
+            Assert.False(string.IsNullOrEmpty(cookieKey));
+            Assert.False(string.IsNullOrEmpty(devices.TenantForKey(cookieKey!)));
+            Assert.NotNull(tenants.LookupBySubject(subject));
+        }
+        finally { http.Dispose(); await app.DisposeAsync(); }
+    }
+
+    [Fact]
     public async Task HostedEnrollSuccess_SetsSecureCookie()
     {
         // The hosted standing credential (cc-gateway-token) rides HTTPS behind the platform front door, so its
-        // Set-Cookie on a successful hosted /m/enroll MUST carry Secure - proven directly off the wire header.
+        // Set-Cookie on a successful hosted /mobile/enroll MUST carry Secure - proven directly off the wire header.
         // Dropping the Secure flag in GatewayTokenCookie.Set reddens this (fails-on-purpose proof).
         const string subject = SubjectAlice;
         var db = OpenWithEntitlements(subject, entitled: true);
@@ -422,7 +449,7 @@ public sealed class HostedMobileAccountEnrollTests : IDisposable
     [Fact]
     public async Task SelfHost_IgnoresBearer_TakesDeviceKeyInBodyPath_Unchanged()
     {
-        // THE CONTROL, asserted positively. With hosted mode OFF, /m/enroll is the self-host device-key-in-body
+        // THE CONTROL, asserted positively. With hosted mode OFF, /mobile/enroll is the self-host device-key-in-body
         // path: the Bearer account token is NOT treated as an account token, no tenant-scoped mint runs, and the
         // request flows to the enrollment service. With no cloud account wired that service answers NotSignedIn
         // (409) - which is precisely NOT the hosted mint's 200/401/402/503, so it proves the hosted mint never
@@ -431,7 +458,7 @@ public sealed class HostedMobileAccountEnrollTests : IDisposable
         var (app, http) = await StartHostedAsync(hosted: null);
         try
         {
-            var msg = new HttpRequestMessage(HttpMethod.Post, "/m/enroll")
+            var msg = new HttpRequestMessage(HttpMethod.Post, "/mobile/enroll")
             {
                 Content = JsonContent.Create(new Dictionary<string, string?> { ["deviceKey"] = "dtd_some_cloud_key", ["deviceId"] = "dev-a", ["platform"] = "android" }),
             };
