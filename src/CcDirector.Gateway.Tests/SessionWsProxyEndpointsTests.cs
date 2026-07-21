@@ -141,10 +141,14 @@ public sealed class SessionWsProxyEndpointsTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task Backfill_numbers_for_an_unconnected_director_returns_503()
+    public async Task Backfill_numbers_for_an_unknown_director_id_returns_404()
     {
+        // MTR-01 (Codex round 1): the backfill leg now resolves the owned Director in the request's tenant
+        // BEFORE dispatch, so an id that is in no Director registry entry is a 404 at the gate - it never
+        // reaches the tunnel dispatch (which is what used to answer an unknown id with a 503). On self-host
+        // the request tenant is Local, so this is an ordinary present/absent lookup.
         var resp = await _http.PostAsync("directors/no-such-director/backfill-numbers", null);
-        Assert.Equal(HttpStatusCode.ServiceUnavailable, resp.StatusCode);
+        Assert.Equal(HttpStatusCode.NotFound, resp.StatusCode);
     }
 
     private static SessionDto Session(string sid) => new()

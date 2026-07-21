@@ -1,5 +1,6 @@
 using System.Net.Http.Json;
 using System.Text.Json;
+using CcDirector.Core.Tenancy;
 using CcDirector.Core.Utilities;
 using CcDirector.Gateway.Contracts;
 using CcDirector.Gateway.Events;
@@ -32,6 +33,7 @@ public sealed class GatewayCronNotifier : ICronNotifier
 
     private readonly DirectorEventLog _events;
     private readonly Func<string, string?> _resolveDirectorEndpoint;
+    private readonly Func<TenantId?> _resolveTenant;
     private readonly string _gatewayBaseUrl;
     private readonly HttpClient _webhookHttp;
 
@@ -45,14 +47,25 @@ public sealed class GatewayCronNotifier : ICronNotifier
     /// HttpClient for the optional outbound webhook POST. A dedicated short-timeout client is
     /// supplied by the host; tests inject a fake handler to capture the POST.
     /// </param>
+    /// <param name="resolveTenant">
+    /// MTR-01 (Codex round 1): the tenant of the current cron pass, so the run-complete event files into THAT
+    /// tenant's event ring (the ring is now keyed by (tenant, id)). Production passes
+    /// <c>() =&gt; _tenantPass.Current</c> - the same seam <paramref name="resolveDirectorEndpoint"/> uses -
+    /// which is the request/tunnel/per-tenant-pass scope in effect at fire time. A null return is DENY: no
+    /// tenant in scope means the best-effort ring event is skipped rather than filed under a guessed owner.
+    /// Optional, defaulting to the single Local tenant - the self-host shape and the unit-test default, so
+    /// omitting the seam can never accidentally produce hosted (cross-tenant) behavior.
+    /// </param>
     public GatewayCronNotifier(
         DirectorEventLog events,
         Func<string, string?> resolveDirectorEndpoint,
         string gatewayBaseUrl,
-        HttpClient webhookHttp)
+        HttpClient webhookHttp,
+        Func<TenantId?>? resolveTenant = null)
     {
         _events = events ?? throw new ArgumentNullException(nameof(events));
         _resolveDirectorEndpoint = resolveDirectorEndpoint ?? throw new ArgumentNullException(nameof(resolveDirectorEndpoint));
+        _resolveTenant = resolveTenant ?? (() => TenantId.Local);
         _gatewayBaseUrl = (gatewayBaseUrl ?? "").TrimEnd('/');
         _webhookHttp = webhookHttp ?? throw new ArgumentNullException(nameof(webhookHttp));
     }
@@ -84,7 +97,13 @@ public sealed class GatewayCronNotifier : ICronNotifier
         // exists to surface, AC2) it files under the job id so the failure is still observable. The
         // event's state carries the infra-status so a reader sees the outcome at a glance.
         var ringKey = string.IsNullOrEmpty(directorId) ? job.Id : directorId;
-        _events.Record(ringKey, payload.SessionId ?? "", DoorbellEvents.CronRunCompleted, payload.InfraStatus);
+        // MTR-01 (Codex round 1): file the event under the CURRENT pass's tenant so the owning account reads it
+        // at GET /directors/{id}/events. No tenant in scope (hosted, no pass) is a DENY - skip the best-effort
+        // ring event rather than file it under a guessed owner; self-host always resolves to Local.
+        if (_resolveTenant() is { } tenant)
+            _events.Record(tenant, ringKey, payload.SessionId ?? "", DoorbellEvents.CronRunCompleted, payload.InfraStatus);
+        else
+            FileLog.Write($"[GatewayCronNotifier] no tenant in scope; run-complete ring event skipped for job={job.Id}");
 
         // Leg 2: optional outbound webhook with the SAME payload (AC5).
         var webhookUrl = job.NotifyWebhookUrl;

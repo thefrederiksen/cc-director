@@ -1,4 +1,5 @@
 using System.Text.Json;
+using CcDirector.Core.Tenancy;
 using CcDirector.Core.Utilities;
 using CcDirector.Gateway.Discovery;
 using CcDirector.Gateway.Running;
@@ -33,7 +34,11 @@ internal static class WorkListRunnerEndpoints
         WorkListStore store,
         DirectorRegistry registry,
         WorkListRunnerManager manager,
-        DirectorCommandRouter.SendDirectorCommandAsync? sendCommand)
+        DirectorCommandRouter.SendDirectorCommandAsync? sendCommand,
+        // MTR-01: the auth-boundary tenant binder. This route spawns a drain (sessions) on a target Director,
+        // so it must resolve that Director in the REQUEST's own tenant - a client-supplied directorId can only
+        // ever name a Director the caller owns. Null (self-host, tests) is the single Local tenant, unchanged.
+        Tenancy.HostedTenantBoundary? tenantBoundary = null)
     {
         app.MapPost("/lists/{name}/run", async (string name, HttpContext ctx) =>
         {
@@ -58,7 +63,13 @@ internal static class WorkListRunnerEndpoints
             // Gateway Cleanup mission (tunnel-only): a Director is reached over the tunnel, not by dialing a
             // control endpoint, so a registered Director with an empty ControlEndpoint is perfectly routable.
             // Gate on existence only; the run itself dispatches the create verb down the stream.
-            var director = registry.Get(body.DirectorId);
+            // MTR-01: resolve the target Director in the REQUEST's own tenant (403 with no bound tenant, 404 for
+            // an id the caller does not own) so a drain cannot be started on another tenant's Director.
+            var reqTenant = tenantBoundary is null ? TenantId.Local : tenantBoundary.ResolveRequestTenant(ctx);
+            if (reqTenant is null)
+                return Results.Json(new { error = "no tenant is bound to this request" },
+                    statusCode: StatusCodes.Status403Forbidden);
+            var director = registry.Get(reqTenant.Value, body.DirectorId);
             if (director is null)
                 return Results.NotFound(new { error = "no such director", directorId = body.DirectorId });
 

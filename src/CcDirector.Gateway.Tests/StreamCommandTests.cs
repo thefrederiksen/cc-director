@@ -517,7 +517,8 @@ public sealed class StreamCommandTests : IAsyncLifetime
             Version = "test",
             StartedAt = DateTime.UtcNow,
         });
-        Assert.Equal("", _gateway.Registry.Get(DirectorId)?.ControlEndpoint);
+        // MTR-01: the HTTP-register path (Upsert) is Local-keyed; read it back through the tenant-scoped overload.
+        Assert.Equal("", _gateway.Registry.Get(CcDirector.Core.Tenancy.TenantId.Local, DirectorId)?.ControlEndpoint);
 
         var spy = new CountingDispatcher(_directorSessions);
         await using var client = NewClient(spy);

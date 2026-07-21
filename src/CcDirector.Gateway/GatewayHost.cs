@@ -928,11 +928,19 @@ public sealed class GatewayHost : IAsyncDisposable
             DirectorEvents,
             directorId =>
             {
-                var d = Registry.Get(directorId);
+                // MTR-01: the registry has no bare-id accessor. A cron notification's deep link resolves the
+                // Director in the tenant of the CURRENT unit of work (the per-tenant cron pass), the same way
+                // SendCommandAsync resolves the down-channel connection - never a hard-coded Local. No tenant in
+                // scope yields no deep link, which is deny-by-default for a best-effort convenience link.
+                if (_tenantPass.Current is not { } t) return null;
+                var d = Registry.Get(t, directorId);
                 return d is null ? null : (d.TailnetEndpoint ?? d.ControlEndpoint);
             },
             $"http://127.0.0.1:{Port}",
-            new HttpClient { Timeout = TimeSpan.FromSeconds(10) });
+            new HttpClient { Timeout = TimeSpan.FromSeconds(10) },
+            // MTR-01 (Codex round 1): file the run-complete event into the current cron pass's OWN tenant ring,
+            // the same per-tenant seam the deep-link resolver above reads. On self-host this is always Local.
+            resolveTenant: () => _tenantPass.Current);
         _cronEngine = new Running.CronEngine(
             _cronJobs, _cronRuns, new Running.DirectorCronSessionStarter(_machineSessionSpawner),
             cronWorkListRunner, cronNotifier, new Running.SystemClock());
@@ -1375,7 +1383,10 @@ public sealed class GatewayHost : IAsyncDisposable
                     // Gateway Cleanup mission, Phase 2: reach the owning Director (carried on the signal as
                     // its DirectorId) through the tunnel-first SessionVerbClient - no HTTP dial. The Director
                     // may be push-only (empty control URL); the tunnel path still reaches it by id.
-                    var director = Registry.Get(signal.DirectorId);
+                    // MTR-01: this voice/turn-end sweep is Local-pinned (like every TenantId.Local read around
+                    // it - the voice state it mutates is not yet partitioned; see the note on
+                    // LocateSessionForRequestAsync), so resolve the Director in Local, not by a bare scan.
+                    var director = Registry.Get(TenantId.Local, signal.DirectorId);
                     if (director is null) return;
                     Api.DirectorCommandRouter.SendDirectorCommandAsync? sendCommand = SendCommandAsync;
                     var route = new Api.SessionVerbClient(director, sendCommand);
@@ -1802,6 +1813,9 @@ public sealed class GatewayHost : IAsyncDisposable
             pushedSessions: PushedSessions,
             streamRegistry: StreamRegistry,
             sendCommand: SendCommandAsync,
+            // MTR-01 (Codex round 1): the director-scoped backfill leg resolves the owned Director in the
+            // request's tenant before dispatch, so it needs the registry.
+            registry: Registry,
             streamStaleAfter: _streamStaleAfter,
             // Hosted Multi-Tenancy (session-serving PR1): the per-session tunnel legs resolve the request's
             // tenant at the session locate, so a wrong-tenant session is never located and a request with no
@@ -2098,7 +2112,7 @@ public sealed class GatewayHost : IAsyncDisposable
         // logic lives HERE at the Gateway; the Director host gains nothing (criterion 7). The
         // same-machine single-drain guard (criterion 8) lives on the shared runner manager.
         WorkListRunnerEndpoints.Map(_app, _workLists, Registry, _runnerManager,
-            SendCommandAsync);
+            SendCommandAsync, tenantBoundary: _tenantBoundary);
 
         // Issue #331: launcher registration + cross-machine Director lifecycle relay.
         // Launchers POST /launchers/register on startup; relay callers POST

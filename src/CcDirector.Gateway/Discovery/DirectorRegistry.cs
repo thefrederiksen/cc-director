@@ -26,8 +26,10 @@ namespace CcDirector.Gateway.Discovery;
 /// which the FSW path cannot provide.
 ///
 /// A client request is served <see cref="ListDirectors(TenantId)"/> or <see cref="Get(TenantId, string)"/>,
-/// which answer from one tenant's partition only. The no-tenant <see cref="ListDirectors()"/> and
-/// <see cref="Get(string)"/> overloads are fleet-global internal views and are NOT an answer to a client.
+/// which answer from one tenant's partition only. The no-tenant <see cref="ListDirectors()"/> overload is a
+/// fleet-global internal view (the roster fan-out / reconcile poll) and is NOT an answer to a client. There
+/// is deliberately NO bare-id <c>Get</c> overload (MTR-01): a Director is only ever resolved WITH the tenant
+/// that owns it, so a client-supplied id can never resolve, read, or reach another tenant's Director.
 /// </summary>
 public sealed class DirectorRegistry : IDisposable
 {
@@ -74,40 +76,16 @@ public sealed class DirectorRegistry : IDisposable
     private readonly ConcurrentDictionary<DirectorKey, DirectorDto> _directors = new();
 
     /// <summary>
-    /// LEGACY bare-director-id resolution, for the accessors that still take an id with NO tenant beside it.
-    /// It answers with the freshest matching entry - the one seen most recently - which reproduces what the
-    /// single-keyed registry used to hold, because there the last writer for an id simply replaced every
-    /// earlier one. On a single tenant (every self-host install, and any hosted id held by one account) there
-    /// is only ever one match and this is an ordinary lookup.
-    ///
-    /// It deliberately does NOT fail closed on a collision. Failing closed looked safer and is not: the
-    /// credential-less POST /directors/register path can create a Local-tenant entry for ANY id, so a
-    /// refusal-on-collision would let an unauthenticated caller disable every by-id route for a chosen
-    /// Director - trading the cross-tenant write this issue closes for a cross-tenant denial of service.
-    ///
-    /// The remaining callers are the /directors/{id}/... routes, which resolve a Director from a
-    /// client-supplied id with no tenant at all. Those are ALREADY addressable by any caller today and are the
-    /// same defect as this issue in a different hat; they are booked as their own work, and each is converted
-    /// to <see cref="Get(TenantId, string)"/> as its route learns whose Director it means. Nothing on the
-    /// tenant-aware session-serving path uses this.
+    /// Look up THE Local-tenant entry for a bare director id. The HTTP discovery plane (register / heartbeat /
+    /// unregister) is the same-machine path and always keys its entries to <see cref="TenantId.Local"/> (see
+    /// <see cref="Upsert"/>), so a bare id from that plane resolves to exactly one partition - Local - and
+    /// never scans across tenants. On the hosted Gateway a Local entry is served to no account, so this stays
+    /// deny-by-default there. Returns false when no Local entry exists for the id.
     /// </summary>
-    private bool TryResolveLegacyKey(string directorId, out DirectorKey key)
+    private bool TryResolveLocalKey(string directorId, out DirectorKey key)
     {
-        key = default;
-        if (string.IsNullOrEmpty(directorId)) return false;
-
-        var best = DateTime.MinValue;
-        var found = false;
-        foreach (var kv in _directors)
-        {
-            if (!string.Equals(kv.Key.DirectorId, directorId, StringComparison.Ordinal)) continue;
-            var seen = kv.Value.LastSeen ?? DateTime.MinValue;
-            if (found && seen <= best) continue;
-            best = seen;
-            key = kv.Key;
-            found = true;
-        }
-        return found;
+        key = new DirectorKey(TenantId.Local, directorId);
+        return !string.IsNullOrEmpty(directorId) && _directors.ContainsKey(key);
     }
 
     /// <summary>
@@ -296,7 +274,7 @@ public sealed class DirectorRegistry : IDisposable
     /// </summary>
     public bool Heartbeat(string directorId)
     {
-        if (!TryResolveLegacyKey(directorId, out var key)) return false;
+        if (!TryResolveLocalKey(directorId, out var key)) return false;
         if (!_directors.TryGetValue(key, out var existing)) return false;
         existing.LastSeen = DateTime.UtcNow;
         return true;
@@ -331,7 +309,7 @@ public sealed class DirectorRegistry : IDisposable
     /// </summary>
     public bool Remove(string directorId)
     {
-        if (!TryResolveLegacyKey(directorId, out var key)) return false;
+        if (!TryResolveLocalKey(directorId, out var key)) return false;
         if (TryRemoveEntry(key, out _))
         {
             _everReachable.TryRemove(directorId, out _); // graceful goodbye: next process starts blank
@@ -400,19 +378,6 @@ public sealed class DirectorRegistry : IDisposable
         => !string.IsNullOrEmpty(directorId) && _directors.TryGetValue(new DirectorKey(tenant, directorId), out var d)
             ? d
             : null;
-
-    /// <summary>
-    /// LEGACY look-up by bare Director ID, with no tenant. Null if unknown; on the (hosted-only) chance that
-    /// two tenants hold the same id it answers with the freshest entry - see <see cref="TryResolveLegacyKey"/>
-    /// for why that, and not a refusal, is the safe choice.
-    ///
-    /// Every remaining caller of this overload is a route that resolves a Director from a client-supplied id
-    /// WITHOUT a tenant beside it. Those are the same defect as #1847 in a different hat and are recorded as
-    /// their own work; this overload exists so they keep behaving exactly as they do today while they are
-    /// converted to <see cref="Get(TenantId, string)"/> one at a time.
-    /// </summary>
-    public DirectorDto? Get(string directorId)
-        => TryResolveLegacyKey(directorId, out var key) && _directors.TryGetValue(key, out var d) ? d : null;
 
     private void LoadExisting()
     {
