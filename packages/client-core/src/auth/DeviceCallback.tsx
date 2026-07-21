@@ -1,16 +1,22 @@
 // The shared device-enrollment callback (issue #908, generalized for the desktop Cockpit in issue
 // #1088), served at the installed profile's callback path (/m/device-callback for the phone,
 // /device-callback for the Cockpit). devthrottle.com redirects the browser here after sign-in with the
-// per-device key in the URL FRAGMENT (never the query, so it is not sent to any server - issue #1082).
-// This screen reads that key, exchanges it at the Gateway (POST /m/enroll) for a LOCAL device key,
-// stores the local key through the shared device-key store, mirrors it into the cc-gateway-token
-// cookie (so the terminal WebSocket and hard navigations authenticate immediately), and enters the app
-// on the originally-requested route. The account session never reaches here.
+// enrollment credential in the URL FRAGMENT (never the query, so it is not sent to any server - issue
+// #1082). This screen reads that credential, exchanges it at the Gateway (POST /m/enroll) for a LOCAL
+// device key, stores the local key through the shared device-key store, mirrors it into the
+// cc-gateway-token cookie (so the terminal WebSocket and hard navigations authenticate immediately),
+// and enters the app on the originally-requested route. The account session never reaches here.
+//
+// Which credential the fragment carries decides the path (multi-tenant hosted sign-in, Phase C): a
+// HOSTED gateway round trip returns the account's Supabase access_token (forwarded to the mint as
+// Authorization: Bearer), while a SELF-HOST round trip returns a device_key (posted in the body, the
+// pre-hosted behavior). readEnrollCredential picks one; only the enroll call differs - the state
+// check, cookie mirror, landing, and error handling below are shared byte-for-byte.
 import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { getInstallId, setDeviceKey } from "./deviceKey";
-import { enrollmentProfile, takeEnrollState, takeEnrollNext } from "./enrollRequest";
-import { enrollDevice, isGatewayNotSignedIn } from "../api/enroll";
+import { enrollmentProfile, takeEnrollState, takeEnrollNext, readEnrollCredential } from "./enrollRequest";
+import { enrollDevice, enrollDeviceHosted, isGatewayNotSignedIn } from "../api/enroll";
 import { ensureGatewayCookie } from "../api/client";
 import { beginSignIn } from "../account/accountClient";
 
@@ -42,7 +48,7 @@ export function DeviceCallback() {
       const rawHash = window.location.hash.startsWith("#") ? window.location.hash.slice(1) : window.location.hash;
       const params = new URLSearchParams(rawHash);
       const error = params.get("error");
-      const deviceKey = params.get("device_key");
+      const credential = readEnrollCredential(params);
       const state = params.get("state");
       const expected = takeEnrollState();
 
@@ -58,14 +64,20 @@ export function DeviceCallback() {
         setMessage("This sign-in could not be verified. Please try again.");
         return;
       }
-      if (!deviceKey) {
+      if (!credential) {
         setPhase("error");
         setMessage("Sign-in did not return a device key. Please try again.");
         return;
       }
 
       try {
-        const localKey = await enrollDevice(deviceKey, getInstallId(), profile.deviceName(), profile.platform());
+        // Only the enroll call differs between the two gateway kinds; everything below is shared. The
+        // hosted path forwards the account access_token as Authorization: Bearer with no device_key in
+        // the body; the self-host path posts the device_key in the body exactly as before.
+        const localKey =
+          credential.mode === "hosted"
+            ? await enrollDeviceHosted(credential.accessToken, getInstallId(), profile.deviceName(), profile.platform())
+            : await enrollDevice(credential.deviceKey, getInstallId(), profile.deviceName(), profile.platform());
         if (cancelled) return;
         setDeviceKey(localKey);
         // Mirror the fresh key into the cc-gateway-token cookie right away, so the terminal WebSocket

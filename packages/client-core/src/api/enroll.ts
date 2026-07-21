@@ -1,11 +1,19 @@
 // The enrollment call (issue #908, shared by the desktop Cockpit since issue #1088): hand the Gateway
-// the per-device key this device received from devthrottle.com, and receive back the LOCAL device key
-// the Gateway issues and validates offline. This is the only place the cloud-issued key is used; from
-// then on the app authenticates with the local key returned here. POST /m/enroll is under /m/, so it
-// is reachable before the device holds any credential (it carries its own authorization: the
-// account-scoped device key in the body). Both shells enroll through this ONE generalized endpoint -
-// the platform field tells the Gateway what kind of device this is (android/ios -> phone, anything
-// else, for example "browser" -> browser).
+// the credential this device received from devthrottle.com, and receive back the LOCAL device key the
+// Gateway issues and validates offline. This is the only place the cloud-issued credential is used;
+// from then on the app authenticates with the local key returned here. POST /m/enroll is under /m/, so
+// it is reachable before the device holds any credential. Both shells enroll through this ONE
+// generalized endpoint - the platform field tells the Gateway what kind of device this is
+// (android/ios -> phone, anything else, for example "browser" -> browser).
+//
+// There are TWO enrollment credentials, one per gateway kind, and the client forwards whichever the
+// website returned in the callback fragment (multi-tenant hosted sign-in, Phase C):
+//   - SELF-HOST gateway: an account-scoped device_key carried in the request BODY (enrollDevice), the
+//     pre-hosted behavior that must not regress.
+//   - HOSTED gateway: the person's short-lived Supabase access token, carried as an
+//     `Authorization: Bearer` header (enrollDeviceHosted). The hosted mint reads the account subject
+//     from that verified token, checks the paid entitlement, resolves the tenant, and mints a
+//     tenant-scoped device key. No device_key is sent in the hosted body.
 import { GatewayError } from "./client";
 
 /**
@@ -46,6 +54,46 @@ export async function enrollDevice(
     body: JSON.stringify({ deviceKey: cloudDeviceKey, deviceId, name, platform }),
     signal,
   });
+  return readLocalDeviceKey(res);
+}
+
+/**
+ * Exchange the account's short-lived Supabase access token for a tenant-scoped local device key on a
+ * HOSTED gateway (multi-tenant hosted sign-in, Phase C). The token is forwarded as the standard
+ * `Authorization: Bearer` header - exactly the mint boundary the hosted /m/enroll endpoint expects -
+ * and NO device_key is sent in the body (tenant isolation is bound at the mint from the verified
+ * token, never from anything the client puts in the body).
+ * @returns the tenant-scoped per-device key the app must store and send as its Bearer.
+ * @throws GatewayError on any non-2xx, carrying the server's reason (401 = token missing/invalid;
+ *   402 = the account has no paid entitlement; 409 = the Gateway is not signed in; 502 = the cloud
+ *   could not be reached).
+ */
+export async function enrollDeviceHosted(
+  accessToken: string,
+  deviceId: string,
+  name: string,
+  platform: string,
+  signal?: AbortSignal,
+): Promise<string> {
+  const res = await fetch("/m/enroll", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Accept: "application/json",
+      Authorization: `Bearer ${accessToken}`,
+    },
+    body: JSON.stringify({ deviceId, name, platform }),
+    signal,
+  });
+  return readLocalDeviceKey(res);
+}
+
+/**
+ * Read the local device key from an /m/enroll response, or throw a GatewayError carrying the server's
+ * reason. Shared verbatim by the self-host and hosted paths so both handle success and every failure
+ * identically - only the request differs between them, never the response handling.
+ */
+async function readLocalDeviceKey(res: Response): Promise<string> {
   if (!res.ok) {
     let detail = `${res.status}`;
     try {

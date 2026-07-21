@@ -134,6 +134,33 @@ export function enrollmentProfile(): EnrollmentShellProfile {
   return profile;
 }
 
+/**
+ * Which enrollment credential the website returned in the callback fragment, and therefore which
+ * gateway kind this sign-in is for (multi-tenant hosted sign-in, Phase C):
+ *   - "hosted": the account's short-lived Supabase access_token, forwarded to the mint as
+ *     `Authorization: Bearer` (enrollDeviceHosted).
+ *   - "selfHost": a device_key, posted in the request body (enrollDevice), the pre-hosted behavior.
+ * null when the fragment carried neither (a malformed or interrupted round trip).
+ */
+export type EnrollCredential =
+  | { mode: "hosted"; accessToken: string }
+  | { mode: "selfHost"; deviceKey: string };
+
+/**
+ * Decide the enrollment path from the callback fragment. The presence of an access_token means a
+ * HOSTED gateway round trip (it is the credential a hosted gateway issues); a device_key means the
+ * pre-hosted SELF-HOST round trip. access_token wins if both are somehow present, because only a
+ * hosted gateway mints from the account token. Returns null when neither is present, so the callback
+ * reports "no device key" exactly as it did before this branch existed.
+ */
+export function readEnrollCredential(params: URLSearchParams): EnrollCredential | null {
+  const accessToken = params.get("access_token");
+  if (accessToken) return { mode: "hosted", accessToken };
+  const deviceKey = params.get("device_key");
+  if (deviceKey) return { mode: "selfHost", deviceKey };
+  return null;
+}
+
 /** Mint a fresh anti-forgery state, persist it for the return leg, and return it. */
 export function newEnrollState(): string {
   const state = crypto.randomUUID();
