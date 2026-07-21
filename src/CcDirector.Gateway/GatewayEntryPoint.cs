@@ -64,6 +64,25 @@ public static class GatewayEntryPoint
             }
         }
 
+        // Fail-CLOSED hosted identity (production-readiness item MH-3). BEFORE anything else boots, if this
+        // executable is the HOSTED image (the immutable compiled-in marker, not the droppable
+        // CC_GATEWAY_HOSTED toggle), it must prove the full hosted contract - hosted mode on, auth enabled,
+        // HTTPS public URL, PostgreSQL provider - or REFUSE to run. A hosted deployment that lost a variable
+        // must crash the boot, never silently downgrade to Local single-tenant / no-auth semantics. This is a
+        // no-op on every non-hosted-image build (desktop tray, dev console host, tests), so self-host is
+        // unaffected. A distinct non-zero exit code (2) marks a contract refusal apart from a generic fault.
+        try
+        {
+            HostedStartupContract.AssertFromEnvironment();
+        }
+        catch (InvalidOperationException ex)
+        {
+            Console.Error.WriteLine(ex.Message);
+            FileLog.Write($"[Program] HOSTED CONTRACT REFUSED: {ex.Message.Replace(Environment.NewLine, " | ")}");
+            FileLog.Stop();
+            return 2;
+        }
+
         // Hosted (Azure App Service): honor the platform's assigned port (WEBSITES_PORT, else PORT), so the
         // front-end can route to the container. Falls through to the --port value when unset. Applied HERE,
         // before the port flows into the Gateway, so the ONE port value is consistent everywhere - the

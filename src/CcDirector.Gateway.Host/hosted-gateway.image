@@ -1,0 +1,15 @@
+This file is the IMAGE-WIDE hosted Gateway identity marker.
+
+The hosted host project (CcDirector.Gateway.Host) bakes this file into its published output, so it lands
+in the application base directory of the hosted container image, alongside every executable that image
+ships. GatewayHostedMode.IsHostedImage treats the deployment as the hosted image when this marker is
+present, INDEPENDENTLY of which entry executable runs.
+
+Why it exists: publishing the host also ships a runnable, UNMARKED CcDirector.Gateway.dll (with its own
+deps.json / runtimeconfig.json). A compiled-in assembly attribute only identifies the launcher it is
+stamped on, so overriding the container entrypoint to run that unmarked executable would let the same
+hosted artifact boot as a self-host, single-tenant, no-auth Gateway with none of the hosted startup
+contract enforced. This marker is read from the deployment directory the two executables SHARE, so the
+fail-closed hosted startup contract (HostedStartupContract) fires whichever one runs.
+
+Do not remove this file or its build wiring in CcDirector.Gateway.Host.csproj.
