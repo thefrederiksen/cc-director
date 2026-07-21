@@ -10,13 +10,16 @@
 // Which credential the fragment carries decides the path (multi-tenant hosted sign-in, Phase C): a
 // HOSTED gateway round trip returns the account's Supabase access_token (forwarded to the mint as
 // Authorization: Bearer), while a SELF-HOST round trip returns a device_key (posted in the body, the
-// pre-hosted behavior). readEnrollCredential picks one; only the enroll call differs - the state
-// check, cookie mirror, landing, and error handling below are shared byte-for-byte.
+// pre-hosted behavior). The dispatch - anti-forgery verification (which FAILS CLOSED), credential
+// classification, and which enroll request is sent - lives in runEnrollmentCallback (enrollCallback.ts)
+// so it is unit-tested without a DOM; this screen only maps the outcome to a phase and the shared side
+// effects (store the key, mirror the cookie, land on the route, surface errors).
 import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { getInstallId, setDeviceKey } from "./deviceKey";
-import { enrollmentProfile, takeEnrollState, takeEnrollNext, readEnrollCredential } from "./enrollRequest";
-import { enrollDevice, enrollDeviceHosted, isGatewayNotSignedIn } from "../api/enroll";
+import { enrollmentProfile, takeEnrollNext } from "./enrollRequest";
+import { runEnrollmentCallback } from "./enrollCallback";
+import { isGatewayNotSignedIn } from "../api/enroll";
 import { ensureGatewayCookie } from "../api/client";
 import { beginSignIn } from "../account/accountClient";
 
@@ -47,47 +50,39 @@ export function DeviceCallback() {
     (async () => {
       const rawHash = window.location.hash.startsWith("#") ? window.location.hash.slice(1) : window.location.hash;
       const params = new URLSearchParams(rawHash);
-      const error = params.get("error");
-      const credential = readEnrollCredential(params);
-      const state = params.get("state");
-      const expected = takeEnrollState();
-
-      if (error) {
-        setPhase("denied");
-        setMessage("Sign-in was declined. Nothing was connected.");
-        return;
-      }
-      // Verify the round trip when we have a saved state; a null expected-state (storage cleared) is not
-      // treated as a failure, so a legitimate sign-in is never blocked by missing session storage.
-      if (expected && state !== expected) {
-        setPhase("error");
-        setMessage("This sign-in could not be verified. Please try again.");
-        return;
-      }
-      if (!credential) {
-        setPhase("error");
-        setMessage("Sign-in did not return a device key. Please try again.");
-        return;
-      }
 
       try {
-        // Only the enroll call differs between the two gateway kinds; everything below is shared. The
-        // hosted path forwards the account access_token as Authorization: Bearer with no device_key in
-        // the body; the self-host path posts the device_key in the body exactly as before.
-        const localKey =
-          credential.mode === "hosted"
-            ? await enrollDeviceHosted(credential.accessToken, getInstallId(), profile.deviceName(), profile.platform())
-            : await enrollDevice(credential.deviceKey, getInstallId(), profile.deviceName(), profile.platform());
+        // The whole dispatch - anti-forgery verification (fail closed), credential classification, and
+        // which enroll request is sent - lives in runEnrollmentCallback so it is exercised by tests.
+        // This screen only maps the outcome to a phase and the shared side effects.
+        const outcome = await runEnrollmentCallback(params, profile, getInstallId());
         if (cancelled) return;
-        setDeviceKey(localKey);
-        // Mirror the fresh key into the cc-gateway-token cookie right away, so the terminal WebSocket
-        // and any hard navigation authenticate without waiting for the next full page load.
-        ensureGatewayCookie();
-        // Land on the originally-requested route when one was remembered (issue #1088), otherwise the
-        // shell's default. Strip the key from the URL/history first, then hand the route to the router.
-        const landing = takeEnrollNext() ?? profile.defaultLanding;
-        window.history.replaceState(null, "", profile.basename + landing);
-        navigate(landing, { replace: true });
+        switch (outcome.kind) {
+          case "denied":
+            setPhase("denied");
+            setMessage("Sign-in was declined. Nothing was connected.");
+            return;
+          case "unverified":
+            setPhase("error");
+            setMessage("This sign-in could not be verified. Please try again.");
+            return;
+          case "noCredential":
+            setPhase("error");
+            setMessage("Sign-in did not return a device key. Please try again.");
+            return;
+          case "enrolled": {
+            setDeviceKey(outcome.localKey);
+            // Mirror the fresh key into the cc-gateway-token cookie right away, so the terminal
+            // WebSocket and any hard navigation authenticate without waiting for the next full page load.
+            ensureGatewayCookie();
+            // Land on the originally-requested route when one was remembered (issue #1088), otherwise
+            // the shell's default. Strip the key from the URL/history first, then hand it to the router.
+            const landing = takeEnrollNext() ?? profile.defaultLanding;
+            window.history.replaceState(null, "", profile.basename + landing);
+            navigate(landing, { replace: true });
+            return;
+          }
+        }
       } catch (err) {
         if (cancelled) return;
         if (isGatewayNotSignedIn(err)) {

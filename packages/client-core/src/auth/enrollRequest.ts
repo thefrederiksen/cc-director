@@ -149,14 +149,18 @@ export type EnrollCredential =
 /**
  * Decide the enrollment path from the callback fragment. The presence of an access_token means a
  * HOSTED gateway round trip (it is the credential a hosted gateway issues); a device_key means the
- * pre-hosted SELF-HOST round trip. access_token wins if both are somehow present, because only a
- * hosted gateway mints from the account token. Returns null when neither is present, so the callback
- * reports "no device key" exactly as it did before this branch existed.
+ * pre-hosted SELF-HOST round trip. A legitimate callback carries EXACTLY ONE of the two. Both
+ * present is AMBIGUOUS - we cannot know which gateway kind the callback is for, and guessing would
+ * send the wrong request shape (a hosted Bearer where the Gateway expects a body device_key, or the
+ * reverse) - so both-present fails closed to null, exactly like neither-present. Returns null when
+ * neither is present, so the callback reports "no device key" exactly as it did before this branch
+ * existed.
  */
 export function readEnrollCredential(params: URLSearchParams): EnrollCredential | null {
   const accessToken = params.get("access_token");
-  if (accessToken) return { mode: "hosted", accessToken };
   const deviceKey = params.get("device_key");
+  if (accessToken && deviceKey) return null;
+  if (accessToken) return { mode: "hosted", accessToken };
   if (deviceKey) return { mode: "selfHost", deviceKey };
   return null;
 }
@@ -174,8 +178,9 @@ export function newEnrollState(): string {
 
 /**
  * Read and clear the state saved before the round trip. Returns null when none was saved (private
- * mode, or storage cleared); the callback treats a null expected-state as "cannot verify, proceed"
- * rather than blocking a legitimate sign-in.
+ * mode, or storage cleared). The callback (runEnrollmentCallback) FAILS CLOSED on a null
+ * expected-state: a callback whose round trip cannot be verified against a nonce THIS browser minted
+ * is rejected rather than enrolled, which closes the hosted login-CSRF path.
  */
 export function takeEnrollState(): string | null {
   try {

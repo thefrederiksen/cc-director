@@ -89,9 +89,12 @@ describe("readEnrollCredential", () => {
     expect(readEnrollCredential(params)).toEqual({ mode: "selfHost", deviceKey: "dk-123" });
   });
 
-  it("prefers the access_token when both are somehow present (only a hosted gateway mints from it)", () => {
+  it("rejects an ambiguous fragment carrying BOTH credentials (fail closed, do not guess)", () => {
+    // A legitimate callback carries exactly one credential. Both present means we cannot know which
+    // gateway kind the callback is for; guessing would send the wrong request shape, so it fails
+    // closed to null exactly like the neither-present case.
     const params = new URLSearchParams("device_key=dk-123&access_token=abc.def.ghi");
-    expect(readEnrollCredential(params)).toEqual({ mode: "hosted", accessToken: "abc.def.ghi" });
+    expect(readEnrollCredential(params)).toBeNull();
   });
 
   it("returns null when the fragment carries neither credential", () => {
