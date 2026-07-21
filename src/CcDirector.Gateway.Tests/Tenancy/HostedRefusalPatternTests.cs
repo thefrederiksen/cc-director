@@ -1,9 +1,11 @@
 using System;
 using System.Linq;
 using CcDirector.Gateway.Tenancy;
+using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.AspNetCore.Routing.Patterns;
+using Microsoft.Extensions.Logging;
 using Xunit;
 
 namespace CcDirector.Gateway.Tests.Tenancy;
@@ -200,6 +202,104 @@ public sealed class HostedRefusalRouteSpaceTests
     [Fact]
     public void A_route_space_with_no_refusals_is_inert()
         => HostedRefusalRouteSpace.Validate(new[] { LiveEndpoint("/x/{id}"), LiveEndpoint("/y") });
+
+    // ---- CHANGE 1: a tie INTRODUCED by refusal substitution fails the start, rather than surfacing as a
+    //      request-time 500 on a denied route. These drive the production validator directly, over a
+    //      finalised endpoint set, which is where the promise at GatewayHost.cs was previously not kept. ----
+
+    [Fact]
+    public void Two_refusals_that_tie_after_case_folding_fail_the_start()
+    {
+        // The Codex counterexample, at the route-space level: GET /x/{id} and POST /X/{name} become verb-less
+        // refusals whose ONLY differences - method, literal case, parameter name - are exactly what
+        // substitution erases. They TIE, and an unvalidated route space would let that become a 500 on the
+        // denied route the first time a caller hit it. The validator is the backstop that fails the start.
+        var endpoints = new[] { Refusal("/x/{id}"), Refusal("/X/{name}") };
+
+        var error = Assert.Throws<InvalidOperationException>(() => HostedRefusalRouteSpace.Validate(endpoints));
+        Assert.Contains("compete for the same route shape", error.Message);
+    }
+
+    [Fact]
+    public void A_refusal_that_ties_with_a_live_route_fails_the_start()
+    {
+        // The verb-less refusal matches every method, so it ties with any live route of the same shape - a
+        // denied family reaching over a route it does not own. Over-refusal, and a 500 rather than a clean
+        // answer; the start fails instead.
+        var endpoints = new[] { Refusal("/x/{id}"), LiveEndpoint("/x/{other}") };
+
+        var error = Assert.Throws<InvalidOperationException>(() => HostedRefusalRouteSpace.Validate(endpoints));
+        Assert.Contains("live route", error.Message);
+    }
+
+    [Fact]
+    public void Refusals_on_distinct_shapes_beside_a_non_colliding_live_route_are_allowed()
+    {
+        // The other direction: distinct shapes do NOT tie, and a literal sibling is a different shape from a
+        // parameter segment - the neighbour must keep serving. A validator that reddened here would be an
+        // over-refusal in its own right.
+        HostedRefusalRouteSpace.Validate(new[] { Refusal("/x/{id}"), Refusal("/y/{id}"), LiveEndpoint("/x/summary") });
+    }
+
+    // ---- CHANGE 3: exclusive containment compares finalised patterns STRUCTURALLY, and a non-literal
+    //      exclusive prefix is refused at construction. ----
+
+    [Theory]
+    [InlineData("/family/{tenant:int}")]   // a parameter carrying a policy
+    [InlineData("/family/{tenant}")]       // a bare parameter, different name from any live route
+    [InlineData("/family/{**rest}")]       // a catch-all
+    public void A_non_literal_exclusive_prefix_is_refused_at_construction(string prefix)
+    {
+        // Exclusivity is verified by LITERAL prefix containment, which a parameterised prefix cannot support:
+        // /family/{tenant:int} normalises to /family/{tenant}, and a live /family/{scope}/still-serving would
+        // not textually start with the original prefix and would serve beneath the claim unseen. The prefix
+        // is rejected where it is declared, not left to slip the route-space check.
+        var outer = NewBuilder();
+
+        var error = Assert.Throws<ArgumentException>(() => HostedRouteDeny.ExclusiveGroup(outer, prefix, Denial));
+        Assert.Contains("route parameter", error.Message);
+    }
+
+    [Fact]
+    public void A_model_built_live_route_with_null_raw_text_under_the_prefix_fails_the_start()
+    {
+        // A pattern rebuilt from the route MODEL - exactly how the refusal patterns are built - has a null
+        // RawText. Reading a null RawText as the root "/" is what let a model-built live route pass
+        // containment while it served beneath the exclusively claimed prefix. The path is read from the
+        // parsed segments instead, so this fails the start.
+        var modelLive = RoutePatternFactory.Pattern(
+            RoutePatternFactory.Segment(RoutePatternFactory.LiteralPart("family")),
+            RoutePatternFactory.Segment(RoutePatternFactory.LiteralPart("still-serving")));
+        Assert.Null(modelLive.RawText);
+
+        var endpoints = new[] { ExclusiveRefusal("/family"), LiveFromPattern(modelLive) };
+
+        var error = Assert.Throws<InvalidOperationException>(() => HostedRefusalRouteSpace.Validate(endpoints));
+        Assert.Contains("EXCLUSIVELY", error.Message);
+    }
+
+    private static IEndpointRouteBuilder NewBuilder()
+    {
+        var builder = WebApplication.CreateBuilder();
+        builder.Logging.ClearProviders();
+        return builder.Build();
+    }
+
+    private static RouteEndpoint Refusal(string pattern)
+        => new(
+            _ => Task.CompletedTask,
+            RoutePatternFactory.Parse(pattern),
+            order: 0,
+            new EndpointMetadataCollection(new HostedRefusalMarker(Denial, pattern)),
+            displayName: pattern);
+
+    private static RouteEndpoint LiveFromPattern(RoutePattern pattern)
+        => new(
+            _ => Task.CompletedTask,
+            pattern,
+            order: 0,
+            EndpointMetadataCollection.Empty,
+            displayName: pattern.RawText ?? "model-built");
 
     private static RouteEndpoint ExclusiveRefusal(string prefix)
         => new(

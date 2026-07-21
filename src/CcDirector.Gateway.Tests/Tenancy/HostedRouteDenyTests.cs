@@ -11,6 +11,7 @@ using CcDirector.Gateway.Tenancy;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Xunit;
 
@@ -304,6 +305,204 @@ public sealed class HostedDenialValidationTests
             new HostedDenial("family", "message", "reason", "undeny", statusCode: StatusCodes.Status200OK));
     }
 
+}
+
+/// <summary>
+/// CHANGE 2, the exclusive-mode premise, proved over the FINALISED endpoint set and with a request probe.
+/// An exclusive family maps ONE catch-all refusal and NO per-route refusals, so conflicting declared shapes
+/// - the case/verb/policy ties a per-route family could manufacture - cannot become an ambiguous denied
+/// route. Before this fix, every <c>Map*</c> on an exclusive group ALSO installed a per-route refusal, so
+/// the exclusive family carried the exact ties its single catch-all was supposed to make impossible.
+/// </summary>
+[Collection(HostedRouteDenyCollection.Name)]
+public sealed class HostedExclusiveDenyTests
+{
+    [Fact]
+    public async Task An_exclusive_family_maps_one_catch_all_and_no_per_route_refusals()
+    {
+        await using var host = await ValidatedHostedApp.StartAsync(outer =>
+        {
+            var group = HostedRouteDeny.ExclusiveGroup(outer, "/exgroup", ProbeDenial());
+
+            // Declared shapes a per-route family would have turned into TYING verb-less refusals: the same
+            // path under two verbs and two cases, and a multi-verb path. On an exclusive family these are all
+            // discarded - the catch-all is the whole mechanism.
+            group.MapGet("/x/{id}", (int id) => Results.Json(new { id }));
+            group.MapPost("/X/{name}", (string name) => Results.Json(new { name }));
+            group.MapGet("/multi", () => Results.Json(new { m = "get" }));
+            group.MapPut("/multi", () => Results.Json(new { m = "put" }));
+        });
+
+        // The finalised endpoint set carries EXACTLY the catch-all and the prefix-root refusal - two refusal
+        // endpoints, no matter how many handlers were declared. That is the property that makes the ties
+        // impossible: there is no per-route refusal to tie with anything.
+        var refusals = host.Endpoints.OfType<RouteEndpoint>()
+            .Count(e => e.Metadata.GetMetadata<HostedRefusalMarker>() is not null);
+        Assert.Equal(2, refusals);
+
+        // The production validator is content: with no per-route refusal, nothing competes.
+        HostedRefusalRouteSpace.Validate(host.Endpoints);
+
+        // The request probe: every declared path, and one never declared at all, answers the refusal
+        // deterministically - a 404 refusal, never the 500 an ambiguous denied route would produce.
+        foreach (var path in new[]
+                 {
+                     "/exgroup/x/7", "/exgroup/x/anything", "/exgroup/X/7",
+                     "/exgroup/multi", "/exgroup", "/exgroup/never/declared/deep",
+                 })
+        {
+            var response = await host.GetAsync(path);
+            Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
+            Assert.Equal("application/json; charset=utf-8", response.Content.Headers.ContentType?.ToString());
+        }
+    }
+
+    [Fact]
+    public async Task An_exclusive_family_serves_its_real_handlers_off_hosted()
+    {
+        // The control: off hosted the exclusive flag is inert, the catch-all is never mapped, and the real
+        // handlers serve exactly as any group's would. Without this, a bug that discarded handlers on
+        // self-host too would satisfy the hosted assertion above and silently break every desktop install.
+        await using var host = await ValidatedHostedApp.StartAsync(
+            outer =>
+            {
+                var group = HostedRouteDeny.ExclusiveGroup(outer, "/exgroup", ProbeDenial());
+                group.MapGet("/x/{id}", (int id) => Results.Json(new { id }));
+            },
+            hosted: false);
+
+        var response = await host.GetAsync("/exgroup/x/7");
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Contains("\"id\":7", await response.Content.ReadAsStringAsync());
+    }
+
+    private static HostedDenial ProbeDenial(string family = "probe") => ProbeDenialFactory.Make(family);
+}
+
+/// <summary>
+/// CHANGE 1, the finalised route-space check, proved through REAL mapping rather than hand-built endpoints:
+/// the tie is manufactured by two families that each map a refusal the way an adopting family does, and the
+/// production validator is shown to THROW over the actual finalised endpoint set - not to let the tie become
+/// a request-time 500. The companion single-family case shows the case-fold dedup already collapses the
+/// Codex counterexample to one refusal, so it never reaches the validator as a tie at all.
+/// </summary>
+[Collection(HostedRouteDenyCollection.Name)]
+public sealed class HostedRefusalRouteSpaceCrossGroupTests
+{
+    [Fact]
+    public async Task Two_families_denying_a_method_disambiguated_shape_fail_the_validator()
+    {
+        // Cross-group: family A denies GET /shared/{id}, family B denies POST /shared/{name}. Self-host holds
+        // them apart by method; hosted strips the method, so both become verb-less refusals on the same shape
+        // and TIE. Dedup is per-group and cannot see across families, so the finalised route-space check is
+        // the only thing that can - and it must fail the start rather than allow the request-time 500.
+        await using var host = await ValidatedHostedApp.StartAsync(outer =>
+        {
+            var a = HostedRouteDeny.Group(outer, "/shared", ProbeDenial("A"));
+            a.MapGet("/{id}", (int id) => Results.Json(new { id }));
+
+            var b = HostedRouteDeny.Group(outer, "/shared", ProbeDenial("B"));
+            b.MapPost("/{name}", (string name) => Results.Json(new { name }));
+        });
+
+        var error = Assert.Throws<InvalidOperationException>(() => HostedRefusalRouteSpace.Validate(host.Endpoints));
+        Assert.Contains("compete for the same route shape", error.Message);
+    }
+
+    [Fact]
+    public async Task A_single_family_denying_one_shape_under_two_verbs_and_cases_dedups_to_one_refusal()
+    {
+        // The Codex counterexample within ONE family: GET /x/{id} and POST /X/{name}. The case-folded shape
+        // key collapses them to a SINGLE verb-less refusal, so the validator sees no tie and every denied
+        // path answers the refusal rather than the 500 the un-folded key would have produced.
+        await using var host = await ValidatedHostedApp.StartAsync(outer =>
+        {
+            var group = HostedRouteDeny.Group(outer, "", ProbeDenial());
+            group.MapGet("/x/{id}", (int id) => Results.Json(new { id }));
+            group.MapPost("/X/{name}", (string name) => Results.Json(new { name }));
+        });
+
+        HostedRefusalRouteSpace.Validate(host.Endpoints);
+
+        var refusals = host.Endpoints.OfType<RouteEndpoint>()
+            .Count(e => e.Metadata.GetMetadata<HostedRefusalMarker>() is not null);
+        Assert.Equal(1, refusals);
+
+        foreach (var path in new[] { "/x/7", "/x/anything", "/X/7" })
+        {
+            var response = await host.GetAsync(path);
+            Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
+        }
+    }
+
+    private static HostedDenial ProbeDenial(string family = "probe") => ProbeDenialFactory.Make(family);
+}
+
+/// <summary>The refusal payload used by the exclusive and cross-group hosts.</summary>
+internal static class ProbeDenialFactory
+{
+    public static HostedDenial Make(string family = "probe") => new(
+        family: family,
+        message: "this family is not available on the hosted gateway",
+        reason: "the probe family exists only to prove the primitive",
+        unDenyInstruction: "nothing to un-deny: this family is a test fixture and stores nothing");
+}
+
+/// <summary>
+/// A minimal HOSTED (or, on request, self-host) app that lets a test map families the way an adopter does,
+/// then reads the FINALISED endpoint set and probes it. The endpoint set is captured the same way
+/// GatewayHost captures it - the aggregate <see cref="EndpointDataSource"/> after every Map - so the
+/// validator under test sees exactly what it sees in production.
+/// </summary>
+internal sealed class ValidatedHostedApp : IAsyncDisposable
+{
+    private readonly WebApplication _app;
+    private readonly HttpClient _http;
+    private readonly string? _priorHosted;
+
+    public IReadOnlyList<Endpoint> Endpoints { get; }
+
+    private ValidatedHostedApp(WebApplication app, HttpClient http, string? priorHosted, IReadOnlyList<Endpoint> endpoints)
+    {
+        _app = app;
+        _http = http;
+        _priorHosted = priorHosted;
+        Endpoints = endpoints;
+    }
+
+    public static async Task<ValidatedHostedApp> StartAsync(Action<IEndpointRouteBuilder> map, bool hosted = true)
+    {
+        var priorHosted = Environment.GetEnvironmentVariable("CC_GATEWAY_HOSTED");
+        Environment.SetEnvironmentVariable("CC_GATEWAY_HOSTED", hosted ? "1" : null);
+
+        var builder = WebApplication.CreateBuilder();
+        builder.Logging.ClearProviders();
+        var app = builder.Build();
+        app.Urls.Add("http://127.0.0.1:0");
+
+        map(app);
+
+        await app.StartAsync();
+
+        // The FINALISED endpoint set, read the same way GatewayHost reads it - the aggregate
+        // EndpointDataSource - but after Start, which is when the routing middleware materialises the group
+        // endpoints into it.
+        var endpoints = app.Services.GetRequiredService<EndpointDataSource>().Endpoints;
+
+        var http = new HttpClient { BaseAddress = new Uri(app.Urls.First()) };
+        return new ValidatedHostedApp(app, http, priorHosted, endpoints);
+    }
+
+    public Task<HttpResponseMessage> GetAsync(string path) => _http.GetAsync(path);
+
+    public async ValueTask DisposeAsync()
+    {
+        _http.Dispose();
+        await _app.StopAsync();
+        await _app.DisposeAsync();
+        Environment.SetEnvironmentVariable("CC_GATEWAY_HOSTED", _priorHosted);
+    }
 }
 
 /// <summary>

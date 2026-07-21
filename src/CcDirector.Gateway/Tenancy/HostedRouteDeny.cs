@@ -90,12 +90,43 @@ public static class HostedRouteDeny
                 "prefix - which would claim the entire Gateway. An exclusive claim needs a real prefix.",
                 nameof(prefix));
 
-        var group = Group(outer, prefix, denial);
+        // THE EXCLUSIVE PREFIX MUST BE PURELY LITERAL. Exclusivity is verified by simple PREFIX CONTAINMENT
+        // in HostedRefusalRouteSpace, and containment is only well-defined against a literal prefix. A
+        // parameterised prefix - /family/{tenant:int} - normalises on hosted to /family/{tenant}, so a live
+        // route /family/{scope}/still-serving does not TEXTUALLY start with the original prefix and slips the
+        // containment check, then serves BENEATH a prefix the family claimed exclusively: an outage on the
+        // more-specific live route hidden behind a claim that reads as airtight. Rejecting the parameterised
+        // prefix at CONSTRUCTION is the fail-loud fix: a prefix a family cannot claim literally is a prefix it
+        // cannot claim exclusively, and it must use per-route Group instead.
+        if (ContainsRouteParameter(prefix))
+            throw new ArgumentException(
+                $"The hosted denial for '{denial.Family}' asked to claim the prefix '{prefix}' exclusively, but it " +
+                "contains a route parameter. An exclusive claim is verified by literal prefix containment, which a " +
+                "parameterised prefix cannot support - a more-specific live route could serve beneath it unseen. " +
+                "Use a literal prefix, or open a per-route Group so each declared route carries its own refusal.",
+                nameof(prefix));
+
+        var group = CreateGroup(outer, prefix, denial, exclusive: true);
 
         if (GatewayHostedMode.IsHosted)
             group.MapExclusiveCatchAll(prefix);
 
         return group;
+    }
+
+    /// <summary>
+    /// True when <paramref name="prefix"/> carries a route parameter part - <c>{id}</c>, <c>{id:int}</c>,
+    /// <c>{**rest}</c>. Parsed by the framework's own parser, never scanned by hand: a hand scan for a brace
+    /// is exactly the kind of pattern-text model this primitive has already been burned by twice.
+    /// </summary>
+    private static bool ContainsRouteParameter(string prefix)
+    {
+        var parsed = Microsoft.AspNetCore.Routing.Patterns.RoutePatternFactory.Parse(prefix);
+        foreach (var segment in parsed.PathSegments)
+            foreach (var part in segment.Parts)
+                if (part is Microsoft.AspNetCore.Routing.Patterns.RoutePatternParameterPart)
+                    return true;
+        return false;
     }
 
     /// <summary>
@@ -113,6 +144,15 @@ public static class HostedRouteDeny
     /// <param name="prefix">The group prefix, or <c>""</c> to keep route paths written out in full.</param>
     /// <param name="denial">This family's refusal payload - the only per-family configuration.</param>
     public static HostedDenyGroup Group(IEndpointRouteBuilder outer, string prefix, HostedDenial denial)
+        => CreateGroup(outer, prefix, denial, exclusive: false);
+
+    /// <summary>
+    /// The shared group construction behind <see cref="Group"/> and <see cref="ExclusiveGroup"/>. The
+    /// <paramref name="exclusive"/> flag rides onto the handle so its <c>Map</c> knows whether a per-route
+    /// refusal is owed (per-route mode) or whether the ONE catch-all already covers the route and a per-route
+    /// refusal would only manufacture a tie (exclusive mode).
+    /// </summary>
+    private static HostedDenyGroup CreateGroup(IEndpointRouteBuilder outer, string prefix, HostedDenial denial, bool exclusive)
     {
         ArgumentNullException.ThrowIfNull(outer);
         ArgumentNullException.ThrowIfNull(prefix);
@@ -141,7 +181,7 @@ public static class HostedRouteDeny
             ? outer.MapGroup(HostedRefusalPattern.WithoutPolicies(prefix, denial.Family))
             : outer.MapGroup(prefix);
 
-        return new HostedDenyGroup(group, denial);
+        return new HostedDenyGroup(group, denial, exclusive);
     }
 }
 
@@ -227,6 +267,16 @@ public sealed class HostedDenyGroup
     private readonly RouteGroupBuilder _group;
     private readonly HostedDenial _denial;
 
+    // WHETHER THIS FAMILY CLAIMED ITS PREFIX EXCLUSIVELY. It changes ONE thing, and it is the thing the
+    // review found missing: an exclusive family already maps ONE catch-all refusal under a prefix nothing
+    // else may serve, so it does NOT also owe a per-route refusal for each declared route. Mapping one would
+    // not add coverage - the catch-all already refuses the path - but it WOULD re-introduce exactly the
+    // per-route ties (case/optional/policy) the exclusive shape exists to avoid, because two verb-less
+    // refusals under one prefix can compete. So on hosted an exclusive family DISCARDS each handler and maps
+    // no per-route refusal at all; the catch-all is the whole mechanism. Off hosted the flag is inert and the
+    // real handlers map exactly as any group's would.
+    private readonly bool _exclusive;
+
     // On hosted, one refusal per route shape WITHIN THIS FAMILY - a de-duplication, and nothing more.
     //
     // WHAT IT IS FOR: a family mapping several verbs on one path needs ONE verb-less refusal, because a
@@ -249,10 +299,11 @@ public sealed class HostedDenyGroup
 
     private sealed record RegisteredRefusal(string SourcePattern, IEndpointConventionBuilder Builder);
 
-    internal HostedDenyGroup(RouteGroupBuilder group, HostedDenial denial)
+    internal HostedDenyGroup(RouteGroupBuilder group, HostedDenial denial, bool exclusive)
     {
         _group = group;
         _denial = denial;
+        _exclusive = exclusive;
     }
 
     /// <summary>This family's refusal payload, so a test can assert against the same strings that are served.</summary>
@@ -302,6 +353,19 @@ public sealed class HostedDenyGroup
         if (!GatewayHostedMode.IsHosted)
             return mapHandler();
 
+        // EXCLUSIVE MODE: the ONE catch-all refusal under this prefix already refuses this route and every
+        // path beneath it, including ones the family never declared. The handler is discarded - it is never
+        // mapped, so nothing binds - and NO per-route refusal is added. Adding one would not extend coverage;
+        // it would only give the family a second verb-less endpoint under the prefix that could tie with the
+        // first. There is nothing to configure on a route that was never mapped, so a no-op handle is
+        // returned rather than a builder pointing at some other endpoint.
+        if (_exclusive)
+        {
+            FileLog.Write($"[HostedRouteDeny] exclusive family={_denial.Family} pattern='{pattern}' " +
+                          "- handler discarded, covered by the catch-all refusal, no per-route refusal mapped");
+            return NoOpConventionBuilder.Instance;
+        }
+
         // The refusal is mapped on the family's pattern with its parameter POLICIES removed, rebuilt from the
         // parsed route MODEL rather than by editing the pattern text (see HostedRefusalPattern). Keeping a
         // policy would leave a measured hole: a segment that fails an inline constraint fails endpoint
@@ -350,4 +414,18 @@ public sealed class HostedDenyGroup
 
     /// <summary>The refusal body: one property, so the assertion can be an exact property set.</summary>
     private sealed record HostedRefusalBody(string Error);
+
+    /// <summary>
+    /// The handle returned when an exclusive family maps a route on hosted: the handler was discarded and no
+    /// endpoint was created, so there is nothing to apply a convention to. It accepts and ignores conventions
+    /// rather than returning null, which would break a family that chains one onto the result.
+    /// </summary>
+    private sealed class NoOpConventionBuilder : IEndpointConventionBuilder
+    {
+        public static readonly NoOpConventionBuilder Instance = new();
+
+        public void Add(Action<EndpointBuilder> convention) { }
+
+        public void Finally(Action<EndpointBuilder> finalConvention) { }
+    }
 }

@@ -1,9 +1,11 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Text;
 using CcDirector.Core.Utilities;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
+using Microsoft.AspNetCore.Routing.Patterns;
 
 namespace CcDirector.Gateway.Tenancy;
 
@@ -34,24 +36,34 @@ internal sealed record HostedExclusivePrefixMarker(HostedDenial Denial, string P
 /// differing only by their separator character.
 ///
 /// The reason it was wrong is worth keeping, because it is the second time this primitive made the same
-/// mistake: <b>the matcher's ambiguity relation is not reachable from public API, so any check for it is a
-/// MODEL of framework semantics rather than the semantics themselves.</b> The first instance was a
-/// hand-written scan standing in for the route parser; this was a hand-rolled key standing in for the
-/// matcher. Both were correct on the cases their author thought of and wrong on cases the framework
-/// already knew about.
+/// mistake: <b>the matcher's FULL ambiguity relation is not reachable from public API, so any check for the
+/// WHOLE of it is a MODEL of framework semantics rather than the semantics themselves.</b> The first
+/// instance was a hand-written scan standing in for the route parser; that one was a hand-rolled key
+/// standing in for the matcher. Both were correct on the cases their author thought of and wrong on cases
+/// the framework already knew about.
 ///
-/// So this no longer models ambiguity. It removes the conditions under which ambiguity can arise:
+/// So this does not try to decide the whole ambiguity relation. It removes the conditions under which
+/// ambiguity can arise, and it fails loud on the ONE class of tie that refusal substitution INTRODUCES -
+/// which is a strictly smaller and decidable question than "would these two patterns ever tie":
 ///
-///   - an EXCLUSIVE-PREFIX family maps ONE catch-all refusal under a prefix nothing else may serve. One
-///     refusal cannot tie with itself, and exclusivity is checked by simple PREFIX CONTAINMENT - a
-///     comparison this code can actually perform correctly, unlike an ambiguity relation.
+///   - an EXCLUSIVE-PREFIX family maps ONE catch-all refusal under a prefix nothing else may serve, and
+///     maps NO per-route refusal (the handle discards each handler). One refusal cannot tie with itself.
+///     Exclusivity is checked by PREFIX CONTAINMENT against the finalised route patterns STRUCTURALLY - the
+///     prefix is required to be literal at construction, and a live route's path is read from its parsed
+///     segments, never from RawText, which a model-built pattern leaves null.
 ///   - a PER-ROUTE family maps a refusal per route it actually declares. Nothing is synthesised, so no
-///     pattern exists that the family did not already have.
+///     pattern exists that the family did not already have. But substitution DROPS the HTTP method and the
+///     parameter policies, and folds literal case - so two routes the family held apart by METHOD, or two
+///     families denying the same path under different verbs, become verb-less refusals that TIE where the
+///     originals did not. That tie is introduced HERE, by this primitive, so it is caught HERE: any two
+///     refusals whose finalised patterns share a case-insensitive structural SHAPE would compete, and any
+///     refusal sharing a shape with a LIVE route would compete with it. Either fails the start.
 ///
-/// The residual case is stated rather than hidden: normalising a pattern WIDENS it, so two of a family's
-/// own routes that differ only by a parameter policy normalise to the same refusal and are de-duplicated
-/// by exact normalised text. Two routes that tie for some other reason would already tie in that family's
-/// own production route table, before any deny existed.
+/// What this still does NOT claim to catch is a tie that would ALREADY exist in a family's own production
+/// route table before any deny - an optional parameter against a shorter path, say. That tie is not
+/// introduced by substitution; it is the family's own, and it would surface off hosted too. Deciding it in
+/// general is the unreachable relation. Deciding the introduced subset - identical structural shape among
+/// verb-less endpoints - is not, and is what this checks.
 /// </summary>
 internal static class HostedRefusalRouteSpace
 {
@@ -71,43 +83,151 @@ internal static class HostedRefusalRouteSpace
             .Where(x => x.Marker is not null)
             .ToList();
 
-        var refusals = routes.Count(e => e.Metadata.GetMetadata<HostedRefusalMarker>() is not null);
+        var refusalEndpoints = routes
+            .Where(e => e.Metadata.GetMetadata<HostedRefusalMarker>() is not null)
+            .ToList();
 
-        if (refusals == 0 && exclusive.Count == 0)
+        if (refusalEndpoints.Count == 0 && exclusive.Count == 0)
         {
             FileLog.Write("[HostedRefusalRouteSpace] no hosted refusals mapped - nothing to validate (self-host)");
             return;
         }
 
+        ValidateNoRefusalTies(routes, refusalEndpoints);
+        ValidateExclusiveContainment(routes, exclusive);
+
+        FileLog.Write($"[HostedRefusalRouteSpace] validated {exclusive.Count} exclusive-prefix claim(s) and " +
+                      $"{refusalEndpoints.Count} refusal route(s) against {routes.Count} mapped route(s)");
+    }
+
+    /// <summary>
+    /// Fails the start on a tie INTRODUCED by refusal substitution: two verb-less refusals whose finalised
+    /// patterns share a case-insensitive structural shape, or a refusal that shares a shape with a live
+    /// route. Both compete in the matcher and answer 500/ambiguous at request time - on a DENIED route, the
+    /// one nobody exercises until a caller does. This is the introduced subset of the ambiguity relation, not
+    /// the whole of it: two verb-less endpoints on the same structural shape always tie, so equal shape keys
+    /// are a SOUND tie witness, never a false alarm.
+    /// </summary>
+    private static void ValidateNoRefusalTies(List<RouteEndpoint> routes, List<RouteEndpoint> refusalEndpoints)
+    {
+        // The live route space, keyed by structural shape. Refusals are excluded here - they are checked
+        // against each other and against these lives below.
+        var liveByShape = new Dictionary<string, RouteEndpoint>(StringComparer.Ordinal);
+        foreach (var live in routes)
+        {
+            if (live.Metadata.GetMetadata<HostedRefusalMarker>() is not null) continue;
+            liveByShape[HostedRefusalPattern.ShapeKey(live.RoutePattern)] = live;
+        }
+
+        var refusalByShape = new Dictionary<string, RouteEndpoint>(StringComparer.Ordinal);
+        foreach (var refusal in refusalEndpoints)
+        {
+            var shape = HostedRefusalPattern.ShapeKey(refusal.RoutePattern);
+            var family = refusal.Metadata.GetMetadata<HostedRefusalMarker>()!.Denial.Family;
+
+            if (refusalByShape.TryGetValue(shape, out var prior) && !ReferenceEquals(prior, refusal))
+            {
+                var priorFamily = prior.Metadata.GetMetadata<HostedRefusalMarker>()!.Denial.Family;
+                throw new InvalidOperationException(
+                    $"Two hosted refusals compete for the same route shape: '{PatternText(prior)}' (family " +
+                    $"'{priorFamily}') and '{PatternText(refusal)}' (family '{family}'). Refusal substitution " +
+                    "drops the HTTP method and folds literal case, so two routes held apart by verb or case " +
+                    "become verb-less refusals that TIE - a 500 on a denied route at request time. Refusing to " +
+                    "start instead. These two denied shapes must be reconciled to a single refusal.");
+            }
+
+            refusalByShape[shape] = refusal;
+
+            if (liveByShape.TryGetValue(shape, out var live))
+                throw new InvalidOperationException(
+                    $"The hosted refusal '{PatternText(refusal)}' (family '{family}') competes for the same route " +
+                    $"shape as the live route '{PatternText(live)}'. The verb-less refusal matches every method, so " +
+                    "it ties with the live route wherever their shapes coincide - a 500 on the denied route rather " +
+                    "than a clean answer. Refusing to start: either that live route belongs to the denied family, " +
+                    "or the family is denying a shape it does not own.");
+        }
+    }
+
+    /// <summary>
+    /// Fails the start when a live route serves BENEATH a prefix a family claimed exclusively - an OUTAGE on
+    /// a route nobody denied, which no leak-shaped test would notice. Containment is computed from the
+    /// finalised route patterns STRUCTURALLY: the exclusive prefix is literal (enforced at construction), and
+    /// the live route's path is read from its parsed segments, so a model-built pattern with a null RawText is
+    /// compared correctly rather than being read as the root "/".
+    /// </summary>
+    private static void ValidateExclusiveContainment(
+        List<RouteEndpoint> routes,
+        List<(RouteEndpoint Endpoint, HostedExclusivePrefixMarker? Marker)> exclusive)
+    {
         foreach (var (endpoint, marker) in exclusive)
         {
-            var prefix = marker!.Prefix.TrimEnd('/');
+            var prefix = marker!.Prefix.TrimEnd('/').ToLowerInvariant();
 
-            // EXCLUSIVITY, by prefix containment. Everything under this prefix belongs to the denied family;
-            // a live route there would be swallowed by the catch-all refusal, which is an OUTAGE on a route
-            // nobody denied - the over-refusal direction, and the one no leak-shaped test would notice.
             foreach (var other in routes)
             {
                 if (ReferenceEquals(other, endpoint)) continue;
                 if (other.Metadata.GetMetadata<HostedRefusalMarker>() is not null) continue;
                 if (other.Metadata.GetMetadata<HostedExclusivePrefixMarker>() is not null) continue;
 
-                var otherPath = "/" + (other.RoutePattern.RawText ?? string.Empty).TrimStart('/');
-                if (!otherPath.StartsWith(prefix + "/", StringComparison.OrdinalIgnoreCase) &&
-                    !string.Equals(otherPath, prefix, StringComparison.OrdinalIgnoreCase))
+                var otherPath = StructuralPath(other.RoutePattern);
+                if (!otherPath.StartsWith(prefix + "/", StringComparison.Ordinal) &&
+                    !string.Equals(otherPath, prefix, StringComparison.Ordinal))
                     continue;
 
                 throw new InvalidOperationException(
                     $"The hosted denial for family '{marker.Denial.Family}' claims the prefix '{marker.Prefix}' " +
-                    $"EXCLUSIVELY, but the live route '{other.RoutePattern.RawText}' serves underneath it. The " +
+                    $"EXCLUSIVELY, but the live route '{PatternText(other)}' serves underneath it. The " +
                     "catch-all refusal would take that route off the air. Refusing to start: an outage on an " +
                     "undenied route is as much a defect as a leak on a denied one. Either that route belongs to " +
                     "the denied family, or this family cannot claim the prefix exclusively and owes per-route " +
                     "refusals instead.");
             }
         }
-
-        FileLog.Write($"[HostedRefusalRouteSpace] validated {exclusive.Count} exclusive-prefix claim(s) and " +
-                      $"{refusals} refusal route(s) against {routes.Count} mapped route(s)");
     }
+
+    /// <summary>
+    /// A route's path as a comparable, case-folded string, built from its PARSED SEGMENTS and never its
+    /// RawText - a pattern rebuilt from the route model (as the refusal patterns are) has a null RawText, and
+    /// reading that as the root "/" is precisely the containment miss this closes. Literal text is folded to
+    /// lower case to match the matcher; a parameter part is emitted as a sentinel that cannot equal any
+    /// literal prefix segment, so a parameter never satisfies containment against a literal prefix.
+    /// </summary>
+    private static string StructuralPath(RoutePattern pattern)
+    {
+        var sb = new StringBuilder();
+
+        foreach (var segment in pattern.PathSegments)
+        {
+            sb.Append('/');
+            foreach (var part in segment.Parts)
+            {
+                switch (part)
+                {
+                    case RoutePatternLiteralPart literal:
+                        sb.Append(literal.Content.ToLowerInvariant());
+                        break;
+                    case RoutePatternSeparatorPart separator:
+                        sb.Append(separator.Content.ToLowerInvariant());
+                        break;
+                    case RoutePatternParameterPart:
+                        // A sentinel a literal path segment cannot contain - route literals never carry a
+                        // brace, and the exclusive prefix is required literal - so a parameter segment can
+                        // never be read as a literal match for an exclusive prefix segment.
+                        sb.Append("{}");
+                        break;
+                    default:
+                        throw new NotSupportedException(
+                            $"Cannot read a structural path for a route part of type '{part.GetType().Name}'.");
+                }
+            }
+        }
+
+        return sb.Length == 0 ? "/" : sb.ToString();
+    }
+
+    /// <summary>The pattern text for a human-facing message, falling back to the structural path when a
+    /// model-built pattern has no RawText - the message never decides anything, so a readable fallback is
+    /// fine here where it would be a bug in the containment check above.</summary>
+    private static string PatternText(RouteEndpoint endpoint)
+        => endpoint.RoutePattern.RawText ?? StructuralPath(endpoint.RoutePattern);
 }

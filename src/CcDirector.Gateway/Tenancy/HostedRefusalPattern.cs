@@ -107,6 +107,13 @@ internal static class HostedRefusalPattern
     /// The key encodes, per segment: a literal's text, a separator's text, and for a parameter its KIND
     /// only. Kind is included because an optional or catch-all parameter does not compete with a standard
     /// one in the same position.
+    ///
+    /// LITERAL TEXT IS FOLDED TO LOWER CASE, because ASP.NET matches route literals CASE-INSENSITIVELY.
+    /// <c>/x/{id}</c> and <c>/X/{name}</c> are the same route to the matcher; a case-sensitive key would
+    /// call them distinct and let both refusals register, and two verb-less refusals on the same route TIE.
+    /// Off hosted the same two shapes are held apart by their HTTP methods, so this only bites once method
+    /// constraints are removed - which is exactly what refusal substitution does, and exactly the tie the
+    /// finalised route-space check would otherwise have to catch after the fact.
     /// </summary>
     public static string ShapeKey(RoutePattern pattern)
     {
@@ -123,10 +130,10 @@ internal static class HostedRefusalPattern
                 switch (part)
                 {
                     case RoutePatternLiteralPart literal:
-                        key.Append("L:").Append(literal.Content);
+                        key.Append("L:").Append(literal.Content.ToLowerInvariant());
                         break;
                     case RoutePatternSeparatorPart separator:
-                        key.Append("S:").Append(separator.Content);
+                        key.Append("S:").Append(separator.Content.ToLowerInvariant());
                         break;
                     case RoutePatternParameterPart parameter:
                         key.Append("P:").Append(parameter.ParameterKind);
