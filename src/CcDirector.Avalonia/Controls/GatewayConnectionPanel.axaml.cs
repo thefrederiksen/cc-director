@@ -103,6 +103,12 @@ public partial class GatewayConnectionPanel : UserControl
     internal Func<Task>? ReapplyGatewaySeam;
     internal string? DirectorIdOverride;
 
+    // ---- Hosted-enroll test seam: run the hosted account sign-in + enroll headless with no browser or
+    // network. Defaults to null -> the real GatewayAccountEnrollRunner.SignInAndEnrollHostedAsync (the exact
+    // path the CLI's `enroll --hosted` uses). Tests inject a fake so ActivateChoiceForTests(UseHosted) can
+    // prove the enabled card runs the hosted enroll with this device's id, without a real network enroll.
+    internal Func<string, string, CancellationToken, Task<OperationResult<MobileEnrollmentResponse>>>? HostedEnrollSeam;
+
     // Which step the panel opens on (spec section 6: the status-box click opens the panel on the resolver's
     // current step). Connect (the default) starts the auto-scan; SignIn/Done skip the scan and read the
     // signed-in state directly, because the handshake is already proven in those states.
@@ -403,6 +409,12 @@ public partial class GatewayConnectionPanel : UserControl
             case GatewayChoiceAction.Skip:
                 HandleSkip();
                 break;
+            case GatewayChoiceAction.UseHosted:
+                // Hosted is live: a browser account sign-in whose token is enrolled at the one shared
+                // hosted Gateway, which mints this machine's tenant-scoped device key. Same proven runner
+                // the CLI's `enroll --hosted` uses - there is no address to type and nothing to provision.
+                StartHostedEnroll();
+                break;
             case GatewayChoiceAction.SelfHost:
                 // Routed, but UNREACHABLE in production today: the card is still rendered disabled
                 // and wires no handler, so a user cannot fire this. The route exists so the
@@ -410,7 +422,6 @@ public partial class GatewayConnectionPanel : UserControl
                 // in the same change that first exposes it to a stranger's machine.
                 StartSelfHost();
                 break;
-            // Hosted is disabled in this slice and never wires a handler, so it cannot fire.
         }
     }
 
@@ -489,6 +500,14 @@ public partial class GatewayConnectionPanel : UserControl
     /// test assert the emitted outcome (NotReady in this slice) without a live Gateway.</summary>
     internal void EmitTerminalForTests()
         => ShowDone(GatewayConfig.Load(), GatewayAccountStatus.NotConfigured());
+
+    // ---- Test hooks: which step sub-panel is currently shown, and the surfaced failure text. These let a
+    // test pin the VISIBLE outcome (a failure is actually shown, disconnect actually returns to the choice)
+    // rather than just inspecting hidden state - so removing ShowFailure / ShowChoice reddens.
+    internal bool IsShowingChoiceForTests => ChoicePanel.IsVisible;
+    internal bool IsShowingConnectingForTests => ConnectingPanel.IsVisible;
+    internal bool IsShowingFailureForTests => FailedPanel.IsVisible;
+    internal string FailureSummaryForTests => FailureSummaryText.Text ?? string.Empty;
 
     // ---- Step 1a: scan --------------------------------------------------------------------------
 
@@ -1170,7 +1189,22 @@ public partial class GatewayConnectionPanel : UserControl
             ShowFailure("The Control API is not running yet, so this Director cannot finish connecting.", null);
             return;
         }
-        await reapply();
+        // OBSERVE the re-apply. The verified credential is ALREADY persisted, so if reapply faults the awaited
+        // Task would fault unobserved in this fire-and-forget flow, leaving the panel spinning on "Connecting".
+        // Catch it and land on a named failure that says the enroll succeeded but could not be applied live,
+        // with a retry affordance - never a stuck spinner.
+        try
+        {
+            await reapply();
+        }
+        catch (Exception ex)
+        {
+            FileLog.Write($"[GatewayConnectionPanel] remote enroll: re-apply after enroll FAILED: {ex.Message}");
+            ShowFailure(
+                "Signed in and enrolled with the Gateway, but this Director could not apply the new connection right now.",
+                "Try again, or restart the Director to finish connecting.");
+            return;
+        }
         _ = TimeoutAsync(attempt);
     }
 
@@ -1178,6 +1212,117 @@ public partial class GatewayConnectionPanel : UserControl
     private static Task<OperationResult<MobileEnrollmentResponse>> DefaultRemoteEnroll(
         string url, string deviceId, string machineName, CancellationToken ct)
         => new GatewayAccountEnrollRunner().VerifyAndSaveAsync(url, deviceId, machineName, ct);
+
+    // ---- Step 0->Done: Use hosted (#1808c/#1811) ------------------------------------------------
+
+    // Fire the hosted-enroll transaction from the choice card. Kept separate (fire-and-forget) so the render
+    // test can activate the enabled card exactly as a click would, while the awaitable core runs the work.
+    private void StartHostedEnroll()
+    {
+        FileLog.Write("[GatewayConnectionPanel] choice: Use hosted -> hosted enroll");
+        _ = HostedEnrollAndHandshakeAsync();
+    }
+
+    // Join DevThrottle's HOSTED Gateway (#1808c): the SAME proven flow the CLI's `enroll --hosted` runs. A
+    // browser account sign-in whose account token goes straight to the hosted Gateway
+    // (GatewayAccountEnrollRunner.SignInAndEnrollHostedAsync), which mints this machine's tenant-scoped device
+    // key in one step and persists the hosted url + key on verified success ONLY. There is no address to type
+    // and nothing to provision - enrolling IS the join. On success we re-apply and run the normal handshake so
+    // the verdict path drives to the signed-in Done view (which then reads "Connected to Gateway on" the
+    // hosted host from HostedGateway.ResolveUrl). Nothing is written on cancel or failure, so a
+    // previously-saved connection is untouched. Internal so a headless test can drive and await it with the
+    // enroll seam injected.
+    internal async Task HostedEnrollAndHandshakeAsync()
+    {
+        var attempt = ++_attemptId;
+        _connecting = true;
+        // Hosted has no address; clear any stale Join attempt so a post-failure "Try again" does not retry a
+        // previous Join URL - it falls back to the scan instead.
+        _lastAttempt = null;
+        ConnectingTitle.Text = "Signing in to DevThrottle to join the hosted Gateway...";
+        LegReachMarker.Text = "[.]";
+        LegCallbackMarker.Text = "[.]";
+        ShowOnly(ConnectingPanel);
+
+        var host = (global::Avalonia.Application.Current as App)?.ControlApiHost;
+        var directorId = DirectorIdOverride ?? host?.DirectorId;
+        if (directorId is null)
+        {
+            ShowFailure("The Control API is not running yet, so this Director cannot connect.",
+                "Wait for the Director to finish starting, then try again.");
+            return;
+        }
+
+        _remoteEnrollCts?.Cancel();
+        _remoteEnrollCts = new CancellationTokenSource();
+        var ct = _remoteEnrollCts.Token;
+
+        OperationResult<MobileEnrollmentResponse> result;
+        try
+        {
+            // The runner signs in on the PUBLIC /signin surface and enrolls the account token at the hosted
+            // Gateway, which mints and returns this machine's tenant-scoped device key. It persists hosted
+            // url + key on verified success ONLY, so a cancel/failure never mutates the saved connection.
+            var enroll = HostedEnrollSeam ?? DefaultHostedEnroll;
+            result = await enroll(directorId, Environment.MachineName, ct);
+        }
+        catch (OperationCanceledException)
+        {
+            // The panel was left, or a newer attempt superseded this one; leave the view (and config) alone.
+            return;
+        }
+        catch (Exception ex)
+        {
+            FileLog.Write($"[GatewayConnectionPanel] hosted enroll error: {ex.Message}");
+            ShowFailure($"Could not sign in and join the hosted Gateway: {ex.Message}", null);
+            return;
+        }
+
+        if (attempt != _attemptId) return; // superseded by a newer connect
+
+        if (!result.Success)
+        {
+            // Enrollment failed: the runner persisted nothing, so any previously-saved connection is
+            // untouched. Surface the reason inline - never a silent no-op.
+            ShowFailure(result.ErrorMessage ?? "Could not join the hosted Gateway.", null);
+            return;
+        }
+
+        // The runner committed the verified hosted url + this device's local key atomically. Re-apply so the
+        // running client authenticates with the NEW credential, then the handshake settles to Sign-in/Done.
+        FileLog.Write("[GatewayConnectionPanel] hosted enroll succeeded; re-applying and handshaking");
+        if (host is not null)
+            EnsureSubscribed(host.GatewayMonitor);
+        var reapply = ReapplyGatewaySeam ?? (host is not null ? host.ReapplyGatewayAsync : null);
+        if (reapply is null)
+        {
+            ShowFailure("The Control API is not running yet, so this Director cannot finish connecting.", null);
+            return;
+        }
+        // OBSERVE the re-apply. The hosted credential is ALREADY persisted at this point, so if reapply faults
+        // the awaited Task would fault unobserved in this fire-and-forget flow, leaving the panel spinning on
+        // "Connecting" with partial live state. Catch it and land on a named failure that says the enroll
+        // succeeded but could not be applied live, with a retry affordance - never a stuck spinner.
+        try
+        {
+            await reapply();
+        }
+        catch (Exception ex)
+        {
+            FileLog.Write($"[GatewayConnectionPanel] hosted enroll: re-apply after enroll FAILED: {ex.Message}");
+            ShowFailure(
+                "Signed in and enrolled with the hosted Gateway, but this Director could not apply the new connection right now.",
+                "Try again, or restart the Director to finish connecting.");
+            return;
+        }
+        _ = TimeoutAsync(attempt);
+    }
+
+    // The real hosted-enroll seam: sign in with DevThrottle and enroll at the hosted Gateway for this
+    // machine's tenant-scoped device key, persisting the hosted url + key on success only.
+    private static Task<OperationResult<MobileEnrollmentResponse>> DefaultHostedEnroll(
+        string deviceId, string machineName, CancellationToken ct)
+        => new GatewayAccountEnrollRunner().SignInAndEnrollHostedAsync(deviceId, machineName, ct);
 
     private enum EnrollFirst { Enrolled, SignInNeeded, RemoteNotSupported, FellThrough }
 
@@ -1524,6 +1669,75 @@ public partial class GatewayConnectionPanel : UserControl
         var open = DoneAdvancedToggle.IsChecked == true;
         if (DoneAdvancedPanel is not null) DoneAdvancedPanel.IsVisible = open;
         if (DoneAdvancedCaret is not null) DoneAdvancedCaret.Text = open ? "^" : "v";
+    }
+
+    // ---- Done: Change gateway (disconnect + reconnect) ------------------------------------------
+
+    // Change which Gateway this Director is connected to: confirm, DISCONNECT (clear the stored connection),
+    // then return to the step-0 CHOICE so the user can connect to a different Gateway - local OR hosted.
+    private async void ChangeGateway_Click(object? sender, RoutedEventArgs e)
+    {
+        try
+        {
+            var host = SafeHost(GatewayConfig.Load().Url);
+            var target = string.IsNullOrWhiteSpace(host) ? "the Gateway" : host;
+
+            // Confirm before disconnecting (a connection is not cheap to re-establish).
+            var owner = TopLevel.GetTopLevel(this) as Window;
+            if (owner is not null)
+            {
+                var confirm = new ConfirmDialog(
+                    "Change gateway",
+                    $"This will disconnect this Director from {target}. Continue?",
+                    confirmLabel: "Disconnect",
+                    cancelLabel: "Cancel");
+                if (!await confirm.ShowDialog<bool>(owner))
+                {
+                    FileLog.Write("[GatewayConnectionPanel] change gateway: cancelled at the confirm prompt");
+                    return;
+                }
+            }
+
+            await DisconnectAndShowChoiceAsync();
+        }
+        catch (Exception ex)
+        {
+            FileLog.Write($"[GatewayConnectionPanel] ChangeGateway FAILED: {ex.Message}");
+            ShowFailure($"Could not disconnect from the Gateway: {ex.Message}", null);
+        }
+    }
+
+    // Clear the stored connection (config.json gateway url + urls + token, and the per-device credential
+    // file), re-apply so the running client drops the old connection immediately, then show the CHOICE so a
+    // different Gateway can be connected. Internal so a headless test can drive the disconnect transaction
+    // without the modal confirm.
+    internal async Task DisconnectAndShowChoiceAsync()
+    {
+        FileLog.Write("[GatewayConnectionPanel] disconnecting from the current gateway");
+        await Task.Run(GatewayCredentialStore.ClearConnection);
+
+        // Re-apply so the running Gateway client picks up the now-empty config and stops presenting the old
+        // per-device key. Uses the same re-apply seam the connect paths use (injectable for tests). OBSERVE a
+        // reapply fault here: the connection is ALREADY cleared (config emptied, credential deleted), so a
+        // reapply failure does NOT undo the disconnect - log it and still return to the choice rather than
+        // reporting a false "could not disconnect" or leaving the user stuck. (A ClearConnection failure DOES
+        // propagate, so the caller surfaces it: nothing was cleared in that case.)
+        var reapply = ReapplyGatewaySeam
+            ?? ((global::Avalonia.Application.Current as App)?.ControlApiHost is { } host ? host.ReapplyGatewayAsync : null);
+        if (reapply is not null)
+        {
+            try
+            {
+                await reapply();
+            }
+            catch (Exception ex)
+            {
+                FileLog.Write($"[GatewayConnectionPanel] disconnect: re-apply after clear FAILED (connection already cleared): {ex.Message}");
+            }
+        }
+
+        FileLog.Write("[GatewayConnectionPanel] disconnected; showing the gateway choice");
+        ShowChoice();
     }
 
     // The token is shown masked, never in the clear (decision 7) - same masking as the old pairing dialog.

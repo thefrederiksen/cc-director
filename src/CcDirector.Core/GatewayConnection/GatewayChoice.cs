@@ -13,7 +13,8 @@ public enum GatewayChoiceAction
     /// <summary>Provision and run a Gateway on this computer. Windows-only; not built yet (slice #1808b/#1810).</summary>
     SelfHost,
 
-    /// <summary>Use the DevThrottle-hosted Gateway. Not built yet (slice #1808c/#1811).</summary>
+    /// <summary>Use the DevThrottle-hosted Gateway. Functional - a browser account sign-in whose token is
+    /// enrolled at the hosted Gateway, which mints this machine's tenant-scoped device key.</summary>
     UseHosted,
 
     /// <summary>Connect to a Gateway that is already running (on the network, over Tailscale, or on the
@@ -140,7 +141,8 @@ public sealed record GatewayChoicePlan(
 /// the UI. The load-bearing rules it enforces:
 ///   - Self-host is Windows-only. Where the host cannot self-host (a Mac), the action is ABSENT, not a
 ///     disabled tease. Where it can, it is DISABLED "coming" in this slice - the orchestrator is #1808b/#1810.
-///   - Hosted is DISABLED "coming" everywhere in this slice - the provisioning is #1808c/#1811.
+///   - Hosted is always ENABLED - a browser account sign-in enrolls this machine at the one shared hosted
+///     Gateway, which mints its tenant-scoped device key (there is no address to type and nothing to provision).
 ///   - Join is always ENABLED - it drives the existing scan / manual-URL / enroll flow.
 ///   - Skip is always ENABLED; what it DOES is per-consumer (onboarding completes local-only, others return).
 /// </summary>
@@ -155,8 +157,9 @@ public static class GatewayChoiceStateMachine
         var options = new List<GatewayChoiceOption>
         {
             ResolveSelfHost(context),
-            // Hosted has no provisioning yet (#1808c/#1811): offered, clearly disabled, never live.
-            new(GatewayChoiceAction.UseHosted, GatewayChoiceAvailability.Disabled, ComingSoonReason),
+            // Hosted is functional: a browser account sign-in enrolls this machine at the one shared hosted
+            // Gateway, which mints its tenant-scoped device key. No address to type, nothing to provision.
+            new(GatewayChoiceAction.UseHosted, GatewayChoiceAvailability.Enabled, null),
             // Join drives today's scan / manual-URL / enroll flow - always available.
             new(GatewayChoiceAction.JoinExisting, GatewayChoiceAvailability.Enabled, null),
             // Skip is always available; SkipBehavior below says what it does for this consumer.

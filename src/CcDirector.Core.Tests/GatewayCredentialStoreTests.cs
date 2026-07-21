@@ -94,4 +94,73 @@ public sealed class GatewayCredentialStoreTests : IDisposable
         Assert.Throws<ArgumentException>(() =>
             GatewayCredentialStore.SaveEnrolledKey("https://gw.example.ts.net", ""));
     }
+
+    [Fact]
+    public void ClearConnection_IsTheInverseOfSaveEnrolledKey_ClearsTheSavedFileAndConfig()
+    {
+        // A GENUINE save -> clear inverse: SAVE writes the credential to the CredentialFile static path (whose
+        // root is locked at first assembly access) and records the gateway block; CLEAR must remove the SAME
+        // file the save wrote and blank the gateway block. Asserting on GatewayCredentialStore.CredentialFile
+        // (the static path) pins the static-path-cache gotcha: if ClearConnection recomputed a fresh-root path
+        // instead, it would delete a DIFFERENT file and the saved one would survive - reddening this test.
+        const string url = "https://gw.example.ts.net";
+        const string key = "test-per-device-key-abcdef0123456789";
+
+        GatewayCredentialStore.SaveEnrolledKey(url, key);
+        Assert.True(File.Exists(GatewayCredentialStore.CredentialFile),
+            "SaveEnrolledKey must write the per-device key file");
+        Assert.True(GatewayConfig.Load().IsEnabled);
+
+        GatewayCredentialStore.ClearConnection();
+
+        Assert.False(File.Exists(GatewayCredentialStore.CredentialFile),
+            "ClearConnection must delete the SAME credential file SaveEnrolledKey wrote");
+        var config = GatewayConfig.Load();
+        Assert.False(config.IsEnabled);
+        Assert.Equal("", config.Url);
+        Assert.Equal("", config.Token);
+        Assert.Empty(config.Urls);
+        Assert.False(config.StreamMode);
+    }
+
+    [Fact]
+    public void ClearConnection_ClearsTheDiscoveredFallbackUrls()
+    {
+        // A connection discovered from the account also seeds gateway.urls (issue #1233); disconnect must
+        // clear that fallback list too, not just the active url.
+        var configPath = CcStorage.ConfigJson();
+        Directory.CreateDirectory(Path.GetDirectoryName(configPath)!);
+        File.WriteAllText(configPath,
+            """{ "gateway": { "url": "https://gw.example.ts.net", "token": "k", "urls": ["https://a:7878", "https://b:7878"] } }""");
+        Assert.Equal(2, GatewayConfig.Load().Urls.Count);
+
+        GatewayCredentialStore.ClearConnection();
+
+        Assert.Empty(GatewayConfig.Load().Urls);
+    }
+
+    [Fact]
+    public void ClearConnection_PreservesUnrelatedConfigSections()
+    {
+        // Disconnect touches ONLY the gateway block; a sibling section (here screenshots) must survive.
+        var configPath = CcStorage.ConfigJson();
+        Directory.CreateDirectory(Path.GetDirectoryName(configPath)!);
+        File.WriteAllText(configPath,
+            """{ "gateway": { "url": "https://gw.example.ts.net", "token": "k" }, "screenshots": { "dir": "D:\\shots" } }""");
+
+        GatewayCredentialStore.ClearConnection();
+
+        var root = JsonNode.Parse(File.ReadAllText(configPath)) as JsonObject;
+        var screenshots = root?["screenshots"] as JsonObject;
+        Assert.NotNull(screenshots);
+        Assert.Equal("D:\\shots", (string?)screenshots["dir"]);
+    }
+
+    [Fact]
+    public void ClearConnection_NoCredentialFile_DoesNotThrow()
+    {
+        // Disconnecting a never-connected Director (no credential file yet) is a no-op clear, not an error.
+        GatewayCredentialStore.ClearConnection();
+        Assert.False(GatewayConfig.Load().IsEnabled);
+    }
 }

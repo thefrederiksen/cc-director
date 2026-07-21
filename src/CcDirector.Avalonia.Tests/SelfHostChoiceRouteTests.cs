@@ -80,11 +80,11 @@ public class SelfHostChoiceRouteTests
     {
         var panel = WindowsPanel();
 
-        // The regression guard that matters: Join and Skip are the only working paths today, and
-        // adding a self-host route must not disturb either.
+        // The regression guard that matters: adding a self-host route must not disturb the working paths.
+        // Join, Skip, and (now) hosted are the enabled choices; only self-host stays disabled.
         Assert.True(CardFor(panel, GatewayChoiceAction.JoinExisting).IsEnabled);
         Assert.True(CardFor(panel, GatewayChoiceAction.Skip).IsEnabled);
-        Assert.False(CardFor(panel, GatewayChoiceAction.UseHosted).IsEnabled);
+        Assert.True(CardFor(panel, GatewayChoiceAction.UseHosted).IsEnabled);
     }
 
     private static string TextOf(Control control)
