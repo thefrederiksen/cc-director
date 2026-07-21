@@ -108,6 +108,25 @@ public sealed class MobileAuthServingTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Legacy_m_301_location_carries_no_fragment_so_the_signin_token_survives()
+    {
+        // The sign-in token rides the URL FRAGMENT (#access_token=... / #device_key=...), which never
+        // reaches the server. A browser preserves that fragment across a redirect ONLY when the redirect's
+        // Location has no fragment of its own - then it re-attaches the original. So the server-side
+        // guarantee that makes the token survive is: the 301 Location must NEVER contain a '#'. If this
+        // handler ever appended a fragment to Location, the browser would use THAT and drop the token.
+        // Emitting a fragment on the redirect target reddens this (fails-on-purpose proof).
+        foreach (var path in new[] { "/m", "/m/device-callback", "/m/device-callback?state=abc", "/m/session/s-1" })
+        {
+            using var res = await _http.GetAsync(path);
+            Assert.Equal(HttpStatusCode.MovedPermanently, res.StatusCode);
+            var location = res.Headers.Location?.OriginalString ?? "";
+            Assert.StartsWith("/mobile", location);
+            Assert.DoesNotContain("#", location);
+        }
+    }
+
+    [Fact]
     public async Task Both_enroll_mounts_are_public_reaching_the_endpoint_not_the_gate()
     {
         // POST /mobile/enroll is the canonical mint seam and POST /m/enroll is its back-compat alias; both

@@ -152,7 +152,12 @@ function focusOrOpen(url) {
 function isCockpitWindow(client) {
   try {
     var path = new URL(client.url).pathname;
-    return path.indexOf('/mobile/') !== 0 && path !== '/mobile';
+    // The mobile app serves at /mobile (re-based from /m); a Cockpit push must not hijack that window.
+    // Both mounts are excluded: the legacy /m still 301s to /mobile, so an installed PWA can be on either
+    // momentarily, and neither is a Cockpit tab.
+    var underMobile = path.indexOf('/mobile/') === 0 || path === '/mobile'
+                   || path.indexOf('/m/') === 0 || path === '/m';
+    return !underMobile;
   } catch (e) {
     return true;
   }
