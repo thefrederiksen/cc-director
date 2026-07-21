@@ -29,6 +29,12 @@ public sealed class EntitlementSchemaQualificationTests
 {
     private const string PgTestConnectionEnvVar = "CC_GATEWAY_TEST_PG_CONNECTION";
 
+    /// <summary>A throwaway but VALID canonical account subject for the query-shape probes. The subject column
+    /// is Postgres uuid and the Gateway maps it through a string&lt;-&gt;Guid value converter, so the WHERE
+    /// constant must be a real uuid - EF evaluates the converter on it when it generates the SQL literal. The
+    /// value is irrelevant to what these facts assert (the FROM clause schema), it only has to parse as a uuid.</summary>
+    private const string ProbeSubject = "35543491-85cb-468d-a0c9-560193683105";
+
     /// <summary>A Fact that skips itself when the throwaway-Postgres connection is unset, so the normal
     /// SQLite test run and CI are unaffected. Anything reading a real PostgresException needs a real server.</summary>
     private sealed class RequiresPostgresFactAttribute : FactAttribute
@@ -81,7 +87,7 @@ public sealed class EntitlementSchemaQualificationTests
         Assert.Equal("gateway", entity!.GetSchema());
         Assert.Equal("entitlements", entity.GetTableName());
 
-        var sql = ctx.Entitlements.AsNoTracking().Where(e => e.Subject == "any").ToQueryString();
+        var sql = ctx.Entitlements.AsNoTracking().Where(e => e.Subject == ProbeSubject).ToQueryString();
 
         // The relation is schema-qualified. Postgres quotes an identifier only when it must, so EF emits the
         // bare-but-qualified form gateway.entitlements here; assert on that exact qualified reference.
@@ -107,7 +113,7 @@ public sealed class EntitlementSchemaQualificationTests
         Assert.NotNull(entity);
         Assert.Null(entity!.GetSchema());
 
-        var sql = ctx.Entitlements.AsNoTracking().Where(e => e.Subject == "any").ToQueryString();
+        var sql = ctx.Entitlements.AsNoTracking().Where(e => e.Subject == ProbeSubject).ToQueryString();
         Assert.DoesNotContain("gateway", sql);
         Assert.Contains("entitlements", sql);
     }
@@ -124,7 +130,12 @@ public sealed class EntitlementSchemaQualificationTests
     public void EntitlementRead_AgainstRealPostgres_ResolvesGatewaySchemaTable()
     {
         var conn = Environment.GetEnvironmentVariable(PgTestConnectionEnvVar)!;
-        var subject = "sub-live-" + Guid.NewGuid().ToString("N");
+        // A CANONICAL D-form uuid subject. The subject column is Postgres uuid and the Gateway reads it through
+        // the string<->Guid value converter, so a non-uuid value (the old "sub-live-..." marker) would throw
+        // Guid.ParseExact before the read ever reached Postgres. A fresh uuid keeps the fixture rerunnable and
+        // unique per run.
+        var subject = Guid.NewGuid().ToString("D");
+        var subjectGuid = Guid.Parse(subject);
         var previous = Environment.GetEnvironmentVariable(GatewayDatabase.PostgresConnectionEnvVar);
         Environment.SetEnvironmentVariable(GatewayDatabase.PostgresConnectionEnvVar, conn);
         try
@@ -132,17 +143,21 @@ public sealed class EntitlementSchemaQualificationTests
             using var db = new GatewayDatabase(new SingleTenantContext());
             using (var ctx = db.CreateUnscopedContext())
             {
-                // The payment side owns this table; create it in the gateway schema as that side would, and
-                // seed one live, active entitlement. IF NOT EXISTS / delete-then-insert keeps the test rerunnable.
+                // The payment side owns this table; create it in the gateway schema as that side would - with
+                // subject as `uuid`, MATCHING the live column the converter is typed against, so this proves the
+                // real scenario (uuid column + the converter's uuid parameter), not a text-column stand-in. Drop
+                // first so a stale text-column table from an earlier test build cannot linger and defeat the fix.
+                ctx.Database.ExecuteSqlRaw("DROP TABLE IF EXISTS gateway.entitlements;");
                 ctx.Database.ExecuteSqlRaw(
-                    "CREATE TABLE IF NOT EXISTS gateway.entitlements (" +
-                    "subject text NOT NULL PRIMARY KEY, status text NOT NULL, " +
+                    "CREATE TABLE gateway.entitlements (" +
+                    "subject uuid NOT NULL PRIMARY KEY, status text NOT NULL, " +
                     "current_period_end timestamptz NULL, stripe_subscription_id text NULL, " +
                     "updated_at timestamptz NULL, livemode boolean NULL);");
-                ctx.Database.ExecuteSqlRaw("DELETE FROM gateway.entitlements WHERE subject = {0};", subject);
+                // Seed one live, active entitlement. The subject is bound as a native uuid parameter so it lands
+                // in the uuid column exactly as the payment side would write it.
                 ctx.Database.ExecuteSqlRaw(
                     "INSERT INTO gateway.entitlements (subject, status, livemode) VALUES ({0}, 'active', true);",
-                    subject);
+                    subjectGuid);
             }
 
             var registry = new EntitlementRegistry(db, requireLivemode: true);
@@ -167,8 +182,12 @@ public sealed class EntitlementSchemaQualificationTests
     public void EntitlementReadFailure_OnPostgresException_LogsSqlStateAndMessageText_NeverSubject()
     {
         var conn = Environment.GetEnvironmentVariable(PgTestConnectionEnvVar)!;
-        // A subject with a distinctive, PII-shaped marker so a leak into the log is unmistakable.
-        var subject = "sub-PII-marker-" + Guid.NewGuid().ToString("N");
+        // A CANONICAL D-form uuid subject, unique per run. It MUST be a valid uuid: the converter parses it on
+        // the way to Postgres, so a non-uuid marker (the old "sub-PII-marker-...") would throw Guid.ParseExact
+        // before the read reached the server, and the intended undefined-table 42P01 would never be produced -
+        // the diagnostic path this fact exists to prove would go unexercised. A fresh uuid is still a unique,
+        // searchable token, so the never-log-the-subject assertion below is just as unmistakable.
+        var subject = Guid.NewGuid().ToString("D");
         var previous = Environment.GetEnvironmentVariable(GatewayDatabase.PostgresConnectionEnvVar);
         Environment.SetEnvironmentVariable(GatewayDatabase.PostgresConnectionEnvVar, conn);
 
