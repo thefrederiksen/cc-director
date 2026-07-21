@@ -749,18 +749,6 @@ public partial class MainWindow : Window
     /// <summary>How often line 2 of the status box re-reads the Gateway's signed-in status.</summary>
     private static readonly TimeSpan AccountPollInterval = TimeSpan.FromSeconds(30);
 
-    /// <summary>The Cockpit Account page route (issue #852). Appended to the Gateway-resolved
-    /// Cockpit front-door URL. Retained for <see cref="BuildAccountUrl"/>, which is still unit-tested.</summary>
-    private const string CockpitAccountRoute = "/account";
-
-    /// <summary>
-    /// Build the Cockpit Account page URL from the gateway's Tailscale front-door URL (issue #852):
-    /// {frontDoor}/account, with a single clean separator so a front door ending in a slash never
-    /// yields "//account". Pure string building, so it is unit-testable without a UI thread.
-    /// </summary>
-    internal static string BuildAccountUrl(string frontDoorUrl) =>
-        frontDoorUrl.TrimEnd('/') + CockpitAccountRoute;
-
     /// <summary>
     /// Wire the account line of the status box (spec section 6, line 2): a heartbeat poll that reads the
     /// connected Gateway's <c>GET /account/status</c> off the UI thread, caches the line-2 inputs, and
@@ -2579,21 +2567,11 @@ public partial class MainWindow : Window
         return $"Could not reach the gateway at {baseUrl}: {error}{hint}";
     }
 
-    // Builds the Cockpit Learning page URL from the gateway's Tailscale front-door URL (#475).
-    // Appends the Learning route (#472) with a single, clean separator so a front door that
-    // ends in a slash never yields "//learn". Pure string building, so it is unit-testable.
-    internal static string BuildLearnUrl(string frontDoorUrl) =>
-        frontDoorUrl.TrimEnd('/') + CockpitLearnRoute;
-
-    // The Cockpit Learning page route (#472). Appended to the Cockpit front-door URL
-    // resolved through the gateway, so the Learn button lands on {frontDoor}/learn.
-    private const string CockpitLearnRoute = "/learn";
-
-    // Open the Cockpit Learning page (#475). This reuses the SAME resolution as the Cockpit
-    // button -- we ASK THE CONFIGURED GATEWAY (GET {base}/cockpit) for the Tailscale front-door
-    // URL rather than hardcoding a host/port -- then open {frontDoor}/learn. cc-director never
-    // opens a localhost URL: when the gateway has no tailnet URL (Tailscale down) or cannot be
-    // reached at all, we surface the explicit "is the Gateway running?" hint and open nothing,
+    // Open the Cockpit Learning page (#475). We ASK THE CONFIGURED GATEWAY (GET {base}/cockpit) and open
+    // the LearnUrl it hands back VERBATIM. The client no longer composes the URL: the Gateway owns it
+    // (CLAUDE.md rule 7), and LearnUrl is {base}/learn - a sibling ROOT route, not {base}/cockpit/learn.
+    // cc-director never opens a localhost URL: when the gateway has no tailnet URL (Tailscale down) or
+    // cannot be reached at all, we surface the explicit "is the Gateway running?" hint and open nothing,
     // never a silent no-op and never a loopback URL that only works on this machine.
     private async void BtnLearn_Click(object? sender, RoutedEventArgs e)
     {
@@ -2604,9 +2582,8 @@ public partial class MainWindow : Window
             using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(8) };
             var info = await http.GetFromJsonAsync<global::CcDirector.Gateway.Contracts.CockpitInfoDto>(
                 baseUrl + "/cockpit");
-            if (info?.Url is { } frontDoor)
+            if (info?.LearnUrl is { } learnUrl)
             {
-                var learnUrl = BuildLearnUrl(frontDoor);
                 FileLog.Write($"[MainWindow] BtnLearn_Click: opening {learnUrl} (up={info.Up}, baseUrl={baseUrl})");
                 OpenUrlInBrowser(learnUrl);
             }

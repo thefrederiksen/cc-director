@@ -4,41 +4,16 @@ using Xunit;
 namespace CcDirector.Avalonia.Tests;
 
 /// <summary>
-/// Unit tests for the Director Learn button helpers (#475). These pin the two pure string
-/// behaviors the <c>BtnLearn_Click</c> handler relies on: building the Cockpit Learning page URL
-/// from the gateway's Tailscale front-door URL, and building the explicit "could not reach the
-/// gateway" message (reusing the existing Gateway-tray hint) for the not-reachable failure state.
-/// The handler itself is an <c>async void</c> UI event handler that opens a browser / shows a
-/// dialog, so the testable logic is extracted into these helpers.
+/// Unit tests for the Director Learn button (#475). The Learn URL is NO LONGER composed on the client -
+/// the Gateway hands it back as <c>CockpitInfoDto.LearnUrl</c> ({base}/learn) and <c>BtnLearn_Click</c>
+/// opens it verbatim (CLAUDE.md rule 7), so the former <c>BuildLearnUrl</c> string-composer and its tests
+/// are gone (a client-composed <c>Url + "/learn"</c> would yield the non-route {base}/cockpit/learn now
+/// that Url is {base}/cockpit; the resolution is proven server-side in CockpitUrlEndpointTests /
+/// GatewayPublicUrlTests). What remains testable here is the pure "could not reach the gateway" message
+/// (reusing the existing Gateway-tray hint) for the not-reachable failure state.
 /// </summary>
 public class LearnButtonUrlTests
 {
-    [Fact]
-    public void BuildLearnUrl_FrontDoorWithoutTrailingSlash_AppendsLearnRoute()
-    {
-        // Arrange
-        var frontDoor = "https://example-host.ts.net";
-
-        // Act
-        var learnUrl = MainWindow.BuildLearnUrl(frontDoor);
-
-        // Assert
-        Assert.Equal("https://example-host.ts.net/learn", learnUrl);
-    }
-
-    [Fact]
-    public void BuildLearnUrl_FrontDoorWithTrailingSlash_DoesNotDoubleSlash()
-    {
-        // Arrange: the gateway's /cockpit response front door commonly ends with a slash.
-        var frontDoor = "https://example-host.ts.net/";
-
-        // Act
-        var learnUrl = MainWindow.BuildLearnUrl(frontDoor);
-
-        // Assert: a single clean separator, never "//learn".
-        Assert.Equal("https://example-host.ts.net/learn", learnUrl);
-    }
-
     [Fact]
     public void BuildGatewayUnreachableMessage_LoopbackDefault_UsesLocalGatewayTrayHint()
     {

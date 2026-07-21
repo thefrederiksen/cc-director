@@ -37,6 +37,12 @@ public static class GatewayPublicUrl
     /// <summary>The Cockpit surface path under the base (the React shell fallback serves it).</summary>
     public const string CockpitPath = "/cockpit";
 
+    /// <summary>The Cockpit Learning page path - a ROOT SPA route (issue #472), a sibling of
+    /// <see cref="CockpitPath"/>, NOT a child of it. It is <c>{base}/learn</c>, never
+    /// <c>{base}/cockpit/learn</c> (which is not a route). The desktop Learn button opens this URL
+    /// verbatim - it must NOT compose a path onto the Cockpit URL (CLAUDE.md rule 7).</summary>
+    public const string LearnPath = "/learn";
+
     /// <summary>The mobile app surface path under the base.</summary>
     public const string MobilePath = "/mobile";
 
@@ -46,6 +52,14 @@ public static class GatewayPublicUrl
     /// </summary>
     /// <returns>The full Cockpit URL, or null in self-host mode when Tailscale is down.</returns>
     public static string? ResolveCockpit() => Resolve(CockpitPath);
+
+    /// <summary>
+    /// Resolve the full public URL for the Cockpit Learning page (<c>{base}/learn</c>) against the live
+    /// environment. Same base rule as <see cref="ResolveCockpit"/>; only the surface path differs. This is
+    /// what the Gateway hands the dumb desktop Learn button so it never composes <c>Url + "/learn"</c>.
+    /// </summary>
+    /// <returns>The full Learn URL, or null in self-host mode when Tailscale is down.</returns>
+    public static string? ResolveLearn() => Resolve(LearnPath);
 
     /// <summary>
     /// Resolve the full public URL for the mobile-app surface (<c>{base}/mobile</c>) against the live

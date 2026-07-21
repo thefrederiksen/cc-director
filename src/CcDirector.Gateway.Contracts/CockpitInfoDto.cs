@@ -16,6 +16,16 @@ public sealed class CockpitInfoDto
     /// </summary>
     public string? Url { get; set; }
 
+    /// <summary>
+    /// The Cockpit Learning page URL, e.g. https://gateway.devthrottle.com/learn (or, self-hosted,
+    /// https://machine-a.tail0123.ts.net/learn). Resolved on the Gateway from the ONE public base, and
+    /// null when Tailscale is unavailable self-hosted, exactly like <see cref="Url"/>. The client OPENS
+    /// this verbatim; it must NOT compose a path onto <see cref="Url"/>. <see cref="Url"/> is now
+    /// {base}/cockpit, so the old client-side <c>Url + "/learn"</c> would yield the non-route
+    /// {base}/cockpit/learn - the Gateway owns the URL, the client just opens it (CLAUDE.md rule 7).
+    /// </summary>
+    public string? LearnUrl { get; set; }
+
     /// <summary>The loopback port the supervised Cockpit child listens on (diagnostics only).</summary>
     public int Port { get; set; }
 

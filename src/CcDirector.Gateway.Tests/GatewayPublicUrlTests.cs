@@ -28,6 +28,7 @@ public class GatewayPublicUrlTests
 
     [Theory]
     [InlineData(GatewayPublicUrl.CockpitPath, FrontDoor + "/cockpit")]
+    [InlineData(GatewayPublicUrl.LearnPath, FrontDoor + "/learn")]
     [InlineData(GatewayPublicUrl.MobilePath, FrontDoor + "/mobile")]
     public void SelfHost_FrontDoorPresent_AppendsSurfacePath(string surfacePath, string expected)
     {
@@ -42,6 +43,7 @@ public class GatewayPublicUrlTests
 
     [Theory]
     [InlineData(GatewayPublicUrl.CockpitPath)]
+    [InlineData(GatewayPublicUrl.LearnPath)]
     [InlineData(GatewayPublicUrl.MobilePath)]
     public void SelfHost_FrontDoorNull_ReturnsNull(string surfacePath)
     {
@@ -68,6 +70,7 @@ public class GatewayPublicUrlTests
 
     [Theory]
     [InlineData(GatewayPublicUrl.CockpitPath, PublicBase + "/cockpit")]
+    [InlineData(GatewayPublicUrl.LearnPath, PublicBase + "/learn")]
     [InlineData(GatewayPublicUrl.MobilePath, PublicBase + "/mobile")]
     public void Hosted_ConfiguredBase_AppendsSurfacePath(string surfacePath, string expected)
     {
@@ -118,13 +121,28 @@ public class GatewayPublicUrlTests
     // ---- convenience wrappers append the right surface path --------------------------------------
 
     [Fact]
-    public void ResolveCockpit_And_ResolveMobile_UseTheirSurfacePaths()
+    public void ResolveCockpit_ResolveLearn_ResolveMobile_UseTheirSurfacePaths()
     {
-        // ResolveCockpit()/ResolveMobile() are thin wrappers over Resolve(surfacePath) that read the live
-        // environment. They cannot be pinned without the environment, but the surface constants they pass
-        // are what the pure tests above pin - so a swap of the two constants would flip every case above.
-        Assert.Equal(GatewayPublicUrl.CockpitPath, "/cockpit");
-        Assert.Equal(GatewayPublicUrl.MobilePath, "/mobile");
-        Assert.NotEqual(GatewayPublicUrl.CockpitPath, GatewayPublicUrl.MobilePath);
+        // ResolveCockpit()/ResolveLearn()/ResolveMobile() are thin wrappers over Resolve(surfacePath) that
+        // read the live environment. They cannot be pinned without the environment, but the surface
+        // constants they pass are what the pure tests above pin - so a swap of any constant flips a case.
+        Assert.Equal("/cockpit", GatewayPublicUrl.CockpitPath);
+        Assert.Equal("/learn", GatewayPublicUrl.LearnPath);
+        Assert.Equal("/mobile", GatewayPublicUrl.MobilePath);
+    }
+
+    [Fact]
+    public void Learn_IsASiblingRootRoute_NotAChildOfCockpit()
+    {
+        // The regression this guards: Learn is {base}/learn, a SIBLING of {base}/cockpit - never
+        // {base}/cockpit/learn (which is not a route). Composing a path onto the cockpit URL is the bug;
+        // resolving /learn from the base is the fix.
+        var cockpit = GatewayPublicUrl.Resolve(isHosted: true,
+            hostedConfiguredBase: PublicBase, selfHostFrontDoor: null, GatewayPublicUrl.CockpitPath);
+        var learn = GatewayPublicUrl.Resolve(isHosted: true,
+            hostedConfiguredBase: PublicBase, selfHostFrontDoor: null, GatewayPublicUrl.LearnPath);
+
+        Assert.Equal(PublicBase + "/learn", learn);
+        Assert.NotEqual(cockpit + "/learn", learn);
     }
 }
