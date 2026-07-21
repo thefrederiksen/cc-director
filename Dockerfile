@@ -123,6 +123,17 @@ ENV HOME=/home/gateway
 # CC_DIRECTOR_ROOT as its base directory; without it the base resolves relative to the read-only
 # /app working directory and the non-root user cannot create it.
 ENV CC_DIRECTOR_ROOT=/home/gateway/cc-director
+
+# Bake the hosted-mode toggle into the IMAGE (production-readiness item MH-3). It used to be set only as an
+# Azure App Service application setting, which a slot swap or a config restore can drop - and a dropped
+# toggle used to boot this same public image as a Local single-tenant, no-auth Gateway, silently. Setting it
+# in the image makes it part of the artifact, so it survives a settings reset. The IMMUTABLE identity is the
+# compiled-in HostedGatewayImage marker in CcDirector.Gateway.Host; this ENV is the runtime toggle that
+# marker requires to be present. The hosted Gateway also REQUIRES CC_GATEWAY_PUBLIC_URL (the https public
+# base URL) and CC_GATEWAY_DB_CONNECTION (the PostgreSQL connection string) at run time - those carry
+# environment-specific values / credentials, so they stay App Service settings and are NOT baked here. The
+# Gateway refuses to start (HostedStartupContract) if any of the three is missing.
+ENV CC_GATEWAY_HOSTED=1
 USER gateway
 
 # The Gateway binds to loopback (127.0.0.1:7878) by design - it is reached over the tunnel, not a public
