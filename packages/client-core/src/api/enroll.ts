@@ -1,10 +1,11 @@
 // The enrollment call (issue #908, shared by the desktop Cockpit since issue #1088): hand the Gateway
 // the credential this device received from devthrottle.com, and receive back the LOCAL device key the
 // Gateway issues and validates offline. This is the only place the cloud-issued credential is used;
-// from then on the app authenticates with the local key returned here. POST /m/enroll is under /m/, so
-// it is reachable before the device holds any credential. Both shells enroll through this ONE
-// generalized endpoint - the platform field tells the Gateway what kind of device this is
-// (android/ios -> phone, anything else, for example "browser" -> browser).
+// from then on the app authenticates with the local key returned here. POST /mobile/enroll is under
+// /mobile/, so it is reachable before the device holds any credential (the Gateway also keeps the old
+// POST /m/enroll mapped, so an installed PWA still mid-flight on the previous bundle keeps working).
+// Both shells enroll through this ONE generalized endpoint - the platform field tells the Gateway what
+// kind of device this is (android/ios -> phone, anything else, for example "browser" -> browser).
 //
 // There are TWO enrollment credentials, one per gateway kind, and the client forwards whichever the
 // website returned in the callback fragment (multi-tenant hosted sign-in, Phase C):
@@ -16,8 +17,12 @@
 //     tenant-scoped device key. No device_key is sent in the hosted body.
 import { GatewayError } from "./client";
 
+// The ONE enrollment seam every browser shell POSTs to. Canonicalized from /m/enroll to /mobile/enroll
+// with the app's /m -> /mobile re-base; the Gateway still answers the old /m/enroll too (back-compat).
+export const ENROLL_PATH = "/mobile/enroll";
+
 /**
- * The Gateway answers POST /m/enroll with 409 when THE GATEWAY ITSELF is not signed in to a DevThrottle
+ * The Gateway answers POST /mobile/enroll with 409 when THE GATEWAY ITSELF is not signed in to a DevThrottle
  * account, so it has no account to enroll this device onto.
  *
  * This is not really a failure - on a fresh install it is the expected state - and it is the one
@@ -48,7 +53,7 @@ export async function enrollDevice(
   platform: string,
   signal?: AbortSignal,
 ): Promise<string> {
-  const res = await fetch("/m/enroll", {
+  const res = await fetch(ENROLL_PATH, {
     method: "POST",
     headers: { "Content-Type": "application/json", Accept: "application/json" },
     body: JSON.stringify({ deviceKey: cloudDeviceKey, deviceId, name, platform }),
@@ -60,7 +65,7 @@ export async function enrollDevice(
 /**
  * Exchange the account's short-lived Supabase access token for a tenant-scoped local device key on a
  * HOSTED gateway (multi-tenant hosted sign-in, Phase C). The token is forwarded as the standard
- * `Authorization: Bearer` header - exactly the mint boundary the hosted /m/enroll endpoint expects -
+ * `Authorization: Bearer` header - exactly the mint boundary the hosted /mobile/enroll endpoint expects -
  * and NO device_key is sent in the body (tenant isolation is bound at the mint from the verified
  * token, never from anything the client puts in the body).
  * @returns the tenant-scoped per-device key the app must store and send as its Bearer.
@@ -75,7 +80,7 @@ export async function enrollDeviceHosted(
   platform: string,
   signal?: AbortSignal,
 ): Promise<string> {
-  const res = await fetch("/m/enroll", {
+  const res = await fetch(ENROLL_PATH, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -89,7 +94,7 @@ export async function enrollDeviceHosted(
 }
 
 /**
- * Read the local device key from an /m/enroll response, or throw a GatewayError carrying the server's
+ * Read the local device key from an /mobile/enroll response, or throw a GatewayError carrying the server's
  * reason. Shared verbatim by the self-host and hosted paths so both handle success and every failure
  * identically - only the request differs between them, never the response handling.
  */

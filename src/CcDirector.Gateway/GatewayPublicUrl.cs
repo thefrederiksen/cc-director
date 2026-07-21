@@ -62,11 +62,12 @@ public static class GatewayPublicUrl
     /// Resolve the full public URL for the mobile-app surface (<c>{base}/mobile</c>) against the live
     /// environment. Same base rule as <see cref="ResolveCockpit"/>; the surface path is the only difference.
     ///
-    /// DEFERRED to P3: NOTHING wires this yet. The mobile app still serves at <c>/m</c> (unchanged in P1).
-    /// The <c>/m</c>-&gt;<c>/mobile</c> app re-base (Vite base, React Router basename, service-worker scope,
-    /// and the <c>/m/signin</c>+<c>/m/enroll</c> sign-in seam), the 301, and the first consumer of this
-    /// method all land together in P3, where a phone proves it. It exists here now, with its own pure
-    /// both-mode unit tests, so the resolver is one complete thing rather than being reopened in P3.
+    /// The <c>/m</c>-&gt;<c>/mobile</c> app re-base has LANDED (Phase D): the mobile app now serves at
+    /// <c>/mobile</c> (Vite base, React Router basename, service-worker scope, and the sign-in seam all
+    /// re-rooted there), and the Gateway 301-redirects the old <c>/m</c> mount to it. What is still
+    /// DEFERRED is a CONSUMER of this method: nothing hands out a mobile URL / QR / "open on phone" link
+    /// yet, so <c>ResolveMobile()</c> is resolved and unit-tested but not yet wired into a caller. The
+    /// first consumer lands with whatever feature needs to hand a phone its URL.
     /// </summary>
     /// <returns>The full mobile URL, or null in self-host mode when Tailscale is down.</returns>
     public static string? ResolveMobile() => Resolve(MobilePath);

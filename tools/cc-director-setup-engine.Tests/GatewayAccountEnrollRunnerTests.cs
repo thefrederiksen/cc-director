@@ -13,7 +13,7 @@ namespace CcDirector.Setup.Engine.Tests;
 /// account-sign-in join logic without a real browser, a live cloud/gateway, or real disk writes: an
 /// injected sign-in stands in for the browser hand-back, a routing fake HTTP handler stands in for both
 /// the cloud device-registry (<c>POST /api/v1/devices/register</c>) and the gateway enrollment
-/// (<c>POST /m/enroll</c>), and a capturing action stands in for the config.json persist.
+/// (<c>POST /mobile/enroll</c>), and a capturing action stands in for the config.json persist.
 ///
 /// What is proven: a successful sign-in registers the account device, exchanges its key at the gateway
 /// for a LOCAL device key, AND persists the (gateway url, local key) pair; a cancelled/failed sign-in, a
@@ -62,7 +62,7 @@ public class GatewayAccountEnrollRunnerTests
         "{\"data\":{\"device_key\":\"" + deviceKey + "\",\"record\":{\"id\":\"cloud-dev-1\",\"name\":\"" + MachineName + "\"}}}";
 
     private static bool IsCloudRegister(HttpRequestMessage r) => r.RequestUri!.AbsolutePath.EndsWith("/devices/register");
-    private static bool IsGatewayEnroll(HttpRequestMessage r) => r.RequestUri!.AbsolutePath == "/m/enroll";
+    private static bool IsGatewayEnroll(HttpRequestMessage r) => r.RequestUri!.AbsolutePath == "/mobile/enroll";
     // Issue #1206: the account device list the installer reads to discover gateways.
     private static bool IsDeviceList(HttpRequestMessage r) =>
         r.Method == HttpMethod.Get && r.RequestUri!.AbsolutePath.EndsWith("/api/v1/devices");
@@ -112,9 +112,9 @@ public class GatewayAccountEnrollRunnerTests
         Assert.Single(saved);
         Assert.Equal(GatewayUrl, saved[0].url);
         Assert.Equal("local-key-abc", saved[0].key);
-        // It registered the account device, then presented the CLOUD key (never the account token) to /m/enroll.
+        // It registered the account device, then presented the CLOUD key (never the account token) to /mobile/enroll.
         Assert.Contains(reqs, x => x.path.EndsWith("/devices/register"));
-        var enroll = Assert.Single(reqs, x => x.path == "/m/enroll");
+        var enroll = Assert.Single(reqs, x => x.path == "/mobile/enroll");
         Assert.Contains("cloud-key-abc", enroll.body);
         Assert.Contains(DeviceId, enroll.body);
     }
@@ -164,7 +164,7 @@ public class GatewayAccountEnrollRunnerTests
         Assert.Contains("could not be registered on your DevThrottle account", result.ErrorMessage);
         Assert.Empty(saved);
         // It never reached the gateway enroll.
-        Assert.DoesNotContain(reqs, x => x.path == "/m/enroll");
+        Assert.DoesNotContain(reqs, x => x.path == "/mobile/enroll");
     }
 
     [Fact]
@@ -220,7 +220,7 @@ public class GatewayAccountEnrollRunnerTests
     [Fact]
     public async Task VerifyAndSaveAsync_EnrollSuccessWithoutKey_BlocksAndDoesNotPersist()
     {
-        // A 2xx from /m/enroll that carries no local device key must NOT count as connected.
+        // A 2xx from /mobile/enroll that carries no local device key must NOT count as connected.
         HttpResponseMessage Responder(HttpRequestMessage r) =>
             IsCloudRegister(r) ? Raw(HttpStatusCode.Created, CloudRegisterJson("cloud-key-abc"))
             : IsGatewayEnroll(r) ? Obj(HttpStatusCode.OK, new { deviceKey = "" })
@@ -359,7 +359,7 @@ public class GatewayAccountEnrollRunnerTests
         Assert.Equal(GatewayUrl, saved[0].url);
         Assert.Equal("local-key-abc", saved[0].key);
         // It enrolled against the discovered gateway, presenting the CLOUD key (never the account token).
-        var enroll = Assert.Single(reqs, x => x.path == "/m/enroll");
+        var enroll = Assert.Single(reqs, x => x.path == "/mobile/enroll");
         Assert.Contains("cloud-key-abc", enroll.body);
     }
 

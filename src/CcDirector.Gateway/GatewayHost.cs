@@ -1568,8 +1568,8 @@ public sealed class GatewayHost : IAsyncDisposable
         }
 
         // Mobile front door (issue #806, docs/architecture/mobile/): a phone browser-navigation
-        // (Accept: text/html, phone User-Agent) not already under /m gets a 302 to the mobile app
-        // at /m/; a desktop UA falls through unchanged to the Cockpit. After auth, before the
+        // (Accept: text/html, phone User-Agent) not already under the mobile app gets a 302 to the mobile
+        // app at /mobile/; a desktop UA falls through unchanged to the Cockpit. After auth, before the
         // Cockpit's browser-page routes - so a phone never reaches the Cockpit sitemap.
         Mobile.MobileRedirect.UseMobileRedirect(_app);
 
@@ -1818,7 +1818,7 @@ public sealed class GatewayHost : IAsyncDisposable
         Api.SignedInEnrollmentEndpoint.Map(_app, Devices, SignIn, _childMirror);
 
         // The hosted-mint dependencies, built ONCE for every hosted entry point that mints a tenant-scoped
-        // device key: the hosted Director enrollment below and the hosted /m/enroll branch both pass this same
+        // device key: the hosted Director enrollment below and the hosted /mobile/enroll branch both pass this same
         // bundle into the ONE mint (HostedEnrollmentEndpoint.Enroll). Non-null only on a hosted Gateway; null
         // keeps every entry point on its self-host path. Building the account-token validator here once means
         // both share the identical signature/audience/issuer configuration - there is no second place that
@@ -2133,7 +2133,7 @@ public sealed class GatewayHost : IAsyncDisposable
         MissionNotesEndpoint.Map(_app, _missionNotes);
 
         // Issue #806 (mobile foundation): the OpenAPI document the mobile codegen consumes, and the
-        // mobile app static serving at /m (built shell + token-injected index.html). Mapped before
+        // mobile app static serving at /mobile (built shell + token-injected index.html). Mapped before
         // the fallback proxy so these explicit routes win over the Cockpit catch-all.
         _app.MapOpenApi();
 
@@ -2145,16 +2145,17 @@ public sealed class GatewayHost : IAsyncDisposable
         Api.WebPushEndpoints.Map(_app, _vapidStore.PublicKey, _pushSubscriptions,
             onSubscribed: () => _pushNotifier?.ResetDedupe());
 
-        // Mobile device enrollment (issue #908): POST /m/enroll. A phone that signed in on
-        // devthrottle.com and received its per-device key hands that key here; the Gateway confirms
-        // (account-scoped, by key hash) that the key belongs to its OWN signed-in account and issues the
-        // phone a LOCAL device key it validates offline - so the master token is no longer injected into
-        // the mobile shell. Under /m/ so it is reachable before the phone holds any credential; it carries
-        // its own authorization (the account-scoped device key), exactly like /devices/register. Mapped
-        // before the mobile shell so the explicit POST route wins over the shell's GET catch-all.
+        // Mobile device enrollment (issue #908): POST /mobile/enroll (with the legacy /m/enroll kept as a
+        // back-compat alias). A phone that signed in on devthrottle.com and received its per-device key
+        // hands that key here; the Gateway confirms (account-scoped, by key hash) that the key belongs to
+        // its OWN signed-in account and issues the phone a LOCAL device key it validates offline - so the
+        // master token is no longer injected into the mobile shell. Under /mobile/ so it is reachable
+        // before the phone holds any credential; it carries its own authorization (the account-scoped
+        // device key), exactly like /devices/register. Mapped before the mobile shell so the explicit POST
+        // route wins over the shell's GET catch-all.
         var mobileEnrollmentClient = new Core.Account.DeviceRegistryClient(new HttpClient { Timeout = TimeSpan.FromSeconds(10) });
-        // On a HOSTED Gateway (hostedEnrollDeps non-null) /m/enroll takes a human's account access token in the
-        // Bearer header and runs the ONE hosted mint; self-host (null) keeps the cloud-device-key-in-body path.
+        // On a HOSTED Gateway (hostedEnrollDeps non-null) /mobile/enroll takes a human's account access token
+        // in the Bearer header and runs the ONE hosted mint; self-host (null) keeps the cloud-device-key-in-body path.
         Api.MobileEnrollmentEndpoint.Map(_app, new Account.MobileDeviceEnrollmentService(Account, mobileEnrollmentClient, Devices), hostedEnrollDeps);
 
         // DevThrottle Stats: the always-available private dashboard (/stats) and its JSON (/stats/data).
@@ -2169,11 +2170,16 @@ public sealed class GatewayHost : IAsyncDisposable
         Prompts.PromptEndpoints.Map(_app, _promptLog, _tenantBoundary);
 
         Mobile.MobileApp.Map(_app, Token);
+        // The legacy /m mount: 301 to the canonical /mobile equivalent so installed phone PWAs and
+        // bookmarks (and the sign-in callback devthrottle.com still hands back to /m/device-callback) keep
+        // working. Mapped after the /mobile serving and the explicit POST /m/enroll route (both win by
+        // being GET vs the same verb / a different verb), before the Cockpit catch-all.
+        Mobile.MobileApp.MapLegacyRedirect(_app);
 
         // One URL (epic #967 cutover, issue #979): the React desktop Cockpit is the Gateway's
         // canonical front door. Everything no explicit endpoint above claimed - the shell at "/",
         // client-side routes, and the hashed static assets (built into wwwroot/c by the release-gated
-        // MSBuild target) - resolves here. Mapped LAST by design, exactly like /m above. The Blazor
+        // MSBuild target) - resolves here. Mapped LAST by design, exactly like /mobile above. The Blazor
         // Server Cockpit and its fallback reverse-proxy were retired in this cutover.
         Cockpit.CockpitReactApp.Map(_app);
 

@@ -87,9 +87,9 @@ public class GatewayHostedEnrollRunnerTests
         Assert.Contains(DeviceId, enroll.Body);
         Assert.Contains(MachineName, enroll.Body);
 
-        // Hosted skips the device-registry exchange entirely: no cloud registration, and no /m/enroll.
+        // Hosted skips the device-registry exchange entirely: no cloud registration, and no /mobile/enroll.
         Assert.DoesNotContain(reqs, r => r.Path.EndsWith("/devices/register"));
-        Assert.DoesNotContain(reqs, r => r.Path == "/m/enroll");
+        Assert.DoesNotContain(reqs, r => r.Path == "/mobile/enroll");
         Assert.Single(reqs);
 
         // The hosted URL and the issued key are persisted exactly once.

@@ -106,7 +106,7 @@ public sealed class RevokeDownEnforcedGatewayProofTests : IAsyncLifetime
         await _gateway.StartAsync();
 
         // Post-enrollment state: the phone holds a local per-device key issued by THIS Gateway, recorded
-        // with its cloud roster id (exactly what /m/enroll records), so the revoke-down sweep can match it.
+        // with its cloud roster id (exactly what /mobile/enroll records), so the revoke-down sweep can match it.
         _phoneKey = _gateway.Devices.Register(PhoneDeviceId, PhoneMachine, "android", "phone").DeviceKey;
         _gateway.Devices.SetCloudDeviceId(PhoneDeviceId, CloudId);
     }

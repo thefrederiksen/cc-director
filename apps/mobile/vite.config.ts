@@ -2,12 +2,13 @@ import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import { VitePWA } from "vite-plugin-pwa";
 
-// The app is served by the Gateway under /m, so every asset URL must be /m-rooted.
+// The app is served by the Gateway under /mobile, so every asset URL must be /mobile-rooted.
+// (The Gateway 301-redirects the old /m mount to /mobile so installed PWAs and bookmarks keep working.)
 // The PWA service worker caches the app shell (Issue 1, AC7) so the roster opens offline
 // showing the last-known data. Build output goes to dist/, which the Gateway's release-gated
-// MSBuild target copies into wwwroot/m/.
+// MSBuild target copies into wwwroot/mobile/.
 export default defineConfig({
-  base: "/m/",
+  base: "/mobile/",
   plugins: [
     react(),
     VitePWA({
@@ -20,19 +21,19 @@ export default defineConfig({
         name: "DevThrottle Mobile",
         short_name: "DevThrottle",
         description: "Mission Control for Claude Code, on your phone.",
-        start_url: "/m/",
-        scope: "/m/",
+        start_url: "/mobile/",
+        scope: "/mobile/",
         display: "standalone",
         background_color: "#0B1020",
         theme_color: "#0B1020",
         icons: [
           {
-            src: "/m/icon-192.png",
+            src: "/mobile/icon-192.png",
             sizes: "192x192",
             type: "image/png",
           },
           {
-            src: "/m/icon-512.png",
+            src: "/mobile/icon-512.png",
             sizes: "512x512",
             type: "image/png",
           },
@@ -52,7 +53,7 @@ export default defineConfig({
         // Web Push (app-icon "needs you" dot): import the hand-written push handler into the
         // generated service worker. It only adds push/notificationclick/message listeners and does
         // not touch Workbox's precache/offline behavior. The file ships verbatim from public/ and is
-        // served by the Gateway at /m/push-sw.js (importScripts URLs are relative to the SW scope).
+        // served by the Gateway at /mobile/push-sw.js (importScripts URLs are relative to the SW scope).
         // The ?v= is a cache-buster AND an update trigger: bump it whenever push-sw.js changes so the
         // generated sw.js content changes too, which is what makes the browser re-install the service
         // worker and re-import the new push handler (an unchanged sw.js is never re-fetched). The
@@ -70,11 +71,11 @@ export default defineConfig({
         globPatterns: ["**/*.{png,svg,ico,woff2}"],
         runtimeCaching: [
           {
-            // The app shell: EVERY navigation under /m fetches the current index.html from the Gateway
+            // The app shell: EVERY navigation under /mobile fetches the current index.html from the Gateway
             // first (served no-cache), so the phone always loads the latest bundle with no manual cache
             // clear. Falls back to the last-served shell ONLY when the network is unavailable (offline
             // open), after a short timeout so a slow network does not stall the open.
-            urlPattern: ({ request, url }) => request.mode === "navigate" && url.pathname.startsWith("/m"),
+            urlPattern: ({ request, url }) => request.mode === "navigate" && url.pathname.startsWith("/mobile"),
             handler: "NetworkFirst",
             options: {
               cacheName: "m-shell",
@@ -86,7 +87,7 @@ export default defineConfig({
           {
             // The hashed JS/CSS bundle: network-first so an iterating build is picked up immediately. The
             // filenames are content-hashed, so the cached copy is always a correct offline fallback.
-            urlPattern: ({ url }) => url.pathname.startsWith("/m/assets/"),
+            urlPattern: ({ url }) => url.pathname.startsWith("/mobile/assets/"),
             handler: "NetworkFirst",
             options: {
               cacheName: "m-assets",

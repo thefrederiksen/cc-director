@@ -64,9 +64,9 @@ function applyNeedsYou(count, snoozeEnded) {
         body: 'Snooze ended - still waiting on you',
         renotify: true,
         silent: false,
-        icon: '/m/icon-192.png',
-        badge: '/m/icon-192.png',
-        data: { url: '/m/' }
+        icon: '/mobile/icon-192.png',
+        badge: '/mobile/icon-192.png',
+        data: { url: '/mobile/' }
       })
     );
     return Promise.all(tasks);
@@ -85,9 +85,9 @@ function applyNeedsYou(count, snoozeEnded) {
       body: body,
       renotify: false,
       silent: true,
-      icon: '/m/icon-192.png',
-      badge: '/m/icon-192.png',
-      data: { url: '/m/' }
+      icon: '/mobile/icon-192.png',
+      badge: '/mobile/icon-192.png',
+      data: { url: '/mobile/' }
     })
   );
 
@@ -104,12 +104,12 @@ function closeNeedsYou() {
 
 self.addEventListener('notificationclick', function (event) {
   event.notification.close();
-  var url = (event.notification.data && event.notification.data.url) || '/m/';
+  var url = (event.notification.data && event.notification.data.url) || '/mobile/';
   event.waitUntil(
     self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then(function (clients) {
       for (var i = 0; i < clients.length; i++) {
         var c = clients[i];
-        if (c.url.indexOf('/m') !== -1 && 'focus' in c) {
+        if (c.url.indexOf('/mobile') !== -1 && 'focus' in c) {
           return c.focus();
         }
       }

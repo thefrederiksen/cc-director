@@ -8,7 +8,7 @@ import { GatewayError } from "./client";
 //   2. the GATEWAY signs in to a DevThrottle account (without this it has no account to enroll onto).
 //
 // A device cannot enroll until BOTH have happened, and a fresh install has only ever done (1). The
-// Gateway reports that as 409 from POST /m/enroll. Before this existed, the callback screen treated it
+// Gateway reports that as 409 from POST /mobile/enroll. Before this existed, the callback screen treated it
 // as a generic error and offered only "Try again" - which returns to the sign-in screen and fails again
 // for exactly the same reason, a loop with no exit. So 409 must stay distinguishable from every other
 // enrollment failure, or that dead end comes straight back.
@@ -80,7 +80,7 @@ describe("enrollment requests", () => {
 
       expect(local).toBe("local-key");
       const { url, init } = lastInit(fetchMock);
-      expect(url).toBe("/m/enroll");
+      expect(url).toBe("/mobile/enroll");
       expect(init.method).toBe("POST");
       const headers = init.headers as Record<string, string>;
       expect(headers.Authorization).toBeUndefined();
@@ -111,7 +111,7 @@ describe("enrollment requests", () => {
 
       expect(local).toBe("tenant-scoped-key");
       const { url, init } = lastInit(fetchMock);
-      expect(url).toBe("/m/enroll");
+      expect(url).toBe("/mobile/enroll");
       expect(init.method).toBe("POST");
       const headers = init.headers as Record<string, string>;
       expect(headers.Authorization).toBe("Bearer access-token-abc");

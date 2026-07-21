@@ -176,11 +176,11 @@ public static class Program
         FileLog.Write($"[Program] self-update outcome={result.Outcome}: {result.Message}");
         foreach (var step in result.Steps) FileLog.Write($"[Program]   {step}");
 
-        // Issue #809: lay the matching mobile app down beside the freshly swapped exe so /m keeps
+        // Issue #809: lay the matching mobile app down beside the freshly swapped exe so /mobile keeps
         // serving after a self-update (the single-file exe carries no loose content). The running
         // Gateway staged + SHA-verified the zip before launching this helper, so we just extract it.
-        // ONLY after a successful exe update - a rollback leaves the prior wwwroot/m in place, matching
-        // the rolled-back exe. Boundary try/catch: the prior mobile build still serves /m if this step
+        // ONLY after a successful exe update - a rollback leaves the prior wwwroot/mobile in place, matching
+        // the rolled-back exe. Boundary try/catch: the prior mobile build still serves /mobile if this step
         // fails, so a failure is logged loudly (and the next self-update retries), never silently
         // hidden, and it does not undo an already-successful exe update.
         if (result.Outcome == SelfUpdateOutcome.Updated)
@@ -196,7 +196,7 @@ public static class Program
             }
             catch (Exception ex)
             {
-                FileLog.Write($"[Program] mobile app apply FAILED (prior /m build still served): {ex.Message}");
+                FileLog.Write($"[Program] mobile app apply FAILED (prior /mobile build still served): {ex.Message}");
             }
 
             // Issue #979: lay the matching React Cockpit down beside the freshly swapped exe so the

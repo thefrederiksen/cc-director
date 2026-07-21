@@ -1,8 +1,8 @@
 // The shared device-enrollment callback (issue #908, generalized for the desktop Cockpit in issue
-// #1088), served at the installed profile's callback path (/m/device-callback for the phone,
+// #1088), served at the installed profile's callback path (/mobile/device-callback for the phone,
 // /device-callback for the Cockpit). devthrottle.com redirects the browser here after sign-in with the
 // enrollment credential in the URL FRAGMENT (never the query, so it is not sent to any server - issue
-// #1082). This screen reads that credential, exchanges it at the Gateway (POST /m/enroll) for a LOCAL
+// #1082). This screen reads that credential, exchanges it at the Gateway (POST /mobile/enroll) for a LOCAL
 // device key, stores the local key through the shared device-key store, mirrors it into the
 // cc-gateway-token cookie (so the terminal WebSocket and hard navigations authenticate immediately),
 // and enters the app on the originally-requested route. The account session never reaches here.
@@ -24,7 +24,7 @@ import { ensureGatewayCookie } from "../api/client";
 import { beginSignIn } from "../account/accountClient";
 
 // "gatewaySignedOut" is the Gateway itself not being signed in to a DevThrottle account (HTTP 409 from
-// /m/enroll). It is deliberately NOT an error phase: on a fresh install it is the EXPECTED state - the
+// /mobile/enroll). It is deliberately NOT an error phase: on a fresh install it is the EXPECTED state - the
 // Gateway has to join an account before it can enroll anything onto that account.
 //
 // It needs its own phase because the generic error phase strands the person. The Gateway's message says

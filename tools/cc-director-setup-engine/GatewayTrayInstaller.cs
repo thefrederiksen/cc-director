@@ -63,15 +63,15 @@ public sealed class GatewayTrayInstaller
         // Scoped to processes under the install dirs only.
         StopInstalledProcesses(steps);
 
-        // 2. Extract the mobile app (issue #809) into wwwroot/m beside the Gateway exe so /m serves on
-        // a clean install with no manual copy. The single-file exe carries no loose content, so this
-        // side-car zip is the delivery. A release that predates the mobile app (#806) has no such asset
-        // and simply serves no /m (ExtractAsync returns null).
+        // 2. Extract the mobile app (issue #809) into wwwroot/mobile beside the Gateway exe so /mobile
+        // serves on a clean install with no manual copy. The single-file exe carries no loose content, so
+        // this side-car zip is the delivery. A release that predates the mobile app (#806) has no such
+        // asset and simply serves no /mobile (ExtractAsync returns null).
         try
         {
             var mobileDir = await MobilePackage.ExtractAsync(_layout, release, source, ct);
             steps.Add(mobileDir is null
-                ? "no mobile app asset in this release (no /m)"
+                ? "no mobile app asset in this release (no /mobile)"
                 : $"extracted {MobilePackage.AssetName} -> {mobileDir}");
             EngineLog.Write($"[GatewayTrayInstaller] mobile app at {(mobileDir ?? "(none)")}");
         }

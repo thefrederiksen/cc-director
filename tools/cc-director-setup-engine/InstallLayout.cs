@@ -83,12 +83,12 @@ public sealed class InstallLayout
     public string CockpitDir => Path.Combine(LocalRoot, "cockpit");
 
     /// <summary>
-    /// The mobile app's static files (issue #809): wwwroot/m BESIDE the Gateway exe, exactly where
-    /// <c>MobileApp.WebRoot</c> (<c>AppContext.BaseDirectory/wwwroot/m</c>) looks. The single-file
+    /// The mobile app's static files (issue #809): wwwroot/mobile BESIDE the Gateway exe, exactly where
+    /// <c>MobileApp.WebRoot</c> (<c>AppContext.BaseDirectory/wwwroot/mobile</c>) looks. The single-file
     /// Gateway exe carries no loose content, so the built React PWA (issue #806) ships as a side-car
     /// zip the setup engine unpacks here on clean install and self-update.
     /// </summary>
-    public string GatewayMobileDir => Path.Combine(GatewayDir, "wwwroot", "m");
+    public string GatewayMobileDir => Path.Combine(GatewayDir, "wwwroot", "mobile");
 
     /// <summary>
     /// The React desktop Cockpit's static files (epic #967 cutover, issue #979): wwwroot/c BESIDE the

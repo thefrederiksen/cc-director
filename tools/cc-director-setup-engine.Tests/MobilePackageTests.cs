@@ -7,7 +7,7 @@ namespace CcDirector.Setup.Engine.Tests;
 
 /// <summary>
 /// Issue #809: the mobile app (issue #806) ships as a side-car zip the setup engine unpacks into
-/// wwwroot/m beside the Gateway exe, so /m serves on a clean install / self-update / redeploy with no
+/// wwwroot/mobile beside the Gateway exe, so /mobile serves on a clean install / self-update / redeploy with no
 /// manual copy. These tests prove the extract contract (lands index.html + assets, cleans stale
 /// files, verifies the SHA, tolerates a release without the asset).
 /// </summary>
@@ -47,7 +47,7 @@ public class MobilePackageTests : IDisposable
         return _releaseDir;
     }
 
-    /// <summary>The zip's root is the CONTENTS of wwwroot/m (index.html + hashed assets/), matching release.yml.</summary>
+    /// <summary>The zip's root is the CONTENTS of wwwroot/mobile (index.html + hashed assets/), matching release.yml.</summary>
     private string BuildMobileZip(string zipPath, string indexHtml)
     {
         var payload = Path.Combine(_dir, "payload-" + Guid.NewGuid().ToString("N"));
@@ -73,6 +73,10 @@ public class MobilePackageTests : IDisposable
         Assert.True(File.Exists(Path.Combine(_layout.GatewayMobileDir, "assets", "index-abc123.js")));
         // The mobile dir lands under the Gateway dir (beside where the exe is placed).
         Assert.StartsWith(_layout.GatewayDir, _layout.GatewayMobileDir, StringComparison.OrdinalIgnoreCase);
+        // Phase D: the leaf is wwwroot/mobile (re-based from wwwroot/m) - it MUST match MobileApp.WebRoot
+        // (AppContext.BaseDirectory/wwwroot/mobile) or the self-updated Gateway serves nothing at /mobile.
+        Assert.Equal(Path.Combine("wwwroot", "mobile"),
+            Path.Combine(Path.GetFileName(Path.GetDirectoryName(_layout.GatewayMobileDir)!), Path.GetFileName(_layout.GatewayMobileDir)));
     }
 
     [Fact]
@@ -131,7 +135,7 @@ public class MobilePackageTests : IDisposable
     [Fact]
     public void ExtractStagedZip_NoStagedZip_ReturnsNull_LeavesWwwrootMUntouched()
     {
-        // Pre-existing wwwroot/m must survive when there is no staged zip (a release without the asset).
+        // Pre-existing wwwroot/mobile must survive when there is no staged zip (a release without the asset).
         Directory.CreateDirectory(_layout.GatewayMobileDir);
         File.WriteAllText(Path.Combine(_layout.GatewayMobileDir, "index.html"), "prior");
 

@@ -25,7 +25,7 @@ public sealed class GatewayUpdater
 
     /// <summary>
     /// The staging path the matching mobile app zip is downloaded to before a self-update (issue
-    /// #809), so the detached update helper can lay <c>wwwroot/m</c> beside the swapped exe with no
+    /// #809), so the detached update helper can lay <c>wwwroot/mobile</c> beside the swapped exe with no
     /// download. Staged + SHA-verified by <see cref="StageAsync"/>.
     /// </summary>
     public string StagedMobileZipPath => Path.Combine(_layout.StateDir, "staged", MobilePackage.AssetName);
@@ -83,7 +83,7 @@ public sealed class GatewayUpdater
             EngineLog.Write($"[GatewayUpdater] staged Gateway {asset.Version} -> {StagedExePath}");
 
             // Issue #809: stage the matching mobile app zip next to the staged exe so the update helper
-            // can lay wwwroot/m beside the swapped Gateway with no download (the single-file exe carries
+            // can lay wwwroot/mobile beside the swapped Gateway with no download (the single-file exe carries
             // no loose content). The exe and its mobile app ship from the SAME release, so they stage
             // together.
             await StageMobileZipAsync(release, source, ct);

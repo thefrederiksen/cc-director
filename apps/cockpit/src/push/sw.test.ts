@@ -191,8 +191,9 @@ describe("cockpit push service worker", () => {
   });
 
   it("does not treat the mobile app window as a Cockpit tab to reuse", async () => {
+    // The mobile app serves at /mobile (re-based from /m); a Cockpit push must not hijack that window.
     const mobileTab: FakeWindowClient = {
-      url: "https://gw.example/m/",
+      url: "https://gw.example/mobile/",
       focused: false,
       focus() {
         this.focused = true;
@@ -207,7 +208,7 @@ describe("cockpit push service worker", () => {
       notification: { close: () => undefined, data: { url: "/" } },
     });
     expect(mobileTab.focused).toBe(false);
-    expect(w.openedWindows).toEqual(["/"]); // opened a Cockpit window rather than hijacking the /m tab
+    expect(w.openedWindows).toEqual(["/"]); // opened a Cockpit window rather than hijacking the /mobile tab
   });
 
   it("the foreground clear message closes the notification", async () => {

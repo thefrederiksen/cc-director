@@ -163,6 +163,58 @@ public sealed class AuthMiddlewareTests
         Assert.NotEqual(StatusCodes.Status401Unauthorized, ctx.Response.StatusCode);
     }
 
+    // Phase D (/m -> /mobile re-base): the mobile app shell and its enroll seam are public on BOTH the
+    // canonical /mobile mount and the legacy /m mount, so a credential-less phone reaches the shell (to
+    // render Sign in) and the enrollment endpoint (which carries its own account-scoped authorization),
+    // rather than being 401'd. Pins the exemption through the REAL middleware.
+    [Theory]
+    [InlineData("/mobile", "GET")]
+    [InlineData("/mobile/", "GET")]
+    [InlineData("/mobile/assets/app.js", "GET")]
+    [InlineData("/mobile/enroll", "POST")]
+    [InlineData("/m", "GET")]
+    [InlineData("/m/", "GET")]
+    [InlineData("/m/device-callback", "GET")]
+    [InlineData("/m/enroll", "POST")]
+    public async Task Mobile_shell_and_enroll_mounts_are_public_without_a_credential(string path, string method)
+    {
+        var ctx = new DefaultHttpContext();
+        ctx.Request.Path = path;
+        ctx.Request.Method = method;
+
+        var passedThrough = false;
+        await AuthMiddleware.Run(
+            ctx,
+            new AuthMiddleware.RequireToken { Token = SharedToken, Devices = TempRegistry() },
+            () => { passedThrough = true; return Task.CompletedTask; });
+
+        Assert.True(passedThrough, $"{method} {path} must reach past the gate without a credential");
+        Assert.NotEqual(StatusCodes.Status401Unauthorized, ctx.Response.StatusCode);
+    }
+
+    // The over-refusal / over-EXEMPTION guard (a guard has two failure directions): the exemption must
+    // match the mobile app EXACTLY, not any path that merely starts with the letters "mobile". A neighbour
+    // like /mobile-mode or /mobilexyz is NOT the app and, with no credential, must STILL be gated - proof
+    // the StartsWith("/mobile/") boundary did not silently widen the public hole.
+    [Theory]
+    [InlineData("/mobile-mode")]
+    [InlineData("/mobilexyz")]
+    public async Task Mobile_prefix_neighbours_stay_gated_without_a_credential(string path)
+    {
+        var ctx = new DefaultHttpContext();
+        ctx.Request.Path = path;
+        ctx.Request.Method = "GET";
+
+        var passedThrough = false;
+        await AuthMiddleware.Run(
+            ctx,
+            new AuthMiddleware.RequireToken { Token = SharedToken, Devices = TempRegistry() },
+            () => { passedThrough = true; return Task.CompletedTask; });
+
+        Assert.False(passedThrough, $"{path} only resembles the mobile mount and must stay credential-gated");
+        Assert.Equal(StatusCodes.Status401Unauthorized, ctx.Response.StatusCode);
+    }
+
     // The corrective half: a DATA endpoint (account status returns email/provider/credits) must STILL be
     // gated - opening enroll-signed-in must not have widened the hole to account data.
     [Fact]

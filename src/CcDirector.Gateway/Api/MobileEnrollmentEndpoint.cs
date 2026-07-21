@@ -10,8 +10,12 @@ namespace CcDirector.Gateway.Api;
 
 /// <summary>
 /// Browser device enrollment (issue #908 for the phone, generalized for the desktop Cockpit in issue
-/// #1088): <c>POST /m/enroll</c>. The ONE enrollment seam every browser shell uses - the mobile PWA and
-/// the desktop Cockpit both exchange their cloud device key here. The device signs in on
+/// #1088): <c>POST /mobile/enroll</c>. The ONE enrollment seam every browser shell uses - the mobile PWA
+/// and the desktop Cockpit both exchange their cloud device key here. The seam canonicalized from
+/// <c>/m/enroll</c> to <c>/mobile/enroll</c> with the app's <c>/m</c>-&gt;<c>/mobile</c> re-base; the
+/// endpoint is ALSO mapped at the old <c>/m/enroll</c> (same handler) so an installed phone PWA still
+/// running the previous bundle keeps enrolling - the POST analog of the Gateway's 301 for GET
+/// navigations, which cannot preserve a POST body. The device signs in on
 /// devthrottle.com, is registered as a device on the account, and receives its per-device key; it POSTs
 /// that key here, and the Gateway confirms (account-scoped) the key belongs to its OWN signed-in
 /// account and issues the device a LOCAL device key it validates offline. The account session is never
@@ -42,13 +46,14 @@ internal static class MobileEnrollmentEndpoint
         // Gateway mapped without its mint dependencies refuses to START rather than degrade unseen.
         if (GatewayHostedMode.IsHosted && hosted is null)
             throw new InvalidOperationException(
-                "This Gateway is in hosted mode but /m/enroll was mapped without hosted enrollment dependencies. Refusing to start rather than fall through to the self-host device-key-in-body path.");
+                "This Gateway is in hosted mode but /mobile/enroll was mapped without hosted enrollment dependencies. Refusing to start rather than fall through to the self-host device-key-in-body path.");
 
-        app.MapPost("/m/enroll", async (MobileEnrollmentRequest? req, HttpContext ctx) =>
+        // The one handler, mapped at the canonical /mobile/enroll AND the legacy /m/enroll (back-compat).
+        Func<MobileEnrollmentRequest?, HttpContext, Task<IResult>> handler = async (req, ctx) =>
         {
             try
             {
-                FileLog.Write($"[MobileEnrollment] POST /m/enroll: deviceId={req?.DeviceId}, platform={req?.Platform} (device key not logged)");
+                FileLog.Write($"[MobileEnrollment] POST {ctx.Request.Path}: deviceId={req?.DeviceId}, platform={req?.Platform} (device key not logged)");
 
                 // HOSTED (decided by the INDEPENDENT hosted-mode signal, not by the argument): this is a HUMAN
                 // account sign-in, not a cloud-device-key exchange. The account access token rides in the
@@ -93,16 +98,19 @@ internal static class MobileEnrollmentEndpoint
             }
             catch (Exception ex)
             {
-                FileLog.Write($"[MobileEnrollment] POST /m/enroll FAILED: {ex.Message}");
+                FileLog.Write($"[MobileEnrollment] POST {ctx.Request.Path} FAILED: {ex.Message}");
                 return Results.Json(
                     new { error = "Could not reach the DevThrottle account service to enroll this device. Try again shortly." },
                     statusCode: StatusCodes.Status502BadGateway);
             }
-        });
+        };
+
+        app.MapPost("/mobile/enroll", handler);
+        app.MapPost("/m/enroll", handler);
     }
 
     /// <summary>
-    /// Completes a HOSTED human sign-in on <c>/m/enroll</c>: read the account access token from the
+    /// Completes a HOSTED human sign-in on <c>/mobile/enroll</c>: read the account access token from the
     /// Authorization Bearer header, run the ONE hosted mint (<see cref="HostedEnrollmentEndpoint.Enroll"/>) with
     /// the request's device id, and on a successful mint set the tenant-scoped device key as the session cookie
     /// and return it. This method does NOT validate the token, gate on entitlement, or mint a tenant/key itself:
@@ -127,14 +135,14 @@ internal static class MobileEnrollmentEndpoint
 
         if (result.Status != StatusCodes.Status200OK || result.Response is null)
         {
-            FileLog.Write($"[MobileEnrollment] POST /m/enroll (hosted): the hosted mint did not enroll -> {result.Status} (no cookie set)");
+            FileLog.Write($"[MobileEnrollment] POST /mobile/enroll (hosted): the hosted mint did not enroll -> {result.Status} (no cookie set)");
             return Results.Json(new { error = result.Error }, statusCode: result.Status);
         }
 
         // The one credential the browser keeps is the tenant-scoped device key, set here through the single
         // cookie helper - the same cookie the self-host path sets, so both surfaces are set exactly one way.
         GatewayTokenCookie.Set(ctx, result.Response.DeviceKey);
-        FileLog.Write("[MobileEnrollment] POST /m/enroll (hosted): signed in - minted a tenant-scoped device key and set the session cookie (account token not logged)");
+        FileLog.Write("[MobileEnrollment] POST /mobile/enroll (hosted): signed in - minted a tenant-scoped device key and set the session cookie (account token not logged)");
         return Results.Json(new MobileEnrollmentResponse { DeviceKey = result.Response.DeviceKey });
     }
 }

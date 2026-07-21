@@ -6,18 +6,22 @@ namespace CcDirector.Gateway.Mobile;
 
 /// <summary>
 /// The mobile front door (docs/architecture/mobile/): a phone that browser-navigates to the
-/// Gateway gets a 302 to the mobile app at <c>/m/</c>, while a desktop browser falls through
+/// Gateway gets a 302 to the mobile app at <c>/mobile/</c>, while a desktop browser falls through
 /// unchanged to the Cockpit. The decision is made server-side at navigation time, before any
 /// app loads, from the request's <c>User-Agent</c> - so the layout width detection inside the
 /// app never has to undo a wrong choice.
 ///
 /// The escape hatch is free: Android/iOS "Desktop site" rewrites the User-Agent to a desktop
 /// signature, so that request no longer matches and reaches the full Cockpit.
+///
+/// A phone already under the mobile app - whether the canonical <c>/mobile</c> or the legacy
+/// <c>/m</c> (which the Gateway 301s to <c>/mobile</c>) - is left alone here, so this front door
+/// never double-redirects and never competes with the legacy 301.
 /// </summary>
 public static class MobileRedirect
 {
     /// <summary>Where a phone navigation is redirected (trailing slash so relative asset URLs resolve).</summary>
-    public const string MobileRoot = "/m/";
+    public const string MobileRoot = "/mobile/";
 
     /// <summary>
     /// True when the User-Agent looks like a phone (Android, iPhone/iPod, or a generic "Mobile"
@@ -36,7 +40,8 @@ public static class MobileRedirect
     /// <summary>
     /// Decide whether this request is a phone browser-navigation that should be redirected to the
     /// mobile app. True only for a GET HTML navigation (Accept: text/html) from a phone User-Agent
-    /// whose path is not already under <c>/m</c>. Public so the policy is unit-testable.
+    /// whose path is not already under the mobile app (<c>/mobile</c> or the legacy <c>/m</c>). Public
+    /// so the policy is unit-testable.
     /// </summary>
     public static bool ShouldRedirectToMobile(string method, PathString path, string? acceptHeader, string? userAgent)
     {
@@ -49,11 +54,18 @@ public static class MobileRedirect
         return IsPhoneUserAgent(userAgent);
     }
 
-    /// <summary>True when the path is the mobile app itself (<c>/m</c> or anything under <c>/m/</c>).</summary>
+    /// <summary>
+    /// True when the path is the mobile app itself: the canonical <c>/mobile</c> (or anything under
+    /// <c>/mobile/</c>) OR the legacy <c>/m</c> (or anything under <c>/m/</c>), which the Gateway 301s to
+    /// <c>/mobile</c>. Both are treated as "already under the app" so this front door never redirects a
+    /// phone that is already there or racing the legacy 301.
+    /// </summary>
     public static bool IsUnderMobileRoot(PathString path)
     {
         var value = path.Value ?? "";
-        return string.Equals(value, "/m", StringComparison.OrdinalIgnoreCase)
+        return string.Equals(value, "/mobile", StringComparison.OrdinalIgnoreCase)
+            || value.StartsWith("/mobile/", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(value, "/m", StringComparison.OrdinalIgnoreCase)
             || value.StartsWith("/m/", StringComparison.OrdinalIgnoreCase);
     }
 

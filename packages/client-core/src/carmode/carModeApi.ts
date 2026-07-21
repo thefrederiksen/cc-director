@@ -234,7 +234,7 @@ export interface CarModeHelpMode {
   examples: string[];
 }
 
-/** The small, glanceable cheat-sheet shown on /m/car (Help Mode): the two ways to talk to Car Mode plus
+/** The small, glanceable cheat-sheet shown on /mobile/car (Help Mode): the two ways to talk to Car Mode plus
  *  how to end a turn and how to get help. The same content as the spoken help script, from the ONE Gateway
  *  source (CarModeHelp), so the on-screen glance and the spoken help can never drift apart. */
 export interface CarModeCheatSheet {

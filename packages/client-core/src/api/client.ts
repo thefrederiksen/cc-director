@@ -123,7 +123,7 @@ export function ensureGatewayCookie(): void {
 
 // The redirect target when a credentialed call is rejected (401) mid-session is SHELL-AWARE, because
 // the two shells that share this client re-gate through sign-in entries at different paths: the
-// mobile PWA's enrollment screen lives at /m/signin, the desktop Cockpit's at /signin. Shared
+// mobile PWA's enrollment screen lives at /mobile/signin, the desktop Cockpit's at /signin. Shared
 // client-core must NOT hardcode either shell's route for the other (issue #1024), so the target is
 // INJECTED per shell at startup via configureUnauthorizedRedirect. The resolver is given the current
 // in-app location so a shell that carries the route forward (the desktop next=) can build a
@@ -143,11 +143,11 @@ export function cockpitSignInRedirect(current: SignInLocation): string {
   return `/signin?next=${encodeURIComponent(current.pathname + current.search)}`;
 }
 
-// The mobile PWA's sign-in redirect: its own /m/signin enrollment screen, absolute under the /m
-// basename so it works from any in-app route. This is what the mobile shell installs at startup, and it
-// is the default so an unconfigured client-core still serves the shell that historically owned it.
+// The mobile PWA's sign-in redirect: its own /mobile/signin enrollment screen, absolute under the
+// /mobile basename so it works from any in-app route. This is what the mobile shell installs at startup,
+// and it is the default so an unconfigured client-core still serves the shell that historically owned it.
 export function mobileSignInRedirect(): string {
-  return "/m/signin";
+  return "/mobile/signin";
 }
 
 let signInRedirect: SignInRedirect = mobileSignInRedirect;

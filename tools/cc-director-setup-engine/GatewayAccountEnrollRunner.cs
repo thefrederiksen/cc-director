@@ -39,7 +39,7 @@ public sealed record DiscoveredGateway(string Name, string EndpointUrl);
 ///   2. The account device registry (<see cref="DeviceRegistryClient.RegisterAsync"/>, the same call the
 ///      Gateway uses to self-register): this Workstation is registered as an account device and the cloud
 ///      issues its per-device key once.
-///   3. The gateway enrollment seam (<c>POST /m/enroll</c>, the same endpoint the phone and Cockpit use):
+///   3. The gateway enrollment seam (<c>POST /mobile/enroll</c>, the same endpoint the phone and Cockpit use):
 ///      the cloud device key is exchanged at the target gateway for a LOCAL, individually-revocable
 ///      device key. The gateway confirms (account-scoped) the key belongs to its OWN account, so a
 ///      Workstation signed into a DIFFERENT account is refused with a clear reason.
@@ -121,7 +121,7 @@ public sealed class GatewayAccountEnrollRunner
     /// </summary>
     /// <param name="gatewayUrl">The target gateway's reachable URL (for example a tailnet address).</param>
     /// <param name="deviceId">This machine's stable device/install id - used both as the cloud
-    /// registration install id and as the <c>/m/enroll</c> device id, so the gateway's local record maps
+    /// registration install id and as the <c>/mobile/enroll</c> device id, so the gateway's local record maps
     /// to the same cloud roster row.</param>
     /// <param name="machineName">A human-readable device name shown in the account roster.</param>
     /// <param name="ct">Cancelled by the installer's Cancel button while the sign-in is in flight.</param>
@@ -291,7 +291,7 @@ public sealed class GatewayAccountEnrollRunner
     ///
     /// THIS PATH IS SHORTER THAN THE SELF-HOSTED ONE, AND DELIBERATELY SO. Self-hosted registers the machine in
     /// the account DEVICE REGISTRY to obtain a cloud device key, then exchanges THAT key at the target gateway
-    /// via <c>/m/enroll</c>, because a gateway the account runs has no way to judge an account token itself. The
+    /// via <c>/mobile/enroll</c>, because a gateway the account runs has no way to judge an account token itself. The
     /// hosted gateway does: <c>POST /devices/enroll-hosted</c> takes the ACCOUNT ACCESS TOKEN directly, verifies
     /// it (signature, expiry, audience, issuer), maps its subject to a tenant, and mints the per-device key in
     /// ONE step. So there is no device-registry exchange here - not a missing step, an unnecessary one. There is
@@ -510,7 +510,7 @@ public sealed class GatewayAccountEnrollRunner
     /// <summary>
     /// The shared register-then-enroll-then-persist steps, run against an ALREADY-captured account token:
     /// (2) register this machine as an account device so the cloud issues its per-device key, (3) exchange
-    /// that cloud key at the target gateway for a LOCAL device key via <c>/m/enroll</c>, and (4) persist the
+    /// that cloud key at the target gateway for a LOCAL device key via <c>/mobile/enroll</c>, and (4) persist the
     /// gateway URL + local key to config.json. Returns the issued <see cref="MobileEnrollmentResponse"/> on
     /// success, or a human-readable reason on any expected failure (no persist). The device keys are never
     /// logged (security rule DT-05).
@@ -542,7 +542,7 @@ public sealed class GatewayAccountEnrollRunner
                 "The account registered this workstation but returned no device key. Please try again.");
 
         // 3. Exchange the cloud device key at the target gateway for a LOCAL device key (the same
-        // /m/enroll seam the phone and Cockpit use), then 4. persist the gateway URL + local key.
+        // /mobile/enroll seam the phone and Cockpit use), then 4. persist the gateway URL + local key.
         var enroll = await EnrollAtGatewayAsync(url, cloud.DeviceKey, deviceId, machineName, ct).ConfigureAwait(false);
         if (!enroll.Success || enroll.Value is null)
             return enroll;
@@ -553,7 +553,7 @@ public sealed class GatewayAccountEnrollRunner
     }
 
     /// <summary>
-    /// POST the cloud device key to the gateway's <c>/m/enroll</c> and map the reply to a
+    /// POST the cloud device key to the gateway's <c>/mobile/enroll</c> and map the reply to a
     /// success-or-reason result. A transport failure, a 403 (this workstation is not on the gateway's
     /// account), a 409 (the gateway itself is not signed in), any other non-2xx, or a 2xx with no local key
     /// all return a clear reason and NO key - so the install can never finish on an enrollment that did not
@@ -576,7 +576,7 @@ public sealed class GatewayAccountEnrollRunner
         HttpResponseMessage resp;
         try
         {
-            resp = await http.PostAsJsonAsync("m/enroll", request, ct).ConfigureAwait(false);
+            resp = await http.PostAsJsonAsync("mobile/enroll", request, ct).ConfigureAwait(false);
         }
         catch (Exception ex)
         {

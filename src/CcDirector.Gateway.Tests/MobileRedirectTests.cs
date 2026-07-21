@@ -9,9 +9,11 @@ namespace CcDirector.Gateway.Tests;
 
 /// <summary>
 /// Issue #806 (mobile foundation): the Gateway redirects a PHONE browser-navigation to the
-/// mobile app at /m/, while a DESKTOP browser falls through unchanged to the Cockpit. The
+/// mobile app at /mobile/, while a DESKTOP browser falls through unchanged to the Cockpit. The
 /// decision is User-Agent based and made server-side at navigation time. These tests cover the
-/// pure policy (no host) and the live middleware (a booted Gateway).
+/// pure policy (no host) and the live middleware (a booted Gateway). Phase D re-based the mobile
+/// app from /m to /mobile, so the front door now targets /mobile/ and both /mobile and the legacy
+/// /m are treated as "already under the app" (no double-redirect).
 /// </summary>
 public sealed class MobileRedirectTests : IAsyncLifetime
 {
@@ -24,7 +26,7 @@ public sealed class MobileRedirectTests : IAsyncLifetime
     public async Task InitializeAsync()
     {
         // A DESKTOP navigation that falls through is served the in-process React Cockpit (shell, or the
-        // 404 not-built notice in a Debug build) - the observable proof it was NOT redirected to /m/.
+        // 404 not-built notice in a Debug build) - the observable proof it was NOT redirected to /mobile/.
         _gateway = new GatewayHost(port: FreePort(), token: "test-token", authEnabled: false,
             instancesDirectory: _instancesDir,
             workListsPath: Path.Combine(_instancesDir, "worklists", "worklists.json"));
@@ -83,12 +85,33 @@ public sealed class MobileRedirectTests : IAsyncLifetime
     }
 
     [Fact]
-    public void ShouldRedirect_phone_request_already_under_m_is_not_redirected()
+    public void ShouldRedirect_phone_request_already_under_mobile_is_not_redirected()
     {
+        // The canonical mount - a phone already on /mobile is left alone.
+        Assert.False(MobileRedirect.ShouldRedirectToMobile(
+            "GET", "/mobile/", "text/html", "Android Mobile"));
+        Assert.False(MobileRedirect.ShouldRedirectToMobile(
+            "GET", "/mobile/assets/app.js", "text/html", "Android Mobile"));
+        // The legacy mount - a phone on /m is left to the /m -> /mobile 301, not phone-redirected here.
         Assert.False(MobileRedirect.ShouldRedirectToMobile(
             "GET", "/m/", "text/html", "Android Mobile"));
         Assert.False(MobileRedirect.ShouldRedirectToMobile(
             "GET", "/m/assets/app.js", "text/html", "Android Mobile"));
+    }
+
+    [Theory]
+    [InlineData("/mobile", true)]
+    [InlineData("/mobile/", true)]
+    [InlineData("/mobile/session/x", true)]
+    [InlineData("/m", true)]
+    [InlineData("/m/", true)]
+    [InlineData("/m/device-callback", true)]
+    [InlineData("/", false)]
+    [InlineData("/sessions", false)]
+    [InlineData("/mobile-mode", false)]
+    public void IsUnderMobileRoot_matches_both_mounts(string path, bool expected)
+    {
+        Assert.Equal(expected, MobileRedirect.IsUnderMobileRoot(path));
     }
 
     [Fact]
@@ -119,7 +142,7 @@ public sealed class MobileRedirectTests : IAsyncLifetime
         using var res = await _http.SendAsync(req);
 
         Assert.Equal(HttpStatusCode.Found, res.StatusCode);
-        Assert.Equal("/m/", res.Headers.Location?.ToString());
+        Assert.Equal("/mobile/", res.Headers.Location?.ToString());
     }
 
     [Fact]
@@ -132,9 +155,9 @@ public sealed class MobileRedirectTests : IAsyncLifetime
 
         using var res = await _http.SendAsync(req);
 
-        // It falls through to the in-process React Cockpit (shell / not-built notice), never a 302 to /m/.
+        // It falls through to the in-process React Cockpit (shell / not-built notice), never a 302 to /mobile/.
         Assert.NotEqual(HttpStatusCode.Found, res.StatusCode);
-        Assert.NotEqual("/m/", res.Headers.Location?.ToString());
+        Assert.NotEqual("/mobile/", res.Headers.Location?.ToString());
     }
 
     [Fact]

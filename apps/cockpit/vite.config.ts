@@ -63,7 +63,9 @@ const devProxy = proxyTarget
       // reaches them against a live Gateway too.
       "/push": { target: proxyTarget, changeOrigin: true },
       // Device enrollment (issue #1088): the shared client-core callback exchanges the cloud device
-      // key at the Gateway's POST /m/enroll, so the enrollment flow works under `npm run dev` too.
+      // key at the Gateway's POST /mobile/enroll, so the enrollment flow works under `npm run dev` too.
+      // /m is kept alongside /mobile because the Gateway still answers the old /m/enroll (back-compat).
+      "/mobile": { target: proxyTarget, changeOrigin: true },
       "/m": { target: proxyTarget, changeOrigin: true },
     }
   : undefined;

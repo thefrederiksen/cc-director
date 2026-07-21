@@ -1,6 +1,6 @@
 # DevThrottle Mobile
 
-A React + TypeScript Progressive Web App, served by the Gateway at `/m`. It is a thin **shell** over
+A React + TypeScript Progressive Web App, served by the Gateway at `/mobile`. It is a thin **shell** over
 the shared library `@devthrottle/client-core` (`packages/client-core`): every shared concern - the
 typed Gateway client, history rendering, the terminal byte-stream engine, dictation, device auth, and
 session ordering - lives in the package, and this app owns only its screens, routing, and styles.
@@ -20,7 +20,7 @@ npm run build --workspace @devthrottle/mobile   # type-checks, then builds the s
 files, and the release pipeline (the `BuildMobileApp` MSBuild target on `CcDirector.Gateway.csproj`,
 gated to a publish/release configuration) runs `npm ci` at the workspace root and
 `npm run build --workspace @devthrottle/mobile`, then copies this app's `dist/**` into the Gateway's
-`wwwroot/m/`. A routine `dotnet build` does NOT run npm.
+`wwwroot/mobile/`. A routine `dotnet build` does NOT run npm.
 
 Vite resolves `@devthrottle/client-core` from its TypeScript source (the package's `exports` map
 points at `src/`), so there is no separate library build step to sequence.

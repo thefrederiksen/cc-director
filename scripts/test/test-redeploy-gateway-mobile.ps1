@@ -1,14 +1,14 @@
 # Proof test for issue #809: redeploy-gateway.ps1 must copy the Gateway PAYLOAD (the exe AND its
 # wwwroot tree) into the install dir, not just the exe - so the mobile app lands beside the exe and
-# GET /m/ serves with no manual copy. The single-file exe carries no loose content, so a copy of only
-# the exe drops wwwroot/m and /m 404s.
+# GET /mobile/ serves with no manual copy. The single-file exe carries no loose content, so a copy of
+# only the exe drops wwwroot/mobile and /mobile 404s. (Phase D re-based the app from /m to /mobile.)
 #
 # Loads the REAL Copy-GatewayPayload function from scripts\redeploy-gateway.ps1 via -DefineOnly (no
 # live deploy - this NEVER touches the running Gateway on 7878 or the production install), then:
-#   A. A staged publish (exe + wwwroot\m\index.html) copies into a fresh install dir, and
-#      wwwroot\m\index.html ends up BESIDE the exe.
+#   A. A staged publish (exe + wwwroot\mobile\index.html) copies into a fresh install dir, and
+#      wwwroot\mobile\index.html ends up BESIDE the exe.
 #   B. A re-copy replaces a stale wwwroot file (no stale hashed asset survives).
-#   C. A stage dir with NO wwwroot\m fails loud (a Release publish must stage the mobile app).
+#   C. A stage dir with NO wwwroot\mobile fails loud (a Release publish must stage the mobile app).
 #
 # ASCII only. Run: powershell -ExecutionPolicy Bypass -File scripts\test\test-redeploy-gateway-mobile.ps1
 # Exit 0 = PASS, non-zero = FAIL.
@@ -40,41 +40,44 @@ function Assert-Throws([scriptblock]$action, [string]$matchPattern, [string]$msg
     }
 }
 
-# Build a fake publish stage dir: devthrottle-gateway.exe + wwwroot\m\index.html + a hashed asset.
+# Build a fake publish stage dir: devthrottle-gateway.exe + wwwroot\mobile\index.html + a hashed asset
+# + wwwroot\c\index.html (Copy-GatewayPayload asserts the Cockpit is staged too).
 function New-FakeStage {
     param([string]$Root)
-    New-Item -ItemType Directory -Force (Join-Path $Root 'wwwroot\m\assets') | Out-Null
+    New-Item -ItemType Directory -Force (Join-Path $Root 'wwwroot\mobile\assets') | Out-Null
+    New-Item -ItemType Directory -Force (Join-Path $Root 'wwwroot\c') | Out-Null
     Set-Content -Path (Join-Path $Root 'devthrottle-gateway.exe') -Value 'exe' -Encoding ascii
-    Set-Content -Path (Join-Path $Root 'wwwroot\m\index.html') -Value '<html>__GATEWAY_TOKEN__</html>' -Encoding ascii
-    Set-Content -Path (Join-Path $Root 'wwwroot\m\assets\index-abc123.js') -Value 'console.log(1)' -Encoding ascii
+    Set-Content -Path (Join-Path $Root 'wwwroot\mobile\index.html') -Value '<html>__GATEWAY_TOKEN__</html>' -Encoding ascii
+    Set-Content -Path (Join-Path $Root 'wwwroot\mobile\assets\index-abc123.js') -Value 'console.log(1)' -Encoding ascii
+    Set-Content -Path (Join-Path $Root 'wwwroot\c\index.html') -Value '<html>cockpit</html>' -Encoding ascii
 }
 
 $work = Join-Path $env:TEMP ("cc-809-redeploy-" + [Guid]::NewGuid().ToString('N'))
 try {
-    # --- A. payload copy lands wwwroot\m beside the exe ---------------------------------------------
-    Write-Host "=== A. Copy-GatewayPayload lands exe + wwwroot\m ==="
+    # --- A. payload copy lands wwwroot\mobile beside the exe ----------------------------------------
+    Write-Host "=== A. Copy-GatewayPayload lands exe + wwwroot\mobile ==="
     $stage = Join-Path $work 'stage'
     $gw    = Join-Path $work 'install'
     New-FakeStage -Root $stage
     Copy-GatewayPayload -StageDir $stage -GatewayDir $gw
     Assert-True (Test-Path (Join-Path $gw 'devthrottle-gateway.exe')) "the exe landed in the install dir"
-    Assert-True (Test-Path (Join-Path $gw 'wwwroot\m\index.html')) "wwwroot\m\index.html landed BESIDE the exe"
-    Assert-True (Test-Path (Join-Path $gw 'wwwroot\m\assets\index-abc123.js')) "the hashed asset landed too"
+    Assert-True (Test-Path (Join-Path $gw 'wwwroot\mobile\index.html')) "wwwroot\mobile\index.html landed BESIDE the exe"
+    Assert-True (Test-Path (Join-Path $gw 'wwwroot\mobile\assets\index-abc123.js')) "the hashed asset landed too"
 
     # --- B. re-copy removes a stale wwwroot file ---------------------------------------------------
     Write-Host "=== B. re-copy removes stale wwwroot files ==="
-    Set-Content -Path (Join-Path $gw 'wwwroot\m\stale-old.js') -Value 'stale' -Encoding ascii
+    Set-Content -Path (Join-Path $gw 'wwwroot\mobile\stale-old.js') -Value 'stale' -Encoding ascii
     Copy-GatewayPayload -StageDir $stage -GatewayDir $gw
-    Assert-True (-not (Test-Path (Join-Path $gw 'wwwroot\m\stale-old.js'))) "a stale wwwroot file did NOT survive the re-copy"
-    Assert-True (Test-Path (Join-Path $gw 'wwwroot\m\index.html')) "wwwroot\m\index.html is still present after the re-copy"
+    Assert-True (-not (Test-Path (Join-Path $gw 'wwwroot\mobile\stale-old.js'))) "a stale wwwroot file did NOT survive the re-copy"
+    Assert-True (Test-Path (Join-Path $gw 'wwwroot\mobile\index.html')) "wwwroot\mobile\index.html is still present after the re-copy"
 
     # --- C. a stage with no mobile app fails loud --------------------------------------------------
-    Write-Host "=== C. missing wwwroot\m fails loud ==="
+    Write-Host "=== C. missing wwwroot\mobile fails loud ==="
     $badStage = Join-Path $work 'bad-stage'
     New-Item -ItemType Directory -Force $badStage | Out-Null
     Set-Content -Path (Join-Path $badStage 'devthrottle-gateway.exe') -Value 'exe' -Encoding ascii
     Assert-Throws { Copy-GatewayPayload -StageDir $badStage -GatewayDir (Join-Path $work 'bad-install') } `
-        'mobile app missing' "Copy-GatewayPayload FAILS LOUD when the publish output has no wwwroot\m"
+        'mobile app missing' "Copy-GatewayPayload FAILS LOUD when the publish output has no wwwroot\mobile"
 }
 finally {
     if (Test-Path $work) { Remove-Item -Recurse -Force $work -ErrorAction SilentlyContinue }
@@ -82,7 +85,7 @@ finally {
 
 Write-Host ''
 if ($failures.Count -eq 0) {
-    Write-Host "RESULT: PASS - redeploy copies the exe AND wwwroot\m so /m serves with no manual copy (issue #809)."
+    Write-Host "RESULT: PASS - redeploy copies the exe AND wwwroot\mobile so /mobile serves with no manual copy (issue #809)."
     exit 0
 } else {
     Write-Host ("RESULT: FAIL - {0} assertion(s) failed:" -f $failures.Count)

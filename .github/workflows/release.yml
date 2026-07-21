@@ -219,7 +219,7 @@ jobs:
           -p:PublishSingleFile=true
           -p:IncludeNativeLibrariesForSelfExtract=true
 
-      # filter: exe -> signs only devthrottle-gateway.exe, not the wwwroot/m web assets.
+      # filter: exe -> signs only devthrottle-gateway.exe, not the wwwroot/mobile web assets.
       - name: Sign devthrottle-gateway.exe
         if: ${{ vars.SIGNING_CERT_PROFILE != '' }}
         uses: ./.github/actions/sign-windows
@@ -238,15 +238,15 @@ jobs:
           if-no-files-found: error
 
       # Issue #809: the single-file Gateway exe carries NO loose content, so the built mobile app
-      # (issue #806, staged into wwwroot/m by the release-gated MSBuild target during the Release
+      # (issue #806, staged into wwwroot/mobile by the release-gated MSBuild target during the Release
       # publish above) must ship as its OWN asset - the setup engine unpacks it beside the exe on
-      # install + self-update. The zip's root is the CONTENTS of wwwroot/m (index.html + hashed
-      # assets/), matching MobilePackage's extract-into-wwwroot/m contract.
-      - name: Package mobile app (wwwroot/m) as zip
+      # install + self-update. The zip's root is the CONTENTS of wwwroot/mobile (index.html + hashed
+      # assets/), matching MobilePackage's extract-into-wwwroot/mobile contract.
+      - name: Package mobile app (wwwroot/mobile) as zip
         shell: pwsh
         run: |
           $pub = "src/CcDirector.GatewayApp/bin/Release/net10.0-windows/win-x64/publish"
-          $m = Join-Path $pub "wwwroot/m"
+          $m = Join-Path $pub "wwwroot/mobile"
           if (-not (Test-Path (Join-Path $m "index.html"))) {
             Write-Error "Mobile app build missing: $m/index.html not found in the Gateway publish output. The release-gated mobile build (CcDirector.Gateway.csproj BuildMobileApp target) did not run."
             exit 1
@@ -632,8 +632,8 @@ jobs:
           # Windows Gateway service (publish emits devthrottle-gateway.exe)
           cp release-artifacts/gateway-win/devthrottle-gateway.exe "$RELEASE_DIR/devthrottle-gateway-win-x64.exe"
 
-          # Windows Gateway mobile app (issue #809): the built React PWA (wwwroot/m), unpacked beside
-          # the Gateway exe by the setup engine on install + self-update so /m serves with no manual copy.
+          # Windows Gateway mobile app (issue #809): the built React PWA (wwwroot/mobile), unpacked beside
+          # the Gateway exe by the setup engine on install + self-update so /mobile serves with no manual copy.
           cp release-artifacts/gateway-mobile-win/devthrottle-gateway-mobile-win-x64.zip "$RELEASE_DIR/devthrottle-gateway-mobile-win-x64.zip"
 
           # Windows React Cockpit (issue #979): the built wwwroot/c, unpacked beside the Gateway exe by

@@ -89,7 +89,7 @@
   </ItemGroup>
 
   <!-- ============================================================================
-       Issue #806 (mobile foundation): build the React PWA and stage it under wwwroot/m.
+       Issue #806 (mobile foundation): build the React PWA and stage it under wwwroot/mobile.
 
        BUILD-TIME ONLY and RELEASE-ONLY. Node.js + npm are needed only to compile the React
        sources to static files, and only on the machine that builds the release. The target is
@@ -98,7 +98,7 @@
        Node. Machines that only RUN the Gateway need nothing extra - the built files ship in
        the release and the Gateway serves them as static files.
 
-       The freshly built dist/** is copied into wwwroot/m and added to Content INSIDE the target
+       The freshly built dist/** is copied into wwwroot/mobile and added to Content INSIDE the target
        (BeforeTargets="AssignTargetPaths"), so it flows to this project's output - and, since
        content flows transitively, into the GatewayApp tray exe that references this project.
        ============================================================================ -->
@@ -108,13 +108,13 @@
          workspace root and the app builds through the workspace (Vite pulls client-core from source). -->
     <WorkspaceRoot>$(MSBuildProjectDirectory)\..\..\</WorkspaceRoot>
     <MobileDir>$(MSBuildProjectDirectory)\..\..\apps\mobile\</MobileDir>
-    <MobileWwwroot>$(MSBuildProjectDirectory)\wwwroot\m</MobileWwwroot>
+    <MobileWwwroot>$(MSBuildProjectDirectory)\wwwroot\mobile</MobileWwwroot>
     <!-- Run the web build for a publish/release configuration, or on explicit opt-in. -->
     <RunMobileBuild Condition="'$(RunMobileBuild)' == '' and ('$(Configuration)' == 'Release' or '$(BuildMobile)' == 'true')">true</RunMobileBuild>
     <RunMobileBuild Condition="'$(RunMobileBuild)' == ''">false</RunMobileBuild>
 
     <!-- Epic #967: the React desktop Cockpit is the second workspace shell (apps/cockpit), served by
-         the Gateway at /c beside the mobile app at /m. It builds through the same workspace and is
+         the Gateway at /c beside the mobile app at /mobile. It builds through the same workspace and is
          staged into wwwroot/c under the same RELEASE-ONLY gate as the mobile app. -->
     <CockpitDir>$(MSBuildProjectDirectory)\..\..\apps\cockpit\</CockpitDir>
     <CockpitWwwroot>$(MSBuildProjectDirectory)\wwwroot\c</CockpitWwwroot>
@@ -165,7 +165,7 @@
           SkipUnchangedFiles="false" />
     <Message Importance="high" Text="[BuildMobileApp] staged @(_MobileDistFiles->Count()) file(s) into $(MobileWwwroot)" />
     <ItemGroup>
-      <Content Include="wwwroot\m\**\*" CopyToOutputDirectory="PreserveNewest" />
+      <Content Include="wwwroot\mobile\**\*" CopyToOutputDirectory="PreserveNewest" />
     </ItemGroup>
   </Target>
 

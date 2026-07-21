@@ -93,7 +93,7 @@ function GatedLayout() {
 // no-op before the phone has enrolled. (No token is injected into the page - issue #908.)
 ensureGatewayCookie();
 
-// Re-gate a mid-session 401 (a revoked device key) through THIS shell's own /m/signin enrollment
+// Re-gate a mid-session 401 (a revoked device key) through THIS shell's own /mobile/signin enrollment
 // screen. This is the mobile default in shared client-core, but each shell installs its own redirect
 // so the desktop Cockpit can install its own /signin flow instead (issues #1024/#1088); installing it
 // here explicitly keeps the mobile shell self-documenting about its own re-gate entry.
@@ -121,9 +121,10 @@ if ("serviceWorker" in navigator && navigator.serviceWorker.controller !== null)
   });
 }
 
-// The app is served under /m, so the router is rooted there. A hard navigation to a deep link
-// (e.g. /m/session/<id>) is served the injected index.html by the Gateway and the router then
-// resolves it client-side.
+// The app is served under /mobile, so the router is rooted there. A hard navigation to a deep link
+// (e.g. /mobile/session/<id>) is served the injected index.html by the Gateway and the router then
+// resolves it client-side. The old /m mount is 301-redirected to /mobile by the Gateway, so an
+// installed PWA or a bookmark on /m/... still lands here.
 // All routes hang off a root layout that carries the errorElement, so a no-route match (the symptom
 // of a stale service-worker shell whose router lacks the navigated route, issue #1155) is caught by
 // RouteRecoveryBoundary and self-healed instead of dead-ending on React Router's raw 404.
@@ -173,7 +174,7 @@ const router = createBrowserRouter(
       ],
     },
   ],
-  { basename: "/m" }
+  { basename: "/mobile" }
 );
 
 const rootElement = document.getElementById("root");

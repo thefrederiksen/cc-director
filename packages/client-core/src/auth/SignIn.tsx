@@ -4,7 +4,7 @@
 // (Google / GitHub / email) and approves this device; the site hands the per-device key back - in the
 // URL FRAGMENT only (issue #1082) - to this shell's callback route, which enrolls it with the Gateway.
 //
-// Both shells render this one screen: the phone (auth gate at /m/signin) and the desktop Cockpit
+// Both shells render this one screen: the phone (auth gate at /mobile/signin) and the desktop Cockpit
 // (auth gate + the Gateway's signed-out redirect at /signin). Everything shell-specific - the
 // callback path, the platform, the device label - comes from the installed EnrollmentShellProfile.
 // The desktop gate carries the originally-requested route in ?next=; it is remembered here so the
