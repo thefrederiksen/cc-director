@@ -403,6 +403,21 @@ public sealed class GatewayDbContext : DbContext
             // so pin them to "C" too - the account subject in particular must match EXACTLY on both providers.
             modelBuilder.Entity<TenantEntity>().Property(e => e.Id).UseCollation("C");
             modelBuilder.Entity<TenantEntity>().Property(e => e.AccountSubject).UseCollation("C");
+
+            // 3. The entitlements.subject column is Postgres `uuid`, not text. The CLR property stays a string
+            //    (its callers pass and compare a string), so map it through a string<->Guid value converter and
+            //    pin the store type to `uuid`. This makes Npgsql emit a UUID parameter for the account-subject
+            //    key lookup instead of a text one - the single change that stops Postgres rejecting the read
+            //    with 42883 'operator does not exist: uuid = text' and 503'ing hosted enrollment. The `subject`
+            //    column stays uuid by contract (the website's read_gateway_entitlement(p_subject uuid) and the
+            //    Supabase auth identifier both depend on it); the Gateway is what was out of step. Postgres
+            //    ONLY: SQLite has no uuid type, so off this branch the column stays a plain string, unchanged.
+            //    Subject is the entity's primary key; a value converter on a key property is supported, and the
+            //    generated key-lookup parameter carries the uuid store type this pins.
+            modelBuilder.Entity<EntitlementEntity>()
+                .Property(e => e.Subject)
+                .HasConversion(EntitlementSubjectToGuidConverter)
+                .HasColumnType("uuid");
         }
     }
 
@@ -427,6 +442,23 @@ public sealed class GatewayDbContext : DbContext
     private static readonly ValueConverter<DateTime?, DateTime?> NullableUtcConverter = new(
         v => v.HasValue ? (v.Value.Kind == DateTimeKind.Utc ? v.Value : v.Value.ToUniversalTime()) : v,
         v => v.HasValue ? DateTime.SpecifyKind(v.Value, DateTimeKind.Utc) : v);
+
+    /// <summary>
+    /// The account-subject converter for the entitlements table, applied ONLY under Postgres. The
+    /// <c>gateway.entitlements.subject</c> column is Postgres <c>uuid</c> (the website's
+    /// <c>read_gateway_entitlement(p_subject uuid)</c> depends on it, and the subject IS the Supabase auth
+    /// identifier), but the CLR property is a <see cref="string"/> - the form the token validator and the
+    /// entitlement registry pass and compare. Without a converter Npgsql types the key-lookup parameter as
+    /// text, so Postgres rejects <c>subject = @p</c> with 42883 'operator does not exist: uuid = text' and
+    /// every entitlement read fails (which is what made hosted enrollment answer 503). Converting the string
+    /// to a <see cref="Guid"/> on the way to the database makes Npgsql emit a UUID parameter that matches the
+    /// column, and back to the canonical "D" string on the way out keeps the property a plain string for its
+    /// callers. The subject is the canonical Supabase auth identifier (the "D" form), so ParseExact("D") is
+    /// exact rather than lenient; a value that is not that form is a caller error, not something to normalise.
+    /// </summary>
+    private static readonly ValueConverter<string, Guid> EntitlementSubjectToGuidConverter = new(
+        v => Guid.ParseExact(v, "D"),
+        v => v.ToString("D"));
 
     /// <summary>
     /// Apply the model-wide correctness conventions across every mapped property: UTC DateTime storage, a
