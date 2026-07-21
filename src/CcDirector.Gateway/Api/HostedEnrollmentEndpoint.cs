@@ -53,7 +53,7 @@ internal static class HostedEnrollmentEndpoint
 
         app.MapPost(Path, (EnrollSignedInRequest req, HttpContext ctx) =>
         {
-            var result = Enroll(ReadBearer(ctx), req, devices, tenants, accountTokenValidator, entitlements, DateTime.UtcNow);
+            var result = Enroll(BearerToken.Read(ctx), req, devices, tenants, accountTokenValidator, entitlements, DateTime.UtcNow);
             return result.Status == StatusCodes.Status200OK
                 ? Results.Json(result.Response, statusCode: StatusCodes.Status200OK)
                 : Results.Json(new { error = result.Error }, statusCode: result.Status);
@@ -150,17 +150,5 @@ internal static class HostedEnrollmentEndpoint
     {
         var bytes = System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(value));
         return Convert.ToHexString(bytes).ToLowerInvariant();
-    }
-
-    private static string? ReadBearer(HttpContext ctx)
-    {
-        if (!ctx.Request.Headers.TryGetValue("Authorization", out var header))
-            return null;
-        var raw = header.ToString();
-        const string prefix = "Bearer ";
-        if (!raw.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
-            return null;
-        var token = raw.Substring(prefix.Length).Trim();
-        return string.IsNullOrEmpty(token) ? null : token;
     }
 }
