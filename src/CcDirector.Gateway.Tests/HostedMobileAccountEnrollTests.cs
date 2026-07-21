@@ -45,6 +45,16 @@ public sealed class HostedMobileAccountEnrollTests : IDisposable
     private const string Audience = "authenticated";
     private const string Issuer = "https://test.example.supabase.co/auth/v1";
 
+    // Account subjects are Supabase auth identifiers, which are uuids - and on the production (Postgres)
+    // Gateway the gateway.entitlements.subject column is a uuid mapped through Guid.ParseExact(v, "D"), so a
+    // non-uuid subject could never exist there and would crash the converter. These fixtures therefore seed
+    // and read canonical "D"-form uuids, exactly the shape production carries; the readable names stand in for
+    // the personas the tests exercised before (alice, the attacker, two distinct accounts a/b).
+    private const string SubjectAlice = "11111111-1111-4111-8111-111111111111";
+    private const string SubjectA = "22222222-2222-4222-8222-222222222222";
+    private const string SubjectB = "33333333-3333-4333-8333-333333333333";
+    private const string SubjectAttacker = "44444444-4444-4444-8444-444444444444";
+
     private readonly GatewayDbTestHarness _harness = new();
     private readonly string _devPath = Path.Combine(Path.GetTempPath(), $"hma-dev-{Guid.NewGuid():N}.json");
     private readonly TestEs256Key _key = new();
@@ -184,7 +194,7 @@ public sealed class HostedMobileAccountEnrollTests : IDisposable
     [Fact]
     public async Task ValidBearerToken_ReturnsTenantScopedKey_SetsHttpOnlyCookie_NoTokenEchoed()
     {
-        const string subject = "sub-alice";
+        const string subject = SubjectAlice;
         var db = OpenWithEntitlements(subject, entitled: true);
         var (devices, tenants, hosted) = WireHosted(db);
         var token = Token(subject);
@@ -209,14 +219,14 @@ public sealed class HostedMobileAccountEnrollTests : IDisposable
     [Fact]
     public async Task TwoAccounts_GetDistinctTenants()
     {
-        var db = OpenWithEntitlements("sub-a", entitled: true);
-        SeedEntitled(db, "sub-b");
+        var db = OpenWithEntitlements(SubjectA, entitled: true);
+        SeedEntitled(db, SubjectB);
         var (devices, _, hosted) = WireHosted(db);
         var (app, http) = await StartHostedAsync(hosted);
         try
         {
-            var respA = await PostBearerAsync(http, Token("sub-a"), "dev-a");
-            var respB = await PostBearerAsync(http, Token("sub-b"), "dev-b");
+            var respA = await PostBearerAsync(http, Token(SubjectA), "dev-a");
+            var respB = await PostBearerAsync(http, Token(SubjectB), "dev-b");
             Assert.Equal(HttpStatusCode.OK, respA.StatusCode);
             Assert.Equal(HttpStatusCode.OK, respB.StatusCode);
             var tenantA = devices.TenantForKey(GatewayCookieValue(respA)!);
@@ -232,9 +242,9 @@ public sealed class HostedMobileAccountEnrollTests : IDisposable
     [Fact]
     public async Task ForgedHs256Bearer_401_NoCookie_RegistryUnchanged()
     {
-        var db = OpenWithEntitlements("sub-attacker", entitled: true);
+        var db = OpenWithEntitlements(SubjectAttacker, entitled: true);
         var (devices, tenants, hosted) = WireHosted(db);
-        var forged = TestEs256Key.Hs256Token("test-signing-secret", "sub-attacker", Audience, Issuer);
+        var forged = TestEs256Key.Hs256Token("test-signing-secret", SubjectAttacker, Audience, Issuer);
         var (app, http) = await StartHostedAsync(hosted);
         try
         {
@@ -242,7 +252,7 @@ public sealed class HostedMobileAccountEnrollTests : IDisposable
             var resp = await PostBearerAsync(http, forged, "dev-a");
             Assert.Equal(HttpStatusCode.Unauthorized, resp.StatusCode);
             Assert.Null(GatewayCookieValue(resp));
-            Assert.Null(tenants.LookupBySubject("sub-attacker"));
+            Assert.Null(tenants.LookupBySubject(SubjectAttacker));
             Assert.Equal(before, RegistrySnapshot(devices));   // no device key minted or persisted
         }
         finally { http.Dispose(); await app.DisposeAsync(); }
@@ -251,16 +261,16 @@ public sealed class HostedMobileAccountEnrollTests : IDisposable
     [Fact]
     public async Task ExpiredBearer_401_NoCookie_RegistryUnchanged()
     {
-        var db = OpenWithEntitlements("sub-alice", entitled: true);
+        var db = OpenWithEntitlements(SubjectAlice, entitled: true);
         var (devices, tenants, hosted) = WireHosted(db);
         var (app, http) = await StartHostedAsync(hosted);
         try
         {
             var before = RegistrySnapshot(devices);
-            var resp = await PostBearerAsync(http, _key.ExpiredToken("sub-alice", "a@x.com", Audience, Issuer), "dev-a");
+            var resp = await PostBearerAsync(http, _key.ExpiredToken(SubjectAlice, "a@x.com", Audience, Issuer), "dev-a");
             Assert.Equal(HttpStatusCode.Unauthorized, resp.StatusCode);
             Assert.Null(GatewayCookieValue(resp));
-            Assert.Null(tenants.LookupBySubject("sub-alice"));
+            Assert.Null(tenants.LookupBySubject(SubjectAlice));
             Assert.Equal(before, RegistrySnapshot(devices));
         }
         finally { http.Dispose(); await app.DisposeAsync(); }
@@ -269,16 +279,16 @@ public sealed class HostedMobileAccountEnrollTests : IDisposable
     [Fact]
     public async Task WrongAudienceBearer_401_NoCookie_RegistryUnchanged()
     {
-        var db = OpenWithEntitlements("sub-alice", entitled: true);
+        var db = OpenWithEntitlements(SubjectAlice, entitled: true);
         var (devices, tenants, hosted) = WireHosted(db);
         var (app, http) = await StartHostedAsync(hosted);
         try
         {
             var before = RegistrySnapshot(devices);
-            var resp = await PostBearerAsync(http, _key.Token("sub-alice", "a@x.com", audience: "some-other-audience", issuer: Issuer), "dev-a");
+            var resp = await PostBearerAsync(http, _key.Token(SubjectAlice, "a@x.com", audience: "some-other-audience", issuer: Issuer), "dev-a");
             Assert.Equal(HttpStatusCode.Unauthorized, resp.StatusCode);
             Assert.Null(GatewayCookieValue(resp));
-            Assert.Null(tenants.LookupBySubject("sub-alice"));
+            Assert.Null(tenants.LookupBySubject(SubjectAlice));
             Assert.Equal(before, RegistrySnapshot(devices));
         }
         finally { http.Dispose(); await app.DisposeAsync(); }
@@ -287,7 +297,7 @@ public sealed class HostedMobileAccountEnrollTests : IDisposable
     [Fact]
     public async Task MissingBearer_401_NoCookie_RegistryUnchanged()
     {
-        var db = OpenWithEntitlements("sub-alice", entitled: true);
+        var db = OpenWithEntitlements(SubjectAlice, entitled: true);
         var (devices, tenants, hosted) = WireHosted(db);
         var (app, http) = await StartHostedAsync(hosted);
         try
@@ -296,7 +306,7 @@ public sealed class HostedMobileAccountEnrollTests : IDisposable
             var resp = await PostBearerAsync(http, bearer: null, "dev-a");
             Assert.Equal(HttpStatusCode.Unauthorized, resp.StatusCode);
             Assert.Null(GatewayCookieValue(resp));
-            Assert.Null(tenants.LookupBySubject("sub-alice"));
+            Assert.Null(tenants.LookupBySubject(SubjectAlice));
             Assert.Equal(before, RegistrySnapshot(devices));
         }
         finally { http.Dispose(); await app.DisposeAsync(); }
@@ -307,16 +317,16 @@ public sealed class HostedMobileAccountEnrollTests : IDisposable
     [Fact]
     public async Task NotEntitled_402_NoCookie_RegistryUnchanged()
     {
-        var db = OpenWithEntitlements("sub-alice", entitled: false);
+        var db = OpenWithEntitlements(SubjectAlice, entitled: false);
         var (devices, tenants, hosted) = WireHosted(db);
         var (app, http) = await StartHostedAsync(hosted);
         try
         {
             var before = RegistrySnapshot(devices);
-            var resp = await PostBearerAsync(http, Token("sub-alice"), "dev-a");
+            var resp = await PostBearerAsync(http, Token(SubjectAlice), "dev-a");
             Assert.Equal(HttpStatusCode.PaymentRequired, resp.StatusCode);
             Assert.Null(GatewayCookieValue(resp));
-            Assert.Null(tenants.LookupBySubject("sub-alice"));
+            Assert.Null(tenants.LookupBySubject(SubjectAlice));
             Assert.Equal(before, RegistrySnapshot(devices));
         }
         finally { http.Dispose(); await app.DisposeAsync(); }
@@ -331,11 +341,11 @@ public sealed class HostedMobileAccountEnrollTests : IDisposable
         try
         {
             var before = RegistrySnapshot(devices);
-            var resp = await PostBearerAsync(http, Token("sub-alice"), "dev-a");
+            var resp = await PostBearerAsync(http, Token(SubjectAlice), "dev-a");
             Assert.Equal(HttpStatusCode.ServiceUnavailable, resp.StatusCode);
             Assert.NotEqual(HttpStatusCode.PaymentRequired, resp.StatusCode);
             Assert.Null(GatewayCookieValue(resp));
-            Assert.Null(tenants.LookupBySubject("sub-alice"));
+            Assert.Null(tenants.LookupBySubject(SubjectAlice));
             Assert.Equal(before, RegistrySnapshot(devices));
         }
         finally { http.Dispose(); await app.DisposeAsync(); }
@@ -344,16 +354,16 @@ public sealed class HostedMobileAccountEnrollTests : IDisposable
     [Fact]
     public async Task MissingDeviceId_400_RegistryUnchanged()
     {
-        var db = OpenWithEntitlements("sub-alice", entitled: true);
+        var db = OpenWithEntitlements(SubjectAlice, entitled: true);
         var (devices, tenants, hosted) = WireHosted(db);
         var (app, http) = await StartHostedAsync(hosted);
         try
         {
             var before = RegistrySnapshot(devices);
-            var resp = await PostBearerAsync(http, Token("sub-alice"), deviceId: "   ");
+            var resp = await PostBearerAsync(http, Token(SubjectAlice), deviceId: "   ");
             Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
             Assert.Null(GatewayCookieValue(resp));
-            Assert.Null(tenants.LookupBySubject("sub-alice"));
+            Assert.Null(tenants.LookupBySubject(SubjectAlice));
             Assert.Equal(before, RegistrySnapshot(devices));
         }
         finally { http.Dispose(); await app.DisposeAsync(); }
@@ -396,7 +406,7 @@ public sealed class HostedMobileAccountEnrollTests : IDisposable
             {
                 Content = JsonContent.Create(new Dictionary<string, string?> { ["deviceKey"] = "dtd_some_cloud_key", ["deviceId"] = "dev-a", ["platform"] = "android" }),
             };
-            msg.Headers.Authorization = new AuthenticationHeaderValue("Bearer", Token("sub-alice"));
+            msg.Headers.Authorization = new AuthenticationHeaderValue("Bearer", Token(SubjectAlice));
             var resp = await http.SendAsync(msg);
 
             Assert.Equal(HttpStatusCode.Conflict, resp.StatusCode);   // NotSignedIn from the self-host service path
