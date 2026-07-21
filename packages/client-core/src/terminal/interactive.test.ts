@@ -165,9 +165,24 @@ import { InteractiveTerminal } from "./interactive";
 const SID = "sess-123";
 
 // A host element that reports a real (non-zero) layout, so the engine's deferred bring-up opens the
-// terminal on the first animation frame (issue #1029).
+// terminal on the first animation frame (issue #1029). querySelector returns null so the font auto-fit
+// (fitFont) finds no rendered .xterm-screen to measure and no-ops - the fit is a pixel-measurement
+// concern proven in the browser, not here; this keeps the engine's OTHER contracts assertable headless.
 function host(): HTMLElement {
-  return { clientWidth: 800, clientHeight: 600 } as unknown as HTMLElement;
+  return {
+    clientWidth: 800,
+    clientHeight: 600,
+    querySelector: () => null,
+  } as unknown as HTMLElement;
+}
+
+// The engine observes the host with a ResizeObserver to re-fit the font on pane/window resize
+// (issue #1962). Model it as a no-op class in the headless test - construction must not throw, and
+// the fit itself is proven in the browser (fitFont no-ops here via the null querySelector above).
+class FakeResizeObserver {
+  observe(): void {}
+  unobserve(): void {}
+  disconnect(): void {}
 }
 
 // Construct, start, and run the bring-up frame so the terminal + first WebSocket exist. Returns the
@@ -212,8 +227,17 @@ beforeEach(() => {
     cancelAnimationFrame: (id: number) => {
       rafCallbacks.delete(id);
     },
+    // The font auto-fit (fitFont, issue #1962) reads the host's padding to compute the usable box.
+    // The default host has no padding, so report zero on every side.
+    getComputedStyle: () => ({
+      paddingLeft: "0",
+      paddingRight: "0",
+      paddingTop: "0",
+      paddingBottom: "0",
+    }),
   };
   (globalThis as unknown as { WebSocket: unknown }).WebSocket = FakeWebSocket;
+  (globalThis as unknown as { ResizeObserver: unknown }).ResizeObserver = FakeResizeObserver;
 });
 
 afterEach(() => {
@@ -344,6 +368,84 @@ describe("InteractiveTerminal rendering", () => {
     const term = hoisted.terminals[0];
     FakeWebSocket.instances[0].emitString(JSON.stringify({ type: "size", cols: 137, rows: 51 }));
     expect(term.resizes[term.resizes.length - 1]).toEqual({ cols: 137, rows: 51 });
+  });
+
+  // Issue #1962: the grid mirrors the PTY exactly, so when the owning terminal is bigger than the
+  // cockpit pane the grid would overflow it - the top rows got clipped and unreachable and the
+  // scrollbar was painted over. The fix scales the FONT down so the whole grid fits the pane in both
+  // axes; xterm's own viewport then becomes the single, correctly-sized, grabbable scroll surface.
+  it("shrinks the font so an oversized PTY grid fits the pane in both axes (issue #1962)", () => {
+    // A pane, and a .xterm-screen whose rendered size tracks the current font: monospace cells are
+    // ~0.6*fontSize wide and lineHeight(1.2)*fontSize tall. The engine measures these to pick the fit.
+    const CELL_W_RATIO = 0.6;
+    const CELL_H_RATIO = 1.2;
+    const paneW = 1060;
+    const paneH = 710;
+    const currentTerm = () => hoisted.terminals[0];
+    const fontSize = () => (currentTerm().options as { fontSize: number }).fontSize;
+    const screenStub = {
+      get scrollWidth() {
+        return currentTerm().cols * (fontSize() * CELL_W_RATIO);
+      },
+      get scrollHeight() {
+        return currentTerm().rows * (fontSize() * CELL_H_RATIO);
+      },
+    };
+    const fitHost = {
+      clientWidth: paneW,
+      clientHeight: paneH,
+      querySelector: (sel: string) => (sel === ".xterm-screen" ? screenStub : null),
+    } as unknown as HTMLElement;
+
+    const t = new InteractiveTerminal(fitHost, SID);
+    t.start();
+    runFrames();
+    // The engine opens xterm at the 14px preferred size; at 14px this 137x50 grid is far bigger than
+    // the pane (137*8.4=1150 wide, 50*16.8=840 tall), so the fit must shrink the font.
+    expect(fontSize()).toBe(14);
+    FakeWebSocket.instances[FakeWebSocket.instances.length - 1].emitString(
+      JSON.stringify({ type: "size", cols: 137, rows: 50 }),
+    );
+
+    const fitted = fontSize();
+    expect(fitted).toBeLessThan(14);
+    // The whole grid now fits the usable box (pane minus the 2px rounding margin) on BOTH axes.
+    expect(137 * fitted * CELL_W_RATIO).toBeLessThanOrEqual(paneW - 2);
+    expect(50 * fitted * CELL_H_RATIO).toBeLessThanOrEqual(paneH - 2);
+
+    t.dispose();
+    runFrames();
+  });
+
+  // The font never grows past the 14px readability ceiling: a small grid that already fits a big pane
+  // is left at the preferred size rather than being blown up to fill the pane.
+  it("never enlarges the font past the preferred size for a grid that already fits", () => {
+    const currentTerm = () => hoisted.terminals[0];
+    const fontSize = () => (currentTerm().options as { fontSize: number }).fontSize;
+    const screenStub = {
+      get scrollWidth() {
+        return currentTerm().cols * (fontSize() * 0.6);
+      },
+      get scrollHeight() {
+        return currentTerm().rows * (fontSize() * 1.2);
+      },
+    };
+    const bigHost = {
+      clientWidth: 4000,
+      clientHeight: 3000,
+      querySelector: (sel: string) => (sel === ".xterm-screen" ? screenStub : null),
+    } as unknown as HTMLElement;
+
+    const t = new InteractiveTerminal(bigHost, SID);
+    t.start();
+    runFrames();
+    FakeWebSocket.instances[FakeWebSocket.instances.length - 1].emitString(
+      JSON.stringify({ type: "size", cols: 80, rows: 24 }),
+    );
+    expect(fontSize()).toBe(14);
+
+    t.dispose();
+    runFrames();
   });
 });
 
