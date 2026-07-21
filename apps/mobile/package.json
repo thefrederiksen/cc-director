@@ -3,7 +3,7 @@
   "private": true,
   "version": "0.1.0",
   "type": "module",
-  "description": "DevThrottle mobile Progressive Web App, served by the Gateway at /m. A thin shell over @devthrottle/client-core.",
+  "description": "DevThrottle mobile Progressive Web App, served by the Gateway at /mobile. A thin shell over @devthrottle/client-core.",
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build",

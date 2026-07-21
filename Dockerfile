@@ -21,7 +21,7 @@
 # 404 as well. So the publish below leaves the three properties alone; a Release configuration turns
 # the cockpit build, the mobile build and the strict workspace typecheck on by default (see
 # src/CcDirector.Gateway/CcDirector.Gateway.csproj), the built files are staged into the Gateway's
-# wwwroot/c and wwwroot/m, and they flow into /app/publish - which is where CockpitReactApp.WebRoot
+# wwwroot/c and wwwroot/mobile, and they flow into /app/publish - which is where CockpitReactApp.WebRoot
 # (AppContext.BaseDirectory/wwwroot/c) and the mobile app's static files are read from at run time.
 # Because those npm targets now run, the BUILD stage needs Node.js; it is installed there.
 #
@@ -63,7 +63,7 @@ COPY . .
 # The three Run*=true properties run the npm-driven mobile build, cockpit build and workspace
 # typecheck. Release already turns them on by default; they are stated here so the image's intent is
 # readable at the publish command rather than inferred from a configuration name. They are what put
-# wwwroot/c and wwwroot/m into /app/publish.
+# wwwroot/c and wwwroot/mobile into /app/publish.
 #
 # Publishing the host (not CcDirector.Gateway directly) is what pulls the Postgres migrations assembly
 # into /app/publish so Database.Migrate() can load it at runtime.
@@ -91,7 +91,7 @@ RUN dotnet publish src/CcDirector.Gateway.Host/CcDirector.Gateway.Host.csproj \
     -p:RunMobileBuild=true -p:RunCockpitBuild=true -p:RunWorkspaceTypecheck=true \
     -o /app/publish --nologo \
     && test -f /app/publish/wwwroot/c/index.html \
-    && test -f /app/publish/wwwroot/m/index.html \
+    && test -f /app/publish/wwwroot/mobile/index.html \
     && echo "[image] cockpit and mobile assets are present in the published output"
 
 # ---- runtime stage -----------------------------------------------------------------------------

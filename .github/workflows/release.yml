@@ -219,7 +219,7 @@ jobs:
           -p:PublishSingleFile=true
           -p:IncludeNativeLibrariesForSelfExtract=true
 
-      # filter: exe -> signs only devthrottle-gateway.exe, not the wwwroot/m web assets.
+      # filter: exe -> signs only devthrottle-gateway.exe, not the wwwroot/mobile web assets.
       - name: Sign devthrottle-gateway.exe
         if: ${{ vars.SIGNING_CERT_PROFILE != '' }}
         uses: ./.github/actions/sign-windows

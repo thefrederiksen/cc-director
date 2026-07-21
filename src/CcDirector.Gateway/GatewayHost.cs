@@ -2133,7 +2133,7 @@ public sealed class GatewayHost : IAsyncDisposable
         MissionNotesEndpoint.Map(_app, _missionNotes);
 
         // Issue #806 (mobile foundation): the OpenAPI document the mobile codegen consumes, and the
-        // mobile app static serving at /m (built shell + token-injected index.html). Mapped before
+        // mobile app static serving at /mobile (built shell + token-injected index.html). Mapped before
         // the fallback proxy so these explicit routes win over the Cockpit catch-all.
         _app.MapOpenApi();
 

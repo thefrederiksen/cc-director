@@ -3,7 +3,7 @@ namespace CcDirector.Gateway.Contracts;
 /// <summary>
 /// The mobile app's request to enroll this phone with the Gateway (issue #908). The phone signed in
 /// on devthrottle.com, which registered it as a device on the account and returned its per-device key;
-/// the phone POSTs that key here to <c>/m/enroll</c>. The Gateway confirms (account-scoped) that the
+/// the phone POSTs that key here to <c>/mobile/enroll</c>. The Gateway confirms (account-scoped) that the
 /// key belongs to its OWN signed-in account and, on a match, issues the phone a LOCAL device key it can
 /// validate offline. The account session is NEVER sent here - only the per-device key - so a worst-case
 /// leak costs one revocable device, not the account (the device-key-only hand-back decision).
