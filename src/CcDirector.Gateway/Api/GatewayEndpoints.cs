@@ -602,7 +602,10 @@ internal static class GatewayEndpoints
         // the pre-#330 shape and records nothing.
         app.MapPost("/directors/{id}/doorbell", (string id, DoorbellRequest req) =>
         {
-            if (registry.Get(id) is null)
+            // MTR-01: the doorbell is part of the same-machine HTTP discovery plane, whose entries are always
+            // keyed to the Local tenant (see DirectorRegistry.Upsert). Resolve within Local - never a bare,
+            // cross-tenant scan - so this stays behavior-identical on self-host and serves no hosted account.
+            if (registry.Get(TenantId.Local, id) is null)
                 return Results.StatusCode(StatusCodes.Status410Gone);
             if (req is null || string.IsNullOrEmpty(req.SessionId) || string.IsNullOrEmpty(req.NewState))
                 return Results.BadRequest(new { error = "sessionId and newState are required" });
@@ -620,7 +623,11 @@ internal static class GatewayEndpoints
         // real consumer (the SSE/WS event hub) is Phase 3.
         app.MapGet("/directors/{id}/events", (string id) =>
         {
-            if (registry.Get(id) is null)
+            // MTR-01: the per-director doorbell-event ring is keyed by bare director id and fed by the Local
+            // discovery plane; resolve the director within Local rather than by a cross-tenant bare scan. This
+            // debug surface is unchanged on self-host and empty for a hosted account (its Local partition is
+            // served to no account) - deny-by-default.
+            if (registry.Get(TenantId.Local, id) is null)
                 return Results.NotFound(new { error = "director not found" });
             var events = directorEvents?.For(id) ?? (IReadOnlyList<DirectorEventDto>)Array.Empty<DirectorEventDto>();
             return Results.Json(new { directorId = id, events });
@@ -1035,9 +1042,18 @@ internal static class GatewayEndpoints
         // per recoverable session, and enrich each with the Gateway's last-known brief so the
         // Cockpit Interrupted sessions list is triageable. Directors on one machine share the journal dir, so the
         // same dead journal can be reported by several live Directors - dedupe by directorId+pid.
-        app.MapGet("/interrupted", async (CancellationToken ct) =>
+        app.MapGet("/interrupted", async (HttpContext ctx, CancellationToken ct) =>
         {
-            var directors = registry.ListDirectors();
+            // MTR-01: the interrupted plane used the fleet-global director list, so it fanned out to - and
+            // enumerated - every tenant's Directors. Scope it to THIS request's tenant so a caller only ever
+            // sees, and only ever reaches over the tunnel, its own Directors' crash journals. A request with no
+            // bound tenant is DENIED (403), never served the fleet-global list.
+            var reqTenant = ResolveReadTenant(ctx, tenantBoundary);
+            if (reqTenant is null)
+                return Results.Json(new { error = "no tenant is bound to this request" },
+                    statusCode: StatusCodes.Status403Forbidden);
+
+            var directors = registry.ListDirectors(reqTenant.Value);
             var fanout = directors.Select(async d =>
             {
                 // Gateway Cleanup Phase 2 (PR D): ride the tunnel first (interrupted-list verb, director-level).
@@ -1085,14 +1101,15 @@ internal static class GatewayEndpoints
 
         // Dismiss one interrupted journal once recovered or unwanted. Routed to the live
         // Director that surfaced it (via=reportedByDirectorId), which owns its machine's dir.
-        app.MapDelete("/interrupted/{deadDirectorId}/{deadPid:int}", async (string deadDirectorId, int deadPid, string? via, CancellationToken ct) =>
+        app.MapDelete("/interrupted/{deadDirectorId}/{deadPid:int}", async (HttpContext ctx, string deadDirectorId, int deadPid, string? via, CancellationToken ct) =>
         {
             FileLog.Write($"[GatewayEndpoints] DELETE /interrupted/{deadDirectorId}/{deadPid} via={via}");
             if (string.IsNullOrWhiteSpace(via))
                 return Results.BadRequest(new { error = "via (reporting director id) is required" });
-            var d = registry.Get(via);
-            if (d is null)
-                return Results.NotFound(new { error = "reporting director not found" });
+            // MTR-01: resolve the reporting Director in the request's OWN tenant, so a caller cannot dismiss a
+            // journal via another tenant's Director (403 with no tenant, 404 for a foreign id).
+            if (!TryResolveOwnedDirector(ctx, tenantBoundary, registry, via, out _, out var err))
+                return err;
 
             // Gateway Cleanup Phase 2 (PR D): ride the tunnel first (interrupted-dismiss verb on the reporting
             // Director). The HTTP path collapsed any non-success (incl a 404) to false -> 502, so a non-Ok
@@ -1106,14 +1123,14 @@ internal static class GatewayEndpoints
         // Dismiss ONE session from an interrupted journal (issue #212 W4): the rest of the
         // journal stays in the Interrupted sessions list. Routed like the journal-level dismiss above.
         app.MapDelete("/interrupted/{deadDirectorId}/{deadPid:int}/sessions/{sessionId}",
-            async (string deadDirectorId, int deadPid, string sessionId, string? via, CancellationToken ct) =>
+            async (HttpContext ctx, string deadDirectorId, int deadPid, string sessionId, string? via, CancellationToken ct) =>
         {
             FileLog.Write($"[GatewayEndpoints] DELETE /interrupted/{deadDirectorId}/{deadPid}/sessions/{sessionId} via={via}");
             if (string.IsNullOrWhiteSpace(via))
                 return Results.BadRequest(new { error = "via (reporting director id) is required" });
-            var d = registry.Get(via);
-            if (d is null)
-                return Results.NotFound(new { error = "reporting director not found" });
+            // MTR-01: resolve the reporting Director in the request's OWN tenant (403 with no tenant, 404 foreign).
+            if (!TryResolveOwnedDirector(ctx, tenantBoundary, registry, via, out _, out var err))
+                return err;
 
             // Gateway Cleanup Phase 2 (PR D): ride the tunnel first (interrupted-remove verb on the reporting
             // Director). Non-Ok -> 502, matching the HTTP path's false -> 502 collapse.
@@ -1131,7 +1148,7 @@ internal static class GatewayEndpoints
         // path is valid there. After a successful create the restored session is removed
         // from the dirty journal so the Interrupted sessions list reflects what is still unrecovered.
         app.MapPost("/interrupted/{deadDirectorId}/{deadPid:int}/restore",
-            async (string deadDirectorId, int deadPid, RestoreInterruptedRequest req, CancellationToken ct) =>
+            async (HttpContext ctx, string deadDirectorId, int deadPid, RestoreInterruptedRequest req, CancellationToken ct) =>
         {
             FileLog.Write($"[GatewayEndpoints] POST /interrupted/{deadDirectorId}/{deadPid}/restore: sid={req?.SessionId} via={req?.Via} toDir={req?.ToDirectorId}");
             if (req is null || string.IsNullOrWhiteSpace(req.SessionId))
@@ -1139,12 +1156,16 @@ internal static class GatewayEndpoints
             if (string.IsNullOrWhiteSpace(req.Via))
                 return Results.BadRequest(new { error = "via (reporting director id) is required" });
 
-            var reporter = registry.Get(req.Via);
-            if (reporter is null)
-                return Results.NotFound(new { error = "reporting director not found" });
-            var target = string.IsNullOrWhiteSpace(req.ToDirectorId) ? reporter : registry.Get(req.ToDirectorId);
-            if (target is null)
-                return Results.NotFound(new { error = "target director not found" });
+            // MTR-01: both the reporting Director and any explicit target Director are resolved in the request's
+            // OWN tenant, so a restore can neither read a foreign crash journal nor spawn a continuation session
+            // on another tenant's Director (403 with no tenant, 404 for a foreign id).
+            if (!TryResolveOwnedDirector(ctx, tenantBoundary, registry, req.Via, out var reporter, out var reporterErr))
+                return reporterErr;
+            DirectorDto target;
+            if (string.IsNullOrWhiteSpace(req.ToDirectorId))
+                target = reporter;
+            else if (!TryResolveOwnedDirector(ctx, tenantBoundary, registry, req.ToDirectorId, out target, out var targetErr))
+                return targetErr;
 
             // The journal is the source of truth for what is restorable - never trust the
             // caller for repo/name. Re-read it from the reporting Director. Gateway Cleanup Phase 2 (PR D):
@@ -1743,10 +1764,9 @@ internal static class GatewayEndpoints
             return Results.Json(new { error = "director not connected to the tunnel" }, statusCode: StatusCodes.Status502BadGateway);
         });
 
-        app.MapGet("/directors/{id}/repos", async (string id, CancellationToken ct) =>
+        app.MapGet("/directors/{id}/repos", async (HttpContext ctx, string id, CancellationToken ct) =>
         {
-            var d = registry.Get(id);
-            if (d is null) return Results.NotFound(new { error = "director not found" });
+            if (!TryResolveOwnedDirector(ctx, tenantBoundary, registry, id, out var d, out var err)) return err;
 
             // Gateway Cleanup Phase 2 (PR D): ride the tunnel first (repos-list verb, director-level so SessionId
             // is ""). Tunnel-only: a null return means the Director is not connected, and a non-Ok stream
@@ -1767,10 +1787,9 @@ internal static class GatewayEndpoints
         // demand rather than pushed in registration/heartbeat: the inventory is large and
         // changes rarely, so riding the 15s heartbeat would bloat the hot path for a fact
         // a consumer reads occasionally.
-        app.MapGet("/directors/{id}/facts", async (string id, CancellationToken ct) =>
+        app.MapGet("/directors/{id}/facts", async (HttpContext ctx, string id, CancellationToken ct) =>
         {
-            var d = registry.Get(id);
-            if (d is null) return Results.NotFound(new { error = "director not found" });
+            if (!TryResolveOwnedDirector(ctx, tenantBoundary, registry, id, out var d, out var err)) return err;
 
             // Gateway Cleanup Phase 2 (PR D): ride the tunnel first (facts verb, director-level).
             var sr = await DirectorCommandRouter.TrySendAsync(sendCommand, id, "facts", "", null, ct, machineName: d.MachineName);
@@ -1789,10 +1808,9 @@ internal static class GatewayEndpoints
         // Issue #1497: the target Director's configured, enabled agents (one per kind) for the Cockpit New
         // Session dialog's agent picker. Rides the tunnel (agents-list verb, director-level), mirroring the
         // facts/repos-list read legs above; a null result (Director not connected) collapses to 502.
-        app.MapGet("/directors/{id}/agents", async (string id, CancellationToken ct) =>
+        app.MapGet("/directors/{id}/agents", async (HttpContext ctx, string id, CancellationToken ct) =>
         {
-            var d = registry.Get(id);
-            if (d is null) return Results.NotFound(new { error = "director not found" });
+            if (!TryResolveOwnedDirector(ctx, tenantBoundary, registry, id, out var d, out var err)) return err;
 
             var sr = await DirectorCommandRouter.TrySendAsync(sendCommand, id, "agents-list", "", null, ct, machineName: d.MachineName);
             if (sr is not null)
@@ -1813,10 +1831,9 @@ internal static class GatewayEndpoints
         // called it settings. These legs ride the tunnel like every director-level verb above; the settings body
         // is an OPAQUE object the Director owns, so it is forwarded VERBATIM in both directions rather than
         // being modelled here (the Gateway must not become a second definition of the Director's config).
-        app.MapGet("/directors/{id}/settings", async (string id, CancellationToken ct) =>
+        app.MapGet("/directors/{id}/settings", async (HttpContext ctx, string id, CancellationToken ct) =>
         {
-            var d = registry.Get(id);
-            if (d is null) return Results.NotFound(new { error = "director not found" });
+            if (!TryResolveOwnedDirector(ctx, tenantBoundary, registry, id, out var d, out var err)) return err;
 
             var sr = await DirectorCommandRouter.TrySendAsync(sendCommand, id, "settings-get", "", null, ct, machineName: d.MachineName);
             if (sr is null || !sr.Ok) return DirectorAnswerFailure(sr, d.MachineName);
@@ -1827,8 +1844,7 @@ internal static class GatewayEndpoints
 
         app.MapPut("/directors/{id}/settings", async (string id, HttpContext ctx, CancellationToken ct) =>
         {
-            var d = registry.Get(id);
-            if (d is null) return Results.NotFound(new { error = "director not found" });
+            if (!TryResolveOwnedDirector(ctx, tenantBoundary, registry, id, out var d, out var err)) return err;
 
             string raw;
             using (var reader = new StreamReader(ctx.Request.Body))
@@ -1861,10 +1877,9 @@ internal static class GatewayEndpoints
             return Results.Content(sr.BodyJson ?? "{}", "application/json");
         });
 
-        app.MapPost("/directors/{id}/sessions", async (string id, NewSessionRequest req) =>
+        app.MapPost("/directors/{id}/sessions", async (HttpContext ctx, string id, NewSessionRequest req) =>
         {
-            var d = registry.Get(id);
-            if (d is null) return Results.NotFound(new { error = "director not found" });
+            if (!TryResolveOwnedDirector(ctx, tenantBoundary, registry, id, out var d, out var ownerErr)) return ownerErr;
             if (req is null || string.IsNullOrWhiteSpace(req.RepoPath))
                 return Results.BadRequest(new { error = "repoPath is required" });
 
@@ -1891,10 +1906,9 @@ internal static class GatewayEndpoints
             return Results.Json(body, statusCode: 201);
         });
 
-        app.MapDelete("/directors/{id}/repos", async (string id, string? path, CancellationToken ct) =>
+        app.MapDelete("/directors/{id}/repos", async (HttpContext ctx, string id, string? path, CancellationToken ct) =>
         {
-            var d = registry.Get(id);
-            if (d is null) return Results.NotFound(new { error = "director not found" });
+            if (!TryResolveOwnedDirector(ctx, tenantBoundary, registry, id, out var d, out var err)) return err;
             if (string.IsNullOrWhiteSpace(path)) return Results.BadRequest(new { error = "path is required" });
 
             // Gateway Cleanup Phase 2 (PR D): ride the tunnel first (repo-delete verb, director-level). The
@@ -1914,10 +1928,9 @@ internal static class GatewayEndpoints
         // the repo-add verb (director-level). The Director core validates directory-existence and returns
         // { added, repo }; added selects the old route's 201 (newly added) vs 200 (already present). A typed
         // failure preserves 400; a null result (Director not tunnel-connected) is 502.
-        app.MapPost("/directors/{id}/repos", async (string id, RepoAddRequest req, CancellationToken ct) =>
+        app.MapPost("/directors/{id}/repos", async (HttpContext ctx, string id, RepoAddRequest req, CancellationToken ct) =>
         {
-            var d = registry.Get(id);
-            if (d is null) return Results.NotFound(new { error = "director not found" });
+            if (!TryResolveOwnedDirector(ctx, tenantBoundary, registry, id, out var d, out var err)) return err;
             if (req is null || string.IsNullOrWhiteSpace(req.Path)) return Results.BadRequest(new { error = "path is required" });
 
             var sr = await DirectorCommandRouter.TrySendAsync(sendCommand, id, "repo-add", "", req, ct, machineName: d.MachineName);
@@ -1930,10 +1943,9 @@ internal static class GatewayEndpoints
         // Gateway Cleanup CUT RESTORATION (SB-4a): rename a registered repository (path is the identity). Rides
         // the repo-rename verb (director-level). A path not in the registry is the executor's NotFound -> 404;
         // a null result (Director not tunnel-connected) is 502.
-        app.MapPatch("/directors/{id}/repos", async (string id, RepoRenameRequest req, CancellationToken ct) =>
+        app.MapPatch("/directors/{id}/repos", async (HttpContext ctx, string id, RepoRenameRequest req, CancellationToken ct) =>
         {
-            var d = registry.Get(id);
-            if (d is null) return Results.NotFound(new { error = "director not found" });
+            if (!TryResolveOwnedDirector(ctx, tenantBoundary, registry, id, out var d, out var err)) return err;
             if (req is null || string.IsNullOrWhiteSpace(req.Path)) return Results.BadRequest(new { error = "path is required" });
             if (string.IsNullOrWhiteSpace(req.Name)) return Results.BadRequest(new { error = "name is required" });
 
@@ -1946,20 +1958,18 @@ internal static class GatewayEndpoints
 
         // Gateway Cleanup CUT RESTORATION (SB-4a): the enriched per-repo overview the Repositories page reads.
         // Rides the repos-overview verb (director-level). A null result (Director not tunnel-connected) is 502.
-        app.MapGet("/directors/{id}/repos/overview", async (string id, CancellationToken ct) =>
+        app.MapGet("/directors/{id}/repos/overview", async (HttpContext ctx, string id, CancellationToken ct) =>
         {
-            var d = registry.Get(id);
-            if (d is null) return Results.NotFound(new { error = "director not found" });
+            if (!TryResolveOwnedDirector(ctx, tenantBoundary, registry, id, out var d, out var err)) return err;
 
             var sr = await DirectorCommandRouter.TrySendAsync(sendCommand, id, "repos-overview", "", null, ct, machineName: d.MachineName);
             if (sr is null || !sr.Ok) return MapDirectorFailure(sr);
             return Results.Json(DirectorCommandRouter.ReadBody<List<RepoOverviewDto>>(sr) ?? new List<RepoOverviewDto>());
         });
 
-        app.MapGet("/directors/{id}/coaching/categories", async (string id, CancellationToken ct) =>
+        app.MapGet("/directors/{id}/coaching/categories", async (HttpContext ctx, string id, CancellationToken ct) =>
         {
-            var d = registry.Get(id);
-            if (d is null) return Results.NotFound(new { error = "director not found" });
+            if (!TryResolveOwnedDirector(ctx, tenantBoundary, registry, id, out var d, out var err)) return err;
 
             // Gateway Cleanup Phase 2 (PR D): ride the tunnel first (coaching-categories verb, director-level).
             var sr = await DirectorCommandRouter.TrySendAsync(sendCommand, id, "coaching-categories", "", null, ct, machineName: d.MachineName);
@@ -1973,10 +1983,9 @@ internal static class GatewayEndpoints
             return TunnelFailure(null);
         });
 
-        app.MapGet("/directors/{id}/claude-sessions", async (string id, CancellationToken ct) =>
+        app.MapGet("/directors/{id}/claude-sessions", async (HttpContext ctx, string id, CancellationToken ct) =>
         {
-            var d = registry.Get(id);
-            if (d is null) return Results.NotFound(new { error = "director not found" });
+            if (!TryResolveOwnedDirector(ctx, tenantBoundary, registry, id, out var d, out var err)) return err;
 
             // Gateway Cleanup Phase 2 (PR D): ride the tunnel first (claude-sessions verb, director-level; no
             // repo filter on this route, so the payload is empty).
@@ -1991,10 +2000,9 @@ internal static class GatewayEndpoints
             return TunnelFailure(null);
         });
 
-        app.MapGet("/directors/{id}/handovers", async (string id, CancellationToken ct) =>
+        app.MapGet("/directors/{id}/handovers", async (HttpContext ctx, string id, CancellationToken ct) =>
         {
-            var d = registry.Get(id);
-            if (d is null) return Results.NotFound(new { error = "director not found" });
+            if (!TryResolveOwnedDirector(ctx, tenantBoundary, registry, id, out var d, out var err)) return err;
 
             // Gateway Cleanup Phase 2 (PR D): ride the tunnel first (handovers-list verb, director-level; this
             // route has no repo filter, so the payload is empty).
@@ -2009,10 +2017,9 @@ internal static class GatewayEndpoints
             return TunnelFailure(null);
         });
 
-        app.MapGet("/directors/{id}/handovers/content", async (string id, string? path, CancellationToken ct) =>
+        app.MapGet("/directors/{id}/handovers/content", async (HttpContext ctx, string id, string? path, CancellationToken ct) =>
         {
-            var d = registry.Get(id);
-            if (d is null) return Results.NotFound(new { error = "director not found" });
+            if (!TryResolveOwnedDirector(ctx, tenantBoundary, registry, id, out var d, out var err)) return err;
             if (string.IsNullOrWhiteSpace(path)) return Results.BadRequest(new { error = "path is required" });
 
             // Gateway Cleanup Phase 2 (PR D): ride the tunnel first (handovers-content verb, director-level; the
@@ -2033,10 +2040,9 @@ internal static class GatewayEndpoints
         // Gateway Cleanup CUT RESTORATION (SB-4a): create a standalone saved-handover document. Rides the
         // handover-create verb (director-level). Success is the old route's 201; a typed failure preserves 400;
         // a null result (Director not tunnel-connected) is 502.
-        app.MapPost("/directors/{id}/handovers", async (string id, HandoverCreateRequest req, CancellationToken ct) =>
+        app.MapPost("/directors/{id}/handovers", async (HttpContext ctx, string id, HandoverCreateRequest req, CancellationToken ct) =>
         {
-            var d = registry.Get(id);
-            if (d is null) return Results.NotFound(new { error = "director not found" });
+            if (!TryResolveOwnedDirector(ctx, tenantBoundary, registry, id, out var d, out var err)) return err;
             if (req is null || string.IsNullOrWhiteSpace(req.Title)) return Results.BadRequest(new { error = "title is required" });
             if (string.IsNullOrWhiteSpace(req.Content)) return Results.BadRequest(new { error = "content is required" });
 
@@ -2051,10 +2057,9 @@ internal static class GatewayEndpoints
         // verb (director-level; the ?path query rides in the payload). A path outside the handover folder is the
         // executor's BadRequest -> 400; a missing file its NotFound -> 404; a null result (Director not
         // tunnel-connected) is 502.
-        app.MapDelete("/directors/{id}/handovers", async (string id, string? path, CancellationToken ct) =>
+        app.MapDelete("/directors/{id}/handovers", async (HttpContext ctx, string id, string? path, CancellationToken ct) =>
         {
-            var d = registry.Get(id);
-            if (d is null) return Results.NotFound(new { error = "director not found" });
+            if (!TryResolveOwnedDirector(ctx, tenantBoundary, registry, id, out var d, out var err)) return err;
             if (string.IsNullOrWhiteSpace(path)) return Results.BadRequest(new { error = "path is required" });
 
             var sr = await DirectorCommandRouter.TrySendAsync(sendCommand, id, "handover-delete", "", new RepoDeleteRequest { Path = path }, ct, machineName: d.MachineName);
@@ -2062,10 +2067,9 @@ internal static class GatewayEndpoints
             return Results.Content(sr.BodyJson ?? "{\"removed\":true}", "application/json");
         });
 
-        app.MapGet("/directors/{id}/fs/list", async (string id, string? path, CancellationToken ct) =>
+        app.MapGet("/directors/{id}/fs/list", async (HttpContext ctx, string id, string? path, CancellationToken ct) =>
         {
-            var d = registry.Get(id);
-            if (d is null) return Results.NotFound(new { error = "director not found" });
+            if (!TryResolveOwnedDirector(ctx, tenantBoundary, registry, id, out var d, out var err)) return err;
 
             // Gateway Cleanup Phase 2 (PR D): ride the tunnel first (fs-list verb, director-level; the ?path
             // query rides in the payload). A non-Ok stream result (e.g. the Director core's bad-path BadRequest)
@@ -2083,10 +2087,9 @@ internal static class GatewayEndpoints
             return TunnelFailure(null);
         });
 
-        app.MapPost("/directors/{id}/sessions/github", async (string id, GitHubSessionRequest req) =>
+        app.MapPost("/directors/{id}/sessions/github", async (HttpContext ctx, string id, GitHubSessionRequest req) =>
         {
-            var d = registry.Get(id);
-            if (d is null) return Results.NotFound(new { error = "director not found" });
+            if (!TryResolveOwnedDirector(ctx, tenantBoundary, registry, id, out var d, out var ownerErr)) return ownerErr;
             if (req is null || string.IsNullOrWhiteSpace(req.Owner) || string.IsNullOrWhiteSpace(req.Repo))
                 return Results.BadRequest(new { error = "owner and repo are required" });
 
@@ -2146,9 +2149,8 @@ internal static class GatewayEndpoints
             FileLog.Write($"[GatewayEndpoints] DELETE director: id={id} force={body.Force} " +
                 $"confirmSessions={(body.ConfirmSessions?.ToString() ?? "-")} reason=\"{Truncate(body.Reason)}\" client={caller}");
 
-            var director = registry.Get(id);
-            if (director is null)
-                return Results.NotFound(new { error = "director not found" });
+            if (!TryResolveOwnedDirector(ctx, tenantBoundary, registry, id, out var director, out var ownerErr))
+                return ownerErr;
 
             if (string.IsNullOrWhiteSpace(body.Reason))
             {
@@ -2158,8 +2160,11 @@ internal static class GatewayEndpoints
 
             // Post-cut: read the live session list from the push store (it carries the same SessionDto incl.
             // Status). A Director with no fresh push is not connected to the tunnel, so the live count is
-            // unknowable and the session gate is skipped below.
-            var cachedSessions = pushedSessions?.TryGetFresh(TenantId.Local, director.DirectorId, streamStaleResolved);
+            // unknowable and the session gate is skipped below. MTR-01: read the push store under the REQUEST's
+            // own tenant (the same tenant the Director was just resolved in), never a hard-coded Local - on
+            // hosted the Director lives in its account's partition, and Local would read the wrong one.
+            var gateTenant = ResolveReadTenant(ctx, tenantBoundary)!.Value;
+            var cachedSessions = pushedSessions?.TryGetFresh(gateTenant, director.DirectorId, streamStaleResolved);
             var sessions = cachedSessions?.ToList();
             if (sessions is not null)
             {
@@ -2685,7 +2690,10 @@ internal static class GatewayEndpoints
                 var newId = registry.ListDirectors().Select(d => d.DirectorId).FirstOrDefault(id => !beforeIds.Contains(id));
                 if (newId is not null)
                 {
-                    var d = registry.Get(newId)!;
+                    // MTR-01: this route ShellExecutes a cc-director.exe on the GATEWAY's own machine, so the
+                    // newly-registered instance is always a Local-tenant entry - resolve it within Local, not by
+                    // a bare cross-tenant scan.
+                    var d = registry.Get(TenantId.Local, newId)!;
                     return Results.Json(new { directorId = d.DirectorId, pid = d.Pid });
                 }
             }
@@ -2746,6 +2754,44 @@ internal static class GatewayEndpoints
     /// </summary>
     private static TenantId? ResolveReadTenant(HttpContext ctx, Tenancy.HostedTenantBoundary? boundary)
         => boundary is null ? TenantId.Local : boundary.ResolveRequestTenant(ctx);
+
+    /// <summary>
+    /// MTR-01: resolve a per-director route's target Director IN THE REQUEST'S OWN TENANT. Every client-serving
+    /// <c>/directors/{id}/...</c> route (and the <c>/interrupted</c> plane's by-id legs) resolves its Director
+    /// through this, so a client-supplied id can only ever name a Director the caller's authenticated device key
+    /// owns. The registry has no bare-id accessor anymore, so there is no way to reach another tenant's entry.
+    ///
+    /// On success returns true and hands back the caller's own Director; on failure returns false and the
+    /// <see cref="IResult"/> the route must return unchanged:
+    ///   - 403 when the request has no bound tenant (deny-by-default, NEVER the Local partition);
+    ///   - 404 when the id is not in the caller's tenant (NEVER another tenant's freshest match).
+    /// Self-host is unchanged: there the request tenant is always Local and the registry holds the one tenant's
+    /// Directors, so this is an ordinary present/absent lookup.
+    /// </summary>
+    private static bool TryResolveOwnedDirector(
+        HttpContext ctx, Tenancy.HostedTenantBoundary? boundary, DirectorRegistry registry, string id,
+        out DirectorDto director, out IResult error)
+    {
+        director = null!;
+        var reqTenant = ResolveReadTenant(ctx, boundary);
+        if (reqTenant is null)
+        {
+            error = Results.Json(new { error = "no tenant is bound to this request" },
+                statusCode: StatusCodes.Status403Forbidden);
+            return false;
+        }
+
+        var found = registry.Get(reqTenant.Value, id);
+        if (found is null)
+        {
+            error = Results.NotFound(new { error = "director not found" });
+            return false;
+        }
+
+        director = found;
+        error = null!;
+        return true;
+    }
 
     /// <summary>
     /// THE route-facing session locator (issue #1869). Every per-session HTTP route resolves its session

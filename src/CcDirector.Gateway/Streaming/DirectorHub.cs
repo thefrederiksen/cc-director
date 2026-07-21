@@ -108,8 +108,8 @@ public sealed class DirectorHub : Hub
         Context.Items[TenantIdItemKey] = tenant;
         _store.RegisterConnection(tenant, directorId, Context.ConnectionId);
         // Gateway Cleanup mission (tunnel-only): the stream IS the registration now (HTTP register is gone).
-        // Register this Director from the Hello identity so registry.Get(id) - the gate on create-session and
-        // the other director-level routes - resolves it. Source="stream", no dialable endpoint.
+        // Register this Director from the Hello identity so registry.Get(tenant, id) - the gate on create-session
+        // and the other director-level routes - resolves it. Source="stream", no dialable endpoint.
         // Issue #1847: register it UNDER THE RESOLVED TENANT. The tenant is half of the registry key, so this
         // Hello can only create or refresh THIS account's own entry - naming another account's Director is
         // structurally impossible, however the client chose hello.DirectorId. It also makes the entry visible

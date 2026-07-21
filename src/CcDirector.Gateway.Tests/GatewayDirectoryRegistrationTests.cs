@@ -142,7 +142,9 @@ public sealed class GatewayDirectoryRegistrationTests : IAsyncLifetime
         var resp = await _http.PostAsJsonAsync("directors/register", req);
         Assert.Equal(HttpStatusCode.Created, resp.StatusCode);
 
-        var dto = _gateway.Registry.Get(id);
+        // The HTTP registration path keys its entry to the Local tenant (see DirectorRegistry.Upsert); MTR-01
+        // deleted the bare-id accessor, so read it back through the tenant-scoped overload.
+        var dto = _gateway.Registry.Get(CcDirector.Core.Tenancy.TenantId.Local, id);
         Assert.NotNull(dto);
         Assert.True(string.IsNullOrEmpty(dto.TailnetEndpoint));
         Assert.Equal(req.EndpointUnreachableReason, dto.EndpointUnreachableReason);
@@ -165,13 +167,14 @@ public sealed class GatewayDirectoryRegistrationTests : IAsyncLifetime
             MachineName = "machine-d",
         });
 
-        var before = _gateway.Registry.Get(id)!.LastSeen;
+        // MTR-01: the HTTP registration path is Local-keyed; read it back through the tenant-scoped overload.
+        var before = _gateway.Registry.Get(CcDirector.Core.Tenancy.TenantId.Local, id)!.LastSeen;
         await Task.Delay(50); // ensure a measurable delta
 
         var resp = await _http.PostAsync($"directors/{id}/heartbeat", content: null);
         Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
 
-        var after = _gateway.Registry.Get(id)!.LastSeen;
+        var after = _gateway.Registry.Get(CcDirector.Core.Tenancy.TenantId.Local, id)!.LastSeen;
         Assert.True(after > before, $"expected LastSeen to move forward; before={before}, after={after}");
     }
 
