@@ -308,50 +308,10 @@ internal static class GatewayEndpoints
         // ===== HTML pages =====
         // The Gateway serves NO UI pages anymore (docs/plans/one-url-cockpit.md): "/" and every
         // other UI path fall through to the Cockpit via the fallback proxy. Only the token
-        // login/logout pair remains (it guards the Gateway itself when auth is enabled).
-        app.MapGet("/login", (HttpContext ctx) =>
-        {
-            var next = ctx.Request.Query["next"].ToString();
-            if (string.IsNullOrEmpty(next)) next = "/";
-            var html = EmbeddedResources.Load("login.html")
-                .Replace("__NEXT__", System.Web.HttpUtility.HtmlAttributeEncode(next))
-                .Replace("__ERROR__", "");
-            return Results.Content(html, "text/html; charset=utf-8");
-        });
-
-        app.MapPost("/login", async (HttpContext ctx) =>
-        {
-            var form = await ctx.Request.ReadFormAsync();
-            var submitted = (form["token"].ToString() ?? "").Trim();
-            var next = form["next"].ToString();
-            if (string.IsNullOrEmpty(next)) next = "/";
-
-            if (!string.Equals(submitted, token, StringComparison.Ordinal))
-            {
-                var html = EmbeddedResources.Load("login.html")
-                    .Replace("__NEXT__", System.Web.HttpUtility.HtmlAttributeEncode(next))
-                    .Replace("__ERROR__", "Wrong token. Check gateway-token.txt and try again.");
-                ctx.Response.StatusCode = StatusCodes.Status401Unauthorized;
-                ctx.Response.ContentType = "text/html; charset=utf-8";
-                await ctx.Response.WriteAsync(html);
-                return;
-            }
-
-            ctx.Response.Cookies.Append(AuthMiddleware.CookieName, token, new CookieOptions
-            {
-                HttpOnly = true,
-                SameSite = SameSiteMode.Lax,
-                Expires = DateTimeOffset.UtcNow.AddDays(30),
-                IsEssential = true,
-            });
-            ctx.Response.Redirect(IsSafeRedirect(next) ? next : "/");
-        });
-
-        app.MapGet("/logout", (HttpContext ctx) =>
-        {
-            ctx.Response.Cookies.Delete(AuthMiddleware.CookieName);
-            return Results.Redirect("/login");
-        });
+        // login/logout pair remains (it guards the Gateway itself when auth is enabled). It lives in
+        // GatewayLoginEndpoint, which bind-breaks the whole /login surface on hosted (MH-2) and routes the
+        // self-host cookie write through the single GatewayTokenCookie helper.
+        GatewayLoginEndpoint.Map(app, token);
 
         // ===== REST =====
         app.MapGet("/healthz", () =>
@@ -3290,14 +3250,6 @@ internal static class GatewayEndpoints
     }
 
     internal sealed record GatewayEvent(string Type, string Id);
-
-    /// <summary>Only allow same-origin path redirects (defense against open-redirect).</summary>
-    private static bool IsSafeRedirect(string next)
-    {
-        return !string.IsNullOrEmpty(next)
-            && next.StartsWith("/", StringComparison.Ordinal)
-            && !next.StartsWith("//", StringComparison.Ordinal);
-    }
 
     /// <summary>One-line-safe log form of a caller-supplied string (reason fields etc.).</summary>
     private static string Truncate(string? s)

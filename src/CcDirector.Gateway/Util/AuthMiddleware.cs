@@ -216,8 +216,27 @@ internal static class AuthMiddleware
     /// that omitted the registry silently 401'd every per-device key (it bit voice-turn). Pass
     /// <c>null</c> for <paramref name="devices"/> ONLY when per-device-key auth is genuinely
     /// inapplicable (there is no registry on this host).
+    ///
+    /// Production-readiness MH-2: on a HOSTED Gateway (<see cref="GatewayHostedMode.IsHosted"/>) the shared
+    /// machine token is NOT accepted here. A hosted deployment serves many tenants, and the shared token
+    /// authenticates with NO device - so no tenant - which would reach every tenant-blind route with zero
+    /// scoping. On hosted the per-device key issued at enrollment is therefore the ONLY accepted credential
+    /// (it carries the tenant), so a shared-token Bearer or cookie is rejected. Self-host is untouched: it is
+    /// single-owner, the shared token remains its credential, and this overload reads
+    /// <see cref="GatewayHostedMode.IsHosted"/> (false off hosted) so behavior there is byte-identical.
     /// </summary>
     public static bool HasValidToken(HttpContext ctx, string token, DeviceRegistry? devices)
+        => HasValidToken(ctx, token, devices, GatewayHostedMode.IsHosted);
+
+    /// <summary>
+    /// Testable core of <see cref="HasValidToken(HttpContext, string, DeviceRegistry?)"/> with the hosted
+    /// policy passed explicitly. When <paramref name="rejectSharedToken"/> is true (hosted), the shared
+    /// machine <paramref name="token"/> is not accepted on Bearer or cookie - only an active per-device key
+    /// authenticates. When false (self-host), the shared token is accepted exactly as before. The seam lets a
+    /// test drive both the hosted-rejection and the self-host-accept paths deterministically, without touching
+    /// the process environment.
+    /// </summary>
+    internal static bool HasValidToken(HttpContext ctx, string token, DeviceRegistry? devices, bool rejectSharedToken)
     {
         // Bearer
         if (ctx.Request.Headers.TryGetValue("Authorization", out var header))
@@ -227,7 +246,9 @@ internal static class AuthMiddleware
             if (raw.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
             {
                 var provided = raw.Substring(prefix.Length).Trim();
-                if (string.Equals(provided, token, StringComparison.Ordinal))
+                // MH-2: the shared machine token authenticates with no device (no tenant), so it is refused on
+                // hosted - the per-device key below is the only accepted credential there.
+                if (!rejectSharedToken && string.Equals(provided, token, StringComparison.Ordinal))
                     return true;
                 // Issue #469: a unique per-device key issued at enrollment is equally valid. DevThrottle
                 // Stats: stash the matched device's type so a remote prompt can be tagged with its surface.
@@ -244,9 +265,10 @@ internal static class AuthMiddleware
         }
 
         // Cookie. A browser WebSocket cannot set an Authorization header, so the live terminal stream
-        // authenticates via this cookie. It accepts the shared machine token OR, per issue #908, an
-        // active per-device key - so a phone that enrolled with its own device key (and mirrors that key
-        // into the cookie) can open the stream, exactly as it can call the Bearer-authenticated endpoints.
+        // authenticates via this cookie. It accepts the shared machine token (self-host only - see MH-2 above)
+        // OR, per issue #908, an active per-device key - so a phone that enrolled with its own device key (and
+        // mirrors that key into the cookie) can open the stream, exactly as it can call the Bearer-authenticated
+        // endpoints.
         //
         // Issue #1088: tolerate duplicate cc-gateway-token cookies. A browser can temporarily send both
         // a stale HttpOnly raw-token cookie from /login and a fresh device-key cookie from enrollment.
@@ -254,7 +276,8 @@ internal static class AuthMiddleware
         // accept if ANY cc-gateway-token value is valid.
         foreach (var cookieValue in CookieValues(ctx, CookieName))
         {
-            if (string.Equals(cookieValue, token, StringComparison.Ordinal))
+            // MH-2: same as the Bearer branch - the shared machine token cookie is not accepted on hosted.
+            if (!rejectSharedToken && string.Equals(cookieValue, token, StringComparison.Ordinal))
                 return true;
             // DevThrottle Stats: same device-key surface stash as the Bearer branch (the live terminal
             // stream authenticates via this cookie).
