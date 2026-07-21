@@ -9,6 +9,8 @@ using System.Threading;
 using System.Threading.Tasks;
 using CcDirector.Gateway.Tenancy;
 using Microsoft.AspNetCore.Builder;
+using Microsoft.AspNetCore.Hosting.Server;
+using Microsoft.AspNetCore.Hosting.Server.Features;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.Extensions.DependencyInjection;
@@ -439,6 +441,134 @@ public sealed class HostedRefusalRouteSpaceCrossGroupTests
     private static HostedDenial ProbeDenial(string family = "probe") => ProbeDenialFactory.Make(family);
 }
 
+/// <summary>
+/// The finalised-route-space check, proved to FAIL BEFORE StartAsync - the guarantee the round-1 harness
+/// could not make, because it started the listener first and only then read the endpoints. Here the families
+/// are mapped exactly as an adopter maps them, the FINALISED endpoint set is read the way GatewayHost reads
+/// it in production - from the app's OWN <see cref="IEndpointRouteBuilder"/> data sources, which carry the
+/// group endpoints (prefix and metadata applied) the moment they are mapped - and the production validator is
+/// shown to THROW over that set while NO listener has bound.
+///
+/// THE THREE PAIRS ARE THE ONES ROUND 1 MISSED. Each pair ties in the matcher but has DIFFERENT shape keys,
+/// so a check that only compared keys for EQUALITY let them through. Method removal is what manufactures the
+/// tie: off hosted each pair is held apart by its HTTP method, and the substitution drops the method.
+///   1. Standard vs Optional parameter in one denied group - keys differ by parameter kind.
+///   2. A denied refusal vs a LIVE route of the same shape - the exact-key live lookup could not see it.
+///   3. Two complex segments differing only by SEPARATOR - keys differ by separator text.
+/// </summary>
+[Collection(HostedRouteDenyCollection.Name)]
+public sealed class HostedRefusalRouteSpaceFailBeforeStartTests
+{
+    [Fact]
+    public async Task Case_1_standard_versus_optional_in_one_group_ties_and_fails_before_start()
+    {
+        await using var host = UnstartedHostedApp.Map(outer =>
+        {
+            // ONE denied group, two routes a family held apart by METHOD off hosted. Hosted strips the
+            // method: /x/{id} (Standard) and /x/{name?} (Optional) become verb-less refusals that a single
+            // path /x/value matches at EQUAL precedence. Their shape keys differ - Standard versus Optional -
+            // so the round-1 equality check missed them; the overlap check must not.
+            var group = HostedRouteDeny.Group(outer, "", ProbeDenial());
+            group.MapGet("/x/{id}", (int id) => Results.Json(new { id }));
+            group.MapPost("/x/{name?}", (string? name) => Results.Json(new { name }));
+        });
+
+        var error = Assert.Throws<InvalidOperationException>(() => HostedRefusalRouteSpace.Validate(host.Endpoints));
+        Assert.Contains("compete for the same route shape", error.Message);
+        Assert.False(host.Started, "the validator must fail BEFORE the host starts and binds a listener");
+    }
+
+    [Fact]
+    public async Task Case_2_a_refusal_ties_with_a_live_route_of_a_different_kind_and_fails_before_start()
+    {
+        await using var host = UnstartedHostedApp.Map(outer =>
+        {
+            // A denied POST /x/{id} and a LIVE GET /x/{name?}. Off hosted the method holds them apart; hosted
+            // gives the family a verb-less refusal /x/{id} that competes with the live /x/{name?} on /x/value.
+            // The kinds differ (Standard versus Optional), so an exact-key live lookup could not see the tie.
+            var group = HostedRouteDeny.Group(outer, "", ProbeDenial());
+            group.MapPost("/x/{id}", (int id) => Results.Json(new { id }));
+
+            outer.MapGet("/x/{name?}", (string? name) => Results.Json(new { name }));
+        });
+
+        var error = Assert.Throws<InvalidOperationException>(() => HostedRefusalRouteSpace.Validate(host.Endpoints));
+        Assert.Contains("competes for the same route shape as the live route", error.Message);
+        Assert.False(host.Started, "the validator must fail BEFORE the host starts and binds a listener");
+    }
+
+    [Fact]
+    public async Task Case_3_complex_segments_differing_only_by_separator_tie_and_fail_before_start()
+    {
+        await using var host = UnstartedHostedApp.Map(outer =>
+        {
+            // Two complex segments the framework ranks at EQUAL precedence: /x/{a}-{b} and /x/{c}.{d} both
+            // match /x/left-mid.right after the method is stripped. Their shape keys differ only by the
+            // separator character, so equality missed them; the overlap check treats two complex segments at
+            // equal precedence as able to share a value and fails the start.
+            var group = HostedRouteDeny.Group(outer, "", ProbeDenial());
+            group.MapGet("/x/{a}-{b}", (string a, string b) => Results.Json(new { a, b }));
+            group.MapPost("/x/{c}.{d}", (string c, string d) => Results.Json(new { c, d }));
+        });
+
+        var error = Assert.Throws<InvalidOperationException>(() => HostedRefusalRouteSpace.Validate(host.Endpoints));
+        Assert.Contains("compete for the same route shape", error.Message);
+        Assert.False(host.Started, "the validator must fail BEFORE the host starts and binds a listener");
+    }
+
+    [Fact]
+    public async Task A_non_tying_neighbour_of_a_different_kind_does_not_fail_the_start()
+    {
+        // THE OTHER FAILURE DIRECTION - over-rejection is an outage. A refusal /x/{id} (a parameter) and a
+        // LIVE literal /x/summary do NOT tie: the literal outranks the parameter, so the matcher never has to
+        // choose between them. The framework's own precedence is what tells the overlap check they differ, so
+        // the neighbour keeps serving and the Gateway starts. Without this a leak-shaped test set would never
+        // notice the validator had begun refusing routes nobody denied.
+        await using var host = UnstartedHostedApp.Map(outer =>
+        {
+            var group = HostedRouteDeny.Group(outer, "", ProbeDenial());
+            group.MapGet("/x/{id}", (int id) => Results.Json(new { id }));
+
+            outer.MapGet("/x/summary", () => Results.Json(new { neighbour = "still serving" }));
+        });
+
+        var exception = Record.Exception(() => HostedRefusalRouteSpace.Validate(host.Endpoints));
+        Assert.Null(exception);
+    }
+
+    [Fact]
+    public async Task The_finalised_refusals_are_visible_before_start_only_via_the_apps_own_data_sources()
+    {
+        // WHY GatewayHost reads the app's own data sources and not the DI CompositeEndpointDataSource, locked
+        // as a test so the production read cannot be "simplified" back into silence. Before StartAsync the DI
+        // composite has NOT been populated with the minimal-API / MapGroup endpoints, so reading it here
+        // returns an EMPTY set and the whole validation quietly does nothing; the app's own data sources carry
+        // the refusals as soon as they are mapped. If a future framework populates the composite eagerly this
+        // reddens and a human re-checks the production read - which is the point.
+        await using var host = UnstartedHostedApp.Map(outer =>
+        {
+            var group = HostedRouteDeny.Group(outer, "", ProbeDenial());
+            group.MapGet("/x/{id}", (int id) => Results.Json(new { id }));
+            group.MapPost("/x/{name?}", (string? name) => Results.Json(new { name }));
+        });
+
+        var viaDiComposite = host.App.Services
+            .GetRequiredService<EndpointDataSource>().Endpoints
+            .OfType<RouteEndpoint>()
+            .Count(e => e.Metadata.GetMetadata<HostedRefusalMarker>() is not null);
+
+        var viaAppDataSources = ((IEndpointRouteBuilder)host.App).DataSources
+            .SelectMany(source => source.Endpoints)
+            .OfType<RouteEndpoint>()
+            .Count(e => e.Metadata.GetMetadata<HostedRefusalMarker>() is not null);
+
+        Assert.Equal(0, viaDiComposite);
+        Assert.Equal(2, viaAppDataSources);
+    }
+
+    private static HostedDenial ProbeDenial(string family = "probe") => ProbeDenialFactory.Make(family);
+}
+
 /// <summary>The refusal payload used by the exclusive and cross-group hosts.</summary>
 internal static class ProbeDenialFactory
 {
@@ -500,6 +630,73 @@ internal sealed class ValidatedHostedApp : IAsyncDisposable
     {
         _http.Dispose();
         await _app.StopAsync();
+        await _app.DisposeAsync();
+        Environment.SetEnvironmentVariable("CC_GATEWAY_HOSTED", _priorHosted);
+    }
+}
+
+/// <summary>
+/// A HOSTED app that maps families the way an adopter does and then reads the FINALISED endpoint set WITHOUT
+/// starting the listener - the piece the round-1 harness lacked. It reads the endpoints the same way
+/// GatewayHost does in production: from the app's OWN <see cref="IEndpointRouteBuilder"/> data sources, which
+/// carry the group endpoints (prefix and metadata conventions applied) as soon as they are mapped, so the
+/// validator can be driven over the exact finalised set BEFORE <c>StartAsync</c> binds anything. Whether a
+/// listener ever bound is exposed so a test can assert the failure came first.
+/// </summary>
+internal sealed class UnstartedHostedApp : IAsyncDisposable
+{
+    private readonly WebApplication _app;
+    private readonly string? _priorHosted;
+
+    /// <summary>The app itself, so a test can contrast the app's own data sources with the DI composite.</summary>
+    public WebApplication App => _app;
+
+    /// <summary>The finalised endpoint set, read pre-Start from the app's own data sources.</summary>
+    public IReadOnlyList<Endpoint> Endpoints { get; }
+
+    private UnstartedHostedApp(WebApplication app, string? priorHosted, IReadOnlyList<Endpoint> endpoints)
+    {
+        _app = app;
+        _priorHosted = priorHosted;
+        Endpoints = endpoints;
+    }
+
+    /// <summary>
+    /// True once the host has actually STARTED - the application-started lifetime token is signalled inside
+    /// <c>StartAsync</c>, which is the moment a listener binds. This harness never calls <c>StartAsync</c>, so
+    /// a test asserting this is false is asserting the validation threw with no listener ever bound. The
+    /// server's addresses feature is NOT used for this: it is seeded from the configured URLs at build time,
+    /// so it reports addresses before anything has bound.
+    /// </summary>
+    public bool Started => _app.Lifetime.ApplicationStarted.IsCancellationRequested;
+
+    public static UnstartedHostedApp Map(Action<IEndpointRouteBuilder> map)
+    {
+        ArgumentNullException.ThrowIfNull(map);
+
+        var priorHosted = Environment.GetEnvironmentVariable("CC_GATEWAY_HOSTED");
+        Environment.SetEnvironmentVariable("CC_GATEWAY_HOSTED", "1");
+
+        var builder = WebApplication.CreateBuilder();
+        builder.Logging.ClearProviders();
+        var app = builder.Build();
+        app.UseRouting();
+
+        map(app);
+
+        // The FINALISED set, read the way GatewayHost reads it - and, crucially, NOT started. The app's own
+        // data sources already carry the group endpoints; the DI CompositeEndpointDataSource would still be
+        // empty here, which is exactly the production trap this harness exists to keep honest.
+        var endpoints = ((IEndpointRouteBuilder)app).DataSources
+            .SelectMany(source => source.Endpoints)
+            .ToList();
+
+        return new UnstartedHostedApp(app, priorHosted, endpoints);
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        // The app was never started, so there is nothing to stop - just dispose and restore the variable.
         await _app.DisposeAsync();
         Environment.SetEnvironmentVariable("CC_GATEWAY_HOSTED", _priorHosted);
     }

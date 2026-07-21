@@ -6,6 +6,7 @@ using CcDirector.Core.Utilities;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.AspNetCore.Routing.Patterns;
+using Microsoft.AspNetCore.Routing.Template;
 
 namespace CcDirector.Gateway.Tenancy;
 
@@ -27,43 +28,57 @@ internal sealed record HostedExclusivePrefixMarker(HostedDenial Denial, string P
 /// Validates the route space AFTER every endpoint has been mapped, and fails the Gateway at startup rather
 /// than letting a conflict surface as a 500 on a denied route the first time somebody calls it.
 ///
-/// WHAT THIS CHECKS, AND - MORE IMPORTANTLY - WHAT IT DELIBERATELY NO LONGER TRIES TO CHECK.
+/// WHAT THIS CHECKS, AND HOW IT AVOIDS RE-MODELLING THE MATCHER.
 ///
 /// A previous version of this file tried to detect whether two route patterns would TIE in the matcher, by
-/// comparing a hand-rolled "shape key". It was wrong, and it was wrong in the way that matters: three
-/// independent route pairs escaped it and returned HTTP 500 at request time - a standard parameter against
-/// an optional one on a present segment, literal case variants, and equal-precedence complex segments
-/// differing only by their separator character.
+/// comparing a hand-rolled "shape key" and then only ever testing that key for EQUALITY. It was wrong, and
+/// it was wrong in the way that matters: three independent route pairs escaped it and returned HTTP 500 at
+/// request time - a standard parameter against an optional one on a present segment, literal case variants,
+/// and equal-precedence complex segments differing only by their separator character. Equal keys are a
+/// SOUND witness of a tie, but they are not the ONLY tie: two patterns can tie with DIFFERENT keys, and the
+/// method-removal this primitive performs is exactly what manufactures those different-key ties.
 ///
-/// The reason it was wrong is worth keeping, because it is the second time this primitive made the same
-/// mistake: <b>the matcher's FULL ambiguity relation is not reachable from public API, so any check for the
-/// WHOLE of it is a MODEL of framework semantics rather than the semantics themselves.</b> The first
-/// instance was a hand-written scan standing in for the route parser; that one was a hand-rolled key
+/// The lesson from that miss is kept, because it is the second time this primitive made the same mistake:
+/// <b>the matcher's FULL ambiguity relation is not reachable from public API, so any hand-written check for
+/// the WHOLE of it is a MODEL of framework semantics rather than the semantics themselves.</b> The first
+/// instance was a hand-written scan standing in for the route parser; the second was a hand-rolled key
 /// standing in for the matcher. Both were correct on the cases their author thought of and wrong on cases
 /// the framework already knew about.
 ///
-/// So this does not try to decide the whole ambiguity relation. It removes the conditions under which
-/// ambiguity can arise, and it fails loud on the ONE class of tie that refusal substitution INTRODUCES -
-/// which is a strictly smaller and decidable question than "would these two patterns ever tie":
+/// So this does NOT reimplement the ambiguity relation. It asks a strictly smaller, DECIDABLE question -
+/// "could a single request path be matched by both of these patterns at EQUAL precedence?" - and it answers
+/// the precedence half by DELEGATING to the framework's own <see cref="RoutePrecedence"/>
+/// rather than by re-deriving precedence digits. That is the opposite of modelling: the specificity ranking
+/// that decides which of two matches wins is the framework's, computed by the framework. What is left for
+/// this file to decide is only whether a common concrete path EXISTS, which is structural and conservative:
+///
+///   - Two patterns of DIFFERENT segment count, or of DIFFERENT inbound precedence, cannot tie - a
+///     more-specific match always wins, so a literal never ties with the parameter that could cover it, and
+///     a constrained parameter never ties with an unconstrained one. These are dropped.
+///   - At EQUAL precedence, a position where BOTH sides are a single literal shares a path only if the two
+///     literals are equal (case-insensitively, as the matcher compares them); unequal literals mean no
+///     shared path and no tie. Every other position - a parameter, a catch-all, a complex segment - is
+///     treated as ABLE to share a value (a parameter matches anything; two complex segments differing only
+///     by separator still share values such as "a-b.c"). That is the fail-CLOSED direction: it can
+///     over-reject an ambiguous DEVELOPER DECLARATION at startup with a clear error, which is acceptable
+///     because it runs on the denied-route declarations, never on user traffic.
+///
+/// This is COMPLETE for the ties method-removal introduces. Two routes a family held apart by HTTP METHOD,
+/// or two families denying one path under different verbs, become verb-less refusals with identical
+/// precedence and intersecting value sets - Standard-vs-Optional, or separator-only complex differences
+/// included - and every such pair fails the start, whether or not their old shape keys were equal.
 ///
 ///   - an EXCLUSIVE-PREFIX family maps ONE catch-all refusal under a prefix nothing else may serve, and
 ///     maps NO per-route refusal (the handle discards each handler). One refusal cannot tie with itself.
 ///     Exclusivity is checked by PREFIX CONTAINMENT against the finalised route patterns STRUCTURALLY - the
 ///     prefix is required to be literal at construction, and a live route's path is read from its parsed
 ///     segments, never from RawText, which a model-built pattern leaves null.
-///   - a PER-ROUTE family maps a refusal per route it actually declares. Nothing is synthesised, so no
-///     pattern exists that the family did not already have. But substitution DROPS the HTTP method and the
-///     parameter policies, and folds literal case - so two routes the family held apart by METHOD, or two
-///     families denying the same path under different verbs, become verb-less refusals that TIE where the
-///     originals did not. That tie is introduced HERE, by this primitive, so it is caught HERE: any two
-///     refusals whose finalised patterns share a case-insensitive structural SHAPE would compete, and any
-///     refusal sharing a shape with a LIVE route would compete with it. Either fails the start.
 ///
 /// What this still does NOT claim to catch is a tie that would ALREADY exist in a family's own production
-/// route table before any deny - an optional parameter against a shorter path, say. That tie is not
-/// introduced by substitution; it is the family's own, and it would surface off hosted too. Deciding it in
-/// general is the unreachable relation. Deciding the introduced subset - identical structural shape among
-/// verb-less endpoints - is not, and is what this checks.
+/// route table before any deny - an optional parameter against a shorter path under a DIFFERENT segment
+/// count, say. That tie is not introduced by substitution; it is the family's own, it would surface off
+/// hosted too, and deciding the general variable-length case is the unreachable relation. Deciding the
+/// introduced subset - a shared path at equal precedence among same-length patterns - is what this checks.
 /// </summary>
 internal static class HostedRefusalRouteSpace
 {
@@ -101,51 +116,131 @@ internal static class HostedRefusalRouteSpace
     }
 
     /// <summary>
-    /// Fails the start on a tie INTRODUCED by refusal substitution: two verb-less refusals whose finalised
-    /// patterns share a case-insensitive structural shape, or a refusal that shares a shape with a live
-    /// route. Both compete in the matcher and answer 500/ambiguous at request time - on a DENIED route, the
-    /// one nobody exercises until a caller does. This is the introduced subset of the ambiguity relation, not
-    /// the whole of it: two verb-less endpoints on the same structural shape always tie, so equal shape keys
-    /// are a SOUND tie witness, never a false alarm.
+    /// Fails the start on a tie INTRODUCED by refusal substitution: two verb-less refusals that a single
+    /// request path could match at equal precedence, or a refusal that could be matched at equal precedence
+    /// with a LIVE route. Both compete in the matcher and answer 500/ambiguous at request time - on a DENIED
+    /// route, the one nobody exercises until a caller does.
+    ///
+    /// This is the introduced subset of the ambiguity relation, not the whole of it, and it is COMPLETE for
+    /// that subset: it does not rely on two patterns having EQUAL shape keys (the round-1 miss), it asks
+    /// whether they could match a common path at equal precedence - which is true for Standard-vs-Optional
+    /// parameters and for separator-only complex differences, exactly the different-key ties method-removal
+    /// manufactures. The precedence half is the framework's own (see <see cref="CouldMatchSamePath"/>), so
+    /// this file never re-derives the specificity ranking it was twice burned re-deriving.
     /// </summary>
     private static void ValidateNoRefusalTies(List<RouteEndpoint> routes, List<RouteEndpoint> refusalEndpoints)
     {
-        // The live route space, keyed by structural shape. Refusals are excluded here - they are checked
-        // against each other and against these lives below.
-        var liveByShape = new Dictionary<string, RouteEndpoint>(StringComparer.Ordinal);
-        foreach (var live in routes)
-        {
-            if (live.Metadata.GetMetadata<HostedRefusalMarker>() is not null) continue;
-            liveByShape[HostedRefusalPattern.ShapeKey(live.RoutePattern)] = live;
-        }
+        // The live route space. Refusals are excluded here - they are checked against each other and against
+        // these lives below.
+        var lives = routes
+            .Where(e => e.Metadata.GetMetadata<HostedRefusalMarker>() is null)
+            .ToList();
 
-        var refusalByShape = new Dictionary<string, RouteEndpoint>(StringComparer.Ordinal);
-        foreach (var refusal in refusalEndpoints)
+        // Refusal against refusal. Every unordered pair, so a tie is caught whichever family declared first.
+        for (var i = 0; i < refusalEndpoints.Count; i++)
         {
-            var shape = HostedRefusalPattern.ShapeKey(refusal.RoutePattern);
-            var family = refusal.Metadata.GetMetadata<HostedRefusalMarker>()!.Denial.Family;
-
-            if (refusalByShape.TryGetValue(shape, out var prior) && !ReferenceEquals(prior, refusal))
+            for (var j = i + 1; j < refusalEndpoints.Count; j++)
             {
-                var priorFamily = prior.Metadata.GetMetadata<HostedRefusalMarker>()!.Denial.Family;
+                var a = refusalEndpoints[i];
+                var b = refusalEndpoints[j];
+                if (!CouldMatchSamePath(a.RoutePattern, b.RoutePattern)) continue;
+
+                var familyA = a.Metadata.GetMetadata<HostedRefusalMarker>()!.Denial.Family;
+                var familyB = b.Metadata.GetMetadata<HostedRefusalMarker>()!.Denial.Family;
                 throw new InvalidOperationException(
-                    $"Two hosted refusals compete for the same route shape: '{PatternText(prior)}' (family " +
-                    $"'{priorFamily}') and '{PatternText(refusal)}' (family '{family}'). Refusal substitution " +
-                    "drops the HTTP method and folds literal case, so two routes held apart by verb or case " +
-                    "become verb-less refusals that TIE - a 500 on a denied route at request time. Refusing to " +
+                    $"Two hosted refusals compete for the same route shape: '{PatternText(a)}' (family " +
+                    $"'{familyA}') and '{PatternText(b)}' (family '{familyB}'). Refusal substitution drops the " +
+                    "HTTP method and folds literal case, so two routes held apart by verb - even ones whose " +
+                    "parameter kinds or separators differ - become verb-less refusals a single path can match " +
+                    "at equal precedence, and they TIE - a 500 on a denied route at request time. Refusing to " +
                     "start instead. These two denied shapes must be reconciled to a single refusal.");
             }
+        }
 
-            refusalByShape[shape] = refusal;
+        // Refusal against live. A verb-less refusal matches every method, so it ties with a live route
+        // wherever a single path could match both at equal precedence.
+        foreach (var refusal in refusalEndpoints)
+        {
+            var family = refusal.Metadata.GetMetadata<HostedRefusalMarker>()!.Denial.Family;
+            foreach (var live in lives)
+            {
+                if (!CouldMatchSamePath(refusal.RoutePattern, live.RoutePattern)) continue;
 
-            if (liveByShape.TryGetValue(shape, out var live))
                 throw new InvalidOperationException(
                     $"The hosted refusal '{PatternText(refusal)}' (family '{family}') competes for the same route " +
                     $"shape as the live route '{PatternText(live)}'. The verb-less refusal matches every method, so " +
-                    "it ties with the live route wherever their shapes coincide - a 500 on the denied route rather " +
-                    "than a clean answer. Refusing to start: either that live route belongs to the denied family, " +
-                    "or the family is denying a shape it does not own.");
+                    "it ties with the live route wherever a single path can match both at equal precedence - a 500 " +
+                    "on the denied route rather than a clean answer. Refusing to start: either that live route " +
+                    "belongs to the denied family, or the family is denying a shape it does not own.");
+            }
         }
+    }
+
+    /// <summary>
+    /// True when a SINGLE request path could be matched by both patterns at EQUAL precedence - the condition
+    /// under which the matcher ties and answers an ambiguous 500. This is the whole tie test, and it is
+    /// deliberately conservative (fail-CLOSED): it answers "could they tie", over-rejecting an ambiguous
+    /// declaration rather than under-reporting a real tie.
+    ///
+    /// The precedence half is NOT re-derived here. <see cref="RoutePrecedence"/> is the
+    /// framework's own inbound-precedence computation - the same ranking the matcher uses to decide which of
+    /// two candidate matches wins - so a literal never counts as tying with the parameter that could cover
+    /// it, and a constrained parameter never counts as tying with an unconstrained one, WITHOUT this file
+    /// re-implementing any of that ordering. Unequal precedence, or a different segment count, means no tie.
+    ///
+    /// What is left is only whether a common concrete path EXISTS at that shared precedence, decided
+    /// per-segment by <see cref="SegmentsCanShareValue"/>.
+    /// </summary>
+    private static bool CouldMatchSamePath(RoutePattern a, RoutePattern b)
+    {
+        if (a.PathSegments.Count != b.PathSegments.Count) return false;
+        if (InboundPrecedence(a) != InboundPrecedence(b)) return false;
+
+        for (var i = 0; i < a.PathSegments.Count; i++)
+            if (!SegmentsCanShareValue(a.PathSegments[i], b.PathSegments[i]))
+                return false;
+
+        return true;
+    }
+
+    /// <summary>
+    /// The framework's own inbound route precedence for a pattern - the exact ranking the matcher uses to
+    /// decide which of two candidate matches wins. The public entry point takes a <see cref="RouteTemplate"/>,
+    /// and a <see cref="RouteTemplate"/> is built from a <see cref="RoutePattern"/> directly, so this works on
+    /// the model-built refusal patterns whose RawText is null. Nothing about precedence is re-derived here.
+    /// </summary>
+    private static decimal InboundPrecedence(RoutePattern pattern)
+        => RoutePrecedence.ComputeInbound(new RouteTemplate(pattern));
+
+    /// <summary>
+    /// Whether two segments AT EQUAL PRECEDENCE could be filled by a common value. Only when BOTH sides are a
+    /// single literal is non-overlap structurally decidable: the two match a common path iff the literals are
+    /// equal, case-insensitively, as the matcher compares route literals. Any other segment - a parameter, a
+    /// catch-all, or a complex mix - is treated as ABLE to share a value (a parameter matches anything; two
+    /// complex segments differing only by their separator still share values such as "a-b.c"), which is the
+    /// fail-CLOSED direction: a false "yes" over-rejects an ambiguous declaration at startup, a false "no"
+    /// would ship a request-time 500 on a denied route. Since the two segments are already known to be at
+    /// equal precedence, "one side literal, the other a parameter" does not reach here as a shared-path case.
+    /// </summary>
+    private static bool SegmentsCanShareValue(RoutePatternPathSegment a, RoutePatternPathSegment b)
+    {
+        if (IsSingleLiteral(a, out var literalA) && IsSingleLiteral(b, out var literalB))
+            return string.Equals(literalA, literalB, StringComparison.OrdinalIgnoreCase);
+
+        return true;
+    }
+
+    /// <summary>True when the segment is exactly one literal part, handing back its text.</summary>
+    private static bool IsSingleLiteral(RoutePatternPathSegment segment, out string literal)
+    {
+        if (segment.Parts.Count == 1 && segment.Parts[0] is RoutePatternLiteralPart part)
+        {
+            literal = part.Content;
+            return true;
+        }
+
+        literal = string.Empty;
+        return false;
     }
 
     /// <summary>

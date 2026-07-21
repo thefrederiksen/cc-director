@@ -2133,8 +2133,17 @@ public sealed class GatewayHost : IAsyncDisposable
         // undenied route off the air. Both would otherwise surface as a request-time failure on the one path
         // nobody exercises until a caller does. Fail the start instead. Inert on self-host, where no refusal
         // endpoint exists.
-        Tenancy.HostedRefusalRouteSpace.Validate(_app.Services
-            .GetRequiredService<Microsoft.AspNetCore.Routing.EndpointDataSource>().Endpoints);
+        //
+        // The finalised endpoints are read from the app's OWN data sources, not from the DI-resolved
+        // CompositeEndpointDataSource. The composite is not populated with the minimal-API / MapGroup
+        // endpoints until StartAsync builds the endpoint middleware, so reading it HERE - before StartAsync -
+        // returns an EMPTY set and the validation silently does nothing. The app's own
+        // IEndpointRouteBuilder.DataSources carry the group endpoints (prefix and metadata conventions
+        // applied) as soon as they are mapped, which is what lets this fail the start BEFORE any listener
+        // binds rather than after.
+        Tenancy.HostedRefusalRouteSpace.Validate(
+            ((Microsoft.AspNetCore.Routing.IEndpointRouteBuilder)_app).DataSources
+                .SelectMany(source => source.Endpoints));
 
         await _app.StartAsync();
         FileLog.Write($"[GatewayHost] listening on http://0.0.0.0:{Port} (all interfaces, auth-gated; version {version})");
