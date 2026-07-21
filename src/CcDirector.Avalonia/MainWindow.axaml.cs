@@ -2523,19 +2523,17 @@ public partial class MainWindow : Window
         try
         {
             using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(8) };
-            // The entire fetch -> select -> URL decision lives in ResolveCockpitOpenUrlAsync, off this
-            // async-void handler, so there is NO cockpit-URL logic left here for a future edit to quietly
-            // re-compose (e.g. appending "/learn"). This handler only opens the resolved URL verbatim.
-            var url = await ResolveCockpitOpenUrlAsync(() =>
-                http.GetFromJsonAsync<global::CcDirector.Gateway.Contracts.CockpitInfoDto>(baseUrl + "/cockpit"));
-            if (url is { } u)
+            // The entire fetch -> select -> OPEN decision lives in OpenCockpitAsync, off this async-void
+            // handler: it fetches the DTO, and when the Gateway hands back a URL it opens THAT url verbatim
+            // through the injected OpenUrlInBrowser. This handler keeps NO cockpit-URL logic and makes NO
+            // browser-open call of its own, so there is nothing left here for a future edit to quietly
+            // re-compose (e.g. appending "/learn"). It only decides which DIALOG to show when nothing opened.
+            var url = await OpenCockpitAsync(
+                () => http.GetFromJsonAsync<global::CcDirector.Gateway.Contracts.CockpitInfoDto>(baseUrl + "/cockpit"),
+                OpenUrlInBrowser);
+            if (url is null)
             {
-                FileLog.Write($"[MainWindow] BtnCockpit_Click: opening {u} (baseUrl={baseUrl})");
-                OpenUrlInBrowser(u);
-            }
-            else
-            {
-                FileLog.Write($"[MainWindow] BtnCockpit_Click: gateway at {baseUrl} returned no Tailscale URL (Tailscale unavailable); opening nothing. cc-director never opens a localhost URL.");
+                FileLog.Write($"[MainWindow] BtnCockpit_Click: gateway at {baseUrl} returned no Tailscale URL (Tailscale unavailable); opened nothing. cc-director never opens a localhost URL.");
                 await new MessageDialog(
                     "Cannot Open Cockpit",
                     "Tailscale is unavailable on this machine, so there is no tailnet URL for the " +
@@ -2558,26 +2556,34 @@ public partial class MainWindow : Window
     }
 
     // The dumb client opens EXACTLY the Url the Gateway hands back on GET /cockpit - it never composes a
-    // path onto it (the Gateway owns the URL, CLAUDE.md rule 7). This seam pins that: BtnCockpit_Click
+    // path onto it (the Gateway owns the URL, CLAUDE.md rule 7). This seam pins that: OpenCockpitAsync
     // opens SelectCockpitOpenUrl(info), and a desktop test reddens if a subpath is ever appended (the
     // regression that made the old Learn button point at the non-route {base}/cockpit/learn once Url
     // became {base}/cockpit). Pure, so it is unit-testable without a UI thread.
     internal static string? SelectCockpitOpenUrl(global::CcDirector.Gateway.Contracts.CockpitInfoDto info)
         => info.Url;
 
-    // The whole fetch -> select -> open decision for the Cockpit button, lifted OFF the async-void
-    // BtnCockpit_Click handler so there is no cockpit-URL logic left inside it to mutate. It fetches the
-    // CockpitInfoDto and returns the URL to open - info.Url VERBATIM via SelectCockpitOpenUrl - or null
-    // when the Gateway hands back no URL (Tailscale down self-hosted) so the caller can say so and open
-    // nothing. A desktop test drives THIS method with a fake fetch and reddens if the returned URL ever
-    // gains a subpath - the exact consumer-boundary regression that appending "/learn" would be
-    // (CLAUDE.md rule 7). Static and fetch-injected, so it is unit-testable without a UI thread or a live
-    // Gateway.
-    internal static async Task<string?> ResolveCockpitOpenUrlAsync(
-        Func<Task<global::CcDirector.Gateway.Contracts.CockpitInfoDto?>> fetch)
+    // The whole fetch -> select -> OPEN decision for the Cockpit button, lifted OFF the async-void
+    // BtnCockpit_Click handler so no cockpit-URL logic AND no browser-open call are left inside it to
+    // mutate. It fetches the CockpitInfoDto, and when the Gateway hands back a URL it OPENS that URL -
+    // info.Url VERBATIM via SelectCockpitOpenUrl - through the injected open action; it opens nothing and
+    // returns null when the Gateway hands back no URL (Tailscale down self-hosted) so the caller can say
+    // so. Because the open() call itself lives HERE, a desktop test injects a fake open that captures its
+    // argument and reddens if the opened URL ever gains a subpath - the exact consumer-boundary regression
+    // that appending "/learn" at the browser boundary would be (CLAUDE.md rule 7). Static, fetch-injected
+    // and open-injected, so it is unit-testable without a UI thread, a live Gateway, or a real browser.
+    internal static async Task<string?> OpenCockpitAsync(
+        Func<Task<global::CcDirector.Gateway.Contracts.CockpitInfoDto?>> fetch,
+        Action<string?> open)
     {
         var info = await fetch();
-        return info is { } i ? SelectCockpitOpenUrl(i) : null;
+        var url = info is { } i ? SelectCockpitOpenUrl(i) : null;
+        if (url is { } u)
+        {
+            FileLog.Write($"[MainWindow] OpenCockpitAsync: opening {u}");
+            open(u);
+        }
+        return url;
     }
 
     // Builds the "could not reach the gateway" message for the Cockpit button (#475). The "is the

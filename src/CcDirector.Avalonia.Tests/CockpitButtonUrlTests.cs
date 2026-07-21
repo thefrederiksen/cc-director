@@ -41,27 +41,61 @@ public class CockpitButtonUrlTests
     }
 
     [Fact]
-    public async Task ResolveCockpitOpenUrlAsync_ReturnsHandedBackUrlVerbatim_NoSubpathAppended()
+    public async Task OpenCockpitAsync_OpensTheHandedBackUrlVerbatim_NoSubpathAppended()
     {
-        // Drive the CONSUMER boundary, not just the pure helper. This is the method BtnCockpit_Click
-        // delegates its ENTIRE fetch->select->open decision to; the handler keeps no cockpit-URL logic of
-        // its own. A fake fetch hands back a known CockpitInfoDto and the method must return info.Url
-        // VERBATIM. If the consumer ever re-composes a subpath (e.g. info.Url + "/learn"), this reddens -
-        // closing the gap where the async-void handler could bypass SelectCockpitOpenUrl (CLAUDE.md rule 7).
+        // Drive the ACTUAL browser-open consumer, not just the returned value. OpenCockpitAsync is the
+        // method BtnCockpit_Click delegates its ENTIRE fetch->select->OPEN decision to; the handler keeps
+        // no cockpit-URL logic and makes no open() call of its own. A fake fetch hands back a known
+        // CockpitInfoDto and a fake open CAPTURES exactly what the method passes to the browser - it must
+        // be info.Url VERBATIM. If the consumer ever re-composes a subpath at the open boundary (e.g.
+        // open(info.Url + "/learn")), this reddens - the exact mutation the guard must catch (CLAUDE.md
+        // rule 7).
         var info = new CockpitInfoDto { Url = "https://gateway.devthrottle.com/cockpit", Up = true };
+        string? opened = null;
+        var openCount = 0;
 
-        var opened = await MainWindow.ResolveCockpitOpenUrlAsync(() => Task.FromResult<CockpitInfoDto?>(info));
+        var returned = await MainWindow.OpenCockpitAsync(
+            () => Task.FromResult<CockpitInfoDto?>(info),
+            u => { openCount++; opened = u; });
 
+        // The browser received info.Url with no path appended, and was opened exactly once.
         Assert.Equal("https://gateway.devthrottle.com/cockpit", opened);
+        Assert.Equal(1, openCount);
+        Assert.Equal("https://gateway.devthrottle.com/cockpit", returned);
     }
 
     [Fact]
-    public async Task ResolveCockpitOpenUrlAsync_NullInfo_ReturnsNull()
+    public async Task OpenCockpitAsync_NullInfo_OpensNothing_ReturnsNull()
     {
-        // Gateway unreachable or empty body: null in -> null out, so the caller shows "cannot open" and
-        // opens nothing - never a fabricated URL.
-        var opened = await MainWindow.ResolveCockpitOpenUrlAsync(() => Task.FromResult<CockpitInfoDto?>(null));
+        // Gateway unreachable or empty body: null in -> the browser is NEVER opened and the method returns
+        // null, so the caller shows "cannot open" and opens nothing - never a fabricated URL.
+        string? opened = null;
+        var openCount = 0;
 
+        var returned = await MainWindow.OpenCockpitAsync(
+            () => Task.FromResult<CockpitInfoDto?>(null),
+            u => { openCount++; opened = u; });
+
+        Assert.Null(returned);
+        Assert.Equal(0, openCount);
+        Assert.Null(opened);
+    }
+
+    [Fact]
+    public async Task OpenCockpitAsync_NullUrl_OpensNothing_ReturnsNull()
+    {
+        // Tailscale down self-hosted: the Gateway returns a DTO whose Url is null. The browser is never
+        // opened and the method returns null so the handler shows the Tailscale-unavailable dialog.
+        var info = new CockpitInfoDto { Url = null, Up = true };
+        string? opened = null;
+        var openCount = 0;
+
+        var returned = await MainWindow.OpenCockpitAsync(
+            () => Task.FromResult<CockpitInfoDto?>(info),
+            u => { openCount++; opened = u; });
+
+        Assert.Null(returned);
+        Assert.Equal(0, openCount);
         Assert.Null(opened);
     }
 
