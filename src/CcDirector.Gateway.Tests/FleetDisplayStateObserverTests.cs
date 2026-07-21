@@ -93,6 +93,70 @@ public sealed class FleetDisplayStateObserverTests
         Assert.Equal("active", sender.Sent[^1].Payload.TriageBucket);
     }
 
+    /// <summary>
+    /// THE STAMP STORM the per-tenant gate exists to prevent (issue #1966). On the hosted Gateway the sweep
+    /// runs one pass PER TENANT (GatewayHost wraps Sweep in ITenantPass.ForEachTenant), each pass seeing only
+    /// that tenant's fleet. With a SINGLE flat gate, tenant t2's pass would prune s1 (not in t2's live set)
+    /// out of the gate every round, so the next round re-sends s1 - and t1's pass evicts s2 likewise - a
+    /// re-send storm every 5 seconds. The gate is partitioned per tenant scope, so each session is sent EXACTLY
+    /// ONCE across many rounds. Model of ForEachTenant: set the ambient scope, snapshot that tenant's slice.
+    /// </summary>
+    [Fact]
+    public void PerTenantPasses_DoNotEvictEachOthersGate_NoStormAcrossTenants()
+    {
+        var sender = new RecordingSender();
+        var byTenant = new Dictionary<string, List<(string, SessionDto)>>
+        {
+            ["t1"] = new() { ("dir-A", Session("s1")) },
+            ["t2"] = new() { ("dir-B", Session("s2")) },
+        };
+        var current = "t1";
+        var observer = new FleetDisplayStateObserver(
+            () => byTenant[current], StubFold, sender.SendAsync, currentScopeKey: () => current);
+
+        // Three full ForEachTenant rounds: each round sweeps t1 then t2.
+        for (var round = 0; round < 3; round++)
+        {
+            current = "t1"; observer.Sweep();
+            current = "t2"; observer.Sweep();
+        }
+
+        // Exactly ONE send per session across all three rounds. A shared flat gate would show ~3 sends each.
+        Assert.Equal(2, sender.Sent.Count);
+        Assert.Contains(sender.Sent, x => x is { DirectorId: "dir-A", SessionId: "s1" });
+        Assert.Contains(sender.Sent, x => x is { DirectorId: "dir-B", SessionId: "s2" });
+    }
+
+    /// <summary>The partition must not become a mute button either: a fold change in ONE tenant is delivered,
+    /// and it does not disturb the OTHER tenant's already-settled gate.</summary>
+    [Fact]
+    public void AFoldChangeInOneTenant_IsDelivered_AndDoesNotResendTheOtherTenant()
+    {
+        var sender = new RecordingSender();
+        var s1 = Session("s1");
+        var byTenant = new Dictionary<string, List<(string, SessionDto)>>
+        {
+            ["t1"] = new() { ("dir-A", s1) },
+            ["t2"] = new() { ("dir-B", Session("s2")) },
+        };
+        var current = "t1";
+        var observer = new FleetDisplayStateObserver(
+            () => byTenant[current], StubFold, sender.SendAsync, currentScopeKey: () => current);
+
+        current = "t1"; observer.Sweep();   // s1 -> red
+        current = "t2"; observer.Sweep();   // s2 -> red
+        sender.Sent.Clear();
+
+        // s1 starts working; only t1's pass should re-send, and only s1.
+        s1.ActivityState = "Working";
+        current = "t1"; observer.Sweep();
+        current = "t2"; observer.Sweep();
+
+        var sent = Assert.Single(sender.Sent);
+        Assert.Equal("s1", sent.SessionId);
+        Assert.Equal("blue", sent.Payload.EffectiveColor);
+    }
+
     /// <summary>A Director with no tunnel gets no stamp, and the observer must NOT record that as delivered -
     /// the fold has to be re-sent the moment it reconnects. Recording a failed send as done would leave that
     /// desktop permanently wrong, and silently.</summary>

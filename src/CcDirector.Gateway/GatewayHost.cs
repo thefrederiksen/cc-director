@@ -823,19 +823,32 @@ public sealed class GatewayHost : IAsyncDisposable
         // and without this enrichment the sweep re-derives the same yellow every tick and the change gate
         // suppresses the update forever. The roster path enriched these (GatewayHost roster map below), so
         // the browsers folded red while the push-only desktop stuck yellow. Same source, same answer.
-        // Hosted Multi-Tenancy (session-serving): NOT yet converted to the per-tenant pass.
-        // BLOCKED ON: partitioning FleetDisplayStateObserver._lastSent by tenant - same shape as FleetRoles
-        // above (session-id-keyed, pruned against the current pass's snapshot), so a per-tenant pass would
-        // turn the display-state fold into a stamp storm every 5 seconds.
+        // Hosted Multi-Tenancy (issue #1966): CONVERTED to the per-tenant pass. The snapshot reads the AMBIENT
+        // tenant (AmbientSnapshotFresh), the voice enrichment reads it too, and the change gate is partitioned
+        // per tenant INSIDE the observer - so the periodic sweep (wrapped in _tenantPass.ForEachTenant below)
+        // and the tunnel-scoped DirectorHub push both fold exactly one tenant's fleet and stamp it down to that
+        // tenant's Directors. Before this the snapshot was hard-coded to TenantId.Local, which on the hosted
+        // multi-tenant Gateway is EMPTY (the sessions live under the signed-in account's tenant), so the desktop
+        // rail received no stamp and rendered grey while the roster - which resolves the request tenant - folded
+        // blue. The gate partitioning is what unblocks the per-tenant pass (see FleetDisplayStateObserver): a
+        // flat gate pruned against one tenant's pass would delete the others and stamp-storm every 5s.
         FleetDisplayState = new Fleet.FleetDisplayStateObserver(
-            () => PushedSessions.SnapshotFresh(TenantId.Local, AutoDismissStaleAfter),
+            () => AmbientSnapshotFresh(AutoDismissStaleAfter),
             sessions => EnrichVoiceThenFoldForPush(
                 sessions,
+                // Voice reads TenantId.Local, byte-identical to the ROSTER's own enrichment (the roster map
+                // below passes TenantId.Local too). Voice/TTS is OFF on the hosted Gateway by design and its
+                // per-tenant partitioning is deferred, so the voice-state store only knows the Local partition;
+                // reading it is correct on self-host and yields false on hosted (voice off), which is the right
+                // answer. It must NOT read the ambient account tenant here: WingmanVoiceService rejects any
+                // tenant that is not a minted voice partition, and matching the roster keeps the pushed fold
+                // byte-identical to the served one - the whole point of this seam.
                 voiceGeneratingFor: sid => _voiceService?.IsGenerating(TenantId.Local, sid) == true,
                 voiceAudioReadyFor: sid => _voiceService?.HasVoice(TenantId.Local, sid) == true,
                 needsYouStampFor: (sid, isRed) => _needsYouClock.Stamp(sid, isRed),
                 snoozeRegistry: _snoozeRegistry),
-            SendCommandAsync);
+            SendCommandAsync,
+            currentScopeKey: () => _tenantPass.Current?.Value);
         // Mission Screen mission (Phase 1b, issue #1405): the mission-WHY store, at a Gateway-side file
         // (CcStorage.Root(), the same location the snooze and cron stores use). Loaded here so a Gateway
         // restart re-serves every WHY. Tests MUST pass an isolated path so they never touch the real store.
@@ -2219,7 +2232,12 @@ public sealed class GatewayHost : IAsyncDisposable
         // overlays (voice, transcription, dictation, snooze expiry) that arrive on no Director push. Never
         // throws into the timer.
         _displayStateSweepTimer = new System.Threading.Timer(
-            _ => { try { FleetDisplayState.Sweep(); } catch (Exception ex) { FileLog.Write($"[GatewayHost] display-state sweep error: {ex.Message}"); } },
+            // One pass per tenant, each inside that tenant's scope (issue #1966), exactly like the auto-dismiss
+            // sweep above. Self-host runs it once (Local); hosted runs it once per live tenant, so the observer's
+            // ambient snapshot and per-tenant gate resolve to each tenant in turn. The try/catch is OUTSIDE the
+            // per-tenant loop only as a backstop - ForEachTenant itself does not isolate a throwing tenant here,
+            // but Sweep is fire-and-forget internally and does not throw on a single bad send.
+            _ => { try { _tenantPass.ForEachTenant(() => FleetDisplayState.Sweep()); } catch (Exception ex) { FileLog.Write($"[GatewayHost] display-state sweep error: {ex.Message}"); } },
             null, DisplayStateSweepInterval, DisplayStateSweepInterval);
         FileLog.Write($"[GatewayHost] display-state sweep started: every {DisplayStateSweepInterval.TotalSeconds:0}s");
 
