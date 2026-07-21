@@ -176,6 +176,13 @@ public sealed class HostedMobileAccountEnrollTests : IDisposable
         && cookies.Any(c => c.StartsWith(Util.AuthMiddleware.CookieName + "=", StringComparison.Ordinal)
                             && c.Contains("httponly", StringComparison.OrdinalIgnoreCase));
 
+    /// <summary>True when the response's cc-gateway-token Set-Cookie header carries the <c>Secure</c> attribute -
+    /// the flag that keeps a hosted (always-HTTPS) standing credential off any plain-HTTP request.</summary>
+    private static bool GatewayCookieIsSecure(HttpResponseMessage resp) =>
+        resp.Headers.TryGetValues("Set-Cookie", out var cookies)
+        && cookies.Any(c => c.StartsWith(Util.AuthMiddleware.CookieName + "=", StringComparison.Ordinal)
+                            && c.Split(';').Any(a => a.Trim().Equals("secure", StringComparison.OrdinalIgnoreCase)));
+
     /// <summary>POSTs /m/enroll with the account token in the Bearer header and the device id in the body.</summary>
     private static async Task<HttpResponseMessage> PostBearerAsync(HttpClient http, string? bearer, string deviceId, string platform = "android")
     {
@@ -207,11 +214,33 @@ public sealed class HostedMobileAccountEnrollTests : IDisposable
             var cookieKey = GatewayCookieValue(resp);
             Assert.False(string.IsNullOrEmpty(cookieKey));
             Assert.True(GatewayCookieIsHttpOnly(resp));
+            // Hosted is always HTTPS behind the platform front door, so the standing credential MUST be Secure -
+            // a browser then never sends cc-gateway-token over plain HTTP.
+            Assert.True(GatewayCookieIsSecure(resp));
             Assert.False(string.IsNullOrEmpty(devices.TenantForKey(cookieKey!)));
             Assert.NotNull(tenants.LookupBySubject(subject));
 
             var body = await resp.Content.ReadAsStringAsync();
             Assert.DoesNotContain(token, body, StringComparison.Ordinal);
+        }
+        finally { http.Dispose(); await app.DisposeAsync(); }
+    }
+
+    [Fact]
+    public async Task HostedEnrollSuccess_SetsSecureCookie()
+    {
+        // The hosted standing credential (cc-gateway-token) rides HTTPS behind the platform front door, so its
+        // Set-Cookie on a successful hosted /m/enroll MUST carry Secure - proven directly off the wire header.
+        // Dropping the Secure flag in GatewayTokenCookie.Set reddens this (fails-on-purpose proof).
+        const string subject = SubjectAlice;
+        var db = OpenWithEntitlements(subject, entitled: true);
+        var (_, _, hosted) = WireHosted(db);
+        var (app, http) = await StartHostedAsync(hosted);
+        try
+        {
+            var resp = await PostBearerAsync(http, Token(subject), "dev-a");
+            Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+            Assert.True(GatewayCookieIsSecure(resp));
         }
         finally { http.Dispose(); await app.DisposeAsync(); }
     }
