@@ -314,14 +314,16 @@ public sealed class GatewayDbContext : DbContext
             // shape lets us read it; emitting a migration for it would have us create or alter a table we do
             // not own, on a schema boundary that is deliberate.
             //
-            // Schema-qualify the table EXPLICITLY on Postgres so the generated SELECT emits
-            // gateway.entitlements and never resolves the relation through the connection's search_path. This
-            // table is excluded from migrations, so it is NOT covered by the migration set that pins every
-            // owned table to the gateway schema; pinning it here makes its qualification an explicit property
-            // of this one go-live-critical read rather than an incidental consequence of the model-wide
-            // HasDefaultSchema below. SQLite is schemaless (one file, no schema namespace) and takes no schema
-            // argument - so this is a provider CONDITIONAL, decided by the same IsNpgsql() signal the rest of
-            // the Postgres-only model shape uses, never a try/catch fallback.
+            // DEFENSE-IN-DEPTH GUARD, behavior-preserving. On Postgres the generated SELECT is already
+            // gateway.entitlements because HasDefaultSchema("gateway") below applies the schema to every
+            // table, so naming the schema HERE changes no emitted SQL today. What it adds is INDEPENDENCE:
+            // this table is excluded from migrations, so it is NOT covered by the migration set that pins the
+            // owned tables to the gateway schema, and its qualification would otherwise rest entirely on the
+            // model-wide default. Pinning it explicitly makes the gateway schema a property of this one read
+            // in its own right, so the read stays qualified even if the model-wide default is later changed
+            // or removed. SQLite is schemaless (one file, no schema namespace) and takes no schema argument -
+            // so this is a provider CONDITIONAL, decided by the same IsNpgsql() signal the rest of the
+            // Postgres-only model shape uses, never a try/catch fallback.
             if (Database.IsNpgsql())
                 b.ToTable("entitlements", "gateway", t => t.ExcludeFromMigrations());
             else

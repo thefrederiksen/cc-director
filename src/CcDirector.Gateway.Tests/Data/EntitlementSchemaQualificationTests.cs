@@ -10,16 +10,20 @@ using Xunit;
 namespace CcDirector.Gateway.Tests.Data;
 
 /// <summary>
-/// The hosted enrollment gate reads one table - <c>entitlements</c> - and a go-live outage traced to that
-/// read resolving the relation through the connection's <c>search_path</c> instead of naming its schema.
-/// These facts pin the gateway's OWN read path to an EXPLICIT schema so it can never depend on search_path
-/// again, and they read that fact from EF's own SQL generation - not from a psql/psycopg2 re-derivation in
-/// another client, which does not prove what THIS Gateway emits.
+/// The hosted enrollment gate reads one table - <c>entitlements</c> - and that read is critical enough that
+/// its schema qualification is worth pinning explicitly. These facts hold TWO behavior-preserving properties.
 ///
-/// The qualification is a provider CONDITIONAL, not a fallback: Postgres names the <c>gateway</c> schema
-/// (the table lives there), while SQLite is schemaless and takes no schema at all. So the property is proven
-/// on EACH provider's OWN branch - Postgres asserts the schema-qualified SELECT, SQLite asserts the bare one
-/// - because a Postgres-branch assertion evaluated on the SQLite model would pass for the wrong reason.
+/// First, the gateway's OWN read path names the <c>gateway</c> schema explicitly on Postgres. On the running
+/// model this SELECT is already gateway-qualified via the model-wide HasDefaultSchema, so this is not a fix
+/// for any emitted query - it is a GUARD: it proves the qualification is an independent property of this one
+/// read and would survive a future change to the model-wide default. It reads the schema from EF's own SQL
+/// generation - not from a psql/psycopg2 re-derivation in another client, which does not prove what THIS
+/// Gateway emits.
+///
+/// Second, on SQLite the same read takes NO schema, because SQLite is schemaless. The qualification is a
+/// provider CONDITIONAL, not a fallback, so the property is proven on EACH provider's OWN branch - Postgres
+/// asserts the schema-qualified SELECT, SQLite asserts the bare one - because a Postgres-branch assertion
+/// evaluated on the SQLite model would pass for the wrong reason.
 /// </summary>
 public sealed class EntitlementSchemaQualificationTests
 {
@@ -60,11 +64,12 @@ public sealed class EntitlementSchemaQualificationTests
     /// <c>gateway</c> schema: the SELECT is <c>FROM gateway.entitlements</c> and the entity's schema annotation
     /// is "gateway". This is the branch that ships to the hosted box.
     ///
-    /// FAIL-ON-PURPOSE (verified during development): change the ToTable schema argument in
-    /// <see cref="GatewayDbContext"/> back to an unqualified <c>ToTable("entitlements", ...)</c> AND remove the
-    /// model-wide <c>HasDefaultSchema("gateway")</c>, and the FROM clause drops to a bare <c>entitlements</c>
-    /// and this assertion reddens. (The explicit ToTable schema added here makes this one read gateway-qualified
-    /// INDEPENDENTLY of the model-wide default, so removing the default alone no longer un-qualifies it.)
+    /// FAIL-ON-PURPOSE (verified during development): the explicit ToTable schema added here makes this one
+    /// read gateway-qualified INDEPENDENTLY of the model-wide default, so removing the model-wide
+    /// <c>HasDefaultSchema("gateway")</c> ALONE leaves the FROM clause qualified and this fact green - that is
+    /// the independence the guard buys. Removing BOTH the ToTable schema argument in
+    /// <see cref="GatewayDbContext"/> AND the model-wide default drops the FROM clause to a bare
+    /// <c>entitlements</c> and this assertion reddens.
     /// </summary>
     [Fact]
     public void EntitlementRead_UnderPostgresProvider_GeneratesGatewaySchemaQualifiedSql()
@@ -81,9 +86,9 @@ public sealed class EntitlementSchemaQualificationTests
         // The relation is schema-qualified. Postgres quotes an identifier only when it must, so EF emits the
         // bare-but-qualified form gateway.entitlements here; assert on that exact qualified reference.
         Assert.Contains("gateway.entitlements", sql);
-        // And it is NOT the unqualified form that would resolve through search_path. The only occurrence of
-        // "entitlements" as a FROM target must carry the schema, so there is no bare " entitlements" token
-        // sitting where a relation reference goes.
+        // And it is NOT the bare, schema-less form. The only occurrence of "entitlements" as a FROM target
+        // must carry the schema, so there is no bare " entitlements" token sitting where a relation reference
+        // goes.
         Assert.DoesNotContain("FROM entitlements", sql);
     }
 
@@ -152,11 +157,11 @@ public sealed class EntitlementSchemaQualificationTests
 
     /// <summary>
     /// PROOF (c). When the entitlement read fails with a <see cref="PostgresException"/>, the diagnostic log
-    /// carries the two fields that actually pinpoint this class of outage - the SQLSTATE code and the server's
+    /// carries the two fields that let the server's own error be read - the SQLSTATE code and the server's
     /// message text - and NEVER the account subject. Driven through the Gateway's own read path against a real
     /// server: the Gateway migrates the gateway schema but not the entitlements table (excluded from
-    /// migrations), so the qualified read throws SQLSTATE 42P01 (undefined_table) - a genuine PostgresException,
-    /// not a constructed one.
+    /// migrations), so the read throws SQLSTATE 42P01 (undefined_table) - a genuine PostgresException, not a
+    /// constructed one.
     /// </summary>
     [RequiresPostgresFact]
     public void EntitlementReadFailure_OnPostgresException_LogsSqlStateAndMessageText_NeverSubject()
