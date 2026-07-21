@@ -232,9 +232,9 @@
                      section 6). The two former boxes (GatewayIndicator + AccountIndicator) are merged
                      into ONE box with two check lines and four visual states:
                        AMBER  = needs attention (NotConfigured, or Connected but not signed in);
-                       YELLOW = a handshake is verifying ("Connecting...");
+                       YELLOW = a handshake is verifying (gateway host + "Connecting...");
                        GREEN  = handshake proven AND the Gateway reports signed in (both lines filled);
-                       RED    = a leg failed, or was working and is now unreachable (the leg is named).
+                       RED    = connection failed, or was working and is now unreachable (gateway host + verdict).
                      GREEN is EARNED - the two-way nonce handshake for line 1, the Gateway's own account
                      report for line 2; a heartbeat or a cached value never paints either green. One click
                      opens the Gateway Connection panel on the resolver's current step. All colors, glyphs,
@@ -244,17 +244,23 @@
                         Margin="8,0,8,4" Padding="10,8" CornerRadius="4"
                         Background="#3A331B" BorderBrush="#F0B848" BorderThickness="1"
                         Cursor="Hand"
+                        Focusable="True"
+                        KeyDown="GatewayStatusBox_KeyDown"
                         PointerPressed="GatewayStatusBox_PointerPressed">
                     <StackPanel Spacing="6">
-                        <!-- Line 1: Gateway reachable (the two-way handshake). -->
-                        <StackPanel Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
+                        <!-- Line 1: WHICH gateway this Director is pointed at. The marker (green check /
+                             amber ring / red cross) reinforces connected / connecting / failed. The line names
+                             the gateway host first and appends the resolved verdict in parentheses, so neither
+                             color nor glyph is the only way to learn the state. With no gateway selected yet
+                             (brand new) the host is empty and this whole row is hidden from code-behind. -->
+                        <StackPanel x:Name="GatewayConnectedRow" Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
                             <Viewbox Width="15" Height="15" VerticalAlignment="Center">
                                 <Path x:Name="GatewayConnectedMarker"
                                       Fill="#F0B848"
                                       Data="M8,1 A7,7 0 1 0 8,15 A7,7 0 1 0 8,1 Z M8,3 A5,5 0 1 1 8,13 A5,5 0 1 1 8,3 Z" />
                             </Viewbox>
                             <TextBlock x:Name="GatewayConnectedLine"
-                                       Text="Connect to Gateway"
+                                       Text=""
                                        FontSize="11" FontWeight="SemiBold"
                                        Foreground="#F0B848"
                                        TextWrapping="Wrap" MaxWidth="176"
