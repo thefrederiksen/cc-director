@@ -12,10 +12,13 @@ namespace CcDirector.Gateway;
 /// enforcement relaxed, and every hosted refusal deactivated - a catastrophic SILENT downgrade rather than a
 /// loud failure.
 ///
-/// The gate keys off the IMMUTABLE identity (<see cref="GatewayHostedMode.IsHostedImage"/>, the compiled-in
-/// <see cref="HostedGatewayImageAttribute"/>), NOT off the droppable <c>CC_GATEWAY_HOSTED</c> toggle. So when
-/// the running executable IS the hosted build, the full contract is REQUIRED even if the toggle was dropped -
-/// a dropped toggle now crashes the boot instead of downgrading it.
+/// The gate keys off the IMMUTABLE identity (<see cref="GatewayHostedMode.IsHostedImage"/> - the compiled-in
+/// <see cref="HostedGatewayImageAttribute"/> on the marked launcher OR the image-wide
+/// <see cref="GatewayHostedMode.HostedImageMarkerFileName"/> marker baked into the published artifact), NOT
+/// off the droppable <c>CC_GATEWAY_HOSTED</c> toggle. So when the running DEPLOYMENT is the hosted build, the
+/// full contract is REQUIRED even if the toggle was dropped, and even if the container entrypoint is
+/// overridden to the unmarked <c>CcDirector.Gateway.dll</c> that also ships in the image - a dropped toggle,
+/// or a swapped entry executable, now crashes the boot instead of downgrading it.
 ///
 /// THE HOSTED CONTRACT (all must hold, checked here at startup):
 ///  1. Hosted mode ON       - <c>CC_GATEWAY_HOSTED=1</c>. This is what drives the async tenant boundary AND
@@ -111,15 +114,18 @@ public static class HostedStartupContract
                 $"{GatewayHost.AuthEnabledEnvVar}=0 disables the auth gate and is not honorable on the hosted " +
                 "image; remove it.");
 
-        // 3. Public HTTPS URL.
+        // 3. Public HTTPS URL. A bare "https://" prefix is NOT enough: GatewayPublicUrl only trims and
+        //    appends a surface path, so a value like "https://" (no host) would pass a prefix check and then
+        //    be served as a broken base URL with no later fail-loud guard. The value must PARSE as an
+        //    absolute https URL with a real host, in the base-URL shape (no query or fragment).
         if (string.IsNullOrWhiteSpace(publicUrl))
             violations.Add(
                 $"{GatewayPublicUrl.PublicBaseUrlEnvVar} must be set to the public base URL (for example " +
                 $"https://gateway.devthrottle.com); it is {Describe(publicUrl)}.");
-        else if (!publicUrl.Trim().StartsWith("https://", StringComparison.OrdinalIgnoreCase))
+        else if (!IsValidHttpsBaseUrl(publicUrl))
             violations.Add(
-                $"{GatewayPublicUrl.PublicBaseUrlEnvVar} must be an https:// URL on the hosted image; it is " +
-                $"{Describe(publicUrl)}.");
+                $"{GatewayPublicUrl.PublicBaseUrlEnvVar} must be an absolute https:// URL with a host (for " +
+                $"example https://gateway.devthrottle.com) on the hosted image; it is {Describe(publicUrl)}.");
 
         // 4. PostgreSQL provider. GatewayDatabase applies the migrations fail-loud once this is set, so the
         //    "migrations applied" part of the contract is enforced by construction from here.
@@ -130,6 +136,36 @@ public static class HostedStartupContract
                 $"{Describe(dbConnection)}.");
 
         return violations;
+    }
+
+    /// <summary>
+    /// True when <paramref name="value"/> is a well-formed public BASE URL for the hosted Gateway: it parses
+    /// as an ABSOLUTE URI, its scheme is exactly <c>https</c>, it has a non-empty host, and it carries no
+    /// query or fragment (a base URL onto which a surface path is appended). This rejects the
+    /// prefix-only values a <c>StartsWith("https://")</c> check let through - <c>https://</c> (no host),
+    /// <c>https:///path</c> (empty host), <c>https://:443</c> (empty host) - and non-https schemes, while
+    /// accepting a host with an optional port and path (for example <c>https://gateway.devthrottle.com</c> or
+    /// <c>https://host:8443</c>).
+    /// </summary>
+    private static bool IsValidHttpsBaseUrl(string value)
+    {
+        if (!Uri.TryCreate(value.Trim(), UriKind.Absolute, out var uri))
+            return false;
+
+        // Uri normalizes the scheme to lower case, so an ordinal compare to the https scheme constant is
+        // exact and case-correct.
+        if (!string.Equals(uri.Scheme, Uri.UriSchemeHttps, StringComparison.Ordinal))
+            return false;
+
+        if (string.IsNullOrEmpty(uri.Host))
+            return false;
+
+        // A base URL carries no query or fragment; a surface path is appended to it, so those would only ever
+        // corrupt the derived URL.
+        if (!string.IsNullOrEmpty(uri.Query) || !string.IsNullOrEmpty(uri.Fragment))
+            return false;
+
+        return true;
     }
 
     /// <summary>Describe an environment value for a violation message without ever echoing a secret: unset,

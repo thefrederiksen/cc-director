@@ -40,6 +40,16 @@
   </ItemGroup>
 
   <ItemGroup>
+    <!-- The IMAGE-WIDE hosted identity marker (GatewayHostedMode.HostedImageMarkerFileName). Publishing this
+         host ALSO ships a runnable, unmarked CcDirector.Gateway.dll; a compiled-in attribute only marks the
+         launcher it is stamped on, so this file - baked into the published output next to every shipped
+         executable - is what makes HostedStartupContract fire whichever entry executable the container runs.
+         CopyToOutputDirectory copies it to both build output and publish output, so the published-artifact
+         regression test (HostedImagePublishedArtifactTests) sees it exactly as the container does. -->
+    <Content Include="hosted-gateway.image" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+  <ItemGroup>
     <!-- The cross-platform Gateway host code + the shared GatewayEntryPoint this executable calls. -->
     <ProjectReference Include="..\CcDirector.Gateway\CcDirector.Gateway.csproj" />
     <!-- The Postgres migration set. Referenced HERE, not from CcDirector.Gateway (which would be the circular

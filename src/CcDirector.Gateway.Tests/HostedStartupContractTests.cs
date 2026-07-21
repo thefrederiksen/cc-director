@@ -92,6 +92,39 @@ public sealed class HostedStartupContractTests
         Assert.Contains(Check(env), v => v.Contains(GatewayPublicUrl.PublicBaseUrlEnvVar));
     }
 
+    [Theory]
+    // A bare "https://" prefix is NOT a valid absolute URL: these all cleared the old StartsWith("https://")
+    // check yet have no usable host, so GatewayPublicUrl would have served a broken base with no later guard.
+    [InlineData("https://")]        // scheme only, no host
+    [InlineData("https:///path")]   // empty host, path only
+    [InlineData("https://:443")]    // empty host, port only
+    [InlineData("https:// ")]       // scheme with a blank host
+    [InlineData("https://gateway.devthrottle.com?x=1")] // base URL must carry no query
+    [InlineData("https://gateway.devthrottle.com#frag")] // base URL must carry no fragment
+    [InlineData("not-a-url")]       // not absolute at all
+    [InlineData("ftp://gateway.devthrottle.com")] // wrong scheme
+    public void Malformed_https_public_url_is_a_violation(string value)
+    {
+        var env = ValidEnv();
+        env[GatewayPublicUrl.PublicBaseUrlEnvVar] = value;
+        Assert.Contains(Check(env), v => v.Contains(GatewayPublicUrl.PublicBaseUrlEnvVar));
+    }
+
+    [Theory]
+    // Well-formed public base URLs must pass: a plain host, a host with a port, and a host with a path
+    // prefix are all valid base URLs the contract must NOT reject (over-refusal would be a hosted outage).
+    [InlineData("https://gateway.devthrottle.com")]
+    [InlineData("https://gateway.devthrottle.com/")]
+    [InlineData("https://host:8443")]
+    [InlineData("https://gateway.devthrottle.com/base")]
+    [InlineData("  https://gateway.devthrottle.com  ")] // surrounding whitespace is trimmed, still valid
+    public void Well_formed_https_public_url_is_not_a_violation(string value)
+    {
+        var env = ValidEnv();
+        env[GatewayPublicUrl.PublicBaseUrlEnvVar] = value;
+        Assert.DoesNotContain(Check(env), v => v.Contains(GatewayPublicUrl.PublicBaseUrlEnvVar));
+    }
+
     [Fact]
     public void Missing_postgres_connection_is_a_violation()
     {
@@ -175,5 +208,55 @@ public sealed class HostedStartupContractTests
         var ctor = typeof(HostedGatewayImageAttribute).GetConstructor(Type.EmptyTypes)!;
         builder.SetCustomAttribute(new CustomAttributeBuilder(ctor, Array.Empty<object>()));
         Assert.True(GatewayHostedMode.IsHostedImageAssembly(builder));
+    }
+
+    [Fact]
+    public void Image_wide_marker_file_makes_an_unmarked_deployment_the_hosted_image()
+    {
+        // This is the fix for the entrypoint-swap bypass: publishing the hosted host also ships a runnable,
+        // UNMARKED CcDirector.Gateway.dll. When the image-wide marker file sits in the deployment directory,
+        // even that unmarked entry is the hosted image, so the fail-closed contract fires whichever executable
+        // the container runs.
+        var dir = Path.Combine(Path.GetTempPath(), "cc-hosted-marker-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        try
+        {
+            // No marker yet: an unmarked entry assembly is self-host.
+            Assert.False(GatewayHostedMode.HostedImageMarkerPresent(dir));
+            Assert.False(GatewayHostedMode.IsHostedImageDeployment(entryAssembly: null, dir));
+
+            // Drop the marker the hosted host bakes into its published output.
+            File.WriteAllText(Path.Combine(dir, GatewayHostedMode.HostedImageMarkerFileName), "marker");
+
+            // Now the SAME unmarked deployment is the hosted image.
+            Assert.True(GatewayHostedMode.HostedImageMarkerPresent(dir));
+            Assert.True(GatewayHostedMode.IsHostedImageDeployment(entryAssembly: null, dir));
+            Assert.True(GatewayHostedMode.IsHostedImageDeployment(typeof(GatewayHostedMode).Assembly, dir));
+        }
+        finally
+        {
+            try { Directory.Delete(dir, recursive: true); } catch { /* best effort */ }
+        }
+    }
+
+    [Fact]
+    public void No_marker_and_no_attribute_is_self_host()
+    {
+        // A directory with no marker, and no marked entry assembly, is self-host - the byte-identical dev /
+        // desktop path. A null or blank base directory never fabricates a hosted verdict.
+        var dir = Path.Combine(Path.GetTempPath(), "cc-hosted-nomarker-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        try
+        {
+            Assert.False(GatewayHostedMode.HostedImageMarkerPresent(dir));
+            Assert.False(GatewayHostedMode.HostedImageMarkerPresent(null));
+            Assert.False(GatewayHostedMode.HostedImageMarkerPresent(""));
+            Assert.False(GatewayHostedMode.IsHostedImageDeployment(typeof(GatewayHostedMode).Assembly, dir));
+            Assert.False(GatewayHostedMode.IsHostedImageDeployment(GetType().Assembly, null));
+        }
+        finally
+        {
+            try { Directory.Delete(dir, recursive: true); } catch { /* best effort */ }
+        }
     }
 }

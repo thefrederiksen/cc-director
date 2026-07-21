@@ -17,6 +17,12 @@ namespace CcDirector.Gateway;
 ///
 /// It lives in <c>CcDirector.Gateway</c> (the shared library both hosts reference) so the shared
 /// <see cref="GatewayEntryPoint"/> can read it off the entry assembly. Only the hosted host applies it.
+///
+/// This attribute identifies the MARKED launcher only. Publishing the hosted host ALSO ships a runnable,
+/// unmarked <c>CcDirector.Gateway.dll</c>, which this attribute cannot identify - so hosted identity is made
+/// IMAGE-WIDE by a companion signal, the <see cref="GatewayHostedMode.HostedImageMarkerFileName"/> marker
+/// file the hosted host bakes into its published output. <see cref="GatewayHostedMode.IsHostedImage"/> is
+/// true when EITHER holds, so the fail-closed contract fires whichever entry executable the container runs.
 /// </summary>
 [AttributeUsage(AttributeTargets.Assembly, AllowMultiple = false, Inherited = false)]
 public sealed class HostedGatewayImageAttribute : Attribute
