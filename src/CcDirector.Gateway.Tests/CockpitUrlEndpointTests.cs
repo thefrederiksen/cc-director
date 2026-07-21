@@ -13,14 +13,15 @@ namespace CcDirector.Gateway.Tests;
 
 /// <summary>
 /// Endpoint-level proof that the P1 fix is WIRED IN, not just present as a helper: the live Gateway
-/// <c>GET /cockpit</c> and the <c>CockpitUrl</c> on <c>GET /gateway/about</c> hand back the configured
-/// public cockpit URL in hosted mode. These are the tests that go red if either call site is reverted to
-/// <c>TailscaleIdentity.TryGetFrontDoorBaseUrl()</c> (which, with no tailnet in the test host, yields null
-/// where the public URL should be) - a green pure-resolver test cannot catch that.
+/// <c>GET /cockpit</c>, the <c>CockpitUrl</c> on <c>GET /gateway/about</c>, and the <c>cockpit.url</c> on
+/// <c>GET /gateway/settings</c> all hand back <c>{base}/cockpit</c> in hosted mode, where base comes from
+/// <c>CC_GATEWAY_PUBLIC_URL</c>. These are the tests that go red if any of the THREE call sites is reverted
+/// to <c>TailscaleIdentity.TryGetFrontDoorBaseUrl()</c> (which, with no tailnet in the test host, yields
+/// null where the public URL should be) - a green pure-resolver test cannot catch a mis-wired call site.
 ///
 /// Only the HOSTED direction is asserted at the endpoint: it is deterministic (no tailscale involved). The
 /// self-host direction depends on whether a tailnet exists on the build host, so its byte-identical proof
-/// lives in <see cref="GatewayCockpitUrlTests"/> against the pure resolver instead.
+/// lives in <see cref="GatewayPublicUrlTests"/> against the pure resolver instead.
 ///
 /// Env vars are process-global; saved and restored in a finally, matching the established pattern in
 /// <c>HealthzTenantLeakTests</c> / <c>HostedStatsDenyTests</c> for the hosted-mode Gateway tests.
@@ -28,40 +29,60 @@ namespace CcDirector.Gateway.Tests;
 public sealed class CockpitUrlEndpointTests
 {
     private const string Token = "test-token";
-    private const string PublicCockpit = "https://cockpit.devthrottle.com";
+    private const string PublicBase = "https://gateway.devthrottle.com";
+    private const string ExpectedCockpit = PublicBase + "/cockpit";
 
     [Fact]
-    public async Task Hosted_cockpit_returns_configured_public_url()
+    public async Task Hosted_cockpit_returns_configured_public_cockpit_url()
     {
-        await WithHostedGateway(PublicCockpit, async (http, _) =>
+        await WithHostedGateway(PublicBase, async (http, _) =>
         {
             var info = await GetJson<CockpitInfoDto>(http, "cockpit", auth: false);
 
-            // The client is dumb - it opens exactly this. Hosted must hand it the public cockpit URL,
-            // never the (absent) tailnet front door. Trailing slash is the historic call-site shape.
-            Assert.Equal(PublicCockpit + "/", info.Url);
+            // The client is dumb - it opens exactly this. Hosted must hand it {base}/cockpit, never the
+            // (absent) tailnet front door.
+            Assert.Equal(ExpectedCockpit, info.Url);
             Assert.True(info.Up);
         });
     }
 
     [Fact]
-    public async Task Hosted_about_CockpitUrl_returns_configured_public_url()
+    public async Task Hosted_about_CockpitUrl_returns_configured_public_cockpit_url()
     {
-        await WithHostedGateway(PublicCockpit, async (http, _) =>
+        await WithHostedGateway(PublicBase, async (http, _) =>
         {
             // /gateway/about is credential-gated; the shared machine token is a valid Bearer.
             var about = await GetJson<AboutDto>(http, "gateway/about", auth: true);
 
-            Assert.Equal(PublicCockpit + "/", about.CockpitUrl);
+            Assert.Equal(ExpectedCockpit, about.CockpitUrl);
         });
     }
 
     [Fact]
-    public async Task Hosted_cockpit_without_configured_url_fails_loud()
+    public async Task Hosted_settings_cockpit_url_returns_configured_public_cockpit_url()
     {
-        // NO fallback end-to-end: hosted with the public URL unset is a deploy misconfiguration, so the
+        await WithHostedGateway(PublicBase, async (http, _) =>
+        {
+            // The third call site (first cut missed it): /gateway/settings.cockpit.url must hand back the
+            // SAME {base}/cockpit, not the raw front-door root it emitted before. Reverting this call site
+            // to TryGetFrontDoorBaseUrl() turns this red (null in the test host).
+            using var req = new HttpRequestMessage(HttpMethod.Get, "gateway/settings");
+            req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", Token);
+            using var resp = await http.SendAsync(req);
+            resp.EnsureSuccessStatusCode();
+
+            using var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync());
+            var url = doc.RootElement.GetProperty("cockpit").GetProperty("url").GetString();
+            Assert.Equal(ExpectedCockpit, url);
+        });
+    }
+
+    [Fact]
+    public async Task Hosted_cockpit_without_configured_base_fails_loud()
+    {
+        // NO fallback end-to-end: hosted with the public base unset is a deploy misconfiguration, so the
         // endpoint throws (500) rather than serving a null the client would misread as "Tailscale down".
-        await WithHostedGateway(configuredCockpitUrl: null, async (http, _) =>
+        await WithHostedGateway(configuredBase: null, async (http, _) =>
         {
             var resp = await http.GetAsync("cockpit");
 
@@ -72,12 +93,12 @@ public sealed class CockpitUrlEndpointTests
     // ---- harness (mirrors HealthzTenantLeakTests) -------------------------------------------------
 
     private static async Task WithHostedGateway(
-        string? configuredCockpitUrl, Func<HttpClient, GatewayHost, Task> body)
+        string? configuredBase, Func<HttpClient, GatewayHost, Task> body)
     {
         var priorHosted = Environment.GetEnvironmentVariable("CC_GATEWAY_HOSTED");
-        var priorUrl = Environment.GetEnvironmentVariable(GatewayCockpitUrl.PublicCockpitUrlEnvVar);
+        var priorUrl = Environment.GetEnvironmentVariable(GatewayPublicUrl.PublicBaseUrlEnvVar);
         Environment.SetEnvironmentVariable("CC_GATEWAY_HOSTED", "1");
-        Environment.SetEnvironmentVariable(GatewayCockpitUrl.PublicCockpitUrlEnvVar, configuredCockpitUrl);
+        Environment.SetEnvironmentVariable(GatewayPublicUrl.PublicBaseUrlEnvVar, configuredBase);
 
         var instancesDir = Path.Combine(Path.GetTempPath(), "cc-cockpiturl-" + Guid.NewGuid().ToString("N"));
         var gateway = new GatewayHost(port: FreePort(), token: Token, authEnabled: true,
@@ -95,7 +116,7 @@ public sealed class CockpitUrlEndpointTests
         {
             await gateway.StopAsync();
             Environment.SetEnvironmentVariable("CC_GATEWAY_HOSTED", priorHosted);
-            Environment.SetEnvironmentVariable(GatewayCockpitUrl.PublicCockpitUrlEnvVar, priorUrl);
+            Environment.SetEnvironmentVariable(GatewayPublicUrl.PublicBaseUrlEnvVar, priorUrl);
             // Deliberately NOT deleting instancesDir - see the note in HealthzTenantLeakTests: deleting it
             // can raise a FileSystemWatcher event on a pool thread after teardown and abort the whole run.
         }
