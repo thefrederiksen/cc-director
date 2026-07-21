@@ -134,6 +134,37 @@ export function enrollmentProfile(): EnrollmentShellProfile {
   return profile;
 }
 
+/**
+ * Which enrollment credential the website returned in the callback fragment, and therefore which
+ * gateway kind this sign-in is for (multi-tenant hosted sign-in, Phase C):
+ *   - "hosted": the account's short-lived Supabase access_token, forwarded to the mint as
+ *     `Authorization: Bearer` (enrollDeviceHosted).
+ *   - "selfHost": a device_key, posted in the request body (enrollDevice), the pre-hosted behavior.
+ * null when the fragment carried neither (a malformed or interrupted round trip).
+ */
+export type EnrollCredential =
+  | { mode: "hosted"; accessToken: string }
+  | { mode: "selfHost"; deviceKey: string };
+
+/**
+ * Decide the enrollment path from the callback fragment. The presence of an access_token means a
+ * HOSTED gateway round trip (it is the credential a hosted gateway issues); a device_key means the
+ * pre-hosted SELF-HOST round trip. A legitimate callback carries EXACTLY ONE of the two. Both
+ * present is AMBIGUOUS - we cannot know which gateway kind the callback is for, and guessing would
+ * send the wrong request shape (a hosted Bearer where the Gateway expects a body device_key, or the
+ * reverse) - so both-present fails closed to null, exactly like neither-present. Returns null when
+ * neither is present, so the callback reports "no device key" exactly as it did before this branch
+ * existed.
+ */
+export function readEnrollCredential(params: URLSearchParams): EnrollCredential | null {
+  const accessToken = params.get("access_token");
+  const deviceKey = params.get("device_key");
+  if (accessToken && deviceKey) return null;
+  if (accessToken) return { mode: "hosted", accessToken };
+  if (deviceKey) return { mode: "selfHost", deviceKey };
+  return null;
+}
+
 /** Mint a fresh anti-forgery state, persist it for the return leg, and return it. */
 export function newEnrollState(): string {
   const state = crypto.randomUUID();
@@ -147,8 +178,9 @@ export function newEnrollState(): string {
 
 /**
  * Read and clear the state saved before the round trip. Returns null when none was saved (private
- * mode, or storage cleared); the callback treats a null expected-state as "cannot verify, proceed"
- * rather than blocking a legitimate sign-in.
+ * mode, or storage cleared). The callback (runEnrollmentCallback) FAILS CLOSED on a null
+ * expected-state: a callback whose round trip cannot be verified against a nonce THIS browser minted
+ * is rejected rather than enrolled, which closes the hosted login-CSRF path.
  */
 export function takeEnrollState(): string | null {
   try {

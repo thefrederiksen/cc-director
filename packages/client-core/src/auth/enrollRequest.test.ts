@@ -9,6 +9,7 @@ import {
   safeInternalPath,
   rememberEnrollNext,
   takeEnrollNext,
+  readEnrollCredential,
 } from "./enrollRequest";
 
 // The shell-agnostic enrollment profile (issue #1088). The mobile profile must stay the DEFAULT and
@@ -70,6 +71,35 @@ describe("desktop device identity", () => {
   it("falls back to a generic label when the user agent is unknown", () => {
     vi.stubGlobal("navigator", { userAgent: "SomethingUnrecognizable/1.0" });
     expect(desktopDeviceName()).toBe("Browser on desktop");
+  });
+});
+
+// The credential the website returns in the callback fragment decides the enrollment path (multi-tenant
+// hosted sign-in, Phase C): an access_token is a HOSTED round trip (forwarded as Authorization: Bearer),
+// a device_key is the pre-hosted SELF-HOST round trip (posted in the body). The self-host case must keep
+// selecting device_key exactly as before, or every self-hosted install's sign-in breaks.
+describe("readEnrollCredential", () => {
+  it("selects the hosted path when the fragment carries an access_token", () => {
+    const params = new URLSearchParams("access_token=abc.def.ghi&state=s1");
+    expect(readEnrollCredential(params)).toEqual({ mode: "hosted", accessToken: "abc.def.ghi" });
+  });
+
+  it("selects the self-host path when the fragment carries a device_key (unchanged behavior)", () => {
+    const params = new URLSearchParams("device_key=dk-123&state=s1");
+    expect(readEnrollCredential(params)).toEqual({ mode: "selfHost", deviceKey: "dk-123" });
+  });
+
+  it("rejects an ambiguous fragment carrying BOTH credentials (fail closed, do not guess)", () => {
+    // A legitimate callback carries exactly one credential. Both present means we cannot know which
+    // gateway kind the callback is for; guessing would send the wrong request shape, so it fails
+    // closed to null exactly like the neither-present case.
+    const params = new URLSearchParams("device_key=dk-123&access_token=abc.def.ghi");
+    expect(readEnrollCredential(params)).toBeNull();
+  });
+
+  it("returns null when the fragment carries neither credential", () => {
+    expect(readEnrollCredential(new URLSearchParams("state=s1"))).toBeNull();
+    expect(readEnrollCredential(new URLSearchParams(""))).toBeNull();
   });
 });
 

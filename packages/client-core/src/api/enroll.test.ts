@@ -1,5 +1,5 @@
-import { describe, expect, it } from "vitest";
-import { GATEWAY_NOT_SIGNED_IN, isGatewayNotSignedIn } from "./enroll";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { GATEWAY_NOT_SIGNED_IN, enrollDevice, enrollDeviceHosted, isGatewayNotSignedIn } from "./enroll";
 import { GatewayError } from "./client";
 
 // There are TWO different sign-ins in this product and they are easy to conflate:
@@ -38,5 +38,100 @@ describe("isGatewayNotSignedIn", () => {
     expect(isGatewayNotSignedIn({ status: 409 })).toBe(false);
     expect(isGatewayNotSignedIn(null)).toBe(false);
     expect(isGatewayNotSignedIn(undefined)).toBe(false);
+  });
+});
+
+// The two enrollment requests (multi-tenant hosted sign-in, Phase C). The client forwards whichever
+// credential the website returned in the callback fragment, and the two gateway kinds authenticate the
+// mint differently:
+//   - SELF-HOST (enrollDevice): the device_key travels in the request BODY, no Authorization header.
+//     This is the pre-hosted behavior and must stay byte-for-byte identical, or every self-hosted
+//     install's sign-in breaks.
+//   - HOSTED (enrollDeviceHosted): the account access token travels as `Authorization: Bearer` and NO
+//     device_key is put in the body (tenant isolation is bound at the mint from the verified token).
+// Both read the local device key back from the response identically; only the request differs.
+describe("enrollment requests", () => {
+  const realFetch = globalThis.fetch;
+  afterEach(() => {
+    globalThis.fetch = realFetch;
+    vi.restoreAllMocks();
+  });
+
+  // A minimal fetch Response stand-in with a JSON body, enough for the enroll response reader.
+  function jsonResponse(status: number, body: unknown): Response {
+    return {
+      ok: status >= 200 && status < 300,
+      status,
+      json: async () => body,
+    } as unknown as Response;
+  }
+
+  function lastInit(fetchMock: ReturnType<typeof vi.fn>): { url: string; init: RequestInit } {
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+    return { url, init };
+  }
+
+  describe("enrollDevice (self-host, unchanged)", () => {
+    it("posts the device_key in the body with NO Authorization header", async () => {
+      const fetchMock = vi.fn(async () => jsonResponse(200, { deviceKey: "local-key" }));
+      globalThis.fetch = fetchMock as unknown as typeof fetch;
+
+      const local = await enrollDevice("cloud-key", "install-1", "Android phone", "android");
+
+      expect(local).toBe("local-key");
+      const { url, init } = lastInit(fetchMock);
+      expect(url).toBe("/m/enroll");
+      expect(init.method).toBe("POST");
+      const headers = init.headers as Record<string, string>;
+      expect(headers.Authorization).toBeUndefined();
+      expect(JSON.parse(init.body as string)).toEqual({
+        deviceKey: "cloud-key",
+        deviceId: "install-1",
+        name: "Android phone",
+        platform: "android",
+      });
+    });
+
+    it("surfaces the Gateway's reason on a non-2xx as a GatewayError", async () => {
+      globalThis.fetch = (async () =>
+        jsonResponse(409, { error: "gateway not signed in" })) as unknown as typeof fetch;
+
+      await expect(enrollDevice("cloud-key", "install-1", "Android phone", "android")).rejects.toMatchObject({
+        status: 409,
+      });
+    });
+  });
+
+  describe("enrollDeviceHosted (hosted)", () => {
+    it("sends Authorization: Bearer <token> and OMITS device_key from the body", async () => {
+      const fetchMock = vi.fn(async () => jsonResponse(200, { deviceKey: "tenant-scoped-key" }));
+      globalThis.fetch = fetchMock as unknown as typeof fetch;
+
+      const local = await enrollDeviceHosted("access-token-abc", "install-9", "Edge on Windows", "browser");
+
+      expect(local).toBe("tenant-scoped-key");
+      const { url, init } = lastInit(fetchMock);
+      expect(url).toBe("/m/enroll");
+      expect(init.method).toBe("POST");
+      const headers = init.headers as Record<string, string>;
+      expect(headers.Authorization).toBe("Bearer access-token-abc");
+      const body = JSON.parse(init.body as string) as Record<string, unknown>;
+      expect(body).toEqual({ deviceId: "install-9", name: "Edge on Windows", platform: "browser" });
+      // The account token must never leak into the request body, only the header.
+      expect("deviceKey" in body).toBe(false);
+      expect(JSON.stringify(body)).not.toContain("access-token-abc");
+    });
+
+    it("surfaces a 402 (no paid entitlement) as a GatewayError carrying the status", async () => {
+      globalThis.fetch = (async () =>
+        jsonResponse(402, { error: "payment required" })) as unknown as typeof fetch;
+
+      await expect(
+        enrollDeviceHosted("access-token-abc", "install-9", "Edge on Windows", "browser"),
+      ).rejects.toBeInstanceOf(GatewayError);
+      await expect(
+        enrollDeviceHosted("access-token-abc", "install-9", "Edge on Windows", "browser"),
+      ).rejects.toMatchObject({ status: 402 });
+    });
   });
 });

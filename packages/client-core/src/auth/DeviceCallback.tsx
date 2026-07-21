@@ -1,16 +1,25 @@
 // The shared device-enrollment callback (issue #908, generalized for the desktop Cockpit in issue
 // #1088), served at the installed profile's callback path (/m/device-callback for the phone,
 // /device-callback for the Cockpit). devthrottle.com redirects the browser here after sign-in with the
-// per-device key in the URL FRAGMENT (never the query, so it is not sent to any server - issue #1082).
-// This screen reads that key, exchanges it at the Gateway (POST /m/enroll) for a LOCAL device key,
-// stores the local key through the shared device-key store, mirrors it into the cc-gateway-token
-// cookie (so the terminal WebSocket and hard navigations authenticate immediately), and enters the app
-// on the originally-requested route. The account session never reaches here.
+// enrollment credential in the URL FRAGMENT (never the query, so it is not sent to any server - issue
+// #1082). This screen reads that credential, exchanges it at the Gateway (POST /m/enroll) for a LOCAL
+// device key, stores the local key through the shared device-key store, mirrors it into the
+// cc-gateway-token cookie (so the terminal WebSocket and hard navigations authenticate immediately),
+// and enters the app on the originally-requested route. The account session never reaches here.
+//
+// Which credential the fragment carries decides the path (multi-tenant hosted sign-in, Phase C): a
+// HOSTED gateway round trip returns the account's Supabase access_token (forwarded to the mint as
+// Authorization: Bearer), while a SELF-HOST round trip returns a device_key (posted in the body, the
+// pre-hosted behavior). The dispatch - anti-forgery verification (which FAILS CLOSED), credential
+// classification, and which enroll request is sent - lives in runEnrollmentCallback (enrollCallback.ts)
+// so it is unit-tested without a DOM; this screen only maps the outcome to a phase and the shared side
+// effects (store the key, mirror the cookie, land on the route, surface errors).
 import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { getInstallId, setDeviceKey } from "./deviceKey";
-import { enrollmentProfile, takeEnrollState, takeEnrollNext } from "./enrollRequest";
-import { enrollDevice, isGatewayNotSignedIn } from "../api/enroll";
+import { enrollmentProfile, takeEnrollNext } from "./enrollRequest";
+import { runEnrollmentCallback } from "./enrollCallback";
+import { isGatewayNotSignedIn } from "../api/enroll";
 import { ensureGatewayCookie } from "../api/client";
 import { beginSignIn } from "../account/accountClient";
 
@@ -41,41 +50,39 @@ export function DeviceCallback() {
     (async () => {
       const rawHash = window.location.hash.startsWith("#") ? window.location.hash.slice(1) : window.location.hash;
       const params = new URLSearchParams(rawHash);
-      const error = params.get("error");
-      const deviceKey = params.get("device_key");
-      const state = params.get("state");
-      const expected = takeEnrollState();
-
-      if (error) {
-        setPhase("denied");
-        setMessage("Sign-in was declined. Nothing was connected.");
-        return;
-      }
-      // Verify the round trip when we have a saved state; a null expected-state (storage cleared) is not
-      // treated as a failure, so a legitimate sign-in is never blocked by missing session storage.
-      if (expected && state !== expected) {
-        setPhase("error");
-        setMessage("This sign-in could not be verified. Please try again.");
-        return;
-      }
-      if (!deviceKey) {
-        setPhase("error");
-        setMessage("Sign-in did not return a device key. Please try again.");
-        return;
-      }
 
       try {
-        const localKey = await enrollDevice(deviceKey, getInstallId(), profile.deviceName(), profile.platform());
+        // The whole dispatch - anti-forgery verification (fail closed), credential classification, and
+        // which enroll request is sent - lives in runEnrollmentCallback so it is exercised by tests.
+        // This screen only maps the outcome to a phase and the shared side effects.
+        const outcome = await runEnrollmentCallback(params, profile, getInstallId());
         if (cancelled) return;
-        setDeviceKey(localKey);
-        // Mirror the fresh key into the cc-gateway-token cookie right away, so the terminal WebSocket
-        // and any hard navigation authenticate without waiting for the next full page load.
-        ensureGatewayCookie();
-        // Land on the originally-requested route when one was remembered (issue #1088), otherwise the
-        // shell's default. Strip the key from the URL/history first, then hand the route to the router.
-        const landing = takeEnrollNext() ?? profile.defaultLanding;
-        window.history.replaceState(null, "", profile.basename + landing);
-        navigate(landing, { replace: true });
+        switch (outcome.kind) {
+          case "denied":
+            setPhase("denied");
+            setMessage("Sign-in was declined. Nothing was connected.");
+            return;
+          case "unverified":
+            setPhase("error");
+            setMessage("This sign-in could not be verified. Please try again.");
+            return;
+          case "noCredential":
+            setPhase("error");
+            setMessage("Sign-in did not return a device key. Please try again.");
+            return;
+          case "enrolled": {
+            setDeviceKey(outcome.localKey);
+            // Mirror the fresh key into the cc-gateway-token cookie right away, so the terminal
+            // WebSocket and any hard navigation authenticate without waiting for the next full page load.
+            ensureGatewayCookie();
+            // Land on the originally-requested route when one was remembered (issue #1088), otherwise
+            // the shell's default. Strip the key from the URL/history first, then hand it to the router.
+            const landing = takeEnrollNext() ?? profile.defaultLanding;
+            window.history.replaceState(null, "", profile.basename + landing);
+            navigate(landing, { replace: true });
+            return;
+          }
+        }
       } catch (err) {
         if (cancelled) return;
         if (isGatewayNotSignedIn(err)) {
