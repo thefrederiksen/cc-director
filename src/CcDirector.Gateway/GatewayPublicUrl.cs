@@ -7,8 +7,8 @@ namespace CcDirector.Gateway;
 /// (<see cref="CockpitPath"/>) or the mobile app (<see cref="MobilePath"/>). There is ONE public base
 /// URL for this Gateway, and every surface is a PATH under it (owner ruling 2026-07-20): the Cockpit URL
 /// is <c>{base}/cockpit</c> and the mobile URL is <c>{base}/mobile</c>, derived here on the Gateway,
-/// exactly as localhost already works (<c>host:port/cockpit</c>). One derivation rule, hosted and local
-/// alike. The client is dumb: it opens whatever URL it is handed, so the whole hosted-vs-self-host
+/// exactly as the same-machine case already works (a <c>host:port/cockpit</c> URL). One derivation rule,
+/// hosted and local alike. The client is dumb: it opens whatever URL it is handed, so the whole hosted-vs-self-host
 /// verdict AND the surface path are decided HERE, once, on the Gateway (CLAUDE.md rule 7).
 ///
 /// Two modes, one gated on the hosted signal (<see cref="GatewayHostedMode.IsHosted"/>):
