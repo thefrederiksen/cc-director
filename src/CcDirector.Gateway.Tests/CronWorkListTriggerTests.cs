@@ -1,3 +1,4 @@
+using CcDirector.Core.Tenancy;
 using CcDirector.Gateway;
 using CcDirector.Gateway.Contracts;
 using CcDirector.Gateway.Data;
@@ -92,7 +93,7 @@ public sealed class CronWorkListTriggerTests : IDisposable
         store.Create("Tonight");
         store.AppendItem("Tonight", new WorkListItemRef { Source = "github", Id = "312" });
         var manager = new WorkListRunnerManager();
-        Assert.Equal(WorkListRunnerManager.AdmitResult.Admitted, manager.TryAdmit("workstation-A", "OtherList"));
+        Assert.Equal(WorkListRunnerManager.AdmitResult.Admitted, manager.TryAdmit(TenantId.Local, "workstation-A", "OtherList"));
 
         var t = Trigger(store, new FakeResolver("machineA"), manager, new FakeLauncher());
         Assert.Equal(CronWorkListOutcome.MachineBusy, await t.TriggerAsync(WorkListJob(), CancellationToken.None));
@@ -116,13 +117,13 @@ public sealed class CronWorkListTriggerTests : IDisposable
         Assert.Equal("Tonight", launcher.LastListName);
         Assert.Equal("machineA", launcher.LastDirectorId);   // the resolved Director id is threaded to the launcher (tunnel leg)
         Assert.StartsWith("cron:cj_test:", launcher.LastConsumer);
-        Assert.Equal("Tonight", manager.ActiveList("workstation-A")); // the machine's slot holds the "Tonight" drain
+        Assert.Equal("Tonight", manager.ActiveList(TenantId.Local, "workstation-A")); // the machine's slot holds the "Tonight" drain
 
         launcher.Release.TrySetResult();
         await launcher.Completed.Task.WaitAsync(TimeSpan.FromSeconds(10));
         // The machine slot is released after the drain completes (poll briefly for the finally).
-        await WaitUntilAsync(() => manager.ActiveList("workstation-A") is null, TimeSpan.FromSeconds(10));
-        Assert.Null(manager.ActiveList("workstation-A"));
+        await WaitUntilAsync(() => manager.ActiveList(TenantId.Local, "workstation-A") is null, TimeSpan.FromSeconds(10));
+        Assert.Null(manager.ActiveList(TenantId.Local, "workstation-A"));
     }
 
     [Fact]

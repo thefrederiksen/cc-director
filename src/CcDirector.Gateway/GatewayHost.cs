@@ -973,7 +973,10 @@ public sealed class GatewayHost : IAsyncDisposable
             new Running.DirectorWorkListDrainLauncher(
                 _workLists,
                 (directorId, endpoint, repoPath) =>
-                    new Running.DirectorImplSessionDriver(directorId, repoPath, spawnSendCommand)));
+                    new Running.DirectorImplSessionDriver(directorId, repoPath, spawnSendCommand)),
+            // MTR (audit MED): partition the machine drain slot by the fire's tenant, the same seam the engine
+            // and notifier read. On self-host this is always Local.
+            resolveTenant: () => _tenantPass.Current);
         // Run-complete notifications (issue #622, the deferred "notify on completion" piece of #479).
         // The notifier rides the EXISTING fleet channel - the per-Director doorbell event ring
         // (DirectorEvents, #330) observed at GET /directors/{id}/events - and optionally POSTs the same
@@ -999,7 +1002,11 @@ public sealed class GatewayHost : IAsyncDisposable
             resolveTenant: () => _tenantPass.Current);
         _cronEngine = new Running.CronEngine(
             _cronJobs, _cronRuns, new Running.DirectorCronSessionStarter(_machineSessionSpawner),
-            cronWorkListRunner, cronNotifier, new Running.SystemClock());
+            cronWorkListRunner, cronNotifier, new Running.SystemClock(),
+            // MTR (audit MED): partition the overlap guard by the tenant of the CURRENT unit of work - the
+            // run-now request scope on hosted, the single Local scope on self-host - the same seam the notifier
+            // reads. A run-now for tenant A's cj_ id must never be refused by tenant B's in-flight same-id job.
+            resolveTenant: () => _tenantPass.Current);
 
         // Web Push (mobile app-icon "needs you" dot): load (or generate on first run) the VAPID key
         // pair and the set of subscribed devices. The notifier that fans out to these is built and

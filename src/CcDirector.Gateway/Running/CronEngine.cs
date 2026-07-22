@@ -1,3 +1,4 @@
+using CcDirector.Core.Tenancy;
 using CcDirector.Core.Utilities;
 using CcDirector.Gateway.Contracts;
 
@@ -44,9 +45,15 @@ public sealed class CronEngine
     private readonly ICronNotifier _notifier;
     private readonly IClock _clock;
     private readonly TimeSpan _catchUpThreshold;
+    private readonly Func<TenantId?> _resolveTenant;
 
     private readonly object _inFlightGate = new();
-    private readonly HashSet<string> _inFlight = new(StringComparer.Ordinal);
+    // Overlap admission, PARTITIONED BY TENANT (audit MED, gap audit-e). A cron job's id is tenant-relative
+    // (the store mints it under the tenant query filter, so two tenants can hold the same cj_ id; the DB
+    // identity is (TenantId, Id)). Keying the in-flight set by the bare id alone let one tenant's in-flight
+    // run refuse another tenant's run-now of a same-id job as an "overlap". The key is now (tenant, id), so a
+    // caller's overlap guard only ever conflicts within its own tenant.
+    private readonly HashSet<(TenantId Tenant, string Id)> _inFlight = new();
 
     /// <param name="starter">Starts a single seeded session for a seed-action job.</param>
     /// <param name="workListRunner">Drains a named work list for a work-list-action job (#484).</param>
@@ -58,6 +65,15 @@ public sealed class CronEngine
     /// How far past its due time a scheduled fire must be to be labeled a catch-up (default 2 min).
     /// Purely cosmetic on the run record; it does not change whether the job fires.
     /// </param>
+    /// <param name="resolveTenant">
+    /// Resolves the tenant of the current unit of work - the tenant the overlap guard is partitioned by
+    /// (audit MED, gap audit-e). Production passes the background-loop/request tenant seam
+    /// (<c>() =&gt; _tenantPass.Current</c>): the run-now request scope on hosted, the per-tenant pass or the
+    /// single Local scope on self-host - exactly the tenant the store scoped the job read to. Omitted (tests,
+    /// self-host wiring) it is <see cref="TenantId.Local"/>, so the single-tenant behaviour is unchanged. A
+    /// fire is only ever reached with a resolved scope in effect (the store read that produced the job already
+    /// required one); an unresolved tenant fails loud rather than defaulting.
+    /// </param>
     public CronEngine(
         CronJobStore store,
         CronRunHistoryStore history,
@@ -65,7 +81,8 @@ public sealed class CronEngine
         ICronWorkListRunner workListRunner,
         ICronNotifier notifier,
         IClock clock,
-        TimeSpan? catchUpThreshold = null)
+        TimeSpan? catchUpThreshold = null,
+        Func<TenantId?>? resolveTenant = null)
     {
         _store = store ?? throw new ArgumentNullException(nameof(store));
         _history = history ?? throw new ArgumentNullException(nameof(history));
@@ -74,6 +91,7 @@ public sealed class CronEngine
         _notifier = notifier ?? throw new ArgumentNullException(nameof(notifier));
         _clock = clock ?? throw new ArgumentNullException(nameof(clock));
         _catchUpThreshold = catchUpThreshold ?? TimeSpan.FromMinutes(2);
+        _resolveTenant = resolveTenant ?? (() => TenantId.Local);
     }
 
     /// <summary>
@@ -130,9 +148,17 @@ public sealed class CronEngine
 
     private async Task<CronRunNowResult> FireAsync(CronJobDto job, DateTime scheduledUtc, bool isManual, CancellationToken ct)
     {
-        if (job.PreventOverlap && !TryEnterFlight(job.Id))
+        // Resolve the tenant of THIS fire ONCE, up front, and key the overlap guard by it. This is the same
+        // tenant the store scoped the job read to (a fire is only ever reached inside a resolved scope), so an
+        // unresolved tenant here is a boundary bug and fails loud (deny-by-default) rather than defaulting.
+        var tenant = _resolveTenant()
+            ?? throw new InvalidOperationException(
+                "A cron fire ran with no tenant scope in effect. The overlap guard is partitioned by tenant " +
+                "and cannot key an unresolved fire; the caller path was not bound at its tenant boundary.");
+
+        if (job.PreventOverlap && !TryEnterFlight(tenant, job.Id))
         {
-            FileLog.Write($"[CronEngine] skip overlap: job={job.Id} (a prior run is still in flight)");
+            FileLog.Write($"[CronEngine] skip overlap: tenant={tenant.ToLogString()} job={job.Id} (a prior run is still in flight)");
             return new CronRunNowResult(CronFireOutcome.SkippedOverlap, null);
         }
 
@@ -211,7 +237,7 @@ public sealed class CronEngine
         finally
         {
             if (job.PreventOverlap)
-                ExitFlight(job.Id);
+                ExitFlight(tenant, job.Id);
         }
     }
 
@@ -256,15 +282,15 @@ public sealed class CronEngine
         _ => "unknown",
     };
 
-    private bool TryEnterFlight(string id)
+    private bool TryEnterFlight(TenantId tenant, string id)
     {
         lock (_inFlightGate)
-            return _inFlight.Add(id);
+            return _inFlight.Add((tenant, id));
     }
 
-    private void ExitFlight(string id)
+    private void ExitFlight(TenantId tenant, string id)
     {
         lock (_inFlightGate)
-            _inFlight.Remove(id);
+            _inFlight.Remove((tenant, id));
     }
 }
