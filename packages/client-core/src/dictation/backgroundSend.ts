@@ -1,5 +1,5 @@
 import { abandonDictation, sendPrompt, uploadDictationToSession } from "../api/client";
-import { logCaptureHealth } from "./captureHealth";
+import { captureLossWarning, logCaptureHealth } from "./captureHealth";
 import { deletePending, getPending, listPending, savePending, type PendingDictation } from "./pendingStore";
 import { clearDictationStatus, publishDictationStatus } from "./status";
 import { blobToWav16kMono } from "./wav";
@@ -147,16 +147,23 @@ export async function backgroundTranscribeAndSend(
   let decodedSeconds: number | undefined;
   let sourceBytes: number | undefined;
   let uploadBlob = captured.blob;
+  let captureWarning: string | undefined;
   try {
     const transcoded = await blobToWav16kMono(captured.blob);
     decodedSeconds = transcoded.decodedSeconds;
     sourceBytes = transcoded.sourceBytes;
     uploadBlob = transcoded.wav;
-    logCaptureHealth("mobile-send", {
+    const health = {
       recordedMs: captured.recordedMs,
       decodedSeconds: transcoded.decodedSeconds,
       sourceBytes: transcoded.sourceBytes,
-    });
+    };
+    logCaptureHealth("mobile-send", health);
+    // Material capture loss must not ship SILENTLY on Send the way it currently did (the Insert/Pause paths
+    // already warn and park). We cannot park a fire-and-forget Send - the screen is gone and the words the
+    // mic DID capture should still be delivered - so instead the deficit rides along as a caution shown with
+    // the delivered `done` status, and stored durably so a resumed send still carries it.
+    captureWarning = captureLossWarning(health) ?? undefined;
   } catch (err) {
     console.warn(
       `[backgroundSend] decode failed; uploading the raw recording unpadded (delivery is unaffected): ${err instanceof Error ? err.message : String(err)}`,
@@ -170,6 +177,7 @@ export async function backgroundTranscribeAndSend(
     recordedMs: captured.recordedMs,
     decodedSeconds,
     sourceBytes,
+    captureWarning,
     before: hooks.composeParts?.before ?? "",
     after: hooks.composeParts?.after ?? "",
     prefix: captured.prefixText ?? "",
@@ -482,7 +490,9 @@ async function driveRecord(rec: PendingDictation, opts: DriveOptions): Promise<v
       // these outcomes is genuinely nothing to say: an abandon, which the user did on purpose.
       if (outcome.submitted) {
         await deletePending(rec.id);
-        publishDictationStatus({ sessionId: rec.sessionId, uploadId: rec.id, phase: "done" });
+        // Delivered. If the capture dropped audio, the words went in but the transcript may be missing some,
+        // so ride a non-blocking caution on the done status (it will not auto-clear) rather than a silent "Sent".
+        publishDictationStatus({ sessionId: rec.sessionId, uploadId: rec.id, phase: "done", warning: rec.captureWarning });
         return;
       }
 

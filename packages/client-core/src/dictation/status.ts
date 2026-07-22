@@ -79,6 +79,12 @@ export interface DictationStatus {
    *  nothing else - a strip that quotes one thing and sends another is its own small lie. Empty/absent on the
    *  rare drop before transcription with no typed text, where the audio is kept for a fresh-id Retry instead. */
   recoverableText?: string;
+  /** A non-blocking caution shown alongside a DELIVERED send (the `done` phase): the words were sent, but
+   *  the capture-health check found a material audio-loss deficit, so the transcript may be missing words
+   *  and the user should check it (issue #863, "never fail silently on mobile"). Unlike a plain `done`, a
+   *  `done` carrying a warning does NOT auto-clear - the user dismisses it, so a Send that dropped audio is
+   *  never silent. Absent on a clean send. */
+  warning?: string;
   /** Epoch milliseconds of the last update (newest-first ordering, and the done auto-clear timer). */
   updatedAt: number;
 }

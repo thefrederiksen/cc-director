@@ -38,13 +38,15 @@ export function DictationStatusStrip({ sessionId }: { sessionId: string | undefi
   const status = useDictationStatusFor(sessionId);
   const [uploadingNow, setUploadingNow] = useState(false);
 
-  // A successful send is acknowledged briefly, then clears itself so the strip does not linger.
+  // A clean successful send is acknowledged briefly, then clears itself so the strip does not linger. A
+  // delivered send that dropped audio carries a warning and must NOT auto-clear - the user has to see and
+  // dismiss it, so a Send that lost words is never silent.
   useEffect(() => {
-    if (status?.phase !== "done") return;
+    if (status?.phase !== "done" || status.warning) return;
     const uploadId = status.uploadId;
     const t = window.setTimeout(() => clearDictationStatus(uploadId), DONE_AUTOCLEAR_MS);
     return () => window.clearTimeout(t);
-  }, [status?.phase, status?.uploadId]);
+  }, [status?.phase, status?.uploadId, status?.warning]);
 
   if (!status) return null;
 
@@ -174,6 +176,20 @@ export function DictationStatusStrip({ sessionId }: { sessionId: string | undefi
   }
 
   if (status.phase === "done") {
+    // Delivered, but the capture dropped audio: the words went in, yet the transcript may be missing some.
+    // Show a non-blocking caution that stays until dismissed (never a silent "Sent"), so the user knows to
+    // check the result. role="status" not "alert" - nothing failed, the send succeeded.
+    if (status.warning) {
+      return (
+        <div className="dictate-strip dictate-strip-warning" role="status">
+          <span className="dictate-strip-icon" aria-hidden="true">!</span>
+          <span className="dictate-strip-text">{status.warning}</span>
+          <button type="button" className="dictate-strip-btn dictate-strip-dismiss" onClick={() => clearDictationStatus(status.uploadId)}>
+            Dismiss
+          </button>
+        </div>
+      );
+    }
     return (
       <div className="dictate-strip dictate-strip-done" role="status">
         <span className="dictate-strip-icon" aria-hidden="true">+</span>
