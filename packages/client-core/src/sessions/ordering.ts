@@ -16,6 +16,11 @@ type GatewayStampedSession = SessionDto & {
   // ("wakes in 3h 48m"). Null when there is no running clock: not snoozed, or a deferred snooze that has
   // not landed yet. The generated schema does not carry it, so it is augmented here like the fields above.
   snoozeUntil?: string | null;
+  // The Gateway-owned hold tri-state ("None" | "Held" | "DeferredHold"). A DeferredHold is a snooze asked
+  // for while the agent was working: accepted, but its clock only starts when the work ends, so onHold is
+  // still false. Clients read this to tell a deferred snooze apart from "not snoozed" (onHold cannot). The
+  // generated schema does not carry it, so it is augmented here like the fields above.
+  holdState?: string | null;
   // The session is flagged for deletion and awaiting the reaper - drives the "winding down" badge. A BADGE,
   // NEVER A COLOUR: the fold does not read it, so the dot keeps telling the truth about the work while this
   // rides beside it (mirrors the desktop rail's IsPendingDeletion). Optional; false for most sessions.
@@ -121,6 +126,14 @@ export function stateLabel(s: SessionDto): string {
 // Non-throwing (optional field): a session without the marker is simply not returned-from-snooze.
 export function snoozeExpired(s: SessionDto): boolean {
   return Boolean((s as GatewayStampedSession).snoozeExpired);
+}
+
+// True when this session carries a DEFERRED snooze: one asked for while the agent was working, so its
+// clock has not started (it arms when the work ends - owner ruling). The raw onHold flag CANNOT see this
+// (a deferred hold reads onHold=false), so a snooze surface reads this to tell "accepted, will snooze
+// when it finishes" apart from "not snoozed at all". Non-throwing (optional Gateway field).
+export function isDeferredHold(s: SessionDto): boolean {
+  return (s as GatewayStampedSession).holdState === "DeferredHold";
 }
 
 // "wakes in 3h 48m" - how long until an armed snooze returns this session to needs-you, read from the

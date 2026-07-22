@@ -1244,19 +1244,38 @@ export async function createSession(
   return (await res.json()) as SessionDto;
 }
 
+/** The applied hold state the Gateway returns from POST /sessions/{sid}/hold. */
+export interface HoldResult {
+  /** True when the hold has LANDED and its clock is running now (an armed snooze). */
+  onHold: boolean;
+  /**
+   * True when the snooze was DEFERRED because the agent was working: it is accepted but has not armed
+   * yet - its clock starts when the work ends (owner ruling). `onHold` is still false in this case, so a
+   * caller that reads only `onHold` would wrongly conclude nothing happened; the snooze surfaces read
+   * this to show a "Snoozing when it finishes" affordance instead of implying it is already held.
+   */
+  pending: boolean;
+}
+
 // POST /sessions/{sid}/hold - toggle the session's on-hold state. The desired state is sent
-// explicitly ({ onHold }) so the call is idempotent; the Director echoes the applied { onHold }.
-// Reaches the Director through the Gateway catch-all session proxy with the injected Bearer.
+// explicitly ({ onHold }) so the call is idempotent; the Gateway returns the applied tri-state as
+// { onHold, pending }. Reaches the Director through the Gateway catch-all session proxy with the
+// injected Bearer.
 //
 // snoozeMinutes is how long to hold it. Omit it for "use my default length", which is what the plain
 // Snooze click means; pass a value for a specific "Snooze for" choice. Ignored on an unsnooze - there is
 // no length to un-hold for - so it is only ever sent alongside onHold=true.
+//
+// RETURNS BOTH FIELDS, not a bare boolean. A working session's snooze DEFERS: the Gateway answers
+// { onHold: false, pending: true }, and a caller that kept only `onHold` would show no change for a
+// perfectly-accepted snooze. `pending` defaults to false for an unsnooze, an immediate hold, or an old
+// Gateway that predates the field.
 export async function holdSession(
   sessionId: string,
   onHold: boolean,
   snoozeMinutes?: number,
   signal?: AbortSignal,
-): Promise<boolean> {
+): Promise<HoldResult> {
   const sid = encodeURIComponent(sessionId);
   const body = onHold && typeof snoozeMinutes === "number" ? { onHold, snoozeMinutes } : { onHold };
   const res = await gatewayFetch(`/sessions/${sid}/hold`, {
@@ -1268,8 +1287,8 @@ export async function holdSession(
   if (!res.ok) {
     throw new GatewayError(res.status, `POST hold failed: ${res.status}`);
   }
-  const result = (await res.json().catch(() => ({}))) as { onHold?: boolean };
-  return result.onHold ?? onHold;
+  const result = (await res.json().catch(() => ({}))) as { onHold?: boolean; pending?: boolean };
+  return { onHold: result.onHold ?? onHold, pending: result.pending ?? false };
 }
 
 // POST /sessions/{sid}/transcribing - mark or clear this session as transcribing a dictated

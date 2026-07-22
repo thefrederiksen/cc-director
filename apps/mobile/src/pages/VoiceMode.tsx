@@ -319,7 +319,7 @@ export function VoiceMode() {
           onClick={() => void manage.toggleHold()}
           disabled={manage.busy || manage.onHold === null}
         >
-          {manage.held ? "Unsnooze" : "Snooze"}
+          {manage.held || manage.deferred ? "Unsnooze" : "Snooze"}
         </button>
         {speaking && (
           <button type="button" className="voice-respond" onClick={() => setResponding(true)}>
