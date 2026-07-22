@@ -488,7 +488,7 @@ internal static class Commands
     {
         if (!OperatingSystem.IsMacOS())
             throw new InvalidOperationException("PlaceMacDirectorAsync is macOS-only.");
-        if (!json) Console.WriteLine("Placing CC Director.app:");
+        if (!json) Console.WriteLine("Placing Director.app:");
         return await MacAppPlacer.PlaceAsync(layout, release, source,
             log: m => { if (!json) Console.WriteLine($"  {m}"); });
     }

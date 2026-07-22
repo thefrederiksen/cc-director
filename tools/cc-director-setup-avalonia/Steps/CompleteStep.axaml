@@ -60,19 +60,17 @@
                        Margin="0,12,0,24"
                        LineHeight="20" />
 
-            <!-- Launch button: the hero of the happy path -->
+            <!-- Launch button: the hero of the happy path. Colours + hover/pressed live in the
+                 Button.launch style (Styles.axaml) so the green stays visible on hover. -->
             <Button x:Name="LaunchButton"
+                    Classes="launch"
                     Height="44"
                     HorizontalAlignment="Stretch"
                     Margin="0,0,0,12"
-                    Cursor="Hand"
-                    Background="#22C55E"
-                    Foreground="White"
                     FontSize="16"
                     FontWeight="SemiBold"
                     HorizontalContentAlignment="Center"
-                    CornerRadius="6"
-                    Content="Launch cc-director"
+                    Content="Launch Director"
                     Click="LaunchButton_Click" />
 
             <!-- One quiet summary line on success -->

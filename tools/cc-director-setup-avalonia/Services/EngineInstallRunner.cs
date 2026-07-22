@@ -16,7 +16,7 @@ public sealed class EngineInstallRunner
     private readonly InstallLayout _layout = InstallLayout.Default();
     private readonly ReleaseSource _source = new();
 
-    /// <summary>The on-disk Director path for this OS (~/Applications/CC Director.app on macOS).</summary>
+    /// <summary>The on-disk Director path for this OS (~/Applications/Director.app on macOS).</summary>
     public string DirectorPath => _layout.PathFor(ComponentRegistry.Director);
 
     /// <summary>Everything ApplyAsync needs, plus the UI rows and up-to-date state.</summary>

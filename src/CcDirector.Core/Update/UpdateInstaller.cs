@@ -24,7 +24,7 @@ public static class UpdateInstaller
     /// <summary>
     /// The path a new build must overwrite to "become" the installed app. On
     /// Windows this is the running cc-director.exe; on macOS it is the enclosing
-    /// "CC Director.app" bundle (not the binary inside it). Falls back to the
+    /// "Director.app" bundle (not the binary inside it). Falls back to the
     /// process path when not running from a bundle (e.g. a bare dev binary).
     /// </summary>
     public static string InstallTarget()

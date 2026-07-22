@@ -12,7 +12,7 @@ namespace CcDirector.Launcher;
 ///
 /// Resolves the installed Director via <see cref="InstallLayout"/>:
 ///   - Windows: %LOCALAPPDATA%/cc-director/app/cc-director.exe
-///   - macOS:   ~/Applications/CC Director.app (an application bundle - a directory)
+///   - macOS:   ~/Applications/Director.app (an application bundle - a directory)
 ///
 /// Provides start / stop / restart operations with a FileLog audit trail.
 ///
