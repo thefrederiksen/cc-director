@@ -1,4 +1,5 @@
 using CcDirector.Avalonia.Voice;
+using CcDirector.Core.Audio;
 using CcDirector.Core.Configuration;
 using CcDirector.Core.Dictation;
 using Xunit;
@@ -11,6 +12,10 @@ namespace CcDirector.Avalonia.Tests;
 /// prove <see cref="BatchDictationRecorder.StopAndGetWavAsync"/> returns the complete capture - tail
 /// included - and still enforces the completeness gate, driven through the fake-microphone seam with no
 /// real mic and no network.
+///
+/// The WAV also carries the transcription run-out pad (<see cref="PcmWav.TrailingSilenceMs"/> of trailing
+/// silence, #2003) AFTER the capture, so the captured audio is the DATA region's PREFIX (right after the
+/// header), not its suffix. Asserting on the suffix would read the pad, not the capture.
 /// </summary>
 public sealed class BatchDictationRecorderStopWavTests
 {
@@ -50,11 +55,21 @@ public sealed class BatchDictationRecorderStopWavTests
 
         var captured = await recorder.StopAndGetWavAsync();
 
-        // The clip is a WAV: a header followed by exactly the captured PCM, tail included and in order.
+        // The clip is a WAV: a 44-byte header, then EXACTLY the captured PCM (body + tail delivered during
+        // drain, in order), then the transcription run-out pad of trailing silence (#2003). The capture is
+        // therefore the DATA region's PREFIX - asserting on the suffix reads the pad, not the audio.
         Assert.NotNull(captured.Wav);
-        Assert.True(captured.Wav.Length > expectedPcm.Length, "WAV must include a header plus the PCM");
-        var pcmSuffix = captured.Wav.AsSpan(captured.Wav.Length - expectedPcm.Length).ToArray();
-        Assert.Equal(expectedPcm, pcmSuffix);
+        const int headerBytes = 44;
+        Assert.True(captured.Wav.Length > headerBytes + expectedPcm.Length, "WAV must include a header, the PCM, and the pad");
+
+        // The captured audio (tail included) sits immediately after the header - this is the real guarantee:
+        // a clipped tail would break here.
+        var pcmPrefix = captured.Wav.AsSpan(headerBytes, expectedPcm.Length).ToArray();
+        Assert.Equal(expectedPcm, pcmPrefix);
+
+        // Everything after the capture is the pad: pure trailing silence, and nothing but silence.
+        for (int i = headerBytes + expectedPcm.Length; i < captured.Wav.Length; i++)
+            Assert.True(captured.Wav[i] == 0, $"pad byte at {i} must be silence");
     }
 
     [Fact]
