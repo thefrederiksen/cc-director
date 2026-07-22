@@ -53,9 +53,14 @@ On the always-on Gateway box, in a store **outside git** (same principle as toda
 file at the shared storage root with no tenant in the file, the store, or the routes, and the routes sit
 behind only the host-wide authentication gate - which admits any enrolled device key from any account. So
 on shared hosted infrastructure the value read is credential theft, the write is tampering with another
-account's paid service, and the delete disables it. The refusal is gated on the hosted deployment signal
-(`GatewayHostedMode.IsHosted`), applied as one filter over the whole route group, so self-host behavior is
-byte-identical to what is documented here.
+account's paid service, and the delete disables it. The refusal is expressed through the shared hosted-refusal
+primitive (`HostedRouteDeny.ExclusiveGroup`, the one boundary every deny family on this Gateway adopts): on
+hosted the four handlers are never mapped and one verb-less catch-all refuses everything under `/vault/keys` -
+every request shape, and any route added under the prefix later. The claim that nothing else serves beneath
+`/vault/keys` is startup-validated (`HostedRefusalRouteSpace`), and the hosted decision reads
+`GatewayHostedMode.IsHosted` directly rather than an argument a caller can omit. Off hosted the primitive maps
+the real handlers and creates no refusal at all, so self-host behavior is byte-identical to what is documented
+here.
 
 **What this deny stops, narrowly: the HTTP ROUTE write and the HTTP ROUTE delete - NOT every write to this
 vault.** An earlier revision of this document claimed "the write is stopped" outright. That was false, and
@@ -69,12 +74,15 @@ The other writers to this same global vault, enumerated exhaustively (every `Set
 
 | Writer | Operation | When it fires | Hosted-gated? |
 |---|---|---|---|
-| `GatewayHost.SeedKeyVaultFromEnvironment` | `SetIfAbsent` | Host startup | **No** |
-| `TranscriptionKeyAutoProvisioner.EnsureAsync` | `SetIfAbsent`, `Set` | Every sign-in, and again at startup | **No** |
-| `TranscriptionKeyAutoProvisioner.RevokeMintedKeyAsync` | `Delete` x2 | Every sign-out | **No** |
+| `GatewayHost.SeedKeyVaultFromEnvironment` | `SetIfAbsent` | Host startup | **Yes** - no-ops on hosted |
+| `TranscriptionKeyAutoProvisioner.EnsureAsync` | `SetIfAbsent`, `Set` | Every sign-in, and again at startup | **Yes** - inert on hosted |
+| `TranscriptionKeyAutoProvisioner.RevokeMintedKeyAsync` | `Delete` x2 | Every sign-out | **Yes** - inert on hosted |
 
-Key material therefore **still arrives in the global vault while this deny is in force**, by paths that never
-touch the denied routes.
+All three writers are gated on `GatewayHostedMode.IsHosted` (each reads the deployment signal directly, so it
+cannot fail open by a caller omitting an argument), so **no new key material arrives in the global vault on
+hosted while this deny is in force.** Material that **predates** this deny is a separate concern that the
+un-deny condition below still owns: the deny closes the route door and the writer gates close the write doors,
+but neither touches what was already in the file.
 
 **The un-deny condition, in order, and the purge is REQUIRED:**
 

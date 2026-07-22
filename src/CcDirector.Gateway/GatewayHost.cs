@@ -1184,6 +1184,16 @@ public sealed class GatewayHost : IAsyncDisposable
     /// </summary>
     private void SeedKeyVaultFromEnvironment()
     {
+        // HOSTED-GATED. The global key vault is denied in whole on hosted (VaultEndpoints), and a deny on the
+        // read route alone is not enough: this writer would keep depositing key material behind the deny. On
+        // hosted there is no per-account vault to seed into, so it no-ops. The gate reads the deployment
+        // signal directly rather than an argument, so it cannot fail open by a caller omitting one.
+        if (GatewayHostedMode.IsHosted)
+        {
+            FileLog.Write("[GatewayHost] hosted: NOT seeding the key vault from the environment - the global vault is denied on hosted");
+            return;
+        }
+
         const string keyName = Core.Configuration.TranscriptionEndpointResolver.DevThrottleKeyName;
         var fromEnv = Environment.GetEnvironmentVariable(keyName);
         if (string.IsNullOrWhiteSpace(fromEnv) && OperatingSystem.IsWindows())

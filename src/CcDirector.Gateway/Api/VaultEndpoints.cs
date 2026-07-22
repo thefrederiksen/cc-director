@@ -1,6 +1,7 @@
 using System.Text.Json;
 using CcDirector.Core;
 using CcDirector.Core.Utilities;
+using CcDirector.Gateway.Tenancy;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
@@ -41,111 +42,119 @@ namespace CcDirector.Gateway.Api;
 /// written down on the pull request: when the vault is properly partitioned per account, these routes come
 /// back one at a time.
 ///
-/// WHAT THIS DENY STOPS, NARROWLY: the HTTP ROUTE write and the HTTP ROUTE delete. It does NOT stop every
-/// write to this vault, and an earlier revision of this file claimed it did. That claim was false and the
-/// correction matters more than the deny, so it is recorded here rather than quietly dropped.
+/// HOW THE DENY IS EXPRESSED - THE SHARED REFUSAL PRIMITIVE, NOT A BESPOKE CHECK. This group is denied
+/// through <see cref="HostedRouteDeny.ExclusiveGroup"/>, the ONE hosted-refusal boundary every deny family
+/// on this Gateway adopts (docs private architecture record; primitive at
+/// <c>src/CcDirector.Gateway/Tenancy/HostedRouteDeny.cs</c>). An earlier revision of this file rolled its
+/// own <c>AddEndpointFilter</c> deny before that primitive existed; it has been replaced so the release
+/// ships ONE refusal boundary, not one per family. What the primitive buys here over the old ad-hoc filter:
 ///
-/// The question that produced the false claim was "do the DENIED ROUTES write?" - to which the answer is a
-/// truthful no. The question that decides the un-deny condition is "does ANYTHING write?", and separately
-/// "what is ALREADY SITTING THERE from before this deny existed?". A deny closes ONE door. It says nothing
-/// about the other doors, and nothing about what accumulated before it was hung.
+///   * On hosted the four handlers are NEVER MAPPED. In their place the exclusive prefix maps ONE verb-less
+///     catch-all refusal over everything under <c>/vault/keys</c> plus a root refusal at the prefix itself.
+///     There is no binding step to get ahead of, no body parameter, no media-type constraint and no method
+///     constraint, so EVERY request shape - a valid body, a malformed body, a wrong media type, a verb the
+///     group never mapped, and a route added LATER - meets the refusal. The old request-time filter answered
+///     only the shapes that reached it.
+///   * The exclusivity claim is CHECKED at startup, not trusted:
+///     <see cref="HostedRefusalRouteSpace.ValidateBeforeStart"/> refuses to start the Gateway if any live
+///     route serves beneath <c>/vault/keys</c> (an outage the catch-all would cause) or if two refusals tie.
+///   * The refusal payload is validated on CONSTRUCTION, so a blank message fails the Gateway at startup
+///     rather than serving an empty refusal that reads like a working route.
+///
+/// The exclusive prefix is <c>/vault/keys</c>: the key-vault route group owns that prefix outright, nothing
+/// else serves beneath it, and the exclusive shape is the stronger one - one catch-all cannot tie with
+/// anything and it covers future routes under the prefix for free.
+///
+/// WHAT THIS DENY STOPS, NARROWLY: the HTTP ROUTE reads, the write and the delete. It does NOT stop every
+/// write to this vault. The question that decides the un-deny condition is "does ANYTHING write?", and
+/// separately "what is ALREADY SITTING THERE from before this deny existed?". A deny closes the ROUTE door.
+/// It says nothing about the other doors, and nothing about what accumulated before it was hung.
 ///
 /// The other doors, enumerated (every mutating call to this vault in the codebase - Set, SetIfAbsent, Delete):
-///   * GatewayHost.SeedKeyVaultFromEnvironment - SetIfAbsent at host startup, NOT hosted-gated.
+///   * GatewayHost.SeedKeyVaultFromEnvironment - SetIfAbsent at host startup. HOSTED-GATED as part of this
+///     change: it now no-ops on hosted (see GatewayHost).
 ///   * Account/TranscriptionKeyAutoProvisioner.EnsureAsync - SetIfAbsent + Set, fired on EVERY sign-in and
-///     again at startup, NOT hosted-gated.
+///     again at startup. HOSTED-GATED as part of this change: the provisioner is inert on hosted.
 ///   * Account/TranscriptionKeyAutoProvisioner.RevokeMintedKeyAsync - two Deletes, fired on EVERY sign-out.
-/// Key material therefore STILL ARRIVES in the global vault while this deny is in force, by paths that never
-/// touch the denied routes.
+///     HOSTED-GATED as part of this change (there is nothing auto-minted on hosted to revoke).
+/// With the writers gated, no new key material arrives in the global vault on hosted while this deny is in
+/// force. Material that PREDATES the deny is a separate concern the un-deny condition below still owns.
 ///
-/// So the un-deny condition is NOT "add a per-account namespace". It is, in order: tenant-partition every
-/// remaining producer above, THEN quarantine, purge or migrate the pre-existing global vault root, and only
-/// then restore a tenant-scoped route. The raw-value GET is the LAST one back. Anyone lifting this deny needs
-/// the partition AND the purge - the purge is REQUIRED, not optional, because material predating this deny is
-/// already in the file and this change never touched it.
+/// So the un-deny condition is NOT "add a per-account namespace". It is, in order: tenant-partition the
+/// vault, THEN quarantine, purge or migrate the pre-existing global vault root, and only then restore a
+/// tenant-scoped route. The raw-value GET is the LAST one back. Anyone lifting this deny needs the partition
+/// AND the purge - the purge is REQUIRED, not optional, because material predating this deny is already in
+/// the file and this change never touched it. The vault PARTITION (the tenant-scoped vault) is a SEPARATE
+/// follow-up still owed; this pull request is the DENY half only.
 ///
-/// Self-host is COMPLETELY unchanged, and that is the control. Self-host is single-tenant, the owner sets
-/// his own keys here from the Cockpit and his own Director reads them back, and a deny scoped to the wrong
-/// signal would break the shipped product to protect the unshipped one.
+/// Self-host is COMPLETELY unchanged, and that is the control. Off hosted the primitive maps the four real
+/// handlers on the group exactly as an unguarded builder would and creates no refusal at all. Self-host is
+/// single-tenant, the owner sets his own keys here from the Cockpit and his own Director reads them back, and
+/// a deny scoped to the wrong signal would break the shipped product to protect the unshipped one.
 /// </summary>
 internal static class VaultEndpoints
 {
     private static readonly JsonSerializerOptions JsonOpts = new() { PropertyNameCaseInsensitive = true };
 
-    /// <summary>
-    /// The hosted refusal for the whole key-vault group, or null on self-host where nothing changes.
-    ///
-    /// Gated on <see cref="GatewayHostedMode.IsHosted"/> - the INDEPENDENT deployment signal - and NOT on a
-    /// boundary or tenant argument being passed in. A security branch that depends on an optional argument
-    /// fails OPEN the moment a caller omits it, so asking hosted mode directly means this group cannot serve
-    /// a key on hosted however the host happens to be wired.
-    ///
-    /// 404 rather than 403: on hosted there is no per-account key store, so this surface does not exist as a
-    /// concept and "not here" is the truthful answer. 403 would imply some credential could reach it, and
-    /// none can.
-    ///
-    /// It REFUSES; it never serves an empty name list or a null value. An empty list is a false statement
-    /// about the vault, where an absent one is merely absent.
-    /// </summary>
-    private static IResult? DenyOnHosted()
-    {
-        if (!GatewayHostedMode.IsHosted) return null;
+    /// <summary>The exclusive prefix the key-vault route group owns outright on hosted.</summary>
+    internal const string Prefix = "/vault/keys";
 
-        FileLog.Write("[VaultEndpoints] DENIED on hosted: the key vault is one global store with no per-account partition");
-        return Results.Json(
-            new { error = "the key vault is not available on the hosted gateway" },
-            statusCode: StatusCodes.Status404NotFound);
+    /// <summary>The single error string the hosted refusal serves. Held here so a test can assert against the
+    /// exact string that is served rather than a copy that could drift.</summary>
+    internal const string RefusalMessage = "the key vault is not available on the hosted gateway";
+
+    /// <summary>
+    /// The hosted refusal payload for the whole key-vault group. Validated on construction, so a blank field
+    /// fails the Gateway at startup rather than serving a refusal a caller cannot act on. 404 rather than 403:
+    /// on hosted there is no per-account key store, so this surface does not exist as a concept and "not here"
+    /// is the truthful answer; 403 would imply some credential could reach it, and none can.
+    /// </summary>
+    private static HostedDenial Denial() => new(
+        family: "key-vault",
+        message: RefusalMessage,
+        reason: "the key vault is one global store with no tenant in the file, the store or the routes, and the " +
+                "host-wide auth gate admits any enrolled device key from any account - so one subscriber could read, " +
+                "overwrite or delete every other subscriber's provider credentials",
+        unDenyInstruction: "do NOT simply remove this deny: tenant-partition the vault, THEN purge or migrate the " +
+                "pre-existing global vault root (material predating this deny is already in the file and this change " +
+                "never touched it), and only then restore a tenant-scoped route - the raw-value GET last",
+        statusCode: StatusCodes.Status404NotFound);
+
+    /// <summary>
+    /// Maps the key-vault routes and RETURNS the denied group they were mapped through.
+    ///
+    /// The routes are mapped through the group HANDLE (<see cref="HostedDenyGroup"/>), never through the
+    /// ungrouped builder: the handle is obtainable only from <see cref="HostedRouteDeny.ExclusiveGroup"/>, so
+    /// a route mapped around the refusal is not expressible here without changing this method's plumbing - the
+    /// bypass count is reduced by design, not by care. On hosted the handle DISCARDS each handler (the
+    /// exclusive catch-all already refuses the path); off hosted it maps each handler as an unguarded builder
+    /// would.
+    ///
+    /// The return value exists so the future-route property is statable from outside this file: a test can map
+    /// a brand-new route through the returned handle and show the refusal already covers routes nobody has
+    /// written yet - the one property that distinguishes an exclusive-prefix deny from a guard repeated in
+    /// each handler.
+    /// </summary>
+    public static HostedDenyGroup Map(IEndpointRouteBuilder outer, KeyVault vault)
+    {
+        FileLog.Write($"[VaultEndpoints] mapping {Prefix}; hosted={GatewayHostedMode.IsHosted} - on hosted the whole group is refused via the shared refusal primitive");
+
+        var group = HostedRouteDeny.ExclusiveGroup(outer, Prefix, Denial());
+        MapRoutes(group, vault);
+        return group;
     }
 
     /// <summary>
-    /// Maps the key-vault routes and RETURNS the group they were mapped into.
-    ///
-    /// The return value exists solely so the future-route property is statable from outside this file: the
-    /// group is created in here, so without handing it back, no test could map a brand-new route onto it and
-    /// show that the refusal already covers routes nobody has written yet. That is the one property which
-    /// distinguishes a group filter from a guard repeated in each handler - the two behave identically on
-    /// every route that exists today.
+    /// The four key-vault routes, mapped relative to the <see cref="Prefix"/> so the full paths are
+    /// <c>/vault/keys</c> and <c>/vault/keys/{name}</c> exactly as before. Takes the denied GROUP HANDLE and
+    /// nothing else: the ungrouped route builder is deliberately out of scope here so no route can be mapped
+    /// around the hosted refusal.
     /// </summary>
-    public static RouteGroupBuilder Map(IEndpointRouteBuilder outer, KeyVault vault)
+    private static void MapRoutes(HostedDenyGroup app, KeyVault vault)
     {
-        FileLog.Write($"[VaultEndpoints] mapping /vault/keys; hosted={GatewayHostedMode.IsHosted} - on hosted EVERY route in this group is refused");
+        app.MapGet("", () => Results.Json(new { names = vault.ListNames() }));
 
-        // The whole group behind ONE endpoint filter, rather than a guard line repeated in every handler.
-        // A repeated guard is a thing to forget: the route added to this file next year would be open by
-        // default. A group filter runs before EVERY route mapped below, including routes that do not exist
-        // yet, so the refusal cannot rot as the group grows. The empty prefix keeps the route paths written
-        // out in full, exactly as before, so the self-host surface is byte-identical.
-        var guarded = outer.MapGroup("");
-        guarded.AddEndpointFilter(async (ctx, next) =>
-        {
-            if (DenyOnHosted() is { } denied) return denied;
-            return await next(ctx);
-        });
-
-        // THE ROUTES ARE MAPPED WHERE `outer` IS NOT IN SCOPE - deliberately, and this is the only reason
-        // MapRoutes exists as a separate method.
-        //
-        // If the routes were written here beside the guarded group, each of the four could INDIVIDUALLY be
-        // mapped onto `outer` instead of onto `guarded` - a one-character edit that bypasses the filter for
-        // that route alone while every other route stays correctly denied. That is four independently
-        // bypassable primitives, each of which would owe its own proof run. Handing the group to a method
-        // that never receives the ungrouped builder makes that mistake INEXPRESSIBLE rather than merely
-        // unlikely: inside MapRoutes there is nothing to map onto except the guarded group. The bypass count
-        // is reduced by design, not by argument about how careful the next author will be.
-        MapRoutes(guarded, vault);
-        return guarded;
-    }
-
-    /// <summary>
-    /// The four key-vault routes. Takes the GUARDED group and nothing else - see the note at the call site:
-    /// the ungrouped route builder is deliberately out of scope here so no route can be mapped around the
-    /// hosted filter.
-    /// </summary>
-    private static void MapRoutes(RouteGroupBuilder app, KeyVault vault)
-    {
-        app.MapGet("/vault/keys", () => Results.Json(new { names = vault.ListNames() }));
-
-        app.MapGet("/vault/keys/{name}", (string name) =>
+        app.MapGet("/{name}", (string name) =>
         {
             var value = vault.Get(name);
             return value is null
@@ -153,7 +162,7 @@ internal static class VaultEndpoints
                 : Results.Json(new { name, value });
         });
 
-        app.MapPut("/vault/keys/{name}", async (string name, HttpContext ctx) =>
+        app.MapPut("/{name}", async (string name, HttpContext ctx) =>
         {
             try
             {
@@ -172,7 +181,7 @@ internal static class VaultEndpoints
             }
         });
 
-        app.MapDelete("/vault/keys/{name}", (string name) =>
+        app.MapDelete("/{name}", (string name) =>
             Results.Json(new { name, deleted = vault.Delete(name) }));
     }
 

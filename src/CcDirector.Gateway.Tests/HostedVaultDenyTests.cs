@@ -10,6 +10,7 @@ using System.Text.Json;
 using System.Threading.Tasks;
 using CcDirector.Core;
 using CcDirector.Gateway.Api;
+using CcDirector.Gateway.Tenancy;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
@@ -32,9 +33,19 @@ namespace CcDirector.Gateway.Tests;
 /// and no per-account namespace, so a per-account answer would have to be invented rather than read. That is
 /// a half-partition, which is worse than an honest refusal because it looks like isolation.
 ///
-/// THE GATE IS ON THE DEPLOYMENT SIGNAL. It reads <see cref="GatewayHostedMode.IsHosted"/> directly, never an
-/// optional boundary or tenant argument. A security branch that depends on an optional argument fails OPEN
-/// the moment a caller omits it.
+/// HOW THE DENY IS EXPRESSED - THE SHARED REFUSAL PRIMITIVE. The group is denied through
+/// <see cref="HostedRouteDeny.ExclusiveGroup"/>, the ONE hosted-refusal boundary every deny family on this
+/// Gateway adopts. An earlier revision of this file rolled its own <c>AddEndpointFilter</c> deny before that
+/// primitive existed; it was replaced so the release ships ONE refusal boundary, not one per family. On
+/// hosted the four handlers are NEVER MAPPED - one verb-less catch-all refusal claims everything under
+/// <c>/vault/keys</c> (plus a root refusal at the prefix itself), so every request shape meets the refusal:
+/// a valid body, a malformed body, a wrong media type, a verb the group never mapped, and a route added
+/// LATER. Off hosted the primitive maps the four real handlers exactly as an unguarded builder would and
+/// creates no refusal at all.
+///
+/// THE GATE IS ON THE DEPLOYMENT SIGNAL. The primitive reads <see cref="GatewayHostedMode.IsHosted"/>
+/// directly, never an optional boundary or tenant argument. A security branch that depends on an optional
+/// argument fails OPEN the moment a caller omits it.
 ///
 /// IT REFUSES, IT NEVER SERVES AN EMPTY ANSWER. An empty name list would be a FALSE statement about a vault
 /// that holds keys; an absent one is merely absent.
@@ -58,36 +69,27 @@ namespace CcDirector.Gateway.Tests;
 /// <see cref="SelfHostVaultGroupControlTests"/>. Without those, "it survived" is a claim about a request that
 /// might never have been capable of destroying anything.
 ///
-/// ONE BYPASSABLE PRIMITIVE, BY DESIGN. The proof-run count is set by how many things can be individually
-/// wrong while everything else stays correct and isolation still breaks. Here that number is ONE: a single
-/// <c>AddEndpointFilter</c> on a single <c>MapGroup</c> created at a single <c>VaultEndpoints.Map</c> call
-/// site (<c>GatewayHost.cs</c>, one call - checked, not assumed), with NO route carrying a guard of its own,
-/// so deleting the filter fails all four routes together. The obvious second family - mapping one of the four
-/// routes onto the UNGROUPED builder, bypassing the filter for that route alone - was four more independently
-/// bypassable primitives, and it was removed by DESIGN rather than argued away: the routes now live in
-/// <c>VaultEndpoints.MapRoutes</c>, which receives the guarded group and never receives the ungrouped builder,
-/// so that mistake is not expressible. That is a compile-time property, which is why no test here asserts it;
-/// a test could not. Removing the hosted check from <c>DenyOnHosted</c> is NOT a third primitive: it makes the
-/// group refuse ALWAYS, which breaks the shipped self-host product rather than isolation, and the self-host
-/// controls below are what redden on it.
+/// WHERE THE MECHANISM IS PROVEN. The primitive itself - that the catch-all covers every request shape, that
+/// the exclusive claim is startup-validated, that a blank refusal fails the start - is proven exhaustively in
+/// <c>HostedRouteDenyTests</c>. This file proves the VAULT FAMILY'S ADOPTION of it: that the whole group is
+/// denied on hosted and served on self-host, end to end through the real <see cref="GatewayHost"/> whose
+/// StartAsync runs <see cref="HostedRefusalRouteSpace.ValidateBeforeStart"/> - so if the vault's exclusive
+/// claim collided with a live route the Gateway would refuse to start and every test here would fail.
 ///
 /// REVERT-PROOF - the recipe to RUN, not to describe. In <c>src/CcDirector.Gateway/Api/VaultEndpoints.cs</c>
-/// DELETE the <c>guarded.AddEndpointFilter(...)</c> block outright, leaving
-/// <c>var guarded = outer.MapGroup("");</c> in place so the group still exists and the file still compiles,
-/// with NO per-route guard put back - the
-/// hosted deny is then absent entirely. Never <c>if (false)</c>: unreachable code is a build error here.
-/// That is ONE primitive mutated and nothing else, so every red is attributable to it. Rebuild, CONFIRM ZERO
-/// ERRORS (a run after a failed build executes the previous binary and reports a false pass), then run the
-/// FULL Gateway suite and record every red BY NAME with the form it arrived in. A red only counts if it fails
-/// WITH THE SYMPTOM - an assertion naming what was served instead of the refusal; crash-reds are UNPROVEN.
-/// Then restore, rebuild, rerun the full suite, and confirm the counts reconcile arithmetically with total
-/// and skipped unchanged.
+/// change <c>HostedRouteDeny.ExclusiveGroup(outer, Prefix, Denial())</c> so the family maps its real handlers
+/// on hosted too - the simplest such mutation is to construct a plain non-denied group with the same prefix
+/// and map the four routes on it. The hosted deny is then absent entirely. Rebuild, CONFIRM ZERO ERRORS (a
+/// run after a failed build executes the previous binary and reports a false pass), then run the FULL Gateway
+/// suite and record every red BY NAME with the form it arrived in. A red only counts if it fails WITH THE
+/// SYMPTOM - an assertion naming what was served instead of the refusal; crash-reds are UNPROVEN. Then
+/// restore, rebuild, rerun the full suite, and confirm the counts reconcile with total and skipped unchanged.
 /// </summary>
 [Collection("DirectorRoot")]
 public sealed class HostedVaultDenyTests : IAsyncLifetime
 {
     private const string Token = "test-token";
-    internal const string RefusalMessage = "the key vault is not available on the hosted gateway";
+    internal const string RefusalMessage = VaultEndpoints.RefusalMessage;
     private const string SecretName = "DEVTHROTTLE_API_KEY";
     private const string SecretValue = "dt_live_another_tenants_key";
 
@@ -226,6 +228,16 @@ public sealed class HostedVaultDenyTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task A_verb_the_group_never_mapped_is_also_refused_on_hosted()
+    {
+        // The primitive maps a VERB-LESS refusal, so a method the family never mapped meets the refusal too -
+        // it does not leak the route's existence through a 405. This shape is exactly what the old
+        // request-time endpoint filter could not answer, and it is why the family moved onto the primitive.
+        var resp = await Send(HttpMethod.Patch, "vault/keys/" + SecretName, "{\"value\":\"x\"}");
+        await AssertBodyIsNothingButTheRefusal(resp);
+    }
+
+    [Fact]
     public async Task An_unauthenticated_caller_is_still_rejected()
     {
         // Control: the deny must not have opened the group up as a side effect of running before the
@@ -282,15 +294,18 @@ public sealed class HostedVaultDenyTests : IAsyncLifetime
 
 /// <summary>
 /// Boots ONLY the key-vault group on an ephemeral port, exactly as <see cref="VaultEndpointsTests"/> does,
-/// and hands the caller the route group back so a test can map routes onto it. That is what makes the
-/// future-route proof possible at all: the group is created inside <c>VaultEndpoints.Map</c>, so nothing
+/// and hands the caller the denied group handle back so a test can map routes through it. That is what makes
+/// the future-route proof possible at all: the group is created inside <c>VaultEndpoints.Map</c>, so nothing
 /// outside that method could otherwise state a property about routes added to it.
+///
+/// Routes handed to <paramref name="mapIntoGroup"/> are RELATIVE to the <c>/vault/keys</c> prefix, the same
+/// way the four production routes are.
 /// </summary>
 internal static class VaultGroupProbeHost
 {
     public static async Task<(WebApplication app, HttpClient http)> StartAsync(
         KeyVault vault,
-        Action<RouteGroupBuilder>? mapIntoGroup = null,
+        Action<HostedDenyGroup>? mapIntoGroup = null,
         Action<IEndpointRouteBuilder>? mapOutsideGroup = null)
     {
         var builder = WebApplication.CreateBuilder();
@@ -328,18 +343,18 @@ internal static class VaultGroupProbeHost
 }
 
 /// <summary>
-/// THE POINT OF THE WHOLE CHANGE: the hosted refusal is a filter on the key-vault route GROUP, so it covers
-/// routes that have not been written yet.
+/// THE POINT OF THE WHOLE CHANGE: the hosted refusal covers routes that have not been written yet.
 ///
-/// A guard line repeated in every handler passes exactly the same tests as a group filter for the routes that
-/// exist today, which is precisely why it is dangerous - the difference only shows up on the route somebody
-/// adds NEXT, when it is open by default and nothing fails. That difference is not observable by driving the
-/// four routes that exist, so this class maps a BRAND-NEW probe route onto the group and asserts it is
-/// already refused with no deny of its own written anywhere.
+/// A guard line repeated in every handler passes exactly the same tests as an exclusive-prefix deny for the
+/// routes that exist today, which is precisely why it is dangerous - the difference only shows up on the
+/// route somebody adds NEXT, when it is open by default and nothing fails. That difference is not observable
+/// by driving the four routes that exist, so this class maps a BRAND-NEW probe route through the group and
+/// asserts it is already refused with no deny of its own written anywhere - the exclusive catch-all refuses
+/// it because it never needed to know the route existed.
 ///
 /// The mirror half - the same probe path SERVED with hosted mode explicitly off, in both non-hosted forms -
 /// is <see cref="SelfHostVaultGroupControlTests.A_route_added_to_the_group_still_serves_on_self_host"/>. One
-/// direction alone cannot tell a working gate apart from a brick: a filter that refused everything
+/// direction alone cannot tell a working gate apart from a brick: a deny that refused everything
 /// unconditionally would pass every hosted assertion in this file while having silently killed the routes for
 /// self-host too.
 /// </summary>
@@ -377,16 +392,16 @@ public sealed class HostedVaultGroupFilterTests : IDisposable
 
     /// <summary>
     /// A route that did not exist when the refusal was written is refused anyway. NOTHING in
-    /// <c>VaultEndpoints</c> mentions this path, and no guard is written for it here - the only thing standing
-    /// between the caller and the probe payload is the group filter. Delete the filter and this test serves
-    /// the probe payload with a 200, which is the future-route hole stated out loud.
+    /// <c>VaultEndpoints</c> mentions this path, and no guard is written for it here - the exclusive catch-all
+    /// under <c>/vault/keys</c> is the only thing standing between the caller and the probe payload. On hosted
+    /// the handle DISCARDS the probe handler (nothing binds), so the catch-all answers.
     /// </summary>
     [Fact]
     public async Task A_route_added_to_the_group_later_is_refused_on_hosted_with_no_deny_of_its_own()
     {
         var (app, http) = await VaultGroupProbeHost.StartAsync(
             SeededVault(),
-            mapIntoGroup: group => group.MapGet("/vault/keys/added-after-the-deny-was-written",
+            mapIntoGroup: group => group.MapGet("/added-after-the-deny-was-written",
                 () => Results.Json(new { probe = ProbePayloadSentinel })));
         try
         {
@@ -400,9 +415,9 @@ public sealed class HostedVaultGroupFilterTests : IDisposable
     }
 
     /// <summary>
-    /// The four production routes, refused through that same filter rather than through a guard of their own.
-    /// Every verb is here, because the write and the delete are the tampering half of this defect and a deny
-    /// that closed only the reads would leave the damage path open.
+    /// The four production routes, refused through the exclusive catch-all rather than through a guard of
+    /// their own. Every verb is here, because the write and the delete are the tampering half of this defect
+    /// and a deny that closed only the reads would leave the damage path open.
     /// </summary>
     [Theory]
     [InlineData("GET", "/vault/keys", null)]
@@ -429,8 +444,8 @@ public sealed class HostedVaultGroupFilterTests : IDisposable
     }
 
     /// <summary>
-    /// CONTROL: the filter is scoped to the key-vault group, not a blanket refusal on the whole application.
-    /// A route mapped OUTSIDE the group still serves on hosted, so the passing tests above are the filter
+    /// CONTROL: the deny is scoped to the key-vault prefix, not a blanket refusal on the whole application.
+    /// A route mapped OUTSIDE the group still serves on hosted, so the passing tests above are the deny
     /// doing its job and not the host refusing everything.
     /// </summary>
     [Fact]
@@ -631,7 +646,7 @@ public sealed class SelfHostVaultGroupControlTests : IDisposable
     /// <see cref="HostedVaultGroupFilterTests.A_route_added_to_the_group_later_is_refused_on_hosted_with_no_deny_of_its_own"/>;
     /// this is its mirror, on the SAME probe path.
     ///
-    /// Without this half, "the filter refuses everything, always" would pass every hosted test in this file
+    /// Without this half, "the deny refuses everything, always" would pass every hosted test in this file
     /// while having silently killed the vault for self-host too.
     /// </summary>
     [Theory]
@@ -642,7 +657,7 @@ public sealed class SelfHostVaultGroupControlTests : IDisposable
 
         var (app, http) = await VaultGroupProbeHost.StartAsync(
             SeededVault(),
-            mapIntoGroup: group => group.MapGet("/vault/keys/added-after-the-deny-was-written",
+            mapIntoGroup: group => group.MapGet("/added-after-the-deny-was-written",
                 () => Results.Json(new { probe = "served" })));
         try
         {
