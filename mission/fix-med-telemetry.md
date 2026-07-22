@@ -58,13 +58,53 @@ flush.
   the Load default back to Local reddens the HOL-block test (uses `TenantId.Local` as the
   real tenant on purpose - a GUID tenant would not catch the revert).
 
-## Verification
+## r3 - Codex CHANGES-NEEDED round 2 residuals, now fixed
+
+Codex round 2 flagged two precise residuals in the hosted STARTUP telemetry parser/ownership
+path; both fixed on top of r2. The legacy-quarantine and per-tenant partitioning from r1/r2 are
+correct and untouched.
+
+### Residual 1 - a non-object / malformed JSON root threw a 500 before the ownership gate
+
+`ReadRecordFields` only caught `JsonException`. A body that is VALID JSON but whose root is not an
+object (an array, number, string, bool, or `null` literal) parses fine, then `TryGetProperty`
+throws `InvalidOperationException` on the non-object element - which escaped as an unhandled 500
+BEFORE the ownership gate ran. So an arbitrary caller's junk body was a server error.
+
+Fix: the body is parsed DEFENSIVELY (`TryReadRecordFields`). A malformed body OR a non-object root
+is rejected CLEANLY - 400 Bad Request, never recorded, never enqueued, never a throw. Only a JSON
+object proceeds.
+
+### Residual 2 - a missing/wrong-typed director_id collapsed to the literal string "(none)"
+
+`ReadRecordFields` returned the literal `"(none)"` for a missing/blank/wrong-typed `director_id`,
+and that string was handed to the ownership check. If any tenant registered a Director LITERALLY
+named `(none)`, an id-less request satisfied its own ownership gate - a real-looking placeholder
+that could pass.
+
+Fix: a missing/blank/wrong-typed `director_id` now resolves to `null` - an ownership-INCAPABLE
+sentinel, never a real-looking string. `IsDirectorOwnedByTenant` takes `string?` and returns false
+for null, so a null id can NEVER satisfy the gate no matter what any tenant registers. The gate then
+requires positive ownership of a real `director_id` by the caller's server-resolved tenant.
+
+### Tests (HOSTED WIRE - POST the real startup route over HTTP, behind the real auth gate)
+
+Added to `DirectorStartupTelemetryTenantTests`:
+- Non-object roots (`[1,2,3]`, `123`, `"str"`, `true`, `null`), malformed JSON, and an empty body
+  -> 400, asserted NOT 500.
+- Missing, wrong-typed (number), and blank `director_id` -> 403, WITH a Director literally named
+  `(none)` registered to the caller's tenant (proves the null sentinel never matches it).
+- A real owned `director_id` over the wire -> 202.
+
+## Verification (r3)
 
 - `dotnet build` gateway + tests: 0 warnings, 0 errors.
-- Telemetry + startup tests: 101 passed.
-- `DirectorStartupTelemetryTenantTests` solo: 7 passed.
+- Telemetry + startup tests: 112 passed (was 101; +11 new wire tests).
+- `DirectorStartupTelemetryTenantTests` solo: 18 passed (was 7).
 - `TelemetryRetryQueueTenantTests` solo: 7 passed.
-- Both r2 fixes independently proven revert-proof (revert -> the matching new test reddens).
+- Both r3 fixes independently proven revert-proof: collapsing a missing id back to `"(none)"`
+  reddens the missing/wrong-typed/blank reject tests (false 202); removing the non-object guard
+  reddens the non-object body tests (500 instead of 400).
 
 Touches `GatewayHost.cs` (the 4-arg `DirectorStartupTelemetryEndpoint.Map` wiring) - so this
 serializes at merge.

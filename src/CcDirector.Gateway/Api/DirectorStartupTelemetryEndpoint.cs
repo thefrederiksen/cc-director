@@ -96,27 +96,36 @@ internal static class DirectorStartupTelemetryEndpoint
             using (var reader = new StreamReader(ctx.Request.Body))
                 body = await reader.ReadToEndAsync(ctx.RequestAborted);
 
-            // Record the event Gateway-side so the startup is observable here regardless of whether a
-            // cloud endpoint exists. director_id + app_version are pulled out for the record line; the
-            // rest of the body is carried verbatim into the queue (when forwarding is configured).
-            var (directorId, appVersion) = ReadRecordFields(body);
+            // Parse the body DEFENSIVELY. A malformed body, or a JSON root that is NOT an object (an
+            // array/number/string/bool/null), is REJECTED cleanly - 400, never recorded, never enqueued.
+            // This is deliberate: property access on a non-object JsonElement throws
+            // InvalidOperationException, and letting that escape here turned an arbitrary caller's junk body
+            // into a 500 server error BEFORE the ownership gate even ran. director_id resolves to null (an
+            // ownership-INCAPABLE sentinel) when it is missing/blank/non-string; app_version is a display
+            // string.
+            if (!TryReadRecordFields(body, out var directorId, out var appVersion))
+            {
+                FileLog.Write("[DirectorStartupTelemetryEndpoint] director-startup REJECTED: body is not a JSON object (malformed or non-object root); not recorded, not enqueued");
+                return Results.StatusCode(StatusCodes.Status400BadRequest);
+            }
 
             // Ownership gate (audit MTR gap C): on hosted, a caller may only create a startup observation for
             // a director_id its OWN tenant PROVABLY owns. Anything the caller cannot prove it owns - a
-            // blank/malformed id, an id owned by ANOTHER tenant (the "submit B's director id to create a false
-            // startup observation for B" the audit describes), or an as-yet-UNKNOWN id registered to nobody -
-            // is rejected, never recorded and never enqueued. A startup report that races the tunnel Hello and
-            // arrives before its own id is registered is therefore dropped; that is the accepted cost of not
-            // accepting a forgeable cross-tenant observation, for a best-effort, swallowed startup ping. On
-            // self-host (single tenant, no forgery surface, and the id may legitimately be unregistered) this
-            // gate never fires.
+            // missing/blank/wrong-typed id (which is now a NULL, ownership-incapable sentinel that no
+            // registered director can ever match, not the literal string "(none)"), an id owned by ANOTHER
+            // tenant (the "submit B's director id to create a false startup observation for B" the audit
+            // describes), or an as-yet-UNKNOWN id registered to nobody - is rejected, never recorded and never
+            // enqueued. A startup report that races the tunnel Hello and arrives before its own id is
+            // registered is therefore dropped; that is the accepted cost of not accepting a forgeable
+            // cross-tenant observation, for a best-effort, swallowed startup ping. On self-host (single
+            // tenant, no forgery surface, and the id may legitimately be unregistered) this gate never fires.
             if (tenants.IsHosted && !directors.IsDirectorOwnedByTenant(tenant.Value, directorId))
             {
-                FileLog.Write($"[DirectorStartupTelemetryEndpoint] director-startup DENIED: director_id={directorId} is not provably owned by the caller (tenant={tenant.Value.ToLogString()}); refusing a startup observation for an unowned director id");
+                FileLog.Write($"[DirectorStartupTelemetryEndpoint] director-startup DENIED: director_id={directorId ?? "(none)"} is not provably owned by the caller (tenant={tenant.Value.ToLogString()}); refusing a startup observation for an unowned director id");
                 return Results.StatusCode(StatusCodes.Status403Forbidden);
             }
 
-            FileLog.Write($"[DirectorStartupTelemetryEndpoint] director-startup recorded: director_id={directorId}, app_version={appVersion}, tenant={tenant.Value.ToLogString()}");
+            FileLog.Write($"[DirectorStartupTelemetryEndpoint] director-startup recorded: director_id={directorId ?? "(none)"}, app_version={appVersion}, tenant={tenant.Value.ToLogString()}");
 
             var targetUrl = ResolveTargetUrl();
             if (targetUrl is null)
@@ -141,32 +150,61 @@ internal static class DirectorStartupTelemetryEndpoint
     }
 
     /// <summary>
-    /// Pulls <c>director_id</c> and <c>app_version</c> out of the inbound body for the record line.
-    /// A missing or unparseable field is recorded as the literal "(none)" so the record line is always
-    /// written - the record is best-effort observability, never a validation gate on the 202.
+    /// Parses the inbound body DEFENSIVELY and pulls out <c>director_id</c> and <c>app_version</c>.
+    /// Returns <c>false</c> when the body is not a JSON OBJECT - a malformed body, or a valid JSON whose
+    /// root is an array/number/string/bool/null - so the caller can reject it cleanly (400) instead of
+    /// letting a non-object property access throw <see cref="System.InvalidOperationException"/> and become
+    /// a 500. On <c>true</c>:
+    /// <list type="bullet">
+    ///   <item><paramref name="directorId"/> is the <c>director_id</c> value ONLY when it is a present,
+    ///     non-blank STRING; otherwise it is <c>null</c> - an ownership-INCAPABLE sentinel (never a
+    ///     real-looking placeholder like "(none)") that can never satisfy the ownership gate no matter what
+    ///     any tenant registers.</item>
+    ///   <item><paramref name="appVersion"/> is the <c>app_version</c> string for the record line, or
+    ///     "(none)" when it is missing/blank/non-string - the record line is best-effort observability.</item>
+    /// </list>
     /// </summary>
-    private static (string DirectorId, string AppVersion) ReadRecordFields(string body)
+    private static bool TryReadRecordFields(string body, out string? directorId, out string appVersion)
     {
-        if (string.IsNullOrWhiteSpace(body))
-            return ("(none)", "(none)");
+        directorId = null;
+        appVersion = "(none)";
 
+        if (string.IsNullOrWhiteSpace(body))
+            return false;
+
+        System.Text.Json.JsonDocument doc;
         try
         {
-            using var doc = System.Text.Json.JsonDocument.Parse(body);
-            var root = doc.RootElement;
-            var directorId = root.TryGetProperty("director_id", out var d) && d.ValueKind == System.Text.Json.JsonValueKind.String
-                ? d.GetString() ?? "(none)"
-                : "(none)";
-            var appVersion = root.TryGetProperty("app_version", out var v) && v.ValueKind == System.Text.Json.JsonValueKind.String
-                ? v.GetString() ?? "(none)"
-                : "(none)";
-            return (directorId, appVersion);
+            doc = System.Text.Json.JsonDocument.Parse(body);
         }
         catch (System.Text.Json.JsonException)
         {
-            // A malformed body still records (with placeholders) and still returns 202 - the inbound
-            // event is best-effort, and the verbatim body is what would be forwarded if configured.
-            return ("(none)", "(none)");
+            return false;
+        }
+
+        using (doc)
+        {
+            var root = doc.RootElement;
+            if (root.ValueKind != System.Text.Json.JsonValueKind.Object)
+                return false;
+
+            if (root.TryGetProperty("director_id", out var d)
+                && d.ValueKind == System.Text.Json.JsonValueKind.String)
+            {
+                var s = d.GetString();
+                if (!string.IsNullOrWhiteSpace(s))
+                    directorId = s;
+            }
+
+            if (root.TryGetProperty("app_version", out var v)
+                && v.ValueKind == System.Text.Json.JsonValueKind.String)
+            {
+                var s = v.GetString();
+                if (!string.IsNullOrWhiteSpace(s))
+                    appVersion = s!;
+            }
+
+            return true;
         }
     }
 }

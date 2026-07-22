@@ -64,6 +64,11 @@ public sealed class DirectorStartupTelemetryTenantTests : IAsyncLifetime
         var directors = new DirectorRegistry(_directorsDir);
         directors.RegisterFromStream("dir-b", "MACHINE-B", "userb", "1.0", 4321, DateTime.UtcNow, new TenantId(TenantB));
         directors.RegisterFromStream("dir-a", "MACHINE-A", "usera", "1.0", 1234, DateTime.UtcNow, new TenantId(TenantA));
+        // A director LITERALLY named "(none)" owned by tenant A. This is the adversary for residual 2: if a
+        // missing/wrong-typed director_id collapsed to the literal string "(none)", tenant A could satisfy its
+        // own ownership gate by simply omitting the field. It must NOT - a missing id resolves to a null,
+        // ownership-incapable sentinel that never matches this (or any) registered director.
+        directors.RegisterFromStream("(none)", "MACHINE-A2", "usera", "1.0", 1235, DateTime.UtcNow, new TenantId(TenantA));
 
         // Hosted boundary: a real AsyncLocalTenantContext makes IsHosted true and the tenant resolve from the
         // authenticated device key's binding.
@@ -127,6 +132,24 @@ public sealed class DirectorStartupTelemetryTenantTests : IAsyncLifetime
         return response.StatusCode;
     }
 
+    /// <summary>
+    /// POSTs a RAW body string (not a serialized object) so a test can send a malformed body, a non-object
+    /// JSON root, or an object with a missing/wrong-typed director_id - the shapes the typed
+    /// <see cref="PostStartupAsync"/> helper cannot express.
+    /// </summary>
+    private async Task<HttpStatusCode> PostRawAsync(string? bearerKey, string rawBody)
+    {
+        using var client = Client();
+        var request = new HttpRequestMessage(HttpMethod.Post, "/telemetry/director-startup")
+        {
+            Content = new StringContent(rawBody, System.Text.Encoding.UTF8, "application/json"),
+        };
+        if (bearerKey is not null)
+            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", bearerKey);
+        var response = await client.SendAsync(request);
+        return response.StatusCode;
+    }
+
     [Fact]
     public async Task NoCredential_IsRejected_SoTheseTestsRunBehindTheGate()
         => Assert.Equal(HttpStatusCode.Unauthorized, await PostStartupAsync(bearerKey: null, "dir-a"));
@@ -160,4 +183,60 @@ public sealed class DirectorStartupTelemetryTenantTests : IAsyncLifetime
     [Fact]
     public async Task TheOtherDirection_TenantBMayNotForgeTenantAsId()
         => Assert.Equal(HttpStatusCode.Forbidden, await PostStartupAsync(_keyB, "dir-a"));
+
+    // ----- Residual 1: a non-object / malformed body is rejected CLEANLY, never a 500 -----
+
+    [Theory]
+    [InlineData("[1,2,3]")]              // valid JSON, array root
+    [InlineData("123")]                   // valid JSON, number root
+    [InlineData("\"just-a-string\"")]   // valid JSON, string root
+    [InlineData("true")]                  // valid JSON, bool root
+    [InlineData("null")]                  // valid JSON, null literal root
+    [InlineData("{ not json ")]          // malformed JSON
+    [InlineData("")]                      // empty body
+    public async Task NonObjectOrMalformedBody_IsRejectedCleanly_Never500(string rawBody)
+    {
+        // These roots make property access throw InvalidOperationException; the old parser only caught
+        // JsonException, so a non-object root escaped as an unhandled 500 BEFORE the ownership gate. The
+        // defensive parse rejects them as 400 - and, critically, NOT a 500.
+        var status = await PostRawAsync(_keyA, rawBody);
+        Assert.Equal(HttpStatusCode.BadRequest, status);
+        Assert.NotEqual(HttpStatusCode.InternalServerError, status);
+    }
+
+    // ----- Residual 2: a missing / wrong-typed director_id is a null sentinel, never the literal "(none)" -----
+
+    [Fact]
+    public async Task MissingDirectorId_ResolvesToNullSentinel_NotTheRegisteredNoneDirector_IsRejected()
+    {
+        // Tenant A has a Director LITERALLY named "(none)" registered. A well-formed object with NO
+        // director_id field must resolve to a null, ownership-INCAPABLE sentinel - NOT the literal string
+        // "(none)" - so it can never satisfy the gate by matching that director. Revert-proof: if a missing id
+        // collapsed to "(none)", this would falsely return 202.
+        var status = await PostRawAsync(_keyA, "{ \"machine_name\": \"M\", \"app_version\": \"1.0\" }");
+        Assert.Equal(HttpStatusCode.Forbidden, status);
+    }
+
+    [Fact]
+    public async Task WrongTypedDirectorId_ResolvesToNullSentinel_IsRejected()
+    {
+        // director_id present but NOT a string (a number) -> null sentinel -> rejected, even with the
+        // "(none)" director registered to tenant A.
+        var status = await PostRawAsync(_keyA, "{ \"director_id\": 12345, \"machine_name\": \"M\", \"app_version\": \"1.0\" }");
+        Assert.Equal(HttpStatusCode.Forbidden, status);
+    }
+
+    [Fact]
+    public async Task BlankStringDirectorId_ResolvesToNullSentinel_IsRejected()
+    {
+        // A whitespace-only director_id string is treated as absent -> null sentinel -> rejected.
+        var status = await PostRawAsync(_keyA, "{ \"director_id\": \"   \", \"machine_name\": \"M\", \"app_version\": \"1.0\" }");
+        Assert.Equal(HttpStatusCode.Forbidden, status);
+    }
+
+    [Fact]
+    public async Task RealOwnedDirectorId_OverTheWire_IsAccepted()
+        // The positive case of the three residual wire checks: a real, owned director_id from its owning
+        // tenant is accepted (202) - the gate rejects only what is not provably owned.
+        => Assert.Equal(HttpStatusCode.Accepted, await PostRawAsync(_keyA, "{ \"director_id\": \"dir-a\", \"machine_name\": \"M\", \"app_version\": \"1.0\" }"));
 }

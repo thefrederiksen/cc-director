@@ -387,15 +387,19 @@ public sealed class DirectorRegistry : IDisposable
     /// yours".
     ///
     /// This is a POSITIVE-ownership check: it returns true ONLY for an id keyed to the caller's own tenant.
-    /// A blank/malformed id, an id owned by a DIFFERENT tenant, and an as-yet-UNKNOWN id (registered to
+    /// A null/blank/malformed id, an id owned by a DIFFERENT tenant, and an as-yet-UNKNOWN id (registered to
     /// nobody) all return false. The caller (the startup endpoint) uses that to REJECT any startup
     /// observation the caller cannot prove it owns, rather than accepting a forgeable one: the audit's threat
     /// is a caller creating a startup observation for a director_id it does not own, and an unknown id is not
     /// provably the caller's, so it is refused. The cost is that a startup report that races the tunnel Hello
     /// (arriving before the caller's own id is registered) is dropped - acceptable for a best-effort,
     /// swallowed startup ping, where a forgeable cross-tenant observation is the worse failure.
+    ///
+    /// <paramref name="directorId"/> is NULLABLE on purpose: the caller resolves a missing/blank/wrong-typed
+    /// director_id to null (an ownership-INCAPABLE sentinel, never a real-looking placeholder string), and a
+    /// null id can never be provably owned no matter what any tenant registers, so it returns false here.
     /// </summary>
-    public bool IsDirectorOwnedByTenant(TenantId caller, string directorId)
+    public bool IsDirectorOwnedByTenant(TenantId caller, string? directorId)
     {
         if (string.IsNullOrEmpty(directorId) || !caller.IsValid)
             return false;
