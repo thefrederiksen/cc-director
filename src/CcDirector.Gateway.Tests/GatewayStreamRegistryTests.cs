@@ -1,4 +1,5 @@
 using System.Runtime.CompilerServices;
+using CcDirector.Core.Tenancy;
 using CcDirector.Gateway.Contracts;
 using CcDirector.Gateway.Streaming;
 using Xunit;
@@ -13,6 +14,11 @@ namespace CcDirector.Gateway.Tests;
 /// </summary>
 public sealed class GatewayStreamRegistryTests
 {
+    // Issue #1923: every stream now records the identity that owns it. These lifecycle tests are all
+    // single-owner, so they register and consume as the same identity - the ownership CHECK itself is proved
+    // in StreamOwnershipTests.
+    private static readonly StreamOwner Owner = new(TenantId.Local, "dir-1");
+
     // A sink that records the frames it is handed, optionally blocking each write on a supplied gate so a test
     // can hold the pull and observe backpressure.
     private sealed class RecordingSink : IStreamSink
@@ -54,9 +60,9 @@ public sealed class GatewayStreamRegistryTests
     {
         var registry = new GatewayStreamRegistry();
         var sink = new RecordingSink();
-        registry.Register("s1", sink);
+        registry.Register("s1", Owner, sink);
 
-        await registry.ConsumeAsync("s1", SizeBinaryClosed("s1"), CancellationToken.None);
+        await registry.ConsumeAsync("s1", Owner, SizeBinaryClosed("s1"), CancellationToken.None);
 
         Assert.Equal(3, sink.Frames.Count);
         Assert.Equal(DirectorStreamFrameType.Size, sink.Frames[0].Kind);
@@ -75,7 +81,7 @@ public sealed class GatewayStreamRegistryTests
         var registry = new GatewayStreamRegistry();
         var gate = new TaskCompletionSource();
         var sink = new RecordingSink(gate: () => gate.Task);
-        registry.Register("bp", sink);
+        registry.Register("bp", Owner, sink);
 
         var yielded = 0;
         async IAsyncEnumerable<DirectorStreamFrame> Produce([EnumeratorCancellation] CancellationToken ct = default)
@@ -89,7 +95,7 @@ public sealed class GatewayStreamRegistryTests
             yield return Closed("bp", "eof");
         }
 
-        var consume = registry.ConsumeAsync("bp", Produce(), CancellationToken.None);
+        var consume = registry.ConsumeAsync("bp", Owner, Produce(), CancellationToken.None);
         await Task.Delay(150); // let the consumer pull the first frame and block on the held sink write
 
         Assert.Equal(1, Volatile.Read(ref yielded)); // only the first frame was pulled; the next pull is blocked
@@ -107,7 +113,7 @@ public sealed class GatewayStreamRegistryTests
     {
         var registry = new GatewayStreamRegistry();
         var sink = new RecordingSink();
-        registry.Register("inf", sink);
+        registry.Register("inf", Owner, sink);
 
         var started = new TaskCompletionSource();
         async IAsyncEnumerable<DirectorStreamFrame> Forever([EnumeratorCancellation] CancellationToken ct = default)
@@ -122,7 +128,7 @@ public sealed class GatewayStreamRegistryTests
             }
         }
 
-        var consume = registry.ConsumeAsync("inf", Forever(), CancellationToken.None);
+        var consume = registry.ConsumeAsync("inf", Owner, Forever(), CancellationToken.None);
         await started.Task;
         await Task.Delay(60); // let a few frames flow
 
@@ -140,10 +146,10 @@ public sealed class GatewayStreamRegistryTests
         // registered sink, so consume returns at once without touching any sink.
         var registry = new GatewayStreamRegistry();
         var sink = new RecordingSink();
-        registry.Register("gone", sink);
+        registry.Register("gone", Owner, sink);
         registry.Close("gone"); // sink torn down before StreamUp arrives
 
-        await registry.ConsumeAsync("gone", SizeBinaryClosed("gone"), CancellationToken.None);
+        await registry.ConsumeAsync("gone", Owner, SizeBinaryClosed("gone"), CancellationToken.None);
 
         Assert.Empty(sink.Frames); // nothing was pumped into the gone sink
         Assert.Equal(0, registry.LiveStreamCount);
@@ -156,7 +162,7 @@ public sealed class GatewayStreamRegistryTests
         // must not wait forever - the open timeout tears it down and fires the caller's token.
         var registry = new GatewayStreamRegistry(openTimeout: TimeSpan.FromMilliseconds(100));
         var sink = new RecordingSink();
-        var token = registry.Register("late", sink);
+        var token = registry.Register("late", Owner, sink);
 
         await Task.Delay(400);
 
@@ -169,7 +175,7 @@ public sealed class GatewayStreamRegistryTests
     public void Register_DuplicateStreamId_ThrowsFailLoud()
     {
         var registry = new GatewayStreamRegistry();
-        registry.Register("dup", new RecordingSink());
-        Assert.Throws<InvalidOperationException>(() => registry.Register("dup", new RecordingSink()));
+        registry.Register("dup", Owner, new RecordingSink());
+        Assert.Throws<InvalidOperationException>(() => registry.Register("dup", Owner, new RecordingSink()));
     }
 }

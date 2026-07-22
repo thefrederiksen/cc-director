@@ -10,6 +10,7 @@ using System.Text.Json.Nodes;
 using CcDirector.ControlApi;
 using CcDirector.Core.Configuration;
 using CcDirector.Core.Sessions;
+using CcDirector.Core.Tenancy;
 using CcDirector.Gateway.Contracts;
 using CcDirector.Gateway.Streaming;
 using Microsoft.AspNetCore.SignalR.Client;
@@ -277,7 +278,9 @@ public sealed class TunnelMechanismProofTests : IAsyncLifetime
         var sink = new StallingSink(gate);
         var yielded = 0;
 
-        _gateway.StreamRegistry.Register(streamId, sink);
+        // Issue #1923: the stream is owned by the tenant and Director this test's real hub connection is
+        // bound to (self-host -> Local, Hello -> DirectorId), so the StreamUp below is the PERMITTED path.
+        _gateway.StreamRegistry.Register(streamId, new StreamOwner(TenantId.Local, DirectorId), sink);
 
         async IAsyncEnumerable<DirectorStreamFrame> Produce([EnumeratorCancellation] CancellationToken ct = default)
         {

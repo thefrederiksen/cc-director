@@ -65,7 +65,7 @@ internal static class SessionWsProxyEndpoints
             if (reqTenant is null) return;
             if (pushedSessions.TryLocate(reqTenant.Value, sid, stale) is { } loc)
             {
-                await tunnel.ServeTerminalAsync(ctx, sid, loc.DirectorId);
+                await tunnel.ServeTerminalAsync(ctx, sid, reqTenant.Value, loc.DirectorId);
                 return;
             }
             await RejectAsync(ctx, sid, "stream");
@@ -80,7 +80,7 @@ internal static class SessionWsProxyEndpoints
             if (pushedSessions.TryLocate(reqTenant.Value, sid, stale) is { } loc)
             {
                 ctx.Response.Headers["X-Content-Type-Options"] = "nosniff";
-                if (await tunnel.TryServeFileAsync(ctx, sid, loc.DirectorId, ctx.Request.Query["path"].ToString()))
+                if (await tunnel.TryServeFileAsync(ctx, sid, reqTenant.Value, loc.DirectorId, ctx.Request.Query["path"].ToString()))
                     return;
             }
             await RejectAsync(ctx, sid, "file");
@@ -107,7 +107,7 @@ internal static class SessionWsProxyEndpoints
             }
             ctx.Response.Headers["Access-Control-Allow-Origin"] = "*";
             ctx.Response.Headers["Cache-Control"] = "public, max-age=3600";
-            if (!await tunnel.TryServeScreenshotAsync(ctx, sid, loc.DirectorId, ctx.Request.Query["name"].ToString()))
+            if (!await tunnel.TryServeScreenshotAsync(ctx, sid, reqTenant.Value, loc.DirectorId, ctx.Request.Query["name"].ToString()))
                 await RejectAsync(ctx, sid, "shot");
         });
 
