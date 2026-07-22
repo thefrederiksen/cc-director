@@ -1014,36 +1014,8 @@ internal static class GatewayWingmanVoiceEndpoint
     /// left at their defaults here. Fire-and-forget; a logging failure never affects the response.
     /// </summary>
     private static void PersistMobileCaptureHealth(string uploadId, UtteranceCompleteRequest req, int wavBytes, string? cleaned)
-    {
-        if (req.ClientRecordedMs is not { } recordedMs) return; // client did not opt in - nothing to persist
-
-        var decodedSeconds = req.ClientDecodedSeconds ?? 0;
-        FileLog.Write($"[GatewayWingmanVoice] capture-health mobile {uploadId}: recordedMs={recordedMs:F0}, "
-            + $"decodedSec={decodedSeconds:F2}, wavBytes={wavBytes}, sourceBytes={req.ClientSourceBytes ?? 0}");
-
-        var record = new DictationSessionRecord(
-            TimestampUtc: DateTime.UtcNow.ToString("o"),
-            SessionId: uploadId,
-            Profile: "default",
-            VocabularyTermCount: 0,
-            MistranscriptionPatternCount: 0,
-            RecordingDurationMs: (long)recordedMs,
-            StopToTranscribedMs: 0,
-            StopToCleanedMs: 0,
-            AudioBytesReceived: (int)Math.Min(wavBytes, int.MaxValue),
-            RawTranscript: "",
-            CleanedTranscript: cleaned ?? "",
-            CleanupApplied: false,
-            CleanupReason: null,
-            CleanupModel: "",
-            RemoteIp: null,
-            ClientError: null,
-            Source: "mobile",
-            RecordedWallMs: recordedMs,
-            DecodedAudioSeconds: decodedSeconds);
-
-        Task.Run(() => DictationSessionLog.TryAppend(record));
-    }
+        => MobileCaptureHealthLog.Persist(
+            uploadId, "mobile", req.ClientRecordedMs, req.ClientDecodedSeconds, req.ClientSourceBytes, wavBytes, cleaned);
 
     /// <summary>Shape a <see cref="WingmanMenu"/> for the JSON response (camelCase the phone reads).</summary>
     private static object MenuJson(WingmanMenu m) => new

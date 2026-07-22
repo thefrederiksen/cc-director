@@ -1,6 +1,8 @@
 import { abandonDictation, sendPrompt, uploadDictationToSession } from "../api/client";
+import { logCaptureHealth } from "./captureHealth";
 import { deletePending, getPending, listPending, savePending, type PendingDictation } from "./pendingStore";
 import { clearDictationStatus, publishDictationStatus } from "./status";
+import { blobToWav16kMono } from "./wav";
 
 // The durable Send pipeline + background retry driver for the mobile Speak dialog (issue #1006,
 // strengthened for #1182). The instant the user hits Send the dialog hands the recorded audio here and
@@ -132,11 +134,37 @@ export async function backgroundTranscribeAndSend(
 ): Promise<void> {
   ensureRetryListeners();
 
+  // Capture-health (issue #863): the fire-and-forget Send path releases the screen the instant Send is
+  // pressed and never transcodes on-device, so it was the ONE finish path that measured no audio loss at
+  // all. Decode the clip ONCE here - the screen has already closed, so this is off the critical path - to
+  // get the decoded audio duration, log the recorded-vs-decoded deficit on this surface the same way every
+  // other finish path does, and stash the numbers on the durable record so the upload forwards them to the
+  // Gateway (which persists them into the same dictation session log). Diagnostics only: a decode failure
+  // is logged loudly but NEVER blocks delivery - the user's words are the guarantee, the measurement is not.
+  let decodedSeconds: number | undefined;
+  let sourceBytes: number | undefined;
+  try {
+    const transcoded = await blobToWav16kMono(captured.blob);
+    decodedSeconds = transcoded.decodedSeconds;
+    sourceBytes = transcoded.sourceBytes;
+    logCaptureHealth("mobile-send", {
+      recordedMs: captured.recordedMs,
+      decodedSeconds: transcoded.decodedSeconds,
+      sourceBytes: transcoded.sourceBytes,
+    });
+  } catch (err) {
+    console.warn(
+      `[backgroundSend] capture-health decode failed (delivery is unaffected): ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+
   const rec: PendingDictation = {
     id: crypto.randomUUID(),
     sessionId,
     blob: captured.blob,
     recordedMs: captured.recordedMs,
+    decodedSeconds,
+    sourceBytes,
     before: hooks.composeParts?.before ?? "",
     after: hooks.composeParts?.after ?? "",
     prefix: captured.prefixText ?? "",
@@ -430,6 +458,11 @@ async function driveRecord(rec: PendingDictation, opts: DriveOptions): Promise<v
       prefix: rec.prefix,
       baselineBufferBytes: rec.baselineBufferBytes,
       resumed: opts.resumed,
+      // Capture-health (issue #863): forward the Send-time measurement so the Gateway persists the
+      // audio-loss deficit for this path. Absent when the on-device decode failed.
+      clientRecordedMs: rec.recordedMs,
+      clientDecodedSeconds: rec.decodedSeconds,
+      clientSourceBytes: rec.sourceBytes,
     });
 
     if (outcome.terminal) {

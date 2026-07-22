@@ -21,6 +21,12 @@ export interface PendingDictation {
   /** The raw recorded audio exactly as the microphone produced it (WebM/Opus etc.). */
   blob: Blob;
   recordedMs: number;
+  /** Capture-health (issue #863): the decoded audio duration and source blob size, measured once at
+   *  Send time by decoding the clip. The fire-and-forget Send path never transcodes on-device, so these
+   *  are stashed here and forwarded with the upload for the Gateway to persist the audio-loss deficit
+   *  (recording wall-clock vs decoded audio duration). Absent when the on-device decode failed. */
+  decodedSeconds?: number;
+  sourceBytes?: number;
   /** Typed text before the caret (Terminal Speak compose); empty for the voice case. */
   before: string;
   /** Typed text after the caret; empty for the voice case. */
