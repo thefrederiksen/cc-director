@@ -30,6 +30,28 @@ const CHUNK_MS = 100;
 // logged so a real occurrence is visible.
 const FLUSH_BACKSTOP_MS = 500;
 
+// The equalizer time window. getByteTimeDomainData fills this many samples of the live waveform; at a
+// typical 48 kHz that is ~11 ms, a long enough window for a steady loudness reading yet short enough to
+// track speech syllables so the bars actually bob rather than crawl.
+const LEVEL_FFT_SIZE = 512;
+
+// Turn a window of live waveform samples (getByteTimeDomainData: bytes centred on 128, silence = 128)
+// into a 0..1 loudness for the equalizer. Root-mean-square of the samples' deviation from the centre is
+// the instantaneous loudness - it responds immediately to how loud the speaker is right now, unlike the
+// old frequency-bin average (which diluted voice energy across mostly-empty high bins) and needs no
+// analyser smoothing (which only lagged the meter). A modest gain lets normal speech fill the bars while
+// the clamp keeps a shout at full scale. Pure and display-only: it never touches the captured audio.
+export function rmsLevel(timeDomain: Uint8Array): number {
+  if (timeDomain.length === 0) return 0;
+  let sumSquares = 0;
+  for (let i = 0; i < timeDomain.length; i++) {
+    const deviation = (timeDomain[i] - 128) / 128; // -1..1, silence -> 0
+    sumSquares += deviation * deviation;
+  }
+  const rms = Math.sqrt(sumSquares / timeDomain.length); // 0..1
+  return Math.min(1, rms * 3.2);
+}
+
 export class MicRecorder {
   private stream: MediaStream | null = null;
   private recorder: MediaRecorder | null = null;
@@ -79,10 +101,13 @@ export class MicRecorder {
     this.audioCtx = new AudioCtor();
     const source = this.audioCtx.createMediaStreamSource(this.stream);
     this.analyser = this.audioCtx.createAnalyser();
-    this.analyser.fftSize = 64;
-    this.analyser.smoothingTimeConstant = 0.5;
+    // Sized for a live-waveform (time-domain) read: the buffer holds fftSize samples of the raw
+    // waveform, which rmsLevel() turns into an instantaneous loudness. No smoothingTimeConstant is set
+    // because that only shapes frequency-domain reads (which we no longer use) and only ever lagged the
+    // meter.
+    this.analyser.fftSize = LEVEL_FFT_SIZE;
     source.connect(this.analyser);
-    this.levelData = new Uint8Array(this.analyser.frequencyBinCount);
+    this.levelData = new Uint8Array(this.analyser.fftSize);
 
     this.mimeType = pickMimeType();
     this.recorder = this.mimeType
@@ -169,14 +194,11 @@ export class MicRecorder {
     return this.snapshot();
   }
 
-  /** Current input level in 0..1, sampled live. Returns 0 when not recording. */
+  /** Current input level in 0..1, sampled live from the waveform. Returns 0 when not recording. */
   level(): number {
     if (!this.analyser || !this.levelData) return 0;
-    this.analyser.getByteFrequencyData(this.levelData);
-    let sum = 0;
-    for (let i = 0; i < this.levelData.length; i++) sum += this.levelData[i];
-    const avg = sum / this.levelData.length; // 0..255
-    return Math.min(1, avg / 180);
+    this.analyser.getByteTimeDomainData(this.levelData);
+    return rmsLevel(this.levelData);
   }
 
   /**
