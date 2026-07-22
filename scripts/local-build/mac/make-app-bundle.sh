@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 #
 # make-app-bundle.sh — Wraps a built cc-director binary in a double-clickable
-# macOS .app bundle and installs it into /Applications.
+# macOS .app bundle and installs it into the developer apps folder
+# "~/Applications/DevThrottle Dev".
 #
 # Why a bundle: a bare Mach-O binary isn't launchable from Finder/Dock/Spotlight,
 # and — more importantly — launching from a .app runs cc-director under launchd,
@@ -11,19 +12,33 @@
 # the Terminal/Wingman tabs die with the "--print" error.
 #
 # Targets:
-#   main         -> "CC Director.app"   <- cc-director-mac-main   (your stable copy)
-#   1|2|3|4      -> "CC Director N.app" <- cc-director-macN       (normal-work slots)
-#   5            -> "CC Director 5.app" <- cc-director-mac5       (testing slot)
+#   main         -> "Director Dev.app"   <- cc-director-mac-main   (your stable copy)
+#   1|2|3|4      -> "Director Dev N.app" <- cc-director-macN       (normal-work slots)
+#   5            -> "Director Dev 5.app" <- cc-director-mac5       (testing slot)
+#
+# Why NOT /Applications, and why not the "Director" name: the real installed app
+# is "Director.app", and its installer PURGES stale product bundles (the legacy
+# "CC Director.app" and Finder-numbered duplicates like "Director 2.app") from
+# both ~/Applications and /Applications. Developer bundles therefore live in
+# their own folder under a name the purge patterns can never match, so a real
+# install on a development machine can never sweep the dev slots away.
 #
 # Each target gets a distinct CFBundleIdentifier so macOS treats them as separate
-# apps (own Dock tile, own Spotlight entry, can run side by side). The bundle's
-# launcher references the binary by absolute path, so rebuilding the binary in
-# place is picked up automatically — no need to re-make the bundle after a build.
+# apps (own Dock tile, own Spotlight entry, can run side by side) - and none of
+# them uses the REAL app's id (com.devthrottle.ccdirector), so the dev main copy
+# never fights the installed Director over LaunchServices registration. The
+# bundle's launcher references the binary by absolute path, so rebuilding the
+# binary in place is picked up automatically — no need to re-make the bundle
+# after a build.
+#
+# Re-running migrates: any old wrapper this script previously placed in
+# /Applications under the old "CC Director*" names is removed (wrappers only,
+# identified by their script launcher - a real installed app is never touched).
 #
 # Usage:
 #   scripts/local-build/mac/make-app-bundle.sh --target main
 #   scripts/local-build/mac/make-app-bundle.sh --target 2
-#   APPS_DIR=~/Applications scripts/local-build/mac/make-app-bundle.sh --target main
+#   APPS_DIR=/tmp/somewhere scripts/local-build/mac/make-app-bundle.sh --target main
 #
 set -euo pipefail
 
@@ -66,24 +81,39 @@ done
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-BIN_DIR="$REPO_ROOT/local_builds/mac"                  # where the binaries live
-APPS_DIR="${APPS_DIR:-/Applications}"                  # override for testing
+BIN_DIR="${BIN_DIR:-$REPO_ROOT/local_builds/mac}"      # where the binaries live (override when
+                                                       # bundling from a worktree whose binaries
+                                                       # live in the main checkout)
+APPS_DIR="${APPS_DIR:-$HOME/Applications/DevThrottle Dev}"   # override for testing
 
-# Map target -> app display name, binary name, bundle id, and rebuild hint.
+# Map target -> app display name, binary name, bundle id, old wrapper name (for
+# migration off /Applications), and rebuild hint.
 case "$TARGET" in
     main)
-        APP_NAME="CC Director"
+        APP_NAME="Director Dev"
         BIN="cc-director-mac-main"
-        BID="com.devthrottle.ccdirector"
+        BID="com.devthrottle.ccdirector.dev"
+        OLD_NAME="CC Director"
         REBUILD="scripts/mac-rebuild.sh main" ;;
     1|2|3|4|5)
-        APP_NAME="CC Director $TARGET"
+        APP_NAME="Director Dev $TARGET"
         BIN="cc-director-mac$TARGET"
         BID="com.devthrottle.ccdirector.slot$TARGET"
+        OLD_NAME="CC Director $TARGET"
         REBUILD="scripts/mac-rebuild.sh $TARGET" ;;
     *)
         echo "ERROR: invalid --target '$TARGET' (use: main|1|2|3|4|5)" >&2; exit 1 ;;
 esac
+
+# Migration: this script used to place the wrappers in /Applications under the
+# "CC Director*" names. Remove that old copy IF it is one of our wrappers - the
+# tell is the generated script launcher at Contents/MacOS/launch. A real
+# installed application never has that, so it can never be removed here.
+OLD_APP="/Applications/$OLD_NAME.app"
+if [[ -f "$OLD_APP/Contents/MacOS/launch" ]]; then
+    echo "Migrating: removing old dev wrapper \"$OLD_APP\""
+    rm -rf "$OLD_APP"
+fi
 
 BIN_PATH="$BIN_DIR/$BIN"
 

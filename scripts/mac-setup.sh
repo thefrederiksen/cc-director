@@ -2,11 +2,16 @@
 #
 # mac-setup.sh — One-time setup for CC Director on macOS.
 #
-# After this runs you'll have:
-#   • "CC Director" — your stable copy, in /Applications AND pinned to the Dock.
-#   • "CC Director 1".."CC Director 4" — normal-work slots, in /Applications
+# After this runs you'll have, in "~/Applications/DevThrottle Dev" (never
+# /Applications - the real installer purges stale product bundles there):
+#   • "Director Dev" — your stable copy, pinned to the Dock.
+#   • "Director Dev 1".."Director Dev 4" — normal-work slots
 #     (find them in Launchpad or Spotlight).
-#   • "CC Director 5" — the testing slot, started and stopped freely.
+#   • "Director Dev 5" — the testing slot, started and stopped freely.
+#
+# Re-running is also the MIGRATION path: old "CC Director*" wrappers this setup
+# used to place in /Applications are removed (wrappers only - a real installed
+# Director.app is never touched).
 #
 # Re-running is safe (idempotent). Requires the .NET 10 SDK (see scripts/local-build/mac/README.md).
 #
@@ -19,7 +24,7 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 # bundle id and would confuse LaunchServices/Dock about which app to open.
 rm -rf "$REPO_ROOT/local_builds/mac/CC Director.app"
 
-echo "Setting up CC Director apps (1 main + 5 slots)..."
+echo "Setting up Director Dev apps (1 main + 5 slots)..."
 
 # 0) Create and trust the stable local code-signing certificate (idempotent;
 #    may ask for your administrator password). Without it every rebuild
@@ -38,13 +43,14 @@ cat <<'EOF'
 
 ✅ Done.
 
-  • "CC Director" is now in your Dock (bottom toolbar) and in /Applications.
-    Click the Dock icon any time — this is your everyday copy.
+  • "Director Dev" is now in your Dock (bottom toolbar) and in
+    "~/Applications/DevThrottle Dev". Click the Dock icon any time — this is
+    your everyday copy.
 
-  • Slots "CC Director 1" … "CC Director 4" (normal work) and "CC Director 5"
-    (testing) are in /Applications. Find them with Spotlight (press Cmd+Space,
-    type "CC Director 2") or in Launchpad. A slot that isn't built yet tells
-    you how to build it when you click it.
+  • Slots "Director Dev 1" … "Director Dev 4" (normal work) and "Director Dev 5"
+    (testing) are in "~/Applications/DevThrottle Dev". Find them with Spotlight
+    (press Cmd+Space, type "Director Dev 2") or in Launchpad. A slot that isn't
+    built yet tells you how to build it when you click it.
 
 Everyday commands (run from the repo root):
 
