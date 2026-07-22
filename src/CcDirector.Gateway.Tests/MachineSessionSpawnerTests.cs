@@ -1,3 +1,4 @@
+using CcDirector.Core.Tenancy;
 using CcDirector.Gateway.Contracts;
 using CcDirector.Gateway.Running;
 using Xunit;
@@ -122,7 +123,8 @@ public sealed class MachineSessionSpawnerTests
             Source = "stream",
         };
         var resolver = new RegistryDirectorTargetResolver(
-            listDirectors: () => new[] { director },
+            listDirectors: _ => new[] { director },
+            resolveTenant: () => TenantId.Local,
             launcher: new ThrowingLauncher());
 
         string? seenDirectorId = null;

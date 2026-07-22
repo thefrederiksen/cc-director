@@ -1,3 +1,4 @@
+using CcDirector.Core.Tenancy;
 using CcDirector.Core.Utilities;
 using CcDirector.Gateway.Contracts;
 using CcDirector.Gateway.Discovery;
@@ -28,23 +29,41 @@ public interface IDirectorTargetResolver
 /// Production resolver. Reads the live Director list (the <see cref="DirectorRegistry"/>) and uses an
 /// <see cref="IDirectorLauncher"/> to start a Director on demand. Uses wall-clock waits (small in
 /// tests) for the launch poll, so it never depends on the engine's injected clock.
+///
+/// Hosted Multi-Tenancy (audit H1, gap audit-e): the resolve is confined to the CALLER'S tenant. The
+/// <paramref name="listDirectors"/> reader takes the tenant to list (production: the registry's
+/// tenant-scoped <c>ListDirectors(TenantId)</c> overload), and the tenant is resolved per-resolve from
+/// <paramref name="resolveTenant"/> - the tenant of the current cron fire (<c>() =&gt; _tenantPass.Current</c>
+/// in production), which flows across the launch poll's awaits with the ambient scope. A bare machine-name
+/// match against the FLEET-GLOBAL list could pick another tenant's Director on the same machine and persist
+/// that cross-tenant DirectorId in this tenant's CronRunRecord; scoping to the caller's partition makes that
+/// structurally impossible. On self-host the tenant is always Local - one partition, unchanged.
 /// </summary>
 public sealed class RegistryDirectorTargetResolver : IDirectorTargetResolver
 {
-    private readonly Func<IEnumerable<DirectorDto>> _listDirectors;
+    private readonly Func<TenantId, IEnumerable<DirectorDto>> _listDirectors;
+    private readonly Func<TenantId?> _resolveTenant;
     private readonly IDirectorLauncher _launcher;
     private readonly TimeSpan _launchTimeout;
     private readonly TimeSpan _pollInterval;
 
-    /// <param name="listDirectors">The live Director list (production: <c>registry.ListDirectors</c>).</param>
+    /// <param name="listDirectors">
+    /// The live Director list for ONE tenant (production: the registry's <c>ListDirectors(TenantId)</c>
+    /// overload). It is only ever called with the tenant <paramref name="resolveTenant"/> yields.</param>
+    /// <param name="resolveTenant">
+    /// The tenant of the current unit of work - the cron fire's scope (production: <c>() =&gt; _tenantPass.Current</c>),
+    /// always <see cref="TenantId.Local"/> on self-host. A fire is only ever reached inside a resolved scope, so a
+    /// null here (hosted, no scope) is a boundary bug and DENIES (throws) rather than defaulting to a partition.</param>
     /// <param name="launcher">Starts a Director on a machine when none is running.</param>
     public RegistryDirectorTargetResolver(
-        Func<IEnumerable<DirectorDto>> listDirectors,
+        Func<TenantId, IEnumerable<DirectorDto>> listDirectors,
+        Func<TenantId?> resolveTenant,
         IDirectorLauncher launcher,
         TimeSpan? launchTimeout = null,
         TimeSpan? pollInterval = null)
     {
         _listDirectors = listDirectors ?? throw new ArgumentNullException(nameof(listDirectors));
+        _resolveTenant = resolveTenant ?? throw new ArgumentNullException(nameof(resolveTenant));
         _launcher = launcher ?? throw new ArgumentNullException(nameof(launcher));
         _launchTimeout = launchTimeout ?? TimeSpan.FromSeconds(90);
         _pollInterval = pollInterval ?? TimeSpan.FromSeconds(3);
@@ -84,7 +103,15 @@ public sealed class RegistryDirectorTargetResolver : IDirectorTargetResolver
     /// longer requires a non-empty ControlEndpoint or an advertised-endpoint reachability state (both are
     /// artifacts of the deleted HTTP-dial path).
     /// </summary>
-    private DirectorDto? PickReachable(string machine) =>
-        _listDirectors().FirstOrDefault(x =>
+    private DirectorDto? PickReachable(string machine)
+    {
+        // Confine the machine-name match to the caller's OWN tenant partition (audit H1, gap audit-e): a
+        // fleet-global scan could return another tenant's Director that happens to run on the same machine.
+        var tenant = _resolveTenant()
+            ?? throw new InvalidOperationException(
+                "A cron target resolution ran with no tenant scope in effect. The Director list is " +
+                "partitioned by tenant; the caller path was not bound at its tenant boundary.");
+        return _listDirectors(tenant).FirstOrDefault(x =>
             string.Equals(x.MachineName, machine, StringComparison.OrdinalIgnoreCase));
+    }
 }
