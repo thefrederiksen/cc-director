@@ -1022,6 +1022,62 @@ public sealed class GatewayInputStatsAggregatorTests : IDisposable
         Assert.Equal(3, Turns(agg.CurrentTotals(TenantB), "typed", "desktop"));
     }
 
+    // ---- Retention prune is PER-PARTITION (H6, same class as the car-mode #1933 global-prune bug) ----
+    //
+    // The retention prune runs inside a caller's per-tenant write transaction. It must archive and delete only
+    // the CALLER'S OWN tenant's expired detail rows. Before the fix every prune statement selected EVERY
+    // tenant older than the cutoff, so one tenant's fold archived+deleted another tenant's old working-day
+    // detail - a caller's write mutating a partition that is not its own. The all-time total survives either
+    // way (the departing rows are archived first), so the LEAK is the lost hourly DETAIL, which HourlyTurns
+    // reads (it excludes the archive marker).
+
+    [Fact]
+    public void OneTenantsFold_DoesNotPruneAnotherTenantsOldDetailRows()
+    {
+        var agg = new GatewayInputStatsAggregator(_path);
+        var now = new DateTime(2026, 6, 1, 12, 0, 0, DateTimeKind.Utc);
+        var old = now.AddDays(-100); // past the 90-day retention window, relative to "now"
+
+        // Tenant B records a turn 100 days ago. B's own write cannot prune it (B's cutoff is 190 days back),
+        // so B's working-day detail row is present and untouched.
+        agg.Observe(Session("b1", ("typed", "desktop", 4, 80)), nowUtc: old, tenant: TenantB);
+        Assert.Single(agg.HourlyTurns(TenantB));
+
+        // An UNRELATED tenant A folds a fresh turn at "now". Its prune must touch ONLY tenant A's partition.
+        agg.Observe(Session("a1", ("typed", "desktop", 1, 10)), nowUtc: now, tenant: TenantA);
+
+        // B's 100-day-old detail row SURVIVES: A's write pruned A's tenant only. On the pre-fix global prune,
+        // A's write archived+deleted B's old row and B's hourly series dropped to empty - revert-proof.
+        Assert.Single(agg.HourlyTurns(TenantB));
+        Assert.Equal(4, agg.HourlyTurns(TenantB).Single().Turns);
+        // B's all-time total is unaffected in either case (archiving preserves it) - the leak is the DETAIL.
+        Assert.Equal(4, Turns(agg.CurrentTotals(TenantB), "typed", "desktop"));
+    }
+
+    [Fact]
+    public void ATenantsOwnFold_StillPrunesItsOwnExpiredDetail()
+    {
+        // The control for the test above: per-partition retention is still LIVE, not switched off. When the
+        // owning tenant B writes at "now", ITS OWN 100-day-old detail is aged out - proving the seeded row
+        // really is past the window (so the test above is not vacuously green) and that the fix narrowed the
+        // prune's scope without disabling retention.
+        var agg = new GatewayInputStatsAggregator(_path);
+        var now = new DateTime(2026, 6, 1, 12, 0, 0, DateTimeKind.Utc);
+        var old = now.AddDays(-100);
+
+        agg.Observe(Session("b-old", ("typed", "desktop", 4, 80)), nowUtc: old, tenant: TenantB);
+        Assert.Single(agg.HourlyTurns(TenantB));
+
+        agg.Observe(Session("b-new", ("typed", "desktop", 1, 10)), nowUtc: now, tenant: TenantB);
+
+        // The 100-day-old hour is gone from the detail series; only the fresh hour (1 turn) remains.
+        var hours = agg.HourlyTurns(TenantB);
+        Assert.Single(hours);
+        Assert.Equal(1, hours.Single().Turns);
+        // The archived old turns are still counted in the all-time total: 4 (archived) + 1 (fresh) = 5.
+        Assert.Equal(5, Turns(agg.CurrentTotals(TenantB), "typed", "desktop"));
+    }
+
     [Fact]
     public void TwoTenants_SameSessionId_SameRepo_DoNotCoalesce()
     {
