@@ -406,12 +406,16 @@ public sealed class HostedRecordingGroupFilterTests : IDisposable
     /// primitive's own body-bound <c>/family/future</c> in <see cref="Tenancy.HostedRouteDenyOnHostedTests"/>).
     /// So the future route takes a plain <see cref="RecordingProbeBody"/> the framework binds from JSON, and:
     ///
-    ///  * on hosted every shape meets the refusal - a valid body, a malformed body, and a verb the route never
-    ///    mapped;
+    ///  * on hosted every shape meets the refusal - a valid body, a malformed body, a WRONG MEDIA TYPE, and a
+    ///    verb the route never mapped;
     ///  * the FRAMEWORK-400 CONTROL fires the identical malformed body at an UNDENIED equivalent of the same
     ///    handler mapped OUTSIDE <c>/ingest</c>, which really reaches the framework and returns its own 400 -
     ///    so the denied route's refusal is a short-circuit BEFORE framework binding, not a route that merely
     ///    happens not to bind;
+    ///  * the FRAMEWORK-415 CONTROL fires the identical wrong media type at that same undenied equivalent,
+    ///    which reaches the framework's endpoint SELECTION and returns its own 415 - so the denied route's
+    ///    wrong-media refusal short-circuits BEFORE selection, the one shape a per-handler guard answering
+    ///    after binding could never intercept;
     ///  * the OBSERVABLE-BINDING SEAM (<see cref="RecordingProbeBinding"/>), a distinct custom-bound route
     ///    mapped alongside, carries the "no handler-bound code ran at all" assertion the framework record
     ///    cannot make on its own: its binder counter stays zero across every shape behind the refusal.
@@ -441,14 +445,18 @@ public sealed class HostedRecordingGroupFilterTests : IDisposable
         try
         {
             // The framework-bound future route is refused on hosted across every shape: a valid body, a
-            // malformed body (off hosted the framework's own 400), and a verb it never mapped (off hosted a
-            // 405 disclosing the route exists).
+            // malformed body (off hosted the framework's own 400), a WRONG MEDIA TYPE (off hosted the
+            // framework's own 415 - a shape endpoint SELECTION enforces ahead of any handler, so a per-handler
+            // guard that answered after binding would leak it), and a verb it never mapped (off hosted a 405
+            // disclosing the route exists).
             foreach (var resp in new[]
                      {
                          await http.PostAsync("/ingest/added-after-the-deny-was-written",
                              new StringContent("{\"text\":\"hello\"}", Encoding.UTF8, "application/json")),
                          await http.PostAsync("/ingest/added-after-the-deny-was-written",
                              new StringContent("{ not json", Encoding.UTF8, "application/json")),
+                         await http.PostAsync("/ingest/added-after-the-deny-was-written",
+                             new StringContent("hello", Encoding.UTF8, "text/plain")),
                          await http.GetAsync("/ingest/added-after-the-deny-was-written"),
                      })
             {
@@ -464,6 +472,15 @@ public sealed class HostedRecordingGroupFilterTests : IDisposable
                 new StringContent("{ not json", Encoding.UTF8, "application/json"));
             Assert.Equal(HttpStatusCode.BadRequest, undeniedMalformed.StatusCode);
 
+            // THE FRAMEWORK-415 CONTROL. A wrong media type reaches the framework's own 415 on the undenied
+            // equivalent, while the denied route returns the refusal above - so the denied route's wrong-media
+            // refusal is a short-circuit BEFORE endpoint SELECTION would 415, not a route that merely happens
+            // to reject the media type. This is the shape a per-handler guard answering after model binding
+            // could never intercept: selection would 415 first and the leak would be invisible.
+            var undeniedWrongMedia = await http.PostAsync("/undenied-equivalent",
+                new StringContent("hello", Encoding.UTF8, "text/plain"));
+            Assert.Equal(HttpStatusCode.UnsupportedMediaType, undeniedWrongMedia.StatusCode);
+
             // NOTHING behind the refusal bound an argument, on any shape - the assertion a parameterless GET
             // or a body-ignoring custom binder could never make, and the one that separates the exclusive
             // catch-all (refusal placed BEFORE binding) from the rejected per-handler filter (which ran the
@@ -474,6 +491,8 @@ public sealed class HostedRecordingGroupFilterTests : IDisposable
                              new StringContent("{\"text\":\"hello\"}", Encoding.UTF8, "application/json")),
                          await http.PostAsync("/ingest/added-after-the-deny-was-written-observed",
                              new StringContent("{ not json", Encoding.UTF8, "application/json")),
+                         await http.PostAsync("/ingest/added-after-the-deny-was-written-observed",
+                             new StringContent("hello", Encoding.UTF8, "text/plain")),
                          await http.GetAsync("/ingest/added-after-the-deny-was-written-observed"),
                      })
             {
@@ -672,6 +691,14 @@ public sealed class SelfHostRecordingGroupControlTests : IDisposable
             var malformed = await http.PostAsync("/ingest/added-after-the-deny-was-written",
                 new StringContent("{ not json", Encoding.UTF8, "application/json"));
             Assert.Equal(HttpStatusCode.BadRequest, malformed.StatusCode);
+
+            // And the SAME future route is capable of the 415 the hosted wrong-media refusal short-circuits: a
+            // wrong media type off hosted hits the framework's own endpoint-selection 415. Paired with the
+            // hosted wrong-media refusal, this proves the hosted 404 on text/plain is the deny firing before
+            // selection, not the route simply refusing the media type on both sides.
+            var wrongMedia = await http.PostAsync("/ingest/added-after-the-deny-was-written",
+                new StringContent("hello", Encoding.UTF8, "text/plain"));
+            Assert.Equal(HttpStatusCode.UnsupportedMediaType, wrongMedia.StatusCode);
 
             // The observable custom binder really ran off hosted - the positive twin of the hosted count of 0.
             var observed = await http.PostAsync("/ingest/added-after-the-deny-was-written-observed",
