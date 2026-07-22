@@ -5,6 +5,7 @@ using CcDirector.Core.Utilities;
 using CcDirector.Gateway.Contracts;
 using CcDirector.Gateway.Discovery;
 using CcDirector.Gateway.Streaming;
+using CcDirector.Gateway.Tenancy;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
@@ -18,7 +19,7 @@ namespace CcDirector.Gateway.Api;
 /// "slots" 1-4 produced by <c>scripts/local-build-avalonia.ps1</c>.
 ///
 /// Routes:
-///   GET    /exes                         local directors + slot status (JSON)
+///   GET    /exes/list                    local directors + slot status (JSON)
 ///   DELETE /exes/slots/{n}               delete local_builds/cc-director{n}.exe
 ///   POST   /exes/slots/{n}/build-start   build slot n, then launch it
 ///
@@ -27,23 +28,107 @@ namespace CcDirector.Gateway.Api;
 /// here. Everything below operates only on the Gateway's own machine - the slot
 /// files and processes live on local disk, so these routes are meaningless for a
 /// remote Director and the page only ever shows machine-local entries.
+///
+/// DENIED IN WHOLE ON HOSTED. This surface is a machine-local developer/launcher CONTROL PLANE for the
+/// Gateway's OWN host box, and it carries no tenant. GET /exes/list substitutes <see cref="TenantId.Local"/>
+/// and enumerates the OS processes running on the shared host; DELETE /exes/slots/{n} deletes a
+/// PROCESS-GLOBAL slot executable off the host's disk; POST /exes/slots/{n}/build-start shells out to a
+/// PowerShell build and LAUNCHES a process on the shared Gateway host. OS-gating is not tenant isolation: on a
+/// Windows hosted deployment the whole surface maps behind only the host-wide auth gate, which admits any
+/// enrolled device key from any account - so one authenticated tenant could read the host's process roster,
+/// delete a slot another tenant's build expects, or start a build that launches a shared process on the host.
+/// None of these has a per-tenant meaning on shared infrastructure, so the WHOLE group is refused on hosted
+/// rather than any single route being guarded - the read, the deletion and the process launch are all equally
+/// wrong here, and a route-by-route guard rots (the next /exes route added would be open by default).
+///
+/// HOW THE DENY IS EXPRESSED - THE SHARED REFUSAL PRIMITIVE, NOT A BESPOKE CHECK. The group is denied through
+/// <see cref="HostedRouteDeny.ExclusiveGroup"/>, the ONE hosted-refusal boundary every deny family on this
+/// Gateway adopts (the recording-ingest group in <see cref="RecordingEndpoints"/> and the key-vault group in
+/// <see cref="VaultEndpoints"/> are the reference adoptions). On hosted the handlers are NEVER MAPPED; one
+/// verb-less catch-all refusal claims everything under <c>/exes</c> (plus a root refusal at the prefix
+/// itself), so EVERY request shape meets the refusal - a valid body, a malformed body, a wrong media type, a
+/// verb the group never mapped, and a route added LATER. The exclusivity claim is CHECKED at startup by
+/// <see cref="HostedRefusalRouteSpace.ValidateBeforeStart"/>: the Gateway refuses to start if any live route
+/// serves beneath <c>/exes</c> (the single-page-app fallback is a global <c>{*path}</c>, not a route under
+/// this prefix, so it does not compete).
+///
+/// SELF-HOST IS COMPLETELY UNCHANGED - the owner's single-owner dev box lists its Directors, deletes its slots
+/// and builds them exactly as before, and that is the control. Off hosted the primitive maps the real handlers
+/// on the group exactly as an unguarded builder would and creates no refusal at all.
+///
+/// UN-DENY DEBT: there is nothing to partition here - the surface controls the Gateway's OWN host machine (its
+/// OS processes, its <c>local_builds</c> slot files, its build script) and has no per-tenant meaning on shared
+/// infrastructure. It exists only for a single-owner self-host dev box, so on hosted it stays denied; this is
+/// recorded on the payload's unDenyInstruction so it travels with the deny.
 /// </summary>
 internal static class ExesEndpoints
 {
     private static readonly Regex SlotFromExe =
         new(@"cc-director(\d+)\.exe$", RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
-    public static void Map(IEndpointRouteBuilder app, DirectorRegistry registry,
+    /// <summary>The exclusive prefix the exe/slot developer surface owns outright on hosted.</summary>
+    internal const string Prefix = "/exes";
+
+    /// <summary>The single error string the hosted refusal serves. Held here so a test can assert against the
+    /// exact string that is served rather than a copy that could drift.</summary>
+    internal const string RefusalMessage = "the developer exe and slot management surface is not available on the hosted gateway";
+
+    /// <summary>
+    /// The hosted refusal payload for the whole exe/slot group. Validated on construction, so a blank field
+    /// fails the Gateway at startup rather than serving a refusal a caller cannot act on. 404 rather than 403:
+    /// on hosted this surface does not exist as a concept, so "not here" is the truthful answer; 403 would
+    /// imply some credential could reach it, and none can.
+    /// </summary>
+    private static HostedDenial Denial() => new(
+        family: "exes-slots",
+        message: RefusalMessage,
+        reason: "the /exes surface is a machine-local developer/launcher control plane for the Gateway's own host: " +
+                "it enumerates the OS processes running on the box (substituting TenantId.Local), deletes process-global " +
+                "slot executables off local disk, and shells out to a PowerShell build that launches a process on the " +
+                "shared host - none of which carries a tenant, so behind the host-wide auth gate one authenticated tenant " +
+                "could read the host roster, delete a slot another tenant's build expects, or launch a shared process",
+        unDenyInstruction: "do NOT lift this deny by partitioning: this surface controls the Gateway's OWN host machine " +
+                "(its OS processes, its local_builds slot files, its build script) and has no per-tenant meaning on shared " +
+                "infrastructure - it exists only for a single-owner self-host dev box, so it must stay denied on hosted",
+        statusCode: StatusCodes.Status404NotFound);
+
+    /// <summary>
+    /// Maps the exe/slot developer routes and RETURNS the denied group they were mapped through.
+    ///
+    /// The routes are mapped through the group HANDLE (<see cref="HostedDenyGroup"/>), never through the
+    /// ungrouped builder: the handle is obtainable only from <see cref="HostedRouteDeny.ExclusiveGroup"/>, so
+    /// a route mapped around the refusal is not expressible in <see cref="MapRoutes"/> without changing its
+    /// signature. On hosted the handle DISCARDS each handler (the exclusive catch-all already refuses the
+    /// path); off hosted it maps each handler as an unguarded builder would.
+    /// </summary>
+    public static HostedDenyGroup Map(IEndpointRouteBuilder outer, DirectorRegistry registry,
         PushedSessionStore? pushedSessions = null, TimeSpan? streamStaleAfter = null,
         Snooze.SnoozeRegistry? snoozeRegistry = null)
+    {
+        FileLog.Write($"[ExesEndpoints] mapping {Prefix} developer exe/slot routes; hosted={GatewayHostedMode.IsHosted} - on hosted the whole group is refused via the shared refusal primitive");
+
+        var group = HostedRouteDeny.ExclusiveGroup(outer, Prefix, Denial());
+        MapRoutes(group, registry, pushedSessions, streamStaleAfter, snoozeRegistry);
+        return group;
+    }
+
+    /// <summary>
+    /// Every /exes route, mapped RELATIVE to the <see cref="Prefix"/> so the full paths are
+    /// <c>/exes/list</c>, <c>/exes/slots/{n}</c> and <c>/exes/slots/{n}/build-start</c> exactly as before.
+    /// Takes the denied GROUP HANDLE and nothing else: the ungrouped route builder is deliberately out of
+    /// scope here so no route can be mapped around the hosted refusal.
+    /// </summary>
+    private static void MapRoutes(HostedDenyGroup app, DirectorRegistry registry,
+        PushedSessionStore? pushedSessions, TimeSpan? streamStaleAfter,
+        Snooze.SnoozeRegistry? snoozeRegistry)
     {
         // Gateway Cleanup Phase 2 (PR E, Group C): under streamMode the roster lives in the push store; resolve
         // the same freshness window the /sessions roster uses so a stream-connected Director's sessions are read
         // from the store instead of pulled over HTTP.
         var streamStale = streamStaleAfter ?? TimeSpan.FromSeconds(Core.Configuration.GatewayConfig.DefaultStreamStaleAfterSeconds);
 
-        // ----- list local directors + slot status (JSON; /exes itself is the HTML page) -----
-        app.MapGet("/exes/list", (HttpContext ctx) =>
+        // ----- list local directors + slot status (JSON; /exes itself is the SPA page) -----
+        app.MapGet("/list", (HttpContext ctx) =>
         {
             FileLog.Write("[ExesEndpoints] GET /exes/list");
             try
@@ -163,7 +248,7 @@ internal static class ExesEndpoints
         });
 
         // ----- delete a slot's built exe -----
-        app.MapDelete("/exes/slots/{n}", (int n) =>
+        app.MapDelete("/slots/{n}", (int n) =>
         {
             FileLog.Write($"[ExesEndpoints] DELETE /exes/slots/{n}");
             try
@@ -196,7 +281,7 @@ internal static class ExesEndpoints
         });
 
         // ----- build a slot then launch it -----
-        app.MapPost("/exes/slots/{n}/build-start", async (int n) =>
+        app.MapPost("/slots/{n}/build-start", async (int n) =>
         {
             FileLog.Write($"[ExesEndpoints] POST /exes/slots/{n}/build-start");
             try
