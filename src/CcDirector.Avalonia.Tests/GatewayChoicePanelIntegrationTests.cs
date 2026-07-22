@@ -236,7 +236,7 @@ public class GatewayChoicePanelIntegrationTests
     {
         await WithTempRootAsync(async () =>
         {
-            const string hostedUrl = "https://devthrottle-gw.azurewebsites.net";
+            const string hostedUrl = "https://gateway.devthrottle.com";
             var panel = GatewayConnectionPanel.CreateForCurrentState(GatewayChoiceConsumer.Settings);
             var reapplied = false;
             panel.DirectorIdOverride = "test-director-id";
