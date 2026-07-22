@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using System.Security.Cryptography;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using CcDirector.Core.Storage;
 using CcDirector.Core.Tenancy;
 using CcDirector.Core.Utilities;
@@ -15,13 +16,66 @@ namespace CcDirector.Gateway.Pairing;
 /// alongside its name, machine, issued-at, and status.
 ///
 /// Persisted to <c>%LOCALAPPDATA%\cc-director\config\director\devices.json</c> so the registry
-/// survives a Gateway restart (a per-device key must keep working across restarts). The file holds the
-/// issued keys, so it is the Gateway host's secret store - locked to the current user by living under
-/// the per-user config root.
+/// survives a Gateway restart (a per-device key must keep working across restarts).
+///
+/// The file stores each key ONLY as a one-way hash (issue #1878). A device key is a bearer secret that
+/// authenticates every Director-to-Gateway call, and on the hosted Gateway this one file holds every
+/// tenant's device binding on shared infrastructure - so anything that can read the file used to be able
+/// to impersonate every tenant's Director. The Gateway only ever needs to VERIFY a presented key, exactly
+/// like a password, so the plaintext is returned to its owner at enrollment and never written to the file.
+/// A read of <c>devices.json</c> now yields no usable credential.
+///
+/// Plaintext is disclosed at exactly ONE point and never retained: the enrollment response. The key is
+/// generated, hashed into the record, and the plaintext is returned to the caller in that one response. It
+/// is never stored, never cached, and never held in this process past the return of the call that issued
+/// it - so a REPEAT enrollment cannot re-reveal a key that was already handed out (issue #1899). There is no
+/// path by which the current bearer credential can be read back out of the registry.
+///
+/// Retry-safety without retaining plaintext (issue #1899): a repeat enrollment of an already-enrolled device
+/// ROTATES the key in place - it issues a fresh key, retires the previous one, and returns the fresh key in
+/// that response (see <see cref="RegisterIfAbsent"/>). Enrollment is a one-shot, deliberate act (the client
+/// calls it on a connect action, never from its polling loop), so the retry it actually produces is a
+/// SEQUENTIAL re-attempt after a failed or lost response: each such attempt returns a fresh, working key that
+/// the caller writes to its credential file, overwriting whatever it held. A caller that never received the
+/// first response never held the retired key, so rotating it locks nobody out; a caller that did receive and
+/// save a key does not then re-fire enrollment. The one-key-per-device cap is preserved - one registry entry,
+/// exactly one key that validates at any moment - which is the guardrail against the #1136 auto-mint leak
+/// (enrollment ACCUMULATING valid credentials). What rotation deliberately does NOT do is keep a plaintext
+/// copy around to hand back on a duplicate; that is precisely the property issue #1899 removed.
+///
+/// The hash is a plain SHA-256 of the key, deliberately NOT a slow password-stretching function: the
+/// secret is a 256-bit value this class generated with a cryptographic random number generator, not a
+/// human-chosen password, so there is no guessable search space for stretching to defend and a
+/// deliberate per-verification delay would be paid on the hot path of EVERY authenticated request.
+/// For the same reason there is no per-record salt - salts defend low-entropy secrets against
+/// precomputation, which does not apply to a 256-bit random value.
+///
+/// The hash is also the INDEX key: a presented key is turned back into its device by a single hash-to-record
+/// dictionary lookup (issue #1899), not by walking every record, so authentication is O(1) in the number of
+/// enrolled devices. Each record carries its own tenant binding, so an indexed lookup resolves to a
+/// tenant-bound record exactly as the old walk did. See <see cref="FindActiveByKey"/>.
+///
+/// Each record also carries a NON-SECRET masked key identity - the key's first few characters and its last
+/// four (issue #1899) - so a host-readable listing can tell devices apart by key without ever holding or
+/// returning the raw key. The masked form reveals a handful of a 43-character (256-bit) key and leaves the
+/// overwhelming majority unknown, so it is not a credential and cannot be replayed.
+///
+/// Migration: a registry file written before this change holds the plaintext key in <c>DeviceKey</c>.
+/// <see cref="Load"/> hashes any such record on the spot, records its masked key identity, drops the
+/// plaintext, and rewrites the file, so every device enrolled before the change keeps working with the key it
+/// already holds and the plaintext is gone from the LIVE registry file after the first load following the
+/// upgrade.
+///
+/// The scope of that claim is exactly the live file and no more. Rewriting a file cannot erase a copy of the
+/// old contents that something else already took: a share snapshot, a backup, a soft-delete retention window,
+/// or file-system history all hold whatever was there before, and this code has no reach into any of them.
+/// Where such retention exists on a deployment, purging it is separate operational work and must be tracked
+/// as such. Any key that a pre-change file may have exposed through a retained copy is only truly dealt with
+/// by rotating that key, not by this migration.
 ///
 /// Thread-safe: registration happens on request threads while GET /devices lists devices.
 /// </summary>
-public sealed class DeviceRegistry
+public sealed class DeviceRegistry : IDisposable
 {
     /// <summary>The status of an actively-enrolled device.</summary>
     public const string StatusActive = "active";
@@ -32,9 +86,26 @@ public sealed class DeviceRegistry
     /// <summary>The platform recorded when a child app enrolls without supplying one.</summary>
     public const string UnknownPlatform = "unknown";
 
+    /// <summary>How many leading characters of a key make up its non-secret masked prefix (issue #1899).</summary>
+    private const int KeyPrefixLength = 8;
+
+    /// <summary>How many trailing characters of a key make up its non-secret masked suffix (issue #1899).</summary>
+    private const int KeyLast4Length = 4;
+
     private readonly string _storePath;
     private readonly object _saveLock = new();
+    private readonly object _enrollLock = new();
     private readonly ConcurrentDictionary<string, DeviceRecord> _byDeviceId =
+        new(StringComparer.Ordinal);
+
+    /// <summary>
+    /// The O(1) authentication index (issue #1899): the stored SHA-256 hash of a device's key mapped to that
+    /// device's record, so a presented key is verified by hashing it once and looking the digest up directly
+    /// rather than walking every device. Kept in lock-step with <see cref="_byDeviceId"/> by every path that
+    /// issues, rotates, or removes a key. The record it points at carries the tenant, so the lookup stays
+    /// tenant-bound. Holds no plaintext - the key is the digest, exactly what is on disk.
+    /// </summary>
+    private readonly ConcurrentDictionary<string, DeviceRecord> _byKeyHash =
         new(StringComparer.Ordinal);
 
     public DeviceRegistry() : this(null) { }
@@ -75,14 +146,24 @@ public sealed class DeviceRegistry
         {
             DeviceId = deviceId,
             MachineName = machineName ?? "",
-            DeviceKey = key,
+            DeviceKeyHash = HashKey(key),
+            KeyPrefix = MaskPrefix(key),
+            KeyLast4 = MaskLast4(key),
             IssuedAtUtc = DateTime.UtcNow,
             Status = StatusActive,
             Platform = string.IsNullOrWhiteSpace(platform) ? UnknownPlatform : platform.Trim(),
             DeviceType = string.IsNullOrWhiteSpace(deviceType) ? DefaultDeviceType : deviceType.Trim(),
             CloudDeviceId = null,
         };
-        _byDeviceId[deviceId] = record;
+
+        // Replace any prior record for this device id and keep the hash index in lock-step: the prior
+        // record's stored hash must stop resolving the instant its key is superseded.
+        DeviceRecord? prior = null;
+        _byDeviceId.AddOrUpdate(deviceId, record, (_, existing) => { prior = existing; return record; });
+        if (prior is not null && !string.IsNullOrEmpty(prior.DeviceKeyHash))
+            _byKeyHash.TryRemove(prior.DeviceKeyHash, out _);
+        _byKeyHash[record.DeviceKeyHash] = record;
+
         Save();
         FileLog.Write($"[DeviceRegistry] Registered device id={deviceId}, machine={machineName}, type={record.DeviceType}, platform={record.Platform}, total={_byDeviceId.Count}");
         return new DeviceRegistrationResponse
@@ -96,33 +177,79 @@ public sealed class DeviceRegistry
     }
 
     /// <summary>
-    /// Idempotent enrollment for the account-sign-in path (issue #1069): if this device id already holds an
-    /// active per-device key, return that SAME key unchanged; otherwise mint one via <see cref="Register"/>.
-    /// This is the load-bearing guardrail against minting a fresh key on every call - the auto-mint key leak
-    /// that #1136 fixed. Unlike <see cref="Register"/> (which rotates the key so a re-pairing issues a fresh
-    /// one), this never rotates: one device identity gets exactly one key until it is revoked.
+    /// Enrollment for the account-sign-in path (issue #1069): this device identity ends up holding exactly
+    /// ONE valid per-device key, whether it is enrolling for the first time or re-enrolling.
+    ///
+    /// A device that is already enrolled keeps its one entry - its account and tenant binding, its cloud
+    /// mapping, and its display attributes are all preserved - and is issued a fresh key IN PLACE, which
+    /// immediately retires the previous one. It does not get a second entry and it does not end up with two
+    /// working keys. That is the guardrail against the #1136 auto-mint key leak, which was an enrollment
+    /// call ACCUMULATING valid credentials in the registry; the count of valid keys per device identity is
+    /// still capped at one.
+    ///
+    /// Retry-safety (issue #1899): the registry keeps only a one-way hash of the key, so it has no plaintext
+    /// to hand back on a duplicate call, and it deliberately keeps none - retaining a plaintext copy just to
+    /// replay it is exactly what issue #1899 removed, because a retained-and-replayable key defeats hashing
+    /// at rest. A repeat call therefore ROTATES: it returns a FRESH working key and retires the previous one.
+    /// Enrollment is a one-shot, deliberate act (the client calls it on a connect action, never from its
+    /// polling loop), so the retry that actually occurs is a sequential re-attempt after a failed or lost
+    /// response - and each such attempt returns a fresh key the caller writes to its credential file. A caller
+    /// that never received the first response never held the retired key, so rotating it locks nobody out.
+    ///
+    /// The whole method is serialized, so two simultaneous calls resolve one after the other rather than
+    /// racing; the later one wins and its key is the one that validates.
+    ///
+    /// An ALREADY-enrolled device that simply keeps using its existing key never calls here at all; its key
+    /// keeps verifying against the stored hash.
     /// </summary>
     public DeviceRegistrationResponse RegisterIfAbsent(string deviceId, string machineName, string? platform = null, string? deviceType = null)
     {
         if (string.IsNullOrWhiteSpace(deviceId))
             throw new ArgumentException("deviceId is required", nameof(deviceId));
 
-        if (_byDeviceId.TryGetValue(deviceId, out var existing)
-            && string.Equals(existing.Status, StatusActive, StringComparison.Ordinal)
-            && !string.IsNullOrEmpty(existing.DeviceKey))
+        // Serialized so that two enrollment calls in flight for the same device cannot both rotate at once.
+        // The path runs at enrollment only, never on the per-request authentication hot path.
+        lock (_enrollLock)
         {
-            FileLog.Write($"[DeviceRegistry] RegisterIfAbsent: device id={deviceId} already has an active key; returning it unchanged (no re-mint)");
-            return new DeviceRegistrationResponse
+            if (_byDeviceId.TryGetValue(deviceId, out var existing)
+                && string.Equals(existing.Status, StatusActive, StringComparison.Ordinal)
+                && !string.IsNullOrEmpty(existing.DeviceKeyHash))
             {
-                DeviceKey = existing.DeviceKey,
-                DeviceId = deviceId,
-                MachineName = existing.MachineName,
-                Status = existing.Status,
-                DeviceCount = _byDeviceId.Count,
-            };
-        }
+                var reissued = GenerateDeviceKey();
+                var supersededHash = existing.DeviceKeyHash;
+                existing.DeviceKeyHash = HashKey(reissued);
+                existing.KeyPrefix = MaskPrefix(reissued);
+                existing.KeyLast4 = MaskLast4(reissued);
+                existing.IssuedAtUtc = DateTime.UtcNow;
 
-        return Register(deviceId, machineName, platform, deviceType);
+                // Keep the hash index in lock-step: the retired key must stop resolving, the fresh key must
+                // start resolving to the same (binding-preserving) record.
+                if (!string.IsNullOrEmpty(supersededHash))
+                    _byKeyHash.TryRemove(supersededHash, out _);
+                _byKeyHash[existing.DeviceKeyHash] = existing;
+
+                Save();
+                FileLog.Write($"[DeviceRegistry] RegisterIfAbsent: device id={deviceId} is already enrolled; rotated to a fresh key in place (one entry, one valid key, binding preserved, previous key retired)");
+                return new DeviceRegistrationResponse
+                {
+                    DeviceKey = reissued,
+                    DeviceId = deviceId,
+                    MachineName = existing.MachineName,
+                    Status = existing.Status,
+                    DeviceCount = _byDeviceId.Count,
+                };
+            }
+
+            return Register(deviceId, machineName, platform, deviceType);
+        }
+    }
+
+    /// <summary>Nothing to release: the registry retains no plaintext and holds no OS handle. Present so the
+    /// host can dispose it uniformly; drops the in-memory maps so shutdown lets go of every reference.</summary>
+    public void Dispose()
+    {
+        _byKeyHash.Clear();
+        _byDeviceId.Clear();
     }
 
     /// <summary>
@@ -160,9 +287,11 @@ public sealed class DeviceRegistry
         if (string.IsNullOrWhiteSpace(deviceId))
             return false;
 
-        if (!_byDeviceId.TryRemove(deviceId, out _))
+        if (!_byDeviceId.TryRemove(deviceId, out var removed))
             return false;
 
+        if (!string.IsNullOrEmpty(removed.DeviceKeyHash))
+            _byKeyHash.TryRemove(removed.DeviceKeyHash, out _);
         Save();
         FileLog.Write($"[DeviceRegistry] Removed device id={deviceId} (local key revoked), total={_byDeviceId.Count}");
         return true;
@@ -181,22 +310,54 @@ public sealed class DeviceRegistry
     }
 
     /// <summary>
-    /// True when the supplied key matches an active device's per-device key. The lookup is over
-    /// all active keys with a constant-time compare so a near-miss reveals nothing through timing.
+    /// True when the supplied key matches an active device's per-device key. The lookup hashes the
+    /// presented key once and finds the matching record by its STORED digest in O(1) (issue #1878, #1899),
+    /// confirming with a constant-time DIGEST comparison. See <see cref="FindActiveByKey"/> for exactly what
+    /// that comparison does and does not cover.
     /// </summary>
-    public bool IsValidDeviceKey(string? key)
+    public bool IsValidDeviceKey(string? key) => FindActiveByKey(key) is not null;
+
+    /// <summary>
+    /// The active device whose stored per-device key hash matches <paramref name="key"/>, or null when none
+    /// does. This is the single place a presented key is turned back into a device (issue #1878): the key is
+    /// hashed once, that digest indexes straight to the one record whose stored digest could match (issue
+    /// #1899 - O(1), not a walk of every device), and the match is then confirmed with
+    /// <see cref="CryptographicOperations.FixedTimeEquals"/>.
+    ///
+    /// Be precise about what the constant-time compare buys, because it is easy to overstate. The DIGEST
+    /// COMPARISON always reads both digests in full, so it does not leak how many leading bytes of a wrong
+    /// digest happened to match, and it is that partial-match signal which would otherwise let an attacker
+    /// walk a guess towards a stored value byte by byte. That is the part that has to be constant-time and it
+    /// is.
+    ///
+    /// The dictionary lookup around it is not constant-time and does not claim to be. What it can leak is
+    /// coarse - roughly, whether a digest is present - not any information about the SECRET, because the
+    /// looked-up value is the output of a hash of the presented key: a wrong guess produces an unrelated
+    /// digest that indexes nothing meaningful. Making the lookup constant-time would defend nothing that
+    /// matters here.
+    ///
+    /// This is the hot path - it runs on every authenticated request - which is why the stored form is a
+    /// plain hash of a 256-bit random secret rather than a deliberately slow password-stretching function,
+    /// and why the lookup is an index rather than a scan.
+    /// </summary>
+    private DeviceRecord? FindActiveByKey(string? key)
     {
-        if (string.IsNullOrEmpty(key)) return false;
-        var supplied = System.Text.Encoding.ASCII.GetBytes(key);
-        foreach (var record in _byDeviceId.Values)
-        {
-            if (!string.Equals(record.Status, StatusActive, StringComparison.Ordinal)) continue;
-            var stored = System.Text.Encoding.ASCII.GetBytes(record.DeviceKey);
-            if (stored.Length == supplied.Length &&
-                CryptographicOperations.FixedTimeEquals(stored, supplied))
-                return true;
-        }
-        return false;
+        if (string.IsNullOrEmpty(key)) return null;
+
+        var suppliedHex = HashKey(key);
+        if (!_byKeyHash.TryGetValue(suppliedHex, out var record)) return null;
+        if (!string.Equals(record.Status, StatusActive, StringComparison.Ordinal)) return null;
+        if (string.IsNullOrEmpty(record.DeviceKeyHash)) return null;
+
+        // The index found the record by exact digest; confirm with the constant-time byte comparison so the
+        // verification path is the same one the pre-index code proved, not the dictionary's own compare.
+        var stored = DecodeHash(record.DeviceKeyHash);
+        if (stored is null) return null;
+        var supplied = HashKeyBytes(key);
+        if (stored.Length == supplied.Length &&
+            CryptographicOperations.FixedTimeEquals(stored, supplied))
+            return record;
+        return null;
     }
 
     /// <summary>
@@ -204,46 +365,25 @@ public sealed class DeviceRegistry
     /// per-device key matches <paramref name="key"/>, or null when no active device matches. Used by the
     /// DevThrottle Stats surface resolution to tag a remote prompt with the surface it came from, from the
     /// SAME verified key that already authenticated the call (no client change, no forgeable header). The
-    /// compare is constant-time, mirroring <see cref="IsValidDeviceKey"/>, so a near-miss reveals nothing
-    /// through timing.
+    /// digest comparison is constant-time, mirroring <see cref="IsValidDeviceKey"/>; see
+    /// <see cref="FindActiveByKey"/> for the exact scope of that.
     /// </summary>
-    public string? DeviceTypeForKey(string? key)
-    {
-        if (string.IsNullOrEmpty(key)) return null;
-        var supplied = System.Text.Encoding.ASCII.GetBytes(key);
-        foreach (var record in _byDeviceId.Values)
-        {
-            if (!string.Equals(record.Status, StatusActive, StringComparison.Ordinal)) continue;
-            var stored = System.Text.Encoding.ASCII.GetBytes(record.DeviceKey);
-            if (stored.Length == supplied.Length &&
-                CryptographicOperations.FixedTimeEquals(stored, supplied))
-                return record.DeviceType;
-        }
-        return null;
-    }
+    public string? DeviceTypeForKey(string? key) => FindActiveByKey(key)?.DeviceType;
 
     /// <summary>
     /// The tenant id of the active device whose per-device key matches <paramref name="key"/>, or null when
     /// no active device matches OR the matched device has no tenant binding (Hosted Multi-Tenancy increment
     /// 1). The tunnel reads this at Hello from the SAME verified key that already authenticated the
     /// connection, so the resolved tenant comes from the AUTHENTICATED credential, never from anything the
-    /// client sent in its Hello payload. The compare is constant-time, mirroring <see cref="IsValidDeviceKey"/>,
-    /// so a near-miss reveals nothing through timing. A null return on hosted is a DENY, never a fall-back to
-    /// the local tenant.
+    /// client sent in its Hello payload. The digest comparison is constant-time, mirroring
+    /// <see cref="IsValidDeviceKey"/>; see <see cref="FindActiveByKey"/> for the exact scope of that. A null
+    /// return on hosted is a DENY, never a fall-back to the local tenant.
     /// </summary>
     public string? TenantForKey(string? key)
     {
-        if (string.IsNullOrEmpty(key)) return null;
-        var supplied = System.Text.Encoding.ASCII.GetBytes(key);
-        foreach (var record in _byDeviceId.Values)
-        {
-            if (!string.Equals(record.Status, StatusActive, StringComparison.Ordinal)) continue;
-            var stored = System.Text.Encoding.ASCII.GetBytes(record.DeviceKey);
-            if (stored.Length == supplied.Length &&
-                CryptographicOperations.FixedTimeEquals(stored, supplied))
-                return string.IsNullOrEmpty(record.TenantId) ? null : record.TenantId;
-        }
-        return null;
+        var record = FindActiveByKey(key);
+        if (record is null) return null;
+        return string.IsNullOrEmpty(record.TenantId) ? null : record.TenantId;
     }
 
     /// <summary>
@@ -327,6 +467,8 @@ public sealed class DeviceRegistry
             MachineName = record.MachineName,
             IssuedAtUtc = record.IssuedAtUtc,
             Status = record.Status,
+            KeyPrefix = record.KeyPrefix,
+            KeyLast4 = record.KeyLast4,
         };
 
     /// <summary>The number of registered devices.</summary>
@@ -344,6 +486,37 @@ public sealed class DeviceRegistry
             .TrimEnd('=');
     }
 
+    /// <summary>The stored form of a device key: the lower-case hexadecimal SHA-256 of the key (issue #1878).</summary>
+    private static string HashKey(string key) => Convert.ToHexString(HashKeyBytes(key)).ToLowerInvariant();
+
+    private static byte[] HashKeyBytes(string key) =>
+        SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(key));
+
+    /// <summary>The NON-SECRET masked prefix of a key (issue #1899): its first few characters, for a
+    /// host-readable listing to tell devices apart by key without ever holding the raw key. Reveals a handful
+    /// of a 256-bit key and is not a credential.</summary>
+    private static string MaskPrefix(string key)
+    {
+        if (string.IsNullOrEmpty(key)) return "";
+        return key.Length <= KeyPrefixLength ? key : key.Substring(0, KeyPrefixLength);
+    }
+
+    /// <summary>The NON-SECRET last few characters of a key (issue #1899), the trailing half of the masked
+    /// key identity. Not a credential.</summary>
+    private static string MaskLast4(string key)
+    {
+        if (string.IsNullOrEmpty(key) || key.Length < KeyLast4Length) return "";
+        return key.Substring(key.Length - KeyLast4Length);
+    }
+
+    /// <summary>The bytes of a stored hash, or null when the stored text is not valid hexadecimal (a
+    /// hand-edited or corrupt record, which then simply matches nothing).</summary>
+    private static byte[]? DecodeHash(string hex)
+    {
+        try { return Convert.FromHexString(hex); }
+        catch (FormatException) { return null; }
+    }
+
     private void Load()
     {
         if (!File.Exists(_storePath)) return;
@@ -355,12 +528,40 @@ public sealed class DeviceRegistry
             PropertyNameCaseInsensitive = true,
         });
         if (records is null) return;
+        var migrated = 0;
         foreach (var record in records)
         {
             if (string.IsNullOrEmpty(record.DeviceId)) continue;
+
+            // Migration (issue #1878): a file written before device keys were hashed carries the plaintext
+            // key. Hash it here, record its non-secret masked identity (issue #1899) while the plaintext is
+            // still in hand, drop the plaintext, and rely on the save below so the device keeps working with
+            // the key it already holds and the plaintext is gone from the live file. That is the whole of the
+            // claim: rewriting the live file cannot reach a snapshot, backup, or soft-delete copy of the old
+            // contents. See the type documentation.
+            if (!string.IsNullOrEmpty(record.DeviceKey))
+            {
+                if (string.IsNullOrEmpty(record.DeviceKeyHash))
+                    record.DeviceKeyHash = HashKey(record.DeviceKey);
+                if (string.IsNullOrEmpty(record.KeyPrefix))
+                    record.KeyPrefix = MaskPrefix(record.DeviceKey);
+                if (string.IsNullOrEmpty(record.KeyLast4))
+                    record.KeyLast4 = MaskLast4(record.DeviceKey);
+                record.DeviceKey = null;
+                migrated++;
+            }
+
             _byDeviceId[record.DeviceId] = record;
+            if (!string.IsNullOrEmpty(record.DeviceKeyHash))
+                _byKeyHash[record.DeviceKeyHash] = record;
         }
         FileLog.Write($"[DeviceRegistry] Loaded {_byDeviceId.Count} device(s) from {_storePath}");
+
+        if (migrated > 0)
+        {
+            Save();
+            FileLog.Write($"[DeviceRegistry] Migrated {migrated} device(s) from a plaintext key to a stored hash; every migrated device keeps its existing key and the plaintext is gone from the live registry file. Any snapshot, backup, or soft-delete copy of the pre-change file still holds those keys and is not reachable from here - purge it separately, or rotate the affected keys.");
+        }
     }
 
     private void Save()
@@ -373,17 +574,37 @@ public sealed class DeviceRegistry
             var json = JsonSerializer.Serialize(_byDeviceId.Values.ToList(), new JsonSerializerOptions
             {
                 WriteIndented = true,
+                DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
             });
             File.WriteAllText(_storePath, json);
         }
     }
 
-    /// <summary>One device's full record, including the issued key (persisted, never listed).</summary>
+    /// <summary>One device's full record. It carries the HASH of the issued key, never the key (issue #1878),
+    /// plus a NON-SECRET masked prefix/last-four of the key for host-readable listings (issue #1899).</summary>
     private sealed class DeviceRecord
     {
         public string DeviceId { get; set; } = "";
         public string MachineName { get; set; } = "";
-        public string DeviceKey { get; set; } = "";
+
+        /// <summary>
+        /// The plaintext key as written by a registry file from BEFORE issue #1878. This property exists
+        /// only so <see cref="Load"/> can read such a file and migrate it; it is nulled the moment it is
+        /// hashed and is never written back out. Nothing else may read or set it.
+        /// </summary>
+        public string? DeviceKey { get; set; }
+
+        /// <summary>The lower-case hexadecimal SHA-256 of this device's key - the only form of the key that
+        /// is ever persisted. Verified against, never reversed.</summary>
+        public string DeviceKeyHash { get; set; } = "";
+
+        /// <summary>The NON-SECRET first few characters of the key (issue #1899): display metadata so a
+        /// host-readable listing can tell devices apart by key without holding the raw key. Not a credential.</summary>
+        public string KeyPrefix { get; set; } = "";
+
+        /// <summary>The NON-SECRET last few characters of the key (issue #1899). Display metadata, not a credential.</summary>
+        public string KeyLast4 { get; set; } = "";
+
         public DateTime IssuedAtUtc { get; set; }
         public string Status { get; set; } = StatusActive;
 

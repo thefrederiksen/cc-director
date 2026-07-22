@@ -158,6 +158,27 @@ public sealed class DeviceRegistryTenantScopeTests : IDisposable
     }
 
     [Fact]
+    public void ListForTenant_ReturnsTheMaskedKeyIdentity_NeverTheRawKey()
+    {
+        // Issue #1899: a tenant-scoped listing must carry the non-secret masked key identity (prefix/last4)
+        // so a device can be recognised by its key, and must NEVER substitute or expose the raw key.
+        var registry = new DeviceRegistry(_storePath);
+        var issuedKey = registry.Register("dev-a", "MACHINE-A").DeviceKey;
+        registry.SetAccountBinding("dev-a", "sub-alice", "tenant-alice");
+
+        var entry = Assert.Single(registry.ListForTenant(new TenantId("tenant-alice")));
+        Assert.Equal("dev-a", entry.DeviceId);
+        Assert.Equal(issuedKey.Substring(0, 8), entry.KeyPrefix);
+        Assert.Equal(issuedKey.Substring(issuedKey.Length - 4), entry.KeyLast4);
+
+        // The raw key is nowhere in the listed entry - not as any field, not substituted for the mask.
+        Assert.NotEqual(issuedKey, entry.KeyPrefix);
+        Assert.NotEqual(issuedKey, entry.KeyLast4);
+        Assert.True(entry.KeyPrefix.Length + entry.KeyLast4.Length < issuedKey.Length,
+            "the mask must reveal only a fraction of the key");
+    }
+
+    [Fact]
     public void ListForTenant_ForeignTenant_ReturnsNothing()
     {
         var registry = new DeviceRegistry(_storePath);

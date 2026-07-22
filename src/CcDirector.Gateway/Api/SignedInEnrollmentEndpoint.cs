@@ -31,18 +31,22 @@ public enum EnrollGateDecision
 /// This is the sign-in replacement for the pairing code: a device gets onto the Gateway by signing in
 /// to DevThrottle, not by reading a code off the Gateway host.
 ///
-///   POST /devices/enroll-signed-in -> mint (or, if this device already has one, RETURN) this
-///       same-machine Director's own per-device key. Gated by three guardrails, each enforced here:
+///   POST /devices/enroll-signed-in -> issue this same-machine Director's own per-device key (a fresh
+///       one if it is already enrolled). Gated by three guardrails, each enforced here:
 ///
 ///   1. Same-machine PROVEN at the transport layer: the caller's remote address must be loopback.
 ///      A null or non-loopback address is rejected (403). This is never a self-asserted header/flag,
 ///      so the endpoint cannot be used from the tailnet or the LAN.
 ///   2. Bound to the Gateway's current signed-in account identity (GatewaySignInService.GetIdentity).
 ///      Not signed in -> 409 with a "sign in first" the client maps to opening the browser sign-in.
-///   3. Idempotent mint (DeviceRegistry.RegisterIfAbsent): a device that already holds an active key
-///      gets the SAME key back - never a fresh key per call. This is the guardrail against the #1136
-///      auto-mint key leak; combined with the client only calling enroll once (never from its polling
-///      loop), a key is minted at most once per device identity.
+///   3. One key per device (DeviceRegistry.RegisterIfAbsent): a device that already holds an active key
+///      ends up with one registry entry, exactly one valid key, and any previous key retired. Enrollment
+///      can therefore never ACCUMULATE valid credentials, which is what the #1136 auto-mint key leak did.
+///      Combined with the client only calling enroll once, never from its polling loop, this stays a
+///      one-time act. (Before issue #1878 the existing key was handed back byte-for-byte; the registry
+///      now stores only a hash of it, so there is no plaintext left to return. Repeat calls are still
+///      SAFE TO RETRY - a duplicate within a short in-memory window gets the same key back rather than
+///      rotating one this endpoint has already returned to a caller that may not have saved it.)
 ///
 /// Every mint is logged with the account identity, device id, and timestamp (guardrail 5) so any leak
 /// is traceable. Remote/headless Directors (not on the Gateway's machine) enroll via the tailnet
@@ -98,7 +102,7 @@ internal static class SignedInEnrollmentEndpoint
                         statusCode: StatusCodes.Status409Conflict);
             }
 
-            // Guardrail 3: idempotent - reuse the existing active key if present, mint at most once.
+            // Guardrail 3: one registry entry and exactly one valid key per device identity.
             var response = devices.RegisterIfAbsent(req.DeviceId, req.MachineName, req.Platform, req.DeviceType);
 
             // Guardrail 5: log the mint with the bound account identity, device id, and (via FileLog) time.

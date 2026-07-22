@@ -3,8 +3,9 @@ namespace CcDirector.Gateway.Contracts;
 /// <summary>
 /// A co-located Director's request to enroll with its own Gateway using the DevThrottle account
 /// sign-in instead of a pairing code (issue #1069). The Director POSTs this to
-/// <c>/devices/enroll-signed-in</c>; the Gateway mints (or, if this device already has one, returns)
-/// the Director's own per-device key - gated on the Gateway being signed in to DevThrottle AND the
+/// <c>/devices/enroll-signed-in</c>; the Gateway issues the Director's own per-device key - a fresh one
+/// if this device is already enrolled, since the registry keeps only a hash of the key it issued and so
+/// has no plaintext to hand back (issue #1878) - gated on the Gateway being signed in to DevThrottle AND the
 /// caller being a loopback same-machine connection. There is no pairing code: signing in is the
 /// authorization. Carries no credential of its own; the loopback origin plus the Gateway's signed-in
 /// account are the proof.
@@ -50,7 +51,9 @@ public sealed class DeviceRegistrationResponse
 /// <summary>
 /// One device's public-facing entry in the Gateway device registry (issue #469): the
 /// host-readable record used to list registered devices. The per-device key itself is NEVER
-/// included - the registry serves identity and status, not the secret.
+/// included - the registry serves identity and status, not the secret. It DOES carry a NON-SECRET
+/// masked key identity (<see cref="KeyPrefix"/> / <see cref="KeyLast4"/>, issue #1899) so a listing can
+/// tell devices apart by key without ever substituting or exposing the raw key.
 /// </summary>
 public sealed class RegisteredDeviceDto
 {
@@ -65,4 +68,15 @@ public sealed class RegisteredDeviceDto
 
     /// <summary>The device's status (e.g. <c>active</c>, <c>revoked</c>).</summary>
     public string Status { get; set; } = "";
+
+    /// <summary>
+    /// The NON-SECRET first few characters of the device's key (issue #1899) - masked display metadata so a
+    /// host can recognise which key a device holds without the registry ever returning the raw key. Reveals a
+    /// handful of a 256-bit key and is not a credential. Empty for a record with no recorded key identity.
+    /// </summary>
+    public string KeyPrefix { get; set; } = "";
+
+    /// <summary>The NON-SECRET last few characters of the device's key (issue #1899), the trailing half of the
+    /// masked key identity. Not a credential.</summary>
+    public string KeyLast4 { get; set; } = "";
 }

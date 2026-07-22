@@ -25,6 +25,72 @@ token injected into the page**, so reaching the URL (or viewing page source) was
 unrevocable fleet control. That token is gone from the shell. The phone now holds only (C) - a local,
 per-device, individually revocable key that is not the master token and not a cloud credential.
 
+### 1a. The device registry is a high-value store (issue #1878)
+
+`DeviceRegistry` persists to `config/director/devices.json` under `CC_DIRECTOR_ROOT`. That one file is
+both the Gateway's credential store for credential (C) and, on the hosted Gateway, the authoritative
+device-to-account-to-tenant map for every tenant on the box - and on hosted it sits on a mounted Azure
+Files share. It must be treated as a high-value store wherever it is discussed, on self-host and on
+hosted alike.
+
+It used to hold each device key in **plaintext**, so anything that could read the file could impersonate
+every enrolled device - which is also what made a process spawned with a working directory on that same
+share (issue #1863) a credential-exfiltration problem rather than only a code-execution one.
+
+Each key is now stored **only as a one-way SHA-256 hash**. The Gateway never needs the key itself: it
+issues the plaintext to its owner once at enrollment and thereafter only VERIFIES a presented key, the
+same way a password store does. A read of `devices.json` therefore yields no usable credential. Two
+consequences follow and are deliberate:
+
+- The hash is a plain SHA-256, not a slow password-stretching function, because the secret is a 256-bit
+  value the Gateway generated with a cryptographic random number generator, not a human-chosen password.
+  There is no guessable search space to stretch against, and this lookup runs on the hot path of every
+  authenticated request.
+- A device that re-enrolls is issued a **fresh** key in place - the registry has no plaintext to hand
+  back. Its entry, its account and tenant binding, and its cloud mapping are all preserved, and it still
+  has exactly one valid key. A device that simply keeps using the key it already holds is unaffected: a
+  registry file written before the change is migrated on load, so keys issued before this keep working.
+
+Enrollment stays safe to RETRY. Because the registry can no longer hand back a stored key, a repeated
+enrollment would otherwise rotate the key on every call - and a caller that lost or had not yet saved the
+first response would then be holding a retired key and locked out. So an issued key stays replayable for a
+short window held **in this process's memory only**: a duplicate or retried enrollment inside that window
+gets the same key back and nothing rotates. It is never serialized and does not survive a restart, so the
+at-rest property is unaffected. Past the window a further enrollment rotates in place as described above.
+
+That in-memory window is a real, if small, exposure, and the thing that makes it acceptable is that it is
+short-lived - so short-livedness is **enforced, not assumed**. The registry starts a recurring eviction pass
+the moment it first retains a key, and that pass drops every issue whose window has closed regardless of
+whether any device ever enrolls again. Plaintext is held for at most one and a half windows, no more than
+seven and a half minutes by default, and shutting the registry down ends it at once.
+
+The subtlety is worth recording, because the first implementation got it wrong in a way that looked right:
+it checked an entry's age only when an already-enrolled device asked to replay. That correctly refuses to
+hand back an expired key, but it does nothing about retention, because the ordinary case - a device that
+enrolls once under its own identifier and never comes back - never reaches the check. Every such key stayed
+resident for the life of the process. Refusing to serve an expired secret and bounding how long the secret
+is kept are two different jobs, and only the second one needs a clock of its own.
+
+The file remains a real target for its non-secret contents (which accounts and tenants exist, and which
+machines are enrolled). Hashing removes the bearer secret from it, not the metadata.
+
+### What the migration does NOT do
+
+The migration rewrites the **live** registry file. That is the limit of the claim, and it should not be
+read as secure erasure. Rewriting a file cannot reach a copy of the old contents that something else
+already took - a storage-share snapshot, a backup, a soft-delete retention window, or file-system history
+all retain whatever the file held before, and no amount of writing from inside the Gateway touches them.
+
+On the hosted Gateway the registry sits on a mounted Azure Files share, where snapshots and soft delete are
+account-level and share-level settings held outside this repository; nothing in the repository configures or
+disables them, so whether pre-change copies are being retained is a property of the deployed storage account
+and has to be checked there rather than inferred from code. Where such retention is found, two things follow
+and both are separate operational work, tracked separately from this change:
+
+1. Purge the retained copies of the pre-change `devices.json`.
+2. Treat every key that appeared in plaintext in those copies as exposed and **rotate it**. Rotation, not
+   file cleanup, is what actually ends the exposure - a copy may already have been read.
+
 ---
 
 ## 2. Trust boundaries (what crosses which line)
@@ -130,6 +196,7 @@ forever unseen.
 | A leaked phone key compromises the account/fleet | (C) is one revocable device key; it is not (A), (B), (D), or the master token |
 | A stolen/lost phone keeps access | Revoke the one device from the website; the reconcile sweep drops (C) |
 | Cloud outage locks the phone out | Steady-state validation of (C) is fully local; no cloud dependency after enrollment |
+| Reading the Gateway's registry file yields every device's key | (C) is stored only as a one-way hash, so `devices.json` holds no usable credential (issue #1878, section 1a) |
 
 ---
 
