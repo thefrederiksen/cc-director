@@ -79,7 +79,10 @@ internal static class GatewayLoginEndpoint
 
         app.MapGet(LogoutPath, (HttpContext ctx) =>
         {
-            ctx.Response.Cookies.Delete(AuthMiddleware.CookieName);
+            // MH-2: clear the cookie through the single GatewayTokenCookie helper so the expiring Set-Cookie
+            // carries the same options as the write - including Secure=IsHosted - and no response-cookie mutation
+            // escapes the centralized policy. A bare Cookies.Delete() would emit a default (non-Secure) header.
+            GatewayTokenCookie.Delete(ctx);
             return Results.Redirect(Path);
         });
     }

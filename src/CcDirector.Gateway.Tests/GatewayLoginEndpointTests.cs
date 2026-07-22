@@ -159,4 +159,52 @@ public sealed class GatewayLoginEndpointTests
         }
         finally { await app.StopAsync(); }
     }
+
+    // ===== /logout clears the cookie THROUGH the single helper, so the expiring header carries Secure=IsHosted =====
+
+    [Fact]
+    public async Task Hosted_GET_logout_clears_the_cookie_with_a_Secure_header()
+    {
+        using var _ = new EnvScope(GatewayHostedMode.HostedEnvVar, "1");
+        var (app, http) = await StartAsync();
+        try
+        {
+            var resp = await http.GetAsync("/logout");
+
+            Assert.Equal(HttpStatusCode.Found, resp.StatusCode);   // 302 back to /login
+            Assert.Equal(GatewayLoginEndpoint.Path, resp.Headers.Location?.ToString());
+
+            var cookie = GatewayCookie(resp);
+            Assert.NotNull(cookie);
+            // Routed through GatewayTokenCookie.Delete: the expiring Set-Cookie is Secure on hosted, so a browser
+            // over HTTPS accepts the deletion and never emits the cleared cookie over plain HTTP.
+            Assert.True(HasAttribute(cookie!, "secure"));
+            Assert.True(HasAttribute(cookie!, "httponly"));
+            Assert.Contains("samesite=lax", cookie!, StringComparison.OrdinalIgnoreCase);
+        }
+        finally { await app.StopAsync(); }
+    }
+
+    [Fact]
+    public async Task SelfHost_GET_logout_clears_the_cookie_with_an_HTTP_usable_header()
+    {
+        using var _ = new EnvScope(GatewayHostedMode.HostedEnvVar, null);
+        var (app, http) = await StartAsync();
+        try
+        {
+            var resp = await http.GetAsync("/logout");
+
+            Assert.Equal(HttpStatusCode.Found, resp.StatusCode);   // 302 back to /login
+            Assert.Equal(GatewayLoginEndpoint.Path, resp.Headers.Location?.ToString());
+
+            var cookie = GatewayCookie(resp);
+            Assert.NotNull(cookie);
+            // NOT Secure on self-host, so the expiring cookie is delivered - and the deletion takes - over the
+            // plain-HTTP loopback/tailnet the self-host owner logs out on. Same HttpOnly/SameSite as the write.
+            Assert.False(HasAttribute(cookie!, "secure"));
+            Assert.True(HasAttribute(cookie!, "httponly"));
+            Assert.Contains("samesite=lax", cookie!, StringComparison.OrdinalIgnoreCase);
+        }
+        finally { await app.StopAsync(); }
+    }
 }
