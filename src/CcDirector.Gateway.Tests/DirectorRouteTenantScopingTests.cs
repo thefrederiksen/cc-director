@@ -10,6 +10,7 @@ using System.Threading.Tasks;
 using CcDirector.Core.Tenancy;
 using CcDirector.Gateway;
 using CcDirector.Gateway.Contracts;
+using CcDirector.Gateway.Discovery;
 using Xunit;
 
 namespace CcDirector.Gateway.Tests;
@@ -251,6 +252,61 @@ public sealed class DirectorRouteTenantScopingTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Events_feed_for_tenant_a_does_not_announce_tenant_b_director()
+    {
+        // Subscribe both accounts before B adds a new Director. B is the positive control that proves the real
+        // server-sent-events route is attached and publishing; A must see no event for the same registry change.
+        using var tenantASubscription = await SubscribeToEventsAsync(_keyA);
+        using var tenantBSubscription = await SubscribeToEventsAsync(_keyB);
+        using var tenantAReader = new StreamReader(await tenantASubscription.Content.ReadAsStreamAsync());
+        using var tenantBReader = new StreamReader(await tenantBSubscription.Content.ReadAsStreamAsync());
+
+        await using var tenantBDirector = await FakeTunnelDirector.StartAsync(
+            _gateway, _keyB, "dir-b-feed-only", "MB", dispatch: Recorder(new ConcurrentQueue<string>()));
+
+        using var positiveControlTimeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        var tenantBEvent = await ReadNextEventDataAsync(tenantBReader, positiveControlTimeout.Token);
+        Assert.Contains("dir-b-feed-only", tenantBEvent);
+
+        using var isolationWindow = new CancellationTokenSource(TimeSpan.FromMilliseconds(500));
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(
+            async () => await ReadNextEventDataAsync(tenantAReader, isolationWindow.Token));
+    }
+
+    [Fact]
+    public async Task Events_feed_with_no_bound_tenant_is_denied()
+    {
+        using var response = await SubscribeToEventsAsync(_keyUnbound);
+
+        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task Events_feed_for_tenant_a_does_not_announce_tenant_b_director_removal()
+    {
+        await using var tenantBDirector = await FakeTunnelDirector.StartAsync(
+            _gateway, _keyB, "dir-b-feed-remove", "MB", dispatch: Recorder(new ConcurrentQueue<string>()));
+
+        using var tenantASubscription = await SubscribeToEventsAsync(_keyA);
+        using var tenantBSubscription = await SubscribeToEventsAsync(_keyB);
+        using var tenantAReader = new StreamReader(await tenantASubscription.Content.ReadAsStreamAsync());
+        using var tenantBReader = new StreamReader(await tenantBSubscription.Content.ReadAsStreamAsync());
+
+        var registered = _gateway.Registry.Get(new TenantId("tenant-bob"), "dir-b-feed-remove");
+        Assert.NotNull(registered);
+        registered.LastSeen = DateTime.UtcNow - DirectorRegistry.HttpHeartbeatTimeout - TimeSpan.FromSeconds(1);
+        _gateway.Registry.SweepStale();
+
+        using var positiveControlTimeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        var tenantBEvent = await ReadNextEventDataAsync(tenantBReader, positiveControlTimeout.Token);
+        Assert.Contains("dir-b-feed-remove", tenantBEvent);
+
+        using var isolationWindow = new CancellationTokenSource(TimeSpan.FromMilliseconds(500));
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(
+            async () => await ReadNextEventDataAsync(tenantAReader, isolationWindow.Token));
+    }
+
+    [Fact]
     public async Task Legacy_discovery_plane_is_unavailable_on_hosted_and_leaves_no_shadow()
     {
         // The discovery legs (register / heartbeat / doorbell / unregister) are the same-machine HTTP plane and
@@ -311,6 +367,24 @@ public sealed class DirectorRouteTenantScopingTests : IAsyncLifetime
         var req = new HttpRequestMessage(HttpMethod.Get, path);
         req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", deviceKey);
         return _http.SendAsync(req);
+    }
+
+    private Task<HttpResponseMessage> SubscribeToEventsAsync(string deviceKey)
+    {
+        var req = new HttpRequestMessage(HttpMethod.Get, "events");
+        req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", deviceKey);
+        return _http.SendAsync(req, HttpCompletionOption.ResponseHeadersRead);
+    }
+
+    private static async Task<string> ReadNextEventDataAsync(StreamReader reader, CancellationToken cancellationToken)
+    {
+        while (await reader.ReadLineAsync(cancellationToken) is { } line)
+        {
+            if (line.StartsWith("data: ", StringComparison.Ordinal))
+                return line[6..];
+        }
+
+        throw new EndOfStreamException("The events feed closed before publishing an event.");
     }
 
     private Task<HttpResponseMessage> Post(string path, string deviceKey, object body)

@@ -2734,6 +2734,17 @@ internal static class GatewayEndpoints
 
         app.MapGet("/events", async (HttpContext ctx) =>
         {
+            var requestTenant = ResolveReadTenant(ctx, tenantBoundary);
+            if (requestTenant is null)
+            {
+                ctx.Response.StatusCode = StatusCodes.Status403Forbidden;
+                await ctx.Response.WriteAsJsonAsync(
+                    new { error = "no tenant is bound to this request" },
+                    cancellationToken: ctx.RequestAborted);
+                return;
+            }
+            var resolvedTenant = requestTenant.Value;
+
             ctx.Response.Headers["Content-Type"] = "text/event-stream";
             ctx.Response.Headers["Cache-Control"] = "no-cache";
             ctx.Response.Headers["Connection"] = "keep-alive";
@@ -2741,11 +2752,17 @@ internal static class GatewayEndpoints
             var ct = ctx.RequestAborted;
             var queue = System.Threading.Channels.Channel.CreateUnbounded<GatewayEvent>();
 
-            void OnAdded(DirectorDto d) => queue.Writer.TryWrite(new GatewayEvent("director.added", d.DirectorId));
-            // The removal carries its tenant now, but this stream has no tenant of its own to filter against
-            // (it is the fleet-global event feed), so it still announces every removal to every listener. It
-            // is on the existing list of not-yet-tenant-aware routes and is converted with them, not here.
-            void OnRemoved(DirectorRemoval removal) => queue.Writer.TryWrite(new GatewayEvent("director.removed", removal.DirectorId));
+            void OnAdded(DirectorArrival arrival)
+            {
+                if (arrival.Tenant.Equals(resolvedTenant))
+                    queue.Writer.TryWrite(new GatewayEvent("director.added", arrival.Director.DirectorId));
+            }
+
+            void OnRemoved(DirectorRemoval removal)
+            {
+                if (removal.Tenant.Equals(resolvedTenant))
+                    queue.Writer.TryWrite(new GatewayEvent("director.removed", removal.DirectorId));
+            }
 
             registry.OnDirectorAdded += OnAdded;
             registry.OnDirectorRemoved += OnRemoved;
