@@ -208,8 +208,11 @@ public sealed class BatchDictationRecorder : IAsyncDisposable
     {
         FileLog.Write("[BatchDictationRecorder] StopAndGetWavAsync");
         var (pcm, _, _) = await StopAndSnapshotAsync();
+        // Pad the model's trailing run-out onto the transcription WAV (dictation end-word fix); the
+        // unpadded pcm length still stands for any bytes accounting - the pad is silence, not captured audio.
         var wav = WavWriter.WrapPcm16(
-            pcm, MicAudioCapture.SampleRate, MicAudioCapture.Channels, MicAudioCapture.BitsPerSample);
+            PcmWav.WithTrailingSilence(pcm, MicAudioCapture.SampleRate, MicAudioCapture.Channels, MicAudioCapture.BitsPerSample, PcmWav.TrailingSilenceMs),
+            MicAudioCapture.SampleRate, MicAudioCapture.Channels, MicAudioCapture.BitsPerSample);
         return new CapturedAudio(wav, _recordingStopwatch?.ElapsedMilliseconds ?? 0);
     }
 
@@ -287,9 +290,12 @@ public sealed class BatchDictationRecorder : IAsyncDisposable
         var dictionary = await _dictionaryResolver.ResolveAsync(ct);
 
         // Wrap the whole captured PCM in one WAV blob and transcribe ONCE through the
-        // Gateway transcription endpoint. The dictionary corrector is the only text transform.
+        // Gateway transcription endpoint. The dictionary corrector is the only text transform. The
+        // trailing-silence run-out (dictation end-word fix) is padded onto the transcription WAV only;
+        // pcm.Length below stays the honest captured-byte count for the audit record.
         var wav = WavWriter.WrapPcm16(
-            pcm, MicAudioCapture.SampleRate, MicAudioCapture.Channels, MicAudioCapture.BitsPerSample);
+            PcmWav.WithTrailingSilence(pcm, MicAudioCapture.SampleRate, MicAudioCapture.Channels, MicAudioCapture.BitsPerSample, PcmWav.TrailingSilenceMs),
+            MicAudioCapture.SampleRate, MicAudioCapture.Channels, MicAudioCapture.BitsPerSample);
 
         var stopWatch = System.Diagnostics.Stopwatch.StartNew();
         var gateway = await new GatewayTranscriptionClient().TranscribeAsync(

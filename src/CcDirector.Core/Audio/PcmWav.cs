@@ -12,6 +12,36 @@ namespace CcDirector.Core.Audio;
 public static class PcmWav
 {
     /// <summary>
+    /// Trailing silence appended to a captured clip before transcription (the dictation end-word fix).
+    /// Capture keeps every byte the user spoke, but the batch transcription model (Whisper) clips the
+    /// FINAL word when a clip ends abruptly on speech with no run-out - exactly what happens when the
+    /// user stops the instant he finishes talking. A short pad of digital silence gives the model the
+    /// trailing anchor it needs so the last word survives. This is the C# twin of the browser
+    /// <c>TRANSCRIBE_TRAILING_SILENCE_MS</c> (packages/client-core/src/dictation/wav.ts); keep the two in
+    /// step so every surface transcribes with the same run-out room.
+    /// </summary>
+    public const int TrailingSilenceMs = 600;
+
+    /// <summary>
+    /// Return <paramref name="pcm"/> with <see cref="TrailingSilenceMs"/> of digital silence (zero,
+    /// frame-aligned bytes) appended for the given format. The pad is run-out room for the transcription
+    /// model, NOT captured audio, so callers append it only to the bytes they send to transcription and
+    /// keep the unpadded length for any capture-health / bytes-received accounting.
+    /// </summary>
+    public static byte[] WithTrailingSilence(byte[] pcm, int sampleRate, int channels, int bitsPerSample, int milliseconds)
+    {
+        if (pcm is null) throw new ArgumentNullException(nameof(pcm));
+        if (milliseconds <= 0) return pcm;
+        int blockAlign = Math.Max(1, channels * bitsPerSample / 8);
+        long padBytes = (long)sampleRate * channels * bitsPerSample / 8 * milliseconds / 1000;
+        padBytes -= padBytes % blockAlign; // frame-align so a sample is never split
+        if (padBytes <= 0) return pcm;
+        var padded = new byte[pcm.Length + padBytes]; // new arrays are zero-filled = silence
+        Buffer.BlockCopy(pcm, 0, padded, 0, pcm.Length);
+        return padded;
+    }
+
+    /// <summary>
     /// Wrap raw little-endian PCM samples in a RIFF/WAV header. The returned blob is
     /// a complete <c>.wav</c> file the transcription endpoint can decode directly.
     /// </summary>

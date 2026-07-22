@@ -10,6 +10,27 @@
 
 const TARGET_SAMPLE_RATE = 16000;
 
+// Trailing silence appended to every transcription WAV (the dictation end-word fix). Capture on every
+// surface keeps the final audio bytes (all end paths use a race-free stop), yet the last WORD still goes
+// missing: the batch transcription model (Whisper) drops or clips the final token when a clip ends
+// abruptly on speech with no run-out - exactly what happens when the user hits Send/Pause the instant he
+// stops talking. A short pad of digital silence gives the model the trailing anchor it needs so the last
+// word survives. This is model run-out room, NOT captured audio: it lengthens the WAV sent for
+// transcription but is never counted as captured audio (decodedSeconds stays the real decoded duration).
+export const TRANSCRIBE_TRAILING_SILENCE_MS = 600;
+
+/** Append `ms` of digital silence (zero samples) after `samples` at `sampleRate`, returning a NEW array
+ *  (the input is not mutated). A non-positive `ms` returns the samples unchanged. Shared so every WAV the
+ *  client sends for transcription carries the same run-out room. */
+export function withTrailingSilence(samples: Float32Array, sampleRate: number, ms: number): Float32Array {
+  if (ms <= 0) return samples;
+  const padFrames = Math.round((ms / 1000) * sampleRate);
+  if (padFrames <= 0) return samples;
+  const padded = new Float32Array(samples.length + padFrames); // new arrays are zero-filled = silence
+  padded.set(samples, 0);
+  return padded;
+}
+
 /** The WAV plus the capture-health facts the decode already revealed (issue #863): the decoded
  *  audio duration (the actual amount of sound captured) and the source blob size. The caller
  *  compares decodedSeconds to the recording wall-clock to detect dropped audio. */
@@ -43,8 +64,11 @@ export async function blobToWav16kMono(blob: Blob): Promise<TranscodeResult> {
   source.start(0);
   const rendered = await offline.startRendering();
 
+  // Pad the model's run-out room onto the WAV, but report the REAL decoded duration for capture-health:
+  // the pad is silence for the transcriber, never audio we claim to have captured.
+  const padded = withTrailingSilence(rendered.getChannelData(0), TARGET_SAMPLE_RATE, TRANSCRIBE_TRAILING_SILENCE_MS);
   return {
-    wav: encodeWav(rendered.getChannelData(0), TARGET_SAMPLE_RATE),
+    wav: encodeWav(padded, TARGET_SAMPLE_RATE),
     decodedSeconds: decoded.duration,
     sourceBytes,
   };
