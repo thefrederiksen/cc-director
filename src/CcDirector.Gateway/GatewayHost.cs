@@ -1878,13 +1878,25 @@ public sealed class GatewayHost : IAsyncDisposable
             // the Director that died - which is exactly when we need it.
             interruptedBriefFor: sid =>
             {
+                // Hosted quarantine (MTR audit gap H5): the brief store is bare-session-id-keyed legacy data
+                // with no tenant in its path or records (issue #549 retired the writer). On a hosted box it
+                // cannot be attributed to the caller's tenant, so serving it here would embed another account's
+                // rail line/headline into this tenant's Interrupted list. Refuse by returning nothing; the read
+                // routes over the same store are denied in TurnBriefGatewayEndpoints. Self-host (one tenant) is
+                // byte-identical - IsHosted is false there.
+                if (GatewayHostedMode.IsHosted) return (null, null);
                 var b = _turnBriefStore.Latest(sid);
                 return (b?.NeedsYou?.RailLine, b?.Headline);
             },
             // Issue #212 W4: the restore endpoint builds its continuation context from the
             // full brief history; the store outlives the dead Director, so this serves
             // sessions whose owner is gone.
-            briefHistoryFor: sid => _turnBriefStore.List(sid),
+            // Hosted quarantine (MTR audit gap H5): the same untenanted legacy store must not seed a new
+            // continuation prompt with another account's brief history on hosted. Empty on hosted,
+            // byte-identical on self-host.
+            briefHistoryFor: sid => GatewayHostedMode.IsHosted
+                ? new List<TurnBriefDto>()
+                : _turnBriefStore.List(sid),
             // Issue #288: record session->Director ownership as the fleet is aggregated, so the WS
             // proxy can return 503 (owner offline) rather than 404 for a session whose Director went dark.
             owners: SessionOwners,
@@ -2274,6 +2286,9 @@ public sealed class GatewayHost : IAsyncDisposable
         // so the store is read-only-serving (effectively empty going forward); the read endpoints
         // stay so existing callers degrade cleanly. The explain trigger (#217) rode the brief agent,
         // which is gone - pass null and the explain endpoint answers 503.
+        // MTR audit gap H5: on HOSTED the whole surface is refused inside Map (the store is bare-session-id
+        // keyed legacy data with no tenant, so it cannot be served cross-tenant); self-host is byte-identical.
+        // The two internal readers of the same store are quarantined at their wiring above.
         TurnBriefGatewayEndpoints.Map(_app, _turnBriefStore,
             sid => _turnBriefStore.Latest(sid) is not null ? "Briefed" : "None",
             requestExplainAsync: null);
