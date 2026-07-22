@@ -11,11 +11,25 @@ namespace CcDirector.Gateway.CarMode;
 /// foundation the owner asked for - a real per-stage breakdown of where a Car Mode turn spends its time.
 ///
 /// Retention is by AGE (drop records older than <see cref="RetentionDays"/> days, the owner's stated
-/// 90-day intent), with a generous hard cap (<see cref="MaxRecords"/>) ONLY as an unbounded-growth guard so
-/// the file can never grow without bound if the owner walks-and-talks far more than expected in a window.
-/// Persisted as a single JSON document with an atomic temp-write + rename (a concurrent reader or a crash
-/// mid-write never sees a half-written store); a corrupt file is quarantined and the store starts empty,
-/// exactly like <see cref="Stats.GatewayInputStatsAggregator"/>.
+/// 90-day intent), with a generous PER-PARTITION hard cap (<see cref="MaxRecords"/> records per device) ONLY
+/// as an unbounded-growth guard so the file can never grow without bound if the owner walks-and-talks far
+/// more than expected in a window. The cap is per device on purpose: a process-wide cap would let one
+/// credential's write trip an eviction that deletes ANOTHER credential's rows, which is a cross-partition
+/// deletion. A write only ever prunes the caller's OWN partition; startup prunes every partition within
+/// itself. Persisted as a single VERSIONED JSON document (a <see cref="StoreDocument"/> envelope) with an
+/// atomic temp-write + rename (a concurrent reader or a crash mid-write never sees a half-written store); a
+/// corrupt file is quarantined and the store starts empty, exactly like
+/// <see cref="Stats.GatewayInputStatsAggregator"/>.
+///
+/// THE DOCUMENT IS VERSIONED, AND A PRE-VERSION DOCUMENT IS NOT TRUSTED. Before this store was partitioned
+/// on the authenticated credential, an earlier endpoint stamped each record's DeviceHash by independently
+/// reparsing the raw request credentials and preferring any Bearer value - even when the gate had REJECTED
+/// that Bearer and authenticated a cookie instead. A nonblank hash on one of those legacy records is
+/// therefore NOT a trustworthy partition key: serving it under the partitioned reads could hand one
+/// credential's turns to another. So a legacy (unversioned) or older-version document is quarantined whole
+/// on load and the store starts empty - blank-only cleanup is not enough, because the untrustworthy case is
+/// precisely a NONBLANK legacy hash. Only records this store wrote at <see cref="StoreVersion"/> or above,
+/// whose DeviceHash <see cref="Add"/> stamped from the gate's own accepted credential, are trusted.
 ///
 /// Only timings and small counts are ever kept - never the text of what was said or heard.
 ///
@@ -42,12 +56,18 @@ public sealed class CarModeTelemetryStore
 {
     private static readonly JsonSerializerOptions FileJsonOptions = new() { WriteIndented = false };
 
+    /// <summary>The persisted document format version. Bumped to 2 when the store began partitioning on the
+    ///  AUTHENTICATED credential; a document written before that (unversioned, or any version below this) is
+    ///  quarantined on load rather than trusted, because its per-record attribution predates the fix. Bump
+    ///  this again if a future change ever invalidates the trust in an existing record's DeviceHash.</summary>
+    private const int StoreVersion = 2;
+
     /// <summary>Keep records for this many days (the owner asked specifically for 90 days).</summary>
     private const int RetentionDays = 90;
 
-    /// <summary>An unbounded-growth guard only - far above any realistic 90-day volume. When the store
-    ///  somehow exceeds this, records are evicted from the LARGEST device partition first (see
-    ///  <see cref="PruneLocked"/>), so one busy device can never push another device's records out.</summary>
+    /// <summary>An unbounded-growth guard only, applied PER DEVICE PARTITION - far above any realistic 90-day
+    ///  volume for a single device. When a device's own partition exceeds this, ITS OWN oldest records are
+    ///  evicted (see <see cref="PruneLocked"/>); one device's writes never touch another device's partition.</summary>
     private const int MaxRecords = 10000;
 
     private readonly string _path;
@@ -66,8 +86,8 @@ public sealed class CarModeTelemetryStore
     {
     }
 
-    /// <summary>Test seam: the same store with a small growth-guard cap, so the partition-fair eviction can
-    ///  be driven with a handful of records instead of ten thousand.</summary>
+    /// <summary>Test seam: the same store with a small PER-PARTITION growth-guard cap, so the per-device
+    ///  eviction can be driven with a handful of records per device instead of ten thousand.</summary>
     internal CarModeTelemetryStore(string? path, Action<string>? log, int maxRecords)
     {
         if (maxRecords <= 0) throw new ArgumentOutOfRangeException(nameof(maxRecords));
@@ -96,7 +116,10 @@ public sealed class CarModeTelemetryStore
         lock (_lock)
         {
             _records.Add(owned);
-            PruneLocked(DateTime.UtcNow);
+            // A write prunes ONLY the caller's own partition for the growth cap - never another device's -
+            // so one credential's Add can never delete another credential's rows. (Age retention below is a
+            // deterministic time policy, not attributable suppression, so it stays global.)
+            PruneLocked(DateTime.UtcNow, capPartition: deviceHash);
             Save();
             var held = MineNewestFirstLocked(deviceHash).Count;
             _log($"[CarModeTelemetry] recorded turn {owned.TurnId}: total={owned.TotalTurnMs:F0}ms, brain={owned.BrainMs:F0}ms, "
@@ -145,54 +168,67 @@ public sealed class CarModeTelemetryStore
         return mine;
     }
 
-    // Drop records older than the retention window, then, only if still over the growth-guard cap, drop the
-    // oldest until under it. Returns HOW MANY records were removed, so a caller that is not already going to
-    // persist (Load) knows it must. Caller holds the lock.
-    private int PruneLocked(DateTime nowUtc)
+    // Drop records older than the retention window (global, by age), then enforce the PER-PARTITION growth
+    // cap. When capPartition is set (a write), only THAT device's partition is capped, so a write can never
+    // evict another device's rows. When capPartition is null (load), every partition is capped WITHIN ITSELF.
+    // Returns HOW MANY records were removed, so a caller that is not already going to persist (Load) knows it
+    // must. Caller holds the lock.
+    private int PruneLocked(DateTime nowUtc, string? capPartition)
     {
         var cutoff = nowUtc.AddDays(-RetentionDays);
         var removedByAge = _records.RemoveAll(r => !WithinRetention(r.ReceivedAtUtc, cutoff));
         if (removedByAge > 0)
             _log($"[CarModeTelemetry] pruned {removedByAge} record(s) older than {RetentionDays} days");
 
-        // Growth guard, partition-fair. The cap is on the FILE, but the eviction is never allowed to let one
-        // device push another device's records out - that would be suppression across the partition, not just
-        // a size guard. So each eviction takes the OLDEST record of whichever device currently holds the MOST
-        // records: a device can only lose a record while it is the largest partition, which is exactly the
-        // device that is over its share. Ties break on the device hash so the choice is deterministic.
+        // Growth guard, strictly partition-local. The cap is PER DEVICE: a partition over its cap loses its
+        // OWN oldest records and nothing else. On a write we cap only the writer's partition, so a write can
+        // never delete another device's data; on load we cap each partition within itself. There is no
+        // cross-partition comparison and therefore no way for one device to push another device's records out.
         var evicted = 0;
-        while (_records.Count > _maxRecords)
+        if (capPartition is null)
         {
-            var largest = LargestPartitionLocked();
-            var index = _records.FindIndex(r => string.Equals(r.DeviceHash, largest, StringComparison.Ordinal));
-            if (index < 0) break; // unreachable: the largest partition has at least one record.
-            _records.RemoveAt(index);
-            evicted++;
+            foreach (var hash in DistinctPartitionsLocked())
+                evicted += EvictOldestOfPartitionLocked(hash);
+        }
+        else
+        {
+            evicted += EvictOldestOfPartitionLocked(capPartition);
         }
         if (evicted > 0)
-            _log($"[CarModeTelemetry] growth guard: dropped {evicted} record(s) from the largest device partition(s) to stay at {_maxRecords}");
+            _log($"[CarModeTelemetry] growth guard: dropped {evicted} record(s), each from its own device partition, to keep every partition at or under {_maxRecords}");
 
         return removedByAge + evicted;
     }
 
-    // The device hash holding the most records right now. Caller holds the lock.
-    private string LargestPartitionLocked()
+    // Evict the OLDEST records of ONE device's partition until it is at or under the per-partition cap. Never
+    // touches any other partition. Returns how many it removed. Caller holds the lock.
+    private int EvictOldestOfPartitionLocked(string deviceHash)
     {
-        var counts = new Dictionary<string, int>(StringComparer.Ordinal);
+        var count = 0;
         foreach (var r in _records)
-            counts[r.DeviceHash] = counts.TryGetValue(r.DeviceHash, out var n) ? n + 1 : 1;
+            if (string.Equals(r.DeviceHash, deviceHash, StringComparison.Ordinal)) count++;
 
-        var bestKey = "";
-        var bestCount = -1;
-        foreach (var pair in counts)
+        var evicted = 0;
+        while (count > _maxRecords)
         {
-            if (pair.Value > bestCount || (pair.Value == bestCount && string.CompareOrdinal(pair.Key, bestKey) < 0))
-            {
-                bestKey = pair.Key;
-                bestCount = pair.Value;
-            }
+            // FindIndex returns the LOWEST index, which is the oldest record of this partition (append order).
+            var index = _records.FindIndex(r => string.Equals(r.DeviceHash, deviceHash, StringComparison.Ordinal));
+            if (index < 0) break; // unreachable: count > cap >= 1 means this partition has a record.
+            _records.RemoveAt(index);
+            count--;
+            evicted++;
         }
-        return bestKey;
+        return evicted;
+    }
+
+    // Each distinct device hash present right now. Caller holds the lock.
+    private List<string> DistinctPartitionsLocked()
+    {
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        var order = new List<string>();
+        foreach (var r in _records)
+            if (seen.Add(r.DeviceHash)) order.Add(r.DeviceHash);
+        return order;
     }
 
     /// <summary>True when a record's received-at stamp is at or after the cutoff. A record with an
@@ -212,35 +248,65 @@ public sealed class CarModeTelemetryStore
             return;
         }
 
-        List<CarModeTelemetryRecord>? parsed;
+        var text = File.ReadAllText(_path);
+
+        // Inspect the root shape first. A pre-version document is a BARE ARRAY of records; the current
+        // document is an OBJECT envelope with a Version. A legacy array (or an older-version envelope) is
+        // NOT trusted - its per-record DeviceHash predates partitioning on the authenticated credential and
+        // may have been stamped from a credential the gate rejected - so it is quarantined whole and the
+        // store starts empty. Trusting a nonblank legacy hash is exactly the cross-credential leak we refuse;
+        // blank-only cleanup would not catch it.
+        JsonValueKind rootKind;
         try
         {
-            parsed = JsonSerializer.Deserialize<List<CarModeTelemetryRecord>>(File.ReadAllText(_path), FileJsonOptions);
+            using var probe = JsonDocument.Parse(text);
+            rootKind = probe.RootElement.ValueKind;
         }
         catch (JsonException ex)
         {
             Quarantine(ex.Message);
             return;
         }
-        if (parsed is null)
+
+        if (rootKind == JsonValueKind.Array)
+        {
+            Quarantine("legacy unversioned store (records predate partitioning on the authenticated credential); attribution not trustworthy");
+            return;
+        }
+
+        StoreDocument? doc;
+        try
+        {
+            doc = JsonSerializer.Deserialize<StoreDocument>(text, FileJsonOptions);
+        }
+        catch (JsonException ex)
+        {
+            Quarantine(ex.Message);
+            return;
+        }
+        if (doc is null)
         {
             Quarantine("file deserialized to null (no store document)");
             return;
         }
+        if (doc.Version < StoreVersion)
+        {
+            Quarantine($"store version {doc.Version} predates the authenticated-credential partition (need v{StoreVersion}); attribution not trustworthy");
+            return;
+        }
 
-        _records.AddRange(parsed);
+        _records.AddRange(doc.Records ?? new List<CarModeTelemetryRecord>());
 
-        // Records already on disk carry the device hash the SERVER stamped on them when they were written -
-        // it has been a server-filled field since the store shipped - so partitioning the reads attributes
-        // nothing that was not already recorded. There is no migration to run and nothing to invent.
-        // A record with a BLANK hash is the one case with no recorded attribution: it belongs to no device,
-        // no partitioned read could ever return it, and guessing an owner for it would be exactly the
-        // invented attribution we refuse. Those are purged here rather than kept as unreachable residue.
+        // Every surviving record was written at this store version or above, where Add stamps the DeviceHash
+        // from the credential THE GATE ACCEPTED, so its attribution is trusted. A record with a BLANK hash is
+        // the one case with no recorded attribution: it belongs to no device, no partitioned read could ever
+        // return it, and guessing an owner for it would be exactly the invented attribution we refuse. Those
+        // are purged here rather than kept as unreachable residue.
         var unattributed = _records.RemoveAll(r => string.IsNullOrWhiteSpace(r.DeviceHash));
         if (unattributed > 0)
             _log($"[CarModeTelemetry] Load: purged {unattributed} record(s) with no device partition (unattributable; never disclosed)");
 
-        var pruned = PruneLocked(DateTime.UtcNow);
+        var pruned = PruneLocked(DateTime.UtcNow, capPartition: null);
 
         // The purge and the retention prune are GUARANTEES, so they happen on their own terms: whatever load
         // removes is written back to the durable file IMMEDIATELY. Removing it from memory only and waiting
@@ -275,7 +341,7 @@ public sealed class CarModeTelemetryStore
             if (!string.IsNullOrEmpty(dir))
                 Directory.CreateDirectory(dir);
 
-            var json = JsonSerializer.Serialize(_records, FileJsonOptions);
+            var json = JsonSerializer.Serialize(new StoreDocument(StoreVersion, _records), FileJsonOptions);
             var tmp = _path + ".tmp";
             File.WriteAllText(tmp, json);
             File.Move(tmp, _path, overwrite: true);
@@ -286,4 +352,9 @@ public sealed class CarModeTelemetryStore
             throw;
         }
     }
+
+    /// <summary>The persisted envelope: a version stamp plus the records. The version is what lets load
+    ///  distinguish records written under the authenticated-credential partition (trusted) from a pre-version
+    ///  document (quarantined). A bare record array on disk is a pre-version document by definition.</summary>
+    private sealed record StoreDocument(int Version, List<CarModeTelemetryRecord> Records);
 }

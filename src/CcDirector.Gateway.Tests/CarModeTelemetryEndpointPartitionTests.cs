@@ -143,8 +143,9 @@ public sealed class CarModeTelemetryEndpointPartitionTests : IAsyncLifetime
     private Dictionary<string, string> StoredPartitions()
     {
         using var doc = JsonDocument.Parse(File.ReadAllText(_storePath));
-        Assert.Equal(JsonValueKind.Array, doc.RootElement.ValueKind);
-        return doc.RootElement.EnumerateArray()
+        // The store persists a versioned envelope: an object with a Version and a Records array.
+        Assert.Equal(JsonValueKind.Object, doc.RootElement.ValueKind);
+        return doc.RootElement.GetProperty("Records").EnumerateArray()
             .ToDictionary(
                 r => r.GetProperty("TurnId").GetString() ?? "",
                 r => r.GetProperty("DeviceHash").GetString() ?? "");
@@ -205,6 +206,49 @@ public sealed class CarModeTelemetryEndpointPartitionTests : IAsyncLifetime
         Assert.Equal(new[] { "turn-from-b" }, readB.TurnIds);
         Assert.DoesNotContain("turn-from-b", readA.TurnIds);
         Assert.DoesNotContain("turn-from-a", readB.TurnIds);
+    }
+
+    [Fact]
+    public async Task SameTurnId_UnderTwoCredentials_DoesNotCross()
+    {
+        // The requested colliding-key proof, on the wire behind the gate: the SAME Car Mode key (an identical
+        // TurnId) written under two DIFFERENT authenticated device credentials must land in two partitions,
+        // never one. Distinguishable payloads (a different brainMs on each side) make "each side reads its
+        // OWN record" a real assertion rather than a turn-id match that a merge would also satisfy.
+        const string sharedTurn = "same-turn-id-under-both";
+        using var client = Client();
+
+        var writeA = new HttpRequestMessage(HttpMethod.Post, "/carmode/telemetry")
+        { Content = JsonContent.Create(new { turnId = sharedTurn, totalTurnMs = 2500.0, brainMs = 111.0 }) };
+        Bearer(_keyA)(writeA);
+        var respA = await client.SendAsync(writeA);
+        Assert.Equal(HttpStatusCode.OK, respA.StatusCode);
+
+        var writeB = new HttpRequestMessage(HttpMethod.Post, "/carmode/telemetry")
+        { Content = JsonContent.Create(new { turnId = sharedTurn, totalTurnMs = 2500.0, brainMs = 222.0 }) };
+        Bearer(_keyB)(writeB);
+        var respB = await client.SendAsync(writeB);
+        Assert.Equal(HttpStatusCode.OK, respB.StatusCode);
+
+        // Positive read on each side, plus the cross-credential exclusion: each device holds exactly ONE
+        // record for the colliding key - its own - not two.
+        var readA = await ReadTurnsAsync(client, Bearer(_keyA));
+        var readB = await ReadTurnsAsync(client, Bearer(_keyB));
+        Assert.Equal(new[] { sharedTurn }, readA.TurnIds);
+        Assert.Equal(new[] { sharedTurn }, readB.TurnIds);
+        Assert.Equal(1, readA.Held);
+        Assert.Equal(1, readB.Held);
+
+        // And at rest: the colliding key exists as TWO records, one per partition, with the two payloads kept
+        // apart - so nothing was overwritten or merged when the keys collided.
+        using var stored = JsonDocument.Parse(File.ReadAllText(_storePath));
+        var records = stored.RootElement.GetProperty("Records").EnumerateArray()
+            .Where(r => r.GetProperty("TurnId").GetString() == sharedTurn)
+            .Select(r => (Hash: r.GetProperty("DeviceHash").GetString(), Brain: r.GetProperty("BrainMs").GetDouble()))
+            .ToArray();
+        Assert.Equal(2, records.Length);
+        Assert.Contains(records, r => r.Hash == CarModeDeviceHash.Of(_keyA) && r.Brain == 111.0);
+        Assert.Contains(records, r => r.Hash == CarModeDeviceHash.Of(_keyB) && r.Brain == 222.0);
     }
 
     [Fact]
