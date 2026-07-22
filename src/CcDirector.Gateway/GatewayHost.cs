@@ -1881,7 +1881,10 @@ public sealed class GatewayHost : IAsyncDisposable
 
         // GET /devices: the host-readable device registry listing. Mapped after the WS proxy so its
         // literal route wins over the catch-all session forwarder, same as the other literal routes.
-        Api.DeviceEnrollmentEndpoint.Map(_app, Devices);
+        // MTR-12: the listing is tenant-scoped to the caller (403 on hosted with no bound tenant), so an
+        // authenticated account never reads back another tenant's devices - it resolves the request's tenant
+        // from the same authenticated device key the other read routes use.
+        Api.DeviceEnrollmentEndpoint.Map(_app, Devices, _tenantBoundary);
 
         // POST /devices/enroll-signed-in (issue #1069): the sign-in replacement for the pairing code -
         // a co-located Director mints its own per-device key by having the Gateway signed in to

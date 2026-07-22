@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using System.Security.Cryptography;
 using System.Text.Json;
 using CcDirector.Core.Storage;
+using CcDirector.Core.Tenancy;
 using CcDirector.Core.Utilities;
 using CcDirector.Gateway.Contracts;
 
@@ -273,20 +274,60 @@ public sealed class DeviceRegistry
         return true;
     }
 
-    /// <summary>The host-readable list of registered devices, newest first. Keys are never included.</summary>
+    /// <summary>
+    /// The host-readable list of EVERY registered device, newest first, ACROSS ALL TENANTS. Keys are never
+    /// included. This is the unscoped internal view (self-host has one tenant, so it is that tenant's list);
+    /// on the hosted Gateway it spans every account's devices and must NEVER be the answer to a client request
+    /// - that is <see cref="ListForTenant(TenantId)"/>. Same shape as <see cref="Discovery.DirectorRegistry"/>'s
+    /// fleet-global vs tenant-scoped listing pair.
+    /// </summary>
     public IReadOnlyList<RegisteredDeviceDto> List()
     {
         return _byDeviceId.Values
             .OrderByDescending(r => r.IssuedAtUtc)
-            .Select(r => new RegisteredDeviceDto
-            {
-                DeviceId = r.DeviceId,
-                MachineName = r.MachineName,
-                IssuedAtUtc = r.IssuedAtUtc,
-                Status = r.Status,
-            })
+            .Select(ToDto)
             .ToList();
     }
+
+    /// <summary>
+    /// The devices ONE tenant owns - what the host-readable <c>GET /devices</c> listing serves (MTR-12). Before
+    /// this, that route returned <see cref="List"/> (every id / machine name / issued time across every tenant),
+    /// so any authenticated account read back a full multi-tenant device inventory. Scoped here, a caller sees
+    /// only its own tenant's devices.
+    ///
+    /// A device with no account binding (<see cref="DeviceRecord.TenantId"/> null/empty) is a Local-tenant
+    /// device - the single-tenant self-host shape, where every request also resolves to <see cref="TenantId.Local"/>,
+    /// so a self-host caller still gets its own devices exactly as <see cref="List"/> returned them. On hosted,
+    /// where a request's tenant is a real account GUID and each device is bound at enrollment, an unbound device
+    /// matches no account. Deny by default: the caller's tenant must match a device's own resolved tenant; there
+    /// is no fall-back to the unscoped list.
+    /// </summary>
+    public IReadOnlyList<RegisteredDeviceDto> ListForTenant(TenantId tenant)
+    {
+        return _byDeviceId.Values
+            .Where(r => EffectiveTenant(r).Equals(tenant))
+            .OrderByDescending(r => r.IssuedAtUtc)
+            .Select(ToDto)
+            .ToList();
+    }
+
+    /// <summary>
+    /// The tenant a device record resolves to. A bound device (hosted enrollment) carries its account tenant; an
+    /// unbound device is the single Local tenant, mirroring <see cref="Tenancy.HostedTenantBoundary.ResolveForDeviceKey"/>
+    /// answering <see cref="TenantId.Local"/> on self-host and <see cref="TenantForKey"/> treating an empty
+    /// binding as none.
+    /// </summary>
+    private static TenantId EffectiveTenant(DeviceRecord record)
+        => string.IsNullOrEmpty(record.TenantId) ? TenantId.Local : new TenantId(record.TenantId);
+
+    private static RegisteredDeviceDto ToDto(DeviceRecord record)
+        => new RegisteredDeviceDto
+        {
+            DeviceId = record.DeviceId,
+            MachineName = record.MachineName,
+            IssuedAtUtc = record.IssuedAtUtc,
+            Status = record.Status,
+        };
 
     /// <summary>The number of registered devices.</summary>
     public int Count => _byDeviceId.Count;
