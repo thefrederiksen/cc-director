@@ -1745,11 +1745,28 @@ public sealed class GatewayHost : IAsyncDisposable
         _app.MapHub<Streaming.DirectorHub>("/director-stream");
         FileLog.Write("[GatewayHost] DirectorHub mapped at /director-stream; /sessions serves from the push cache when fresh");
 
-        // launcher-persistent-join: the launcher-push stream endpoint, also mandatory. When a launcher
-        // joins, the machine lifecycle relay pushes commands DOWN this stream instead of dialing the
-        // launcher's REST API.
-        _app.MapHub<Streaming.LauncherHub>("/launcher-stream");
-        FileLog.Write("[GatewayHost] LauncherHub mapped at /launcher-stream; machine lifecycle relay prefers the stream when a launcher is joined");
+        // launcher-persistent-join: the launcher-push stream endpoint. When a launcher joins, the machine
+        // lifecycle relay pushes commands DOWN this stream instead of dialing the launcher's REST API.
+        //
+        // DENIED ON HOSTED, consistent with #1917's deny of the /launchers + /machines HTTP family. The hub is
+        // the ONE launcher/machine writer that HTTP deny did not cover: LauncherHub.Hello resolves NO tenant
+        // (unlike DirectorHub.Hello, which aborts when the device key resolves to no tenant), and
+        // LauncherConnectionRegistry keys one active connection per BARE machine name. So on hosted a launcher
+        // Hello for machine X supersedes ANY other tenant's active connection for the same name - a cross-tenant
+        // collision. A physical machine is not owned by a tenant on shared hosted infrastructure, so there is no
+        // per-tenant answer to serve here, only a leak to close: the hub is NOT MAPPED on hosted, exactly as the
+        // HTTP family's handlers are not mapped, so no launcher can join and no bare-machine-keyed row is ever
+        // written. Self-host maps the hub unchanged. Un-denying requires a launcher/machine tenant-ownership
+        // model AND a purge of the launcher + launcher-connection registries.
+        if (GatewayHostedMode.IsHosted)
+        {
+            FileLog.Write("[GatewayHost] LauncherHub DENIED on hosted (no per-tenant machine ownership) - /launcher-stream is not mapped; launcher/machine control is self-host only");
+        }
+        else
+        {
+            _app.MapHub<Streaming.LauncherHub>("/launcher-stream");
+            FileLog.Write("[GatewayHost] LauncherHub mapped at /launcher-stream; machine lifecycle relay prefers the stream when a launcher is joined");
+        }
 
         // Product version stamped by Directory.Build.props; full form carries the commit SHA.
         var version = AppVersion.Full;
