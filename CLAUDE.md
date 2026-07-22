@@ -81,8 +81,8 @@ Processes launched by Task Scheduler run under `svchost.exe` (the Schedule servi
 ```powershell
 # Point the task at your current test build. The WorkingDirectory must be set, or
 # Avalonia's first-time resource resolution may fail with exit -1.
-$exe = "C:\repos\cc-director\local_builds\cc-director5.exe"
-$wd  = "C:\repos\cc-director\local_builds"
+$exe = "C:\repos\cc-director\scripts\local-build\cc-director5.exe"
+$wd  = "C:\repos\cc-director\scripts\local-build"
 $action = New-ScheduledTaskAction -Execute $exe -WorkingDirectory $wd
 $trigger = New-ScheduledTaskTrigger -Once -At (Get-Date).AddYears(5)  # far future, on-demand only
 Register-ScheduledTask -TaskName "cc-director-launch" -Action $action -Trigger $trigger -Force
@@ -98,7 +98,7 @@ The Director boots with parent = `svchost.exe`, port-allocates a fresh Control A
 
 #### Slot convention to avoid colliding with the user's running Directors
 
-The `local_builds` directory holds the **main** build `cc-director.exe` (the user's daily-driver, Start Menu + taskbar) plus development slots `cc-director1.exe` through `cc-director4.exe`. The user keeps long-lived Director processes running from the main exe and from slots 1-4, and you MUST NOT kill any of them. Reserve **slot 5 or higher** for your own test Directors. Build to that slot with `scripts\local-build-avalonia.ps1 -Slot 5` and point `cc-director-launch` at that path.
+The `scripts\local-build` directory holds development slots `cc-director1.exe` through `cc-director4.exe` (the main daily-driver `cc-director.exe` is no longer a local build - it is INSTALLED from a release into `%LOCALAPPDATA%\cc-director\app` and auto-updates in place). The user keeps long-lived Director processes running from the installed app and from slots 1-4, and you MUST NOT kill any of them. Reserve **slot 5 or higher** for your own test Directors. Build to that slot with `scripts\local-build-avalonia.ps1 -Slot 5 -OutputDir "<repo>\scripts\local-build"` (the default `-OutputDir` is the dead repo-root `local_builds\` - always pass `scripts\local-build`) and point `cc-director-launch` at that path.
 
 #### Cleaning up your own test Director
 
