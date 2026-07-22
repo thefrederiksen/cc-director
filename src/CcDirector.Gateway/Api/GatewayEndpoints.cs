@@ -861,7 +861,7 @@ internal static class GatewayEndpoints
                                      && !string.Equals(x.ActivityState, "Exited", StringComparison.OrdinalIgnoreCase))
                             .Select(x => x.SessionId),
                         StringComparer.Ordinal);
-                    owners?.RetainForDirector(d.DirectorId, liveIds);
+                    owners?.RetainForDirector(reqTenant.Value, d.DirectorId, liveIds);
                     // Snooze Length mission: a reachable Director's returned list is authoritative, so a
                     // snoozed session that has permanently exited is no longer live here - drop its
                     // snooze entry so the registry does not accumulate stale entries on disk. Runs only
@@ -915,7 +915,7 @@ internal static class GatewayEndpoints
                         s.TailnetEndpoint = baseUrl;
                     // Issue #288: remember who owns this session so the WS proxy answers 503 (owner
                     // offline) instead of 404 once this Director goes dark.
-                    owners?.Remember(s.SessionId, d.DirectorId);
+                    owners?.Remember(reqTenant.Value, s.SessionId, d.DirectorId);
                     // Issue #549: the always-on turn-brief pipeline is retired. The Gateway no
                     // longer stamps the assessed-state refutation (issue #186, Option A) nor the
                     // brief stamping (issue #187 BriefingState/RailLine) - the brief agent that
@@ -3210,7 +3210,7 @@ internal static class GatewayEndpoints
                 if (owner is not null)
                 {
                     FileLog.Write($"[GatewayEndpoints] LocateSessionAsync: sid={sid} located=pushed-cache, director={directorId}");
-                    owners?.Remember(sid, directorId);
+                    owners?.Remember(tenant, sid, directorId);
                     return Task.FromResult<(DirectorDto?, SessionDto?)>((owner, pushedSession));
                 }
             }
