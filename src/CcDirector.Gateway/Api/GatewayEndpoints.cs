@@ -723,19 +723,27 @@ internal static class GatewayEndpoints
                 return Results.Json(new { error = "no tenant is bound to this request" },
                     statusCode: StatusCodes.Status403Forbidden);
 
-            var directors = registry.ListDirectors()
+            // Hosted Multi-Tenancy (audit H1, gap audit-a): serve THIS request's tenant's Directors, resolved
+            // from the registry's tenant-scoped (tenant, id) partition - NOT the fleet-global ListDirectors().
+            // The fleet-global overload names every tenant's Directors, and the `director=` / `machine=` filters
+            // below match on a BARE id / machine name, so a cross-tenant Director sharing the requested id or
+            // machine would survive into this tenant's roster and leak its DirectorDto (machine name, the
+            // "unreachable" reachability / machineError rows) in the ?envelope response. ListDirectors(tenant)
+            // confines the list to the caller's own partition so no such collision can name another tenant. A
+            // hosted Director reaches the registry only via its tunnel Hello, which first binds it into its
+            // tenant's partition, so scoping to the partition drops nothing of the tenant's own. On self-host the
+            // registry partition IS the one Local tenant, so this is the same list as before.
+            var directors = registry.ListDirectors(reqTenant.Value)
                 .Where(d => string.IsNullOrEmpty(director) || string.Equals(d.DirectorId, director, StringComparison.OrdinalIgnoreCase))
                 .Where(d => string.IsNullOrEmpty(machine) || string.Equals(d.MachineName, machine, StringComparison.OrdinalIgnoreCase))
                 .ToList();
 
-            // Hosted Multi-Tenancy (session-serving PR1): the Director registry is fleet-global, but a tenant's
-            // roster must only ever NAME its own directors. Scope the list to the request tenant's partition so
-            // another tenant's directors never appear - not as sessions, and not as "unreachable"
-            // machineError / reachability rows (which would otherwise leak their ids and machine names in the
-            // ?envelope response). A hosted director reaches the registry only via its tunnel Hello, which first
-            // binds it into its tenant's partition, so scoping to the partition drops nothing of the tenant's
-            // own. On self-host the boundary is inert and the registry already IS the one tenant's directors, so
-            // this is skipped and behavior is unchanged (a registered-but-unpushed director still surfaces).
+            // Within that already tenant-scoped list, hosted additionally keeps only Directors that have pushed a
+            // session snapshot - the roster source below is the pushed stream cache, so a registered-but-unpushed
+            // Director has nothing to serve. This intersection is by bare id, which is safe ONLY because the list
+            // above is confined to this tenant's partition (every id here belongs to reqTenant); it is a
+            // pushed-vs-registered filter, not the tenant boundary. On self-host it is skipped, so a
+            // registered-but-unpushed Director still surfaces (unchanged).
             if (tenantBoundary?.IsHosted == true && pushedSessions is not null)
             {
                 var mine = new HashSet<string>(pushedSessions.DirectorIdsFor(reqTenant.Value), StringComparer.OrdinalIgnoreCase);
@@ -2883,15 +2891,26 @@ internal static class GatewayEndpoints
         statusCode: StatusCodes.Status404NotFound);
 
     /// <summary>
-    /// The ROLE UNIVERSE for a fold that runs OUTSIDE the /sessions roster loop: every tunnel-connected
-    /// Director's pushed roster, grouped by Director.
+    /// The ROLE UNIVERSE for a fold that runs OUTSIDE the /sessions roster loop: the CALLER'S TENANT's
+    /// tunnel-connected Directors' pushed rosters, grouped by Director.
     ///
     /// The roster handler builds its universe inline as it walks the Directors it already pulled. The two
     /// other folding routes (/exes/list and GET /sessions/{sid}) have no such loop, and both need the whole
-    /// fleet for the same reason: a session's role depends on whether its controller is alive, and the
+    /// tenant for the same reason: a session's role depends on whether its controller is alive, and the
     /// controller may live on a Director this route was never otherwise interested in. /exes/list is the
-    /// sharp case - it is a LOCAL-MACHINE page, but a local Worker's Manager can be on another machine
-    /// entirely, so the universe is deliberately the whole fleet and not the local Directors.
+    /// sharp case - it is a LOCAL-MACHINE page, but a Worker's Manager can be on another machine entirely, so
+    /// the universe spans every machine. Every one of those Directors is still in the caller's OWN tenant (a
+    /// Worker and its Manager belong to the same account), so spanning machines does NOT mean spanning tenants.
+    ///
+    /// Hosted Multi-Tenancy (audit H1): the universe is <see cref="DirectorRegistry.ListDirectors(TenantId)"/>,
+    /// the caller's partition, NOT the fleet-global <see cref="DirectorRegistry.ListDirectors()"/>. Two tenants
+    /// can each own a Director with the SAME id (the registry key is (tenant, id), and the id is client-chosen),
+    /// so the fleet-global list projects to bare ids in which one tenant's ids appear beside another's. Reading
+    /// the caller's cache under that fleet-wide id set means ANOTHER tenant's registered Director id decides
+    /// which of the caller's own cached rosters this fold surfaces - a cross-tenant coupling. Bounding the
+    /// universe to the caller's own registered Directors removes it: the tenant scope on the push-store read
+    /// keeps another tenant's DATA out, and this scope keeps another tenant's ID SET out, so the fold is
+    /// correct by construction rather than by the push store's key being the sole boundary.
     ///
     /// Returns copies (the push store hands out deep copies), so stamping the result never writes through
     /// to the cache.
@@ -2902,7 +2921,7 @@ internal static class GatewayEndpoints
     {
         var byDirector = new Dictionary<string, IReadOnlyList<SessionDto>>(StringComparer.Ordinal);
         if (pushedSessions is null) return byDirector;
-        foreach (var d in registry.ListDirectors())
+        foreach (var d in registry.ListDirectors(tenant))
         {
             var cached = pushedSessions.TryGetFresh(tenant, d.DirectorId, streamStale);
             if (cached is not null) byDirector[d.DirectorId] = cached;

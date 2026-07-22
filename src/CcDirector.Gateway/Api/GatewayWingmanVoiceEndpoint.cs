@@ -242,14 +242,23 @@ internal static class GatewayWingmanVoiceEndpoint
             FileLog.Write($"[GatewayWingmanVoice] voice-mode/all requested: enabled={enabled}");
 
             // The machine each Director runs on, so a skipped session names where it lives in plain English.
-            var machineByDirector = registry.ListDirectors()
+            // Hosted Multi-Tenancy (audit H1, gap audit-b): scope this to the caller's OWN partition, not the
+            // fleet-global ListDirectors(). Two tenants can each own a Director with the SAME id (the registry
+            // key is (tenant, id)), so the fleet-global list can hold duplicate DirectorIds and ToDictionary
+            // would throw on the collision - a 500 in which one tenant's Director denies another tenant's whole
+            // voice-mode/all toggle. It would also map the caller's id to ANOTHER tenant's machine name.
+            // ListDirectors(tenant) yields ids unique within the partition (no duplicate-key throw) and only this
+            // tenant's machine names - which is all the fan-out below, itself tenant-scoped, ever looks up.
+            var machineByDirector = registry.ListDirectors(reqTenant.Value)
                 .ToDictionary(d => d.DirectorId, d => d.MachineName, StringComparer.Ordinal);
 
             // Every session the Gateway can see right now, de-duplicated by id. A session belongs to exactly
             // one Director, but the guard keeps a duplicated roster entry from being toggled (and counted) twice.
             // Hosted Multi-Tenancy: voice-mode/all is a fleet fan-out WRITE (voice family), scoped to the
             // caller's tenant resolved from its authenticated device key - so it toggles only the requester's
-            // own sessions, never another tenant's, and a request with no bound tenant is denied above.
+            // own sessions, never another tenant's, and a request with no bound tenant is denied above. FleetByDirector
+            // itself now builds its Director universe from ListDirectors(reqTenant) (audit H1 Codex residual), so a
+            // cross-tenant duplicate id cannot even enter this fold's universe, matching machineByDirector above.
             var byDirector = GatewayEndpoints.FleetByDirector(registry, pushedSessions, stale, reqTenant.Value);
             var targets = new List<(string DirectorId, string Machine, string Sid, string? Name)>();
             var seen = new HashSet<string>(StringComparer.Ordinal);

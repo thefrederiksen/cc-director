@@ -964,7 +964,13 @@ public sealed class GatewayHost : IAsyncDisposable
         // A cron job targets a MACHINE (#503): resolve it to a Director at fire time, launching one
         // via the launcher (the shipped /machines/{m}/director/start relay, #331) if none is running.
         var cronTargetResolver = new Running.RegistryDirectorTargetResolver(
-            () => Registry.ListDirectors(),
+            // Audit H1 (gap audit-e): list the target machine's Directors within the FIRE's tenant only, via the
+            // registry's tenant-scoped overload. The fleet-global ListDirectors() could match another tenant's
+            // Director on the same machine and persist that cross-tenant DirectorId in this tenant's
+            // CronRunRecord. The tenant is _tenantPass.Current - the scope the fire runs inside (the engine and
+            // the drain runner read the same seam); on self-host it is always Local.
+            tenant => Registry.ListDirectors(tenant),
+            () => _tenantPass.Current,
             new Running.RelayDirectorLauncher(Port, Token));
         // The single resolve-then-create path shared by the cron firing engine and the interactive
         // POST /machines/{machine}/sessions relay ("start a session on another computer"). Gateway Cleanup
