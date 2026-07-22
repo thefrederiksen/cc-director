@@ -110,12 +110,12 @@ internal static class GatewayEndpoints
         // created mission's DTO carries the additive workflowRunId. Null (old callers, tests) leaves
         // mission creation byte-identical to before.
         Workflows.WorkflowRunStore? workflowRuns = null,
-        // Store injection points: the host owns a single key vault, transcription telemetry log, and audio
+        // Store injection points: the host owns a single key vault, transcription history, and audio
         // archive and passes them here so the phone-recorder ingest transcriber (RecordingEndpoints) uses
         // the host's instances rather than newing its own. Null (old callers, tests) leaves RecordingEndpoints
         // to build its own defaults, byte-identical to before.
         Core.KeyVault? recordingKeyVault = null,
-        Transcription.TranscriptionTelemetryLog? transcriptionTelemetry = null,
+        Transcription.TranscriptionHistoryLog? transcriptionHistory = null,
         Transcription.TranscriptionAudioArchive? transcriptionAudioArchive = null,
         // Round 4 finding 1: the reliable display-state channel, so the hold endpoint can TRIGGER a prompt
         // push of the folded HoldState after a snooze / unsnooze instead of sending its own second hold
@@ -322,7 +322,7 @@ internal static class GatewayEndpoints
         var logoutVisibility = authEnabled ? "" : "style=\"display:none\"";
 
         // Phone recorder ingest (offline-recorded audio -> transcription -> vault).
-        RecordingEndpoints.Map(app, recordingKeyVault, transcriptionTelemetry, transcriptionAudioArchive);
+        RecordingEndpoints.Map(app, recordingKeyVault, transcriptionHistory, transcriptionAudioArchive);
 
         // Read-only view of the Communication Manager approval queue (see the phone's
         // pending drafts remotely). Step 1 of centralizing the comm queue on the Gateway.

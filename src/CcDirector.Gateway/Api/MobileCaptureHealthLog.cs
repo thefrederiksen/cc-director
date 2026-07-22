@@ -16,7 +16,7 @@ namespace CcDirector.Gateway.Api;
 /// On the hosted Gateway the write is SKIPPED (MTR-10 Gap H3): the session log is one shared,
 /// unpartitioned file with a single static lock and no reader on hosted, so persisting it would mix every
 /// tenant's cleaned transcript at rest. Because both endpoints route through <see cref="Persist"/>, gating
-/// it here closes the hosted write path in one place. Mirrors the archive skip #1985 / telemetry skip #1897.
+/// it here closes the hosted write path in one place. Mirrors the archive and local-history hosted guards.
 /// </summary>
 internal static class MobileCaptureHealthLog
 {
@@ -49,7 +49,7 @@ internal static class MobileCaptureHealthLog
         // Voice complete path reach it) every account's transcript text and diagnostics would mix at rest in
         // that one file and contend on that one lock. The log is a write-only diagnostic aid with no
         // production reader and no hosted read route, so there is nothing on hosted to serve it: mirror the
-        // transcription-audio archive skip beside it (MTR-10 Gap A, #1985) and the telemetry skip before that
+        // transcription-audio archive skip beside it (MTR-10 Gap A, #1985) and the local-history guard
         // (#1897) - stop the write on hosted. Self-host (including a self-host Gateway) stays byte-identical.
         if (GatewayHostedMode.IsHosted)
         {

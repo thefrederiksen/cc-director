@@ -83,7 +83,7 @@ window.fetch = (async (input: RequestInfo | URL, init?: RequestInit): Promise<Re
   if (url.includes("/wingman/transcribe")) return okJson({ transcript: "" });
   if (url.includes("/carmode/turn")) return okJson({ turnId: "x", spoken: "", actions: [], pendingConfirmation: false, timing: null });
   if (url.includes("/carmode/warmup")) return okJson({ warmed: true });
-  if (url.includes("/carmode/telemetry")) return okJson({ recorded: true });
+  if (url.includes("/carmode/diagnostics")) return okJson({ recorded: true });
   return realFetch(input, init);
 }) as typeof window.fetch;
 

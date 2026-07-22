@@ -4,14 +4,14 @@ using Xunit;
 namespace CcDirector.Gateway.Tests;
 
 /// <summary>
-/// The Car Mode telemetry store (performance round) keeps per-turn timing records, retained by AGE
+/// The Car Mode diagnostics store (performance round) keeps per-turn timing records, retained by AGE
 /// (90 days) with a growth-guard cap only. These tests drive it against a temp file to prove it records,
 /// hands back newest-first, prunes records older than the retention window, keeps records with an
 /// unparseable stamp, survives a corrupt file, and never stores any text.
 /// </summary>
-public sealed class CarModeTelemetryStoreTests : IDisposable
+public sealed class CarModeDiagnosticsStoreTests : IDisposable
 {
-    private readonly string _path = Path.Combine(Path.GetTempPath(), $"carmode-telemetry-{Guid.NewGuid():N}.json");
+    private readonly string _path = Path.Combine(Path.GetTempPath(), $"carmode-diagnostics-{Guid.NewGuid():N}.json");
 
     public void Dispose()
     {
@@ -23,7 +23,7 @@ public sealed class CarModeTelemetryStoreTests : IDisposable
     /// <summary>The device partition these single-device tests write and read under.</summary>
     private const string Device = "abc123def456";
 
-    private static CarModeTelemetryRecord Record(string turnId, string receivedAtUtc, double totalTurnMs = 2500) => new()
+    private static CarModeDiagnosticsRecord Record(string turnId, string receivedAtUtc, double totalTurnMs = 2500) => new()
     {
         TurnId = turnId,
         ReceivedAtUtc = receivedAtUtc,
@@ -38,7 +38,7 @@ public sealed class CarModeTelemetryStoreTests : IDisposable
     [Fact]
     public void Add_ThenRecent_ReturnsNewestFirst()
     {
-        var store = new CarModeTelemetryStore(_path, _ => { });
+        var store = new CarModeDiagnosticsStore(_path, _ => { });
         store.Add(Device, Record("t1", DateTime.UtcNow.AddMinutes(-2).ToString("o")));
         store.Add(Device, Record("t2", DateTime.UtcNow.AddMinutes(-1).ToString("o")));
 
@@ -51,9 +51,23 @@ public sealed class CarModeTelemetryStoreTests : IDisposable
     }
 
     [Fact]
+    public void Clear_RemovesOnlyTheRequestedDevicePartition()
+    {
+        var store = new CarModeDiagnosticsStore(_path, _ => { });
+        store.Add(Device, Record("mine", DateTime.UtcNow.ToString("o")));
+        var other = "other-device";
+        store.Add(other, Record("theirs", DateTime.UtcNow.ToString("o")) with { DeviceHash = other });
+
+        Assert.Equal(1, store.Clear(Device));
+
+        Assert.Empty(store.Recent(Device, 10));
+        Assert.Equal("theirs", Assert.Single(store.Recent(other, 10)).TurnId);
+    }
+
+    [Fact]
     public void Prune_DropsRecordsOlderThanNinetyDays_KeepsRecent()
     {
-        var store = new CarModeTelemetryStore(_path, _ => { });
+        var store = new CarModeDiagnosticsStore(_path, _ => { });
         store.Add(Device, Record("old", DateTime.UtcNow.AddDays(-120).ToString("o")));
         store.Add(Device, Record("fresh", DateTime.UtcNow.AddDays(-1).ToString("o")));
 
@@ -66,7 +80,7 @@ public sealed class CarModeTelemetryStoreTests : IDisposable
     [Fact]
     public void Prune_KeepsRecordWithUnparseableStamp_RatherThanDiscardIt()
     {
-        var store = new CarModeTelemetryStore(_path, _ => { });
+        var store = new CarModeDiagnosticsStore(_path, _ => { });
         store.Add(Device, Record("weird", "not-a-date"));
 
         Assert.Equal(1, store.Count(Device));
@@ -75,10 +89,10 @@ public sealed class CarModeTelemetryStoreTests : IDisposable
     [Fact]
     public void Load_RestoresPersistedRecords_AcrossInstances()
     {
-        var first = new CarModeTelemetryStore(_path, _ => { });
+        var first = new CarModeDiagnosticsStore(_path, _ => { });
         first.Add(Device, Record("t1", DateTime.UtcNow.ToString("o")));
 
-        var second = new CarModeTelemetryStore(_path, _ => { });
+        var second = new CarModeDiagnosticsStore(_path, _ => { });
 
         Assert.Equal(1, second.Count(Device));
         Assert.Equal("t1", second.Recent(Device, 1)[0].TurnId);
@@ -89,8 +103,8 @@ public sealed class CarModeTelemetryStoreTests : IDisposable
     {
         // The cut-off-reply diagnostic: a reply that was synthesized but NOT heard to the end must persist
         // as Completed=false with its played duration and clip count, so a truncated reply is visible at
-        // /carmode/telemetry the next time it happens - the whole reason these fields were added.
-        var store = new CarModeTelemetryStore(_path, _ => { });
+        // /carmode/diagnostics the next time it happens - the whole reason these fields were added.
+        var store = new CarModeDiagnosticsStore(_path, _ => { });
         var cutOff = Record("cut", DateTime.UtcNow.ToString("o")) with
         {
             Chunks = 1,
@@ -100,7 +114,7 @@ public sealed class CarModeTelemetryStoreTests : IDisposable
         };
         store.Add(Device, cutOff);
 
-        var reloaded = new CarModeTelemetryStore(_path, _ => { }).Recent(Device, 1)[0];
+        var reloaded = new CarModeDiagnosticsStore(_path, _ => { }).Recent(Device, 1)[0];
 
         Assert.False(reloaded.Completed); // the reply did not play to its end
         Assert.Equal(1, reloaded.Chunks);
@@ -115,7 +129,7 @@ public sealed class CarModeTelemetryStoreTests : IDisposable
         // tries before the turn was taken) and the mic-contention hypothesis fields (the whole synthesized
         // clip length, how far playback reached, whether the mic was re-opened mid-playback, and how many
         // rolling "stop" polls ran) must all persist so ONE real phone turn is enough to read the truth.
-        var store = new CarModeTelemetryStore(_path, _ => { });
+        var store = new CarModeDiagnosticsStore(_path, _ => { });
         var turn = Record("mobile", DateTime.UtcNow.ToString("o")) with
         {
             TranscribeAttempts = 4,             // "over and out" took four tries to land - finicky
@@ -128,7 +142,7 @@ public sealed class CarModeTelemetryStoreTests : IDisposable
         };
         store.Add(Device, turn);
 
-        var reloaded = new CarModeTelemetryStore(_path, _ => { }).Recent(Device, 1)[0];
+        var reloaded = new CarModeDiagnosticsStore(_path, _ => { }).Recent(Device, 1)[0];
 
         Assert.Equal(4, reloaded.TranscribeAttempts);
         Assert.Equal(5200, reloaded.ClipDurationMs);
@@ -143,7 +157,7 @@ public sealed class CarModeTelemetryStoreTests : IDisposable
     {
         File.WriteAllText(_path, "{ this is not valid json ][");
 
-        var store = new CarModeTelemetryStore(_path, _ => { });
+        var store = new CarModeDiagnosticsStore(_path, _ => { });
 
         Assert.Equal(0, store.Count(Device));
         var corrupt = Directory.GetFiles(Path.GetDirectoryName(_path)!, Path.GetFileName(_path) + ".corrupt-*");

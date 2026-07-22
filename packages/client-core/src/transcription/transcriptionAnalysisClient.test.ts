@@ -24,7 +24,6 @@ function stats(fields: Partial<TranscriptionStats> = {}): TranscriptionStats {
     cleanupAppliedTurns: 0,
     totalWords: 0,
     totalCharacters: 0,
-    totalAudioBytes: 0,
     ...fields,
   };
 }

@@ -18,26 +18,27 @@ namespace CcDirector.Gateway.Api;
 ///
 /// Performance round: the turn response also carries a server-minted turnId and a per-stage server timing
 /// block so the browser can merge its own client stamps and post ONE compact timing record to the
-/// telemetry store below. Two more routes serve that store:
-///   POST /carmode/telemetry       - the browser posts one merged record per turn.
-///   GET  /carmode/telemetry       - a self-contained HTML dashboard of recent turns and aggregates.
-///   GET  /carmode/telemetry/data  - the raw records as JSON, which the dashboard fetches.
+/// local diagnostics store below. The owner can inspect and clear it:
+///   POST   /carmode/diagnostics       - the browser posts one merged record per turn.
+///   GET    /carmode/diagnostics       - a self-contained HTML dashboard.
+///   GET    /carmode/diagnostics/data  - this device's records as JSON.
+///   DELETE /carmode/diagnostics       - clear this device's records.
 ///
-/// Telemetry is stored and served PER DEVICE. The write files the record under the device hash the server
+/// Diagnostics are stored and served PER DEVICE. The write files the record under the device hash the server
 /// derives from the caller's own credential, and the data read returns only that same device's records, so
 /// one caller's turn timings are never disclosed to another.
 ///
 /// Auth: the routes are not on the public allow-list and are not under /m/, so the host-wide auth gate
 /// already requires the caller's per-device key (or the shared token), per the Gateway auth rule. THE
 /// CREDENTIAL THE GATE ACCEPTED - not this file's own reading of the request - keys the server-side
-/// conversation context and the telemetry partition, so multi-turn works per device without any history
+/// conversation context and the diagnostics partition, so multi-turn works per device without any history
 /// crossing the wire and a caller cannot be authenticated as one identity while being partitioned as
 /// another. The credential is used only as an opaque key and a one-way device hash, and is never
 /// logged (DT-05).
 /// </summary>
 internal static class CarModeEndpoint
 {
-    public static void Map(IEndpointRouteBuilder app, CarModeBrain brain, CarModeTurnCache turnCache, CarModeTelemetryStore telemetry, CarModeWarmup warmup)
+    public static void Map(IEndpointRouteBuilder app, CarModeBrain brain, CarModeTurnCache turnCache, CarModeDiagnosticsStore diagnostics, CarModeWarmup warmup)
     {
         // Keep-warm (Car Mode performance round): the browser calls this the instant the owner taps Start,
         // and every few minutes WHILE Car Mode is open, so the hosted model + text-to-speech are hot before
@@ -76,14 +77,14 @@ internal static class CarModeEndpoint
             if (req is null || string.IsNullOrWhiteSpace(req.Text))
                 return Results.Json(new { error = "text is required" }, statusCode: StatusCodes.Status400BadRequest);
 
-            // The per-device conversation key is the SAME authenticated credential the telemetry partition
+            // The per-device conversation key is the SAME authenticated credential the diagnostics partition
             // uses. It was read from the raw headers here too, which had the same flaw: a caller could be
             // authenticated on one credential and given another device's conversation context.
             var deviceKey = AuthenticatedCredential(ctx);
             var text = req.Text.Trim();
             // Offline resilience Phase 4b (issue #1427): the client sends its durable command-audio record id
             // as the Idempotency-Key so an already-sent turn whose result was lost in a dead zone auto-retries
-            // and ACTS at most once. When present it also becomes the turnId, so a retry's telemetry ties back
+            // and ACTS at most once. When present it also becomes the turnId, so a retry's diagnostics tie back
             // to the original rather than double-counting. When absent (a legacy caller), the old behavior
             // holds: a fresh server turnId and a direct brain run on the request token.
             var idemKey = ExtractIdempotencyKey(ctx);
@@ -111,7 +112,7 @@ internal static class CarModeEndpoint
                     actions = result.Actions.Select(a => new { tool = a.Tool, summary = a.Summary }),
                     pendingConfirmation = result.PendingConfirmation,
                     // The per-stage server timing, inline, so the browser posts it back merged with its
-                    // own client stamps as one telemetry record (performance round).
+                    // own client stamps as one diagnostics record (performance round).
                     timing = result.Timing is null ? null : new
                     {
                         totalMs = result.Timing.TotalMs,
@@ -155,13 +156,13 @@ internal static class CarModeEndpoint
         // body is ever used as the discriminator - a caller-supplied value (the turn id in particular) is
         // not trusted, and the partition is recorded at write time so records can never accumulate
         // unpartitioned behind a read filter.
-        app.MapPost("/carmode/telemetry", (HttpContext ctx, CarModeTelemetryPost? req) =>
+        app.MapPost("/carmode/diagnostics", (HttpContext ctx, CarModeDiagnosticsPost? req) =>
         {
             if (req is null || string.IsNullOrWhiteSpace(req.TurnId))
                 return Results.Json(new { error = "turnId is required" }, statusCode: StatusCodes.Status400BadRequest);
 
             var deviceHash = DevicePartition(ctx);
-            var record = new CarModeTelemetryRecord
+            var record = new CarModeDiagnosticsRecord
             {
                 TurnId = req.TurnId,
                 ReceivedAtUtc = DateTime.UtcNow.ToString("o"),
@@ -198,7 +199,7 @@ internal static class CarModeEndpoint
                 ActionsCount = req.ActionsCount,
                 PendingConfirmation = req.PendingConfirmation,
             };
-            var held = telemetry.Add(deviceHash, record);
+            var held = diagnostics.Add(deviceHash, record);
             return Results.Json(new { recorded = true, held });
         });
 
@@ -206,7 +207,7 @@ internal static class CarModeEndpoint
         // caller's credential exactly as the write derives it, so one device's turns are never handed to
         // another. The held count is this device's count too - a process-wide total would disclose other
         // devices' activity as an aggregate.
-        app.MapGet("/carmode/telemetry/data", (HttpContext ctx) =>
+        app.MapGet("/carmode/diagnostics/data", (HttpContext ctx) =>
         {
             var deviceHash = DevicePartition(ctx);
             var limit = 200;
@@ -214,25 +215,27 @@ internal static class CarModeEndpoint
             return Results.Json(new
             {
                 generatedAtUtc = DateTime.UtcNow,
-                held = telemetry.Count(deviceHash),
-                records = telemetry.Recent(deviceHash, limit),
+                held = diagnostics.Count(deviceHash),
+                records = diagnostics.Recent(deviceHash, limit),
             });
         });
 
-        // The dashboard page itself is a static, record-free document: it carries no telemetry, it fetches
-        // /carmode/telemetry/data in the browser, and that read is partitioned above.
-        app.MapGet("/carmode/telemetry", (HttpContext ctx) =>
+        // The dashboard page itself is a static, record-free document; its data read is partitioned above.
+        app.MapGet("/carmode/diagnostics", (HttpContext ctx) =>
         {
             ctx.Response.Headers.CacheControl = "no-cache";
             ctx.Response.ContentType = "text/html; charset=utf-8";
-            return ctx.Response.WriteAsync(CarModeTelemetryPage.Html);
+            return ctx.Response.WriteAsync(CarModeDiagnosticsPage.Html);
         });
+
+        app.MapDelete("/carmode/diagnostics", (HttpContext ctx) =>
+            Results.Json(new { removed = diagnostics.Clear(DevicePartition(ctx)) }));
     }
 
     /// <summary>
     /// THE ONE caller identity in this file: THE EXACT CREDENTIAL THE AUTHENTICATION GATE ACCEPTED, which
     /// <see cref="AuthMiddleware.HasValidToken"/> stashes on the request. It is the storage partition for
-    /// telemetry and the per-device conversation key for a turn.
+    /// diagnostics and the per-device conversation key for a turn.
     ///
     /// This route deliberately does NOT read the Authorization header or the cookies itself. It used to, and
     /// that was the defect: the gate accepts a request if ANY presented credential is valid - it tries the
@@ -252,7 +255,7 @@ internal static class CarModeEndpoint
             ? credential as string ?? ""
             : "";
 
-    /// <summary>The telemetry storage partition: a one-way hash of the credential that authenticated this
+    /// <summary>The diagnostics storage partition: a one-way hash of the credential that authenticated this
     ///  request. Both the write and the data read derive it here, from this one helper, so the write can
     ///  never file a record under a partition the read would not ask for, and neither can be steered by
     ///  anything the caller supplies - not the posted body, not a query parameter, and not an unvalidated
@@ -271,10 +274,10 @@ internal static class CarModeEndpoint
     }
 }
 
-/// <summary>Body of POST /carmode/telemetry: the browser's client stamps plus the server timing it echoes
+/// <summary>Body of POST /carmode/diagnostics: the browser's client stamps plus the server timing it echoes
 /// back from the turn response, and small non-text turn facts. The server overrides the identity/build
 /// fields from its own side, so those are not part of this body.</summary>
-public sealed class CarModeTelemetryPost
+public sealed class CarModeDiagnosticsPost
 {
     public string TurnId { get; set; } = "";
     public double PauseToTranscribeMs { get; set; }

@@ -466,9 +466,9 @@ public sealed class GatewayHost : IAsyncDisposable
     // Car Mode (Voice-screen-actions phase, design B): the per-device "current subject" - the session the
     // owner is talking about - so "it" / "answer it" / "snooze it" resolve after a focus or a read.
     private readonly CarMode.CarModeSubjectStore _carModeSubjects = new();
-    // Car Mode performance round: the durable, Gateway-local store of per-turn timing records. The browser
-    // posts ONE record per turn; GET /carmode/telemetry reads them back. Retained about 90 days by age.
-    private readonly CarMode.CarModeTelemetryStore _carModeTelemetry = new();
+    // Car Mode performance round: the durable, Gateway-local store of per-turn timing diagnostics. The
+    // browser posts one minimized record per turn; the owner can inspect or clear them. Retained 90 days.
+    private readonly CarMode.CarModeDiagnosticsStore _carModeDiagnostics = new();
     // Car Mode offline resilience Phase 4b (issue #1427): idempotency + single-flight cache for
     // POST /carmode/turn keyed by the client's turn id, so an already-sent turn whose result was lost in a
     // dead zone auto-retries and ACTS at most once. In-memory, one instance for the whole Gateway.
@@ -516,7 +516,7 @@ public sealed class GatewayHost : IAsyncDisposable
     // the retired statics; no behavior change. The voice-turn upload store (VoiceTurnUploads root) is
     // distinct from _dictationUploads above (DictationUploads root) - two roots, two subsystems.
     private readonly Prompts.GatewayPromptLog _promptLog;
-    private readonly Transcription.TranscriptionTelemetryLog _transcriptionTelemetry = new();
+    private readonly Transcription.TranscriptionHistoryLog _transcriptionHistory = new();
     private readonly Transcription.TranscriptionAudioArchive _transcriptionAudioArchive = new();
     // The voice-turn staging root, likewise bound to an explicitly-named partition. This path stages a clip
     // for the duration of one turn and then deletes it; it writes no delivery record and performs no
@@ -558,10 +558,6 @@ public sealed class GatewayHost : IAsyncDisposable
             activelyTranscribing: marks.IsActivelyTranscribing(tenant, sessionId),
             undelivered: uploads.IsSessionLocked(sessionId),
             progressing: marks.IsTranscribing(tenant, sessionId));
-    // Issue #629: the durable, bounded, restart-surviving retry queue behind the login-telemetry
-    // relay. Constructed here (loads any events a previous run left on disk), wired into the relay
-    // endpoint, started flushing in StartAsync, and disposed in StopAsync.
-    private readonly Api.TelemetryRetryQueue _telemetryQueue;
     // Web Push (mobile app-icon "needs you" dot): the VAPID key pair, the set of subscribed devices,
     // the loopback HTTP client the notifier reads /sessions with, and the background notifier itself.
     // The stores are constructed in the ctor (load-on-construct); the notifier is built and started in
@@ -596,19 +592,6 @@ public sealed class GatewayHost : IAsyncDisposable
     /// Override the cron run-history store file (epic #479, #483). Tests pass an isolated temp path;
     /// production omits it for the shared default at <c>%LOCALAPPDATA%\cc-director\cronruns.json</c>.
     /// </param>
-    /// <param name="telemetryQueuePath">
-    /// Override the durable telemetry retry-queue store file (issue #629). Tests pass an isolated temp
-    /// path; production omits it for the shared default at
-    /// <c>%LOCALAPPDATA%\cc-director\config\director\telemetry-queue.json</c>.
-    /// </param>
-    /// <param name="telemetryQueueMaxSize">
-    /// Override the telemetry retry-queue bound (issue #629). Tests pass a small value to exercise
-    /// eviction; production omits it for <see cref="Api.TelemetryRetryQueue.DefaultMaxSize"/>.
-    /// </param>
-    /// <param name="telemetryRetryInterval">
-    /// Override how often the telemetry retry-queue flusher re-attempts delivery (issue #629). Tests
-    /// pass a short interval; production omits it for a sensible default.
-    /// </param>
     /// <param name="account">
     /// Override the Gateway-hosted DevThrottle credential service (issue #636). Tests pass a service
     /// over an in-memory or temp-directory store so they never touch the real Windows Data Protection
@@ -631,12 +614,16 @@ public sealed class GatewayHost : IAsyncDisposable
     /// The dictation complete path transcribes BEFORE it delivers, so an end-to-end test of the delivery
     /// arm cannot reach that arm at all without a transcription that succeeds - and the hosted base URL is a
     /// compile-time constant, so there is no way to point it at a local stub. Tests pass a service built over
-    /// a stub HttpClient (and their own telemetry + audio archive, which otherwise default to process-wide
+    /// a stub HttpClient (and their own local history + audio archive, which otherwise default to process-wide
     /// Shared instances that write to the real user's directories). Production omits it and the host builds
     /// the service over its own key vault, exactly as before.
     /// </param>
-    public GatewayHost(int port = DefaultPort, string? token = null, bool? authEnabled = null, string? instancesDirectory = null, string? turnBriefDirectory = null, string? keyVaultPath = null, string? workListsPath = null, string? cronJobsPath = null, string? cronRunsPath = null, string? devicesPath = null, string? telemetryQueuePath = null, int? telemetryQueueMaxSize = null, TimeSpan? telemetryRetryInterval = null, Core.Account.DevThrottleAccountService? account = null, bool? streamMode = null, string? inputStatsPath = null, string? promptLogPath = null, string? snoozePath = null, string? pushSubscriptionsPath = null, string? wingmanInstructionsPath = null, string? missionsPath = null, string? missionNotesPath = null, Transcription.GatewayTranscriptionService? dictationTranscription = null, Core.Agents.AgentKind? brainTool = null)
+    public GatewayHost(int port = DefaultPort, string? token = null, bool? authEnabled = null, string? instancesDirectory = null, string? turnBriefDirectory = null, string? keyVaultPath = null, string? workListsPath = null, string? cronJobsPath = null, string? cronRunsPath = null, string? devicesPath = null, Core.Account.DevThrottleAccountService? account = null, bool? streamMode = null, string? inputStatsPath = null, string? promptLogPath = null, string? snoozePath = null, string? pushSubscriptionsPath = null, string? wingmanInstructionsPath = null, string? missionsPath = null, string? missionNotesPath = null, Transcription.GatewayTranscriptionService? dictationTranscription = null, Core.Agents.AgentKind? brainTool = null)
     {
+        var retiredFilesRemoved = Core.Configuration.LegacyPrivacyDataCleanup.Run();
+        if (retiredFilesRemoved > 0)
+            FileLog.Write($"[GatewayHost] Removed {retiredFilesRemoved} retired local tracking file(s).");
+
         // Resolve and VALIDATE the warm-brain tool up front, before any resource is opened: a brain tool
         // that cannot be hosted is a configuration error that must fail loudly at construction, not
         // silently later at the brain's first spawn. BrainToolConfig.Get reads config.json; a test passes
@@ -931,8 +918,7 @@ public sealed class GatewayHost : IAsyncDisposable
         // store here (a headless container has no Keychain and no secret service), so on Linux Account
         // stays null - an explicit, logged null, not a silent fallback; a local install keeps its data
         // local and the hosted Supabase story owns Linux durable credentials later. The platform guards
-        // also satisfy the platform-compatibility analyzer. Resolved BEFORE the telemetry queue so the
-        // queue can attach the Gateway's own account token when forwarding (issue #639).
+        // also satisfy the platform-compatibility analyzer.
         if (account is not null)
             Account = account;
         else if (OperatingSystem.IsWindows())
@@ -942,25 +928,6 @@ public sealed class GatewayHost : IAsyncDisposable
         else
             FileLog.Write("[GatewayHost] DevThrottle credential service not built: no local operating-system credential store on this platform (Linux); Account stays null");
 
-        // Durable telemetry retry queue (issue #629): one JSON file under the Gateway config directory
-        // (the DeviceRegistry / gateway-token precedent), loaded here so events a previous run left
-        // undelivered survive a restart. A short-timeout forwarder client keeps a slow/unreachable
-        // backend from holding a flush pass open. Tests pass an isolated path + a small bound + a short
-        // retry interval so they never touch the real store and can exercise eviction quickly.
-        // Issue #639: when the Gateway has a credential service the queue is wired with a Gateway token
-        // source, so it attaches the GATEWAY's own account token at forward time (and holds events while
-        // the Gateway is not signed in). On a host with no credential service the source stays null and
-        // the queue keeps its Phase 1 behaviour (forward with the per-event stored bearer, unchanged).
-        var telemetryForwardClient = new HttpClient { Timeout = TimeSpan.FromSeconds(10) };
-        var gatewayTelemetryTokenSource = Account is not null
-            ? new Api.GatewayAccountTelemetryTokenSource(Account)
-            : null;
-        _telemetryQueue = new Api.TelemetryRetryQueue(
-            telemetryQueuePath ?? Path.Combine(CcStorage.Config(), "director", "telemetry-queue.json"),
-            telemetryForwardClient,
-            telemetryRetryInterval ?? TimeSpan.FromSeconds(30),
-            telemetryQueueMaxSize ?? Api.TelemetryRetryQueue.DefaultMaxSize,
-            gatewayTelemetryTokenSource);
         // A cron job targets a MACHINE (#503): resolve it to a Director at fire time, launching one
         // via the launcher (the shipped /machines/{m}/director/start relay, #331) if none is running.
         var cronTargetResolver = new Running.RegistryDirectorTargetResolver(
@@ -1781,9 +1748,9 @@ public sealed class GatewayHost : IAsyncDisposable
         GatewayEndpoints.Map(_app, Registry, version, Token, AuthEnabled,
             netDiagRollup: _netDiagRollup,
             // Store injection points: hand the phone-recorder ingest (RecordingEndpoints) the host's single
-            // key vault + transcription telemetry + audio archive, so it stops newing its own copies.
+            // key vault + transcription history + audio archive, so it stops newing its own copies.
             recordingKeyVault: _keyVault,
-            transcriptionTelemetry: _transcriptionTelemetry,
+            transcriptionHistory: _transcriptionHistory,
             transcriptionAudioArchive: _transcriptionAudioArchive,
             requestShutdown: () =>
             {
@@ -2069,9 +2036,9 @@ public sealed class GatewayHost : IAsyncDisposable
             owners: SessionOwners,
             instructionsProvider: () => _instructionsStore.ActiveContent,
             // Store injection points: hand the endpoint the host's single voice-turn upload store and the
-            // host's transcription telemetry + audio archive, so it stops newing its own copies.
+            // host's transcription history + audio archive, so it stops newing its own copies.
             uploadStore: _voiceTurnUploads,
-            telemetry: _transcriptionTelemetry,
+            history: _transcriptionHistory,
             audioArchive: _transcriptionAudioArchive,
             tenantBoundary: _tenantBoundary);
 
@@ -2095,7 +2062,7 @@ public sealed class GatewayHost : IAsyncDisposable
                 var key = _keyVault.Get(tts.KeyName) ?? "";
                 return (tts.BaseUrl, Core.Configuration.TtsVoiceConfig.Resolve(mode), Core.Configuration.TtsModelConfig.Resolve(mode), key);
             });
-        Api.CarModeEndpoint.Map(_app, carModeBrain, _carModeTurnCache, _carModeTelemetry, carModeWarmup);
+        Api.CarModeEndpoint.Map(_app, carModeBrain, _carModeTurnCache, _carModeDiagnostics, carModeWarmup);
         // Editable/versioned wingman instructions settings surface (issue #537), incl. A/B test
         // over saved training sessions (reads the shared training store; uses the hosted wingman brain).
         WingmanInstructionsEndpoint.Map(_app, _instructionsStore, _trainingStore, WingmanBrainAsync);
@@ -2110,7 +2077,7 @@ public sealed class GatewayHost : IAsyncDisposable
         // in resumable chunks and the Gateway assembles → transcribes → injects the turn into the
         // owning session itself, so a refresh / dropped connection cannot lose a recorded utterance.
         GatewayDictationEndpoint.Map(_app, Registry, SessionOwners, Token,
-            _dictationTranscription ?? new Transcription.GatewayTranscriptionService(_keyVault, telemetry: _transcriptionTelemetry, audioArchive: _transcriptionAudioArchive), _transcribingSessions, new Api.DictationTenantGate(_dictationUploads, _tenantBoundary), Devices,
+            _dictationTranscription ?? new Transcription.GatewayTranscriptionService(_keyVault, history: _transcriptionHistory, audioArchive: _transcriptionAudioArchive), _transcribingSessions, new Api.DictationTenantGate(_dictationUploads, _tenantBoundary), Devices,
             pushedSessions: PushedSessions,
             sendCommand: SendCommandAsync);
         // Durable per-upload-id dictation record (issue #1183): a PENDING upload's chunks are retained
@@ -2163,26 +2130,6 @@ public sealed class GatewayHost : IAsyncDisposable
         // yield, aging WIP, and high-effort/no-outcome runs with cost + attention-burden. Read-only.
         Api.GovernanceReportEndpoints.Map(_app, _outcomeLedger);
 
-        // Gateway Centralization Phase 1 (issue #628): the inbound login-telemetry RELAY. The Director
-        // POSTs its login-telemetry event here (instead of the cloud) and the Gateway forwards it on,
-        // so the Gateway becomes the single egress. Best-effort: a backend failure is logged and the
-        // caller still gets a non-5xx; the inbound access token is forwarded unchanged but NEVER logged.
-        // Inherits the host-wide token middleware above (the existing gateway.token convention).
-        // Issue #629: the relay enqueues every accepted event into the durable retry queue (which owns
-        // delivery, retry-with-backoff, FIFO flush, the bound, and restart survival) instead of
-        // forwarding inline. The flush loop is started just below in StartAsync.
-        TelemetryRelayEndpoint.Map(_app, _telemetryQueue, _tenantBoundary);
-
-        // Gateway Centralization Phase 1 (issue #631): the inbound Director-STARTUP telemetry endpoint.
-        // A Director POSTs a startup event here on launch (Director-side firing is issue #632); the
-        // Gateway RECORDS it (a log line carrying director_id + app_version) so the startup is observable
-        // Gateway-side, then BEST-EFFORT forwards it to the cloud ONLY when a startup endpoint is
-        // configured (env DEVTHROTTLE_STARTUP_TELEMETRY_URL). The backend has no startup endpoint yet
-        // (flagged dependency), so with no URL configured the event is recorded locally and the caller
-        // still gets a 202 - no error. Forwarding reuses the SAME durable retry queue as the login relay
-        // (issues #628 / #629), adding no new forwarder. Inherits the host-wide token middleware above.
-        DirectorStartupTelemetryEndpoint.Map(_app, _telemetryQueue, _tenantBoundary, Registry);
-
         // Gateway Centralization Phase 2 (issue #638): GET /account/status answers "is the Gateway
         // signed in to DevThrottle, and as whom?" computed ENTIRELY LOCALLY from the Gateway-hosted
         // credential service (issue #636, the reused DevThrottleAccountService exposed as Account) -
@@ -2218,7 +2165,7 @@ public sealed class GatewayHost : IAsyncDisposable
         // last-seen and a per-device revoke, but the Cockpit must never hold the account token or call the
         // cloud directly - the token lives here on the Gateway. So the Gateway proxies: it reads its own
         // stored account token (the SAME GetAccessTokenForForwarding credential it uses to forward
-        // telemetry/login to the cloud) and calls the cloud device registry through DeviceRegistryClient,
+        // authenticated account operations) and calls the cloud device registry through DeviceRegistryClient,
         // returning a local token-free DTO (security rule DT-05). Signed-out yields an explicit
         // signedIn:false envelope (never a fabricated empty list) and an unreachable cloud yields a clear
         // 502 (logged). The injectable HttpClient is the test seam. This is distinct from the LOCAL pairing
@@ -2269,9 +2216,9 @@ public sealed class GatewayHost : IAsyncDisposable
         // through this one endpoint - it resolves the mode + key and runs the right provider (in-process
         // Whisper, or the resolved provider-compatible batch endpoint). Optional ?correct=true also runs
         // the validated dictionary correction, keeping that out of the callers too.
-        TranscriptionBatchEndpoint.Map(_app, _keyVault, _transcriptionTelemetry, _transcriptionAudioArchive);
+        TranscriptionBatchEndpoint.Map(_app, _keyVault, _transcriptionHistory, _transcriptionAudioArchive);
 
-        // Read-only analysis over the LOCAL transcription telemetry log: latency percentiles, cleanup
+        // Read-only analysis over the LOCAL minimized transcription history: latency percentiles, cleanup
         // behaviour, most-corrected terms, and word frequencies, so any agent can query the Gateway to
         // see how fast and how good transcription is - all from data on this machine, never a server.
         Api.TranscriptionAnalysisEndpoint.Map(_app);
@@ -2506,12 +2453,6 @@ public sealed class GatewayHost : IAsyncDisposable
         FileLog.Write($"[GatewayHost] voice-turn upload sweep started: every " +
             $"{voiceTurnUploadSchedule.TotalMinutes:0.###}min, removing staging idle longer than " +
             $"{VoiceTurnUploadMaxAge.TotalHours:0.###}h");
-
-        // Issue #629: start the durable telemetry retry-queue flusher. It drains any events restored
-        // from disk on construction (so a backend outage that spanned the previous run's lifetime now
-        // delivers) and every event the relay enqueues going forward, in FIFO order, retrying with
-        // backoff while the backend is unreachable.
-        _telemetryQueue.StartFlushing();
 
         // Issue #640: start the Gateway-owned background token refresh. Start() returns immediately (the
         // first sweep runs after a short delay), so this never blocks startup. When the cached access
@@ -2800,11 +2741,6 @@ public sealed class GatewayHost : IAsyncDisposable
         try { _hostedAiSpendSweep?.Dispose(); } catch (Exception ex) { FileLog.Write($"[GatewayHost] hosted-ai spend sweep dispose error: {ex.Message}"); }
         _pushNotifier = null;
         try { _pushLoopbackHttp.Dispose(); } catch (Exception ex) { FileLog.Write($"[GatewayHost] push loopback client dispose error: {ex.Message}"); }
-
-        // Issue #629: stop the telemetry retry-queue flusher. The queue file is written through on
-        // every mutation, so any undelivered events are already on disk and reload on the next start -
-        // stopping never loses them.
-        try { await _telemetryQueue.DisposeAsync(); } catch (Exception ex) { FileLog.Write($"[GatewayHost] telemetry queue dispose error: {ex.Message}"); }
 
         // Turn-end watcher + voice sweep first (they drive the brain), then the brain itself - the
         // supervisor's dispose gracefully stops the hosted claude.exe (never leaked).

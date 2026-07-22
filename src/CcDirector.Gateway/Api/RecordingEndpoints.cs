@@ -143,13 +143,13 @@ internal static class RecordingEndpoints
     public static HostedDenyGroup Map(
         IEndpointRouteBuilder outer,
         KeyVault? keyVault = null,
-        TranscriptionTelemetryLog? telemetry = null,
+        TranscriptionHistoryLog? history = null,
         TranscriptionAudioArchive? audioArchive = null)
     {
         FileLog.Write($"[RecordingEndpoints] mapping {Prefix} recording + dictionary routes; hosted={GatewayHostedMode.IsHosted} - on hosted the whole group is refused via the shared refusal primitive");
 
         var group = HostedRouteDeny.ExclusiveGroup(outer, Prefix, Denial());
-        MapRoutes(group, keyVault, telemetry, audioArchive);
+        MapRoutes(group, keyVault, history, audioArchive);
         return group;
     }
 
@@ -162,7 +162,7 @@ internal static class RecordingEndpoints
     private static void MapRoutes(
         HostedDenyGroup app,
         KeyVault? keyVault,
-        TranscriptionTelemetryLog? telemetry,
+        TranscriptionHistoryLog? history,
         TranscriptionAudioArchive? audioArchive)
     {
         // Lazily built on FIRST USE, not at host startup: constructing the service resolves
@@ -171,9 +171,9 @@ internal static class RecordingEndpoints
         // (500 with an explicit hosted-AI setup message) instead of preventing
         // the entire Gateway host from starting. On hosted the group discards every handler, so this
         // Lazy is never forced and the service is never built.
-        // In production the host owns the key vault + telemetry + audio archive and passes them, so the
+        // In production the host owns the key vault + local history + audio archive and passes them, so the
         // recording transcriber shares the host's single instances rather than newing its own copies.
-        var lazyService = new Lazy<RecordingIngestService>(() => BuildService(keyVault, telemetry, audioArchive));
+        var lazyService = new Lazy<RecordingIngestService>(() => BuildService(keyVault, history, audioArchive));
 
         app.MapPost("/recording", async (HttpContext ctx) =>
         {
@@ -528,7 +528,7 @@ internal static class RecordingEndpoints
 
     private static RecordingIngestService BuildService(
         KeyVault? keyVault,
-        TranscriptionTelemetryLog? telemetry,
+        TranscriptionHistoryLog? history,
         TranscriptionAudioArchive? audioArchive)
     {
         // Local transient store for transcripts (audio + markdown). Transcripts
@@ -557,7 +557,7 @@ internal static class RecordingEndpoints
         return new RecordingIngestService(
             root,
             transcriberFactory: () => new GatewayServiceRecordingTranscriber(
-                new GatewayTranscriptionService(keyVault ?? new KeyVault(), telemetry: telemetry, audioArchive: audioArchive)),
+                new GatewayTranscriptionService(keyVault ?? new KeyVault(), history: history, audioArchive: audioArchive)),
             filer,
             collectionDir);
     }

@@ -89,11 +89,11 @@ public sealed record CloudDeviceRegistrationResult(
 /// It lists the signed-in account's active devices with
 /// <c>GET /api/v1/devices</c> and revokes one with <c>DELETE /api/v1/devices/{id}</c>, both authenticated
 /// with the Bearer access token the Gateway already holds for cloud egress (the same credential
-/// <see cref="DevThrottleAccountService.GetAccessTokenForForwarding"/> returns for telemetry forwarding).
+/// <see cref="DevThrottleAccountService.GetAccessTokenForForwarding"/> returns for account operations).
 ///
-/// The endpoint base is resolved from <see cref="AccountTelemetryClient.ApiBaseUrlEnvVar"/> when set (so
+/// The endpoint base is resolved from <see cref="DevThrottleApi.BaseUrlEnvVar"/> when set (so
 /// development and QA can point at a local stub), otherwise the documented production default
-/// <see cref="AccountTelemetryClient.DefaultApiBaseUrl"/> - the SAME cloud base the Gateway already
+/// <see cref="DevThrottleApi.DefaultBaseUrl"/> - the SAME cloud base the Gateway already
 /// targets for the rest of its account egress, so this client introduces no new hard-coded URL.
 ///
 /// The access token is sent only as the Authorization header and is NEVER written to the log (security
@@ -131,31 +131,13 @@ public sealed class DeviceRegistryClient
     /// <summary>
     /// Creates the client. <paramref name="client"/> defaults to a short-timeout
     /// <see cref="HttpClient"/>; tests inject one over a stub handler. <paramref name="baseUrl"/>
-    /// defaults to the <see cref="AccountTelemetryClient.ApiBaseUrlEnvVar"/> override when set, otherwise
+    /// defaults to the <see cref="DevThrottleApi.BaseUrlEnvVar"/> override when set, otherwise
     /// the production default - the same resolution the rest of the account egress uses.
     /// </summary>
     public DeviceRegistryClient(HttpClient? client = null, string? baseUrl = null)
     {
         _client = client ?? new HttpClient(GatewayHttp.Handler()) { Timeout = TimeSpan.FromSeconds(10) };
-        _baseUrl = ResolveBaseUrl(baseUrl);
-    }
-
-    /// <summary>
-    /// Resolves the API base URL: the explicit <paramref name="baseUrl"/> argument when given
-    /// (trimmed, non-empty), otherwise the <see cref="AccountTelemetryClient.ApiBaseUrlEnvVar"/>
-    /// environment override, otherwise the production default. The trailing slash is removed so the path
-    /// concatenation never double-slashes.
-    /// </summary>
-    private static string ResolveBaseUrl(string? baseUrl)
-    {
-        if (!string.IsNullOrWhiteSpace(baseUrl))
-            return baseUrl.Trim().TrimEnd('/');
-
-        var fromEnv = Environment.GetEnvironmentVariable(AccountTelemetryClient.ApiBaseUrlEnvVar);
-        if (!string.IsNullOrWhiteSpace(fromEnv))
-            return fromEnv.Trim().TrimEnd('/');
-
-        return AccountTelemetryClient.DefaultApiBaseUrl;
+        _baseUrl = DevThrottleApi.ResolveBaseUrl(baseUrl);
     }
 
     /// <summary>

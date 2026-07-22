@@ -130,7 +130,7 @@ internal static class GatewayWingmanVoiceEndpoint
         Func<string>? instructionsProvider = null,
         HttpClient? ttsHttpClient = null,
         Voice.VoiceUploadStore? uploadStore = null,
-        Transcription.TranscriptionTelemetryLog? telemetry = null,
+        Transcription.TranscriptionHistoryLog? history = null,
         Transcription.TranscriptionAudioArchive? audioArchive = null,
         Tenancy.HostedTenantBoundary? tenantBoundary = null)
     {
@@ -163,7 +163,7 @@ internal static class GatewayWingmanVoiceEndpoint
         // (the resumable /wingman/utterance/complete and the one-shot /wingman/transcribe) go through
         // it, so they resolve the mode + key and pick the hosted endpoint exactly the same way every
         // other batch caller does - no second resolver.
-        var transcription = new Transcription.GatewayTranscriptionService(vault, telemetry: telemetry, audioArchive: audioArchive);
+        var transcription = new Transcription.GatewayTranscriptionService(vault, history: history, audioArchive: audioArchive);
 
         // Which voice sessions have a ready, playable spoken summary right now (the phone's list
         // shows a play button on these and can play without entering).

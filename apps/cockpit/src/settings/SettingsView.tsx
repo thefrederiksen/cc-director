@@ -2,11 +2,6 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { TABS, tabFromParam, type TabId } from "./settingsTabs";
 import {
-  getTelemetryConsent,
-  setTelemetryConsent,
-  type TelemetryConsent,
-} from "@devthrottle/client-core/telemetry/telemetryClient";
-import {
   getGatewaySettings,
   setAddressingMode,
   setAutostart,
@@ -61,7 +56,7 @@ import {
 //   Notifications - how a session that needs you reaches you: snooze length, browser notifications
 //   AI            - DevThrottle-hosted models, transcription, wingman, and voice
 //   Car Mode      - the phone's hands-free fleet control
-//   Privacy       - what data leaves this machine: usage telemetry, wingman training capture
+//   Training data - whether wingman summaries are retained for testing and improvement
 //
 // Every card carries a scope pill ("this machine" / "this browser" / "whole fleet") because the page
 // mixes all three and the reach of a change must be readable without reading the hint paragraph.
@@ -73,9 +68,8 @@ import {
 const SAMPLE_TEXT = "Hi, I'm your DevThrottle wingman. This is how I'll sound.";
 
 export function SettingsView() {
-  // The initial tab can be deep-linked with ?tab= (issue #1405 companion cleanup): the retired
-  // standalone Telemetry page redirects here, so an old bookmark lands straight on the telemetry setting
-  // rather than the default "This machine" tab. See settingsTabs.ts for the resolution rules.
+  // The initial tab can be deep-linked with ?tab=. Unknown or retired values fall back to
+  // "This machine"; see settingsTabs.ts for the resolution rules.
   const [params] = useSearchParams();
   const [tab, setTab] = useState<TabId>(() => tabFromParam(params.get("tab")));
   return (
@@ -114,7 +108,7 @@ export function SettingsView() {
       ) : tab === "carmode" ? (
         <CarModeTab />
       ) : (
-        <PrivacyTab />
+        <TrainingDataTab />
       )}
     </div>
   );
@@ -131,20 +125,10 @@ function CardHead({ title, scope }: { title: string; scope: Scope }) {
   );
 }
 
-// ---- "Privacy" tab: what data leaves this machine ------------------------------------------------
-//
-// The two consent switches, together: fleet-wide usage telemetry and wingman training capture. They were
-// split across a one-card "Telemetry" tab and the bottom of "This machine"; they are the same decision, so
-// they answer it in one place. Each card loads independently - a telemetry load failure must not blank the
-// training switch next to it.
+// ---- "Training data" tab --------------------------------------------------------------------------
 
-function PrivacyTab() {
-  return (
-    <>
-      <TelemetryCard />
-      <TrainingDataCard />
-    </>
-  );
+function TrainingDataTab() {
+  return <TrainingDataCard />;
 }
 
 // The wingman training-data capture switch. Reads/writes the same Gateway settings document as the "This
@@ -188,94 +172,9 @@ function TrainingDataCard() {
   );
 }
 
-// The fleet-wide richer-usage-telemetry consent (was the standalone Telemetry page, issue #978, then a tab
-// of its own, now a Privacy card). One fleet-wide setting on the Gateway, read from GET
-// /gateway/telemetry-consent and toggled via PUT. The always-on sign-in / startup auth-floor events are
-// never gated by it. A load failure replaces the card (no value to show); a SAVE failure keeps the toggle
-// on screen so the user can retry in place (the no-fallback rule - never a fabricated "off" state).
-function TelemetryCard() {
-  const [consent, setConsent] = useState<TelemetryConsent | null>(null);
-  const [loadError, setLoadError] = useState(false);
-  const [saveError, setSaveError] = useState(false);
-  const [busy, setBusy] = useState(false);
-  const [saved, setSaved] = useState(false);
-
-  const load = useCallback(async (signal?: AbortSignal) => {
-    try {
-      setLoadError(false);
-      setConsent(await getTelemetryConsent(signal));
-    } catch {
-      if (signal?.aborted) return;
-      setLoadError(true);
-    }
-  }, []);
-
-  useEffect(() => {
-    const controller = new AbortController();
-    void load(controller.signal);
-    return () => controller.abort();
-  }, [load]);
-
-  const toggle = async () => {
-    if (busy || consent === null) return;
-    setBusy(true); // immediate feedback: the control disables before the call returns
-    setSaved(false);
-    setSaveError(false);
-    try {
-      setConsent(await setTelemetryConsent(!consent.enabled));
-      setSaved(true);
-    } catch {
-      setSaveError(true);
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  if (loadError) {
-    return (
-      <div className="settings-error">
-        Could not load the telemetry setting from the Gateway.{" "}
-        <button type="button" className="settings-btn" onClick={() => void load()}>
-          Retry
-        </button>
-      </div>
-    );
-  }
-  if (consent === null) {
-    return <p className="settings-loading">Loading...</p>;
-  }
-
-  return (
-    <section className="settings-card">
-      <CardHead title="Usage telemetry" scope="whole fleet" />
-      <p className="settings-hint">
-        One fleet-wide setting, managed on the Gateway. When on, Directors report anonymous usage events
-        (event names and timestamps only - never your code, prompts, or credentials). When off, those
-        events stop fleet-wide. Sign-in and Director-startup events always flow so the account keeps
-        working. Applies to the whole fleet immediately.
-      </p>
-      <label className="settings-check">
-        <input type="checkbox" checked={consent.enabled} disabled={busy} onChange={() => void toggle()} />
-        Richer usage telemetry is {consent.enabled ? "ON" : "OFF"}
-      </label>
-
-      {saveError && (
-        <div className="settings-msg" role="alert">
-          Couldn&apos;t save the change - the Gateway did not apply it. The setting is unchanged; try again.
-        </div>
-      )}
-      {saved && !saveError && (
-        <div className="settings-msg">
-          Saved. Fleet-wide telemetry is now {consent.enabled ? "ON" : "OFF"}.
-        </div>
-      )}
-    </section>
-  );
-}
-
 // ---- The Gateway settings document -----------------------------------------------------------------
 //
-// Three tabs read this one document (This machine, Notifications' snooze, Privacy's training capture), so
+// Three tabs read this one document (This machine, Notifications' snooze, Training data), so
 // the load/error/busy/message plumbing lives here once. Each consumer mounts its own copy, which means one
 // fetch per tab - tabs unmount when you switch, so nothing double-fetches.
 //

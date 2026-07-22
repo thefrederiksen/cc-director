@@ -9,8 +9,8 @@ namespace CcDirector.Gateway.Account;
 /// Builds the Gateway-hosted DevThrottle credential service - the Gateway Centralization Phase 2
 /// foundation (issue #636). Phase 2 moves the DevThrottle account off each Director and onto the
 /// Gateway: this factory wires the reused <see cref="DevThrottleAccountService"/> (the same Core
-/// account type the Director side used, reused here as-is, not duplicated) to a credential store and
-/// authentication-event log rooted under the GATEWAY config directory (config/gateway), so the
+/// account type the Director side used, reused here as-is, not duplicated) to a credential store rooted
+/// under the GATEWAY config directory (config/gateway), so the
 /// Gateway holds the one machine-wide credential rather than each Director holding its own copy.
 ///
 /// The service stores the access-plus-refresh token pair encrypted at rest (Windows Data Protection),
@@ -97,7 +97,7 @@ public static class GatewayAccountFactory
         FileLog.Write("[GatewayAccountFactory] CreateForWindows: building the Gateway-hosted credential service");
 
         var store = new WindowsProtectedTokenStore(CcStorage.GatewayDevThrottleCredentialBlob());
-        var service = Build(store, CcStorage.GatewayDevThrottleAuthEventsLog());
+        var service = Build(store);
         SeedTestCredentialIfRequested(service);
         return service;
     }
@@ -114,24 +114,22 @@ public static class GatewayAccountFactory
         FileLog.Write("[GatewayAccountFactory] CreateForMac: building the Gateway-hosted credential service");
 
         var store = new MacKeychainProtectedTokenStore();
-        var service = Build(store, CcStorage.GatewayDevThrottleAuthEventsLog());
+        var service = Build(store);
         SeedTestCredentialIfRequested(service);
         return service;
     }
 
     /// <summary>
-    /// Creates the Gateway-hosted credential service over an explicit credential store and an explicit
-    /// authentication-event log path. Used by tests (which supply an in-memory or temp-directory store)
+    /// Creates the Gateway-hosted credential service over an explicit credential store.
+    /// Used by tests (which supply an in-memory or temp-directory store)
     /// and by non-Windows hosts that supply their own <see cref="IProtectedTokenStore"/>. Does NOT seed
     /// the test credential - callers that want the seed seam exercised use
     /// <see cref="SeedTestCredentialIfRequested"/> explicitly.
     /// </summary>
-    public static DevThrottleAccountService Build(IProtectedTokenStore store, string authEventsLogPath)
+    public static DevThrottleAccountService Build(IProtectedTokenStore store)
     {
         if (store is null)
             throw new ArgumentNullException(nameof(store));
-        if (string.IsNullOrWhiteSpace(authEventsLogPath))
-            throw new ArgumentException("Authentication-event log path is required", nameof(authEventsLogPath));
 
         var validator = new JwtAccessTokenValidator(
             ResolveSigningSecret(),
@@ -143,7 +141,6 @@ public static class GatewayAccountFactory
             // not change. The audience/issuer are unset here (this is the membership validator, not the
             // authorization-mode enrollment validator), so this only hardens the signature-algorithm surface.
             allowSymmetricHs256: !GatewayHostedMode.IsHosted);
-        var eventLog = new AuthEventLog(authEventsLogPath);
         // Issue #640 / #876: the real Gateway-owned token refresher. It exchanges the cached refresh
         // token for a fresh pair against the embedded production backend (environment override for
         // tests, see DevThrottleAuthBackend). An unreachable backend keeps the cached credential; a
@@ -152,7 +149,7 @@ public static class GatewayAccountFactory
         var refresher = new GatewayHttpTokenRefresher(new HttpClient { Timeout = TimeSpan.FromSeconds(10) });
 
         FileLog.Write("[GatewayAccountFactory] Build: Gateway credential service constructed");
-        return new DevThrottleAccountService(store, validator, eventLog, refresher);
+        return new DevThrottleAccountService(store, validator, refresher);
     }
 
     /// <summary>

@@ -202,8 +202,7 @@ public static class CcStorage
     /// <summary>The Director's cache of the GATEWAY-OWNED injected text:
     /// config/director/injected-text-cache.json. The authoritative value lives on the Gateway
     /// (GET /gateway/injected-text); this file is the last-known copy the Director reads synchronously at
-    /// session launch so a launch never waits on - or fails without - the network. Mirrors the
-    /// telemetry-consent cache next to it (<see cref="TelemetryConsentCache"/>).</summary>
+    /// session launch so a launch never waits on - or fails without - the network.</summary>
     public static string InjectedTextCache() =>
         Path.Combine(ToolConfig("director"), "injected-text-cache.json");
 
@@ -241,11 +240,11 @@ public static class CcStorage
     /// <summary>The Gateway's durable prompt + reply record: base/prompt-log/.</summary>
     public static string PromptLog() => Path.Combine(Base(), "prompt-log");
 
-    /// <summary>Transcription telemetry: base/transcription-log/.</summary>
-    public static string TranscriptionLog() => Path.Combine(Base(), "transcription-log");
+    /// <summary>Bounded local history behind Transcription Health: base/transcription-history/.</summary>
+    public static string TranscriptionHistory() => Path.Combine(Base(), "transcription-history");
 
-    /// <summary>Rolling archive of the audio behind each transcription, keyed by the telemetry turn id.
-    /// Bounded by age and count by its owner (TranscriptionAudioArchive); sits beside TranscriptionLog()
+    /// <summary>Rolling archive of the audio behind each transcription, keyed by the history turn id.
+    /// Bounded by age and count by its owner (TranscriptionAudioArchive); sits beside TranscriptionHistory()
     /// so a suspicious transcript line leads straight to the clip that produced it.</summary>
     public static string TranscriptionAudio() => Path.Combine(Base(), "transcription-audio");
 
@@ -367,35 +366,6 @@ public static class CcStorage
         Path.Combine(ToolConfig("director"), "devthrottle-credential.bin");
 
     /// <summary>
-    /// DevThrottle authentication-floor event log: config/director/devthrottle-auth-events.jsonl.
-    /// Append-only JSON-lines record of "logged-in" / "logout" events. Records only the event kind
-    /// and timestamp - never the token - so it can never leak a credential.
-    /// </summary>
-    public static string DevThrottleAuthEventsLog() =>
-        Path.Combine(ToolConfig("director"), "devthrottle-auth-events.jsonl");
-
-    /// <summary>
-    /// DevThrottle richer usage-telemetry sink: config/director/devthrottle-usage-events.jsonl.
-    /// Append-only JSON-lines record of the user-controllable usage events (issue #582), written only
-    /// while the usage-telemetry toggle is on. Distinct from the always-on authentication-floor log
-    /// (<see cref="DevThrottleAuthEventsLog"/>): when the toggle is off, nothing is written here while
-    /// the authentication events still flow. Records only an event name and timestamp - never the
-    /// token or the user's work.
-    /// </summary>
-    public static string DevThrottleUsageEventsLog() =>
-        Path.Combine(ToolConfig("director"), "devthrottle-usage-events.jsonl");
-
-    /// <summary>
-    /// The Director's last-known cache of the Gateway's fleet-wide telemetry-consent setting:
-    /// config/director/telemetry-consent-cache.json (issue #649). The Director reads the authoritative
-    /// value from the Gateway and caches it here; when the Gateway is unreachable it falls back to this
-    /// last-known value (degraded, decision #3) rather than guessing. Holds only the boolean consent and
-    /// the time it was cached - no token, no user data.
-    /// </summary>
-    public static string TelemetryConsentCache() =>
-        Path.Combine(ToolConfig("director"), "telemetry-consent-cache.json");
-
-    /// <summary>
     /// Encrypted DevThrottle account credential blob on the Gateway: config/gateway/devthrottle-credential.bin.
     /// The Gateway-Centralization Phase 2 foundation (issue #636): the access-plus-refresh token pair is
     /// written here encrypted at rest by the operating system credential store (Windows Data Protection on
@@ -405,16 +375,6 @@ public static class CcStorage
     /// </summary>
     public static string GatewayDevThrottleCredentialBlob() =>
         Path.Combine(ToolConfig("gateway"), "devthrottle-credential.bin");
-
-    /// <summary>
-    /// DevThrottle authentication-floor event log on the Gateway: config/gateway/devthrottle-auth-events.jsonl.
-    /// Append-only JSON-lines record of "logged-in" / "logout" events for the Gateway-hosted account
-    /// (issue #636). Records only the event kind and timestamp - never the token - so it can never leak a
-    /// credential. Distinct from the per-Director authentication log
-    /// (<see cref="DevThrottleAuthEventsLog"/>) under config/director.
-    /// </summary>
-    public static string GatewayDevThrottleAuthEventsLog() =>
-        Path.Combine(ToolConfig("gateway"), "devthrottle-auth-events.jsonl");
 
     // -- Life Operating System coaching directories --
 

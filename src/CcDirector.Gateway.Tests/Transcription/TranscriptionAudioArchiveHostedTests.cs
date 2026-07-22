@@ -8,7 +8,7 @@ namespace CcDirector.Gateway.Tests.Transcription;
 /// a GLOBAL age/count prune, so on a multi-tenant hosted Gateway it would mix every account's raw speech
 /// at rest and let one tenant's traffic prune another's diagnostic clips. It is a LOCAL self-host
 /// diagnostic aid - write-only, no read method, no public archive-read route - so the fix is the same one
-/// the telemetry log beside it already takes on hosted (#1897): stop the write. These tests pin BOTH
+/// the local history beside it already takes on hosted (#1897): stop the write. These tests pin BOTH
 /// directions of that gate, because a guard has two failure directions: under-refusing on hosted leaks
 /// cross-tenant audio at rest, and over-refusing on self-host silently deletes the diagnostic the archive
 /// exists to provide.

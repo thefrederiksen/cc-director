@@ -26,14 +26,12 @@ public sealed class GatewaySignInServiceTests : IDisposable
 {
     private readonly string _tempDir;
     private readonly string _blobPath;
-    private readonly string _authEventsPath;
 
     public GatewaySignInServiceTests()
     {
         _tempDir = Path.Combine(Path.GetTempPath(), "cc-gw-signin-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(_tempDir);
         _blobPath = Path.Combine(_tempDir, "devthrottle-credential.bin");
-        _authEventsPath = Path.Combine(_tempDir, "devthrottle-auth-events.jsonl");
     }
 
     public void Dispose()
@@ -55,7 +53,7 @@ public sealed class GatewaySignInServiceTests : IDisposable
         try
         {
             var store = new WindowsProtectedTokenStore(_blobPath);
-            return GatewayAccountFactory.Build(store, _authEventsPath);
+            return GatewayAccountFactory.Build(store);
         }
         finally
         {

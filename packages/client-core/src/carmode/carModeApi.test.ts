@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { carModeTurn, getCarModeHelp, postCarModeTelemetry, postCarModeWarmup, speakCarModeText, transcribeCarModeAudio } from "./carModeApi";
+import { carModeTurn, getCarModeHelp, postCarModeDiagnostics, postCarModeWarmup, speakCarModeText, transcribeCarModeAudio } from "./carModeApi";
 import { CreditsError, GatewayError } from "../api/client";
 
 // The Car Mode Gateway calls must fail LOUD and SPECIFIC (mission decision 8): a money refusal (402) is
@@ -142,7 +142,7 @@ describe("getCarModeHelp", () => {
   });
 });
 
-describe("postCarModeTelemetry", () => {
+describe("postCarModeDiagnostics", () => {
   const record = {
     turnId: "t1", pauseToTranscribeMs: 900, transcodeMs: 120, brainMs: 1200, ttsMs: 300, firstAudioMs: 350,
     totalTurnMs: 2450, transcribeAttempts: 1, chunks: 1, playMs: 4200, clipDurationMs: 4300, playedToMs: 4200,
@@ -153,16 +153,16 @@ describe("postCarModeTelemetry", () => {
     replyChars: 40, actionsCount: 0, pendingConfirmation: false,
   };
 
-  it("posts the record to /carmode/telemetry", async () => {
+  it("posts the record to /carmode/diagnostics", async () => {
     const fetchMock = mockFetch(200, { recorded: true, held: 1 });
     vi.stubGlobal("fetch", fetchMock);
-    await postCarModeTelemetry(record);
-    expect(fetchMock).toHaveBeenCalledWith("/carmode/telemetry", expect.objectContaining({ method: "POST" }));
+    await postCarModeDiagnostics(record);
+    expect(fetchMock).toHaveBeenCalledWith("/carmode/diagnostics", expect.objectContaining({ method: "POST" }));
   });
 
   it("never throws when the post fails (best-effort observability)", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => { throw new Error("network down"); }));
-    await expect(postCarModeTelemetry(record)).resolves.toBeUndefined();
+    await expect(postCarModeDiagnostics(record)).resolves.toBeUndefined();
   });
 });
 

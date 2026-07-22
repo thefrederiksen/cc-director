@@ -43,8 +43,7 @@ public sealed class AccountSignInCallbackEndpointTests
         Environment.SetEnvironmentVariable(GatewayAccountFactory.SigningSecretEnvVar, GatewayTestJwt.SigningSecret);
         try
         {
-            var authEventsLog = Path.Combine(Path.GetTempPath(), "cc-gw-acct-signin-callback-" + Guid.NewGuid().ToString("N") + ".jsonl");
-            return GatewayAccountFactory.Build(new InMemoryTokenStore(), authEventsLog);
+            return GatewayAccountFactory.Build(new InMemoryTokenStore());
         }
         finally
         {

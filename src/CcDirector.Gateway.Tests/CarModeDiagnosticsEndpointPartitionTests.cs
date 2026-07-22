@@ -14,7 +14,7 @@ using Xunit;
 namespace CcDirector.Gateway.Tests;
 
 /// <summary>
-/// The Car Mode telemetry routes over the WIRE, BEHIND THE REAL AUTHENTICATION GATE, with two callers
+/// The Car Mode diagnostics routes over the WIRE, BEHIND THE REAL AUTHENTICATION GATE, with two callers
 /// holding different enrolled device keys (hosted-Gateway collection census row 40). The pipeline is the
 /// shipped one: <see cref="AuthMiddleware.Run"/> over a real <see cref="DeviceRegistry"/>, then the real
 /// <see cref="CarModeEndpoint"/> route map, on an ephemeral port over a temp-file store.
@@ -32,11 +32,11 @@ namespace CcDirector.Gateway.Tests;
 /// so an empty answer cannot pass for isolation when it was really a failed seed. Status code and media
 /// type are asserted BEFORE any body is parsed, because parsing is itself an assertion about format.
 /// </summary>
-public sealed class CarModeTelemetryEndpointPartitionTests : IAsyncLifetime
+public sealed class CarModeDiagnosticsEndpointPartitionTests : IAsyncLifetime
 {
     private const string SharedMachineToken = "shared-machine-token-for-this-test";
 
-    private readonly string _storePath = Path.Combine(Path.GetTempPath(), $"carmode-telemetry-http-{Guid.NewGuid():N}.json");
+    private readonly string _storePath = Path.Combine(Path.GetTempPath(), $"carmode-diagnostics-http-{Guid.NewGuid():N}.json");
     private readonly string _registryPath = Path.Combine(Path.GetTempPath(), $"carmode-devices-{Guid.NewGuid():N}.json");
 
     private WebApplication _app = null!;
@@ -54,7 +54,7 @@ public sealed class CarModeTelemetryEndpointPartitionTests : IAsyncLifetime
         _keyA = devices.Register("device-a", "PHONE-A", "android", "phone").DeviceKey;
         _keyB = devices.Register("device-b", "PHONE-B", "android", "phone").DeviceKey;
 
-        var telemetry = new CarModeTelemetryStore(_storePath, _ => { });
+        var diagnostics = new CarModeDiagnosticsStore(_storePath, _ => { });
         var brain = new CarModeBrain(
             new UnusedChat(),
             new UnusedFleet(),
@@ -77,7 +77,7 @@ public sealed class CarModeTelemetryEndpointPartitionTests : IAsyncLifetime
         var requireToken = new AuthMiddleware.RequireToken { Token = SharedMachineToken, Devices = devices };
         _app.Use(async (ctx, next) => await AuthMiddleware.Run(ctx, requireToken, next));
 
-        CarModeEndpoint.Map(_app, brain, new CarModeTurnCache(_ => { }), telemetry, warmup);
+        CarModeEndpoint.Map(_app, brain, new CarModeTurnCache(_ => { }), diagnostics, warmup);
         await _app.StartAsync();
         _baseAddress = $"http://127.0.0.1:{port}";
     }
@@ -101,11 +101,11 @@ public sealed class CarModeTelemetryEndpointPartitionTests : IAsyncLifetime
 
     private HttpClient Client() => new() { BaseAddress = new Uri(_baseAddress) };
 
-    /// <summary>Post one telemetry record with whatever credentials <paramref name="present"/> attaches,
+    /// <summary>Post one diagnostics record with whatever credentials <paramref name="present"/> attaches,
     ///  asserting the wire contract before any parse.</summary>
     private async Task PostTurnAsync(HttpClient client, string turnId, Action<HttpRequestMessage> present)
     {
-        var request = new HttpRequestMessage(HttpMethod.Post, "/carmode/telemetry")
+        var request = new HttpRequestMessage(HttpMethod.Post, "/carmode/diagnostics")
         {
             Content = JsonContent.Create(new { turnId, totalTurnMs = 2500.0, brainMs = 1200.0 }),
         };
@@ -117,11 +117,11 @@ public sealed class CarModeTelemetryEndpointPartitionTests : IAsyncLifetime
         Assert.Equal("application/json", response.Content.Headers.ContentType?.MediaType);
     }
 
-    /// <summary>Read telemetry with whatever credentials <paramref name="present"/> attaches, asserting
+    /// <summary>Read diagnostics with whatever credentials <paramref name="present"/> attaches, asserting
     ///  status and media type BEFORE parsing the body.</summary>
     private async Task<(int Held, string[] TurnIds)> ReadTurnsAsync(HttpClient client, Action<HttpRequestMessage> present)
     {
-        var request = new HttpRequestMessage(HttpMethod.Get, "/carmode/telemetry/data");
+        var request = new HttpRequestMessage(HttpMethod.Get, "/carmode/diagnostics/data");
         present(request);
 
         var response = await client.SendAsync(request);
@@ -181,8 +181,8 @@ public sealed class CarModeTelemetryEndpointPartitionTests : IAsyncLifetime
     {
         using var client = Client();
 
-        var write = await client.PostAsJsonAsync("/carmode/telemetry", new { turnId = "no-credential" });
-        var read = await client.GetAsync("/carmode/telemetry/data");
+        var write = await client.PostAsJsonAsync("/carmode/diagnostics", new { turnId = "no-credential" });
+        var read = await client.GetAsync("/carmode/diagnostics/data");
 
         Assert.Equal(HttpStatusCode.Unauthorized, write.StatusCode);
         Assert.Equal(HttpStatusCode.Unauthorized, read.StatusCode);
@@ -218,13 +218,13 @@ public sealed class CarModeTelemetryEndpointPartitionTests : IAsyncLifetime
         const string sharedTurn = "same-turn-id-under-both";
         using var client = Client();
 
-        var writeA = new HttpRequestMessage(HttpMethod.Post, "/carmode/telemetry")
+        var writeA = new HttpRequestMessage(HttpMethod.Post, "/carmode/diagnostics")
         { Content = JsonContent.Create(new { turnId = sharedTurn, totalTurnMs = 2500.0, brainMs = 111.0 }) };
         Bearer(_keyA)(writeA);
         var respA = await client.SendAsync(writeA);
         Assert.Equal(HttpStatusCode.OK, respA.StatusCode);
 
-        var writeB = new HttpRequestMessage(HttpMethod.Post, "/carmode/telemetry")
+        var writeB = new HttpRequestMessage(HttpMethod.Post, "/carmode/diagnostics")
         { Content = JsonContent.Create(new { turnId = sharedTurn, totalTurnMs = 2500.0, brainMs = 222.0 }) };
         Bearer(_keyB)(writeB);
         var respB = await client.SendAsync(writeB);
@@ -288,7 +288,7 @@ public sealed class CarModeTelemetryEndpointPartitionTests : IAsyncLifetime
         using var client = Client();
         await PostTurnAsync(client, "really-b", Bearer(_keyB));
 
-        var request = new HttpRequestMessage(HttpMethod.Post, "/carmode/telemetry")
+        var request = new HttpRequestMessage(HttpMethod.Post, "/carmode/diagnostics")
         {
             Content = JsonContent.Create(new { turnId = "claimed-by-a", deviceHash = CarModeDeviceHash.Of(_keyB), totalTurnMs = 1000.0 }),
         };
@@ -378,18 +378,18 @@ public sealed class CarModeTelemetryEndpointPartitionTests : IAsyncLifetime
         Assert.DoesNotContain("anonymous", StoredPartitions().Values);  // and never the credential-free bucket
     }
 
-    /// <summary>The brain is never called by these tests - the telemetry routes do not touch it. It throws
+    /// <summary>The brain is never called by these tests - the diagnostics routes do not touch it. It throws
     ///  loudly rather than returning a plausible answer if that assumption ever breaks.</summary>
     private sealed class UnusedChat : ICarModeChat
     {
         public Task<CarModeAssistantTurn> CompleteAsync(string messagesJson, string toolsJson, CancellationToken ct)
-            => throw new InvalidOperationException("The telemetry routes must not call the model.");
+            => throw new InvalidOperationException("The diagnostics routes must not call the model.");
     }
 
     private sealed class UnusedFleet : ICarModeFleet
     {
         private static InvalidOperationException Unexpected()
-            => new("The telemetry routes must not call the fleet.");
+            => new("The diagnostics routes must not call the fleet.");
 
         public Task<IReadOnlyList<CarModeSessionInfo>> ListSessionsAsync(CancellationToken ct) => throw Unexpected();
         public Task<CarModeActivity?> GetSessionActivityAsync(string sessionReference, CancellationToken ct) => throw Unexpected();

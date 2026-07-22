@@ -88,7 +88,7 @@ The Gateway **never opens a browser and never draws a window**. A service has no
 | Settings | Cockpit `/settings` (four tabs; it already had them) |
 | Start on login | Cockpit `/settings` -> `PUT /gateway/autostart` |
 | Add a device / pairing code | **Deleted.** Account sign-in enrollment replaced it |
-| First-run consent | **Deleted.** Installer Privacy step + Cockpit Telemetry tab already had it |
+| First-run consent | **Deleted.** No behavioral, startup, login, or usage reporting remains (issue #494) |
 | Sign in to DevThrottle | Cockpit `/account` -> `POST /account/sign-in-start` |
 | Restart | **Deleted.** Stop then Start |
 | Logs / Config folders | **Deleted.** A service cannot open Explorer |

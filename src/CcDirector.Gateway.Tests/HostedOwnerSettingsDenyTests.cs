@@ -35,9 +35,6 @@ public static class OwnerSettingsRoutes
     /// <summary>The refusal a route in <c>AiModelsEndpoint</c> answers with on hosted.</summary>
     public const string ModelsRefusal = "the model settings are not available on the hosted gateway";
 
-    /// <summary>The refusal a route in <c>TelemetryConsentEndpoint</c> answers with on hosted.</summary>
-    public const string TelemetryRefusal = "the telemetry consent setting is not available on the hosted gateway";
-
     /// <summary>A route in the group: the verb it answers, its path, and a well-formed body for writes.</summary>
     public sealed record Route(string Verb, string Path, string? Body, string Refusal)
     {
@@ -86,15 +83,8 @@ public static class OwnerSettingsRoutes
         new("PUT",  "gateway/ai/tts-model",           "{\"model\":\"hosted-speech\"}", ModelsRefusal),
     };
 
-    /// <summary>The 2 routes mapped by <c>TelemetryConsentEndpoint</c>.</summary>
-    public static readonly Route[] Telemetry =
-    {
-        new("GET", "gateway/telemetry-consent", null, TelemetryRefusal),
-        new("PUT", "gateway/telemetry-consent", "{\"enabled\":false}", TelemetryRefusal),
-    };
-
-    /// <summary>All 31 route-and-verb pairs the owner-settings group answers.</summary>
-    public static IEnumerable<Route> All => Settings.Concat(Models).Concat(Telemetry);
+    /// <summary>All route-and-verb pairs the owner-settings group answers.</summary>
+    public static IEnumerable<Route> All => Settings.Concat(Models);
 
     /// <summary>
     /// Every route as xUnit theory data, so no row can be silently left out of either side. Flattened to
@@ -161,11 +151,11 @@ public static class OwnerSettingsRoutes
 /// <summary>
 /// Issue #1863: the WHOLE owner-settings group is DENIED on the hosted Gateway.
 ///
-/// THE DEFECT. Thirty-one routes across three endpoint classes read and write PROCESS-GLOBAL
+/// THE DEFECT. Twenty-nine routes across two endpoint classes read and write PROCESS-GLOBAL
 /// configuration. There is no tenant dimension anywhere in them: config.json is one file for the whole
 /// process, so every write is a FLEET-WIDE mutation performed by whichever authenticated caller happened
 /// to send it - one tenant repointing the wingman model, the speech model, the time zone, the snooze
-/// lengths, the network addressing mode or the fleet-wide telemetry consent for everybody else. And
+/// lengths or the network addressing mode for everybody else. And
 /// <c>GET /gateway/injected-text</c> hands back the owner's own custom agent-launch instruction text,
 /// which is his words, to any caller.
 ///
@@ -184,7 +174,7 @@ public static class OwnerSettingsRoutes
 /// no settings", which is a false statement rather than an absent one. Every refusal is a 404 whose body
 /// is EXACTLY one <c>error</c> property, asserted as an allow-list over the whole property set.
 ///
-/// ONE SHARED REFUSAL PRIMITIVE PER FAMILY, NOT A GUARD PER ROUTE. Each of the three endpoint classes maps
+/// ONE SHARED REFUSAL PRIMITIVE PER FAMILY, NOT A GUARD PER ROUTE. Each of the two endpoint classes maps
 /// its routes through <see cref="CcDirector.Gateway.Tenancy.HostedRouteDeny.Group"/>, which on hosted maps
 /// a verb-less refusal in place of each handler - so a route added to the group later is refused too, with
 /// no deny of its own. <see cref="HostedOwnerSettingsGroupFilterTests"/> is the test of that property: a
@@ -314,7 +304,6 @@ public sealed class HostedOwnerSettingsDenyTests : IAsyncLifetime
         var timeZoneBefore = TimeZoneConfig.Get();
         var voiceBefore = TtsVoiceConfig.Resolve(TranscriptionModeConfig.Get());
         var carModelBefore = CarModeModelConfig.Get();
-        var consentBefore = TelemetryConsentConfig.Get();
 
         foreach (var route in OwnerSettingsRoutes.All.Where(r => r.Body is not null))
             await OwnerSettingsRoutes.AssertIsNothingButTheRefusal(
@@ -323,7 +312,6 @@ public sealed class HostedOwnerSettingsDenyTests : IAsyncLifetime
         Assert.Equal(timeZoneBefore, TimeZoneConfig.Get());
         Assert.Equal(voiceBefore, TtsVoiceConfig.Resolve(TranscriptionModeConfig.Get()));
         Assert.Equal(carModelBefore, CarModeModelConfig.Get());
-        Assert.Equal(consentBefore, TelemetryConsentConfig.Get());
     }
 
     /// <summary>
@@ -415,7 +403,7 @@ internal sealed record CanaryBody(string Text);
 /// A guard line repeated in every handler passes EXACTLY the same tests as the group refusal for the routes
 /// that exist today, which is precisely what makes it dangerous rather than merely untidy: the difference
 /// only appears on the route somebody adds NEXT, when it is open on hosted by default and nothing fails.
-/// That difference is not observable by driving the 31 routes that exist, so this class maps a BRAND-NEW
+/// That difference is not observable by driving the routes that exist, so this class maps a BRAND-NEW
 /// probe route THROUGH each denied handle and asserts it is refused with no deny written for it anywhere.
 /// These are the tests that justify routing every handler through the primitive at all, and they are the
 /// reason all three <c>Map</c> methods now return their denied handle.
@@ -470,12 +458,11 @@ public sealed class HostedOwnerSettingsGroupFilterTests : IAsyncLifetime
         try { if (Directory.Exists(_root)) Directory.Delete(_root, true); } catch { /* best effort */ }
     }
 
-    /// <summary>The three families, each mapped on its own so one refusal is the only thing in the way.</summary>
+    /// <summary>The two families, each mapped on its own so one refusal is the only thing in the way.</summary>
     internal Func<IEndpointRouteBuilder, HostedDenyGroup> Family(string name) => name switch
     {
         "settings" => routes => SettingsEndpoints.Map(routes, _gateway),
         "models" => routes => AiModelsEndpoint.Map(routes, new KeyVault(Path.Combine(_root, "vault.json"))),
-        "telemetry" => TelemetryConsentEndpoint.Map,
         _ => throw new ArgumentOutOfRangeException(nameof(name), name, "unknown owner-settings family"),
     };
 
@@ -483,7 +470,6 @@ public sealed class HostedOwnerSettingsGroupFilterTests : IAsyncLifetime
     {
         { "settings", "/gateway/added-after-the-deny-was-written" },
         { "models", "/gateway/ai/added-after-the-deny-was-written" },
-        { "telemetry", "/gateway/telemetry-added-after-the-deny-was-written" },
     };
 
     /// <summary>

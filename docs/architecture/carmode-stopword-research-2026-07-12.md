@@ -16,7 +16,7 @@ Current shipped state (verified against `origin/main` @ `0910530a`, v5 - NOT the
 - There is **no spoken interrupt during playback at all** today. The only interrupt while the
   assistant speaks is the on-screen **STOP button**. Spoken "stop" during playback was removed in v3
   because listening during playback re-opened the microphone and ducked the reply audio to silence.
-- `micReacquiredDuringPlayback` in the telemetry is a **hardcoded `false` assertion** ("kept to
+- `micReacquiredDuringPlayback` in the local diagnostics is a **hardcoded `false` assertion** ("kept to
   prove it"), not a live measurement. If any new approach re-adds a microphone tap during playback,
   that flag must be turned back into a real measurement and the mobile duck re-checked before shipping.
 

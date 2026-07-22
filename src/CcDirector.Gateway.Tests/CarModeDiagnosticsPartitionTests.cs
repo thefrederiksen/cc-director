@@ -5,7 +5,7 @@ using Xunit;
 namespace CcDirector.Gateway.Tests;
 
 /// <summary>
-/// Car Mode telemetry is PARTITIONED BY DEVICE CREDENTIAL (hosted-Gateway collection census row 40). These
+/// Car Mode diagnostics is PARTITIONED BY DEVICE CREDENTIAL (hosted-Gateway collection census row 40). These
 /// tests hold the store to the two facts that make the partition real, and they are deliberately kept as
 /// TWO SEPARATE FACTS rather than one end-to-end assertion:
 ///
@@ -20,12 +20,12 @@ namespace CcDirector.Gateway.Tests;
 /// record back on the same call. Without it, a failed seed would produce an empty answer that looks exactly
 /// like isolation.
 /// </summary>
-public sealed class CarModeTelemetryPartitionTests : IDisposable
+public sealed class CarModeDiagnosticsPartitionTests : IDisposable
 {
     private const string DeviceA = "aaaa11112222";
     private const string DeviceB = "bbbb33334444";
 
-    private readonly string _path = Path.Combine(Path.GetTempPath(), $"carmode-telemetry-part-{Guid.NewGuid():N}.json");
+    private readonly string _path = Path.Combine(Path.GetTempPath(), $"carmode-diagnostics-part-{Guid.NewGuid():N}.json");
 
     public void Dispose()
     {
@@ -34,7 +34,7 @@ public sealed class CarModeTelemetryPartitionTests : IDisposable
             File.Delete(f);
     }
 
-    private static CarModeTelemetryRecord Record(string turnId, string? claimedDeviceHash = null) => new()
+    private static CarModeDiagnosticsRecord Record(string turnId, string? claimedDeviceHash = null) => new()
     {
         TurnId = turnId,
         ReceivedAtUtc = DateTime.UtcNow.ToString("o"),
@@ -50,7 +50,7 @@ public sealed class CarModeTelemetryPartitionTests : IDisposable
     {
         // The caller's record claims to belong to device B. The write must file it under the trusted
         // partition it was called with (device A) and nowhere else.
-        var store = new CarModeTelemetryStore(_path, _ => { });
+        var store = new CarModeDiagnosticsStore(_path, _ => { });
 
         store.Add(DeviceA, Record("claims-b", claimedDeviceHash: DeviceB));
 
@@ -66,9 +66,9 @@ public sealed class CarModeTelemetryPartitionTests : IDisposable
     {
         // The partition must be RECORDED, not merely applied in memory: a reload of the file must still
         // attribute the record to the writing device only.
-        new CarModeTelemetryStore(_path, _ => { }).Add(DeviceA, Record("persisted", claimedDeviceHash: DeviceB));
+        new CarModeDiagnosticsStore(_path, _ => { }).Add(DeviceA, Record("persisted", claimedDeviceHash: DeviceB));
 
-        var reopened = new CarModeTelemetryStore(_path, _ => { });
+        var reopened = new CarModeDiagnosticsStore(_path, _ => { });
 
         var mine = reopened.Recent(DeviceA, 10);
         Assert.Single(mine);                              // positive control after the reload
@@ -81,7 +81,7 @@ public sealed class CarModeTelemetryPartitionTests : IDisposable
     {
         // Read the stored document directly, not through the store's own reader, so the write is proven by
         // the artifact rather than by the same code path that filters.
-        new CarModeTelemetryStore(_path, _ => { }).Add(DeviceA, Record("on-disk", claimedDeviceHash: DeviceB));
+        new CarModeDiagnosticsStore(_path, _ => { }).Add(DeviceA, Record("on-disk", claimedDeviceHash: DeviceB));
 
         using var doc = JsonDocument.Parse(File.ReadAllText(_path));
 
@@ -95,7 +95,7 @@ public sealed class CarModeTelemetryPartitionTests : IDisposable
     [Fact]
     public void Add_BlankPartition_Throws_RatherThanWritingAnUnpartitionedRecord()
     {
-        var store = new CarModeTelemetryStore(_path, _ => { });
+        var store = new CarModeDiagnosticsStore(_path, _ => { });
 
         Assert.Throws<ArgumentException>(() => store.Add("", Record("no-owner")));
         Assert.Throws<ArgumentException>(() => store.Add("   ", Record("no-owner")));
@@ -106,7 +106,7 @@ public sealed class CarModeTelemetryPartitionTests : IDisposable
     [Fact]
     public void Recent_ReturnsOnlyTheCallingDevicesRecords()
     {
-        var store = new CarModeTelemetryStore(_path, _ => { });
+        var store = new CarModeDiagnosticsStore(_path, _ => { });
         store.Add(DeviceA, Record("a-one"));
         store.Add(DeviceB, Record("b-one"));
         store.Add(DeviceA, Record("a-two"));
@@ -126,7 +126,7 @@ public sealed class CarModeTelemetryPartitionTests : IDisposable
     [Fact]
     public void Count_IsThisDevicesCount_NotTheProcessWideTotal()
     {
-        var store = new CarModeTelemetryStore(_path, _ => { });
+        var store = new CarModeDiagnosticsStore(_path, _ => { });
         store.Add(DeviceA, Record("a-one"));
         store.Add(DeviceB, Record("b-one"));
         store.Add(DeviceB, Record("b-two"));
@@ -138,7 +138,7 @@ public sealed class CarModeTelemetryPartitionTests : IDisposable
     [Fact]
     public void Add_ReturnsThisDevicesHeldCount_NotTheProcessWideTotal()
     {
-        var store = new CarModeTelemetryStore(_path, _ => { });
+        var store = new CarModeDiagnosticsStore(_path, _ => { });
         store.Add(DeviceB, Record("b-one"));
         store.Add(DeviceB, Record("b-two"));
 
@@ -152,7 +152,7 @@ public sealed class CarModeTelemetryPartitionTests : IDisposable
     {
         // A limit must be applied AFTER the partition, never before it: filling the slice from the global
         // tail would hand a quiet device its neighbour's turns.
-        var store = new CarModeTelemetryStore(_path, _ => { });
+        var store = new CarModeDiagnosticsStore(_path, _ => { });
         store.Add(DeviceA, Record("a-one"));
         for (var i = 0; i < 5; i++) store.Add(DeviceB, Record($"b-{i}"));
 
@@ -165,7 +165,7 @@ public sealed class CarModeTelemetryPartitionTests : IDisposable
     [Fact]
     public void Recent_BlankPartition_Throws_RatherThanReturningEveryDevice()
     {
-        var store = new CarModeTelemetryStore(_path, _ => { });
+        var store = new CarModeDiagnosticsStore(_path, _ => { });
         store.Add(DeviceA, Record("a-one"));
 
         Assert.Throws<ArgumentException>(() => store.Recent("", 100));
@@ -191,7 +191,7 @@ public sealed class CarModeTelemetryPartitionTests : IDisposable
             RecordJson("v2-a", DeviceA, DateTime.UtcNow),
             RecordJson("v2-b", DeviceB, DateTime.UtcNow));
 
-        var store = new CarModeTelemetryStore(_path, _ => { });
+        var store = new CarModeDiagnosticsStore(_path, _ => { });
 
         Assert.Equal(new[] { "v2-a" }, store.Recent(DeviceA, 10).Select(r => r.TurnId).ToArray());
         Assert.Equal(new[] { "v2-b" }, store.Recent(DeviceB, 10).Select(r => r.TurnId).ToArray());
@@ -208,7 +208,7 @@ public sealed class CarModeTelemetryPartitionTests : IDisposable
         var legacy = $"[{RecordJson("legacy-a", DeviceA, DateTime.UtcNow)},{RecordJson("legacy-b", DeviceB, DateTime.UtcNow)}]";
         File.WriteAllText(_path, legacy);
 
-        var store = new CarModeTelemetryStore(_path, _ => { });
+        var store = new CarModeDiagnosticsStore(_path, _ => { });
 
         // Not one legacy record is exposed under any partition.
         Assert.Empty(store.Recent(DeviceA, 10));
@@ -225,7 +225,7 @@ public sealed class CarModeTelemetryPartitionTests : IDisposable
         // predate the trust boundary. It is quarantined whole, not partially trusted.
         WriteVersionedFile(1, RecordJson("v1-a", DeviceA, DateTime.UtcNow));
 
-        var store = new CarModeTelemetryStore(_path, _ => { });
+        var store = new CarModeDiagnosticsStore(_path, _ => { });
 
         Assert.Empty(store.Recent(DeviceA, 10));
         var corrupt = Directory.GetFiles(Path.GetDirectoryName(_path)!, Path.GetFileName(_path) + ".corrupt-*");
@@ -242,7 +242,7 @@ public sealed class CarModeTelemetryPartitionTests : IDisposable
             RecordJson("orphan", "", DateTime.UtcNow),
             RecordJson("owned", DeviceA, DateTime.UtcNow));
 
-        var store = new CarModeTelemetryStore(_path, _ => { });
+        var store = new CarModeDiagnosticsStore(_path, _ => { });
 
         // The orphan is GONE FROM THE DURABLE FILE, and nothing in this test wrote to the store to make that
         // happen: the file is inspected IMMEDIATELY after construction. A test that added a record first
@@ -254,7 +254,7 @@ public sealed class CarModeTelemetryPartitionTests : IDisposable
         Assert.Equal(new[] { "owned" }, storedTurnIds);
 
         // And a second store reading that same file agrees, with the surviving record still attributed.
-        var reopened = new CarModeTelemetryStore(_path, _ => { });
+        var reopened = new CarModeDiagnosticsStore(_path, _ => { });
         Assert.Equal(new[] { "owned" }, reopened.Recent(DeviceA, 10).Select(r => r.TurnId).ToArray()); // positive control
         Assert.Empty(reopened.Recent(DeviceB, 10));
         Assert.Equal(new[] { "owned" }, store.Recent(DeviceA, 10).Select(r => r.TurnId).ToArray());
@@ -269,7 +269,7 @@ public sealed class CarModeTelemetryPartitionTests : IDisposable
             RecordJson("ancient", DeviceA, DateTime.UtcNow.AddDays(-120)),
             RecordJson("recent", DeviceA, DateTime.UtcNow));
 
-        var store = new CarModeTelemetryStore(_path, _ => { });
+        var store = new CarModeDiagnosticsStore(_path, _ => { });
 
         using var doc = JsonDocument.Parse(File.ReadAllText(_path));
         var storedTurnIds = doc.RootElement.GetProperty("Records").EnumerateArray().Select(r => r.GetProperty("TurnId").GetString()).ToArray();
@@ -285,7 +285,7 @@ public sealed class CarModeTelemetryPartitionTests : IDisposable
         WriteVersionedFile(2, RecordJson("owned", DeviceA, DateTime.UtcNow));
         var before = File.ReadAllText(_path);
 
-        var store = new CarModeTelemetryStore(_path, _ => { });
+        var store = new CarModeDiagnosticsStore(_path, _ => { });
 
         Assert.Equal(before, File.ReadAllText(_path));
         Assert.Single(store.Recent(DeviceA, 10)); // positive control: it really did load the record
@@ -302,7 +302,7 @@ public sealed class CarModeTelemetryPartitionTests : IDisposable
         // assertions that go red the moment the read filter is removed - so it cannot silently rot into a
         // test that passes against an un-partitioned store.
         const string shared = "same-turn-id";
-        var store = new CarModeTelemetryStore(_path, _ => { });
+        var store = new CarModeDiagnosticsStore(_path, _ => { });
         store.Add(DeviceA, Record(shared) with { BrainMs = 111 });
         store.Add(DeviceB, Record(shared) with { BrainMs = 222 });
 
@@ -331,7 +331,7 @@ public sealed class CarModeTelemetryPartitionTests : IDisposable
     {
         // The cap is PER DEVICE, so a flooding device only ever evicts its OWN oldest records down to the cap,
         // and a quiet neighbour keeps everything it has.
-        var store = new CarModeTelemetryStore(_path, _ => { }, maxRecords: 5);
+        var store = new CarModeDiagnosticsStore(_path, _ => { }, maxRecords: 5);
         store.Add(DeviceA, Record("a-keep"));
 
         for (var i = 0; i < 20; i++) store.Add(DeviceB, Record($"b-{i}"));
@@ -350,7 +350,7 @@ public sealed class CarModeTelemetryPartitionTests : IDisposable
         // With a per-partition cap, B fills to the cap and A's later single write leaves every one of B's
         // records intact, because A only ever prunes its own partition. This assertion is RED on the old
         // process-wide cap (B would drop to 2) and GREEN here.
-        var store = new CarModeTelemetryStore(_path, _ => { }, maxRecords: 3);
+        var store = new CarModeDiagnosticsStore(_path, _ => { }, maxRecords: 3);
         store.Add(DeviceB, Record("b-0"));
         store.Add(DeviceB, Record("b-1"));
         store.Add(DeviceB, Record("b-2"));
@@ -367,18 +367,18 @@ public sealed class CarModeTelemetryPartitionTests : IDisposable
     // ---- Age retention: one device's Add must not age-prune ANOTHER device's expired rows ----
 
     /// <summary>Place a record straight into the store's backing list, past every prune path. A unit test has
-    ///  no clock seam, and both <see cref="CarModeTelemetryStore.Add"/> and startup Load prune expired rows -
+    ///  no clock seam, and both <see cref="CarModeDiagnosticsStore.Add"/> and startup Load prune expired rows -
     ///  the very behaviour under test - so an already-aged row that is present in memory but has NOT yet been
     ///  swept (a quiet device on a long-lived Gateway that has not restarted) can only be staged this way.</summary>
-    private static void SeedRawRecord(CarModeTelemetryStore store, CarModeTelemetryRecord record)
+    private static void SeedRawRecord(CarModeDiagnosticsStore store, CarModeDiagnosticsRecord record)
     {
-        var field = typeof(CarModeTelemetryStore).GetField("_records",
+        var field = typeof(CarModeDiagnosticsStore).GetField("_records",
             System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!;
-        var list = (List<CarModeTelemetryRecord>)field.GetValue(store)!;
+        var list = (List<CarModeDiagnosticsRecord>)field.GetValue(store)!;
         list.Add(record);
     }
 
-    private static CarModeTelemetryRecord AgedRecord(string turnId, string deviceHash, int daysOld)
+    private static CarModeDiagnosticsRecord AgedRecord(string turnId, string deviceHash, int daysOld)
         => Record(turnId, claimedDeviceHash: deviceHash) with { ReceivedAtUtc = DateTime.UtcNow.AddDays(-daysOld).ToString("o") };
 
     [Fact]
@@ -389,7 +389,7 @@ public sealed class CarModeTelemetryPartitionTests : IDisposable
         // Add must NEVER remove another device's rows, not by the growth cap AND not by age. B's rows have
         // aged past the 90-day window but its Gateway has not restarted (no load-time global sweep), so they
         // are still in memory when an UNRELATED device A posts one fresh turn.
-        var store = new CarModeTelemetryStore(_path, _ => { });
+        var store = new CarModeDiagnosticsStore(_path, _ => { });
         SeedRawRecord(store, AgedRecord("b-old-1", DeviceB, daysOld: 120));
         SeedRawRecord(store, AgedRecord("b-old-2", DeviceB, daysOld: 200));
 
@@ -411,7 +411,7 @@ public sealed class CarModeTelemetryPartitionTests : IDisposable
         // owning device B writes, ITS OWN expired row is aged out - proving the seeded row really is past the
         // window (so the test above is not vacuously green) and that the fix narrowed the prune's scope
         // without switching retention off.
-        var store = new CarModeTelemetryStore(_path, _ => { });
+        var store = new CarModeDiagnosticsStore(_path, _ => { });
         SeedRawRecord(store, AgedRecord("b-old", DeviceB, daysOld: 120));
 
         store.Add(DeviceB, Record("b-fresh")); // the owning device's own write ages its own partition

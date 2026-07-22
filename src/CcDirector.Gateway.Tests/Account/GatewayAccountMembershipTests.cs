@@ -19,13 +19,11 @@ public sealed class GatewayAccountMembershipTests : IDisposable
     private static readonly DateTime Now = new(2026, 7, 6, 12, 0, 0, DateTimeKind.Utc);
 
     private readonly string _tempDir;
-    private readonly string _authEventsPath;
 
     public GatewayAccountMembershipTests()
     {
         _tempDir = Path.Combine(Path.GetTempPath(), "cc-gw-membership-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(_tempDir);
-        _authEventsPath = Path.Combine(_tempDir, "devthrottle-auth-events.jsonl");
     }
 
     public void Dispose()
@@ -42,8 +40,7 @@ public sealed class GatewayAccountMembershipTests : IDisposable
     {
         var store = new InMemoryTokenStore();
         var validator = new JwtAccessTokenValidator("membership-test-unused-secret");
-        var eventLog = new AuthEventLog(_authEventsPath);
-        var service = new DevThrottleAccountService(store, validator, eventLog, new ThrowingTokenRefresher());
+        var service = new DevThrottleAccountService(store, validator, new ThrowingTokenRefresher());
 
         if (ownSubject is not null)
         {

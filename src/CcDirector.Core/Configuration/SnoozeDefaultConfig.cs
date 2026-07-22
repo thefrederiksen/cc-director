@@ -11,8 +11,8 @@ namespace CcDirector.Core.Configuration;
 /// to their one Gateway, this single Gateway setting IS "the same snooze length across all devices".
 ///
 /// Persisted in <c>config.json</c> as the top-level integer key <c>snooze_default_minutes</c>, the
-/// same store the other Gateway settings use (<see cref="TelemetryConsentConfig"/>,
-/// <see cref="AddressingModeConfig"/>). Default 60 (one hour): a Gateway with no persisted value
+/// same store the other Gateway settings use (for example <see cref="AddressingModeConfig"/>).
+/// Default 60 (one hour): a Gateway with no persisted value
 /// snoozes for one hour. Read at the moment a snooze is set, so a change takes effect on the next
 /// snooze - no Gateway restart.
 /// </summary>

@@ -8,7 +8,7 @@ namespace CcDirector.Gateway.CarMode;
 /// These are the SERVER stamps: the whole /carmode/turn wall-clock, every hosted-model round trip, and the
 /// fleet/roster reads the tools made. They are returned inline in the turn response so the browser can
 /// merge them with its own CLIENT stamps (pause-to-transcribe, the brain round trip, text-to-speech, and
-/// first-audio) into ONE compact record it posts back to the telemetry store. Milliseconds throughout.
+/// first-audio) into ONE compact local diagnostics record. Milliseconds throughout.
 /// </summary>
 public sealed record CarModeTurnTiming
 {
@@ -36,7 +36,7 @@ public sealed record CarModeTurnTiming
 }
 
 /// <summary>
-/// One compact Car Mode turn timing record, the unit the telemetry store keeps. It carries ONLY timings
+/// One compact Car Mode turn timing record, the unit the local diagnostics store keeps. It carries ONLY timings
 /// and small counts - never the text of what was said or heard (the command and reply are recorded as
 /// character counts only, mirroring the Stats dashboard's counts-only rule). The device is identified by a
 /// short one-way hash of its credential, never the raw credential (security rule DT-05).
@@ -45,7 +45,7 @@ public sealed record CarModeTurnTiming
 /// the server fills <see cref="ReceivedAtUtc"/>, <see cref="DeviceHash"/>, and <see cref="GatewayVersion"/>
 /// from its own side so those cannot be spoofed by the client.
 /// </summary>
-public sealed record CarModeTelemetryRecord
+public sealed record CarModeDiagnosticsRecord
 {
     /// <summary>The turn id the server minted and returned in the turn response, so the client record and
     ///  the server's own log line for the same turn can be lined up.</summary>
@@ -116,7 +116,7 @@ public sealed record CarModeTelemetryRecord
     public double PlayedToMs { get; init; }
 
     /// <summary>True when the reply clip played fully to its natural end; false when it was cut off (a voice
-    ///  or touch interrupt, or End Car Mode). The cut-off-reply bug this telemetry makes visible reads as
+    ///  or touch interrupt, or End Car Mode). The cut-off-reply bug these diagnostics make visible reads as
     ///  false: the reply was synthesized but the owner did not hear all of it.</summary>
     public bool Completed { get; init; }
 
@@ -138,7 +138,7 @@ public sealed record CarModeTelemetryRecord
 
     // ----- Real viewport measurements (v5: the button-cut-off diagnostic, read from the phone) -----
 
-    /// <summary>window.innerHeight on the phone at telemetry time - the layout viewport height (the tall,
+    /// <summary>window.innerHeight on the phone at capture time - the layout viewport height (the tall,
     ///  toolbar-hidden height on mobile).</summary>
     public double ViewportInnerHeight { get; init; }
 
@@ -186,7 +186,7 @@ public sealed record CarModeTelemetryRecord
     public bool PendingConfirmation { get; init; }
 }
 
-/// <summary>Helpers for the caller-credential hash used as <see cref="CarModeTelemetryRecord.DeviceHash"/>.</summary>
+/// <summary>Helpers for the caller-credential hash used as <see cref="CarModeDiagnosticsRecord.DeviceHash"/>.</summary>
 public static class CarModeDeviceHash
 {
     /// <summary>A short, stable, one-way hash of a device credential (first 12 hex of its SHA-256), so a

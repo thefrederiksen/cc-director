@@ -43,7 +43,6 @@ window.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
         cockpit: { port: 7879, up: true, url: null },
         autostart: { supported: false, enabled: null },
         wingmanTrainingCapture: false,
-        telemetryConsent: true,
         snoozeDefaultMinutes: window.__state.defaultMinutes,
         snoozePresets: window.__state.presets,
         snoozeMaxPresets: 5,

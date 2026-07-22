@@ -12,10 +12,7 @@ namespace CcDirector.Core.Tests.Account;
 public sealed class FirstRunLoginCoordinatorTests
 {
     private static DevThrottleAccountService MakeAccount(InMemoryTokenStore store) =>
-        new(store, new JwtAccessTokenValidator(TestJwt.SigningSecret), new AuthEventLog(NullEventLogPath()), new StubTokenRefresher(null));
-
-    private static string NullEventLogPath() =>
-        System.IO.Path.Combine(System.IO.Path.GetTempPath(), "cc-dt-login-" + Guid.NewGuid().ToString("N") + ".jsonl");
+        new(store, new JwtAccessTokenValidator(TestJwt.SigningSecret), new StubTokenRefresher(null));
 
     // Acceptance criterion: the Log in action opens the system browser at the expected sign-in address.
     [Fact]
@@ -79,15 +76,12 @@ public sealed class FirstRunLoginCoordinatorTests
         string? openedUrl = null;
         var capturedTokens = new DevThrottleTokens(TestJwt.Create(DateTime.UtcNow.AddHours(1)), "refresh-1");
 
-        // Drive a real loopback listener and a stand-in completion that posts the token to it. Inject a
-        // recording login reporter so no real network call is made and the best-effort report is provable.
+        // Drive a real loopback listener and a stand-in completion that posts the token to it.
         using var listener = new LoopbackLoginListener();
-        var reporter = new RecordingLoginReporter();
         var coordinator = new FirstRunLoginCoordinator(
             account,
             openBrowser: url => { openedUrl = url; return Task.CompletedTask; },
-            listenerFactory: () => listener,
-            loginReporter: reporter);
+            listenerFactory: () => listener);
 
         var run = coordinator.RunAsync();
         await PostStandInCompletionAsync(listener.CallbackUrl, capturedTokens);
@@ -102,27 +96,22 @@ public sealed class FirstRunLoginCoordinatorTests
         Assert.Equal("refresh-1", stored.RefreshToken);
         Assert.True(account.IsLoggedIn());
 
-        // The always-on login telemetry (issue #40) fires best-effort with the captured access token.
-        var reportedToken = await reporter.Reported.WaitAsync(TimeSpan.FromSeconds(5));
-        Assert.Equal(capturedTokens.AccessToken, reportedToken);
     }
 
     // Issue #642: the Director wires the coordinator with the non-persisting persist action, so a
-    // successful sign-in captures the hand-back and still reports the login, but stores NO credential.
+    // successful sign-in captures the hand-back but stores NO credential.
     [Fact]
-    public async Task RunAsync_DirectorNonPersistingVariant_CapturesAndReportsButStoresNothing()
+    public async Task RunAsync_DirectorNonPersistingVariant_CapturesButStoresNothing()
     {
         var store = new InMemoryTokenStore();
         var account = MakeAccount(store);
         var capturedTokens = new DevThrottleTokens(TestJwt.Create(DateTime.UtcNow.AddHours(1)), "refresh-1");
 
         using var listener = new LoopbackLoginListener();
-        var reporter = new RecordingLoginReporter();
         var coordinator = new FirstRunLoginCoordinator(
             account,
             openBrowser: _ => Task.CompletedTask,
             listenerFactory: () => listener,
-            loginReporter: reporter,
             persistCredential: FirstRunLoginCoordinator.WithoutPersisting);
 
         var run = coordinator.RunAsync();
@@ -136,23 +125,6 @@ public sealed class FirstRunLoginCoordinatorTests
         Assert.Null(store.Load());
         Assert.False(account.IsLoggedIn());
 
-        // The always-on login telemetry still fires best-effort with the captured access token.
-        var reportedToken = await reporter.Reported.WaitAsync(TimeSpan.FromSeconds(5));
-        Assert.Equal(capturedTokens.AccessToken, reportedToken);
-    }
-
-    /// <summary>A login reporter that records the access token it was asked to report, for assertions.</summary>
-    private sealed class RecordingLoginReporter : ILoginTelemetryReporter
-    {
-        private readonly TaskCompletionSource<string> _reported = new(TaskCreationOptions.RunContinuationsAsynchronously);
-
-        public Task<string> Reported => _reported.Task;
-
-        public Task ReportLoginAsync(string accessToken, CancellationToken ct = default)
-        {
-            _reported.TrySetResult(accessToken);
-            return Task.CompletedTask;
-        }
     }
 
     // Failure path: a browser that cannot be opened returns a user-safe failure, not a thrown exception.

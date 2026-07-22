@@ -34,7 +34,7 @@ namespace CcDirector.Gateway.Tests;
 /// AND IT ASSERTS A POSITIVE FACT PER ROUTE, NOT THE ABSENCE OF THE REFUSAL. "The refusal string is not
 /// in the body" is satisfied by an empty 200, by a single-page-application shell, and by a route that was
 /// deleted - it proves nothing about the route being alive. All thirty-one routes are proved by one of:
-///   - its REAL PAYLOAD, field by field (the eleven read routes);
+///   - its REAL PAYLOAD, field by field (the ten read routes);
 ///   - an INDEPENDENTLY RE-READ EFFECT - the value is written over the wire and then read back out of the
 ///     configuration store through the Core config class, not out of the response (thirteen write routes);
 ///   - a SEEDED TRANSITION off a sentinel the effect cannot produce, where the effect is a RESET rather
@@ -135,7 +135,6 @@ public sealed class HostedOwnerSettingsSelfHostControlTests : IAsyncLifetime
                              "gateway/transcription-mode",
                              "gateway/ai-provider",
                              "gateway/tts-voice",
-                             "gateway/telemetry-consent",
                          })
                     data.Add(hosted, path);
             return data;
@@ -143,7 +142,7 @@ public sealed class HostedOwnerSettingsSelfHostControlTests : IAsyncLifetime
     }
 
     /// <summary>
-    /// The eleven read routes, each asserted by the REAL PAYLOAD it carries - the fields, and where a field
+    /// The ten read routes, each asserted by the REAL PAYLOAD it carries - the fields, and where a field
     /// has an independently knowable value, that value. Format facts (status, media type) are asserted
     /// BEFORE the body is parsed, on this side too: if a route were gone, the Gateway's single-page
     /// -application fallback would answer with HTML and parsing first would turn that finding into a crash.
@@ -174,7 +173,7 @@ public sealed class HostedOwnerSettingsSelfHostControlTests : IAsyncLifetime
                          {
                              "version", "state", "port", "uptimeSeconds", "directors", "mode",
                              "addressingMode", "cockpit", "brain", "autostart", "wingmanTrainingCapture",
-                             "telemetryConsent", "snoozeDefaultMinutes", "snoozePresets", "snoozeMaxPresets",
+                             "snoozeDefaultMinutes", "snoozePresets", "snoozeMaxPresets",
                              "timeZone", "timeZoneMachineDefault",
                          })
                     Assert.Contains(expected, properties);
@@ -241,11 +240,6 @@ public sealed class HostedOwnerSettingsSelfHostControlTests : IAsyncLifetime
                     root.GetProperty("voice").GetString());
                 break;
 
-            case "gateway/telemetry-consent":
-                Assert.Equal(new[] { "enabled" }, properties);
-                Assert.Equal(TelemetryConsentConfig.Get(), root.GetProperty("enabled").GetBoolean());
-                break;
-
             default:
                 throw new ArgumentOutOfRangeException(nameof(path), path, "no payload assertion written for this route");
         }
@@ -267,7 +261,6 @@ public sealed class HostedOwnerSettingsSelfHostControlTests : IAsyncLifetime
                 // transcription-mode is NOT here - it needs a seeded starting value to be distinguishable
                 // from a no-op, so it has its own test below.
                 data.Add(hosted, "PUT", "gateway/tts-voice", "{\"voice\":\"shimmer\"}", "tts-voice", "shimmer");
-                data.Add(hosted, "PUT", "gateway/telemetry-consent", "{\"enabled\":false}", "telemetry-consent", "false");
                 data.Add(hosted, "PUT", "gateway/ai/wingman-model", "{\"model\":\"hosted-wingman\"}", "wingman-model", "hosted-wingman");
                 data.Add(hosted, "PUT", "gateway/ai/wingman-fast-model", "{\"model\":\"hosted-fast\"}", "wingman-fast-model", "hosted-fast");
                 data.Add(hosted, "PUT", "gateway/ai/car-mode-model", "{\"model\":\"hosted-car\"}", "car-mode-model", "hosted-car");
@@ -292,7 +285,6 @@ public sealed class HostedOwnerSettingsSelfHostControlTests : IAsyncLifetime
         "time-zone" => TimeZoneConfig.Get() ?? "",
         "transcription-mode" => TranscriptionModeConfig.Get().ToConfigString(),
         "tts-voice" => TtsVoiceConfig.Resolve(TranscriptionModeConfig.Get()),
-        "telemetry-consent" => TelemetryConsentConfig.Get() ? "true" : "false",
         "wingman-model" => WingmanModelConfig.Resolve(TranscriptionModeConfig.Get()),
         "wingman-fast-model" => WingmanModelConfig.ResolveFast(TranscriptionModeConfig.Get()),
         "car-mode-model" => CarModeModelConfig.Get(),
@@ -618,7 +610,6 @@ public sealed class HostedOwnerSettingsSelfHostProbeTests : IAsyncLifetime
             {
                 data.Add(hosted, "settings", "/gateway/added-after-the-deny-was-written");
                 data.Add(hosted, "models", "/gateway/ai/added-after-the-deny-was-written");
-                data.Add(hosted, "telemetry", "/gateway/telemetry-added-after-the-deny-was-written");
             }
             return data;
         }
@@ -636,7 +627,6 @@ public sealed class HostedOwnerSettingsSelfHostProbeTests : IAsyncLifetime
         {
             "settings" => routes => Api.SettingsEndpoints.Map(routes, _gateway),
             "models" => routes => Api.AiModelsEndpoint.Map(routes, new Core.KeyVault(Path.Combine(_root, "vault.json"))),
-            "telemetry" => Api.TelemetryConsentEndpoint.Map,
             _ => throw new ArgumentOutOfRangeException(nameof(family), family, "unknown owner-settings family"),
         };
 
