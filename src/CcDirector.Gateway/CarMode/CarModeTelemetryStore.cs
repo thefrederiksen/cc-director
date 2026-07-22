@@ -116,9 +116,10 @@ public sealed class CarModeTelemetryStore
         lock (_lock)
         {
             _records.Add(owned);
-            // A write prunes ONLY the caller's own partition for the growth cap - never another device's -
-            // so one credential's Add can never delete another credential's rows. (Age retention below is a
-            // deterministic time policy, not attributable suppression, so it stays global.)
+            // A write prunes ONLY the caller's own partition - never another device's - for BOTH the age
+            // retention AND the growth cap, so one credential's Add can never mutate or delete another
+            // credential's rows (not by cap, and not by age either). Other partitions' expired rows are aged
+            // on the next startup Load (which ages every partition within itself), never by a foreign caller.
             PruneLocked(DateTime.UtcNow, capPartition: deviceHash);
             Save();
             var held = MineNewestFirstLocked(deviceHash).Count;
@@ -168,15 +169,23 @@ public sealed class CarModeTelemetryStore
         return mine;
     }
 
-    // Drop records older than the retention window (global, by age), then enforce the PER-PARTITION growth
-    // cap. When capPartition is set (a write), only THAT device's partition is capped, so a write can never
-    // evict another device's rows. When capPartition is null (load), every partition is capped WITHIN ITSELF.
-    // Returns HOW MANY records were removed, so a caller that is not already going to persist (Load) knows it
-    // must. Caller holds the lock.
+    // Drop records older than the retention window, then enforce the growth cap. BOTH steps are strictly
+    // partition-local when capPartition is set (a write): only THAT device's partition is aged and capped, so
+    // a write can never remove another device's rows - not by cap, and not by age. A caller's Add must NEVER
+    // mutate, prune, or delete a row outside its own partition. When capPartition is null (load, which is not
+    // attributable to any credential), every partition is aged and capped WITHIN ITSELF. Returns HOW MANY
+    // records were removed, so a caller that is not already going to persist (Load) knows it must. Caller
+    // holds the lock.
     private int PruneLocked(DateTime nowUtc, string? capPartition)
     {
         var cutoff = nowUtc.AddDays(-RetentionDays);
-        var removedByAge = _records.RemoveAll(r => !WithinRetention(r.ReceivedAtUtc, cutoff));
+        // Age retention. On a write, age ONLY the writer's own partition - a foreign caller aging (and thus
+        // deleting) another device's expired rows is exactly the cross-partition mutation this store forbids.
+        // On load, age every partition.
+        int removedByAge = capPartition is null
+            ? _records.RemoveAll(r => !WithinRetention(r.ReceivedAtUtc, cutoff))
+            : _records.RemoveAll(r => string.Equals(r.DeviceHash, capPartition, StringComparison.Ordinal)
+                                      && !WithinRetention(r.ReceivedAtUtc, cutoff));
         if (removedByAge > 0)
             _log($"[CarModeTelemetry] pruned {removedByAge} record(s) older than {RetentionDays} days");
 

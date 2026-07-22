@@ -363,4 +363,59 @@ public sealed class CarModeTelemetryPartitionTests : IDisposable
         Assert.Contains(store.Recent(DeviceB, 100), r => r.TurnId == "b-0");
         Assert.Equal(new[] { "a-keep" }, store.Recent(DeviceA, 100).Select(r => r.TurnId).ToArray()); // positive control
     }
+
+    // ---- Age retention: one device's Add must not age-prune ANOTHER device's expired rows ----
+
+    /// <summary>Place a record straight into the store's backing list, past every prune path. A unit test has
+    ///  no clock seam, and both <see cref="CarModeTelemetryStore.Add"/> and startup Load prune expired rows -
+    ///  the very behaviour under test - so an already-aged row that is present in memory but has NOT yet been
+    ///  swept (a quiet device on a long-lived Gateway that has not restarted) can only be staged this way.</summary>
+    private static void SeedRawRecord(CarModeTelemetryStore store, CarModeTelemetryRecord record)
+    {
+        var field = typeof(CarModeTelemetryStore).GetField("_records",
+            System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!;
+        var list = (List<CarModeTelemetryRecord>)field.GetValue(store)!;
+        list.Add(record);
+    }
+
+    private static CarModeTelemetryRecord AgedRecord(string turnId, string deviceHash, int daysOld)
+        => Record(turnId, claimedDeviceHash: deviceHash) with { ReceivedAtUtc = DateTime.UtcNow.AddDays(-daysOld).ToString("o") };
+
+    [Fact]
+    public void Add_ByOneDevice_DoesNotAgePruneAnotherDevicesExpiredRows()
+    {
+        // THE RESIDUAL THIS REWORK FIXES: the age prune was global, so credential A's write deleted EXPIRED
+        // rows belonging to credential B - a caller's Add mutating a partition that is not its own. A caller's
+        // Add must NEVER remove another device's rows, not by the growth cap AND not by age. B's rows have
+        // aged past the 90-day window but its Gateway has not restarted (no load-time global sweep), so they
+        // are still in memory when an UNRELATED device A posts one fresh turn.
+        var store = new CarModeTelemetryStore(_path, _ => { });
+        SeedRawRecord(store, AgedRecord("b-old-1", DeviceB, daysOld: 120));
+        SeedRawRecord(store, AgedRecord("b-old-2", DeviceB, daysOld: 200));
+
+        store.Add(DeviceA, Record("a-fresh")); // a different credential's write
+
+        // B's expired rows are UNTOUCHED - A's Add pruned only A's own partition. On the reverted (global)
+        // age prune, A's Add would delete both of B's expired rows and this drops to 0: revert-proof.
+        Assert.Equal(2, store.Count(DeviceB));
+        var b = store.Recent(DeviceB, 100);
+        Assert.Contains(b, r => r.TurnId == "b-old-1");
+        Assert.Contains(b, r => r.TurnId == "b-old-2");
+        Assert.Equal(new[] { "a-fresh" }, store.Recent(DeviceA, 100).Select(r => r.TurnId).ToArray()); // positive control
+    }
+
+    [Fact]
+    public void Add_ByTheOwningDevice_StillAgePrunesItsOwnExpiredRows()
+    {
+        // The control for the test above: per-partition age retention is still LIVE, not disabled. When the
+        // owning device B writes, ITS OWN expired row is aged out - proving the seeded row really is past the
+        // window (so the test above is not vacuously green) and that the fix narrowed the prune's scope
+        // without switching retention off.
+        var store = new CarModeTelemetryStore(_path, _ => { });
+        SeedRawRecord(store, AgedRecord("b-old", DeviceB, daysOld: 120));
+
+        store.Add(DeviceB, Record("b-fresh")); // the owning device's own write ages its own partition
+
+        Assert.Equal(new[] { "b-fresh" }, store.Recent(DeviceB, 100).Select(r => r.TurnId).ToArray());
+    }
 }
