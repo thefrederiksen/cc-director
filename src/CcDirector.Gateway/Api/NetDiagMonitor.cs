@@ -215,7 +215,15 @@ public sealed class NetDiagMonitor : IDisposable
 
                 // Fold this judged observation into the hourly quality rollup (home/away split on the
                 // MEASURED path). The monitor has no throughput numbers, so down/up are null. Best-effort.
-                try { _rollup?.Fold(nowUtc, peer.LatencyMs, peer.Direct, isLanPath, null, null); }
+                //
+                // TENANT: explicitly Local, and that is correct HERE and only here. This monitor is
+                // constructed by GatewayHost inside `if (!GatewayHostedMode.IsHosted)` - it shells out to the
+                // tailscale command-line tool, which the hosted container image does not carry, and a hosted
+                // Gateway has no tailnet to diagnose. On self-host, Local is the only tenant there is. If this
+                // monitor is ever constructed on hosted, this line becomes wrong and the owning tenant must be
+                // passed in rather than assumed; it is written literally, at the fold, so that change is
+                // visible here instead of hidden behind a defaulted parameter.
+                try { _rollup?.Fold(Core.Tenancy.TenantId.Local, nowUtc, peer.LatencyMs, peer.Direct, isLanPath, null, null); }
                 catch (Exception ex) { FileLog.Write($"[NetDiagMonitor] rollup fold failed for {key}: {ex.Message}"); }
 
                 results.Add((key, decision));

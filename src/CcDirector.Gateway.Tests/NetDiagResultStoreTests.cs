@@ -1,3 +1,4 @@
+using CcDirector.Core.Tenancy;
 using CcDirector.Gateway.Api;
 using CcDirector.Gateway.Contracts;
 using Xunit;
@@ -27,10 +28,10 @@ public sealed class NetDiagResultStoreTests : IDisposable
     public void Recent_IsNewestFirst()
     {
         var store = new NetDiagResultStore(_path);
-        store.Add(Result("a"));
-        store.Add(Result("b"));
-        store.Add(Result("c"));
-        Assert.Equal(new[] { "c", "b", "a" }, store.Recent().Select(r => r.Verdict));
+        store.Add(TenantId.Local, Result("a"));
+        store.Add(TenantId.Local, Result("b"));
+        store.Add(TenantId.Local, Result("c"));
+        Assert.Equal(new[] { "c", "b", "a" }, store.Recent(TenantId.Local).Select(r => r.Verdict));
     }
 
     [Fact]
@@ -38,9 +39,9 @@ public sealed class NetDiagResultStoreTests : IDisposable
     {
         var store = new NetDiagResultStore(_path);
         for (int i = 0; i < NetDiagResultStore.MaxRecords + 5; i++)
-            store.Add(Result($"r{i}"));
+            store.Add(TenantId.Local, Result($"r{i}"));
 
-        var recent = store.Recent();
+        var recent = store.Recent(TenantId.Local);
         Assert.Equal(NetDiagResultStore.MaxRecords, recent.Count);
         Assert.Equal($"r{NetDiagResultStore.MaxRecords + 4}", recent[0].Verdict);
         Assert.DoesNotContain(recent, r => r.Verdict == "r0");
@@ -50,11 +51,11 @@ public sealed class NetDiagResultStoreTests : IDisposable
     public void Results_SurviveReload()
     {
         var store = new NetDiagResultStore(_path);
-        store.Add(new NetDiagResultDto { Verdict = "persisted", Route = "tailscale", LatencyMedianMs = 44, DownloadMbps = 90 });
+        store.Add(TenantId.Local, new NetDiagResultDto { Verdict = "persisted", Route = "tailscale", LatencyMedianMs = 44, DownloadMbps = 90 });
 
         // A fresh store over the SAME file (simulating a Gateway restart) must see the persisted result.
         var reopened = new NetDiagResultStore(_path);
-        var recent = reopened.Recent();
+        var recent = reopened.Recent(TenantId.Local);
         var only = Assert.Single(recent);
         Assert.Equal("persisted", only.Verdict);
         Assert.Equal("tailscale", only.Route);
@@ -70,20 +71,20 @@ public sealed class NetDiagResultStoreTests : IDisposable
 
         // Load must not throw; it quarantines the bad file and starts empty.
         var store = new NetDiagResultStore(_path);
-        Assert.Empty(store.Recent());
+        Assert.Empty(store.Recent(TenantId.Local));
         Assert.NotEmpty(Directory.GetFiles(Path.GetDirectoryName(_path)!, "*.corrupt-*"));
 
         // And it is usable afterward.
-        store.Add(Result("after-quarantine"));
-        Assert.Single(store.Recent());
+        store.Add(TenantId.Local, Result("after-quarantine"));
+        Assert.Single(store.Recent(TenantId.Local));
     }
 
     [Fact]
     public void Recent_RespectsCount()
     {
         var store = new NetDiagResultStore(_path);
-        for (int i = 0; i < 10; i++) store.Add(Result($"r{i}"));
-        Assert.Equal(3, store.Recent(3).Count);
-        Assert.Empty(store.Recent(0));
+        for (int i = 0; i < 10; i++) store.Add(TenantId.Local, Result($"r{i}"));
+        Assert.Equal(3, store.Recent(TenantId.Local, 3).Count);
+        Assert.Empty(store.Recent(TenantId.Local, 0));
     }
 }
