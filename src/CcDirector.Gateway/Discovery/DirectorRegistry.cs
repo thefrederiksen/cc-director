@@ -105,8 +105,11 @@ public sealed class DirectorRegistry : IDisposable
     private Timer? _sweeper;
     private bool _disposed;
 
-    /// <summary>Raised when a Director appears (file created or HTTP register).</summary>
-    public event Action<DirectorDto>? OnDirectorAdded;
+    /// <summary>
+    /// Raised when a Director appears (file created, local registration, or tunnel registration). The payload
+    /// carries the owning tenant because a Director identifier is unique only within a tenant.
+    /// </summary>
+    public event Action<DirectorArrival>? OnDirectorAdded;
 
     /// <summary>
     /// Raised when a Director disappears (file removed, HTTP unregister, or stale).
@@ -212,7 +215,7 @@ public sealed class DirectorRegistry : IDisposable
             ? $"[DirectorRegistry] Upsert (http): id={dto.DirectorId}, endpoint={dto.TailnetEndpoint}, existed={existed}"
             : $"[DirectorRegistry] Upsert (http, FLAGGED no reachable endpoint): id={dto.DirectorId}, existed={existed}, reason={dto.EndpointUnreachableReason}");
         if (!existed)
-            OnDirectorAdded?.Invoke(dto);
+            OnDirectorAdded?.Invoke(new DirectorArrival(key.Tenant, dto));
         return dto;
     }
 
@@ -263,7 +266,7 @@ public sealed class DirectorRegistry : IDisposable
         if (!existed)
         {
             FileLog.Write($"[DirectorRegistry] RegisterFromStream: id={directorId}, machine={machineName}, version={version}");
-            OnDirectorAdded?.Invoke(dto);
+            OnDirectorAdded?.Invoke(new DirectorArrival(key.Tenant, dto));
         }
         return dto;
     }
@@ -496,7 +499,7 @@ public sealed class DirectorRegistry : IDisposable
             dto.Source = "file";
             var wasNew = !_directors.ContainsKey(key);
             _directors[key] = dto;
-            if (wasNew) OnDirectorAdded?.Invoke(dto);
+            if (wasNew) OnDirectorAdded?.Invoke(new DirectorArrival(key.Tenant, dto));
             FileLog.Write($"[DirectorRegistry] Added (file): id={dto.DirectorId}, endpoint={dto.ControlEndpoint}");
             return true;
         }
