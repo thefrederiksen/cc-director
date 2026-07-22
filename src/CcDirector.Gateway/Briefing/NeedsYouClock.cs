@@ -1,5 +1,4 @@
 using System.Collections.Concurrent;
-using CcDirector.Core.Tenancy;
 using CcDirector.Core.Utilities;
 
 namespace CcDirector.Gateway.Briefing;
@@ -23,46 +22,37 @@ namespace CcDirector.Gateway.Briefing;
 /// EffectiveColor folds in OnHold / Briefing / Explaining (see <see cref="Contracts.SessionOrdering"/>),
 /// so a session the wingman is still reading is effective yellow/orange, not red, and is
 /// correctly treated as not-yet-waiting here.
-///
-/// Hosted Multi-Tenancy (MTR-10 Gap C): the clock is keyed by (tenant, sessionId), never the
-/// bare session id. Two accounts can run sessions with the SAME id; a bare-sid key let one
-/// tenant's "left red" clear the other tenant's entry, or one tenant's held stamp be reported
-/// as the other's "waiting since". The fold hands the OWNING tenant of the row it is stamping
-/// (the roster's request tenant, the display push's ambient tenant), so each tenant's clock is
-/// its own. Self-host resolves to the single <see cref="TenantId.Local"/> partition, unchanged.
 /// </summary>
 public sealed class NeedsYouClock
 {
-    private readonly ConcurrentDictionary<(TenantId Tenant, string SessionId), DateTime> _since = new();
+    private readonly ConcurrentDictionary<string, DateTime> _since = new();
 
     /// <summary>
     /// Apply the entry/hold/clear rule for one session and return the timestamp to stamp on
     /// its <see cref="Contracts.SessionDto.NeedsYouSince"/> (UTC), or null when it is not red.
     /// </summary>
-    /// <param name="tenant">The tenant that owns the session being stamped (MTR-10 Gap C).</param>
     /// <param name="sessionId">The session's stable id.</param>
     /// <param name="isRed">Whether the session's EffectiveColor is "red" this refresh.</param>
-    public DateTime? Stamp(TenantId tenant, string sessionId, bool isRed)
+    public DateTime? Stamp(string sessionId, bool isRed)
     {
         ArgumentException.ThrowIfNullOrEmpty(sessionId);
 
-        var key = (tenant, sessionId);
         if (!isRed)
         {
-            if (_since.TryRemove(key, out _))
-                FileLog.Write($"[NeedsYouClock] tenant={tenant.ToLogString()} sid={sessionId}: left red, cleared NeedsYouSince");
+            if (_since.TryRemove(sessionId, out _))
+                FileLog.Write($"[NeedsYouClock] sid={sessionId}: left red, cleared NeedsYouSince");
             return null;
         }
 
         // First red refresh stamps UtcNow; every subsequent red refresh holds that value.
         var added = false;
-        var since = _since.GetOrAdd(key, _ =>
+        var since = _since.GetOrAdd(sessionId, _ =>
         {
             added = true;
             return DateTime.UtcNow;
         });
         if (added)
-            FileLog.Write($"[NeedsYouClock] tenant={tenant.ToLogString()} sid={sessionId}: entered red, NeedsYouSince={since:o}");
+            FileLog.Write($"[NeedsYouClock] sid={sessionId}: entered red, NeedsYouSince={since:o}");
         return since;
     }
 }
