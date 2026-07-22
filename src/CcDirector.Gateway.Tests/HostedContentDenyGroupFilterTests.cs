@@ -83,12 +83,13 @@ public sealed class HostedContentDenyGroupFilterTests
     /// also carries the live batch + cleanup routes, but its group prefix is <c>/transcription</c> all the
     /// same, so its probe sits one segment deeper than before.
     /// </summary>
+    // The /dictation and /wingman/utterance upload families are NO LONGER denied (issue #1884, un-deny): they
+    // are served tenant-partitioned on hosted, so they are not deny groups and are not probed here. The
+    // remaining denied content-read families keep their group-filter proof.
     private static string PrefixFor(string family) => family switch
     {
         "transcription" => "transcription/",
         "instructions" => "gateway/wingman/instructions/",
-        "utterance" => "wingman/utterance/",
-        "dictation" => "dictation/",
         _ => throw new ArgumentOutOfRangeException(nameof(family)),
     };
 
@@ -99,18 +100,14 @@ public sealed class HostedContentDenyGroupFilterTests
 
     private const string TranscriptionRefusal = "transcription analysis is not available on the hosted gateway";
     private const string InstructionsRefusal = "the wingman instructions surface is not available on the hosted gateway";
-    private const string UtteranceRefusal = "the wingman utterance upload is not available on the hosted gateway";
-    private const string DictationRefusal = "dictation upload is not available on the hosted gateway";
 
     /// <summary>Which family, its group-mapper, and the refusal its filter must produce.</summary>
-    public static TheoryData<string> Families() => new() { "transcription", "instructions", "utterance", "dictation" };
+    public static TheoryData<string> Families() => new() { "transcription", "instructions" };
 
     private static string RefusalFor(string family) => family switch
     {
         "transcription" => TranscriptionRefusal,
         "instructions" => InstructionsRefusal,
-        "utterance" => UtteranceRefusal,
-        "dictation" => DictationRefusal,
         _ => throw new ArgumentOutOfRangeException(nameof(family)),
     };
 
@@ -193,10 +190,6 @@ public sealed class HostedContentDenyGroupFilterTests
     [InlineData("transcription", "0")]
     [InlineData("instructions", null)]
     [InlineData("instructions", "0")]
-    [InlineData("utterance", null)]
-    [InlineData("utterance", "0")]
-    [InlineData("dictation", null)]
-    [InlineData("dictation", "0")]
     public async Task A_route_added_to_the_group_still_binds_and_serves_on_self_host(string family, string? hostedValue)
     {
         using var env = new HostedEnv(hostedValue);
@@ -328,31 +321,8 @@ public sealed class HostedContentDenyGroupFilterTests
                         new WingmanTrainingStore(() => false, Path.Combine(root, "training")),
                         brain);
 
-                case "utterance":
-                {
-                    var vault = new KeyVault(Path.Combine(root, "probe.vault"));
-                    var voice = new WingmanVoiceService(brain, vault, Path.Combine(root, "voice.json"));
-                    return GatewayWingmanVoiceEndpoint.Map(
-                        app,
-                        new DirectorRegistry(Path.Combine(root, "instances")),
-                        brain,
-                        vault,
-                        voice);
-                }
-
-                case "dictation":
-                {
-                    var vault = new KeyVault(Path.Combine(root, "probe.vault"));
-                    return GatewayDictationEndpoint.Map(
-                        app,
-                        new DirectorRegistry(Path.Combine(root, "instances")),
-                        owners: null,
-                        token: "probe-token",
-                        transcription: new GatewayTranscriptionService(vault),
-                        transcribingSessions: new TranscribingSessions(),
-                        uploads: new VoiceUploadStore(Path.Combine(root, "uploads")),
-                        devices: new Pairing.DeviceRegistry(Path.Combine(root, "devices.json")));
-                }
+                // NOTE: /wingman/utterance and /dictation are deliberately absent - they are un-denied and
+                // tenant-partitioned (issue #1884), not deny groups, so they have no group filter to probe.
 
                 default:
                     throw new ArgumentOutOfRangeException(nameof(family), family, "unknown family");

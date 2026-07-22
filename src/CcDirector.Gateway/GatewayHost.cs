@@ -495,7 +495,12 @@ public sealed class GatewayHost : IAsyncDisposable
     // delivery record (issue #1183): PENDING chunks are retained until delivered/abandoned, and the
     // terminal tombstone de-dupes the upload id forever until the client acknowledges it - so there is no
     // age sweep for dictation staging (only the unrelated voice-turn staging is age-swept).
-    private readonly Voice.VoiceUploadStore _dictationUploads = new(CcDirector.Core.Storage.CcStorage.DictationUploads());
+    // The tenant is named here because the store REQUIRES one - there is no constructor that picks a
+    // partition on the author's behalf. This is the BASE handle only: the dictation endpoint re-scopes it
+    // with ForTenant to the tenant it resolved from the authenticated device key, and does its work solely
+    // inside that partition. Naming Local here reproduces exactly the path this store has always used.
+    private readonly Voice.VoiceUploadStore _dictationUploads =
+        new(CcDirector.Core.Storage.CcStorage.DictationUploads(), CcDirector.Core.Tenancy.TenantId.Local);
     // Store injection points (Hosted Gateway, Step 1b): the host owns ONE instance of each durable store
     // that was previously reached through a process-wide static, and hands it to the endpoint/service that
     // uses it, so a tenant id can reach the storage layer in a later pull request. Same default paths as
@@ -504,7 +509,12 @@ public sealed class GatewayHost : IAsyncDisposable
     private readonly Prompts.GatewayPromptLog _promptLog;
     private readonly Transcription.TranscriptionTelemetryLog _transcriptionTelemetry = new();
     private readonly Transcription.TranscriptionAudioArchive _transcriptionAudioArchive = new();
-    private readonly Voice.VoiceUploadStore _voiceTurnUploads = new();
+    // The voice-turn staging root, likewise bound to an explicitly-named partition. This path stages a clip
+    // for the duration of one turn and then deletes it; it writes no delivery record and performs no
+    // cross-request lookup by upload id, so it is unchanged by the dictation partition work. Per-tenant
+    // scoping of the voice-turn path itself is a separate piece of work and is NOT claimed here.
+    private readonly Voice.VoiceUploadStore _voiceTurnUploads =
+        new(CcDirector.Core.Storage.CcStorage.VoiceTurnUploads(), CcDirector.Core.Tenancy.TenantId.Local);
     // The Gateway's stable per-machine install identity (issue #857), owned by the host and handed to the
     // device-registration service instead of the retired static GatewayInstallId.LoadOrCreate.
     private readonly Account.GatewayInstallId _installIdStore = new();
@@ -2002,7 +2012,7 @@ public sealed class GatewayHost : IAsyncDisposable
         // in resumable chunks and the Gateway assembles → transcribes → injects the turn into the
         // owning session itself, so a refresh / dropped connection cannot lose a recorded utterance.
         GatewayDictationEndpoint.Map(_app, Registry, SessionOwners, Token,
-            _dictationTranscription ?? new Transcription.GatewayTranscriptionService(_keyVault, telemetry: _transcriptionTelemetry, audioArchive: _transcriptionAudioArchive), _transcribingSessions, _dictationUploads, Devices,
+            _dictationTranscription ?? new Transcription.GatewayTranscriptionService(_keyVault, telemetry: _transcriptionTelemetry, audioArchive: _transcriptionAudioArchive), _transcribingSessions, new Api.DictationTenantGate(_dictationUploads, _tenantBoundary), Devices,
             pushedSessions: PushedSessions,
             sendCommand: SendCommandAsync);
         // Durable per-upload-id dictation record (issue #1183): a PENDING upload's chunks are retained
@@ -2351,6 +2361,21 @@ public sealed class GatewayHost : IAsyncDisposable
             _ => { try { _tenantPass.ForEachTenant(() => FleetDisplayState.Sweep()); } catch (Exception ex) { FileLog.Write($"[GatewayHost] display-state sweep error: {ex.Message}"); } },
             null, DisplayStateSweepInterval, DisplayStateSweepInterval);
         FileLog.Write($"[GatewayHost] display-state sweep started: every {DisplayStateSweepInterval.TotalSeconds:0}s");
+
+        // Un-deny safety gate (issue #1884). Now that the /dictation and /wingman/utterance upload families
+        // are served on hosted (tenant-partitioned), any pre-partition upload directory sitting directly under
+        // a shared base root is legacy and unattributable - it predates the partition and belongs to no
+        // resolvable tenant. On hosted, move those aside ONCE at startup so no pass (the age sweep below, the
+        // durable PENDING projection, or any base-handle read) ever treats them as live. It MOVES, never
+        // deletes, and is idempotent/re-entrant, so it is safe under restart and concurrent workers. Self-host
+        // legitimately keeps its uploads at the root, so this runs only on hosted.
+        if (GatewayHostedMode.IsHosted)
+        {
+            var quarantinedDictation = _dictationUploads.QuarantineLegacyUploads();
+            var quarantinedVoiceTurn = _voiceTurnUploads.QuarantineLegacyUploads();
+            FileLog.Write($"[GatewayHost] hosted un-deny safety: quarantined legacy upload dirs " +
+                $"dictation={quarantinedDictation} voiceTurn={quarantinedVoiceTurn}");
+        }
 
         // Voice-turn upload staging retention. The success path deletes an upload's staging directory when
         // the turn starts; everything else - a refused, dropped or never-completed upload - is bounded here

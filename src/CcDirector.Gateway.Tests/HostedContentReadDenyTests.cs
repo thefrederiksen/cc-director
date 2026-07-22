@@ -213,8 +213,8 @@ public sealed class HostedContentReadDenyTests : IAsyncLifetime
 
     private const string TranscriptionRefusal = "transcription analysis is not available on the hosted gateway";
     private const string InstructionsRefusal = "the wingman instructions surface is not available on the hosted gateway";
-    private const string UtteranceRefusal = "the wingman utterance upload is not available on the hosted gateway";
-    private const string DictationRefusal = "dictation upload is not available on the hosted gateway";
+    // The utterance and dictation refusal constants were removed with their theories (issue #1884, un-deny):
+    // those two upload families are now served tenant-partitioned on hosted, not refused.
 
     private GatewayHost _gateway = null!;
     private HttpClient _http = null!;
@@ -329,68 +329,11 @@ public sealed class HostedContentReadDenyTests : IAsyncLifetime
         Assert.Equal(HttpStatusCode.NotFound, resp.StatusCode);
     }
 
-    /// <summary>
-    /// Issue #1896. All three legs, not only the one that returns the transcript: the chunk leg lets a
-    /// caller overwrite another account's staged recording, which is the same missing boundary with a
-    /// different consequence.
-    /// </summary>
-    [Theory]
-    [InlineData("POST", "wingman/utterance/upload", "")]
-    [InlineData("PUT", "wingman/utterance/someone-elses-id/chunk/0", "audio-bytes")]
-    [InlineData("POST", "wingman/utterance/someone-elses-id/complete", "{\"totalChunks\":1}")]
-    public async Task Wingman_utterance_upload_family_is_refused_to_an_enrolled_tenant(
-        string method, string path, string body)
-    {
-        var resp = await Send(new HttpMethod(method), path, body);
-        await AssertBodyIsNothingButTheRefusal(resp, UtteranceRefusal, $"{method} {path}");
-        Assert.Equal(HttpStatusCode.NotFound, resp.StatusCode);
-    }
-
-    /// <summary>
-    /// Issue #1884, the sibling family on the same store shape. The register leg is the live read: it
-    /// short-circuits on the terminal tombstone and hands back the recorded transcript WITHOUT looking any
-    /// session up, so the fact that /complete's session lookup already fails on hosted does not contain it.
-    /// ack and abandon destroy another account's in-flight recording.
-    /// </summary>
-    [Theory]
-    [InlineData("POST", "dictation/upload", "{\"sessionId\":\"11111111-1111-1111-1111-111111111111\"}")]
-    [InlineData("PUT", "dictation/someone-elses-id/chunk/0", "audio-bytes")]
-    [InlineData("POST", "dictation/someone-elses-id/complete", "{\"sessionId\":\"11111111-1111-1111-1111-111111111111\",\"totalChunks\":1}")]
-    [InlineData("POST", "dictation/someone-elses-id/ack", "")]
-    [InlineData("POST", "dictation/someone-elses-id/abandon", "")]
-    public async Task Dictation_upload_family_is_refused_to_an_enrolled_tenant(
-        string method, string path, string body)
-    {
-        var resp = await Send(new HttpMethod(method), path, body);
-        await AssertBodyIsNothingButTheRefusal(resp, DictationRefusal, $"{method} {path}");
-        Assert.Equal(HttpStatusCode.NotFound, resp.StatusCode);
-    }
-
-    /// <summary>
-    /// The refusal must PREVENT the work, not merely relabel it. A handler that ran and then reported 404
-    /// would pass a status-code-only assertion, so this proves the two upload families staged nothing: the
-    /// idempotency key was never registered, so no directory for it exists under the isolated root.
-    /// </summary>
-    [Fact]
-    public async Task A_refused_upload_registration_staged_nothing_on_disk()
-    {
-        var key = "claimed-" + Guid.NewGuid().ToString("N");
-
-        var utterance = await Send(HttpMethod.Post, "wingman/utterance/upload", "", key);
-        Assert.Equal(HttpStatusCode.NotFound, utterance.StatusCode);
-
-        var dictation = await Send(HttpMethod.Post, "dictation/upload",
-            "{\"sessionId\":\"11111111-1111-1111-1111-111111111111\"}", key);
-        Assert.Equal(HttpStatusCode.NotFound, dictation.StatusCode);
-
-        // Nothing named for that key anywhere under the isolated storage root. Searching the whole root
-        // rather than one expected directory is deliberate: it does not depend on knowing which staging
-        // path the store would have chosen, so it cannot pass by looking in the wrong place.
-        var staged = Directory.Exists(_root)
-            ? Directory.EnumerateFileSystemEntries(_root, "*" + key + "*", SearchOption.AllDirectories).ToArray()
-            : Array.Empty<string>();
-        Assert.Empty(staged);
-    }
+    // NOTE (issue #1884, un-deny): the /wingman/utterance and /dictation upload families are NO LONGER denied
+    // on hosted - they are served tenant-partitioned so the owner's mobile dictation works. Their hosted
+    // isolation (tenant A round-trips, tenant B cannot read/list/complete/ack A's upload, and a legacy
+    // pre-partition dir is never served) is proved in HostedDictationTenantRoundTripTests. What remains denied
+    // here is the transcription-analysis and wingman-instructions content-read surface, which has no partition.
 
     /// <summary>
     /// THE GATE MUST NOT DEPEND ON RESOLVING A TENANT, AND THIS IS THE CASE THAT PROVES IT.
@@ -410,8 +353,6 @@ public sealed class HostedContentReadDenyTests : IAsyncLifetime
     [Theory]
     [InlineData("GET", "transcription/turns", null, TranscriptionRefusal)]
     [InlineData("GET", "gateway/wingman/instructions/records", null, InstructionsRefusal)]
-    [InlineData("POST", "wingman/utterance/upload", "", UtteranceRefusal)]
-    [InlineData("POST", "dictation/upload", "{\"sessionId\":\"11111111-1111-1111-1111-111111111111\"}", DictationRefusal)]
     public async Task Every_family_is_refused_to_a_caller_carrying_no_tenant_at_all(
         string method, string path, string? body, string refusal)
     {

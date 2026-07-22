@@ -4,6 +4,7 @@ using System.Net.Http.Json;
 using System.Text;
 using System.Text.Json;
 using CcDirector.Core.Storage;
+using CcDirector.Core.Tenancy;
 using CcDirector.Gateway.Voice;
 using Xunit;
 
@@ -207,7 +208,7 @@ public sealed class DurableDictationDedupeTests : IAsyncLifetime
     // A store bound to the SAME on-disk dictation root the running Gateway reads (both resolve
     // CcStorage.DictationUploads() under the isolated CC_DIRECTOR_ROOT), so a tombstone written here is the
     // one the Gateway's complete/register handlers see.
-    private static VoiceUploadStore Store() => new(CcStorage.DictationUploads());
+    private static VoiceUploadStore Store() => new(CcStorage.DictationUploads(), TenantId.Local);
 
     private static async Task<(HttpStatusCode status, JsonElement body)> CompleteAsync(HttpClient http, string uploadId)
     {

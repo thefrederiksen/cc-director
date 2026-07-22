@@ -1,5 +1,6 @@
 using CcDirector.Gateway.Contracts;
 using CcDirector.Gateway.Transcription;
+using CcDirector.Core.Tenancy;
 using CcDirector.Gateway.Voice;
 using Xunit;
 
@@ -48,7 +49,7 @@ public sealed class DictationOrangeProducerTests : IDisposable
     public DictationOrangeProducerTests()
     {
         _marks = new TranscribingSessions(() => _now);
-        _uploads = new VoiceUploadStore(_root);
+        _uploads = new VoiceUploadStore(_root, TenantId.Local);
     }
 
     public void Dispose()
