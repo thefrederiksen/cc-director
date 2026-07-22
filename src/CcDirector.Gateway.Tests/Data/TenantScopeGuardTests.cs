@@ -111,7 +111,24 @@ public sealed class TenantScopeGuardTests : IDisposable
         //    order to decide whether a tenant may be minted at all. It is also READ-ONLY here - it is written
         //    by the payment side as the service role and this Gateway holds SELECT and nothing more - and it
         //    carries no tenant content: one subject, one subscription state, one period end.
-        var allowedGlobalTables = new HashSet<Type> { typeof(TenantEntity), typeof(EntitlementEntity) };
+        //
+        //  - DeviceCredentialEntity is the device registry (MTR-14) - an AUTH-RESOLUTION lookup, not tenant
+        //    data. A presented key is resolved to its device by its SHA-256 hash BEFORE any tenant is known, and
+        //    the tenant is then READ OFF the matched record (each row carries its own tenant binding as a
+        //    column). Scoping the table to a tenant would make that resolution circular, exactly like the
+        //    tenants mapping. A key still only ever resolves to its OWN bound tenant, so this is not a
+        //    cross-tenant read.
+        //
+        //  - DeviceImportMarkerEntity is the one-time devices.json -> device_credentials import marker (MTR-14A).
+        //    It guards a migration that spans every tenant's devices at once and runs before any tenant is
+        //    resolved, so it is global for the same reason its table is.
+        var allowedGlobalTables = new HashSet<Type>
+        {
+            typeof(TenantEntity),
+            typeof(EntitlementEntity),
+            typeof(DeviceCredentialEntity),
+            typeof(DeviceImportMarkerEntity),
+        };
 
         var model = Model();
         var offenders = model.GetEntityTypes()

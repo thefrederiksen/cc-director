@@ -59,13 +59,13 @@ public sealed class PostgresProviderProofTests
     /// were created. Dropping first (EnsureDeleted) makes the migrate a genuine from-nothing run so the schema
     /// creation is really exercised, not just found already present.
     /// </summary>
-    /// <summary>The 16 mapped tables, all expected under the gateway schema and NONE under public.</summary>
+    /// <summary>The 18 mapped tables, all expected under the gateway schema and NONE under public.</summary>
     private static readonly string[] MappedTables =
     {
         "cron_jobs", "cron_runs", "worklists", "worklist_items", "workflows", "workflow_versions",
         "workflow_files", "workflow_runs", "snoozes", "governance_events", "push_subscriptions",
         "wingman_instructions", "session_spend", "account_hosted_ai_spend", "mission_notes",
-        "governance_audit_events",
+        "governance_audit_events", "device_credentials", "device_import_markers",
     };
 
     [RequiresPostgresFact]
@@ -124,10 +124,17 @@ public sealed class PostgresProviderProofTests
 
         var expected = new[]
         {
+            // The device-credential natural keys (MTR-14): the DeviceId primary key and the DeviceKeyHash lookup
+            // index, plus the device-import marker's SourcePath key - all byte-ordinal to match SQLite BINARY.
+            ("device_credentials", "DeviceId"),
+            ("device_credentials", "DeviceKeyHash"),
+            ("device_import_markers", "SourcePath"),
             ("mission_notes", "Key"),
             ("push_subscriptions", "Endpoint"),
             ("session_spend", "SessionId"),
             ("snoozes", "SessionId"),
+            ("tenants", "AccountSubject"),
+            ("tenants", "Id"),
         };
         Assert.Equal(expected, withExplicitC.ToArray());
 

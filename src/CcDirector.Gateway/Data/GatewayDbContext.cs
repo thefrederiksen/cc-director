@@ -107,6 +107,16 @@ public sealed class GatewayDbContext : DbContext
     /// </summary>
     public DbSet<EntitlementEntity> Entitlements => Set<EntitlementEntity>();
 
+    /// <summary>The durable per-device-key credential records (<c>device_credentials</c>, MTR-14) - the per-row
+    /// replacement for the shared <c>devices.json</c> file. A GLOBAL table (no <c>tenant_id</c> query filter):
+    /// a presented key is resolved by its hash before any tenant is known, and the tenant is read off the
+    /// matched record. The runtime read/write cutover is MTR-14B; MTR-14A only creates this schema.</summary>
+    public DbSet<DeviceCredentialEntity> DeviceCredentials => Set<DeviceCredentialEntity>();
+
+    /// <summary>The one-time <c>devices.json</c> import markers (<c>device_import_markers</c>, MTR-14A) - the
+    /// idempotency record for the legacy-registry migration. GLOBAL, like <see cref="DeviceCredentials"/>.</summary>
+    public DbSet<DeviceImportMarkerEntity> DeviceImportMarkers => Set<DeviceImportMarkerEntity>();
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         base.OnModelCreating(modelBuilder);
@@ -370,6 +380,31 @@ public sealed class GatewayDbContext : DbContext
             b.HasIndex(e => e.AccountSubject).IsUnique();
         });
 
+        modelBuilder.Entity<DeviceCredentialEntity>(b =>
+        {
+            b.ToTable("device_credentials");
+            // DeviceId is the natural primary key - the device's stable identity, globally unique, mirroring the
+            // in-memory registry's _byDeviceId map keyed by device id. This table is GLOBAL (like tenants): it is
+            // deliberately NOT passed to ApplyTenantScope, so it carries no query filter, because a presented key
+            // is resolved to its device by hash BEFORE any tenant is known and the tenant is read off the record.
+            b.HasKey(e => e.DeviceId);
+            // The key-to-device lookup path (MTR-14B's authentication read) is by the stored hash, mirroring the
+            // in-memory _byKeyHash index. Indexed for that O(1) lookup. Deliberately NOT unique: a hand-edited or
+            // duplicate legacy devices.json must import rather than brick on a database constraint (the same
+            // stance account_hosted_ai_spend takes on its dedup tuple), and the in-memory index already enforces
+            // last-writer-wins uniqueness in code. The random 256-bit key space makes a genuine hash collision
+            // between two distinct devices astronomically unlikely regardless.
+            b.HasIndex(e => e.DeviceKeyHash);
+        });
+
+        modelBuilder.Entity<DeviceImportMarkerEntity>(b =>
+        {
+            b.ToTable("device_import_markers");
+            // SourcePath (the absolute devices.json path) is the natural primary key - one marker per imported
+            // source file. GLOBAL, like device_credentials: not tenant-scoped.
+            b.HasKey(e => e.SourcePath);
+        });
+
         // Tenant scoping - the tenant_id column plus the global query filter - applied uniformly to every
         // entity that derives from TenantScopedEntity, so future stores inherit it by deriving from the base.
         ApplyTenantScope<CronJobEntity>(modelBuilder);
@@ -423,6 +458,15 @@ public sealed class GatewayDbContext : DbContext
             // so pin them to "C" too - the account subject in particular must match EXACTLY on both providers.
             modelBuilder.Entity<TenantEntity>().Property(e => e.Id).UseCollation("C");
             modelBuilder.Entity<TenantEntity>().Property(e => e.AccountSubject).UseCollation("C");
+
+            // The device_credentials natural-key columns (MTR-14): the DeviceId primary key and the
+            // DeviceKeyHash lookup index both rely on byte-ordinal equality/ordering, same as the keys above -
+            // the key-hash lookup in particular must match EXACTLY on both providers (it is the authentication
+            // read MTR-14B moves onto this table), so pin both to "C" (raw-byte, memcmp) to agree with SQLite's
+            // default BINARY collation. The device_import_markers SourcePath key is likewise byte-ordinal.
+            modelBuilder.Entity<DeviceCredentialEntity>().Property(e => e.DeviceId).UseCollation("C");
+            modelBuilder.Entity<DeviceCredentialEntity>().Property(e => e.DeviceKeyHash).UseCollation("C");
+            modelBuilder.Entity<DeviceImportMarkerEntity>().Property(e => e.SourcePath).UseCollation("C");
 
             // 3. The entitlements.subject column is Postgres `uuid`, not text. The CLR property stays a string
             //    (its callers pass and compare a string), so map it through a string<->Guid value converter and
