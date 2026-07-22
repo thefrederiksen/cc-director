@@ -20,7 +20,7 @@ namespace CcDirector.Gateway.Tests;
 /// (re-reading config.json from disk, the across-restart guarantee), and rejects a non-object body.
 /// In the "DirectorRoot" collection because it sets CC_DIRECTOR_ROOT.
 /// </summary>
-[Collection("DirectorRoot")]
+[Collection("GatewayHostedMode")]
 public sealed class TelemetryConsentEndpointTests : IAsyncLifetime
 {
     private readonly string _root;

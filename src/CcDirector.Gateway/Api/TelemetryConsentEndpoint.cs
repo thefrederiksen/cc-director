@@ -1,6 +1,7 @@
 using System.Text.Json;
 using CcDirector.Core.Configuration;
 using CcDirector.Core.Utilities;
+using CcDirector.Gateway.Tenancy;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
@@ -20,13 +21,67 @@ namespace CcDirector.Gateway.Api;
 /// the same store the other Gateway settings use. Read at decision time, so a toggle takes effect
 /// immediately - no Gateway restart. These endpoints inherit the host-wide Gateway token middleware
 /// exactly like every other Gateway endpoint. The response carries no token and no user data.
+///
+/// DENIED IN WHOLE ON HOSTED (issue #1863). Both routes are refused on a hosted Gateway through the shared
+/// refusal primitive (<see cref="HostedRouteDeny.Group"/>), the same boundary the rest of the owner-settings
+/// group and the key-vault group adopt. The consent is a single PROCESS-GLOBAL config.json key governing the
+/// WHOLE fleet, with no tenant dimension - so on shared hosted infrastructure one tenant toggling it would be
+/// answering a privacy question on behalf of every other tenant. There is no correct per-tenant answer to
+/// serve here. Self-host is single-tenant and this is legitimate owner function there, so on self-host
+/// nothing changes.
+///
+/// PER-ROUTE MODE, not an exclusive prefix: this family sits under <c>/gateway</c>, which carries LIVE routes
+/// from other families, so an exclusive claim would take them off the air. The primitive maps a verb-less
+/// refusal on each route's own pattern on hosted - the handler is never mapped - so every request shape,
+/// including a verb the route never served, meets the refusal rather than a 405.
 /// </summary>
 internal static class TelemetryConsentEndpoint
 {
     private static readonly JsonSerializerOptions JsonOpts = new() { PropertyNameCaseInsensitive = true };
 
-    /// <summary>Maps the GET/PUT telemetry-consent routes.</summary>
-    public static void Map(IEndpointRouteBuilder app)
+    /// <summary>The single error string the hosted refusal serves, held here so a test asserts the exact
+    /// string served rather than a copy that could drift.</summary>
+    internal const string RefusalMessage = "the telemetry consent setting is not available on the hosted gateway";
+
+    /// <summary>
+    /// The hosted refusal payload for both telemetry-consent routes (issue #1863). Validated on construction,
+    /// so a blank field fails the Gateway at startup. The primitive reads <see cref="GatewayHostedMode.IsHosted"/>
+    /// DIRECTLY, never an optional argument that fails OPEN when a caller forgets it. 404 rather than 403 for
+    /// the same reason as its siblings: on hosted a fleet-wide owner consent does not exist as a concept.
+    /// </summary>
+    private static HostedDenial Denial() => new(
+        family: "telemetry-consent",
+        message: RefusalMessage,
+        reason: "the consent is one process-global config.json key governing the whole fleet, with no tenant " +
+                "dimension - so on shared infrastructure one subscriber would answer the privacy question for all",
+        unDenyInstruction: "do NOT simply remove this deny: give the consent a per-tenant home (config.json has " +
+                "none today) and migrate the global value already written, then restore a tenant-scoped route",
+        statusCode: StatusCodes.Status404NotFound);
+
+    /// <summary>
+    /// Maps the GET/PUT telemetry-consent routes through the shared refusal primitive and returns the denied
+    /// handle, so a test can map a brand-new route onto that handle and find it already refused on hosted with
+    /// no deny of its own.
+    /// </summary>
+    public static HostedDenyGroup Map(IEndpointRouteBuilder outer)
+    {
+        FileLog.Write($"[TelemetryConsentEndpoint] mapping telemetry consent; hosted={GatewayHostedMode.IsHosted} - on hosted EVERY route in this group is refused via the shared refusal primitive (issue #1863)");
+
+        var group = HostedRouteDeny.Group(outer, "", Denial());
+
+        // THE ROUTES ARE MAPPED WHERE `outer` IS NOT IN SCOPE - see the note in SettingsEndpoints.Map.
+        // Either of these two routes could otherwise be mapped onto `outer` by a one-word edit, opening it
+        // alone while the other stayed denied. Handing the typed handle to a method that never receives the
+        // ungrouped builder makes that INEXPRESSIBLE.
+        MapRoutes(group);
+        return group;
+    }
+
+    /// <summary>
+    /// The two telemetry-consent routes. Takes the denied GROUP HANDLE and nothing else, deliberately, so
+    /// neither route can be mapped around the hosted refusal.
+    /// </summary>
+    private static void MapRoutes(HostedDenyGroup app)
     {
         app.MapGet("/gateway/telemetry-consent", () =>
         {
