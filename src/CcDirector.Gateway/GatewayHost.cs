@@ -2255,7 +2255,9 @@ public sealed class GatewayHost : IAsyncDisposable
             // stamp the resolved mission name onto the create request forwarded to the Director.
             missions: Missions,
             // Workflows mission (phase 5b): seat spawns on workflow runs and record participants.
-            workflowRuns: _workflowRuns);
+            workflowRuns: _workflowRuns,
+            // Tenant boundary: every launcher-registry read/write is scoped to the calling tenant.
+            boundary: _tenantBoundary);
 
         // The Cockpit Settings page surface (docs/architecture/gateway/SETTINGS_OWNERSHIP.md):
         // one snapshot GET plus brain-restart and autostart actions. Reads this host directly
@@ -2670,11 +2672,11 @@ public sealed class GatewayHost : IAsyncDisposable
     /// which the caller treats as "no stream" and falls back to the HTTP relay. Any non-null result - success
     /// OR a typed failure - means the stream handled the command and its outcome is authoritative.
     /// </summary>
-    public async Task<LauncherCommandResult?> SendLauncherCommandAsync(string machineName, LauncherCommand command, CancellationToken ct = default)
+    public async Task<LauncherCommandResult?> SendLauncherCommandAsync(Core.Tenancy.TenantId tenant, string machineName, LauncherCommand command, CancellationToken ct = default)
     {
         if (command is null) throw new ArgumentNullException(nameof(command));
 
-        var connectionId = LauncherConnections.GetActiveConnectionId(machineName);
+        var connectionId = LauncherConnections.GetActiveConnectionId(tenant, machineName);
         var hub = _app?.Services.GetService(typeof(Microsoft.AspNetCore.SignalR.IHubContext<Streaming.LauncherHub>))
             as Microsoft.AspNetCore.SignalR.IHubContext<Streaming.LauncherHub>;
         if (connectionId is null || hub is null)
