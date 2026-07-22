@@ -27,6 +27,11 @@ export interface PendingDictation {
    *  (recording wall-clock vs decoded audio duration). Absent when the on-device decode failed. */
   decodedSeconds?: number;
   sourceBytes?: number;
+  /** A material capture-loss caution measured at Send time (issue #863): some of what was said was dropped
+   *  during recording, so the transcript may be missing words. Stored durably so it survives a resume and is
+   *  shown with the delivered `done` status (the Send path's equivalent of the dialog's dropped-audio
+   *  warning, so a Send that dropped audio is never silent). Absent on a clean capture. */
+  captureWarning?: string;
   /** Typed text before the caret (Terminal Speak compose); empty for the voice case. */
   before: string;
   /** Typed text after the caret; empty for the voice case. */

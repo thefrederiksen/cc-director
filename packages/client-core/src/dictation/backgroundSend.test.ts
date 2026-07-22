@@ -130,6 +130,32 @@ describe("backgroundTranscribeAndSend", () => {
     expect(vi.mocked(savePending).mock.calls[0][0].blob).toBe(captured.blob);
   });
 
+  it("a delivered send that dropped audio carries a capture-loss warning on done (never silent)", async () => {
+    // The send succeeds, but the record was flagged with a capture-loss warning at Send time. The delivered
+    // `done` status must carry that warning so the strip shows a non-clearing caution instead of a silent
+    // "Sent" - the fire-and-forget Send's equivalent of the dialog's dropped-audio warning.
+    vi.mocked(uploadDictationToSession).mockResolvedValue(SUBMITTED);
+    const warned: PendingDictation = { ...makeRecord("warn-1"), captureWarning: "About 3 seconds of your audio was not captured, so words may be missing." };
+    vi.mocked(listPending).mockResolvedValue([warned]);
+
+    await resumePendingDictations();
+
+    const s = statusFor("warn-1");
+    expect(s?.phase).toBe("done");
+    expect(s?.warning).toBe("About 3 seconds of your audio was not captured, so words may be missing.");
+  });
+
+  it("a clean delivered send has no warning on done", async () => {
+    vi.mocked(uploadDictationToSession).mockResolvedValue(SUBMITTED);
+    vi.mocked(listPending).mockResolvedValue([makeRecord("clean-1")]);
+
+    await resumePendingDictations();
+
+    const s = statusFor("clean-1");
+    expect(s?.phase).toBe("done");
+    expect(s?.warning).toBeUndefined();
+  });
+
   it("removes the durable copy on a terminal submitted outcome (the queue does not accumulate)", async () => {
     vi.mocked(uploadDictationToSession).mockResolvedValue(SUBMITTED);
 

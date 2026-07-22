@@ -2708,6 +2708,14 @@ a.banner-btn {
   background: rgba(148, 163, 184, 0.12);
   border-color: rgba(148, 163, 184, 0.4);
 }
+/* Delivered but audio was dropped during capture (#863): the send succeeded, yet the transcript may be
+   missing words, so it is an amber caution the user dismisses - not an alarm (nothing failed), not a silent
+   "Sent" (a Send that lost words must never be silent). */
+.dictate-strip-warning {
+  color: #f5c264;
+  background: rgba(217, 164, 65, 0.12);
+  border-color: rgba(217, 164, 65, 0.4);
+}
 
 /* The dropped strip's stacked message + quoted words. flex-basis keeps the buttons beside it on a wide
    screen and drops them below on a narrow phone. */
@@ -2747,6 +2755,7 @@ a.banner-btn {
 .dictate-strip-parked .dictate-strip-icon { background: rgba(148, 163, 184, 0.3); }
 .dictate-strip-dropped .dictate-strip-icon { background: rgba(241, 76, 76, 0.3); }
 .dictate-strip-unheard .dictate-strip-icon { background: rgba(148, 163, 184, 0.3); }
+.dictate-strip-warning .dictate-strip-icon { background: rgba(217, 164, 65, 0.3); }
 
 /* Small inline spinner for the strip's in-flight state (reuses the voice-spin keyframes). */
 .dictate-strip-spin {
