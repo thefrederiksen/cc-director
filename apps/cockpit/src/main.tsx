@@ -28,7 +28,6 @@ import { AccountView } from "./account/AccountView";
 import { AboutView } from "./about/AboutView";
 import { SettingsView } from "./settings/SettingsView";
 import { InjectedTextView } from "./injectedtext/InjectedTextView";
-import { FeedbackView } from "./feedback/FeedbackView";
 import "./styles.css";
 import "./components/components.css";
 import "./fleet/fleet.css";
@@ -44,7 +43,6 @@ import "./account/account.css";
 import "./about/about.css";
 import "./settings/settings.css";
 import "./injectedtext/injectedtext.css";
-import "./feedback/feedback.css";
 
 // Browser device enrollment is the front door (issue #1088): this desktop shell authenticates with
 // the SAME shared client-core device-auth flow the phone shipped with (#908). The Cockpit installs its
@@ -196,7 +194,6 @@ const router = createBrowserRouter(
             // it is now this route, reading/writing same-origin through the Gateway settings endpoints.
             { path: "/settings", element: <SettingsView /> },
             { path: "/injected-text", element: <InjectedTextView /> },
-            { path: "/feedback", element: <FeedbackView /> },
             { path: "*", element: <NotFound /> },
           ],
         },

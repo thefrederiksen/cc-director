@@ -311,7 +311,6 @@ public sealed class GatewayHost : IAsyncDisposable
     // interactive POST /machines/{machine}/sessions relay). Built in the constructor, used by both.
     private readonly Running.MachineSessionSpawner _machineSessionSpawner;
     private readonly TailscaleServeProvisioner _serveProvisioner;
-    private readonly GatewayTurnBriefStore _turnBriefStore;
     private readonly KeyVault _keyVault;
 
     // Lost Dictations mission (#1593): the transcription owner the dictation endpoint uses. Null in
@@ -702,7 +701,6 @@ public sealed class GatewayHost : IAsyncDisposable
         // The production behaviour, assigned once here. See BrainRestartAction for why the indirection
         // exists; nothing in production ever reassigns it.
         BrainRestartAction = ct => Brain.RestartAsync(ct);
-        _turnBriefStore = new GatewayTurnBriefStore(turnBriefDirectory);
         // Production omits keyVaultPath for the shared default; tests pass an isolated path so
         // they never touch the real %LOCALAPPDATA% key store.
         _keyVault = new KeyVault(keyVaultPath);
@@ -1378,7 +1376,6 @@ public sealed class GatewayHost : IAsyncDisposable
     public string BrainModel { get; }
 
     /// <summary>Gateway-side turn-brief storage (issue #185): append-only, fleet-wide.</summary>
-    public GatewayTurnBriefStore TurnBriefs => _turnBriefStore;
 
     /// <summary>
     /// Build the wingman's brain for the CURRENTLY selected AI provider and requested model role. The
@@ -1895,30 +1892,12 @@ public sealed class GatewayHost : IAsyncDisposable
             dictationStatusFor: (tenant, sid) => DictationStatusFor(tenant, sid, _transcribingSessions, _dictationUploads.ForTenant(tenant)),
             // The mobile Speak flow marks/clears this via POST /sessions/{sid}/transcribing.
             transcribingSessions: _transcribingSessions,
-            // Issue #212 W3: enrich the Interrupted sessions list from the durable brief store. Always
-            // available (read-only is safe even with briefing disabled), and the brief survives
-            // the Director that died - which is exactly when we need it.
-            interruptedBriefFor: sid =>
-            {
-                // Hosted quarantine (MTR audit gap H5): the brief store is bare-session-id-keyed legacy data
-                // with no tenant in its path or records (issue #549 retired the writer). On a hosted box it
-                // cannot be attributed to the caller's tenant, so serving it here would embed another account's
-                // rail line/headline into this tenant's Interrupted list. Refuse by returning nothing; the read
-                // routes over the same store are denied in TurnBriefGatewayEndpoints. Self-host (one tenant) is
-                // byte-identical - IsHosted is false there.
-                if (GatewayHostedMode.IsHosted) return (null, null);
-                var b = _turnBriefStore.Latest(sid);
-                return (b?.NeedsYou?.RailLine, b?.Headline);
-            },
-            // Issue #212 W4: the restore endpoint builds its continuation context from the
-            // full brief history; the store outlives the dead Director, so this serves
-            // sessions whose owner is gone.
-            // Hosted quarantine (MTR audit gap H5): the same untenanted legacy store must not seed a new
-            // continuation prompt with another account's brief history on hosted. Empty on hosted,
-            // byte-identical on self-host.
-            briefHistoryFor: sid => GatewayHostedMode.IsHosted
-                ? new List<TurnBriefDto>()
-                : _turnBriefStore.List(sid),
+            // The Gateway turn-brief store was removed: issue #549 retired the writer, so the store only ever
+            // served untenanted legacy data and is superseded by Wingman voice. The Interrupted-list rail-line
+            // enrichment and the restore continuation-history now carry no brief context (both already returned
+            // nothing on hosted); the restore endpoint still works with less context.
+            interruptedBriefFor: _ => (null, null),
+            briefHistoryFor: _ => new List<TurnBriefDto>(),
             // Issue #288: record session->Director ownership as the fleet is aggregated, so the WS
             // proxy can return 503 (owner offline) rather than 404 for a session whose Director went dark.
             owners: SessionOwners,
@@ -2283,17 +2262,10 @@ public sealed class GatewayHost : IAsyncDisposable
         // for status/brain; run mode + autostart come from SettingsHooks (GatewayApp-owned).
         SettingsEndpoints.Map(_app, this);
 
-        // Gateway-served turn briefs (issue #185): the Cockpit and the interrupted/restore paths
-        // read briefs from the store HERE. Issue #549 removed the only WRITER (GatewayTurnBriefAgent),
-        // so the store is read-only-serving (effectively empty going forward); the read endpoints
-        // stay so existing callers degrade cleanly. The explain trigger (#217) rode the brief agent,
-        // which is gone - pass null and the explain endpoint answers 503.
-        // MTR audit gap H5: on HOSTED the whole surface is refused inside Map (the store is bare-session-id
-        // keyed legacy data with no tenant, so it cannot be served cross-tenant); self-host is byte-identical.
-        // The two internal readers of the same store are quarantined at their wiring above.
-        TurnBriefGatewayEndpoints.Map(_app, _turnBriefStore,
-            sid => _turnBriefStore.Latest(sid) is not null ? "Briefed" : "None",
-            requestExplainAsync: null);
+        // The Gateway turn-brief surface (issues #185/#217) was removed. Its writer was retired in #549, so
+        // it only served untenanted legacy data and is superseded by Wingman voice; the store, its endpoints,
+        // and the Cockpit Feedback page are deleted. Shared DTOs/contracts (TurnBriefDto, TurnPackage, the
+        // Wingman contracts) stay - the live Wingman/Director/phone paths use them.
 
         // Mission Screen mission (Phase 1b, issue #1405): the mission-WHY read/set surface. A device-authed
         // client route under /gateway/missions/notes - the host-wide token middleware gates it (proven by
