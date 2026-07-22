@@ -3,5 +3,18 @@
              x:Class="CcDirector.Launcher.App">
     <Application.Styles>
         <FluentTheme />
+        <!-- Scrollbars are controls, not hover-revealed decoration: don't fade out. -->
+        <Style Selector="ScrollViewer">
+            <Setter Property="AllowAutoHide" Value="False" />
+        </Style>
     </Application.Styles>
+
+    <Application.Resources>
+        <!-- Draw the scrollbar thumb at full thickness always, never a thin hover-only
+             sliver. The Fluent theme collapses the thumb with a scaleX/scaleY(0.125)
+             RenderTransform set as a local value on the thumb (which a style setter
+             cannot beat), so override the resource that transform resolves to. -->
+        <TransformOperations x:Key="VerticalSmallScrollThumbScaleTransform">none</TransformOperations>
+        <TransformOperations x:Key="HorizontalSmallScrollThumbScaleTransform">none</TransformOperations>
+    </Application.Resources>
 </Application>

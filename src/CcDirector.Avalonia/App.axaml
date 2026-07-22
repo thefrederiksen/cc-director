@@ -4,21 +4,26 @@
              RequestedThemeVariant="Dark">
     <Application.Styles>
         <FluentTheme />
-        <!-- App-wide policy: scrollbars are controls, not hover-revealed decoration. -->
+        <!-- App-wide policy: scrollbars are controls, not hover-revealed decoration.
+             Keep the bar from fading out when the pointer leaves. -->
         <Style Selector="ScrollViewer">
             <Setter Property="AllowAutoHide" Value="False" />
-        </Style>
-        <!-- AllowAutoHide keeps the bar from fading out, but the Fluent theme still
-             draws it as a thin sliver until the pointer is over it: the thumb carries
-             a scale transform that only the IsExpanded (hover) state removes. Strip
-             that transform unconditionally so a scrollbar that is present is drawn at
-             full thickness and is unmistakably there, not a hard-to-see hairline. -->
-        <Style Selector="ScrollBar /template/ Thumb">
-            <Setter Property="RenderTransform" Value="none" />
         </Style>
     </Application.Styles>
 
     <Application.Resources>
+        <!-- Draw the scrollbar thumb at full thickness always, never a thin
+             hover-only sliver. The Fluent theme collapses the thumb to a hairline
+             by putting a scaleX(0.125)/scaleY(0.125) RenderTransform DIRECTLY on the
+             thumb in its template (a local value the IsExpanded hover state clears).
+             A style setter cannot beat a local value, so a "RenderTransform=none"
+             style on the thumb does nothing - override the resource that local value
+             resolves to instead. This is what actually fixes the collapsed bar; the
+             earlier style-based attempt (#1422) silently stopped working when Avalonia
+             moved the transform onto the thumb as a local value (11.3). -->
+        <TransformOperations x:Key="VerticalSmallScrollThumbScaleTransform">none</TransformOperations>
+        <TransformOperations x:Key="HorizontalSmallScrollThumbScaleTransform">none</TransformOperations>
+
         <SolidColorBrush x:Key="PanelBackground" Color="#1E1E1E" />
         <SolidColorBrush x:Key="SidebarBackground" Color="#252526" />
         <SolidColorBrush x:Key="ButtonBackground" Color="#3C3C3C" />
