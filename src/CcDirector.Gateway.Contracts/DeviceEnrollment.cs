@@ -51,7 +51,9 @@ public sealed class DeviceRegistrationResponse
 /// <summary>
 /// One device's public-facing entry in the Gateway device registry (issue #469): the
 /// host-readable record used to list registered devices. The per-device key itself is NEVER
-/// included - the registry serves identity and status, not the secret.
+/// included - the registry serves identity and status, not the secret. It DOES carry a NON-SECRET
+/// masked key identity (<see cref="KeyPrefix"/> / <see cref="KeyLast4"/>, issue #1899) so a listing can
+/// tell devices apart by key without ever substituting or exposing the raw key.
 /// </summary>
 public sealed class RegisteredDeviceDto
 {
@@ -66,4 +68,15 @@ public sealed class RegisteredDeviceDto
 
     /// <summary>The device's status (e.g. <c>active</c>, <c>revoked</c>).</summary>
     public string Status { get; set; } = "";
+
+    /// <summary>
+    /// The NON-SECRET first few characters of the device's key (issue #1899) - masked display metadata so a
+    /// host can recognise which key a device holds without the registry ever returning the raw key. Reveals a
+    /// handful of a 256-bit key and is not a credential. Empty for a record with no recorded key identity.
+    /// </summary>
+    public string KeyPrefix { get; set; } = "";
+
+    /// <summary>The NON-SECRET last few characters of the device's key (issue #1899), the trailing half of the
+    /// masked key identity. Not a credential.</summary>
+    public string KeyLast4 { get; set; } = "";
 }

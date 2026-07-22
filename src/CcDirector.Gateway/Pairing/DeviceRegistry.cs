@@ -25,24 +25,23 @@ namespace CcDirector.Gateway.Pairing;
 /// like a password, so the plaintext is returned to its owner at enrollment and never written to the file.
 /// A read of <c>devices.json</c> now yields no usable credential.
 ///
-/// One deliberate exception, and it is memory-only: an issued key is held in this process for a short replay
-/// window so that a RETRIED enrollment gets the same key back rather than a rotated one (see
-/// <see cref="RegisterIfAbsent"/>). It is never serialized and does not survive a restart, so it does not
-/// weaken the at-rest property above.
+/// Plaintext is disclosed at exactly ONE point and never retained: the enrollment response. The key is
+/// generated, hashed into the record, and the plaintext is returned to the caller in that one response. It
+/// is never stored, never cached, and never held in this process past the return of the call that issued
+/// it - so a REPEAT enrollment cannot re-reveal a key that was already handed out (issue #1899). There is no
+/// path by which the current bearer credential can be read back out of the registry.
 ///
-/// What makes that exception acceptable is that it is SHORT-LIVED, so the short-livedness is enforced by a
-/// clock this type owns rather than merely asserted: a recurring eviction pass, started the moment the first
-/// key is retained, drops every issue whose window has closed - whether or not anything else ever calls in
-/// again. Plaintext is therefore held for at most one and a half replay windows (no more than seven and a
-/// half minutes by default), and <see cref="Dispose"/> ends it immediately.
-///
-/// That was got wrong once and the mistake is worth naming, because it is easy to make again. Checking an
-/// entry's age when somebody asks to replay it stops an expired key being RETURNED, and it looks like it
-/// bounds retention, but it does not: the ordinary case is a device that enrolls once under its own id and
-/// never comes back, and that device never reaches the check at all, so its plaintext key would sit in memory
-/// for the life of the process. Correctness of the reply and boundedness of the retention are two different
-/// jobs; only the second one needs a clock. Eviction has exactly ONE owner so a broken pass cannot be masked
-/// by some other path tidying up on its way past.
+/// Retry-safety without retaining plaintext (issue #1899): a repeat enrollment of an already-enrolled device
+/// ROTATES the key in place - it issues a fresh key, retires the previous one, and returns the fresh key in
+/// that response (see <see cref="RegisterIfAbsent"/>). Enrollment is a one-shot, deliberate act (the client
+/// calls it on a connect action, never from its polling loop), so the retry it actually produces is a
+/// SEQUENTIAL re-attempt after a failed or lost response: each such attempt returns a fresh, working key that
+/// the caller writes to its credential file, overwriting whatever it held. A caller that never received the
+/// first response never held the retired key, so rotating it locks nobody out; a caller that did receive and
+/// save a key does not then re-fire enrollment. The one-key-per-device cap is preserved - one registry entry,
+/// exactly one key that validates at any moment - which is the guardrail against the #1136 auto-mint leak
+/// (enrollment ACCUMULATING valid credentials). What rotation deliberately does NOT do is keep a plaintext
+/// copy around to hand back on a duplicate; that is precisely the property issue #1899 removed.
 ///
 /// The hash is a plain SHA-256 of the key, deliberately NOT a slow password-stretching function: the
 /// secret is a 256-bit value this class generated with a cryptographic random number generator, not a
@@ -51,10 +50,21 @@ namespace CcDirector.Gateway.Pairing;
 /// For the same reason there is no per-record salt - salts defend low-entropy secrets against
 /// precomputation, which does not apply to a 256-bit random value.
 ///
+/// The hash is also the INDEX key: a presented key is turned back into its device by a single hash-to-record
+/// dictionary lookup (issue #1899), not by walking every record, so authentication is O(1) in the number of
+/// enrolled devices. Each record carries its own tenant binding, so an indexed lookup resolves to a
+/// tenant-bound record exactly as the old walk did. See <see cref="FindActiveByKey"/>.
+///
+/// Each record also carries a NON-SECRET masked key identity - the key's first few characters and its last
+/// four (issue #1899) - so a host-readable listing can tell devices apart by key without ever holding or
+/// returning the raw key. The masked form reveals a handful of a 43-character (256-bit) key and leaves the
+/// overwhelming majority unknown, so it is not a credential and cannot be replayed.
+///
 /// Migration: a registry file written before this change holds the plaintext key in <c>DeviceKey</c>.
-/// <see cref="Load"/> hashes any such record on the spot, drops the plaintext, and rewrites the file, so
-/// every device enrolled before the change keeps working with the key it already holds and the plaintext is
-/// gone from the LIVE registry file after the first load following the upgrade.
+/// <see cref="Load"/> hashes any such record on the spot, records its masked key identity, drops the
+/// plaintext, and rewrites the file, so every device enrolled before the change keeps working with the key it
+/// already holds and the plaintext is gone from the LIVE registry file after the first load following the
+/// upgrade.
 ///
 /// The scope of that claim is exactly the live file and no more. Rewriting a file cannot erase a copy of the
 /// old contents that something else already took: a share snapshot, a backup, a soft-delete retention window,
@@ -76,73 +86,38 @@ public sealed class DeviceRegistry : IDisposable
     /// <summary>The platform recorded when a child app enrolls without supplying one.</summary>
     public const string UnknownPlatform = "unknown";
 
-    /// <summary>
-    /// How long a key issued by <see cref="RegisterIfAbsent"/> stays replayable, so that a retried or
-    /// duplicated enrollment gets the SAME key back instead of rotating one the caller may not have saved
-    /// yet. See <see cref="RegisterIfAbsent"/> for why this exists.
-    /// </summary>
-    public static readonly TimeSpan DefaultEnrollmentReplayWindow = TimeSpan.FromMinutes(5);
+    /// <summary>How many leading characters of a key make up its non-secret masked prefix (issue #1899).</summary>
+    private const int KeyPrefixLength = 8;
+
+    /// <summary>How many trailing characters of a key make up its non-secret masked suffix (issue #1899).</summary>
+    private const int KeyLast4Length = 4;
 
     private readonly string _storePath;
     private readonly object _saveLock = new();
     private readonly object _enrollLock = new();
-    private readonly TimeSpan _replayWindow;
     private readonly ConcurrentDictionary<string, DeviceRecord> _byDeviceId =
         new(StringComparer.Ordinal);
 
     /// <summary>
-    /// The key most recently issued by <see cref="RegisterIfAbsent"/> per device id, held IN MEMORY ONLY
-    /// for <see cref="_replayWindow"/> so a retry of the same enrollment can be answered with the same key.
-    /// Never serialized, never written to <see cref="_storePath"/>, and gone when the process exits.
+    /// The O(1) authentication index (issue #1899): the stored SHA-256 hash of a device's key mapped to that
+    /// device's record, so a presented key is verified by hashing it once and looking the digest up directly
+    /// rather than walking every device. Kept in lock-step with <see cref="_byDeviceId"/> by every path that
+    /// issues, rotates, or removes a key. The record it points at carries the tenant, so the lookup stays
+    /// tenant-bound. Holds no plaintext - the key is the digest, exactly what is on disk.
     /// </summary>
-    private readonly ConcurrentDictionary<string, ReplayableIssue> _replayableIssues =
+    private readonly ConcurrentDictionary<string, DeviceRecord> _byKeyHash =
         new(StringComparer.Ordinal);
-
-    /// <summary>The recurring pass that evicts expired replayable keys. Null until the first key is actually
-    /// retained, and again once disposed.</summary>
-    private Timer? _evictionTimer;
-
-    /// <summary>How the eviction pass gets driven; null means production's own <see cref="Timer"/>.</summary>
-    private readonly Action<TimeSpan, Action>? _scheduleEviction;
-
-    /// <summary>Whether the recurring eviction pass has been started. Only ever set under <see cref="_enrollLock"/>.</summary>
-    private bool _evictionStarted;
 
     public DeviceRegistry() : this(null) { }
 
     /// <param name="storePath">Override the registry file (tests pass an isolated temp path);
     /// production omits it for the shared default under the config root.</param>
-    public DeviceRegistry(string? storePath) : this(storePath, DefaultEnrollmentReplayWindow) { }
-
-    /// <param name="storePath">Override the registry file (tests pass an isolated temp path);
-    /// production omits it for the shared default under the config root.</param>
-    /// <param name="enrollmentReplayWindow">How long a key issued by <see cref="RegisterIfAbsent"/> stays
-    /// replayable. Production uses <see cref="DefaultEnrollmentReplayWindow"/>; a test passes
-    /// <see cref="TimeSpan.Zero"/> to exercise the behaviour after the window has closed.</param>
-    public DeviceRegistry(string? storePath, TimeSpan enrollmentReplayWindow)
-        : this(storePath, enrollmentReplayWindow, scheduleEviction: null) { }
-
-    /// <param name="storePath">Override the registry file (tests pass an isolated temp path);
-    /// production omits it for the shared default under the config root.</param>
-    /// <param name="enrollmentReplayWindow">How long a key issued by <see cref="RegisterIfAbsent"/> stays
-    /// replayable.</param>
-    /// <param name="scheduleEviction">How the recurring eviction pass gets driven. Null - production - starts
-    /// a <see cref="Timer"/> on the replay window. A test passes its own scheduler, captures the callback, and
-    /// fires it by hand, so that BOTH halves of eviction are proven without waiting on a clock: that this type
-    /// actually schedules a pass, and that the pass actually releases the plaintext. Waiting on a real timer
-    /// would make the proof a matter of how loaded the machine is, which is not a proof.</param>
-    internal DeviceRegistry(string? storePath, TimeSpan enrollmentReplayWindow, Action<TimeSpan, Action>? scheduleEviction)
+    public DeviceRegistry(string? storePath)
     {
-        if (enrollmentReplayWindow < TimeSpan.Zero)
-            throw new ArgumentOutOfRangeException(nameof(enrollmentReplayWindow), "the replay window cannot be negative");
-
         _storePath = string.IsNullOrWhiteSpace(storePath)
             ? Path.Combine(CcStorage.Config(), "director", "devices.json")
             : storePath;
-        _replayWindow = enrollmentReplayWindow;
         Load();
-
-        _scheduleEviction = scheduleEviction;
     }
 
     /// <summary>The on-disk registry file path.</summary>
@@ -172,13 +147,23 @@ public sealed class DeviceRegistry : IDisposable
             DeviceId = deviceId,
             MachineName = machineName ?? "",
             DeviceKeyHash = HashKey(key),
+            KeyPrefix = MaskPrefix(key),
+            KeyLast4 = MaskLast4(key),
             IssuedAtUtc = DateTime.UtcNow,
             Status = StatusActive,
             Platform = string.IsNullOrWhiteSpace(platform) ? UnknownPlatform : platform.Trim(),
             DeviceType = string.IsNullOrWhiteSpace(deviceType) ? DefaultDeviceType : deviceType.Trim(),
             CloudDeviceId = null,
         };
-        _byDeviceId[deviceId] = record;
+
+        // Replace any prior record for this device id and keep the hash index in lock-step: the prior
+        // record's stored hash must stop resolving the instant its key is superseded.
+        DeviceRecord? prior = null;
+        _byDeviceId.AddOrUpdate(deviceId, record, (_, existing) => { prior = existing; return record; });
+        if (prior is not null && !string.IsNullOrEmpty(prior.DeviceKeyHash))
+            _byKeyHash.TryRemove(prior.DeviceKeyHash, out _);
+        _byKeyHash[record.DeviceKeyHash] = record;
+
         Save();
         FileLog.Write($"[DeviceRegistry] Registered device id={deviceId}, machine={machineName}, type={record.DeviceType}, platform={record.Platform}, total={_byDeviceId.Count}");
         return new DeviceRegistrationResponse
@@ -202,26 +187,17 @@ public sealed class DeviceRegistry : IDisposable
     /// call ACCUMULATING valid credentials in the registry; the count of valid keys per device identity is
     /// still capped at one.
     ///
-    /// Before issue #1878 this returned the device's existing key byte-for-byte, so calling it twice was
-    /// harmless. It cannot return a stored key any more - the registry keeps only a one-way hash - so the
-    /// repeat-call safety is preserved a different way, by a short IN-MEMORY replay window
-    /// (<see cref="DefaultEnrollmentReplayWindow"/>).
+    /// Retry-safety (issue #1899): the registry keeps only a one-way hash of the key, so it has no plaintext
+    /// to hand back on a duplicate call, and it deliberately keeps none - retaining a plaintext copy just to
+    /// replay it is exactly what issue #1899 removed, because a retained-and-replayable key defeats hashing
+    /// at rest. A repeat call therefore ROTATES: it returns a FRESH working key and retires the previous one.
+    /// Enrollment is a one-shot, deliberate act (the client calls it on a connect action, never from its
+    /// polling loop), so the retry that actually occurs is a sequential re-attempt after a failed or lost
+    /// response - and each such attempt returns a fresh key the caller writes to its credential file. A caller
+    /// that never received the first response never held the retired key, so rotating it locks nobody out.
     ///
-    /// A repeat call inside that window returns the SAME key that the previous call issued and does not
-    /// rotate anything. This matters because the caller has not necessarily saved the first response yet:
-    /// a lost or delayed response, a double submit, or two enrollment calls in flight would otherwise leave
-    /// a caller holding a key that a later call had already retired, locking that device out until a human
-    /// re-enrolled it. That is a self-inflicted outage on a retry, which is exactly the failure that only
-    /// shows up on a flaky connection. The whole method is serialized, so two simultaneous calls resolve to
-    /// one issue rather than racing to rotate.
-    ///
-    /// After the window closes, a further call rotates the key in place: same single registry entry, same
-    /// account and tenant binding, same cloud mapping, and still exactly one key that validates, with the
-    /// previous one retired. That one-key-per-device cap is the #1136 auto-mint guardrail (the leak was
-    /// enrollment ACCUMULATING valid credentials) and it holds on both paths.
-    ///
-    /// The replayable key lives in this process's memory and nowhere else - it is never serialized and it
-    /// does not survive a restart - so the at-rest property this change exists for is untouched.
+    /// The whole method is serialized, so two simultaneous calls resolve one after the other rather than
+    /// racing; the later one wins and its key is the one that validates.
     ///
     /// An ALREADY-enrolled device that simply keeps using its existing key never calls here at all; its key
     /// keeps verifying against the stored hash.
@@ -231,34 +207,29 @@ public sealed class DeviceRegistry : IDisposable
         if (string.IsNullOrWhiteSpace(deviceId))
             throw new ArgumentException("deviceId is required", nameof(deviceId));
 
-        // Serialized so that two enrollment calls in flight for the same device cannot both rotate. The
-        // path runs at enrollment only, never on the per-request authentication hot path.
+        // Serialized so that two enrollment calls in flight for the same device cannot both rotate at once.
+        // The path runs at enrollment only, never on the per-request authentication hot path.
         lock (_enrollLock)
         {
             if (_byDeviceId.TryGetValue(deviceId, out var existing)
                 && string.Equals(existing.Status, StatusActive, StringComparison.Ordinal)
                 && !string.IsNullOrEmpty(existing.DeviceKeyHash))
             {
-                if (TryReplayIssuedKey(deviceId, existing, out var replayed))
-                {
-                    FileLog.Write($"[DeviceRegistry] RegisterIfAbsent: device id={deviceId} enrolled again within the replay window; returned the SAME key, nothing rotated");
-                    return new DeviceRegistrationResponse
-                    {
-                        DeviceKey = replayed,
-                        DeviceId = deviceId,
-                        MachineName = existing.MachineName,
-                        Status = existing.Status,
-                        DeviceCount = _byDeviceId.Count,
-                    };
-                }
-
                 var reissued = GenerateDeviceKey();
-                var reissuedHash = HashKey(reissued);
-                existing.DeviceKeyHash = reissuedHash;
+                var supersededHash = existing.DeviceKeyHash;
+                existing.DeviceKeyHash = HashKey(reissued);
+                existing.KeyPrefix = MaskPrefix(reissued);
+                existing.KeyLast4 = MaskLast4(reissued);
                 existing.IssuedAtUtc = DateTime.UtcNow;
+
+                // Keep the hash index in lock-step: the retired key must stop resolving, the fresh key must
+                // start resolving to the same (binding-preserving) record.
+                if (!string.IsNullOrEmpty(supersededHash))
+                    _byKeyHash.TryRemove(supersededHash, out _);
+                _byKeyHash[existing.DeviceKeyHash] = existing;
+
                 Save();
-                RecordReplayableIssue(deviceId, reissued, reissuedHash);
-                FileLog.Write($"[DeviceRegistry] RegisterIfAbsent: device id={deviceId} is already enrolled and past the replay window; re-issued its key in place (one entry, one valid key, binding preserved)");
+                FileLog.Write($"[DeviceRegistry] RegisterIfAbsent: device id={deviceId} is already enrolled; rotated to a fresh key in place (one entry, one valid key, binding preserved, previous key retired)");
                 return new DeviceRegistrationResponse
                 {
                     DeviceKey = reissued,
@@ -269,124 +240,17 @@ public sealed class DeviceRegistry : IDisposable
                 };
             }
 
-            var fresh = Register(deviceId, machineName, platform, deviceType);
-            RecordReplayableIssue(deviceId, fresh.DeviceKey, HashKey(fresh.DeviceKey));
-            return fresh;
+            return Register(deviceId, machineName, platform, deviceType);
         }
     }
 
-    /// <summary>
-    /// The key this registry last issued for <paramref name="deviceId"/> through
-    /// <see cref="RegisterIfAbsent"/>, when that issue is still inside the replay window AND is still the
-    /// key the stored record verifies against. Both conditions matter: an expired entry must not be handed
-    /// out, and neither must one that some other path (an explicit <see cref="Register"/> re-pairing, a
-    /// revoke-and-re-enroll) has already superseded.
-    /// </summary>
-    private bool TryReplayIssuedKey(string deviceId, DeviceRecord existing, out string key)
-    {
-        key = "";
-
-        if (!_replayableIssues.TryGetValue(deviceId, out var issue)) return false;
-        if (DateTime.UtcNow - issue.IssuedAtUtc >= _replayWindow) return false;
-        if (!string.Equals(issue.KeyHash, existing.DeviceKeyHash, StringComparison.Ordinal)) return false;
-
-        key = issue.Key;
-        return true;
-    }
-
-    /// <summary>
-    /// Remembers the key just issued so the next call inside the window can replay it. This deliberately
-    /// records unconditionally, including for a zero window: the window is enforced in exactly ONE place,
-    /// the expiry check in <see cref="TryReplayIssuedKey"/>. A second short-circuit here would mean a broken
-    /// expiry check could still look correct under a zero window, which is the guard that would hide it.
-    /// </summary>
-    private void RecordReplayableIssue(string deviceId, string key, string keyHash)
-    {
-        _replayableIssues[deviceId] = new ReplayableIssue(key, keyHash, DateTime.UtcNow);
-        StartEvictionPassOnce();
-    }
-
-    /// <summary>
-    /// Starts the recurring eviction pass the first time this registry actually retains a plaintext key.
-    /// Retention is what the pass exists to bound, so it begins when retention begins - a registry that never
-    /// issues a key never needs a clock and never starts one.
-    ///
-    /// The pass runs at HALF the window, which fixes the real retention bound. An entry recorded just after a
-    /// pass waits out its own window and then at most one further interval, so plaintext is held for at most
-    /// one and a half windows - under the default, no more than seven and a half minutes. Running the pass at
-    /// the full window length would have made the true bound TWICE the window, which is not what the
-    /// documentation on this type claims, and the claim is the thing that has to be true.
-    ///
-    /// Called only from <see cref="RecordReplayableIssue"/>, which runs under <see cref="_enrollLock"/>, so
-    /// the once-only start needs no lock of its own.
-    /// </summary>
-    private void StartEvictionPassOnce()
-    {
-        if (_evictionStarted) return;
-        _evictionStarted = true;
-
-        var interval = EvictionIntervalFor(_replayWindow);
-        if (_scheduleEviction is not null)
-            _scheduleEviction(interval, EvictExpiredReplayableIssues);
-        else
-            _evictionTimer = new Timer(_ => EvictExpiredReplayableIssues(), null, interval, interval);
-    }
-
-    /// <summary>
-    /// Drops every replayable key whose window has closed, releasing the last strong reference to that
-    /// plaintext. Driven by the recurring eviction pass this type schedules for itself - NOT by anyone
-    /// happening to call in.
-    ///
-    /// The distinction matters and is the whole point of this method existing separately from the age check
-    /// in <see cref="TryReplayIssuedKey"/>. That age check stops an expired key being RETURNED; it does not
-    /// bound how long the plaintext is RETAINED, because it only runs when an already-enrolled device asks to
-    /// replay. A device that enrolls once under its own id and never comes back - the ordinary fresh
-    /// enrollment - would never reach it, so its key would sit in memory for the life of the process. Two
-    /// different jobs: that one is correctness, this one is retention, and retention needs a clock of its own.
-    /// </summary>
-    internal void EvictExpiredReplayableIssues()
-    {
-        var now = DateTime.UtcNow;
-        foreach (var pair in _replayableIssues)
-        {
-            if (now - pair.Value.IssuedAtUtc >= _replayWindow)
-                _replayableIssues.TryRemove(pair.Key, out _);
-        }
-    }
-
-    /// <summary>
-    /// How many issued plaintext keys this registry is currently holding in memory. Exposed to the test
-    /// assembly so retention can be asserted directly, rather than inferred from behaviour that would still
-    /// look correct while the plaintext stayed resident.
-    /// </summary>
-    internal int RetainedReplayableKeyCount => _replayableIssues.Count;
-
-    /// <summary>
-    /// How often the eviction pass runs for a given replay window: half the window, floored at one second so
-    /// a tiny or zero window (which tests use to reach the post-window branch) cannot turn into a busy loop.
-    /// Half, not the full window, so that the worst-case retention is one and a half windows rather than two.
-    /// </summary>
-    internal static TimeSpan EvictionIntervalFor(TimeSpan replayWindow)
-    {
-        var half = TimeSpan.FromTicks(replayWindow.Ticks / 2);
-        return half < TimeSpan.FromSeconds(1) ? TimeSpan.FromSeconds(1) : half;
-    }
-
-    /// <summary>Stops the recurring eviction pass and drops every retained plaintext key immediately.</summary>
+    /// <summary>Nothing to release: the registry retains no plaintext and holds no OS handle. Present so the
+    /// host can dispose it uniformly; drops the in-memory maps so shutdown lets go of every reference.</summary>
     public void Dispose()
     {
-        _evictionTimer?.Dispose();
-        _evictionTimer = null;
-        _replayableIssues.Clear();
+        _byKeyHash.Clear();
+        _byDeviceId.Clear();
     }
-
-    /// <summary>A key handed out by <see cref="RegisterIfAbsent"/>, kept in memory only, so that a retry of
-    /// the same enrollment can be answered with the same key instead of rotating one the caller may not
-    /// have saved yet.</summary>
-    /// <param name="Key">The issued plaintext key. In memory for the replay window; never persisted.</param>
-    /// <param name="KeyHash">The stored form, used to confirm this issue is still the current one.</param>
-    /// <param name="IssuedAtUtc">When it was issued, for the window.</param>
-    private sealed record ReplayableIssue(string Key, string KeyHash, DateTime IssuedAtUtc);
 
     /// <summary>
     /// Records the cloud roster id assigned to a mirrored child (Path B, Diagram 2b) so a later
@@ -423,10 +287,11 @@ public sealed class DeviceRegistry : IDisposable
         if (string.IsNullOrWhiteSpace(deviceId))
             return false;
 
-        if (!_byDeviceId.TryRemove(deviceId, out _))
+        if (!_byDeviceId.TryRemove(deviceId, out var removed))
             return false;
 
-        _replayableIssues.TryRemove(deviceId, out _);
+        if (!string.IsNullOrEmpty(removed.DeviceKeyHash))
+            _byKeyHash.TryRemove(removed.DeviceKeyHash, out _);
         Save();
         FileLog.Write($"[DeviceRegistry] Removed device id={deviceId} (local key revoked), total={_byDeviceId.Count}");
         return true;
@@ -446,49 +311,52 @@ public sealed class DeviceRegistry : IDisposable
 
     /// <summary>
     /// True when the supplied key matches an active device's per-device key. The lookup hashes the
-    /// presented key once and compares that digest against each active device's STORED digest (issue #1878)
-    /// with a constant-time DIGEST comparison. See <see cref="FindActiveByKey"/> for what that does and does
-    /// not cover - the comparison is constant-time; the surrounding lookup is not.
+    /// presented key once and finds the matching record by its STORED digest in O(1) (issue #1878, #1899),
+    /// confirming with a constant-time DIGEST comparison. See <see cref="FindActiveByKey"/> for exactly what
+    /// that comparison does and does not cover.
     /// </summary>
     public bool IsValidDeviceKey(string? key) => FindActiveByKey(key) is not null;
 
     /// <summary>
     /// The active device whose stored per-device key hash matches <paramref name="key"/>, or null when none
     /// does. This is the single place a presented key is turned back into a device (issue #1878): the key is
-    /// hashed once, then that digest is compared against each active record's stored digest with
+    /// hashed once, that digest indexes straight to the one record whose stored digest could match (issue
+    /// #1899 - O(1), not a walk of every device), and the match is then confirmed with
     /// <see cref="CryptographicOperations.FixedTimeEquals"/>.
     ///
-    /// Be precise about what that buys, because it is easy to overstate. The DIGEST COMPARISON is
-    /// constant-time: it always reads both digests in full, so it does not leak how many leading bytes of a
-    /// wrong digest happened to match, and it is that partial-match signal which would otherwise let an
-    /// attacker walk a guess towards a stored value byte by byte. The comparison is the part that has to be
-    /// constant-time and it is.
+    /// Be precise about what the constant-time compare buys, because it is easy to overstate. The DIGEST
+    /// COMPARISON always reads both digests in full, so it does not leak how many leading bytes of a wrong
+    /// digest happened to match, and it is that partial-match signal which would otherwise let an attacker
+    /// walk a guess towards a stored value byte by byte. That is the part that has to be constant-time and it
+    /// is.
     ///
-    /// The LOOKUP AROUND IT is not constant-time and does not claim to be. It walks the records, it skips
-    /// inactive and unhashed ones, and it returns as soon as it matches - so its running time varies with how
-    /// many devices are enrolled and with where in the walk a match falls. What that can leak is coarse
-    /// registry shape (roughly how many devices exist, and a matching key's rough position among them), not
-    /// any information about the SECRET, because the compared digest is the output of a hash of the presented
-    /// value and a wrong guess produces an unrelated digest whose position is meaningless. Making the walk
-    /// constant-time would defend nothing that matters here.
+    /// The dictionary lookup around it is not constant-time and does not claim to be. What it can leak is
+    /// coarse - roughly, whether a digest is present - not any information about the SECRET, because the
+    /// looked-up value is the output of a hash of the presented key: a wrong guess produces an unrelated
+    /// digest that indexes nothing meaningful. Making the lookup constant-time would defend nothing that
+    /// matters here.
     ///
     /// This is the hot path - it runs on every authenticated request - which is why the stored form is a
-    /// plain hash of a 256-bit random secret rather than a deliberately slow password-stretching function.
+    /// plain hash of a 256-bit random secret rather than a deliberately slow password-stretching function,
+    /// and why the lookup is an index rather than a scan.
     /// </summary>
     private DeviceRecord? FindActiveByKey(string? key)
     {
         if (string.IsNullOrEmpty(key)) return null;
+
+        var suppliedHex = HashKey(key);
+        if (!_byKeyHash.TryGetValue(suppliedHex, out var record)) return null;
+        if (!string.Equals(record.Status, StatusActive, StringComparison.Ordinal)) return null;
+        if (string.IsNullOrEmpty(record.DeviceKeyHash)) return null;
+
+        // The index found the record by exact digest; confirm with the constant-time byte comparison so the
+        // verification path is the same one the pre-index code proved, not the dictionary's own compare.
+        var stored = DecodeHash(record.DeviceKeyHash);
+        if (stored is null) return null;
         var supplied = HashKeyBytes(key);
-        foreach (var record in _byDeviceId.Values)
-        {
-            if (!string.Equals(record.Status, StatusActive, StringComparison.Ordinal)) continue;
-            if (string.IsNullOrEmpty(record.DeviceKeyHash)) continue;
-            var stored = DecodeHash(record.DeviceKeyHash);
-            if (stored is null) continue;
-            if (stored.Length == supplied.Length &&
-                CryptographicOperations.FixedTimeEquals(stored, supplied))
-                return record;
-        }
+        if (stored.Length == supplied.Length &&
+            CryptographicOperations.FixedTimeEquals(stored, supplied))
+            return record;
         return null;
     }
 
@@ -599,6 +467,8 @@ public sealed class DeviceRegistry : IDisposable
             MachineName = record.MachineName,
             IssuedAtUtc = record.IssuedAtUtc,
             Status = record.Status,
+            KeyPrefix = record.KeyPrefix,
+            KeyLast4 = record.KeyLast4,
         };
 
     /// <summary>The number of registered devices.</summary>
@@ -621,6 +491,23 @@ public sealed class DeviceRegistry : IDisposable
 
     private static byte[] HashKeyBytes(string key) =>
         SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(key));
+
+    /// <summary>The NON-SECRET masked prefix of a key (issue #1899): its first few characters, for a
+    /// host-readable listing to tell devices apart by key without ever holding the raw key. Reveals a handful
+    /// of a 256-bit key and is not a credential.</summary>
+    private static string MaskPrefix(string key)
+    {
+        if (string.IsNullOrEmpty(key)) return "";
+        return key.Length <= KeyPrefixLength ? key : key.Substring(0, KeyPrefixLength);
+    }
+
+    /// <summary>The NON-SECRET last few characters of a key (issue #1899), the trailing half of the masked
+    /// key identity. Not a credential.</summary>
+    private static string MaskLast4(string key)
+    {
+        if (string.IsNullOrEmpty(key) || key.Length < KeyLast4Length) return "";
+        return key.Substring(key.Length - KeyLast4Length);
+    }
 
     /// <summary>The bytes of a stored hash, or null when the stored text is not valid hexadecimal (a
     /// hand-edited or corrupt record, which then simply matches nothing).</summary>
@@ -647,19 +534,26 @@ public sealed class DeviceRegistry : IDisposable
             if (string.IsNullOrEmpty(record.DeviceId)) continue;
 
             // Migration (issue #1878): a file written before device keys were hashed carries the plaintext
-            // key. Hash it here and drop the plaintext, so the device keeps working with the key it already
-            // holds and the plaintext is gone from the live file after the first save following this load.
-            // That is the whole of the claim: rewriting the live file cannot reach a snapshot, backup, or
-            // soft-delete copy of the old contents. See the type documentation.
+            // key. Hash it here, record its non-secret masked identity (issue #1899) while the plaintext is
+            // still in hand, drop the plaintext, and rely on the save below so the device keeps working with
+            // the key it already holds and the plaintext is gone from the live file. That is the whole of the
+            // claim: rewriting the live file cannot reach a snapshot, backup, or soft-delete copy of the old
+            // contents. See the type documentation.
             if (!string.IsNullOrEmpty(record.DeviceKey))
             {
                 if (string.IsNullOrEmpty(record.DeviceKeyHash))
                     record.DeviceKeyHash = HashKey(record.DeviceKey);
+                if (string.IsNullOrEmpty(record.KeyPrefix))
+                    record.KeyPrefix = MaskPrefix(record.DeviceKey);
+                if (string.IsNullOrEmpty(record.KeyLast4))
+                    record.KeyLast4 = MaskLast4(record.DeviceKey);
                 record.DeviceKey = null;
                 migrated++;
             }
 
             _byDeviceId[record.DeviceId] = record;
+            if (!string.IsNullOrEmpty(record.DeviceKeyHash))
+                _byKeyHash[record.DeviceKeyHash] = record;
         }
         FileLog.Write($"[DeviceRegistry] Loaded {_byDeviceId.Count} device(s) from {_storePath}");
 
@@ -686,7 +580,8 @@ public sealed class DeviceRegistry : IDisposable
         }
     }
 
-    /// <summary>One device's full record. It carries the HASH of the issued key, never the key (issue #1878).</summary>
+    /// <summary>One device's full record. It carries the HASH of the issued key, never the key (issue #1878),
+    /// plus a NON-SECRET masked prefix/last-four of the key for host-readable listings (issue #1899).</summary>
     private sealed class DeviceRecord
     {
         public string DeviceId { get; set; } = "";
@@ -702,6 +597,13 @@ public sealed class DeviceRegistry : IDisposable
         /// <summary>The lower-case hexadecimal SHA-256 of this device's key - the only form of the key that
         /// is ever persisted. Verified against, never reversed.</summary>
         public string DeviceKeyHash { get; set; } = "";
+
+        /// <summary>The NON-SECRET first few characters of the key (issue #1899): display metadata so a
+        /// host-readable listing can tell devices apart by key without holding the raw key. Not a credential.</summary>
+        public string KeyPrefix { get; set; } = "";
+
+        /// <summary>The NON-SECRET last few characters of the key (issue #1899). Display metadata, not a credential.</summary>
+        public string KeyLast4 { get; set; } = "";
 
         public DateTime IssuedAtUtc { get; set; }
         public string Status { get; set; } = StatusActive;
