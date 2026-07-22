@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Net;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using CcDirector.Core.Network;
@@ -34,6 +35,17 @@ public static class TailscaleDiagnostics
         public string? Note { get; init; }
     }
 
+    /// <summary>
+    /// The Gateway's finished ruling for the connection-status pill. Browser clients render these fields
+    /// verbatim; they do not reinterpret diagnostic fields or invent a label when the ruling is unavailable.
+    /// </summary>
+    public sealed record NetworkConnectionVerdict
+    {
+        public string Level { get; init; } = "grey";
+        public string Label { get; init; } = "Unknown";
+        public string Detail { get; init; } = "Connection quality is unavailable.";
+    }
+
     /// <summary>The whole picture an agent reads to judge network health with no phone involved.</summary>
     public sealed record NetworkDiag
     {
@@ -47,6 +59,151 @@ public static class TailscaleDiagnostics
         public List<PeerDiag> Peers { get; init; } = new();
         public List<string> Notes { get; init; } = new();
         public DateTime CollectedAt { get; init; } = DateTime.UtcNow;
+        public NetworkConnectionVerdict ConnectionVerdict { get; init; } = new();
+    }
+
+    /// <summary>
+    /// Return the complete hosted-mode answer. A successful request already proves that the browser reached
+    /// the public Gateway. Tailscale is not part of that browser-to-Gateway path, so no command is run and no
+    /// shared tailnet inventory is included.
+    /// </summary>
+    internal static NetworkDiag HostedConnection() => new()
+    {
+        TailscaleAvailable = false,
+        Notes = { "Tailscale peer diagnostics do not apply to the hosted Gateway's public internet connection." },
+        ConnectionVerdict = new NetworkConnectionVerdict
+        {
+            Level = "green",
+            Label = "Connected",
+            Detail = "Connected to the hosted Gateway.",
+        },
+    };
+
+    /// <summary>
+    /// Stamp the self-hosted connection ruling onto a collected diagnostic. The request address identifies
+    /// whether the browser arrived locally, over the local network, or through Tailscale; for a Tailscale
+    /// request the collector's matching peer supplies the authoritative direct-versus-relay result.
+    /// </summary>
+    internal static NetworkDiag WithConnectionVerdict(
+        NetworkDiag diagnostic, IPAddress? clientAddress, int consecutiveRelayObservations)
+    {
+        var clientPath = NetDiag.ClassifyClientIp(clientAddress);
+        NetworkConnectionVerdict verdict;
+        if (clientPath == "lan")
+        {
+            verdict = new NetworkConnectionVerdict
+            {
+                Level = "green",
+                Label = "Direct local network",
+                Detail = "Straight to the Gateway over your local network.",
+            };
+        }
+        else if (clientPath == "local")
+        {
+            verdict = new NetworkConnectionVerdict
+            {
+                Level = "green",
+                Label = "Local",
+                Detail = "On the Gateway machine.",
+            };
+        }
+        else if (clientPath == "tailscale")
+        {
+            verdict = TailscaleConnectionVerdict(
+                diagnostic, NormalizeAddress(clientAddress), consecutiveRelayObservations);
+        }
+        else
+        {
+            verdict = new NetworkConnectionVerdict
+            {
+                Level = "grey",
+                Label = "Unknown",
+                Detail = "The Gateway cannot classify this connection path.",
+            };
+        }
+
+        return diagnostic with { ConnectionVerdict = verdict };
+    }
+
+    private static NetworkConnectionVerdict TailscaleConnectionVerdict(
+        NetworkDiag diagnostic, string? clientAddress, int consecutiveRelayObservations)
+    {
+        if (!diagnostic.TailscaleAvailable)
+        {
+            return new NetworkConnectionVerdict
+            {
+                Level = "grey",
+                Label = "Checking",
+                Detail = "Confirming your Tailscale path...",
+            };
+        }
+
+        var peer = diagnostic.Peers.Find(candidate => candidate.TailscaleIp == clientAddress);
+        if (peer is null)
+        {
+            return new NetworkConnectionVerdict
+            {
+                Level = "grey",
+                Label = "Unknown",
+                Detail = "The Gateway does not see this device yet.",
+            };
+        }
+
+        if (peer.Direct == true)
+        {
+            var latency = peer.LatencyMs is null
+                ? ""
+                : $" ({Math.Round(peer.LatencyMs.Value, MidpointRounding.AwayFromZero)} milliseconds)";
+            return new NetworkConnectionVerdict
+            {
+                Level = "green",
+                Label = "Fast",
+                Detail = $"Direct path over your local network{latency}.",
+            };
+        }
+
+        if (peer.Direct == false)
+        {
+            if (consecutiveRelayObservations < NetworkConnectionVerdictFold.RelayObservationsBeforeSlow)
+            {
+                return new NetworkConnectionVerdict
+                {
+                    Level = "amber",
+                    Label = "Warming up",
+                    Detail = "Connecting - this speeds up once the direct path forms.",
+                };
+            }
+
+            return new NetworkConnectionVerdict
+            {
+                Level = "red",
+                Label = "Slow",
+                Detail = "Relaying through a distant server instead of a direct path.",
+            };
+        }
+
+        return new NetworkConnectionVerdict
+        {
+            Level = "amber",
+            Label = "Checking",
+            Detail = "Confirming the path...",
+        };
+    }
+
+    internal static bool IsRelayObservation(NetworkDiag diagnostic, IPAddress? clientAddress)
+    {
+        if (NetDiag.ClassifyClientIp(clientAddress) != "tailscale" || !diagnostic.TailscaleAvailable)
+            return false;
+
+        var normalized = NormalizeAddress(clientAddress);
+        return diagnostic.Peers.Find(candidate => candidate.TailscaleIp == normalized)?.Direct == false;
+    }
+
+    internal static string? NormalizeAddress(IPAddress? address)
+    {
+        if (address is null)
+            return null;
+        return address.IsIPv4MappedToIPv6 ? address.MapToIPv4().ToString() : address.ToString();
     }
 
     /// <summary>

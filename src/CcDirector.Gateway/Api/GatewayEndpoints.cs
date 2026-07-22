@@ -133,7 +133,8 @@ internal static class GatewayEndpoints
         // Process.GetProcessById(pid).Kill(entireProcessTree:true). A test injects a recorder that observes
         // the kill WITHOUT actually killing anything - so "did the force-kill reach the process by that pid"
         // is a DIRECT assertion, exactly as OnShutdownRequested lets the shutdown proof observe the handler.
-        Func<int, bool>? forceKillDirectorTree = null)
+        Func<int, bool>? forceKillDirectorTree = null,
+        Func<TailscaleDiagnostics.NetworkDiag>? collectNetworkDiagnostic = null)
     {
         // The old issue #1188 "session lock" (423 Locked on human input while a PENDING dictation record
         // existed) was removed deliberately (issue #1308). This is a single-operator tool: a collision
@@ -439,15 +440,20 @@ internal static class GatewayEndpoints
             return Results.Json(new { received });
         });
 
-        // GET /diag/network: the SERVER-SIDE diagnostic an agent runs with no phone and no app open. Runs
-        // tailscale status/ping/netcheck and reports, per connected device, direct-vs-DERP-relay + latency,
-        // plus UDP/NAT health - the one signal the phone speed test cannot see (it cannot tell "warming up
-        // on the relay" apart from "genuinely broken"). Ran off the request thread so the CLI shell-outs do
-        // not block the Kestrel I/O thread.
-        app.MapGet("/diag/network", async () =>
+        // GET /diag/network: the Gateway-owned finished connection verdict plus the underlying self-hosted
+        // Tailscale diagnostic. Hosted browsers reach this shared Gateway over the public internet, so a
+        // tailnet diagnostic is neither relevant nor tenant-safe there: answer Connected from the successful
+        // request itself without invoking Tailscale or returning the host's shared peer inventory. Self-hosted
+        // mode keeps the direct-versus-relay diagnostic and folds it here, before the response reaches a client.
+        var connectionVerdicts = new NetworkConnectionVerdictFold();
+        app.MapGet("/diag/network", async (HttpContext ctx) =>
         {
-            var diag = await Task.Run(TailscaleDiagnostics.Collect);
-            return Results.Json(diag);
+            if (GatewayHostedMode.IsHosted)
+                return Results.Json(TailscaleDiagnostics.HostedConnection());
+
+            var collector = collectNetworkDiagnostic ?? TailscaleDiagnostics.Collect;
+            var diag = await Task.Run(collector);
+            return Results.Json(connectionVerdicts.Fold(diag, ctx.Connection.RemoteIpAddress));
         });
 
         // GET /diag/ping: the featherweight latency endpoint the client's latency loop hits. Unlike
