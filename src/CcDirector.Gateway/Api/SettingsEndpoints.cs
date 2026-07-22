@@ -6,6 +6,7 @@ using CcDirector.AgentBrain;
 using CcDirector.Core.Configuration;
 using CcDirector.Core.Network;
 using CcDirector.Core.Utilities;
+using CcDirector.Gateway.Tenancy;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
@@ -35,94 +36,111 @@ namespace CcDirector.Gateway.Api;
 ///   GET  /gateway/injected-text   -> { use_yours, yours, ours, placeholders[] } (what agents get at launch)
 ///   PUT  /gateway/injected-text   body { "use_yours": bool, "yours": string|null } -> same shape
 ///
-/// DENIED IN WHOLE ON HOSTED (issue #1863). Every route in this group is refused on a hosted Gateway,
-/// through ONE group filter rather than a guard repeated per route. These routes operate on
-/// PROCESS-GLOBAL configuration with NO TENANT DIMENSION AT ALL: config.json is one file for the whole
-/// process, so every write here is a fleet-wide mutation performed by whichever authenticated caller
-/// happened to send it, and GET /gateway/injected-text hands back the owner's own custom agent-launch
-/// instruction text. On shared hosted infrastructure there is no correct per-tenant answer to serve
-/// here - only a leak to close. Self-host is single-tenant and these are legitimate owner function
-/// there, so on self-host nothing changes.
+/// DENIED IN WHOLE ON HOSTED (issue #1863). Every route in this group is refused on a hosted Gateway.
+/// These routes operate on PROCESS-GLOBAL configuration with NO TENANT DIMENSION AT ALL: config.json is
+/// one file for the whole process, so every write here is a fleet-wide mutation performed by whichever
+/// authenticated caller happened to send it, and GET /gateway/injected-text hands back the owner's own
+/// custom agent-launch instruction text. On shared hosted infrastructure there is no correct per-tenant
+/// answer to serve here - only a leak to close. Self-host is single-tenant and these are legitimate owner
+/// function there, so on self-host nothing changes.
+///
+/// HOW THE DENY IS EXPRESSED - THE SHARED REFUSAL PRIMITIVE, NOT A BESPOKE FILTER. This group is denied
+/// through <see cref="HostedRouteDeny.Group"/>, the ONE hosted-refusal boundary every deny family on this
+/// Gateway adopts (primitive at <c>src/CcDirector.Gateway/Tenancy/HostedRouteDeny.cs</c>; the key-vault
+/// group in <c>VaultEndpoints</c> is the reference adopter). An earlier revision rolled its own
+/// <c>AddEndpointFilter</c> deny before the primitive existed; it has been replaced so the release ships
+/// ONE refusal boundary, not one per family. What the primitive buys over the old request-time filter: on
+/// hosted the handler is NEVER MAPPED - in its place a verb-less refusal is mapped on the route's own
+/// pattern, so there is no binding step to get ahead of, no body parameter and no method constraint. EVERY
+/// request shape meets the refusal - a valid body, a malformed body, a wrong media type, and a VERB THE
+/// ROUTE NEVER MAPPED (which the old filter let endpoint selection answer with a 405, disclosing that a
+/// route exists on a Gateway whose refusal says it does not).
+///
+/// PER-ROUTE MODE (<see cref="HostedRouteDeny.Group"/>), NOT AN EXCLUSIVE PREFIX. The owner-settings routes
+/// do not own an exclusive prefix: they are scattered leaves under <c>/gateway</c>, which also carries LIVE
+/// routes from other families (<c>/gateway/about</c>, <c>/gateway/governance/*</c>, <c>/gateway/workflows/*</c>,
+/// <c>/gateway/wingman/instructions/*</c>, <c>/gateway/missions/notes</c>, <c>/gateway/lists/item-status</c>).
+/// An <see cref="HostedRouteDeny.ExclusiveGroup"/> claim over <c>/gateway</c> would take every one of those
+/// off the air, and the startup exclusivity check (<see cref="HostedRefusalRouteSpace.ValidateBeforeStart"/>)
+/// refuses to boot the Gateway when a live route serves beneath an exclusive prefix - so the exclusive shape
+/// is not available here. Per-route mode maps one refusal per route this family declares; the family owes a
+/// test that a route added to the group is refused, which is why <c>Map</c> returns the group handle.
 /// </summary>
 internal static class SettingsEndpoints
 {
     private static readonly JsonSerializerOptions JsonOpts = new() { PropertyNameCaseInsensitive = true };
 
-    /// <summary>
-    /// The hosted refusal for every owner-settings route (issue #1863), or null on self-host where nothing
-    /// changes.
-    ///
-    /// Gated on <see cref="GatewayHostedMode.IsHosted"/> DIRECTLY - never on an optional or nullable
-    /// argument being passed in. A security branch that depends on an optional argument fails OPEN the
-    /// moment a caller forgets it, which is exactly how the hosted account-status fix nearly shipped a
-    /// hole. Asking hosted mode directly means these routes cannot mutate fleet-global configuration on
-    /// hosted however this is wired.
-    ///
-    /// 404 rather than 403: on hosted "the owner's settings" does not exist as a concept, so "not here"
-    /// is the truthful answer. 403 would imply the right credential could reach it, and none can.
-    /// </summary>
-    private static IResult? DenyOnHosted()
-    {
-        if (!GatewayHostedMode.IsHosted) return null;
-
-        FileLog.Write("[SettingsEndpoints] DENIED on hosted: the owner settings are process-global configuration with no tenant dimension");
-        return Results.Json(
-            new { error = "gateway settings are not available on the hosted gateway" },
-            statusCode: StatusCodes.Status404NotFound);
-    }
+    /// <summary>The single error string the hosted refusal serves. Held here so a test can assert against the
+    /// exact string that is served rather than a copy that could drift.</summary>
+    internal const string RefusalMessage = "gateway settings are not available on the hosted gateway";
 
     /// <summary>
-    /// Maps the owner-settings group and RETURNS it, so the refusal can be proved to cover routes that do
-    /// not exist yet: a test maps a NEW probe route onto the returned group and finds it already refused on
-    /// hosted, with no deny written for it anywhere. Returning the group is the only way to state that
-    /// property from outside this file, and a per-route guard and a group filter are indistinguishable
-    /// without it.
+    /// The hosted refusal payload for the whole owner-settings group (issue #1863). Validated on
+    /// construction, so a blank field fails the Gateway at startup rather than serving a refusal a caller
+    /// cannot act on.
+    ///
+    /// The primitive reads <see cref="GatewayHostedMode.IsHosted"/> DIRECTLY, never an optional argument a
+    /// caller can omit - a security branch that depends on an argument fails OPEN the moment somebody forgets
+    /// it, which is how the hosted account-status fix nearly shipped a hole. 404 rather than 403: on hosted
+    /// "the owner's settings" does not exist as a concept, so "not here" is the truthful answer; 403 would
+    /// imply the right credential could reach it, and none can.
     /// </summary>
-    public static RouteGroupBuilder Map(IEndpointRouteBuilder outer, GatewayHost host)
-    {
-        FileLog.Write($"[SettingsEndpoints] mapping the owner settings; hosted={GatewayHostedMode.IsHosted} - on hosted EVERY route in this group is refused (issue #1863)");
+    private static HostedDenial Denial() => new(
+        family: "owner-settings",
+        message: RefusalMessage,
+        reason: "the owner settings are process-global config.json values with no tenant dimension anywhere - " +
+                "not in the file, the store or the routes - and the host-wide auth gate admits any enrolled " +
+                "device key from any account, so one subscriber would repoint or read the whole fleet's settings",
+        unDenyInstruction: "do NOT simply remove this deny: give each of these settings a per-tenant home " +
+                "(config.json has none today), migrate any global value already written, and only then restore " +
+                "a tenant-scoped route",
+        statusCode: StatusCodes.Status404NotFound);
 
-        // The whole group behind ONE filter, rather than a guard line repeated in every handler. A repeated
-        // guard is a thing to forget: the route added to this file next year would be open by default on
-        // hosted and nothing would fail. A group filter runs before EVERY route mapped below, including
-        // routes that do not exist yet. The empty prefix keeps every route path written out in full, so the
-        // self-host surface is byte-identical to before and the diff stays readable.
-        var guarded = outer.MapGroup("");
-        guarded.AddEndpointFilter(async (ctx, next) =>
-        {
-            if (DenyOnHosted() is { } denied) return denied;
-            return await next(ctx);
-        });
+    /// <summary>
+    /// Maps the owner-settings group through the shared refusal primitive and RETURNS the denied group they
+    /// were mapped through, so the refusal can be proved to cover routes that do not exist yet: a test maps a
+    /// NEW probe route onto the returned handle and finds it already refused on hosted, with no deny written
+    /// for it anywhere. Returning the handle is the only way to state that property from outside this file.
+    /// </summary>
+    public static HostedDenyGroup Map(IEndpointRouteBuilder outer, GatewayHost host)
+    {
+        FileLog.Write($"[SettingsEndpoints] mapping the owner settings; hosted={GatewayHostedMode.IsHosted} - on hosted EVERY route in this group is refused via the shared refusal primitive (issue #1863)");
+
+        // The whole group through ONE primitive-created handle, rather than a guard line repeated in every
+        // handler. A repeated guard is a thing to forget: the route added to this file next year would be
+        // open by default on hosted and nothing would fail. Per-route Group mode maps a refusal for every
+        // route mapped through the handle below. The empty prefix keeps every route path written out in full,
+        // so the self-host surface is byte-identical to before and the diff stays readable.
+        var group = HostedRouteDeny.Group(outer, "", Denial());
 
         // The telemetry-consent family is mapped onto OUTER, not into this group, deliberately (issue
-        // #1863). It carries its OWN hosted group filter, and mapping it here as well would put two filters
-        // over the same routes - which hides a defect rather than adding safety: deleting either filter
-        // alone would leave the routes still refused, so neither filter's revert could be attributed to it.
-        // One family, one filter, one thing to revert. It is called HERE, in the only method that still
-        // holds `outer`, so that `outer` does not have to stay in scope where the routes are mapped.
+        // #1863). It carries its OWN hosted refusal, and mapping it here as well would put two boundaries
+        // over the same routes - which hides a defect rather than adding safety: deleting either alone would
+        // leave the routes still refused, so neither's revert could be attributed to it. One family, one
+        // boundary, one thing to revert. It is called HERE, in the only method that still holds `outer`, so
+        // that `outer` does not have to stay in scope where the routes are mapped.
         TelemetryConsentEndpoint.Map(outer);
 
         // THE ROUTES ARE MAPPED WHERE `outer` IS NOT IN SCOPE - deliberately, and this is the only reason
         // MapRoutes exists as a separate method.
         //
-        // If the routes were written here beside the guarded group, each of the twenty-two could
-        // INDIVIDUALLY be mapped onto `outer` instead of onto `guarded` - a one-word edit that bypasses the
-        // filter for that route alone while every other route stays correctly denied. That is twenty-two
-        // independently bypassable primitives, each of which would owe its own proof run. Handing the group
-        // to a method that never receives the ungrouped builder makes that mistake INEXPRESSIBLE rather than
-        // merely unlikely: inside MapRoutes there is nothing to map onto except the guarded group. The
-        // bypass count is reduced by design, not by argument about how careful the next author will be.
-        // This is the shape the key-vault deny uses, in VaultEndpoints.
-        MapRoutes(guarded, host);
-        return guarded;
+        // If the routes were written here beside the group handle, each of the twenty-two could INDIVIDUALLY
+        // be mapped onto `outer` instead of onto the denied handle - a one-word edit that bypasses the
+        // refusal for that route alone while every other route stays correctly denied. That is twenty-two
+        // independently bypassable primitives, each of which would owe its own proof run. Handing the typed
+        // handle to a method that never receives the ungrouped builder makes that mistake INEXPRESSIBLE
+        // rather than merely unlikely: inside MapRoutes there is nothing to map onto except the denied handle.
+        // The bypass count is reduced by design. This is the shape the key-vault deny uses, in VaultEndpoints.
+        MapRoutes(group, host);
+        return group;
     }
 
     /// <summary>
-    /// The twenty-two owner-settings routes. Takes the GUARDED group and nothing else - see the note at the
-    /// call site: the ungrouped route builder is deliberately out of scope here so no route can be mapped
-    /// around the hosted filter.
+    /// The twenty-two owner-settings routes. Takes the denied GROUP HANDLE and nothing else - see the note at
+    /// the call site: the ungrouped route builder is deliberately out of scope here so no route can be mapped
+    /// around the hosted refusal.
     /// </summary>
-    private static void MapRoutes(RouteGroupBuilder app, GatewayHost host)
+    private static void MapRoutes(HostedDenyGroup app, GatewayHost host)
     {
         app.MapGet("/gateway/settings", async () =>
         {

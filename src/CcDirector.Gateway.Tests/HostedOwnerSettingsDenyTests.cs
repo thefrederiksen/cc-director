@@ -12,6 +12,7 @@ using System.Threading.Tasks;
 using CcDirector.Core;
 using CcDirector.Core.Configuration;
 using CcDirector.Gateway.Api;
+using CcDirector.Gateway.Tenancy;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
@@ -183,10 +184,16 @@ public static class OwnerSettingsRoutes
 /// no settings", which is a false statement rather than an absent one. Every refusal is a 404 whose body
 /// is EXACTLY one <c>error</c> property, asserted as an allow-list over the whole property set.
 ///
-/// ONE GROUP FILTER PER FAMILY, NOT A GUARD PER ROUTE. Each of the three endpoint classes puts one
-/// endpoint filter on the route group it maps, so the refusal runs before every route in that group
-/// INCLUDING ROUTES THAT DO NOT EXIST YET. <see cref="HostedOwnerSettingsGroupFilterTests"/> is the only
-/// test of that property: a guard repeated per handler passes every other test in this file.
+/// ONE SHARED REFUSAL PRIMITIVE PER FAMILY, NOT A GUARD PER ROUTE. Each of the three endpoint classes maps
+/// its routes through <see cref="CcDirector.Gateway.Tenancy.HostedRouteDeny.Group"/>, which on hosted maps
+/// a verb-less refusal in place of each handler - so a route added to the group later is refused too, with
+/// no deny of its own. <see cref="HostedOwnerSettingsGroupFilterTests"/> is the test of that property: a
+/// guard repeated per handler passes every other test in this file.
+///
+/// The primitive REPLACED an earlier bespoke <c>AddEndpointFilter</c> deny (a request-time filter that ran
+/// inside the still-mapped handler). The upgrade shows up on the one shape the old filter could not answer -
+/// a verb the route never served - proved by
+/// <see cref="The_brain_restart_route_answers_the_refusal_on_a_verb_it_never_served_on_hosted"/>.
 /// </summary>
 [Collection("GatewayHostedMode")]
 public sealed class HostedOwnerSettingsDenyTests : IAsyncLifetime
@@ -359,21 +366,22 @@ public sealed class HostedOwnerSettingsDenyTests : IAsyncLifetime
 
 /// <summary>
 /// Boots ONE owner-settings family onto a bare application with no authentication gate and NO
-/// single-page-application fallback, and hands the caller the route group back so a test can map routes
-/// onto it. That return value is what makes the future-route proof possible at all: the group is created
-/// inside each <c>Map</c> method, so nothing outside those methods could otherwise state a property about
-/// routes added to it later.
+/// single-page-application fallback, and hands the caller the denied group HANDLE back so a test can map
+/// routes through it. That return value is what makes the future-route proof possible at all: the handle is
+/// created inside each <c>Map</c> method, so nothing outside those methods could otherwise state a property
+/// about routes added to it later.
 ///
 /// No fallback is deliberate as well. On the real Gateway an unmapped path is answered by the
 /// single-page-application fallback, so "the route is not there" and "the route is there and refused" can
-/// look alike. Here an unmapped path is a bare 404 with no body and an unmatched VERB is a 405, which is
-/// what lets <see cref="HostedOwnerSettingsGroupFilterTests"/> prove a route exists on hosted at all.
+/// look alike. Here an UNDECLARED path is a bare 404 with no body, while a DECLARED route's path answers the
+/// refusal on every verb (the primitive maps a verb-less refusal, so there is no 405) - which is what lets
+/// <see cref="HostedOwnerSettingsGroupFilterTests"/> tell a refused route apart from an unmapped one.
 /// </summary>
 internal static class OwnerSettingsProbeHost
 {
     public static async Task<(WebApplication app, HttpClient http)> StartAsync(
-        Func<IEndpointRouteBuilder, RouteGroupBuilder> mapFamily,
-        Action<RouteGroupBuilder>? mapIntoGroup = null,
+        Func<IEndpointRouteBuilder, HostedDenyGroup> mapFamily,
+        Action<HostedDenyGroup>? mapIntoGroup = null,
         Action<IEndpointRouteBuilder>? mapOutsideGroup = null)
     {
         var builder = WebApplication.CreateBuilder();
@@ -392,21 +400,21 @@ internal static class OwnerSettingsProbeHost
 }
 
 /// <summary>
-/// THE POINT OF THE WHOLE CHANGE: the hosted refusal is a filter on each route GROUP, so it covers routes
-/// that have not been written yet.
+/// THE POINT OF THE WHOLE CHANGE: the hosted refusal is mapped through the shared primitive on each route
+/// GROUP, so it covers routes that have not been written yet.
 ///
-/// A guard line repeated in every handler passes EXACTLY the same tests as a group filter for the routes
+/// A guard line repeated in every handler passes EXACTLY the same tests as the group refusal for the routes
 /// that exist today, which is precisely what makes it dangerous rather than merely untidy: the difference
 /// only appears on the route somebody adds NEXT, when it is open on hosted by default and nothing fails.
 /// That difference is not observable by driving the 31 routes that exist, so this class maps a BRAND-NEW
-/// probe route onto each group and asserts it is refused with no deny written for it anywhere. These are
-/// the tests that justify choosing a group filter at all, and they are the reason all three
-/// <c>Map</c> methods now return their group.
+/// probe route THROUGH each denied handle and asserts it is refused with no deny written for it anywhere.
+/// These are the tests that justify routing every handler through the primitive at all, and they are the
+/// reason all three <c>Map</c> methods now return their denied handle.
 ///
 /// The served half of the same probe - the SAME probe paths, with hosted mode explicitly OFF in both
 /// non-hosted forms - is <see cref="HostedOwnerSettingsSelfHostProbeTests"/>. One direction alone cannot
-/// tell a working gate apart from a brick: a filter that refused everything unconditionally would pass
-/// every assertion in this class while having silently killed the routes for self-host too.
+/// tell a working gate apart from a brick: a refusal that fired everything unconditionally would pass every
+/// assertion in this class while having silently killed the routes for self-host too.
 /// </summary>
 [Collection("GatewayHostedMode")]
 public sealed class HostedOwnerSettingsGroupFilterTests : IAsyncLifetime
@@ -453,8 +461,8 @@ public sealed class HostedOwnerSettingsGroupFilterTests : IAsyncLifetime
         try { if (Directory.Exists(_root)) Directory.Delete(_root, true); } catch { /* best effort */ }
     }
 
-    /// <summary>The three families, each mapped on its own so one filter is the only thing in the way.</summary>
-    internal Func<IEndpointRouteBuilder, RouteGroupBuilder> Family(string name) => name switch
+    /// <summary>The three families, each mapped on its own so one refusal is the only thing in the way.</summary>
+    internal Func<IEndpointRouteBuilder, HostedDenyGroup> Family(string name) => name switch
     {
         "settings" => routes => SettingsEndpoints.Map(routes, _gateway),
         "models" => routes => AiModelsEndpoint.Map(routes, new KeyVault(Path.Combine(_root, "vault.json"))),
@@ -471,9 +479,10 @@ public sealed class HostedOwnerSettingsGroupFilterTests : IAsyncLifetime
 
     /// <summary>
     /// A route that did not exist when the refusal was written is refused anyway. NOTHING in the endpoint
-    /// class mentions this path and no guard is written for it here - the only thing between the caller and
-    /// the probe payload is the group filter. Delete the filter and this serves the probe payload with a
-    /// 200, which is the future-route hole stated out loud.
+    /// class mentions this path and no guard is written for it here - it is mapped THROUGH the denied handle,
+    /// so on hosted the primitive maps a verb-less refusal in its place instead of the probe handler. Map it
+    /// on the ungrouped builder instead and this serves the probe payload with a 200, which is the
+    /// future-route hole stated out loud.
     /// </summary>
     [Theory]
     [MemberData(nameof(Families))]
@@ -499,9 +508,9 @@ public sealed class HostedOwnerSettingsGroupFilterTests : IAsyncLifetime
     }
 
     /// <summary>
-    /// CONTROL: the filter is scoped to its own group, not a blanket refusal on the whole application. A
-    /// route mapped OUTSIDE the group still serves on hosted, so the refusals above are the filter doing
-    /// its job rather than the host refusing everything. This must stay GREEN through the revert.
+    /// CONTROL: the refusal is scoped to its own group, not a blanket refusal on the whole application. A
+    /// route mapped OUTSIDE the denied handle still serves on hosted, so the refusals above are the primitive
+    /// doing its job rather than the host refusing everything. This must stay GREEN through the revert.
     /// </summary>
     [Theory]
     [MemberData(nameof(Families))]
@@ -523,38 +532,41 @@ public sealed class HostedOwnerSettingsGroupFilterTests : IAsyncLifetime
     }
 
     /// <summary>
-    /// A SUPPLEMENTARY fact about <c>POST /gateway/brain/restart</c>: the route is registered on hosted at
-    /// that exact path, and only for POST.
+    /// A VERB THE ROUTE NEVER SERVED meets the REFUSAL, not a 405 - the headline upgrade the shared refusal
+    /// primitive buys over the old request-time group filter, and the reason this rework replaced the filter.
     ///
-    /// THIS IS NO LONGER THE SERVED-SIDE PROOF FOR THAT ROUTE, and it was wrong to lean on it as one. A GET
-    /// answered 405 with <c>Allow: POST</c> proves the routing table has a POST endpoint registered there;
-    /// it says NOTHING about which handler that POST reaches, or whether it reaches one at all. The real
-    /// served-side proof now drives the exact path and verb and asserts the handler's own receipt, through
-    /// an injected restart seam so no process is started - see
-    /// <see cref="HostedOwnerSettingsSelfHostControlTests.The_brain_restart_route_reaches_its_handler_on_self_host_without_starting_a_process"/>
-    /// and its destructibility control.
+    /// <c>POST /gateway/brain/restart</c> is the only verb this route ever served. Under the old
+    /// <c>AddEndpointFilter</c> deny the route's handler was still MAPPED on hosted and the filter ran inside
+    /// it, so a GET to that path was answered by endpoint SELECTION with 405 <c>Allow: POST</c> - which
+    /// discloses that a route exists on a Gateway whose refusal says it does not. The primitive maps a
+    /// VERB-LESS refusal on the path and never maps the handler at all, so every verb - including one the
+    /// route never served - meets the same 404 refusal. A wrong verb IS a request shape, and the refusal is
+    /// uniform across shapes.
     ///
-    /// It is kept because it still answers a real question the receipt does not: a 404 deny is
-    /// indistinguishable from a route that was never mapped, and this shows the path is genuinely
-    /// registered ON HOSTED, where the deny is active. The 405 survives the deny because no endpoint is
-    /// selected for a verb that does not exist, so the filter never runs.
+    /// THIS IS REVERT-PROOF. Restore the real handler on hosted (map it instead of the refusal) and this GET
+    /// goes back to 405, reddening the refusal assertion. And it still answers the question the old 405 did -
+    /// a refused path is distinguished from one that was never mapped: the refused path carries the error
+    /// body, a never-mapped path is a bare 404 with no body and no <c>Allow</c> header on this fallback-free
+    /// probe host.
     /// </summary>
     [Fact]
-    public async Task The_brain_restart_route_is_registered_on_hosted_and_only_as_a_post()
+    public async Task The_brain_restart_route_answers_the_refusal_on_a_verb_it_never_served_on_hosted()
     {
         var (app, http) = await OwnerSettingsProbeHost.StartAsync(Family("settings"));
         try
         {
+            // GET a POST-only route. NOT a 405 - the verb-less refusal answers it, uniformly across verbs.
             var wrongVerb = await http.GetAsync("/gateway/brain/restart");
-            Assert.Equal(HttpStatusCode.MethodNotAllowed, wrongVerb.StatusCode);
-            Assert.Contains("POST", wrongVerb.Content.Headers.Allow);
+            await OwnerSettingsRoutes.AssertIsNothingButTheRefusal(wrongVerb, OwnerSettingsRoutes.SettingsRefusal);
+            Assert.Empty(wrongVerb.Content.Headers.Allow);
 
-            // The path really is unique to this route: a path NOT mapped at all answers 404, not 405, on
-            // this fallback-free probe host - so the 405 above is about a registered endpoint and not a
-            // catch-all.
+            // The refusal above is this route's own, not a catch-all: a path NOT in the family answers a bare
+            // 404 with no body on this fallback-free probe host. Per-route mode refuses only the paths the
+            // family declares, so an undeclared sub-path is genuinely unmapped.
             var neverMapped = await http.GetAsync("/gateway/brain/no-such-route");
             Assert.Equal(HttpStatusCode.NotFound, neverMapped.StatusCode);
             Assert.Empty(neverMapped.Content.Headers.Allow);
+            Assert.Equal(string.Empty, await neverMapped.Content.ReadAsStringAsync());
         }
         finally { http.Dispose(); await app.DisposeAsync(); }
     }

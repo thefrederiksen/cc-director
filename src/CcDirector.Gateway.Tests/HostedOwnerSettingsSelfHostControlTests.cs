@@ -8,6 +8,7 @@ using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using CcDirector.Core.Configuration;
+using CcDirector.Gateway.Tenancy;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
@@ -560,11 +561,11 @@ public sealed class HostedOwnerSettingsSelfHostControlTests : IAsyncLifetime
 /// THE SERVED HALF OF THE FUTURE-ROUTE PROOF, and the half most likely to be skipped because everything
 /// looks green without it.
 ///
-/// <see cref="HostedOwnerSettingsGroupFilterTests"/> maps a brand-new route onto each group and finds it
-/// REFUSED on hosted. On its own that cannot tell a working gate apart from a brick: a filter that refused
-/// everything unconditionally would satisfy every one of those assertions while having silently killed the
-/// routes for self-host too. This class drives the SAME probe paths with hosted mode explicitly OFF, in
-/// BOTH non-hosted forms, and asserts they are SERVED with their real payload.
+/// <see cref="HostedOwnerSettingsGroupFilterTests"/> maps a brand-new route through each denied handle and
+/// finds it REFUSED on hosted. On its own that cannot tell a working gate apart from a brick: a primitive
+/// that refused everything unconditionally would satisfy every one of those assertions while having silently
+/// killed the routes for self-host too. This class drives the SAME probe paths with hosted mode explicitly
+/// OFF, in BOTH non-hosted forms, and asserts they are SERVED with their real payload.
 /// </summary>
 [Collection("GatewayHostedMode")]
 public sealed class HostedOwnerSettingsSelfHostProbeTests : IAsyncLifetime
@@ -630,7 +631,7 @@ public sealed class HostedOwnerSettingsSelfHostProbeTests : IAsyncLifetime
         Environment.SetEnvironmentVariable("CC_GATEWAY_HOSTED", hostedForm);
         Assert.False(GatewayHostedMode.IsHosted);
 
-        Func<IEndpointRouteBuilder, RouteGroupBuilder> map = family switch
+        Func<IEndpointRouteBuilder, HostedDenyGroup> map = family switch
         {
             "settings" => routes => Api.SettingsEndpoints.Map(routes, _gateway),
             "models" => routes => Api.AiModelsEndpoint.Map(routes, new Core.KeyVault(Path.Combine(_root, "vault.json"))),
