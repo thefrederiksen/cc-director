@@ -29,10 +29,12 @@ ZIP_NAME="cc-director-mac-arm64.zip"
 
 BINARY=""
 OUT_DIR=""
+DMG_NAME=""
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --binary) BINARY="$2"; shift 2 ;;
         --out)    OUT_DIR="$2"; shift 2 ;;
+        --dmg-name) DMG_NAME="$2"; shift 2 ;;   # also produce a drag-to-Applications DMG
         --app-name) APP_NAME="$2"; shift 2 ;;   # e.g. "CC Director Setup"
         --bin-name) BIN_NAME="$2"; shift 2 ;;    # the binary inside the bundle (matches AssemblyName)
         --zip-name) ZIP_NAME="$2"; shift 2 ;;    # output asset name
@@ -169,6 +171,26 @@ codesign --verify --deep --strict "$APP" 2>&1 | sed 's/^/  codesign: /' || true
 ZIP_PATH="$OUT_DIR/$ZIP_NAME"
 rm -f "$ZIP_PATH"
 ditto -c -k --sequesterRsrc --keepParent "$APP" "$ZIP_PATH"
+
+# ----------------------------------------------------------------------------
+# Optional drag-to-Applications DMG (--dmg-name). The DMG holds the .app plus
+# an /Applications symlink, so a manual install is one drag and always lands in
+# the canonical place - no loose unzipped app copies scattered around Downloads
+# (the pile-up the installer's purge exists to clean). The zip stays the
+# auto-updater's asset; the DMG is the human download.
+# ----------------------------------------------------------------------------
+if [[ -n "$DMG_NAME" ]]; then
+    DMG_PATH="$OUT_DIR/$DMG_NAME"
+    DMG_STAGE="$(mktemp -d)"
+    ditto "$APP" "$DMG_STAGE/$APP_NAME.app"
+    ln -s /Applications "$DMG_STAGE/Applications"
+    rm -f "$DMG_PATH"
+    hdiutil create -quiet -volname "$APP_NAME $VERSION" -srcfolder "$DMG_STAGE" \
+        -fs HFS+ -format UDZO "$DMG_PATH"
+    rm -rf "$DMG_STAGE"
+    echo "Packaged $APP_NAME v$VERSION -> $DMG_PATH"
+fi
+
 rm -rf "$STAGE"
 
 echo "Packaged $APP_NAME v$VERSION -> $ZIP_PATH"
