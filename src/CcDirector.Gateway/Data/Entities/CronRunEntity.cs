@@ -14,11 +14,8 @@ namespace CcDirector.Gateway.Data.Entities;
 /// and survives the one-time import (records are assigned sequences in their stored newest-first order), so
 /// a tie in <see cref="Contracts.CronRunRecord.FiredUtc"/> can never reorder the list.
 /// </summary>
-public sealed class CronRunEntity : TenantScopedEntity
+public sealed class CronRunEntity : GatewayMintedKeyEntity
 {
-    /// <summary>Row primary key. A GUID generated in code (never a database default).</summary>
-    public Guid Id { get; set; }
-
     /// <summary>The owning cron job's id. Indexed; not a foreign key (independent lifecycle).</summary>
     public string JobId { get; set; } = "";
 

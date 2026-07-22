@@ -21,11 +21,8 @@ namespace CcDirector.Gateway.Data.Entities;
 /// of the run the session was working, so a per-run duration rollup needs no participant lookup), but the
 /// subject's own key is always present.
 /// </summary>
-public sealed class GovernanceEventEntity : TenantScopedEntity
+public sealed class GovernanceEventEntity : GatewayMintedKeyEntity
 {
-    /// <summary>Primary key, minted in code - never a database default.</summary>
-    public Guid Id { get; set; }
-
     /// <summary>What kind of thing transitioned: "session" or "run". The subject's own key
     /// (<see cref="SessionId"/> for a session, <see cref="RunId"/> for a run) is required for that kind.</summary>
     public string SubjectKind { get; set; } = "";

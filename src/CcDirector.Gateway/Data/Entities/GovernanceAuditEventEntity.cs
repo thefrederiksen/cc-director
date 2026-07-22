@@ -18,11 +18,8 @@ namespace CcDirector.Gateway.Data.Entities;
 /// prompt content. The <see cref="Actor"/> is the audit "who": the human identity on a human decision, the
 /// agent on an agent event.
 /// </summary>
-public sealed class GovernanceAuditEventEntity : TenantScopedEntity
+public sealed class GovernanceAuditEventEntity : GatewayMintedKeyEntity
 {
-    /// <summary>Primary key, minted in code - never a database default.</summary>
-    public Guid Id { get; set; }
-
     /// <summary>The canonical fleet session GUID the event belongs to (audit events are session-scoped).
     /// The same id run participants, the event ledger, and session spend key on.</summary>
     public string SessionId { get; set; } = "";

@@ -450,7 +450,6 @@ public sealed class WorkflowStore
 
         var row = existing ?? new WorkflowVersionEntity
         {
-            Id = Guid.NewGuid(),
             TenantId = ctx.ActiveTenant!,
             WorkflowId = workflowId,
             Version = versionNumber,
@@ -470,7 +469,6 @@ public sealed class WorkflowStore
 
         var files = hashedFiles.Select(f => new WorkflowFileEntity
         {
-            Id = Guid.NewGuid(),
             TenantId = ctx.ActiveTenant!,
             VersionId = row.Id,
             FileName = f.FileName,

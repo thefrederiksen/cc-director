@@ -7,11 +7,8 @@ namespace CcDirector.Gateway.Data.Entities;
 /// targeted remove-by-source-and-id stay exact and queryable - the child-table pattern the cron run history
 /// established.
 /// </summary>
-public sealed class WorkListItemEntity : TenantScopedEntity
+public sealed class WorkListItemEntity : GatewayMintedKeyEntity
 {
-    /// <summary>Row primary key. A GUID generated in code (never a database default).</summary>
-    public Guid Id { get; set; }
-
     /// <summary>The owning work list's id (foreign key).</summary>
     public Guid WorkListId { get; set; }
 

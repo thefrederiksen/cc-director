@@ -115,7 +115,7 @@ public sealed class WingmanInstructionsStore
         var row = ctx.WingmanInstructions.FirstOrDefault();
         if (row is null)
         {
-            row = new WingmanInstructionEntity { Id = Guid.NewGuid(), TenantId = ctx.ActiveTenant! };
+            row = new WingmanInstructionEntity { TenantId = ctx.ActiveTenant! };
             ctx.WingmanInstructions.Add(row);
         }
         row.ActiveVersionId = _state.ActiveVersionId;
@@ -349,7 +349,6 @@ public sealed class WingmanInstructionsStore
         using var ctx = _db.CreateContext();
         ctx.WingmanInstructions.Add(new WingmanInstructionEntity
         {
-            Id = Guid.NewGuid(),
             TenantId = ctx.ActiveTenant!,
             ActiveVersionId = parsed.ActiveVersionId,
             AckDefaultVersion = parsed.AckDefaultVersion,

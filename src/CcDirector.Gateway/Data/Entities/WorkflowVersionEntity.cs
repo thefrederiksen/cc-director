@@ -14,11 +14,8 @@ namespace CcDirector.Gateway.Data.Entities;
 /// Steps and criteria reuse the wire contract types as EF owned types serialized to JSON columns
 /// (the cron store's "bulky sub-doc -> JSON in a column" pattern).
 /// </summary>
-public sealed class WorkflowVersionEntity : TenantScopedEntity
+public sealed class WorkflowVersionEntity : GatewayMintedKeyEntity
 {
-    /// <summary>Primary key, minted in code - never a database default.</summary>
-    public Guid Id { get; set; }
-
     /// <summary>The workflow this version belongs to. (WorkflowId, Version) is unique.</summary>
     public string WorkflowId { get; set; } = "";
 

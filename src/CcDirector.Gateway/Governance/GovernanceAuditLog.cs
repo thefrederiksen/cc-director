@@ -205,7 +205,6 @@ public sealed class GovernanceAuditLog
 
         return new GovernanceAuditEventEntity
         {
-            Id = Guid.NewGuid(),
             TenantId = tenant,
             SessionId = request.SessionId.Trim(),
             RunId = request.RunId,

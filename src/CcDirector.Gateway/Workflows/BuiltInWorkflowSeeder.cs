@@ -77,7 +77,6 @@ public static class BuiltInWorkflowSeeder
     public static WorkflowVersionEntity BuildShippedVersion(
         GatewayDbContext ctx, WorkflowDefinition definition, int versionNumber, DateTime createdUtc) => new()
     {
-        Id = Guid.NewGuid(),
         TenantId = ctx.ActiveTenant!,
         WorkflowId = definition.Id,
         Version = versionNumber,

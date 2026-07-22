@@ -18,6 +18,20 @@ namespace CcDirector.Gateway.Tests.Data;
 ///    a global query filter (deny-by-default isolation).
 ///  - The GLOBAL mapping table <see cref="TenantEntity"/> MUST NOT be scoped: it is the table the filter's
 ///    tenant values come from, so it carries no <c>tenant_id</c> column and no query filter.
+///
+/// And a THIRD rule, the other half of tenant scoping:
+///  - EVERY tenant-scoped table's PRIMARY KEY must INCLUDE the tenant, unless its key is a value the Gateway
+///    itself mints and guarantees globally unique - which is not a list of table names but a TYPE,
+///    <see cref="GatewayMintedKeyEntity"/>, whose key only that base class can write.
+///
+/// That third rule exists because the column-and-filter checks above are structurally BLIND to the key. A
+/// table can carry a perfect <c>tenant_id</c> column and a perfect query filter and STILL have a primary key
+/// built only from caller-supplied input - and three did (<c>snoozes</c>, <c>session_spend</c>,
+/// <c>push_subscriptions</c>). Every store upserts by reading THROUGH the filter and adding when it finds
+/// nothing, so on such a key a second tenant presenting an identifier the first tenant already holds finds
+/// nothing, inserts, and hits a PRIMARY KEY violation: a cross-tenant SQUAT plus an EXISTENCE ORACLE. A guard
+/// that checked only the column and the filter was exactly how those three survived, so the key check lives
+/// here beside them rather than in a separate file that could be forgotten.
 /// </summary>
 public sealed class TenantScopeGuardTests : IDisposable
 {
@@ -113,5 +127,130 @@ public sealed class TenantScopeGuardTests : IDisposable
             "could read another tenant's rows: " + string.Join(", ", offenders) +
             ". Derive the entity from TenantScopedEntity, or - only if it is genuinely global mapping data - " +
             "add it to allowedGlobalTables with a reason.");
+    }
+
+    /// <summary>
+    /// The OTHER half of tenant scoping: the PRIMARY KEY. The two tests above check the tenant COLUMN and the
+    /// query FILTER, and are structurally blind to the key - which is why <c>snoozes</c>, <c>session_spend</c>
+    /// and <c>push_subscriptions</c> shipped with a primary key built from CALLER-SUPPLIED input while passing
+    /// every guard here. Every store upserts by reading THROUGH the filter and adding when it finds nothing,
+    /// so with such a key a second tenant presenting an identifier the first tenant already holds finds
+    /// nothing (the filter hides the row), inserts, and hits a PRIMARY KEY violation: it cannot use that
+    /// identifier at all (a cross-tenant SQUAT) and the failure tells it another tenant holds it (an EXISTENCE
+    /// ORACLE).
+    ///
+    /// The rule: every tenant-scoped table's primary key MUST include <c>tenant_id</c>. The only exemption is
+    /// a key the GATEWAY ITSELF mints as a fresh <see cref="Guid"/> - globally unique by construction and
+    /// never a value a caller can present.
+    ///
+    /// THE EXEMPTION IS A TYPE, NOT A LIST. It used to be a written allowlist of table names, each with a
+    /// sentence asserting "this store mints the key with Guid.NewGuid()", and the check beside it re-tested
+    /// only the SHAPE of the key - that it was still a single <see cref="Guid"/>. That is true both before AND
+    /// after the one change that matters: a store switching from minting the value to accepting one from the
+    /// caller keeps the key a single Guid, so the guard stayed green in the exact case it was written to
+    /// catch. A check that cannot fail for the dangerous change is worse than no check, because everyone
+    /// downstream reads it as protection and stops looking.
+    ///
+    /// So the exemption now IS <see cref="GatewayMintedKeyEntity"/>, whose <c>Id</c> has a private setter and
+    /// is minted by the base class itself. Assigning a caller-supplied value to it does not fail here - it
+    /// does not COMPILE. What is left for this test is the two ways to escape that type while keeping a
+    /// tenant-less key, and it closes both by construction:
+    ///
+    ///  - DROP the base class (and re-add a settable <c>Id</c>): the entity is then not a
+    ///    <see cref="GatewayMintedKeyEntity"/>, so it needs <c>tenant_id</c> in its key and turns this red.
+    ///  - KEEP the base class but key the table on something else - a re-declared <c>Id</c> that shadows the
+    ///    base one, or any caller-supplied column: the mapped key property is then no longer DECLARED ON
+    ///    <see cref="GatewayMintedKeyEntity"/>, which is what this test requires, so it turns red too.
+    ///
+    /// The third escape - widening the private setter so a caller value compiles again - is held by
+    /// <see cref="TheGatewayMintedKey_CanOnlyBeWrittenByTheBaseClassThatMintsIt"/> below.
+    /// </summary>
+    [Fact]
+    public void EveryTenantScopedTable_HasTenantIdInItsPrimaryKey_UnlessTheGatewayMintsTheKeyItself()
+    {
+        var model = Model();
+        var scoped = model.GetEntityTypes()
+            .Where(e => !e.IsOwned())
+            .Where(e => typeof(TenantScopedEntity).IsAssignableFrom(e.ClrType))
+            .ToList();
+
+        // Sanity: the scan actually found the scoped stores (guard against a reflection no-op passing green).
+        Assert.NotEmpty(scoped);
+
+        // Sanity: the exempt population is not empty either. If a refactor ever unhooked every entity from
+        // GatewayMintedKeyEntity, the exemption branch below would stop executing and this test would go
+        // green while testing nothing about it.
+        Assert.Contains(scoped, e => typeof(GatewayMintedKeyEntity).IsAssignableFrom(e.ClrType));
+
+        var offenders = new List<string>();
+        foreach (var entity in scoped)
+        {
+            var key = entity.FindPrimaryKey();
+            Assert.True(key is not null, $"{entity.ClrType.Name} is tenant-scoped but has no primary key.");
+
+            var keyHasTenant = key!.Properties.Any(
+                p => string.Equals(p.GetColumnName(), "tenant_id", StringComparison.Ordinal));
+            if (keyHasTenant)
+                continue;
+
+            // The ONLY exemption: the key is the Id that GatewayMintedKeyEntity itself declares and mints.
+            // Note this asks where the key property is DECLARED, not merely what type it is - a re-declared
+            // or shadowing Id on the derived entity is settable by callers again and is therefore NOT this.
+            var keyIsTheMintedId = key.Properties.Count == 1
+                                   && key.Properties[0].PropertyInfo?.DeclaringType
+                                       == typeof(GatewayMintedKeyEntity);
+            if (keyIsTheMintedId)
+                continue;
+
+            offenders.Add(entity.ClrType.Name + " (key: " +
+                          string.Join(", ", key.Properties.Select(p => p.GetColumnName())) + ")");
+        }
+
+        Assert.True(offenders.Count == 0,
+            "These tenant-scoped tables have a PRIMARY KEY that does not include tenant_id and is not the " +
+            "Gateway-minted Id, so one tenant can squat a key value for every other tenant and learn that " +
+            "another tenant holds it: " + string.Join("; ", offenders) +
+            ". Make the key composite - HasKey(e => new { e.TenantId, e.<Key> }) - and add the migration on " +
+            "BOTH providers; or, only if the key is genuinely the Gateway's to mint, derive the entity from " +
+            "GatewayMintedKeyEntity and key the table on its Id.");
+    }
+
+    /// <summary>
+    /// The mechanism behind the exemption above, asserted directly. <see cref="GatewayMintedKeyEntity"/> earns
+    /// a primary key without <c>tenant_id</c> on exactly one ground: no caller can choose that key, because
+    /// only the base class can write it. That is not a property of the key's TYPE (a caller-supplied Guid
+    /// looks identical to a minted one) - it is a property of its ACCESSIBILITY, so accessibility is what this
+    /// checks.
+    ///
+    /// This is the test that fails for the dangerous change. Widening the setter is the ONLY way to make
+    /// <c>entity.Id = someCallerSuppliedGuid</c> compile again, so the moment someone does it to unblock
+    /// themselves, this turns red and names the reason instead of letting the exemption quietly go false.
+    /// </summary>
+    [Fact]
+    public void TheGatewayMintedKey_CanOnlyBeWrittenByTheBaseClassThatMintsIt()
+    {
+        var id = typeof(GatewayMintedKeyEntity).GetProperty(nameof(GatewayMintedKeyEntity.Id));
+        Assert.True(id is not null, "GatewayMintedKeyEntity no longer declares an Id property.");
+
+        var setter = id!.SetMethod;
+        Assert.True(setter is not null,
+            "GatewayMintedKeyEntity.Id has no setter at all. EF needs one (or the backing field) to " +
+            "materialize a loaded row - restore a PRIVATE setter.");
+
+        Assert.True(setter!.IsPrivate,
+            "GatewayMintedKeyEntity.Id's setter is no longer private (it is now " +
+            (setter.IsPublic ? "public" : setter.IsFamily ? "protected" : "internal or protected internal") +
+            "). That setter being private is the WHOLE reason these tables are exempt from having tenant_id " +
+            "in their primary key: it is what makes 'the Gateway mints this key' something the compiler " +
+            "enforces rather than a sentence someone wrote. With a wider setter a caller-supplied value can " +
+            "be assigned, and then one tenant can squat that key for every other tenant and learn from the " +
+            "insert failure that another tenant holds it. Put the setter back to private; if the key really " +
+            "must be caller-supplied, stop deriving from GatewayMintedKeyEntity and put tenant_id in the key.");
+
+        // And nothing else on the type may hand the value out for writing either.
+        Assert.DoesNotContain(typeof(GatewayMintedKeyEntity).GetFields(
+                System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance
+                | System.Reflection.BindingFlags.Static),
+            f => !f.IsInitOnly);
     }
 }

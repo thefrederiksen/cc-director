@@ -106,14 +106,15 @@ public sealed class GatewayDatabaseLivePostgresProofTests
     public void JsonOwnedColumns_RoundTrip_OnConfiguredPostgres()
     {
         using var db = OpenGateway();
-        var id = Guid.NewGuid();
+        // The key is minted by GatewayMintedKeyEntity, not chosen here - read it back off the row we added.
+        // Left empty until then so the cleanup below is a no-op if the insert never happened.
+        var id = Guid.Empty;
         try
         {
             using (var ctx = db.CreateContext())
             {
-                ctx.WorkflowVersions.Add(new WorkflowVersionEntity
+                var row = new WorkflowVersionEntity
                 {
-                    Id = id,
                     TenantId = TenantId.Local.Value,
                     WorkflowId = "wf-live-json-proof",
                     Version = 1,
@@ -134,8 +135,10 @@ public sealed class GatewayDatabaseLivePostgresProofTests
                     ContentHash = "hash",
                     AuthoredBy = "test",
                     CreatedUtc = DateTime.UtcNow,
-                });
+                };
+                ctx.WorkflowVersions.Add(row);
                 ctx.SaveChanges();
+                id = row.Id;
             }
 
             using (var ctx = db.CreateContext())

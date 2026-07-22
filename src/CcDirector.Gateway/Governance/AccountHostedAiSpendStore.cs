@@ -80,7 +80,6 @@ public sealed class AccountHostedAiSpendStore
 
                 ctx.AccountHostedAiSpend.Add(new AccountHostedAiSpendEntity
                 {
-                    Id = Guid.NewGuid(),
                     TenantId = tenant,
                     AmountMicros = debit.AmountMicros,
                     Kind = DebitKind,

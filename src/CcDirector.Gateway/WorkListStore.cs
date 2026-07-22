@@ -111,7 +111,7 @@ public sealed class WorkListStore
                 return false;
             }
 
-            ctx.WorkLists.Add(new WorkListEntity { Id = Guid.NewGuid(), TenantId = ctx.ActiveTenant!, Name = name });
+            ctx.WorkLists.Add(new WorkListEntity { TenantId = ctx.ActiveTenant!, Name = name });
             ctx.SaveChanges();
             FileLog.Write($"[WorkListStore] Create: name={name}");
             return true;
@@ -367,7 +367,6 @@ public sealed class WorkListStore
 
     private static WorkListItemEntity NewItem(WorkListEntity list, string tenantId, int position, WorkListItemRef item) => new()
     {
-        Id = Guid.NewGuid(),
         WorkListId = list.Id,
         TenantId = tenantId,
         Position = position,
@@ -444,7 +443,6 @@ public sealed class WorkListStore
 
             var entity = new WorkListEntity
             {
-                Id = Guid.NewGuid(),
                 TenantId = ctx.ActiveTenant!,
                 Name = list.Name,
                 Consumer = list.Consumer,

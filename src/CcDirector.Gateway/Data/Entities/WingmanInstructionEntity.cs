@@ -19,12 +19,8 @@ namespace CcDirector.Gateway.Data.Entities;
 /// A surrogate GUID <see cref="Id"/> is the key (the document has no external id); the store keeps exactly one
 /// row per tenant. <c>tenant_id</c> + the global query filter are inherited from the base.
 /// </summary>
-public sealed class WingmanInstructionEntity : TenantScopedEntity
+public sealed class WingmanInstructionEntity : GatewayMintedKeyEntity
 {
-    /// <summary>Surrogate primary key (code-generated). The document has no natural external id; the store
-    /// keeps a single row per tenant.</summary>
-    public Guid Id { get; set; }
-
     /// <summary>The active custom version's id, or null to ride the deployed default. The active-version
     /// pointer, reproduced exactly.</summary>
     public string? ActiveVersionId { get; set; }

@@ -95,7 +95,6 @@ public sealed class WorkflowRunStore
             var now = DateTime.UtcNow;
             var entity = new WorkflowRunEntity
             {
-                Id = Guid.NewGuid(),
                 TenantId = ctx.ActiveTenant!,
                 WorkflowId = key,
                 WorkflowVersionId = version.Id,

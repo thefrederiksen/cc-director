@@ -9,11 +9,8 @@ namespace CcDirector.Gateway.Data.Entities;
 /// File names are validated by the store (no path separators, a short allow-listed extension set,
 /// size-capped) so a bundle can always be materialized to disk safely.
 /// </summary>
-public sealed class WorkflowFileEntity : TenantScopedEntity
+public sealed class WorkflowFileEntity : GatewayMintedKeyEntity
 {
-    /// <summary>Primary key, minted in code - never a database default.</summary>
-    public Guid Id { get; set; }
-
     /// <summary>The <see cref="WorkflowVersionEntity"/> this file belongs to. Indexed; not a foreign
     /// key (independent lifecycle, like cron runs to cron jobs).</summary>
     public Guid VersionId { get; set; }
