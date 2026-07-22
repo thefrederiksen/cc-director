@@ -139,6 +139,40 @@ public sealed class FleetRoleObserverTests
     }
 
     /// <summary>
+    /// THE ROLE-STAMP STORM the per-tenant gate exists to prevent (issue #1966 follow-up). On the hosted
+    /// Gateway the hub push path folds one tenant's fleet at a time (the snapshot reads the ambient tenant),
+    /// each pass seeing only that tenant's sessions. With a SINGLE flat gate, tenant t2's pass would prune s1
+    /// (not in t2's live set) out of the gate every round, so the next round re-sends s1 - and t1's pass evicts
+    /// s2 likewise - a re-send storm on every push. The gate is partitioned per tenant scope, so each session's
+    /// role is sent EXACTLY ONCE across many rounds. Model of the hub scope: set the ambient key, snapshot that
+    /// tenant's slice.
+    /// </summary>
+    [Fact]
+    public void PerTenantPasses_DoNotEvictEachOthersGate_NoRoleStormAcrossTenants()
+    {
+        var sender = new RecordingSender();
+        var byTenant = new Dictionary<string, List<(string, SessionDto)>>
+        {
+            ["t1"] = new() { ("dir-A", Session("s1")) },
+            ["t2"] = new() { ("dir-B", Session("s2")) },
+        };
+        var current = "t1";
+        var observer = new FleetRoleObserver(() => byTenant[current], sender.SendAsync, currentScopeKey: () => current);
+
+        // Three full rounds: each round sweeps t1's scope then t2's scope.
+        for (var round = 0; round < 3; round++)
+        {
+            current = "t1"; observer.Sweep();
+            current = "t2"; observer.Sweep();
+        }
+
+        // Exactly ONE send per session across all three rounds. A shared flat gate would show ~3 sends each.
+        Assert.Equal(2, sender.Sent.Count);
+        Assert.Contains(sender.Sent, x => x is { DirectorId: "dir-A", SessionId: "s1" });
+        Assert.Contains(sender.Sent, x => x is { DirectorId: "dir-B", SessionId: "s2" });
+    }
+
+    /// <summary>
     /// A Director with no tunnel gets no stamp, and the observer must NOT record that as delivered - the
     /// role has to be re-sent the moment it reconnects. Recording a failed send as done would leave that
     /// desktop permanently wrong, and silently.

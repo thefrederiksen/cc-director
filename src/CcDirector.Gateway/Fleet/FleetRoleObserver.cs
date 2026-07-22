@@ -47,24 +47,52 @@ public sealed class FleetRoleObserver
     // takes one. Structurally identical - GatewayHost.SendCommandAsync satisfies both.
     private readonly Func<string, DirectorCommand, CancellationToken, Task<DirectorCommandResult?>> _sendCommand;
 
+    /// <summary>Resolves the current tenant scope's key (TenantId.Value) so the change gate can be partitioned
+    /// per tenant; null on self-host or when no seam is supplied (the unit tests), which resolves to the one
+    /// <see cref="DefaultScope"/> partition - byte-identical to the flat single-tenant gate before this.</summary>
+    private readonly Func<string?>? _currentScopeKey;
+
     /// <summary>
-    /// The change gate: session id -> the role we last successfully sent down. An entry is only written
-    /// AFTER the send is accepted, so a dropped send is retried on the next push rather than being recorded
-    /// as delivered. Bounded by pruning sessions that have left the fleet.
+    /// The change gate, PARTITIONED BY TENANT SCOPE: scope key -> (session id -> the role we last successfully
+    /// sent down). An entry is only written AFTER the send is accepted, so a dropped send is retried on the
+    /// next push rather than being recorded as delivered. Bounded by pruning sessions that have left the fleet.
+    ///
+    /// PARTITIONED because on the hosted Gateway the hub push path folds one tenant's fleet at a time (the
+    /// snapshot reads the AMBIENT tenant). A single flat gate pruned against one tenant's live set would delete
+    /// every OTHER tenant's entries, so the next push would re-send them all - a role-stamp storm. Each tenant's
+    /// pass reads and prunes ONLY its own partition. Self-host has one partition (<see cref="DefaultScope"/>),
+    /// unchanged. This is the partitioning the FleetRoles-on-Local comment in GatewayHost was blocked on.
     /// </summary>
-    private readonly ConcurrentDictionary<string, string> _lastSent = new(StringComparer.Ordinal);
+    private readonly ConcurrentDictionary<string, ConcurrentDictionary<string, string>> _lastSentByScope
+        = new(StringComparer.Ordinal);
+
+    /// <summary>The one gate partition used when no tenant scope is in effect (self-host and the unit tests).</summary>
+    private const string DefaultScope = " single";
+
+    /// <summary>This pass's gate partition, resolved from the ambient tenant scope. MUST be captured once per
+    /// <see cref="Sweep"/> synchronously BEFORE any await, because the fire-and-forget sends can outlive the
+    /// scope that a hub push ran under.</summary>
+    private ConcurrentDictionary<string, string> GateForCurrentScope()
+        => _lastSentByScope.GetOrAdd(
+            _currentScopeKey?.Invoke() is { Length: > 0 } key ? key : DefaultScope,
+            _ => new ConcurrentDictionary<string, string>(StringComparer.Ordinal));
 
     /// <param name="snapshot">The fresh pushed sessions across every stream-connected Director, each paired
     /// with its owning directorId (PushedSessionStore.SnapshotFresh) - the same fleet read the auto-dismiss
     /// sweeper uses. Roles need the WHOLE fleet, not one Director's slice.</param>
     /// <param name="sendCommand">The down-channel command sender (GatewayHost.SendCommandAsync). A null
     /// RESULT means that Director has no stream, which is the documented "no Gateway, no role" floor.</param>
+    /// <param name="currentScopeKey">Resolves the ambient tenant scope's key so the change gate is partitioned
+    /// per tenant (GatewayHost passes <c>() =&gt; _tenantPass.Current?.Value</c>). Omit on self-host and in unit
+    /// tests: the gate then uses the single <see cref="DefaultScope"/> partition, unchanged.</param>
     public FleetRoleObserver(
         Func<IReadOnlyList<(string DirectorId, SessionDto Session)>> snapshot,
-        Func<string, DirectorCommand, CancellationToken, Task<DirectorCommandResult?>> sendCommand)
+        Func<string, DirectorCommand, CancellationToken, Task<DirectorCommandResult?>> sendCommand,
+        Func<string?>? currentScopeKey = null)
     {
         _snapshot = snapshot ?? throw new ArgumentNullException(nameof(snapshot));
         _sendCommand = sendCommand ?? throw new ArgumentNullException(nameof(sendCommand));
+        _currentScopeKey = currentScopeKey;
     }
 
     /// <summary>Observe one pushed session. Any push can change any session's role, so this re-resolves the
@@ -110,6 +138,9 @@ public sealed class FleetRoleObserver
     /// </summary>
     internal void Sweep()
     {
+        // Capture THIS pass's per-tenant gate up front, synchronously: the hub push path runs inside one
+        // tenant's scope and the async sends below can outlive it, so the gate reference must be resolved here.
+        var gate = GateForCurrentScope();
         var fleet = _snapshot();
         if (fleet is null || fleet.Count == 0) return;
 
@@ -127,19 +158,20 @@ public sealed class FleetRoleObserver
             var role = s.SessionRole ?? SessionRoles.Standalone;
             // THE GATE. Unchanged role -> no send -> the echo of our own stamp dies here rather than
             // becoming the next push. Removing this makes the observer spin.
-            if (_lastSent.TryGetValue(s.SessionId, out var sent) && string.Equals(sent, role, StringComparison.Ordinal))
+            if (gate.TryGetValue(s.SessionId, out var sent) && string.Equals(sent, role, StringComparison.Ordinal))
                 continue;
 
-            _ = SendRoleAsync(directorId, s.SessionId, role);
+            _ = SendRoleAsync(directorId, s.SessionId, role, gate);
         }
 
-        // Keep the gate bounded: a session that has left the fleet keeps no entry.
-        foreach (var key in _lastSent.Keys)
+        // Keep the gate bounded: a session that has left THIS TENANT'S fleet keeps no entry. Prune only this
+        // tenant's partition against this tenant's live set - never another tenant's, which would re-send it.
+        foreach (var key in gate.Keys)
             if (!live.Contains(key))
-                _lastSent.TryRemove(key, out _);
+                gate.TryRemove(key, out _);
     }
 
-    private async Task SendRoleAsync(string directorId, string sessionId, string role)
+    private async Task SendRoleAsync(string directorId, string sessionId, string role, ConcurrentDictionary<string, string> gate)
     {
         try
         {
@@ -169,7 +201,7 @@ public sealed class FleetRoleObserver
             }
 
             // Recorded ONLY on a confirmed delivery, so a dropped stamp is re-sent on the next push.
-            _lastSent[sessionId] = role;
+            gate[sessionId] = role;
             FileLog.Write($"[FleetRoleObserver] sid={sessionId}: role '{role}' stamped down to director={directorId}");
         }
         catch (Exception ex)

@@ -807,16 +807,17 @@ public sealed class GatewayHost : IAsyncDisposable
         // (constructed per-invocation by SignalR) folds every pushed session through this ONE instance -
         // which matters here more than anywhere: the instance holds the change gate that stops the stamp
         // echoing back up and re-triggering itself forever.
-        // Hosted Multi-Tenancy (session-serving): NOT yet converted to the per-tenant pass.
-        // BLOCKED ON: partitioning FleetRoleObserver._lastSent by tenant. That change gate is keyed by session
-        // id alone and is PRUNED against the current pass's snapshot, so running this once per tenant would
-        // have each tenant's pass delete every other tenant's gate entries - inverting a suppressed no-op into
-        // a role-stamp storm every sweep. Converting the loop before partitioning the state it MUTATES makes
-        // things worse, not better. Until then it stays on Local: correct on self-host, and on hosted a Local
-        // read is empty, so it degrades to a no-op exactly as today (never a wrong-tenant read).
+        // Hosted Multi-Tenancy (issue #1966 follow-up): CONVERTED to the ambient tenant. FleetRoleObserver
+        // now partitions its change gate per tenant scope, which unblocks reading the AMBIENT tenant here:
+        // previously the snapshot was hard-coded to TenantId.Local, empty on the hosted Gateway, so role badges
+        // (M/A) never pushed to a hosted Director - the same tenant-blindness that greyed the display-state rail
+        // (see the display-state observer below). Roles are hub-only (no periodic sweep), and the DirectorHub
+        // push path already runs inside the bound tenant's scope, so reading the ambient tenant is all that is
+        // needed here; the per-tenant gate is what stops one tenant's pass pruning + re-storming the others.
         FleetRoles = new Fleet.FleetRoleObserver(
-            () => PushedSessions.SnapshotFresh(TenantId.Local, AutoDismissStaleAfter),
-            SendCommandAsync);
+            () => AmbientSnapshotFresh(AutoDismissStaleAfter),
+            SendCommandAsync,
+            currentScopeKey: () => _tenantPass.Current?.Value);
         // The fold push seam: stamps each session's folded display state down to its owning Director, so the
         // desktop rail stops re-folding from local facts it cannot see. Folds through the SAME method the
         // roster serves from (StampFleetRolesAndFold with THIS host's NeedsYouClock and snooze registry), so
