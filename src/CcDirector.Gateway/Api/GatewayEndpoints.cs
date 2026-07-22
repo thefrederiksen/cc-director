@@ -127,7 +127,13 @@ internal static class GatewayEndpoints
         // hosted Gateway, the request-scoped session reads (/sessions, /sessions/{sid}) resolve the caller's
         // tenant from its authenticated device key and DENY (403) when it has none - never falling back to
         // Local. Null (self-host, older callers, tests) keeps the single-tenant Local behavior.
-        Tenancy.HostedTenantBoundary? tenantBoundary = null)
+        Tenancy.HostedTenantBoundary? tenantBoundary = null,
+        // Production-readiness B2 (process-control): the seam the DELETE /directors/{id} FORCE-KILL branch
+        // calls to kill a Director's process tree by pid. Null (production) uses the real
+        // Process.GetProcessById(pid).Kill(entireProcessTree:true). A test injects a recorder that observes
+        // the kill WITHOUT actually killing anything - so "did the force-kill reach the process by that pid"
+        // is a DIRECT assertion, exactly as OnShutdownRequested lets the shutdown proof observe the handler.
+        Func<int, bool>? forceKillDirectorTree = null)
     {
         // The old issue #1188 "session lock" (423 Locked on human input while a PENDING dictation record
         // existed) was removed deliberately (issue #1308). This is a single-operator tool: a collision
@@ -286,7 +292,19 @@ internal static class GatewayEndpoints
         // Graceful exit for the self-update helper: answer first (so the caller gets its 200),
         // then hand off to the host's shutdown handler shortly after. 501 when the hosting
         // process wired no handler - this endpoint never half-stops the host on its own.
-        app.MapPost("/shutdown", () =>
+        //
+        // HOSTED DENY (production-readiness B2). This route triggers a PROCESS-WIDE shutdown of the whole
+        // Gateway. On self-host that is exactly right - the single owner's self-update helper POSTs it to
+        // make the process exit so the exe unlocks. On the HOSTED Gateway the process is SHARED
+        // infrastructure serving every tenant, and this route has no per-tenant meaning and no owner check,
+        // so any authenticated tenant's device key could POST /shutdown and take the Gateway down for
+        // everyone else. It is therefore refused on hosted through the shared refusal primitive - the same
+        // boundary #1904 adopted for /vault - which on hosted maps a verb-less refusal in place of the
+        // handler and never binds it, while off hosted maps the real handler byte-identically to before.
+        // ExclusiveGroup because /shutdown owns its prefix outright, so the one catch-all also covers any
+        // process-control route added beneath it later without a fresh deny.
+        var shutdownGroup = Tenancy.HostedRouteDeny.ExclusiveGroup(app, "/shutdown", ShutdownHostedDenial());
+        shutdownGroup.MapPost("", () =>
         {
             FileLog.Write("[GatewayEndpoints] POST /shutdown");
             if (requestShutdown is null)
@@ -2257,14 +2275,35 @@ internal static class GatewayEndpoints
 
             if (body.Force)
             {
+                // HOSTED DENY (production-readiness B2, process-control). The force-kill resolves the process by
+                // director.Pid - a number the Director itself supplied in its Hello - and kills its WHOLE tree on
+                // THIS Gateway's own machine (Process.GetProcessById runs against the local process table). On
+                // self-host that is correct: the Director really is a process on this machine and the single owner
+                // is force-killing their own stuck instance. On the HOSTED Gateway the process is SHARED
+                // infrastructure and the Director is a REMOTE process reached over the tunnel - it is not on this
+                // host at all - so that pid, resolved locally, names whatever unrelated process on the shared host
+                // happens to hold that number: the Gateway itself, another tenant's container, anything. A tenant
+                // must never be able to kill host processes by number, so the local force-kill is refused on
+                // hosted. The graceful tunnel shutdown attempted above is already tenant-scoped and is the ONLY
+                // stop a hosted caller gets; there is no host-local process for the Gateway to reach on their
+                // behalf. 404 (not 403) for the same reason as POST /shutdown: on hosted this action does not exist
+                // as a concept - no credential could ever make killing a host process by client pid safe.
+                if (GatewayHostedMode.IsHosted)
+                {
+                    FileLog.Write($"[GatewayEndpoints] DELETE director FORCE-KILL REFUSED on hosted: id={id} pid={director.Pid} client={caller}");
+                    return Results.Json(new
+                    {
+                        error = "force-killing a Director by process id is not available on the hosted Gateway",
+                    }, statusCode: StatusCodes.Status404NotFound);
+                }
+
                 FileLog.Write($"[GatewayEndpoints] DELETE director FORCE-KILL: id={id} pid={director.Pid} " +
                     $"tree=true reason=\"{Truncate(body.Reason)}\" client={caller}");
                 try
                 {
-                    var proc = Process.GetProcessById(director.Pid);
-                    proc.Kill(entireProcessTree: true);
-                    FileLog.Write($"[GatewayEndpoints] DELETE director FORCE-KILL done: id={id} pid={director.Pid}");
-                    return Results.Json(new { accepted = true, killed = true });
+                    var killed = (forceKillDirectorTree ?? DefaultForceKillProcessTree)(director.Pid);
+                    FileLog.Write($"[GatewayEndpoints] DELETE director FORCE-KILL done: id={id} pid={director.Pid} killed={killed}");
+                    return Results.Json(new { accepted = true, killed });
                 }
                 catch (Exception ex)
                 {
@@ -2733,6 +2772,24 @@ internal static class GatewayEndpoints
             body ??= new LaunchDirectorRequest();
             FileLog.Write($"[GatewayEndpoints] POST director: launch new instance");
 
+            // HOSTED DENY (production-readiness B2, process-control). This route ShellExecutes a cc-director.exe
+            // on the GATEWAY's OWN machine (Process.Start below). On self-host that is the desktop spawning a
+            // local Director. On the SHARED hosted Gateway it would start an arbitrary process on shared
+            // infrastructure at any authenticated tenant's request, with no per-tenant meaning and no owner check
+            // - so it is refused on hosted. 404 for the same reason as POST /shutdown: on hosted launching a
+            // host-local process does not exist as a concept. NOTE: this is an in-handler refusal rather than the
+            // verb-less HostedRouteDeny primitive because the tenant-scoped GET /directors list shares this exact
+            // path, and that primitive refuses EVERY verb on a path - it would take the list route off the air on
+            // hosted too. Self-host reaches the launch below byte-identically to before.
+            if (GatewayHostedMode.IsHosted)
+            {
+                FileLog.Write("[GatewayEndpoints] POST /directors REFUSED on hosted (host-local process launch)");
+                return Results.Json(new
+                {
+                    error = "launching a Director is not available on the hosted Gateway",
+                }, statusCode: StatusCodes.Status404NotFound);
+            }
+
             var exePath = ResolveDirectorExe();
             if (exePath is null)
                 return Results.Problem("cc-director.exe not found on PATH or in standard install location", statusCode: 500);
@@ -2792,6 +2849,38 @@ internal static class GatewayEndpoints
         MissionName = m.MissionName,
         ParentMissionId = m.ParentMissionId,
     };
+
+    /// <summary>
+    /// The hosted refusal payload for POST /shutdown (production-readiness B2). Validated on construction, so a
+    /// blank field fails the Gateway at startup. The primitive reads <see cref="GatewayHostedMode.IsHosted"/>
+    /// DIRECTLY, never an optional argument that fails OPEN when a caller forgets it. 404 rather than 403: on
+    /// hosted this route does not exist as a concept, and 403 would imply some credential could reach it - none
+    /// can, because a process-wide shutdown of shared infrastructure has no per-tenant meaning.
+    /// </summary>
+    /// <summary>
+    /// The real force-kill used by DELETE /directors/{id} when no test seam is injected: resolve the Director's
+    /// process by its pid on THIS machine and end its whole tree. Byte-identical to the pre-seam inline body.
+    /// Only ever reached on self-host - the hosted branch refuses before this is called (a client-supplied pid
+    /// resolved against the shared host's local process table could name any process on it).
+    /// </summary>
+    private static bool DefaultForceKillProcessTree(int pid)
+    {
+        var proc = Process.GetProcessById(pid);
+        proc.Kill(entireProcessTree: true);
+        return true;
+    }
+
+    private static Tenancy.HostedDenial ShutdownHostedDenial() => new(
+        family: "gateway-shutdown",
+        message: "shutdown is not available on the hosted Gateway",
+        reason: "POST /shutdown stops the whole Gateway process, which on shared hosted infrastructure would " +
+                "take the Gateway down for every tenant at once - it is the self-host self-update helper's " +
+                "local control, has no per-tenant dimension, and carries no owner check, so on hosted no " +
+                "credential may reach it",
+        unDenyInstruction: "do NOT simply remove this deny: a hosted process-lifecycle control needs a scoped, " +
+                "authorized meaning first (per-deployment operator authorization, never a per-tenant device key), " +
+                "because a shared Gateway must never let one tenant end the process for all of them",
+        statusCode: StatusCodes.Status404NotFound);
 
     /// <summary>
     /// The ROLE UNIVERSE for a fold that runs OUTSIDE the /sessions roster loop: every tunnel-connected
