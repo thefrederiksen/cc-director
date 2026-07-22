@@ -53,10 +53,13 @@ public sealed class CockpitUrlEndpointTests
     [Fact]
     public async Task Hosted_about_CockpitUrl_returns_configured_public_cockpit_url()
     {
-        await WithHostedGateway(PublicBase, async (http, _) =>
+        await WithHostedGateway(PublicBase, async (http, gateway) =>
         {
-            // /gateway/about is credential-gated; the shared machine token is a valid Bearer.
-            var about = await GetJson<AboutDto>(http, "gateway/about", auth: true);
+            // /gateway/about is credential-gated. On hosted the shared machine token is NO LONGER a valid
+            // Bearer (production-readiness MH-2 - it authenticates with no tenant), so the credential is a
+            // per-device key issued at enrollment, exactly as a real hosted caller uses.
+            var deviceKey = gateway.Devices.Register("cockpiturl-about", "PHONE").DeviceKey;
+            var about = await GetJson<AboutDto>(http, "gateway/about", bearer: deviceKey);
 
             Assert.Equal(ExpectedCockpit, about.CockpitUrl);
         });
@@ -65,13 +68,16 @@ public sealed class CockpitUrlEndpointTests
     [Fact]
     public async Task Hosted_settings_cockpit_url_returns_configured_public_cockpit_url()
     {
-        await WithHostedGateway(PublicBase, async (http, _) =>
+        await WithHostedGateway(PublicBase, async (http, gateway) =>
         {
             // The third call site (first cut missed it): /gateway/settings.cockpit.url must hand back the
             // SAME {base}/cockpit, not the raw front-door root it emitted before. Reverting this call site
             // to TryGetFrontDoorBaseUrl() turns this red (null in the test host).
+            //
+            // MH-2: authenticate with a per-device key, not the shared token (rejected on hosted).
+            var deviceKey = gateway.Devices.Register("cockpiturl-settings", "PHONE").DeviceKey;
             using var req = new HttpRequestMessage(HttpMethod.Get, "gateway/settings");
-            req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", Token);
+            req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", deviceKey);
             using var resp = await http.SendAsync(req);
             resp.EnsureSuccessStatusCode();
 
@@ -126,10 +132,12 @@ public sealed class CockpitUrlEndpointTests
         }
     }
 
-    private static async Task<T> GetJson<T>(HttpClient http, string path, bool auth)
+    private static async Task<T> GetJson<T>(HttpClient http, string path, bool auth = false, string? bearer = null)
     {
         using var req = new HttpRequestMessage(HttpMethod.Get, path);
-        if (auth)
+        if (bearer is not null)
+            req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", bearer);
+        else if (auth)
             req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", Token);
         using var resp = await http.SendAsync(req);
         resp.EnsureSuccessStatusCode();

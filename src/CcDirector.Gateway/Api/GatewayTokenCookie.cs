@@ -47,4 +47,27 @@ internal static class GatewayTokenCookie
             IsEssential = true,
         });
     }
+
+    /// <summary>
+    /// Clears the <c>cc-gateway-token</c> cookie by writing an expired <c>Set-Cookie</c> with the SAME
+    /// security options the <see cref="Set"/> write used (<c>HttpOnly</c>, <c>SameSite=Lax</c>, default Path,
+    /// and <c>Secure = IsHosted</c>). The delete MUST carry the same options as the set: a browser only clears a
+    /// cookie whose attributes match, and - critically - the expired header is itself subject to <c>Secure</c>,
+    /// so on hosted (HTTPS) it is marked Secure and on self-host (plain-HTTP loopback/tailnet) it is not, which
+    /// is exactly what lets the logout cookie be delivered and take effect over HTTP there. Routing <c>/logout</c>
+    /// through here keeps EVERY response-cookie mutation inside this single helper, so none can drift non-Secure.
+    /// </summary>
+    /// <param name="ctx">The HTTP context whose response the expired cookie is written to. Required.</param>
+    public static void Delete(HttpContext ctx)
+    {
+        if (ctx is null) throw new ArgumentNullException(nameof(ctx));
+
+        ctx.Response.Cookies.Delete(Util.AuthMiddleware.CookieName, new CookieOptions
+        {
+            HttpOnly = true,
+            SameSite = SameSiteMode.Lax,
+            Secure = GatewayHostedMode.IsHosted,
+            IsEssential = true,
+        });
+    }
 }

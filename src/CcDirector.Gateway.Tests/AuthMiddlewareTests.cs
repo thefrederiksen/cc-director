@@ -99,6 +99,64 @@ public sealed class AuthMiddlewareTests
         Assert.True(AuthMiddleware.HasValidToken(WithBearer(key), SharedToken, devices));
     }
 
+    // ===== Production-readiness MH-2: the shared machine token is REJECTED on hosted =====
+    // On a hosted, multi-tenant Gateway the shared token authenticates with no device - so no tenant - and
+    // would reach every tenant-blind route with zero scoping. These pin that with the hosted policy on
+    // (rejectSharedToken: true) the shared token is refused on BOTH Bearer and cookie, while a valid
+    // per-device key still authenticates AND resolves its tenant (stashes DeviceKeyItemKey). The self-host
+    // half (rejectSharedToken: false) proves the shared token still works off hosted, so self-host is green.
+
+    [Fact]
+    public void Hosted_rejects_the_shared_token_on_the_Bearer_header()
+    {
+        var devices = TempRegistry();
+        Assert.False(AuthMiddleware.HasValidToken(WithBearer(SharedToken), SharedToken, devices, rejectSharedToken: true));
+    }
+
+    [Fact]
+    public void Hosted_rejects_the_shared_token_in_the_cookie()
+    {
+        var devices = TempRegistry();
+        Assert.False(AuthMiddleware.HasValidToken(WithCookie(SharedToken), SharedToken, devices, rejectSharedToken: true));
+    }
+
+    [Fact]
+    public void Hosted_still_accepts_a_valid_per_device_key_on_the_Bearer_header_and_resolves_its_tenant()
+    {
+        var devices = TempRegistry();
+        var key = devices.Register("phone-hosted-bearer", "PHONE").DeviceKey;
+        var ctx = WithBearer(key);
+
+        Assert.True(AuthMiddleware.HasValidToken(ctx, SharedToken, devices, rejectSharedToken: true));
+        // The tenant boundary resolves the request's tenant from this same verified key, so it must be stashed.
+        Assert.Equal(key, ctx.Items[AuthMiddleware.DeviceKeyItemKey]);
+    }
+
+    [Fact]
+    public void Hosted_still_accepts_a_valid_per_device_key_in_the_cookie_and_resolves_its_tenant()
+    {
+        var devices = TempRegistry();
+        var key = devices.Register("phone-hosted-cookie", "PHONE").DeviceKey;
+        var ctx = WithCookie(key);
+
+        Assert.True(AuthMiddleware.HasValidToken(ctx, SharedToken, devices, rejectSharedToken: true));
+        Assert.Equal(key, ctx.Items[AuthMiddleware.DeviceKeyItemKey]);
+    }
+
+    [Fact]
+    public void SelfHost_still_accepts_the_shared_token_on_the_Bearer_header()
+    {
+        var devices = TempRegistry();
+        Assert.True(AuthMiddleware.HasValidToken(WithBearer(SharedToken), SharedToken, devices, rejectSharedToken: false));
+    }
+
+    [Fact]
+    public void SelfHost_still_accepts_the_shared_token_in_the_cookie()
+    {
+        var devices = TempRegistry();
+        Assert.True(AuthMiddleware.HasValidToken(WithCookie(SharedToken), SharedToken, devices, rejectSharedToken: false));
+    }
+
     // Epic #1069 (fresh-device unblock): the sign-in enrollment endpoint must be reachable by a
     // token-less device, or a brand-new co-located Director can never earn its first key (the deadlock).
     // It carries its own loopback + signed-in guards, so opening the route is safe. This pins that the
