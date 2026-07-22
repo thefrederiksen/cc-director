@@ -2128,7 +2128,7 @@ public sealed class GatewayHost : IAsyncDisposable
         // Issue #629: the relay enqueues every accepted event into the durable retry queue (which owns
         // delivery, retry-with-backoff, FIFO flush, the bound, and restart survival) instead of
         // forwarding inline. The flush loop is started just below in StartAsync.
-        TelemetryRelayEndpoint.Map(_app, _telemetryQueue);
+        TelemetryRelayEndpoint.Map(_app, _telemetryQueue, _tenantBoundary);
 
         // Gateway Centralization Phase 1 (issue #631): the inbound Director-STARTUP telemetry endpoint.
         // A Director POSTs a startup event here on launch (Director-side firing is issue #632); the
@@ -2138,7 +2138,7 @@ public sealed class GatewayHost : IAsyncDisposable
         // (flagged dependency), so with no URL configured the event is recorded locally and the caller
         // still gets a 202 - no error. Forwarding reuses the SAME durable retry queue as the login relay
         // (issues #628 / #629), adding no new forwarder. Inherits the host-wide token middleware above.
-        DirectorStartupTelemetryEndpoint.Map(_app, _telemetryQueue);
+        DirectorStartupTelemetryEndpoint.Map(_app, _telemetryQueue, _tenantBoundary, Registry);
 
         // Gateway Centralization Phase 2 (issue #638): GET /account/status answers "is the Gateway
         // signed in to DevThrottle, and as whom?" computed ENTIRELY LOCALLY from the Gateway-hosted

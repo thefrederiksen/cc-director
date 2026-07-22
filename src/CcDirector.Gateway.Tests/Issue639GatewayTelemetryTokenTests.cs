@@ -115,7 +115,7 @@ public sealed class Issue639GatewayTelemetryTokenTests
         {
             source.SignedIn = true;
             // Enqueued with NO per-event bearer (the relay path): the Gateway token must still be attached.
-            queue.Enqueue(TargetUrl, BodyFor(0), bearer: null);
+            queue.Enqueue(TargetUrl, BodyFor(0), bearer: null, CcDirector.Core.Tenancy.TenantId.Local);
 
             var delivered = await queue.FlushOnceAsync();
 
@@ -137,7 +137,7 @@ public sealed class Issue639GatewayTelemetryTokenTests
         {
             source.SignedIn = false; // Gateway not signed in yet
             for (var i = 0; i < 4; i++)
-                queue.Enqueue(TargetUrl, BodyFor(i), bearer: null);
+                queue.Enqueue(TargetUrl, BodyFor(i), bearer: null, CcDirector.Core.Tenancy.TenantId.Local);
 
             // Not forwarded while not signed in - the events stay queued.
             Assert.Equal(4, queue.Depth);
@@ -174,7 +174,7 @@ public sealed class Issue639GatewayTelemetryTokenTests
         {
             source.SignedIn = true;
             // Simulate a leftover Director Bearer that somehow reached the queue: it must NOT be forwarded.
-            queue.Enqueue(TargetUrl, BodyFor(0), bearer: DirectorToken);
+            queue.Enqueue(TargetUrl, BodyFor(0), bearer: DirectorToken, CcDirector.Core.Tenancy.TenantId.Local);
 
             var delivered = await queue.FlushOnceAsync();
 
@@ -201,7 +201,7 @@ public sealed class Issue639GatewayTelemetryTokenTests
         try
         {
             source.SignedIn = false;
-            queue.Enqueue(TargetUrl, BodyFor(0), bearer: DirectorToken);
+            queue.Enqueue(TargetUrl, BodyFor(0), bearer: DirectorToken, CcDirector.Core.Tenancy.TenantId.Local);
             // A deferred (not-signed-in) pass logs, then a signed-in pass forwards and logs - both paths
             // touch the token-bearing code; neither may write a token value.
             Assert.Equal(0, await queue.FlushOnceAsync());
@@ -235,7 +235,7 @@ public sealed class Issue639GatewayTelemetryTokenTests
         var queue = new TelemetryRetryQueue(path, new HttpClient(handler), TimeSpan.FromMilliseconds(50));
         try
         {
-            queue.Enqueue(TargetUrl, BodyFor(0), bearer: DirectorToken);
+            queue.Enqueue(TargetUrl, BodyFor(0), bearer: DirectorToken, CcDirector.Core.Tenancy.TenantId.Local);
             var delivered = await queue.FlushOnceAsync();
 
             Assert.Equal(1, delivered);
@@ -394,7 +394,12 @@ public sealed class Issue639GatewayTelemetryTokenTests
             retryInterval: TimeSpan.FromMilliseconds(100),
             maxSize: TelemetryRetryQueue.DefaultMaxSize,
             gatewayTokenSource: source);
-        TelemetryRelayEndpoint.Map(relayApp, queue);
+        // Self-host tenant boundary (no ambient AsyncLocalTenantContext -> TenantId.Local for every request),
+        // so this issue-639 token suite is unaffected by the tenant tag.
+        var tenants = new CcDirector.Gateway.Tenancy.HostedTenantBoundary(
+            new CcDirector.Core.Tenancy.SingleTenantContext(),
+            new CcDirector.Gateway.Pairing.DeviceRegistry(Path.Combine(Path.GetTempPath(), $"relay639-devices-{Guid.NewGuid():N}.json")));
+        TelemetryRelayEndpoint.Map(relayApp, queue, tenants);
         queue.StartFlushing();
         await relayApp.StartAsync();
 

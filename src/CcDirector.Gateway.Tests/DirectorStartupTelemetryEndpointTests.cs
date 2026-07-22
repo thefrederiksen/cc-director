@@ -92,7 +92,16 @@ public sealed class DirectorStartupTelemetryEndpointTests
             queuePath,
             new HttpClient { Timeout = TimeSpan.FromSeconds(3) },
             retryInterval: TimeSpan.FromMilliseconds(100));
-        DirectorStartupTelemetryEndpoint.Map(app, queue);
+        // Self-host tenant boundary (no ambient AsyncLocalTenantContext -> every request resolves to
+        // TenantId.Local, IsHosted=false) and an empty Director registry, so this record/forward suite is
+        // unaffected by the tenant tag and the hosted ownership gate never fires (self-host accepts an
+        // unregistered id). The multi-tenant behaviour is proven in DirectorStartupTelemetryTenantTests and
+        // TelemetryRetryQueueTenantTests.
+        var tenants = new CcDirector.Gateway.Tenancy.HostedTenantBoundary(
+            new CcDirector.Core.Tenancy.SingleTenantContext(),
+            new CcDirector.Gateway.Pairing.DeviceRegistry(Path.Combine(Path.GetTempPath(), $"startup-devices-{Guid.NewGuid():N}.json")));
+        var directors = new CcDirector.Gateway.Discovery.DirectorRegistry(Path.Combine(Path.GetTempPath(), $"startup-registry-{Guid.NewGuid():N}"));
+        DirectorStartupTelemetryEndpoint.Map(app, queue, tenants, directors);
         queue.StartFlushing();
         await app.StartAsync();
 

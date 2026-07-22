@@ -104,7 +104,14 @@ public sealed class TelemetryRelayEndpointTests
             queuePath,
             new HttpClient { Timeout = TimeSpan.FromSeconds(3) },
             retryInterval: TimeSpan.FromMilliseconds(100));
-        TelemetryRelayEndpoint.Map(relay, queue);
+        // Self-host tenant boundary: no ambient AsyncLocalTenantContext, so every request resolves to
+        // TenantId.Local - the endpoint behaves exactly as it did before the tenant tag (this suite is not
+        // the multi-tenant one; the per-tenant isolation is proven in TelemetryRetryQueueTenantTests and
+        // the endpoint tenant/forgery behaviour in DirectorStartupTelemetryTenantTests).
+        var tenants = new CcDirector.Gateway.Tenancy.HostedTenantBoundary(
+            new CcDirector.Core.Tenancy.SingleTenantContext(),
+            new CcDirector.Gateway.Pairing.DeviceRegistry(Path.Combine(Path.GetTempPath(), $"relay-devices-{Guid.NewGuid():N}.json")));
+        TelemetryRelayEndpoint.Map(relay, queue, tenants);
         queue.StartFlushing();
         await relay.StartAsync();
 

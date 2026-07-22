@@ -3,6 +3,7 @@ using System.Net;
 using System.Net.Http;
 using System.Net.Http.Headers;
 using System.Text.Json;
+using CcDirector.Core.Tenancy;
 using CcDirector.Gateway.Api;
 using Xunit;
 
@@ -74,7 +75,7 @@ public sealed class TelemetryRetryQueueTests
             handler.Reachable = false; // backend down
 
             for (var i = 0; i < 5; i++)
-                queue.Enqueue(TargetUrl, BodyFor(i), AccessToken);
+                queue.Enqueue(TargetUrl, BodyFor(i), AccessToken, TenantId.Local);
 
             // Nothing delivered while the backend is down...
             Assert.Equal(5, queue.Depth);
@@ -97,7 +98,7 @@ public sealed class TelemetryRetryQueueTests
         {
             handler.Reachable = false;
             for (var i = 0; i < 5; i++)
-                queue.Enqueue(TargetUrl, BodyFor(i), AccessToken);
+                queue.Enqueue(TargetUrl, BodyFor(i), AccessToken, TenantId.Local);
             Assert.Equal(5, queue.Depth);
 
             // Backend comes back; one flush pass should drain everything.
@@ -129,7 +130,7 @@ public sealed class TelemetryRetryQueueTests
         {
             handler.Reachable = true;
             for (var i = 0; i < 3; i++)
-                queue.Enqueue(TargetUrl, BodyFor(i), AccessToken);
+                queue.Enqueue(TargetUrl, BodyFor(i), AccessToken, TenantId.Local);
 
             // First two deliver, then the backend drops before the third.
             // Deliver one at a time by toggling: deliver all reachable first.
@@ -163,7 +164,7 @@ public sealed class TelemetryRetryQueueTests
             var handler1 = new ControllableHandler { Reachable = false };
             var q1 = new TelemetryRetryQueue(path, new HttpClient(handler1), TimeSpan.FromMilliseconds(50));
             for (var i = 0; i < 4; i++)
-                q1.Enqueue(TargetUrl, BodyFor(i), AccessToken);
+                q1.Enqueue(TargetUrl, BodyFor(i), AccessToken, TenantId.Local);
             Assert.Equal(4, q1.Depth);
             await q1.DisposeAsync(); // simulate Gateway stop
 
@@ -199,7 +200,7 @@ public sealed class TelemetryRetryQueueTests
             handler.Reachable = false;
             // Enqueue 5 into a bound-3 queue: events 0 and 1 are evicted (oldest first); 2,3,4 remain.
             for (var i = 0; i < 5; i++)
-                queue.Enqueue(TargetUrl, BodyFor(i), AccessToken);
+                queue.Enqueue(TargetUrl, BodyFor(i), AccessToken, TenantId.Local);
 
             Assert.Equal(3, queue.Depth); // never grows past the bound
 
@@ -228,7 +229,7 @@ public sealed class TelemetryRetryQueueTests
         try
         {
             handler.Reachable = false;
-            queue.Enqueue(TargetUrl, BodyFor(0), AccessToken);
+            queue.Enqueue(TargetUrl, BodyFor(0), AccessToken, TenantId.Local);
             var onDisk = await File.ReadAllTextAsync(path);
             Assert.Contains(AccessToken, onDisk); // present for replay
         }
@@ -258,7 +259,7 @@ public sealed class TelemetryRetryQueueTests
         var (queue, _, path) = NewQueue();
         try
         {
-            Assert.Throws<ArgumentException>(() => queue.Enqueue("", BodyFor(0), AccessToken));
+            Assert.Throws<ArgumentException>(() => queue.Enqueue("", BodyFor(0), AccessToken, TenantId.Local));
         }
         finally { await queue.DisposeAsync(); Cleanup(path); }
     }
