@@ -88,4 +88,46 @@ public sealed class OfflineFloorRailColorTests
         Assert.Equal("blue", SessionViewModel.RailColor(true, "grey", ActivityState.Working, gatewaySettled: false));
         Assert.Equal("red", SessionViewModel.RailColor(true, "blue", ActivityState.WaitingForInput, gatewaySettled: false));
     }
+
+    // ----- OFFLINE FLOOR + SNOOZE: an explicit user hold survives a tunnel flap, never flattens to red -----
+
+    [Theory]
+    [InlineData(ActivityState.WaitingForInput)]
+    [InlineData(ActivityState.WaitingForPerm)]
+    [InlineData(ActivityState.Idle)]
+    public void Offline_Held_IdleSession_StaysSnoozedGrey_NotRed(ActivityState state)
+    {
+        // The user snoozed this session; the Director caches that as Session.OnHold (a Gateway-owned fact),
+        // and the Gateway last stamped it snoozed-grey. When the tunnel flaps, the floor must KEEP the snooze,
+        // not repaint it red - otherwise the snooze "does not stick" every time the tunnel reconnects.
+        Assert.Equal("grey", SessionViewModel.RailColor(
+            gatewayOffline: true, gatewayStamp: "grey", localActivity: state, gatewaySettled: false, isHeld: true));
+    }
+
+    [Fact]
+    public void Offline_Held_NoStamp_FallsBackToGrey()
+    {
+        // Held but somehow no frozen stamp: still render snoozed-grey, never red.
+        Assert.Equal("grey", SessionViewModel.RailColor(
+            gatewayOffline: true, gatewayStamp: null, localActivity: ActivityState.Idle, gatewaySettled: false, isHeld: true));
+    }
+
+    [Theory]
+    [InlineData(ActivityState.Working)]
+    [InlineData(ActivityState.Starting)]
+    public void Offline_Held_ButWorking_IsStillBlue(ActivityState state)
+    {
+        // Working retires a snooze (the Gateway edge), so a held session that is producing output is blue -
+        // working always wins over the cached hold.
+        Assert.Equal("blue", SessionViewModel.RailColor(
+            gatewayOffline: true, gatewayStamp: "grey", localActivity: state, gatewaySettled: false, isHeld: true));
+    }
+
+    [Fact]
+    public void Offline_NotHeld_IdleSession_IsStillRed()
+    {
+        // The carve-out is ONLY for an explicit hold; an ordinary idle session with no snooze stays red.
+        Assert.Equal("red", SessionViewModel.RailColor(
+            gatewayOffline: true, gatewayStamp: "grey", localActivity: ActivityState.WaitingForInput, gatewaySettled: false, isHeld: false));
+    }
 }
