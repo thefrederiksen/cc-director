@@ -67,6 +67,17 @@ public sealed class TranscriptionKeyAutoProvisioner
     /// </summary>
     public async Task<bool> EnsureAsync(CancellationToken ct = default)
     {
+        // HOSTED-GATED. The global key vault is denied in whole on hosted (VaultEndpoints), and a deny on the
+        // read route alone is not enough: this provisioner writes minted key material into that same global
+        // vault on every sign-in and at startup, by a path that never touches the denied routes. On hosted it
+        // is inert. The gate reads the deployment signal directly, so it cannot fail open by a caller omitting
+        // an argument.
+        if (GatewayHostedMode.IsHosted)
+        {
+            FileLog.Write("[TranscriptionKeyAutoProvisioner] EnsureAsync: hosted - the global vault is denied on hosted, provisioning is inert");
+            return false;
+        }
+
         // Serialize the whole check-then-mint sequence so concurrent callers (the sign-in hook and the
         // startup task) mint at most one key between them (issue #1136).
         await _ensureGate.WaitAsync(ct);
@@ -145,6 +156,15 @@ public sealed class TranscriptionKeyAutoProvisioner
     /// </summary>
     public async Task<bool> RevokeMintedKeyAsync(CancellationToken ct = default)
     {
+        // HOSTED-GATED, for symmetry with EnsureAsync: on hosted this provisioner never minted or stored a
+        // key (Ensure is inert), so there is nothing of ours in the global vault to revoke or clear. Return
+        // early rather than issue Deletes against the hosted global vault.
+        if (GatewayHostedMode.IsHosted)
+        {
+            FileLog.Write("[TranscriptionKeyAutoProvisioner] RevokeMintedKeyAsync: hosted - provisioning is inert, nothing minted to revoke");
+            return false;
+        }
+
         var keyId = _vault.Get(InferenceKeyIdVaultName);
         if (string.IsNullOrWhiteSpace(keyId))
         {

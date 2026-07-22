@@ -170,6 +170,72 @@ public sealed class TranscriptionKeyAutoProvisionerTests : IDisposable
         Assert.Equal("minted-key-id", reread.Get(TranscriptionKeyAutoProvisioner.InferenceKeyIdVaultName));
     }
 
+    // ----- Hosted gate (MTR-04): the writer is inert on hosted so no key material arrives in the -----
+    // ----- global vault behind the route deny. A deny on the read route alone is not enough.       -----
+
+    /// <summary>
+    /// On hosted the provisioner MINTS NOTHING and STORES NOTHING. The global key vault is denied in whole on
+    /// hosted (VaultEndpoints), and this writer would otherwise deposit minted key material into that same
+    /// global vault by a path that never touches the denied routes. The mode is set explicitly and asserted,
+    /// then restored, so the test states which deployment it is in rather than inheriting the ambient default.
+    /// </summary>
+    [Fact]
+    public async Task EnsureAsync_OnHosted_MintsNothing_AndStoresNothing()
+    {
+        var prior = Environment.GetEnvironmentVariable("CC_GATEWAY_HOSTED");
+        Environment.SetEnvironmentVariable("CC_GATEWAY_HOSTED", "1");
+        try
+        {
+            Assert.True(GatewayHostedMode.IsHosted);
+
+            var vault = new KeyVault(_vaultPath);
+            // Signed in with an empty vault - the exact case that mints on self-host
+            // (EnsureAsync_SignedIn_EmptyVault_MintsAndStoresKeyAndId). On hosted it must not.
+            var minter = new FakeMinter("dt_live_should_never_be_minted_on_hosted", id: "should-not-store");
+            var sut = new TranscriptionKeyAutoProvisioner(vault, () => "the.jwt", minter);
+
+            var minted = await sut.EnsureAsync();
+
+            Assert.False(minted);
+            Assert.Equal(0, minter.Calls);
+            var reread = new KeyVault(_vaultPath);
+            Assert.Null(reread.Get(TranscriptionEndpointResolver.DevThrottleKeyName));
+            Assert.Null(reread.Get(TranscriptionKeyAutoProvisioner.InferenceKeyIdVaultName));
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("CC_GATEWAY_HOSTED", prior);
+        }
+    }
+
+    /// <summary>
+    /// On hosted the revoke path is inert too: nothing was minted, so there is nothing of ours in the global
+    /// vault to revoke, and it issues no Delete against the hosted global vault.
+    /// </summary>
+    [Fact]
+    public async Task RevokeMintedKeyAsync_OnHosted_IsInert()
+    {
+        var prior = Environment.GetEnvironmentVariable("CC_GATEWAY_HOSTED");
+        Environment.SetEnvironmentVariable("CC_GATEWAY_HOSTED", "1");
+        try
+        {
+            Assert.True(GatewayHostedMode.IsHosted);
+
+            var vault = new KeyVault(_vaultPath);
+            var minter = new FakeMinter("dt_live_x", id: "the-id");
+            var sut = new TranscriptionKeyAutoProvisioner(vault, () => "the.jwt", minter);
+
+            var revoked = await sut.RevokeMintedKeyAsync();
+
+            Assert.False(revoked);
+            Assert.Equal(0, minter.RevokeCalls);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("CC_GATEWAY_HOSTED", prior);
+        }
+    }
+
     // ----- Revoke-on-sign-out (issue #881) -----
 
     [Fact]
