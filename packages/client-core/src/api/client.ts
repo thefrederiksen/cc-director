@@ -1482,6 +1482,13 @@ export interface DictationUploadArgs {
   prefix: string;
   baselineBufferBytes: number;
   resumed: boolean;
+  /** Capture-health (issue #863), optional: the recording wall-clock, the decoded audio duration, and
+   *  the source blob size, measured once at Send time. Forwarded on the complete call so the Gateway
+   *  persists the audio-loss deficit for the fire-and-forget Send path (which never transcodes
+   *  on-device). Omitted when the on-device decode failed - diagnostics only, never blocks delivery. */
+  clientRecordedMs?: number;
+  clientDecodedSeconds?: number;
+  clientSourceBytes?: number;
 }
 
 /** The honest, plain-English line for a dictation whose delivery is paused because the connection
@@ -1562,6 +1569,11 @@ export async function uploadDictationToSession(
     prefix: args.prefix,
     baselineBufferBytes: args.baselineBufferBytes,
     resumed: args.resumed,
+    // Capture-health (issue #863): forwarded so the Gateway persists this path's audio-loss deficit
+    // into the same dictation session log every other surface writes. Undefined fields are omitted.
+    clientRecordedMs: args.clientRecordedMs,
+    clientDecodedSeconds: args.clientDecodedSeconds,
+    clientSourceBytes: args.clientSourceBytes,
   };
   const complete = (): Promise<Response> =>
     gatewayFetch(`/dictation/${id}/complete`, {

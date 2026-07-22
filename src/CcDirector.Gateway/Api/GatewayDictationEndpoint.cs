@@ -525,6 +525,13 @@ internal static class GatewayDictationEndpoint
                 return nonOk;
 
             var transcript = (result.Text ?? "").Trim();
+            // Capture-health (issue #863): persist the fire-and-forget Send path's audio-loss deficit into
+            // the SAME dictation session log the Voice-mode and desktop paths write, via the one shared
+            // helper. The assembled audio byte count is what the server actually transcribed. When the client
+            // did not send its measurements this is a no-op. Fire-and-forget - never affects the outcome.
+            MobileCaptureHealthLog.Persist(
+                uploadId, "mobile-send", req.ClientRecordedMs, req.ClientDecodedSeconds, req.ClientSourceBytes,
+                audio.Length, transcript);
             // Compose the final message: any typed text the caret split the dictation around (before /
             // after), any earlier paused dictation segments already turned to text (prefix), and this
             // clip's transcript, space-joined skipping empties. The common voice case is transcript alone.
@@ -684,6 +691,13 @@ public sealed class DictationCompleteRequest
     public long BaselineBufferBytes { get; set; }
     /// <summary>True when this complete is a resume after a reload/relaunch (applies the moved-on guard).</summary>
     public bool Resumed { get; set; }
+    /// <summary>Capture-health (issue #863), optional - present when the mobile Send path measured the clip:
+    /// recording wall-clock, decoded audio duration, and source blob size. When present the complete handler
+    /// persists a dictation session record so the fire-and-forget Send path's audio loss lands in the same
+    /// log as the Voice-mode and desktop paths. Diagnostics only; omitting it changes nothing.</summary>
+    public double? ClientRecordedMs { get; set; }
+    public double? ClientDecodedSeconds { get; set; }
+    public long? ClientSourceBytes { get; set; }
 }
 
 /// <summary>Terminal or retryable outcome of a dictation complete, mapped to an HTTP result.</summary>
