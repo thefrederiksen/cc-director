@@ -286,7 +286,19 @@ internal static class GatewayEndpoints
         // Graceful exit for the self-update helper: answer first (so the caller gets its 200),
         // then hand off to the host's shutdown handler shortly after. 501 when the hosting
         // process wired no handler - this endpoint never half-stops the host on its own.
-        app.MapPost("/shutdown", () =>
+        //
+        // HOSTED DENY (production-readiness B2). This route triggers a PROCESS-WIDE shutdown of the whole
+        // Gateway. On self-host that is exactly right - the single owner's self-update helper POSTs it to
+        // make the process exit so the exe unlocks. On the HOSTED Gateway the process is SHARED
+        // infrastructure serving every tenant, and this route has no per-tenant meaning and no owner check,
+        // so any authenticated tenant's device key could POST /shutdown and take the Gateway down for
+        // everyone else. It is therefore refused on hosted through the shared refusal primitive - the same
+        // boundary #1904 adopted for /vault - which on hosted maps a verb-less refusal in place of the
+        // handler and never binds it, while off hosted maps the real handler byte-identically to before.
+        // ExclusiveGroup because /shutdown owns its prefix outright, so the one catch-all also covers any
+        // process-control route added beneath it later without a fresh deny.
+        var shutdownGroup = Tenancy.HostedRouteDeny.ExclusiveGroup(app, "/shutdown", ShutdownHostedDenial());
+        shutdownGroup.MapPost("", () =>
         {
             FileLog.Write("[GatewayEndpoints] POST /shutdown");
             if (requestShutdown is null)
@@ -2792,6 +2804,25 @@ internal static class GatewayEndpoints
         MissionName = m.MissionName,
         ParentMissionId = m.ParentMissionId,
     };
+
+    /// <summary>
+    /// The hosted refusal payload for POST /shutdown (production-readiness B2). Validated on construction, so a
+    /// blank field fails the Gateway at startup. The primitive reads <see cref="GatewayHostedMode.IsHosted"/>
+    /// DIRECTLY, never an optional argument that fails OPEN when a caller forgets it. 404 rather than 403: on
+    /// hosted this route does not exist as a concept, and 403 would imply some credential could reach it - none
+    /// can, because a process-wide shutdown of shared infrastructure has no per-tenant meaning.
+    /// </summary>
+    private static Tenancy.HostedDenial ShutdownHostedDenial() => new(
+        family: "gateway-shutdown",
+        message: "shutdown is not available on the hosted Gateway",
+        reason: "POST /shutdown stops the whole Gateway process, which on shared hosted infrastructure would " +
+                "take the Gateway down for every tenant at once - it is the self-host self-update helper's " +
+                "local control, has no per-tenant dimension, and carries no owner check, so on hosted no " +
+                "credential may reach it",
+        unDenyInstruction: "do NOT simply remove this deny: a hosted process-lifecycle control needs a scoped, " +
+                "authorized meaning first (per-deployment operator authorization, never a per-tenant device key), " +
+                "because a shared Gateway must never let one tenant end the process for all of them",
+        statusCode: StatusCodes.Status404NotFound);
 
     /// <summary>
     /// The ROLE UNIVERSE for a fold that runs OUTSIDE the /sessions roster loop: every tunnel-connected
