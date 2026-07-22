@@ -2257,6 +2257,24 @@ public sealed class GatewayHost : IAsyncDisposable
         // Server Cockpit and its fallback reverse-proxy were retired in this cutover.
         Cockpit.CockpitReactApp.Map(_app);
 
+        // Every route is now mapped, which is the earliest moment the FINALISED route space exists - and the
+        // only moment a conflict between a hosted refusal and anything else can be seen. A refusal that ties
+        // with another refusal answers 500 on a denied route; a refusal that ties with a live route takes an
+        // undenied route off the air. Both would otherwise surface as a request-time failure on the one path
+        // nobody exercises until a caller does. Fail the start instead. Inert on self-host, where no refusal
+        // endpoint exists.
+        //
+        // The finalised endpoints are read from the app's OWN data sources, not from the DI-resolved
+        // CompositeEndpointDataSource. The composite is not populated with the minimal-API / MapGroup
+        // endpoints until StartAsync builds the endpoint middleware, so reading it HERE - before StartAsync -
+        // returns an EMPTY set and the validation silently does nothing. The app's own
+        // IEndpointRouteBuilder.DataSources carry the group endpoints (prefix and metadata conventions
+        // applied) as soon as they are mapped, which is what lets this fail the start BEFORE any listener
+        // binds rather than after. That source selection lives in ONE place - ValidateBeforeStart - shared
+        // with the pre-start test harness, so reverting it to the DI composite reddens the tie tests rather
+        // than silently regressing this path.
+        Tenancy.HostedRefusalRouteSpace.ValidateBeforeStart(_app);
+
         await _app.StartAsync();
         FileLog.Write($"[GatewayHost] listening on http://0.0.0.0:{Port} (all interfaces, auth-gated; version {version})");
 
