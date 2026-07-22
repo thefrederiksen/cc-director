@@ -24,16 +24,33 @@ public sealed class OfflineFloorRailColorTests
     public void Online_RendersGatewayStampVerbatim_RegardlessOfLocalActivity(string stamp)
     {
         // Even a locally-working session shows the Gateway's stamp when online - e.g. yellow "preparing
-        // voice", which the Director could never compute for itself.
+        // voice", which the Director could never compute for itself. A present stamp renders verbatim whether
+        // or not the tunnel has settled.
         Assert.Equal(stamp, SessionViewModel.RailColor(
-            gatewayOffline: false, gatewayStamp: stamp, localActivity: ActivityState.Working));
+            gatewayOffline: false, gatewayStamp: stamp, localActivity: ActivityState.Working, gatewaySettled: true));
+        Assert.Equal(stamp, SessionViewModel.RailColor(
+            gatewayOffline: false, gatewayStamp: stamp, localActivity: ActivityState.Working, gatewaySettled: false));
     }
 
     [Fact]
-    public void Online_NoStamp_IsNeutralUnknown()
+    public void Online_NoStamp_NotYetSettled_IsNeutralUnknown()
     {
+        // The tunnel just connected and the first push has not arrived yet - the normal warm-up. Show the
+        // neutral placeholder, not an alarm.
         Assert.Equal("unknown", SessionViewModel.RailColor(
-            gatewayOffline: false, gatewayStamp: null, localActivity: ActivityState.Working));
+            gatewayOffline: false, gatewayStamp: null, localActivity: ActivityState.Working, gatewaySettled: false));
+    }
+
+    [Fact]
+    public void Online_NoStamp_Settled_IsTheMagentaUnstampedSentinel()
+    {
+        // Connected and settled past the grace, yet still no stamp: the push seam is not delivering (issue
+        // #1966). Fail LOUD with the magenta sentinel, never a grey that reads as "parked".
+        Assert.Equal(SessionViewModel.UnstampedSentinel, SessionViewModel.RailColor(
+            gatewayOffline: false, gatewayStamp: null, localActivity: ActivityState.Working, gatewaySettled: true));
+        // Independent of local activity - the desktop is not computing a colour, it is raising an alarm.
+        Assert.Equal(SessionViewModel.UnstampedSentinel, SessionViewModel.RailColor(
+            gatewayOffline: false, gatewayStamp: null, localActivity: ActivityState.WaitingForInput, gatewaySettled: true));
     }
 
     // ----- OFFLINE FLOOR: blue when working, red otherwise, ignoring the stale stamp -----
@@ -43,9 +60,10 @@ public sealed class OfflineFloorRailColorTests
     [InlineData(ActivityState.Starting)]
     public void Offline_Working_IsBlue(ActivityState state)
     {
-        // The stale stamp says yellow (frozen "preparing voice"), but the agent is working -> blue.
+        // The stale stamp says yellow (frozen "preparing voice"), but the agent is working -> blue. The offline
+        // floor ignores settledness entirely (there is no live Gateway to have settled with).
         Assert.Equal("blue", SessionViewModel.RailColor(
-            gatewayOffline: true, gatewayStamp: "yellow", localActivity: state));
+            gatewayOffline: true, gatewayStamp: "yellow", localActivity: state, gatewaySettled: false));
     }
 
     [Theory]
@@ -58,7 +76,7 @@ public sealed class OfflineFloorRailColorTests
         // Stale stamp says yellow; the agent is idle/waiting -> red. Never yellow: the Director cannot know
         // VoiceAudioReady, so it must not paint "preparing voice".
         Assert.Equal("red", SessionViewModel.RailColor(
-            gatewayOffline: true, gatewayStamp: "yellow", localActivity: state));
+            gatewayOffline: true, gatewayStamp: "yellow", localActivity: state, gatewaySettled: false));
     }
 
     [Fact]
@@ -66,8 +84,8 @@ public sealed class OfflineFloorRailColorTests
     {
         // Whatever the Gateway last stamped before it dropped, the offline floor is a pure function of local
         // activity - a working session is blue even if the frozen stamp was red/grey/orange.
-        Assert.Equal("blue", SessionViewModel.RailColor(true, "red", ActivityState.Working));
-        Assert.Equal("blue", SessionViewModel.RailColor(true, "grey", ActivityState.Working));
-        Assert.Equal("red", SessionViewModel.RailColor(true, "blue", ActivityState.WaitingForInput));
+        Assert.Equal("blue", SessionViewModel.RailColor(true, "red", ActivityState.Working, gatewaySettled: false));
+        Assert.Equal("blue", SessionViewModel.RailColor(true, "grey", ActivityState.Working, gatewaySettled: false));
+        Assert.Equal("red", SessionViewModel.RailColor(true, "blue", ActivityState.WaitingForInput, gatewaySettled: false));
     }
 }

@@ -101,6 +101,10 @@ public static class StatusPalette
         "error"      => ErrorBrush,
         "grey"       => GreyBrush,
         "unknown"    => GreyBrush,
+        // The Director is connected and settled but the Gateway has stamped nothing (SessionViewModel
+        // .UnstampedSentinel): a broken display-state push, rendered the magenta sentinel on purpose - never
+        // grey, which would read as "parked". Explicit so it is intentional, not the catch-all fallback below.
+        "unstamped"  => BrokenBrush,
         _            => BrokenBrush,
     };
 
@@ -118,6 +122,7 @@ public static class StatusPalette
         "error"      => Error,
         "grey"       => Grey,
         "unknown"    => Grey,
+        "unstamped"  => Broken,
         _            => Broken,
     };
 
@@ -140,4 +145,18 @@ public static class StatusPalette
         => FileLog.Write($"[StatusPalette] UNKNOWN FOLD COLOUR '{foldColor}' for session {sessionId} - " +
                          "not in the desktop palette, rendering the BROKEN magenta sentinel. The Gateway is " +
                          "emitting a colour name this build does not know; see docs/new_architecture/session-state.html.");
+
+    /// <summary>
+    /// Report that the Director is CONNECTED and settled but the Gateway has stamped NO display state for a
+    /// session - the display-state push is not delivering, so the rail shows the magenta sentinel instead of a
+    /// grey that would read as "parked" (issue #1966). Distinct from <see cref="ReportUnknownColor"/>: there
+    /// the Gateway sent a colour NAME this build does not know; here it sent nothing at all. Edge-triggered by
+    /// the caller, once per change, so a per-frame binding getter does not flood the log.
+    /// </summary>
+    public static void ReportMissingStamp(string sessionId)
+        => FileLog.Write($"[StatusPalette] NO GATEWAY DISPLAY-STATE STAMP for session {sessionId} while the " +
+                         "tunnel is connected and settled - the set-display-state push is not delivering the " +
+                         "Gateway's verdict. Rendering the BROKEN magenta sentinel (never grey). Likely a " +
+                         "Gateway/Director version or tenancy mismatch; redeploy the Gateway and Director " +
+                         "together. See docs/new_architecture/session-state.html.");
 }
