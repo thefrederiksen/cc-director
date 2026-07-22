@@ -8,6 +8,7 @@ using CcDirector.Core.Recording;
 using CcDirector.Core.Storage;
 using CcDirector.Core.Utilities;
 using CcDirector.Gateway.Contracts;
+using CcDirector.Gateway.Tenancy;
 using CcDirector.Gateway.Transcription;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
@@ -16,28 +17,81 @@ using Microsoft.AspNetCore.Routing;
 namespace CcDirector.Gateway.Api;
 
 /// <summary>
-/// Maps the <c>/ingest/recording</c> REST surface the phone recorder uploads
-/// to. The phone records offline; when it has connectivity it registers a
-/// recording, PUTs each finalized audio segment (idempotent by index + hash),
-/// then POSTs <c>complete</c>, which queues the recording and returns 202
-/// immediately. A background worker transcribes every segment through the
-/// existing dictation pipeline and assembles + cleans the transcript into the
-/// local transcripts area, retrying flaky segments and re-queueing a failed
-/// job for a later attempt. The phone polls <c>status</c> to watch progress.
-/// Transcripts stay local (transient) until the user promotes one into the vault.
+/// Maps the <c>/ingest</c> REST surface the phone recorder uploads to. The phone records offline; when it
+/// has connectivity it registers a recording, PUTs each finalized audio segment (idempotent by index +
+/// hash), then POSTs <c>complete</c>, which queues the recording and returns 202 immediately. A background
+/// worker transcribes every segment through the existing dictation pipeline and assembles + cleans the
+/// transcript into the local transcripts area, retrying flaky segments and re-queueing a failed job for a
+/// later attempt. The phone polls <c>status</c> to watch progress. Transcripts stay local (transient) until
+/// the user promotes one into the vault. A shared dictation glossary lives under the same prefix.
 ///
-/// Routes (all JSON except the raw-bytes chunk PUT):
-///   POST /ingest/recording                      register, body RecordingRegisterRequest
-///   PUT  /ingest/recording/{id}/chunk/{index}   raw audio bytes, header X-Chunk-Sha256
-///   POST /ingest/recording/{id}/complete        body RecordingManifest
-///   GET  /ingest/recording/{id}/status          RecordingStatusDto
-///   POST /ingest/recording/{id}/promote         copy transcript + audio into the vault
-///   PATCH /ingest/recording/{id}/meta           set human-readable title/subtitle/summary
-///   DELETE /ingest/recording/{id}               delete the transient local transcript
-///   GET  /ingest/agent-info                     copy-paste API guide for an external agent
+/// Routes (all JSON except the raw-bytes chunk PUT), all under <c>/ingest</c>:
+///   POST   /ingest/recording                      register, body RecordingRegisterRequest
+///   PUT    /ingest/recording/{id}/chunk/{index}   raw audio bytes, header X-Chunk-Sha256
+///   POST   /ingest/recording/{id}/complete        body RecordingManifest
+///   GET    /ingest/recording/{id}/status          RecordingStatusDto
+///   GET    /ingest/recordings                     list EVERY recording on this gateway
+///   GET    /ingest/recording/{id}/transcript      the cleaned transcript as plain text
+///   GET    /ingest/recording/{id}/audio/{index}   one raw audio segment
+///   POST   /ingest/recording/{id}/promote         copy transcript + audio into the vault
+///   PATCH  /ingest/recording/{id}/meta            set human-readable title/subtitle/summary
+///   DELETE /ingest/recording/{id}                 delete the transient local transcript
+///   GET    /ingest/dictionary                     the shared dictation glossary
+///   PUT    /ingest/dictionary                     replace the shared dictation glossary
+///   POST   /ingest/dictionary/terms               add terms to the shared dictation glossary
+///   GET    /ingest/agent-info                     copy-paste API guide for an external agent
 ///
-/// Auth is the Gateway's existing token middleware (applied host-wide when
-/// enabled), so these routes inherit it without extra checks here.
+/// Auth is the Gateway's existing token middleware (applied host-wide when enabled), so these routes
+/// inherit it without extra checks here.
+///
+/// DENIED IN WHOLE ON HOSTED. Every route under <c>/ingest</c> is refused on the hosted Gateway, because
+/// nothing in this surface carries a tenant. The durable directory for a recording is built from the
+/// CALLER-SUPPLIED recording id alone, so on shared hosted infrastructure any authenticated device can name
+/// another account's recording and be served it: list every record on the box, read its raw audio and its
+/// raw and cleaned transcript, overwrite its title, subtitle, summary and chunks, promote it into the vault,
+/// or delete it outright. The id sanitiser only replaces invalid characters, so two distinct caller ids can
+/// alias onto the same directory as well. The dictionary routes have the same shape: one shared glossary
+/// file, no tenant, read and written by anyone. It is a deny of the WHOLE GROUP, not a guard on the worst
+/// route, because the read, the write and the destruction are all equally wrong here, and because a
+/// route-by-route fix rots: the next ingest route added would be open again by default.
+///
+/// It is a DENY rather than a per-tenant partition because partitioning this store is real work - the
+/// on-disk layout, the promote target and the shared glossary all have to grow an owner - and a
+/// half-partition is worse than an honest refusal. (Contrast the cached wingman voice READ surface, which
+/// WAS partitioned per tenant in #1973 and is therefore served, not denied - the two surfaces looked alike
+/// but had different work done to them.)
+///
+/// HOW THE DENY IS EXPRESSED - THE SHARED REFUSAL PRIMITIVE, NOT A BESPOKE CHECK. This group is denied
+/// through <see cref="HostedRouteDeny.ExclusiveGroup"/>, the ONE hosted-refusal boundary every deny family
+/// on this Gateway adopts (primitive at <c>src/CcDirector.Gateway/Tenancy/HostedRouteDeny.cs</c>; the
+/// key-vault group in <see cref="VaultEndpoints"/> is the reference adoption). On hosted the handlers are
+/// NEVER MAPPED. In their place the exclusive prefix maps ONE verb-less catch-all refusal over everything
+/// under <c>/ingest</c> plus a root refusal at the prefix itself. There is no binding step to get ahead of,
+/// no body parameter, no media-type constraint and no method constraint, so EVERY request shape - a valid
+/// body, a malformed body, a wrong media type, a verb the group never mapped, and a route added LATER -
+/// meets the refusal. The exclusivity claim is CHECKED at startup by
+/// <see cref="HostedRefusalRouteSpace.ValidateBeforeStart"/>: the Gateway refuses to start if any live route
+/// serves beneath <c>/ingest</c>. Nothing else on this Gateway serves under <c>/ingest</c>, so the whole
+/// prefix is this group's to claim.
+///
+/// NO OFF-ROUTE WRITER TO HOST-GATE. Unlike the key-vault group (which had a startup seed, a provisioner and
+/// a revocation firing off-route), NOTHING writes this surface's state except the routes themselves.
+/// <see cref="RecordingIngestService"/> is constructed in exactly one place - <see cref="BuildService"/>,
+/// reached only through the per-request Lazy below - and on hosted the catch-all answers before any handler
+/// runs, so the Lazy is never forced, the service is never built and its transcription worker never starts.
+/// The shared glossary is written only by the two denied dictionary routes. (DictionaryResolver's cache
+/// write is a Director-side consumer of a Gateway glossary, not a Gateway writer of this store.) So there is
+/// no defence-in-depth writer to gate; the deny is the whole mechanism.
+///
+/// UN-DENY DEBT: a deny closes the ROUTE door only. Before it is lifted: (1) give recordings and the shared
+/// glossary a per-tenant layout (keyed by tenant, not by caller-supplied id alone, which also closes the
+/// id-aliasing hazard), (2) quarantine, purge or migrate the PRE-DENY root rather than adopting un-owned
+/// material into the new layout, and ONLY THEN (3) lift this refusal. This is recorded on the payload's
+/// unDenyInstruction so it travels with the deny.
+///
+/// Self-host is COMPLETELY unchanged - the owner records, transcribes, edits and deletes exactly as before -
+/// and that is the control. Off hosted the primitive maps the real handlers on the group exactly as an
+/// unguarded builder would and creates no refusal at all.
 /// </summary>
 internal static class RecordingEndpoints
 {
@@ -46,22 +100,82 @@ internal static class RecordingEndpoints
         PropertyNameCaseInsensitive = true,
     };
 
-    public static void Map(
-        IEndpointRouteBuilder app,
+    /// <summary>The exclusive prefix the recording-ingest group owns outright on hosted.</summary>
+    internal const string Prefix = "/ingest";
+
+    /// <summary>The single error string the hosted refusal serves. Held here so a test can assert against the
+    /// exact string that is served rather than a copy that could drift.</summary>
+    internal const string RefusalMessage = "recordings are not available on the hosted gateway";
+
+    /// <summary>
+    /// The hosted refusal payload for the whole recording-ingest group. Validated on construction, so a blank
+    /// field fails the Gateway at startup rather than serving a refusal a caller cannot act on. 404 rather
+    /// than 403: on hosted this surface does not exist as a concept, so "not here" is the truthful answer;
+    /// 403 would imply some credential could reach it, and none can.
+    /// </summary>
+    private static HostedDenial Denial() => new(
+        family: "recording-ingest",
+        message: RefusalMessage,
+        reason: "recordings and the shared dictation glossary carry no tenant - the recording directory is keyed on " +
+                "a caller-supplied id alone and the glossary is one global file - and the host-wide auth gate admits " +
+                "any enrolled device key from any account, so one subscriber could list, read, overwrite, promote or " +
+                "delete every other subscriber's recorded conversations",
+        unDenyInstruction: "do NOT simply remove this deny: give recordings and the shared glossary a per-tenant " +
+                "layout (keyed by tenant, not by caller-supplied id alone), THEN quarantine, purge or migrate the " +
+                "pre-existing global recording root (material predating this deny is already on disk and this change " +
+                "never touched it), and only then restore tenant-scoped routes",
+        statusCode: StatusCodes.Status404NotFound);
+
+    /// <summary>
+    /// Maps the recording-ingest routes and RETURNS the denied group they were mapped through.
+    ///
+    /// The routes are mapped through the group HANDLE (<see cref="HostedDenyGroup"/>), never through the
+    /// ungrouped builder: the handle is obtainable only from <see cref="HostedRouteDeny.ExclusiveGroup"/>, so
+    /// a route mapped around the refusal is not expressible in <see cref="MapRoutes"/> without changing its
+    /// signature. On hosted the handle DISCARDS each handler (the exclusive catch-all already refuses the
+    /// path); off hosted it maps each handler as an unguarded builder would.
+    ///
+    /// The return value exists so the future-route property is statable from outside this file: a test can map
+    /// a brand-new route through the returned handle and show the refusal already covers routes nobody has
+    /// written yet - the one property that distinguishes an exclusive-prefix deny from a guard repeated in
+    /// each handler.
+    /// </summary>
+    public static HostedDenyGroup Map(
+        IEndpointRouteBuilder outer,
         KeyVault? keyVault = null,
         TranscriptionTelemetryLog? telemetry = null,
         TranscriptionAudioArchive? audioArchive = null)
+    {
+        FileLog.Write($"[RecordingEndpoints] mapping {Prefix} recording + dictionary routes; hosted={GatewayHostedMode.IsHosted} - on hosted the whole group is refused via the shared refusal primitive");
+
+        var group = HostedRouteDeny.ExclusiveGroup(outer, Prefix, Denial());
+        MapRoutes(group, keyVault, telemetry, audioArchive);
+        return group;
+    }
+
+    /// <summary>
+    /// Every /ingest route, mapped relative to the <see cref="Prefix"/> so the full paths are
+    /// <c>/ingest/recording</c>, <c>/ingest/dictionary</c> and so on exactly as before. Takes the denied
+    /// GROUP HANDLE and nothing else: the ungrouped route builder is deliberately out of scope here so no
+    /// route can be mapped around the hosted refusal.
+    /// </summary>
+    private static void MapRoutes(
+        HostedDenyGroup app,
+        KeyVault? keyVault,
+        TranscriptionTelemetryLog? telemetry,
+        TranscriptionAudioArchive? audioArchive)
     {
         // Lazily built on FIRST USE, not at host startup: constructing the service resolves
         // the OpenAI API key (the transcriber needs it), and the Gateway must boot on machines
         // without that key. A missing key then fails the individual recording request loudly
         // (500 with an explicit hosted-AI setup message) instead of preventing
-        // the entire Gateway host from starting.
+        // the entire Gateway host from starting. On hosted the group discards every handler, so this
+        // Lazy is never forced and the service is never built.
         // In production the host owns the key vault + telemetry + audio archive and passes them, so the
         // recording transcriber shares the host's single instances rather than newing its own copies.
         var lazyService = new Lazy<RecordingIngestService>(() => BuildService(keyVault, telemetry, audioArchive));
 
-        app.MapPost("/ingest/recording", async (HttpContext ctx) =>
+        app.MapPost("/recording", async (HttpContext ctx) =>
         {
             try
             {
@@ -79,7 +193,7 @@ internal static class RecordingEndpoints
             }
         });
 
-        app.MapPut("/ingest/recording/{id}/chunk/{index:int}", async (string id, int index, HttpContext ctx) =>
+        app.MapPut("/recording/{id}/chunk/{index:int}", async (string id, int index, HttpContext ctx) =>
         {
             try
             {
@@ -100,7 +214,7 @@ internal static class RecordingEndpoints
             }
         });
 
-        app.MapPost("/ingest/recording/{id}/complete", async (string id, HttpContext ctx) =>
+        app.MapPost("/recording/{id}/complete", async (string id, HttpContext ctx) =>
         {
             try
             {
@@ -150,7 +264,7 @@ internal static class RecordingEndpoints
             }
         });
 
-        app.MapGet("/ingest/recording/{id}/status", (string id) =>
+        app.MapGet("/recording/{id}/status", (string id) =>
         {
             try
             {
@@ -171,13 +285,13 @@ internal static class RecordingEndpoints
         // transcription and desktop dictation. The page sends the whole document
         // on save (no partial merge) so the file stays the single source of truth.
 
-        app.MapGet("/ingest/dictionary", () =>
+        app.MapGet("/dictionary", () =>
         {
             var dict = DictionaryLoader.LoadFromDisk(DictionaryFilePath());
             return Results.Json(ToDto(dict));
         });
 
-        app.MapPut("/ingest/dictionary", async (HttpContext ctx) =>
+        app.MapPut("/dictionary", async (HttpContext ctx) =>
         {
             try
             {
@@ -200,7 +314,7 @@ internal static class RecordingEndpoints
         // Additive convenience endpoint so an agent in a session can add a term
         // (and optional mistranscription spellings) without round-tripping the
         // whole document. Existing entries are preserved; duplicates are ignored.
-        app.MapPost("/ingest/dictionary/terms", async (HttpContext ctx) =>
+        app.MapPost("/dictionary/terms", async (HttpContext ctx) =>
         {
             try
             {
@@ -249,9 +363,9 @@ internal static class RecordingEndpoints
             }
         });
 
-        app.MapGet("/ingest/recordings", () => Results.Json(lazyService.Value.ListAll()));
+        app.MapGet("/recordings", () => Results.Json(lazyService.Value.ListAll()));
 
-        app.MapGet("/ingest/recording/{id}/transcript", (string id) =>
+        app.MapGet("/recording/{id}/transcript", (string id) =>
         {
             var text = lazyService.Value.GetTranscript(id);
             return text is null
@@ -259,7 +373,7 @@ internal static class RecordingEndpoints
                 : Results.Text(text, "text/plain; charset=utf-8");
         });
 
-        app.MapGet("/ingest/recording/{id}/audio/{index:int}", (string id, int index) =>
+        app.MapGet("/recording/{id}/audio/{index:int}", (string id, int index) =>
         {
             var audio = lazyService.Value.GetAudioFile(id, index);
             return audio is null
@@ -267,7 +381,7 @@ internal static class RecordingEndpoints
                 : Results.File(audio.Value.path, audio.Value.contentType, enableRangeProcessing: true);
         });
 
-        app.MapDelete("/ingest/recording/{id}", (string id) =>
+        app.MapDelete("/recording/{id}", (string id) =>
         {
             try
             {
@@ -281,7 +395,7 @@ internal static class RecordingEndpoints
             }
         });
 
-        app.MapPost("/ingest/recording/{id}/promote", async (string id) =>
+        app.MapPost("/recording/{id}/promote", async (string id) =>
         {
             try
             {
@@ -302,7 +416,7 @@ internal static class RecordingEndpoints
 
         // Update human-readable metadata (title, subtitle, summary). Accepts both
         // PATCH (partial update) and POST so simple clients can use either.
-        app.MapMethods("/ingest/recording/{id}/meta", new[] { "PATCH", "POST" }, async (string id, HttpContext ctx) =>
+        app.MapMethods("/recording/{id}/meta", new[] { "PATCH", "POST" }, async (string id, HttpContext ctx) =>
         {
             try
             {
@@ -329,7 +443,7 @@ internal static class RecordingEndpoints
         // tailnet front door (resolved via Tailscale, independent of how this
         // page was reached) so an agent on any tailnet machine gets a URL that
         // actually works. Access is API-only; the guide does not expose the disk.
-        app.MapGet("/ingest/agent-info", () =>
+        app.MapGet("/agent-info", () =>
         {
             var baseUrl = TailscaleIdentity.TryGetFrontDoorBaseUrl();
             var guide = BuildAgentInfo(baseUrl);
