@@ -627,11 +627,13 @@ public sealed class HostedLauncherMachineExclusiveGroupTests : IDisposable
     /// own #1904 canary (<c>HostedRouteDenyTests</c>) exactly.
     ///   * The FRAMEWORK-body-bound canary (<see cref="ProbeRelativePath"/>) takes a real record,
     ///     <see cref="FutureRouteBody"/>, bound by the FRAMEWORK'S OWN model binding - NOT a custom binder. That
-    ///     is the whole point of the malformed-body row: only a genuine <c>[FromBody]</c> record reaches the
-    ///     framework's own 400 boundary, so a refusal that returns instead of that 400 proves the deny
-    ///     short-circuits BEFORE binding. A custom <c>BindAsync</c> ignores the body and never reaches that
-    ///     boundary, so a malformed-body assertion against one would be VACUOUS - the exact defect this fix
-    ///     closes. The undenied equivalent (this SAME route off hosted) is shown to answer the framework 400 in
+    ///     is the whole point of the malformed-body AND wrong-media-type rows: only a genuine <c>[FromBody]</c>
+    ///     record reaches the framework's own 400 boundary (malformed JSON) and its own 415 boundary (a body
+    ///     media type endpoint SELECTION rejects), so a refusal that returns instead of that 400 or 415 proves
+    ///     the deny short-circuits BEFORE binding and BEFORE selection. A custom <c>BindAsync</c> ignores the
+    ///     body and reaches neither boundary, so those assertions against one would be VACUOUS - the exact
+    ///     defect this fix closes. The undenied equivalents (this SAME route off hosted) are shown to answer the
+    ///     framework 400 and 415 in
     ///     <see cref="HostedLauncherMachineSelfHostControlTests.A_body_bound_route_added_to_either_group_still_serves_and_binds_on_self_host"/>.
     ///   * The OBSERVABLE-binder canary (<see cref="BinderProbeRelativePath"/>) exists ONLY to make the
     ///     no-binder claim observable: framework body binding leaves no trace, so proving NO binder ran needs a
@@ -643,8 +645,8 @@ public sealed class HostedLauncherMachineExclusiveGroupTests : IDisposable
     /// about the other's future-route coverage.
     ///
     /// Replace the exclusive-group deny with per-handler guards (or delete it) and this test serves the probe
-    /// payload with a 200, answers the framework 400 on malformed JSON, AND records a bind - which is the
-    /// future-route + body-binding hole stated out loud.
+    /// payload with a 200, answers the framework 400 on malformed JSON, answers the framework 415 on a wrong
+    /// media type, AND records a bind - which is the future-route + body-binding hole stated out loud.
     /// </summary>
     [Fact]
     public async Task A_body_bound_route_added_to_either_group_later_is_refused_on_hosted_with_no_binder_run()
@@ -678,6 +680,19 @@ public sealed class HostedLauncherMachineExclusiveGroupTests : IDisposable
             Assert.Equal(HttpStatusCode.NotFound, malformed.StatusCode);
             Assert.DoesNotContain(ProbePayloadSentinel, await malformed.Content.ReadAsStringAsync(), StringComparison.Ordinal);
             await HostedLauncherMachineDenyTests.AssertBodyIsNothingButTheRefusal(malformed);
+
+            // A WRONG MEDIA TYPE against that SAME framework-bound route. Its body parameter makes the
+            // framework infer a media-type constraint that endpoint SELECTION enforces ahead of any handler,
+            // so off hosted this shape meets the framework's OWN 415 (the undenied equivalent, proved in the
+            // self-host control). On hosted the family's handlers are never mapped and each prefix's verb-less
+            // catch-all claims the path, so the refusal short-circuits before selection could reject the media
+            // type - this must meet the SAME refusal, not a framework 415. THIS is the row a wrong media type
+            // could otherwise slip through if the deny ran after endpoint selection.
+            var wrongMedia = await probe.Http.PostAsync(bodyBoundUrl,
+                new StringContent("hello", Encoding.UTF8, "text/plain"));
+            Assert.Equal(HttpStatusCode.NotFound, wrongMedia.StatusCode);
+            Assert.DoesNotContain(ProbePayloadSentinel, await wrongMedia.Content.ReadAsStringAsync(), StringComparison.Ordinal);
+            await HostedLauncherMachineDenyTests.AssertBodyIsNothingButTheRefusal(wrongMedia);
 
             // THE OBSERVABLE-BINDER CANARY, across shapes: the refusal must short-circuit before ANY argument
             // binder runs. Its BindAsync records every invocation, so a bind behind the refusal reddens the
@@ -964,11 +979,12 @@ public sealed class HostedLauncherMachineSelfHostControlTests : IDisposable
     /// self-host too; and a primitive that broke binding on every deployment would satisfy the hosted
     /// no-binder assertion and nothing would notice.
     ///
-    /// IT ALSO PINS THE UNDENIED 400 BOUNDARY THE HOSTED MALFORMED-BODY ROW IS MEASURED AGAINST. The
-    /// framework-body-bound canary here answers the framework's OWN 400 on malformed JSON off hosted - so the
-    /// hosted refusal returning instead of that 400 genuinely proves a short-circuit BEFORE binding, rather
-    /// than dodging a boundary that never existed. The bind count is the positive twin of the hosted
-    /// no-binder assertion.
+    /// IT ALSO PINS THE UNDENIED 400 AND 415 BOUNDARIES THE HOSTED MALFORMED-BODY AND WRONG-MEDIA ROWS ARE
+    /// MEASURED AGAINST. The framework-body-bound canary here answers the framework's OWN 400 on malformed JSON
+    /// AND its OWN 415 on a wrong media type off hosted - so the hosted refusal returning instead of that 400
+    /// or 415 genuinely proves a short-circuit BEFORE binding and BEFORE endpoint selection, rather than
+    /// dodging a boundary that never existed. The bind count is the positive twin of the hosted no-binder
+    /// assertion.
     /// </summary>
     [Theory]
     [MemberData(nameof(NonHostedValues))]
@@ -1002,6 +1018,15 @@ public sealed class HostedLauncherMachineSelfHostControlTests : IDisposable
             var malformed = await probe.Http.PostAsync(bodyBoundUrl,
                 new StringContent("{ not json", Encoding.UTF8, "application/json"));
             Assert.Equal(HttpStatusCode.BadRequest, malformed.StatusCode);
+
+            // ...and a WRONG MEDIA TYPE makes the framework answer its OWN 415: the record parameter infers a
+            // media-type constraint that endpoint SELECTION enforces here, because off hosted the real handler
+            // IS mapped. This is the undenied equivalent the hosted wrong-media row is measured against - the
+            // 415 boundary is real here, so the hosted refusal returning instead of it genuinely proves a
+            // short-circuit before endpoint selection, not a boundary that never existed.
+            var wrongMedia = await probe.Http.PostAsync(bodyBoundUrl,
+                new StringContent("hello", Encoding.UTF8, "text/plain"));
+            Assert.Equal(HttpStatusCode.UnsupportedMediaType, wrongMedia.StatusCode);
 
             // The observable-binder canary serves off hosted and its binder RUNS.
             var bound = await probe.Http.PostAsync(binderUrl,
