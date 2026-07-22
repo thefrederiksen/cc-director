@@ -360,19 +360,32 @@ public sealed class ContextLessDatabaseRouteTenancyTests : IAsyncLifetime
     // ================================================= the credential is the only variable
 
     /// <summary>
-    /// THE THREE-WAY CREDENTIAL PROBE, on ONE route, with nothing else varied.
+    /// THE CREDENTIAL PROBE, on ONE route, with nothing else varied.
     ///
     /// The claim's premise was that the HANDLER's signature decides whether a tenant is in scope. It does
     /// not - the CREDENTIAL does. This holds the route, the store and the payload fixed and varies only the
     /// bearer token:
     ///
-    ///   device key  -> 200, a served list  (the middleware resolved a tenant and entered its scope)
-    ///   shared token-> 500                  (authenticated, but no device key, so NO scope was entered)
-    ///   garbage     -> 401                  (never authenticated at all)
+    ///   device key BOUND to a tenant   -> 200, a served list  (a tenant resolved, the middleware entered its scope)
+    ///   device key with NO tenant      -> 500                  (authenticated, but bound to no tenant, so NO scope)
+    ///   shared machine token           -> 401                  (on hosted it is not a credential at all)
+    ///   garbage                        -> 401                  (never authenticated at all)
     ///
-    /// The 401 arm is what stops the 500 from being read as an authentication artifact: the shared token is
-    /// demonstrably accepted by the auth middleware, and still cannot reach the database. The 500's exact
-    /// body is asserted too, because the pipeline boundary serves a fixed generic body.
+    /// The "no tenant" arm is the one that proves a tenant scope is not free: a credential the middleware
+    /// ACCEPTS, that nonetheless carries no tenant, still cannot reach the database. On hosted the credential
+    /// that occupies that arm is an enrolled-but-unbound device key: it passes the auth layer
+    /// (<c>DeviceRegistry.IsValidDeviceKey</c>) yet resolves to nothing
+    /// (<c>HostedTenantBoundary.ResolveForDeviceKey</c> is deny-by-default), so no scope is entered and the
+    /// context-less handler hits the deny-by-default throw. The 500's exact body is asserted too, because the
+    /// pipeline boundary serves a fixed generic body.
+    ///
+    /// The shared machine token USED to occupy that arm - it authenticated but carried no device, so it also
+    /// reached the 500. Production-readiness MH-2 (commit 76e7b49e) closed that on hosted: the shared token no
+    /// longer authenticates at all on a multi-tenant Gateway, because a credential with no device has no
+    /// tenant and would reach every tenant-blind route unscoped. So on hosted it is now a 401 - refused at the
+    /// door, exactly as an unknown credential is - and that rejection is asserted here to keep this route
+    /// honest about the current invariant. (Self-host still accepts the shared token; this file runs hosted,
+    /// and <see cref="AuthMiddlewareTests"/> pins both halves without HTTP.)
     ///
     /// This test deliberately does NOT claim to identify WHICH internal error produced the 500 - a status
     /// code cannot carry that. The exact exception, its type and its message are pinned separately and
@@ -381,20 +394,32 @@ public sealed class ContextLessDatabaseRouteTenancyTests : IAsyncLifetime
     [Fact]
     public async Task OnOneRoute_TheCredentialAloneDecidesWhetherATenantScopeExists()
     {
-        var withDeviceKey = await Json(await Send("GET", "cron/jobs", _keyB, null),
-            HttpStatusCode.OK, "DEVICE KEY   GET /cron/jobs (a scope IS entered)");
-        Assert.Equal(JsonValueKind.Array, Arr(withDeviceKey, "jobs").ValueKind);
+        // A device key BOUND to a tenant: a scope is resolved and entered, so the route reaches the store.
+        var withBoundDeviceKey = await Json(await Send("GET", "cron/jobs", _keyB, null),
+            HttpStatusCode.OK, "BOUND DEVICE KEY   GET /cron/jobs (a scope IS entered)");
+        Assert.Equal(JsonValueKind.Array, Arr(withBoundDeviceKey, "jobs").ValueKind);
 
+        // A device key that AUTHENTICATES but is bound to NO tenant. It is a real active key (so the auth
+        // layer admits it and stashes it) yet the hosted boundary resolves it to nothing, so no scope is
+        // entered and the context-less handler hits the deny-by-default throw -> 500 with the fixed body.
+        var unboundKey = _gateway.Devices.Register("dev-unbound", "MC").DeviceKey; // registered, never account-bound
+        var withUnboundKey = await Send("GET", "cron/jobs", unboundKey, null);
+        var unboundBody = await withUnboundKey.Content.ReadAsStringAsync();
+        _out.WriteLine($"UNBOUND DEVICE KEY GET /cron/jobs -> {(int)withUnboundKey.StatusCode} " +
+                       $"[{withUnboundKey.Content.Headers.ContentType?.MediaType}] {unboundBody}");
+        Assert.Equal(HttpStatusCode.InternalServerError, withUnboundKey.StatusCode);
+        Assert.Equal("application/json", withUnboundKey.Content.Headers.ContentType?.MediaType);
+        Assert.Equal("{\"error\":\"internal error\"}", unboundBody);
+
+        // The shared machine token: on hosted (MH-2) it is not a credential at all, so it never reaches the
+        // database - it is a 401, exactly as an unknown credential is.
         var withSharedToken = await Send("GET", "cron/jobs", SharedToken, null);
-        var sharedBody = await withSharedToken.Content.ReadAsStringAsync();
-        _out.WriteLine($"SHARED TOKEN GET /cron/jobs -> {(int)withSharedToken.StatusCode} " +
-                       $"[{withSharedToken.Content.Headers.ContentType?.MediaType}] {sharedBody}");
-        Assert.Equal(HttpStatusCode.InternalServerError, withSharedToken.StatusCode);
-        Assert.Equal("application/json", withSharedToken.Content.Headers.ContentType?.MediaType);
-        Assert.Equal("{\"error\":\"internal error\"}", sharedBody);
+        _out.WriteLine($"SHARED TOKEN       GET /cron/jobs -> {(int)withSharedToken.StatusCode}");
+        Assert.Equal(HttpStatusCode.Unauthorized, withSharedToken.StatusCode);
 
+        // A credential that never authenticated at all.
         var withGarbage = await Send("GET", "cron/jobs", "not-a-real-credential", null);
-        _out.WriteLine($"GARBAGE      GET /cron/jobs -> {(int)withGarbage.StatusCode}");
+        _out.WriteLine($"GARBAGE            GET /cron/jobs -> {(int)withGarbage.StatusCode}");
         Assert.Equal(HttpStatusCode.Unauthorized, withGarbage.StatusCode);
     }
 
