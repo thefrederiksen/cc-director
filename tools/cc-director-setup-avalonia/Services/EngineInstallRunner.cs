@@ -16,6 +16,13 @@ public sealed class EngineInstallRunner
     private readonly InstallLayout _layout = InstallLayout.Default();
     private readonly ReleaseSource _source = new();
 
+    /// <summary>
+    /// When set (--release-dir / DEVTHROTTLE_RELEASE_DIR, parsed in Program.Main), the wizard
+    /// installs from this local directory instead of fetching the release from GitHub - the same
+    /// offline override the setup command line offers.
+    /// </summary>
+    public static string? ReleaseDirectoryOverride { get; set; }
+
     /// <summary>The on-disk Director path for this OS (~/Applications/Director.app on macOS).</summary>
     public string DirectorPath => _layout.PathFor(ComponentRegistry.Director);
 
@@ -29,8 +36,18 @@ public sealed class EngineInstallRunner
     {
         SetupLog.Write("[EngineInstallRunner] PrepareAsync: resolving the release for this setup executable");
         // Install the release this setup exe was built for: a pre-release build installs its
-        // matching pre-release, a stable build installs the latest stable (issue #1294).
-        var release = await _source.FetchReleaseForSetupAsync(ct);
+        // matching pre-release, a stable build installs the latest stable (issue #1294). A local
+        // release directory override wins over both (offline / hermetic install).
+        ResolvedRelease release;
+        if (ReleaseDirectoryOverride is { } releaseDir)
+        {
+            SetupLog.Write($"[EngineInstallRunner] PrepareAsync: using local release directory {releaseDir}");
+            release = ReleaseSource.LoadLocalReleaseDir(releaseDir);
+        }
+        else
+        {
+            release = await _source.FetchReleaseForSetupAsync(ct);
+        }
         var version = release.Manifest.Version;
 
         var items = new List<ToolDownloadItem>();
