@@ -87,6 +87,35 @@ public sealed class HostedEnrollmentEndpointTests : IDisposable
     }
 
     [Fact]
+    public void EnrollmentDeviceCount_IsScopedToTheCallersOwnTenant_NotTheFleetTotal()
+    {
+        var (devices, tenants, validator) = Wire();
+
+        // Alice enrolls her first device: her own count is 1.
+        var a1 = HostedEnrollmentEndpoint.Enroll(_key.Token("sub-alice", "a@x.com", Audience, Issuer), Req("dev-a"), devices, tenants, validator);
+        Assert.Equal(200, a1.Status);
+        Assert.Equal(1, a1.Response!.DeviceCount);
+
+        // Bob enrolls his FIRST device AFTER alice has one. The leak this closes: the response must report
+        // bob's OWN count (1), never the fleet total (2). Before the fix this reported the global registry size.
+        var b1 = HostedEnrollmentEndpoint.Enroll(_key.Token("sub-bob", "b@x.com", Audience, Issuer), Req("dev-b"), devices, tenants, validator);
+        Assert.Equal(200, b1.Status);
+        Assert.Equal(1, b1.Response!.DeviceCount);
+
+        // Alice enrolls a SECOND device: her count is now 2 - proving the count still reflects the caller's own
+        // tenant growing, not a constant.
+        var a2 = HostedEnrollmentEndpoint.Enroll(_key.Token("sub-alice", "a@x.com", Audience, Issuer), Req("dev-a2"), devices, tenants, validator);
+        Assert.Equal(200, a2.Status);
+        Assert.Equal(2, a2.Response!.DeviceCount);
+
+        // Idempotent re-enrollment of bob's existing device: the fleet now holds 3 devices, but bob must still
+        // read back only his OWN 1 - he cannot poll this route to observe the total hosted fleet size.
+        var b1Again = HostedEnrollmentEndpoint.Enroll(_key.Token("sub-bob", "b@x.com", Audience, Issuer), Req("dev-b"), devices, tenants, validator);
+        Assert.Equal(200, b1Again.Status);
+        Assert.Equal(1, b1Again.Response!.DeviceCount);
+    }
+
+    [Fact]
     public void MissingToken_Is401()
     {
         var (devices, tenants, validator) = Wire();
