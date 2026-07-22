@@ -1,5 +1,6 @@
 using System.Security.Cryptography;
 using System.Text;
+using CcDirector.Core.Tenancy;
 using CcDirector.Gateway.Voice;
 using Xunit;
 
@@ -14,7 +15,7 @@ public sealed class VoiceUploadStoreTests : IDisposable
     private readonly string _root = Path.Combine(Path.GetTempPath(), "cc-upload-" + Guid.NewGuid().ToString("N"));
     private readonly VoiceUploadStore _store;
 
-    public VoiceUploadStoreTests() => _store = new VoiceUploadStore(_root);
+    public VoiceUploadStoreTests() => _store = new VoiceUploadStore(_root, TenantId.Local);
 
     public void Dispose()
     {
@@ -329,7 +330,7 @@ public sealed class VoiceUploadStoreTests : IDisposable
         await _store.StoreChunkAsync(id, 1, Bytes("BBB"), null);
         await _store.StoreChunkAsync(id, 2, Bytes("CCC"), null);
 
-        var afterRestart = new VoiceUploadStore(_root);
+        var afterRestart = new VoiceUploadStore(_root, TenantId.Local);
         Assert.True(afterRestart.IsPending(id));
         var result = await afterRestart.AssembleAsync(id, 3);
         Assert.Equal("ok", result.Status);
@@ -352,7 +353,7 @@ public sealed class VoiceUploadStoreTests : IDisposable
         Assert.True(File.Exists(Path.Combine(dir, "record.json"))); // marker kept
         Assert.False(_store.IsPending(id), "a delivered upload is terminal, not pending");
 
-        var afterRestart = new VoiceUploadStore(_root);
+        var afterRestart = new VoiceUploadStore(_root, TenantId.Local);
         var record = afterRestart.ReadRecord(id);
         Assert.NotNull(record);
         Assert.Equal(DictationDeliveryState.Delivered, record!.State);
@@ -371,7 +372,7 @@ public sealed class VoiceUploadStoreTests : IDisposable
         _store.MarkAbandoned(id, "user cancelled");
 
         Assert.False(_store.IsPending(id), "an abandoned upload is terminal, not pending");
-        var record = new VoiceUploadStore(_root).ReadRecord(id);
+        var record = new VoiceUploadStore(_root, TenantId.Local).ReadRecord(id);
         Assert.NotNull(record);
         Assert.Equal(DictationDeliveryState.Abandoned, record!.State);
         Assert.False(record.Submitted);
@@ -487,7 +488,7 @@ public sealed class VoiceUploadStoreTests : IDisposable
         Assert.True(_store.IsSessionLocked(sid), "a PENDING record locks its session");
         Assert.False(_store.IsSessionLocked(Guid.NewGuid().ToString()), "an unrelated session is not locked");
         // Restart-safe: a fresh store over the same root recomputes the lock from disk.
-        Assert.True(new VoiceUploadStore(_root).IsSessionLocked(sid));
+        Assert.True(new VoiceUploadStore(_root, TenantId.Local).IsSessionLocked(sid));
     }
 
     [Fact]
@@ -560,7 +561,7 @@ public sealed class VoiceUploadStoreTests : IDisposable
 
         var values = Enumerable.Range(1, 64).Select(i => (long)i * 1_000).ToArray();
         var shuffled = values.OrderBy(v => (v * 7919) % 101).ToArray();
-        Parallel.ForEach(shuffled, v => new VoiceUploadStore(_root).RecordFailedDeliveryBaseline(uploadId, v));
+        Parallel.ForEach(shuffled, v => new VoiceUploadStore(_root, TenantId.Local).RecordFailedDeliveryBaseline(uploadId, v));
 
         Assert.Equal(values.Max(), _store.ReadRecord(uploadId)!.RebaselineBufferBytes);
     }
@@ -591,7 +592,7 @@ public sealed class VoiceUploadStoreTests : IDisposable
             // this re-baseline writes. The gate is what must stop it; nothing else here does.
             competing = Task.Run(() =>
             {
-                new VoiceUploadStore(_root).MarkDelivered(uploadId, submitted: true, movedOn: false, transcript: "delivered words");
+                new VoiceUploadStore(_root, TenantId.Local).MarkDelivered(uploadId, submitted: true, movedOn: false, transcript: "delivered words");
                 tombstoneLanded.Set();
             });
             // A bounded wait, NOT a barrier: under the gate this must time out (the tombstone is blocked behind

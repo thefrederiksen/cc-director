@@ -3,6 +3,7 @@ using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Text.Json;
 using CcDirector.Core.Storage;
+using CcDirector.Core.Tenancy;
 using CcDirector.Gateway.Voice;
 using Xunit;
 
@@ -83,7 +84,7 @@ public sealed class DictationSessionLockTests : IAsyncLifetime
 
     // ===== helpers =================================================================================
 
-    private static VoiceUploadStore Store() => new(CcStorage.DictationUploads());
+    private static VoiceUploadStore Store() => new(CcStorage.DictationUploads(), TenantId.Local);
 
     private async Task<(HttpStatusCode status, JsonElement body)> PromptAsync(string sessionId, HttpClient? http = null)
     {

@@ -246,7 +246,7 @@ public sealed class Issue1593FailedAttemptRebaselineTests : IAsyncLifetime
 
     // ===== helpers =================================================================================
 
-    private static VoiceUploadStore Store() => new(CcStorage.DictationUploads());
+    private static VoiceUploadStore Store() => new(CcStorage.DictationUploads(), TenantId.Local);
 
     private SessionDto SessionAt(long bufferBytes) => new()
     {

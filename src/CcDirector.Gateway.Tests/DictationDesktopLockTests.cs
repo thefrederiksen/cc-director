@@ -2,6 +2,7 @@ using System.Text.Json;
 using CcDirector.ControlApi;
 using CcDirector.Core.Sessions;
 using CcDirector.Gateway.Contracts;
+using CcDirector.Core.Tenancy;
 using CcDirector.Gateway.Voice;
 using Xunit;
 
@@ -30,7 +31,7 @@ public sealed class DictationDesktopLockTests
         var root = Path.Combine(Path.GetTempPath(), "cc-dictlock-xfmt-" + Guid.NewGuid().ToString("N"));
         try
         {
-            var store = new VoiceUploadStore(root);
+            var store = new VoiceUploadStore(root, TenantId.Local);
             var sid = Guid.NewGuid().ToString();
             var uploadId = Guid.NewGuid().ToString();
             store.Register(uploadId);
@@ -53,7 +54,7 @@ public sealed class DictationDesktopLockTests
         var root = Path.Combine(Path.GetTempPath(), "cc-dictlock-xfmt-" + Guid.NewGuid().ToString("N"));
         try
         {
-            var store = new VoiceUploadStore(root);
+            var store = new VoiceUploadStore(root, TenantId.Local);
             var sid = Guid.NewGuid().ToString();
             var uploadId = Guid.NewGuid().ToString();
             store.Register(uploadId);

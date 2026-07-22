@@ -1,7 +1,7 @@
 using System.Security.Cryptography;
 using System.Text.Json;
 using System.Text.Json.Serialization;
-using CcDirector.Core.Storage;
+using CcDirector.Core.Tenancy;
 using CcDirector.Core.Utilities;
 
 namespace CcDirector.Gateway.Voice;
@@ -36,22 +36,170 @@ namespace CcDirector.Gateway.Voice;
 /// keeps the outcome marker, so a delivered upload id is de-duplicated forever - across time and a
 /// Gateway restart - until the client acknowledges it (<see cref="Acknowledge"/>). See
 /// <see cref="DictationDeliveryRecord"/> for the model.
+///
+/// PARTITIONED BY TENANT (issue #1884). Every directory, chunk and record used to be keyed SOLELY by the
+/// caller-supplied upload id, on one global root. A GUID is not a tenant boundary: secrecy of an identifier
+/// is not authorization, and upload ids travel in client logs, retries and store-and-forward queues - so on
+/// the hosted Gateway one account holding another's upload id could read its transcript, overwrite its
+/// chunks, or resolve its record. An upload id is now only meaningful INSIDE its own tenant: the partition is
+/// the DIRECTORY (<see cref="ForTenant"/>), so a read physically cannot open another tenant's staging, and
+/// the record itself carries its tenant as a second, independent check. <see cref="TenantId.Local"/> keeps
+/// today's path exactly - self-host is unchanged and nothing migrates - and a hosted account tenant lands
+/// under tenants/&lt;id&gt;/. The tenant is always supplied by the caller, which resolved it from the
+/// authenticated device key at the boundary; this type never guesses one.
+///
+/// THE TENANT IS REQUIRED AT CONSTRUCTION. There is deliberately no constructor that omits it, so an
+/// unscoped store is not something to be guarded against - it cannot be built, and the attempt is a build
+/// error at the call site rather than a live object with the widest possible reach. See the constructor
+/// below for why the previous defaults were the wrong shape.
 /// </summary>
 public sealed class VoiceUploadStore
 {
     /// <summary>The container directory hosting the non-local partitions, directly under the base root.</summary>
     public const string TenantPartitionDirectoryName = "tenants";
 
+    // This partition's staging root: the base root for the local tenant, base/tenants/<id> otherwise.
     private readonly string _root;
+    // The base root every partition is computed from, so ForTenant on an already-partitioned store still
+    // resolves against the base rather than nesting a partition inside a partition.
+    private readonly string _partitionBase;
+    // The tenant this instance is bound to. Stamped onto every record written and required to match on
+    // every record read.
+    private readonly TenantId _tenant;
 
-    public VoiceUploadStore() : this(CcStorage.VoiceTurnUploads()) { }
+    /// <summary>
+    /// Stage under an explicit root, bound to ONE tenant.
+    ///
+    /// THE TENANT IS A REQUIRED ARGUMENT OF CONSTRUCTION, AND THAT IS THE WHOLE POINT OF THIS SIGNATURE.
+    /// This type used to offer a no-argument constructor and a root-only constructor, both of which silently
+    /// bound <see cref="TenantId.Local"/>. That made the widest scope the DEFAULT - reached by writing LESS
+    /// code, not more - so a new call site could hold every account's staged audio while looking, to a
+    /// reviewer, like an ordinary object creation with nothing to question. There is now no spelling of
+    /// "make me an upload store" that does not name the partition it belongs to: an unscoped store is not
+    /// guarded against, it is UNCONSTRUCTABLE, so there is no bypass to enumerate and none to forget.
+    ///
+    /// Naming <see cref="TenantId.Local"/> is still correct on self-host and still resolves to exactly the
+    /// path it always did - but it is now WRITTEN DOWN at the call site, which is the difference between a
+    /// decision a reviewer can see and one the compiler made on the author's behalf.
+    /// </summary>
+    /// <param name="root">The base staging root; the local partition is this directory itself.</param>
+    /// <param name="tenant">The partition this store is bound to. Never guessed, never defaulted.</param>
+    public VoiceUploadStore(string root, TenantId tenant)
+        : this(PartitionRootFor(root, RequireTenant(tenant)), tenant, root) { }
 
-    /// <summary>Test seam: stage under an explicit root instead of the shared storage dir.</summary>
-    public VoiceUploadStore(string root)
+    private VoiceUploadStore(string root, TenantId tenant, string partitionBase)
     {
         _root = root;
+        _tenant = tenant;
+        _partitionBase = partitionBase;
         Directory.CreateDirectory(_root);
     }
+
+    /// <summary>The tenant this store instance is bound to.</summary>
+    public TenantId Tenant => _tenant;
+
+    /// <summary>This partition's staging root on disk.</summary>
+    public string Root => _root;
+
+    /// <summary>
+    /// A view of this staging bound to ONE tenant. Every path, gate, chunk and record of the returned store
+    /// lives inside that tenant's partition, so an upload id from another tenant simply does not exist here -
+    /// the isolation is the directory, not a predicate a later edit could forget to apply.
+    /// </summary>
+    public VoiceUploadStore ForTenant(TenantId tenant) => new VoiceUploadStore(_partitionBase, tenant);
+
+    /// <summary>
+    /// The single place a tenant is admitted into this type. An unresolved tenant is DENIED here rather than
+    /// quietly becoming <see cref="TenantId.Local"/>: a default struct bypasses <see cref="TenantId"/>'s own
+    /// validating constructor, so <c>default(TenantId)</c> is the one way a caller could still arrive without
+    /// having decided anything, and it must not be the way in.
+    /// </summary>
+    private static TenantId RequireTenant(TenantId tenant)
+        => tenant.IsValid
+            ? tenant
+            : throw new ArgumentException(
+                "An upload partition needs a valid tenant; an unresolved tenant is denied, never defaulted.",
+                nameof(tenant));
+
+    /// <summary>
+    /// True only for the EXACT form <see cref="Tenancy.TenantRegistry"/> mints: a canonical lowercase GUID.
+    ///
+    /// A tenant id becomes a DIRECTORY NAME here, so it must be a shape this system actually produces - not
+    /// merely "characters that look harmless". Both structural aliases already found on the prompt-log
+    /// partition (<c>GatewayPromptLog</c>) apply verbatim to this one:
+    ///
+    ///  - A character allow-list such as <c>^[A-Za-z0-9._-]{1,64}$</c> accepts <c>".."</c>, and combining the
+    ///    base root with <c>tenants</c> and <c>".."</c> canonicalizes to exactly the base root - the LOCAL
+    ///    partition.
+    ///  - An allow-list accepting <c>A-F</c> as well as <c>a-f</c> lets two ids that differ only in case name
+    ///    the SAME directory on Windows and Azure Files while being DIFFERENT identities to the
+    ///    case-sensitive tenants table. That is one tenant reading another's audio through a casing alias.
+    ///
+    /// So this accepts ONE spelling: parse strictly, then require the value to equal its own canonical
+    /// round-trip. Anything else is REFUSED rather than normalised - normalising is how two identities
+    /// quietly share a folder, and this folder holds recorded AUDIO and its TRANSCRIPT.
+    /// </summary>
+    private static bool IsMintedAccountTenant(string value)
+        => Guid.TryParseExact(value, "D", out var parsed)
+           && string.Equals(value, parsed.ToString("D"), StringComparison.Ordinal);
+
+    /// <summary>
+    /// The staging root one tenant's uploads live in. The local tenant keeps the root it has always used -
+    /// self-host unchanged, nothing migrates - and every other tenant gets its own folder beneath it.
+    /// </summary>
+    private static string PartitionRootFor(string partitionBase, TenantId tenant)
+    {
+        if (tenant.IsLocal) return partitionBase;
+
+        // Every other partition must be a minted account tenant - including the reserved SYSTEM tenant, which
+        // is deliberately REFUSED rather than given a folder: no recorded audio belongs to it, so the safe
+        // answer is that it has no partition at all.
+        if (!IsMintedAccountTenant(tenant.Value))
+            throw new ArgumentException(
+                $"Tenant '{tenant.ToLogString()}' is not a minted account tenant and cannot name an upload partition.",
+                nameof(tenant));
+
+        var combined = Path.Combine(partitionBase, TenantPartitionDirectoryName, tenant.Value);
+
+        // Belt and braces, because the cost of being wrong here is one account reading another's dictation:
+        // the result must actually LIE INSIDE the partition container. The rule above already excludes
+        // traversal, so this can only fire if that rule is ever loosened - which is exactly when it is wanted.
+        //
+        // THIS GUARD HAS NO CANARY, DELIBERATELY, AND THAT IS NOT A COVERAGE GAP TO FILL. Measured, not
+        // assumed: deleting these three lines and running the tenant-partition and dictation suites reddens
+        // NOTHING. It cannot redden, because IsMintedAccountTenant above already refuses every value that
+        // could escape the root - ".." and "../.." and "a/b" and any non-GUID - so no input this method can
+        // legally receive reaches here with a combined path outside the container. It is unreachable by
+        // construction, which is the whole reason it is belt and braces rather than the primary defence.
+        //
+        // So do NOT write a test for it: the only test that could exist here is one that cannot fail, and a
+        // test that cannot fail is worse than no test - it reads as coverage. The condition under which this
+        // guard becomes reachable, and therefore the condition under which it becomes testable and MUST be
+        // given a canary, is precisely the moment someone loosens IsMintedAccountTenant. If you are here
+        // because you just did that, this guard is now live and needs a test that fails when you remove it.
+        var expectedRoot =
+            Path.GetFullPath(Path.Combine(partitionBase, TenantPartitionDirectoryName)) + Path.DirectorySeparatorChar;
+        if (!Path.GetFullPath(combined).StartsWith(expectedRoot, StringComparison.OrdinalIgnoreCase))
+            throw new ArgumentException(
+                $"Tenant '{tenant.ToLogString()}' resolves outside the upload partition root.", nameof(tenant));
+
+        return combined;
+    }
+
+    /// <summary>
+    /// The SECOND, independent check on a record: does the record on disk claim this partition's tenant?
+    /// The directory already makes a cross-tenant read impossible, so this can only fire if a partition root
+    /// is ever mis-computed - which is precisely the failure that must not silently hand over a transcript.
+    ///
+    /// An ABSENT tenant on the record is accepted ONLY for the local partition. That is not a fallback: it is
+    /// the exact reading of records written before this field existed, all of which are self-host records in
+    /// the local partition. In an account partition an absent tenant is refused, so a missing value can never
+    /// become a way in.
+    /// </summary>
+    private bool BelongsHere(DictationDeliveryRecord record)
+        => string.IsNullOrEmpty(record.Tenant)
+            ? _tenant.IsLocal
+            : string.Equals(record.Tenant, _tenant.Value, StringComparison.Ordinal);
 
     /// <summary>
     /// Begin (or re-open) an upload. The caller supplies a GUID id (it is also the
@@ -303,6 +451,106 @@ public sealed class VoiceUploadStore
         => Guid.TryParseExact(name, "N", out var parsed)
            && string.Equals(name, parsed.ToString("N"), StringComparison.Ordinal);
 
+    /// <summary>The subdirectory pre-partition legacy uploads are moved into by <see cref="QuarantineLegacyUploads"/>.
+    /// Not a canonical upload id, so no sweep, projection, or partition treats it as an upload or a tenant.</summary>
+    public const string QuarantineDirectoryName = "_quarantine-legacy";
+
+    /// <summary>
+    /// Move aside every pre-partition upload directory sitting DIRECTLY under this store's base root, so a
+    /// hosted Gateway never serves, sweeps, or projects a legacy unattributable upload as if it were live
+    /// (issue #1884, the un-deny safety gate; the same move-aside shape #1933 used for pre-version rows).
+    ///
+    /// WHY IT IS NEEDED EVEN WITH THE DIRECTORY PARTITION. A hosted account tenant reads only
+    /// <c>base/tenants/&lt;id&gt;/</c> and can never address <c>base/&lt;uploadId&gt;</c>, so the audio is
+    /// already unreachable to another account. What this closes is the BASE (Local) handle's OWN passes - the
+    /// age sweep and the durable PENDING projection both enumerate the base root on a hosted Gateway - which
+    /// would otherwise read a legacy record as live state (a legacy PENDING record surfacing a session as
+    /// locked, a legacy dir aged out and deleted). Moving the legacy dirs out of the enumerated root removes
+    /// them from every such pass at once, and out of any future un-scoped read.
+    ///
+    /// MOVE, NEVER DELETE: the bytes are preserved under <see cref="QuarantineDirectoryName"/> for a later
+    /// operator-run purge - this method loses nothing. IDEMPOTENT AND RE-ENTRANT: it admits ONLY a canonical
+    /// upload-id directory, so the tenants partition container and the quarantine directory itself are never
+    /// moved. A legacy source is ALWAYS moved aside - NEVER left live at the base root. When the canonical
+    /// quarantine slot is already taken - an earlier run (or a concurrent worker) quarantined that id and then
+    /// a rolling/older worker recreated the same base id, or an interrupted recovery is re-entered - the source
+    /// is moved to a UNIQUE non-colliding name beside it (a <c>__dup-N</c> suffix) rather than left where the
+    /// base age sweep and the base PENDING projection would still read it as live. The suffix is deliberately
+    /// NOT a canonical upload-id shape, so a quarantined dup is never re-admitted as an upload or a tenant.
+    /// Running it twice - or two workers at once - converges without error and never overwrites an existing
+    /// quarantined directory; and because a moved source is gone from the base root, a second run that sees the
+    /// same id at base is looking at a genuinely NEW legacy directory that must also be moved aside.
+    ///
+    /// Call it on the BASE (Local) handle; on an account partition there is nothing pre-partition to move and
+    /// it is a no-op. Returns how many directories were moved.
+    /// </summary>
+    public int QuarantineLegacyUploads()
+    {
+        // Account partitions (base/tenants/<id>) are clean by construction - only the shared base root can
+        // hold pre-partition uploads - so this runs only for the base handle.
+        if (!string.Equals(_root, _partitionBase, StringComparison.Ordinal)) return 0;
+
+        var quarantine = Path.Combine(_root, QuarantineDirectoryName);
+        var moved = 0;
+        try
+        {
+            foreach (var dir in Directory.EnumerateDirectories(_root))
+            {
+                var name = Path.GetFileName(dir.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
+                // Admit ONLY a canonical upload-id directory. The tenants container and the quarantine dir are
+                // not canonical names, so they are skipped - which is exactly what makes this re-entrant.
+                if (!IsCanonicalUploadDirName(name)) continue;
+
+                try
+                {
+                    Directory.CreateDirectory(quarantine);
+                    // Pick a target that does not already exist. The canonical slot (quarantine/<id>) first; if
+                    // it is taken, a unique __dup-N sibling - so the source ALWAYS moves and is never left live
+                    // at base. A null return means no free slot was found (unreasonable), in which case we log
+                    // and leave the source rather than delete or overwrite anything.
+                    var target = FreeQuarantineTarget(quarantine, name);
+                    if (target is null)
+                    {
+                        FileLog.Write($"[VoiceUploadStore] quarantine {name} skipped: no free target slot");
+                        continue;
+                    }
+                    Directory.Move(dir, target);
+                    moved++;
+                }
+                catch (IOException ex) { FileLog.Write($"[VoiceUploadStore] quarantine {name} skipped: {ex.Message}"); }
+                catch (UnauthorizedAccessException ex) { FileLog.Write($"[VoiceUploadStore] quarantine {name} skipped: {ex.Message}"); }
+            }
+            if (moved > 0)
+                FileLog.Write($"[VoiceUploadStore] QuarantineLegacyUploads moved={moved} legacy upload dirs into {QuarantineDirectoryName}");
+        }
+        catch (Exception ex)
+        {
+            FileLog.Write($"[VoiceUploadStore] QuarantineLegacyUploads failed: {ex.Message}");
+        }
+        return moved;
+    }
+
+    /// <summary>
+    /// The first quarantine target path for <paramref name="name"/> that does not already exist: the canonical
+    /// <c>quarantine/&lt;name&gt;</c> slot when it is free, else <c>quarantine/&lt;name&gt;__dup-N</c> for the
+    /// lowest N that is free. Returns null only if every candidate up to the bound is taken (unreasonable), so
+    /// the caller can leave the source rather than overwrite. The suffix keeps the name NON-canonical, so a
+    /// quarantined dup is never re-admitted as an upload id or a tenant by any later pass.
+    /// </summary>
+    private static string? FreeQuarantineTarget(string quarantine, string name)
+    {
+        var canonical = Path.Combine(quarantine, name);
+        if (!Directory.Exists(canonical)) return canonical;
+        // A bound rather than an unbounded loop: a hostile or pathological pile-up of colliding ids must not
+        // spin forever. 10000 distinct dup slots per id is far beyond any real rolling-deploy collision.
+        for (var n = 1; n <= 10000; n++)
+        {
+            var candidate = Path.Combine(quarantine, $"{name}__dup-{n}");
+            if (!Directory.Exists(candidate)) return candidate;
+        }
+        return null;
+    }
+
     /// <summary>Delete the staging dir for an upload. Best-effort; called once the turn is started.</summary>
     public void Delete(string uploadId)
     {
@@ -334,7 +582,19 @@ public sealed class VoiceUploadStore
     public DictationDeliveryRecord? ReadRecord(string uploadId)
     {
         var uid = NormalizeId(uploadId);
-        return uid is null ? null : ReadRecordFile(RecordPath(DirFor(uid)));
+        if (uid is null) return null;
+        var record = ReadRecordFile(RecordPath(DirFor(uid)));
+        if (record is null) return null;
+        // Tenant-checked as well as partitioned (issue #1884). See BelongsHere: the directory is the boundary,
+        // this is the independent second opinion, and a record that fails it is treated as absent rather than
+        // handed to a caller it does not belong to.
+        if (!BelongsHere(record))
+        {
+            FileLog.Write($"[VoiceUploadStore] ReadRecord: uploadId={uid} record belongs to another tenant " +
+                $"(partition={_tenant.ToLogString()}); refused");
+            return null;
+        }
+        return record;
     }
 
     private static DictationDeliveryRecord? ReadRecordFile(string path)
@@ -415,8 +675,23 @@ public sealed class VoiceUploadStore
             dirs = Array.Empty<string>();
         }
         foreach (var dir in dirs)
-            if (ReadRecordFile(RecordPath(dir)) is { State: DictationDeliveryState.Pending } rec)
+        {
+            // The partition container is not an upload, so skip it rather than probing it for a record.
+            //
+            // NO CANARY HERE EITHER, and for a different reason than the containment guard in
+            // PartitionRootFor - this one is REDUNDANT rather than unreachable. Measured: removing this line
+            // reddens nothing. It cannot, because the container directory holds other tenants' partitions and
+            // no record.json of its own, so ReadRecordFile returns null and the pattern match already declines
+            // it; and even if a record were somehow found there, BelongsHere on the same line refuses a record
+            // belonging to another tenant. Two independent things downstream already give the right answer.
+            //
+            // It stays because it says what is true - a partition container is not an upload - and because it
+            // stops a pointless file probe per partition on every projection. It is clarity and cost, not a
+            // security boundary; the security boundary on this line is BelongsHere, and THAT one has canaries.
+            if (IsPartitionContainer(dir)) continue;
+            if (ReadRecordFile(RecordPath(dir)) is { State: DictationDeliveryState.Pending } rec && BelongsHere(rec))
                 yield return rec;
+        }
     }
 
     /// <summary>
@@ -620,11 +895,15 @@ public sealed class VoiceUploadStore
     }
 
     // Persist the record.json marker atomically (temp + move), leaving any staged chunks untouched.
-    private static void WriteRecordMarker(string dir, DictationDeliveryRecord record)
+    //
+    // THE ONE PLACE a record is written, so it is the one place the owning tenant is stamped (issue #1884).
+    // Stamped here rather than by each composer on purpose: a composer that forgot would write an
+    // unattributed record, and the whole point of the field is that it cannot be forgotten.
+    private void WriteRecordMarker(string dir, DictationDeliveryRecord record)
     {
         var path = RecordPath(dir);
         var tmp = path + ".tmp";
-        File.WriteAllText(tmp, JsonSerializer.Serialize(record, RecordJson));
+        File.WriteAllText(tmp, JsonSerializer.Serialize(record with { Tenant = _tenant.Value }, RecordJson));
         File.Move(tmp, path, overwrite: true);
     }
 
@@ -717,6 +996,12 @@ public sealed class VoiceUploadStore
     private string GateKey(string uid) => Path.GetFullPath(DirFor(uid));
 
     private string DirFor(string uid) => Path.Combine(_root, uid);
+
+    // True for the directory that HOLDS the other tenants' partitions, which is never itself an upload.
+    private static bool IsPartitionContainer(string dir)
+        => string.Equals(Path.GetFileName(dir.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)),
+            TenantPartitionDirectoryName, StringComparison.OrdinalIgnoreCase);
+
     private static string ChunkPath(string dir, int index) => Path.Combine(dir, $"{index:D5}.part");
     private static string RecordPath(string dir) => Path.Combine(dir, "record.json");
 
@@ -732,6 +1017,13 @@ public sealed class VoiceUploadStore
         if (string.IsNullOrWhiteSpace(id)) return null;
         return Guid.TryParse(id, out var g) ? g.ToString("N") : null;
     }
+
+    /// <summary>
+    /// The canonical staging form of a caller-supplied upload id, or null when it is not a GUID. Exposed so
+    /// the endpoint's in-memory caches key on the SAME single spelling this store keys its directories by:
+    /// two spellings of one GUID must not become two cache entries for one staging directory.
+    /// </summary>
+    internal static string? NormalizeUploadId(string? id) => NormalizeId(id);
 
     private static string Sha256Hex(byte[] bytes)
         => Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant();
@@ -775,6 +1067,14 @@ public enum DictationDeliveryState { Pending, Delivered, Abandoned, Failed }
 /// that never saw the 502 still retries against the honest baseline. Null (absent) in every record written
 /// before this field existed, which reads back as "no attempt has failed" - the correct meaning.
 /// </param>
+/// <param name="Tenant">
+/// The tenant that owns this upload (issue #1884). Stamped by <see cref="VoiceUploadStore"/> on every write
+/// from the partition the record is written into - callers never supply it - and required to match on every
+/// read. The directory partition is the boundary; this field is the independent second check, so a
+/// mis-computed partition root cannot silently hand one account another's audio or transcript. Empty in
+/// records written before the field existed, which are self-host records and are accepted only in the local
+/// partition.
+/// </param>
 public sealed record DictationDeliveryRecord(
     DictationDeliveryState State,
     bool Submitted,
@@ -782,4 +1082,5 @@ public sealed record DictationDeliveryRecord(
     string Transcript,
     string? Reason,
     string SessionId = "",
-    long? RebaselineBufferBytes = null);
+    long? RebaselineBufferBytes = null,
+    string Tenant = "");

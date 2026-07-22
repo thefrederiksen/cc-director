@@ -2,6 +2,7 @@ using System.Text;
 using System.Text.Json;
 using CcDirector.Gateway.Api;
 using CcDirector.Gateway.Transcription;
+using CcDirector.Core.Tenancy;
 using CcDirector.Gateway.Voice;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.DependencyInjection;
@@ -24,7 +25,7 @@ public sealed class DictationPermanentFailureTests : IDisposable
     private readonly string _root = Path.Combine(Path.GetTempPath(), "cc-perm-" + Guid.NewGuid().ToString("N"));
     private readonly VoiceUploadStore _store;
 
-    public DictationPermanentFailureTests() => _store = new VoiceUploadStore(_root);
+    public DictationPermanentFailureTests() => _store = new VoiceUploadStore(_root, TenantId.Local);
 
     public void Dispose()
     {

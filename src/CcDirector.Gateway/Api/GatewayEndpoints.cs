@@ -53,8 +53,8 @@ internal static class GatewayEndpoints
         Func<TenantId, string, bool>? nothingToNarrateFor = null,
         Func<TenantId, string, bool>? servedViaFallbackFor = null,
         Func<string, bool, DateTime?>? needsYouStampFor = null,
-        Func<string, bool>? transcribingFor = null,
-        Func<string, string?>? dictationStatusFor = null,
+        Func<TenantId, string, bool>? transcribingFor = null,
+        Func<TenantId, string, string?>? dictationStatusFor = null,
         Transcription.TranscribingSessions? transcribingSessions = null,
         Func<string, (string? RailLine, string? Headline)>? interruptedBriefFor = null,
         Func<string, List<TurnBriefDto>>? briefHistoryFor = null,
@@ -998,12 +998,12 @@ internal static class GatewayEndpoints
                     // BEFORE the NeedsYouSince clock below so the EffectiveColor fold already sees orange
                     // (a transcribing session is not "needs you") when the clock reads the final color.
                     if (transcribingFor is not null)
-                        s.Transcribing = transcribingFor(s.SessionId);
+                        s.Transcribing = transcribingFor(reqTenant.Value, s.SessionId);
                     // Issue #1181, Task 4: the honest phase label - "Uploading from phone" (durable PENDING
                     // marker) vs "Transcribing" (active run). Drives the same orange, but the clients render
                     // this string so the user knows whether it is their phone still uploading or the server.
                     if (dictationStatusFor is not null)
-                        s.DictationStatus = dictationStatusFor(s.SessionId);
+                        s.DictationStatus = dictationStatusFor(reqTenant.Value, s.SessionId);
                     // The authoritative presentation fold (EffectiveColor / StateLabel / TriageBucket /
                     // NeedsYouSince) is stamped in ONE post-pass AFTER this loop assembles the whole fleet -
                     // see StampFleetRolesAndFold below. It is deferred because SessionRole (which the fold
@@ -1560,14 +1560,20 @@ internal static class GatewayEndpoints
         {
             if (transcribingSessions is null)
                 return Results.StatusCode(StatusCodes.Status503ServiceUnavailable);
+            // The transcribing mark is keyed by (tenant, sid) (issue #1884, Gap B): resolve the caller's
+            // tenant from the authenticated device key and refuse (403) when none resolves on hosted, so a
+            // request can only ever set or clear ITS OWN account's mark - never paint or clear another
+            // account's session by supplying that account's session id. Self-host resolves Local, unchanged.
+            if (ResolveReadTenant(ctx, tenantBoundary) is not { } reqTenant)
+                return Results.Json(new { error = "no tenant is bound to this request" }, statusCode: StatusCodes.Status403Forbidden);
             var (director, session) = await LocateSessionForRequestAsync(ctx, tenantBoundary, registry, sid, pushedSessions, streamStaleResolved, owners);
             if (session is null || director is null)
                 return Results.NotFound(new { error = "session not found across any director" });
             var transcribing = req?.Transcribing ?? false;
             if (transcribing)
-                transcribingSessions.Begin(sid);
+                transcribingSessions.Begin(reqTenant, sid);
             else
-                transcribingSessions.End(sid);
+                transcribingSessions.End(reqTenant, sid);
             return Results.Json(new { transcribing });
         });
 
