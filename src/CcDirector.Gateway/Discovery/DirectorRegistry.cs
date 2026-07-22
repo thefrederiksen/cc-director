@@ -379,6 +379,29 @@ public sealed class DirectorRegistry : IDisposable
             ? d
             : null;
 
+    /// <summary>
+    /// True when <paramref name="directorId"/> is registered to <paramref name="caller"/> - i.e. the caller
+    /// PROVABLY owns it (audit MTR gap C, the startup-telemetry ownership guard). It answers ONLY the yes/no
+    /// ownership question a caller-side gate needs; it never returns another tenant's identity or its Director,
+    /// so it is NOT the bare-id serving lookup MTR-01 removed - a caller learns nothing but "that id is (not)
+    /// yours".
+    ///
+    /// This is a POSITIVE-ownership check: it returns true ONLY for an id keyed to the caller's own tenant.
+    /// A blank/malformed id, an id owned by a DIFFERENT tenant, and an as-yet-UNKNOWN id (registered to
+    /// nobody) all return false. The caller (the startup endpoint) uses that to REJECT any startup
+    /// observation the caller cannot prove it owns, rather than accepting a forgeable one: the audit's threat
+    /// is a caller creating a startup observation for a director_id it does not own, and an unknown id is not
+    /// provably the caller's, so it is refused. The cost is that a startup report that races the tunnel Hello
+    /// (arriving before the caller's own id is registered) is dropped - acceptable for a best-effort,
+    /// swallowed startup ping, where a forgeable cross-tenant observation is the worse failure.
+    /// </summary>
+    public bool IsDirectorOwnedByTenant(TenantId caller, string directorId)
+    {
+        if (string.IsNullOrEmpty(directorId) || !caller.IsValid)
+            return false;
+        return _directors.ContainsKey(new DirectorKey(caller, directorId));
+    }
+
     private void LoadExisting()
     {
         try

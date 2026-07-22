@@ -1,4 +1,5 @@
 using CcDirector.Core.Utilities;
+using CcDirector.Gateway.Tenancy;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
@@ -60,14 +61,31 @@ internal static class TelemetryRelayEndpoint
     /// </summary>
     /// <param name="app">The route builder.</param>
     /// <param name="queue">The durable retry queue that owns delivery to the backend (issue #629).</param>
-    public static void Map(IEndpointRouteBuilder app, TelemetryRetryQueue queue)
+    /// <param name="tenants">
+    /// The auth-boundary tenant binder (audit MTR gap C). It resolves the SERVER-BOUND tenant of the
+    /// authenticated request so the queued event is partitioned by tenant. On hosted an unresolved tenant
+    /// is a 403 DENY (never Local); on self-host every request is <see cref="TenantId.Local"/>.
+    /// </param>
+    public static void Map(IEndpointRouteBuilder app, TelemetryRetryQueue queue, HostedTenantBoundary tenants)
     {
         if (queue is null)
             throw new ArgumentNullException(nameof(queue));
+        if (tenants is null)
+            throw new ArgumentNullException(nameof(tenants));
 
         app.MapPost("/telemetry/login", async (HttpContext ctx) =>
         {
             var targetUrl = ResolveTargetUrl();
+
+            // Resolve the tenant from the AUTHENTICATED request (never from the body). On hosted a key with
+            // no bound tenant is a DENY - the event is not queued under a guessed owner; on self-host this is
+            // always Local. This is the partition the queue bounds and flushes by.
+            var tenant = tenants.ResolveRequestTenant(ctx);
+            if (tenant is null)
+            {
+                FileLog.Write("[TelemetryRelayEndpoint] POST /telemetry/login DENIED: no tenant resolved for the authenticated caller (hosted deny-by-default)");
+                return Results.StatusCode(StatusCodes.Status403Forbidden);
+            }
 
             // Read the inbound body (the event JSON) verbatim so it is forwarded UNCHANGED.
             string body;
@@ -82,9 +100,9 @@ internal static class TelemetryRelayEndpoint
 
             // Enqueue for durable delivery with NO stored Bearer - the Gateway token is attached when the
             // queue forwards. The queue logs the target + depth (never any token value) and owns the
-            // retry / persistence / bound-eviction behaviour; the relay just hands off.
-            FileLog.Write($"[TelemetryRelayEndpoint] POST /telemetry/login -> enqueue for {targetUrl} (inboundAuthPresent={inboundAuthPresent}; ignored, gateway token attached on forward)");
-            queue.Enqueue(targetUrl, body, bearer: null);
+            // retry / persistence / per-tenant bound-eviction behaviour; the relay just hands off.
+            FileLog.Write($"[TelemetryRelayEndpoint] POST /telemetry/login -> enqueue for {targetUrl} (tenant={tenant.Value.ToLogString()}, inboundAuthPresent={inboundAuthPresent}; ignored, gateway token attached on forward)");
+            queue.Enqueue(targetUrl, body, bearer: null, tenant.Value);
 
             // The relay accepts the event regardless of the backend's current reachability or whether the
             // Gateway is signed in yet (the queue delivers it once both are ready). 202 Accepted is the

@@ -1,6 +1,7 @@
 using System.Collections.Generic;
 using System.Net.Http.Headers;
 using System.Text.Json;
+using CcDirector.Core.Tenancy;
 using CcDirector.Core.Utilities;
 
 namespace CcDirector.Gateway.Api;
@@ -12,16 +13,25 @@ namespace CcDirector.Gateway.Api;
 ///
 /// Behaviour:
 /// <list type="bullet">
-///   <item>FIFO: events flush in the order they were enqueued (best-effort FIFO, at-least-once).</item>
-///   <item>Retry with backoff: a failed or unreachable forward leaves the event at the HEAD of the
-///     queue and the flusher waits the retry interval before trying again, so a backend outage queues
-///     events instead of dropping them.</item>
-///   <item>Bounded: the queue never grows past <see cref="MaxSize"/>; when full, the OLDEST event is
-///     evicted (dropped) with a logged WARNING so there is no unbounded growth.</item>
+///   <item>FIFO per tenant: events flush in the order they were enqueued WITHIN a tenant (best-effort
+///     FIFO, at-least-once).</item>
+///   <item>Retry with backoff: a failed or unreachable forward leaves the event at the head of ITS
+///     TENANT's line and the flusher waits the retry interval before trying again, so a backend outage
+///     queues events instead of dropping them.</item>
+///   <item>Bounded PER TENANT: each tenant's queued events never grow past <see cref="MaxSize"/>; when a
+///     tenant is full its OWN oldest event is evicted (dropped) with a logged WARNING, so one tenant's
+///     volume can never evict another tenant's queued event.</item>
 ///   <item>Durable: the whole queue is persisted to one JSON file (the WorkListStore precedent: atomic
 ///     temp + rename write-through, reload on construction, corrupt-file quarantine) under the Gateway
 ///     config directory, so queued events survive a Gateway restart.</item>
 /// </list>
+///
+/// Multi-tenancy (audit MTR gap C: telemetry queue): every queued event is tagged with the
+/// SERVER-RESOLVED tenant of the request that enqueued it (never a client-supplied value). The bound and
+/// the flush are PER TENANT: a caller can only evict its own tenant's oldest event, and a poison event
+/// that the backend permanently rejects blocks only its own tenant's line - other tenants keep flushing
+/// past it (no cross-tenant head-of-line block). On self-host every event is <see cref="TenantId.Local"/>
+/// and the behaviour is exactly the single-line FIFO it always was.
 ///
 /// Security (issue #628 property preserved): a queued payload carries the inbound access token (the
 /// Bearer) in memory and on disk so it can be replayed, but the token value is NEVER written to the
@@ -32,6 +42,22 @@ public sealed class TelemetryRetryQueue : IAsyncDisposable
 {
     /// <summary>The default maximum number of queued events before the oldest is evicted.</summary>
     public const int DefaultMaxSize = 1000;
+
+    /// <summary>
+    /// The isolated partition legacy, pre-tag persisted events are loaded into (audit MTR gap C). A queue
+    /// file written before the tenant tag existed has events with an EMPTY tenant; on a hosted Gateway those
+    /// events came from many real accounts but carry no way to tell them apart, so they must NOT be collapsed
+    /// into any real tenant's partition - least of all the shared <see cref="TenantId.Local"/> one, where one
+    /// account's legacy poison event would head-of-line-block every other account's legacy event.
+    ///
+    /// They are instead quarantined under this reserved partition key, which is deliberately NOT a valid
+    /// <see cref="TenantId"/> (the '#' can never appear in a real tenant id, Local, or System), so it can
+    /// never collide with a real tenant's line. Because the bound and the flush are keyed by this string, the
+    /// quarantine lane is fully isolated: it still drains (at-least-once preserved - legacy events are
+    /// delivered, not dropped) and a poison event in it blocks ONLY the quarantine lane, never any real
+    /// tenant's flush. Newly-enqueued events always carry a real server-resolved tenant and never land here.
+    /// </summary>
+    public const string LegacyUntaggedPartition = "__legacy-untagged#quarantine__";
 
     private static readonly JsonSerializerOptions FileJsonOptions = new()
     {
@@ -124,17 +150,26 @@ public sealed class TelemetryRetryQueue : IAsyncDisposable
 
     /// <summary>
     /// Enqueue one accepted telemetry event for durable delivery. The body and Bearer are stored
-    /// verbatim so they replay UNCHANGED. When the queue is full the OLDEST event is evicted first
-    /// (logged WARNING). The token value is never logged.
+    /// verbatim so they replay UNCHANGED. The event is tagged with <paramref name="tenant"/> - the tenant
+    /// the CALLING endpoint resolved from the authenticated request (never a client-supplied value) - and
+    /// the bound is enforced PER TENANT: when this tenant already holds <see cref="MaxSize"/> events, THIS
+    /// tenant's own oldest is evicted first (logged WARNING), so a flood from one tenant never drops
+    /// another tenant's queued event. The token value and the raw tenant id are never logged.
     /// </summary>
     /// <param name="targetUrl">The backend URL to forward to.</param>
     /// <param name="body">The event JSON, forwarded unchanged.</param>
     /// <param name="bearer">The inbound access token, replayed unchanged; NEVER logged.</param>
-    /// <exception cref="ArgumentException">targetUrl is null/empty/whitespace.</exception>
-    public void Enqueue(string targetUrl, string body, string? bearer)
+    /// <param name="tenant">
+    /// The server-resolved owning tenant (<see cref="TenantId.Local"/> on self-host). REQUIRED and must be
+    /// valid - an unresolved tenant is a denied request at the endpoint, never a queued event under a guess.
+    /// </param>
+    /// <exception cref="ArgumentException">targetUrl is null/empty/whitespace, or tenant is invalid.</exception>
+    public void Enqueue(string targetUrl, string body, string? bearer, TenantId tenant)
     {
         if (string.IsNullOrWhiteSpace(targetUrl))
             throw new ArgumentException("targetUrl is required", nameof(targetUrl));
+        if (!tenant.IsValid)
+            throw new ArgumentException("a valid tenant is required to enqueue a telemetry event", nameof(tenant));
 
         var item = new QueuedEvent
         {
@@ -143,6 +178,7 @@ public sealed class TelemetryRetryQueue : IAsyncDisposable
             TargetUrl = targetUrl,
             Body = body ?? string.Empty,
             Bearer = bearer,
+            Tenant = tenant.Value,
         };
 
         int depth;
@@ -150,53 +186,100 @@ public sealed class TelemetryRetryQueue : IAsyncDisposable
         lock (_gate)
         {
             _events.AddLast(item);
-            while (_events.Count > MaxSize)
+            // Per-tenant bound: count and evict only THIS tenant's own events, so one tenant's volume can
+            // never push another tenant's event out of the shared list.
+            while (CountForTenant(item.Tenant) > MaxSize)
             {
-                var oldest = _events.First;
+                var oldest = FirstNodeForTenant(item.Tenant);
                 if (oldest is null)
                     break;
-                _events.RemoveFirst();
+                _events.Remove(oldest);
                 evicted = true;
-                FileLog.Write($"[TelemetryRetryQueue] WARNING bound exceeded (maxSize={MaxSize}); evicted OLDEST event id={oldest.Value.Id} enqueuedAt={oldest.Value.EnqueuedAtUtc:O} target={oldest.Value.TargetUrl} (dropped, not delivered)");
+                FileLog.Write($"[TelemetryRetryQueue] WARNING per-tenant bound exceeded (maxSize={MaxSize}, tenant={tenant.ToLogString()}); evicted OLDEST event id={oldest.Value.Id} enqueuedAt={oldest.Value.EnqueuedAtUtc:O} target={oldest.Value.TargetUrl} (dropped, not delivered)");
             }
             depth = _events.Count;
             Save();
         }
 
-        FileLog.Write($"[TelemetryRetryQueue] Enqueue: target={targetUrl} (bearerPresent={(bearer is not null)}), depth={depth}{(evicted ? " (oldest evicted)" : "")}");
+        FileLog.Write($"[TelemetryRetryQueue] Enqueue: target={targetUrl} (bearerPresent={(bearer is not null)}, tenant={tenant.ToLogString()}), depth={depth}{(evicted ? " (tenant oldest evicted)" : "")}");
+    }
+
+    /// <summary>Count the queued events belonging to one tenant. Caller holds <see cref="_gate"/>.</summary>
+    private int CountForTenant(string tenant)
+    {
+        var count = 0;
+        for (var node = _events.First; node is not null; node = node.Next)
+            if (string.Equals(node.Value.Tenant, tenant, StringComparison.Ordinal))
+                count++;
+        return count;
+    }
+
+    /// <summary>The oldest (head-most) queued node for one tenant, or null. Caller holds <see cref="_gate"/>.</summary>
+    private LinkedListNode<QueuedEvent>? FirstNodeForTenant(string tenant)
+    {
+        for (var node = _events.First; node is not null; node = node.Next)
+            if (string.Equals(node.Value.Tenant, tenant, StringComparison.Ordinal))
+                return node;
+        return null;
+    }
+
+    /// <summary>The node carrying a given event id, or null. Caller holds <see cref="_gate"/>.</summary>
+    private LinkedListNode<QueuedEvent>? FindNodeById(string id)
+    {
+        for (var node = _events.First; node is not null; node = node.Next)
+            if (string.Equals(node.Value.Id, id, StringComparison.Ordinal))
+                return node;
+        return null;
     }
 
     /// <summary>
-    /// Try to drain the queue once, head-first, in FIFO order. Each event is forwarded; on success it
-    /// is removed from the head and the next is attempted; on the FIRST failure the pass stops and the
-    /// failing event stays at the head (so order is preserved and it is retried next pass). Returns the
-    /// number of events delivered this pass. Public so a test can trigger a deterministic drain without
-    /// waiting on the timer.
+    /// Try to drain the queue once, in per-tenant FIFO order. Each pass repeatedly picks the head-most
+    /// event whose tenant is still flushing, forwards it, and on success removes it. On a failure the
+    /// event stays queued and its TENANT is marked done-for-this-pass, so that tenant's later events wait
+    /// (its FIFO + at-least-once preserved) while EVERY OTHER tenant keeps flushing past it - one tenant's
+    /// poison event can never head-of-line-block another tenant. Returns the number of events delivered
+    /// this pass. Public so a test can trigger a deterministic drain without waiting on the timer.
     /// </summary>
     public async Task<int> FlushOnceAsync(CancellationToken cancellationToken = default)
     {
         var delivered = 0;
+        // Tenants whose earliest event failed THIS pass. Skipped for the rest of the pass so their FIFO
+        // order holds; they are retried on the next pass.
+        var blocked = new HashSet<string>(StringComparer.Ordinal);
         while (!cancellationToken.IsCancellationRequested)
         {
-            QueuedEvent head;
+            QueuedEvent? next = null;
             lock (_gate)
             {
-                if (_events.First is null)
-                    break;
-                head = _events.First.Value;
+                for (var node = _events.First; node is not null; node = node.Next)
+                {
+                    if (!blocked.Contains(node.Value.Tenant))
+                    {
+                        next = node.Value;
+                        break;
+                    }
+                }
+            }
+            if (next is null)
+                break; // nothing left whose tenant is still flushing this pass
+
+            var ok = await TryForwardAsync(next, cancellationToken);
+            if (!ok)
+            {
+                // Leave it queued; stop this tenant for the pass so its order holds and other tenants
+                // are not blocked behind it.
+                blocked.Add(next.Tenant);
+                continue;
             }
 
-            var ok = await TryForwardAsync(head, cancellationToken);
-            if (!ok)
-                break; // leave it at the head; retry next pass (FIFO preserved)
-
             lock (_gate)
             {
-                // The head may only be removed if it is still the same event (it always is here:
-                // a single flusher drains, and Enqueue only appends to the tail).
-                if (_events.First is not null && _events.First.Value.Id == head.Id)
+                // Remove that specific event if still present (a single flusher drains; Enqueue only
+                // appends to the tail or evicts its own tenant's oldest).
+                var node = FindNodeById(next.Id);
+                if (node is not null)
                 {
-                    _events.RemoveFirst();
+                    _events.Remove(node);
                     Save();
                 }
             }
@@ -302,6 +385,14 @@ public sealed class TelemetryRetryQueue : IAsyncDisposable
 
         /// <summary>The inbound access token, replayed unchanged. On disk, never logged.</summary>
         public string? Bearer { get; set; }
+
+        /// <summary>
+        /// The server-resolved owning tenant (audit MTR gap C). The bound and the flush are scoped by this,
+        /// so a caller only ever evicts/blocks its own tenant. A queue file written before this field existed
+        /// has it empty; <see cref="Load"/> quarantines such legacy events into the isolated
+        /// <see cref="LegacyUntaggedPartition"/> so they can never head-of-line-block a real tenant.
+        /// </summary>
+        public string Tenant { get; set; } = string.Empty;
     }
 
     /// <summary>The on-disk shape: one document holding the ordered queue.</summary>
@@ -350,6 +441,13 @@ public sealed class TelemetryRetryQueue : IAsyncDisposable
                 _events.Clear();
                 return;
             }
+            // A queue file written before the tenant tag existed has an empty Tenant. Such legacy events
+            // cannot be attributed to a real account, so they are quarantined into an ISOLATED partition
+            // (never the shared Local one) - see <see cref="LegacyUntaggedPartition"/>. This keeps a legacy
+            // poison event from head-of-line-blocking any real tenant's flush while still delivering the
+            // legacy events (they drain in their own isolated lane).
+            if (string.IsNullOrWhiteSpace(ev.Tenant))
+                ev.Tenant = LegacyUntaggedPartition;
             _events.AddLast(ev);
         }
 
