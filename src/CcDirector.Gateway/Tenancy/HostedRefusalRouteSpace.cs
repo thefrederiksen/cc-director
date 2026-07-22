@@ -6,7 +6,6 @@ using CcDirector.Core.Utilities;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.AspNetCore.Routing.Patterns;
-using Microsoft.AspNetCore.Routing.Template;
 
 namespace CcDirector.Gateway.Tenancy;
 
@@ -47,10 +46,12 @@ internal sealed record HostedExclusivePrefixMarker(HostedDenial Denial, string P
 ///
 /// So this does NOT reimplement the ambiguity relation. It asks a strictly smaller, DECIDABLE question -
 /// "could a single request path be matched by both of these patterns at EQUAL precedence?" - and it answers
-/// the precedence half by DELEGATING to the framework's own <see cref="RoutePrecedence"/>
-/// rather than by re-deriving precedence digits. That is the opposite of modelling: the specificity ranking
-/// that decides which of two matches wins is the framework's, computed by the framework. What is left for
-/// this file to decide is only whether a common concrete path EXISTS, which is structural and conservative:
+/// the precedence half by reading each pattern's OWN <see cref="RoutePattern.InboundPrecedence"/> - the exact
+/// value the endpoint comparer uses - rather than by re-deriving precedence digits. That is the opposite of
+/// modelling: the specificity ranking that decides which of two matches wins is the framework's, computed by
+/// the framework, and it is read from the FINALISED pattern so a parameter carrying a required value counts
+/// as the literal it actually matches. What is left for this file to decide is only whether a common concrete
+/// path EXISTS, which is structural and conservative:
 ///
 ///   - Two patterns of DIFFERENT segment count, or of DIFFERENT inbound precedence, cannot tie - a
 ///     more-specific match always wins, so a literal never ties with the parameter that could cover it, and
@@ -87,6 +88,33 @@ internal static class HostedRefusalRouteSpace
     /// all mapping is done and before the host serves. Inert when nothing is refused, so it does nothing on
     /// self-host, where no refusal endpoint exists.
     /// </summary>
+    /// <summary>
+    /// Selects the finalised endpoint set the way it MUST be read before StartAsync, then validates it. This
+    /// is the ONE place the pre-start data source is chosen, and both GatewayHost (immediately before its own
+    /// StartAsync) and the pre-start test harness call it - so the test drives the exact selection production
+    /// uses, and a revert of the source back to the DI composite reddens the tie tests instead of passing
+    /// unnoticed. See <see cref="SelectFinalisedEndpoints"/> for why the app's own data sources are the only
+    /// correct source here.
+    /// </summary>
+    public static void ValidateBeforeStart(IEndpointRouteBuilder app)
+        => Validate(SelectFinalisedEndpoints(app));
+
+    /// <summary>
+    /// The pre-start source SELECTION, factored to a single definition. The finalised endpoints are read from
+    /// the app's OWN <see cref="IEndpointRouteBuilder.DataSources"/>, which carry the group / minimal-API
+    /// endpoints (prefix and metadata conventions applied) the moment they are mapped. The DI-resolved
+    /// <see cref="EndpointDataSource"/> composite is deliberately NOT read here: it is not populated with those
+    /// endpoints until StartAsync builds the endpoint middleware, so before start it is EMPTY and the whole
+    /// validation would silently do nothing. Because this selection has exactly one definition shared by
+    /// production and the harness, reverting it to the DI composite fails the pre-start tie tests rather than
+    /// only regressing production.
+    /// </summary>
+    public static IReadOnlyList<Endpoint> SelectFinalisedEndpoints(IEndpointRouteBuilder app)
+    {
+        ArgumentNullException.ThrowIfNull(app);
+        return app.DataSources.SelectMany(source => source.Endpoints).ToList();
+    }
+
     public static void Validate(IEnumerable<Endpoint> endpoints)
     {
         ArgumentNullException.ThrowIfNull(endpoints);
@@ -182,11 +210,13 @@ internal static class HostedRefusalRouteSpace
     /// deliberately conservative (fail-CLOSED): it answers "could they tie", over-rejecting an ambiguous
     /// declaration rather than under-reporting a real tie.
     ///
-    /// The precedence half is NOT re-derived here. <see cref="RoutePrecedence"/> is the
-    /// framework's own inbound-precedence computation - the same ranking the matcher uses to decide which of
-    /// two candidate matches wins - so a literal never counts as tying with the parameter that could cover
-    /// it, and a constrained parameter never counts as tying with an unconstrained one, WITHOUT this file
-    /// re-implementing any of that ordering. Unequal precedence, or a different segment count, means no tie.
+    /// The precedence half is NOT re-derived here. Each pattern's own <see cref="RoutePattern.InboundPrecedence"/>
+    /// is the framework's inbound-precedence value - the same ranking the matcher uses to decide which of two
+    /// candidate matches wins - so a literal never counts as tying with the parameter that could cover it, and
+    /// a constrained parameter never counts as tying with an unconstrained one, WITHOUT this file re-implementing
+    /// any of that ordering. Reading the FINALISED pattern's own value (rather than reconstructing it through a
+    /// RouteTemplate, which drops the pattern's required values) means a parameter carrying a required value is
+    /// scored as the literal it actually matches. Unequal precedence, or a different segment count, means no tie.
     ///
     /// What is left is only whether a common concrete path EXISTS at that shared precedence, decided
     /// per-segment by <see cref="SegmentsCanShareValue"/>.
@@ -194,7 +224,7 @@ internal static class HostedRefusalRouteSpace
     private static bool CouldMatchSamePath(RoutePattern a, RoutePattern b)
     {
         if (a.PathSegments.Count != b.PathSegments.Count) return false;
-        if (InboundPrecedence(a) != InboundPrecedence(b)) return false;
+        if (a.InboundPrecedence != b.InboundPrecedence) return false;
 
         for (var i = 0; i < a.PathSegments.Count; i++)
             if (!SegmentsCanShareValue(a.PathSegments[i], b.PathSegments[i]))
@@ -202,15 +232,6 @@ internal static class HostedRefusalRouteSpace
 
         return true;
     }
-
-    /// <summary>
-    /// The framework's own inbound route precedence for a pattern - the exact ranking the matcher uses to
-    /// decide which of two candidate matches wins. The public entry point takes a <see cref="RouteTemplate"/>,
-    /// and a <see cref="RouteTemplate"/> is built from a <see cref="RoutePattern"/> directly, so this works on
-    /// the model-built refusal patterns whose RawText is null. Nothing about precedence is re-derived here.
-    /// </summary>
-    private static decimal InboundPrecedence(RoutePattern pattern)
-        => RoutePrecedence.ComputeInbound(new RouteTemplate(pattern));
 
     /// <summary>
     /// Whether two segments AT EQUAL PRECEDENCE could be filled by a common value. Only when BOTH sides are a

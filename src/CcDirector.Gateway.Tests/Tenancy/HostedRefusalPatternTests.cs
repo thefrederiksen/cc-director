@@ -233,6 +233,29 @@ public sealed class HostedRefusalRouteSpaceTests
     }
 
     [Fact]
+    public void A_required_value_live_route_ties_with_a_literal_refusal_and_fails_the_start()
+    {
+        // The precedence source matters. The framework's RouteTemplate(RoutePattern) conversion DROPS a
+        // pattern's RequiredValues, but the pattern's OWN InboundPrecedence treats a parameter carrying a
+        // non-empty required value as a LITERAL. So a live /x/{slug} whose required value is slug=fixed
+        // matches ONLY /x/fixed, at the SAME precedence as the literal refusal /x/fixed - the two TIE. Method
+        // removal manufactures exactly this: a method-specific denied /x/fixed beside a verb-less
+        // required-value live endpoint. Reconstructing precedence through a RouteTemplate would score the live
+        // pattern as a plain parameter and miss the tie; reading the pattern's own InboundPrecedence sees it.
+        var live = RoutePatternFactory.Parse(
+            "/x/{slug}", defaults: null, parameterPolicies: null, requiredValues: new { slug = "fixed" });
+
+        // The tie is a precedence equality on the FINALISED patterns - documented here so the reason the
+        // start must fail is explicit, not just the throw below.
+        Assert.Equal(RoutePatternFactory.Parse("/x/fixed").InboundPrecedence, live.InboundPrecedence);
+
+        var endpoints = new[] { Refusal("/x/fixed"), LiveFromPattern(live) };
+
+        var error = Assert.Throws<InvalidOperationException>(() => HostedRefusalRouteSpace.Validate(endpoints));
+        Assert.Contains("live route", error.Message);
+    }
+
+    [Fact]
     public void Refusals_on_distinct_shapes_beside_a_non_colliding_live_route_are_allowed()
     {
         // The other direction: distinct shapes do NOT tie, and a literal sibling is a different shape from a

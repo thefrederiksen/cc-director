@@ -684,12 +684,13 @@ internal sealed class UnstartedHostedApp : IAsyncDisposable
 
         map(app);
 
-        // The FINALISED set, read the way GatewayHost reads it - and, crucially, NOT started. The app's own
+        // The FINALISED set, selected through the SAME production helper GatewayHost uses
+        // (HostedRefusalRouteSpace.SelectFinalisedEndpoints) - and, crucially, NOT started. The app's own
         // data sources already carry the group endpoints; the DI CompositeEndpointDataSource would still be
-        // empty here, which is exactly the production trap this harness exists to keep honest.
-        var endpoints = ((IEndpointRouteBuilder)app).DataSources
-            .SelectMany(source => source.Endpoints)
-            .ToList();
+        // empty here, which is exactly the production trap this harness exists to keep honest. Sharing the
+        // ONE selection means a revert of that source to the DI composite empties these endpoints and reddens
+        // the tie tests below, rather than passing unnoticed while production silently regresses.
+        var endpoints = HostedRefusalRouteSpace.SelectFinalisedEndpoints(app);
 
         return new UnstartedHostedApp(app, priorHosted, endpoints);
     }

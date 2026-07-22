@@ -2140,10 +2140,10 @@ public sealed class GatewayHost : IAsyncDisposable
         // returns an EMPTY set and the validation silently does nothing. The app's own
         // IEndpointRouteBuilder.DataSources carry the group endpoints (prefix and metadata conventions
         // applied) as soon as they are mapped, which is what lets this fail the start BEFORE any listener
-        // binds rather than after.
-        Tenancy.HostedRefusalRouteSpace.Validate(
-            ((Microsoft.AspNetCore.Routing.IEndpointRouteBuilder)_app).DataSources
-                .SelectMany(source => source.Endpoints));
+        // binds rather than after. That source selection lives in ONE place - ValidateBeforeStart - shared
+        // with the pre-start test harness, so reverting it to the DI composite reddens the tie tests rather
+        // than silently regressing this path.
+        Tenancy.HostedRefusalRouteSpace.ValidateBeforeStart(_app);
 
         await _app.StartAsync();
         FileLog.Write($"[GatewayHost] listening on http://0.0.0.0:{Port} (all interfaces, auth-gated; version {version})");
