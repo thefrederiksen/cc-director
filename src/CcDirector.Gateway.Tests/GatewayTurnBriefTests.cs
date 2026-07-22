@@ -1,4 +1,5 @@
 using System.Text.Json;
+using CcDirector.Core.Tenancy;
 using CcDirector.Core.Wingman;
 using CcDirector.Gateway.Briefing;
 using CcDirector.Gateway.Contracts;
@@ -165,7 +166,7 @@ public sealed class TurnEndWatcherTests
     {
         var turnEnds = new List<TurnEndSignal>();
         var working = new List<string>();
-        var watcher = new TurnEndWatcher(turnEnds.Add, (sid, _) => working.Add(sid));
+        var watcher = new TurnEndWatcher(turnEnds.Add, (_, sid, _) => working.Add(sid));
         return (watcher, turnEnds, working);
     }
 
@@ -175,8 +176,8 @@ public sealed class TurnEndWatcherTests
         var (watcher, turnEnds, working) = BuildObserved();
         using (watcher)
         {
-            watcher.Observe("s1", "Working", "d1");
-            watcher.Observe("s1", "WaitingForInput", "d1");
+            watcher.Observe(TenantId.Local, "s1", "Working", "d1");
+            watcher.Observe(TenantId.Local, "s1", "WaitingForInput", "d1");
 
             Assert.Single(working);
             Assert.Single(turnEnds);
@@ -193,11 +194,11 @@ public sealed class TurnEndWatcherTests
         var (watcher, turnEnds, working) = BuildObserved();
         using (watcher)
         {
-            watcher.Observe("s1", "Working", "http://d1");           // doorbell
-            watcher.Observe("s1", "WaitingForInput", "http://d1");   // doorbell -> turn end
-            watcher.Observe("s1", "WaitingForInput", "http://d1");   // heartbeat replay
-            watcher.Observe("s1", "Working", "http://d1");           // user replied
-            watcher.Observe("s1", "Working", "http://d1");           // heartbeat replay
+            watcher.Observe(TenantId.Local, "s1", "Working", "http://d1");           // doorbell
+            watcher.Observe(TenantId.Local, "s1", "WaitingForInput", "http://d1");   // doorbell -> turn end
+            watcher.Observe(TenantId.Local, "s1", "WaitingForInput", "http://d1");   // heartbeat replay
+            watcher.Observe(TenantId.Local, "s1", "Working", "http://d1");           // user replied
+            watcher.Observe(TenantId.Local, "s1", "Working", "http://d1");           // heartbeat replay
 
             Assert.Single(turnEnds);
             Assert.Equal(2, working.Count); // entered Working twice, replays ignored
@@ -225,13 +226,13 @@ public sealed class TurnEndWatcherTests
         var (watcher, turnEnds, _) = BuildObserved();
         using (watcher)
         {
-            watcher.Observe("s1", "Working", "http://d1");
-            watcher.Observe("s1", "WaitingForInput", "http://d1");
+            watcher.Observe(TenantId.Local, "s1", "Working", "http://d1");
+            watcher.Observe(TenantId.Local, "s1", "WaitingForInput", "http://d1");
             turnEnds.Clear();
 
             // Working -> (lost) -> heartbeat says Working -> doorbell says WaitingForInput
-            watcher.Observe("s1", "Working", "http://d1");
-            watcher.Observe("s1", "WaitingForInput", "http://d1");
+            watcher.Observe(TenantId.Local, "s1", "Working", "http://d1");
+            watcher.Observe(TenantId.Local, "s1", "WaitingForInput", "http://d1");
             Assert.Single(turnEnds);
         }
     }
