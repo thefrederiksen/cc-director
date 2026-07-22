@@ -13,6 +13,7 @@ using CcDirector.Core.Voice.Services;
 using CcDirector.Gateway.Contracts;
 using CcDirector.Gateway.Discovery;
 using CcDirector.Gateway.HostedAi;
+using CcDirector.Gateway.Tenancy;
 using CcDirector.Gateway.Voice;
 using CcDirector.Gateway.Wingman;
 using Microsoft.AspNetCore.Builder;
@@ -81,6 +82,73 @@ internal static class GatewayWingmanVoiceEndpoint
     private static IResult TooLarge(string error) =>
         Results.Json(new { error }, statusCode: StatusCodes.Status413PayloadTooLarge);
 
+    /// <summary>The exclusive prefix the /wingman/utterance upload route group owns outright on hosted.</summary>
+    internal const string UtterancePrefix = "/wingman/utterance";
+
+    /// <summary>The single error string the hosted utterance refusal serves. Held here so a test can assert
+    /// against the exact string that is served rather than a copy that could drift.</summary>
+    internal const string UtteranceRefusalMessage = "the wingman utterance upload is not available on the hosted gateway";
+
+    /// <summary>
+    /// The hosted refusal payload for the whole /wingman/utterance upload family (issue #1896). Validated on
+    /// construction, so a blank field fails the Gateway at startup rather than serving a refusal a caller
+    /// cannot act on. 404 rather than 403: on hosted this upload family does not exist as a concept - an
+    /// upload id is meaningless without a tenant to scope it to, and the store has none - so "not here" is
+    /// the truthful answer; 403 would imply the right credential could reach it, and none can. Driven off
+    /// <see cref="GatewayHostedMode.IsHosted"/> inside the primitive - the INDEPENDENT deployment signal, not
+    /// an optional argument a caller can omit and thereby fail OPEN.
+    ///
+    /// UN-DENY CONDITION. Two SEPARATE questions, because answering only the first is how a deny gets
+    /// mistaken for a clean slate. "Does anything still write this state" and "what is already sitting
+    /// there" have different answers, and the second one does not improve while the deny stands.
+    ///
+    /// (a) DOES ANYTHING STILL WRITE IT? No, and NO OFF-ROUTE WRITER NEEDS A HOST-GATE HERE. Checked by
+    /// sweeping the COMPLETE MUTATING SURFACE of the state rather than the routes that touch it: every
+    /// construction of a <c>VoiceUploadStore</c> in the repository, then every production caller of every
+    /// mutating method on the type (<c>Register</c>, <c>StoreChunkAsync</c>, <c>AssembleAsync</c>,
+    /// <c>Delete</c>, <c>MarkPending</c>, <c>MarkDelivered</c>, <c>MarkAbandoned</c>, <c>MarkFailed</c>,
+    /// <c>ClearFailed</c>, <c>RecordFailedDeliveryBaseline</c>, <c>Acknowledge</c>, <c>SweepAbandoned</c>),
+    /// and finally any raw file writer into the root that bypasses the type entirely. The only production
+    /// instance on this root is the one <c>GatewayHost</c> holds as <c>_voiceTurnUploads</c> and hands to
+    /// this endpoint alone; every mutating call reached from this file is inside this refused group;
+    /// <c>SweepAbandoned</c> has NO production caller at all, only a test; nothing writes the root outside the
+    /// store. The one residual write is the constructor calling <c>CcStorage.VoiceTurnUploads()</c>, which
+    /// ENSURES the directory exists: an empty directory, never content. So with the routes refused, no writer
+    /// to this store reaches it on hosted - there is no OFF-route writer to gate (unlike the
+    /// transcription-telemetry and wingman-training stores, whose writers fire from undenied paths and are
+    /// host-gated at the writer).
+    ///
+    /// (b) WHAT ALREADY EXISTS? A SEPARATE QUESTION, and it is not answered by (a). NO NEW WRITES IS A
+    /// STATEMENT ABOUT THE FUTURE, NOT EVIDENCE ABOUT THE PAST. The shared root may hold pre-deny
+    /// cross-tenant staged audio and assembled transcripts, written before this refusal was hung and
+    /// untouched by it. SO THE UN-DENY STILL REQUIRES PURGING OR QUARANTINING THE LEGACY ROOT, on top of
+    /// issue #1896's tenant-keying of the store - "the write is stopped" is not "the root is clean" and must
+    /// never be read as the whole condition.
+    ///
+    /// HOW THE DENY IS EXPRESSED - THE SHARED REFUSAL PRIMITIVE, NOT A BESPOKE FILTER. This group is denied
+    /// through <see cref="HostedRouteDeny.ExclusiveGroup"/>, the ONE hosted-refusal boundary every deny
+    /// family on this Gateway adopts (reference implementation: the key-vault deny in pull request #1904). An
+    /// earlier revision rolled its own <c>AddEndpointFilter</c> deny before the primitive existed; it has
+    /// been replaced. The family owns the <c>/wingman/utterance</c> prefix OUTRIGHT - the rest of the voice
+    /// surface (voice-turn, tts, transcribe, explain, ask, menu) lives on OTHER paths and keeps serving on
+    /// hosted - so on hosted the three utterance handlers are NEVER MAPPED and ONE verb-less catch-all refuses
+    /// everything under the prefix plus a root refusal at the prefix itself, covering every verb, every
+    /// request shape, and every future sub-path for free. The exclusivity claim is CHECKED at startup by
+    /// <see cref="HostedRefusalRouteSpace.ValidateBeforeStart"/>. Off hosted the primitive maps the three real
+    /// handlers exactly as an unguarded builder would - self-host unchanged.
+    /// </summary>
+    private static HostedDenial UtteranceDenial() => new(
+        family: "wingman-utterance",
+        message: UtteranceRefusalMessage,
+        reason: "the utterance upload store keys staged audio and the assembled transcript SOLELY by a " +
+                "caller-supplied Idempotency-Key under one on-disk root shared across every account, and complete " +
+                "returns the assembled transcript - so an account can claim another account's upload id and be " +
+                "handed the words it spoke, or overwrite its chunks before it completes",
+        unDenyInstruction: "do NOT simply remove this deny: tenant-key the utterance store, THEN purge or " +
+                "quarantine the pre-existing shared root (pre-deny cross-tenant staged audio and transcripts are " +
+                "already in it and this change never touched them), and only then restore a tenant-scoped route",
+        statusCode: StatusCodes.Status404NotFound);
+
     /// <summary>
     /// Read a request body into memory, giving up the moment it exceeds <paramref name="max"/>.
     ///
@@ -105,7 +173,12 @@ internal static class GatewayWingmanVoiceEndpoint
         }
     }
 
-    public static void Map(
+    /// Returns the DENIED utterance group. That return value exists SOLELY so a test can map a brand-new
+    /// route onto the same group and prove it is refused on hosted with no deny written for it - the
+    /// future-route property, which is otherwise invisible to any test that only drives the routes existing
+    /// today. Only the utterance family is denied; the rest of the voice surface stays on the ungrouped
+    /// builder and keeps serving on hosted.
+    public static HostedDenyGroup Map(
         IEndpointRouteBuilder app,
         DirectorRegistry registry,
         Func<WingmanModelRole, CancellationToken, Task<IAgentBrain>> brainProvider,
@@ -304,104 +377,53 @@ internal static class GatewayWingmanVoiceEndpoint
         //   POST   /wingman/utterance/upload                  -> { upload_id }
         //   PUT    /wingman/utterance/{id}/chunk/{i}           -> { ok }   (idempotent)
         //   POST   /wingman/utterance/{id}/complete {total}    -> { transcript } | 409 { missing }
-        app.MapPost("/wingman/utterance/upload", (HttpContext ctx) =>
-        {
-            var key = ctx.Request.Headers["Idempotency-Key"].ToString();
-            var id = uploads.Register(string.IsNullOrWhiteSpace(key) ? null : key);
-            return Results.Json(new { upload_id = id });
-        });
+        //
+        // DENIED IN WHOLE ON HOSTED (issue #1896). None of these three resolves a tenant at all, the upload
+        // id is CALLER-CHOSEN (it arrives as an Idempotency-Key header), the store behind them has one
+        // on-disk root shared across every account with no tenant segment in the path, and `complete`
+        // returns the assembled transcript. So an account can claim another account's upload id and be
+        // handed the words that account spoke - and, before the owner completes, overwrite its chunks.
+        // A caller-supplied identifier is not a tenant boundary: secrecy of an identifier is not
+        // authorization, and upload ids travel through client logs, retries and store-and-forward queues.
+        //
+        // The whole family, not just `complete`: denying only the leg that returns text would leave the
+        // chunk leg able to corrupt another account's recording, which is the same boundary failure with a
+        // different consequence. It is a deny rather than a partition because the staged records carry no
+        // tenant to partition BY - partitioning the store is issue #1896's job and un-denying is gated on
+        // it. It refuses rather than returning an empty transcript, because an empty transcript is a FALSE
+        // statement ("you said nothing") where a refusal is merely an absent one.
+        //
+        // Self-host is COMPLETELY unchanged: one tenant, so a shared root is the owner's own root, and the
+        // phone's record-locally-and-keep-retrying path works exactly as it always has.
+        //
+        // The exclusive prefix reproduces the route paths character for character (the legs are written
+        // relative to it), so the self-host surface is byte-identical; on hosted the ONE catch-all under the
+        // prefix also covers legs added to this family later, which a per-route guard would not.
+        var utterance = HostedRouteDeny.ExclusiveGroup(app, UtterancePrefix, UtteranceDenial());
 
-        app.MapPut("/wingman/utterance/{uploadId}/chunk/{index:int}", async (string uploadId, int index, HttpContext ctx, CancellationToken ct) =>
-        {
-            if (!uploads.Exists(uploadId))
-                return Results.Json(new { error = "unknown upload id (register it first)" }, statusCode: StatusCodes.Status404NotFound);
-
-            // Refuse an oversized chunk BEFORE reading a byte of it, when the client declares its size.
-            // This is the cheap door: no allocation, no read, and the client learns immediately.
-            if (ctx.Request.ContentLength is { } declared && declared > VoiceUploadLimits.MaxChunkBytes)
-            {
-                FileLog.Write($"[GatewayWingmanVoice] chunk rejected: declared {declared} bytes > {VoiceUploadLimits.MaxChunkBytes} cap (upload={uploadId}, index={index})");
-                return TooLarge($"chunk is {declared} bytes; the limit is {VoiceUploadLimits.MaxChunkBytes}");
-            }
-
-            var sha = ctx.Request.Headers["X-Chunk-Sha256"].ToString();
-
-            // Content-Length is the client's CLAIM. It can be absent (chunked transfer-encoding) and it
-            // can be wrong, so the read itself is bounded too: this stops the moment the body exceeds
-            // the cap instead of faithfully buffering however much someone chooses to send.
-            var bytes = await ReadBoundedAsync(ctx.Request.Body, VoiceUploadLimits.MaxChunkBytes, ct);
-            if (bytes is null)
-            {
-                FileLog.Write($"[GatewayWingmanVoice] chunk rejected: body exceeded the {VoiceUploadLimits.MaxChunkBytes}-byte cap (upload={uploadId}, index={index})");
-                return TooLarge($"chunk exceeded the {VoiceUploadLimits.MaxChunkBytes}-byte limit");
-            }
-
-            // Total across the whole upload. Excluding THIS index is what keeps a resend free: the
-            // client's retry replaces chunk N, it does not add a second copy of it, and retrying is the
-            // normal case on this path.
-            var staged = uploads.StagedBytes(uploadId, excludeIndex: index);
-            if (staged + bytes.Length > VoiceUploadLimits.MaxTotalUploadBytes)
-            {
-                FileLog.Write($"[GatewayWingmanVoice] chunk rejected: upload total would be {staged + bytes.Length} > {VoiceUploadLimits.MaxTotalUploadBytes} cap (upload={uploadId})");
-                return TooLarge($"upload would exceed the {VoiceUploadLimits.MaxTotalUploadBytes}-byte total limit");
-            }
-
-            try { await uploads.StoreChunkAsync(uploadId, index, bytes, string.IsNullOrEmpty(sha) ? null : sha, ct); return Results.Json(new { ok = true, index }); }
-            catch (Exception ex) { return Results.Json(new { error = ex.Message }, statusCode: StatusCodes.Status400BadRequest); }
-        });
-
-        app.MapPost("/wingman/utterance/{uploadId}/complete", async (string uploadId, UtteranceCompleteRequest? req, CancellationToken ct) =>
-        {
-            if (req is null || req.TotalChunks <= 0)
-                return Results.Json(new { error = "totalChunks (>0) is required" }, statusCode: StatusCodes.Status400BadRequest);
-            if (!uploads.Exists(uploadId))
-                return Results.Json(new { error = "unknown upload id (register it first)" }, statusCode: StatusCodes.Status404NotFound);
-
-            // The configured mode's key must be present (issue #887: both modes are key-bearing). The
-            // single transcription owner resolves this; check it BEFORE assembling so a no-key request
-            // does not pay the reassembly cost.
-            var routing = transcription.Resolve();
-            if (routing.Key is null)
-                return Results.Json(new { error = $"no key configured for transcription mode {routing.Mode.ToConfigString()}" }, statusCode: StatusCodes.Status503ServiceUnavailable);
-
-            AssembleResult assembled;
-            try { assembled = await uploads.AssembleAsync(uploadId, req.TotalChunks, ct); }
-            catch (Exception ex) { return Results.Json(new { error = ex.Message }, statusCode: StatusCodes.Status400BadRequest); }
-
-            if (assembled.Status == "unknown_upload")
-                return Results.Json(new { error = "unknown upload id" }, statusCode: StatusCodes.Status404NotFound);
-            if (assembled.Status == "incomplete")
-                return Results.Json(new { status = "incomplete", missing = assembled.Missing }, statusCode: StatusCodes.Status409Conflict);
-
-            var assembledAudio = assembled.Audio;
-            if (assembledAudio is null || assembledAudio.Length == 0)
-            {
-                uploads.Delete(uploadId);
-                return Results.Json(new { error = "assembled recording was empty" }, statusCode: StatusCodes.Status502BadGateway);
-            }
-
-            // Transcribe through the single owner WITH the validated dictionary correction applied (the
-            // SAME engine every other surface uses; fails open to raw in local mode or on any error).
-            var result = await transcription.TranscribeAsync(
-                assembledAudio, "audio." + (req.Ext ?? "webm"), req.Mime ?? "audio/webm", applyCorrection: true, ct);
-            uploads.Delete(uploadId);
-            // Out of credits / monthly cap (issue #939): map to the shared 402 state (branch by code)
-            // instead of flattening it into a generic 502 - so the client shows the consistent
-            // add-credits message and keeps the recording, not "transcription failed".
-            if (result.Outcome == Transcription.TranscriptionOutcome.OutOfCredits)
-                return HostedAiHttp.PaymentRequiredResult(HostedAiErrorMapper.MapCode(result.Code));
-            if (result.Outcome != Transcription.TranscriptionOutcome.Ok)
-                return Results.Json(new { error = result.Error }, statusCode: StatusCodes.Status502BadGateway);
-            FileLog.Write($"[GatewayWingmanVoice] utterance complete {uploadId}: mode={result.Mode}, chars={result.Text?.Length ?? 0}");
-
-            // Capture-health persistence (issue #863): when the mobile dialog sent its measurements,
-            // record the audio-loss deficit (recording wall-clock vs decoded audio duration) into the
-            // same dictation session log the desktop and overlay write, tagged Source="mobile". The
-            // assembled WAV byte count is the audio the server actually transcribed. Fire-and-forget.
-            PersistMobileCaptureHealth(uploadId, req, assembledAudio.Length, result.Text);
-
-            return Results.Json(new { transcript = result.Text });
-        });
+        // THE ROUTES ARE MAPPED WHERE THE UNFILTERED `app` IS NOT IN SCOPE - deliberately, and that is the
+        // only reason MapUtteranceRoutes exists as a separate method. It takes only the denied group handle
+        // (<see cref="HostedDenyGroup"/>), obtainable only from the refusal primitive.
+        //
+        // This file is the sharpest case of the problem, because unlike the other three families the
+        // unfiltered builder is LEGITIMATELY here: the voice-turn, text-to-speech, transcribe, explain, ask
+        // and menu routes below are not part of the denied family and must stay on `app`. That is exactly
+        // what made the bypass cheap - both builders in scope at the same mapping site, so each of these
+        // THREE utterance legs could INDIVIDUALLY be mapped onto `app` instead of onto `utterance`, a
+        // one-word edit that compiles, passes every existing test, and opens that leg on hosted while the
+        // other two stay correctly denied. Three independently bypassable primitives, each owing its own
+        // full-suite security run under the bypassability rule. Handing the group handle to a method that
+        // never receives `app` makes the mistake INEXPRESSIBLE rather than merely unlikely: inside
+        // MapUtteranceRoutes there is nothing to map onto except the group handle. The count falls by
+        // DESIGN, not by an argument about how careful the next author will be.
+        //
+        // THE LIMIT OF THAT PROPERTY, STATED SO NOBODY OVER-CLAIMS IT: it holds WITHIN THIS MAPPING SITE.
+        // It does not reach across sites. This deny is one of FOUR families, each creating its own group and
+        // mapping from its own site, so any one site can be wrong while the other three stay correct and no
+        // compiler notices. That is exactly why the registered proof is four handler-restore arms rather than
+        // one: the group handle removes the per-ROUTE bypass inside a family, it does not merge the four
+        // families into one primitive.
+        MapUtteranceRoutes(utterance, uploads, transcription);
 
         // Text-to-speech for the mobile Voice screen + Cockpit: turn the wingman's spoken summary into
         // natural-sounding audio (the browser's own voice is robotic). Returns audio/mpeg bytes the
@@ -807,6 +829,120 @@ internal static class GatewayWingmanVoiceEndpoint
         // Pressing menu options (fully hands-free voice-answering) is its own later issue, built with per-agent
         // picker profiles and a screen-version lock on every keypress. The GET /wingman/menu detection above
         // stays (read-only, for the announce step); it never leads to a keypress.
+
+        // The GUARDED group only - not the whole voice surface. Everything else mapped above is deliberately
+        // outside it and must keep serving on hosted, which is itself asserted by a scoping control.
+        return utterance;
+    }
+
+    /// <summary>
+    /// The three /wingman/utterance upload legs, mapped relative to the <see cref="UtterancePrefix"/> so the
+    /// full paths are <c>/wingman/utterance/upload</c> and <c>/wingman/utterance/{uploadId}/...</c> exactly as
+    /// before. Takes the denied GROUP HANDLE and nothing else - see the note at the call site: the unfiltered
+    /// route builder that the rest of this file legitimately uses is deliberately out of scope here, so no leg
+    /// of this family can be mapped around the hosted refusal.
+    /// </summary>
+    private static void MapUtteranceRoutes(HostedDenyGroup utterance, VoiceUploadStore uploads,
+        Transcription.GatewayTranscriptionService transcription)
+    {
+        utterance.MapPost("/upload", (HttpContext ctx) =>
+        {
+            var key = ctx.Request.Headers["Idempotency-Key"].ToString();
+            var id = uploads.Register(string.IsNullOrWhiteSpace(key) ? null : key);
+            return Results.Json(new { upload_id = id });
+        });
+
+        utterance.MapPut("/{uploadId}/chunk/{index:int}", async (string uploadId, int index, HttpContext ctx, CancellationToken ct) =>
+        {
+            if (!uploads.Exists(uploadId))
+                return Results.Json(new { error = "unknown upload id (register it first)" }, statusCode: StatusCodes.Status404NotFound);
+
+            // Refuse an oversized chunk BEFORE reading a byte of it, when the client declares its size.
+            // This is the cheap door: no allocation, no read, and the client learns immediately.
+            if (ctx.Request.ContentLength is { } declared && declared > VoiceUploadLimits.MaxChunkBytes)
+            {
+                FileLog.Write($"[GatewayWingmanVoice] chunk rejected: declared {declared} bytes > {VoiceUploadLimits.MaxChunkBytes} cap (upload={uploadId}, index={index})");
+                return TooLarge($"chunk is {declared} bytes; the limit is {VoiceUploadLimits.MaxChunkBytes}");
+            }
+
+            var sha = ctx.Request.Headers["X-Chunk-Sha256"].ToString();
+
+            // Content-Length is the client's CLAIM. It can be absent (chunked transfer-encoding) and it
+            // can be wrong, so the read itself is bounded too: this stops the moment the body exceeds
+            // the cap instead of faithfully buffering however much someone chooses to send.
+            var bytes = await ReadBoundedAsync(ctx.Request.Body, VoiceUploadLimits.MaxChunkBytes, ct);
+            if (bytes is null)
+            {
+                FileLog.Write($"[GatewayWingmanVoice] chunk rejected: body exceeded the {VoiceUploadLimits.MaxChunkBytes}-byte cap (upload={uploadId}, index={index})");
+                return TooLarge($"chunk exceeded the {VoiceUploadLimits.MaxChunkBytes}-byte limit");
+            }
+
+            // Total across the whole upload. Excluding THIS index is what keeps a resend free: the
+            // client's retry replaces chunk N, it does not add a second copy of it, and retrying is the
+            // normal case on this path.
+            var staged = uploads.StagedBytes(uploadId, excludeIndex: index);
+            if (staged + bytes.Length > VoiceUploadLimits.MaxTotalUploadBytes)
+            {
+                FileLog.Write($"[GatewayWingmanVoice] chunk rejected: upload total would be {staged + bytes.Length} > {VoiceUploadLimits.MaxTotalUploadBytes} cap (upload={uploadId})");
+                return TooLarge($"upload would exceed the {VoiceUploadLimits.MaxTotalUploadBytes}-byte total limit");
+            }
+
+            try { await uploads.StoreChunkAsync(uploadId, index, bytes, string.IsNullOrEmpty(sha) ? null : sha, ct); return Results.Json(new { ok = true, index }); }
+            catch (Exception ex) { return Results.Json(new { error = ex.Message }, statusCode: StatusCodes.Status400BadRequest); }
+        });
+
+        utterance.MapPost("/{uploadId}/complete", async (string uploadId, UtteranceCompleteRequest? req, CancellationToken ct) =>
+        {
+            if (req is null || req.TotalChunks <= 0)
+                return Results.Json(new { error = "totalChunks (>0) is required" }, statusCode: StatusCodes.Status400BadRequest);
+            if (!uploads.Exists(uploadId))
+                return Results.Json(new { error = "unknown upload id (register it first)" }, statusCode: StatusCodes.Status404NotFound);
+
+            // The configured mode's key must be present (issue #887: both modes are key-bearing). The
+            // single transcription owner resolves this; check it BEFORE assembling so a no-key request
+            // does not pay the reassembly cost.
+            var routing = transcription.Resolve();
+            if (routing.Key is null)
+                return Results.Json(new { error = $"no key configured for transcription mode {routing.Mode.ToConfigString()}" }, statusCode: StatusCodes.Status503ServiceUnavailable);
+
+            AssembleResult assembled;
+            try { assembled = await uploads.AssembleAsync(uploadId, req.TotalChunks, ct); }
+            catch (Exception ex) { return Results.Json(new { error = ex.Message }, statusCode: StatusCodes.Status400BadRequest); }
+
+            if (assembled.Status == "unknown_upload")
+                return Results.Json(new { error = "unknown upload id" }, statusCode: StatusCodes.Status404NotFound);
+            if (assembled.Status == "incomplete")
+                return Results.Json(new { status = "incomplete", missing = assembled.Missing }, statusCode: StatusCodes.Status409Conflict);
+
+            var assembledAudio = assembled.Audio;
+            if (assembledAudio is null || assembledAudio.Length == 0)
+            {
+                uploads.Delete(uploadId);
+                return Results.Json(new { error = "assembled recording was empty" }, statusCode: StatusCodes.Status502BadGateway);
+            }
+
+            // Transcribe through the single owner WITH the validated dictionary correction applied (the
+            // SAME engine every other surface uses; fails open to raw in local mode or on any error).
+            var result = await transcription.TranscribeAsync(
+                assembledAudio, "audio." + (req.Ext ?? "webm"), req.Mime ?? "audio/webm", applyCorrection: true, ct);
+            uploads.Delete(uploadId);
+            // Out of credits / monthly cap (issue #939): map to the shared 402 state (branch by code)
+            // instead of flattening it into a generic 502 - so the client shows the consistent
+            // add-credits message and keeps the recording, not "transcription failed".
+            if (result.Outcome == Transcription.TranscriptionOutcome.OutOfCredits)
+                return HostedAiHttp.PaymentRequiredResult(HostedAiErrorMapper.MapCode(result.Code));
+            if (result.Outcome != Transcription.TranscriptionOutcome.Ok)
+                return Results.Json(new { error = result.Error }, statusCode: StatusCodes.Status502BadGateway);
+            FileLog.Write($"[GatewayWingmanVoice] utterance complete {uploadId}: mode={result.Mode}, chars={result.Text?.Length ?? 0}");
+
+            // Capture-health persistence (issue #863): when the mobile dialog sent its measurements,
+            // record the audio-loss deficit (recording wall-clock vs decoded audio duration) into the
+            // same dictation session log the desktop and overlay write, tagged Source="mobile". The
+            // assembled WAV byte count is the audio the server actually transcribed. Fire-and-forget.
+            PersistMobileCaptureHealth(uploadId, req, assembledAudio.Length, result.Text);
+
+            return Results.Json(new { transcript = result.Text });
+        });
     }
 
     /// <summary>

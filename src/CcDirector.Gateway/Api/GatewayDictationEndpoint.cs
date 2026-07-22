@@ -6,6 +6,7 @@ using CcDirector.Core.Utilities;
 using CcDirector.Gateway.Contracts;
 using CcDirector.Gateway.Discovery;
 using CcDirector.Gateway.HostedAi;
+using CcDirector.Gateway.Tenancy;
 using CcDirector.Gateway.Transcription;
 using CcDirector.Gateway.Util;
 using CcDirector.Gateway.Voice;
@@ -39,6 +40,32 @@ namespace CcDirector.Gateway.Api;
 /// the tombstone is retired only by the client ack. Every route is token-gated via
 /// <see cref="AuthMiddleware.HasValidToken"/> so it holds even when the production tray Gateway runs with
 /// the global auth middleware off.
+///
+/// DENIED IN WHOLE ON HOSTED (issue #1884). This is the SIBLING of the utterance upload family denied in
+/// <see cref="GatewayWingmanVoiceEndpoint"/> under issue #1896 - a different route family standing on the
+/// same <see cref="VoiceUploadStore"/> shape, with the same defect: one on-disk root shared across every
+/// account, every directory and record and chunk keyed SOLELY by the caller-supplied upload id, a
+/// <c>DictationDeliveryRecord</c> that carries no tenant, and a static <c>_completes</c> cache keyed solely
+/// by that same id.
+///
+/// The disclosure is live and needs no session: after account A completes upload id X, account B posts
+/// /dictation/upload with <c>Idempotency-Key: X</c>, the terminal-register short-circuit reads A's record,
+/// and B is handed A's TRANSCRIPT. That leg never looks a session up, so the fact that /complete's session
+/// lookup already fails on hosted does not contain it. Before A reaches a terminal state, B can also
+/// overwrite A's chunks, or ack or abandon A's record.
+///
+/// A caller-supplied identifier is not a tenant boundary. Secrecy of an identifier is not authorization,
+/// and upload ids travel through client logs, retries and store-and-forward queues.
+///
+/// The whole family, not only the leg that hands text back: ack and abandon destroy another account's
+/// in-flight recording, which is the same missing boundary with a different consequence. It is a deny
+/// rather than a partition because the records carry no tenant to partition BY - partitioning the store is
+/// issue #1884's job, and un-denying is gated on it. It refuses rather than reporting an empty or dropped
+/// upload, because "your dictation was dropped" is a FALSE statement where a refusal is merely absent.
+///
+/// Self-host is COMPLETELY unchanged, and that is the control. Self-host has one tenant, so the shared root
+/// is the owner's own root and the phone's durable store-and-forward dictation lane behaves exactly as it
+/// always has.
 /// </summary>
 internal static class GatewayDictationEndpoint
 {
@@ -61,18 +88,122 @@ internal static class GatewayDictationEndpoint
     // is a single guid-pair and is bounded by real abandoned-upload volume.
     private static readonly ConcurrentDictionary<string, string> _uploadSids = new();
 
-    public static void Map(IEndpointRouteBuilder app, DirectorRegistry registry,
+    /// <summary>The exclusive prefix the dictation upload route group owns outright on hosted.</summary>
+    internal const string Prefix = "/dictation";
+
+    /// <summary>The single error string the hosted refusal serves. Held here so a test can assert against the
+    /// exact string that is served rather than a copy that could drift.</summary>
+    internal const string RefusalMessage = "dictation upload is not available on the hosted gateway";
+
+    /// <summary>
+    /// The hosted refusal payload for the whole /dictation upload family (issue #1884). Validated on
+    /// construction, so a blank field fails the Gateway at startup rather than serving a refusal a caller
+    /// cannot act on. 404 rather than 403: on hosted this upload family does not exist as a concept - an
+    /// upload id is meaningless without a tenant to scope it to, and the store has none - so "not here" is
+    /// the truthful answer; 403 would imply the right credential could reach it, and none can. Driven off
+    /// <see cref="GatewayHostedMode.IsHosted"/> inside the primitive - the INDEPENDENT deployment signal, not
+    /// an optional argument a caller can omit and thereby fail OPEN.
+    ///
+    /// UN-DENY CONDITION. Two SEPARATE questions, because answering only the first is how a deny gets
+    /// mistaken for a clean slate.
+    ///
+    /// (a) DOES ANYTHING STILL WRITE IT? No, and NO OFF-ROUTE WRITER NEEDS A HOST-GATE HERE. Checked by
+    /// sweeping the COMPLETE MUTATING SURFACE of the state rather than the routes that touch it: every
+    /// <c>VoiceUploadStore</c> construction in the repository, then every production caller of every mutating
+    /// method on the type, and finally any raw file writer into the root that bypasses the type. The only
+    /// production instance on the dictation-uploads root is the one <c>GatewayHost</c> holds as
+    /// <c>_dictationUploads</c>, which reaches this endpoint plus one READ-only status query
+    /// (<c>DictationStatusFor</c>); Core's <c>DictationLockReader</c> also only reads. Every mutation -
+    /// register, mark pending, store chunk, assemble, delete, mark delivered, mark failed, clear failed,
+    /// record baseline, acknowledge, mark abandoned - is inside this refused group or inside a private helper
+    /// (<c>RunCompleteCoreAsync</c>, <c>MapNonOkTranscription</c>) whose only caller is the completion leg,
+    /// which is itself refused. The static <c>_completes</c> cache is filled only by that same leg.
+    /// <c>SweepAbandoned</c> has no production caller. Nothing writes the root outside the store. The only
+    /// residual write is the constructor ensuring the directory exists: an empty directory, never content. So
+    /// with the routes refused, no writer to this store reaches it on hosted - there is no OFF-route writer
+    /// to gate (unlike the transcription-telemetry and wingman-training stores, whose writers fire from
+    /// undenied paths and are host-gated at the writer).
+    ///
+    /// (b) WHAT ALREADY EXISTS? A SEPARATE QUESTION, and it is not answered by (a). NO NEW WRITES IS A
+    /// STATEMENT ABOUT THE FUTURE, NOT EVIDENCE ABOUT THE PAST. The shared dictation-uploads root may hold
+    /// pre-deny cross-tenant staged audio, delivery records and transcripts. SO THE UN-DENY STILL REQUIRES
+    /// PURGING OR QUARANTINING THE LEGACY ROOT, on top of issue #1884's tenant-keying of the store, the
+    /// record and the <c>_completes</c> cache.
+    ///
+    /// NOTE THE BOUNDARY OF THE (a) CLAIM: it is about THIS store. A completed dictation also writes a turn
+    /// into the shared transcription telemetry log - but that writer is now host-gated in
+    /// <c>GatewayTranscriptionService.RecordTelemetry</c>, so it too stops on hosted (see the un-deny
+    /// condition on <c>TranscriptionAnalysisEndpoint</c>).
+    ///
+    /// HOW THE DENY IS EXPRESSED - THE SHARED REFUSAL PRIMITIVE, NOT A BESPOKE FILTER. This group is denied
+    /// through <see cref="HostedRouteDeny.ExclusiveGroup"/>, the ONE hosted-refusal boundary every deny
+    /// family on this Gateway adopts (reference implementation: the key-vault deny in pull request #1904). An
+    /// earlier revision rolled its own <c>AddEndpointFilter</c> deny before the primitive existed; it has
+    /// been replaced. The family owns the <c>/dictation</c> prefix OUTRIGHT - nothing else serves beneath it
+    /// - so on hosted the five handlers are NEVER MAPPED and ONE verb-less catch-all refuses everything under
+    /// the prefix plus a root refusal at the prefix itself, covering every verb, every request shape, and
+    /// every future sub-path for free. The exclusivity claim is CHECKED at startup by
+    /// <see cref="HostedRefusalRouteSpace.ValidateBeforeStart"/>. Off hosted the primitive maps the five real
+    /// handlers exactly as an unguarded builder would - self-host unchanged.
+    /// </summary>
+    private static HostedDenial Denial() => new(
+        family: "dictation-upload",
+        message: RefusalMessage,
+        reason: "the dictation upload store keys every directory, record and chunk SOLELY by the caller-supplied " +
+                "upload id under one on-disk root shared across every account, and a re-register of another " +
+                "account's upload id short-circuits on its terminal tombstone and hands back that account's " +
+                "transcript with no session lookup in the way - so a caller-supplied id is not a tenant boundary",
+        unDenyInstruction: "do NOT simply remove this deny: tenant-key the store, the delivery record and the " +
+                "_completes cache, THEN purge or quarantine the pre-existing shared dictation-uploads root " +
+                "(pre-deny cross-tenant staged audio, records and transcripts are already in it and this change " +
+                "never touched them), and only then restore a tenant-scoped route",
+        statusCode: StatusCodes.Status404NotFound);
+
+    /// <summary>
+    /// Maps the dictation routes and RETURNS the denied group they were mapped through. The routes are mapped
+    /// through the group HANDLE (<see cref="HostedDenyGroup"/>), never through the ungrouped builder: the
+    /// handle is obtainable only from <see cref="HostedRouteDeny"/>, so a route mapped around the refusal is
+    /// not expressible in <see cref="MapRoutes"/> without changing its signature - the bypass count is reduced
+    /// by design, not by care. On hosted the exclusive catch-all refuses the whole group and each handler is
+    /// DISCARDED; off hosted the handle maps each handler as an unguarded builder would. The return value
+    /// exists so a test can map a brand-new route through the returned handle and show the refusal already
+    /// covers routes nobody has written yet.
+    /// </summary>
+    public static HostedDenyGroup Map(IEndpointRouteBuilder outer, DirectorRegistry registry,
         SessionOwnerCache? owners, string token, GatewayTranscriptionService transcription,
         TranscribingSessions transcribingSessions, VoiceUploadStore uploads, Pairing.DeviceRegistry devices,
         Streaming.PushedSessionStore? pushedSessions = null,
         DirectorCommandRouter.SendDirectorCommandAsync? sendCommand = null,
         TimeSpan? streamStale = null)
     {
+        FileLog.Write($"[GatewayDictation] mapping {Prefix}; hosted={GatewayHostedMode.IsHosted} - on hosted the whole group is refused via the shared refusal primitive (issue #1884)");
+
+        var app = HostedRouteDeny.ExclusiveGroup(outer, Prefix, Denial());
+
         // Gateway Cleanup mission, Phase 2 (PR E-B): resolve the owning Director push-store-first and inject
         // the dictation through the tunnel-first SessionVerbClient (the delivery marker rides the PromptRequest
         // DeliveryUploadId field, not an HTTP header), so this path no longer HTTP-dials the Director.
         var stale = streamStale ?? TimeSpan.FromSeconds(Core.Configuration.GatewayConfig.DefaultStreamStaleAfterSeconds);
-        app.MapPost("/dictation/upload", (DictationUploadRequest? body, HttpContext ctx) =>
+
+        MapRoutes(app, registry, owners, token, transcription, transcribingSessions, uploads, devices,
+            pushedSessions, sendCommand, stale);
+        return app;
+    }
+
+    /// <summary>
+    /// The five dictation upload routes, mapped relative to the <see cref="Prefix"/> so the full paths are
+    /// <c>/dictation/upload</c> and <c>/dictation/{uploadId}/...</c> exactly as before. Takes the denied GROUP
+    /// HANDLE and nothing else: the ungrouped route builder is deliberately out of scope here, so no route in
+    /// this family can be mapped around the hosted refusal.
+    /// </summary>
+    private static void MapRoutes(HostedDenyGroup app, DirectorRegistry registry,
+        SessionOwnerCache? owners, string token, GatewayTranscriptionService transcription,
+        TranscribingSessions transcribingSessions, VoiceUploadStore uploads, Pairing.DeviceRegistry devices,
+        Streaming.PushedSessionStore? pushedSessions,
+        DirectorCommandRouter.SendDirectorCommandAsync? sendCommand,
+        TimeSpan stale)
+    {
+        app.MapPost("/upload", (DictationUploadRequest? body, HttpContext ctx) =>
         {
             if (!AuthMiddleware.HasValidToken(ctx, token, devices))
                 return Results.Json(new { error = "missing or invalid token" }, statusCode: StatusCodes.Status401Unauthorized);
@@ -109,7 +240,7 @@ internal static class GatewayDictationEndpoint
             return Results.Json(new { upload_id = uploadId });
         });
 
-        app.MapPut("/dictation/{uploadId}/chunk/{index:int}", async (string uploadId, int index, HttpContext ctx) =>
+        app.MapPut("/{uploadId}/chunk/{index:int}", async (string uploadId, int index, HttpContext ctx) =>
         {
             if (!AuthMiddleware.HasValidToken(ctx, token, devices))
                 return Results.Json(new { error = "missing or invalid token" }, statusCode: StatusCodes.Status401Unauthorized);
@@ -135,7 +266,7 @@ internal static class GatewayDictationEndpoint
             }
         });
 
-        app.MapPost("/dictation/{uploadId}/complete", async (string uploadId, DictationCompleteRequest? req, HttpContext ctx) =>
+        app.MapPost("/{uploadId}/complete", async (string uploadId, DictationCompleteRequest? req, HttpContext ctx) =>
         {
             if (!AuthMiddleware.HasValidToken(ctx, token, devices))
                 return Results.Json(new { error = "missing or invalid token" }, statusCode: StatusCodes.Status401Unauthorized);
@@ -223,7 +354,7 @@ internal static class GatewayDictationEndpoint
         // is a no-op returning retired=false. If the ack is lost the tombstone simply persists and a later
         // re-complete returns the same outcome and the client re-acks - so the tombstone is retired ONLY on
         // a real client ack, never by age.
-        app.MapPost("/dictation/{uploadId}/ack", (string uploadId, HttpContext ctx) =>
+        app.MapPost("/{uploadId}/ack", (string uploadId, HttpContext ctx) =>
         {
             if (!AuthMiddleware.HasValidToken(ctx, token, devices))
                 return Results.Json(new { error = "missing or invalid token" }, statusCode: StatusCodes.Status401Unauthorized);
@@ -240,7 +371,7 @@ internal static class GatewayDictationEndpoint
         // reconciles on its next contact - a re-register / re-complete of an abandoned id returns dropped, so
         // it drops its on-device copy with no resurrection and no duplicate. Abandon may target ANY surface's
         // dictation because it addresses the durable upload id, not the caller.
-        app.MapPost("/dictation/{uploadId}/abandon", (string uploadId, HttpContext ctx) =>
+        app.MapPost("/{uploadId}/abandon", (string uploadId, HttpContext ctx) =>
         {
             if (!AuthMiddleware.HasValidToken(ctx, token, devices))
                 return Results.Json(new { error = "missing or invalid token" }, statusCode: StatusCodes.Status401Unauthorized);

@@ -192,6 +192,18 @@ public sealed class GatewayTranscriptionService
         string turnId, string outcome, string mode, GatewayTranscriptionRouting routing, long audioBytes,
         long transcribeMs, long cleanupMs, bool corrected, string? raw, CleanupOutcome? cleanup, string? error)
     {
+        // HOSTED WRITE GATE (deny-by-default, defense in depth for the transcription-analysis read deny
+        // #1897). The shared telemetry log has no tenant in its path, file name, or records, and its ONLY
+        // reader is the now-denied analysis group (verified: nothing billing / usage-metering / quota
+        // consumes it, so gating undercounts nothing). Continuing to append every account's raw + cleaned
+        // speech to one shared file on hosted would keep accumulating cross-tenant data at rest that nothing
+        // on hosted can even read - so stop the write. Self-host is single-tenant and unchanged.
+        if (GatewayHostedMode.IsHosted)
+        {
+            FileLog.Write("[GatewayTranscriptionService] telemetry write SKIPPED on hosted: the shared transcription telemetry log has no tenant and its only reader is denied on hosted (issue #1897 defense in depth)");
+            return;
+        }
+
         var finalText = cleanup?.Text ?? raw;
         _telemetry.Record(new TranscriptionTelemetryRecord
         {
