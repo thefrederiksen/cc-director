@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import type { SessionDto } from "../api/client";
-import { classify, contextLine, deletionReason, dotColor, dotHex, effectiveColor, groupByDirector, inBucket, inWaitingOrder, isWorking, pendingDeletion, snoozeCountdown, stateLabel } from "./ordering";
+import { classify, contextLine, deletionReason, dotColor, dotHex, effectiveColor, groupByDirector, inBucket, inWaitingOrder, isDeferredHold, isWorking, pendingDeletion, snoozeCountdown, stateLabel } from "./ordering";
 
 function session(fields: Partial<SessionDto> & { sessionId?: string } = {}): SessionDto {
   return {
@@ -98,6 +98,14 @@ describe("Gateway-stamped session presentation state", () => {
   it("stateLabel fails loudly when missing", () => {
     expect(() => stateLabel(session({ effectiveColor: "red" })))
       .toThrow("Gateway /sessions missing stateLabel");
+  });
+
+  it("isDeferredHold reads the Gateway hold tri-state, which onHold cannot see", () => {
+    // A deferred snooze reads onHold=false, so only holdState distinguishes it from "not snoozed".
+    expect(isDeferredHold(session({ holdState: "DeferredHold", onHold: false } as Partial<SessionDto>))).toBe(true);
+    expect(isDeferredHold(session({ holdState: "Held" } as Partial<SessionDto>))).toBe(false);
+    expect(isDeferredHold(session({ holdState: "None" } as Partial<SessionDto>))).toBe(false);
+    expect(isDeferredHold(session({}))).toBe(false);
   });
 
   it("isWorking is exactly the Gateway's blue - nothing else gets a vote", () => {

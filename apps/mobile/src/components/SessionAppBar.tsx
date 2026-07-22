@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { useNavigate, useParams } from "react-router-dom";
+import { holdPillLabel } from "@devthrottle/client-core/sessions/snoozeAction";
 import { StatusPill } from "./StatusPill";
 import type { SessionManage } from "./useSessionManage";
 
@@ -150,7 +151,7 @@ export function SessionAppBar({ title, manage, showSnooze = false, showSwitchToV
                   }}
                   disabled={manage.busy || manage.onHold === null}
                 >
-                  {manage.held ? "Unsnooze" : "Snooze"}
+                  {manage.held || manage.deferred ? "Unsnooze" : "Snooze"}
                 </button>
               )}
 
@@ -188,14 +189,20 @@ export function SessionAppBar({ title, manage, showSnooze = false, showSwitchToV
       </div>
 
       {manage.error !== null && <div className="banner banner-error" role="alert">{manage.error}</div>}
-      {/* The snoozed pill reads the Gateway's FOLD (manage.snoozed), not the raw onHold flag: a Held session
-          that has started working is blue "Working" and must not still read "Snoozed". Shows the hold time
-          beside it when the Gateway's snooze clock is running, matching the roster and the desktop rail. */}
-      {manage.snoozed && (
-        <span className="manage-held-pill">
-          {manage.holdCountdown ? `Snoozed - ${manage.holdCountdown}` : "Snoozed"}
-        </span>
-      )}
+      {/* The snooze pill. A DEFERRED snooze reads "Snoozing when it finishes" (asked for while the agent is
+          working, so it arms when the work ends) - this is what makes snoozing a busy session give instant
+          feedback instead of looking like nothing happened. An armed snooze reads the Gateway FOLD
+          (manage.snoozed), not the raw onHold flag - a Held session that has started working is blue
+          "Working" and must not still read "Snoozed" - with the running hold time beside it, matching the
+          roster and the desktop rail. */}
+      {(() => {
+        const pill = holdPillLabel(
+          { held: manage.held, deferred: manage.deferred },
+          manage.snoozed,
+          manage.holdCountdown,
+        );
+        return pill !== null ? <span className="manage-held-pill">{pill}</span> : null;
+      })()}
 
       {confirming && (
         <div className="confirm-overlay" role="dialog" aria-modal="true" aria-label="Remove session">
