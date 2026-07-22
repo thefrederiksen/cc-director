@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { MicRecorder } from "./recorder";
+import { MicRecorder, rmsLevel } from "./recorder";
 
 // snapshotFlushed() is the tail-loss fix for the turn-taking paths (Car Mode "Over and out" and the
 // end-phrase watch): a bare snapshot() only sees chunks MediaRecorder has already delivered, so the
@@ -125,5 +125,56 @@ describe("MicRecorder.snapshotFlushed", () => {
     expect(flushed.size).toBe(2);
     // The backstop timer was cleared on delivery; advancing time must not blow up on a settled promise.
     await vi.advanceTimersByTimeAsync(1000);
+  });
+});
+
+// The equalizer meter (issue: the Cockpit Speak bars were sluggish/near-flat). rmsLevel reads the live
+// WAVEFORM (getByteTimeDomainData: bytes centred on 128, silence = 128) as instantaneous loudness, so the
+// bars track the speaker in real time. These pin the shape the equalizer relies on.
+describe("rmsLevel", () => {
+  // A window of pure silence is every sample sitting at the 128 centre.
+  function silence(n: number): Uint8Array {
+    return new Uint8Array(n).fill(128);
+  }
+  // A full-scale square wave: samples alternate between the two rails (0 and 255), the loudest possible
+  // read.
+  function fullScale(n: number): Uint8Array {
+    const buf = new Uint8Array(n);
+    for (let i = 0; i < n; i++) buf[i] = i % 2 === 0 ? 0 : 255;
+    return buf;
+  }
+
+  it("reads silence (all samples at the centre) as zero", () => {
+    expect(rmsLevel(silence(512))).toBe(0);
+  });
+
+  it("reads a full-scale waveform as the clamped maximum of 1", () => {
+    expect(rmsLevel(fullScale(512))).toBe(1);
+  });
+
+  it("reads an empty window as zero rather than dividing by zero", () => {
+    expect(rmsLevel(new Uint8Array(0))).toBe(0);
+  });
+
+  it("rises monotonically as the waveform gets louder", () => {
+    const quiet = new Uint8Array(512);
+    const loud = new Uint8Array(512);
+    for (let i = 0; i < 512; i++) {
+      // Small deviation from centre vs a larger one - louder audio swings further from 128.
+      quiet[i] = i % 2 === 0 ? 118 : 138; // +-10
+      loud[i] = i % 2 === 0 ? 88 : 168; // +-40
+    }
+    const q = rmsLevel(quiet);
+    const l = rmsLevel(loud);
+    expect(q).toBeGreaterThan(0);
+    expect(l).toBeGreaterThan(q);
+  });
+
+  it("stays within 0..1 for any input", () => {
+    const random = new Uint8Array(512);
+    for (let i = 0; i < 512; i++) random[i] = (i * 37) % 256;
+    const v = rmsLevel(random);
+    expect(v).toBeGreaterThanOrEqual(0);
+    expect(v).toBeLessThanOrEqual(1);
   });
 });

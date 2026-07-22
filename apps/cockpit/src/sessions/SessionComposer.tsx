@@ -7,7 +7,6 @@ import {
   gatewayErrorMessage,
   type QueueItem,
 } from "@devthrottle/client-core/api/client";
-import { backgroundTranscribeAndSend, type CapturedUtterance } from "@devthrottle/client-core/dictation/backgroundSend";
 import { DictationDialog } from "@devthrottle/client-core/dictation/DictationDialog";
 import { insertAt } from "@devthrottle/client-core/dictation/transcript";
 
@@ -17,7 +16,20 @@ import { insertAt } from "@devthrottle/client-core/dictation/transcript";
 //   Send  -> POST /sessions/{sid}/prompt { appendEnter: true }  (submit the typed line; Ctrl+Enter)
 //   Speak -> mounts the shared DictationDialog (packages/client-core), exactly as the mobile
 //            SessionControls does; the transcript inserts at the caret (Insert) or inserts + submits
-//            (Send). One transcription path through the Gateway, unchanged.
+//            (Send). Both Insert and Send go through the SAME synchronous transcribe-then-act path
+//            (transcribeUtterance -> the Gateway's /wingman/utterance/* transcription, which is
+//            tenant-aware on hosted), so Send-direct sends exactly the text Insert would place.
+//
+// The Cockpit deliberately does NOT wire the DictationDialog's fire-and-forget onSendAudio path (the
+// durable background pipeline the phone uses so mobile Speak does not hold the screen). That pipeline
+// injects the turn server-side through the /dictation/* routes, which are NOT tenant-aware on the
+// hosted Gateway (they still resolve the session in the Local partition - documented blocker #1884),
+// so a hosted-Cockpit Send-direct through it resolves an empty partition, holds, and retries forever
+// with no visible status - "Send basically sends nothing". The Cockpit also never mounts the mobile's
+// DictationStatusStrip / resumePendingDictations, so a held send has no feedback here at all. Omitting
+// onSendAudio makes the dialog fall back to the blocking commit-then-onSend path (the same fallback the
+// mobile Voice-mode reply panel uses), which reuses the proven Insert transcription path. See
+// mission/cockpit-speak-send.md.
 //   Queue -> POST /sessions/{sid}/queue { text }                (append to the queue; Ctrl+Shift+Enter)
 //   Attach -> POST /sessions/{sid}/upload-image                 (upload a device-local image, then
 //             insert the Director-side saved path into the composer for the agent to read)
@@ -195,8 +207,7 @@ export function SessionComposer({ sessionId, value, onChange, onQueued, focusHan
 
   // Speak: mount the shared dictation dialog, exactly like the mobile SessionControls. Insert drops the
   // transcript at the caret (no submit); Send inserts at the caret and submits via the same POST /prompt
-  // path; SendAudio hands the raw clip to the durable background pipeline (one transcription path
-  // through the Gateway).
+  // path. Both transcribe synchronously through the tenant-aware /wingman/utterance/* path.
   const onSpeak = useCallback(() => {
     caretRef.current = textareaRef.current?.selectionStart ?? value.length;
     setError(null);
@@ -231,32 +242,6 @@ export function SessionComposer({ sessionId, value, onChange, onQueued, focusHan
       } finally {
         setBusy(false);
       }
-    },
-    [sessionId, value, onChange],
-  );
-
-  // Immediate (fire-and-forget) Send from the Speak dialog: the dialog captured the audio buffer and
-  // closed itself. The durable pipeline transcodes + uploads + transcribes + submits in the background
-  // (the roster shows the session orange, "Transcribing..."), so the browser is free immediately.
-  const onDictateSendAudio = useCallback(
-    (captured: CapturedUtterance) => {
-      setDictating(false);
-      if (!sessionId) return;
-      const composerText = value;
-      const caret = caretRef.current;
-      onChange("");
-      setStatus("Transcribing...");
-      void backgroundTranscribeAndSend(sessionId, captured, {
-        onError: (message) => setError(message),
-        // Insert the dictated words at the snapshotted caret inside the typed text: the Gateway submits
-        // before + dictation + after.
-        composeParts: { before: composerText.slice(0, caret), after: composerText.slice(caret) },
-        // If the send does not complete, the audio is kept durably for resume, but the typed text is
-        // client-only: put it back so Send never silently loses it.
-        onFailed: () => {
-          if (composerText.trim().length > 0) onChange(composerText);
-        },
-      });
     },
     [sessionId, value, onChange],
   );
@@ -322,7 +307,6 @@ export function SessionComposer({ sessionId, value, onChange, onQueued, focusHan
         <DictationDialog
           onInsert={onDictateInsert}
           onSend={onDictateSend}
-          onSendAudio={onDictateSendAudio}
           onClose={() => setDictating(false)}
         />
       )}
