@@ -106,7 +106,7 @@ namespace CcDirector.Gateway.Tests;
 ///       - ALL NINE theory rows.
 ///   HostedLauncherMachineDenyTests.The_launcher_listing_leaks_no_machine_on_hosted
 ///   HostedLauncherMachineDenyTests.The_refusal_is_not_an_empty_launcher_list
-///   HostedLauncherMachineExclusiveGroupTests.A_route_added_to_the_group_later_is_refused_on_hosted_with_no_deny_of_its_own
+///   HostedLauncherMachineExclusiveGroupTests.A_body_bound_route_added_to_either_group_later_is_refused_on_hosted_with_no_binder_run
 ///   HostedLauncherMachineExclusiveGroupTests.A_refused_registration_writes_nothing_into_the_registry
 ///   HostedLauncherMachineExclusiveGroupTests.A_refused_spawn_never_reaches_the_resolver
 ///   HostedLauncherMachineExclusiveGroupTests.A_refused_launch_never_dials_the_launcher
@@ -461,7 +461,8 @@ internal sealed class MachineGroupProbeHost : IAsyncDisposable
     }
 
     public static async Task<MachineGroupProbeHost> StartAsync(
-        Action<HostedDenyGroup>? mapIntoGroup = null,
+        Action<HostedDenyGroup>? mapIntoMachineGroup = null,
+        Action<HostedDenyGroup>? mapIntoLauncherGroup = null,
         Action<IEndpointRouteBuilder>? mapOutsideGroup = null,
         bool withStubLauncher = false)
     {
@@ -506,11 +507,14 @@ internal sealed class MachineGroupProbeHost : IAsyncDisposable
             (directorId, req, ct) => Task.FromResult<(bool, SessionDto?, string?)>(
                 (true, new SessionDto { SessionId = SpawnedSessionId }, null)));
 
-        // The probe routes are /machines paths, so mapIntoGroup targets the MACHINE exclusive group. On hosted
-        // its handler is discarded and the group's catch-all refuses the path; off hosted the handler is mapped
-        // and served - which is exactly the future-route property both directions of the proof turn on.
-        var (_, machineGroup) = MachineEndpoints.Map(app, launchers, spawner, sendLauncherCommand: null);
-        mapIntoGroup?.Invoke(machineGroup);
+        // BOTH exclusive groups are handed back, because the family owns TWO prefixes and the future-route
+        // property has to be proved on EACH - a proof on /machines alone is silent on whether /launchers got
+        // the same coverage. On hosted a handler mapped into either group is discarded and that group's
+        // catch-all refuses the path; off hosted the handler is mapped and served. That is the future-route
+        // property both directions of the proof turn on, per prefix.
+        var (launcherGroup, machineGroup) = MachineEndpoints.Map(app, launchers, spawner, sendLauncherCommand: null);
+        mapIntoMachineGroup?.Invoke(machineGroup);
+        mapIntoLauncherGroup?.Invoke(launcherGroup);
         mapOutsideGroup?.Invoke(app);
 
         await app.StartAsync();
@@ -554,22 +558,46 @@ internal sealed class MachineGroupProbeHost : IAsyncDisposable
 /// exist today, which is precisely why it is dangerous - the difference only shows up on the route somebody
 /// adds NEXT, when it is open by default and nothing fails. On THIS family, "open by default" means
 /// cross-machine code execution. That difference is not observable by driving the nine routes that exist, so
-/// this class maps a BRAND-NEW probe route onto the group and asserts it is refused with no deny of its own
-/// written anywhere. Its mirror - the same probe path SERVED with hosted mode explicitly off - lives in
-/// <see cref="HostedLauncherMachineSelfHostControlTests"/>: one direction alone cannot tell a working gate
-/// apart from a brick.
+/// this class maps a BRAND-NEW body-bound probe route onto EACH exclusive group - <c>/launchers</c> and
+/// <c>/machines</c> - and asserts it is refused with no deny of its own written anywhere AND that no argument
+/// binder ran behind the refusal on any shape. Its mirror - the same probe path SERVED, and its binder RUN,
+/// with hosted mode explicitly off - lives in <see cref="HostedLauncherMachineSelfHostControlTests"/>: one
+/// direction alone cannot tell a working gate apart from a brick.
 /// </summary>
 public sealed class HostedLauncherMachineExclusiveGroupTests : IDisposable
 {
     internal const string ProbePayloadSentinel = "probe-payload-that-must-never-be-served-on-hosted";
 
-    /// <summary>The probe route mapped RELATIVE to the machine group prefix, so the full path is
-    /// <see cref="ProbeUrl"/>. It is mapped through the returned <see cref="HostedDenyGroup"/> handle, never
-    /// through the outer builder, which is what lets the future-route property be stated from a test.</summary>
+    /// <summary>The probe route mapped RELATIVE to each group prefix, so the full paths are
+    /// <see cref="ProbeUrl"/> (machine) and <see cref="LauncherProbeUrl"/> (launcher). It is mapped through the
+    /// returned <see cref="HostedDenyGroup"/> handles, never through the outer builder, which is what lets the
+    /// future-route property be stated from a test.</summary>
     internal const string ProbeRelativePath = "/added-after-the-deny-was-written";
 
-    /// <summary>The full URL the probe route answers on - the machine prefix plus <see cref="ProbeRelativePath"/>.</summary>
+    /// <summary>The full URL the probe route answers on under the MACHINE prefix - <see cref="ProbeRelativePath"/> mapped onto it.</summary>
     internal const string ProbeUrl = "/machines/added-after-the-deny-was-written";
+
+    /// <summary>
+    /// The full URL the probe route answers on under the LAUNCHER prefix. The family owns TWO exclusive
+    /// prefixes, so the future-route property is proved on each: a proof under only one prefix leaves the
+    /// other's catch-all untested and a regression there invisible.
+    /// </summary>
+    internal const string LauncherProbeUrl = "/launchers/added-after-the-deny-was-written";
+
+    /// <summary>
+    /// The SECOND canary route, mapped alongside the framework-body-bound one, taking a parameter with a
+    /// custom <see cref="FutureRouteBinding"/> binder. Its ONLY job is the no-binder-ran count: its
+    /// <c>BindAsync</c> records every invocation, so a bind behind the refusal reddens the count. The
+    /// malformed-body boundary is NOT proved through it - a custom binder ignores the body and never reaches
+    /// the framework's own 400, which is the whole reason the body-bound canary above exists separately.
+    /// </summary>
+    internal const string BinderProbeRelativePath = "/added-after-the-deny-was-written-binder";
+
+    /// <summary>The full URL the observable-binder canary answers on under the MACHINE prefix.</summary>
+    internal const string BinderProbeUrl = "/machines/added-after-the-deny-was-written-binder";
+
+    /// <summary>The full URL the observable-binder canary answers on under the LAUNCHER prefix.</summary>
+    internal const string LauncherBinderProbeUrl = "/launchers/added-after-the-deny-was-written-binder";
 
     private readonly string? _priorHosted;
 
@@ -583,24 +611,108 @@ public sealed class HostedLauncherMachineExclusiveGroupTests : IDisposable
     public void Dispose() => Environment.SetEnvironmentVariable("CC_GATEWAY_HOSTED", _priorHosted);
 
     /// <summary>
-    /// A route that did not exist when the refusal was written is refused anyway. NOTHING in
-    /// <see cref="MachineEndpoints"/> mentions this path and no guard is written for it here - the only thing
-    /// standing between the caller and the probe payload is the exclusive-prefix catch-all refusal. Replace the
-    /// exclusive-group deny with per-handler guards and this test serves the probe payload with a 200, which is
-    /// the future-route hole stated out loud.
+    /// A BODY-BOUND route added to EITHER exclusive group later is refused on hosted, and - the load-bearing
+    /// claim - NO argument binder runs behind the refusal on any request shape. NOTHING in
+    /// <see cref="MachineEndpoints"/> mentions these paths and no guard is written for them here; the only
+    /// thing standing between the caller and the probe payload is each prefix's catch-all refusal.
+    ///
+    /// WHY A BODY-BOUND POST AND NOT A PARAMETERLESS GET. A parameterless GET is exactly the shape the removed
+    /// endpoint-filter deny could ALSO answer correctly - the filter ran after the framework had already
+    /// selected the endpoint and bound its arguments, so the one shape it could not be seen to miss is the one
+    /// with nothing to bind. A body-bound POST is where the difference shows: the exclusive catch-all is
+    /// verb-less and handler-less, so the discarded handler's parameter is never bound; a per-handler guard,
+    /// which runs AFTER binding, would have let the framework read and bind the body before the guard fired.
+    ///
+    /// TWO CANARIES, ONE PER CONCERN - AND WHY ONE ALONE CANNOT DO BOTH. This replicates the shared primitive's
+    /// own #1904 canary (<c>HostedRouteDenyTests</c>) exactly.
+    ///   * The FRAMEWORK-body-bound canary (<see cref="ProbeRelativePath"/>) takes a real record,
+    ///     <see cref="FutureRouteBody"/>, bound by the FRAMEWORK'S OWN model binding - NOT a custom binder. That
+    ///     is the whole point of the malformed-body row: only a genuine <c>[FromBody]</c> record reaches the
+    ///     framework's own 400 boundary, so a refusal that returns instead of that 400 proves the deny
+    ///     short-circuits BEFORE binding. A custom <c>BindAsync</c> ignores the body and never reaches that
+    ///     boundary, so a malformed-body assertion against one would be VACUOUS - the exact defect this fix
+    ///     closes. The undenied equivalent (this SAME route off hosted) is shown to answer the framework 400 in
+    ///     <see cref="HostedLauncherMachineSelfHostControlTests.A_body_bound_route_added_to_either_group_still_serves_and_binds_on_self_host"/>.
+    ///   * The OBSERVABLE-binder canary (<see cref="BinderProbeRelativePath"/>) exists ONLY to make the
+    ///     no-binder claim observable: framework body binding leaves no trace, so proving NO binder ran needs a
+    ///     parameter that records the fact it was bound. <see cref="FutureRouteBinding"/> records every bind, so
+    ///     a binder that ran anyway reddens the count here rather than leaking silently.
+    ///
+    /// BOTH PREFIXES. The family owns <c>/launchers</c> and <c>/machines</c> as separate exclusive groups, so
+    /// each has its own catch-all and each is proved independently - a proof under one prefix says nothing
+    /// about the other's future-route coverage.
+    ///
+    /// Replace the exclusive-group deny with per-handler guards (or delete it) and this test serves the probe
+    /// payload with a 200, answers the framework 400 on malformed JSON, AND records a bind - which is the
+    /// future-route + body-binding hole stated out loud.
     /// </summary>
     [Fact]
-    public async Task A_route_added_to_the_group_later_is_refused_on_hosted_with_no_deny_of_its_own()
+    public async Task A_body_bound_route_added_to_either_group_later_is_refused_on_hosted_with_no_binder_run()
     {
+        FutureRouteBinding.Reset();
+
         await using var probe = await MachineGroupProbeHost.StartAsync(
-            mapIntoGroup: group => group.MapGet(ProbeRelativePath, () => Results.Json(new { probe = ProbePayloadSentinel })));
+            mapIntoMachineGroup: MapBothCanaries(ProbePayloadSentinel),
+            mapIntoLauncherGroup: MapBothCanaries(ProbePayloadSentinel));
 
-        var resp = await probe.Http.GetAsync(ProbeUrl);
+        foreach (var (bodyBoundUrl, binderUrl) in new[]
+                 {
+                     (ProbeUrl, BinderProbeUrl),
+                     (LauncherProbeUrl, LauncherBinderProbeUrl),
+                 })
+        {
+            // THE FRAMEWORK-BODY-BOUND CANARY. A WELL-FORMED body: with the deny gone this route binds the body
+            // through the framework and serves the sentinel; the refusal short-circuits before that.
+            var wellFormed = await probe.Http.PostAsync(bodyBoundUrl,
+                HostedLauncherMachineDenyTests.JsonBody(new { text = "hello" }));
+            Assert.Equal(HttpStatusCode.NotFound, wellFormed.StatusCode);
+            Assert.DoesNotContain(ProbePayloadSentinel, await wellFormed.Content.ReadAsStringAsync(), StringComparison.Ordinal);
+            await HostedLauncherMachineDenyTests.AssertBodyIsNothingButTheRefusal(wellFormed);
 
-        Assert.Equal(HttpStatusCode.NotFound, resp.StatusCode);
-        Assert.DoesNotContain(ProbePayloadSentinel, await resp.Content.ReadAsStringAsync(), StringComparison.Ordinal);
-        await HostedLauncherMachineDenyTests.AssertBodyIsNothingButTheRefusal(resp);
+            // A MALFORMED body against that SAME framework-bound route. Its [FromBody] record makes the
+            // framework answer its OWN 400 off hosted (the undenied equivalent, proved in the self-host
+            // control); on hosted the refusal short-circuits before any binding, so this must meet the SAME
+            // refusal, not a framework 400. THIS is the row the custom-binder shape could never prove.
+            var malformed = await probe.Http.PostAsync(bodyBoundUrl,
+                new StringContent("{ not json", Encoding.UTF8, "application/json"));
+            Assert.Equal(HttpStatusCode.NotFound, malformed.StatusCode);
+            Assert.DoesNotContain(ProbePayloadSentinel, await malformed.Content.ReadAsStringAsync(), StringComparison.Ordinal);
+            await HostedLauncherMachineDenyTests.AssertBodyIsNothingButTheRefusal(malformed);
+
+            // THE OBSERVABLE-BINDER CANARY, across shapes: the refusal must short-circuit before ANY argument
+            // binder runs. Its BindAsync records every invocation, so a bind behind the refusal reddens the
+            // count asserted below.
+            foreach (var shape in new[]
+                     {
+                         HostedLauncherMachineDenyTests.JsonBody(new { text = "hello" }),
+                         new StringContent("{ not json", Encoding.UTF8, "application/json"),
+                     })
+            {
+                var resp = await probe.Http.PostAsync(binderUrl, shape);
+                Assert.Equal(HttpStatusCode.NotFound, resp.StatusCode);
+                Assert.DoesNotContain(ProbePayloadSentinel, await resp.Content.ReadAsStringAsync(), StringComparison.Ordinal);
+                await HostedLauncherMachineDenyTests.AssertBodyIsNothingButTheRefusal(resp);
+            }
+        }
+
+        // THE CLAIM THAT SEPARATES A BEFORE-BINDING REFUSAL FROM AN AFTER-BINDING GUARD: not "the response was
+        // right" but that NO handler-bound code executed at all, on any shape, under either prefix. The
+        // observable binder was hit on both prefixes above and never once ran.
+        Assert.Equal(0, FutureRouteBinding.Count);
     }
+
+    /// <summary>
+    /// Maps BOTH canaries into a group: the framework-body-bound record route and the observable-binder route.
+    /// The <paramref name="payload"/> sentinel is what the framework-bound handler would serve if the deny
+    /// failed to short-circuit - so its ABSENCE from the response is the leak check.
+    /// </summary>
+    private static Action<HostedDenyGroup> MapBothCanaries(string payload) => group =>
+    {
+        group.MapPost(ProbeRelativePath,
+            (FutureRouteBody body) => Results.Json(new { probe = payload, echoed = body.Text }));
+        group.MapPost(BinderProbeRelativePath,
+            (FutureRouteBinding bound) => Results.Json(new { probe = payload, bound = bound.Value }));
+    };
 
     /// <summary>
     /// CONTROL: the deny is scoped to this group, not a blanket refusal on the whole application. A route
@@ -844,24 +956,107 @@ public sealed class HostedLauncherMachineSelfHostControlTests : IDisposable
     }
 
     /// <summary>
-    /// THE SECOND HALF OF THE FUTURE-ROUTE PROOF: the same probe path that
-    /// <see cref="HostedLauncherMachineExclusiveGroupTests.A_route_added_to_the_group_later_is_refused_on_hosted_with_no_deny_of_its_own"/>
-    /// finds refused on hosted must be SERVED with hosted mode explicitly off, in both non-hosted forms.
-    /// Without this half, "the deny refuses everything, always" would pass every hosted assertion in this
-    /// file while having silently killed the family for self-host too.
+    /// THE SECOND HALF OF THE FUTURE-ROUTE PROOF: the same body-bound probe paths that
+    /// <see cref="HostedLauncherMachineExclusiveGroupTests.A_body_bound_route_added_to_either_group_later_is_refused_on_hosted_with_no_binder_run"/>
+    /// finds refused on hosted must be SERVED - and their binders actually RUN - with hosted mode explicitly
+    /// off, in both non-hosted forms and under BOTH prefixes. Without this half, "the deny refuses everything,
+    /// always" would pass every hosted assertion in this file while having silently killed the family for
+    /// self-host too; and a primitive that broke binding on every deployment would satisfy the hosted
+    /// no-binder assertion and nothing would notice.
+    ///
+    /// IT ALSO PINS THE UNDENIED 400 BOUNDARY THE HOSTED MALFORMED-BODY ROW IS MEASURED AGAINST. The
+    /// framework-body-bound canary here answers the framework's OWN 400 on malformed JSON off hosted - so the
+    /// hosted refusal returning instead of that 400 genuinely proves a short-circuit BEFORE binding, rather
+    /// than dodging a boundary that never existed. The bind count is the positive twin of the hosted
+    /// no-binder assertion.
     /// </summary>
     [Theory]
     [MemberData(nameof(NonHostedValues))]
-    public async Task A_route_added_to_the_group_still_serves_on_self_host(string? hostedValue)
+    public async Task A_body_bound_route_added_to_either_group_still_serves_and_binds_on_self_host(string? hostedValue)
     {
         DeclareSelfHost(hostedValue);
+        FutureRouteBinding.Reset();
+
         await using var probe = await MachineGroupProbeHost.StartAsync(
-            mapIntoGroup: group => group.MapGet(HostedLauncherMachineExclusiveGroupTests.ProbeRelativePath,
-                () => Results.Json(new { probe = "served" })));
+            mapIntoMachineGroup: MapBothServedCanaries(),
+            mapIntoLauncherGroup: MapBothServedCanaries());
 
-        var resp = await probe.Http.GetAsync(HostedLauncherMachineExclusiveGroupTests.ProbeUrl);
+        foreach (var (bodyBoundUrl, binderUrl) in new[]
+                 {
+                     (HostedLauncherMachineExclusiveGroupTests.ProbeUrl,
+                      HostedLauncherMachineExclusiveGroupTests.BinderProbeUrl),
+                     (HostedLauncherMachineExclusiveGroupTests.LauncherProbeUrl,
+                      HostedLauncherMachineExclusiveGroupTests.LauncherBinderProbeUrl),
+                 })
+        {
+            // The framework-bound canary serves a VALID body off hosted, binding the record through the
+            // framework...
+            var served = await probe.Http.PostAsync(bodyBoundUrl,
+                HostedLauncherMachineDenyTests.JsonBody(new { text = "hello" }));
+            Assert.Equal(HttpStatusCode.OK, served.StatusCode);
+            Assert.Contains("served", await served.Content.ReadAsStringAsync(), StringComparison.Ordinal);
 
-        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
-        Assert.Contains("served", await resp.Content.ReadAsStringAsync(), StringComparison.Ordinal);
+            // ...and its [FromBody] record makes the FRAMEWORK answer its OWN 400 on malformed JSON. THIS is
+            // the undenied equivalent the hosted malformed-body assertion is measured against: the 400 boundary
+            // is real here, so the hosted refusal genuinely short-circuits before binding.
+            var malformed = await probe.Http.PostAsync(bodyBoundUrl,
+                new StringContent("{ not json", Encoding.UTF8, "application/json"));
+            Assert.Equal(HttpStatusCode.BadRequest, malformed.StatusCode);
+
+            // The observable-binder canary serves off hosted and its binder RUNS.
+            var bound = await probe.Http.PostAsync(binderUrl,
+                HostedLauncherMachineDenyTests.JsonBody(new { text = "hello" }));
+            Assert.Equal(HttpStatusCode.OK, bound.StatusCode);
+            Assert.Contains("served", await bound.Content.ReadAsStringAsync(), StringComparison.Ordinal);
+        }
+
+        // Off hosted the real handler IS mapped, so the observable binder ran - once per prefix. The hosted
+        // twin asserts this same instrument stayed at zero.
+        Assert.Equal(2, FutureRouteBinding.Count);
+    }
+
+    /// <summary>Maps both canaries with the self-host "served" payload into a group.</summary>
+    private static Action<HostedDenyGroup> MapBothServedCanaries() => group =>
+    {
+        group.MapPost(HostedLauncherMachineExclusiveGroupTests.ProbeRelativePath,
+            (FutureRouteBody body) => Results.Json(new { probe = "served", echoed = body.Text }));
+        group.MapPost(HostedLauncherMachineExclusiveGroupTests.BinderProbeRelativePath,
+            (FutureRouteBinding bound) => Results.Json(new { probe = "served", bound = bound.Value }));
+    };
+}
+
+/// <summary>
+/// The FRAMEWORK-body-bound canary type: a plain record bound from the request body by the framework's OWN
+/// model binding (the <c>[FromBody]</c> inference minimal APIs apply to a complex parameter), exactly like the
+/// production routes' <c>LauncherRegistrationRequest</c> / <c>NewSessionRequest</c> and the #1904 primitive's
+/// <c>EchoBody</c>. Using the framework's binder is the whole point: only a genuine body-bound record reaches
+/// the framework's own malformed-JSON 400 boundary, so a refusal that returns instead of that 400 proves the
+/// deny short-circuits BEFORE binding. A custom <c>BindAsync</c> would ignore the body and never reach that
+/// boundary, making the malformed-body assertion vacuous.
+/// </summary>
+internal sealed record FutureRouteBody(string Text);
+
+/// <summary>
+/// A minimal-API parameter whose BINDING IS OBSERVABLE, so a proof can assert that NO handler-bound code ran
+/// behind the hosted refusal - the property that separates a refusal placed BEFORE argument binding (the
+/// exclusive catch-all) from a guard placed AFTER it (a per-handler check). Argument binding leaves no trace
+/// of its own; this records the fact it was invoked. It ignores the request body deliberately: the claim is
+/// about WHETHER the binder ran, not what it read - which is ALSO why it cannot carry the malformed-body 400
+/// proof, and why <see cref="FutureRouteBody"/> exists as a separate framework-bound canary for that row.
+/// </summary>
+internal sealed class FutureRouteBinding
+{
+    private static int _count;
+
+    public string Value { get; init; } = "";
+
+    public static int Count => Volatile.Read(ref _count);
+
+    public static void Reset() => Interlocked.Exchange(ref _count, 0);
+
+    public static ValueTask<FutureRouteBinding?> BindAsync(HttpContext context)
+    {
+        Interlocked.Increment(ref _count);
+        return ValueTask.FromResult<FutureRouteBinding?>(new FutureRouteBinding { Value = "bound" });
     }
 }
