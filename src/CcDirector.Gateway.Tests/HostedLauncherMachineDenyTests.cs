@@ -15,6 +15,7 @@ using CcDirector.Gateway.Api;
 using CcDirector.Gateway.Contracts;
 using CcDirector.Gateway.Discovery;
 using CcDirector.Gateway.Running;
+using CcDirector.Gateway.Tenancy;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
@@ -57,11 +58,14 @@ namespace CcDirector.Gateway.Tests;
 /// that does not exist, and an allow-list on the property set reddens automatically on any extra leaked
 /// field, unlike a substring check.
 ///
-/// ONE GROUP FILTER, NOT A GUARD PER ROUTE. The refusal is an endpoint filter on the route group, so it runs
-/// before every route in the group INCLUDING ROUTES THAT DO NOT EXIST YET. A guard repeated in each handler
-/// passes exactly the same tests as a group filter for the routes that exist today, which is precisely what
-/// makes it dangerous. <see cref="HostedLauncherMachineGroupFilterTests"/> proves the difference with a
-/// brand-new probe route, in BOTH directions (refused on hosted, served on self-host).
+/// ONE EXCLUSIVE-PREFIX DENY, NOT A GUARD PER ROUTE. The refusal is expressed through the shared primitive
+/// <see cref="HostedRouteDeny.ExclusiveGroup"/> (the same boundary #1904 adopted for /vault/keys), one
+/// exclusive group per prefix - <c>/launchers</c> and <c>/machines</c>. On hosted the family's handlers are
+/// never mapped; each prefix maps ONE verb-less catch-all refusal that covers every verb, every sub-path, and
+/// ROUTES THAT DO NOT EXIST YET. A guard repeated in each handler passes exactly the same tests as this for
+/// the routes that exist today, which is precisely what makes it dangerous.
+/// <see cref="HostedLauncherMachineExclusiveGroupTests"/> proves the difference with a brand-new probe route,
+/// in BOTH directions (refused on hosted, served on self-host).
 ///
 /// THE WRITE IS STOPPED ON THE HTTP SURFACE, BUT NOT EVERYWHERE - AND THAT DECIDES THE UN-DENY. This file
 /// proves the denied write routes leave no state behind: after a refused POST /launchers/register the
@@ -78,20 +82,22 @@ namespace CcDirector.Gateway.Tests;
 /// by a positive effect - a seeded registration read back, a relay reaching a STUB LAUNCHER and returning its
 /// sentinel payload, a spawned session id - never merely by the refusal being absent.
 ///
-/// REVERT-PROOF RECIPE. In <c>src/CcDirector.Gateway/Api/MachineEndpoints.cs</c> DELETE the
-/// <c>app.AddEndpointFilter(...)</c> block outright, leaving <c>var app = outer.MapGroup("");</c> in place so
-/// the group still exists and the file compiles - the hosted deny is then absent ENTIRELY with no per-route
-/// guard put back in its place. Deleting is the only correct revert: wrapping it in <c>if (false)</c> leaves
-/// unreachable code, which is a BUILD ERROR here, and a test run after a failed build silently executes the
-/// previous binary and reports a false pass. Rebuild, CONFIRM ZERO ERRORS, verify by diff that the mutation
-/// is actually present in the source, then run the FULL suite - never a filter over these classes, which
-/// could not see whether some existing test already covered the behaviour nor any collateral damage.
+/// REVERT-PROOF RECIPE - the recipe to RUN, not to describe. In
+/// <c>src/CcDirector.Gateway/Api/MachineEndpoints.cs</c> change the two
+/// <c>HostedRouteDeny.ExclusiveGroup(outer, prefix, ...)</c> constructions so the family maps its real
+/// handlers on hosted too - the simplest such mutation is to construct plain non-denied groups with the same
+/// prefixes (<c>outer.MapGroup(LauncherPrefix)</c> / <c>outer.MapGroup(MachinePrefix)</c>) and map the nine
+/// routes on them. The hosted deny is then absent ENTIRELY, with no per-route guard put in its place. This is
+/// the only correct revert: it must COMPILE (a build error means a test run silently executes the previous
+/// binary and reports a false pass), so confirm ZERO ERRORS and verify by diff that the mutation is present in
+/// the source, then run the FULL suite - never a filter over these classes, which could not see whether some
+/// existing test already covered the behaviour nor any collateral damage.
 ///
 /// THE REDS ARE PRE-REGISTERED BELOW, WRITTEN AND PUSHED BEFORE THE ARM WAS EVER RUN. That ordering is the
 /// whole point: A PREDICTED RED THAT DOES NOT APPEAR IS A FINDING. A list filled in afterwards from what was
 /// observed cannot produce that finding at all - whatever reddens is by definition what was expected, so a
 /// mutation that silently failed to apply, or that reddened the wrong tests, reads as a clean result. It
-/// guards the other direction too: MORE reds than predicted means the filter was carrying something that was
+/// guards the other direction too: MORE reds than predicted means the deny was carrying something that was
 /// not accounted for, and that is to be understood rather than accepted.
 ///
 /// PREDICTION: EXACTLY 15 TEST CASES REDDEN, ALL OF THEM IN THIS FILE, AND NOTHING ELSE IN THE SUITE MOVES.
@@ -100,15 +106,15 @@ namespace CcDirector.Gateway.Tests;
 ///       - ALL NINE theory rows.
 ///   HostedLauncherMachineDenyTests.The_launcher_listing_leaks_no_machine_on_hosted
 ///   HostedLauncherMachineDenyTests.The_refusal_is_not_an_empty_launcher_list
-///   HostedLauncherMachineGroupFilterTests.A_route_added_to_the_group_later_is_refused_on_hosted_with_no_deny_of_its_own
-///   HostedLauncherMachineGroupFilterTests.A_refused_registration_writes_nothing_into_the_registry
-///   HostedLauncherMachineGroupFilterTests.A_refused_spawn_never_reaches_the_resolver
-///   HostedLauncherMachineGroupFilterTests.A_refused_launch_never_dials_the_launcher
+///   HostedLauncherMachineExclusiveGroupTests.A_route_added_to_the_group_later_is_refused_on_hosted_with_no_deny_of_its_own
+///   HostedLauncherMachineExclusiveGroupTests.A_refused_registration_writes_nothing_into_the_registry
+///   HostedLauncherMachineExclusiveGroupTests.A_refused_spawn_never_reaches_the_resolver
+///   HostedLauncherMachineExclusiveGroupTests.A_refused_launch_never_dials_the_launcher
 ///
 /// WHERE EACH RED IS PREDICTED TO ARRIVE, because a red that arrives from the fixture is VOID and only a red
 /// that arrives from an assertion about what was served proves anything:
 ///
-///   Five of the nine theory rows redden on the STATUS assertion, because with the filter gone the handler's
+///   Five of the nine theory rows redden on the STATUS assertion, because with the deny gone the handler's
 ///   own answer is a different status: register -> 201 Created, heartbeat on an unregistered machine -> 410
 ///   Gone, unregister -> 200 OK, the listing -> 200 OK, and the spawn -> 502 Bad Gateway (no Director on that
 ///   machine; the spawner fails loud rather than falling back).
@@ -145,11 +151,11 @@ namespace CcDirector.Gateway.Tests;
 ///
 /// MUST STAY GREEN - the controls, and a control that moves with the change under test is not a control:
 ///   HostedLauncherMachineDenyTests.An_unauthenticated_caller_is_still_rejected
-///   HostedLauncherMachineGroupFilterTests.A_route_outside_the_group_still_serves_on_hosted
+///   HostedLauncherMachineExclusiveGroupTests.A_route_outside_the_group_still_serves_on_hosted
 ///   ALL TEN cases of HostedLauncherMachineSelfHostControlTests (five methods, two non-hosted forms each)
 ///
 /// AND ZERO REDS ANYWHERE ELSE IN THE SUITE. The twelve existing launcher and machine test files run under
-/// the runner's ambient non-hosted default, where this filter is a pass-through, so deleting it cannot reach
+/// the runner's ambient non-hosted default, where this deny is a pass-through (the primitive maps real handlers off hosted), so removing it cannot reach
 /// them. If one of them reddens, the ambient default is not what it is believed to be - which would be a
 /// finding about every other hosted test in this assembly, not a detail about this one.
 ///
@@ -227,9 +233,9 @@ namespace CcDirector.Gateway.Tests;
 /// OVER THE FILESYSTEM, and the reference graph is structurally blind to it.
 ///
 /// For THIS mutation it is settled, and settled for FREE by text rather than by spending a box slot: the
-/// deleted block is five lines of routing code containing ZERO loopback literals, and MachineEndpoints.cs
-/// still contains four afterwards - so the allowlist entry stays honest and that guard cannot flip. Verified
-/// by applying the mutation, grepping, and restoring.
+/// mutation only swaps the two exclusive-group constructions for plain groups (routing wiring), touching ZERO
+/// loopback literals, and MachineEndpoints.cs still contains four afterwards - so the allowlist entry stays
+/// honest and that guard cannot flip. Verified by applying the mutation, grepping, and restoring.
 ///
 /// THE DECIDING ARGUMENT IS THE RECONCILIATION GATE, NOT THE COUPLING. Scoping the ARM narrower than the
 /// BASELINE BREAKS the primary truncation detector, because passed plus failed plus skipped is then compared
@@ -363,7 +369,7 @@ public sealed class HostedLauncherMachineDenyTests : IAsyncLifetime
     public async Task An_unauthenticated_caller_is_still_rejected()
     {
         // Control: the deny must not have opened the family up as a side effect of running before the gate.
-        // Without a key the host-wide auth middleware still refuses FIRST, so the 404s above are the filter
+        // Without a key the host-wide auth middleware still refuses FIRST, so the 404s above are the deny
         // and not the absence of a gate.
         Assert.Equal(HttpStatusCode.Unauthorized, (await _http.GetAsync("launchers")).StatusCode);
         Assert.Equal(HttpStatusCode.Unauthorized,
@@ -455,7 +461,7 @@ internal sealed class MachineGroupProbeHost : IAsyncDisposable
     }
 
     public static async Task<MachineGroupProbeHost> StartAsync(
-        Action<RouteGroupBuilder>? mapIntoGroup = null,
+        Action<HostedDenyGroup>? mapIntoGroup = null,
         Action<IEndpointRouteBuilder>? mapOutsideGroup = null,
         bool withStubLauncher = false)
     {
@@ -500,8 +506,11 @@ internal sealed class MachineGroupProbeHost : IAsyncDisposable
             (directorId, req, ct) => Task.FromResult<(bool, SessionDto?, string?)>(
                 (true, new SessionDto { SessionId = SpawnedSessionId }, null)));
 
-        var group = MachineEndpoints.Map(app, launchers, spawner, sendLauncherCommand: null);
-        mapIntoGroup?.Invoke(group);
+        // The probe routes are /machines paths, so mapIntoGroup targets the MACHINE exclusive group. On hosted
+        // its handler is discarded and the group's catch-all refuses the path; off hosted the handler is mapped
+        // and served - which is exactly the future-route property both directions of the proof turn on.
+        var (_, machineGroup) = MachineEndpoints.Map(app, launchers, spawner, sendLauncherCommand: null);
+        mapIntoGroup?.Invoke(machineGroup);
         mapOutsideGroup?.Invoke(app);
 
         await app.StartAsync();
@@ -538,10 +547,10 @@ internal sealed class MachineGroupProbeHost : IAsyncDisposable
 }
 
 /// <summary>
-/// THE POINT OF THE WHOLE CHANGE: the hosted refusal is a filter on the ROUTE GROUP, so it covers routes that
+/// THE POINT OF THE WHOLE CHANGE: the hosted refusal is an exclusive-prefix deny on the ROUTE GROUP, so it covers routes that
 /// have not been written yet.
 ///
-/// A guard repeated in every handler passes exactly the same tests as a group filter for the routes that
+/// A guard repeated in every handler passes exactly the same tests as an exclusive-prefix deny for the routes that
 /// exist today, which is precisely why it is dangerous - the difference only shows up on the route somebody
 /// adds NEXT, when it is open by default and nothing fails. On THIS family, "open by default" means
 /// cross-machine code execution. That difference is not observable by driving the nine routes that exist, so
@@ -550,14 +559,21 @@ internal sealed class MachineGroupProbeHost : IAsyncDisposable
 /// <see cref="HostedLauncherMachineSelfHostControlTests"/>: one direction alone cannot tell a working gate
 /// apart from a brick.
 /// </summary>
-public sealed class HostedLauncherMachineGroupFilterTests : IDisposable
+public sealed class HostedLauncherMachineExclusiveGroupTests : IDisposable
 {
     internal const string ProbePayloadSentinel = "probe-payload-that-must-never-be-served-on-hosted";
-    internal const string ProbePath = "/machines/added-after-the-deny-was-written";
+
+    /// <summary>The probe route mapped RELATIVE to the machine group prefix, so the full path is
+    /// <see cref="ProbeUrl"/>. It is mapped through the returned <see cref="HostedDenyGroup"/> handle, never
+    /// through the outer builder, which is what lets the future-route property be stated from a test.</summary>
+    internal const string ProbeRelativePath = "/added-after-the-deny-was-written";
+
+    /// <summary>The full URL the probe route answers on - the machine prefix plus <see cref="ProbeRelativePath"/>.</summary>
+    internal const string ProbeUrl = "/machines/added-after-the-deny-was-written";
 
     private readonly string? _priorHosted;
 
-    public HostedLauncherMachineGroupFilterTests()
+    public HostedLauncherMachineExclusiveGroupTests()
     {
         _priorHosted = Environment.GetEnvironmentVariable("CC_GATEWAY_HOSTED");
         Environment.SetEnvironmentVariable("CC_GATEWAY_HOSTED", "1");
@@ -569,17 +585,17 @@ public sealed class HostedLauncherMachineGroupFilterTests : IDisposable
     /// <summary>
     /// A route that did not exist when the refusal was written is refused anyway. NOTHING in
     /// <see cref="MachineEndpoints"/> mentions this path and no guard is written for it here - the only thing
-    /// standing between the caller and the probe payload is the group filter. Replace the filter with
-    /// per-handler guards and this test serves the probe payload with a 200, which is the future-route hole
-    /// stated out loud.
+    /// standing between the caller and the probe payload is the exclusive-prefix catch-all refusal. Replace the
+    /// exclusive-group deny with per-handler guards and this test serves the probe payload with a 200, which is
+    /// the future-route hole stated out loud.
     /// </summary>
     [Fact]
     public async Task A_route_added_to_the_group_later_is_refused_on_hosted_with_no_deny_of_its_own()
     {
         await using var probe = await MachineGroupProbeHost.StartAsync(
-            mapIntoGroup: group => group.MapGet(ProbePath, () => Results.Json(new { probe = ProbePayloadSentinel })));
+            mapIntoGroup: group => group.MapGet(ProbeRelativePath, () => Results.Json(new { probe = ProbePayloadSentinel })));
 
-        var resp = await probe.Http.GetAsync(ProbePath);
+        var resp = await probe.Http.GetAsync(ProbeUrl);
 
         Assert.Equal(HttpStatusCode.NotFound, resp.StatusCode);
         Assert.DoesNotContain(ProbePayloadSentinel, await resp.Content.ReadAsStringAsync(), StringComparison.Ordinal);
@@ -587,8 +603,8 @@ public sealed class HostedLauncherMachineGroupFilterTests : IDisposable
     }
 
     /// <summary>
-    /// CONTROL: the filter is scoped to this group, not a blanket refusal on the whole application. A route
-    /// mapped OUTSIDE the group still serves on hosted, so the passing tests here are the filter doing its
+    /// CONTROL: the deny is scoped to this group, not a blanket refusal on the whole application. A route
+    /// mapped OUTSIDE the group still serves on hosted, so the passing tests here are the deny doing its
     /// job rather than the host refusing everything.
     /// </summary>
     [Fact]
@@ -829,9 +845,9 @@ public sealed class HostedLauncherMachineSelfHostControlTests : IDisposable
 
     /// <summary>
     /// THE SECOND HALF OF THE FUTURE-ROUTE PROOF: the same probe path that
-    /// <see cref="HostedLauncherMachineGroupFilterTests.A_route_added_to_the_group_later_is_refused_on_hosted_with_no_deny_of_its_own"/>
+    /// <see cref="HostedLauncherMachineExclusiveGroupTests.A_route_added_to_the_group_later_is_refused_on_hosted_with_no_deny_of_its_own"/>
     /// finds refused on hosted must be SERVED with hosted mode explicitly off, in both non-hosted forms.
-    /// Without this half, "the filter refuses everything, always" would pass every hosted assertion in this
+    /// Without this half, "the deny refuses everything, always" would pass every hosted assertion in this
     /// file while having silently killed the family for self-host too.
     /// </summary>
     [Theory]
@@ -840,10 +856,10 @@ public sealed class HostedLauncherMachineSelfHostControlTests : IDisposable
     {
         DeclareSelfHost(hostedValue);
         await using var probe = await MachineGroupProbeHost.StartAsync(
-            mapIntoGroup: group => group.MapGet(HostedLauncherMachineGroupFilterTests.ProbePath,
+            mapIntoGroup: group => group.MapGet(HostedLauncherMachineExclusiveGroupTests.ProbeRelativePath,
                 () => Results.Json(new { probe = "served" })));
 
-        var resp = await probe.Http.GetAsync(HostedLauncherMachineGroupFilterTests.ProbePath);
+        var resp = await probe.Http.GetAsync(HostedLauncherMachineExclusiveGroupTests.ProbeUrl);
 
         Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
         Assert.Contains("served", await resp.Content.ReadAsStringAsync(), StringComparison.Ordinal);

@@ -5,6 +5,7 @@ using CcDirector.Core.Utilities;
 using CcDirector.Gateway.Contracts;
 using CcDirector.Gateway.Discovery;
 using CcDirector.Gateway.Running;
+using CcDirector.Gateway.Tenancy;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
@@ -42,9 +43,8 @@ namespace CcDirector.Gateway.Api;
 /// This enables the Gateway on MACHINE_A to relay lifecycle verbs to the launcher on
 /// EXAMPLE-PC when EXAMPLE-PC's launcher registered with its tailnet hostname.
 ///
-/// DENIED IN WHOLE ON HOSTED (issue #1917). EVERY route in this group is refused on the hosted Gateway,
-/// through ONE group filter rather than a guard repeated per route - so a route added here later is refused
-/// too, without anyone remembering to defend it.
+/// DENIED IN WHOLE ON HOSTED (issue #1917). EVERY route in this file is refused on the hosted Gateway - both
+/// prefixes, every verb, every existing and future sub-path alike.
 ///
 /// THE DEFECT THIS CLOSES. This family is TENANT-BLIND BY CONSTRUCTION: there is no tenant dimension
 /// anywhere in the path. <see cref="LauncherRegistry"/> keys on machine NAME alone,
@@ -70,17 +70,50 @@ namespace CcDirector.Gateway.Api;
 /// because it looks like isolation. Nothing is substituted and no empty list is served: an empty
 /// GET /launchers would be a FALSE statement (a fleet with no machines) where a refusal is merely absent.
 ///
-/// SELF-HOST IS COMPLETELY UNCHANGED AND IS THE CONTROL. Cross-machine launch is legitimate fleet function
-/// there: one operator, his own machines.
+/// HOW THE DENY IS EXPRESSED - THE SHARED REFUSAL PRIMITIVE, NOT A BESPOKE FILTER. This family is denied
+/// through <see cref="HostedRouteDeny.ExclusiveGroup"/>, the ONE hosted-refusal boundary every deny family on
+/// this Gateway adopts (reference adoption: #1904 for /vault/keys; primitive at
+/// <c>src/CcDirector.Gateway/Tenancy/HostedRouteDeny.cs</c>). An earlier revision of this file rolled its own
+/// <c>AddEndpointFilter</c> deny before that primitive existed; it has been replaced so the release ships ONE
+/// refusal boundary, not one per family. What the primitive buys here over the old ad-hoc filter:
+///
+///   * On hosted the family's handlers are NEVER MAPPED. In their place each prefix maps ONE verb-less
+///     catch-all refusal over everything beneath it plus a root refusal at the prefix itself. There is no
+///     binding step to get ahead of, no body parameter, no media-type constraint and no method constraint, so
+///     EVERY request shape - a valid body, a malformed body, a wrong media type, a verb the group never
+///     mapped, and a route added LATER - meets the refusal. The old request-time filter answered only the
+///     shapes that reached it.
+///   * The exclusivity claim is CHECKED at startup, not trusted:
+///     <see cref="HostedRefusalRouteSpace.ValidateBeforeStart"/> refuses to start the Gateway if any live
+///     route serves beneath <c>/launchers</c> or <c>/machines</c>, or if two refusals tie.
+///   * The refusal payload is validated on CONSTRUCTION, so a blank message fails the Gateway at startup
+///     rather than serving an empty refusal that reads like a working route.
+///
+/// TWO EXCLUSIVE PREFIXES, BECAUSE THIS FAMILY OWNS TWO. The launcher self-registration surface owns
+/// <c>/launchers</c> outright and the machine relay surface owns <c>/machines</c> outright; nothing else on
+/// the Gateway serves beneath either (checked at startup). Each is its own exclusive group, so each gets the
+/// verb-less catch-all and the future-route coverage independently. A single empty-prefix group would NOT be
+/// an exclusive claim - it would claim the whole Gateway - which is why the bespoke filter used an empty
+/// prefix plus a request-time check and the primitive uses two real prefixes plus a startup-checked claim.
+///
+/// WHAT THIS DENY STOPS, NARROWLY: the HTTP ROUTE reads, writes and relays under both prefixes. It does NOT
+/// stop every write to launcher state. Every mutating call to <see cref="LauncherRegistry"/> in the
+/// codebase - Upsert (register), Heartbeat, Remove (unregister) - is an ON-ROUTE handler in THIS file, so all
+/// three close with the routes. But <see cref="Streaming.LauncherHub"/>.Hello still writes a
+/// machine-name-keyed connection row into <see cref="Streaming.LauncherConnectionRegistry"/> over the
+/// /launcher-stream SignalR hub, which is NOT in this route group (it is the HUB half, host-gated on a
+/// separate change). So tenant-blind state can still ACCUMULATE behind this deny.
+///
+/// SELF-HOST IS COMPLETELY UNCHANGED AND IS THE CONTROL. Off hosted the primitive maps the nine real handlers
+/// on the two groups exactly as an unguarded builder would and creates no refusal at all. Cross-machine
+/// launch is legitimate fleet function there: one operator, his own machines.
 ///
 /// UN-DENY. The permanent fix is a tenant-scoped launcher design that binds machine identity to a tenant at
 /// REGISTRATION and authorizes every launch, lifecycle and relay call against the calling tenant - including
-/// on the REST fallback arm. That unit is NOT enough on its own: this HTTP deny does NOT stop every write.
-/// <see cref="Streaming.LauncherHub"/>.Hello still writes a machine-name-keyed connection row into
-/// <see cref="Streaming.LauncherConnectionRegistry"/> over the /launcher-stream hub, which is not in this
-/// route group, so tenant-blind state can still ACCUMULATE behind the deny. The un-deny is therefore the
-/// tenant-key unit PLUS A PURGE of the launcher and launcher-connection registries. Deny-closed on the safe
-/// side: assume the purge is required until write-coverage is proven complete.
+/// on the REST fallback arm. That unit is NOT enough on its own: because the /launcher-stream hub keeps
+/// writing behind this deny, the un-deny is the tenant-key unit PLUS A PURGE of the launcher and
+/// launcher-connection registries. Deny-closed on the safe side: assume the purge is required until
+/// write-coverage is proven complete.
 /// </summary>
 internal static class MachineEndpoints
 {
@@ -93,41 +126,72 @@ internal static class MachineEndpoints
         new(@"cc-director(\d*)\.exe$", RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
     /// <summary>
-    /// The exact refusal every route in this group serves on hosted. One string, asserted verbatim by the
-    /// tests, so the refusal is identifiable as ITSELF - a bare 404 would be indistinguishable from a route
-    /// that does not exist.
+    /// The exact refusal every route in this family serves on hosted. One string, shared by BOTH denied
+    /// groups and asserted verbatim by the tests, so the refusal is identifiable as ITSELF - a bare 404 would
+    /// be indistinguishable from a route that does not exist.
     /// </summary>
     internal const string HostedRefusal =
         "machine and launcher control is not available on the hosted gateway";
 
-    /// <summary>
-    /// The hosted refusal for the whole machine/launcher family (issue #1917), or null on self-host where
-    /// nothing changes.
-    ///
-    /// Gated on <see cref="GatewayHostedMode.IsHosted"/> - the INDEPENDENT signal - and not on a boundary or
-    /// tenant argument being passed in. A security branch that depends on an optional argument fails OPEN
-    /// when a caller forgets it, which is exactly how the hosted account-status fix nearly shipped a hole.
-    ///
-    /// 404 rather than 403: on hosted a tenant-owned machine does not exist as a concept, so "not here" is the
-    /// truthful answer. 403 would imply the right credential could reach it, and none can. The BODY is what
-    /// makes this a deny rather than a missing route, so it is always served and always the same.
-    /// </summary>
-    private static IResult? DenyOnHosted()
-    {
-        if (!GatewayHostedMode.IsHosted) return null;
+    /// <summary>The launcher self-registration prefix this family owns outright on hosted.</summary>
+    internal const string LauncherPrefix = "/launchers";
 
-        FileLog.Write("[MachineEndpoints] DENIED on hosted: the launcher and machine-control family is tenant-blind - a tenant does not own a machine on shared infrastructure (issue #1917)");
-        return Results.Json(new { error = HostedRefusal }, statusCode: StatusCodes.Status404NotFound);
-    }
+    /// <summary>The machine relay prefix this family owns outright on hosted.</summary>
+    internal const string MachinePrefix = "/machines";
 
     /// <summary>
-    /// Maps the machine/launcher group and RETURNS it, so the refusal can be proved to cover routes that do
-    /// not exist yet: a test maps a NEW probe route onto the returned group and finds it already refused on
-    /// hosted, without anyone having written a deny for it. Returning the group is the only way to state that
-    /// property from outside this file - and it is the ONLY property that distinguishes a group filter from a
-    /// guard repeated per route, because the two behave identically on every route that exists today.
+    /// The hosted refusal payload for the launcher self-registration surface (issue #1917). Validated on
+    /// construction, so a blank field fails the Gateway at startup rather than serving a refusal a caller
+    /// cannot act on. 404 rather than 403: on hosted a tenant-owned machine does not exist as a concept, so
+    /// "not here" is the truthful answer; 403 would imply some credential could reach it, and none can. The
+    /// hosted decision is read inside the primitive from <see cref="GatewayHostedMode.IsHosted"/> directly -
+    /// the INDEPENDENT signal - never from an argument a caller could forget and so fail OPEN.
     /// </summary>
-    public static RouteGroupBuilder Map(IEndpointRouteBuilder outer, LauncherRegistry launchers,
+    private static HostedDenial LauncherDenial() => new(
+        family: "launcher-registration",
+        message: HostedRefusal,
+        reason: "the launcher registry keys on machine name alone with no tenant in the file, the store or the " +
+                "routes, and the host-wide auth gate admits any enrolled device key from any account - so one " +
+                "subscriber could enumerate, overwrite or delete every other subscriber's registered machines",
+        unDenyInstruction: "do NOT simply remove this deny: bind machine identity to a tenant at registration and " +
+                "authorize every call against the calling tenant, THEN purge the launcher and launcher-connection " +
+                "registries - the /launcher-stream hub keeps writing machine-name-keyed rows behind this deny",
+        statusCode: StatusCodes.Status404NotFound);
+
+    /// <summary>
+    /// The hosted refusal payload for the machine relay surface - the SAME message and status as the launcher
+    /// group, so a caller sees one consistent refusal across the family, with a family name and reason tuned to
+    /// the relay's cross-machine-code-execution risk.
+    /// </summary>
+    private static HostedDenial MachineDenial() => new(
+        family: "machine-control",
+        message: HostedRefusal,
+        reason: "the machine relay resolves purely on machine name with no tenant scope; its REST fallback arm " +
+                "dials a machine's stored address with its stored token, so one subscriber could run code on and " +
+                "relay lifecycle verbs to every other subscriber's machine",
+        unDenyInstruction: "do NOT simply remove this deny: bind machine identity to a tenant at registration and " +
+                "authorize every launch, lifecycle and relay call against the calling tenant - including the REST " +
+                "fallback arm - THEN purge the launcher and launcher-connection registries",
+        statusCode: StatusCodes.Status404NotFound);
+
+    /// <summary>
+    /// Maps the launcher and machine groups and RETURNS both denied handles, so the refusal can be proved to
+    /// cover routes that do not exist yet: a test maps a NEW probe route onto a returned group and finds it
+    /// already refused on hosted, without anyone having written a deny for it. Returning the groups is the only
+    /// way to state that future-route property from outside this file - and it is the ONLY property that
+    /// distinguishes an exclusive-prefix deny from a guard repeated per route, because the two behave
+    /// identically on every route that exists today.
+    ///
+    /// Each surface is its OWN exclusive group. <see cref="LauncherPrefix"/> and <see cref="MachinePrefix"/>
+    /// are owned outright - nothing else on the Gateway serves beneath either, which
+    /// <see cref="HostedRefusalRouteSpace.ValidateBeforeStart"/> checks at startup - so each maps ONE verb-less
+    /// catch-all refusal on hosted (covering every verb, every sub-path, and every route added later) and its
+    /// real handlers off hosted. The routes are mapped through the returned GROUP HANDLES, never through
+    /// <paramref name="outer"/>: a route mapped around the refusal is not expressible without changing the
+    /// signatures of <see cref="MapLauncherRoutes"/> / <see cref="MapMachineRoutes"/>, which take only the
+    /// handle - the bypass count is reduced by design, not by care.
+    /// </summary>
+    public static (HostedDenyGroup Launchers, HostedDenyGroup Machines) Map(IEndpointRouteBuilder outer, LauncherRegistry launchers,
         MachineSessionSpawner spawner,
         LauncherCommandRouter.SendLauncherCommandAsync? sendLauncherCommand = null,
         // Gateway Cleanup mission (Wave 4b): the Gateway-native mission store. When non-null, a
@@ -146,25 +210,31 @@ internal static class MachineEndpoints
     {
         if (spawner is null) throw new ArgumentNullException(nameof(spawner));
 
-        FileLog.Write($"[MachineEndpoints] mapping /launchers + /machines; hosted={GatewayHostedMode.IsHosted} - on hosted EVERY route in this group is refused (issue #1917)");
+        FileLog.Write($"[MachineEndpoints] mapping {LauncherPrefix} + {MachinePrefix}; hosted={GatewayHostedMode.IsHosted} - on hosted EVERY route in both groups is refused via the shared refusal primitive (issue #1917)");
 
-        // The whole family behind ONE filter, rather than a guard line repeated in every handler.
-        // A repeated guard is a thing to forget: the route added to this file next year would be open by
-        // default and nothing would fail - and on this family "open by default" means cross-machine code
-        // execution. A group filter runs before EVERY route mapped below, including routes that do not exist
-        // yet. The empty prefix keeps the route paths written out in full, exactly as before, so the self-host
-        // surface is byte-identical.
-        var app = outer.MapGroup("");
-        app.AddEndpointFilter(async (ctx, next) =>
-        {
-            if (DenyOnHosted() is { } denied) return denied;
-            return await next(ctx);
-        });
+        var launcherGroup = HostedRouteDeny.ExclusiveGroup(outer, LauncherPrefix, LauncherDenial());
+        MapLauncherRoutes(launcherGroup, launchers);
 
+        var machineGroup = HostedRouteDeny.ExclusiveGroup(outer, MachinePrefix, MachineDenial());
+        MapMachineRoutes(machineGroup, launchers, spawner, sendLauncherCommand, missions, workflowRuns);
+
+        return (launcherGroup, machineGroup);
+    }
+
+    /// <summary>
+    /// The four launcher self-registration routes, mapped relative to <see cref="LauncherPrefix"/> so the full
+    /// paths are <c>/launchers</c> and <c>/launchers/{machine}/...</c> exactly as before. Takes the denied
+    /// GROUP HANDLE and nothing else: the ungrouped route builder is deliberately out of scope so no route can
+    /// be mapped around the hosted refusal. All three <see cref="LauncherRegistry"/> writers - Upsert
+    /// (register), Heartbeat, Remove (unregister) - live here, ON-ROUTE, so every one of them closes with the
+    /// group; there is no off-route launcher-registry writer to host-gate separately.
+    /// </summary>
+    private static void MapLauncherRoutes(HostedDenyGroup app, LauncherRegistry launchers)
+    {
         // ===== Launcher self-registration surface =====
 
         // POST /launchers/register - the launcher POSTs this on startup and after reconnects.
-        app.MapPost("/launchers/register", (LauncherRegistrationRequest req) =>
+        app.MapPost("/register", (LauncherRegistrationRequest req) =>
         {
             if (req is null || string.IsNullOrWhiteSpace(req.MachineName))
                 return Results.BadRequest(new { error = "machineName is required" });
@@ -179,7 +249,7 @@ internal static class MachineEndpoints
         });
 
         // POST /launchers/{machine}/heartbeat - keep-alive from the launcher every 30 s.
-        app.MapPost("/launchers/{machine}/heartbeat", (string machine) =>
+        app.MapPost("/{machine}/heartbeat", (string machine) =>
         {
             var ok = launchers.Heartbeat(machine);
             if (!ok)
@@ -192,7 +262,7 @@ internal static class MachineEndpoints
         });
 
         // DELETE /launchers/{machine} - graceful unregister on launcher shutdown.
-        app.MapDelete("/launchers/{machine}", (string machine) =>
+        app.MapDelete("/{machine}", (string machine) =>
         {
             launchers.Remove(machine);
             FileLog.Write($"[MachineEndpoints] DELETE /launchers/{machine}: removed");
@@ -200,24 +270,36 @@ internal static class MachineEndpoints
         });
 
         // GET /launchers - list all registered launchers (machine name, port, last-seen).
-        app.MapGet("/launchers", () =>
+        app.MapGet("", () =>
         {
             var list = launchers.ListLaunchers();
             FileLog.Write($"[MachineEndpoints] GET /launchers: count={list.Count}");
             return Results.Json(list);
         });
+    }
 
+    /// <summary>
+    /// The five machine relay routes, mapped relative to <see cref="MachinePrefix"/> so the full paths are
+    /// <c>/machines/{machine}/...</c> exactly as before. Takes the denied GROUP HANDLE and the relay
+    /// dependencies, and nothing else that could map a route around the hosted refusal.
+    /// </summary>
+    private static void MapMachineRoutes(HostedDenyGroup app, LauncherRegistry launchers,
+        MachineSessionSpawner spawner,
+        LauncherCommandRouter.SendLauncherCommandAsync? sendLauncherCommand,
+        Core.Sessions.MissionStore? missions,
+        Workflows.WorkflowRunStore? workflowRuns)
+    {
         // ===== Machine relay surface =====
 
         // POST /machines/{machine}/director/restart
-        app.MapPost("/machines/{machine}/director/restart", async (string machine, HttpContext ctx, CancellationToken ct) =>
+        app.MapPost("/{machine}/director/restart", async (string machine, HttpContext ctx, CancellationToken ct) =>
         {
             FileLog.Write($"[MachineEndpoints] POST /machines/{machine}/director/restart: caller={ctx.Connection.RemoteIpAddress}");
             return await RelayDirectorLifecycleAsync(machine, "restart", ctx, launchers, sendLauncherCommand, ct);
         });
 
         // POST /machines/{machine}/director/start
-        app.MapPost("/machines/{machine}/director/start", async (string machine, HttpContext ctx, CancellationToken ct) =>
+        app.MapPost("/{machine}/director/start", async (string machine, HttpContext ctx, CancellationToken ct) =>
         {
             FileLog.Write($"[MachineEndpoints] POST /machines/{machine}/director/start: caller={ctx.Connection.RemoteIpAddress}");
             return await RelayDirectorLifecycleAsync(machine, "start", ctx, launchers, sendLauncherCommand, ct);
@@ -227,7 +309,7 @@ internal static class MachineEndpoints
         // to a Director (auto-launching one via the launcher if none is running) and create the session
         // there through the SAME resolve-then-create path the cron firing engine uses. Fail loud: an
         // off/unreachable machine or a create failure returns 502 with the error - NEVER a local spawn.
-        app.MapPost("/machines/{machine}/sessions", async (string machine, NewSessionRequest req, CancellationToken ct) =>
+        app.MapPost("/{machine}/sessions", async (string machine, NewSessionRequest req, CancellationToken ct) =>
         {
             FileLog.Write($"[MachineEndpoints] POST /machines/{machine}/sessions: repo={req?.RepoPath}, agent={req?.Agent}");
             if (req is null || string.IsNullOrWhiteSpace(req.RepoPath))
@@ -344,14 +426,14 @@ internal static class MachineEndpoints
         });
 
         // POST /machines/{machine}/director/stop
-        app.MapPost("/machines/{machine}/director/stop", async (string machine, HttpContext ctx, CancellationToken ct) =>
+        app.MapPost("/{machine}/director/stop", async (string machine, HttpContext ctx, CancellationToken ct) =>
         {
             FileLog.Write($"[MachineEndpoints] POST /machines/{machine}/director/stop: caller={ctx.Connection.RemoteIpAddress}");
             return await RelayDirectorLifecycleAsync(machine, "stop", ctx, launchers, sendLauncherCommand, ct);
         });
 
         // POST /machines/{machine}/launch - relay a generic launch request to the launcher.
-        app.MapPost("/machines/{machine}/launch", async (string machine, HttpContext ctx, CancellationToken ct) =>
+        app.MapPost("/{machine}/launch", async (string machine, HttpContext ctx, CancellationToken ct) =>
         {
             FileLog.Write($"[MachineEndpoints] POST /machines/{machine}/launch: caller={ctx.Connection.RemoteIpAddress}");
 
@@ -404,8 +486,6 @@ internal static class MachineEndpoints
             }
             return result;
         });
-
-        return app;
     }
 
     // -------------------------------------------------------------------------
