@@ -17,7 +17,7 @@
         </StackPanel>
 
         <TextBlock DockPanel.Dock="Bottom"
-                   Text="You can skip this step and connect later from inside CC Director."
+                   Text="You can skip this step and connect later from inside DevThrottle."
                    Foreground="#888888"
                    FontSize="12"
                    Margin="0,8,0,0" />

@@ -1,6 +1,13 @@
+<!-- RequestedThemeVariant: the wizard paints its own dark palette (#1E1E1E panels, white
+     headings) on every step, so the Fluent base theme MUST be pinned dark. Left on Default it
+     follows the operating system, and on a light-mode machine every base-theme-drawn state -
+     button hover/pressed repaints, disabled text, expanders, text boxes, list boxes - flips to
+     light-theme colors on top of the dark panels: near-white buttons, black-on-dark text,
+     buttons that "vanish" on hover. -->
 <Application xmlns="https://github.com/avaloniaui"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-             x:Class="CcDirectorSetup.App">
+             x:Class="CcDirectorSetup.App"
+             RequestedThemeVariant="Dark">
     <Application.Styles>
         <FluentTheme />
         <StyleInclude Source="avares://cc-director-setup/Styles.axaml" />

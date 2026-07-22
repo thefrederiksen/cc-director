@@ -34,9 +34,9 @@
                              Background="#1E1E1E" Foreground="#AAAAAA" BorderThickness="0"
                              TextWrapping="Wrap" Padding="6" />
                     <StackPanel Orientation="Horizontal" Margin="0,10,0,0">
-                        <Button x:Name="OpenLogButton" Content="Open log folder" Padding="10,4"
+                        <Button x:Name="OpenLogButton" Classes="setup" Content="Open log folder" Padding="10,4"
                                 Margin="0,0,8,0" Click="OpenLogButton_Click" />
-                        <Button x:Name="ReportButton" Content="Report a problem on GitHub" Padding="10,4"
+                        <Button x:Name="ReportButton" Classes="setup" Content="Report a problem on GitHub" Padding="10,4"
                                 Click="ReportButton_Click" />
                     </StackPanel>
                     <TextBlock x:Name="ReportHint"
@@ -46,6 +46,9 @@
             </Border>
         </Expander>
 
+        <!-- The main column scrolls: with the details expander docked at the bottom, a tall
+             failure/notice stack would otherwise overflow INTO the expander and paint over it. -->
+        <ScrollViewer>
         <StackPanel>
             <TextBlock x:Name="HeadingText"
                        Text="&#x2713;  Setup Complete"
@@ -132,5 +135,6 @@
                        FontSize="11"
                        TextWrapping="Wrap" />
         </StackPanel>
+        </ScrollViewer>
     </DockPanel>
 </UserControl>

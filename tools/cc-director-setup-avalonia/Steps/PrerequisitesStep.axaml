@@ -125,6 +125,7 @@
                                 <TextBlock Text="{Binding Description}"
                                            Foreground="#888888"
                                            FontSize="11"
+                                           TextWrapping="Wrap"
                                            Margin="0,2,0,0" />
 
                                 <TextBlock Text="{Binding Version}"

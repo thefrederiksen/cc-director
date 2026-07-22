@@ -30,9 +30,9 @@
                        FontSize="11"
                        TextWrapping="Wrap" />
             <StackPanel Orientation="Horizontal" Margin="0,6,0,0">
-                <Button x:Name="OpenLogButton" Content="Open log folder" Padding="10,3"
+                <Button x:Name="OpenLogButton" Classes="setup" Content="Open log folder" Padding="10,3"
                         Margin="0,0,8,0" Click="OpenLogButton_Click" />
-                <Button x:Name="ReportButton" Content="Stuck or failing? Report on GitHub" Padding="10,3"
+                <Button x:Name="ReportButton" Classes="setup" Content="Stuck or failing? Report on GitHub" Padding="10,3"
                         Click="ReportButton_Click" />
             </StackPanel>
         </StackPanel>
@@ -69,6 +69,49 @@
                                        Foreground="#888888" FontSize="11"
                                        HorizontalAlignment="Right" />
                             <TextBlock x:Name="DirectorStatus"
+                                       Text="Pending"
+                                       Foreground="#CCCCCC"
+                                       FontSize="13" FontWeight="SemiBold"
+                                       HorizontalAlignment="Right"
+                                       Margin="0,2,0,0" />
+                        </StackPanel>
+                    </Grid>
+                </Border>
+
+                <!-- cc-launcher (macOS only: the always-on launcher tray). Hidden unless the runner
+                     reports a launcher item, so the Windows wizard's flow is unchanged. Without this
+                     row the launcher installed (or failed) INVISIBLY - the Complete step could report
+                     "1 component did not install" for a component no screen had ever shown. -->
+                <Border x:Name="LauncherCard" Background="#2A2D2E" CornerRadius="6" Padding="16"
+                        Margin="0,0,0,12" IsVisible="False">
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+
+                        <StackPanel Grid.Column="0">
+                            <TextBlock Text="cc-launcher"
+                                       Foreground="White"
+                                       FontSize="16"
+                                       FontWeight="SemiBold" />
+                            <TextBlock Text="Keeps DevThrottle available in the background"
+                                       Foreground="#888888"
+                                       FontSize="12"
+                                       Margin="0,2,0,0" />
+                            <ProgressBar x:Name="LauncherProgress"
+                                         Height="3" Margin="0,8,24,0"
+                                         Background="#3C3C3C" Foreground="#007ACC"
+                                         IsVisible="False"
+                                         Minimum="0" Maximum="100" />
+                        </StackPanel>
+
+                        <StackPanel Grid.Column="1" VerticalAlignment="Center"
+                                    HorizontalAlignment="Right">
+                            <TextBlock x:Name="LauncherSize"
+                                       Foreground="#888888" FontSize="11"
+                                       HorizontalAlignment="Right" />
+                            <TextBlock x:Name="LauncherStatus"
                                        Text="Pending"
                                        Foreground="#CCCCCC"
                                        FontSize="13" FontWeight="SemiBold"
