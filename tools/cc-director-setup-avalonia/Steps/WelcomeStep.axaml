@@ -30,6 +30,7 @@
 
         <!-- Standard card -->
         <Border x:Name="StandardCard"
+                Classes="card"
                 Background="#2A2D2E"
                 BorderBrush="#007ACC"
                 BorderThickness="2"
@@ -61,6 +62,7 @@
 
         <!-- Developer card -->
         <Border x:Name="DeveloperCard"
+                Classes="card"
                 Background="#2A2D2E"
                 BorderBrush="#3C3C3C"
                 BorderThickness="2"

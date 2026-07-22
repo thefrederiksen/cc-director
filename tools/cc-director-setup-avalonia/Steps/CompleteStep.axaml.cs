@@ -17,13 +17,14 @@ public partial class CompleteStep : UserControl
     private int _installed;
     private int _skipped;
     private bool _isUpdate;
+    private IReadOnlyList<string> _skippedNames = [];
 
     public CompleteStep()
     {
         InitializeComponent();
     }
 
-    public CompleteStep(int installed, int skipped, string installPath, bool isUpdate, bool alreadyUpToDate = false, string? version = null, string? capabilityNotice = null)
+    public CompleteStep(int installed, int skipped, string installPath, bool isUpdate, bool alreadyUpToDate = false, string? version = null, string? capabilityNotice = null, IReadOnlyList<string>? skippedNames = null)
     {
         InitializeComponent();
 
@@ -71,13 +72,22 @@ public partial class CompleteStep : UserControl
         // out of the way behind the small collapsed expander at the bottom.
         if (skipped > 0)
         {
+            _skippedNames = skippedNames ?? [];
             var amber = new SolidColorBrush(Color.FromRgb(0xE0, 0xA0, 0x30));
             HeadingText.Text = isUpdate ? "Update finished with problems" : "Setup finished with problems";
             HeadingText.Foreground = amber;
-            DescriptionText.Text = $"{skipped} component(s) did not install. DevThrottle may still work, but please report this.";
+            // Name what failed - "1 component(s)" tells the user nothing actionable.
+            var what = _skippedNames.Count switch
+            {
+                0 => skipped == 1 ? "One component" : $"{skipped} components",
+                1 => _skippedNames[0],
+                _ => string.Join(", ", _skippedNames),
+            };
+            DescriptionText.Text = $"{what} did not install. DevThrottle may still work, but please report this.";
             SummaryLine.IsVisible = false;
             FailurePanel.IsVisible = true;
-            DetailsHeader.Text = $"{skipped} component(s) did not install - please report this";
+            if (_skippedNames.Count > 0) SkippedText.Text = $"{skipped} ({string.Join(", ", _skippedNames)})";
+            DetailsHeader.Text = $"{what} did not install - please report this";
             DetailsHeader.Foreground = amber;
             DetailsExpander.IsExpanded = true;
         }
@@ -132,7 +142,8 @@ public partial class CompleteStep : UserControl
         sb.AppendLine($"- Mode: {(_isUpdate ? "update" : "install")}");
         sb.AppendLine($"- OS: {os} ({RuntimeInformation.OSDescription})");
         sb.AppendLine($"- Arch: {RuntimeInformation.OSArchitecture}");
-        sb.AppendLine($"- Installed: {_installed}, Skipped: {_skipped}");
+        sb.AppendLine($"- Installed: {_installed}, Skipped: {_skipped}"
+            + (_skippedNames.Count > 0 ? $" ({string.Join(", ", _skippedNames)})" : ""));
         sb.AppendLine();
         sb.AppendLine("## Setup log");
         sb.AppendLine($"Full log (please attach it): `{SetupLog.Path}`");

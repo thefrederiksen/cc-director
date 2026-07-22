@@ -14,6 +14,7 @@ namespace CcDirectorSetup.Steps;
 public partial class InstallStep : UserControl
 {
     private ToolDownloadItem? _directorItem;
+    private ToolDownloadItem? _launcherItem;
     private List<SkillItem> _skillItems = [];
 
     public InstallStep()
@@ -88,6 +89,7 @@ public partial class InstallStep : UserControl
     public void SetItems(List<ToolDownloadItem> items)
     {
         _directorItem = items.FirstOrDefault(i => i.Name == "cc-director");
+        _launcherItem = items.FirstOrDefault(i => i.Name == "cc-launcher");
 
         // The cc-* tools are no longer installed here (the app provisions them on first launch), so the
         // Tools card is a static note - there are no tool rows to bind or track.
@@ -99,29 +101,39 @@ public partial class InstallStep : UserControl
         SkillList.ItemsSource = _skillItems;
         SkillsSummary.Text = $"{_skillItems.Count} Claude Code skills";
 
-        // Bind director item changes
-        if (_directorItem != null)
+        BindItem(_directorItem, DirectorStatus, DirectorProgress, DirectorSize);
+
+        // The launcher row exists only when the runner reports a launcher item (macOS).
+        if (_launcherItem != null)
         {
-            _directorItem.PropertyChanged += (_, e) =>
-            {
-                Dispatcher.UIThread.Post(() =>
-                {
-                    if (e.PropertyName == nameof(ToolDownloadItem.Status))
-                    {
-                        DirectorStatus.Text = _directorItem.Status;
-                        DirectorStatus.Foreground = SolidColorBrush.Parse(_directorItem.StatusColor);
-                    }
-                    else if (e.PropertyName == nameof(ToolDownloadItem.Progress))
-                    {
-                        DirectorProgress.Value = _directorItem.Progress;
-                    }
-                    else if (e.PropertyName == nameof(ToolDownloadItem.SizeText))
-                    {
-                        DirectorSize.Text = _directorItem.SizeText;
-                    }
-                });
-            };
+            LauncherCard.IsVisible = true;
+            BindItem(_launcherItem, LauncherStatus, LauncherProgress, LauncherSize);
         }
+    }
+
+    private static void BindItem(ToolDownloadItem? item, TextBlock status, ProgressBar progress, TextBlock size)
+    {
+        if (item is null) return;
+        item.PropertyChanged += (_, e) =>
+        {
+            Dispatcher.UIThread.Post(() =>
+            {
+                if (e.PropertyName == nameof(ToolDownloadItem.Status))
+                {
+                    status.Text = item.Status;
+                    status.Foreground = SolidColorBrush.Parse(item.StatusColor);
+                }
+                else if (e.PropertyName == nameof(ToolDownloadItem.Progress))
+                {
+                    progress.Value = item.Progress;
+                    if (item.Progress > 0) progress.IsVisible = true;
+                }
+                else if (e.PropertyName == nameof(ToolDownloadItem.SizeText))
+                {
+                    size.Text = item.SizeText;
+                }
+            });
+        };
     }
 
     public event Action? OnRepairRequested;

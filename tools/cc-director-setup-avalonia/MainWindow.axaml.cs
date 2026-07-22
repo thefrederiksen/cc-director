@@ -22,6 +22,7 @@ public partial class MainWindow : Window
     private List<PrerequisiteInfo> _prerequisites = [];
     private int _installedCount;
     private int _skippedCount;
+    private IReadOnlyList<string> _skippedNames = [];
     private string _installPath = "";
 
     private readonly bool _isUpdate;
@@ -113,7 +114,7 @@ public partial class MainWindow : Window
             StepSkills => _skillsStep ??= new SkillsStep(_isUpdate),
             StepInstall => _installStep ??= new InstallStep(),
             StepGateway => _gatewayStep ??= CreateGatewayStep(),
-            StepComplete => _completeStep ??= new CompleteStep(_installedCount, _skippedCount, _installPath, _isUpdate, _alreadyUpToDate, _latestVersion, BuildCapabilityNotice()),
+            StepComplete => _completeStep ??= new CompleteStep(_installedCount, _skippedCount, _installPath, _isUpdate, _alreadyUpToDate, _latestVersion, BuildCapabilityNotice(), _skippedNames),
             _ => null
         };
 
@@ -324,6 +325,7 @@ public partial class MainWindow : Window
         var (installed, skipped) = await _runner.ApplyAsync(prep, status);
         _installedCount = installed;
         _skippedCount = skipped;
+        _skippedNames = prep.Items.Where(i => i.Status is "Skipped" or "Failed").Select(i => i.Name).ToList();
 
         // Skills are per-user markdown downloads, handled outside the binary engine.
         var skillItems = _installStep?.GetSkillItems() ?? [];
