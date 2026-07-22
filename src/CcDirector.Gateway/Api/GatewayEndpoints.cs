@@ -2483,10 +2483,21 @@ internal static class GatewayEndpoints
         // never the Gateway directly - cannot mint its own grant. A human tool holding the token mints
         // one and hands the id to the broadcaster. (A dedicated human-approval surface can tighten who
         // may mint in a later pass.)
-        app.MapPost("/fleet/broadcast-grants", () =>
+        app.MapPost("/fleet/broadcast-grants", (HttpContext ctx) =>
         {
-            var grantId = broadcastGovernor.MintGrant();
-            FileLog.Write("[GatewayEndpoints] POST /fleet/broadcast-grants: minted a broadcast grant");
+            // audit-a: the grant is bound to the caller's OWN tenant (server-resolved from the device key,
+            // never the body). On hosted a request with no bound tenant is DENIED (403) - it has no partition
+            // to mint into. Self-host resolves to Local, so behaviour there is unchanged.
+            var tenant = ResolveReadTenant(ctx, tenantBoundary);
+            if (tenant is null)
+            {
+                FileLog.Write("[GatewayEndpoints] POST /fleet/broadcast-grants DENIED - no tenant is bound to this request");
+                return Results.Json(new { error = "no tenant is bound to this request" },
+                    statusCode: StatusCodes.Status403Forbidden);
+            }
+
+            var grantId = broadcastGovernor.MintGrant(tenant.Value);
+            FileLog.Write($"[GatewayEndpoints] POST /fleet/broadcast-grants: minted a broadcast grant for tenant={tenant.Value.ToLogString()}");
             return Results.Json(new { grantId, expiresInSeconds = (int)TimeSpan.FromMinutes(10).TotalSeconds });
         });
 
@@ -2498,6 +2509,18 @@ internal static class GatewayEndpoints
                 return Results.BadRequest(new { error = "text is required" });
 
             FileLog.Write($"[GatewayEndpoints] POST fanout: count={req.SessionIds.Count}, len={req.Text.Length}, from={req.FromSessionId}");
+
+            // audit-a: the tenant that owns this broadcast's rate-limit window and validates its grant is
+            // resolved from the caller's authenticated device key (server-side), NEVER from the body. On
+            // hosted a request with no bound tenant is DENIED (403) - it has no partition to charge or grant
+            // against. Self-host resolves to Local, so behaviour there is unchanged.
+            var reqTenant = ResolveReadTenant(ctx, tenantBoundary);
+            if (reqTenant is null)
+            {
+                FileLog.Write("[GatewayEndpoints] fanout DENIED - no tenant is bound to this request");
+                return Results.Json(new { error = "no tenant is bound to this request" },
+                    statusCode: StatusCodes.Status403Forbidden);
+            }
 
             // Resolve all directors once up-front, capturing each target's broadcast scope (issue #1229).
             var directorBySession = new Dictionary<string, DirectorDto>();
@@ -2531,7 +2554,7 @@ internal static class GatewayEndpoints
                 : targetScopes.Any(t => !senderScope.Value.Includes(t.Scope));
             var hasValidGrant = anyOutOfScope
                 && !string.IsNullOrWhiteSpace(req.Reason)
-                && broadcastGovernor.IsGrantValid(req.GrantId);
+                && broadcastGovernor.IsGrantValid(reqTenant.Value, req.GrantId);
 
             var decision = FleetBroadcastPolicy.Evaluate(senderScope, targetScopes, hasValidGrant, req.Reason);
             if (!decision.Allowed)
@@ -2547,7 +2570,7 @@ internal static class GatewayEndpoints
             }
 
             // Rate-limit even an in-team broadcast so a runaway agent cannot storm the fleet in a loop.
-            var rate = broadcastGovernor.TryRecordSend(req.FromSessionId);
+            var rate = broadcastGovernor.TryRecordSend(reqTenant.Value, req.FromSessionId);
             if (!rate.Allowed)
             {
                 FileLog.Write($"[GatewayEndpoints] fanout RATE-LIMITED: from={req.FromSessionId}, limit={rate.LimitPerWindow}/{rate.WindowSeconds}s");

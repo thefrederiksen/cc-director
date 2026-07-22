@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using CcDirector.Core.Tenancy;
 
 namespace CcDirector.Gateway.Api;
 
@@ -18,6 +19,13 @@ public readonly record struct RateLimitResult(bool Allowed, int LimitPerWindow, 
 /// Grants are validated (not consumed one-shot) for their short lifetime, so a human who authorizes a
 /// fleet-wide announcement can send it without the grant evaporating on the first attempt; the short
 /// time-to-live bounds the exposure.
+///
+/// Hosted Multi-Tenancy (audit-a): the Gateway process is shared by every tenant, so ALL state here is
+/// keyed by the OWNING tenant resolved from the caller's authenticated device key (never from the request
+/// body). The rate-limit window is keyed by (tenant, sessionId), so tenant A exhausting the window for
+/// session id X can never deny tenant B's same-id broadcast; and every grant records its minting tenant
+/// and validates only in that tenant, so A's grant can never authorize a broadcast in B's partition.
+/// Self-host resolves every request to <see cref="TenantId.Local"/>, so its behaviour is unchanged.
 /// </summary>
 public sealed class BroadcastGovernor
 {
@@ -26,11 +34,12 @@ public sealed class BroadcastGovernor
     private readonly TimeSpan _grantTtl;
     private readonly Func<DateTime> _now;
 
-    // senderId -> UTC timestamps of its recent recorded broadcasts (pruned to the window on each check).
-    private readonly ConcurrentDictionary<string, List<DateTime>> _sends = new(StringComparer.OrdinalIgnoreCase);
+    // (owning tenant, senderId) -> UTC timestamps of its recent recorded broadcasts (pruned to the window
+    // on each check). Keyed by the tenant so one tenant's window can never touch another's for the same id.
+    private readonly ConcurrentDictionary<(TenantId Tenant, string Sender), List<DateTime>> _sends = new();
 
-    // grantId -> UTC expiry.
-    private readonly ConcurrentDictionary<string, DateTime> _grants = new();
+    // grantId -> (minting tenant, UTC expiry). A grant is valid only in the tenant that minted it.
+    private readonly ConcurrentDictionary<string, (TenantId Owner, DateTime Expiry)> _grants = new();
 
     private readonly object _sendsLock = new();
 
@@ -54,45 +63,55 @@ public sealed class BroadcastGovernor
     public int WindowSeconds => (int)_window.TotalSeconds;
 
     /// <summary>
-    /// Mint a fresh broadcast grant, valid for the configured time-to-live. Returns the opaque grant
-    /// id the caller hands to the broadcaster. Only reachable through the Hub's auth-guarded grant
-    /// endpoint - there is no Director relay for minting, so an agent cannot mint its own.
+    /// Mint a fresh broadcast grant OWNED BY <paramref name="tenant"/>, valid for the configured
+    /// time-to-live. Returns the opaque grant id the caller hands to the broadcaster. Only reachable
+    /// through the Hub's auth-guarded grant endpoint - there is no Director relay for minting, so an agent
+    /// cannot mint its own. The grant validates only in <paramref name="tenant"/> (see
+    /// <see cref="IsGrantValid"/>), so on the shared hosted Gateway one tenant's grant can never authorize
+    /// another tenant's broadcast.
     /// </summary>
-    public string MintGrant()
+    public string MintGrant(TenantId tenant)
     {
         var id = Guid.NewGuid().ToString("N");
-        _grants[id] = _now() + _grantTtl;
+        _grants[id] = (tenant, _now() + _grantTtl);
         return id;
     }
 
     /// <summary>
-    /// True when <paramref name="grantId"/> names a grant that exists and has not expired. Prunes any
-    /// expired grants it encounters. A null/blank id is never valid.
+    /// True when <paramref name="grantId"/> names a grant that exists, has not expired, AND was minted by
+    /// <paramref name="tenant"/>. A grant is bound to its minting tenant, so it is never valid in another
+    /// tenant's partition. Prunes any expired grants it encounters. A null/blank id is never valid.
     /// </summary>
-    public bool IsGrantValid(string? grantId)
+    public bool IsGrantValid(TenantId tenant, string? grantId)
     {
         if (string.IsNullOrWhiteSpace(grantId)) return false;
         PruneExpiredGrants();
-        return _grants.TryGetValue(grantId, out var expiry) && expiry > _now();
+        return _grants.TryGetValue(grantId, out var grant)
+            && grant.Expiry > _now()
+            && grant.Owner == tenant;
     }
 
     /// <summary>
-    /// Record a broadcast by <paramref name="senderId"/> against the rolling window and report whether
-    /// it is under the limit. When the sender is over the limit nothing is recorded and
+    /// Record a broadcast by <paramref name="senderId"/> in <paramref name="tenant"/> against the rolling
+    /// window and report whether it is under the limit. The window is keyed by (tenant, sender), so a
+    /// caller only ever touches its OWN tenant's window - one tenant exhausting session id X can never deny
+    /// another tenant's same-id broadcast. When the sender is over the limit nothing is recorded and
     /// <see cref="RateLimitResult.Allowed"/> is false. A null/blank sender id is exempt (it cannot be
     /// tracked); the scope policy already denies an unidentified fleet-wide sender.
     /// </summary>
-    public RateLimitResult TryRecordSend(string? senderId)
+    public RateLimitResult TryRecordSend(TenantId tenant, string? senderId)
     {
         if (string.IsNullOrWhiteSpace(senderId))
             return new RateLimitResult(true, _maxPerWindow, WindowSeconds);
 
         var now = _now();
         var cutoff = now - _window;
+        // Preserve the original case-insensitive sender matching while keying the tenant exactly.
+        var key = (tenant, senderId.ToLowerInvariant());
 
         lock (_sendsLock)
         {
-            var stamps = _sends.GetOrAdd(senderId, _ => new List<DateTime>());
+            var stamps = _sends.GetOrAdd(key, _ => new List<DateTime>());
             stamps.RemoveAll(t => t < cutoff);
             if (stamps.Count >= _maxPerWindow)
                 return new RateLimitResult(false, _maxPerWindow, WindowSeconds);
@@ -106,7 +125,7 @@ public sealed class BroadcastGovernor
     {
         var now = _now();
         foreach (var kvp in _grants)
-            if (kvp.Value <= now)
+            if (kvp.Value.Expiry <= now)
                 _grants.TryRemove(kvp.Key, out _);
     }
 }

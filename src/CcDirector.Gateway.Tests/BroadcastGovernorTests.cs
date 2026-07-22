@@ -1,4 +1,5 @@
 using System;
+using CcDirector.Core.Tenancy;
 using CcDirector.Gateway.Api;
 using Xunit;
 
@@ -7,10 +8,14 @@ namespace CcDirector.Gateway.Tests;
 /// <summary>
 /// Unit tests for the Hub's broadcast governance state (issue #1229): the human-issued grant store and
 /// the per-sender broadcast rate limiter. Uses an injected clock so time-based behaviour is
-/// deterministic.
+/// deterministic. All state is tenant-keyed (audit-a); these single-tenant tests pin the behaviour
+/// within one tenant, and <see cref="BroadcastGovernorTenantIsolationTests"/> pins the cross-tenant
+/// isolation.
 /// </summary>
 public sealed class BroadcastGovernorTests
 {
+    private static readonly TenantId Tenant = new("tenant-a");
+
     private sealed class FakeClock
     {
         public DateTime Now = new(2026, 7, 10, 12, 0, 0, DateTimeKind.Utc);
@@ -26,31 +31,31 @@ public sealed class BroadcastGovernorTests
         var clock = new FakeClock();
         var gov = new BroadcastGovernor(grantTtl: TimeSpan.FromMinutes(10), now: clock.Get);
 
-        var grant = gov.MintGrant();
-        Assert.True(gov.IsGrantValid(grant));
+        var grant = gov.MintGrant(Tenant);
+        Assert.True(gov.IsGrantValid(Tenant, grant));
 
         clock.Advance(TimeSpan.FromMinutes(9));
-        Assert.True(gov.IsGrantValid(grant));
+        Assert.True(gov.IsGrantValid(Tenant, grant));
 
         clock.Advance(TimeSpan.FromMinutes(2)); // now 11 minutes in, past the 10-minute TTL
-        Assert.False(gov.IsGrantValid(grant));
+        Assert.False(gov.IsGrantValid(Tenant, grant));
     }
 
     [Fact]
     public void UnknownOrBlankGrant_isNeverValid()
     {
         var gov = new BroadcastGovernor();
-        Assert.False(gov.IsGrantValid(null));
-        Assert.False(gov.IsGrantValid(""));
-        Assert.False(gov.IsGrantValid("   "));
-        Assert.False(gov.IsGrantValid("not-a-real-grant"));
+        Assert.False(gov.IsGrantValid(Tenant, null));
+        Assert.False(gov.IsGrantValid(Tenant, ""));
+        Assert.False(gov.IsGrantValid(Tenant, "   "));
+        Assert.False(gov.IsGrantValid(Tenant, "not-a-real-grant"));
     }
 
     [Fact]
     public void EachMintedGrant_isDistinct()
     {
         var gov = new BroadcastGovernor();
-        Assert.NotEqual(gov.MintGrant(), gov.MintGrant());
+        Assert.NotEqual(gov.MintGrant(Tenant), gov.MintGrant(Tenant));
     }
 
     // ===== Rate limiting =====
@@ -61,11 +66,11 @@ public sealed class BroadcastGovernorTests
         var clock = new FakeClock();
         var gov = new BroadcastGovernor(maxPerWindow: 3, window: TimeSpan.FromSeconds(60), now: clock.Get);
 
-        Assert.True(gov.TryRecordSend("sender-1").Allowed);
-        Assert.True(gov.TryRecordSend("sender-1").Allowed);
-        Assert.True(gov.TryRecordSend("sender-1").Allowed);
+        Assert.True(gov.TryRecordSend(Tenant, "sender-1").Allowed);
+        Assert.True(gov.TryRecordSend(Tenant, "sender-1").Allowed);
+        Assert.True(gov.TryRecordSend(Tenant, "sender-1").Allowed);
 
-        var fourth = gov.TryRecordSend("sender-1");
+        var fourth = gov.TryRecordSend(Tenant, "sender-1");
         Assert.False(fourth.Allowed);
         Assert.Equal(3, fourth.LimitPerWindow);
         Assert.Equal(60, fourth.WindowSeconds);
@@ -76,9 +81,9 @@ public sealed class BroadcastGovernorTests
     {
         var gov = new BroadcastGovernor(maxPerWindow: 1);
 
-        Assert.True(gov.TryRecordSend("sender-a").Allowed);
-        Assert.False(gov.TryRecordSend("sender-a").Allowed);
-        Assert.True(gov.TryRecordSend("sender-b").Allowed); // a different sender has its own budget
+        Assert.True(gov.TryRecordSend(Tenant, "sender-a").Allowed);
+        Assert.False(gov.TryRecordSend(Tenant, "sender-a").Allowed);
+        Assert.True(gov.TryRecordSend(Tenant, "sender-b").Allowed); // a different sender has its own budget
     }
 
     [Fact]
@@ -87,21 +92,21 @@ public sealed class BroadcastGovernorTests
         var clock = new FakeClock();
         var gov = new BroadcastGovernor(maxPerWindow: 2, window: TimeSpan.FromSeconds(60), now: clock.Get);
 
-        Assert.True(gov.TryRecordSend("s").Allowed);
-        Assert.True(gov.TryRecordSend("s").Allowed);
-        Assert.False(gov.TryRecordSend("s").Allowed);
+        Assert.True(gov.TryRecordSend(Tenant, "s").Allowed);
+        Assert.True(gov.TryRecordSend(Tenant, "s").Allowed);
+        Assert.False(gov.TryRecordSend(Tenant, "s").Allowed);
 
         clock.Advance(TimeSpan.FromSeconds(61)); // both prior sends are now outside the window
-        Assert.True(gov.TryRecordSend("s").Allowed);
+        Assert.True(gov.TryRecordSend(Tenant, "s").Allowed);
     }
 
     [Fact]
     public void BlankSender_isExempt_fromRateLimiting()
     {
         var gov = new BroadcastGovernor(maxPerWindow: 1);
-        Assert.True(gov.TryRecordSend(null).Allowed);
-        Assert.True(gov.TryRecordSend("").Allowed);
-        Assert.True(gov.TryRecordSend(null).Allowed);
+        Assert.True(gov.TryRecordSend(Tenant, null).Allowed);
+        Assert.True(gov.TryRecordSend(Tenant, "").Allowed);
+        Assert.True(gov.TryRecordSend(Tenant, null).Allowed);
     }
 
     [Fact]
