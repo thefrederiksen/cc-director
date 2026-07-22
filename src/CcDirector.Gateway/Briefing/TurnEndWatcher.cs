@@ -7,14 +7,16 @@ using CcDirector.Gateway.Streaming;
 
 namespace CcDirector.Gateway.Briefing;
 
-/// <summary>One observed turn boundary: the session and the id of the Director that owns it (Gateway
+/// <summary>One observed turn boundary: the session, the id of the Director that owns it (Gateway
 /// Cleanup mission, Phase 2: the owning Director is now carried as its DirectorId, not a dialable control
-/// URL, so the voice-refresh path reaches it through the tunnel). <paramref name="IsNewTurn"/> is true only
-/// for a live Working -> Waiting boundary (a genuinely new turn the user is now waiting on); it is false
-/// when a session is FIRST seen already waiting (a startup catch-up of a turn that ended earlier). Voice
-/// generation uses it to show the yellow "wingman reading" hold only for a new turn and stay quiet on a
-/// catch-up refresh (issue #1322).</summary>
-public sealed record TurnEndSignal(string SessionId, string DirectorId, bool IsNewTurn = false);
+/// URL, so the voice-refresh path reaches it through the tunnel), and the tenant that owns it. Hosted
+/// Multi-Tenancy (MTR-10 Gap C): the tenant is RESOLVED before the transition decision and carried here, so
+/// the voice refresh runs in the right partition with no second resolution. <paramref name="IsNewTurn"/> is
+/// true only for a live Working -> Waiting boundary (a genuinely new turn the user is now waiting on); it is
+/// false when a session is FIRST seen already waiting (a startup catch-up of a turn that ended earlier).
+/// Voice generation uses it to show the yellow "wingman reading" hold only for a new turn and stay quiet on
+/// a catch-up refresh (issue #1322).</summary>
+public sealed record TurnEndSignal(string SessionId, string DirectorId, TenantId Tenant, bool IsNewTurn = false);
 
 /// <summary>
 /// The brief agent's turn-boundary tracker (issues #185/#186). PUSH-fed since #186:
@@ -51,11 +53,16 @@ public sealed class TurnEndWatcher : IDisposable
     private readonly PushedSessionStore? _pushedSessions;
     private readonly TimeSpan _streamStale;
     private readonly Action<TurnEndSignal> _onTurnEnd;
-    // (sessionId, directorId): the director id is carried so the handler can resolve the session's OWNING
-    // tenant (Hosted Multi-Tenancy voice-serving) and clear the stale voice cache in the right partition.
-    private readonly Action<string, string> _onSessionWorking;
+    // (tenant, sessionId, directorId): the owning tenant is resolved BEFORE the transition decision and passed
+    // in (Hosted Multi-Tenancy voice-serving, MTR-10 Gap C), so the handler clears the stale voice cache in the
+    // right partition; the director id is carried for the tunnel reach.
+    private readonly Action<TenantId, string, string> _onSessionWorking;
     private readonly TimeSpan _interval;
-    private readonly ConcurrentDictionary<string, string> _lastActivity = new();
+    // MTR-10 Gap C: keyed by (tenant, sessionId), never the bare session id. Two accounts can run sessions with
+    // the SAME id; a bare key let one tenant's last-seen state suppress - or fabricate - the other tenant's
+    // Working -> Waiting transition (and so its voice refresh / stale-cache clear). The owning tenant is
+    // resolved before Observe and scopes the transition memory here. Self-host uses the one TenantId.Local key.
+    private readonly ConcurrentDictionary<(TenantId Tenant, string SessionId), string> _lastActivity = new();
     private Timer? _timer;
     private int _polling;
     private bool _disposed;
@@ -67,7 +74,7 @@ public sealed class TurnEndWatcher : IDisposable
     /// <param name="streamStale">Freshness window for the push store read; defaults to the roster's window.</param>
     public TurnEndWatcher(
         Action<TurnEndSignal> onTurnEnd,
-        Action<string, string> onSessionWorking,
+        Action<TenantId, string, string> onSessionWorking,
         TimeSpan? reconcileInterval = null,
         PushedSessionStore? pushedSessions = null,
         TimeSpan? streamStale = null)
@@ -100,19 +107,25 @@ public sealed class TurnEndWatcher : IDisposable
     /// Feed one observation (doorbell ping, heartbeat snapshot entry, or reconcile sweep
     /// row) into the tracker. Idempotent for repeated identical states - a heartbeat
     /// replaying a state the doorbell already delivered changes nothing.
+    ///
+    /// MTR-10 Gap C: the OWNING <paramref name="tenant"/> is resolved by the caller BEFORE this call and
+    /// scopes the transition memory, so a session id shared across two accounts can never suppress or
+    /// fabricate the other account's Working -> Waiting boundary. On self-host the caller passes
+    /// <see cref="TenantId.Local"/> and the behaviour is unchanged.
     /// </summary>
-    public void Observe(string sessionId, string activityState, string directorId)
+    public void Observe(TenantId tenant, string sessionId, string activityState, string directorId)
     {
         if (_disposed) return;
         if (string.IsNullOrEmpty(sessionId) || string.IsNullOrEmpty(activityState)) return;
 
-        var hadPrev = _lastActivity.TryGetValue(sessionId, out var prev);
+        var key = (tenant, sessionId);
+        var hadPrev = _lastActivity.TryGetValue(key, out var prev);
         if (hadPrev && prev == activityState) return; // no transition, nothing to do
-        _lastActivity[sessionId] = activityState;
+        _lastActivity[key] = activityState;
 
         if (IsWorking(activityState))
         {
-            _onSessionWorking(sessionId, directorId);
+            _onSessionWorking(tenant, sessionId, directorId);
             return;
         }
 
@@ -121,7 +134,7 @@ public sealed class TurnEndWatcher : IDisposable
             // A live boundary (previous state was Working) is a genuinely new turn; a first sighting
             // of an already-waiting session (no previous state) is a catch-up of an earlier turn.
             var isNewTurn = hadPrev && prev == "Working";
-            _onTurnEnd(new TurnEndSignal(sessionId, directorId, isNewTurn));
+            _onTurnEnd(new TurnEndSignal(sessionId, directorId, tenant, isNewTurn));
         }
     }
 
@@ -146,16 +159,19 @@ public sealed class TurnEndWatcher : IDisposable
         _ = sweepAll;
         if (_pushedSessions is not null)
         {
-            // Hosted Multi-Tenancy (session-serving): this reconcile is NOT yet per-tenant.
-            // BLOCKED ON: partitioning TurnEndWatcher._lastActivity by tenant (and NeedsYouClock._stamps,
-            // which the turn-end signal feeds). Both are keyed by session id alone, so a per-tenant pass would
-            // let one tenant's last-seen state suppress - or fabricate - another tenant's turn boundary.
-            // Until then it serves Local: correct on self-host, and on hosted a Local read is empty, so the
-            // reconcile degrades to a no-op (never a wrong-tenant read).
-            foreach (var (directorId, session) in _pushedSessions.SnapshotFresh(TenantId.Local, _streamStale))
+            // Hosted Multi-Tenancy (session-serving), MTR-10 Gap C: reconcile ONE pass PER TENANT, each row fed
+            // with its OWNING tenant so the transition memory is partitioned. The push store's KnownTenants is
+            // exactly the set of tenants with a tunnel-bound Director - the only fleets a push-store reconcile
+            // could act on. Self-host has one tenant (Local) and runs the single pass unchanged; on hosted each
+            // tenant's snapshot is read in its own partition and never reaches across.
+            foreach (var tenant in _pushedSessions.KnownTenants())
             {
-                if (_disposed) return Task.CompletedTask;
-                Observe(session.SessionId, session.ActivityState, directorId);
+                if (!tenant.IsValid) continue;
+                foreach (var (directorId, session) in _pushedSessions.SnapshotFresh(tenant, _streamStale))
+                {
+                    if (_disposed) return Task.CompletedTask;
+                    Observe(tenant, session.SessionId, session.ActivityState, directorId);
+                }
             }
         }
         return Task.CompletedTask;

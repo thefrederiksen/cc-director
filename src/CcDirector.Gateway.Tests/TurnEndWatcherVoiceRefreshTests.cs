@@ -1,3 +1,4 @@
+using CcDirector.Core.Tenancy;
 using CcDirector.Gateway.Briefing;
 using Xunit;
 
@@ -47,7 +48,7 @@ public sealed class TurnEndWatcherVoiceRefreshTests
                 if (voice.IsVoiceSession(signal.SessionId))
                     voice.GenerateAsync(signal.SessionId, signal.DirectorId, signal.IsNewTurn);
             },
-            onSessionWorking: (sid, _) => voice.OnSessionWorking(sid));
+            onSessionWorking: (_, sid, _) => voice.OnSessionWorking(sid));
     }
 
     [Fact]
@@ -59,8 +60,8 @@ public sealed class TurnEndWatcherVoiceRefreshTests
         // A turn runs and then finishes on its own (Working -> WaitingForInput) - the hands-off
         // boundary. The watcher must call voice GenerateAsync for the session, with the owning
         // Director endpoint, and nothing else.
-        watcher.Observe("voice-sid", "Working", "d1");
-        watcher.Observe("voice-sid", "WaitingForInput", "d1");
+        watcher.Observe(TenantId.Local, "voice-sid", "Working", "d1");
+        watcher.Observe(TenantId.Local, "voice-sid", "WaitingForInput", "d1");
 
         var generated = Assert.Single(voice.Generated);
         Assert.Equal("voice-sid", generated.Sid);
@@ -80,7 +81,7 @@ public sealed class TurnEndWatcherVoiceRefreshTests
         using var watcher = BuildWatcher(voice);
 
         // No prior Working observation - the very first sighting is the waiting state.
-        watcher.Observe("voice-sid", "WaitingForInput", "d1");
+        watcher.Observe(TenantId.Local, "voice-sid", "WaitingForInput", "d1");
 
         var generated = Assert.Single(voice.Generated);
         Assert.Equal("voice-sid", generated.Sid);
@@ -95,8 +96,8 @@ public sealed class TurnEndWatcherVoiceRefreshTests
         var voice = new RecordingVoice(/* no voice sessions */);
         using var watcher = BuildWatcher(voice);
 
-        watcher.Observe("plain-sid", "Working", "d1");
-        watcher.Observe("plain-sid", "WaitingForInput", "d1");
+        watcher.Observe(TenantId.Local, "plain-sid", "Working", "d1");
+        watcher.Observe(TenantId.Local, "plain-sid", "WaitingForInput", "d1");
 
         Assert.Empty(voice.Generated);
     }
@@ -108,9 +109,9 @@ public sealed class TurnEndWatcherVoiceRefreshTests
         var voice = new RecordingVoice("voice-sid");
         using var watcher = BuildWatcher(voice);
 
-        watcher.Observe("voice-sid", "Working", "d1");
-        watcher.Observe("voice-sid", "WaitingForInput", "d1");  // turn end -> generate
-        watcher.Observe("voice-sid", "Working", "d1");          // user replied -> clear cache
+        watcher.Observe(TenantId.Local, "voice-sid", "Working", "d1");
+        watcher.Observe(TenantId.Local, "voice-sid", "WaitingForInput", "d1");  // turn end -> generate
+        watcher.Observe(TenantId.Local, "voice-sid", "Working", "d1");          // user replied -> clear cache
 
         Assert.Single(voice.Generated);
         Assert.Contains("voice-sid", voice.Cleared);
