@@ -20,6 +20,9 @@ public sealed class CarModeTelemetryStoreTests : IDisposable
             File.Delete(f);
     }
 
+    /// <summary>The device partition these single-device tests write and read under.</summary>
+    private const string Device = "abc123def456";
+
     private static CarModeTelemetryRecord Record(string turnId, string receivedAtUtc, double totalTurnMs = 2500) => new()
     {
         TurnId = turnId,
@@ -36,25 +39,25 @@ public sealed class CarModeTelemetryStoreTests : IDisposable
     public void Add_ThenRecent_ReturnsNewestFirst()
     {
         var store = new CarModeTelemetryStore(_path, _ => { });
-        store.Add(Record("t1", DateTime.UtcNow.AddMinutes(-2).ToString("o")));
-        store.Add(Record("t2", DateTime.UtcNow.AddMinutes(-1).ToString("o")));
+        store.Add(Device, Record("t1", DateTime.UtcNow.AddMinutes(-2).ToString("o")));
+        store.Add(Device, Record("t2", DateTime.UtcNow.AddMinutes(-1).ToString("o")));
 
-        var recent = store.Recent(10);
+        var recent = store.Recent(Device, 10);
 
         Assert.Equal(2, recent.Count);
         Assert.Equal("t2", recent[0].TurnId); // newest first
         Assert.Equal("t1", recent[1].TurnId);
-        Assert.Equal(2, store.Count());
+        Assert.Equal(2, store.Count(Device));
     }
 
     [Fact]
     public void Prune_DropsRecordsOlderThanNinetyDays_KeepsRecent()
     {
         var store = new CarModeTelemetryStore(_path, _ => { });
-        store.Add(Record("old", DateTime.UtcNow.AddDays(-120).ToString("o")));
-        store.Add(Record("fresh", DateTime.UtcNow.AddDays(-1).ToString("o")));
+        store.Add(Device, Record("old", DateTime.UtcNow.AddDays(-120).ToString("o")));
+        store.Add(Device, Record("fresh", DateTime.UtcNow.AddDays(-1).ToString("o")));
 
-        var recent = store.Recent(10);
+        var recent = store.Recent(Device, 10);
 
         Assert.Single(recent);
         Assert.Equal("fresh", recent[0].TurnId);
@@ -64,21 +67,21 @@ public sealed class CarModeTelemetryStoreTests : IDisposable
     public void Prune_KeepsRecordWithUnparseableStamp_RatherThanDiscardIt()
     {
         var store = new CarModeTelemetryStore(_path, _ => { });
-        store.Add(Record("weird", "not-a-date"));
+        store.Add(Device, Record("weird", "not-a-date"));
 
-        Assert.Equal(1, store.Count());
+        Assert.Equal(1, store.Count(Device));
     }
 
     [Fact]
     public void Load_RestoresPersistedRecords_AcrossInstances()
     {
         var first = new CarModeTelemetryStore(_path, _ => { });
-        first.Add(Record("t1", DateTime.UtcNow.ToString("o")));
+        first.Add(Device, Record("t1", DateTime.UtcNow.ToString("o")));
 
         var second = new CarModeTelemetryStore(_path, _ => { });
 
-        Assert.Equal(1, second.Count());
-        Assert.Equal("t1", second.Recent(1)[0].TurnId);
+        Assert.Equal(1, second.Count(Device));
+        Assert.Equal("t1", second.Recent(Device, 1)[0].TurnId);
     }
 
     [Fact]
@@ -95,9 +98,9 @@ public sealed class CarModeTelemetryStoreTests : IDisposable
             Completed = false,
             ReplyChars = 180,
         };
-        store.Add(cutOff);
+        store.Add(Device, cutOff);
 
-        var reloaded = new CarModeTelemetryStore(_path, _ => { }).Recent(1)[0];
+        var reloaded = new CarModeTelemetryStore(_path, _ => { }).Recent(Device, 1)[0];
 
         Assert.False(reloaded.Completed); // the reply did not play to its end
         Assert.Equal(1, reloaded.Chunks);
@@ -123,9 +126,9 @@ public sealed class CarModeTelemetryStoreTests : IDisposable
             MicReacquiredDuringPlayback = true, // the mic was re-opened while the reply "played"
             SpeakingPollCount = 2,
         };
-        store.Add(turn);
+        store.Add(Device, turn);
 
-        var reloaded = new CarModeTelemetryStore(_path, _ => { }).Recent(1)[0];
+        var reloaded = new CarModeTelemetryStore(_path, _ => { }).Recent(Device, 1)[0];
 
         Assert.Equal(4, reloaded.TranscribeAttempts);
         Assert.Equal(5200, reloaded.ClipDurationMs);
@@ -142,7 +145,7 @@ public sealed class CarModeTelemetryStoreTests : IDisposable
 
         var store = new CarModeTelemetryStore(_path, _ => { });
 
-        Assert.Equal(0, store.Count());
+        Assert.Equal(0, store.Count(Device));
         var corrupt = Directory.GetFiles(Path.GetDirectoryName(_path)!, Path.GetFileName(_path) + ".corrupt-*");
         Assert.Single(corrupt);
     }

@@ -70,6 +70,27 @@ internal static class AuthMiddleware
     public const string DeviceKeyItemKey = "cc.auth.DeviceKey";
 
     /// <summary>
+    /// HttpContext.Items key under which <see cref="HasValidToken"/> stashes THE EXACT CREDENTIAL STRING IT
+    /// ACCEPTED, for every accepted credential shape - the shared machine token as well as a per-device key,
+    /// arriving as a Bearer header or as any one of possibly several cookies.
+    ///
+    /// This exists so that anything which needs a per-caller identity - a storage partition, a per-device
+    /// context key - uses the credential this gate actually validated, instead of reading the raw request a
+    /// SECOND time and reaching its own conclusion. Re-deriving an identity from raw headers is re-doing the
+    /// authentication decision in a second place with different rules, and two independent parsers of the
+    /// same request eventually disagree: the gate accepts on a valid cookie while the second parser resolves
+    /// on an attacker-chosen Bearer, and the gap between them is a partition the caller can choose. Resolve
+    /// the identity once, here, and pass it forward.
+    ///
+    /// Absent means NO credential was authenticated on this request (the host-wide gate is off), which is
+    /// not an identity and must never be quietly replaced by re-reading the headers.
+    ///
+    /// It is deliberately SEPARATE from <see cref="DeviceKeyItemKey"/>, whose absence means "the shared
+    /// machine token, no device" and is load-bearing for hosted tenant resolution.
+    /// </summary>
+    public const string AuthenticatedCredentialItemKey = "cc.auth.Credential";
+
+    /// <summary>
     /// The desktop Cockpit's sign-in route (issue #1088): the shared client-core enrollment screen a
     /// signed-out browser navigation is redirected to. Must match the route in apps/cockpit/src/main.tsx.
     /// </summary>
@@ -249,18 +270,12 @@ internal static class AuthMiddleware
                 // MH-2: the shared machine token authenticates with no device (no tenant), so it is refused on
                 // hosted - the per-device key below is the only accepted credential there.
                 if (!rejectSharedToken && string.Equals(provided, token, StringComparison.Ordinal))
-                    return true;
+                    return Accept(ctx, provided, deviceType: null);
                 // Issue #469: a unique per-device key issued at enrollment is equally valid. DevThrottle
-                // Stats: stash the matched device's type so a remote prompt can be tagged with its surface.
+                // Stats: record the matched device's type so a remote prompt can be tagged with its surface.
                 var deviceType = devices?.DeviceTypeForKey(provided);
                 if (deviceType is not null)
-                {
-                    ctx.Items[DeviceTypeItemKey] = deviceType;
-                    // Hosted Multi-Tenancy increment 1: stash the authenticated key so the tenant boundary can
-                    // resolve this request's tenant from the same verified credential.
-                    ctx.Items[DeviceKeyItemKey] = provided;
-                    return true;
-                }
+                    return Accept(ctx, provided, deviceType);
             }
         }
 
@@ -278,21 +293,38 @@ internal static class AuthMiddleware
         {
             // MH-2: same as the Bearer branch - the shared machine token cookie is not accepted on hosted.
             if (!rejectSharedToken && string.Equals(cookieValue, token, StringComparison.Ordinal))
-                return true;
-            // DevThrottle Stats: same device-key surface stash as the Bearer branch (the live terminal
+                return Accept(ctx, cookieValue, deviceType: null);
+            // DevThrottle Stats: same device-key surface record as the Bearer branch (the live terminal
             // stream authenticates via this cookie).
             var cookieDeviceType = devices?.DeviceTypeForKey(cookieValue);
             if (cookieDeviceType is not null)
-            {
-                ctx.Items[DeviceTypeItemKey] = cookieDeviceType;
-                // Hosted Multi-Tenancy increment 1: same authenticated-key stash as the Bearer branch (the
-                // live terminal stream authenticates via this cookie).
-                ctx.Items[DeviceKeyItemKey] = cookieValue;
-                return true;
-            }
+                return Accept(ctx, cookieValue, cookieDeviceType);
         }
 
         return false;
+    }
+
+    /// <summary>
+    /// THE ONE PLACE a request is accepted. Every accepted credential shape - the shared machine token or a
+    /// per-device key, arriving as a Bearer or as any one of several cookies - returns through here, so the
+    /// authenticated identity is recorded on the request exactly once, in one line, for all of them. A shape
+    /// that returned true on its own would be an authenticated caller with no identity to pass forward, and
+    /// whatever needed one would go and read the raw request again - which is the second authentication
+    /// decision this whole mechanism exists to prevent.
+    /// </summary>
+    /// <param name="credential">The exact credential string that was validated.</param>
+    /// <param name="deviceType">The matched device's type, or null for the shared machine token (no device).
+    ///  Null deliberately leaves <see cref="DeviceKeyItemKey"/> absent, which hosted tenant resolution reads
+    ///  as "shared token, no device".</param>
+    private static bool Accept(HttpContext ctx, string credential, string? deviceType)
+    {
+        ctx.Items[AuthenticatedCredentialItemKey] = credential;
+        if (deviceType is not null)
+        {
+            ctx.Items[DeviceTypeItemKey] = deviceType;
+            ctx.Items[DeviceKeyItemKey] = credential;
+        }
+        return true;
     }
 
     private static IEnumerable<string> CookieValues(HttpContext ctx, string name)
