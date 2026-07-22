@@ -786,7 +786,7 @@ public sealed class GatewayHost : IAsyncDisposable
         // sandbox decisions on the EF data layer, so a Gateway restart never loses a recorded audit fact.
         _governanceAudit = new Governance.GovernanceAuditLog(_gatewayDb);
         _sessionSpendEmitter = new Governance.SessionSpendEmitter(_sessionSpend);
-        _sessionStateEmitter = new Governance.SessionStateEventEmitter(_governanceEvents);
+        _sessionStateEmitter = new Governance.SessionStateEventEmitter(_governanceEvents, _tenantBoundary);
         // The weekly Outcome Ledger reporter (issue #1771, spine item 4): read-only over the run tables +
         // event ledger + spend + audit trail. No store of its own.
         _outcomeLedger = new Governance.OutcomeLedgerReporter(_gatewayDb);
@@ -1833,7 +1833,7 @@ public sealed class GatewayHost : IAsyncDisposable
                 // breaks the turn tracking above).
                 try
                 {
-                    _sessionStateEmitter.Observe(sessionId, newState);
+                    _sessionStateEmitter.Observe(owningTenant, sessionId, newState);
                 }
                 catch (Exception ex)
                 {

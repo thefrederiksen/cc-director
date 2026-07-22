@@ -1,6 +1,8 @@
 using System.Collections.Concurrent;
+using CcDirector.Core.Tenancy;
 using CcDirector.Core.Utilities;
 using CcDirector.Gateway.Contracts;
+using CcDirector.Gateway.Tenancy;
 
 namespace CcDirector.Gateway.Governance;
 
@@ -16,64 +18,80 @@ namespace CcDirector.Gateway.Governance;
 /// waiting-on-human / waiting-on-permission / blocked this emits one closing event at the true exit time.
 /// <see cref="ActivityState"/>'s Starting and Exited are lifecycle, not activity states, so they are not
 /// emitted as-is (and the ledger would reject them anyway).
+///
+/// Hosted Multi-Tenancy: every observation carries its OWNING tenant. The tenant is half of the dedup key and
+/// scopes the ledger append, so two accounts that happen to share a raw session id never collide - a bare
+/// session key let one tenant suppress another's real transition (or clear it on exit) and let the ledger row
+/// land under the wrong tenant. A name is a label, not an authority; the address is (tenant, session id).
 /// </summary>
 public sealed class SessionStateEventEmitter
 {
     private readonly GovernanceEventLedger _ledger;
+    private readonly HostedTenantBoundary _tenants;
 
-    // The last ledger state emitted per session, so an event lands only on a real change. Cleared on exit so
-    // the map does not grow without bound. Per-session observations are ordered by the funnel, so the
-    // read-then-write is effectively serial per session; a rare race would at worst emit a duplicate the
-    // reader tolerates.
-    private readonly ConcurrentDictionary<string, string> _lastState = new(StringComparer.Ordinal);
+    // The last ledger state emitted per (tenant, session), so an event lands only on a real change. Cleared on
+    // exit so the map does not grow without bound. Keyed by the OWNING tenant AND the session id - never the
+    // bare session id - so two tenants sharing a raw session identifier keep independent dedup memory.
+    // Per-session observations are ordered by the funnel, so the read-then-write is effectively serial per
+    // key; a rare race would at worst emit a duplicate the reader tolerates. Self-host uses TenantId.Local.
+    private readonly ConcurrentDictionary<(TenantId Tenant, string SessionId), string> _lastState = new();
 
-    public SessionStateEventEmitter(GovernanceEventLedger ledger)
+    public SessionStateEventEmitter(GovernanceEventLedger ledger, HostedTenantBoundary tenants)
     {
         _ledger = ledger ?? throw new ArgumentNullException(nameof(ledger));
+        _tenants = tenants ?? throw new ArgumentNullException(nameof(tenants));
     }
 
     /// <summary>
-    /// Observe a session's reported activity state. Appends a ledger event on a real transition; on exit,
-    /// closes an open wait/block interval at the true exit time and forgets the session.
+    /// Observe a session's reported activity state under its OWNING tenant. Appends a ledger event on a real
+    /// transition; on exit, closes an open wait/block interval at the true exit time and forgets the session.
+    /// The tenant scopes both the dedup memory and the ledger write, so a shared session id never collides.
     /// </summary>
-    public void Observe(string sessionId, string? activityState)
+    public void Observe(TenantId tenant, string sessionId, string? activityState)
     {
         if (string.IsNullOrEmpty(sessionId))
             return;
 
+        var key = (tenant, sessionId);
         var mapped = MapState(activityState);
         if (mapped is null)
         {
             // Not one of the six ledger states. On exit, close any open wait/block interval at the true exit
             // (so a mid-wait exit is not overcounted to the window end), then forget the session.
             if (IsExit(activityState) &&
-                _lastState.TryRemove(sessionId, out var lastOnExit) &&
+                _lastState.TryRemove(key, out var lastOnExit) &&
                 IsOpenInterval(lastOnExit))
             {
-                Append(sessionId, GovernanceEventState.Recovered);
+                Append(tenant, sessionId, GovernanceEventState.Recovered);
             }
             return;
         }
 
         // A real transition only - a heartbeat re-reporting the current state must not append a duplicate.
-        var previous = _lastState.GetValueOrDefault(sessionId);
+        var previous = _lastState.GetValueOrDefault(key);
         if (string.Equals(previous, mapped, StringComparison.Ordinal))
             return;
 
-        _lastState[sessionId] = mapped;
-        Append(sessionId, mapped);
+        _lastState[key] = mapped;
+        Append(tenant, sessionId, mapped);
     }
 
-    private void Append(string sessionId, string state)
+    private void Append(TenantId tenant, string sessionId, string state)
     {
-        _ledger.Append(new AppendGovernanceEventRequest
+        // The ledger is a tenant-scoped store: its append stamps the AMBIENT tenant. This funnel runs off the
+        // doorbell/heartbeat with no request scope, so enter the owning tenant's scope for the write - the
+        // sibling turn-end watcher is handed the same tenant explicitly. Inert on self-host (Local).
+        using (_tenants.EnterScope(tenant))
         {
-            SubjectKind = GovernanceEventSubject.Session,
-            SessionId = sessionId,
-            State = state,
-            OccurredUtc = null, // the Gateway stamps the append time
-        });
-        FileLog.Write($"[SessionStateEventEmitter] Append: session={sessionId}, state={state}");
+            _ledger.Append(new AppendGovernanceEventRequest
+            {
+                SubjectKind = GovernanceEventSubject.Session,
+                SessionId = sessionId,
+                State = state,
+                OccurredUtc = null, // the Gateway stamps the append time
+            });
+        }
+        FileLog.Write($"[SessionStateEventEmitter] Append: tenant={tenant.ToLogString()}, session={sessionId}, state={state}");
     }
 
     /// <summary>
