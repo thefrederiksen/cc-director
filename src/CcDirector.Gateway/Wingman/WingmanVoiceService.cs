@@ -154,6 +154,11 @@ public sealed class WingmanVoiceService
     /// <summary>The folder holding one tenant's cached narration clips and their metadata.</summary>
     private string AudioDirFor(TenantId tenant) => Path.Combine(PartitionDirectoryFor(tenant), "voice-audio");
 
+    /// <summary>Upper bound on an accepted session id (see <see cref="SafeClipPath"/>). A real session id is a
+    /// GUID or short token - well under this - so a longer one is a malformed/hostile input, refused before a
+    /// path is built. Also keeps the clip file name comfortably inside any filesystem's component limit.</summary>
+    private const int MaxSidLength = 128;
+
     /// <summary>
     /// Resolve the on-disk path of one clip file (the <c>.mp3</c> or the <c>.json</c>) inside a tenant's
     /// voice-audio directory, REFUSING a session id that is not a single safe path segment - returning null,
@@ -168,21 +173,30 @@ public sealed class WingmanVoiceService
     /// different door). So <c>"../../&lt;other-tenant&gt;/voice-audio/&lt;victim&gt;"</c> is a real input, and
     /// concatenated raw it walks the write out of this tenant's partition and into another's. Two independent
     /// checks, BOTH required - a shape that slips one is caught by the other:
-    ///  - the id must be a single ordinary file-name component: equal to its own <see cref="Path.GetFileName"/>,
-    ///    not <c>"."</c> or <c>".."</c>, and free of any directory separator, volume marker, or char the
-    ///    platform rejects in a file name; and
+    ///  - the id must be a single safe file-name atom: non-empty, not <c>"."</c> or <c>".."</c>, no longer
+    ///    than <see cref="MaxSidLength"/> characters, and every character drawn from a strict ALLOW-LIST
+    ///    (<c>[A-Za-z0-9._-]</c>). An allow-list is used deliberately rather than a separator/invalid-char
+    ///    denylist: a denylist that only bans <c>/ \ :</c> and the platform's invalid chars still ACCEPTS a
+    ///    percent-encoded traversal such as <c>"%2e%2e%2f%2e%2e%2fescape"</c> (no separator, all "legal"
+    ///    file-name chars) and an unbounded, over-long segment (a 300-char id). The allow-list rejects both
+    ///    - the <c>'%'</c> is not on it and the length is bounded - BEFORE any path is built; and
     ///  - the fully-resolved path must still lie INSIDE this tenant's voice-audio directory (canonical
-    ///    containment), so even a separator this list did not anticipate cannot escape the partition.
-    /// A legitimate session id (a GUID) has none of these traits and passes untouched; anything else is
-    /// refused rather than coerced, the same rule the tenant partition already applies one level up.
+    ///    containment), so even a shape this list did not anticipate cannot escape the partition.
+    /// A legitimate session id (a GUID) is entirely allow-list characters and well under the length bound, so
+    /// it passes untouched; anything else is refused rather than coerced, the same rule the tenant partition
+    /// already applies one level up.
     /// </summary>
     private string? SafeClipPath(TenantId tenant, string sid, string extension)
     {
         if (string.IsNullOrWhiteSpace(sid)) return null;
         if (sid is "." or "..") return null;
-        if (!string.Equals(sid, Path.GetFileName(sid), StringComparison.Ordinal)) return null;
-        if (sid.IndexOfAny(new[] { '/', '\\', ':' }) >= 0) return null;
-        if (sid.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0) return null;
+        if (sid.Length > MaxSidLength) return null;
+        foreach (var c in sid)
+        {
+            var allowed = c is (>= 'A' and <= 'Z') or (>= 'a' and <= 'z') or (>= '0' and <= '9')
+                or '.' or '_' or '-';
+            if (!allowed) return null;
+        }
 
         var audioDir = AudioDirFor(tenant);
         var combined = Path.Combine(audioDir, sid + extension);

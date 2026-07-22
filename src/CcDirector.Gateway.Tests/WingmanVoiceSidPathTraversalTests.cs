@@ -146,6 +146,54 @@ public sealed class WingmanVoiceSidPathTraversalTests
     }
 
     /// <summary>
+    /// A PERCENT-ENCODED traversal id must write nothing. This is the shape a separator/invalid-char denylist
+    /// lets through: "%2e%2e%2f%2e%2e%2fescape" carries no literal separator and no filesystem-invalid char,
+    /// so the earlier "single file-name component" check accepted it and built a file literally named that
+    /// inside A's own directory. The strict allow-list refuses it because '%' is not an allowed character, so
+    /// nothing is written at all - neither an escape nor a bizarrely-named clip.
+    /// </summary>
+    [Fact]
+    public void A_percent_encoded_traversal_session_id_writes_nothing()
+    {
+        var svc = ServiceAt(NewBaseDir());
+        var aAudioDir = Path.Combine(svc.PartitionDirectoryFor(TenantA), "voice-audio");
+
+        var evil = "%2e%2e%2f%2e%2e%2fescape";
+        svc.StoreReadyAudioForTest(TenantA, evil, "spoken", "reply", Mp3("X"));
+
+        // The percent-encoded id is refused: no clip file is created under it on disk.
+        Assert.False(File.Exists(Path.Combine(aAudioDir, evil + ".mp3")));
+        Assert.False(File.Exists(Path.Combine(aAudioDir, evil + ".json")));
+    }
+
+    /// <summary>
+    /// An OVER-LONG session id must be refused by the length bound BEFORE any path work happens. A 300-char
+    /// id is all allow-list characters yet far past any real session id, so the bound rejects it - closing
+    /// the unbounded-segment shape (which could push a file name past a filesystem's component limit).
+    ///
+    /// The observable is the voice-audio DIRECTORY, not a clip file: a 300-char file name would blow past the
+    /// platform path limit and throw on the write regardless of the guard, so a "no .mp3 file" assertion would
+    /// pass for the wrong reason (the OS, not our bound) and fail to pin the guard. The guard instead returns
+    /// null and the save sink bails out BEFORE it calls Directory.CreateDirectory, so the tenant's voice-audio
+    /// directory is never even created. Drop the length bound and the sink runs on to CreateDirectory (then
+    /// throws on the over-long write), so the directory appears - reddening this test.
+    /// </summary>
+    [Fact]
+    public void An_over_long_session_id_is_refused_before_any_directory_is_created()
+    {
+        var svc = ServiceAt(NewBaseDir());
+        var aAudioDir = Path.Combine(svc.PartitionDirectoryFor(TenantA), "voice-audio");
+        Assert.False(Directory.Exists(aAudioDir));   // precondition: nothing created yet
+
+        var evil = new string('a', 300);
+        svc.StoreReadyAudioForTest(TenantA, evil, "spoken", "reply", Mp3("X"));
+
+        // The length bound refused the id before the sink touched the filesystem, so the directory the sink
+        // would have created for the write was never created.
+        Assert.False(Directory.Exists(aAudioDir));
+    }
+
+    /// <summary>
     /// CONTROL: an ordinary GUID session id still round-trips through the save sink unchanged, so the guard
     /// refuses only the unsafe shapes and never a legitimate id.
     /// </summary>

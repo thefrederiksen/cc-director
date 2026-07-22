@@ -40,14 +40,30 @@ customer content on the hosted Gateway.
 
 New private `SafeClipPath(tenant, sid, extension)` in `WingmanVoiceService`, applied on BOTH the
 save and the delete sink. It refuses the id (returns null -> the sink writes/deletes NOTHING) unless
-it is a single safe path segment AND its resolved path stays inside the tenant's voice-audio dir:
+it passes a strict allow-list AND its resolved path stays inside the tenant's voice-audio dir:
 
-- single ordinary file-name component: equals its own `Path.GetFileName`, not `.` / `..`, no
-  `/ \ :`, no `Path.GetInvalidFileNameChars`; and
+- strict safe-id allow-list: non-empty, not `.` / `..`, no longer than `MaxSidLength` (128), and
+  every character drawn from `[A-Za-z0-9._-]`; and
 - canonical containment: `Path.GetFullPath(combined)` must start with the tenant's voice-audio root.
 
-A legitimate GUID session id has none of these traits and passes untouched. This mirrors, one level
-down, the exact rule the tenant partition already applies to the directory name.
+A legitimate GUID session id is entirely allow-list characters, well under the length bound, and
+passes untouched. This mirrors, one level down, the exact rule the tenant partition already applies
+to the directory name.
+
+### Harden after Codex review (audit B1, PR #1990)
+
+Codex's review of the first cut found the guard was a separator/invalid-char DENYLIST that equals
+its own `Path.GetFileName` and bans `/ \ :` plus the platform's invalid chars. That still ACCEPTED
+two shapes:
+
+- a PERCENT-ENCODED traversal such as `%2e%2e%2f%2e%2e%2fescape` - no literal separator, no invalid
+  char, so it slipped the denylist and built a bizarrely-named clip file; and
+- an UNBOUNDED, over-long segment (a 300-char id) - no length check at all.
+
+The denylist was replaced with a strict ALLOW-LIST (`[A-Za-z0-9._-]` only, so `%` is rejected) plus
+a `MaxSidLength = 128` bound, applied BEFORE any path is built. This is defense in depth on TOP of
+the canonical containment, which is unchanged. An allow-list cannot be out-guessed the way a
+denylist can.
 
 ## Revert-proof
 
@@ -58,11 +74,16 @@ Each guard is independently pinned (single-primitive reverts, full-assembly buil
 - Remove the SAVE guard only -> the write and overwrite tests redden (and the delete test, whose
   victim is overwritten before delete).
 
-## Test evidence (after fix)
+## Test evidence (after fix + harden)
 
-- `WingmanVoiceSidPathTraversalTests`: 5/5 pass (3 attack + 2 controls: separator id writes nothing,
-  normal GUID still persists).
-- All voice + wingman Gateway tests: 366/366 pass.
+- `WingmanVoiceSidPathTraversalTests`: 7/7 pass - 3 traversal attacks, 1 separator id, 1 normal-GUID
+  control, plus the two Codex-review additions: a percent-encoded traversal id
+  (`%2e%2e%2f%2e%2e%2fescape`) writes nothing, and a 300-char id is refused before any directory is
+  created. Both new tests are revert-proofed: restore the old separator/invalid-char denylist and
+  both redden (the percent id writes its clip file; the over-long id's refused save no longer skips
+  `Directory.CreateDirectory`, so the voice-audio directory appears), while the original five stay
+  green.
+- All voice + wingman Gateway tests: 368/368 pass.
 - `WingmanVoiceTenantPartitionTests` (solo): 20/20 pass.
 - `VoiceUploadStoreTenantPartitionTests` (solo): 15/15 pass.
 - Gateway + Gateway.Tests build: 0 warnings / 0 errors.
