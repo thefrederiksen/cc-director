@@ -129,7 +129,7 @@ public sealed class InstallLayout
         {
             return component.Kind switch
             {
-                ComponentKind.Director => Path.Combine(MacAppsDir, "CC Director.app"),
+                ComponentKind.Director => Path.Combine(MacAppsDir, "Director.app"),
                 ComponentKind.Tool => Path.Combine(BinDir, component.Id),
                 ComponentKind.Gateway => Path.Combine(GatewayDir, "devthrottle-gateway"),
                 ComponentKind.Launcher => Path.Combine(LauncherDir, "cc-launcher"),
@@ -150,18 +150,27 @@ public sealed class InstallLayout
     /// <summary>
     /// Pre-rename on-disk names a component may still occupy on an existing host, besides its current
     /// canonical <see cref="PathFor"/> location. Presence detection accepts these so an update
-    /// recognises a legacy host and refreshes it instead of silently orphaning it (issue #1821). Only
-    /// the Gateway was renamed (cc-director-gateway.exe -> devthrottle-gateway.exe); every other
-    /// component has no legacy alias. The CURRENT name stays canonical/target - these are read-only
-    /// aliases for detection, never a place we write to.
+    /// recognises a legacy host and refreshes it instead of silently orphaning it (issue #1821). Two
+    /// components have been renamed: the Gateway (cc-director-gateway.exe -> devthrottle-gateway.exe),
+    /// and the macOS Director bundle ("CC Director.app" -> "Director.app"). The CURRENT name stays
+    /// canonical/target - these are read-only aliases for detection, never a place we write to.
     /// </summary>
     public IReadOnlyList<string> LegacyAliasesFor(Component component)
     {
         ArgumentNullException.ThrowIfNull(component);
-        if (component.Kind != ComponentKind.Gateway)
-            return Array.Empty<string>();
 
-        var legacyName = OperatingSystem.IsWindows() ? "cc-director-gateway.exe" : "cc-director-gateway";
-        return new[] { Path.Combine(GatewayDir, legacyName) };
+        if (component.Kind == ComponentKind.Gateway)
+        {
+            var legacyName = OperatingSystem.IsWindows() ? "cc-director-gateway.exe" : "cc-director-gateway";
+            return new[] { Path.Combine(GatewayDir, legacyName) };
+        }
+
+        // The macOS Director bundle was renamed "CC Director.app" -> "Director.app". A host installed
+        // before the rename still carries the old bundle in ~/Applications; accept it for detection so
+        // an update refreshes that host instead of orphaning it. Windows/tool names never changed.
+        if (component.Kind == ComponentKind.Director && !OperatingSystem.IsWindows())
+            return new[] { Path.Combine(MacAppsDir, "CC Director.app") };
+
+        return Array.Empty<string>();
     }
 }

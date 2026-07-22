@@ -34,7 +34,7 @@ public sealed class UpdaterState
 
     /// <summary>
     /// Absolute path the staged build should overwrite. On Windows the installed
-    /// cc-director.exe; on macOS the installed "CC Director.app" bundle directory.
+    /// cc-director.exe; on macOS the installed "Director.app" bundle directory.
     /// </summary>
     [JsonPropertyName("installTarget")]
     public string? InstallTarget { get; set; }

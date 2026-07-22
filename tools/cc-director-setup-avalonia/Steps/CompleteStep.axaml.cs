@@ -161,34 +161,43 @@ public partial class CompleteStep : UserControl
     {
         SetupLog.Write("[CompleteStep] LaunchButton_Click");
 
-        var binName = RuntimeInformation.IsOSPlatform(OSPlatform.Windows)
-            ? "cc-director.exe"
-            : "cc-director";
-        var exePath = Path.Combine(_installPath, binName);
-
-        if (!File.Exists(exePath))
-        {
-            SetupLog.Write($"[CompleteStep] cc-director not found at {exePath}");
-            return;
-        }
-
+        // _installPath is the canonical Director path (InstallLayout.PathFor). On Windows that is the
+        // installed cc-director.exe; on macOS it is the ~/Applications/Director.app bundle. The two
+        // launch differently: run the exe directly on Windows, but on macOS hand the bundle to
+        // /usr/bin/open so LaunchServices registers it - that is what gives the app its Dock icon and
+        // foreground activation. Launching the inner Mach-O binary directly gives neither.
         try
         {
-            var psi = new ProcessStartInfo
-            {
-                FileName = exePath,
-                UseShellExecute = false,
-            };
+            ProcessStartInfo psi;
 
-            if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+            if (RuntimeInformation.IsOSPlatform(OSPlatform.OSX))
             {
+                if (!Directory.Exists(_installPath))
+                {
+                    SetupLog.Write($"[CompleteStep] Director bundle not found at {_installPath}");
+                    return;
+                }
+
+                psi = new ProcessStartInfo("/usr/bin/open") { UseShellExecute = false };
+                psi.ArgumentList.Add(_installPath);
+            }
+            else
+            {
+                if (!File.Exists(_installPath))
+                {
+                    SetupLog.Write($"[CompleteStep] cc-director not found at {_installPath}");
+                    return;
+                }
+
+                psi = new ProcessStartInfo { FileName = _installPath, UseShellExecute = false };
+
                 var freshPath = GetFreshPathWindows();
                 if (freshPath != null)
                     psi.Environment["PATH"] = freshPath;
             }
 
             Process.Start(psi);
-            SetupLog.Write("[CompleteStep] LaunchButton_Click: cc-director launched");
+            SetupLog.Write("[CompleteStep] LaunchButton_Click: Director launched");
 
             // Close the setup wizard
             var window = this.VisualRoot as Window;

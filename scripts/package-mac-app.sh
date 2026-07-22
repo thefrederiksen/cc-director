@@ -18,11 +18,11 @@
 # Usage:
 #   scripts/package-mac-app.sh --binary <path-to-self-contained-binary> --out <output-dir>
 #
-# Produces:  <output-dir>/cc-director-mac-arm64.zip  (contains "CC Director.app")
+# Produces:  <output-dir>/cc-director-mac-arm64.zip  (contains "Director.app")
 #
 set -euo pipefail
 
-APP_NAME="CC Director"
+APP_NAME="Director"
 BIN_NAME="cc-director"                 # CFBundle binary name (matches AssemblyName)
 BID="com.devthrottle.ccdirector"
 ZIP_NAME="cc-director-mac-arm64.zip"

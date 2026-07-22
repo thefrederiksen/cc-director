@@ -52,4 +52,27 @@
         <Setter Property="Opacity" Value="0.5" />
     </Style>
 
+    <!-- Launch (success/hero) button: the green "Launch Director" call to action on the final step.
+         The hover and pressed backgrounds MUST be set on the templated ContentPresenter, otherwise
+         the base theme repaints it on :pointerover and the green (and its white text) vanish - which
+         made the button look like it "disappeared on hover" and could not be clicked. -->
+    <Style Selector="Button.launch">
+        <Setter Property="Background" Value="#22C55E" />
+        <Setter Property="Foreground" Value="White" />
+        <Setter Property="BorderThickness" Value="0" />
+        <Setter Property="Cursor" Value="Hand" />
+        <Setter Property="CornerRadius" Value="6" />
+    </Style>
+    <Style Selector="Button.launch:pointerover /template/ ContentPresenter">
+        <Setter Property="Background" Value="#16A34A" />
+        <Setter Property="Foreground" Value="White" />
+    </Style>
+    <Style Selector="Button.launch:pressed /template/ ContentPresenter">
+        <Setter Property="Background" Value="#15803D" />
+        <Setter Property="Foreground" Value="White" />
+    </Style>
+    <Style Selector="Button.launch:disabled">
+        <Setter Property="Opacity" Value="0.5" />
+    </Style>
+
 </Styles>

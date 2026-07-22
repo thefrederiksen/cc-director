@@ -123,7 +123,7 @@ public class InstalledManifestTests : IDisposable
     public void Reader_MacBundleDirectoryWithNoManifestEntry_ReportsBundleVersion()
     {
         // Issue #1736 regression shape: a macOS machine whose Director exists only as the
-        // "CC Director.app" bundle, with no manifest entry (installed before the manifest
+        // "Director.app" bundle, with no manifest entry (installed before the manifest
         // existed). It must read as PRESENT with the bundle's Info.plist version - the wizard's
         // old private detector reported exactly this machine as "not installed". (That the
         // presence check accepts a directory is covered by the DefaultExists tests.)
