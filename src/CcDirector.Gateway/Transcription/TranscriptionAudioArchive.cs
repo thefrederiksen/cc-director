@@ -91,6 +91,19 @@ public sealed class TranscriptionAudioArchive
     /// <param name="contentType">The clip's MIME type, used to pick a playable file extension.</param>
     public string? TrySave(string turnId, byte[] audio, string contentType)
     {
+        // HOSTED WRITE GATE (MTR-10 Gap A). This archive has ONE process/user directory with no tenant in
+        // its path or API and a GLOBAL age/count prune, so on a multi-tenant hosted Gateway it would mix
+        // every account's raw speech at rest and let one tenant's traffic prune another's clips. It is a
+        // LOCAL self-host diagnostic aid - write-only, no read method, no public archive-read route - so
+        // there is nothing on hosted to serve it. This is the exact reasoning, and the exact fix, applied
+        // to the telemetry log that sits beside it (GatewayTranscriptionService.RecordTelemetry, issue
+        // #1897): stop the write on hosted. Self-host is single-tenant and byte-identical to today.
+        if (GatewayHostedMode.IsHosted)
+        {
+            FileLog.Write($"[TranscriptionAudioArchive] TrySave SKIPPED on hosted for turn {turnId}: the archive has no tenant partition and no reader on hosted (MTR-10 Gap A; mirrors the telemetry skip #1897)");
+            return null;
+        }
+
         if (string.IsNullOrWhiteSpace(turnId)) return null;
         if (audio is null || audio.Length == 0) return null;
 
