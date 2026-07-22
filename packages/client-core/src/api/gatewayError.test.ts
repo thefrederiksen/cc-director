@@ -7,7 +7,7 @@ import {
   type HostedAiUnavailable,
 } from "./client";
 
-// The user-facing error mapper (issue #1028): the Cockpit fleet/telemetry/roster pages must never
+// The user-facing error mapper (issue #1028): the Cockpit fleet/settings/roster pages must never
 // show the internal "METHOD /path failed: NNN" diagnostic the client throws on a non-2xx, nor the
 // browser's bare "Failed to fetch". gatewayErrorMessage() collapses every thrown error into one clean
 // line. These tests pin the exact mapping the pages rely on.

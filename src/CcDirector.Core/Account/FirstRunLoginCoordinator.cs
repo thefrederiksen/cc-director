@@ -45,7 +45,6 @@ public sealed class FirstRunLoginCoordinator
     private readonly DevThrottleAccountService _account;
     private readonly Func<string, Task> _openBrowser;
     private readonly Func<LoopbackLoginListener> _listenerFactory;
-    private readonly ILoginTelemetryReporter _loginReporter;
     private readonly Action<DevThrottleTokens> _persistCredential;
 
     /// <summary>
@@ -60,11 +59,6 @@ public sealed class FirstRunLoginCoordinator
     /// Creates the loopback listener that receives the hand-back. Defaults to a real
     /// <see cref="LoopbackLoginListener"/>.
     /// </param>
-    /// <param name="loginReporter">
-    /// Reports the always-on login event to the backend (issue #40), fired
-    /// best-effort on success. Defaults to the real <see cref="DevThrottleLoginTelemetryReporter"/>
-    /// stamped with this build's version.
-    /// </param>
     /// <param name="persistCredential">
     /// What to do with the captured token pair. Defaults to storing it through the credential service
     /// (<see cref="DevThrottleAccountService.StoreTokens"/>) - the Gateway path, where the Gateway is the
@@ -75,7 +69,6 @@ public sealed class FirstRunLoginCoordinator
         DevThrottleAccountService account,
         Func<string, Task>? openBrowser = null,
         Func<LoopbackLoginListener>? listenerFactory = null,
-        ILoginTelemetryReporter? loginReporter = null,
         Action<DevThrottleTokens>? persistCredential = null)
     {
         _account = account ?? throw new ArgumentNullException(nameof(account));
@@ -85,7 +78,6 @@ public sealed class FirstRunLoginCoordinator
             return Task.CompletedTask;
         });
         _listenerFactory = listenerFactory ?? (() => new LoopbackLoginListener());
-        _loginReporter = loginReporter ?? new DevThrottleLoginTelemetryReporter(appVersion: AppVersion.Semver);
         _persistCredential = persistCredential ?? _account.StoreTokens;
     }
 
@@ -179,29 +171,6 @@ public sealed class FirstRunLoginCoordinator
         _persistCredential(tokens);
         FileLog.Write("[FirstRunLoginCoordinator] RunAsync: credential captured (persistence handled by the injected persist action)");
 
-        ReportLoginBestEffort(tokens.AccessToken);
         return FirstRunLoginResult.Success();
-    }
-
-    /// <summary>
-    /// Reports the always-on login event to the backend (issue #40), fully detached. It runs on the
-    /// thread pool and only logs on failure, so a slow or failed report can never block or fail the
-    /// user's login. The access token is passed to the reporter as the Authorization credential and is
-    /// never logged here.
-    /// </summary>
-    private void ReportLoginBestEffort(string accessToken)
-    {
-        _ = Task.Run(async () =>
-        {
-            try
-            {
-                await _loginReporter.ReportLoginAsync(accessToken).ConfigureAwait(false);
-                FileLog.Write("[FirstRunLoginCoordinator] ReportLoginBestEffort: login telemetry reported");
-            }
-            catch (Exception ex)
-            {
-                FileLog.Write($"[FirstRunLoginCoordinator] ReportLoginBestEffort: login telemetry failed (ignored, best-effort): {ex.Message}");
-            }
-        });
     }
 }

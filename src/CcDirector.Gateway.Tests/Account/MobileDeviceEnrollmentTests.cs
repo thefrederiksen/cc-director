@@ -80,8 +80,7 @@ public sealed class MobileDeviceEnrollmentTests
         Environment.SetEnvironmentVariable(GatewayAccountFactory.SigningSecretEnvVar, GatewayTestJwt.SigningSecret);
         try
         {
-            var authEventsLog = Path.Combine(Path.GetTempPath(), "cc-gw-mobile-enroll-" + Guid.NewGuid().ToString("N") + ".jsonl");
-            var service = GatewayAccountFactory.Build(new InMemoryTokenStore(), authEventsLog);
+            var service = GatewayAccountFactory.Build(new InMemoryTokenStore());
             if (signedIn)
                 service.StoreTokens(new DevThrottleTokens(GatewayTestJwt.Create(DateTime.UtcNow.AddHours(1)), "refresh-908"));
             return service;

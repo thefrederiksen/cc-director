@@ -328,13 +328,13 @@ public sealed class Issue1593FailedAttemptRebaselineTests : IAsyncLifetime
         return (resp.StatusCode, await resp.Content.ReadFromJsonAsync<JsonElement>());
     }
 
-    /// <summary>The real transcription owner over a stub provider socket, with its own telemetry + audio
+    /// <summary>The real transcription owner over a stub provider socket, with its own local history + audio
     /// archive so it never writes into the real user's directories (the defaults are process-wide Shared
     /// instances whose paths are baked at type-init).</summary>
     private GatewayTranscriptionService StubTranscription() => new(
         new KeyVault(_vaultPath),
         http: new HttpClient(new TranscriptStub()),
-        telemetry: new TranscriptionTelemetryLog(Path.Combine(_root, "telemetry")),
+        history: new TranscriptionHistoryLog(Path.Combine(_root, "transcription-history")),
         audioArchive: new TranscriptionAudioArchive(Path.Combine(_root, "audio")));
 
     /// <summary>Stands in for the hosted speech-to-text provider: always returns the same transcript.</summary>

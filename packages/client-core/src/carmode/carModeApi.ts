@@ -71,7 +71,7 @@ export interface CarModeAction {
 
 /** The per-stage SERVER timing the brain measured for one turn (performance round): every hosted-model
  *  round trip and every fleet/roster read, plus the whole-turn server wall-clock. Milliseconds. The browser
- *  echoes this back merged with its own client stamps as one telemetry record. */
+ *  echoes this back merged with its own client stamps as one local diagnostics record. */
 export interface CarModeServerTiming {
   totalMs: number;
   modelCallCount: number;
@@ -85,7 +85,7 @@ export interface CarModeServerTiming {
 /** The brain's answer for one turn (POST /carmode/turn). `spoken` is what the assistant says out loud;
  *  `actions` is what it did this turn (empty for a pure question); `pendingConfirmation` is true when the
  *  assistant is holding a destructive action and is waiting for a spoken "confirm" next turn. `turnId` and
- *  `timing` feed the telemetry record the browser posts back. */
+ *  `timing` feed the diagnostics record the browser posts back. */
 export interface CarModeTurnResult {
   turnId: string;
   spoken: string;
@@ -127,11 +127,11 @@ export async function carModeTurn(text: string, idempotencyKey?: string, signal?
   };
 }
 
-/** One merged per-turn timing record the browser posts to the Gateway telemetry store (performance round):
+/** One merged per-turn timing record the browser posts to the Gateway diagnostics store (performance round):
  *  the client stamps it measured, plus the server timing it received in the turn response, plus small
  *  non-text turn facts (character counts, action count). The server fills the received-at time, the device
  *  hash, and the Gateway build from its own side. No command or reply text is ever included. */
-export interface CarModeTelemetryPost {
+export interface CarModeDiagnosticsPost {
   turnId: string;
   pauseToTranscribeMs: number;
   transcodeMs: number;
@@ -155,7 +155,7 @@ export interface CarModeTelemetryPost {
    *  below clipDurationMs flags a PLAYBACK cut-off (as opposed to a short synthesis). */
   playedToMs: number;
   /** True when the reply clip played fully to its natural end; false when it was cut off (interrupt / End
-   *  Car Mode). A cut-off reply - the bug this telemetry makes visible - reads as false. */
+   *  Car Mode). A cut-off reply - the bug these diagnostics make visible - reads as false. */
   completed: boolean;
   /** True when the reply's play() was REJECTED - the mobile autoplay block (a play() not tied to a live
    *  user gesture is refused), so the reply never sounded. The unlock-on-Start fix drives this to false. */
@@ -165,7 +165,7 @@ export interface CarModeTelemetryPost {
   micReacquiredDuringPlayback: boolean;
   /** How many rolling-"stop" transcriptions ran during this reply (each re-reads the open mic). */
   speakingPollCount: number;
-  /** window.innerHeight on the phone at telemetry time - the layout viewport height (the tall,
+  /** window.innerHeight on the phone when the record is taken - the layout viewport height (the tall,
    *  toolbar-hidden height on mobile). */
   viewportInnerHeight: number;
   /** window.visualViewport.height - the ACTUALLY visible height (minus the browser toolbars / keyboard), or
@@ -193,21 +193,21 @@ export interface CarModeTelemetryPost {
 }
 
 /**
- * Post one turn's merged timing record to the Gateway telemetry store (POST /carmode/telemetry). Best-effort
+ * Post one turn's merged timing record to the local Gateway diagnostics store (POST /carmode/diagnostics). Best-effort
  * observability: it never throws into the turn loop and never blocks the spoken reply - a failed post is
  * logged and swallowed, because losing a timing record must never disrupt the drive. Same-origin, with the
  * enrolled per-device key like every other Car Mode call.
  */
-export async function postCarModeTelemetry(record: CarModeTelemetryPost): Promise<void> {
+export async function postCarModeDiagnostics(record: CarModeDiagnosticsPost): Promise<void> {
   try {
-    await fetch("/carmode/telemetry", {
+    await fetch("/carmode/diagnostics", {
       method: "POST",
       headers: { "Content-Type": "application/json", ...authHeaders() },
       body: JSON.stringify(record),
       keepalive: true,
     });
   } catch (err) {
-    console.log(`[CarMode] telemetry post failed (ignored): ${String(err)}`);
+    console.log(`[CarMode] diagnostics post failed (ignored): ${String(err)}`);
   }
 }
 

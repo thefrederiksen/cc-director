@@ -31,8 +31,6 @@ namespace CcDirector.Gateway.Api;
 ///   PUT  /gateway/ai-provider     body { "provider": "devthrottle" } (resets hosted model defaults)
 ///   GET  /gateway/tts-voice       -> { voice, voices[] }
 ///   PUT  /gateway/tts-voice       body { "voice": "nova"|... } -> { voice }
-///   GET  /gateway/telemetry-consent  -> { enabled } (fleet-wide richer-usage consent, default ON, issue #649)
-///   PUT  /gateway/telemetry-consent  body { "enabled": bool } -> { enabled }
 ///   GET  /gateway/injected-text   -> { use_yours, yours, ours, placeholders[] } (what agents get at launch)
 ///   PUT  /gateway/injected-text   body { "use_yours": bool, "yours": string|null } -> same shape
 ///
@@ -113,14 +111,6 @@ internal static class SettingsEndpoints
         // so the self-host surface is byte-identical to before and the diff stays readable.
         var group = HostedRouteDeny.Group(outer, "", Denial());
 
-        // The telemetry-consent family is mapped onto OUTER, not into this group, deliberately (issue
-        // #1863). It carries its OWN hosted refusal, and mapping it here as well would put two boundaries
-        // over the same routes - which hides a defect rather than adding safety: deleting either alone would
-        // leave the routes still refused, so neither's revert could be attributed to it. One family, one
-        // boundary, one thing to revert. It is called HERE, in the only method that still holds `outer`, so
-        // that `outer` does not have to stay in scope where the routes are mapped.
-        TelemetryConsentEndpoint.Map(outer);
-
         // THE ROUTES ARE MAPPED WHERE `outer` IS NOT IN SCOPE - deliberately, and this is the only reason
         // MapRoutes exists as a separate method.
         //
@@ -180,10 +170,6 @@ internal static class SettingsEndpoints
                 // Issue #531 follow-up: when on, every wingman summary is saved (terminal + response)
                 // as training data for improving the wingman.
                 wingmanTrainingCapture = Core.Configuration.WingmanTrainingCaptureConfig.Get(),
-                // Issue #649: the fleet-wide richer-usage-telemetry consent (opt-out). Default ON.
-                // Gates ONLY the richer usage telemetry; the always-on login/startup events are
-                // never gated by it.
-                telemetryConsent = Core.Configuration.TelemetryConsentConfig.Get(),
                 // Snooze Length mission: the per-user default snooze length in minutes (default 60),
                 // so the one Settings page can render and edit it in Phase 3.
                 snoozeDefaultMinutes = Core.Configuration.SnoozeDefaultConfig.Get(),
@@ -312,12 +298,6 @@ internal static class SettingsEndpoints
                 return Results.BadRequest(new { error = "invalid JSON" });
             }
         });
-
-        // The fleet-wide richer-usage-telemetry consent (issue #649) lives in its own endpoint class
-        // (TelemetryConsentEndpoint) so it can be unit-tested in isolation, and it is mapped from Map above
-        // rather than here, because it needs the UNGROUPED builder and this method deliberately does not
-        // have one. Default ON; gates only the richer usage telemetry - the always-on login/startup events
-        // are never gated.
 
         // Network addressing mode (issue #457): "tailscale" (advertise the Tailscale Serve
         // front door) or "lan" (advertise the machine's real LAN IP). Stored as the top-level

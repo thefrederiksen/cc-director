@@ -25,14 +25,12 @@ public sealed class InstallerGatewaySignInHandoffTests : IDisposable
 {
     private readonly string _tempDir;
     private readonly string _blobPath;
-    private readonly string _authEventsPath;
 
     public InstallerGatewaySignInHandoffTests()
     {
         _tempDir = Path.Combine(Path.GetTempPath(), "cc-installer-gw-handoff-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(_tempDir);
         _blobPath = Path.Combine(_tempDir, "devthrottle-credential.bin");
-        _authEventsPath = Path.Combine(_tempDir, "devthrottle-auth-events.jsonl");
     }
 
     public void Dispose()
@@ -51,7 +49,7 @@ public sealed class InstallerGatewaySignInHandoffTests : IDisposable
     private void PersistLikeInstaller(string accessToken, string refreshToken)
     {
         var installerStore = new WindowsProtectedTokenStore(_blobPath);
-        var installerService = DevThrottleAccountFactory.Build(installerStore, _authEventsPath);
+        var installerService = DevThrottleAccountFactory.Build(installerStore);
         installerService.StoreTokens(new DevThrottleTokens(accessToken, refreshToken));
     }
 
@@ -66,7 +64,7 @@ public sealed class InstallerGatewaySignInHandoffTests : IDisposable
         try
         {
             var store = new WindowsProtectedTokenStore(_blobPath);
-            return GatewayAccountFactory.Build(store, _authEventsPath);
+            return GatewayAccountFactory.Build(store);
         }
         finally
         {

@@ -1,6 +1,6 @@
 // Client for the Gateway's local transcription analysis API (GET /transcription/*). It reads the
-// on-machine transcription telemetry the Gateway records for every turn - latency, outcomes, the
-// dictionary corrections that were applied, and word frequencies - so the Cockpit (and any agent) can
+// on-machine transcription history the Gateway records for every turn - latency, outcomes, and the
+// dictionary corrections that were applied - so the Cockpit (and any agent) can
 // see how fast and how good transcription is. Same-origin through the Gateway front door with the
 // per-device key, exactly like the rest of client-core; never a Director address.
 
@@ -29,7 +29,6 @@ export interface TranscriptionStats {
   cleanupAppliedTurns: number;
   totalWords: number;
   totalCharacters: number;
-  totalAudioBytes: number;
 }
 
 export interface TermFrequency {
@@ -77,6 +76,18 @@ function windowQuery(days?: number): string {
 /** Aggregate transcription stats over the last {days} days (or all time when omitted). */
 export function getTranscriptionStats(days?: number, signal?: AbortSignal): Promise<TranscriptionStats> {
   return getJson<TranscriptionStats>(`/transcription/stats${windowQuery(days)}`, signal);
+}
+
+/** Delete all locally retained Transcription Health history. */
+export async function clearTranscriptionHistory(signal?: AbortSignal): Promise<number> {
+  const res = await fetch("/transcription/history", {
+    method: "DELETE",
+    headers: { Accept: "application/json", ...authHeaders() },
+    signal,
+  });
+  if (!res.ok) throw new Error(`DELETE /transcription/history failed: ${res.status}`);
+  const body = (await res.json()) as { removedFiles?: number };
+  return Number(body.removedFiles ?? 0);
 }
 
 /** The most frequent dictionary corrections applied, over the window. */

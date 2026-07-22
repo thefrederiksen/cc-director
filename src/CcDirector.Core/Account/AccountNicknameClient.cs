@@ -16,7 +16,7 @@ namespace CcDirector.Core.Account;
 /// Gateway already holds for cloud egress (the SAME credential
 /// <see cref="DevThrottleAccountService.GetAccessTokenForForwarding"/> returns - the nickname endpoint
 /// is JWT-authed, NOT dt_-key-authed), the base URL resolves the same way the rest of the account egress
-/// does (<see cref="AccountTelemetryClient.ApiBaseUrlEnvVar"/> override, else the production default), so
+/// does (<see cref="DevThrottleApi.BaseUrlEnvVar"/> override, else the production default), so
 /// this client introduces no new hard-coded host, and the access token is sent only as the
 /// Authorization header and is NEVER written to the log (DT-05). The <see cref="HttpClient"/> is
 /// injectable so tests drive it against an in-process stub.
@@ -37,17 +37,7 @@ public sealed class AccountNicknameClient
     public AccountNicknameClient(HttpClient? client = null, string? baseUrl = null)
     {
         _client = client ?? new HttpClient(GatewayHttp.Handler()) { Timeout = TimeSpan.FromSeconds(10) };
-        _baseUrl = ResolveBaseUrl(baseUrl);
-    }
-
-    private static string ResolveBaseUrl(string? baseUrl)
-    {
-        if (!string.IsNullOrWhiteSpace(baseUrl))
-            return baseUrl.Trim().TrimEnd('/');
-        var fromEnv = Environment.GetEnvironmentVariable(AccountTelemetryClient.ApiBaseUrlEnvVar);
-        if (!string.IsNullOrWhiteSpace(fromEnv))
-            return fromEnv.Trim().TrimEnd('/');
-        return AccountTelemetryClient.DefaultApiBaseUrl;
+        _baseUrl = DevThrottleApi.ResolveBaseUrl(baseUrl);
     }
 
     /// <summary>

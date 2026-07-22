@@ -6,8 +6,8 @@ namespace CcDirector.Gateway.CarMode;
 
 /// <summary>
 /// The durable, Gateway-local store of Car Mode turn timing records (Car Mode performance round). Every
-/// turn the browser posts ONE compact <see cref="CarModeTelemetryRecord"/> here; the private
-/// GET /carmode/telemetry dashboard reads them back with no cloud round trip. This is the observability
+/// turn the browser posts ONE compact <see cref="CarModeDiagnosticsRecord"/> here; the private
+/// GET /carmode/diagnostics dashboard reads them back with no cloud round trip. This is the observability
 /// foundation the owner asked for - a real per-stage breakdown of where a Car Mode turn spends its time.
 ///
 /// Retention is by AGE (drop records older than <see cref="RetentionDays"/> days, the owner's stated
@@ -38,8 +38,8 @@ namespace CcDirector.Gateway.CarMode;
 /// request, never from the posted body. The device credential is the safe discriminator here for three
 /// reasons: it is trusted (the Gateway derives it from the authenticated request), the other Car Mode
 /// stores - conversation, pending action, subject - are already keyed the same way, so this is consistent
-/// rather than novel, and telemetry is per-device operational data (a turn's timings describe THAT phone's
-/// microphone, transcode, and playback). Making telemetry follow a person across their devices is a
+/// rather than novel, and diagnostics are per-device operational data (a turn's timings describe THAT phone's
+/// microphone, transcode, and playback). Making diagnostics follow a person across their devices is a
 /// PRODUCT question, not this security partition, and is deliberately not built here.
 ///
 /// The hash is derived from THE CREDENTIAL THE AUTHENTICATION GATE ACCEPTED, which the endpoint reads from
@@ -52,7 +52,7 @@ namespace CcDirector.Gateway.CarMode;
 /// deferred leak - unpartitioned records would keep accumulating behind it - so the write records the
 /// partition too. The caller-supplied <c>TurnId</c> is never used as a discriminator.
 /// </summary>
-public sealed class CarModeTelemetryStore
+public sealed class CarModeDiagnosticsStore
 {
     private static readonly JsonSerializerOptions FileJsonOptions = new() { WriteIndented = false };
 
@@ -76,23 +76,23 @@ public sealed class CarModeTelemetryStore
     private readonly int _maxRecords;
 
     // Newest last (append order). Reads hand back a newest-first copy for the dashboard.
-    private readonly List<CarModeTelemetryRecord> _records = new();
+    private readonly List<CarModeDiagnosticsRecord> _records = new();
 
-    /// <param name="path">The durable store file. Defaults to carmode-telemetry.json under the cc-director
+    /// <param name="path">The durable store file. Defaults to carmode-diagnostics.json under the cc-director
     ///  storage root, beside the other Gateway stores.</param>
     /// <param name="log">Log sink; <see cref="FileLog.Write"/> when null.</param>
-    public CarModeTelemetryStore(string? path = null, Action<string>? log = null)
+    public CarModeDiagnosticsStore(string? path = null, Action<string>? log = null)
         : this(path, log, MaxRecords)
     {
     }
 
     /// <summary>Test seam: the same store with a small PER-PARTITION growth-guard cap, so the per-device
     ///  eviction can be driven with a handful of records per device instead of ten thousand.</summary>
-    internal CarModeTelemetryStore(string? path, Action<string>? log, int maxRecords)
+    internal CarModeDiagnosticsStore(string? path, Action<string>? log, int maxRecords)
     {
         if (maxRecords <= 0) throw new ArgumentOutOfRangeException(nameof(maxRecords));
         _path = string.IsNullOrWhiteSpace(path)
-            ? Path.Combine(CcStorage.Root(), "carmode-telemetry.json")
+            ? Path.Combine(CcStorage.Root(), "carmode-diagnostics.json")
             : path!;
         _log = log ?? FileLog.Write;
         _maxRecords = maxRecords;
@@ -107,10 +107,10 @@ public sealed class CarModeTelemetryStore
     /// <param name="deviceHash">The trusted, credential-derived partition from
     ///  <see cref="CarModeDeviceHash.Of"/>. Blank is a programming error and throws - it is never quietly
     ///  turned into a shared bucket, because that would silently un-partition the write.</param>
-    public int Add(string deviceHash, CarModeTelemetryRecord? record)
+    public int Add(string deviceHash, CarModeDiagnosticsRecord? record)
     {
         if (string.IsNullOrWhiteSpace(deviceHash))
-            throw new ArgumentException("A telemetry write needs the caller's device partition.", nameof(deviceHash));
+            throw new ArgumentException("A diagnostics write needs the caller's device partition.", nameof(deviceHash));
         if (record is null) return Count(deviceHash);
         var owned = record with { DeviceHash = deviceHash };
         lock (_lock)
@@ -123,7 +123,7 @@ public sealed class CarModeTelemetryStore
             PruneLocked(DateTime.UtcNow, capPartition: deviceHash);
             Save();
             var held = MineNewestFirstLocked(deviceHash).Count;
-            _log($"[CarModeTelemetry] recorded turn {owned.TurnId}: total={owned.TotalTurnMs:F0}ms, brain={owned.BrainMs:F0}ms, "
+            _log($"[CarModeDiagnostics] recorded turn {owned.TurnId}: total={owned.TotalTurnMs:F0}ms, brain={owned.BrainMs:F0}ms, "
                 + $"fleetReads={owned.FleetReadCount}, models={owned.ModelCallCount}; this device now holds {held} of {_records.Count}");
             return held;
         }
@@ -134,10 +134,10 @@ public sealed class CarModeTelemetryStore
     /// <param name="deviceHash">The trusted, credential-derived partition from
     ///  <see cref="CarModeDeviceHash.Of"/>. Blank is a programming error and throws, so a missing partition
     ///  can never widen the read to every device.</param>
-    public IReadOnlyList<CarModeTelemetryRecord> Recent(string deviceHash, int limit)
+    public IReadOnlyList<CarModeDiagnosticsRecord> Recent(string deviceHash, int limit)
     {
         if (string.IsNullOrWhiteSpace(deviceHash))
-            throw new ArgumentException("A telemetry read needs the caller's device partition.", nameof(deviceHash));
+            throw new ArgumentException("A diagnostics read needs the caller's device partition.", nameof(deviceHash));
         if (limit <= 0) limit = 100;
         lock (_lock)
         {
@@ -151,16 +151,31 @@ public sealed class CarModeTelemetryStore
     public int Count(string deviceHash)
     {
         if (string.IsNullOrWhiteSpace(deviceHash))
-            throw new ArgumentException("A telemetry read needs the caller's device partition.", nameof(deviceHash));
+            throw new ArgumentException("A diagnostics read needs the caller's device partition.", nameof(deviceHash));
         lock (_lock) return MineNewestFirstLocked(deviceHash).Count;
+    }
+
+    /// <summary>Deletes only the caller's device partition and returns the number removed.</summary>
+    public int Clear(string deviceHash)
+    {
+        if (string.IsNullOrWhiteSpace(deviceHash))
+            throw new ArgumentException("A diagnostics clear needs the caller's device partition.", nameof(deviceHash));
+        lock (_lock)
+        {
+            var removed = _records.RemoveAll(record =>
+                string.Equals(record.DeviceHash, deviceHash, StringComparison.Ordinal));
+            if (removed > 0)
+                Save();
+            return removed;
+        }
     }
 
     /// <summary>THE ONE PLACE a device's records are selected. Every read - the record list and the count -
     ///  goes through this single filter, so the partition cannot be right in one read and wrong in another,
     ///  and there is exactly one line to get right. Newest first. Caller holds the lock.</summary>
-    private List<CarModeTelemetryRecord> MineNewestFirstLocked(string deviceHash)
+    private List<CarModeDiagnosticsRecord> MineNewestFirstLocked(string deviceHash)
     {
-        var mine = new List<CarModeTelemetryRecord>();
+        var mine = new List<CarModeDiagnosticsRecord>();
         for (var i = _records.Count - 1; i >= 0; i--)
         {
             if (string.Equals(_records[i].DeviceHash, deviceHash, StringComparison.Ordinal))
@@ -187,7 +202,7 @@ public sealed class CarModeTelemetryStore
             : _records.RemoveAll(r => string.Equals(r.DeviceHash, capPartition, StringComparison.Ordinal)
                                       && !WithinRetention(r.ReceivedAtUtc, cutoff));
         if (removedByAge > 0)
-            _log($"[CarModeTelemetry] pruned {removedByAge} record(s) older than {RetentionDays} days");
+            _log($"[CarModeDiagnostics] pruned {removedByAge} record(s) older than {RetentionDays} days");
 
         // Growth guard, strictly partition-local. The cap is PER DEVICE: a partition over its cap loses its
         // OWN oldest records and nothing else. On a write we cap only the writer's partition, so a write can
@@ -204,7 +219,7 @@ public sealed class CarModeTelemetryStore
             evicted += EvictOldestOfPartitionLocked(capPartition);
         }
         if (evicted > 0)
-            _log($"[CarModeTelemetry] growth guard: dropped {evicted} record(s), each from its own device partition, to keep every partition at or under {_maxRecords}");
+            _log($"[CarModeDiagnostics] growth guard: dropped {evicted} record(s), each from its own device partition, to keep every partition at or under {_maxRecords}");
 
         return removedByAge + evicted;
     }
@@ -253,7 +268,7 @@ public sealed class CarModeTelemetryStore
     {
         if (!File.Exists(_path))
         {
-            _log($"[CarModeTelemetry] Load: no store file at {_path}; starting empty");
+            _log($"[CarModeDiagnostics] Load: no store file at {_path}; starting empty");
             return;
         }
 
@@ -304,7 +319,7 @@ public sealed class CarModeTelemetryStore
             return;
         }
 
-        _records.AddRange(doc.Records ?? new List<CarModeTelemetryRecord>());
+        _records.AddRange(doc.Records ?? new List<CarModeDiagnosticsRecord>());
 
         // Every surviving record was written at this store version or above, where Add stamps the DeviceHash
         // from the credential THE GATE ACCEPTED, so its attribution is trusted. A record with a BLANK hash is
@@ -313,7 +328,7 @@ public sealed class CarModeTelemetryStore
         // are purged here rather than kept as unreachable residue.
         var unattributed = _records.RemoveAll(r => string.IsNullOrWhiteSpace(r.DeviceHash));
         if (unattributed > 0)
-            _log($"[CarModeTelemetry] Load: purged {unattributed} record(s) with no device partition (unattributable; never disclosed)");
+            _log($"[CarModeDiagnostics] Load: purged {unattributed} record(s) with no device partition (unattributable; never disclosed)");
 
         var pruned = PruneLocked(DateTime.UtcNow, capPartition: null);
 
@@ -326,17 +341,17 @@ public sealed class CarModeTelemetryStore
         if (unattributed + pruned > 0)
         {
             Save();
-            _log($"[CarModeTelemetry] Load: rewrote {_path} after removing {unattributed + pruned} record(s)");
+            _log($"[CarModeDiagnostics] Load: rewrote {_path} after removing {unattributed + pruned} record(s)");
         }
 
-        _log($"[CarModeTelemetry] Load: restored {_records.Count} record(s) from {_path}");
+        _log($"[CarModeDiagnostics] Load: restored {_records.Count} record(s) from {_path}");
     }
 
     private void Quarantine(string reason)
     {
         var quarantinePath = $"{_path}.corrupt-{DateTime.UtcNow:yyyyMMdd-HHmmss-fff}";
         File.Move(_path, quarantinePath);
-        _log($"[CarModeTelemetry] Load FAILED: store file at {_path} is corrupt ({reason}); quarantined to {quarantinePath}; starting empty.");
+        _log($"[CarModeDiagnostics] Load FAILED: store file at {_path} is corrupt ({reason}); quarantined to {quarantinePath}; starting empty.");
     }
 
     // Write-through under the lock: serialize the whole store and atomically replace the file (temp +
@@ -357,7 +372,7 @@ public sealed class CarModeTelemetryStore
         }
         catch (Exception ex)
         {
-            _log($"[CarModeTelemetry] Save FAILED: path={_path}: {ex.Message}");
+            _log($"[CarModeDiagnostics] Save FAILED: path={_path}: {ex.Message}");
             throw;
         }
     }
@@ -365,5 +380,5 @@ public sealed class CarModeTelemetryStore
     /// <summary>The persisted envelope: a version stamp plus the records. The version is what lets load
     ///  distinguish records written under the authenticated-credential partition (trusted) from a pre-version
     ///  document (quarantined). A bare record array on disk is a pre-version document by definition.</summary>
-    private sealed record StoreDocument(int Version, List<CarModeTelemetryRecord> Records);
+    private sealed record StoreDocument(int Version, List<CarModeDiagnosticsRecord> Records);
 }

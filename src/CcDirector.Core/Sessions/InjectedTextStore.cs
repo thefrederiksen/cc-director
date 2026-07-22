@@ -37,8 +37,7 @@ public sealed record InjectedTextCacheEntry(
 /// <see cref="InjectedTextConfig"/>). The Director never owns this setting; it downloads it and injects
 /// what it last downloaded.
 ///
-/// The read is split so a synchronous launch never blocks on the network, exactly like
-/// <see cref="Account.GatewayTelemetryConsent"/>:
+/// The read is split so a synchronous launch never blocks on the network:
 ///   - <see cref="RefreshAsync"/> fetches the authoritative value off the launch path and writes the
 ///     on-disk cache. The host calls it when the Gateway connection goes green and on a refresh timer.
 ///   - <see cref="ActiveTemplate"/> / <see cref="ActiveSource"/> read that cache synchronously at

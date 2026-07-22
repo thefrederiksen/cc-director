@@ -67,6 +67,32 @@ public static class CcDirectorConfigService
         }
     }
 
+    /// <summary>
+    /// Removes exact top-level keys while preserving every other section. Returns true when at least
+    /// one key was present. A malformed document still throws before any write, matching
+    /// <see cref="MergePatch"/>'s no-data-loss rule.
+    /// </summary>
+    public static bool RemoveTopLevelKeys(params string[] keys)
+    {
+        if (keys is null) throw new ArgumentNullException(nameof(keys));
+
+        lock (WriteLock)
+        {
+            var current = ReadRaw();
+            var changed = false;
+            foreach (var key in keys)
+            {
+                if (string.IsNullOrWhiteSpace(key))
+                    throw new ArgumentException("Keys must be non-empty.", nameof(keys));
+                changed |= current.Remove(key);
+            }
+
+            if (changed)
+                WriteAtomic(current);
+            return changed;
+        }
+    }
+
     /// <summary>Gateway connection settings, read fresh from disk.</summary>
     public static GatewayConfig GetGateway() => GatewayConfig.Load();
 

@@ -8,10 +8,6 @@ describe("tabFromParam", () => {
     }
   });
 
-  it("maps the retired telemetry id onto the Privacy tab so old bookmarks still land on the setting", () => {
-    expect(tabFromParam("telemetry")).toBe("privacy");
-  });
-
   it("falls back to This machine when the parameter is missing or unknown", () => {
     expect(tabFromParam(null)).toBe("machine");
     expect(tabFromParam("")).toBe("machine");
@@ -21,7 +17,7 @@ describe("tabFromParam", () => {
 
 describe("TABS", () => {
   it("orders the tabs machine-first, with the scopes grouped after it", () => {
-    expect(TABS.map((t) => t.id)).toEqual(["machine", "notifications", "ai", "carmode", "privacy"]);
+    expect(TABS.map((t) => t.id)).toEqual(["machine", "notifications", "ai", "carmode", "training"]);
   });
 
   it("has no duplicate ids", () => {

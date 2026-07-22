@@ -1,15 +1,15 @@
 namespace CcDirector.Gateway.CarMode;
 
 /// <summary>
-/// The self-contained HTML for GET /carmode/telemetry (Car Mode performance round): a private dashboard the
+/// The self-contained HTML for GET /carmode/diagnostics (Car Mode performance round): a private dashboard the
 /// owner opens on the Gateway to see, per turn, exactly where a Car Mode turn spent its time - the client
 /// stamps (pause to transcribe, the brain round trip, first audio) and the server stamps (each model call,
-/// the fleet reads, the whole-turn wall-clock). It reads the Gateway's own telemetry store with no cloud
+/// the fleet reads, the whole-turn wall-clock). It reads the Gateway's own diagnostics store with no cloud
 /// round trip. Embedded in the binary (not a wwwroot React route) so it works even on a plain dev build,
 /// exactly like the Stats page. All CSS and JavaScript inline, no external requests, ASCII only,
 /// light/dark aware.
 /// </summary>
-internal static class CarModeTelemetryPage
+internal static class CarModeDiagnosticsPage
 {
     public const string Html = """
 <!doctype html>
@@ -58,6 +58,8 @@ internal static class CarModeTelemetryPage
   .err { color: var(--bad); }
   .pill { display: inline-block; font-size: 11px; padding: 1px 7px; border-radius: 20px;
     border: 1px solid var(--line); color: var(--muted); margin-left: 6px; }
+  button { border: 1px solid var(--line); background: var(--card); color: var(--ink);
+    border-radius: 8px; padding: 7px 10px; cursor: pointer; }
 </style>
 </head>
 <body>
@@ -109,6 +111,7 @@ internal static class CarModeTelemetryPage
   </div>
 
   <div class="foot" id="foot"></div>
+  <button type="button" id="clear">Clear this device's local diagnostics</button>
 </div>
 
 <script>
@@ -254,13 +257,20 @@ internal static class CarModeTelemetryPage
   }
 
   function load() {
-    fetch("/carmode/telemetry/data?limit=200", { credentials: "same-origin" })
+    fetch("/carmode/diagnostics/data?limit=200", { credentials: "same-origin" })
       .then(function (r) { if (!r.ok) throw new Error("HTTP " + r.status); return r.json(); })
       .then(render)
-      .catch(function (e) { document.getElementById("foot").innerHTML = '<span class="err">Could not load telemetry: ' + e.message + "</span>"; });
+      .catch(function (e) { document.getElementById("foot").innerHTML = '<span class="err">Could not load diagnostics: ' + e.message + "</span>"; });
   }
 
   load();
+  document.getElementById("clear").addEventListener("click", function () {
+    if (!window.confirm("Delete this device's retained Car Mode diagnostics?")) return;
+    fetch("/carmode/diagnostics", { method: "DELETE", credentials: "same-origin" })
+      .then(function (r) { if (!r.ok) throw new Error("HTTP " + r.status); return r.json(); })
+      .then(load)
+      .catch(function (e) { document.getElementById("foot").textContent = "Could not clear diagnostics: " + e.message; });
+  });
   setInterval(load, 5000);
 })();
 </script>

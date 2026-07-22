@@ -14,23 +14,23 @@ namespace CcDirector.Gateway.Transcription;
 /// matching the wall clock proves no samples were DROPPED, but it can never prove the bytes carried
 /// speech. Only the audio can settle that. So the audio is now KEPT.
 ///
-/// WHY HERE. This sits beside <see cref="TranscriptionTelemetryLog"/> on purpose. That log is the one
+/// WHY HERE. This sits beside <see cref="TranscriptionHistoryLog"/> on purpose. That history is the one
 /// place that sees EVERY turn from every surface (desktop Send, the Speak dialog, the phone, Car Mode),
 /// because they all transcribe through <see cref="GatewayTranscriptionService"/>. The two desktop
 /// dictation paths do not agree on this: only the fire-and-forget Send saves a clip at all. Archiving at
 /// the choke point covers every surface once instead of per-caller.
 ///
-/// The file is named for the same <c>turnId</c> the telemetry log records, so a suspicious line in
-/// transcription-log-YYYYMMDD.jsonl leads straight to the audio that produced it.
+/// The file is named for the same <c>turnId</c> the local history records, so a suspicious line in
+/// transcription-history/transcription-YYYYMMDD.jsonl leads straight to the audio that produced it.
 ///
 /// BOUNDED BY CONSTRUCTION. This is a diagnostic window, not an archive that grows forever: every save
 /// prunes clips older than <see cref="MaxAge"/> and, whatever their age, all but the newest
 /// <see cref="MaxClips"/>. Both bounds apply, so neither a quiet week nor a busy hour can run the disk up.
 ///
-/// Privacy: LOCAL disk only, exactly like the telemetry text it sits next to. Never transmitted.
+/// Privacy: LOCAL disk only, exactly like the minimized history it sits next to. Never transmitted.
 ///
 /// Fail-safe: archiving must never break a transcription. Every operation swallows and logs its errors,
-/// the same fail-open contract as the telemetry log.
+/// the same fail-open contract as the local history.
 /// </summary>
 public sealed class TranscriptionAudioArchive
 {
@@ -86,7 +86,7 @@ public sealed class TranscriptionAudioArchive
     /// Archive the exact bytes sent for transcription and return the saved path, or null when nothing
     /// was saved. Never throws: a full disk must degrade the diagnostics, never the transcription.
     /// </summary>
-    /// <param name="turnId">The telemetry turn id; ties the clip to its transcription-log line.</param>
+    /// <param name="turnId">The local-history turn id; ties the clip to its transcription-history line.</param>
     /// <param name="audio">The clip bytes, exactly as sent to the provider.</param>
     /// <param name="contentType">The clip's MIME type, used to pick a playable file extension.</param>
     public string? TrySave(string turnId, byte[] audio, string contentType)
@@ -96,11 +96,11 @@ public sealed class TranscriptionAudioArchive
         // every account's raw speech at rest and let one tenant's traffic prune another's clips. It is a
         // LOCAL self-host diagnostic aid - write-only, no read method, no public archive-read route - so
         // there is nothing on hosted to serve it. This is the exact reasoning, and the exact fix, applied
-        // to the telemetry log that sits beside it (GatewayTranscriptionService.RecordTelemetry, issue
+        // to the local history that sits beside it (GatewayTranscriptionService.RecordHistory, issue
         // #1897): stop the write on hosted. Self-host is single-tenant and byte-identical to today.
         if (GatewayHostedMode.IsHosted)
         {
-            FileLog.Write($"[TranscriptionAudioArchive] TrySave SKIPPED on hosted for turn {turnId}: the archive has no tenant partition and no reader on hosted (MTR-10 Gap A; mirrors the telemetry skip #1897)");
+            FileLog.Write($"[TranscriptionAudioArchive] TrySave SKIPPED on hosted for turn {turnId}: the archive has no tenant partition and no reader on hosted (MTR-10 Gap A; mirrors the local-history guard)");
             return null;
         }
 
@@ -123,6 +123,43 @@ public sealed class TranscriptionAudioArchive
         {
             FileLog.Write($"[TranscriptionAudioArchive] TrySave FAILED for turn {turnId}: {ex.Message}");
             return null;
+        }
+    }
+
+    /// <summary>
+    /// Deletes every locally retained troubleshooting clip and returns the number removed. This is the
+    /// audio half of the owner's Transcription Health clear action. Individual deletion failures are
+    /// logged and skipped so a locked file cannot prevent the remaining clips from being removed.
+    /// </summary>
+    public int Clear()
+    {
+        try
+        {
+            lock (_gate)
+            {
+                if (!Directory.Exists(ArchiveDirectory))
+                    return 0;
+
+                var removed = 0;
+                foreach (var path in Directory.EnumerateFiles(ArchiveDirectory, "turn-*"))
+                {
+                    try
+                    {
+                        File.Delete(path);
+                        removed++;
+                    }
+                    catch (Exception ex)
+                    {
+                        FileLog.Write($"[TranscriptionAudioArchive] clear FAILED for {Path.GetFileName(path)}: {ex.Message}");
+                    }
+                }
+                return removed;
+            }
+        }
+        catch (Exception ex)
+        {
+            FileLog.Write($"[TranscriptionAudioArchive] clear FAILED: {ex.Message}");
+            return 0;
         }
     }
 

@@ -175,12 +175,6 @@ const router = createBrowserRouter(
             // and Feedback.razor (the Wingman feedback corpus), each over the same Gateway REST surface.
             // Account and About get a left-rail entry; Feedback is route-only (hidden from the default rail,
             // reached by its direct route).
-            //
-            // Usage telemetry is no longer its own page: the fleet-wide consent toggle is now the
-            // "Telemetry" tab of Settings (the rail is decluttered, matching the Missions move). The old
-            // /telemetry route redirects there, deep-linking straight to that tab so bookmarks still land
-            // on the setting.
-            { path: "/telemetry", element: <Navigate to="/settings?tab=privacy" replace /> },
             // Your Throttle (devthrottle-stats mission): the in-Cockpit port of the standalone Gateway
             // /stats page. Reads the same GET /stats/data feed through client-core so the user sees
             // their throttle in the app rather than at a bare URL.
@@ -189,7 +183,7 @@ const router = createBrowserRouter(
             // now the fourth tab of Your Throttle (owner ask). Tabs are mutually exclusive, so it still
             // never shows on-screen alongside the shareable throttle. Redirect so old bookmarks land.
             { path: "/repos", element: <Navigate to="/your-throttle" replace /> },
-            // Transcription Health: read-only view over the local transcription telemetry the Gateway
+            // Transcription Health: read-only view over the local transcription history the Gateway
             // records (latency, failures, most-corrected words). Same Gateway REST surface via client-core.
             { path: "/transcription", element: <TranscriptionHealthView /> },
             { path: "/network", element: <NetworkDiagnosticsView /> },

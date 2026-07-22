@@ -167,10 +167,11 @@ never be able to block or lose a dictation; the worst permitted outcome is
 "a term was left uncorrected". After this pattern, the worst case flips
 polarity: from "user's words replaced by garbage" to "under-correction".
 
-## 5. Telemetry and audit (non-negotiable)
+## 5. Local troubleshooting record (non-negotiable)
 
 The original incident was nearly unprovable because one pipeline path kept
-no record. Whatever surface you port this to:
+no record. This troubleshooting record stays on the owner's machine and is not
+forwarded as product analytics. Whatever surface you port this to:
 
 1. Log EVERY session: original text, final text, model identity, and the
    accepted/rejected edits with reasons. Dictation writes JSONL via

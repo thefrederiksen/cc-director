@@ -140,9 +140,7 @@ internal static class ContentFingerprint
 /// boundary - a positional index, a turn id, or an identifier the CALLER supplies. Public signup on the
 /// backing account project is open, so "any authenticated caller" means the public.
 ///
-///   /transcription/*                     one shared daily telemetry log; /turns returns up to 2000
-///                                        records including rawText and cleanedText and needs NO
-///                                        identifier at all - one request returns everyone's speech.
+///   /transcription/*                     one shared local history with no tenant partition.
 ///   /gateway/wingman/instructions/*       training records holding up to 20,000 characters of raw session
 ///                                        TERMINAL output, addressable by a POSITIONAL
 ///                                        "&lt;filename&gt;#&lt;lineindex&gt;" id; plus the single-owner wingman
@@ -272,23 +270,28 @@ public sealed class HostedContentReadDenyTests : IAsyncLifetime
     }
 
     /// <summary>
-    /// Issue #1897. All four transcription-analysis reads over the one shared telemetry log. /turns is the
-    /// sharpest - it needs no identifier and returns the raw and cleaned text of every turn - but the other
-    /// three aggregate the SAME unpartitioned records, so serving them discloses the same content in
-    /// summary form.
+    /// The local Transcription Health history is unavailable on a shared hosted Gateway because its store
+    /// has no tenant partition.
     /// </summary>
     [Theory]
     [InlineData("transcription/turns")]
     [InlineData("transcription/turns?limit=2000")]
     [InlineData("transcription/stats")]
     [InlineData("transcription/terms")]
-    [InlineData("transcription/words")]
     public async Task Transcription_analysis_reads_are_refused_to_an_enrolled_tenant(string path)
     {
         var resp = await Send(HttpMethod.Get, path);
         // Fingerprint FIRST, status second: a renamed route must redden on "this is not the refusal
         // body", not on "404 != 404". Asserting status ahead of the body would prove a route changed.
         await AssertBodyIsNothingButTheRefusal(resp, TranscriptionRefusal, $"GET {path}");
+        Assert.Equal(HttpStatusCode.NotFound, resp.StatusCode);
+    }
+
+    [Fact]
+    public async Task Transcription_history_clear_is_refused_to_an_enrolled_tenant()
+    {
+        var resp = await Send(HttpMethod.Delete, "transcription/history");
+        await AssertBodyIsNothingButTheRefusal(resp, TranscriptionRefusal, "DELETE transcription/history");
         Assert.Equal(HttpStatusCode.NotFound, resp.StatusCode);
     }
 
@@ -477,12 +480,6 @@ public sealed class HostedContentReadSelfHostControlTests : IAsyncLifetime
 {
     private const string Token = "test-token";
 
-    /// <summary>Planted in the seeded telemetry record and asserted back out of /transcription/turns.</summary>
-    private const string SeededRawText = "seeded raw utterance zqxjv";
-
-    /// <summary>Planted as the cleaned text, so /transcription/words must count this word.</summary>
-    private const string SeededWord = "zqxjvword";
-
     /// <summary>Planted as a dictionary correction, so /transcription/terms must report this pair.</summary>
     private const string SeededFind = "zqxjvfind";
     private const string SeededReplace = "zqxjvreplace";
@@ -537,34 +534,30 @@ public sealed class HostedContentReadSelfHostControlTests : IAsyncLifetime
         _http = new HttpClient { BaseAddress = new Uri($"http://127.0.0.1:{_gateway.Port}/") };
         _key = _gateway.Devices.Register("dev-owner", "MA").DeviceKey;
 
-        SeedTranscriptionTelemetry();
+        SeedTranscriptionHistory();
         SeedWingmanTrainingRecord();
     }
 
     /// <summary>
-    /// Plant ONE transcription turn in the real on-disk telemetry log, under this test's isolated storage
-    /// root, using the production writer. All four /transcription reads derive from this one record, so
+    /// Plant one minimized transcription-health record under this test's isolated storage root.
+    /// The self-host reads derive from this one record, so
     /// each of them has something only that handler could return.
     /// </summary>
-    private static void SeedTranscriptionTelemetry()
+    private static void SeedTranscriptionHistory()
     {
-        new TranscriptionTelemetryLog().Record(new TranscriptionTelemetryRecord
+        new TranscriptionHistoryLog().Record(new TranscriptionHistoryRecord
         {
             TimestampUtc = DateTime.UtcNow,
             TurnId = "seed-turn",
             Outcome = "ok",
-            Mode = "devthrottle",
-            AudioBytes = 4096,
             TranscriptionMs = 120,
             CleanupMs = 30,
             Corrected = true,
             CleanupApplied = true,
             ChangedWordCount = 1,
-            Changes = new[] { new TelemetryEdit { Find = SeededFind, Replace = SeededReplace } },
-            CharCount = SeededRawText.Length,
+            Changes = new[] { new TranscriptionHistoryEdit { Find = SeededFind, Replace = SeededReplace } },
+            CharCount = 24,
             WordCount = 4,
-            RawText = SeededRawText,
-            CleanedText = SeededWord,
         });
     }
 
@@ -623,10 +616,11 @@ public sealed class HostedContentReadSelfHostControlTests : IAsyncLifetime
     {
         var root = await GetJsonAsync("transcription/turns");
 
-        var texts = ContentFingerprint.Arr(root, "turns", "GET transcription/turns").EnumerateArray()
-            .Select(t => ContentFingerprint.Str(t, "rawText"))
-            .ToArray();
-        Assert.Contains(SeededRawText, texts);
+        var turns = ContentFingerprint.Arr(root, "turns", "GET transcription/turns").EnumerateArray().ToArray();
+        var seeded = Assert.Single(turns);
+        Assert.Equal("seed-turn", ContentFingerprint.Str(seeded, "turnId"));
+        Assert.False(seeded.TryGetProperty("rawText", out _));
+        Assert.False(seeded.TryGetProperty("cleanedText", out _));
     }
 
     [Fact]
@@ -649,17 +643,6 @@ public sealed class HostedContentReadSelfHostControlTests : IAsyncLifetime
             .Select(t => (ContentFingerprint.Str(t, "find"), ContentFingerprint.Str(t, "replace")))
             .ToArray();
         Assert.Contains((SeededFind, SeededReplace), pairs);
-    }
-
-    [Fact]
-    public async Task Self_host_transcription_words_counts_the_seeded_word()
-    {
-        var root = await GetJsonAsync("transcription/words");
-
-        var words = ContentFingerprint.Arr(root, "words", "GET transcription/words").EnumerateArray()
-            .Select(w => ContentFingerprint.Str(w, "word"))
-            .ToArray();
-        Assert.Contains(SeededWord, words);
     }
 
     // ===== The wingman instructions reads =====

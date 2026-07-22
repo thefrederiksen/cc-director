@@ -27,8 +27,8 @@ public sealed record InjectedTextSettings(bool UseYours, string? Yours)
 /// Persisted in the Gateway's <c>config.json</c> under the top-level object "injected_text":
 ///   - "use_yours" (bool)   - run the user's own text instead of ours. DEFAULT FALSE.
 ///   - "yours"      (string) - the user's own text. Absent until they write one.
-/// This is the same store the other Gateway settings use (<see cref="SnoozeDefaultConfig"/>,
-/// <see cref="TelemetryConsentConfig"/>).
+/// This is the same store the other Gateway settings use (for example
+/// <see cref="SnoozeDefaultConfig"/>).
 ///
 /// No-fallback rule: a present-but-wrong-typed key THROWS with the fix named, rather than silently
 /// picking a default. For THIS setting that matters more than most - silently reading a malformed

@@ -384,7 +384,7 @@ public sealed class DirectorRegistry : IDisposable
 
     /// <summary>
     /// True when <paramref name="directorId"/> is registered to <paramref name="caller"/> - i.e. the caller
-    /// PROVABLY owns it (audit MTR gap C, the startup-telemetry ownership guard). It answers ONLY the yes/no
+    /// PROVABLY owns it (the Director ownership guard). It answers ONLY the yes/no
     /// ownership question a caller-side gate needs; it never returns another tenant's identity or its Director,
     /// so it is NOT the bare-id serving lookup MTR-01 removed - a caller learns nothing but "that id is (not)
     /// yours".

@@ -89,7 +89,6 @@ public sealed class BrowserPageRoutesTests : IAsyncLifetime
     [InlineData("GET", "/schedule", "text/html")]              // no same-path JSON: served by SPA fallback
     [InlineData("GET", "/dictionary", "text/html")]            // no same-path JSON: served by SPA fallback
     [InlineData("GET", "/transcripts", "text/html")]           // no same-path JSON: served by SPA fallback
-    [InlineData("GET", "/telemetry", "text/html")]             // no same-path JSON: served by SPA fallback
     [InlineData("GET", "/about", "text/html")]                 // no same-path JSON: served by SPA fallback
     public void Non_navigation_requests_are_not_page_requests(string method, string path, string? accept)
     {

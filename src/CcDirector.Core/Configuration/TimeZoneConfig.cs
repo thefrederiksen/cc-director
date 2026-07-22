@@ -10,7 +10,7 @@ namespace CcDirector.Core.Configuration;
 /// "the time zone my charts read in".
 ///
 /// Persisted in <c>config.json</c> as the top-level string key <c>time_zone</c>, the same store the other
-/// Gateway settings use (<see cref="SnoozeDefaultConfig"/>, <see cref="TelemetryConsentConfig"/>). When no
+/// Gateway settings use (for example <see cref="SnoozeDefaultConfig"/>). When no
 /// value has ever been persisted it AUTO-DEFAULTS to the Gateway machine's own zone
 /// (<see cref="MachineDefault"/>), so the charts read local time out of the box with no setup; the owner
 /// can override it on the Settings page. Read at render time, so a change takes effect on the next refresh

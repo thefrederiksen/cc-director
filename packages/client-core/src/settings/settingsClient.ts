@@ -38,7 +38,6 @@ export interface GatewaySettings {
   cockpit: GatewayCockpit;
   autostart: AutostartState;
   wingmanTrainingCapture: boolean;
-  telemetryConsent: boolean;
   // Snooze Length mission: the per-user default snooze length in minutes (one value across every device,
   // because they all talk to this one Gateway). Default 60. Always one of snoozePresets.
   snoozeDefaultMinutes: number;
@@ -119,7 +118,6 @@ export async function getGatewaySettings(signal?: AbortSignal): Promise<GatewayS
       enabled: body.autostart?.enabled ?? null,
     },
     wingmanTrainingCapture: Boolean(body.wingmanTrainingCapture),
-    telemetryConsent: Boolean(body.telemetryConsent),
     snoozeDefaultMinutes: Number(body.snoozeDefaultMinutes ?? 60),
     snoozePresets: Array.isArray(body.snoozePresets)
       ? body.snoozePresets.map(Number)
