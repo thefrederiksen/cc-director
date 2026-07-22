@@ -128,8 +128,9 @@ public sealed class DirectorHub : Hub
         using var tenantScope = EnterBoundTenantScope();
         var set = sessions ?? Array.Empty<SessionDto>();
         var accepted = _store.ApplySnapshot(RequireBoundTenant(), directorId, Context.ConnectionId, sequence, set);
-        // DevThrottle Stats: fold each session's input tally into the always-available aggregate.
-        _inputStats.ObserveSnapshot(set);
+        // DevThrottle Stats: fold each session's input tally into the always-available aggregate, under this
+        // connection's bound tenant (MTR-08) so one account's tallies never coalesce with another's.
+        _inputStats.ObserveSnapshot(set, tenant: RequireBoundTenant());
         // A push the store REJECTED (from a superseded connection, or a stale sequence) is NOT authoritative,
         // so it must not drive the snooze observer - whose edges MUTATE the authoritative registry
         // (ClearIfArmed deletes an armed snooze, Land converts a deferral). A rejected stale Working push
@@ -164,8 +165,9 @@ public sealed class DirectorHub : Hub
         // below writes the snooze/spend EF stores, which must stamp and filter by this connection's tenant).
         using var tenantScope = EnterBoundTenantScope();
         var accepted = _store.ApplyDelta(RequireBoundTenant(), directorId, Context.ConnectionId, sequence, session);
-        // DevThrottle Stats: fold this session's tally into the always-available aggregate.
-        _inputStats.Observe(session);
+        // DevThrottle Stats: fold this session's tally into the always-available aggregate, under this
+        // connection's bound tenant (MTR-08).
+        _inputStats.Observe(session, tenant: RequireBoundTenant());
         // A push the store REJECTED (superseded connection, or a stale sequence) is NOT authoritative, so it
         // must not drive the snooze observer, whose edges MUTATE the authoritative registry (ClearIfArmed
         // deletes an armed snooze, Land converts a deferral). See the note in PushSnapshot. The roles/display
@@ -199,8 +201,9 @@ public sealed class DirectorHub : Hub
         // can touch tenant-scoped state through the observers below).
         using var tenantScope = EnterBoundTenantScope();
         _store.ApplyRemove(RequireBoundTenant(), directorId, Context.ConnectionId, sequence, sessionId);
-        // DevThrottle Stats: its contribution stays in the totals; drop only its high-water entry.
-        _inputStats.Forget(sessionId);
+        // DevThrottle Stats: its contribution stays in the totals; drop only its high-water entry, scoped to
+        // this connection's bound tenant (MTR-08) so it cannot drop another tenant's same-id high-water.
+        _inputStats.Forget(sessionId, RequireBoundTenant());
         // A DEPARTURE RE-ROLES THE SURVIVORS, exactly as an arrival does: a controller leaving should stop
         // its workers being Workers. Must run AFTER ApplyRemove so the sweep resolves the fleet that now
         // exists rather than the one that just left.

@@ -1,4 +1,5 @@
 using CcDirector.Core.Storage;
+using CcDirector.Core.Tenancy;
 using CcDirector.Core.Utilities;
 using CcDirector.Gateway.Contracts;
 using Microsoft.Data.Sqlite;
@@ -37,6 +38,18 @@ namespace CcDirector.Gateway.Stats;
 ///      recorded this?" - which is what keeps an IDLE roster poll at zero writes, exactly as it is today.
 ///      The mirror only advances AFTER the write commits, so a failed write is a loud failure retried on the
 ///      next poll, never a silent mirror-only success.
+///
+/// MTR-08 (production-readiness census rows 49-67): EVERY tally, membership set and identity is now keyed by
+/// the OWNING TENANT as well as its old key, and every stored row carries the tenant. Before this the whole
+/// aggregator was process-global: two tenants pushing the SAME bare session id shared one high-water entry
+/// (so one could suppress the other's first-seen/seed accounting), and two tenants that drove the same
+/// "owner/repo" repository, agent or model shared one surrogate identity (so their turns coalesced into one
+/// total). The tenant is carried from the Director-statistics ingress - the same authenticated tenant the
+/// tunnel/DirectorHub binds - stamped by the producer and required by the reader. On the single-tenant self
+/// host there is exactly one tenant (<see cref="TenantId.Local"/>), so the composite key degenerates to the
+/// bare key it was and behavior is unchanged; on hosted the private dashboard that reads this is refused in
+/// whole (issue #1848), so a reader here only ever runs for Local. A null/invalid tenant is a DENY, never a
+/// default: the producer paths pass the bound tenant, and the reader passes the request tenant.
 /// </summary>
 public sealed class GatewayInputStatsAggregator : IDisposable
 {
@@ -49,42 +62,60 @@ public sealed class GatewayInputStatsAggregator : IDisposable
     private readonly object _lock = new();
 
     // ---- The mirror. Membership and identity ONLY - never a tally (Decision 6). ----
+    //
+    // MTR-08: every map below is keyed by (tenant, ...) so one tenant's membership and identity can never be
+    // read, suppressed, or coalesced by another. The session-keyed maps carry the tenant in a composite tuple
+    // key (default tuple equality is Ordinal on the tenant value and Ordinal on the session id - exactly the
+    // StringComparer.Ordinal they used before). The identity display->id maps nest a per-tenant dictionary so
+    // the OrdinalIgnoreCase comparer that DECIDES identity is preserved byte-for-byte per tenant; the id->
+    // display maps stay flat because a surrogate id is globally unique (AUTOINCREMENT) and already names its
+    // tenant's row.
 
-    private readonly Dictionary<string, Dictionary<(string Modality, string Surface), Counters>> _highWater = new(StringComparer.Ordinal);
-    private readonly Dictionary<string, Counters> _agentDrivenHighWater = new(StringComparer.Ordinal);
-    private readonly HashSet<string> _wingmanSessions = new(StringComparer.Ordinal);
+    private readonly Dictionary<(TenantId Tenant, string SessionId), Dictionary<(string Modality, string Surface), Counters>> _highWater = new();
+    private readonly Dictionary<(TenantId Tenant, string SessionId), Counters> _agentDrivenHighWater = new();
+    private readonly HashSet<(TenantId Tenant, string SessionId)> _wingmanSessions = new();
 
     // The last cumulative token spend seen per session (issue #1637), so only the INCREASE folds - the same
     // high-water discipline as _highWater, one dimension over. A dropped count is a restart and folds fresh
     // from zero.
-    private readonly Dictionary<string, TokenCounters> _tokenHighWater = new(StringComparer.Ordinal);
+    private readonly Dictionary<(TenantId Tenant, string SessionId), TokenCounters> _tokenHighWater = new();
 
     // Sessions whose already-counted turns have been attributed to their agent (issue #1633). MUST persist:
     // session_highwater survives a restart, so without this the back-fill would run a second time against a
     // non-empty high-water and double every agent's numbers.
-    private readonly HashSet<string> _agentsSeeded = new(StringComparer.Ordinal);
+    private readonly HashSet<(TenantId Tenant, string SessionId)> _agentsSeeded = new();
 
-    // Display spelling -> surrogate id. THE COMPARER HERE IS THE WHOLE REASON THE SCHEMA USES SURROGATE IDS:
-    // it is the same StringComparer.OrdinalIgnoreCase the old dictionaries used, so grouping is decided by
-    // the identical object with identical semantics and SQLite is never asked to compare a repository,
-    // agent or model string. First-seen-wins on the display spelling, which is what a Dictionary does.
-    private readonly Dictionary<string, long> _repoIds = new(StringComparer.OrdinalIgnoreCase);
-    private readonly Dictionary<string, long> _agentIds = new(StringComparer.OrdinalIgnoreCase);
-    private readonly Dictionary<string, long> _modelIds = new(StringComparer.OrdinalIgnoreCase);
+    // Display spelling -> surrogate id, PER TENANT (MTR-08). THE INNER COMPARER IS THE WHOLE REASON THE SCHEMA
+    // USES SURROGATE IDS: it is the same StringComparer.OrdinalIgnoreCase the old dictionaries used, so
+    // grouping is decided by the identical object with identical semantics and SQLite is never asked to
+    // compare a repository, agent or model string. First-seen-wins on the display spelling, which is what a
+    // Dictionary does. Nesting per tenant keeps that comparer exact while making tenant A's "owner/repo" a
+    // DIFFERENT surrogate id than tenant B's, so their turns cannot coalesce.
+    private readonly Dictionary<TenantId, Dictionary<string, long>> _repoIds = new();
+    private readonly Dictionary<TenantId, Dictionary<string, long>> _agentIds = new();
+    private readonly Dictionary<TenantId, Dictionary<string, long>> _modelIds = new();
     // The checkout (local working directory) dimension retained beside the repository (issue: group the
     // Repos page by repository). repo_id is now the repo name, so worktrees and per-machine clones
     // of one repository share a repo_id; checkout_id keeps the path each turn actually ran in so it is not
-    // lost. Same first-seen-wins OrdinalIgnoreCase identity as the others.
-    private readonly Dictionary<string, long> _checkoutIds = new(StringComparer.OrdinalIgnoreCase);
+    // lost. Same first-seen-wins OrdinalIgnoreCase identity as the others, per tenant.
+    private readonly Dictionary<TenantId, Dictionary<string, long>> _checkoutIds = new();
+    // id -> display stays flat: a surrogate id is globally unique and belongs to exactly one tenant's row.
     private readonly Dictionary<long, string> _repoDisplay = new();
     private readonly Dictionary<long, string> _agentDisplay = new();
     private readonly Dictionary<long, string> _modelDisplay = new();
     private readonly Dictionary<long, string> _checkoutDisplay = new();
 
+    // The distinct-session sets stay keyed by (surrogate id, session id): the id is already tenant-specific
+    // (minted per tenant above), so (idA, "s1") and (idB, "s1") are distinct entries for two tenants that
+    // happen to share a bare session id. No tenant is needed in the key.
     private readonly HashSet<(long Id, string SessionId)> _repoSessions = new();
     private readonly HashSet<(long Id, string SessionId)> _agentSessions = new();
 
-    private string _agentsSinceUtc = "";
+    // When the per-agent tally started counting, PER TENANT (MTR-08): each tenant's first fold stamps its own
+    // start, so the Agents page states the window for THAT tenant rather than a fleet-global first observation.
+    private readonly Dictionary<TenantId, string> _agentsSinceUtc = new();
+    // When the model DIMENSION started recording. A schema fact (stamped once by the version-2 migration),
+    // not a per-tenant statistic, so it stays a single value read tenant-agnostically.
     private string _modelsSinceUtc = "";
 
     /// <summary>Every statement executed against the database. The seam acceptance criterion 3 measures: an
@@ -125,7 +156,7 @@ public sealed class GatewayInputStatsAggregator : IDisposable
     /// </summary>
     private enum IdentityKind { Repo, Agent, Model, Checkout }
 
-    private Dictionary<string, long> IdsFor(IdentityKind kind) => kind switch
+    private Dictionary<TenantId, Dictionary<string, long>> OuterIdsFor(IdentityKind kind) => kind switch
     {
         IdentityKind.Repo => _repoIds,
         IdentityKind.Agent => _agentIds,
@@ -133,6 +164,20 @@ public sealed class GatewayInputStatsAggregator : IDisposable
         IdentityKind.Checkout => _checkoutIds,
         _ => throw new ArgumentOutOfRangeException(nameof(kind), kind, "Unknown identity kind."),
     };
+
+    // The per-tenant display->id map for one kind, created on first use with the OrdinalIgnoreCase comparer
+    // that is the whole point of the surrogate scheme. Creating an empty map for a read-only probe is
+    // harmless - it just answers "no identity yet for this tenant".
+    private Dictionary<string, long> IdsFor(TenantId tenant, IdentityKind kind)
+    {
+        var outer = OuterIdsFor(kind);
+        if (!outer.TryGetValue(tenant, out var inner))
+        {
+            inner = new Dictionary<string, long>(StringComparer.OrdinalIgnoreCase);
+            outer[tenant] = inner;
+        }
+        return inner;
+    }
 
     private Dictionary<long, string> DisplayFor(IdentityKind kind) => kind switch
     {
@@ -206,88 +251,115 @@ public sealed class GatewayInputStatsAggregator : IDisposable
     {
         lock (_lock)
         {
-            Read("SELECT session_id, modality, surface, turns, chars FROM session_highwater", r =>
+            // Every row carries its owning tenant (MTR-08), so the mirror is rebuilt per tenant - exactly the
+            // partition that was written. A surrogate id lands in the flat id->display map (ids are globally
+            // unique) AND in its tenant's display->id map.
+            Read("SELECT tenant, session_id, modality, surface, turns, chars FROM session_highwater", r =>
             {
-                var sid = r.GetString(0);
-                if (!_highWater.TryGetValue(sid, out var hw))
+                var key = (new TenantId(r.GetString(0)), r.GetString(1));
+                if (!_highWater.TryGetValue(key, out var hw))
                 {
                     hw = new Dictionary<(string, string), Counters>();
-                    _highWater[sid] = hw;
+                    _highWater[key] = hw;
                 }
-                hw[(r.GetString(1), r.GetString(2))] = new Counters { Turns = r.GetInt64(3), Characters = r.GetInt64(4) };
+                hw[(r.GetString(2), r.GetString(3))] = new Counters { Turns = r.GetInt64(4), Characters = r.GetInt64(5) };
             });
-            Read("SELECT session_id, turns, chars FROM agent_driven_highwater",
-                r => _agentDrivenHighWater[r.GetString(0)] = new Counters { Turns = r.GetInt64(1), Characters = r.GetInt64(2) });
-            Read("SELECT session_id, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens FROM token_highwater",
-                r => _tokenHighWater[r.GetString(0)] = new TokenCounters
+            Read("SELECT tenant, session_id, turns, chars FROM agent_driven_highwater",
+                r => _agentDrivenHighWater[(new TenantId(r.GetString(0)), r.GetString(1))] = new Counters { Turns = r.GetInt64(2), Characters = r.GetInt64(3) });
+            Read("SELECT tenant, session_id, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens FROM token_highwater",
+                r => _tokenHighWater[(new TenantId(r.GetString(0)), r.GetString(1))] = new TokenCounters
                 {
-                    Input = r.GetInt64(1), Output = r.GetInt64(2), CacheRead = r.GetInt64(3), CacheCreation = r.GetInt64(4),
+                    Input = r.GetInt64(2), Output = r.GetInt64(3), CacheRead = r.GetInt64(4), CacheCreation = r.GetInt64(5),
                 });
-            Read("SELECT session_id FROM wingman_session", r => _wingmanSessions.Add(r.GetString(0)));
-            Read("SELECT session_id FROM agents_seeded", r => _agentsSeeded.Add(r.GetString(0)));
-            Read("SELECT repo_id, repo_display FROM repo_identity", r =>
+            Read("SELECT tenant, session_id FROM wingman_session", r => _wingmanSessions.Add((new TenantId(r.GetString(0)), r.GetString(1))));
+            Read("SELECT tenant, session_id FROM agents_seeded", r => _agentsSeeded.Add((new TenantId(r.GetString(0)), r.GetString(1))));
+            Read("SELECT tenant, repo_id, repo_display FROM repo_identity", r =>
             {
-                var id = r.GetInt64(0); var d = r.GetString(1);
-                _repoIds[d] = id; _repoDisplay[id] = d;
+                var t = new TenantId(r.GetString(0)); var id = r.GetInt64(1); var d = r.GetString(2);
+                IdsFor(t, IdentityKind.Repo)[d] = id; _repoDisplay[id] = d;
             });
-            Read("SELECT agent_id, agent_display FROM agent_identity", r =>
+            Read("SELECT tenant, agent_id, agent_display FROM agent_identity", r =>
             {
-                var id = r.GetInt64(0); var d = r.GetString(1);
-                _agentIds[d] = id; _agentDisplay[id] = d;
+                var t = new TenantId(r.GetString(0)); var id = r.GetInt64(1); var d = r.GetString(2);
+                IdsFor(t, IdentityKind.Agent)[d] = id; _agentDisplay[id] = d;
             });
-            Read("SELECT model_id, model_display FROM model_identity", r =>
+            Read("SELECT tenant, model_id, model_display FROM model_identity", r =>
             {
-                var id = r.GetInt64(0); var d = r.GetString(1);
-                _modelIds[d] = id; _modelDisplay[id] = d;
+                var t = new TenantId(r.GetString(0)); var id = r.GetInt64(1); var d = r.GetString(2);
+                IdsFor(t, IdentityKind.Model)[d] = id; _modelDisplay[id] = d;
             });
-            Read("SELECT checkout_id, checkout_display FROM checkout_identity", r =>
+            Read("SELECT tenant, checkout_id, checkout_display FROM checkout_identity", r =>
             {
-                var id = r.GetInt64(0); var d = r.GetString(1);
-                _checkoutIds[d] = id; _checkoutDisplay[id] = d;
+                var t = new TenantId(r.GetString(0)); var id = r.GetInt64(1); var d = r.GetString(2);
+                IdsFor(t, IdentityKind.Checkout)[d] = id; _checkoutDisplay[id] = d;
             });
+            // repo_session/agent_session need no tenant: repo_id/agent_id are already tenant-specific.
             Read("SELECT repo_id, session_id FROM repo_session", r => _repoSessions.Add((r.GetInt64(0), r.GetString(1))));
             Read("SELECT agent_id, session_id FROM agent_session", r => _agentSessions.Add((r.GetInt64(0), r.GetString(1))));
-            _agentsSinceUtc = ReadScalarString("SELECT value FROM meta WHERE name=$n", ("$n", AgentsSinceKey)) ?? "";
+            // agents_since is PER TENANT now (one row per tenant that has folded).
+            Read("SELECT tenant, value FROM meta WHERE name=$n",
+                r => _agentsSinceUtc[new TenantId(r.GetString(0))] = r.GetString(1), ("$n", AgentsSinceKey));
 
             // Written by the version 2 migration, so it is present on every database this build can open -
-            // the migration runs before this does. Read into the mirror because the stats surface reports it
-            // on every request and it never changes at runtime.
-            _modelsSinceUtc = ReadScalarString("SELECT value FROM meta WHERE name=$n",
+            // the migration runs before this does. A schema fact, not per-tenant, so it is read once with no
+            // tenant filter. Read into the mirror because the stats surface reports it on every request and it
+            // never changes at runtime.
+            _modelsSinceUtc = ReadScalarString("SELECT value FROM meta WHERE name=$n LIMIT 1",
                 ("$n", GatewayStatsDatabase.ModelsSinceKey)) ?? "";
 
             FileLog.Write($"[GatewayInputStatsAggregator] LoadMirror: {_highWater.Count} live session(s), " +
-                          $"{_wingmanSessions.Count} wingman session(s), {_repoIds.Count} repo(s), {_agentIds.Count} agent(s), " +
-                          $"{_modelIds.Count} model(s), {_checkoutIds.Count} checkout(s), {_agentsSeeded.Count} seeded, agentsSince='{_agentsSinceUtc}', " +
+                          $"{_wingmanSessions.Count} wingman session(s), {_repoDisplay.Count} repo(s), {_agentDisplay.Count} agent(s), " +
+                          $"{_modelDisplay.Count} model(s), {_checkoutDisplay.Count} checkout(s), {_agentsSeeded.Count} seeded, " +
+                          $"{_agentsSinceUtc.Count} tenant(s) with an agents-since stamp, " +
                           $"modelsSince='{_modelsSinceUtc}' from {_db.Path}");
         }
     }
 
-    /// <summary>Fold every session in a full snapshot into the totals and the per-hour turn log.</summary>
-    public void ObserveSnapshot(IEnumerable<SessionDto>? sessions, DateTime? nowUtc = null)
+    /// <summary>
+    /// Fold every session in a full snapshot into the totals and the per-hour turn log, under
+    /// <paramref name="tenant"/> - the authenticated tenant the Director-statistics ingress bound. The whole
+    /// snapshot belongs to one tenant (the ingress is per-tenant), so a single tenant scopes the batch.
+    /// Defaults to <see cref="TenantId.Local"/> for the self-host shape and the unit-test default; the
+    /// production producer paths pass the bound tenant explicitly.
+    /// </summary>
+    public void ObserveSnapshot(IEnumerable<SessionDto>? sessions, DateTime? nowUtc = null, TenantId? tenant = null)
     {
         if (sessions is null) return;
+        var t = RequireTenant(tenant);
         var now = nowUtc ?? DateTime.UtcNow;
         lock (_lock)
         {
-            var batch = new FoldBatch(now, HourKey(now));
+            var batch = new FoldBatch(t, now, HourKey(now));
             StampAgentsSinceLocked(batch);
             foreach (var s in sessions) FoldLocked(s, batch);
             CommitLocked(batch);
         }
     }
 
-    /// <summary>Fold one session (a delta) into the totals and the per-hour turn log.</summary>
-    public void Observe(SessionDto? session, DateTime? nowUtc = null)
+    /// <summary>Fold one session (a delta) into the totals and the per-hour turn log, under
+    /// <paramref name="tenant"/> (the bound ingress tenant; defaults to <see cref="TenantId.Local"/>).</summary>
+    public void Observe(SessionDto? session, DateTime? nowUtc = null, TenantId? tenant = null)
     {
         if (session is null) return;
+        var t = RequireTenant(tenant);
         var now = nowUtc ?? DateTime.UtcNow;
         lock (_lock)
         {
-            var batch = new FoldBatch(now, HourKey(now));
+            var batch = new FoldBatch(t, now, HourKey(now));
             StampAgentsSinceLocked(batch);
             FoldLocked(session, batch);
             CommitLocked(batch);
         }
+    }
+
+    // Resolve the tenant a producer or reader supplied. Null means the self-host / unit-test default (Local);
+    // an explicitly-passed tenant must be valid - an invalid one is a DENY, never silently defaulted, so a
+    // caller that resolved "no tenant" (hosted, unbound) can never file under a guessed owner.
+    private static TenantId RequireTenant(TenantId? tenant)
+    {
+        if (tenant is not { } t) return TenantId.Local;
+        if (!t.IsValid) throw new ArgumentException("a valid tenant is required", nameof(tenant));
+        return t;
     }
 
     /// <summary>
@@ -298,7 +370,11 @@ public sealed class GatewayInputStatsAggregator : IDisposable
     /// </summary>
     private sealed class FoldBatch
     {
-        public FoldBatch(DateTime nowUtc, string hourKey) { NowUtc = nowUtc; HourKey = hourKey; }
+        public FoldBatch(TenantId tenant, DateTime nowUtc, string hourKey) { Tenant = tenant; NowUtc = nowUtc; HourKey = hourKey; }
+
+        // MTR-08: the one tenant this whole batch belongs to. Every row written and every mirror entry
+        // advanced by this batch is keyed by it - the producer stamps it once here, never per row.
+        public TenantId Tenant { get; }
         public DateTime NowUtc { get; }
         public string HourKey { get; }
 
@@ -331,7 +407,9 @@ public sealed class GatewayInputStatsAggregator : IDisposable
 
     private void StampAgentsSinceLocked(FoldBatch batch)
     {
-        if (_agentsSinceUtc.Length > 0) return;
+        // Per tenant (MTR-08): only stamp when THIS tenant has no start yet, so each account's Agents page
+        // states its own window rather than a fleet-global first observation.
+        if (_agentsSinceUtc.TryGetValue(batch.Tenant, out var existing) && existing.Length > 0) return;
         batch.StampAgentsSince = batch.NowUtc.ToUniversalTime()
             .ToString("o", System.Globalization.CultureInfo.InvariantCulture);
     }
@@ -356,8 +434,9 @@ public sealed class GatewayInputStatsAggregator : IDisposable
 
         // A session "uses the wingman" the moment it is seen with voice mode on - recorded even with no
         // input this fold. BEFORE the empty-buckets return, deliberately; the membership mirror is what
-        // keeps it free on an idle poll.
-        if (wingman && !_wingmanSessions.Contains(s.SessionId) && !batch.NewWingmanSessions.Contains(s.SessionId))
+        // keeps it free on an idle poll. Keyed by (tenant, session id) so another tenant's same session id
+        // neither counts this one nor is counted by it (MTR-08).
+        if (wingman && !_wingmanSessions.Contains((batch.Tenant, s.SessionId)) && !batch.NewWingmanSessions.Contains(s.SessionId))
             batch.NewWingmanSessions.Add(s.SessionId);
 
         // Issue #1636: turns other agents drove into this session, on their own lane. Folded BEFORE the
@@ -373,13 +452,14 @@ public sealed class GatewayInputStatsAggregator : IDisposable
 
         if (s.InputStats?.Buckets is null || s.InputStats.Buckets.Count == 0) return;
 
-        _highWater.TryGetValue(s.SessionId, out var hw);
+        _highWater.TryGetValue((batch.Tenant, s.SessionId), out var hw);
 
         // Issue #1633: the first time this session is folded, attribute what it has ALREADY counted to its
         // agent. Read before the loop below moves the high-water on. On a fresh database this contributes
         // nothing (the high-water is empty); after a RESTART it would contribute real turns, which is why
-        // agents_seeded is persisted.
-        if (!_agentsSeeded.Contains(s.SessionId))
+        // agents_seeded is persisted. Keyed by (tenant, session id) so one tenant seeding a session id can
+        // never suppress another tenant's back-fill of the same id (MTR-08).
+        if (!_agentsSeeded.Contains((batch.Tenant, s.SessionId)))
         {
             batch.NewSeeded.Add(s.SessionId);
             if (hw is not null)
@@ -499,7 +579,7 @@ public sealed class GatewayInputStatsAggregator : IDisposable
         var chars = s.InputStats?.AgentDrivenCharacters ?? 0;
         if (turns == 0 && chars == 0) return;
 
-        _agentDrivenHighWater.TryGetValue(s.SessionId, out var prev);
+        _agentDrivenHighWater.TryGetValue((batch.Tenant, s.SessionId), out var prev);
         var prevTurns = prev?.Turns ?? 0;
         var prevChars = prev?.Characters ?? 0;
 
@@ -533,7 +613,7 @@ public sealed class GatewayInputStatsAggregator : IDisposable
         var t = s.TokenTotals;
         if (t is null) return;
 
-        _tokenHighWater.TryGetValue(s.SessionId, out var prev);
+        _tokenHighWater.TryGetValue((batch.Tenant, s.SessionId), out var prev);
         var prevIn = prev?.Input ?? 0;
         var prevOut = prev?.Output ?? 0;
         var prevCacheR = prev?.CacheRead ?? 0;
@@ -568,9 +648,12 @@ public sealed class GatewayInputStatsAggregator : IDisposable
 
     private void NeedIdentity(string display, IdentityKind kind, FoldBatch batch)
     {
-        if (IdsFor(kind).ContainsKey(display)) return;
+        // Resolve within THIS batch's tenant (MTR-08): a display spelling already known to another tenant is
+        // NOT known here, so the two tenants mint separate surrogate ids and their turns never coalesce.
+        if (IdsFor(batch.Tenant, kind).ContainsKey(display)) return;
         // The pending list is compared with the SAME comparer, so two spellings differing only by case
-        // inside one batch resolve to one identity, exactly as the dictionary would.
+        // inside one batch resolve to one identity, exactly as the dictionary would. The whole batch is one
+        // tenant, so no tenant test is needed on the pending list.
         foreach (var (d, k) in batch.NewIdentities)
             if (k == kind && StringComparer.OrdinalIgnoreCase.Equals(d, display)) return;
         batch.NewIdentities.Add((display, kind));
@@ -578,7 +661,9 @@ public sealed class GatewayInputStatsAggregator : IDisposable
 
     private bool KnownIdentitySession(string display, string sessionId, IdentityKind kind, FoldBatch batch)
     {
-        if (IdsFor(kind).TryGetValue(display, out var id) && SessionsFor(kind).Contains((id, sessionId)))
+        // The display->id lookup is per tenant; the distinct-session set is keyed by the resolved (tenant-
+        // specific) id, so no tenant test is needed on it.
+        if (IdsFor(batch.Tenant, kind).TryGetValue(display, out var id) && SessionsFor(kind).Contains((id, sessionId)))
             return true;
         foreach (var (d, sid, k) in batch.NewIdentitySessions)
             if (k == kind && sid == sessionId && StringComparer.OrdinalIgnoreCase.Equals(d, display)) return true;
@@ -591,13 +676,17 @@ public sealed class GatewayInputStatsAggregator : IDisposable
     {
         if (batch.IsEmpty) return;
 
+        var tenant = batch.Tenant.Value;
+
         using var tx = _db.Connection.BeginTransaction();
 
+        // agents_since is per tenant (MTR-08): (tenant, name) is the key.
         if (batch.StampAgentsSince is not null)
-            Execute("INSERT OR REPLACE INTO meta(name, value) VALUES ($n, $v)", tx,
-                ("$n", AgentsSinceKey), ("$v", batch.StampAgentsSince));
+            Execute("INSERT OR REPLACE INTO meta(tenant, name, value) VALUES ($tn, $n, $v)", tx,
+                ("$tn", tenant), ("$n", AgentsSinceKey), ("$v", batch.StampAgentsSince));
 
-        // Freshly minted ids, per kind, keyed with the SAME comparer as the mirror they will join.
+        // Freshly minted ids, per kind, keyed with the SAME comparer as the mirror they will join. Every
+        // identity row carries this batch's tenant, so the reload rebuilds the per-tenant display->id map.
         var newIds = new Dictionary<IdentityKind, Dictionary<string, long>>
         {
             [IdentityKind.Repo] = new(StringComparer.OrdinalIgnoreCase),
@@ -608,14 +697,15 @@ public sealed class GatewayInputStatsAggregator : IDisposable
         foreach (var (display, kind) in batch.NewIdentities)
         {
             var (table, column) = IdentityTableFor(kind);
-            var id = ExecuteScalarLong($"INSERT INTO {table}({column}) VALUES ($d); SELECT last_insert_rowid()", tx, ("$d", display));
+            var id = ExecuteScalarLong($"INSERT INTO {table}({column}, tenant) VALUES ($d, $tn); SELECT last_insert_rowid()", tx,
+                ("$d", display), ("$tn", tenant));
             newIds[kind][display] = id;
         }
 
         long Resolve(string display, IdentityKind kind)
         {
             if (newIds[kind].TryGetValue(display, out var fresh)) return fresh;
-            return IdsFor(kind)[display];
+            return IdsFor(batch.Tenant, kind)[display];
         }
 
         // An absent model resolves to nothing at all - DBNull, so the column is SQL NULL rather than a
@@ -624,50 +714,50 @@ public sealed class GatewayInputStatsAggregator : IDisposable
             display is null ? DBNull.Value : Resolve(display, IdentityKind.Model);
 
         foreach (var r in batch.Rows)
-            Execute(@"INSERT INTO stat_delta(hour_utc, session_id, modality, surface, is_voice, repo_id, checkout_id, model_id, wingman, turns, chars)
-                      VALUES ($h, $s, $m, $u, $v, $r, $k, $d, $w, $t, $c)", tx,
-                ("$h", r.Hour), ("$s", r.SessionId), ("$m", r.Modality), ("$u", r.Surface),
+            Execute(@"INSERT INTO stat_delta(tenant, hour_utc, session_id, modality, surface, is_voice, repo_id, checkout_id, model_id, wingman, turns, chars)
+                      VALUES ($tn, $h, $s, $m, $u, $v, $r, $k, $d, $w, $t, $c)", tx,
+                ("$tn", tenant), ("$h", r.Hour), ("$s", r.SessionId), ("$m", r.Modality), ("$u", r.Surface),
                 ("$v", r.IsVoice ? 1 : 0), ("$r", Resolve(r.Repo, IdentityKind.Repo)),
                 ("$k", Resolve(r.Checkout, IdentityKind.Checkout)),
                 ("$d", ResolveModel(r.Model)), ("$w", r.Wingman ? 1 : 0),
                 ("$t", r.Turns), ("$c", r.Chars));
 
         foreach (var a in batch.AgentRows)
-            Execute("INSERT INTO agent_delta(agent_id, is_voice, turns, chars) VALUES ($a, $v, $t, $c)", tx,
-                ("$a", Resolve(a.Agent, IdentityKind.Agent)), ("$v", a.IsVoice ? 1 : 0), ("$t", a.Turns), ("$c", a.Chars));
+            Execute("INSERT INTO agent_delta(tenant, agent_id, is_voice, turns, chars) VALUES ($tn, $a, $v, $t, $c)", tx,
+                ("$tn", tenant), ("$a", Resolve(a.Agent, IdentityKind.Agent)), ("$v", a.IsVoice ? 1 : 0), ("$t", a.Turns), ("$c", a.Chars));
 
         foreach (var a in batch.AgentDrivenRows)
-            Execute("INSERT INTO agent_driven_delta(agent_id, turns, chars) VALUES ($a, $t, $c)", tx,
-                ("$a", Resolve(a.Agent, IdentityKind.Agent)), ("$t", a.Turns), ("$c", a.Chars));
+            Execute("INSERT INTO agent_driven_delta(tenant, agent_id, turns, chars) VALUES ($tn, $a, $t, $c)", tx,
+                ("$tn", tenant), ("$a", Resolve(a.Agent, IdentityKind.Agent)), ("$t", a.Turns), ("$c", a.Chars));
 
         foreach (var h in batch.HighWater)
-            Execute(@"INSERT INTO session_highwater(session_id, modality, surface, turns, chars)
-                      VALUES ($s, $m, $u, $t, $c)
-                      ON CONFLICT(session_id, modality, surface) DO UPDATE SET turns=$t, chars=$c", tx,
-                ("$s", h.SessionId), ("$m", h.Modality), ("$u", h.Surface), ("$t", h.Turns), ("$c", h.Chars));
+            Execute(@"INSERT INTO session_highwater(tenant, session_id, modality, surface, turns, chars)
+                      VALUES ($tn, $s, $m, $u, $t, $c)
+                      ON CONFLICT(tenant, session_id, modality, surface) DO UPDATE SET turns=$t, chars=$c", tx,
+                ("$tn", tenant), ("$s", h.SessionId), ("$m", h.Modality), ("$u", h.Surface), ("$t", h.Turns), ("$c", h.Chars));
 
         foreach (var h in batch.AgentDrivenHighWater)
-            Execute(@"INSERT INTO agent_driven_highwater(session_id, turns, chars) VALUES ($s, $t, $c)
-                      ON CONFLICT(session_id) DO UPDATE SET turns=$t, chars=$c", tx,
-                ("$s", h.SessionId), ("$t", h.Turns), ("$c", h.Chars));
+            Execute(@"INSERT INTO agent_driven_highwater(tenant, session_id, turns, chars) VALUES ($tn, $s, $t, $c)
+                      ON CONFLICT(tenant, session_id) DO UPDATE SET turns=$t, chars=$c", tx,
+                ("$tn", tenant), ("$s", h.SessionId), ("$t", h.Turns), ("$c", h.Chars));
 
         foreach (var r in batch.TokenRows)
-            Execute(@"INSERT INTO token_delta(hour_utc, model_id, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens)
-                      VALUES ($h, $d, $i, $o, $cr, $cc)", tx,
-                ("$h", r.Hour), ("$d", ResolveModel(r.Model)),
+            Execute(@"INSERT INTO token_delta(tenant, hour_utc, model_id, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens)
+                      VALUES ($tn, $h, $d, $i, $o, $cr, $cc)", tx,
+                ("$tn", tenant), ("$h", r.Hour), ("$d", ResolveModel(r.Model)),
                 ("$i", r.Input), ("$o", r.Output), ("$cr", r.CacheRead), ("$cc", r.CacheCreation));
 
         foreach (var h in batch.TokenHighWater)
-            Execute(@"INSERT INTO token_highwater(session_id, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens)
-                      VALUES ($s, $i, $o, $cr, $cc)
-                      ON CONFLICT(session_id) DO UPDATE SET input_tokens=$i, output_tokens=$o, cache_read_tokens=$cr, cache_creation_tokens=$cc", tx,
-                ("$s", h.SessionId), ("$i", h.Input), ("$o", h.Output), ("$cr", h.CacheRead), ("$cc", h.CacheCreation));
+            Execute(@"INSERT INTO token_highwater(tenant, session_id, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens)
+                      VALUES ($tn, $s, $i, $o, $cr, $cc)
+                      ON CONFLICT(tenant, session_id) DO UPDATE SET input_tokens=$i, output_tokens=$o, cache_read_tokens=$cr, cache_creation_tokens=$cc", tx,
+                ("$tn", tenant), ("$s", h.SessionId), ("$i", h.Input), ("$o", h.Output), ("$cr", h.CacheRead), ("$cc", h.CacheCreation));
 
         foreach (var sid in batch.NewWingmanSessions)
-            Execute("INSERT OR IGNORE INTO wingman_session(session_id) VALUES ($s)", tx, ("$s", sid));
+            Execute("INSERT OR IGNORE INTO wingman_session(tenant, session_id) VALUES ($tn, $s)", tx, ("$tn", tenant), ("$s", sid));
 
         foreach (var sid in batch.NewSeeded)
-            Execute("INSERT OR IGNORE INTO agents_seeded(session_id) VALUES ($s)", tx, ("$s", sid));
+            Execute("INSERT OR IGNORE INTO agents_seeded(tenant, session_id) VALUES ($tn, $s)", tx, ("$tn", tenant), ("$s", sid));
 
         foreach (var (display, sessionId, kind) in batch.NewIdentitySessions)
         {
@@ -686,48 +776,53 @@ public sealed class GatewayInputStatsAggregator : IDisposable
 
         tx.Commit();
 
-        // ---- Committed. Only now does the mirror move. ----
-        if (batch.StampAgentsSince is not null) _agentsSinceUtc = batch.StampAgentsSince;
+        // ---- Committed. Only now does the mirror move. Every advance is keyed by the batch's tenant. ----
+        if (batch.StampAgentsSince is not null) _agentsSinceUtc[batch.Tenant] = batch.StampAgentsSince;
         foreach (var (kind, minted) in newIds)
-            foreach (var (d, id) in minted) { IdsFor(kind)[d] = id; DisplayFor(kind)[id] = d; }
+            foreach (var (d, id) in minted) { IdsFor(batch.Tenant, kind)[d] = id; DisplayFor(kind)[id] = d; }
         foreach (var h in batch.HighWater)
         {
-            if (!_highWater.TryGetValue(h.SessionId, out var hw))
+            var key = (batch.Tenant, h.SessionId);
+            if (!_highWater.TryGetValue(key, out var hw))
             {
                 hw = new Dictionary<(string, string), Counters>();
-                _highWater[h.SessionId] = hw;
+                _highWater[key] = hw;
             }
             hw[(h.Modality, h.Surface)] = new Counters { Turns = h.Turns, Characters = h.Chars };
         }
         foreach (var h in batch.AgentDrivenHighWater)
-            _agentDrivenHighWater[h.SessionId] = new Counters { Turns = h.Turns, Characters = h.Chars };
+            _agentDrivenHighWater[(batch.Tenant, h.SessionId)] = new Counters { Turns = h.Turns, Characters = h.Chars };
         foreach (var h in batch.TokenHighWater)
-            _tokenHighWater[h.SessionId] = new TokenCounters
+            _tokenHighWater[(batch.Tenant, h.SessionId)] = new TokenCounters
             {
                 Input = h.Input, Output = h.Output, CacheRead = h.CacheRead, CacheCreation = h.CacheCreation,
             };
-        foreach (var sid in batch.NewWingmanSessions) _wingmanSessions.Add(sid);
-        foreach (var sid in batch.NewSeeded) _agentsSeeded.Add(sid);
+        foreach (var sid in batch.NewWingmanSessions) _wingmanSessions.Add((batch.Tenant, sid));
+        foreach (var sid in batch.NewSeeded) _agentsSeeded.Add((batch.Tenant, sid));
         foreach (var (display, sessionId, kind) in batch.NewIdentitySessions)
-            SessionsFor(kind).Add((IdsFor(kind)[display], sessionId));
+            SessionsFor(kind).Add((IdsFor(batch.Tenant, kind)[display], sessionId));
     }
 
     /// <summary>
     /// Forget a removed session's high-water entry. Its contribution stays in the totals (it was folded in
     /// as it happened); dropping the high-water entry just stops the map growing without bound.
     /// </summary>
-    public void Forget(string? sessionId)
+    public void Forget(string? sessionId, TenantId? tenant = null)
     {
         if (string.IsNullOrEmpty(sessionId)) return;
+        var t = RequireTenant(tenant);
         lock (_lock)
         {
+            // Scoped to (tenant, session id) (MTR-08): forgetting one tenant's session must not drop another
+            // tenant's high-water for the same bare session id.
+            //
             // The token high-water is cleaned up on its own, not under the session_highwater guard: a session
             // has both, and dropping only one would leave the other's map growing without bound. Each is
             // removed only if present, so forgetting a session that never spent a token is still a no-op.
-            if (_highWater.Remove(sessionId))
-                Execute("DELETE FROM session_highwater WHERE session_id=$s", null, ("$s", sessionId));
-            if (_tokenHighWater.Remove(sessionId))
-                Execute("DELETE FROM token_highwater WHERE session_id=$s", null, ("$s", sessionId));
+            if (_highWater.Remove((t, sessionId)))
+                Execute("DELETE FROM session_highwater WHERE tenant=$tn AND session_id=$s", null, ("$tn", t.Value), ("$s", sessionId));
+            if (_tokenHighWater.Remove((t, sessionId)))
+                Execute("DELETE FROM token_highwater WHERE tenant=$tn AND session_id=$s", null, ("$tn", t.Value), ("$s", sessionId));
         }
     }
 
@@ -752,11 +847,15 @@ public sealed class GatewayInputStatsAggregator : IDisposable
         // SQLite groups NULLs together, so every unknown-model row of a bucket archives into ONE row that is
         // still honestly NULL. That is the wanted behaviour: absence aggregates as absence. (checkout_id is
         // never NULL on a row this build wrote, but it rides the same fold for the same reason.)
-        Execute(@"INSERT INTO stat_delta(hour_utc, session_id, modality, surface, is_voice, repo_id, checkout_id, model_id, wingman, turns, chars)
-                  SELECT $marker, $marker, modality, surface, is_voice, repo_id, checkout_id, model_id, wingman, SUM(turns), SUM(chars)
+        // MTR-08: tenant is carried through the archive fold in BOTH the SELECT and the GROUP BY, exactly as
+        // model_id and checkout_id are - left out of either, a pruned tenant's turns would either read the
+        // wrong tenant or collapse across tenants ninety days later. Each tenant's departing rows fold into
+        // that tenant's own archive row.
+        Execute(@"INSERT INTO stat_delta(tenant, hour_utc, session_id, modality, surface, is_voice, repo_id, checkout_id, model_id, wingman, turns, chars)
+                  SELECT tenant, $marker, $marker, modality, surface, is_voice, repo_id, checkout_id, model_id, wingman, SUM(turns), SUM(chars)
                     FROM stat_delta
                    WHERE hour_utc <> $marker AND hour_utc < $cutoff
-                   GROUP BY modality, surface, is_voice, repo_id, checkout_id, model_id, wingman", tx,
+                   GROUP BY tenant, modality, surface, is_voice, repo_id, checkout_id, model_id, wingman", tx,
             ("$marker", GatewayStatsDatabase.ArchiveMarker), ("$cutoff", cutoff));
         Execute("DELETE FROM stat_delta WHERE hour_utc <> $marker AND hour_utc < $cutoff", tx,
             ("$marker", GatewayStatsDatabase.ArchiveMarker), ("$cutoff", cutoff));
@@ -765,11 +864,11 @@ public sealed class GatewayInputStatsAggregator : IDisposable
         // both the SELECT and the GROUP BY, or the ninety-day fold turns every archived model's spend into
         // "model unknown". Its all-time totals INCLUDE archive rows (that is the point of archiving), so the
         // spend must not shrink when detail is pruned.
-        Execute(@"INSERT INTO token_delta(hour_utc, model_id, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens)
-                  SELECT $marker, model_id, SUM(input_tokens), SUM(output_tokens), SUM(cache_read_tokens), SUM(cache_creation_tokens)
+        Execute(@"INSERT INTO token_delta(tenant, hour_utc, model_id, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens)
+                  SELECT tenant, $marker, model_id, SUM(input_tokens), SUM(output_tokens), SUM(cache_read_tokens), SUM(cache_creation_tokens)
                     FROM token_delta
                    WHERE hour_utc <> $marker AND hour_utc < $cutoff
-                   GROUP BY model_id", tx,
+                   GROUP BY tenant, model_id", tx,
             ("$marker", GatewayStatsDatabase.ArchiveMarker), ("$cutoff", cutoff));
         Execute("DELETE FROM token_delta WHERE hour_utc <> $marker AND hour_utc < $cutoff", tx,
             ("$marker", GatewayStatsDatabase.ArchiveMarker), ("$cutoff", cutoff));
@@ -780,33 +879,35 @@ public sealed class GatewayInputStatsAggregator : IDisposable
     /// volume. NOT part of the human totals: this is the fleet driving itself, which is a different
     /// question from how the owner drives.
     /// </summary>
-    public (long Turns, long Characters) AgentDrivenUsage()
+    public (long Turns, long Characters) AgentDrivenUsage(TenantId? tenant = null)
     {
+        var t = RequireTenant(tenant);
         lock (_lock)
         {
             long turns = 0, chars = 0;
-            Read("SELECT COALESCE(SUM(turns),0), COALESCE(SUM(chars),0) FROM agent_driven_delta",
-                r => { turns = r.GetInt64(0); chars = r.GetInt64(1); });
+            Read("SELECT COALESCE(SUM(turns),0), COALESCE(SUM(chars),0) FROM agent_driven_delta WHERE tenant=$tn",
+                r => { turns = r.GetInt64(0); chars = r.GetInt64(1); }, ("$tn", t.Value));
             return (turns, chars);
         }
     }
 
     /// <summary>An immutable snapshot of the all-time totals for the dashboard, buckets in a stable order.</summary>
-    public InputStatsDto CurrentTotals()
+    public InputStatsDto CurrentTotals(TenantId? tenant = null)
     {
+        var t = RequireTenant(tenant);
         lock (_lock)
         {
             var rows = new List<InputStatBucketDto>();
             // ARCHIVE rows are INCLUDED - that is the point of archiving: an all-time total must not shrink
-            // when the hourly detail behind it is pruned.
-            Read(@"SELECT modality, surface, SUM(turns), SUM(chars) FROM stat_delta GROUP BY modality, surface", r =>
+            // when the hourly detail behind it is pruned. Scoped to the request tenant (MTR-08).
+            Read(@"SELECT modality, surface, SUM(turns), SUM(chars) FROM stat_delta WHERE tenant=$tn GROUP BY modality, surface", r =>
                 rows.Add(new InputStatBucketDto
                 {
                     Modality = r.GetString(0),
                     Surface = r.GetString(1),
                     Turns = r.GetInt64(2),
                     Characters = r.GetInt64(3),
-                }));
+                }), ("$tn", t.Value));
 
             var dto = new InputStatsDto();
             // Ordered in C#, ordinal - the comparer the original projection used.
@@ -819,33 +920,36 @@ public sealed class GatewayInputStatsAggregator : IDisposable
 
     /// <summary>All-time wingman usage: the number of submitted turns folded while a session had voice mode
     /// on, and the count of distinct sessions ever seen with voice mode on.</summary>
-    public WingmanUsageDto WingmanUsage()
+    public WingmanUsageDto WingmanUsage(TenantId? tenant = null)
     {
+        var t = RequireTenant(tenant);
         lock (_lock)
         {
             // SUM(turns) WHERE wingman=1 - never anything keyed on modality. A turn TYPED while voice mode
-            // was on is a wingman turn.
-            var turns = ScalarLong("SELECT COALESCE(SUM(turns),0) FROM stat_delta WHERE wingman=1");
-            var sessions = ScalarLong("SELECT COUNT(*) FROM wingman_session");
+            // was on is a wingman turn. Both halves scoped to the request tenant (MTR-08).
+            var turns = ExecuteScalarLong("SELECT COALESCE(SUM(turns),0) FROM stat_delta WHERE tenant=$tn AND wingman=1", null, ("$tn", t.Value));
+            var sessions = ExecuteScalarLong("SELECT COUNT(*) FROM wingman_session WHERE tenant=$tn", null, ("$tn", t.Value));
             return new WingmanUsageDto { Turns = turns, Sessions = (int)sessions };
         }
     }
 
     /// <summary>The per-hour turn log (the "working day" series: turns by modality and character volume per
     /// UTC clock hour), oldest hour first.</summary>
-    public IReadOnlyList<InputHourDto> HourlyTurns()
+    public IReadOnlyList<InputHourDto> HourlyTurns(TenantId? tenant = null)
     {
+        var t = RequireTenant(tenant);
         lock (_lock)
         {
             var list = new List<InputHourDto>();
             // ARCHIVE rows are EXCLUDED: they are real all-time data with no real hour, so letting them
-            // through would invent a bucket in this series that was never an hour of the working day.
+            // through would invent a bucket in this series that was never an hour of the working day. Scoped
+            // to the request tenant (MTR-08).
             Read(@"SELECT hour_utc,
                           COALESCE(SUM(CASE WHEN is_voice = 1 THEN turns ELSE 0 END), 0),
                           COALESCE(SUM(CASE WHEN is_voice = 0 THEN turns ELSE 0 END), 0),
                           SUM(chars)
                      FROM stat_delta
-                    WHERE hour_utc <> $marker
+                    WHERE tenant = $tn AND hour_utc <> $marker
                     GROUP BY hour_utc", r =>
             {
                 var voice = r.GetInt64(1);
@@ -858,7 +962,7 @@ public sealed class GatewayInputStatsAggregator : IDisposable
                     Turns = voice + typed,
                     Characters = r.GetInt64(3),
                 });
-            }, ("$marker", GatewayStatsDatabase.ArchiveMarker));
+            }, ("$tn", t.Value), ("$marker", GatewayStatsDatabase.ArchiveMarker));
             list.Sort((a, b) => string.CompareOrdinal(a.Hour, b.Hour));
             return list;
         }
@@ -866,10 +970,13 @@ public sealed class GatewayInputStatsAggregator : IDisposable
 
     /// <summary>The per-repository all-time tally (turns by modality, character volume, distinct sessions),
     /// ranked most-driven first, for the private Repos page. Repos with no counted turns are omitted.</summary>
-    public IReadOnlyList<RepoStatBucketDto> RepoTotals()
+    public IReadOnlyList<RepoStatBucketDto> RepoTotals(TenantId? tenant = null)
     {
+        var t = RequireTenant(tenant);
         lock (_lock)
         {
+            // SessionCounts groups by repo_id, which is tenant-specific, so only this tenant's repo ids (read
+            // from the tenant-filtered stat_delta below) are ever looked up out of it (MTR-08).
             var sessions = SessionCounts("repo_session", "repo_id");
 
             // The local checkouts (worktrees, per-machine clones) that rolled up into each repository, kept so
@@ -877,7 +984,7 @@ public sealed class GatewayInputStatsAggregator : IDisposable
             // lost when the repo name collapses them. Display spellings come from the identity mirror, never from a
             // SQL join; sorted here so the retained list is stable rather than in row-insert order.
             var checkoutsByRepo = new Dictionary<long, List<string>>();
-            Read("SELECT DISTINCT repo_id, checkout_id FROM stat_delta WHERE checkout_id IS NOT NULL", r =>
+            Read("SELECT DISTINCT repo_id, checkout_id FROM stat_delta WHERE tenant=$tn AND checkout_id IS NOT NULL", r =>
             {
                 var repoId = r.GetInt64(0);
                 var checkoutId = r.GetInt64(1);
@@ -885,7 +992,7 @@ public sealed class GatewayInputStatsAggregator : IDisposable
                 if (!checkoutsByRepo.TryGetValue(repoId, out var paths))
                     checkoutsByRepo[repoId] = paths = new List<string>();
                 paths.Add(path);
-            });
+            }, ("$tn", t.Value));
             foreach (var paths in checkoutsByRepo.Values)
                 paths.Sort(StringComparer.OrdinalIgnoreCase);
 
@@ -894,7 +1001,7 @@ public sealed class GatewayInputStatsAggregator : IDisposable
                           COALESCE(SUM(CASE WHEN is_voice = 1 THEN turns ELSE 0 END), 0),
                           COALESCE(SUM(CASE WHEN is_voice = 0 THEN turns ELSE 0 END), 0),
                           SUM(chars)
-                     FROM stat_delta GROUP BY repo_id", r =>
+                     FROM stat_delta WHERE tenant=$tn GROUP BY repo_id", r =>
             {
                 var id = r.GetInt64(0);
                 var voice = r.GetInt64(1);
@@ -913,7 +1020,7 @@ public sealed class GatewayInputStatsAggregator : IDisposable
                     Sessions = sessions.TryGetValue(id, out var n) ? n : 0,
                     Checkouts = checkoutsByRepo.TryGetValue(id, out var cks) ? cks : new List<string>(),
                 });
-            });
+            }, ("$tn", t.Value));
             // Ranked in C#, matching the original ordering exactly.
             list.Sort((a, b) =>
             {
@@ -928,8 +1035,9 @@ public sealed class GatewayInputStatsAggregator : IDisposable
 
     /// <summary>The per-agent all-time tally (turns by modality, character volume, distinct sessions),
     /// ranked most-driven first, for the private Agents page.</summary>
-    public IReadOnlyList<AgentStatBucketDto> AgentTotals()
+    public IReadOnlyList<AgentStatBucketDto> AgentTotals(TenantId? tenant = null)
     {
+        var t = RequireTenant(tenant);
         lock (_lock)
         {
             var sessions = SessionCounts("agent_session", "agent_id");
@@ -939,18 +1047,22 @@ public sealed class GatewayInputStatsAggregator : IDisposable
                           COALESCE(SUM(CASE WHEN is_voice = 1 THEN turns ELSE 0 END), 0),
                           COALESCE(SUM(CASE WHEN is_voice = 0 THEN turns ELSE 0 END), 0),
                           SUM(chars)
-                     FROM agent_delta GROUP BY agent_id",
-                r => human[r.GetInt64(0)] = (r.GetInt64(1), r.GetInt64(2), r.GetInt64(3)));
+                     FROM agent_delta WHERE tenant=$tn GROUP BY agent_id",
+                r => human[r.GetInt64(0)] = (r.GetInt64(1), r.GetInt64(2), r.GetInt64(3)), ("$tn", t.Value));
 
             var driven = new Dictionary<long, (long Turns, long Chars)>();
-            Read("SELECT agent_id, SUM(turns), SUM(chars) FROM agent_driven_delta GROUP BY agent_id",
-                r => driven[r.GetInt64(0)] = (r.GetInt64(1), r.GetInt64(2)));
+            Read("SELECT agent_id, SUM(turns), SUM(chars) FROM agent_driven_delta WHERE tenant=$tn GROUP BY agent_id",
+                r => driven[r.GetInt64(0)] = (r.GetInt64(1), r.GetInt64(2)), ("$tn", t.Value));
 
             // Every agent EVER attributed appears, including one registered with no turns - the original
             // creates the tally entry on attribution regardless, so the page describes the agents actually
-            // being run rather than only those that submitted a turn in the window.
+            // being run rather than only those that submitted a turn in the window. Iterate THIS TENANT'S
+            // identity map (MTR-08), not the global id->display: iterating the global map would list every
+            // other tenant's agents (each as a zero-turn row) - a cross-tenant leak of who runs what. The
+            // per-tenant map holds exactly the ids this tenant minted, so both the zero-turn agents and the
+            // active ones are its own.
             var list = new List<AgentStatBucketDto>();
-            foreach (var (id, display) in _agentDisplay)
+            foreach (var (display, id) in IdsFor(t, IdentityKind.Agent))
             {
                 human.TryGetValue(id, out var h);
                 driven.TryGetValue(id, out var d);
@@ -985,10 +1097,12 @@ public sealed class GatewayInputStatsAggregator : IDisposable
         return counts;
     }
 
-    /// <summary>When the per-agent tally started counting (round-trip UTC), or "" if never stamped.</summary>
-    public string AgentsSinceUtc
+    /// <summary>When the per-agent tally started counting for <paramref name="tenant"/> (round-trip UTC), or
+    /// "" if that tenant has never folded (MTR-08: the window is per tenant).</summary>
+    public string AgentsSinceUtc(TenantId? tenant = null)
     {
-        get { lock (_lock) { return _agentsSinceUtc; } }
+        var t = RequireTenant(tenant);
+        lock (_lock) { return _agentsSinceUtc.TryGetValue(t, out var v) ? v : ""; }
     }
 
     /// <summary>
@@ -1013,18 +1127,20 @@ public sealed class GatewayInputStatsAggregator : IDisposable
     /// count of sessions here would be a number that looks like the neighbouring ones and means something
     /// weaker, so it is absent rather than approximated.
     /// </summary>
-    public IReadOnlyList<ModelStatBucketDto> ModelTotals()
+    public IReadOnlyList<ModelStatBucketDto> ModelTotals(TenantId? tenant = null)
     {
+        var t = RequireTenant(tenant);
         lock (_lock)
         {
             var list = new List<ModelStatBucketDto>();
             // Archive rows are INCLUDED - the marker convention only excludes them from hourly and
             // working-day series, and an all-time tally that dropped them would shrink as history is pruned.
+            // Scoped to the request tenant (MTR-08).
             Read(@"SELECT model_id,
                           COALESCE(SUM(CASE WHEN is_voice = 1 THEN turns ELSE 0 END), 0),
                           COALESCE(SUM(CASE WHEN is_voice = 0 THEN turns ELSE 0 END), 0),
                           SUM(chars)
-                     FROM stat_delta GROUP BY model_id", r =>
+                     FROM stat_delta WHERE tenant=$tn GROUP BY model_id", r =>
             {
                 var voice = r.GetInt64(1);
                 var typed = r.GetInt64(2);
@@ -1042,7 +1158,7 @@ public sealed class GatewayInputStatsAggregator : IDisposable
                     TypedTurns = typed,
                     Characters = r.GetInt64(3),
                 });
-            });
+            }, ("$tn", t.Value));
             // Ranked in C#, matching the repository and agent tallies. The null bucket sorts by its numbers
             // like any other and is deliberately not pinned anywhere: it is a bucket, not a footnote.
             list.Sort((a, b) =>
@@ -1062,20 +1178,21 @@ public sealed class GatewayInputStatsAggregator : IDisposable
     /// all-time figure that dropped them would shrink as history is pruned. No context occupancy here; it is
     /// not spend and was never stored.
     /// </summary>
-    public TokenSpendDto TokenSpend()
+    public TokenSpendDto TokenSpend(TenantId? tenant = null)
     {
+        var t = RequireTenant(tenant);
         lock (_lock)
         {
             var dto = new TokenSpendDto();
             Read(@"SELECT COALESCE(SUM(input_tokens),0), COALESCE(SUM(output_tokens),0),
                           COALESCE(SUM(cache_read_tokens),0), COALESCE(SUM(cache_creation_tokens),0)
-                     FROM token_delta", r =>
+                     FROM token_delta WHERE tenant=$tn", r =>
             {
                 dto.InputTokens = r.GetInt64(0);
                 dto.OutputTokens = r.GetInt64(1);
                 dto.CacheReadTokens = r.GetInt64(2);
                 dto.CacheCreationTokens = r.GetInt64(3);
-            });
+            }, ("$tn", t.Value));
             return dto;
         }
     }
@@ -1085,8 +1202,9 @@ public sealed class GatewayInputStatsAggregator : IDisposable
     /// archive marker, exactly as the hourly turn series does: an archive row is not a real hour and would
     /// grow a phantom bucket. Ordered by hour.
     /// </summary>
-    public IReadOnlyList<TokenHourDto> TokenSpendByHour()
+    public IReadOnlyList<TokenHourDto> TokenSpendByHour(TenantId? tenant = null)
     {
+        var t = RequireTenant(tenant);
         lock (_lock)
         {
             var list = new List<TokenHourDto>();
@@ -1094,7 +1212,7 @@ public sealed class GatewayInputStatsAggregator : IDisposable
                           COALESCE(SUM(input_tokens),0), COALESCE(SUM(output_tokens),0),
                           COALESCE(SUM(cache_read_tokens),0), COALESCE(SUM(cache_creation_tokens),0)
                      FROM token_delta
-                    WHERE hour_utc <> $marker
+                    WHERE tenant=$tn AND hour_utc <> $marker
                     GROUP BY hour_utc", r => list.Add(new TokenHourDto
             {
                 Hour = r.GetString(0),
@@ -1102,7 +1220,7 @@ public sealed class GatewayInputStatsAggregator : IDisposable
                 OutputTokens = r.GetInt64(2),
                 CacheReadTokens = r.GetInt64(3),
                 CacheCreationTokens = r.GetInt64(4),
-            }), ("$marker", GatewayStatsDatabase.ArchiveMarker));
+            }), ("$tn", t.Value), ("$marker", GatewayStatsDatabase.ArchiveMarker));
             list.Sort((a, b) => string.CompareOrdinal(a.Hour, b.Hour));
             return list;
         }
@@ -1113,15 +1231,16 @@ public sealed class GatewayInputStatsAggregator : IDisposable
     /// archive rows. The null-model bucket is a REAL bucket - spend folded before the session's model was
     /// recorded - and is reported, not filtered, so the per-model spend sums to the all-time total.
     /// </summary>
-    public IReadOnlyList<ModelSpendDto> TokenSpendByModel()
+    public IReadOnlyList<ModelSpendDto> TokenSpendByModel(TenantId? tenant = null)
     {
+        var t = RequireTenant(tenant);
         lock (_lock)
         {
             var list = new List<ModelSpendDto>();
             Read(@"SELECT model_id,
                           COALESCE(SUM(input_tokens),0), COALESCE(SUM(output_tokens),0),
                           COALESCE(SUM(cache_read_tokens),0), COALESCE(SUM(cache_creation_tokens),0)
-                     FROM token_delta GROUP BY model_id", r =>
+                     FROM token_delta WHERE tenant=$tn GROUP BY model_id", r =>
             {
                 // A null model_id is the "not recorded" bucket and stays null to the page; the display
                 // spelling comes from the identity mirror, never a SQL join over the string.
@@ -1136,7 +1255,7 @@ public sealed class GatewayInputStatsAggregator : IDisposable
                     CacheReadTokens = r.GetInt64(3),
                     CacheCreationTokens = r.GetInt64(4),
                 });
-            });
+            }, ("$tn", t.Value));
             list.Sort((a, b) =>
             {
                 var byTotal = b.TotalTokens.CompareTo(a.TotalTokens);
@@ -1204,8 +1323,6 @@ public sealed class GatewayInputStatsAggregator : IDisposable
         StatementsExecuted++;
         while (reader.Read()) onRow(reader);
     }
-
-    private long ScalarLong(string sql) => ExecuteScalarLong(sql, null);
 
     private string? ReadScalarString(string sql, params (string Name, object Value)[] args)
     {

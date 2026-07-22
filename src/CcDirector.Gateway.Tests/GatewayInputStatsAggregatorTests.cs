@@ -1,3 +1,4 @@
+using CcDirector.Core.Tenancy;
 using CcDirector.Gateway.Contracts;
 using CcDirector.Gateway.Stats;
 using Xunit;
@@ -448,20 +449,20 @@ public sealed class GatewayInputStatsAggregatorTests : IDisposable
     {
         var first = new DateTime(2026, 7, 15, 9, 0, 0, DateTimeKind.Utc);
         var agg = new GatewayInputStatsAggregator(_path);
-        Assert.Equal("", agg.AgentsSinceUtc); // nothing observed yet - no claim about a window
+        Assert.Equal("", agg.AgentsSinceUtc()); // nothing observed yet - no claim about a window
 
         agg.Observe(SessionOnAgent("s1", "ClaudeCode", ("typed", "desktop", 1, 10)), first);
-        var stamped = agg.AgentsSinceUtc;
+        var stamped = agg.AgentsSinceUtc();
         Assert.NotEqual("", stamped);
         Assert.StartsWith("2026-07-15T09:00:00", stamped);
 
         // A later observation must NOT move the since-date, or the page would understate its own window.
         agg.Observe(SessionOnAgent("s1", "ClaudeCode", ("typed", "desktop", 9, 90)), first.AddHours(5));
-        Assert.Equal(stamped, agg.AgentsSinceUtc);
+        Assert.Equal(stamped, agg.AgentsSinceUtc());
 
         // It survives a Gateway restart, so the window does not reset every time the Gateway starts.
         var reloaded = new GatewayInputStatsAggregator(_path);
-        Assert.Equal(stamped, reloaded.AgentsSinceUtc);
+        Assert.Equal(stamped, reloaded.AgentsSinceUtc());
     }
 
     [Fact]
@@ -653,6 +654,9 @@ public sealed class GatewayInputStatsAggregatorTests : IDisposable
 
     private static ModelStatBucketDto? Model(GatewayInputStatsAggregator agg, string? model) =>
         agg.ModelTotals().FirstOrDefault(m => m.Model == model);
+
+    private static ModelStatBucketDto? Model(GatewayInputStatsAggregator agg, string? model, TenantId tenant) =>
+        agg.ModelTotals(tenant).FirstOrDefault(m => m.Model == model);
 
     [Fact]
     public void Model_ReportedByTheDirector_IsAttributedToThatModel()
@@ -984,4 +988,179 @@ public sealed class GatewayInputStatsAggregatorTests : IDisposable
         // The all-time total did not shrink because detail was pruned.
         Assert.Equal(beforeInput + 10, agg.TokenSpend().InputTokens);
     }
+
+    // ---- MTR-08: cross-tenant isolation (production-readiness census rows 49-67) ----
+    //
+    // Two tenants that push the SAME bare session id, and drive the SAME repository / agent / model, must
+    // keep entirely separate tallies, membership and identity. Before the fix the aggregator was
+    // process-global: their turns coalesced into one total and one could suppress the other's high-water,
+    // wingman-seen and seed accounting. Each test below is written so it FAILS on the pre-fix code (a shared
+    // total, a suppressed count) and passes only when the store is partitioned by tenant. TenantA and TenantB
+    // stand in for two hosted accounts; they are ordinary GUID-shaped tenant ids, not the reserved Local one.
+
+    private static readonly TenantId TenantA = new("11111111-1111-1111-1111-111111111111");
+    private static readonly TenantId TenantB = new("22222222-2222-2222-2222-222222222222");
+
+    [Fact]
+    public void TwoTenants_SameSessionId_Totals_DoNotCoalesceOrSuppress()
+    {
+        var agg = new GatewayInputStatsAggregator(_path);
+
+        // Same bare session id "s1", same bucket, different tenants and different counts.
+        agg.Observe(Session("s1", ("typed", "desktop", 5, 100)), tenant: TenantA);
+        agg.Observe(Session("s1", ("typed", "desktop", 3, 60)), tenant: TenantB);
+
+        // Neither tenant's total is the other's, and neither is the sum: the two are partitioned.
+        Assert.Equal(5, Turns(agg.CurrentTotals(TenantA), "typed", "desktop"));
+        Assert.Equal(3, Turns(agg.CurrentTotals(TenantB), "typed", "desktop"));
+
+        // A re-push of A's session must not be inflated by B having written the same bare id in between. On
+        // the pre-fix global high-water, B's lower count reset the shared watermark, so A's re-push folded a
+        // spurious positive delta and A's total climbed past 5.
+        agg.Observe(Session("s1", ("typed", "desktop", 5, 100)), tenant: TenantA);
+        Assert.Equal(5, Turns(agg.CurrentTotals(TenantA), "typed", "desktop"));
+        Assert.Equal(3, Turns(agg.CurrentTotals(TenantB), "typed", "desktop"));
+    }
+
+    [Fact]
+    public void TwoTenants_SameSessionId_SameRepo_DoNotCoalesce()
+    {
+        var agg = new GatewayInputStatsAggregator(_path);
+
+        agg.Observe(SessionWithRepoName("s1", "owner/app", @"D:\a\app", ("voice", "phone", 6, 600)), tenant: TenantA);
+        agg.Observe(SessionWithRepoName("s1", "owner/app", @"D:\b\app", ("typed", "desktop", 2, 40)), tenant: TenantB);
+
+        var repoA = agg.RepoTotals(TenantA).Single(r => r.RepoName == "app");
+        var repoB = agg.RepoTotals(TenantB).Single(r => r.RepoName == "app");
+
+        // Same "owner/app" repo name, but a DIFFERENT surrogate identity per tenant, so their turns do not sum.
+        Assert.Equal(6, repoA.Turns);
+        Assert.Equal(1, repoA.Sessions);
+        Assert.Equal(2, repoB.Turns);
+        Assert.Equal(1, repoB.Sessions);
+    }
+
+    [Fact]
+    public void TwoTenants_SameSessionId_SameAgent_DoNotCoalesce()
+    {
+        var agg = new GatewayInputStatsAggregator(_path);
+
+        agg.Observe(SessionOnAgent("s1", "ClaudeCode", ("voice", "phone", 6, 600)), tenant: TenantA);
+        agg.Observe(SessionOnAgent("s1", "ClaudeCode", ("typed", "desktop", 2, 40)), tenant: TenantB);
+
+        var agentA = agg.AgentTotals(TenantA).Single(a => a.AgentName == "Claude Code");
+        var agentB = agg.AgentTotals(TenantB).Single(a => a.AgentName == "Claude Code");
+        Assert.Equal(6, agentA.Turns);
+        Assert.Equal(2, agentB.Turns);
+
+        // The Agents page for A must NOT list B's agents (a cross-tenant leak of who-runs-what), and vice
+        // versa. Here both ran only Claude Code, so each tenant's list is exactly one agent.
+        Assert.Single(agg.AgentTotals(TenantA));
+        Assert.Single(agg.AgentTotals(TenantB));
+    }
+
+    [Fact]
+    public void TwoTenants_DistinctAgents_AreNotVisibleToEachOther()
+    {
+        var agg = new GatewayInputStatsAggregator(_path);
+
+        agg.Observe(SessionOnAgent("s1", "ClaudeCode", ("typed", "desktop", 4, 40)), tenant: TenantA);
+        agg.Observe(SessionOnAgent("s2", "Codex", ("typed", "desktop", 3, 30)), tenant: TenantB);
+
+        // A sees only Claude Code; B sees only Codex. On the pre-fix global id->display iteration, each page
+        // listed BOTH agents (the other tenant's as a zero-turn row).
+        Assert.Equal(new[] { "Claude Code" }, agg.AgentTotals(TenantA).Select(a => a.AgentName).ToArray());
+        Assert.Equal(new[] { "Codex" }, agg.AgentTotals(TenantB).Select(a => a.AgentName).ToArray());
+    }
+
+    [Fact]
+    public void TwoTenants_SameSessionId_SameModel_DoNotCoalesce()
+    {
+        var agg = new GatewayInputStatsAggregator(_path);
+
+        agg.Observe(SessionOnModel("s1", "claude-opus-4-8", ("typed", "desktop", 5, 50)), tenant: TenantA);
+        agg.Observe(SessionOnModel("s1", "claude-opus-4-8", ("typed", "desktop", 8, 80)), tenant: TenantB);
+
+        Assert.Equal(5, Model(agg, "claude-opus-4-8", TenantA)!.Turns);
+        Assert.Equal(8, Model(agg, "claude-opus-4-8", TenantB)!.Turns);
+    }
+
+    [Fact]
+    public void TwoTenants_Wingman_SeenMarkersAreNotSuppressed()
+    {
+        var agg = new GatewayInputStatsAggregator(_path);
+
+        // Both tenants use voice mode on the SAME bare session id "s1". Each is a distinct wingman session for
+        // its own tenant; neither's presence may suppress or coalesce the other's count.
+        agg.Observe(VoiceSession("s1", ("voice", "phone", 3, 120)), tenant: TenantA);
+        agg.Observe(VoiceSession("s1", ("voice", "phone", 4, 160)), tenant: TenantB);
+
+        var wingA = agg.WingmanUsage(TenantA);
+        var wingB = agg.WingmanUsage(TenantB);
+        Assert.Equal(1, wingA.Sessions);
+        Assert.Equal(3, wingA.Turns);
+        Assert.Equal(1, wingB.Sessions);
+        Assert.Equal(4, wingB.Turns);
+    }
+
+    [Fact]
+    public void TwoTenants_SeedMarkerAndHighWater_SurviveRestart_PerTenant()
+    {
+        // The seed marker and high-water both persist and both are keyed by tenant. Across a restart, one
+        // tenant's re-push of a shared session id must not be re-back-filled (double counted) and must not
+        // disturb the other tenant's tally.
+        using (var first = new GatewayInputStatsAggregator(_path))
+        {
+            first.Observe(SessionOnAgent("s1", "ClaudeCode", ("typed", "desktop", 4, 80)), tenant: TenantA);
+            first.Observe(SessionOnAgent("s1", "Codex", ("typed", "desktop", 6, 120)), tenant: TenantB);
+        }
+
+        using var reopened = new GatewayInputStatsAggregator(_path);
+        // Re-push the SAME counts after the restart. agents_seeded and session_highwater were reloaded per
+        // tenant, so neither re-back-fills and neither double-counts.
+        reopened.Observe(SessionOnAgent("s1", "ClaudeCode", ("typed", "desktop", 4, 80)), tenant: TenantA);
+        reopened.Observe(SessionOnAgent("s1", "Codex", ("typed", "desktop", 6, 120)), tenant: TenantB);
+
+        Assert.Equal(4, agg_AgentTurns(reopened, TenantA, "Claude Code"));
+        Assert.Equal(6, agg_AgentTurns(reopened, TenantB, "Codex"));
+        // And the tenants still cannot see each other's agent.
+        Assert.Single(reopened.AgentTotals(TenantA));
+        Assert.Single(reopened.AgentTotals(TenantB));
+    }
+
+    [Fact]
+    public void TwoTenants_Forget_OnlyDropsThatTenantsHighWater()
+    {
+        var agg = new GatewayInputStatsAggregator(_path);
+
+        agg.Observe(Session("s1", ("typed", "desktop", 5, 100)), tenant: TenantA);
+        agg.Observe(Session("s1", ("typed", "desktop", 3, 60)), tenant: TenantB);
+
+        // Forgetting A's s1 drops only A's high-water. B's s1 high-water is untouched, so a B re-push of the
+        // same counts still folds nothing (no spurious delta from a wrongly-cleared watermark).
+        agg.Forget("s1", TenantA);
+        agg.Observe(Session("s1", ("typed", "desktop", 3, 60)), tenant: TenantB);
+
+        Assert.Equal(3, Turns(agg.CurrentTotals(TenantB), "typed", "desktop"));
+        // A's contribution stays in A's totals (Forget drops the high-water, not the recorded turns).
+        Assert.Equal(5, Turns(agg.CurrentTotals(TenantA), "typed", "desktop"));
+    }
+
+    [Fact]
+    public void ExistingData_Reloads_UnderTheLocalTenant()
+    {
+        // The self-host control: data written with no explicit tenant lands under Local and reads back under
+        // Local, unchanged - the composite key degenerates to the bare key it was.
+        using (var first = new GatewayInputStatsAggregator(_path))
+            first.Observe(SessionWithRepoName("s1", "owner/app", @"D:\a\app", ("voice", "phone", 7, 700)));
+
+        using var reopened = new GatewayInputStatsAggregator(_path);
+        Assert.Equal(7, Turns(reopened.CurrentTotals(), "voice", "phone")); // default tenant == Local
+        Assert.Equal(7, Turns(reopened.CurrentTotals(TenantId.Local), "voice", "phone"));
+        // ...and a hosted tenant that never folded sees nothing here.
+        Assert.Empty(reopened.CurrentTotals(TenantA).Buckets);
+    }
+
+    private static long agg_AgentTurns(GatewayInputStatsAggregator agg, TenantId tenant, string agentName) =>
+        agg.AgentTotals(tenant).Single(a => a.AgentName == agentName).Turns;
 }

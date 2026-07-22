@@ -1,3 +1,4 @@
+using CcDirector.Core.Tenancy;
 using CcDirector.Core.Utilities;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
@@ -104,7 +105,10 @@ public static class StatsPageEndpoint
 
         app.MapGet("/stats/data", () =>
         {
-            var totals = aggregator.CurrentTotals();
+            // MTR-08: this whole route group is refused on hosted (the filter above), so it serves ONLY the
+            // single-tenant self host. There the sole tenant is Local, so every read scopes to it explicitly.
+            var tenant = TenantId.Local;
+            var totals = aggregator.CurrentTotals(tenant);
             return Results.Json(new
             {
                 generatedAtUtc = DateTime.UtcNow,
@@ -113,46 +117,46 @@ public static class StatsPageEndpoint
                 timeZone = CcDirector.Core.Configuration.TimeZoneConfig.Get(),
                 buckets = totals.Buckets,
                 // DevThrottle Stats: the "working day" series - turns (by modality) + characters per UTC hour.
-                hourlyTurns = aggregator.HourlyTurns(),
+                hourlyTurns = aggregator.HourlyTurns(tenant),
                 // Wingman usage: turns submitted while a session had voice mode on, and the count of distinct
                 // sessions ever in voice mode ("using the wingman" = voice mode on for that session).
-                wingman = aggregator.WingmanUsage(),
+                wingman = aggregator.WingmanUsage(tenant),
                 // DevThrottle Stats: fleet concurrency (both series: live loaded/running, and actively
                 // working). Null until the aggregator is wired (old callers / tests).
-                concurrency = concurrency?.Snapshot(DateTime.UtcNow),
+                concurrency = concurrency?.Snapshot(DateTime.UtcNow, tenant),
                 // DevThrottle Stats (private Repos page): the per-repository all-time tally, ranked
                 // most-driven first, so the owner can see where development actually happens. Same
                 // owner-only auth as the rest of this feed; rendered on a SEPARATE page from Your Throttle
                 // so it never rides along when the throttle is shared.
-                repos = aggregator.RepoTotals(),
+                repos = aggregator.RepoTotals(tenant),
                 // DevThrottle Stats (private Agents page): the per-agent all-time tally, ranked most-driven
                 // first, so the owner can see which agent CLI the work actually goes through. Unlike the
                 // other series this one starts at agentsSinceUtc - the breakdown was added after the totals
                 // had been accumulating - so the page states that window rather than implying the earlier
                 // turns ran under no agent.
-                agents = aggregator.AgentTotals(),
-                agentsSinceUtc = aggregator.AgentsSinceUtc,
+                agents = aggregator.AgentTotals(tenant),
+                agentsSinceUtc = aggregator.AgentsSinceUtc(tenant),
                 // DevThrottle Stats (issue #1637): the per-model all-time tally - which model actually did
                 // the work, ranked most-driven first. Like the agents series it starts at modelsSinceUtc
                 // rather than at the beginning of the totals, so the page states that window instead of
                 // implying the earlier turns ran under no model. A null model in this list is the honest
                 // "the agent had not recorded one yet" bucket, not a missing value to hide.
-                models = aggregator.ModelTotals(),
+                models = aggregator.ModelTotals(tenant),
                 modelsSinceUtc = aggregator.ModelsSinceUtc,
                 // DevThrottle Stats (issue #1637): TOKEN SPEND - what the work actually cost. Three views of
                 // one number: the all-time total, the per-hour series for "what did I spend today / this
                 // week / this month", and the per-model split for "which model cost what". Cumulative,
                 // additive tokens only (input / output / cache) - never context-window occupancy, which is a
                 // gauge and cannot be summed. Claude-only until other agents' drivers report cumulative spend.
-                tokenSpend = aggregator.TokenSpend(),
-                tokenSpendByHour = aggregator.TokenSpendByHour(),
-                tokenSpendByModel = aggregator.TokenSpendByModel(),
+                tokenSpend = aggregator.TokenSpend(tenant),
+                tokenSpendByHour = aggregator.TokenSpendByHour(tenant),
+                tokenSpendByModel = aggregator.TokenSpendByModel(tenant),
                 // DevThrottle Stats (issue #1636): turns the fleet drove into ITSELF - one agent prompting
                 // another. Reported alongside the human tally but never inside it: "how do you drive" and
                 // "how much does the fleet drive itself" are different questions, and the ratio between
                 // them is the leverage the owner actually gets per turn they spend.
-                agentDrivenTurns = aggregator.AgentDrivenUsage().Turns,
-                agentDrivenCharacters = aggregator.AgentDrivenUsage().Characters,
+                agentDrivenTurns = aggregator.AgentDrivenUsage(tenant).Turns,
+                agentDrivenCharacters = aggregator.AgentDrivenUsage(tenant).Characters,
                 notCaptured = NotCaptured,
             });
         });

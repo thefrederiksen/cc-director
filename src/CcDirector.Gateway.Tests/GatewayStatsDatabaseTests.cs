@@ -104,7 +104,8 @@ public sealed class GatewayStatsDatabaseTests : IDisposable
         using (var first = new GatewayStatsDatabase(_path))
         {
             using var cmd = first.Connection.CreateCommand();
-            cmd.CommandText = "INSERT INTO meta(name, value) VALUES ('probe', '42')";
+            // meta is keyed by (tenant, name) from schema v5 (MTR-08).
+            cmd.CommandText = "INSERT INTO meta(tenant, name, value) VALUES ('local', 'probe', '42')";
             cmd.ExecuteNonQuery();
         }
 
@@ -182,11 +183,15 @@ public sealed class GatewayStatsDatabaseTests : IDisposable
 
         var expected = new[]
         {
-            "id", "hour_utc", "session_id", "modality", "surface",
+            "id", "tenant", "hour_utc", "session_id", "modality", "surface",
             "is_voice", "repo_id", "checkout_id", "model_id", "wingman", "turns", "chars",
         };
         Assert.Equal(expected.OrderBy(c => c, StringComparer.Ordinal),
                      columns.Keys.OrderBy(c => c, StringComparer.Ordinal));
+
+        // The tenant is a TEXT partition key (MTR-08): every read filters by it and it is stated here
+        // deliberately, exactly as the whitelist requires of any new column.
+        Assert.Equal("TEXT", columns["tenant"]);
 
         // The repository and model dimensions are integers, so SQLite cannot be asked to compare a
         // repository or model string here even by accident. model_id is stated here deliberately, which is
@@ -331,6 +336,91 @@ public sealed class GatewayStatsDatabaseTests : IDisposable
         return Convert.ToInt64(cmd.ExecuteScalar());
     }
 
+    // A hand-built schema-VERSION-4 store (the shape before MTR-08's tenant dimension): the full v4 schema
+    // with a couple of real rows, user_version=4. Used to prove the v4 -> v5 forward migration is FAITHFUL -
+    // it adds the tenant column, backfills every existing row to the local tenant, and keeps every row -
+    // rather than retiring the store the way a genuinely incompatible (pre-v4) one is.
+    private void WriteVersion4Database()
+    {
+        using var connection = new SqliteConnection($"Data Source={_path}");
+        connection.Open();
+        void Run(string sql)
+        {
+            using var cmd = connection.CreateCommand();
+            cmd.CommandText = sql;
+            cmd.ExecuteNonQuery();
+        }
+
+        // stat_delta in its v4 shape: the v1 columns, then model_id (v2 ADD COLUMN), then checkout_id (v4).
+        Run(@"CREATE TABLE stat_delta (
+                  id INTEGER PRIMARY KEY AUTOINCREMENT, hour_utc TEXT NOT NULL, session_id TEXT NOT NULL,
+                  modality TEXT NOT NULL, surface TEXT NOT NULL, is_voice INTEGER NOT NULL, repo_id INTEGER NOT NULL,
+                  wingman INTEGER NOT NULL, turns INTEGER NOT NULL, chars INTEGER NOT NULL,
+                  model_id INTEGER, checkout_id INTEGER)");
+        Run("CREATE TABLE session_highwater (session_id TEXT NOT NULL, modality TEXT NOT NULL, surface TEXT NOT NULL, turns INTEGER NOT NULL, chars INTEGER NOT NULL, PRIMARY KEY (session_id, modality, surface))");
+        Run("CREATE TABLE wingman_session (session_id TEXT PRIMARY KEY)");
+        Run("CREATE TABLE repo_session (repo_id INTEGER NOT NULL, session_id TEXT NOT NULL, PRIMARY KEY (repo_id, session_id))");
+        Run("CREATE TABLE agent_session (agent_id INTEGER NOT NULL, session_id TEXT NOT NULL, PRIMARY KEY (agent_id, session_id))");
+        Run("CREATE TABLE repo_identity (repo_id INTEGER PRIMARY KEY AUTOINCREMENT, repo_display TEXT NOT NULL)");
+        Run("CREATE TABLE agent_identity (agent_id INTEGER PRIMARY KEY AUTOINCREMENT, agent_display TEXT NOT NULL)");
+        Run("CREATE TABLE model_identity (model_id INTEGER PRIMARY KEY AUTOINCREMENT, model_display TEXT NOT NULL)");
+        Run("CREATE TABLE checkout_identity (checkout_id INTEGER PRIMARY KEY AUTOINCREMENT, checkout_display TEXT NOT NULL)");
+        Run("CREATE TABLE agent_delta (id INTEGER PRIMARY KEY AUTOINCREMENT, agent_id INTEGER NOT NULL, is_voice INTEGER NOT NULL, turns INTEGER NOT NULL, chars INTEGER NOT NULL)");
+        Run("CREATE TABLE agent_driven_delta (id INTEGER PRIMARY KEY AUTOINCREMENT, agent_id INTEGER NOT NULL, turns INTEGER NOT NULL, chars INTEGER NOT NULL)");
+        Run("CREATE TABLE agent_driven_highwater (session_id TEXT PRIMARY KEY, turns INTEGER NOT NULL, chars INTEGER NOT NULL)");
+        Run("CREATE TABLE agents_seeded (session_id TEXT PRIMARY KEY)");
+        Run("CREATE TABLE token_delta (id INTEGER PRIMARY KEY AUTOINCREMENT, hour_utc TEXT NOT NULL, model_id INTEGER, input_tokens INTEGER NOT NULL, output_tokens INTEGER NOT NULL, cache_read_tokens INTEGER NOT NULL, cache_creation_tokens INTEGER NOT NULL)");
+        Run("CREATE TABLE token_highwater (session_id TEXT PRIMARY KEY, input_tokens INTEGER NOT NULL, output_tokens INTEGER NOT NULL, cache_read_tokens INTEGER NOT NULL, cache_creation_tokens INTEGER NOT NULL)");
+        Run("CREATE TABLE meta (name TEXT PRIMARY KEY, value TEXT NOT NULL)");
+
+        // A repo identity and a stat_delta row that references it, plus a high-water row, a wingman row, a
+        // seeded row and the models-since stamp - one of each shape a rebuild or an add-column must preserve.
+        Run("INSERT INTO repo_identity(repo_display) VALUES ('owner/app')");
+        Run("INSERT INTO stat_delta(hour_utc, session_id, modality, surface, is_voice, repo_id, wingman, turns, chars, model_id, checkout_id) VALUES ('2026-07-16T09', 's1', 'typed', 'desktop', 0, 1, 0, 12, 240, NULL, NULL)");
+        Run("INSERT INTO session_highwater(session_id, modality, surface, turns, chars) VALUES ('s1', 'typed', 'desktop', 12, 240)");
+        Run("INSERT INTO wingman_session(session_id) VALUES ('s1')");
+        Run("INSERT INTO agents_seeded(session_id) VALUES ('s1')");
+        Run("INSERT INTO meta(name, value) VALUES ('models_since_utc', '2026-07-01T00:00:00.0000000Z')");
+
+        Run("PRAGMA user_version=4");
+        connection.Close();
+        SqliteConnection.ClearAllPools();
+    }
+
+    [Fact]
+    public void Open_Version4Store_MigratesForwardToV5_BackfillsLocalTenant_AndKeepsEveryRow()
+    {
+        // The v4 -> v5 migration is a FORWARD migration, not a retire: v5 only adds the tenant dimension, and
+        // every existing row belongs to the single self-host tenant. So a self-host upgrade must keep all of
+        // its numbers, now owned by the local tenant.
+        WriteVersion4Database();
+
+        using var db = new GatewayStatsDatabase(_path);
+
+        // Migrated, not retired: the store is at the current version, no retired copy was minted, and the row
+        // is still here - backfilled to the local tenant.
+        Assert.Equal(GatewayStatsDatabase.SchemaVersion, UserVersion(db));
+        Assert.Empty(Directory.GetFiles(_dir, "gateway-stats.db.superseded-*"));
+        Assert.Equal(1, ScalarLong(db, "SELECT COUNT(*) FROM stat_delta"));
+        Assert.Equal(12, ScalarLong(db, "SELECT turns FROM stat_delta WHERE tenant='local'"));
+
+        // The tenant joined the primary key of the rebuilt tables, and the copied rows landed under 'local'.
+        Assert.Contains("tenant", ColumnsOf(db, "session_highwater"));
+        Assert.Equal(1, ScalarLong(db, "SELECT COUNT(*) FROM session_highwater WHERE tenant='local' AND session_id='s1'"));
+        Assert.Equal(1, ScalarLong(db, "SELECT COUNT(*) FROM wingman_session WHERE tenant='local' AND session_id='s1'"));
+        Assert.Equal(1, ScalarLong(db, "SELECT COUNT(*) FROM agents_seeded WHERE tenant='local' AND session_id='s1'"));
+
+        // The repo identity gained the tenant column (backfilled local), so the reload rebuilds its per-tenant
+        // display->id map.
+        Assert.Contains("tenant", ColumnsOf(db, "repo_identity"));
+        Assert.Equal(1, ScalarLong(db, "SELECT COUNT(*) FROM repo_identity WHERE tenant='local' AND repo_display='owner/app'"));
+
+        // meta became (tenant, name) and the schema fact rode the local tenant's row.
+        using var read = db.Connection.CreateCommand();
+        read.CommandText = "SELECT value FROM meta WHERE tenant='local' AND name='models_since_utc'";
+        Assert.Equal("2026-07-01T00:00:00.0000000Z", read.ExecuteScalar() as string);
+    }
+
     [Fact]
     public void Open_IncompatibleStore_IsRetiredAsideUnread_AndStartsEmpty()
     {
@@ -384,7 +474,7 @@ public sealed class GatewayStatsDatabaseTests : IDisposable
         using (var first = new GatewayStatsDatabase(_path))
         {
             using var cmd = first.Connection.CreateCommand();
-            cmd.CommandText = "INSERT INTO meta(name, value) VALUES ('probe', 'kept')";
+            cmd.CommandText = "INSERT INTO meta(tenant, name, value) VALUES ('local', 'probe', 'kept')";
             cmd.ExecuteNonQuery();
         }
         SqliteConnection.ClearAllPools();
@@ -408,7 +498,7 @@ public sealed class GatewayStatsDatabaseTests : IDisposable
         var columns = ColumnsOf(db, "token_delta");
         var expected = new[]
         {
-            "id", "hour_utc", "model_id",
+            "id", "tenant", "hour_utc", "model_id",
             "input_tokens", "output_tokens", "cache_read_tokens", "cache_creation_tokens",
         };
         Assert.Equal(expected.OrderBy(c => c, StringComparer.Ordinal),

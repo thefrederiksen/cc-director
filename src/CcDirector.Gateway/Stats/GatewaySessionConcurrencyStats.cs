@@ -1,6 +1,7 @@
 using System.Globalization;
 using System.Text.Json;
 using CcDirector.Core.Storage;
+using CcDirector.Core.Tenancy;
 using CcDirector.Core.Utilities;
 using CcDirector.Gateway.Contracts;
 
@@ -25,6 +26,13 @@ namespace CcDirector.Gateway.Stats;
 /// Weekly max (or any window) is DERIVED from the hourly log. Persisted (atomic temp-write + rename,
 /// corrupt file quarantined); hourly buckets past the retention window are pruned so the store stays
 /// bounded.
+///
+/// MTR-08 (production-readiness census rows 49-67): every peak, hour bucket and current-hour dedup set is
+/// kept PER TENANT. The /sessions roster is assembled per request tenant, so the concurrency it folds
+/// belongs to one tenant; keeping the peaks per tenant means one account's "how many at once" can never mix
+/// with another's. On the single-tenant self host there is exactly one tenant (<see cref="TenantId.Local"/>)
+/// and the on-disk shape is the same numbers it always held, now under one tenant key. The dashboard that
+/// reads a snapshot is refused in whole on hosted (issue #1848), so a reader here only ever runs for Local.
 /// </summary>
 public sealed class GatewaySessionConcurrencyStats
 {
@@ -32,25 +40,36 @@ public sealed class GatewaySessionConcurrencyStats
     private const int RetentionDays = 90;
     private const string HourFormat = "yyyy-MM-ddTHH";
 
+    /// <summary>The on-disk envelope version. 1 = the pre-tenant single-object shape (migrated to the local
+    /// tenant on load); 2 = the per-tenant shape written from here on.</summary>
+    private const int StoreVersion = 2;
+
     private readonly string _path;
     private readonly object _lock = new();
 
-    private int _liveCurrent;
-    private int _workingCurrent;
-    private int _liveAllTimeMax;
-    private DateTime? _liveAllTimeMaxAtUtc;
-    private int _workingAllTimeMax;
-    private DateTime? _workingAllTimeMaxAtUtc;
+    // Per tenant (MTR-08). Created on first observation of a tenant; the whole of the pre-tenant state now
+    // lives inside one of these.
+    private readonly Dictionary<TenantId, TenantState> _tenants = new();
 
-    // Per-hour log, keyed by UTC clock hour.
-    private readonly Dictionary<string, HourStat> _hours = new(StringComparer.Ordinal);
+    private sealed class TenantState
+    {
+        public int LiveCurrent;
+        public int WorkingCurrent;
+        public int LiveAllTimeMax;
+        public DateTime? LiveAllTimeMaxAtUtc;
+        public int WorkingAllTimeMax;
+        public DateTime? WorkingAllTimeMaxAtUtc;
 
-    // Dedup sets for the CURRENT hour only, so distinct counts are correct across many observations. Rolled
-    // when the clock hour changes; persisted so a restart mid-hour resumes the same hour's dedup.
-    private string _currentHourKey = "";
-    private readonly HashSet<string> _curSessions = new(StringComparer.Ordinal);
-    private readonly HashSet<string> _curMachines = new(StringComparer.OrdinalIgnoreCase);
-    private readonly HashSet<string> _curRepos = new(StringComparer.OrdinalIgnoreCase);
+        // Per-hour log, keyed by UTC clock hour.
+        public readonly Dictionary<string, HourStat> Hours = new(StringComparer.Ordinal);
+
+        // Dedup sets for the CURRENT hour only, so distinct counts are correct across many observations.
+        // Rolled when the clock hour changes; persisted so a restart mid-hour resumes the same hour's dedup.
+        public string CurrentHourKey = "";
+        public readonly HashSet<string> CurSessions = new(StringComparer.Ordinal);
+        public readonly HashSet<string> CurMachines = new(StringComparer.OrdinalIgnoreCase);
+        public readonly HashSet<string> CurRepos = new(StringComparer.OrdinalIgnoreCase);
+    }
 
     private sealed class HourStat
     {
@@ -74,24 +93,47 @@ public sealed class GatewaySessionConcurrencyStats
     private static string HourKey(DateTime utc) =>
         utc.ToUniversalTime().ToString(HourFormat, CultureInfo.InvariantCulture);
 
+    // Resolve the tenant a producer or reader supplied. Null is the self-host / unit-test default (Local); an
+    // explicitly-passed tenant must be valid - an invalid one is a DENY, never silently defaulted.
+    private static TenantId RequireTenant(TenantId? tenant)
+    {
+        if (tenant is not { } t) return TenantId.Local;
+        if (!t.IsValid) throw new ArgumentException("a valid tenant is required", nameof(tenant));
+        return t;
+    }
+
+    private TenantState StateFor(TenantId tenant)
+    {
+        if (!_tenants.TryGetValue(tenant, out var st))
+        {
+            st = new TenantState();
+            _tenants[tenant] = st;
+        }
+        return st;
+    }
+
     /// <summary>
-    /// Observe the current fleet <paramref name="roster"/> at <paramref name="nowUtc"/>: update the live and
-    /// working current values and all-time peaks, and fold this hour's max concurrency plus its distinct
-    /// session / machine / repository counts. Idempotent within an hour - a peak or distinct count only ever
-    /// grows - so folding on every /sessions read captures the hourly log without inflating anything.
+    /// Observe the current fleet <paramref name="roster"/> for <paramref name="tenant"/> at
+    /// <paramref name="nowUtc"/>: update that tenant's live and working current values and all-time peaks, and
+    /// fold this hour's max concurrency plus its distinct session / machine / repository counts. Idempotent
+    /// within an hour - a peak or distinct count only ever grows - so folding on every /sessions read captures
+    /// the hourly log without inflating anything. Defaults to <see cref="TenantId.Local"/> for the self-host
+    /// shape and the unit-test default; the production /sessions path passes the request tenant.
     /// </summary>
-    public void Observe(IReadOnlyCollection<SessionDto>? roster, DateTime nowUtc)
+    public void Observe(IReadOnlyCollection<SessionDto>? roster, DateTime nowUtc, TenantId? tenant = null)
     {
         if (roster is null) return;
+        var t = RequireTenant(tenant);
         var key = HourKey(nowUtc);
         lock (_lock)
         {
-            if (key != _currentHourKey)
+            var st = StateFor(t);
+            if (key != st.CurrentHourKey)
             {
-                _currentHourKey = key;
-                _curSessions.Clear();
-                _curMachines.Clear();
-                _curRepos.Clear();
+                st.CurrentHourKey = key;
+                st.CurSessions.Clear();
+                st.CurMachines.Clear();
+                st.CurRepos.Clear();
             }
 
             var liveCount = 0;
@@ -101,49 +143,55 @@ public sealed class GatewaySessionConcurrencyStats
                 if (string.Equals(s.ActivityState, "Exited", StringComparison.OrdinalIgnoreCase)) continue;
                 liveCount++;
                 if (string.Equals(s.ActivityState, "Working", StringComparison.OrdinalIgnoreCase)) workingCount++;
-                if (!string.IsNullOrEmpty(s.SessionId)) _curSessions.Add(s.SessionId);
-                if (!string.IsNullOrWhiteSpace(s.MachineName)) _curMachines.Add(s.MachineName);
-                if (!string.IsNullOrWhiteSpace(s.RepoPath)) _curRepos.Add(s.RepoPath);
+                if (!string.IsNullOrEmpty(s.SessionId)) st.CurSessions.Add(s.SessionId);
+                if (!string.IsNullOrWhiteSpace(s.MachineName)) st.CurMachines.Add(s.MachineName);
+                if (!string.IsNullOrWhiteSpace(s.RepoPath)) st.CurRepos.Add(s.RepoPath);
             }
 
-            _liveCurrent = liveCount;
-            _workingCurrent = workingCount;
+            st.LiveCurrent = liveCount;
+            st.WorkingCurrent = workingCount;
 
             var changed = false;
-            if (liveCount > _liveAllTimeMax) { _liveAllTimeMax = liveCount; _liveAllTimeMaxAtUtc = nowUtc; changed = true; }
-            if (workingCount > _workingAllTimeMax) { _workingAllTimeMax = workingCount; _workingAllTimeMaxAtUtc = nowUtc; changed = true; }
+            if (liveCount > st.LiveAllTimeMax) { st.LiveAllTimeMax = liveCount; st.LiveAllTimeMaxAtUtc = nowUtc; changed = true; }
+            if (workingCount > st.WorkingAllTimeMax) { st.WorkingAllTimeMax = workingCount; st.WorkingAllTimeMaxAtUtc = nowUtc; changed = true; }
 
-            if (!_hours.TryGetValue(key, out var h))
+            if (!st.Hours.TryGetValue(key, out var h))
             {
                 h = new HourStat();
-                _hours[key] = h;
+                st.Hours[key] = h;
                 changed = true;
             }
             if (liveCount > h.MaxLive) { h.MaxLive = liveCount; changed = true; }
             if (workingCount > h.MaxWorking) { h.MaxWorking = workingCount; changed = true; }
-            if (_curSessions.Count > h.DistinctSessions) { h.DistinctSessions = _curSessions.Count; changed = true; }
-            if (_curMachines.Count > h.DistinctMachines) { h.DistinctMachines = _curMachines.Count; changed = true; }
-            if (_curRepos.Count > h.DistinctRepos) { h.DistinctRepos = _curRepos.Count; changed = true; }
+            if (st.CurSessions.Count > h.DistinctSessions) { h.DistinctSessions = st.CurSessions.Count; changed = true; }
+            if (st.CurMachines.Count > h.DistinctMachines) { h.DistinctMachines = st.CurMachines.Count; changed = true; }
+            if (st.CurRepos.Count > h.DistinctRepos) { h.DistinctRepos = st.CurRepos.Count; changed = true; }
 
             if (changed)
             {
-                PruneLocked(nowUtc);
+                PruneLocked(st, nowUtc);
                 Save();
             }
         }
     }
 
-    /// <summary>A read-only snapshot for the dashboard / agent API: the live and working series (current,
-    /// all-time peak, derived weekly max) and the full hourly log.</summary>
-    public ConcurrencySnapshot Snapshot(DateTime nowUtc)
+    /// <summary>A read-only snapshot for the dashboard / agent API for <paramref name="tenant"/>: the live and
+    /// working series (current, all-time peak, derived weekly max) and the full hourly log. An unseen tenant
+    /// returns an all-zero snapshot with no hours (MTR-08).</summary>
+    public ConcurrencySnapshot Snapshot(DateTime nowUtc, TenantId? tenant = null)
     {
+        var t = RequireTenant(tenant);
         lock (_lock)
         {
+            if (!_tenants.TryGetValue(t, out var st))
+                return new ConcurrencySnapshot(
+                    new ConcurrencySeriesDto(), new ConcurrencySeriesDto(), Array.Empty<ConcurrencyHourDto>());
+
             var weeklyCutoff = nowUtc.AddDays(-7);
             var liveWeekly = 0;
             var workingWeekly = 0;
-            var hourly = new List<ConcurrencyHourDto>(_hours.Count);
-            foreach (var kvp in _hours)
+            var hourly = new List<ConcurrencyHourDto>(st.Hours.Count);
+            foreach (var kvp in st.Hours)
             {
                 var h = kvp.Value;
                 hourly.Add(new ConcurrencyHourDto
@@ -163,17 +211,17 @@ public sealed class GatewaySessionConcurrencyStats
             }
             hourly.Sort((a, b) => string.CompareOrdinal(a.Hour, b.Hour));
             return new ConcurrencySnapshot(
-                new ConcurrencySeriesDto { Current = _liveCurrent, AllTimeMax = _liveAllTimeMax, AllTimeMaxAtUtc = _liveAllTimeMaxAtUtc, WeeklyMax = liveWeekly },
-                new ConcurrencySeriesDto { Current = _workingCurrent, AllTimeMax = _workingAllTimeMax, AllTimeMaxAtUtc = _workingAllTimeMaxAtUtc, WeeklyMax = workingWeekly },
+                new ConcurrencySeriesDto { Current = st.LiveCurrent, AllTimeMax = st.LiveAllTimeMax, AllTimeMaxAtUtc = st.LiveAllTimeMaxAtUtc, WeeklyMax = liveWeekly },
+                new ConcurrencySeriesDto { Current = st.WorkingCurrent, AllTimeMax = st.WorkingAllTimeMax, AllTimeMaxAtUtc = st.WorkingAllTimeMaxAtUtc, WeeklyMax = workingWeekly },
                 hourly);
         }
     }
 
-    private void PruneLocked(DateTime nowUtc)
+    private void PruneLocked(TenantState st, DateTime nowUtc)
     {
         var cutoff = nowUtc.AddDays(-RetentionDays);
-        var stale = _hours.Keys.Where(k => TryParseHour(k, out var dt) && dt < cutoff).ToList();
-        foreach (var k in stale) _hours.Remove(k);
+        var stale = st.Hours.Keys.Where(k => TryParseHour(k, out var dt) && dt < cutoff).ToList();
+        foreach (var k in stale) st.Hours.Remove(k);
     }
 
     private static bool TryParseHour(string key, out DateTime utc) =>
@@ -189,7 +237,9 @@ public sealed class GatewaySessionConcurrencyStats
         public int DistinctRepos { get; set; }
     }
 
-    private sealed class StoreFile
+    // One tenant's persisted state. This is EXACTLY the pre-tenant StoreFile shape, so a version-1 file (which
+    // held one of these at the root) is read straight into the local tenant's slot with no field remapping.
+    private sealed class TenantStoreFile
     {
         public int LiveAllTimeMax { get; set; }
         public DateTime? LiveAllTimeMaxAtUtc { get; set; }
@@ -202,6 +252,13 @@ public sealed class GatewaySessionConcurrencyStats
         public List<string> CurrentRepos { get; set; } = new();
     }
 
+    // The version-2 envelope: the version tag plus one TenantStoreFile per tenant.
+    private sealed class StoreEnvelope
+    {
+        public int Version { get; set; }
+        public Dictionary<string, TenantStoreFile> Tenants { get; set; } = new();
+    }
+
     private void Load()
     {
         if (!File.Exists(_path))
@@ -210,28 +267,62 @@ public sealed class GatewaySessionConcurrencyStats
             return;
         }
 
-        StoreFile? parsed;
+        string text;
+        bool isVersioned;
         try
         {
-            parsed = JsonSerializer.Deserialize<StoreFile>(File.ReadAllText(_path), FileJsonOptions);
+            text = File.ReadAllText(_path);
+            // The version-1 file is a bare TenantStoreFile (LiveAllTimeMax at the root); the version-2 file is
+            // an envelope with a "Tenants" object. Detect by presence of the envelope's tenants property
+            // (case-insensitively, so a serializer naming-policy change cannot silently misclassify the file)
+            // so an upgrade migrates the old numbers into the local tenant rather than quarantining them.
+            using var probe = JsonDocument.Parse(text);
+            isVersioned = probe.RootElement.ValueKind == JsonValueKind.Object
+                          && probe.RootElement.EnumerateObject()
+                                  .Any(p => string.Equals(p.Name, "tenants", StringComparison.OrdinalIgnoreCase));
         }
         catch (JsonException ex)
         {
             Quarantine(ex.Message);
             return;
         }
-        if (parsed is null)
+
+        try
         {
-            Quarantine("file deserialized to null (no store document)");
+            if (isVersioned)
+            {
+                var env = JsonSerializer.Deserialize<StoreEnvelope>(text, FileJsonOptions);
+                if (env is null) { Quarantine("file deserialized to null (no store envelope)"); return; }
+                foreach (var (tenantValue, tsf) in env.Tenants)
+                    LoadTenant(new TenantId(tenantValue), tsf);
+            }
+            else
+            {
+                // Version 1: the whole file is the local tenant's state.
+                var tsf = JsonSerializer.Deserialize<TenantStoreFile>(text, FileJsonOptions);
+                if (tsf is null) { Quarantine("file deserialized to null (no store document)"); return; }
+                LoadTenant(TenantId.Local, tsf);
+            }
+        }
+        catch (JsonException ex)
+        {
+            Quarantine(ex.Message);
             return;
         }
 
-        _liveAllTimeMax = parsed.LiveAllTimeMax;
-        _liveAllTimeMaxAtUtc = parsed.LiveAllTimeMaxAtUtc;
-        _workingAllTimeMax = parsed.WorkingAllTimeMax;
-        _workingAllTimeMaxAtUtc = parsed.WorkingAllTimeMaxAtUtc;
+        var totalHours = _tenants.Values.Sum(s => s.Hours.Count);
+        FileLog.Write($"[GatewaySessionConcurrencyStats] Load: {_tenants.Count} tenant(s), {totalHours} hourly bucket(s) total from {_path}");
+    }
+
+    private void LoadTenant(TenantId tenant, TenantStoreFile parsed)
+    {
+        var st = StateFor(tenant);
+        st.LiveAllTimeMax = parsed.LiveAllTimeMax;
+        st.LiveAllTimeMaxAtUtc = parsed.LiveAllTimeMaxAtUtc;
+        st.WorkingAllTimeMax = parsed.WorkingAllTimeMax;
+        st.WorkingAllTimeMaxAtUtc = parsed.WorkingAllTimeMaxAtUtc;
         foreach (var (hour, hs) in parsed.Hours)
-            _hours[hour] = new HourStat
+            st.Hours[hour] = new HourStat
             {
                 MaxLive = hs.MaxLive,
                 MaxWorking = hs.MaxWorking,
@@ -239,11 +330,10 @@ public sealed class GatewaySessionConcurrencyStats
                 DistinctMachines = hs.DistinctMachines,
                 DistinctRepos = hs.DistinctRepos,
             };
-        _currentHourKey = parsed.CurrentHourKey ?? "";
-        foreach (var s in parsed.CurrentSessions) _curSessions.Add(s);
-        foreach (var m in parsed.CurrentMachines) _curMachines.Add(m);
-        foreach (var r in parsed.CurrentRepos) _curRepos.Add(r);
-        FileLog.Write($"[GatewaySessionConcurrencyStats] Load: live peak {_liveAllTimeMax}, working peak {_workingAllTimeMax}, {_hours.Count} hourly bucket(s) from {_path}");
+        st.CurrentHourKey = parsed.CurrentHourKey ?? "";
+        foreach (var s in parsed.CurrentSessions) st.CurSessions.Add(s);
+        foreach (var m in parsed.CurrentMachines) st.CurMachines.Add(m);
+        foreach (var r in parsed.CurrentRepos) st.CurRepos.Add(r);
     }
 
     private void Quarantine(string reason)
@@ -264,28 +354,33 @@ public sealed class GatewaySessionConcurrencyStats
             if (!string.IsNullOrEmpty(dir))
                 Directory.CreateDirectory(dir);
 
-            var file = new StoreFile
+            var env = new StoreEnvelope { Version = StoreVersion };
+            foreach (var (tenant, st) in _tenants)
             {
-                LiveAllTimeMax = _liveAllTimeMax,
-                LiveAllTimeMaxAtUtc = _liveAllTimeMaxAtUtc,
-                WorkingAllTimeMax = _workingAllTimeMax,
-                WorkingAllTimeMaxAtUtc = _workingAllTimeMaxAtUtc,
-                CurrentHourKey = _currentHourKey,
-                CurrentSessions = _curSessions.ToList(),
-                CurrentMachines = _curMachines.ToList(),
-                CurrentRepos = _curRepos.ToList(),
-            };
-            foreach (var (hour, h) in _hours)
-                file.Hours[hour] = new HourStatStore
+                var tsf = new TenantStoreFile
                 {
-                    MaxLive = h.MaxLive,
-                    MaxWorking = h.MaxWorking,
-                    DistinctSessions = h.DistinctSessions,
-                    DistinctMachines = h.DistinctMachines,
-                    DistinctRepos = h.DistinctRepos,
+                    LiveAllTimeMax = st.LiveAllTimeMax,
+                    LiveAllTimeMaxAtUtc = st.LiveAllTimeMaxAtUtc,
+                    WorkingAllTimeMax = st.WorkingAllTimeMax,
+                    WorkingAllTimeMaxAtUtc = st.WorkingAllTimeMaxAtUtc,
+                    CurrentHourKey = st.CurrentHourKey,
+                    CurrentSessions = st.CurSessions.ToList(),
+                    CurrentMachines = st.CurMachines.ToList(),
+                    CurrentRepos = st.CurRepos.ToList(),
                 };
+                foreach (var (hour, h) in st.Hours)
+                    tsf.Hours[hour] = new HourStatStore
+                    {
+                        MaxLive = h.MaxLive,
+                        MaxWorking = h.MaxWorking,
+                        DistinctSessions = h.DistinctSessions,
+                        DistinctMachines = h.DistinctMachines,
+                        DistinctRepos = h.DistinctRepos,
+                    };
+                env.Tenants[tenant.Value] = tsf;
+            }
 
-            var json = JsonSerializer.Serialize(file, FileJsonOptions);
+            var json = JsonSerializer.Serialize(env, FileJsonOptions);
             var tmp = _path + ".tmp";
             File.WriteAllText(tmp, json);
             File.Move(tmp, _path, overwrite: true);
