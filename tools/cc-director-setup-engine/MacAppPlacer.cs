@@ -61,7 +61,10 @@ public static class MacAppPlacer
             // "CC Director.app", Finder's auto-suffixed duplicates ("CC Director 2.app", "Director 2.app"),
             // and any copy dragged into the system /Applications instead of ~/Applications. This is what
             // makes reinstalling upgrade-in-place instead of stacking a new icon beside the old ones.
-            PurgeStaleBundles(layout, keep: target, Log);
+            // Deletion is identity-gated (MacBundlePurger): only bundles carrying the Director's own
+            // CFBundleIdentifier are removed, so developer slot wrappers and unrelated apps that happen
+            // to share the name survive.
+            MacBundlePurger.Purge([layout.MacAppsDir, "/Applications"], keep: target, Log);
 
             Log($"installing {AppName} to {layout.MacAppsDir}");
             // Build beside, then this is a fresh place: remove any existing app, then ditto in.
@@ -86,52 +89,6 @@ public static class MacAppPlacer
             try { if (zip is not null && File.Exists(zip)) File.Delete(zip); } catch { /* best-effort */ }
             try { if (stage is not null && Directory.Exists(stage)) Directory.Delete(stage, recursive: true); } catch { /* best-effort */ }
         }
-    }
-
-    /// <summary>
-    /// Remove stale Director bundles the old loose-zip distribution could have left, so a reinstall
-    /// converges on the single <paramref name="keep"/> bundle instead of stacking icons. Scans both the
-    /// per-user ~/Applications and the system /Applications for the current and legacy bundle names plus
-    /// Finder's numbered duplicates ("Director 2.app", "CC Director 3.app"). The <paramref name="keep"/>
-    /// path is never removed here - the caller replaces it in place immediately after. Best-effort:
-    /// a copy under /Applications the user cannot delete without admin is logged and skipped, not fatal.
-    /// </summary>
-    private static void PurgeStaleBundles(InstallLayout layout, string keep, Action<string> log)
-    {
-        var dirs = new[] { layout.MacAppsDir, "/Applications" };
-        var baseNames = new[] { "Director", "CC Director" };
-
-        foreach (var dir in dirs)
-        {
-            if (!Directory.Exists(dir)) continue;
-            foreach (var baseName in baseNames)
-            {
-                // The exact bundle plus Finder's " N" suffixed duplicates (space + digits), e.g.
-                // "Director.app", "Director 2.app", "CC Director 10.app".
-                foreach (var bundle in Directory.EnumerateDirectories(dir, $"{baseName}*.app"))
-                {
-                    var name = Path.GetFileName(bundle);
-                    if (!IsBundleName(name, baseName)) continue;
-                    if (string.Equals(Path.GetFullPath(bundle), Path.GetFullPath(keep), StringComparison.Ordinal))
-                        continue; // the caller replaces this one in place.
-
-                    var (exit, out_) = ProcessRunner.Run("/bin/rm", $"-rf \"{bundle}\"");
-                    if (exit == 0) log($"removed stale bundle {bundle}");
-                    else log($"could not remove {bundle} (needs admin?); skipping: {Trim(out_)}");
-                }
-            }
-        }
-    }
-
-    /// <summary>True for "&lt;base&gt;.app" or Finder's "&lt;base&gt; N.app" duplicate form, and nothing else -
-    /// so "Director.app"/"Director 2.app" match "Director" but an unrelated "Directory.app" does not.</summary>
-    private static bool IsBundleName(string name, string baseName)
-    {
-        if (string.Equals(name, $"{baseName}.app", StringComparison.Ordinal)) return true;
-        if (!name.StartsWith($"{baseName} ", StringComparison.Ordinal) ||
-            !name.EndsWith(".app", StringComparison.Ordinal)) return false;
-        var middle = name.Substring(baseName.Length + 1, name.Length - baseName.Length - 1 - ".app".Length);
-        return middle.Length > 0 && middle.All(char.IsDigit);
     }
 
     private static string Trim(string s) => s.Length > 400 ? s[..400] : s;

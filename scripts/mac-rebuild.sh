@@ -4,12 +4,15 @@
 #
 # This is the one command you run while developing. It builds the requested
 # binary (via local-build-mac.sh), then (re)creates the matching .app bundle in
-# /Applications. For the main target it also pins the app to the Dock.
+# "~/Applications/DevThrottle Dev" (NEVER /Applications - the real installer
+# purges stale product bundles there, and dev wrappers must be out of its
+# reach; see make-app-bundle.sh). For the main target it also pins the app to
+# the Dock.
 #
 # Targets:
-#   main        Build the stable copy -> "CC Director.app", pinned to the Dock.
-#   1|2|3|4     Build a normal-work slot -> "CC Director N.app" (run several at once).
-#   5           Build the testing slot -> "CC Director 5.app" (started and stopped freely).
+#   main        Build the stable copy -> "Director Dev.app", pinned to the Dock.
+#   1|2|3|4     Build a normal-work slot -> "Director Dev N.app" (run several at once).
+#   5           Build the testing slot -> "Director Dev 5.app" (started and stopped freely).
 #   all         Build main + slots 1 through 5.
 #   apps        (Re)create all six .app bundles WITHOUT building — fast, used by
 #               mac-setup.sh to lay down the icons before anything is built.
@@ -20,7 +23,7 @@
 #   scripts/mac-rebuild.sh all
 #
 # Env:
-#   APPS_DIR    Where to install the apps (default /Applications).
+#   APPS_DIR    Where to install the apps (default "~/Applications/DevThrottle Dev").
 #
 set -euo pipefail
 
@@ -34,7 +37,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 MAC_DIR="$REPO_ROOT/local_builds/mac"
 MAC_HELPERS="$REPO_ROOT/scripts/local-build/mac"
-APPS_DIR="${APPS_DIR:-/Applications}"
+APPS_DIR="${APPS_DIR:-$HOME/Applications/DevThrottle Dev}"
 export APPS_DIR
 
 # Build one target's binary, then (re)make its app bundle.
@@ -46,25 +49,28 @@ build_one() {
     "$MAC_HELPERS/make-app-bundle.sh" --target "$t"
 }
 
-# Pin the main app to the Dock. Always unpins any existing 'CC Director' tile
-# first, rebuilds the icon cache, then re-pins — so the tile reliably shows the
-# current icon even if an earlier (icon-less) bundle was cached by the Dock.
+# Pin the main app to the Dock. Always unpins any existing 'Director Dev' tile
+# (and any old 'CC Director' tile from the pre-migration layout) first, rebuilds
+# the icon cache, then re-pins — so the tile reliably shows the current icon
+# even if an earlier (icon-less) bundle was cached by the Dock.
 pin_dock() {
-    local app="$APPS_DIR/CC Director.app"
+    local app="$APPS_DIR/Director Dev.app"
     touch "$app"
     /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister \
         -f "$app" 2>/dev/null || true
 
-    # Remove any existing 'CC Director' (main, not the numbered slots) tile.
+    # Remove any existing 'Director Dev' tile, and any old 'CC Director' tile
+    # left from the pre-migration /Applications layout (its app is gone).
     python3 - <<PY 2>/dev/null || true
 import subprocess, plistlib
 data = subprocess.run(["defaults","export","com.apple.dock","-"],capture_output=True).stdout
 pl = plistlib.loads(data)
-def is_main(e):
+def is_stale(e):
     try: s = e["tile-data"]["file-data"]["_CFURLString"].replace("%20"," ")
     except Exception: return False
-    return s.rstrip("/").endswith("/CC Director.app")
-pl["persistent-apps"] = [e for e in pl.get("persistent-apps",[]) if not is_main(e)]
+    s = s.rstrip("/")
+    return s.endswith("/Director Dev.app") or s.endswith("/CC Director.app")
+pl["persistent-apps"] = [e for e in pl.get("persistent-apps",[]) if not is_stale(e)]
 subprocess.run(["defaults","import","com.apple.dock","-"],input=plistlib.dumps(pl))
 PY
 
@@ -73,7 +79,7 @@ PY
     defaults write com.apple.dock persistent-apps -array-add \
         "<dict><key>tile-data</key><dict><key>file-data</key><dict><key>_CFURLString</key><string>file://$app/</string><key>_CFURLStringType</key><integer>15</integer></dict></dict></dict>"
     killall Dock
-    echo "Dock: pinned 'CC Director' (the Dock restarted briefly — that's normal)."
+    echo "Dock: pinned 'Director Dev' (the Dock restarted briefly — that's normal)."
 }
 
 case "$TARGET" in
@@ -82,7 +88,7 @@ case "$TARGET" in
         pin_dock ;;
     1|2|3|4|5)
         build_one "$TARGET"
-        echo "Open it from Launchpad/Spotlight, or: open \"$APPS_DIR/CC Director $TARGET.app\"" ;;
+        echo "Open it from Launchpad/Spotlight, or: open \"$APPS_DIR/Director Dev $TARGET.app\"" ;;
     all)
         build_one main
         for n in 1 2 3 4 5; do build_one "$n"; done
