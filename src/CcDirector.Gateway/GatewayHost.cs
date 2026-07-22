@@ -1286,7 +1286,7 @@ public sealed class GatewayHost : IAsyncDisposable
                     if (vs.HasVoice(tenant, sid)) continue;          // already cached, nothing to do
                     var located = PushedSessions.TryLocate(tenant, sid, stale);
                     if (located is not { } loc) continue;            // not owned by any of this tenant's directors
-                    var director = Registry.Get(loc.DirectorId);
+                    var director = Registry.Get(tenant, loc.DirectorId);
                     if (director is null) continue;
                     var st = loc.Session.ActivityState ?? "";
                     if (st is "Idle" or "WaitingForInput" or "WaitingForPerm")
