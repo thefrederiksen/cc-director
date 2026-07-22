@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using CcDirector.Core.Storage;
@@ -67,8 +68,20 @@ public sealed class GatewayPromptLog
         => Guid.TryParseExact(value, "D", out var parsed)
            && string.Equals(value, parsed.ToString("D"), StringComparison.Ordinal);
 
-    private readonly object _gate = new();
+    /// <summary>
+    /// One file-IO lock PER TENANT, not one shared across the whole fleet (audit gap audit-a). The partition
+    /// is already the directory, so two tenants never touch the same daily FILE; a single process-global lock
+    /// would nonetheless serialize them, letting one tenant's append/read of an unbounded (retention is
+    /// forever) file stall every other tenant's unrelated prompt IO. Each tenant gets its OWN gate, keyed by
+    /// <see cref="TenantId"/>, so a caller only ever takes the lock of its own partition and one account's
+    /// large or slow file cannot block another's read. The gate still serializes a single tenant's own
+    /// concurrent appends/reads to its files, which is the only serialization actually required.
+    /// </summary>
+    private readonly ConcurrentDictionary<TenantId, object> _gates = new();
     private readonly string _directory;
+
+    /// <summary>This tenant's file-IO lock, created on first use. Two distinct tenants get two distinct gates.</summary>
+    private object GateFor(TenantId tenant) => _gates.GetOrAdd(tenant, static _ => new object());
 
     /// <param name="directory">Override the log directory (tests). Defaults to the per-user location.</param>
     public GatewayPromptLog(string? directory = null)
@@ -138,6 +151,7 @@ public sealed class GatewayPromptLog
     public int Append(TenantId tenant, IEnumerable<PromptRecord> records)
     {
         var directory = DirectoryFor(tenant);
+        var gate = GateFor(tenant);
         var written = 0;
         try
         {
@@ -147,7 +161,7 @@ public sealed class GatewayPromptLog
             {
                 var lines = day.Select(r => JsonSerializer.Serialize(r, JsonOpts)).ToList();
                 var path = FileFor(tenant, day.Key);
-                lock (_gate)
+                lock (gate)
                 {
                     Directory.CreateDirectory(directory);
                     File.AppendAllLines(path, lines);
@@ -173,6 +187,7 @@ public sealed class GatewayPromptLog
     public IReadOnlyList<PromptRecord> Read(TenantId tenant, DateTime fromUtc, DateTime toUtc)
     {
         var results = new List<PromptRecord>();
+        var gate = GateFor(tenant);
         for (var day = fromUtc.Date; day <= toUtc.Date; day = day.AddDays(1))
         {
             var path = FileFor(tenant, day);
@@ -180,7 +195,7 @@ public sealed class GatewayPromptLog
             string[] lines;
             try
             {
-                lock (_gate) { lines = File.ReadAllLines(path); }
+                lock (gate) { lines = File.ReadAllLines(path); }
             }
             catch (Exception ex)
             {
