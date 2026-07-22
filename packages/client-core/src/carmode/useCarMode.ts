@@ -208,6 +208,13 @@ export interface UseCarModeOptions {
 const KEEP_WARM_MS = 3 * 60 * 1000;
 // A snapshot smaller than this is just the container header with no real audio - skip transcribing it.
 const MIN_CLIP_BYTES = 2000;
+
+// The shortest decoded audio the button ("Over and out") path treats as a real command (defect 4). The old
+// gate rejected any clip under ~2000 compressed bytes (~0.67 s of Opus), which silently dropped short spoken
+// commands like "stop" or "yes". Gating on DECODED duration instead lets a real word through while still
+// rejecting an empty tap or stray click - below roughly one syllable there is no command, only noise the
+// transcription model would hallucinate a word from.
+const MIN_COMMAND_SECONDS = 0.2;
 // The default hands-free sign-off phrase; the page can override it with the owner's configured phrase.
 const DEFAULT_END_PHRASE = "over and out";
 // How often, while Listening, the captured audio is re-transcribed to check whether it now ends with the
@@ -969,9 +976,26 @@ export function useCarMode(options: UseCarModeOptions): CarModeView {
     // resolve on an already-queued earlier chunk under load. Stopping here is safe: this turn is over
     // and takeTurn releases the microphone before Thinking anyway (its own stop then no-ops).
     const clip = prefetched ? prefetched.clip : rec.isRecording ? await rec.stop() : rec.snapshot();
-    if (!prefetched && clip.size < MIN_CLIP_BYTES) {
-      void takeTurn("", null); // nothing captured: a canned nudge, no server turn, no durable record
-      return;
+
+    // Button path: decode up-front and gate on ACTUAL decoded audio duration, not compressed bytes (defect
+    // 4). A short spoken command is well under the old byte floor yet is real speech, so the old check
+    // dropped it as "nothing captured". Gate on decoded duration instead: an empty tap / stray noise nudges,
+    // a real command passes. The decode is REUSED for the transcribe below, so it is never paid twice.
+    let buttonDecoded: Awaited<ReturnType<typeof blobToWav16kMono>> | null = null;
+    let buttonTranscodeMs = 0;
+    if (!prefetched) {
+      const decodeStart = performance.now();
+      try {
+        buttonDecoded = await blobToWav16kMono(clip);
+      } catch {
+        void takeTurn("", null); // empty / undecodable tap: a canned nudge, never a held error
+        return;
+      }
+      buttonTranscodeMs = performance.now() - decodeStart;
+      if (buttonDecoded.decodedSeconds < MIN_COMMAND_SECONDS) {
+        void takeTurn("", null); // essentially no speech captured: a canned nudge, no server turn
+        return;
+      }
     }
 
     // Persist the command audio to the durable store BEFORE any transcribe, so a connection drop mid-turn
@@ -1007,11 +1031,10 @@ export function useCarMode(options: UseCarModeOptions): CarModeView {
       } else {
         setCaptureState("transcribing");
         transcribeAttemptsRef.current += 1;
-        // Measure the client-side transcode (phone CPU) separately from the transcribe round trip (network +
-        // server), so a real phone turn shows where the time actually goes.
-        const transcodeStart = performance.now();
-        const decoded = await blobToWav16kMono(clip);
-        transcodeMs = performance.now() - transcodeStart;
+        // Reuse the up-front decode from the duration gate above (the phone-CPU transcode cost is already
+        // paid and measured), so the button path decodes the clip exactly once.
+        const decoded = buttonDecoded!;
+        transcodeMs = buttonTranscodeMs;
         decodedSeconds = decoded.decodedSeconds;
         transcript = (await transcribeCarModeAudio(decoded.wav)).trim();
       }
@@ -1142,7 +1165,13 @@ export function useCarMode(options: UseCarModeOptions): CarModeView {
       stopThinkingCue();
       thinkingCueStopRef.current = startThinkingCue();
       stopEndPhraseWatch();
-      void transcribeAndTake({ transcript, transcodeMs, pauseDetectedAt: startedAt, clip, decodedSeconds: decoded.decodedSeconds });
+      // Defect 3: the flushed snapshot used to DETECT the sign-off can, under load, resolve on an
+      // already-queued earlier chunk (its documented residual race) - fine for detection, but the PERSISTED
+      // command audio must be complete. Re-capture race-free via stop(), which resolves only after
+      // MediaRecorder's final buffered chunk, and commit THAT; fall back to the detection snapshot if the
+      // recorder already stopped. The transcript is unchanged - the snapshot provably contained the sign-off.
+      const committedClip = rec.isRecording ? await rec.stop() : clip;
+      void transcribeAndTake({ transcript, transcodeMs, pauseDetectedAt: startedAt, clip: committedClip, decodedSeconds: decoded.decodedSeconds });
     } catch (err) {
       // A failed rolling transcribe must not kill the turn - skip this tick and try again next second. But
       // a dead zone must not silently swallow "over and out" forever: after several consecutive failures,
