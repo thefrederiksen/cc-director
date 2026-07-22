@@ -78,8 +78,11 @@ public sealed class HostedSessionCommandRouteTenancyTests : IAsyncLifetime
 
         _keyA = _gateway.Devices.Register("dev-a", "MA").DeviceKey;
         _keyB = _gateway.Devices.Register("dev-b", "MB").DeviceKey;
-        _gateway.Devices.SetAccountBinding("dev-a", "sub-alice", "tenant-alice");
-        _gateway.Devices.SetAccountBinding("dev-b", "sub-bob", "tenant-bob");
+        // Account tenants are minted GUIDs in production (the roster's voice enrichment routes the request
+        // tenant into WingmanVoiceService, which refuses a non-GUID, non-Local partition key), so bind real
+        // GUID tenant ids here rather than friendly labels.
+        _gateway.Devices.SetAccountBinding("dev-a", "sub-alice", "55555555-5555-5555-5555-555555555555");
+        _gateway.Devices.SetAccountBinding("dev-b", "sub-bob", "66666666-6666-6666-6666-666666666666");
 
         // Both fake Directors answer every verb, so a route that reaches its Director gets a real answer and
         // any not-found body can only have come from the locate step - the step under test.
