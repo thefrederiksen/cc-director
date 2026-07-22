@@ -12,6 +12,11 @@ namespace CcDirector.Gateway.Api;
 ///
 /// The measurement is diagnostics only: it changes no transcription behaviour, and a logging failure
 /// never affects the response (fire-and-forget on a background task).
+///
+/// On the hosted Gateway the write is SKIPPED (MTR-10 Gap H3): the session log is one shared,
+/// unpartitioned file with a single static lock and no reader on hosted, so persisting it would mix every
+/// tenant's cleaned transcript at rest. Because both endpoints route through <see cref="Persist"/>, gating
+/// it here closes the hosted write path in one place. Mirrors the archive skip #1985 / telemetry skip #1897.
 /// </summary>
 internal static class MobileCaptureHealthLog
 {
@@ -36,6 +41,21 @@ internal static class MobileCaptureHealthLog
     {
         var record = BuildRecord(uploadId, source, recordedMs, decodedSeconds, sourceBytes, audioBytes, cleaned);
         if (record is null) return; // client did not opt in - nothing to persist
+
+        // HOSTED WRITE GATE (MTR-10 Gap H3). DictationSessionLog appends every record to ONE process/user
+        // file (dictation/sessions/YYYY-MM-DD.jsonl) under a single static lock, with no tenant in the path,
+        // no tenant in the API and no per-tenant lock - and the record carries the customer's CleanedTranscript.
+        // That is right for single-tenant self-host, but on a multi-tenant hosted Gateway (both this and the
+        // Voice complete path reach it) every account's transcript text and diagnostics would mix at rest in
+        // that one file and contend on that one lock. The log is a write-only diagnostic aid with no
+        // production reader and no hosted read route, so there is nothing on hosted to serve it: mirror the
+        // transcription-audio archive skip beside it (MTR-10 Gap A, #1985) and the telemetry skip before that
+        // (#1897) - stop the write on hosted. Self-host (including a self-host Gateway) stays byte-identical.
+        if (GatewayHostedMode.IsHosted)
+        {
+            FileLog.Write($"[MobileCaptureHealth] {source} {uploadId}: SKIPPED on hosted - the dictation session log has no tenant partition and no reader on hosted (MTR-10 Gap H3; mirrors the archive skip #1985)");
+            return;
+        }
 
         FileLog.Write($"[MobileCaptureHealth] {source} {uploadId}: recordedMs={record.RecordedWallMs:F0}, "
             + $"decodedSec={record.DecodedAudioSeconds:F2}, audioBytes={audioBytes}, sourceBytes={sourceBytes ?? 0}");
