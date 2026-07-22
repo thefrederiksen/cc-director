@@ -134,19 +134,24 @@ export async function backgroundTranscribeAndSend(
 ): Promise<void> {
   ensureRetryListeners();
 
-  // Capture-health (issue #863): the fire-and-forget Send path releases the screen the instant Send is
-  // pressed and never transcodes on-device, so it was the ONE finish path that measured no audio loss at
-  // all. Decode the clip ONCE here - the screen has already closed, so this is off the critical path - to
-  // get the decoded audio duration, log the recorded-vs-decoded deficit on this surface the same way every
-  // other finish path does, and stash the numbers on the durable record so the upload forwards them to the
-  // Gateway (which persists them into the same dictation session log). Diagnostics only: a decode failure
-  // is logged loudly but NEVER blocks delivery - the user's words are the guarantee, the measurement is not.
+  // Decode the clip ONCE here - the screen has already closed, so this is off the critical path - to do
+  // two things the Send path previously skipped:
+  //   1. Upload the decoded 16 kHz WAV instead of the raw recording. The WAV carries the trailing-silence
+  //      run-out (added in blobToWav16kMono) that keeps the last word from being clipped by the model, and
+  //      it is what the Gateway's Local Whisper mode can read directly. Every other finish path already
+  //      sends this WAV; the Send path now matches, so all surfaces transcribe the same padded WAV.
+  //   2. Measure capture-health (issue #863): the recorded-vs-decoded deficit, logged on this surface and
+  //      forwarded on the upload so the Gateway persists it into the same dictation session log.
+  // Diagnostics AND the pad are best-effort: a decode failure is logged loudly but NEVER blocks delivery -
+  // we fall back to uploading the raw recording so the user's words are the guarantee, the pad is not.
   let decodedSeconds: number | undefined;
   let sourceBytes: number | undefined;
+  let uploadBlob = captured.blob;
   try {
     const transcoded = await blobToWav16kMono(captured.blob);
     decodedSeconds = transcoded.decodedSeconds;
     sourceBytes = transcoded.sourceBytes;
+    uploadBlob = transcoded.wav;
     logCaptureHealth("mobile-send", {
       recordedMs: captured.recordedMs,
       decodedSeconds: transcoded.decodedSeconds,
@@ -154,14 +159,14 @@ export async function backgroundTranscribeAndSend(
     });
   } catch (err) {
     console.warn(
-      `[backgroundSend] capture-health decode failed (delivery is unaffected): ${err instanceof Error ? err.message : String(err)}`,
+      `[backgroundSend] decode failed; uploading the raw recording unpadded (delivery is unaffected): ${err instanceof Error ? err.message : String(err)}`,
     );
   }
 
   const rec: PendingDictation = {
     id: crypto.randomUUID(),
     sessionId,
-    blob: captured.blob,
+    blob: uploadBlob,
     recordedMs: captured.recordedMs,
     decodedSeconds,
     sourceBytes,

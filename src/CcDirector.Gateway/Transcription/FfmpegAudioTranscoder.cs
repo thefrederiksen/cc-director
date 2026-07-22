@@ -106,11 +106,14 @@ public sealed class FfmpegAudioTranscoder : IAudioTranscoder
             CreateNoWindow = true,
         };
         // Decode anything ffmpeg understands to 16 kHz mono 16-bit PCM WAV - the transcription-friendly
-        // form the splitter chunks. -nostdin so it never blocks waiting on input.
+        // form the splitter chunks. -nostdin so it never blocks waiting on input. `apad=pad_dur=0.6`
+        // appends 0.6 s of trailing silence (the dictation end-word run-out, matching PcmWav.TrailingSilenceMs
+        // and the browser wav.ts pad) so any compressed clip that reaches a transcode also gives the model
+        // room to emit the last word.
         foreach (var arg in new[]
         {
             "-hide_banner", "-loglevel", "error", "-nostdin", "-y",
-            "-i", input, "-ar", "16000", "-ac", "1", "-c:a", "pcm_s16le", "-f", "wav", output,
+            "-i", input, "-ar", "16000", "-ac", "1", "-af", "apad=pad_dur=0.6", "-c:a", "pcm_s16le", "-f", "wav", output,
         })
             psi.ArgumentList.Add(arg);
 
