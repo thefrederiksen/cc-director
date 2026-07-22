@@ -13,6 +13,7 @@ using CcDirector.Core.Voice.Services;
 using CcDirector.Gateway.Contracts;
 using CcDirector.Gateway.Discovery;
 using CcDirector.Gateway.HostedAi;
+using CcDirector.Gateway.Tenancy;
 using CcDirector.Gateway.Voice;
 using CcDirector.Gateway.Wingman;
 using Microsoft.AspNetCore.Builder;
@@ -81,37 +82,41 @@ internal static class GatewayWingmanVoiceEndpoint
     private static IResult TooLarge(string error) =>
         Results.Json(new { error }, statusCode: StatusCodes.Status413PayloadTooLarge);
 
+    /// <summary>The exclusive prefix the /wingman/utterance upload route group owns outright on hosted.</summary>
+    internal const string UtterancePrefix = "/wingman/utterance";
+
+    /// <summary>The single error string the hosted utterance refusal serves. Held here so a test can assert
+    /// against the exact string that is served rather than a copy that could drift.</summary>
+    internal const string UtteranceRefusalMessage = "the wingman utterance upload is not available on the hosted gateway";
+
     /// <summary>
-    /// The hosted refusal for the whole /wingman/utterance upload family (issue #1896), or null on
-    /// self-host where nothing changes.
-    ///
-    /// Gated on <see cref="GatewayHostedMode.IsHosted"/> - the INDEPENDENT deployment signal - and NOT on a
-    /// boundary or tenant argument being passed in. A security branch that depends on an optional argument
-    /// fails OPEN when a caller omits it, which is exactly how the hosted account-status fix nearly shipped
-    /// a hole: omit the argument and a hosted Gateway silently takes the self-host path. Asking hosted mode
-    /// directly means this family cannot serve another account's transcript on hosted however the host is
-    /// wired.
-    ///
-    /// 404 rather than 403: on hosted this upload family does not exist as a concept - an upload id is
-    /// meaningless without a tenant to scope it to, and the store has none - so "not here" is the truthful
-    /// answer. 403 would imply the right credential could reach it, and none can.
+    /// The hosted refusal payload for the whole /wingman/utterance upload family (issue #1896). Validated on
+    /// construction, so a blank field fails the Gateway at startup rather than serving a refusal a caller
+    /// cannot act on. 404 rather than 403: on hosted this upload family does not exist as a concept - an
+    /// upload id is meaningless without a tenant to scope it to, and the store has none - so "not here" is
+    /// the truthful answer; 403 would imply the right credential could reach it, and none can. Driven off
+    /// <see cref="GatewayHostedMode.IsHosted"/> inside the primitive - the INDEPENDENT deployment signal, not
+    /// an optional argument a caller can omit and thereby fail OPEN.
     ///
     /// UN-DENY CONDITION. Two SEPARATE questions, because answering only the first is how a deny gets
     /// mistaken for a clean slate. "Does anything still write this state" and "what is already sitting
     /// there" have different answers, and the second one does not improve while the deny stands.
     ///
-    /// (a) DOES ANYTHING STILL WRITE IT? No. Checked by sweeping the COMPLETE MUTATING SURFACE of the state
-    /// rather than the routes that touch it: every construction of a <c>VoiceUploadStore</c> in the
-    /// repository, then every production caller of every mutating method on the type (<c>Register</c>,
-    /// <c>StoreChunkAsync</c>, <c>AssembleAsync</c>, <c>Delete</c>, <c>MarkPending</c>,
-    /// <c>MarkDelivered</c>, <c>MarkAbandoned</c>, <c>MarkFailed</c>, <c>ClearFailed</c>,
-    /// <c>RecordFailedDeliveryBaseline</c>, <c>Acknowledge</c>, <c>SweepAbandoned</c>), and finally any raw
-    /// file writer into the root that bypasses the type entirely. The only production instance on this root
-    /// is the one <c>GatewayHost</c> holds as <c>_voiceTurnUploads</c> and hands to this endpoint alone;
-    /// every mutating call reached from this file is inside the guarded group; <c>SweepAbandoned</c> has NO
-    /// production caller at all, only a test; nothing writes the root outside the store. The one residual
-    /// write is the constructor calling <c>CcStorage.VoiceTurnUploads()</c>, which ENSURES the directory
-    /// exists: an empty directory, never content.
+    /// (a) DOES ANYTHING STILL WRITE IT? No, and NO OFF-ROUTE WRITER NEEDS A HOST-GATE HERE. Checked by
+    /// sweeping the COMPLETE MUTATING SURFACE of the state rather than the routes that touch it: every
+    /// construction of a <c>VoiceUploadStore</c> in the repository, then every production caller of every
+    /// mutating method on the type (<c>Register</c>, <c>StoreChunkAsync</c>, <c>AssembleAsync</c>,
+    /// <c>Delete</c>, <c>MarkPending</c>, <c>MarkDelivered</c>, <c>MarkAbandoned</c>, <c>MarkFailed</c>,
+    /// <c>ClearFailed</c>, <c>RecordFailedDeliveryBaseline</c>, <c>Acknowledge</c>, <c>SweepAbandoned</c>),
+    /// and finally any raw file writer into the root that bypasses the type entirely. The only production
+    /// instance on this root is the one <c>GatewayHost</c> holds as <c>_voiceTurnUploads</c> and hands to
+    /// this endpoint alone; every mutating call reached from this file is inside this refused group;
+    /// <c>SweepAbandoned</c> has NO production caller at all, only a test; nothing writes the root outside the
+    /// store. The one residual write is the constructor calling <c>CcStorage.VoiceTurnUploads()</c>, which
+    /// ENSURES the directory exists: an empty directory, never content. So with the routes refused, no writer
+    /// to this store reaches it on hosted - there is no OFF-route writer to gate (unlike the
+    /// transcription-telemetry and wingman-training stores, whose writers fire from undenied paths and are
+    /// host-gated at the writer).
     ///
     /// (b) WHAT ALREADY EXISTS? A SEPARATE QUESTION, and it is not answered by (a). NO NEW WRITES IS A
     /// STATEMENT ABOUT THE FUTURE, NOT EVIDENCE ABOUT THE PAST. The shared root may hold pre-deny
@@ -119,16 +124,30 @@ internal static class GatewayWingmanVoiceEndpoint
     /// untouched by it. SO THE UN-DENY STILL REQUIRES PURGING OR QUARANTINING THE LEGACY ROOT, on top of
     /// issue #1896's tenant-keying of the store - "the write is stopped" is not "the root is clean" and must
     /// never be read as the whole condition.
+    ///
+    /// HOW THE DENY IS EXPRESSED - THE SHARED REFUSAL PRIMITIVE, NOT A BESPOKE FILTER. This group is denied
+    /// through <see cref="HostedRouteDeny.ExclusiveGroup"/>, the ONE hosted-refusal boundary every deny
+    /// family on this Gateway adopts (reference implementation: the key-vault deny in pull request #1904). An
+    /// earlier revision rolled its own <c>AddEndpointFilter</c> deny before the primitive existed; it has
+    /// been replaced. The family owns the <c>/wingman/utterance</c> prefix OUTRIGHT - the rest of the voice
+    /// surface (voice-turn, tts, transcribe, explain, ask, menu) lives on OTHER paths and keeps serving on
+    /// hosted - so on hosted the three utterance handlers are NEVER MAPPED and ONE verb-less catch-all refuses
+    /// everything under the prefix plus a root refusal at the prefix itself, covering every verb, every
+    /// request shape, and every future sub-path for free. The exclusivity claim is CHECKED at startup by
+    /// <see cref="HostedRefusalRouteSpace.ValidateBeforeStart"/>. Off hosted the primitive maps the three real
+    /// handlers exactly as an unguarded builder would - self-host unchanged.
     /// </summary>
-    private static IResult? DenyUtteranceOnHosted()
-    {
-        if (!GatewayHostedMode.IsHosted) return null;
-
-        FileLog.Write("[GatewayWingmanVoice] DENIED on hosted: the utterance upload store is keyed only by a caller-supplied id under one shared root, so an upload id is not a tenant boundary");
-        return Results.Json(
-            new { error = "the wingman utterance upload is not available on the hosted gateway" },
-            statusCode: StatusCodes.Status404NotFound);
-    }
+    private static HostedDenial UtteranceDenial() => new(
+        family: "wingman-utterance",
+        message: UtteranceRefusalMessage,
+        reason: "the utterance upload store keys staged audio and the assembled transcript SOLELY by a " +
+                "caller-supplied Idempotency-Key under one on-disk root shared across every account, and complete " +
+                "returns the assembled transcript - so an account can claim another account's upload id and be " +
+                "handed the words it spoke, or overwrite its chunks before it completes",
+        unDenyInstruction: "do NOT simply remove this deny: tenant-key the utterance store, THEN purge or " +
+                "quarantine the pre-existing shared root (pre-deny cross-tenant staged audio and transcripts are " +
+                "already in it and this change never touched them), and only then restore a tenant-scoped route",
+        statusCode: StatusCodes.Status404NotFound);
 
     /// <summary>
     /// Read a request body into memory, giving up the moment it exceeds <paramref name="max"/>.
@@ -154,11 +173,12 @@ internal static class GatewayWingmanVoiceEndpoint
         }
     }
 
-    /// Returns the guarded route group. That return value exists SOLELY so a test can map a brand-new
+    /// Returns the DENIED utterance group. That return value exists SOLELY so a test can map a brand-new
     /// route onto the same group and prove it is refused on hosted with no deny written for it - the
-    /// property that distinguishes a group filter from a per-route guard, and which is otherwise
-    /// invisible to any test that only drives the routes existing today.
-    public static RouteGroupBuilder Map(
+    /// future-route property, which is otherwise invisible to any test that only drives the routes existing
+    /// today. Only the utterance family is denied; the rest of the voice surface stays on the ungrouped
+    /// builder and keeps serving on hosted.
+    public static HostedDenyGroup Map(
         IEndpointRouteBuilder app,
         DirectorRegistry registry,
         Func<WingmanModelRole, CancellationToken, Task<IAgentBrain>> brainProvider,
@@ -376,19 +396,14 @@ internal static class GatewayWingmanVoiceEndpoint
         // Self-host is COMPLETELY unchanged: one tenant, so a shared root is the owner's own root, and the
         // phone's record-locally-and-keep-retrying path works exactly as it always has.
         //
-        // The group prefix reproduces the route paths character for character, so the self-host surface is
-        // byte-identical; the filter also covers legs added to this family later, which a per-route guard
-        // would not.
-        var utterance = app.MapGroup("/wingman/utterance");
-        utterance.AddEndpointFilter(async (ctx, next) =>
-        {
-            if (DenyUtteranceOnHosted() is { } denied) return denied;
-            return await next(ctx);
-        });
+        // The exclusive prefix reproduces the route paths character for character (the legs are written
+        // relative to it), so the self-host surface is byte-identical; on hosted the ONE catch-all under the
+        // prefix also covers legs added to this family later, which a per-route guard would not.
+        var utterance = HostedRouteDeny.ExclusiveGroup(app, UtterancePrefix, UtteranceDenial());
 
         // THE ROUTES ARE MAPPED WHERE THE UNFILTERED `app` IS NOT IN SCOPE - deliberately, and that is the
-        // only reason MapUtteranceRoutes exists as a separate method. Copied from the key-vault deny (pull
-        // request #1904), which is the reviewed instance of this pattern.
+        // only reason MapUtteranceRoutes exists as a separate method. It takes only the denied group handle
+        // (<see cref="HostedDenyGroup"/>), obtainable only from the refusal primitive.
         //
         // This file is the sharpest case of the problem, because unlike the other three families the
         // unfiltered builder is LEGITIMATELY here: the voice-turn, text-to-speech, transcribe, explain, ask
@@ -397,17 +412,17 @@ internal static class GatewayWingmanVoiceEndpoint
         // THREE utterance legs could INDIVIDUALLY be mapped onto `app` instead of onto `utterance`, a
         // one-word edit that compiles, passes every existing test, and opens that leg on hosted while the
         // other two stay correctly denied. Three independently bypassable primitives, each owing its own
-        // full-suite security run under the bypassability rule. Handing the guarded group to a method that
+        // full-suite security run under the bypassability rule. Handing the group handle to a method that
         // never receives `app` makes the mistake INEXPRESSIBLE rather than merely unlikely: inside
-        // MapUtteranceRoutes there is nothing to map onto except the guarded group. The count falls by
+        // MapUtteranceRoutes there is nothing to map onto except the group handle. The count falls by
         // DESIGN, not by an argument about how careful the next author will be.
         //
         // THE LIMIT OF THAT PROPERTY, STATED SO NOBODY OVER-CLAIMS IT: it holds WITHIN THIS MAPPING SITE.
-        // It does not reach across sites. This deny is one of FOUR families, each creating its own group,
-        // attaching its own filter and mapping from its own site, so any one site can be wrong while the
-        // other three stay correct and no compiler notices. That is exactly why the registered proof is
-        // four filter-removal arms and four gate-inversion arms rather than one of each: the split removes
-        // the per-ROUTE bypass inside a family, it does not merge the four families into one primitive.
+        // It does not reach across sites. This deny is one of FOUR families, each creating its own group and
+        // mapping from its own site, so any one site can be wrong while the other three stay correct and no
+        // compiler notices. That is exactly why the registered proof is four handler-restore arms rather than
+        // one: the group handle removes the per-ROUTE bypass inside a family, it does not merge the four
+        // families into one primitive.
         MapUtteranceRoutes(utterance, uploads, transcription);
 
         // Text-to-speech for the mobile Voice screen + Cockpit: turn the wingman's spoken summary into
@@ -821,11 +836,13 @@ internal static class GatewayWingmanVoiceEndpoint
     }
 
     /// <summary>
-    /// The three /wingman/utterance upload legs. Takes the GUARDED group and nothing else - see the note
-    /// at the call site: the unfiltered route builder that the rest of this file legitimately uses is
-    /// deliberately out of scope here, so no leg of this family can be mapped around the hosted filter.
+    /// The three /wingman/utterance upload legs, mapped relative to the <see cref="UtterancePrefix"/> so the
+    /// full paths are <c>/wingman/utterance/upload</c> and <c>/wingman/utterance/{uploadId}/...</c> exactly as
+    /// before. Takes the denied GROUP HANDLE and nothing else - see the note at the call site: the unfiltered
+    /// route builder that the rest of this file legitimately uses is deliberately out of scope here, so no leg
+    /// of this family can be mapped around the hosted refusal.
     /// </summary>
-    private static void MapUtteranceRoutes(RouteGroupBuilder utterance, VoiceUploadStore uploads,
+    private static void MapUtteranceRoutes(HostedDenyGroup utterance, VoiceUploadStore uploads,
         Transcription.GatewayTranscriptionService transcription)
     {
         utterance.MapPost("/upload", (HttpContext ctx) =>

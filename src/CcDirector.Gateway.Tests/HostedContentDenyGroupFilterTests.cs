@@ -6,6 +6,7 @@ using CcDirector.Core.Configuration;
 using CcDirector.Gateway.Tests.Data;
 using CcDirector.Gateway.Api;
 using CcDirector.Gateway.Discovery;
+using CcDirector.Gateway.Tenancy;
 using CcDirector.Gateway.Transcription;
 using CcDirector.Gateway.Voice;
 using CcDirector.Gateway.Wingman;
@@ -20,19 +21,23 @@ namespace CcDirector.Gateway.Tests;
 /// <summary>
 /// PROVES THE PROPERTY THAT MADE THE GROUP FILTER THE RIGHT SHAPE, WHICH NOTHING ELSE HERE CAN SEE.
 ///
-/// Each of the four denied families is guarded by ONE <c>AddEndpointFilter</c> on the route group rather
-/// than a <c>DenyOnHosted()</c> call repeated in every handler. The stated reason is that a per-route
-/// guard ROTS - the moment someone adds a route to that file it is undefended and nothing fails - whereas
-/// a group filter runs before every route in the group INCLUDING ROUTES THAT DO NOT EXIST YET.
+/// Each of the four denied families is denied through the shared refusal primitive
+/// <see cref="CcDirector.Gateway.Tenancy.HostedRouteDeny"/> - three via <c>ExclusiveGroup</c> (one catch-all
+/// refusal claims the whole prefix) and transcription via the per-route <c>Group</c> (a refusal mirrors each
+/// route mapped through the returned handle) - rather than a <c>DenyOnHosted()</c> call repeated in every
+/// handler. The stated reason is that a per-handler guard ROTS - the moment someone adds a route to that
+/// file it is undefended and nothing fails - whereas mapping through the primitive's group handle covers
+/// every route mapped through it INCLUDING ROUTES THAT DO NOT EXIST YET (an exclusive family's catch-all
+/// covers even paths never declared; a per-route family covers every route it maps through the handle).
 ///
 /// That difference is completely invisible to any test that only drives the routes existing today: a
-/// per-route guard and a group filter behave identically on those. Which is exactly what makes the
-/// per-route shape dangerous, and exactly why the claim needs its own proof rather than an assurance in a
+/// per-handler guard and the primitive behave identically on those. Which is exactly what makes the
+/// per-handler shape dangerous, and exactly why the claim needs its own proof rather than an assurance in a
 /// pull request body. Until this file existed, the pull request asserted the future-route property and
 /// nothing tested it.
 ///
-/// So each family maps a BRAND-NEW route onto its returned group, with NO deny written for it anywhere,
-/// and asserts:
+/// So each family maps a BRAND-NEW route onto its returned group handle, with NO deny written for it
+/// anywhere, and asserts:
 ///
 ///   1. HOSTED           - the probe route is refused, carrying that family's refusal and nothing else.
 ///   2. SELF-HOST        - the SAME probe route is SERVED, over BOTH non-hosted forms that occur in
@@ -42,8 +47,8 @@ namespace CcDirector.Gateway.Tests;
 /// All three are needed and none is redundant. Without (2) a filter that refused everything
 /// unconditionally would pass every hosted assertion in this file while having silently killed the route
 /// for self-host too - a brick is indistinguishable from a working gate if you only push on it from one
-/// side. Without (3) the hosted passes could be the host refusing everything rather than the filter doing
-/// its job.
+/// side. Without (3) the hosted passes could be the host refusing everything rather than the primitive
+/// doing its job.
 ///
 /// The self-host legs also assert <see cref="GatewayHostedMode.IsHosted"/> is genuinely false rather than
 /// trusting the environment variable to have taken effect, so no leg can silently run in the mode it
@@ -58,19 +63,21 @@ public sealed class HostedContentDenyGroupFilterTests
     private const string ProbeBody = "probe-served-zqxjv";
 
     /// <summary>
-    /// The URL prefix of each family's guarded group, because they are NOT all the same and assuming they
-    /// were is what broke this rig on its first run. Three families map their group with an EMPTY prefix
-    /// (the route paths are written out in full inside the group, so the self-host surface stays
-    /// byte-identical); the utterance family maps its group at "/wingman/utterance" and writes its routes
-    /// relative to that. A probe mapped onto a group is reachable only under that group's prefix, so the
-    /// prefix has to come from the production code rather than from an assumption about it.
+    /// The URL prefix of each family's denied group, because they are NOT all the same and assuming they
+    /// were is what broke this rig on its first run. After the move to the shared refusal primitive every
+    /// family maps its group at its OWN real prefix and writes its routes relative to that, so a probe mapped
+    /// onto the group is reachable only under that prefix - and the prefix has to come from the production
+    /// code rather than from an assumption about it. Three families claim their prefix EXCLUSIVELY
+    /// (instructions, utterance, dictation); transcription uses the PER-ROUTE group because <c>/transcription</c>
+    /// also carries the live batch + cleanup routes, but its group prefix is <c>/transcription</c> all the
+    /// same, so its probe sits one segment deeper than before.
     /// </summary>
     private static string PrefixFor(string family) => family switch
     {
-        "transcription" => "",
-        "instructions" => "",
+        "transcription" => "transcription/",
+        "instructions" => "gateway/wingman/instructions/",
         "utterance" => "wingman/utterance/",
-        "dictation" => "",
+        "dictation" => "dictation/",
         _ => throw new ArgumentOutOfRangeException(nameof(family)),
     };
 
@@ -150,7 +157,7 @@ public sealed class HostedContentDenyGroupFilterTests
         await using var rig = await Rig.StartAsync(family);
 
         // Mapped on the application, NOT on the guarded group. If this were refused, the hosted passes
-        // above would be the host refusing everything rather than the filter being correctly scoped.
+        // above would be the host refusing everything rather than the primitive being correctly scoped.
         var resp = await rig.Http.GetAsync("outside-the-group");
         var body = await resp.Content.ReadAsStringAsync();
 
@@ -219,7 +226,7 @@ public sealed class HostedContentDenyGroupFilterTests
                 root, priorRoot, db);
         }
 
-        private static RouteGroupBuilder MapFamily(WebApplication app, string family, string root,
+        private static HostedDenyGroup MapFamily(WebApplication app, string family, string root,
             ref GatewayDbTestHarness? db)
         {
             var brain = (WingmanModelRole _, CancellationToken _) =>

@@ -57,6 +57,17 @@ public sealed class WingmanTrainingStore
         SessionVerbClient route, string sessionId, string source,
         string reply, string recentContext, string spoken, double replySeconds, CancellationToken ct = default)
     {
+        // HOSTED WRITE GATE (deny-by-default, defense in depth for the wingman-instructions read deny #1853).
+        // The training records hold raw session terminal output in one shared, untenanted store whose ONLY
+        // reader is the now-denied /records + /test routes (verified: nothing billing / metering consumes it).
+        // On hosted, stop capturing - do not fetch the terminal and do not accumulate cross-tenant terminal
+        // output nothing on hosted can read. Checked before the tunnel fetch so it costs nothing on hosted.
+        // Self-host (single tenant, opt-in) is unchanged.
+        if (GatewayHostedMode.IsHosted)
+        {
+            FileLog.Write($"[WingmanTrainingStore] capture SKIPPED on hosted: the shared training store is untenanted and its only reader is denied on hosted (issue #1853 defense in depth): sid={sessionId}");
+            return;
+        }
         if (!Enabled) return;
         string terminal = "";
         try
@@ -79,6 +90,9 @@ public sealed class WingmanTrainingStore
         string sessionId, string source, string terminal, string reply, string recentContext,
         string spoken, double replySeconds, CancellationToken ct = default)
     {
+        // The actual disk write - gated on hosted too (belt and suspenders behind CaptureAsync's gate), so a
+        // future direct caller of WriteAsync cannot reopen the accumulation the read deny #1853 exists to stop.
+        if (GatewayHostedMode.IsHosted) return;
         if (!Enabled) return;
         try
         {

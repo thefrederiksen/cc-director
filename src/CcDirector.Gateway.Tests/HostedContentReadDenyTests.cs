@@ -166,18 +166,27 @@ internal static class ContentFingerprint
 /// not an optional boundary or tenant argument. A security branch that depends on an optional argument
 /// fails OPEN the moment a caller omits it.
 ///
-/// REVERT-PROOF RECIPE (run verbatim, per family):
-///   1. In the named file, delete the <c>AddEndpointFilter</c> block that calls the deny helper.
-///   2. Run this class. The theory cases for that family go RED (200/400/404-without-the-refusal-body
-///      instead of the refusal), while every other family stays green.
-///   3. Run the self-host controls named below. They stay GREEN throughout - the guard is invisible to
+/// REVERT-PROOF RECIPE (each family is denied through the shared refusal primitive
+/// <c>HostedRouteDeny</c>, not a bespoke filter - the revert is RE-ENABLING THE REAL HANDLER ON HOSTED):
+///   1. In the named file, change the family's routes so their real handlers map on hosted - e.g. replace
+///      the <c>HostedRouteDeny.ExclusiveGroup</c> / <c>HostedRouteDeny.Group</c> call in <c>Map</c> with a
+///      plain group that maps the handlers, OR flip the primitive's hosted branch so
+///      <c>HostedDenyGroup.Map</c> maps the handler instead of the refusal.
+///   2. Run this class. The theory cases for that family go RED - the real handler answers (a 200 payload,
+///      a 400/401/404 from the handler's own body checks, or a startup failure when an exclusive family's
+///      real route now serves under its own claimed prefix) instead of the exact refusal body - while every
+///      other family stays green.
+///   3. Run the self-host controls named below. They stay GREEN throughout - the deny is invisible to
 ///      self-host in both directions, which is the point.
-///   4. Restore the block. Everything goes green again.
-/// The files and blocks are:
-///   src/CcDirector.Gateway/Api/TranscriptionAnalysisEndpoint.cs   DenyOnHosted
-///   src/CcDirector.Gateway/Api/WingmanInstructionsEndpoint.cs     DenyOnHosted
-///   src/CcDirector.Gateway/Api/GatewayWingmanVoiceEndpoint.cs     DenyUtteranceOnHosted
-///   src/CcDirector.Gateway/Api/GatewayDictationEndpoint.cs        DenyOnHosted
+///   4. Restore. Everything goes green again. (Proven for this branch: flipping the primitive's hosted
+///      branch to map handlers reddened all four families' hosted theories - transcription, instructions
+///      reads+writes, utterance, dictation - plus the unbound-caller and future-route probes; restoring
+///      returned all green.)
+/// The files and their deny call in <c>Map</c> are:
+///   src/CcDirector.Gateway/Api/TranscriptionAnalysisEndpoint.cs   HostedRouteDeny.Group (per-route)
+///   src/CcDirector.Gateway/Api/WingmanInstructionsEndpoint.cs     HostedRouteDeny.ExclusiveGroup
+///   src/CcDirector.Gateway/Api/GatewayWingmanVoiceEndpoint.cs     HostedRouteDeny.ExclusiveGroup (utterance)
+///   src/CcDirector.Gateway/Api/GatewayDictationEndpoint.cs        HostedRouteDeny.ExclusiveGroup
 ///
 /// MUTATION-RED, AND WHY IT IS NOT OPTIONAL HERE. Removing the guard is only half the proof: it shows the
 /// refusal is what produces the refusal. It does NOT show the test could notice the route going missing.
@@ -500,8 +509,8 @@ public sealed class HostedContentReadDenyTests : IAsyncLifetime
 /// either. That is why the previous version of this class was unsound: it asserted status 200 plus the
 /// ABSENCE of the refusal strings, and a built Cockpit shell satisfies both. It also drove <c>POST</c> at
 /// the dictation chunk route, which production maps as <c>MapPut</c> ONLY
-/// (GatewayDictationEndpoint.cs:176) - a request that never reached the handler at all, and nothing in the
-/// assertion could notice.
+/// (GatewayDictationEndpoint, the <c>/{uploadId}/chunk/{index:int}</c> leg) - a request that never reached
+/// the handler at all, and nothing in the assertion could notice.
 ///
 /// So: every read asserts SEEDED or ROUTE-SPECIFIC JSON that only that handler could have produced, and
 /// every write asserts its own STORE RECEIPT - a state change read back - rather than a status code.

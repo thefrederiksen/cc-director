@@ -1,6 +1,7 @@
 using CcDirector.AgentBrain;
 using CcDirector.Core.Configuration;
 using CcDirector.Core.Utilities;
+using CcDirector.Gateway.Tenancy;
 using CcDirector.Gateway.Wingman;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
@@ -68,97 +69,102 @@ internal static class WingmanInstructionsEndpoint
     /// UN-DENY CONDITION - REMOVING THIS DENY REQUIRES ALSO PURGING OR PARTITIONING WHAT ACCUMULATED BEHIND
     /// IT. Two SEPARATE questions, and here the first one already fails.
     ///
-    /// (a) DOES ANYTHING STILL WRITE IT? The prompt half IS contained: every route that can rewrite the
-    /// wingman instructions (save, revert, switch-to-default) is in this group and refused with the reads.
-    /// For the training RECORDS the honest answer is LATENT, NOT ACTIVE, and an earlier version of this note
-    /// got that wrong by reading call sites instead of following the gate.
+    /// (a) DOES ANYTHING STILL WRITE IT? NOT ON HOSTED, in either half. The prompt half was always
+    /// contained: every route that can rewrite the wingman instructions (save, revert, switch-to-default) is
+    /// in this group and refused with the reads. For the training RECORDS there are three writers, none in
+    /// this group: the voice-turn route, the explain route, and <c>WingmanVoiceService.GenerateOnceAsync</c>
+    /// (reached by the Gateway's OWN voice sweep timer, so it needs no request from anybody). ALL THREE
+    /// funnel through <c>WingmanTrainingStore.CaptureAsync</c>, which was already OPT-IN and DEFAULTS TO
+    /// FALSE - but "off by default" is not "cannot be turned on", so THIS PASS HOST-GATES that capture too
+    /// (defense in depth, deny-by-default, matching the key-vault deny #1904): <c>CaptureAsync</c> and its
+    /// <c>WriteAsync</c> both NO-OP on hosted, so even with the setting on, no raw session terminal output
+    /// accumulates in the shared untenanted store while the deny stands. That gate is safe because the
+    /// store's ONLY reader is this now-denied group (the /records and /test routes) - verified nothing
+    /// billing / metering consumes it. #1853's separate interim write deny is subsumed by this gate.
     ///
-    /// There are three writers, none of them in this group: the voice-turn route, the explain route, and
-    /// <c>WingmanVoiceService.GenerateOnceAsync</c> - which is reached by the Gateway's OWN voice sweep
-    /// timer, so it needs no request from anybody. But ALL THREE funnel through
-    /// <c>WingmanTrainingStore.CaptureAsync</c>, whose first statement is <c>if (!Enabled) return;</c>, and
-    /// <c>Enabled</c> reads <c>WingmanTrainingCaptureConfig</c> - the <c>wingman_training_capture</c> key,
-    /// which is OPT-IN and DEFAULTS TO FALSE. On a hosted box that has never set it, nothing writes here at
-    /// all. A CALL SITE PROVES CODE EXISTS, NOT THAT IT RUNS.
+    /// (b) WHAT ALREADY EXISTS? A SEPARATE QUESTION, and the one that decides the un-deny. Gating the write
+    /// is a statement about the future; it is not evidence about the past. Records may already be on disk
+    /// from any period when the setting was on, or carried in from a self-host box. They carry no tenant, so
+    /// they cannot be attributed after the fact: the choice is deletion or quarantine, never a later
+    /// migration.
     ///
-    /// So the accurate statement is conditional: while that setting is off nothing accumulates, and the
-    /// moment it is turned on, three writers - one of them an unattended timer - begin appending raw session
-    /// terminal output to one untenanted store, and this deny covers none of them. Issue #1853's separate
-    /// interim write deny still has not landed.
-    ///
-    /// (b) WHAT ALREADY EXISTS? A SEPARATE QUESTION, and the one that decides the un-deny. "Nothing writes
-    /// today" is a statement about the future; it is not evidence about the past. Records may already be on
-    /// disk from any period when the setting was on, or carried in from a self-host box. They carry no
-    /// tenant, so they cannot be attributed after the fact: the choice is deletion or quarantine, never a
-    /// later migration. This is why the READ deny is worth having even while the writers are dormant.
+    /// HOW THE DENY IS EXPRESSED - THE SHARED REFUSAL PRIMITIVE, NOT A BESPOKE FILTER. This group is denied
+    /// through <see cref="HostedRouteDeny.ExclusiveGroup"/>, the ONE hosted-refusal boundary every deny
+    /// family on this Gateway adopts (reference implementation: the key-vault deny in pull request #1904).
+    /// An earlier revision rolled its own <c>AddEndpointFilter</c> deny before the primitive existed; it has
+    /// been replaced so the release ships ONE refusal boundary. The group owns the <c>/gateway/wingman/instructions</c>
+    /// prefix OUTRIGHT - nothing else serves beneath it - so the exclusive shape fits: on hosted the nine
+    /// handlers are NEVER MAPPED and ONE verb-less catch-all refuses everything under the prefix plus a root
+    /// refusal at the prefix itself, covering every verb, every request shape, and every future sub-path for
+    /// free. The exclusivity claim is CHECKED at startup by <see cref="HostedRefusalRouteSpace.ValidateBeforeStart"/>,
+    /// which fails the Gateway if any live route serves beneath the prefix. Off hosted the primitive maps the
+    /// nine real handlers exactly as an unguarded builder would, with no refusal at all - self-host unchanged.
     /// </summary>
-    private static IResult? DenyOnHosted()
-    {
-        if (!GatewayHostedMode.IsHosted) return null;
+    /// <summary>The exclusive prefix the wingman-instructions route group owns outright on hosted.</summary>
+    internal const string Prefix = "/gateway/wingman/instructions";
 
-        FileLog.Write("[WingmanInstructionsEndpoint] DENIED on hosted: the training records hold raw session terminal output in one shared store, and the wingman prompt is a single-owner control with no per-tenant answer");
-        return Results.Json(
-            new { error = "the wingman instructions surface is not available on the hosted gateway" },
-            statusCode: StatusCodes.Status404NotFound);
-    }
+    /// <summary>The single error string the hosted refusal serves. Held here so a test can assert against the
+    /// exact string that is served rather than a copy that could drift.</summary>
+    internal const string RefusalMessage = "the wingman instructions surface is not available on the hosted gateway";
 
-    /// Returns the guarded route group. That return value exists SOLELY so a test can map a brand-new
-    /// route onto the same group and prove it is refused on hosted with no deny written for it - the
-    /// property that distinguishes a group filter from a per-route guard, and which is otherwise
-    /// invisible to any test that only drives the routes existing today.
-    public static RouteGroupBuilder Map(IEndpointRouteBuilder outer, WingmanInstructionsStore store,
+    /// <summary>
+    /// The hosted refusal payload for the whole wingman-instructions group (issue #1853, read side).
+    /// Validated on construction, so a blank field fails the Gateway at startup rather than serving a refusal
+    /// a caller cannot act on. 404 rather than 403: on hosted these routes do not exist as a concept - there
+    /// is no per-tenant training pool and no per-tenant wingman prompt - so "not here" is the truthful
+    /// answer; 403 would imply the right credential could reach them, and none can. Driven off
+    /// <see cref="GatewayHostedMode.IsHosted"/> inside the primitive - the INDEPENDENT deployment signal, not
+    /// an optional argument a caller can omit and thereby fail OPEN.
+    /// </summary>
+    private static HostedDenial Denial() => new(
+        family: "wingman-instructions",
+        message: RefusalMessage,
+        reason: "the training records hold raw session terminal output in one shared, untenanted store addressable " +
+                "by a positional index, and the wingman prompt is a single-owner control over the whole box with no " +
+                "per-tenant version to serve",
+        unDenyInstruction: "do NOT simply remove this deny: the training capture is host-gated now (no new " +
+                "accumulation on hosted) but a shared, untenanted store predates the gate - so tenant-partition the " +
+                "training store, purge or quarantine the pre-existing records (records written with no tenant cannot " +
+                "be attributed afterwards - the choice is deletion or quarantine, never a later migration), and give " +
+                "the single-owner wingman prompt a per-tenant model before any of these routes come back",
+        statusCode: StatusCodes.Status404NotFound);
+
+    /// <summary>
+    /// Maps the wingman-instructions routes and RETURNS the denied group they were mapped through.
+    ///
+    /// The routes are mapped through the group HANDLE (<see cref="HostedDenyGroup"/>), never through the
+    /// ungrouped builder: the handle is obtainable only from <see cref="HostedRouteDeny"/>, so a route mapped
+    /// around the refusal is not expressible in <see cref="MapRoutes"/> without changing its signature - the
+    /// bypass count is reduced by design, not by care. On hosted the exclusive catch-all refuses the whole
+    /// group and each handler is DISCARDED; off hosted the handle maps each handler as an unguarded builder
+    /// would. The return value exists so the future-route property is statable from outside this file: a test
+    /// maps a brand-new route through the returned handle and shows the refusal already covers routes nobody
+    /// has written yet.
+    /// </summary>
+    public static HostedDenyGroup Map(IEndpointRouteBuilder outer, WingmanInstructionsStore store,
         WingmanTrainingStore training, Func<WingmanModelRole, CancellationToken, Task<IAgentBrain>> brainProvider)
     {
         var translator = new WingmanTranslator(brainProvider);
 
-        FileLog.Write($"[WingmanInstructionsEndpoint] mapping /gateway/wingman/instructions; hosted={GatewayHostedMode.IsHosted} - on hosted EVERY route in this group is refused (issue #1853)");
+        FileLog.Write($"[WingmanInstructionsEndpoint] mapping {Prefix}; hosted={GatewayHostedMode.IsHosted} - on hosted the whole group is refused via the shared refusal primitive (issue #1853)");
 
-        // The whole group behind ONE filter, rather than a guard line repeated in every handler.
-        // A repeated guard is a thing to forget: the route added next year would be open by default and
-        // nobody would notice. A group filter runs before EVERY route mapped below, including routes that
-        // do not exist yet, so the refusal cannot rot as the group grows. The empty prefix keeps the route
-        // paths written out in full, exactly as before, so the self-host surface is byte-identical.
-        var app = outer.MapGroup("");
-        app.AddEndpointFilter(async (ctx, next) =>
-        {
-            if (DenyOnHosted() is { } denied) return denied;
-            return await next(ctx);
-        });
-
-        // THE ROUTES ARE MAPPED WHERE `outer` IS NOT IN SCOPE - deliberately, and that is the only reason
-        // MapRoutes exists as a separate method. Copied from the key-vault deny (pull request #1904), which
-        // is the reviewed instance of this pattern.
-        //
-        // Written inline here, beside both builders, each of these NINE routes could INDIVIDUALLY be mapped
-        // onto `outer` instead of onto `app` - a one-word edit that compiles, passes every existing test,
-        // and opens exactly that route on hosted while the other eight stay correctly denied. That is nine
-        // independently bypassable primitives, and under the bypassability rule each would owe its own
-        // full-suite security run. Handing the guarded group to a method that never receives the ungrouped
-        // builder makes the mistake INEXPRESSIBLE rather than merely unlikely: inside MapRoutes there is
-        // nothing to map onto except the guarded group. The count falls by DESIGN, not by an argument about
-        // how careful the next author will be.
-        //
-        // THE LIMIT OF THAT PROPERTY, STATED SO NOBODY OVER-CLAIMS IT: it holds WITHIN THIS MAPPING SITE.
-        // It does not reach across sites. This deny is one of FOUR families, each creating its own group,
-        // attaching its own filter and mapping from its own site, so any one site can be wrong while the
-        // other three stay correct and no compiler notices. That is exactly why the registered proof is
-        // four filter-removal arms and four gate-inversion arms rather than one of each: the split removes
-        // the per-ROUTE bypass inside a family, it does not merge the four families into one primitive.
-        MapRoutes(app, store, training, translator);
-        return app;
+        var group = HostedRouteDeny.ExclusiveGroup(outer, Prefix, Denial());
+        MapRoutes(group, store, training, translator);
+        return group;
     }
 
     /// <summary>
-    /// The nine wingman-instructions routes. Takes the GUARDED group and nothing else - see the note at the
-    /// call site: the ungrouped route builder is deliberately out of scope here, so no route in this family
-    /// can be mapped around the hosted filter.
+    /// The nine wingman-instructions routes, mapped relative to the <see cref="Prefix"/> so the full paths
+    /// are <c>/gateway/wingman/instructions</c> and its sub-paths exactly as before. Takes the denied GROUP
+    /// HANDLE and nothing else: the ungrouped route builder is deliberately out of scope here so no route can
+    /// be mapped around the hosted refusal.
     /// </summary>
-    private static void MapRoutes(RouteGroupBuilder app, WingmanInstructionsStore store,
+    private static void MapRoutes(HostedDenyGroup app, WingmanInstructionsStore store,
         WingmanTrainingStore training, WingmanTranslator translator)
     {
         // Current state: the active instructions, whether they are customized, whether the dev team
         // has shipped a newer default, and the deployed-default identity.
-        app.MapGet("/gateway/wingman/instructions", () =>
+        app.MapGet("", () =>
         {
             var active = store.Active();
             return Results.Json(new
@@ -172,7 +178,7 @@ internal static class WingmanInstructionsEndpoint
         });
 
         // Save edited instructions as a new version and make them active.
-        app.MapPut("/gateway/wingman/instructions", (WingmanInstructionsBody? req) =>
+        app.MapPut("", (WingmanInstructionsBody? req) =>
         {
             if (req is null || string.IsNullOrWhiteSpace(req.Content))
                 return Results.Json(new { error = "content is required" }, statusCode: StatusCodes.Status400BadRequest);
@@ -189,11 +195,11 @@ internal static class WingmanInstructionsEndpoint
         });
 
         // Version history, newest first.
-        app.MapGet("/gateway/wingman/instructions/versions", () =>
+        app.MapGet("/versions", () =>
             Results.Json(new { versions = store.Versions().Select(Project).ToList() }));
 
         // Make an existing version active again.
-        app.MapPost("/gateway/wingman/instructions/revert", (RevertBody? req) =>
+        app.MapPost("/revert", (RevertBody? req) =>
         {
             if (req is null || string.IsNullOrWhiteSpace(req.Id))
                 return Results.Json(new { error = "id is required" }, statusCode: StatusCodes.Status400BadRequest);
@@ -203,7 +209,7 @@ internal static class WingmanInstructionsEndpoint
         });
 
         // The deployed default (the DevThrottle dev team's shipped instructions).
-        app.MapGet("/gateway/wingman/instructions/default", () =>
+        app.MapGet("/default", () =>
         {
             var d = store.DefaultAsVersion();
             return Results.Json(new { version = store.DefaultVersion, hash = store.DefaultHash, content = d.Content });
@@ -211,7 +217,7 @@ internal static class WingmanInstructionsEndpoint
 
         // The managed-default review: is a newer default available, and what did the dev team change
         // (the acknowledged/based-on default -> the new default), so the page can show the diff.
-        app.MapGet("/gateway/wingman/instructions/update", () =>
+        app.MapGet("/update", () =>
         {
             var (ackVersion, ackContent) = store.AcknowledgedDefault();
             return Results.Json(new
@@ -226,7 +232,7 @@ internal static class WingmanInstructionsEndpoint
         });
 
         // Adopt the deployed default (drop the custom version, acknowledge the latest default).
-        app.MapPost("/gateway/wingman/instructions/switch-to-default", () =>
+        app.MapPost("/switch-to-default", () =>
         {
             store.SwitchToDefault();
             return Results.Json(new { active = Project(store.Active()), isCustomized = store.IsCustomized, updateAvailable = store.UpdateAvailable });
@@ -234,7 +240,7 @@ internal static class WingmanInstructionsEndpoint
 
         // Recent captured training sessions (issue #537): the pool the user picks from to A/B-test a
         // draft prompt. Empty until the wingman_training_capture setting has been on for some turns.
-        app.MapGet("/gateway/wingman/instructions/records", (int? limit) =>
+        app.MapGet("/records", (int? limit) =>
         {
             var n = Math.Clamp(limit ?? 20, 1, 100);
             var records = training.ListRecords(n).Select(r => new
@@ -249,7 +255,7 @@ internal static class WingmanInstructionsEndpoint
         // return, per record, the agent reply, the wingman's ORIGINAL spoken output, and the NEW one
         // the draft produces - so the user sees the effect before saving. Does NOT change the live
         // instructions. Each record is a brain call, so the count is capped.
-        app.MapPost("/gateway/wingman/instructions/test", async (InstructionsTestBody? req, CancellationToken ct) =>
+        app.MapPost("/test", async (InstructionsTestBody? req, CancellationToken ct) =>
         {
             if (req is null || string.IsNullOrWhiteSpace(req.Content))
                 return Results.Json(new { error = "content (the draft instructions) is required" }, statusCode: StatusCodes.Status400BadRequest);
