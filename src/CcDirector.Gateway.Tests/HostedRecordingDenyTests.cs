@@ -7,6 +7,7 @@ using System.Net.Http.Headers;
 using System.Net.Sockets;
 using System.Text;
 using System.Text.Json;
+using System.Threading;
 using System.Threading.Tasks;
 using CcDirector.Core.Recording;
 using CcDirector.Core.Storage;
@@ -160,6 +161,7 @@ public sealed class HostedRecordingDenyTests : IAsyncLifetime
     [InlineData("POST", "ingest/recording/" + SeededId + "/complete", "{}")]
     [InlineData("POST", "ingest/recording/" + SeededId + "/promote", null)]                        // promote into the vault
     [InlineData("PATCH", "ingest/recording/" + SeededId + "/meta", "{\"title\":\"hijacked\"}")]     // overwrite metadata
+    [InlineData("POST", "ingest/recording/" + SeededId + "/meta", "{\"title\":\"hijacked\"}")]      // /meta maps POST too - the omitted verb
     [InlineData("DELETE", "ingest/recording/" + SeededId, null)]                                   // destroy the record
     [InlineData("GET", "ingest/dictionary", null)]                                                 // the shared glossary
     [InlineData("PUT", "ingest/dictionary", "{\"vocabulary\":[],\"commonMistranscriptions\":{},\"profiles\":{}}")]
@@ -368,8 +370,6 @@ internal static class RecordingGroupProbeHost
 [Collection("DirectorRoot")]
 public sealed class HostedRecordingGroupFilterTests : IDisposable
 {
-    private const string ProbePayloadSentinel = "probe-payload-that-must-never-be-served-on-hosted";
-
     private readonly string _root;
     private readonly string? _prevRoot;
     private readonly string? _priorHosted;
@@ -395,22 +395,93 @@ public sealed class HostedRecordingGroupFilterTests : IDisposable
     /// <summary>
     /// A route that did not exist when the refusal was written is refused anyway. NOTHING in
     /// <see cref="RecordingEndpoints"/> mentions this path, and no guard is written for it here - the
-    /// exclusive catch-all under <c>/ingest</c> is the only thing standing between the caller and the probe
-    /// payload. On hosted the handle DISCARDS the probe handler (nothing binds), so the catch-all answers.
+    /// exclusive catch-all under <c>/ingest</c> is the only thing standing between the caller and the handler.
+    /// On hosted the handle DISCARDS the future handler (nothing binds), so the catch-all answers.
+    ///
+    /// THE FUTURE ROUTE IS A FRAMEWORK BODY-BOUND POST, NOT A CUSTOM-BOUND ONE AND NOT A PARAMETERLESS GET. A
+    /// parameterless probe is exactly the request shape the original pre-binding defect is invisible through;
+    /// a CUSTOM binder (<c>IBindableFromHttpContext</c>/<c>BindAsync</c>) is just as blind, because it ignores
+    /// the request body and binds unconditionally, so a malformed body could never reach the framework's own
+    /// 400. The shared primitive's contract requires the future-route proof to be FRAMEWORK-bound (see the
+    /// primitive's own body-bound <c>/family/future</c> in <see cref="Tenancy.HostedRouteDenyOnHostedTests"/>).
+    /// So the future route takes a plain <see cref="RecordingProbeBody"/> the framework binds from JSON, and:
+    ///
+    ///  * on hosted every shape meets the refusal - a valid body, a malformed body, and a verb the route never
+    ///    mapped;
+    ///  * the FRAMEWORK-400 CONTROL fires the identical malformed body at an UNDENIED equivalent of the same
+    ///    handler mapped OUTSIDE <c>/ingest</c>, which really reaches the framework and returns its own 400 -
+    ///    so the denied route's refusal is a short-circuit BEFORE framework binding, not a route that merely
+    ///    happens not to bind;
+    ///  * the OBSERVABLE-BINDING SEAM (<see cref="RecordingProbeBinding"/>), a distinct custom-bound route
+    ///    mapped alongside, carries the "no handler-bound code ran at all" assertion the framework record
+    ///    cannot make on its own: its binder counter stays zero across every shape behind the refusal.
     /// </summary>
     [Fact]
     public async Task A_route_added_to_the_group_later_is_refused_on_hosted_with_no_deny_of_its_own()
     {
+        RecordingProbeBinding.Reset();
+
         var (app, http) = await RecordingGroupProbeHost.StartAsync(
-            mapIntoGroup: group => group.MapGet("/added-after-the-deny-was-written",
-                () => Results.Json(new { probe = ProbePayloadSentinel })));
+            mapIntoGroup: group =>
+            {
+                // The future route: FRAMEWORK-bound body record. Off hosted a malformed body reaches the
+                // framework's JSON-binding 400; on hosted the exclusive catch-all refuses before any binding.
+                group.MapPost("/added-after-the-deny-was-written",
+                    (RecordingProbeBody body) => Results.Json(new { echoed = body.Text }));
+                // The observable-binding seam, a SEPARATE route: a custom binder whose execution is counted,
+                // so the proof can assert NO handler-bound code ran - not merely that the sentinel was absent.
+                group.MapPost("/added-after-the-deny-was-written-observed",
+                    (RecordingProbeBinding probe) => Results.Json(new { probe = probe.Value }));
+            },
+            mapOutsideGroup: routes =>
+                // The UNDENIED EQUIVALENT: the identical framework-bound handler mapped OUTSIDE /ingest. A
+                // malformed body here really reaches the framework and 400s.
+                routes.MapPost("/undenied-equivalent",
+                    (RecordingProbeBody body) => Results.Json(new { echoed = body.Text })));
         try
         {
-            var resp = await http.GetAsync("/ingest/added-after-the-deny-was-written");
+            // The framework-bound future route is refused on hosted across every shape: a valid body, a
+            // malformed body (off hosted the framework's own 400), and a verb it never mapped (off hosted a
+            // 405 disclosing the route exists).
+            foreach (var resp in new[]
+                     {
+                         await http.PostAsync("/ingest/added-after-the-deny-was-written",
+                             new StringContent("{\"text\":\"hello\"}", Encoding.UTF8, "application/json")),
+                         await http.PostAsync("/ingest/added-after-the-deny-was-written",
+                             new StringContent("{ not json", Encoding.UTF8, "application/json")),
+                         await http.GetAsync("/ingest/added-after-the-deny-was-written"),
+                     })
+            {
+                await RecordingGroupProbeHost.AssertBodyIsNothingButTheRefusal(resp);
+                Assert.DoesNotContain("echoed", await resp.Content.ReadAsStringAsync(), StringComparison.Ordinal);
+            }
 
-            await RecordingGroupProbeHost.AssertBodyIsNothingButTheRefusal(resp);
-            Assert.DoesNotContain(ProbePayloadSentinel, await resp.Content.ReadAsStringAsync(),
-                StringComparison.Ordinal);
+            // THE FRAMEWORK-400 CONTROL. The identical malformed body meets the framework's own 400 on the
+            // undenied equivalent, while the denied route returns the refusal above - so the denied route
+            // short-circuits BEFORE framework binding, and the malformed-body refusal is not a route that
+            // merely happens not to bind.
+            var undeniedMalformed = await http.PostAsync("/undenied-equivalent",
+                new StringContent("{ not json", Encoding.UTF8, "application/json"));
+            Assert.Equal(HttpStatusCode.BadRequest, undeniedMalformed.StatusCode);
+
+            // NOTHING behind the refusal bound an argument, on any shape - the assertion a parameterless GET
+            // or a body-ignoring custom binder could never make, and the one that separates the exclusive
+            // catch-all (refusal placed BEFORE binding) from the rejected per-handler filter (which ran the
+            // binder first and then refused).
+            foreach (var resp in new[]
+                     {
+                         await http.PostAsync("/ingest/added-after-the-deny-was-written-observed",
+                             new StringContent("{\"text\":\"hello\"}", Encoding.UTF8, "application/json")),
+                         await http.PostAsync("/ingest/added-after-the-deny-was-written-observed",
+                             new StringContent("{ not json", Encoding.UTF8, "application/json")),
+                         await http.GetAsync("/ingest/added-after-the-deny-was-written-observed"),
+                     })
+            {
+                await RecordingGroupProbeHost.AssertBodyIsNothingButTheRefusal(resp);
+                Assert.DoesNotContain(RecordingProbeBinding.Sentinel, await resp.Content.ReadAsStringAsync(),
+                    StringComparison.Ordinal);
+            }
+            Assert.Equal(0, RecordingProbeBinding.Count);
         }
         finally { http.Dispose(); await app.DisposeAsync(); }
     }
@@ -559,31 +630,98 @@ public sealed class SelfHostRecordingGroupControlTests : IDisposable
     }
 
     /// <summary>
-    /// The self-host mirror of the future-route probe: the SAME brand-new route mapped through the group
-    /// SERVES on self-host, in both non-hosted forms. Paired with
+    /// The self-host mirror of the future-route probe: the SAME framework body-bound POST route mapped through
+    /// the group SERVES on self-host, in both non-hosted forms. Paired with
     /// <see cref="HostedRecordingGroupFilterTests.A_route_added_to_the_group_later_is_refused_on_hosted_with_no_deny_of_its_own"/>,
     /// this proves the group is a working gate (refuse on hosted, serve off it) and not a brick that refuses
     /// everything unconditionally.
+    ///
+    /// It also proves the future route's binding is REALLY the framework's: a valid body serves with the body
+    /// bound, and a malformed body off hosted hits the framework's own 400 - the exact capability the hosted
+    /// refusal short-circuits before reaching. And it is the POSITIVE twin of the hosted no-binding assertion:
+    /// off hosted the observable custom binder DID run (count == 1) and served the bound sentinel, so the
+    /// hosted count of zero is a working gate and not a binder broken on every deployment.
     /// </summary>
     [Theory]
     [MemberData(nameof(NonHostedValues))]
     public async Task A_route_added_to_the_group_still_serves_on_self_host(string? hostedValue)
     {
         DeclareSelfHost(hostedValue);
-        const string sentinel = "probe-payload-served-on-self-host";
+        RecordingProbeBinding.Reset();
 
         var (app, http) = await RecordingGroupProbeHost.StartAsync(
-            mapIntoGroup: group => group.MapGet("/added-after-the-deny-was-written",
-                () => Results.Json(new { probe = sentinel })));
+            mapIntoGroup: group =>
+            {
+                group.MapPost("/added-after-the-deny-was-written",
+                    (RecordingProbeBody body) => Results.Json(new { echoed = body.Text }));
+                group.MapPost("/added-after-the-deny-was-written-observed",
+                    (RecordingProbeBinding probe) => Results.Json(new { probe = probe.Value }));
+            });
         try
         {
-            var resp = await http.GetAsync("/ingest/added-after-the-deny-was-written");
-            Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
-            Assert.Equal("application/json", resp.Content.Headers.ContentType?.MediaType);
+            // The framework-bound future route SERVES off hosted, with the body really bound.
+            var served = await http.PostAsync("/ingest/added-after-the-deny-was-written",
+                new StringContent("{\"text\":\"hello\"}", Encoding.UTF8, "application/json"));
+            Assert.Equal(HttpStatusCode.OK, served.StatusCode);
+            Assert.Equal("application/json", served.Content.Headers.ContentType?.MediaType);
+            using (var doc = JsonDocument.Parse(await served.Content.ReadAsStringAsync()))
+                Assert.Equal("hello", doc.RootElement.GetProperty("echoed").GetString());
 
-            using var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync());
-            Assert.Equal(sentinel, doc.RootElement.GetProperty("probe").GetString());
+            // The binding is the framework's and is capable of the 400 the hosted refusal short-circuits: a
+            // malformed body off hosted hits the framework's own 400 on the SAME future route.
+            var malformed = await http.PostAsync("/ingest/added-after-the-deny-was-written",
+                new StringContent("{ not json", Encoding.UTF8, "application/json"));
+            Assert.Equal(HttpStatusCode.BadRequest, malformed.StatusCode);
+
+            // The observable custom binder really ran off hosted - the positive twin of the hosted count of 0.
+            var observed = await http.PostAsync("/ingest/added-after-the-deny-was-written-observed",
+                new StringContent("{\"text\":\"hello\"}", Encoding.UTF8, "application/json"));
+            Assert.Equal(HttpStatusCode.OK, observed.StatusCode);
+            using (var doc = JsonDocument.Parse(await observed.Content.ReadAsStringAsync()))
+                Assert.Equal(RecordingProbeBinding.Sentinel, doc.RootElement.GetProperty("probe").GetString());
+            Assert.Equal(1, RecordingProbeBinding.Count);
         }
         finally { http.Dispose(); await app.DisposeAsync(); }
+    }
+}
+
+/// <summary>
+/// The future route's body record, bound by the FRAMEWORK ([FromBody] on a minimal-API handler), exactly as
+/// the shared primitive's own <see cref="Tenancy"/> reference future route binds its <c>EchoBody</c>. This is
+/// what makes the future-route canary a real framework-binding proof: off hosted a malformed body posted to
+/// this route reaches the framework's JSON-binding boundary and returns its own 400, and on hosted the
+/// exclusive catch-all refuses BEFORE that binding is ever attempted. A custom
+/// <c>IBindableFromHttpContext</c>/<c>BindAsync</c> parameter would ignore the request body entirely and bind
+/// unconditionally, so a malformed body could never reach the framework 400 - which is precisely why the
+/// future route must be framework-bound and not custom-bound.
+/// </summary>
+internal sealed record RecordingProbeBody(string Text);
+
+/// <summary>
+/// The OBSERVABLE-BINDING SEAM, kept as a SEPARATE route from the framework-bound future route above.
+/// Argument binding leaves no trace of its own, so proving that NOTHING bound behind the hosted refusal - on a
+/// valid body, a malformed body, or a verb the route never mapped - requires a parameter that records the fact
+/// it was bound. This mirrors the shared primitive's own <see cref="Tenancy.ObservableBinding"/> (its
+/// <c>/family/custom</c> route, distinct from its framework-bound <c>/family/echo</c> and <c>/family/future</c>
+/// routes), kept local so this file stays self-contained. It is NOT the future route: the future route is
+/// framework-bound (<see cref="RecordingProbeBody"/>); this is the counting instrument mapped alongside it.
+/// </summary>
+internal sealed class RecordingProbeBinding
+{
+    /// <summary>The payload the binder produces off hosted, and the string that must NEVER appear on hosted.</summary>
+    public const string Sentinel = "probe-payload-that-must-never-be-served-on-hosted";
+
+    private static int _count;
+
+    public string Value { get; init; } = "";
+
+    public static int Count => Volatile.Read(ref _count);
+
+    public static void Reset() => Interlocked.Exchange(ref _count, 0);
+
+    public static ValueTask<RecordingProbeBinding?> BindAsync(HttpContext context)
+    {
+        Interlocked.Increment(ref _count);
+        return ValueTask.FromResult<RecordingProbeBinding?>(new RecordingProbeBinding { Value = Sentinel });
     }
 }
