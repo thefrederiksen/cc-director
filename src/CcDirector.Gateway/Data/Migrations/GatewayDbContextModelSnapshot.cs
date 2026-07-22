@@ -161,6 +161,115 @@ namespace CcDirector.Gateway.Data.Migrations
                     b.ToTable("cron_runs", (string)null);
                 });
 
+            modelBuilder.Entity("CcDirector.Gateway.Data.Entities.DeviceCredentialEntity", b =>
+                {
+                    b.Property<string>("DeviceId")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("AccountSubject")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("CloudDeviceId")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("DeviceKeyHash")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("DeviceType")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
+                    b.Property<DateTime>("IssuedAtUtc")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("KeyLast4")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("KeyPrefix")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("MachineName")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("Platform")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
+                    b.Property<DateTime?>("RevokedAtUtc")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("RevokedReason")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("TenantId")
+                        .HasColumnType("TEXT");
+
+                    b.HasKey("DeviceId");
+
+                    b.HasIndex("DeviceKeyHash");
+
+                    b.ToTable("device_credentials", (string)null);
+                });
+
+            modelBuilder.Entity("CcDirector.Gateway.Data.Entities.DeviceImportMarkerEntity", b =>
+                {
+                    b.Property<string>("SourcePath")
+                        .HasColumnType("TEXT");
+
+                    b.Property<DateTime>("ImportedAtUtc")
+                        .HasColumnType("TEXT");
+
+                    b.Property<int>("ImportedCount")
+                        .HasColumnType("INTEGER");
+
+                    b.HasKey("SourcePath");
+
+                    b.ToTable("device_import_markers", (string)null);
+                });
+
+            modelBuilder.Entity("CcDirector.Gateway.Data.Entities.EntitlementEntity", b =>
+                {
+                    b.Property<string>("Subject")
+                        .HasColumnType("TEXT")
+                        .HasColumnName("subject");
+
+                    b.Property<DateTime?>("CurrentPeriodEnd")
+                        .HasColumnType("TEXT")
+                        .HasColumnName("current_period_end");
+
+                    b.Property<bool?>("Livemode")
+                        .HasColumnType("INTEGER")
+                        .HasColumnName("livemode");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasColumnType("TEXT")
+                        .HasColumnName("status");
+
+                    b.Property<string>("StripeSubscriptionId")
+                        .HasColumnType("TEXT")
+                        .HasColumnName("stripe_subscription_id");
+
+                    b.Property<DateTime?>("UpdatedAt")
+                        .HasColumnType("TEXT")
+                        .HasColumnName("updated_at");
+
+                    b.HasKey("Subject");
+
+                    b.ToTable("entitlements", null, t =>
+                        {
+                            t.ExcludeFromMigrations();
+                        });
+                });
+
             modelBuilder.Entity("CcDirector.Gateway.Data.Entities.GovernanceAuditEventEntity", b =>
                 {
                     b.Property<Guid>("Id")
