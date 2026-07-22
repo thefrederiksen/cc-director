@@ -119,8 +119,8 @@ public sealed class HostedLauncherHubDenyTests : IAsyncLifetime
         });
 
         // The registry was never written by either tenant - there is no bare-machine-keyed row to supersede.
-        Assert.False(_gateway.LauncherConnections.IsStreamConnected(Machine));
-        Assert.Null(_gateway.LauncherConnections.GetActiveConnectionId(Machine));
+        Assert.False(_gateway.LauncherConnections.IsStreamConnected(CcDirector.Core.Tenancy.TenantId.Local, Machine));
+        Assert.Null(_gateway.LauncherConnections.GetActiveConnectionId(CcDirector.Core.Tenancy.TenantId.Local, Machine));
     }
 
     /// <summary>
@@ -140,7 +140,7 @@ public sealed class HostedLauncherHubDenyTests : IAsyncLifetime
 
         await conn.InvokeAsync("Hello", new LauncherStreamHello { MachineName = Machine, Port = 7878, Version = "test" });
 
-        Assert.True(_gateway.LauncherConnections.IsStreamConnected(Machine));
+        Assert.True(_gateway.LauncherConnections.IsStreamConnected(CcDirector.Core.Tenancy.TenantId.Local, Machine));
     }
 
     private async Task<HubConnection> ConnectLauncherAsync(string token)

@@ -331,7 +331,7 @@ public sealed class HostedLauncherMachineDenyTests : IAsyncLifetime
         // port and process id fleet-wide. Seeding a machine directly into the registry and then proving the
         // hosted response cannot possibly carry it states the disclosure in its own terms - an empty list
         // would satisfy "no leak" while being a false statement about the fleet, so the refusal is asserted too.
-        _gateway.Launchers.Upsert(new LauncherRegistrationRequest
+        _gateway.Launchers.Upsert(CcDirector.Core.Tenancy.TenantId.Local, new LauncherRegistrationRequest
         {
             MachineName = "SOMEONE-ELSES-PC",
             Port = 7999,
@@ -532,7 +532,7 @@ internal sealed class MachineGroupProbeHost : IAsyncDisposable
 
     /// <summary>Register the stub launcher under <paramref name="machine"/> so the REST relay dials it on loopback.</summary>
     public void SeedStubLauncher(string machine) =>
-        Launchers.Upsert(new LauncherRegistrationRequest
+        Launchers.Upsert(CcDirector.Core.Tenancy.TenantId.Local, new LauncherRegistrationRequest
         {
             MachineName = machine,
             Port = StubLauncherPort,
@@ -770,8 +770,8 @@ public sealed class HostedLauncherMachineExclusiveGroupTests : IDisposable
 
         // Read the write side directly. Nothing landed - so the outbound-request-forgery primitive
         // (re-pointing a machine's relay at an arbitrary host) never armed.
-        Assert.Null(probe.Launchers.Get("ATTACKER-REDIRECT"));
-        Assert.Empty(probe.Launchers.ListLaunchers());
+        Assert.Null(probe.Launchers.Get(CcDirector.Core.Tenancy.TenantId.Local, "ATTACKER-REDIRECT"));
+        Assert.Empty(probe.Launchers.ListLaunchers(CcDirector.Core.Tenancy.TenantId.Local));
     }
 
     /// <summary>
@@ -894,7 +894,7 @@ public sealed class HostedLauncherMachineSelfHostControlTests : IDisposable
         // UNREGISTER - and re-read the registry OBJECT directly, so the effect is observed at the write side
         // rather than only through the route that reports it.
         Assert.Equal(HttpStatusCode.OK, (await probe.Http.DeleteAsync($"/launchers/{Machine}")).StatusCode);
-        Assert.Null(probe.Launchers.Get(Machine));
+        Assert.Null(probe.Launchers.Get(CcDirector.Core.Tenancy.TenantId.Local, Machine));
         Assert.Empty((await probe.Http.GetFromJsonAsync<List<LauncherDto>>("/launchers"))!);
     }
 

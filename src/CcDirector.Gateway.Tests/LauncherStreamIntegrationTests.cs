@@ -60,7 +60,7 @@ public sealed class LauncherStreamIntegrationTests : IAsyncLifetime
 
         await conn.InvokeAsync("Hello", new LauncherStreamHello { MachineName = Machine, Port = 7878, Version = "test" });
 
-        Assert.True(_gateway.LauncherConnections.IsStreamConnected(Machine));
+        Assert.True(_gateway.LauncherConnections.IsStreamConnected(CcDirector.Core.Tenancy.TenantId.Local, Machine));
     }
 
     [Fact]
@@ -75,7 +75,7 @@ public sealed class LauncherStreamIntegrationTests : IAsyncLifetime
         });
         await conn.InvokeAsync("Hello", new LauncherStreamHello { MachineName = Machine, Port = 7878, Version = "test" });
 
-        var result = await _gateway.SendLauncherCommandAsync(Machine, new LauncherCommand { Verb = "director/restart" });
+        var result = await _gateway.SendLauncherCommandAsync(CcDirector.Core.Tenancy.TenantId.Local, Machine, new LauncherCommand { Verb = "director/restart" });
 
         Assert.NotNull(result);
         Assert.True(result!.IsOk);
@@ -91,7 +91,7 @@ public sealed class LauncherStreamIntegrationTests : IAsyncLifetime
             _ => Task.FromResult(LauncherCommandResult.Fail(LauncherCommandStatus.BadRequest, "unknown verb: bogus")));
         await conn.InvokeAsync("Hello", new LauncherStreamHello { MachineName = Machine, Port = 7878, Version = "test" });
 
-        var result = await _gateway.SendLauncherCommandAsync(Machine, new LauncherCommand { Verb = "bogus" });
+        var result = await _gateway.SendLauncherCommandAsync(CcDirector.Core.Tenancy.TenantId.Local, Machine, new LauncherCommand { Verb = "bogus" });
 
         Assert.NotNull(result);
         Assert.False(result!.IsOk);
@@ -104,7 +104,7 @@ public sealed class LauncherStreamIntegrationTests : IAsyncLifetime
     {
         // No launcher has joined for this machine => no active stream connection => null, which the caller
         // treats as "no stream" and falls back to the existing HTTP relay.
-        var result = await _gateway.SendLauncherCommandAsync("no-such-machine", new LauncherCommand { Verb = "director/start" });
+        var result = await _gateway.SendLauncherCommandAsync(CcDirector.Core.Tenancy.TenantId.Local, "no-such-machine", new LauncherCommand { Verb = "director/start" });
         Assert.Null(result);
     }
 
