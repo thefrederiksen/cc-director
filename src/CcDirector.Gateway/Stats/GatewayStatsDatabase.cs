@@ -1,4 +1,5 @@
 using CcDirector.Core.Storage;
+using CcDirector.Core.Tenancy;
 using CcDirector.Core.Utilities;
 using Microsoft.Data.Sqlite;
 
@@ -35,7 +36,18 @@ public sealed class GatewayStatsDatabase : IDisposable
 {
     /// <summary>The schema version this build understands. Bump it and add a migration step; never reshape
     /// an existing table in place without one.</summary>
-    public const int SchemaVersion = 4;
+    public const int SchemaVersion = 5;
+
+    /// <summary>
+    /// The oldest schema version this build can migrate FORWARD without losing data. Below it the store is
+    /// retired aside unread (<see cref="RetireIncompatibleStore"/>): version 4 changed what repo_id MEANS
+    /// (local path -> "owner/repo" repo name), and the Gateway cannot re-key a stored path, so a pre-v4 store
+    /// has no faithful forward migration. A v4 store DOES: version 5 (MTR-08) only ADDS a tenant column and
+    /// backfills every existing row to the single self-host tenant, so v4 is migrated, never retired. This is
+    /// a FIXED boundary, deliberately NOT <see cref="SchemaVersion"/> - raising the schema version must not
+    /// silently start retiring stores that have a faithful migration.
+    /// </summary>
+    private const int OldestForwardMigratableVersion = 4;
 
     /// <summary>The meta key holding when the model dimension started recording - an ISO-8601 UTC stamp
     /// written once, by the migration that added the dimension. See <see cref="MigrateToVersion2"/> for why
@@ -136,6 +148,9 @@ public sealed class GatewayStatsDatabase : IDisposable
 
         if (current < 4)
             MigrateToVersion4(tx);
+
+        if (current < 5)
+            MigrateToVersion5(tx);
 
         Execute($"PRAGMA user_version={SchemaVersion}", tx);
         tx.Commit();
@@ -505,6 +520,128 @@ public sealed class GatewayStatsDatabase : IDisposable
             )", tx);
     }
 
+    // Version 5: the TENANT dimension (MTR-08, production-readiness census rows 49-67) - the owning tenant of
+    // every recorded fact, so a hosted Gateway that folds several accounts' pushes into this one store keeps
+    // each account's tally, membership and identity PHYSICALLY separate instead of coalescing them.
+    //
+    // WHY A FORWARD MIGRATION AND NOT A RETIRE. Unlike version 4 (which changed what repo_id MEANS and had no
+    // faithful re-key), this only ADDS a column. Every row already in the store was written by a single-tenant
+    // build, so it belongs to exactly one tenant: the self-host tenant. Backfilling each existing row to
+    // TenantId.Local is therefore not a guess - it is the true owner. No numbers are lost and no data is
+    // invented.
+    //
+    // TWO SHAPES OF CHANGE:
+    //   - ADD COLUMN with a NOT NULL DEFAULT of the local tenant, for the delta tables and the identity
+    //     tables. SQLite backfills every existing row to 'local' in one statement, and the column keeps
+    //     NOT NULL going forward (the fold always stamps a tenant).
+    //   - A TABLE REBUILD for the five membership/high-water tables and meta, because the tenant must join
+    //     their PRIMARY KEY and SQLite cannot alter a primary key in place. Without the tenant in the key,
+    //     two tenants pushing the same bare session id would collide on the key and one would silently
+    //     overwrite the other's high-water - the exact suppression this fix closes. Each rebuild copies every
+    //     existing row under the local tenant, so a self-host store keeps all of its rows.
+    //
+    // Runs inside the migration transaction (see Migrate()), so a crash mid-rebuild rolls the whole thing back
+    // rather than leaving a half-keyed store claiming to be version 5.
+    private void MigrateToVersion5(SqliteTransaction tx)
+    {
+        var local = TenantId.Local.Value;
+
+        // The delta and identity tables: the tenant is a plain column (not part of any primary key), so an
+        // ADD COLUMN with a NOT NULL default backfills every existing row to the self-host tenant in place.
+        foreach (var table in new[]
+                 {
+                     "stat_delta", "token_delta", "agent_delta", "agent_driven_delta",
+                     "repo_identity", "agent_identity", "model_identity", "checkout_identity",
+                 })
+            Execute($"ALTER TABLE {table} ADD COLUMN tenant TEXT NOT NULL DEFAULT '{local}'", tx);
+
+        // Read speed: the tenant-scoped aggregate reads all filter by tenant, and the working-day series also
+        // by hour. A composite index keeps those from scanning another tenant's rows.
+        Execute("CREATE INDEX IF NOT EXISTS ix_stat_delta_tenant_hour ON stat_delta(tenant, hour_utc)", tx);
+        Execute("CREATE INDEX IF NOT EXISTS ix_token_delta_tenant_hour ON token_delta(tenant, hour_utc)", tx);
+
+        // The membership / high-water tables and meta: the tenant must join the PRIMARY KEY, so each is
+        // rebuilt with the tenant in the key and every existing row copied under the local tenant.
+        RebuildWithTenant(tx, "session_highwater",
+            @"CREATE TABLE session_highwater (
+                  tenant     TEXT    NOT NULL,
+                  session_id TEXT    NOT NULL,
+                  modality   TEXT    NOT NULL,
+                  surface    TEXT    NOT NULL,
+                  turns      INTEGER NOT NULL,
+                  chars      INTEGER NOT NULL,
+                  PRIMARY KEY (tenant, session_id, modality, surface)
+              )",
+            "tenant, session_id, modality, surface, turns, chars",
+            "session_id, modality, surface, turns, chars", local);
+
+        RebuildWithTenant(tx, "agent_driven_highwater",
+            @"CREATE TABLE agent_driven_highwater (
+                  tenant     TEXT    NOT NULL,
+                  session_id TEXT    NOT NULL,
+                  turns      INTEGER NOT NULL,
+                  chars      INTEGER NOT NULL,
+                  PRIMARY KEY (tenant, session_id)
+              )",
+            "tenant, session_id, turns, chars",
+            "session_id, turns, chars", local);
+
+        RebuildWithTenant(tx, "token_highwater",
+            @"CREATE TABLE token_highwater (
+                  tenant                TEXT    NOT NULL,
+                  session_id            TEXT    NOT NULL,
+                  input_tokens          INTEGER NOT NULL,
+                  output_tokens         INTEGER NOT NULL,
+                  cache_read_tokens     INTEGER NOT NULL,
+                  cache_creation_tokens INTEGER NOT NULL,
+                  PRIMARY KEY (tenant, session_id)
+              )",
+            "tenant, session_id, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens",
+            "session_id, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens", local);
+
+        RebuildWithTenant(tx, "wingman_session",
+            @"CREATE TABLE wingman_session (
+                  tenant     TEXT NOT NULL,
+                  session_id TEXT NOT NULL,
+                  PRIMARY KEY (tenant, session_id)
+              )",
+            "tenant, session_id", "session_id", local);
+
+        RebuildWithTenant(tx, "agents_seeded",
+            @"CREATE TABLE agents_seeded (
+                  tenant     TEXT NOT NULL,
+                  session_id TEXT NOT NULL,
+                  PRIMARY KEY (tenant, session_id)
+              )",
+            "tenant, session_id", "session_id", local);
+
+        // meta becomes per (tenant, name). agents_since_utc is per tenant from here on; models_since_utc is a
+        // schema fact and simply rides the local tenant's row (it is read tenant-agnostically).
+        RebuildWithTenant(tx, "meta",
+            @"CREATE TABLE meta (
+                  tenant TEXT NOT NULL,
+                  name   TEXT NOT NULL,
+                  value  TEXT NOT NULL,
+                  PRIMARY KEY (tenant, name)
+              )",
+            "tenant, name, value", "name, value", local);
+    }
+
+    // Rebuild one table so the tenant can join its primary key: create the new shape, copy every existing row
+    // under the local tenant, drop the old table, rename the new one into its place. The copy stamps the
+    // local-tenant literal as the first selected column, which is why <paramref name="oldColumns"/> lists the
+    // ORIGINAL columns (no tenant) and <paramref name="newColumns"/> lists them WITH tenant first.
+    private void RebuildWithTenant(SqliteTransaction tx, string table, string createNewSql,
+        string newColumns, string oldColumns, string local)
+    {
+        var tmp = table + "_v5";
+        // createNewSql names `table`; build it under the temp name, then rename after the drop.
+        Execute(createNewSql.Replace($"CREATE TABLE {table} ", $"CREATE TABLE {tmp} "), tx);
+        Execute($"INSERT INTO {tmp}({newColumns}) SELECT '{local}', {oldColumns} FROM {table}", tx);
+        Execute($"DROP TABLE {table}", tx);
+        Execute($"ALTER TABLE {tmp} RENAME TO {table}", tx);
+    }
+
     // Retire an incompatible pre-version-4 statistics store aside UNREAD, exactly as the legacy JSON store was
     // retired (GatewayInputStatsAggregator.RetireLegacyJsonStore). Runs once, before the database is opened.
     //
@@ -542,9 +679,10 @@ public sealed class GatewayStatsDatabase : IDisposable
             return;
         }
 
-        // A valid store already at version 4 (or, defensively, beyond it) is current; version 0 is not a real
-        // stamped store. Only a genuine version 1..3 file is the incompatible store this retires.
-        if (version <= 0 || version >= SchemaVersion) return;
+        // A store at version 4 or beyond has a faithful forward migration (v5 only adds a tenant column), so
+        // it is NOT retired - it is migrated. Version 0 is not a real stamped store. Only a genuine version
+        // 1..3 file is the incompatible store this retires (its repo_id is a path this build cannot re-key).
+        if (version <= 0 || version >= OldestForwardMigratableVersion) return;
 
         var aside = _path + ".superseded-" +
             DateTime.UtcNow.ToString("yyyyMMdd-HHmmss", System.Globalization.CultureInfo.InvariantCulture);
@@ -552,7 +690,7 @@ public sealed class GatewayStatsDatabase : IDisposable
         MoveAsideIfExists(_path + "-wal", aside + "-wal");
         MoveAsideIfExists(_path + "-shm", aside + "-shm");
         FileLog.Write($"[GatewayStatsDatabase] RetireIncompatibleStore: the repository dimension changed from " +
-                      $"local path to repo name at schema v{SchemaVersion}; renamed the superseded store " +
+                      $"local path to repo name at schema v{OldestForwardMigratableVersion}; renamed the superseded store " +
                       $"(v{version}) to {aside} UNREAD; starting empty");
     }
 

@@ -1031,14 +1031,17 @@ internal static class GatewayEndpoints
             // fold only runs when stream mode is on, which it is not in production). The aggregator's
             // per-session high-water logic makes folding the full roster on every read idempotent - only a
             // genuine increase is added, so repeated /sessions polls never double-count.
-            inputStats?.ObserveSnapshot(all, DateTime.UtcNow);
+            // MTR-08: stamp the REQUEST TENANT. The roster assembled above is this tenant's own (the
+            // owned-Director gate filtered it), so its input tallies fold into this tenant's partition and can
+            // never coalesce with another account's.
+            inputStats?.ObserveSnapshot(all, DateTime.UtcNow, reqTenant.Value);
 
             // DevThrottle Stats: record fleet concurrency and the hourly activity log from the same
             // assembled roster - max concurrent loaded/running (live) and actively working, plus how many
-            // distinct sessions/machines/repositories ran each hour. Fleet-wide with no per-Director
-            // instrumentation, since the roster already sees every session on every machine. The tracker
-            // keeps only the higher value per hour, so folding on every /sessions read never inflates.
-            concurrency?.Observe(all, DateTime.UtcNow);
+            // distinct sessions/machines/repositories ran each hour. Per-tenant with no per-Director
+            // instrumentation, since the roster already sees this tenant's sessions on every machine. The
+            // tracker keeps only the higher value per hour, so folding on every /sessions read never inflates.
+            concurrency?.Observe(all, DateTime.UtcNow, reqTenant.Value);
 
             // Issue #1292: adopt every observed number into the fleet allocator's in-use set. This is how
             // the Gateway learns numbers it did not hand out - a number a Director assigned offline, or any

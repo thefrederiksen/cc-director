@@ -1,3 +1,4 @@
+using CcDirector.Core.Tenancy;
 using CcDirector.Gateway.Contracts;
 using CcDirector.Gateway.Stats;
 using Xunit;
@@ -125,5 +126,73 @@ public sealed class GatewaySessionConcurrencyStatsTests : IDisposable
         Assert.Single(snap.Hourly);                 // only the recent hour survives the history
         Assert.Equal("2026-07-11T20", snap.Hourly[0].Hour);
         Assert.Equal(15, snap.Live.AllTimeMax);     // the peak is not history-derived, so it stands
+    }
+
+    // ---- MTR-08: two tenants' concurrency does not mix ----
+
+    private static readonly TenantId TenantA = new("11111111-1111-1111-1111-111111111111");
+    private static readonly TenantId TenantB = new("22222222-2222-2222-2222-222222222222");
+
+    [Fact]
+    public void TwoTenants_ConcurrencyAggregates_DoNotMix()
+    {
+        var s = new GatewaySessionConcurrencyStats(_path);
+
+        // Each tenant's /sessions roster is its own; the peak, current and hourly distinct counts are kept per
+        // tenant, so tenant A's 28-live peak never shows up in tenant B's snapshot and vice versa.
+        s.Observe(Roster(28, 7), T0, TenantA);
+        s.Observe(Roster(4, 1), T0, TenantB);
+
+        var snapA = s.Snapshot(T0.AddMinutes(1), TenantA);
+        var snapB = s.Snapshot(T0.AddMinutes(1), TenantB);
+
+        Assert.Equal(28, snapA.Live.AllTimeMax);
+        Assert.Equal(7, snapA.Working.AllTimeMax);
+        Assert.Equal(4, snapB.Live.AllTimeMax);
+        Assert.Equal(1, snapB.Working.AllTimeMax);
+
+        // The hourly distinct-session counts are per tenant too - A saw 28 distinct sessions that hour, B saw
+        // 4, and neither is the sum.
+        Assert.Equal(28, Assert.Single(snapA.Hourly).Sessions);
+        Assert.Equal(4, Assert.Single(snapB.Hourly).Sessions);
+    }
+
+    [Fact]
+    public void TwoTenants_Concurrency_SurvivesRestart_PerTenant()
+    {
+        var a = new GatewaySessionConcurrencyStats(_path);
+        a.Observe(Roster(28, 7), T0, TenantA);
+        a.Observe(Roster(4, 1), T0, TenantB);
+
+        var b = new GatewaySessionConcurrencyStats(_path); // reload the version-2 per-tenant store from disk
+        Assert.Equal(28, b.Snapshot(T0.AddMinutes(1), TenantA).Live.AllTimeMax);
+        Assert.Equal(4, b.Snapshot(T0.AddMinutes(1), TenantB).Live.AllTimeMax);
+    }
+
+    [Fact]
+    public void PreTenantStoreFile_Reloads_UnderTheLocalTenant()
+    {
+        // A version-1 file (the pre-tenant single-object shape) written by an older build migrates its numbers
+        // into the Local tenant, so a self-host upgrade keeps its all-time peak rather than quarantining it.
+        var legacy = """
+        {
+          "LiveAllTimeMax": 42,
+          "LiveAllTimeMaxAtUtc": "2026-07-11T20:00:00Z",
+          "WorkingAllTimeMax": 9,
+          "WorkingAllTimeMaxAtUtc": "2026-07-11T20:00:00Z",
+          "Hours": { "2026-07-11T20": { "MaxLive": 42, "MaxWorking": 9, "DistinctSessions": 42, "DistinctMachines": 3, "DistinctRepos": 5 } },
+          "CurrentHourKey": "2026-07-11T20",
+          "CurrentSessions": [],
+          "CurrentMachines": [],
+          "CurrentRepos": []
+        }
+        """;
+        File.WriteAllText(_path, legacy);
+
+        var s = new GatewaySessionConcurrencyStats(_path);
+        var snap = s.Snapshot(T0.AddMinutes(1)); // default tenant == Local
+        Assert.Equal(42, snap.Live.AllTimeMax);
+        Assert.Equal(9, snap.Working.AllTimeMax);
+        Assert.Equal(42, Assert.Single(snap.Hourly).Sessions);
     }
 }
