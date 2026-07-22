@@ -13,11 +13,18 @@ namespace CcDirector.Gateway.Tests;
 
 /// <summary>
 /// Endpoint-level proof that the P1 fix is WIRED IN, not just present as a helper: the live Gateway
-/// <c>GET /cockpit</c>, the <c>CockpitUrl</c> on <c>GET /gateway/about</c>, and the <c>cockpit.url</c> on
-/// <c>GET /gateway/settings</c> all hand back <c>{base}/cockpit</c> in hosted mode, where base comes from
-/// <c>CC_GATEWAY_PUBLIC_URL</c>. These are the tests that go red if any of the THREE call sites is reverted
-/// to <c>TailscaleIdentity.TryGetFrontDoorBaseUrl()</c> (which, with no tailnet in the test host, yields
-/// null where the public URL should be) - a green pure-resolver test cannot catch a mis-wired call site.
+/// <c>GET /cockpit</c> and the <c>CockpitUrl</c> on <c>GET /gateway/about</c> both hand back
+/// <c>{base}/cockpit</c> in hosted mode, where base comes from <c>CC_GATEWAY_PUBLIC_URL</c>. These are the
+/// tests that go red if either call site is reverted to <c>TailscaleIdentity.TryGetFrontDoorBaseUrl()</c>
+/// (which, with no tailnet in the test host, yields null where the public URL should be) - a green
+/// pure-resolver test cannot catch a mis-wired call site. These two are the surfaces a hosted client actually
+/// reads for the public URL.
+///
+/// <c>GET /gateway/settings</c> once carried a third <c>cockpit.url</c> copy, but that route is part of the
+/// owner-settings group DENIED on the hosted Gateway (issue #1863), so on hosted it serves the refusal and no
+/// cockpit URL at all - proved by <see cref="Hosted_settings_route_is_denied_and_carries_no_cockpit_url"/>.
+/// That copy is unused anyway: boot, navigation, and URL discovery do not consume it; its only reader is the
+/// settings-page load, which renders a load-error state on the deny.
 ///
 /// Only the HOSTED direction is asserted at the endpoint: it is deterministic (no tailscale involved). The
 /// self-host direction depends on whether a tailnet exists on the build host, so its byte-identical proof
@@ -66,24 +73,23 @@ public sealed class CockpitUrlEndpointTests
     }
 
     [Fact]
-    public async Task Hosted_settings_cockpit_url_returns_configured_public_cockpit_url()
+    public async Task Hosted_settings_route_is_denied_and_carries_no_cockpit_url()
     {
         await WithHostedGateway(PublicBase, async (http, gateway) =>
         {
-            // The third call site (first cut missed it): /gateway/settings.cockpit.url must hand back the
-            // SAME {base}/cockpit, not the raw front-door root it emitted before. Reverting this call site
-            // to TryGetFrontDoorBaseUrl() turns this red (null in the test host).
+            // /gateway/settings is part of the owner-settings group DENIED on hosted (issue #1863), so it no
+            // longer serves the cockpit.url it once did - it answers the refusal. The live public-URL surfaces
+            // are GET /cockpit and GET /gateway/about, asserted above; cockpit.url is unused by boot,
+            // navigation, or URL discovery.
             //
-            // MH-2: authenticate with a per-device key, not the shared token (rejected on hosted).
+            // MH-2: authenticate with a per-device key, not the shared token (rejected on hosted) - so this
+            // reaches the deny, not the auth gate.
             var deviceKey = gateway.Devices.Register("cockpiturl-settings", "PHONE").DeviceKey;
             using var req = new HttpRequestMessage(HttpMethod.Get, "gateway/settings");
             req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", deviceKey);
             using var resp = await http.SendAsync(req);
-            resp.EnsureSuccessStatusCode();
 
-            using var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync());
-            var url = doc.RootElement.GetProperty("cockpit").GetProperty("url").GetString();
-            Assert.Equal(ExpectedCockpit, url);
+            await OwnerSettingsRoutes.AssertIsNothingButTheRefusal(resp, OwnerSettingsRoutes.SettingsRefusal);
         });
     }
 

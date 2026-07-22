@@ -400,6 +400,15 @@ internal static class OwnerSettingsProbeHost
 }
 
 /// <summary>
+/// The well-formed JSON body the future-route canary binds THROUGH THE FRAMEWORK. A plain record parameter is
+/// inferred as the JSON body (the same shape as the reference's <c>EchoBody</c>), so the framework infers the
+/// media-type and parse constraints and a malformed body is the framework's own 400 on self-host - which is
+/// what makes the hosted "malformed body meets the refusal" claim a real pre-emption of binding rather than a
+/// custom binder side-stepping the bytes.
+/// </summary>
+internal sealed record CanaryBody(string Text);
+
+/// <summary>
 /// THE POINT OF THE WHOLE CHANGE: the hosted refusal is mapped through the shared primitive on each route
 /// GROUP, so it covers routes that have not been written yet.
 ///
@@ -478,11 +487,25 @@ public sealed class HostedOwnerSettingsGroupFilterTests : IAsyncLifetime
     };
 
     /// <summary>
-    /// A route that did not exist when the refusal was written is refused anyway. NOTHING in the endpoint
-    /// class mentions this path and no guard is written for it here - it is mapped THROUGH the denied handle,
-    /// so on hosted the primitive maps a verb-less refusal in its place instead of the probe handler. Map it
-    /// on the ungrouped builder instead and this serves the probe payload with a 200, which is the
-    /// future-route hole stated out loud.
+    /// A route that did not exist when the refusal was written is refused anyway - and it is proved through a
+    /// BODY-BOUND POST canary, not a parameterless GET, because a parameterless GET is the one shape the
+    /// original future-route defect could not be seen through (this is the shape set enumerated in
+    /// <c>Tenancy/HostedRouteDenyTests</c>, mirrored here for the owner-settings families). NOTHING in the
+    /// endpoint class mentions this path and no guard is written for it here - it is mapped THROUGH the denied
+    /// handle, so on hosted the primitive maps a verb-less refusal in its place and the handler is never
+    /// mapped at all.
+    ///
+    /// EVERY BODY SHAPE MEETS THE SAME REFUSAL. The canary binds its body through the FRAMEWORK - a plain
+    /// <see cref="CanaryBody"/> record parameter, inferred as the JSON body exactly like the reference's
+    /// <c>EchoBody</c>, NOT a custom binder that would ignore the bytes and prove nothing. That is what makes
+    /// the malformed-body and wrong-media-type shapes real: on self-host a malformed body is the framework's
+    /// own 400 (proved by the self-host half), so a hosted refusal that answers it with a 404 instead is
+    /// genuinely pre-empting framework binding rather than side-stepping it. A well-formed body, a malformed
+    /// one, and a wrong media type all meet the same 404 here, and the sentinel is served on none of them.
+    ///
+    /// Map the same canary on the ungrouped builder instead and it serves the sentinel with a 200, which is
+    /// the future-route hole stated out loud. The served half - the SAME canary with hosted mode OFF - is
+    /// <see cref="HostedOwnerSettingsSelfHostProbeTests"/>.
     /// </summary>
     [Theory]
     [MemberData(nameof(Families))]
@@ -491,20 +514,38 @@ public sealed class HostedOwnerSettingsGroupFilterTests : IAsyncLifetime
     {
         var (app, http) = await OwnerSettingsProbeHost.StartAsync(
             Family(family),
-            mapIntoGroup: group => group.MapGet(probePath, () => Results.Json(new { probe = ProbeSentinel })));
+            mapIntoGroup: group => group.MapPost(probePath,
+                (CanaryBody body) => Results.Json(new { probe = ProbeSentinel, echoed = body.Text })));
         try
         {
-            var response = await http.GetAsync(probePath);
-
-            Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
-            Assert.Equal("application/json", response.Content.Headers.ContentType?.MediaType);
-            var body = await response.Content.ReadAsStringAsync();
-            Assert.DoesNotContain(ProbeSentinel, body, StringComparison.Ordinal);
-
-            using var document = JsonDocument.Parse(body);
-            Assert.Equal(new[] { "error" }, document.RootElement.EnumerateObject().Select(p => p.Name).ToArray());
+            // Valid body, malformed body, and a wrong media type - each meets the refusal, not a 400/415, and
+            // the sentinel is served on none of them.
+            await AssertIsNothingButTheRefusal(await http.PostAsync(probePath, JsonBody("{\"text\":\"hello\"}")));
+            await AssertIsNothingButTheRefusal(await http.PostAsync(probePath, JsonBody("{ not json")));
+            await AssertIsNothingButTheRefusal(
+                await http.PostAsync(probePath, new StringContent("hello", Encoding.UTF8, "text/plain")));
         }
         finally { http.Dispose(); await app.DisposeAsync(); }
+    }
+
+    private static StringContent JsonBody(string json) => new(json, Encoding.UTF8, "application/json");
+
+    /// <summary>
+    /// Asserts the canary response is the family refusal and NOTHING ELSE: a 404, application/json, the
+    /// sentinel absent, and exactly one <c>error</c> property. Format facts precede the parse for the same
+    /// reason as <see cref="OwnerSettingsRoutes.AssertIsNothingButTheRefusal(HttpResponseMessage, string)"/> -
+    /// a route that had gone and now served HTML must redden as a media-type mismatch, not a parser crash.
+    /// </summary>
+    private static async Task AssertIsNothingButTheRefusal(HttpResponseMessage response)
+    {
+        var body = await response.Content.ReadAsStringAsync();
+
+        Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
+        Assert.Equal("application/json", response.Content.Headers.ContentType?.MediaType);
+        Assert.DoesNotContain(ProbeSentinel, body, StringComparison.Ordinal);
+
+        using var document = JsonDocument.Parse(body);
+        Assert.Equal(new[] { "error" }, document.RootElement.EnumerateObject().Select(p => p.Name).ToArray());
     }
 
     /// <summary>

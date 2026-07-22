@@ -4,6 +4,7 @@ using System.Linq;
 using System.Net;
 using System.Net.Http;
 using System.Net.Http.Headers;
+using System.Text;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
@@ -639,17 +640,32 @@ public sealed class HostedOwnerSettingsSelfHostProbeTests : IAsyncLifetime
             _ => throw new ArgumentOutOfRangeException(nameof(family), family, "unknown owner-settings family"),
         };
 
+        // The SAME body-bound POST canary the hosted side refuses (Tenancy/HostedRouteDenyTests shape),
+        // driven with hosted mode OFF. A primitive that refused everything unconditionally would satisfy the
+        // hosted class while silently killing this route for self-host too, so the served half must be proved.
         var (app, http) = await OwnerSettingsProbeHost.StartAsync(
             map,
-            mapIntoGroup: group => group.MapGet(probePath, () => Results.Json(new { probe = ProbePayload })));
+            mapIntoGroup: group => group.MapPost(probePath,
+                (CanaryBody body) => Results.Json(new { probe = ProbePayload, echoed = body.Text })));
         try
         {
-            var response = await http.GetAsync(probePath);
-            Assert.Equal(HttpStatusCode.OK, response.StatusCode);
-            Assert.Equal("application/json", response.Content.Headers.ContentType?.MediaType);
+            // A valid body binds through the framework and serves the sentinel with what it echoed.
+            var served = await http.PostAsync(probePath,
+                new StringContent("{\"text\":\"hello\"}", Encoding.UTF8, "application/json"));
+            Assert.Equal(HttpStatusCode.OK, served.StatusCode);
+            Assert.Equal("application/json", served.Content.Headers.ContentType?.MediaType);
 
-            using var document = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+            using var document = JsonDocument.Parse(await served.Content.ReadAsStringAsync());
             Assert.Equal(ProbePayload, document.RootElement.GetProperty("probe").GetString());
+            Assert.Equal("hello", document.RootElement.GetProperty("echoed").GetString());
+
+            // The binding is the FRAMEWORK's, not a custom binder that ignores the body: a malformed body is
+            // the framework's own 400 here. That is what makes the hosted "malformed body meets the refusal"
+            // claim a real pre-emption of binding - if this route side-stepped the bytes, the hosted assertion
+            // would prove nothing.
+            var malformed = await http.PostAsync(probePath,
+                new StringContent("{ not json", Encoding.UTF8, "application/json"));
+            Assert.Equal(HttpStatusCode.BadRequest, malformed.StatusCode);
         }
         finally { http.Dispose(); await app.DisposeAsync(); }
     }
