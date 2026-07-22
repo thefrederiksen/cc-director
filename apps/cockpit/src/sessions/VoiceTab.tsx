@@ -175,12 +175,19 @@ export function VoiceTab({ sessionId }: { sessionId: string | undefined }) {
         )}
       </div>
 
-      {/* Reply: the shared dictation interface with NO Insert - Send goes straight into the session. */}
+      {/* Reply: the shared dictation interface with NO Insert - Send goes straight into the session.
+          Deliberately NOT wired to the fire-and-forget onSendAudio path, matching SessionComposer: that
+          path is the durable /dictation/* background pipeline, which is not tenant-aware on the hosted
+          Gateway (blocker #1884) - so a hosted-Cockpit send-direct through it resolves an empty partition
+          and holds forever with no feedback (the Cockpit mounts no DictationStatusStrip). Omitting
+          onSendAudio makes the dialog use the blocking commit path (transcribeUtterance -> the tenant-safe
+          /wingman/utterance/* route), which ALSO surfaces a dropped-audio capture-loss warning in the
+          dialog itself (it parks instead of committing), so a Cockpit voice reply that lost audio is never
+          silent - closing the one gap where the warning was published but had no strip to show it. */}
       {v.responding && (
         <DictationDialog
           showInsert={false}
           onSend={(text) => void v.onRespondSend(text)}
-          onSendAudio={v.onRespondSendAudio}
           onClose={() => v.setResponding(false)}
         />
       )}
