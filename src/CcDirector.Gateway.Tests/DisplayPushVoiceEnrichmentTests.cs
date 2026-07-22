@@ -1,5 +1,4 @@
 using System.Collections.Generic;
-using CcDirector.Core.Tenancy;
 using CcDirector.Gateway.Contracts;
 using Xunit;
 
@@ -43,7 +42,6 @@ public sealed class DisplayPushVoiceEnrichmentTests
             new List<SessionDto> { s },
             voiceGeneratingFor: _ => false,
             voiceAudioReadyFor: _ => true,
-            tenant: TenantId.Local,
             needsYouStampFor: null,
             snoozeRegistry: null);
 
@@ -62,7 +60,6 @@ public sealed class DisplayPushVoiceEnrichmentTests
             new List<SessionDto> { s },
             voiceGeneratingFor: _ => false,
             voiceAudioReadyFor: _ => false,
-            tenant: TenantId.Local,
             needsYouStampFor: null,
             snoozeRegistry: null);
 
@@ -80,7 +77,6 @@ public sealed class DisplayPushVoiceEnrichmentTests
             new List<SessionDto> { s },
             voiceGeneratingFor: _ => true,
             voiceAudioReadyFor: _ => true,
-            tenant: TenantId.Local,
             needsYouStampFor: null,
             snoozeRegistry: null);
 

@@ -26,8 +26,7 @@ internal static class GatewayEndpoints
     /// <param name="voiceAudioReadyFor">Issue #553: whether the Gateway has fetchable, playable
     /// cached audio for a session id (<c>WingmanVoiceService.HasVoice</c>), stamped onto
     /// <see cref="SessionDto.VoiceAudioReady"/>. Null leaves the field false.</param>
-    /// <param name="needsYouStampFor">Issue #218 (MTR-10 Gap C: tenant-partitioned): given
-    /// (tenant, sessionId, isRed) where tenant is the OWNING tenant of the row and isRed is the
+    /// <param name="needsYouStampFor">Issue #218: given (sessionId, isRed) where isRed is the
     /// session's final EffectiveColor=="red" this refresh, returns the Gateway-owned UTC
     /// timestamp the session entered red (held while red, null when not red), stamped onto
     /// <see cref="SessionDto.NeedsYouSince"/>. Null (old callers) leaves
@@ -53,7 +52,7 @@ internal static class GatewayEndpoints
         Func<TenantId, string, Core.HostedAi.HostedAiState?>? voiceUnavailableFor = null,
         Func<TenantId, string, bool>? nothingToNarrateFor = null,
         Func<TenantId, string, bool>? servedViaFallbackFor = null,
-        Func<TenantId, string, bool, DateTime?>? needsYouStampFor = null,
+        Func<string, bool, DateTime?>? needsYouStampFor = null,
         Func<TenantId, string, bool>? transcribingFor = null,
         Func<TenantId, string, string?>? dictationStatusFor = null,
         Transcription.TranscribingSessions? transcribingSessions = null,
@@ -1023,7 +1022,7 @@ internal static class GatewayEndpoints
             // stamp the presentation fold (which reads the role to suppress a live Worker's red toward the
             // human). Done here, once, because the role needs the full fleet view - the UNFILTERED one
             // (`fleet`), not the response set (`all`). See defect 13 in StampFleetRolesAndFold.
-            StampFleetRolesAndFold(fleet, all, needsYouStampFor, snoozeRegistry, reqTenant.Value);
+            StampFleetRolesAndFold(fleet, all, needsYouStampFor, snoozeRegistry);
 
             // DevThrottle Stats: fold the assembled roster's per-session input tallies into the always-
             // available aggregate that backs "Your Throttle". This is the ONE path that carries
@@ -1319,7 +1318,7 @@ internal static class GatewayEndpoints
             // is driven by the roster read. Letting a by-id read stamp it would drive that clock out of band
             // and corrupt the roster's own waiting times. NeedsYouSince stays unstamped here, exactly as
             // before - this fix does not claim it.
-            StampFleetRolesAndFold(fleet, new[] { session }, needsYouStampFor: null, snoozeRegistry: snoozeRegistry, tenant: reqTenant.Value);
+            StampFleetRolesAndFold(fleet, new[] { session }, needsYouStampFor: null, snoozeRegistry: snoozeRegistry);
             return Results.Json(session);
         });
 
@@ -2924,9 +2923,8 @@ internal static class GatewayEndpoints
     internal static void StampFleetRolesAndFold(
         List<SessionDto> roleUniverse,
         IReadOnlyList<SessionDto> toStamp,
-        Func<TenantId, string, bool, DateTime?>? needsYouStampFor = null,
-        Snooze.SnoozeRegistry? snoozeRegistry = null,
-        TenantId? tenant = null)
+        Func<string, bool, DateTime?>? needsYouStampFor = null,
+        Snooze.SnoozeRegistry? snoozeRegistry = null)
     {
         if (roleUniverse is null) throw new ArgumentNullException(nameof(roleUniverse));
         if (toStamp is null) throw new ArgumentNullException(nameof(toStamp));
@@ -3022,11 +3020,7 @@ internal static class GatewayEndpoints
             if (needsYouStampFor is not null)
             {
                 var isRed = string.Equals(effectiveColor, "red", StringComparison.OrdinalIgnoreCase);
-                // MTR-10 Gap C: the needs-you clock is partitioned per tenant. The tenant is the OWNING tenant
-                // of the fold pass - the roster's request tenant, the display push's ambient tenant. Only the
-                // needs-you callers pass it; the dev/diagnostic callers pass no needsYouStampFor and no tenant,
-                // so the null-to-Local resolution here is never reached for them.
-                s.NeedsYouSince = needsYouStampFor(tenant ?? TenantId.Local, s.SessionId, isRed);
+                s.NeedsYouSince = needsYouStampFor(s.SessionId, isRed);
             }
             // The armed-snooze deadline, so a client can show "Snoozed - wakes in Xh". Read straight from the
             // registry (the sole timer owner) alongside HoldState above; null when there is no running clock
