@@ -44,6 +44,22 @@ export function holdStateFromResponse(res: { onHold: boolean; pending: boolean }
   return { held: res.onHold, deferred: res.pending };
 }
 
+/** How a hold toggle RESOLVED: the server's authoritative answer, or a failed request. */
+export type HoldToggleOutcome =
+  | { ok: true; response: { onHold: boolean; pending: boolean } }
+  | { ok: false };
+
+/**
+ * The UI state to SETTLE on once a hold toggle resolves. On success the server's authoritative tri-state
+ * wins. On FAILURE the optimistic flip is rolled all the way back to <paramref name="preTap"/> - the state
+ * BEFORE the tap - because the snooze did NOT happen: the button must never falsely read "Snoozed" or
+ * "Snoozing when it finishes" for a hold the Gateway rejected. Keeping this decision here (not in the
+ * async hook) is what lets the rollback be unit-tested and stops it silently regressing.
+ */
+export function reconcileHoldToggle(preTap: HoldUiState, outcome: HoldToggleOutcome): HoldUiState {
+  return outcome.ok ? holdStateFromResponse(outcome.response) : preTap;
+}
+
 /** The snooze button's label for the current state. */
 export function holdButtonLabel(s: HoldUiState): "Snooze" | "Unsnooze" {
   return isSnoozing(s) ? "Unsnooze" : "Snooze";

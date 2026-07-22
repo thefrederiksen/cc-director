@@ -5,6 +5,7 @@ import {
   holdStateFromResponse,
   isSnoozing,
   optimisticHoldToggle,
+  reconcileHoldToggle,
   type HoldUiState,
 } from "./snoozeAction";
 
@@ -45,5 +46,35 @@ describe("snooze action - instant, honest feedback for every case", () => {
     expect(holdPillLabel({ held: false, deferred: true }, false, null)).toBe("Snoozing when it finishes");
     expect(holdPillLabel({ held: true, deferred: false }, true, null)).toBe("Snoozed");
     expect(holdPillLabel(none, false, null)).toBeNull();
+  });
+
+  it("a FAILED /hold rolls the optimistic snooze back to the pre-tap state - never a false 'Snoozed'", () => {
+    // The tap optimistically flipped an idle session to HELD. When the /hold POST rejects, the snooze did
+    // NOT happen: the UI must settle back on the PRE-TAP state, so the button reads "Snooze" again (not
+    // "Unsnooze") and no snoozed pill is shown. The hook pairs this rollback with an error message.
+    const preTap = none;
+    const optimistic = optimisticHoldToggle(preTap, /* working */ false);
+    expect(holdButtonLabel(optimistic)).toBe("Unsnooze"); // it briefly showed snoozed...
+
+    const settled = reconcileHoldToggle(preTap, { ok: false });
+    expect(settled).toEqual(preTap); // ...and rolls all the way back on failure
+    expect(holdButtonLabel(settled)).toBe("Snooze");
+    expect(holdPillLabel(settled, /* snoozedByFold */ false, null)).toBeNull();
+
+    // A failed UN-snooze rolls back the other way - a still-armed hold stays "Unsnooze", not a false clear.
+    const armed: HoldUiState = { held: true, deferred: false };
+    expect(reconcileHoldToggle(armed, { ok: false })).toEqual(armed);
+    expect(holdButtonLabel(reconcileHoldToggle(armed, { ok: false }))).toBe("Unsnooze");
+  });
+
+  it("a SUCCESSFUL /hold still settles on the server's authoritative tri-state (success path unchanged)", () => {
+    expect(reconcileHoldToggle(none, { ok: true, response: { onHold: true, pending: false } })).toEqual({
+      held: true,
+      deferred: false,
+    });
+    expect(reconcileHoldToggle(none, { ok: true, response: { onHold: false, pending: true } })).toEqual({
+      held: false,
+      deferred: true,
+    });
   });
 });

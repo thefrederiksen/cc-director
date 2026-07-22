@@ -3,9 +3,10 @@ import { useNavigate } from "react-router-dom";
 import { holdSession, killSession, listSessions } from "@devthrottle/client-core/api/client";
 import { classify, isDeferredHold, isWorking, snoozeCountdown } from "@devthrottle/client-core/sessions/ordering";
 import {
-  holdStateFromResponse,
   isSnoozing,
   optimisticHoldToggle,
+  reconcileHoldToggle,
+  type HoldToggleOutcome,
   type HoldUiState,
 } from "@devthrottle/client-core/sessions/snoozeAction";
 
@@ -101,31 +102,39 @@ export function useSessionManage(sessionId: string | undefined): SessionManage {
 
   const toggleHold = useCallback(async () => {
     if (!sessionId || busy) return;
-    const current: HoldUiState = { held: onHold === true, deferred };
-    const desired = !isSnoozing(current);
+    // The pre-tap state: both what the toggle flips FROM and what a FAILED /hold must roll back to.
+    const preTap: HoldUiState = { held: onHold === true, deferred };
+    const desired = !isSnoozing(preTap);
     // Optimistic: flip the UI the instant the tap lands, so a snooze is NEVER silent. A working session
-    // shows the deferred affordance immediately; a settled one shows held. Reconciled below from the
-    // server's authoritative answer, and again by the immediate refresh.
-    const optimistic = optimisticHoldToggle(current, working);
+    // shows the deferred affordance immediately; a settled one shows held. Settled below from the TRUE
+    // outcome - the server's authoritative answer on success, or a rollback to pre-tap on failure.
+    const optimistic = optimisticHoldToggle(preTap, working);
     setBusy(true);
     pendingRef.current = true;
     setError(null);
     setOnHold(optimistic.held);
     setDeferred(optimistic.deferred);
+    let outcome: HoldToggleOutcome;
     try {
-      const reconciled = holdStateFromResponse(await holdSession(sessionId, desired));
-      setOnHold(reconciled.held);
-      setDeferred(reconciled.deferred);
+      outcome = { ok: true, response: await holdSession(sessionId, desired) };
     } catch (err) {
+      // /hold FAILED: the snooze did NOT happen. Surface the error; the rollback below returns the UI to
+      // its pre-tap state so the button never falsely reads "Snoozed"/"Snoozing when it finishes".
+      outcome = { ok: false };
       setError(err instanceof Error ? err.message : "Hold failed");
     } finally {
       pendingRef.current = false;
       setBusy(false);
     }
-    // Kill the up-to-a-poll-interval lag: re-sync from the roster fold NOW, so the countdown, the
-    // snoozed pill and the armed/deferred split land immediately. pendingRef is cleared above, so this
-    // refresh is allowed to write through.
-    void refresh();
+    // Settle on the TRUE server outcome: the authoritative tri-state on success, or the pre-tap state on
+    // failure (never a false success). Only on success re-sync from the roster fold NOW, killing the
+    // up-to-a-poll-interval lag so the countdown, the snoozed pill and the armed/deferred split land
+    // immediately. On FAILURE we must NOT refresh: a roster blip could re-assert the optimistic snooze,
+    // or a failed refresh would keep the last-known (optimistic) state - either way a false "Snoozed".
+    const settled = reconcileHoldToggle(preTap, outcome);
+    setOnHold(settled.held);
+    setDeferred(settled.deferred);
+    if (outcome.ok) void refresh();
   }, [sessionId, busy, onHold, deferred, working, refresh]);
 
   const removeSession = useCallback(async () => {

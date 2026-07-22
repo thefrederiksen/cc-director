@@ -174,18 +174,40 @@ The wire already carries the tri-state; the client now honours it end to end.
   when it finishes" the instant it is tapped and self-heals to "Snoozed - <countdown>" when the turn
   lands.
 
+## Residual fixed (Codex CHANGES-NEEDED on #1987): failed /hold left a false "Snoozed"
+
+Codex flagged one real defect in `useSessionManage.toggleHold`: the optimistic-on-tap flip was
+**never rolled back when `POST /hold` FAILED**. The catch only set `error`, and the follow-up
+`refresh()` ran unconditionally — so on a rejected hold the UI could keep the optimistic
+`Held`/`Deferred` and falsely read "Snoozed" / "Snoozing when it finishes" for a snooze that never
+happened. (A roster blip could re-assert the optimistic state, and a failed `refresh` swallows its
+error and keeps the last-known — i.e. optimistic — state.)
+
+Fix (client-side only):
+- `client-core/sessions/snoozeAction.ts` — new pure `reconcileHoldToggle(preTap, outcome)` +
+  `HoldToggleOutcome`: on success the server's authoritative tri-state wins; on FAILURE it rolls all
+  the way back to the PRE-TAP state. Kept pure so the rollback is unit-tested, not buried in the async
+  hook.
+- `apps/mobile/components/useSessionManage.ts` — captures the pre-tap state, settles the UI from the
+  TRUE outcome via `reconcileHoldToggle`, and only calls `refresh()` on SUCCESS. On failure it restores
+  pre-tap and surfaces the error; the follow-up refresh can no longer re-assert or preserve the failed
+  optimistic snooze. The SUCCESS tri-state feedback is unchanged.
+
 ## Tests
-- `client-core/sessions/snoozeAction.test.ts` (4) — snooze a WORKING session shows the deferred
+- `client-core/sessions/snoozeAction.test.ts` (6) — snooze a WORKING session shows the deferred
   affordance immediately; snooze an IDLE session shows Held immediately; un-snooze clears both; pill
-  precedence.
+  precedence; **a FAILED /hold rolls back to the pre-tap label (button returns to "Snooze", no pill),
+  and a failed un-snooze keeps the armed state**; a SUCCESSFUL /hold still settles on the server
+  tri-state (success path unchanged).
 - `client-core/api/hold.test.ts` (3) — `holdSession` returns `{ onHold, pending }`; pending=true on a
   deferred answer; defaults on an old/empty body.
 - `client-core/sessions/ordering.test.ts` — `isDeferredHold` reads the tri-state onHold cannot see.
 - Registry revert-proof test (`HostedSnoozeLifecycleTenancyTests`) kept.
 
-Counts: client-core vitest **576/576**; client-core + mobile + cockpit `tsc --noEmit` clean; mobile
-`vite build` OK. Gateway snooze/hold + tenancy suites green (per PR #1987 run).
+Counts: client-core vitest **578/578**; mobile `tsc --noEmit` + `vite build` clean; Gateway.Tests
+build 0/0; `HostedSnoozeLifecycleTenancyTests` **2/2**.
 
 ## Status
-Fix implemented + tested. Shipping on PR #1987 (base main, no attribution) alongside the revert-proof
-registry test. Reporting to the architect and reaping.
+Fix implemented + tested, plus Codex's residual (failed-/hold rollback) closed. Shipping on PR #1987
+(base main, no attribution) alongside the revert-proof registry test. Reporting to the architect and
+reaping.
