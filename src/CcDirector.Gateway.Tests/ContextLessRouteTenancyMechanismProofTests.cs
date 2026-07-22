@@ -66,24 +66,27 @@ public sealed class ContextLessRouteTenancyMechanismProofTests : IDisposable
     public void TheGlobalQueryFilterAlone_HidesTheOtherTenantsRow_AndIgnoringTheFilterProvesTheRowWasThereAllAlong()
     {
         var name = "bobs-isolated-list-" + Guid.NewGuid().ToString("N")[..8];
-        var rowId = Guid.NewGuid();
         const string consumer = "bobs-consumer-token";
 
         var asBob = _harness.Open(new FixedTenantContext(new TenantId(TenantB)));
         var asAlice = _harness.Open(new FixedTenantContext(new TenantId(TenantA)));
 
-        // Seed one row as tenant B, with values only this test knows.
+        // Seed one row as tenant B, with values only this test knows. The primary key is minted by
+        // WorkListEntity's GatewayMintedKeyEntity base (a caller cannot assign it), so capture the
+        // minted id after the row lands and use it as this test's fingerprint.
+        Guid rowId;
         using (var ctx = asBob.CreateContext())
         {
             Assert.Equal(TenantB, ctx.ActiveTenant);
-            ctx.WorkLists.Add(new WorkListEntity
+            var row = new WorkListEntity
             {
-                Id = rowId,
                 Name = name,
                 Consumer = consumer,
                 TenantId = TenantB,
-            });
+            };
+            ctx.WorkLists.Add(row);
             Assert.Equal(1, ctx.SaveChanges());
+            rowId = row.Id;
         }
 
         // POSITIVE CONTROL - the owner reads the exact seeded fingerprint back.
