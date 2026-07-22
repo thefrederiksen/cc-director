@@ -101,6 +101,26 @@ public sealed class WingmanVoiceService
            && string.Equals(value, parsed.ToString("D"), StringComparison.Ordinal);
 
     /// <summary>
+    /// Whether <paramref name="tenant"/> can name a voice-state partition at all: self-host's single
+    /// <see cref="TenantId.Local"/>, or a minted account tenant. This is the SAME decision
+    /// <see cref="CanonicalTenantKey"/> makes, surfaced WITHOUT throwing, so a hot read path can ask "does
+    /// this tenant even have a voice partition?" and get a plain false for one that has none - the reserved
+    /// <see cref="TenantId.System"/> identity, an unminted id, an unresolved id - instead of an exception.
+    ///
+    /// The persisting/generating paths keep throwing for such a tenant (writing into a partition that cannot
+    /// be named IS a bug); but a READ on the fleet-wide display-push seam must degrade to "no voice", never
+    /// take the whole snapshot push down with it. MTR-10 Gap D reads the AMBIENT per-tenant of the display
+    /// pass, and that ambient tenant is whatever tenant a Director is bound to - which need NOT be a minted
+    /// voice partition (a self-host-shaped tenant on a hosted Gateway, a test tenant). The original Gap D
+    /// change called the voice read unguarded and an unminted ambient tenant threw
+    /// <see cref="ArgumentException"/> straight out of the DirectorHub <c>PushSnapshot</c> as a
+    /// <c>HubException</c>, taking the whole fleet's display push down - the regression that reverted #1986.
+    /// Guarding the read with this predicate answers the design-documented "no voice state at all" instead.
+    /// </summary>
+    public static bool CanNameVoicePartition(TenantId tenant)
+        => tenant.IsValid && (tenant.IsLocal || IsMintedAccountTenant(tenant.Value));
+
+    /// <summary>
     /// The canonical partition key for a tenant - the single string used BOTH as the in-memory bucket key and
     /// as the on-disk directory name, so the two can never disagree about which tenant a session belongs to.
     ///

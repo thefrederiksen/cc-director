@@ -32,10 +32,10 @@ namespace CcDirector.Gateway.Tests;
 ///    old single <c>TenantId.Local</c> pass and <see cref="Voice_sweep_reaches_only_the_owning_tenants_director"/>
 ///    goes RED - the Local partition holds no marked voice session, so the tunnel read that must reach dir-B is
 ///    never sent.
-///  - the turn-end callback: replace its <c>ResolveOwningTenant(signal.DirectorId)</c> + tenant-passed
-///    <c>IsVoiceSession</c>/<c>GenerateAsync</c> with the old <c>TenantId.Local</c> and
-///    <see cref="Turn_end_voice_refresh_reaches_only_the_owning_tenants_director"/> goes RED - IsVoiceSession is
-///    false in the Local partition, so no refresh is issued.
+///  - the turn-end callback: replace its <c>signal.Tenant</c>-passed <c>IsVoiceSession</c>/<c>GenerateAsync</c>
+///    (the owning tenant resolved BEFORE Observe and carried on the signal, MTR-10 Gap C) with the old
+///    <c>TenantId.Local</c> and <see cref="Turn_end_voice_refresh_reaches_only_the_owning_tenants_director"/>
+///    goes RED - IsVoiceSession is false in the Local partition, so no refresh is issued.
 ///
 /// The assembly runs sequentially (TestParallelization), so toggling CC_GATEWAY_HOSTED here is safe; it is
 /// reset in DisposeAsync.
@@ -124,8 +124,8 @@ public sealed class VoiceServingLoopIsolationTests : IAsyncLifetime
         // Drive a REAL Working -> Waiting transition for B's session on dir-B through the live watcher, which
         // fires the production onSessionWorking (clear) then onTurnEnd (refresh) callbacks. Both resolve the
         // owning tenant from the director id the signal carries.
-        _gateway.TurnEndWatcherForTest!.Observe(SessB, "Working", "dir-b");
-        _gateway.TurnEndWatcherForTest!.Observe(SessB, "WaitingForInput", "dir-b");
+        _gateway.TurnEndWatcherForTest!.Observe(TenantB, SessB, "Working", "dir-b");
+        _gateway.TurnEndWatcherForTest!.Observe(TenantB, SessB, "WaitingForInput", "dir-b");
 
         // POSITIVE CONTROL FIRST: the turn-end refresh's tunnel read for B's session reached dir-B.
         Assert.NotNull(await WaitForVerb(_seenByB, "turns", SessB));
