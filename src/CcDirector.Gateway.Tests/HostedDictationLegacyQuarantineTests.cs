@@ -135,6 +135,45 @@ public sealed class HostedDictationLegacyQuarantineTests : IDisposable
     }
 
     [Fact]
+    public void A_colliding_quarantine_target_still_moves_the_source_aside_without_overwriting()
+    {
+        // THE COLLISION HOLE (issue #1884, finding 3). A legacy id was quarantined by an earlier run (or a
+        // concurrent worker), and then a rolling/older worker recreated the SAME id at the base root. The old
+        // code saw quarantine/<id> already present and simply skipped - leaving the freshly-recreated legacy
+        // dir LIVE at the base root, where the base age sweep and the base PENDING projection still read it.
+        // The fix moves the source aside under a unique name, so NO legacy source is ever left live at base,
+        // and never overwrites the already-quarantined data.
+        var baseStore = BaseStore();
+        var legacyId = Guid.NewGuid().ToString();
+        var cid = Guid.Parse(legacyId).ToString("N");
+
+        // An occupant already sitting in the canonical quarantine slot, with its own distinct content.
+        var occupant = Path.Combine(_root, VoiceUploadStore.QuarantineDirectoryName, cid);
+        Directory.CreateDirectory(occupant);
+        File.WriteAllText(Path.Combine(occupant, "occupant.txt"), "already-quarantined-bytes");
+
+        // A NEW legacy dir with the same id, recreated live at the base root, with DIFFERENT content.
+        baseStore.MarkDelivered(legacyId, submitted: true, movedOn: false, transcript: "recreated-legacy-transcript");
+        var legacyDir = Path.Combine(_root, cid);
+        Assert.True(File.Exists(Path.Combine(legacyDir, "record.json")), "precondition: the recreated legacy dir is live at base");
+
+        var moved = baseStore.QuarantineLegacyUploads();
+
+        // The source is moved aside - NO legacy source is left live at the base root.
+        Assert.Equal(1, moved);
+        Assert.False(Directory.Exists(legacyDir), "the recreated legacy dir must NOT be left live at the base root");
+        Assert.True(baseStore.ReadRecord(legacyId) is null, "the base handle must no longer read the recreated legacy record as live");
+
+        // The already-quarantined occupant is untouched (never overwritten): move, not overwrite.
+        Assert.Equal("already-quarantined-bytes", File.ReadAllText(Path.Combine(occupant, "occupant.txt")));
+        Assert.False(File.Exists(Path.Combine(occupant, "record.json")), "the occupant slot must not have been overwritten with the source");
+
+        // The source's bytes are preserved under a unique, non-canonical dup name (never lost - move, not delete).
+        var dup = Path.Combine(_root, VoiceUploadStore.QuarantineDirectoryName, cid + "__dup-1");
+        Assert.True(File.Exists(Path.Combine(dup, "record.json")), "the recreated legacy bytes must be preserved under a unique dup slot");
+    }
+
+    [Fact]
     public void Quarantine_on_an_account_partition_is_a_no_op()
     {
         // Only the base (Local) handle scans the shared root; an account partition is clean by construction, so

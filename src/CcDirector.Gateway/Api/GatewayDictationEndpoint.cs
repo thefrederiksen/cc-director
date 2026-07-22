@@ -220,7 +220,7 @@ internal static class GatewayDictationEndpoint
             var uploadId = store.Register(string.IsNullOrWhiteSpace(key) ? null : key);
             store.MarkPending(uploadId, sid);
             _uploadSids.Set(tenant, uploadId, sid);
-            try { transcribingSessions.Begin(sid); } catch { /* the orange mark is a nicety */ }
+            try { transcribingSessions.Begin(tenant, sid); } catch { /* the orange mark is a nicety */ }
             FileLog.Write($"[GatewayDictation] upload registered sid={sid} uploadId={uploadId}");
             return Results.Json(new { upload_id = uploadId });
         });
@@ -245,7 +245,7 @@ internal static class GatewayDictationEndpoint
                 // Heartbeat: a stored chunk is progress, so keep the orange mark alive past its idle
                 // backstop for a slow upload that streams over more than the idle window (issue #1126).
                 if (_uploadSids.TryGet(tenant, uploadId, out var chunkSid))
-                    transcribingSessions.Refresh(chunkSid);
+                    transcribingSessions.Refresh(tenant, chunkSid);
                 return Results.Json(new { ok = true, index });
             }
             catch (Exception ex)
@@ -269,7 +269,7 @@ internal static class GatewayDictationEndpoint
 
             // A completion attempt is progress - keep the orange mark alive across the server-side
             // transcribe so a slow transcribe cannot let it age out mid-flight (issue #1126).
-            transcribingSessions.Refresh(req.SessionId!);
+            transcribingSessions.Refresh(tenant, req.SessionId!);
 
             // DevThrottle Stats: this dictation is a VOICE turn; resolve WHICH surface recorded it from the
             // verified device key that authenticated this complete (the phone that recorded it, or the
@@ -286,7 +286,7 @@ internal static class GatewayDictationEndpoint
             var settled = store.ReadRecord(uploadId);
             if (settled is { State: DictationDeliveryState.Delivered or DictationDeliveryState.Abandoned })
             {
-                EndTranscribing(transcribingSessions, req.SessionId!);
+                EndTranscribing(transcribingSessions, tenant, req.SessionId!);
                 _uploadSids.Remove(tenant, uploadId);
                 FileLog.Write($"[GatewayDictation] complete uploadId={uploadId}: cached terminal outcome " +
                     $"state={settled.State} (no re-injection)");
@@ -333,7 +333,7 @@ internal static class GatewayDictationEndpoint
             // on the same upload id, so the session is genuinely still transcribing.
             if (!outcome.IsIncomplete)
             {
-                EndTranscribing(transcribingSessions, req.SessionId!);
+                EndTranscribing(transcribingSessions, tenant, req.SessionId!);
                 _uploadSids.Remove(tenant, uploadId);
             }
             // Drop the in-memory single-flight entry once the run settles. A terminal run has already
@@ -378,7 +378,7 @@ internal static class GatewayDictationEndpoint
         {
             if (!AuthMiddleware.HasValidToken(ctx, token, devices))
                 return Results.Json(new { error = "missing or invalid token" }, statusCode: StatusCodes.Status401Unauthorized);
-            if (!gate.TryOpen(ctx, out var store, out _, out var deny)) return deny;
+            if (!gate.TryOpen(ctx, out var store, out var tenant, out var deny)) return deny;
 
             var existing = store.ReadRecord(uploadId);
             if (existing is { State: DictationDeliveryState.Delivered })
@@ -389,12 +389,13 @@ internal static class GatewayDictationEndpoint
 
             store.MarkAbandoned(uploadId, "user_abandoned");
             // Clear the in-memory transcribing marks so the roster un-oranges at once (the durable PENDING
-            // marker - the "Uploading from phone" source - is already gone via MarkAbandoned).
+            // marker - the "Uploading from phone" source - is already gone via MarkAbandoned). Keyed to the
+            // caller's own tenant (issue #1884, Gap B), so an abandon can never clear another account's mark.
             var sid = existing?.SessionId;
             if (!string.IsNullOrEmpty(sid))
             {
-                EndTranscribing(transcribingSessions, sid);
-                transcribingSessions.ClearActivelyTranscribing(sid);
+                EndTranscribing(transcribingSessions, tenant, sid);
+                transcribingSessions.ClearActivelyTranscribing(tenant, sid);
             }
             FileLog.Write($"[GatewayDictation] abandon uploadId={uploadId} sid={sid}: marked ABANDONED, staging discarded");
             return Results.Json(new { ok = true, upload_id = uploadId, abandoned = true });
@@ -497,7 +498,7 @@ internal static class GatewayDictationEndpoint
         // Issue #1181, Task 4: this run assembles + transcribes + delivers, so mark the session ACTIVELY
         // transcribing for its duration. The aggregator reads this to show "Transcribing" (vs the durable
         // PENDING marker's "Uploading from phone"). Cleared in the finally so it never outlives the run.
-        transcribingSessions.MarkActivelyTranscribing(sid);
+        transcribingSessions.MarkActivelyTranscribing(tenant, sid);
         try
         {
             // The configured mode's key must be present before we pay the reassembly + transcribe cost.
@@ -644,13 +645,13 @@ internal static class GatewayDictationEndpoint
         {
             // Issue #1181, Task 4: the transcription run is over (delivered, failed, or threw), so drop the
             // "Transcribing" mark. The durable PENDING/DELIVERED marker now owns the session's state.
-            transcribingSessions.ClearActivelyTranscribing(sid);
+            transcribingSessions.ClearActivelyTranscribing(tenant, sid);
         }
     }
 
-    private static void EndTranscribing(TranscribingSessions t, string sid)
+    private static void EndTranscribing(TranscribingSessions t, TenantId tenant, string sid)
     {
-        try { t.End(sid); } catch { /* the Gateway's stale-mark backstop clears it if this throws */ }
+        try { t.End(tenant, sid); } catch { /* the Gateway's stale-mark backstop clears it if this throws */ }
     }
 
     private static bool IsExited(SessionDto session)

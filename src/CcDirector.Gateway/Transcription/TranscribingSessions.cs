@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using CcDirector.Core.Tenancy;
 using CcDirector.Core.Utilities;
 
 namespace CcDirector.Gateway.Transcription;
@@ -27,6 +28,17 @@ namespace CcDirector.Gateway.Transcription;
 /// quiet and ages out within the idle window. Issue #1126 shortened this from a fixed 20-minute age -
 /// which wedged sessions orange for a full 20 minutes whenever the explicit clear was skipped - to
 /// this short idle window.
+///
+/// TENANT-KEYED (issue #1884, Gap B). Both maps below key on (tenant, sessionId), NEVER on the bare
+/// sessionId. This set is a single process-wide instance shared across every tenant on the hosted
+/// Gateway, and a session id is a client-supplied GUID that travels in logs and retries - so keying on
+/// it alone let one account set, clear, or read ANOTHER account's transcribing state by supplying that
+/// account's session id (paint a stranger's session orange for the idle window, or clear the real mark
+/// on their live dictation). A GUID is not a tenant boundary. The tenant is resolved server-side from
+/// the authenticated device key at every call site (the /sessions/{sid}/transcribing route, the
+/// dictation completion flow, and the roster read) and is a REQUIRED argument here - there is no
+/// bare-sessionId overload that would silently key on one shared partition. Self-host passes
+/// <see cref="TenantId.Local"/> throughout and is byte-identical to before.
 /// </summary>
 public sealed class TranscribingSessions
 {
@@ -37,7 +49,7 @@ public sealed class TranscribingSessions
     /// that has genuinely stopped making progress.</summary>
     public static readonly TimeSpan IdleTimeout = TimeSpan.FromSeconds(90);
 
-    private readonly ConcurrentDictionary<string, DateTime> _lastProgress = new(); // sid -> last progress time (UTC)
+    private readonly ConcurrentDictionary<string, DateTime> _lastProgress = new(); // (tenant|sid) -> last progress time (UTC)
     private readonly Func<DateTime> _utcNow;
 
     /// <summary>Production uses the wall clock; tests inject a controllable clock so the
@@ -47,46 +59,55 @@ public sealed class TranscribingSessions
         _utcNow = utcNow ?? (() => DateTime.UtcNow);
     }
 
+    /// <summary>
+    /// The map key: the owning tenant AND the session id. The tenant is first so a key can never be
+    /// read as belonging to a different account by accident, and a session id from one account can never
+    /// name another account's mark.
+    /// </summary>
+    private static string MarkKey(TenantId tenant, string sessionId) => tenant.Value + "|" + sessionId;
+
     /// <summary>Mark a session as transcribing (idempotent). Stamps the progress time so a fresh Send
     /// restarts the idle backstop clock rather than inheriting an older mark's age.</summary>
-    public void Begin(string sessionId)
+    public void Begin(TenantId tenant, string sessionId)
     {
         ArgumentException.ThrowIfNullOrEmpty(sessionId);
-        _lastProgress[sessionId] = _utcNow();
-        FileLog.Write($"[TranscribingSessions] sid={sessionId}: begin transcribing");
+        _lastProgress[MarkKey(tenant, sessionId)] = _utcNow();
+        FileLog.Write($"[TranscribingSessions] tenant={tenant.ToLogString()} sid={sessionId}: begin transcribing");
     }
 
     /// <summary>Record progress on an EXISTING mark (a chunk stored, a completion attempt) so an active
     /// but slow upload keeps its mark alive past the idle backstop. A no-op when the session is not
     /// currently marked: Refresh keeps a live mark alive, it never resurrects a cleared one.</summary>
-    public void Refresh(string sessionId)
+    public void Refresh(TenantId tenant, string sessionId)
     {
         if (string.IsNullOrEmpty(sessionId)) return;
+        var key = MarkKey(tenant, sessionId);
         // Only bump an existing mark. Using TryGetValue-then-set (not an unconditional write) keeps a
         // Refresh that races an End from re-creating the mark End just removed.
-        if (_lastProgress.ContainsKey(sessionId))
-            _lastProgress[sessionId] = _utcNow();
+        if (_lastProgress.ContainsKey(key))
+            _lastProgress[key] = _utcNow();
     }
 
     /// <summary>Clear a session's transcribing mark (idempotent). The authoritative clear, called by
     /// the dictation-upload flow on every terminal outcome.</summary>
-    public void End(string sessionId)
+    public void End(TenantId tenant, string sessionId)
     {
         ArgumentException.ThrowIfNullOrEmpty(sessionId);
-        if (_lastProgress.TryRemove(sessionId, out _))
-            FileLog.Write($"[TranscribingSessions] sid={sessionId}: end transcribing");
+        if (_lastProgress.TryRemove(MarkKey(tenant, sessionId), out _))
+            FileLog.Write($"[TranscribingSessions] tenant={tenant.ToLogString()} sid={sessionId}: end transcribing");
     }
 
     /// <summary>Whether the session is currently transcribing. A mark that has seen no progress for
     /// <see cref="IdleTimeout"/> is treated as an abandoned mark and removed on read, so a
     /// crashed/offline client cannot wedge the session orange.</summary>
-    public bool IsTranscribing(string sessionId)
+    public bool IsTranscribing(TenantId tenant, string sessionId)
     {
         if (string.IsNullOrEmpty(sessionId)) return false;
-        if (!_lastProgress.TryGetValue(sessionId, out var since)) return false;
+        var key = MarkKey(tenant, sessionId);
+        if (!_lastProgress.TryGetValue(key, out var since)) return false;
         if (_utcNow() - since <= IdleTimeout) return true;
-        if (_lastProgress.TryRemove(sessionId, out _))
-            FileLog.Write($"[TranscribingSessions] sid={sessionId}: mark idle for over {IdleTimeout.TotalSeconds:0}s, cleared");
+        if (_lastProgress.TryRemove(key, out _))
+            FileLog.Write($"[TranscribingSessions] tenant={tenant.ToLogString()} sid={sessionId}: mark idle for over {IdleTimeout.TotalSeconds:0}s, cleared");
         return false;
     }
 
@@ -97,23 +118,24 @@ public sealed class TranscribingSessions
     // "actively transcribing" signal: set for the duration of the assemble+transcribe+deliver run and
     // cleared in a finally. No idle timeout is needed - it is bounded by the run; if a crash leaks an
     // entry, the Gateway restart clears it (in-memory) and the durable marker still shows "Uploading".
+    // Keyed by (tenant, sid) for the same reason as _lastProgress above (issue #1884, Gap B).
     private readonly ConcurrentDictionary<string, byte> _activelyTranscribing = new();
 
     /// <summary>Mark a session as ACTIVELY transcribing (the complete-run is assembling/transcribing).</summary>
-    public void MarkActivelyTranscribing(string sessionId)
+    public void MarkActivelyTranscribing(TenantId tenant, string sessionId)
     {
         if (string.IsNullOrEmpty(sessionId)) return;
-        _activelyTranscribing[sessionId] = 1;
+        _activelyTranscribing[MarkKey(tenant, sessionId)] = 1;
     }
 
     /// <summary>Clear the actively-transcribing mark (called in the complete-run's finally).</summary>
-    public void ClearActivelyTranscribing(string sessionId)
+    public void ClearActivelyTranscribing(TenantId tenant, string sessionId)
     {
         if (string.IsNullOrEmpty(sessionId)) return;
-        _activelyTranscribing.TryRemove(sessionId, out _);
+        _activelyTranscribing.TryRemove(MarkKey(tenant, sessionId), out _);
     }
 
     /// <summary>True while the server is actively transcribing this session's uploaded audio.</summary>
-    public bool IsActivelyTranscribing(string sessionId)
-        => !string.IsNullOrEmpty(sessionId) && _activelyTranscribing.ContainsKey(sessionId);
+    public bool IsActivelyTranscribing(TenantId tenant, string sessionId)
+        => !string.IsNullOrEmpty(sessionId) && _activelyTranscribing.ContainsKey(MarkKey(tenant, sessionId));
 }

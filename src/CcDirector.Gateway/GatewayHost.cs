@@ -543,11 +543,12 @@ public sealed class GatewayHost : IAsyncDisposable
     /// now?" - must always expire).
     /// </summary>
     internal static string? DictationStatusFor(
-        string sessionId, Transcription.TranscribingSessions marks, Voice.VoiceUploadStore uploads)
+        CcDirector.Core.Tenancy.TenantId tenant, string sessionId,
+        Transcription.TranscribingSessions marks, Voice.VoiceUploadStore uploads)
         => Transcription.DictationPhase.For(
-            activelyTranscribing: marks.IsActivelyTranscribing(sessionId),
+            activelyTranscribing: marks.IsActivelyTranscribing(tenant, sessionId),
             undelivered: uploads.IsSessionLocked(sessionId),
-            progressing: marks.IsTranscribing(sessionId));
+            progressing: marks.IsTranscribing(tenant, sessionId));
     // Issue #629: the durable, bounded, restart-surviving retry queue behind the login-telemetry
     // relay. Constructed here (loads any events a previous run left on disk), wired into the relay
     // endpoint, started flushing in StartAsync, and disposed in StopAsync.
@@ -1788,7 +1789,7 @@ public sealed class GatewayHost : IAsyncDisposable
             needsYouStampFor: (sid, isRed) => _needsYouClock.Stamp(sid, isRed),
             // Stamp the orange "Transcribing..." flag while a dictated utterance is being uploaded
             // and transcribed in the background for this session (mobile Speak -> Send).
-            transcribingFor: sid => _transcribingSessions.IsTranscribing(sid),
+            transcribingFor: (tenant, sid) => _transcribingSessions.IsTranscribing(tenant, sid),
             // Issue #1181, Task 4: the honest phase label. "Transcribing" while the server is actively
             // turning the uploaded audio into text (a bounded run); "Uploading from phone" while the durable
             // PENDING marker stands AND the phone is still making progress; null when no dictation is
@@ -1834,7 +1835,11 @@ public sealed class GatewayHost : IAsyncDisposable
             // The rule itself lives in DictationPhase.For so it is testable without a running Gateway, and
             // the WIRING that supplies its three facts lives in DictationStatusFor so it is testable too -
             // see that method for why an inline lambda here was a hole rather than a style choice.
-            dictationStatusFor: sid => DictationStatusFor(sid, _transcribingSessions, _dictationUploads),
+            // Read the CALLER'S tenant partition (issue #1884, Gap B/finding 2): IsSessionLocked enumerates
+            // the partition root, so a fresh hosted tenant's PENDING dictation is visible in its own durable
+            // "Uploading from phone" status instead of being masked by the Local/base handle. Self-host resolves
+            // Local, so ForTenant(Local) is the base root and this is byte-identical to before.
+            dictationStatusFor: (tenant, sid) => DictationStatusFor(tenant, sid, _transcribingSessions, _dictationUploads.ForTenant(tenant)),
             // The mobile Speak flow marks/clears this via POST /sessions/{sid}/transcribing.
             transcribingSessions: _transcribingSessions,
             // Issue #212 W3: enrich the Interrupted sessions list from the durable brief store. Always
@@ -2385,7 +2390,20 @@ public sealed class GatewayHost : IAsyncDisposable
         _voiceTurnUploadSweepTimer = new System.Threading.Timer(
             _ =>
             {
-                try { _voiceTurnUploads.SweepAbandoned(VoiceTurnUploadMaxAge); }
+                // PER-TENANT retention (issue #1884, finding 2). /wingman/utterance now stages account uploads
+                // in tenant partitions (base/tenants/<id>), and SweepAbandoned deliberately does NOT descend
+                // into the partition container - so sweeping only the Local/base handle would retain every
+                // hosted tenant's interrupted utterance audio forever, breaking the four-hour privacy bound
+                // (#1952). Run one pass per live tenant, each inside that tenant's own partition. Self-host runs
+                // exactly one Local pass (ForTenant(Local) is the base root), byte-identical to before.
+                try
+                {
+                    _tenantPass.ForEachTenant(() =>
+                    {
+                        if (_tenantPass.Current is not { } tenant) return; // deny: no scope -> sweep nothing
+                        _voiceTurnUploads.ForTenant(tenant).SweepAbandoned(VoiceTurnUploadMaxAge);
+                    });
+                }
                 catch (Exception ex) { FileLog.Write($"[GatewayHost] voice-turn upload sweep error: {ex.Message}"); }
             },
             null, voiceTurnUploadSchedule, voiceTurnUploadSchedule);

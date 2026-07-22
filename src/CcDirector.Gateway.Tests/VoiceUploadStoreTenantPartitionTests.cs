@@ -295,6 +295,32 @@ public sealed class VoiceUploadStoreTenantPartitionTests : IDisposable
             MustStillExist(a, id, "the sweep must not have destroyed another tenant's pending record").State);
     }
 
+    [Fact]
+    public void A_tenant_partition_sweep_removes_that_tenants_abandoned_upload_and_no_others()
+    {
+        // Issue #1884, finding 2: the voice-turn retention sweep now runs PER TENANT (GatewayHost wraps it in
+        // _tenantPass.ForEachTenant and sweeps ForTenant(tenant)). This proves the mechanism that wiring drives:
+        // ForTenant(A).SweepAbandoned removes A's OWN aged staging - which the base/Local sweep deliberately
+        // never descends into - while leaving B's staging untouched. Without the per-tenant sweep, a hosted
+        // tenant's interrupted utterance audio would be retained forever (only the base root was ever swept).
+        var a = _base.ForTenant(_tenantA);
+        var b = _base.ForTenant(_tenantB);
+        var agedA = Guid.NewGuid().ToString();
+        var liveB = Guid.NewGuid().ToString();
+        a.Register(agedA);
+        b.Register(liveB);
+
+        // A cutoff in the FUTURE (a negative max age) so "aged out" is deterministic without sleeping. Sweep
+        // A's partition: A's staging is removed; B's partition is a different root and is untouched.
+        Assert.Equal(1, a.SweepAbandoned(TimeSpan.FromDays(-1)));
+        Assert.False(a.Exists(agedA), "A's own partition sweep must remove A's aged staging");
+        Assert.True(b.Exists(liveB), "sweeping A's partition must not touch B's staging");
+
+        // Positive control that the per-tenant sweep is what removes B's too - the base sweep would not.
+        Assert.Equal(1, b.SweepAbandoned(TimeSpan.FromDays(-1)));
+        Assert.False(b.Exists(liveB));
+    }
+
     /// <summary>
     /// Read a record that the claim under test says MUST still be there, asserting its presence before
     /// touching it.

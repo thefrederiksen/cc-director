@@ -471,8 +471,15 @@ public sealed class VoiceUploadStore
     /// MOVE, NEVER DELETE: the bytes are preserved under <see cref="QuarantineDirectoryName"/> for a later
     /// operator-run purge - this method loses nothing. IDEMPOTENT AND RE-ENTRANT: it admits ONLY a canonical
     /// upload-id directory, so the tenants partition container and the quarantine directory itself are never
-    /// moved; and a move whose target already exists is left untouched, so running it twice - or two workers
-    /// running it at once - converges without error and never overwrites an already-quarantined directory.
+    /// moved. A legacy source is ALWAYS moved aside - NEVER left live at the base root. When the canonical
+    /// quarantine slot is already taken - an earlier run (or a concurrent worker) quarantined that id and then
+    /// a rolling/older worker recreated the same base id, or an interrupted recovery is re-entered - the source
+    /// is moved to a UNIQUE non-colliding name beside it (a <c>__dup-N</c> suffix) rather than left where the
+    /// base age sweep and the base PENDING projection would still read it as live. The suffix is deliberately
+    /// NOT a canonical upload-id shape, so a quarantined dup is never re-admitted as an upload or a tenant.
+    /// Running it twice - or two workers at once - converges without error and never overwrites an existing
+    /// quarantined directory; and because a moved source is gone from the base root, a second run that sees the
+    /// same id at base is looking at a genuinely NEW legacy directory that must also be moved aside.
     ///
     /// Call it on the BASE (Local) handle; on an account partition there is nothing pre-partition to move and
     /// it is a no-op. Returns how many directories were moved.
@@ -494,12 +501,19 @@ public sealed class VoiceUploadStore
                 // not canonical names, so they are skipped - which is exactly what makes this re-entrant.
                 if (!IsCanonicalUploadDirName(name)) continue;
 
-                var target = Path.Combine(quarantine, name);
                 try
                 {
                     Directory.CreateDirectory(quarantine);
-                    // Already quarantined by an earlier run or a concurrent worker: leave it, never overwrite.
-                    if (Directory.Exists(target)) continue;
+                    // Pick a target that does not already exist. The canonical slot (quarantine/<id>) first; if
+                    // it is taken, a unique __dup-N sibling - so the source ALWAYS moves and is never left live
+                    // at base. A null return means no free slot was found (unreasonable), in which case we log
+                    // and leave the source rather than delete or overwrite anything.
+                    var target = FreeQuarantineTarget(quarantine, name);
+                    if (target is null)
+                    {
+                        FileLog.Write($"[VoiceUploadStore] quarantine {name} skipped: no free target slot");
+                        continue;
+                    }
                     Directory.Move(dir, target);
                     moved++;
                 }
@@ -514,6 +528,27 @@ public sealed class VoiceUploadStore
             FileLog.Write($"[VoiceUploadStore] QuarantineLegacyUploads failed: {ex.Message}");
         }
         return moved;
+    }
+
+    /// <summary>
+    /// The first quarantine target path for <paramref name="name"/> that does not already exist: the canonical
+    /// <c>quarantine/&lt;name&gt;</c> slot when it is free, else <c>quarantine/&lt;name&gt;__dup-N</c> for the
+    /// lowest N that is free. Returns null only if every candidate up to the bound is taken (unreasonable), so
+    /// the caller can leave the source rather than overwrite. The suffix keeps the name NON-canonical, so a
+    /// quarantined dup is never re-admitted as an upload id or a tenant by any later pass.
+    /// </summary>
+    private static string? FreeQuarantineTarget(string quarantine, string name)
+    {
+        var canonical = Path.Combine(quarantine, name);
+        if (!Directory.Exists(canonical)) return canonical;
+        // A bound rather than an unbounded loop: a hostile or pathological pile-up of colliding ids must not
+        // spin forever. 10000 distinct dup slots per id is far beyond any real rolling-deploy collision.
+        for (var n = 1; n <= 10000; n++)
+        {
+            var candidate = Path.Combine(quarantine, $"{name}__dup-{n}");
+            if (!Directory.Exists(candidate)) return candidate;
+        }
+        return null;
     }
 
     /// <summary>Delete the staging dir for an upload. Best-effort; called once the turn is started.</summary>

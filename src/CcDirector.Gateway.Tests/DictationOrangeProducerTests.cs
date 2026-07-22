@@ -58,8 +58,11 @@ public sealed class DictationOrangeProducerTests : IDisposable
         catch (IOException) { /* a temp directory that outlives the test is not a test failure */ }
     }
 
-    /// <summary>The production seam itself - the exact method the live roster's dictationStatusFor calls.</summary>
-    private string? PhaseFor(string sessionId) => GatewayHost.DictationStatusFor(sessionId, _marks, _uploads);
+    /// <summary>The production seam itself - the exact method the live roster's dictationStatusFor calls.
+    /// This is a self-host (Local) store, so the tenant is Local throughout - the same partition the live
+    /// self-host roster reads. Cross-tenant isolation of the mark is proven in
+    /// <see cref="TranscribingSessionsTenantIsolationTests"/>.</summary>
+    private string? PhaseFor(string sessionId) => GatewayHost.DictationStatusFor(TenantId.Local, sessionId, _marks, _uploads);
 
     /// <summary>
     /// A real durable PENDING record, written by the real store's real verb, and read back through the real
@@ -107,7 +110,7 @@ public sealed class DictationOrangeProducerTests : IDisposable
     public void AProgressMarkThatGoesIdle_StopsPainting_TheNinetySecondBound()
     {
         ARealUndeliveredDictation("quiet-phone");
-        _marks.Begin("quiet-phone");
+        _marks.Begin(TenantId.Local, "quiet-phone");
 
         Assert.Equal(DictationPhase.Uploading, PhaseFor("quiet-phone"));
 
@@ -133,12 +136,12 @@ public sealed class DictationOrangeProducerTests : IDisposable
     public void AnUploadThatKeepsMakingProgress_KeepsPainting_HoweverLongItTakes()
     {
         ARealUndeliveredDictation("slow-phone");
-        _marks.Begin("slow-phone");
+        _marks.Begin(TenantId.Local, "slow-phone");
 
         for (var chunk = 0; chunk < 10; chunk++)
         {
             _now = _now.AddSeconds(60);      // slow, but alive
-            _marks.Refresh("slow-phone");    // the real verb the chunk-store path calls
+            _marks.Refresh(TenantId.Local, "slow-phone");    // the real verb the chunk-store path calls
             Assert.Equal(DictationPhase.Uploading, PhaseFor("slow-phone"));
         }
     }
@@ -149,7 +152,7 @@ public sealed class DictationOrangeProducerTests : IDisposable
     public void WhileTheServerIsActuallyTranscribing_TheLabelSaysSo()
     {
         ARealUndeliveredDictation("transcribing");
-        _marks.MarkActivelyTranscribing("transcribing");
+        _marks.MarkActivelyTranscribing(TenantId.Local, "transcribing");
 
         Assert.Equal(DictationPhase.Transcribing, PhaseFor("transcribing"));
     }
@@ -172,7 +175,7 @@ public sealed class DictationOrangeProducerTests : IDisposable
     [Fact]
     public void AProgressMarkWithNoUndeliveredRecord_PaintsNothing()
     {
-        _marks.Begin("no-record");
+        _marks.Begin(TenantId.Local, "no-record");
 
         Assert.False(_uploads.IsSessionLocked("no-record"));
         Assert.Null(PhaseFor("no-record"));
@@ -188,7 +191,7 @@ public sealed class DictationOrangeProducerTests : IDisposable
     public void OnceTheWordsAreDelivered_NothingPaints()
     {
         var uploadId = ARealUndeliveredDictation("delivering");
-        _marks.Begin("delivering");
+        _marks.Begin(TenantId.Local, "delivering");
         Assert.Equal(DictationPhase.Uploading, PhaseFor("delivering"));
 
         _uploads.MarkDelivered(uploadId, submitted: true, movedOn: false, transcript: "the 362 characters");
