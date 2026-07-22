@@ -155,6 +155,44 @@ public sealed class WingmanVoiceService
     private string AudioDirFor(TenantId tenant) => Path.Combine(PartitionDirectoryFor(tenant), "voice-audio");
 
     /// <summary>
+    /// Resolve the on-disk path of one clip file (the <c>.mp3</c> or the <c>.json</c>) inside a tenant's
+    /// voice-audio directory, REFUSING a session id that is not a single safe path segment - returning null,
+    /// on which the caller writes or deletes NOTHING.
+    ///
+    /// The session id becomes a FILE NAME here, exactly as the tenant id becomes a DIRECTORY NAME in
+    /// <see cref="CanonicalTenantKey"/> - so it gets the same treatment for the same reason. The tenant is a
+    /// shape this system mints and is validated; the session id, on the PERSISTING path, is NOT. A hostile
+    /// Director can advertise any non-empty string as a pushed session id, and the persisting callers - the
+    /// <c>/sessions/voice-mode/all</c> fan-out and the turn-end narration sweep - carry whatever id they are
+    /// handed with no <c>Guid.TryParse</c> gate (the interactive request endpoints that DO gate are a
+    /// different door). So <c>"../../&lt;other-tenant&gt;/voice-audio/&lt;victim&gt;"</c> is a real input, and
+    /// concatenated raw it walks the write out of this tenant's partition and into another's. Two independent
+    /// checks, BOTH required - a shape that slips one is caught by the other:
+    ///  - the id must be a single ordinary file-name component: equal to its own <see cref="Path.GetFileName"/>,
+    ///    not <c>"."</c> or <c>".."</c>, and free of any directory separator, volume marker, or char the
+    ///    platform rejects in a file name; and
+    ///  - the fully-resolved path must still lie INSIDE this tenant's voice-audio directory (canonical
+    ///    containment), so even a separator this list did not anticipate cannot escape the partition.
+    /// A legitimate session id (a GUID) has none of these traits and passes untouched; anything else is
+    /// refused rather than coerced, the same rule the tenant partition already applies one level up.
+    /// </summary>
+    private string? SafeClipPath(TenantId tenant, string sid, string extension)
+    {
+        if (string.IsNullOrWhiteSpace(sid)) return null;
+        if (sid is "." or "..") return null;
+        if (!string.Equals(sid, Path.GetFileName(sid), StringComparison.Ordinal)) return null;
+        if (sid.IndexOfAny(new[] { '/', '\\', ':' }) >= 0) return null;
+        if (sid.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0) return null;
+
+        var audioDir = AudioDirFor(tenant);
+        var combined = Path.Combine(audioDir, sid + extension);
+        var root = Path.GetFullPath(audioDir) + Path.DirectorySeparatorChar;
+        var full = Path.GetFullPath(combined);
+        if (!full.StartsWith(root, StringComparison.OrdinalIgnoreCase)) return null;
+        return full;
+    }
+
+    /// <summary>
     /// The one HTTP client for the narration speech leg, used whenever no test client is injected.
     ///
     /// Static and never disposed, matching the hosted-call pattern used across this codebase
@@ -391,12 +429,21 @@ public sealed class WingmanVoiceService
     {
         try
         {
-            var audioDir = AudioDirFor(tenant);
-            Directory.CreateDirectory(audioDir);
+            // The session id is a file name here, and on the persisting path it is caller-controlled (see
+            // SafeClipPath): refuse a traversal / separator-bearing / non-canonical id rather than let it
+            // write outside this tenant's partition. Refused -> write NOTHING (both files or neither).
+            var mp3Path = SafeClipPath(tenant, sid, ".mp3");
+            var metaPath = SafeClipPath(tenant, sid, ".json");
+            if (mp3Path is null || metaPath is null)
+            {
+                FileLog.Write($"[WingmanVoiceService] save ready audio REFUSED (session id is not a safe path segment) tenant={tenant.ToLogString()} sid={sid}");
+                return;
+            }
+            Directory.CreateDirectory(AudioDirFor(tenant));
             // Write the audio first, then the metadata, so a startup load (which requires BOTH the
             // .mp3 and the .json) never sees a session ready before its bytes are on disk.
-            File.WriteAllBytes(Path.Combine(audioDir, sid + ".mp3"), ready.Audio);
-            File.WriteAllText(Path.Combine(audioDir, sid + ".json"),
+            File.WriteAllBytes(mp3Path, ready.Audio);
+            File.WriteAllText(metaPath,
                 JsonSerializer.Serialize(new PersistedVoice(ready.Spoken, ready.Reply, ready.AtUtc, ready.ContentType, ready.ServedViaFallback)));
         }
         catch (Exception ex) { FileLog.Write($"[WingmanVoiceService] save ready audio FAILED tenant={tenant.ToLogString()} sid={sid}: {Redact(ex.Message, tenant)}"); }
@@ -406,9 +453,16 @@ public sealed class WingmanVoiceService
     {
         try
         {
-            var audioDir = AudioDirFor(tenant);
-            var meta = Path.Combine(audioDir, sid + ".json");
-            var audio = Path.Combine(audioDir, sid + ".mp3");
+            // Same guard as the save sink: the session id is a caller-controlled file name, so a traversal
+            // id must not let a delete reach another tenant's clip. Refused -> delete NOTHING. A safe id
+            // could only ever have written its own files, so there is nothing legitimate to miss here.
+            var meta = SafeClipPath(tenant, sid, ".json");
+            var audio = SafeClipPath(tenant, sid, ".mp3");
+            if (meta is null || audio is null)
+            {
+                FileLog.Write($"[WingmanVoiceService] delete ready audio REFUSED (session id is not a safe path segment) tenant={tenant.ToLogString()} sid={sid}");
+                return;
+            }
             if (File.Exists(meta)) File.Delete(meta);
             if (File.Exists(audio)) File.Delete(audio);
         }
