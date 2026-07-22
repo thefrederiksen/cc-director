@@ -4,6 +4,7 @@ using System.Net.Http.Json;
 using System.Net.Sockets;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using CcDirector.Core.Tenancy;
 using CcDirector.Gateway;
 using CcDirector.Gateway.Contracts;
 using Xunit;
@@ -673,11 +674,11 @@ public sealed class SessionsAggregationTests : IAsyncLifetime
         // WS proxy must still answer 503 for it.
         var reachable = await StartFake("M", "u", new[] { Sample("live", "ClaudeCode", "r", "Idle", "green") });
         await Register(reachable);
-        _gateway.SessionOwners.Remember("offline-owned", "dead-director-id");
+        _gateway.SessionOwners.Remember(TenantId.Local, "offline-owned", "dead-director-id");
 
         await GetSessions();
 
-        Assert.Equal("dead-director-id", _gateway.SessionOwners.OwnerOf("offline-owned"));
+        Assert.Equal("dead-director-id", _gateway.SessionOwners.OwnerOf(TenantId.Local, "offline-owned"));
         var resp = await _http.GetAsync("sessions/offline-owned/stream");
         Assert.Equal(HttpStatusCode.ServiceUnavailable, resp.StatusCode);
     }
