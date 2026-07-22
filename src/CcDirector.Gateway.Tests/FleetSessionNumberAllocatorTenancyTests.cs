@@ -1,3 +1,7 @@
+using System;
+using System.Collections;
+using System.Reflection;
+using System.Threading;
 using CcDirector.Core.Tenancy;
 using CcDirector.Gateway.Discovery;
 using Xunit;
@@ -109,5 +113,79 @@ public sealed class FleetSessionNumberAllocatorTenancyTests
         // THE PROPERTY - tenant B still has a completely fresh pool; A's flood never touched it.
         var bFirst = a.Allocate(TenantB, "bob-1", "dir-b");
         Assert.Equal(FleetSessionNumberAllocator.MinNumber, bFirst);
+    }
+
+    /// <summary>
+    /// CROSS-TENANT CONCURRENCY (audit H2, Codex residual). Correctness partitioning is not enough: the
+    /// allocator must also not SERIALIZE tenants on a shared lock. With one process-global lock, tenant A
+    /// holding it (mid-allocation, or just contending) stalls every other tenant's allocation. The fix gives
+    /// each tenant's partition its OWN lock, so a caller only ever takes ITS tenant's lock.
+    ///
+    /// This test holds tenant A's partition lock and proves tenant B allocates concurrently WITHOUT waiting,
+    /// while a same-tenant A allocation DOES wait (the destructibility control - it proves the held lock is
+    /// the one A's own operations take, so "B proceeded" is real independence, not a lock we grabbed that
+    /// nobody uses). Revert to a single shared lock and the tenant-B property assertion reddens: B would then
+    /// block on the very lock this test holds.
+    /// </summary>
+    [Fact]
+    public void One_tenant_holding_its_pool_lock_does_not_block_another_tenants_allocation()
+    {
+        var a = new FleetSessionNumberAllocator();
+        // Materialize both partitions so each has a lock object to reach.
+        a.Allocate(TenantA, "alice-seed", "dir-a");
+        a.Allocate(TenantB, "bob-seed", "dir-b");
+
+        var tenantALock = PoolLockFor(a, TenantA);
+        var aBlockedAllocationDone = new ManualResetEventSlim(false);
+
+        lock (tenantALock)
+        {
+            // Tenant A's partition lock is HELD by this thread; any operation on A's partition must wait.
+
+            // THE PROPERTY - tenant B allocates on ANOTHER thread and completes without waiting on A's lock.
+            int? bNumber = null;
+            var bDone = new ManualResetEventSlim(false);
+            var bThread = new Thread(() =>
+            {
+                bNumber = a.Allocate(TenantB, "bob-concurrent", "dir-b");
+                bDone.Set();
+            }) { IsBackground = true };
+            bThread.Start();
+
+            Assert.True(bDone.Wait(TimeSpan.FromSeconds(5)),
+                "Tenant B's allocation blocked while tenant A held ITS OWN pool lock - the allocator is serializing tenants on a shared lock.");
+            Assert.NotNull(bNumber);
+
+            // DESTRUCTIBILITY CONTROL - a same-tenant (A) allocation really DOES block on the held lock.
+            var aThread = new Thread(() =>
+            {
+                a.Allocate(TenantA, "alice-concurrent", "dir-a");
+                aBlockedAllocationDone.Set();
+            }) { IsBackground = true };
+            aThread.Start();
+
+            Assert.False(aBlockedAllocationDone.Wait(TimeSpan.FromSeconds(1)),
+                "Tenant A's own allocation completed while A's pool lock was held - the lock held is not the one A's partition uses, so the property assertion above proves nothing.");
+        }
+
+        // Once A's lock is released, the previously-blocked A allocation completes - closing the control.
+        Assert.True(aBlockedAllocationDone.Wait(TimeSpan.FromSeconds(5)),
+            "Tenant A's allocation never completed after its pool lock was released.");
+    }
+
+    /// <summary>
+    /// Reach the per-tenant partition's own lock object by reflection. This is a concurrency proof, so it must
+    /// hold the EXACT lock a caller for that tenant takes - there is no public seam for that by design.
+    /// </summary>
+    private static object PoolLockFor(FleetSessionNumberAllocator allocator, TenantId tenant)
+    {
+        var mapField = typeof(FleetSessionNumberAllocator).GetField("_byTenant", BindingFlags.NonPublic | BindingFlags.Instance);
+        Assert.NotNull(mapField);
+        var map = (IDictionary)mapField!.GetValue(allocator)!;
+        var pool = map[tenant];
+        Assert.NotNull(pool);
+        var lockField = pool!.GetType().GetField("Lock", BindingFlags.Public | BindingFlags.Instance);
+        Assert.NotNull(lockField);
+        return lockField!.GetValue(pool)!;
     }
 }

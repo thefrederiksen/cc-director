@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using CcDirector.Core.Tenancy;
 using CcDirector.Core.Utilities;
 
@@ -45,9 +46,11 @@ namespace CcDirector.Gateway.Discovery;
 /// re-handed. Numbers are freed only by an explicit <see cref="Release"/> when a session ends, or by
 /// <see cref="ReleaseForDirector"/> when a whole Director is swept from the registry.
 ///
-/// Thread-safe: every public method takes the single lock. The lock guards the whole tenant map, so it is
-/// held for the brief span of one partition's probe/mutate - low contention, and simpler than a lock per
-/// partition.
+/// Thread-safe, and PARTITIONED for concurrency as well as correctness (audit H2). The tenant map is a
+/// <see cref="ConcurrentDictionary{TKey,TValue}"/>, and each tenant's partition carries its OWN lock. A
+/// caller's allocate / adopt / release / removal only ever takes the lock of ITS OWN tenant's partition,
+/// so two tenants operating at once never contend on a shared lock - one tenant flooding allocations
+/// cannot block another tenant's allocation. There is no process-global lock across tenants.
 /// </summary>
 public sealed class FleetSessionNumberAllocator
 {
@@ -60,47 +63,41 @@ public sealed class FleetSessionNumberAllocator
     /// <summary>Highest assignable number (inclusive). 800-999 is the offline band.</summary>
     public const int MaxNumber = 999;
 
-    private readonly object _lock = new();
-
-    /// <summary>One partition per tenant; each holds that tenant's own session map and in-use set (its own pool).</summary>
-    private readonly Dictionary<TenantId, TenantPool> _byTenant = new();
+    /// <summary>One partition per tenant; each holds that tenant's own session map, in-use set (its own pool), and lock.</summary>
+    private readonly ConcurrentDictionary<TenantId, TenantPool> _byTenant = new();
 
     private readonly record struct Assignment(int Number, string DirectorId);
 
-    /// <summary>One tenant's private allocation state: its session-to-number map and its own 100-999 in-use set.</summary>
+    /// <summary>
+    /// One tenant's private allocation state: its session-to-number map, its own 100-999 in-use set, and its
+    /// OWN lock. Every mutation or read of this partition's fields is done under <see cref="Lock"/>, so a
+    /// caller only ever contends with other callers for the SAME tenant - never across tenants.
+    /// </summary>
     private sealed class TenantPool
     {
+        public readonly object Lock = new();
         public readonly Dictionary<string, Assignment> BySession = new(StringComparer.Ordinal);
         public readonly HashSet<int> InUse = new();
     }
 
-    /// <summary>The tenant's partition, creating it on first use. Caller holds the lock.</summary>
-    private TenantPool PoolFor(TenantId tenant)
-    {
-        if (!_byTenant.TryGetValue(tenant, out var pool))
-        {
-            pool = new TenantPool();
-            _byTenant[tenant] = pool;
-        }
-        return pool;
-    }
+    /// <summary>The tenant's partition, creating it on first use. The map itself is thread-safe (no outer lock needed).</summary>
+    private TenantPool PoolFor(TenantId tenant) => _byTenant.GetOrAdd(tenant, static _ => new TenantPool());
 
     /// <summary>Count of numbers currently reserved in <paramref name="tenant"/>'s partition. For tests and diagnostics.</summary>
     public int InUseCount(TenantId tenant)
     {
-        lock (_lock)
-            return _byTenant.TryGetValue(tenant, out var pool) ? pool.InUse.Count : 0;
+        if (!_byTenant.TryGetValue(tenant, out var pool)) return 0;
+        lock (pool.Lock)
+            return pool.InUse.Count;
     }
 
     /// <summary>The number currently assigned to <paramref name="sessionId"/> in <paramref name="tenant"/>'s partition, or null if none.</summary>
     public int? NumberFor(TenantId tenant, string sessionId)
     {
         if (string.IsNullOrEmpty(sessionId)) return null;
-        lock (_lock)
-        {
-            if (!_byTenant.TryGetValue(tenant, out var pool)) return null;
+        if (!_byTenant.TryGetValue(tenant, out var pool)) return null;
+        lock (pool.Lock)
             return pool.BySession.TryGetValue(sessionId, out var a) ? a.Number : (int?)null;
-        }
     }
 
     /// <summary>
@@ -117,9 +114,9 @@ public sealed class FleetSessionNumberAllocator
         if (string.IsNullOrEmpty(sessionId))
             throw new ArgumentException("sessionId is required", nameof(sessionId));
 
-        lock (_lock)
+        var pool = PoolFor(tenant);
+        lock (pool.Lock)
         {
-            var pool = PoolFor(tenant);
             if (pool.BySession.TryGetValue(sessionId, out var existing))
             {
                 FileLog.Write($"[FleetSessionNumberAllocator] Allocate: {sessionId} already has {existing.Number} (idempotent, tenant={tenant.ToLogString()})");
@@ -153,9 +150,9 @@ public sealed class FleetSessionNumberAllocator
         if (string.IsNullOrEmpty(sessionId)) return;
         if (number < MinNumber || number > MaxNumber) return;
 
-        lock (_lock)
+        var pool = PoolFor(tenant);
+        lock (pool.Lock)
         {
-            var pool = PoolFor(tenant);
             if (pool.BySession.TryGetValue(sessionId, out var existing))
             {
                 // Already tracked. Keep the number it already has (its own hand-out or a prior adopt).
@@ -187,9 +184,9 @@ public sealed class FleetSessionNumberAllocator
     public void Release(TenantId tenant, string sessionId)
     {
         if (string.IsNullOrEmpty(sessionId)) return;
-        lock (_lock)
+        if (!_byTenant.TryGetValue(tenant, out var pool)) return;
+        lock (pool.Lock)
         {
-            if (!_byTenant.TryGetValue(tenant, out var pool)) return;
             if (!pool.BySession.Remove(sessionId, out var a))
                 return;
             // Only clear the shared reservation if no other session still holds this number (a
@@ -215,9 +212,9 @@ public sealed class FleetSessionNumberAllocator
     public void ReleaseForDirector(TenantId tenant, string directorId)
     {
         if (string.IsNullOrEmpty(directorId)) return;
-        lock (_lock)
+        if (!_byTenant.TryGetValue(tenant, out var pool)) return;
+        lock (pool.Lock)
         {
-            if (!_byTenant.TryGetValue(tenant, out var pool)) return;
             var gone = pool.BySession.Where(kv => string.Equals(kv.Value.DirectorId, directorId, StringComparison.Ordinal))
                                      .Select(kv => kv.Key).ToList();
             foreach (var sid in gone)

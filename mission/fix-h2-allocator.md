@@ -28,11 +28,17 @@ and tenant A's `DELETE /session-numbers/{id}` free tenant B's number for an iden
 
 ## Fix — partition every piece of state by tenant
 
-- **Allocator.** State now lives in a per-tenant partition (`Dictionary<TenantId, TenantPool>`, each
-  holding its own `BySession` map, `InUse` set, and 100-999 pool). Every method takes a `TenantId` and
-  only ever reads/writes that tenant's own partition. Each tenant draws from its OWN pool, so exhaustion
-  is confined to the tenant that caused it. Self-host resolves to `TenantId.Local` — one partition,
-  behavior unchanged. Log lines use `TenantId.ToLogString()` (no raw account id in logs).
+- **Allocator.** State now lives in a per-tenant partition (`ConcurrentDictionary<TenantId, TenantPool>`,
+  each holding its own `BySession` map, `InUse` set, 100-999 pool, AND its own lock). Every method takes a
+  `TenantId` and only ever reads/writes that tenant's own partition. Each tenant draws from its OWN pool, so
+  exhaustion is confined to the tenant that caused it. Self-host resolves to `TenantId.Local` — one
+  partition, behavior unchanged. Log lines use `TenantId.ToLogString()` (no raw account id in logs).
+- **Per-tenant locking (Codex residual).** The first cut kept ONE process-global `_lock` that every tenant
+  operation took, so tenants still serialized on a shared lock — a busy tenant's allocations stalled every
+  other tenant. Fixed: the tenant->pool map is a `ConcurrentDictionary` (thread-safe lookup, no outer lock),
+  and each `TenantPool` carries its OWN lock. A caller's allocate / adopt / release / director-removal only
+  ever takes ITS tenant's partition lock, so two tenants operating at once never contend. There is no
+  process-global lock across tenants.
 - **Endpoints** (`GatewayEndpoints`). `POST /session-numbers/allocate` and `DELETE /session-numbers/{id}`
   resolve the caller's tenant SERVER-SIDE from the authenticated device key (`ResolveReadTenant`, never
   from the request body). No bound tenant on hosted → 403 (deny by default), never the Local partition.
@@ -48,7 +54,11 @@ Server-resolved tenant only; self-host/`TenantId.Local` paths stay correct off-h
 
 - `FleetSessionNumberAllocatorTenancyTests` — director-removal, release, idempotent-read, and
   pool-exhaustion isolation, each with a destructibility control (the owner's own op really frees /
-  hands out / exhausts) beside the isolation assertion.
+  hands out / exhausts) beside the isolation assertion. Plus `One_tenant_holding_its_pool_lock_does_not_
+  block_another_tenants_allocation` — a CROSS-TENANT CONCURRENCY proof: while tenant A's partition lock is
+  held, tenant B allocates concurrently and completes, while a same-tenant A allocation blocks (the control,
+  proving the held lock is the one A's own ops take). Confirmed to redden under a collapsed shared lock while
+  the four correctness assertions stay green.
 - `HostedSessionNumberRouteTenancyTests` — two device keys on two account tenants over REAL HTTP through
   the REAL auth middleware: same session-id string allocates independently per tenant, one tenant's
   DELETE never frees the other's, and an unbound-tenant allocate is 403.
