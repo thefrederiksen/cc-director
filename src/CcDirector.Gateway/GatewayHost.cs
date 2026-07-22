@@ -230,6 +230,15 @@ public sealed class GatewayHost : IAsyncDisposable
     public Action? OnShutdownRequested { get; set; }
 
     /// <summary>
+    /// Production-readiness B2 (process-control): the seam DELETE /directors/{id} FORCE-KILL calls to kill a
+    /// Director's process tree by pid. Null (production) uses the real Process.GetProcessById(pid).Kill. A test
+    /// injects a recorder that observes the kill WITHOUT killing anything, so a proof can assert the force-kill
+    /// path was (self-host) or was NOT (hosted) reached with the client-supplied pid - a direct assertion,
+    /// exactly as <see cref="OnShutdownRequested"/> lets the shutdown proof observe its handler.
+    /// </summary>
+    public Func<int, bool>? OnForceKillDirector { get; set; }
+
+    /// <summary>
     /// Issue #331: registered cc-launcher processes. The relay endpoints use this to
     /// forward lifecycle verbs to the correct machine's launcher loopback REST API.
     /// </summary>
@@ -1758,6 +1767,17 @@ public sealed class GatewayHost : IAsyncDisposable
                 var handler = OnShutdownRequested;
                 if (handler is null) return false;
                 handler();
+                return true;
+            },
+            // Production-readiness B2: the DELETE /directors/{id} force-kill seam. Read at REQUEST time (like
+            // requestShutdown above) so a test can inject its recorder after StartAsync; in production the
+            // property is null and this performs the real Process.GetProcessById(pid).Kill(entireProcessTree).
+            forceKillDirectorTree: pid =>
+            {
+                var seam = OnForceKillDirector;
+                if (seam is not null) return seam(pid);
+                var proc = System.Diagnostics.Process.GetProcessById(pid);
+                proc.Kill(entireProcessTree: true);
                 return true;
             },
             // Issue #186: doorbell pings and heartbeat snapshots feed the turn tracker;
