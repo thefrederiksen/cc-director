@@ -1,0 +1,136 @@
+name: Deploy hosted Gateway
+
+# Ships the hosted Gateway container to Azure App Service (devthrottle-gw) automatically after CI
+# passes on main - the Gateway equivalent of the website's Vercel auto-deploy. It REDEPLOYS only
+# (rebuild image -> repin the App Service to the new immutable digest -> restart -> verify /healthz);
+# it does NOT provision resources or set app settings (the resource group, ACR, plan, storage mount
+# and the CC_GATEWAY_DB_CONNECTION are already provisioned by docs/architecture/step3-azure-deploy in
+# devthrottle_internal and persist across deploys), so this workflow needs NO stored secrets - only an
+# Azure OIDC federated login as the devthrottle-hosted-gateway service principal.
+#
+# Auth is OIDC (workload identity federation): no client secret is stored in this PUBLIC repo. The
+# service principal (Contributor on the subscription) trusts a federated credential scoped to this
+# repo's "hosted-gateway-production" environment. One-time setup is in the repo's deploy runbook.
+#
+# Runs on ubuntu-latest on purpose: the Azure CLI's build-log renderer crashes on a Windows host
+# (colorama cp1252 cannot encode the U+2713 the build prints); on Linux it streams cleanly and
+# `az acr build` blocks until the remote build finishes, so no polling workaround is needed here.
+
+on:
+  # Deploy only AFTER CI has gone green for a push to main - reuses CI's build+test as the gate
+  # instead of duplicating it. A PR CI run never deploys (its head branch is not main).
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+    branches: [main]
+  # Manual redeploy of the current main (e.g. to re-pin after an infra change).
+  workflow_dispatch:
+
+# Never let two deploys race the same App Service; a newer one waits rather than clobbering.
+concurrency:
+  group: deploy-hosted-gateway
+  cancel-in-progress: false
+
+permissions:
+  id-token: write   # required for the Azure OIDC login
+  contents: read
+
+env:
+  AZURE_RG: rg-devthrottle-hosted-gateway
+  ACR: crdevthrottlehg
+  APP: devthrottle-gw
+  IMAGE_NAME: devthrottle-gateway
+  GATEWAY_URL: https://devthrottle-gw.azurewebsites.net
+
+jobs:
+  deploy:
+    name: Build image and redeploy
+    runs-on: ubuntu-latest
+    # Guard: fire only for a SUCCESSFUL, push-triggered CI run on main, or a manual dispatch.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.event == 'push' &&
+       github.event.workflow_run.head_branch == 'main')
+    environment: hosted-gateway-production
+
+    steps:
+      # For a workflow_run trigger, build the EXACT commit CI validated; for a manual dispatch, HEAD of main.
+      - name: Resolve the commit to ship
+        id: sha
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_run" ]; then
+            echo "sha=${{ github.event.workflow_run.head_sha }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "sha=${{ github.sha }}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ steps.sha.outputs.sha }}
+
+      - name: Short SHA
+        id: short
+        run: echo "short=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Azure login (OIDC, no stored secret)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_GW_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_GW_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_GW_SUBSCRIPTION_ID }}
+
+      # Build the image IN Azure from this checkout (Dockerfile at the repo root builds the C# Gateway
+      # plus the mobile PWA and the React Cockpit, and runs the workspace typecheck). A per-commit tag
+      # keeps builds distinguishable; the App Service is pinned by the resulting immutable DIGEST, never
+      # the tag, so a rebuild always forces a real pull.
+      - name: Build image in ACR
+        run: |
+          az acr build \
+            --registry "$ACR" \
+            --image "${IMAGE_NAME}:ci-${{ steps.short.outputs.short }}" \
+            --build-arg COCKPIT_COMMIT="${{ steps.short.outputs.short }}" \
+            .
+
+      - name: Read the built image digest
+        id: digest
+        run: |
+          DIGEST=$(az acr repository show \
+            --name "$ACR" \
+            --image "${IMAGE_NAME}:ci-${{ steps.short.outputs.short }}" \
+            --query digest --output tsv)
+          case "$DIGEST" in
+            sha256:*) echo "digest=$DIGEST" >> "$GITHUB_OUTPUT" ;;
+            *) echo "ERROR: could not read a sha256 digest (got '$DIGEST')"; exit 1 ;;
+          esac
+          echo "Built digest: $DIGEST"
+
+      - name: Repin the App Service to the new digest
+        run: |
+          REF="${ACR}.azurecr.io/${IMAGE_NAME}@${{ steps.digest.outputs.digest }}"
+          az webapp config container set \
+            --resource-group "$AZURE_RG" \
+            --name "$APP" \
+            --docker-custom-image-name "$REF" \
+            --output none
+          echo "Pinned $APP to $REF"
+
+      - name: Restart to pull the digest-pinned image
+        run: az webapp restart --resource-group "$AZURE_RG" --name "$APP" --output none
+
+      # The container pulls the new image, boots and runs EF migrations; expect a brief 502/no-response
+      # window first. Poll /healthz to a real 200 before declaring success.
+      - name: Verify /healthz
+        run: |
+          for i in $(seq 1 30); do
+            code=$(curl -s -m 15 -o /dev/null -w "%{http_code}" "${GATEWAY_URL}/healthz" || true)
+            echo "attempt $i: HTTP $code"
+            if [ "$code" = "200" ]; then
+              echo "Gateway healthy at ${GATEWAY_URL}"
+              curl -s -m 15 "${GATEWAY_URL}/healthz"; echo
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "ERROR: /healthz did not return 200 within the timeout"
+          exit 1
