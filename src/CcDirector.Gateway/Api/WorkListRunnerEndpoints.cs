@@ -80,14 +80,17 @@ internal static class WorkListRunnerEndpoints
                 : body.MachineKey;
 
             // Single-machine guard FIRST (criterion 8): refuse a second concurrent drain on a machine
-            // already draining a list, before we touch the list's own consumer claim.
-            var admit = manager.TryAdmit(machineKey, name);
+            // already draining a list, before we touch the list's own consumer claim. The slot is partitioned
+            // by the REQUEST's own tenant (audit MED, gap audit-e): the caller-controlled machineKey is shared
+            // across tenants, so keying by tenant is what stops one tenant's drain refusing another's - and
+            // keeps the 409's activeList from ever naming another tenant's list.
+            var admit = manager.TryAdmit(reqTenant.Value, machineKey, name);
             if (admit == WorkListRunnerManager.AdmitResult.RefusedMachineBusy)
                 return Results.Conflict(new
                 {
                     error = "machine is already draining another list (v1 same-machine guard)",
                     machineKey,
-                    activeList = manager.ActiveList(machineKey),
+                    activeList = manager.ActiveList(reqTenant.Value, machineKey),
                 });
 
             try
@@ -110,7 +113,7 @@ internal static class WorkListRunnerEndpoints
             }
             finally
             {
-                manager.Complete(machineKey);
+                manager.Complete(reqTenant.Value, machineKey);
             }
         });
 

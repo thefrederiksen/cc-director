@@ -1,3 +1,4 @@
+using CcDirector.Core.Tenancy;
 using CcDirector.Core.Utilities;
 using CcDirector.Gateway.Contracts;
 
@@ -17,17 +18,27 @@ public sealed class DirectorCronWorkListRunner : ICronWorkListRunner
     private readonly IDirectorTargetResolver _resolver;
     private readonly WorkListRunnerManager _manager;
     private readonly ICronWorkListDrainLauncher _launcher;
+    private readonly Func<TenantId?> _resolveTenant;
 
+    /// <param name="resolveTenant">
+    /// Resolves the tenant of the current cron fire - the same background-loop/request seam the engine keys its
+    /// overlap guard by (audit MED, gap audit-e). The machine drain slot is partitioned by this tenant so one
+    /// tenant's drain never refuses another tenant's drain on a shared machine key. Omitted (self-host wiring,
+    /// tests) it is <see cref="TenantId.Local"/> - one partition, unchanged. A fire is only ever reached inside
+    /// a resolved scope, so an unresolved tenant here is a boundary bug and fails loud rather than defaulting.
+    /// </param>
     public DirectorCronWorkListRunner(
         WorkListStore store,
         IDirectorTargetResolver resolver,
         WorkListRunnerManager manager,
-        ICronWorkListDrainLauncher launcher)
+        ICronWorkListDrainLauncher launcher,
+        Func<TenantId?>? resolveTenant = null)
     {
         _store = store ?? throw new ArgumentNullException(nameof(store));
         _resolver = resolver ?? throw new ArgumentNullException(nameof(resolver));
         _manager = manager ?? throw new ArgumentNullException(nameof(manager));
         _launcher = launcher ?? throw new ArgumentNullException(nameof(launcher));
+        _resolveTenant = resolveTenant ?? (() => TenantId.Local);
     }
 
     public async Task<CronWorkListOutcome> TriggerAsync(CronJobDto job, CancellationToken ct)
@@ -69,10 +80,18 @@ public sealed class DirectorCronWorkListRunner : ICronWorkListRunner
         }
         var directorId = target.DirectorId;
 
+        // Partition the machine drain slot by the tenant of this fire (audit MED): a caller-controlled machine
+        // key shared across tenants must not let one tenant's drain refuse another's. Resolved once here and
+        // used for admit AND the finally-release below, so the release always matches the admit.
+        var tenant = _resolveTenant()
+            ?? throw new InvalidOperationException(
+                "A cron work-list drain ran with no tenant scope in effect. The machine drain slot is " +
+                "partitioned by tenant; the caller path was not bound at its tenant boundary.");
+
         var machineKey = string.IsNullOrWhiteSpace(machine) ? directorId : machine;
-        if (_manager.TryAdmit(machineKey, listName) == WorkListRunnerManager.AdmitResult.RefusedMachineBusy)
+        if (_manager.TryAdmit(tenant, machineKey, listName) == WorkListRunnerManager.AdmitResult.RefusedMachineBusy)
         {
-            FileLog.Write($"[DirectorCronWorkListRunner] job={job.Id}: machine={machineKey} busy (active={_manager.ActiveList(machineKey)})");
+            FileLog.Write($"[DirectorCronWorkListRunner] job={job.Id}: tenant={tenant.ToLogString()} machine={machineKey} busy (active={_manager.ActiveList(tenant, machineKey)})");
             return CronWorkListOutcome.MachineBusy;
         }
 
@@ -100,7 +119,7 @@ public sealed class DirectorCronWorkListRunner : ICronWorkListRunner
             }
             finally
             {
-                _manager.Complete(machineKey);
+                _manager.Complete(tenant, machineKey);
             }
         }, CancellationToken.None);
 
