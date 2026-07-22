@@ -345,7 +345,8 @@ public sealed class GatewayHostTests : IAsyncLifetime
         // Releasing frees it for reuse.
         var del = await _http.DeleteAsync("session-numbers/sess-A");
         Assert.Equal(HttpStatusCode.NoContent, del.StatusCode);
-        Assert.Null(_gateway.SessionNumbers.NumberFor("sess-A"));
+        // Self-host: the endpoint resolves the request to the Local partition, so that is where to look.
+        Assert.Null(_gateway.SessionNumbers.NumberFor(Core.Tenancy.TenantId.Local, "sess-A"));
     }
 
     private async Task WaitForDirectorCount(int target, TimeSpan timeout)

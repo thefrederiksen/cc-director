@@ -152,23 +152,36 @@ internal static class GatewayEndpoints
         // which runs the whole turn Gateway-side. The Gateway endpoint + its two dedicated tests are deleted;
         // the Director SSE endpoint is on the Phase 1 deletion DROP list, removed at the cut.
 
-        // Issue #1292: the fleet-wide session-number authority. A Director asks for a number when it
-        // creates a session (so the number is unique across every Director on every machine) and frees
+        // Issue #1292: the per-tenant session-number authority. A Director asks for a number when it
+        // creates a session (so the number is unique across every Director THAT TENANT owns) and frees
         // it when the session ends. Guarded by the same auth middleware as every other Director-facing
         // route, so the Director's own fleet credential is required.
+        //
+        // Audit H2: the allocator is partitioned by tenant, so both routes resolve the caller's OWN tenant
+        // (server-side, from the authenticated device key - never from the request body) and touch only
+        // that tenant's partition. A request whose device key binds to no tenant is DENIED on hosted rather
+        // than served the Local partition; self-host always resolves to Local, unchanged.
         if (sessionNumbers is not null)
         {
-            app.MapPost("/session-numbers/allocate", (SessionNumberAllocateRequest req) =>
+            app.MapPost("/session-numbers/allocate", (SessionNumberAllocateRequest req, HttpContext ctx) =>
             {
                 if (string.IsNullOrWhiteSpace(req.SessionId))
                     return Results.BadRequest(new { error = "sessionId is required" });
-                var number = sessionNumbers.Allocate(req.SessionId, req.DirectorId ?? "");
+                var tenant = ResolveReadTenant(ctx, tenantBoundary);
+                if (tenant is null)
+                    return Results.Json(new { error = "no tenant is bound to this request" },
+                        statusCode: StatusCodes.Status403Forbidden);
+                var number = sessionNumbers.Allocate(tenant.Value, req.SessionId, req.DirectorId ?? "");
                 return Results.Ok(new SessionNumberAllocateResponse { Number = number });
             });
 
-            app.MapDelete("/session-numbers/{sessionId}", (string sessionId) =>
+            app.MapDelete("/session-numbers/{sessionId}", (string sessionId, HttpContext ctx) =>
             {
-                sessionNumbers.Release(sessionId);
+                var tenant = ResolveReadTenant(ctx, tenantBoundary);
+                if (tenant is null)
+                    return Results.Json(new { error = "no tenant is bound to this request" },
+                        statusCode: StatusCodes.Status403Forbidden);
+                sessionNumbers.Release(tenant.Value, sessionId);
                 return Results.NoContent();
             });
         }
@@ -1042,16 +1055,19 @@ internal static class GatewayEndpoints
             // tracker keeps only the higher value per hour, so folding on every /sessions read never inflates.
             concurrency?.Observe(all, DateTime.UtcNow, reqTenant.Value);
 
-            // Issue #1292: adopt every observed number into the fleet allocator's in-use set. This is how
-            // the Gateway learns numbers it did not hand out - a number a Director assigned offline, or any
+            // Issue #1292: adopt every observed number into the allocator's in-use set. This is how the
+            // Gateway learns numbers it did not hand out - a number a Director assigned offline, or any
             // number still live after a Gateway restart - so it never hands the same number to a new
             // session. Adopt only ever marks a number in use (never frees one), so doing it from this
             // possibly-filtered view is safe: a Director that is momentarily absent from the aggregation
             // can never lose its numbers here.
+            // Audit H2: adopt into THIS REQUEST'S tenant partition. The roster assembled above is this
+            // tenant's own (the owned-Director gate filtered it), so its numbers belong to this tenant and
+            // can never mark another account's partition in use.
             if (sessionNumbers is not null)
                 foreach (var s in all)
                     if (s.Number is int num)
-                        sessionNumbers.Adopt(s.SessionId, s.DirectorId, num);
+                        sessionNumbers.Adopt(reqTenant.Value, s.SessionId, s.DirectorId, num);
 
             if (envelope == true)
             {

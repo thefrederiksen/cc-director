@@ -641,12 +641,11 @@ public sealed class GatewayHost : IAsyncDisposable
         // Issue #1292: free a removed Director's session numbers so a Director that died without releasing
         // them does not leak the pool. OnDirectorRemoved fires on graceful unregister and on the registry's
         // own stale/unreachable sweep, so this never fires for a merely momentarily-unreachable Director.
-        // The allocator's own store keys assignments by BARE director id with no tenant beside them, so it
-        // cannot yet scope this release even though the event now carries the tenant. That is a real hole of
-        // the same family - one account's disconnect frees another account's session numbers - but closing it
-        // means partitioning the allocator, which is its own unit of work; see the note on
-        // FleetSessionNumberAllocator.ReleaseForDirector.
-        Registry.OnDirectorRemoved += removal => SessionNumbers.ReleaseForDirector(removal.DirectorId);
+        // Audit H2: the allocator is partitioned by tenant and a director id is unique only within its
+        // tenant, so the removal's OWNING tenant is threaded straight through - dropping it would let one
+        // account's disconnect free another account's numbers. The removal carries its owner (DirectorRemoval),
+        // so the release only ever touches the departed Director's own tenant partition.
+        Registry.OnDirectorRemoved += removal => SessionNumbers.ReleaseForDirector(removal.Tenant, removal.DirectorId);
         PushedSessions = new Streaming.PushedSessionStore();
         // Gateway Cleanup mission (Wave 4b): the Gateway-native mission store, at a Gateway-side file path
         // (CcStorage.Root(), the same location the cron and snooze stores use), NOT the Director's tool-config
