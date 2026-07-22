@@ -352,7 +352,7 @@ public sealed class GatewayHostTests : IAsyncLifetime
         var deadline = DateTime.UtcNow + timeout;
         while (DateTime.UtcNow < deadline)
         {
-            if (_gateway.Registry.ListDirectors().Count >= target) return;
+            if (_gateway.Registry.ListDirectors(CcDirector.Gateway.Tenancy.SystemScope.Grant()).Count >= target) return;
             await Task.Delay(100);
         }
         // Don't fail here - tests will fail with clearer assertions if discovery didn't work
