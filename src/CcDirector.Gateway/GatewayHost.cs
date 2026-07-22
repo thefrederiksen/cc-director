@@ -1286,7 +1286,7 @@ public sealed class GatewayHost : IAsyncDisposable
                     if (vs.HasVoice(tenant, sid)) continue;          // already cached, nothing to do
                     var located = PushedSessions.TryLocate(tenant, sid, stale);
                     if (located is not { } loc) continue;            // not owned by any of this tenant's directors
-                    var director = Registry.Get(loc.DirectorId);
+                    var director = Registry.Get(tenant, loc.DirectorId);
                     if (director is null) continue;
                     var st = loc.Session.ActivityState ?? "";
                     if (st is "Idle" or "WaitingForInput" or "WaitingForPerm")
@@ -1432,10 +1432,9 @@ public sealed class GatewayHost : IAsyncDisposable
                     // Gateway Cleanup mission, Phase 2: reach the owning Director (carried on the signal as
                     // its DirectorId) through the tunnel-first SessionVerbClient - no HTTP dial. The Director
                     // may be push-only (empty control URL); the tunnel path still reaches it by id.
-                    // MTR-01: this voice/turn-end sweep is Local-pinned (like every TenantId.Local read around
-                    // it - the voice state it mutates is not yet partitioned; see the note on
-                    // LocateSessionForRequestAsync), so resolve the Director in Local, not by a bare scan.
-                    var director = Registry.Get(TenantId.Local, signal.DirectorId);
+                    // Hosted Multi-Tenancy voice-serving: resolve the Director in its OWNING tenant (the
+                    // registry is keyed by (tenant, director id)); Local would miss it on a hosted Gateway.
+                    var director = Registry.Get(tenant, signal.DirectorId);
                     if (director is null) return;
                     Api.DirectorCommandRouter.SendDirectorCommandAsync? sendCommand = SendCommandAsync;
                     var route = new Api.SessionVerbClient(director, sendCommand);
