@@ -372,7 +372,8 @@ internal static class GatewayEndpoints
                 });
             }
 
-            var directors = registry.ListDirectors();
+            // Self-host status only (this branch is not reached on hosted): the single tenant is Local.
+            var directors = registry.ListDirectors(TenantId.Local);
             // Post-cut: the roster lives ONLY in the push store, so count from there. A Director with no
             // fresh pushed snapshot is not connected to the tunnel and contributes zero.
             int totalSessions = directors.Sum(d =>
@@ -2819,7 +2820,9 @@ internal static class GatewayEndpoints
             if (exePath is null)
                 return Results.Problem("cc-director.exe not found on PATH or in standard install location", statusCode: 500);
 
-            var beforeIds = registry.ListDirectors().Select(d => d.DirectorId).ToHashSet();
+            // The spawned cc-director.exe runs on the Gateway's OWN machine, so it registers as a Local-tenant
+            // entry; scope the before/after diff to Local (this route is refused on hosted).
+            var beforeIds = registry.ListDirectors(TenantId.Local).Select(d => d.DirectorId).ToHashSet();
 
             try
             {
@@ -2844,7 +2847,7 @@ internal static class GatewayEndpoints
             while (DateTime.UtcNow < deadline)
             {
                 await Task.Delay(500);
-                var newId = registry.ListDirectors().Select(d => d.DirectorId).FirstOrDefault(id => !beforeIds.Contains(id));
+                var newId = registry.ListDirectors(TenantId.Local).Select(d => d.DirectorId).FirstOrDefault(id => !beforeIds.Contains(id));
                 if (newId is not null)
                 {
                     // MTR-01: this route ShellExecutes a cc-director.exe on the GATEWAY's own machine, so the

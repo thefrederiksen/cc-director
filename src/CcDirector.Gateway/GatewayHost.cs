@@ -39,6 +39,11 @@ public sealed class GatewayHost : IAsyncDisposable
     public string Token { get; }
     public DirectorRegistry Registry { get; }
 
+    // The process's ONE system capability, minted here in the composition root. Passed to the internal
+    // system passes that legitimately read across tenants; never handed to a request handler. The guard
+    // test (SystemScopeGuardTests) enforces that SystemScope.Grant() is called nowhere else.
+    private readonly Tenancy.SystemScope _system = Tenancy.SystemScope.Grant();
+
     /// <summary>
     /// Issue #1292: the fleet-wide authority for the short three-digit session numbers. One instance for
     /// the whole Gateway, so a number names exactly one session across every Director on every machine.
@@ -1299,7 +1304,7 @@ public sealed class GatewayHost : IAsyncDisposable
         if (vs is null) return Task.CompletedTask;
         try
         {
-            if (Registry.ListDirectors().Count == 0) return Task.CompletedTask;
+            if (Registry.ListDirectors(_system).Count == 0) return Task.CompletedTask;
             // Hosted Multi-Tenancy voice-serving: run ONE pass per tenant, each inside that tenant's own scope
             // (_tenantPass.ForEachTenant). Within a pass, locate each of THAT tenant's voice sessions in ITS
             // OWN partition (push-store TryLocate - no HTTP dial) and generate into that tenant's voice state,

@@ -156,7 +156,7 @@ internal static class ExesEndpoints
                 // read. A dev page must not drive it.
                 GatewayEndpoints.StampFleetRolesAndFold(fleet, fleet, needsYouStampFor: null, snoozeRegistry: snoozeRegistry);
 
-                var local = registry.ListDirectors()
+                var local = registry.ListDirectors(TenantId.Local)
                     .Where(d => string.Equals(d.MachineName, machine, StringComparison.OrdinalIgnoreCase))
                     .OrderBy(d => d.StartedAt)
                     .ToList();
@@ -430,7 +430,7 @@ internal static class ExesEndpoints
     {
         var target = Path.GetFullPath(exePath);
         var machine = Environment.MachineName;
-        foreach (var d in registry.ListDirectors())
+        foreach (var d in registry.ListDirectors(TenantId.Local))
         {
             if (!string.Equals(d.MachineName, machine, StringComparison.OrdinalIgnoreCase)) continue;
             var p = TryGetExePath(d.Pid);

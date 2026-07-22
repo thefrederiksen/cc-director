@@ -147,7 +147,7 @@ internal static class SettingsEndpoints
                 state = "Running",
                 port = host.Port,
                 uptimeSeconds = (long)up.TotalSeconds,
-                directors = host.Registry.ListDirectors().Count,
+                directors = host.Registry.ListDirectors(CcDirector.Core.Tenancy.TenantId.Local).Count,
                 mode = host.SettingsHooks?.Mode?.Invoke() ?? "unknown",
                 // Issue #457: the fleet network addressing mode ("tailscale" | "lan").
                 addressingMode = Core.Configuration.AddressingModeConfig.Get().ToConfigString(),

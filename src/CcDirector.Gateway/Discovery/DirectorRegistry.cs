@@ -350,12 +350,19 @@ public sealed class DirectorRegistry : IDisposable
     }
 
     /// <summary>
-    /// Snapshot of all currently-known Directors, FLEET-GLOBAL - every tenant's. This is the internal
-    /// aggregation view (the roster fan-out, the reconcile poll); it must NEVER be the answer to a client
-    /// request. Serving a client is <see cref="ListDirectors(TenantId)"/>.
+    /// Snapshot of all currently-known Directors, FLEET-GLOBAL - every tenant's. This is the system
+    /// aggregation view (the "is there any fleet at all" guard, reconcile, a future operator surface); it
+    /// is NEVER the answer to a client request. Serving a client is <see cref="ListDirectors(TenantId)"/>.
+    ///
+    /// It takes a <see cref="Tenancy.SystemScope"/> so that a request handler - which never holds one -
+    /// physically cannot call it. The fleet-global reach is a capability, not a convention: the old
+    /// no-argument overload was reachable by any code and was where cross-tenant leaks kept appearing.
     /// </summary>
-    public IReadOnlyCollection<DirectorDto> ListDirectors()
-        => _directors.Values.ToList().AsReadOnly();
+    public IReadOnlyCollection<DirectorDto> ListDirectors(Tenancy.SystemScope scope)
+    {
+        ArgumentNullException.ThrowIfNull(scope);
+        return _directors.Values.ToList().AsReadOnly();
+    }
 
     /// <summary>
     /// Issue #1847: the Directors ONE tenant owns - what a client request is served. Before this, the

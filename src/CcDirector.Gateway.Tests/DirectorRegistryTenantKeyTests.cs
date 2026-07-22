@@ -132,7 +132,7 @@ public sealed class DirectorRegistryTenantKeyTests : IDisposable
 
         // Control: the no-tenant overload is the internal aggregation view and DOES see both. Without this,
         // a registry that had simply lost Bob's entry would satisfy the two assertions above.
-        var everything = _registry.ListDirectors().Select(d => d.DirectorId).ToArray();
+        var everything = _registry.ListDirectors(CcDirector.Gateway.Tenancy.SystemScope.Grant()).Select(d => d.DirectorId).ToArray();
         Assert.Contains("dir-a", everything);
         Assert.Contains("dir-b", everything);
 
