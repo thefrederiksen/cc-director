@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Threading.Tasks;
@@ -171,6 +172,91 @@ public sealed class HostedDictationLegacyQuarantineTests : IDisposable
         // The source's bytes are preserved under a unique, non-canonical dup name (never lost - move, not delete).
         var dup = Path.Combine(_root, VoiceUploadStore.QuarantineDirectoryName, cid + "__dup-1");
         Assert.True(File.Exists(Path.Combine(dup, "record.json")), "the recreated legacy bytes must be preserved under a unique dup slot");
+    }
+
+    [Fact]
+    public async Task Concurrent_workers_quarantine_every_legacy_upload_without_loss_and_leave_none_live()
+    {
+        // THE CONCURRENCY CLAIM the method's summary is granted on ("safe under restart and concurrent
+        // workers"), driven directly. GatewayHost.StartAsync calls this at startup on hosted, and the fleet
+        // runs several Gateway workers, so two can enter QuarantineLegacyUploads over the SAME shared base root
+        // at once. This stages the HARD case for that - the collision hole of finding 3, now under contention:
+        // every legacy id ALREADY has its canonical quarantine slot occupied (an earlier run quarantined it and
+        // then it was recreated live at base). The old "skip if the canonical slot is taken" would leave every
+        // recreated source LIVE at base; the fix moves each aside under a unique name. This is the line the test
+        // is revert-proof against - restore the skip (FreeQuarantineTarget / the always-move at the call site)
+        // and "no legacy left live" reddens.
+        //
+        // The invariants asserted are PHYSICAL, not the workers' return values: two workers can each observe a
+        // successful rename to the same target before either sees the other, so the counts legitimately
+        // over-report. What must hold on disk is no recorded speech lost, no legacy source left live, no occupant
+        // overwritten, and convergence to a no-op.
+        var baseStore = BaseStore();
+        var quarantineDir = Path.Combine(_root, VoiceUploadStore.QuarantineDirectoryName);
+        Directory.CreateDirectory(quarantineDir);
+
+        const int legacyCount = 24;
+        var expected = new Dictionary<string, string>(StringComparer.Ordinal); // canonical id -> its transcript
+        foreach (var _ in Enumerable.Range(0, legacyCount))
+        {
+            var id = Guid.NewGuid().ToString();
+            var cid = Guid.Parse(id).ToString("N");
+            var transcript = "recreated-legacy-" + cid;
+
+            // The occupant already sitting in the canonical quarantine slot, with its OWN distinct content.
+            var occupant = Path.Combine(quarantineDir, cid);
+            Directory.CreateDirectory(occupant);
+            File.WriteAllText(Path.Combine(occupant, "occupant.txt"), "already-quarantined-" + cid);
+
+            // The recreated legacy dir, live at the base root, with different content and the same id.
+            baseStore.MarkDelivered(id, submitted: true, movedOn: false, transcript: transcript);
+            expected[cid] = transcript;
+        }
+
+        // Two workers over the SAME base root, at once - the shape of two Gateway processes sharing one Azure
+        // Files root.
+        var workerOne = BaseStore();
+        var workerTwo = BaseStore();
+        await Task.WhenAll(
+            Task.Run(() => workerOne.QuarantineLegacyUploads()),
+            Task.Run(() => workerTwo.QuarantineLegacyUploads()));
+
+        // NO LEGACY LEFT LIVE. Not one canonical upload-id directory remains at the base root for any base pass
+        // (the age sweep, the PENDING projection) to still read as live. THIS is the revert canary: the old
+        // skip-on-collision leaves every recreated source here.
+        var survivingAtBase = Directory.EnumerateDirectories(_root)
+            .Select(d => Path.GetFileName(d.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)))
+            .Where(name => Guid.TryParseExact(name, "N", out _))
+            .ToList();
+        Assert.Empty(survivingAtBase);
+
+        foreach (var (canonicalId, transcript) in expected)
+        {
+            // THE OCCUPANT IS NEVER OVERWRITTEN. Its canonical slot still holds its own bytes and never gained
+            // the source's record - a move aside, not an overwrite.
+            var occupant = Path.Combine(quarantineDir, canonicalId);
+            Assert.Equal("already-quarantined-" + canonicalId, File.ReadAllText(Path.Combine(occupant, "occupant.txt")));
+            Assert.False(File.Exists(Path.Combine(occupant, "record.json")),
+                $"occupant slot for {canonicalId} must not have been overwritten by the recreated source");
+
+            // NO DATA LOSS and NO DUPLICATION. The recreated source's transcript is preserved under EXACTLY ONE
+            // unique __dup-N sibling - moved, never deleted, and the race never made a second physical copy.
+            var dupRecords = Directory.EnumerateDirectories(quarantineDir)
+                .Where(d =>
+                {
+                    var name = Path.GetFileName(d.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
+                    return name.StartsWith(canonicalId + "__dup-", StringComparison.Ordinal);
+                })
+                .Select(d => Path.Combine(d, "record.json"))
+                .Where(File.Exists)
+                .ToList();
+            Assert.True(dupRecords.Count == 1,
+                $"recreated legacy {canonicalId} must be preserved under exactly one dup slot (found {dupRecords.Count})");
+            Assert.Contains(transcript, File.ReadAllText(dupRecords[0]), StringComparison.Ordinal);
+        }
+
+        // IDEMPOTENT UNDER CONCURRENCY. A further pass converges to a no-op - nothing is left to move.
+        Assert.Equal(0, baseStore.QuarantineLegacyUploads());
     }
 
     [Fact]
