@@ -165,7 +165,7 @@ public sealed class TurnEndWatcherTests
     {
         var turnEnds = new List<TurnEndSignal>();
         var working = new List<string>();
-        var watcher = new TurnEndWatcher(turnEnds.Add, working.Add);
+        var watcher = new TurnEndWatcher(turnEnds.Add, (sid, _) => working.Add(sid));
         return (watcher, turnEnds, working);
     }
 

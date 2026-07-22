@@ -51,15 +51,15 @@ internal sealed class SessionVerbClient
     /// tunnel-only caller. Returns null when no Director owns the session.
     /// </summary>
     public static async Task<SessionVerbClient?> ResolveAsync(
-        string sid, DirectorRegistry registry,
+        string sid, TenantId tenant, DirectorRegistry registry,
         PushedSessionStore? pushedSessions, TimeSpan streamStale, SessionOwnerCache? owners,
         DirectorCommandRouter.SendDirectorCommandAsync? sendCommand)
     {
-        // Hosted Multi-Tenancy: SessionVerbClient is the tunnel-only RELAY caller (voice/verb sends); a later
-        // slice threads the request tenant here. For now it serves Local - correct on self-host, and an empty
-        // Local read on hosted means no wrong-tenant session is ever resolved (degrades to null, never leaks).
+        // Hosted Multi-Tenancy: SessionVerbClient is the tunnel-only RELAY caller (voice/verb sends). The
+        // caller resolves the tenant - the request tenant on the wingman voice surface, the owning tenant in
+        // background loops - and passes it here, so a session is only ever located inside its own partition.
         var (director, session) = await GatewayEndpoints.LocateSessionAsync(
-            registry, sid, pushedSessions, streamStale, TenantId.Local, owners);
+            registry, sid, pushedSessions, streamStale, tenant, owners);
         if (director is null || session is null)
             return null;
         return new SessionVerbClient(director, sendCommand);

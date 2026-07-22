@@ -47,11 +47,11 @@ internal static class GatewayEndpoints
     /// <see cref="GatewayVoiceTurnEndpoint"/>; null (old callers) maps nothing.</param>
     public static void Map(IEndpointRouteBuilder app, DirectorRegistry registry, string version, string token, bool authEnabled = false, Func<bool>? requestShutdown = null,
         Action<string, string, string>? onSessionState = null,
-        Func<string, bool>? voiceGeneratingFor = null,
-        Func<string, bool>? voiceAudioReadyFor = null,
-        Func<string, Core.HostedAi.HostedAiState?>? voiceUnavailableFor = null,
-        Func<string, bool>? nothingToNarrateFor = null,
-        Func<string, bool>? servedViaFallbackFor = null,
+        Func<TenantId, string, bool>? voiceGeneratingFor = null,
+        Func<TenantId, string, bool>? voiceAudioReadyFor = null,
+        Func<TenantId, string, Core.HostedAi.HostedAiState?>? voiceUnavailableFor = null,
+        Func<TenantId, string, bool>? nothingToNarrateFor = null,
+        Func<TenantId, string, bool>? servedViaFallbackFor = null,
         Func<string, bool, DateTime?>? needsYouStampFor = null,
         Func<string, bool>? transcribingFor = null,
         Func<string, string?>? dictationStatusFor = null,
@@ -970,14 +970,14 @@ internal static class GatewayEndpoints
                     // (the SINGLE truthful "there is voice you can play right now" signal). VoiceGenerating
                     // is the only "preparing voice" hold; VoiceAudioReady controls playback affordances.
                     if (voiceGeneratingFor is not null)
-                        s.VoiceGenerating = voiceGeneratingFor(s.SessionId);
+                        s.VoiceGenerating = voiceGeneratingFor(reqTenant.Value, s.SessionId);
                     if (voiceAudioReadyFor is not null)
-                        s.VoiceAudioReady = voiceAudioReadyFor(s.SessionId);
+                        s.VoiceAudioReady = voiceAudioReadyFor(reqTenant.Value, s.SessionId);
                     // Issue #939: when the gateway could not keep this session's voice because hosted AI
                     // is unavailable (out of credits / cap / no key), stamp the ONE shared message so the
                     // owning UI shows the consistent add-credit / add-key state instead of a silently
                     // missing play triangle. Null (voice fine) leaves the field unset.
-                    if (voiceUnavailableFor is not null && voiceUnavailableFor(s.SessionId) is Core.HostedAi.HostedAiState reason)
+                    if (voiceUnavailableFor is not null && voiceUnavailableFor(reqTenant.Value, s.SessionId) is Core.HostedAi.HostedAiState reason)
                         s.VoiceUnavailable = HostedAi.HostedAiHttp.Dto(reason);
                     // The FOLDED voice-mode display verdict the Voice screen renders VERBATIM. Every piece
                     // of ruling the phone used to do for itself - the badge, the message, and crucially
@@ -991,9 +991,9 @@ internal static class GatewayEndpoints
                                    || string.Equals(s.ActivityState, "Starting", StringComparison.OrdinalIgnoreCase),
                         hasAudio: s.VoiceAudioReady,
                         generating: s.VoiceGenerating,
-                        unavailable: voiceUnavailableFor?.Invoke(s.SessionId),
-                        nothingToNarrate: nothingToNarrateFor?.Invoke(s.SessionId) ?? false,
-                        servedViaFallback: servedViaFallbackFor?.Invoke(s.SessionId) ?? false);
+                        unavailable: voiceUnavailableFor?.Invoke(reqTenant.Value, s.SessionId),
+                        nothingToNarrate: nothingToNarrateFor?.Invoke(reqTenant.Value, s.SessionId) ?? false,
+                        servedViaFallback: servedViaFallbackFor?.Invoke(reqTenant.Value, s.SessionId) ?? false);
                     // Orange "Transcribing..." while a dictated utterance is uploading/transcribing in
                     // the background for this session (mobile Speak -> Send released the screen). Stamped
                     // BEFORE the NeedsYouSince clock below so the EffectiveColor fold already sees orange
@@ -2779,7 +2779,7 @@ internal static class GatewayEndpoints
     /// bound tenant is refused, NEVER served the Local partition (which would be a wrong-tenant read waiting to
     /// happen). Self-host, or no boundary (older callers / tests), is always Local - behavior unchanged.
     /// </summary>
-    private static TenantId? ResolveReadTenant(HttpContext ctx, Tenancy.HostedTenantBoundary? boundary)
+    internal static TenantId? ResolveReadTenant(HttpContext ctx, Tenancy.HostedTenantBoundary? boundary)
         => boundary is null ? TenantId.Local : boundary.ResolveRequestTenant(ctx);
 
     /// <summary>
