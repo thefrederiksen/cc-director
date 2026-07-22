@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { logCaptureHealth } from "../dictation/captureHealth";
 import { MicRecorder } from "../dictation/recorder";
 import { blobToWav16kMono } from "../dictation/wav";
 import { playReadyCue, playYourTurnCue, startThinkingCue, primeCueAudio, releaseCueAudio } from "../dictation/readyCue";
@@ -327,6 +328,12 @@ export function useCarMode(options: UseCarModeOptions): CarModeView {
   const endPollBusyRef = useRef(false);
   const endTickRef = useRef<() => void>(() => {});
 
+  // Capture-health (issue #863, #1988 Phase 2): wall-clock the microphone has been open for THIS listening
+  // turn, anchored when the mic (re)opens in enterListening. Compared at commit against the decoded audio
+  // duration of the committed clip so Car Mode reports the same audio-loss deficit every other surface does
+  // - previously it had no measurement at all. 0 before the first listening turn opens.
+  const utteranceStartRef = useRef(0);
+
   // Offline resilience (Phase 4a) refs. currentRecordIdRef is the durable id of the turn in flight, so a
   // brain success can delete exactly that record. The drive* refs run the background re-drive of held
   // audio: drivingRef single-flights it, driveTimerRef holds the cadence timer, driveAttemptRef is the
@@ -523,6 +530,8 @@ export function useCarMode(options: UseCarModeOptions): CarModeView {
     setCaptureError(null);
     setCaptureState("listening");
     await restartCapture();
+    // Anchor the capture-health wall-clock for this listening turn at the moment the mic reopened.
+    utteranceStartRef.current = performance.now();
     // Hands-free: watch for the spoken sign-off phrase for the whole of this Listening turn. The touch
     // "Over and out" button remains the instant path; this is what makes it work without a tap.
     startEndPhraseWatch();
@@ -944,7 +953,7 @@ export function useCarMode(options: UseCarModeOptions): CarModeView {
   // primary (and only) end-of-turn path in v3: the owner explicitly ended his turn, so a failure is
   // announced loudly. If he happened to say "over and out" it is stripped; otherwise the whole transcript is
   // the command (voice over-and-out is deferred - the button is the end path).
-  const transcribeAndTake = useCallback(async (prefetched?: { transcript: string; transcodeMs: number; pauseDetectedAt: number; clip: Blob }) => {
+  const transcribeAndTake = useCallback(async (prefetched?: { transcript: string; transcodeMs: number; pauseDetectedAt: number; clip: Blob; decodedSeconds: number }) => {
     const rec = recorderRef.current;
     if (rec === null) return;
     // Time the command transcription from the tap so the telemetry shows how long the owner waits between
@@ -990,18 +999,31 @@ export function useCarMode(options: UseCarModeOptions): CarModeView {
     try {
       let transcript: string;
       let transcodeMs: number;
+      let decodedSeconds: number;
       if (prefetched) {
         transcript = prefetched.transcript;
         transcodeMs = prefetched.transcodeMs;
+        decodedSeconds = prefetched.decodedSeconds;
       } else {
         setCaptureState("transcribing");
         transcribeAttemptsRef.current += 1;
         // Measure the client-side transcode (phone CPU) separately from the transcribe round trip (network +
         // server), so a real phone turn shows where the time actually goes.
         const transcodeStart = performance.now();
-        const { wav } = await blobToWav16kMono(clip);
+        const decoded = await blobToWav16kMono(clip);
         transcodeMs = performance.now() - transcodeStart;
-        transcript = (await transcribeCarModeAudio(wav)).trim();
+        decodedSeconds = decoded.decodedSeconds;
+        transcript = (await transcribeCarModeAudio(decoded.wav)).trim();
+      }
+      // Capture-health (issue #863, #1988 Phase 2): Car Mode now reports the same audio-loss deficit every
+      // other surface does - the listening wall-clock versus the decoded audio duration of the committed
+      // clip. Logged once per committed turn (never on the rolling end-phrase ticks, which would spam).
+      if (utteranceStartRef.current > 0) {
+        logCaptureHealth("carmode", {
+          recordedMs: pauseDetectedAt - utteranceStartRef.current,
+          decodedSeconds,
+          sourceBytes: clip.size,
+        });
       }
       const pauseToTranscribeMs = performance.now() - pauseDetectedAt;
       setLastHeard(transcript);
@@ -1095,9 +1117,9 @@ export function useCarMode(options: UseCarModeOptions): CarModeView {
       const clip = await rec.snapshotFlushed();
       if (clip.size < MIN_CLIP_BYTES) return;
       const transcodeStart = performance.now();
-      const { wav } = await blobToWav16kMono(clip);
+      const decoded = await blobToWav16kMono(clip);
       const transcodeMs = performance.now() - transcodeStart;
-      const transcript = (await transcribeCarModeAudio(wav)).trim();
+      const transcript = (await transcribeCarModeAudio(decoded.wav)).trim();
       // This tick reached the Gateway: the connection is alive. Reset the silent-stall counter and clear
       // the connection-down state / announce-once latch, so a recovered connection stops warning.
       endFailCountRef.current = 0;
@@ -1120,7 +1142,7 @@ export function useCarMode(options: UseCarModeOptions): CarModeView {
       stopThinkingCue();
       thinkingCueStopRef.current = startThinkingCue();
       stopEndPhraseWatch();
-      void transcribeAndTake({ transcript, transcodeMs, pauseDetectedAt: startedAt, clip });
+      void transcribeAndTake({ transcript, transcodeMs, pauseDetectedAt: startedAt, clip, decodedSeconds: decoded.decodedSeconds });
     } catch (err) {
       // A failed rolling transcribe must not kill the turn - skip this tick and try again next second. But
       // a dead zone must not silently swallow "over and out" forever: after several consecutive failures,

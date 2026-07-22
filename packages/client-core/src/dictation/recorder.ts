@@ -71,6 +71,9 @@ export class MicRecorder {
   // Compared against the DECODED audio duration of the captured blob (in wav.ts) to detect
   // dropped audio - the browser analog of the desktop expected-vs-captured byte check. A
   // compressed MediaRecorder blob has no fixed bytes/sec, so duration, not bytes, is the yardstick.
+  // Anchored at the FIRST real audio chunk (not at start()), so it excludes the mic warm-up gap and
+  // lines up with both the displayed timer and the decoded audio - otherwise the warm-up would read as
+  // phantom dropped audio. 0 until the first chunk arrives.
   private startedAt = 0;
   private recordedMs = 0;
 
@@ -115,19 +118,26 @@ export class MicRecorder {
       : new MediaRecorder(this.stream);
     this.chunks = [];
     this.captureLiveFired = false;
+    // Reset the capture-health wall-clock; it is anchored at the FIRST real audio below, not here, so a
+    // segment that never delivers a chunk reports recordedMs = 0 rather than a stale previous value.
+    this.startedAt = 0;
     this.recorder.ondataavailable = (e) => {
       if (e.data && e.data.size > 0) {
         this.chunks.push(e.data);
         // The first real chunk is the honest "mic is capturing your voice" moment. Fire once.
         if (!this.captureLiveFired) {
           this.captureLiveFired = true;
+          // Anchor the capture-health wall-clock at first audio - the same instant the displayed timer and
+          // the decoded audio begin. Anchoring at start() instead would fold in the mic warm-up gap (which
+          // produced no audio), inflating recordedMs into a phantom deficit and firing a false
+          // dropped-audio warning on short clips.
+          this.startedAt = performance.now();
           this.onCaptureLive?.();
         }
       }
     };
     // Start WITH a timeslice so chunks (and the first-audio signal) arrive during capture.
     this.recorder.start(CHUNK_MS);
-    this.startedAt = performance.now();
   }
 
   /**
