@@ -772,7 +772,7 @@ public sealed class GatewayInputStatsAggregator : IDisposable
                 ("$i", Resolve(display, kind)), ("$s", sessionId));
         }
 
-        if (batch.Rows.Count > 0 || batch.TokenRows.Count > 0) PruneLocked(batch.NowUtc, tx);
+        if (batch.Rows.Count > 0 || batch.TokenRows.Count > 0) PruneLocked(tenant, batch.NowUtc, tx);
 
         tx.Commit();
 
@@ -826,7 +826,15 @@ public sealed class GatewayInputStatsAggregator : IDisposable
         }
     }
 
-    // Prune the working-day detail past the retention window. Caller holds the lock.
+    // Prune the working-day detail past the retention window, for ONE tenant only. Caller holds the lock.
+    //
+    // PER-PARTITION (MTR-08, same class as the car-mode #1933 global-prune bug): this runs inside a caller's
+    // per-tenant write transaction, so it archives and deletes ONLY that caller's own tenant's expired rows.
+    // Every statement below is constrained to tenant=$tn - without that, a caller's write would archive and
+    // delete EVERY tenant's rows older than the cutoff, a cross-tenant mutation that violates the invariant
+    // that a caller's write only ever touches its own partition. A quiet tenant's expired detail is reclaimed
+    // when THAT tenant next writes; a global age-sweep, if ever wanted, is a non-caller-triggered background
+    // job, never a side effect of an unrelated tenant's fold.
     //
     // The original prunes only the hourly buckets and the all-time totals survive because they live in
     // separate dictionaries. Here ONE row feeds both, so deleting it would silently shrink the all-time
@@ -834,7 +842,7 @@ public sealed class GatewayInputStatsAggregator : IDisposable
     // preserving every dimension any all-time answer groups by: modality, surface, is_voice, repository and
     // the wingman flag. Pruning collapses the hour and the session id, and nothing else. agent_delta and
     // agent_driven_delta carry no hour and are never pruned, matching the all-time agent tally.
-    private void PruneLocked(DateTime nowUtc, SqliteTransaction tx)
+    private void PruneLocked(string tenant, DateTime nowUtc, SqliteTransaction tx)
     {
         var cutoff = HourKey(nowUtc.AddDays(-RetentionDays));
         // model_id and checkout_id are carried through the archive fold, and each MUST be in BOTH lists. Left
@@ -854,11 +862,11 @@ public sealed class GatewayInputStatsAggregator : IDisposable
         Execute(@"INSERT INTO stat_delta(tenant, hour_utc, session_id, modality, surface, is_voice, repo_id, checkout_id, model_id, wingman, turns, chars)
                   SELECT tenant, $marker, $marker, modality, surface, is_voice, repo_id, checkout_id, model_id, wingman, SUM(turns), SUM(chars)
                     FROM stat_delta
-                   WHERE hour_utc <> $marker AND hour_utc < $cutoff
+                   WHERE tenant = $tn AND hour_utc <> $marker AND hour_utc < $cutoff
                    GROUP BY tenant, modality, surface, is_voice, repo_id, checkout_id, model_id, wingman", tx,
-            ("$marker", GatewayStatsDatabase.ArchiveMarker), ("$cutoff", cutoff));
-        Execute("DELETE FROM stat_delta WHERE hour_utc <> $marker AND hour_utc < $cutoff", tx,
-            ("$marker", GatewayStatsDatabase.ArchiveMarker), ("$cutoff", cutoff));
+            ("$tn", tenant), ("$marker", GatewayStatsDatabase.ArchiveMarker), ("$cutoff", cutoff));
+        Execute("DELETE FROM stat_delta WHERE tenant = $tn AND hour_utc <> $marker AND hour_utc < $cutoff", tx,
+            ("$tn", tenant), ("$marker", GatewayStatsDatabase.ArchiveMarker), ("$cutoff", cutoff));
 
         // token_delta prunes on the SAME rule and the same care: its one dimension, model_id, is carried in
         // both the SELECT and the GROUP BY, or the ninety-day fold turns every archived model's spend into
@@ -867,11 +875,11 @@ public sealed class GatewayInputStatsAggregator : IDisposable
         Execute(@"INSERT INTO token_delta(tenant, hour_utc, model_id, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens)
                   SELECT tenant, $marker, model_id, SUM(input_tokens), SUM(output_tokens), SUM(cache_read_tokens), SUM(cache_creation_tokens)
                     FROM token_delta
-                   WHERE hour_utc <> $marker AND hour_utc < $cutoff
+                   WHERE tenant = $tn AND hour_utc <> $marker AND hour_utc < $cutoff
                    GROUP BY tenant, model_id", tx,
-            ("$marker", GatewayStatsDatabase.ArchiveMarker), ("$cutoff", cutoff));
-        Execute("DELETE FROM token_delta WHERE hour_utc <> $marker AND hour_utc < $cutoff", tx,
-            ("$marker", GatewayStatsDatabase.ArchiveMarker), ("$cutoff", cutoff));
+            ("$tn", tenant), ("$marker", GatewayStatsDatabase.ArchiveMarker), ("$cutoff", cutoff));
+        Execute("DELETE FROM token_delta WHERE tenant = $tn AND hour_utc <> $marker AND hour_utc < $cutoff", tx,
+            ("$tn", tenant), ("$marker", GatewayStatsDatabase.ArchiveMarker), ("$cutoff", cutoff));
     }
 
     /// <summary>
