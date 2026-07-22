@@ -190,15 +190,19 @@ public class SessionViewModel : INotifyPropertyChanged
     /// unrecognised stamp value still falls through to the magenta sentinel in <see cref="StatusColorBrush"/>,
     /// which is the real fail-loud. (docs/new_architecture/session-state.html.)
     /// </summary>
-    private string EffectiveColor => RailColor(IsGatewayOffline, FoldInput.EffectiveColor, Session.ActivityState);
+    private string EffectiveColor => RailColor(IsGatewayOffline, FoldInput.EffectiveColor, Session.ActivityState, IsGatewaySettled);
 
     /// <summary>
     /// The rail dot's colour name. Pure so it is tested without an Avalonia app - the getter above binds the
     /// three live inputs.
     ///
-    /// ONLINE (<paramref name="gatewayOffline"/> false): render the Gateway's stamped answer VERBATIM, or a
-    /// neutral placeholder ("unknown" -&gt; grey) when there is no stamp yet. The desktop computes NOTHING; the
-    /// Gateway owns every colour. This is the law.
+    /// ONLINE (<paramref name="gatewayOffline"/> false): render the Gateway's stamped answer VERBATIM. When
+    /// there is NO stamp, tell the connect warm-up apart from a broken push by whether the tunnel has SETTLED
+    /// (<paramref name="gatewaySettled"/>): not yet settled -&gt; the neutral placeholder ("unknown" -&gt; grey),
+    /// waiting for the first push; settled but STILL unstamped -&gt; the loud magenta <see cref="UnstampedSentinel"/>,
+    /// because the push seam is not delivering the Gateway's verdict and a grey would read as "parked". The
+    /// desktop computes NO session colour; the Gateway owns every one. The magenta is an ALARM that the seam is
+    /// broken, not a state the desktop invented - the same missing-stamp condition the cockpit fails loud on.
     ///
     /// GATEWAY-OFFLINE FLOOR (owner's ruling, 2026-07-19): the desktop HOSTS these sessions and is the one
     /// surface that can still tell the truth with no Gateway to ask. When the tunnel is down the Gateway
@@ -211,13 +215,28 @@ public class SessionViewModel : INotifyPropertyChanged
     /// the neutral placeholder when offline because, unlike the Director, they do not host the session and
     /// cannot know what it is doing. (docs/new_architecture/session-state.html.)
     /// </summary>
-    internal static string RailColor(bool gatewayOffline, string? gatewayStamp, ActivityState localActivity)
+    internal static string RailColor(bool gatewayOffline, string? gatewayStamp, ActivityState localActivity, bool gatewaySettled)
     {
         if (gatewayOffline)
             return localActivity is ActivityState.Working or ActivityState.Starting ? "blue" : "red";
 
-        return gatewayStamp ?? "unknown";
+        if (gatewayStamp is not null)
+            return gatewayStamp;
+
+        // Online, but the Gateway has stamped no display state for this session. Until the tunnel has SETTLED
+        // (the first stamps arrive within the Gateway's ~5s fold sweep) this is the normal connect warm-up, so
+        // show the neutral placeholder and wait. Once settled and STILL unstamped, the push seam is not
+        // delivering - the exact fault that let a working session sit grey while the Gateway folded it blue
+        // (issue #1966) - so raise the loud magenta sentinel, never a grey that reads as "parked".
+        return gatewaySettled ? UnstampedSentinel : "unknown";
     }
+
+    /// <summary>The colour name <see cref="RailColor"/> returns when the Director is CONNECTED and settled yet
+    /// holds no Gateway stamp for a session - a broken display-state push, not a real state. It renders the
+    /// magenta <see cref="StatusPalette.Broken"/> pixel and a specific loud log line
+    /// (<see cref="StatusPalette.ReportMissingStamp"/>). Distinct from a Gateway-emitted "unknown" COLOUR,
+    /// which is a genuine indeterminate activity state and renders grey.</summary>
+    internal const string UnstampedSentinel = "unstamped";
 
     /// <summary>
     /// The owning Director's tunnel to its Gateway is not up, so no fresh fold can arrive and the last stamp
@@ -236,6 +255,30 @@ public class SessionViewModel : INotifyPropertyChanged
             return monitor is not null && monitor.Status != GatewayConnectionStatus.Connected;
         }
     }
+
+    /// <summary>
+    /// The tunnel is Connected AND has been for longer than <see cref="GatewayStampGrace"/> - long enough that
+    /// the Gateway's fold sweep (~5s) should have stamped every session at least once. <see cref="RailColor"/>
+    /// uses it to tell a normal connect warm-up (no stamp yet -&gt; neutral placeholder) from a broken push seam
+    /// (settled but still unstamped -&gt; the loud magenta sentinel). Resolved off the same single
+    /// <see cref="GatewayConnectionMonitor"/> the sidebar reads;
+    /// <see cref="GatewayConnectionMonitor.LastVerifiedAt"/> is stamped once when the tunnel comes up and is not
+    /// churned while it stays up, so it marks the moment this connection settled.
+    /// </summary>
+    private static bool IsGatewaySettled
+    {
+        get
+        {
+            var monitor = (global::Avalonia.Application.Current as App)?.ControlApiHost?.GatewayMonitor;
+            if (monitor is null || monitor.Status != GatewayConnectionStatus.Connected) return false;
+            return monitor.LastVerifiedAt is { } since && DateTime.UtcNow - since > GatewayStampGrace;
+        }
+    }
+
+    /// <summary>How long after the tunnel connects the rail waits for the first Gateway stamp before it treats
+    /// a still-unstamped session as a broken push (magenta) rather than a warm-up (neutral). Covers the
+    /// Gateway's ~5s fold sweep with margin.</summary>
+    private static readonly TimeSpan GatewayStampGrace = TimeSpan.FromSeconds(15);
 
     /// <summary>Repaint the rail dot because the Gateway connection flipped (connected &lt;-&gt; offline).
     /// The offline floor in <see cref="EffectiveColor"/> reads the connection status, and that status change
@@ -260,7 +303,10 @@ public class SessionViewModel : INotifyPropertyChanged
             if (!StatusPalette.Knows(color) && color != _lastUnknownColorLogged)
             {
                 _lastUnknownColorLogged = color;
-                StatusPalette.ReportUnknownColor(color, Session.Id.ToString());
+                if (color == UnstampedSentinel)
+                    StatusPalette.ReportMissingStamp(Session.Id.ToString());
+                else
+                    StatusPalette.ReportUnknownColor(color, Session.Id.ToString());
             }
             return StatusPalette.BrushFor(color);
         }

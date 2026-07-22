@@ -61,6 +61,19 @@ public sealed class StatusPaletteTests
     }
 
     [Fact]
+    public void BrushFor_Unstamped_IsTheMagentaSentinel_NeverGrey()
+    {
+        // "unstamped" is the desktop's OWN sentinel (SessionViewModel.UnstampedSentinel): connected and
+        // settled but the Gateway stamped nothing (issue #1966). It must render the magenta BROKEN pixel, not
+        // grey - grey would read as "parked". It is deliberately NOT a Known fold colour; it routes to the
+        // dedicated ReportMissingStamp log rather than the generic unknown-colour path.
+        Assert.Equal(Color.Parse("#FF00FF"), ((ISolidColorBrush)StatusPalette.BrushFor("unstamped")).Color);
+        Assert.NotEqual(Color.Parse(StatusPalette.Grey), ((ISolidColorBrush)StatusPalette.BrushFor("unstamped")).Color);
+        Assert.False(StatusPalette.Knows("unstamped"));
+        Assert.Equal(StatusPalette.Broken, StatusPalette.HexFor("unstamped"));
+    }
+
+    [Fact]
     public void BrushFor_ANameTheFoldNeverEmits_IsTheBrokenSentinel_NeverGrey()
     {
         // Grey MEANS snoozed-or-exited. So a colour we do not know must never render grey - that

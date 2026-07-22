@@ -513,6 +513,30 @@ public partial class MainWindow : Window
         _boxGatewayHost = SafeHost(config.Url);
     }
 
+    private global::Avalonia.Threading.DispatcherTimer? _settleRepaintTimer;
+
+    /// <summary>
+    /// One-shot repaint a beat after the Gateway settle grace. A row that is online but still holds no Gateway
+    /// stamp flips to the magenta "unstamped" sentinel only once the connection has SETTLED (see
+    /// <see cref="SessionViewModel"/>), and settling is the passage of time, which fires no per-row event.
+    /// Without this, a broken push would leave a non-working row on the neutral placeholder until some unrelated
+    /// event happened to repaint it. Re-armed on every connection change; a healthy connection stamps every row
+    /// before this fires, making the repaint a no-op. 18s covers the 15s grace with margin.
+    /// </summary>
+    private void ScheduleSettleRepaint()
+    {
+        if (_gatewayMonitor is null || _gatewayMonitor.Status != GatewayConnectionStatus.Connected) return;
+        _settleRepaintTimer?.Stop();
+        _settleRepaintTimer = new global::Avalonia.Threading.DispatcherTimer { Interval = TimeSpan.FromSeconds(18) };
+        _settleRepaintTimer.Tick += (_, _) =>
+        {
+            _settleRepaintTimer?.Stop();
+            _settleRepaintTimer = null;
+            foreach (var vm in _sessions) vm.RefreshGatewayFloor();
+        };
+        _settleRepaintTimer.Start();
+    }
+
     private void TryAttachGatewayMonitor()
     {
         if (_gatewayMonitor is not null) return;
@@ -535,6 +559,7 @@ public partial class MainWindow : Window
                 // place that owns the GatewayConnectionMonitor subscription - or a settled row keeps its old dot
                 // until an unrelated event happens to repaint it.
                 foreach (var vm in _sessions) vm.RefreshGatewayFloor();
+                ScheduleSettleRepaint();
             }
             catch (Exception ex)
             {
