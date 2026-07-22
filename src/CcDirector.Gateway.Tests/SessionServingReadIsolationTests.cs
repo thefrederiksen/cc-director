@@ -75,8 +75,11 @@ public sealed class SessionServingReadIsolationTests : IAsyncLifetime
         _keyA = _gateway.Devices.Register("dev-a", "MA").DeviceKey;
         _keyB = _gateway.Devices.Register("dev-b", "MB").DeviceKey;
         _keyUnbound = _gateway.Devices.Register("dev-x", "MX").DeviceKey;
-        _gateway.Devices.SetAccountBinding("dev-a", "sub-alice", "tenant-alice");
-        _gateway.Devices.SetAccountBinding("dev-b", "sub-bob", "tenant-bob");
+        // Account tenants are minted GUIDs in production (the roster's voice enrichment now routes the
+        // request tenant into WingmanVoiceService, which refuses a non-GUID, non-Local partition key), so
+        // bind real GUID tenant ids here rather than friendly labels.
+        _gateway.Devices.SetAccountBinding("dev-a", "sub-alice", "33333333-3333-3333-3333-333333333333");
+        _gateway.Devices.SetAccountBinding("dev-b", "sub-bob", "44444444-4444-4444-4444-444444444444");
 
         // Each Director authenticates with its OWN device key -> the tunnel Hello binds its tenant -> its pushed
         // session lands in that tenant's partition. dir-B answers the screenshots-list verb so the same-tenant

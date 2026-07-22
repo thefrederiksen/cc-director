@@ -47,7 +47,7 @@ public sealed class TurnEndWatcherVoiceRefreshTests
                 if (voice.IsVoiceSession(signal.SessionId))
                     voice.GenerateAsync(signal.SessionId, signal.DirectorId, signal.IsNewTurn);
             },
-            onSessionWorking: sid => voice.OnSessionWorking(sid));
+            onSessionWorking: (sid, _) => voice.OnSessionWorking(sid));
     }
 
     [Fact]

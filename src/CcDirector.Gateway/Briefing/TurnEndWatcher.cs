@@ -51,7 +51,9 @@ public sealed class TurnEndWatcher : IDisposable
     private readonly PushedSessionStore? _pushedSessions;
     private readonly TimeSpan _streamStale;
     private readonly Action<TurnEndSignal> _onTurnEnd;
-    private readonly Action<string> _onSessionWorking;
+    // (sessionId, directorId): the director id is carried so the handler can resolve the session's OWNING
+    // tenant (Hosted Multi-Tenancy voice-serving) and clear the stale voice cache in the right partition.
+    private readonly Action<string, string> _onSessionWorking;
     private readonly TimeSpan _interval;
     private readonly ConcurrentDictionary<string, string> _lastActivity = new();
     private Timer? _timer;
@@ -65,7 +67,7 @@ public sealed class TurnEndWatcher : IDisposable
     /// <param name="streamStale">Freshness window for the push store read; defaults to the roster's window.</param>
     public TurnEndWatcher(
         Action<TurnEndSignal> onTurnEnd,
-        Action<string> onSessionWorking,
+        Action<string, string> onSessionWorking,
         TimeSpan? reconcileInterval = null,
         PushedSessionStore? pushedSessions = null,
         TimeSpan? streamStale = null)
@@ -110,7 +112,7 @@ public sealed class TurnEndWatcher : IDisposable
 
         if (IsWorking(activityState))
         {
-            _onSessionWorking(sessionId);
+            _onSessionWorking(sessionId, directorId);
             return;
         }
 

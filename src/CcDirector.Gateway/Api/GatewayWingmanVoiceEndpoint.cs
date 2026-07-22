@@ -119,7 +119,8 @@ internal static class GatewayWingmanVoiceEndpoint
         HttpClient? ttsHttpClient = null,
         Voice.VoiceUploadStore? uploadStore = null,
         Transcription.TranscriptionTelemetryLog? telemetry = null,
-        Transcription.TranscriptionAudioArchive? audioArchive = null)
+        Transcription.TranscriptionAudioArchive? audioArchive = null,
+        Tenancy.HostedTenantBoundary? tenantBoundary = null)
     {
         // The speech transport: the shared static in production, an injected stub in a test. This is the
         // same seam WingmanVoiceService already exposes for its narration leg (ttsHttpClient) and it
@@ -133,16 +134,16 @@ internal static class GatewayWingmanVoiceEndpoint
         // (turns / buffer / prompt) through the tunnel-only SessionVerbClient, so the wingman voice surface
         // never HTTP-dials the Director.
         var stale = streamStale ?? TimeSpan.FromSeconds(GatewayConfig.DefaultStreamStaleAfterSeconds);
-        Task<SessionVerbClient?> ResolveRouteAsync(string sid) =>
-            SessionVerbClient.ResolveAsync(sid, registry, pushedSessions, stale, owners, sendCommand);
+        Task<SessionVerbClient?> ResolveRouteAsync(TenantId tenant, string sid) =>
+            SessionVerbClient.ResolveAsync(sid, tenant, registry, pushedSessions, stale, owners, sendCommand);
 
         // The session's title, which the wingman speaks before the summary so a listener who cannot
         // see the screen knows which session is talking (WingmanTranslator.FidelityPrompt v5.2). Same
         // push-store read as ResolveRouteAsync above - no dial. Null (unknown session, or no name) is
         // the honest answer and simply means no title is spoken; see GatewayHost.ResolveSessionTitle.
-        string? SessionTitle(string sid)
+        string? SessionTitle(TenantId tenant, string sid)
         {
-            var name = pushedSessions?.TryLocate(TenantId.Local, sid, stale)?.Session.Name;
+            var name = pushedSessions?.TryLocate(tenant, sid, stale)?.Session.Name;
             return string.IsNullOrWhiteSpace(name) ? null : name;
         }
 
@@ -154,23 +155,35 @@ internal static class GatewayWingmanVoiceEndpoint
 
         // Which voice sessions have a ready, playable spoken summary right now (the phone's list
         // shows a play button on these and can play without entering).
-        app.MapGet("/wingman/voice/ready", () => Results.Json(new { sids = voice.ReadySessionIds(TenantId.Local) }));
+        app.MapGet("/wingman/voice/ready", (HttpContext ctx) =>
+        {
+            var reqTenant = GatewayEndpoints.ResolveReadTenant(ctx, tenantBoundary);
+            if (reqTenant is null)
+                return Results.Json(new { error = "no tenant is bound to this request" }, statusCode: StatusCodes.Status403Forbidden);
+            return Results.Json(new { sids = voice.ReadySessionIds(reqTenant.Value) });
+        });
 
         // The precomputed spoken summary for a session (instant on entry - no re-read needed).
-        app.MapGet("/sessions/{sid}/wingman/voice", (string sid) =>
+        app.MapGet("/sessions/{sid}/wingman/voice", (string sid, HttpContext ctx) =>
         {
-            var v = voice.Get(TenantId.Local, sid);
+            var reqTenant = GatewayEndpoints.ResolveReadTenant(ctx, tenantBoundary);
+            if (reqTenant is null)
+                return Results.Json(new { error = "no tenant is bound to this request" }, statusCode: StatusCodes.Status403Forbidden);
+            var v = voice.Get(reqTenant.Value, sid);
             return v is null
                 ? Results.Json(new { ready = false })
                 : Results.Json(new { ready = true, spoken = v.Spoken, reply = v.Reply, generatedAt = v.AtUtc });
         });
 
         // The precomputed audio for a session - streamed so the list can play it with one tap.
-        app.MapGet("/sessions/{sid}/wingman/voice/audio", (string sid) =>
+        app.MapGet("/sessions/{sid}/wingman/voice/audio", (string sid, HttpContext ctx) =>
         {
-            var audio = voice.GetAudio(TenantId.Local, sid);
+            var reqTenant = GatewayEndpoints.ResolveReadTenant(ctx, tenantBoundary);
+            if (reqTenant is null)
+                return Results.Json(new { error = "no tenant is bound to this request" }, statusCode: StatusCodes.Status403Forbidden);
+            var audio = voice.GetAudio(reqTenant.Value, sid);
             return audio is { Length: > 0 }
-                ? Results.Bytes(audio, voice.GetAudioContentType(TenantId.Local, sid) ?? "audio/mpeg", enableRangeProcessing: true)
+                ? Results.Bytes(audio, voice.GetAudioContentType(reqTenant.Value, sid) ?? "audio/mpeg", enableRangeProcessing: true)
                 : Results.Json(new { error = "no voice ready for this session" }, statusCode: StatusCodes.Status404NotFound);
         });
 
@@ -180,12 +193,15 @@ internal static class GatewayWingmanVoiceEndpoint
         // phone's "Turn voice off" calls it alongside the Director's /voice-mode { enabled:false }.
         // Gateway-side only and read-only - it clears the voice marker + cached clip and sends nothing
         // into the session. Idempotent: stopping a session that was not a voice session is a no-op 200.
-        app.MapPost("/sessions/{sid}/wingman/voice/stop", (string sid) =>
+        app.MapPost("/sessions/{sid}/wingman/voice/stop", (string sid, HttpContext ctx) =>
         {
             FileLog.Write($"[GatewayWingmanVoice] voice/stop sid={sid}");
+            var reqTenant = GatewayEndpoints.ResolveReadTenant(ctx, tenantBoundary);
+            if (reqTenant is null)
+                return Results.Json(new { error = "no tenant is bound to this request" }, statusCode: StatusCodes.Status403Forbidden);
             if (!Guid.TryParse(sid, out _))
                 return Results.Json(new { error = "invalid session id format" }, statusCode: StatusCodes.Status400BadRequest);
-            voice.Unmark(TenantId.Local, sid);
+            voice.Unmark(reqTenant.Value, sid);
             return Results.Json(new { stopped = true });
         });
 
@@ -205,8 +221,11 @@ internal static class GatewayWingmanVoiceEndpoint
         // thread and never raced. Idempotent: enabling a session already on, or disabling one already off,
         // is a harmless no-op. This endpoint sends NO prompt into any session - it only sets voice marking,
         // exactly like the single-session /voice-mode and /wingman/voice/stop it fans out to.
-        app.MapPost("/sessions/voice-mode/all", async (VoiceModeAllRequest? req, CancellationToken ct) =>
+        app.MapPost("/sessions/voice-mode/all", async (VoiceModeAllRequest? req, HttpContext ctx, CancellationToken ct) =>
         {
+            var reqTenant = GatewayEndpoints.ResolveReadTenant(ctx, tenantBoundary);
+            if (reqTenant is null)
+                return Results.Json(new { error = "no tenant is bound to this request" }, statusCode: StatusCodes.Status403Forbidden);
             var enabled = req?.Enabled ?? true;
             FileLog.Write($"[GatewayWingmanVoice] voice-mode/all requested: enabled={enabled}");
 
@@ -216,10 +235,10 @@ internal static class GatewayWingmanVoiceEndpoint
 
             // Every session the Gateway can see right now, de-duplicated by id. A session belongs to exactly
             // one Director, but the guard keeps a duplicated roster entry from being toggled (and counted) twice.
-            // Hosted Multi-Tenancy: voice-mode/all is a fleet fan-out WRITE (voice family); a later slice adds
-            // the request context and scopes this to the caller's tenant. For now it serves Local - correct on
-            // self-host, and on hosted the empty Local fleet means it toggles nothing (degrades, never leaks).
-            var byDirector = GatewayEndpoints.FleetByDirector(registry, pushedSessions, stale, TenantId.Local);
+            // Hosted Multi-Tenancy: voice-mode/all is a fleet fan-out WRITE (voice family), scoped to the
+            // caller's tenant resolved from its authenticated device key - so it toggles only the requester's
+            // own sessions, never another tenant's, and a request with no bound tenant is denied above.
+            var byDirector = GatewayEndpoints.FleetByDirector(registry, pushedSessions, stale, reqTenant.Value);
             var targets = new List<(string DirectorId, string Machine, string Sid, string? Name)>();
             var seen = new HashSet<string>(StringComparer.Ordinal);
             foreach (var (directorId, sessions) in byDirector)
@@ -246,7 +265,7 @@ internal static class GatewayWingmanVoiceEndpoint
                 var ok = result is { Ok: true };
                 if (ok)
                 {
-                    if (enabled) voice.Mark(TenantId.Local, t.Sid); else voice.Unmark(TenantId.Local, t.Sid);
+                    if (enabled) voice.Mark(reqTenant.Value, t.Sid); else voice.Unmark(reqTenant.Value, t.Sid);
                     changed++;
                 }
                 var reason = ok
@@ -500,15 +519,18 @@ internal static class GatewayWingmanVoiceEndpoint
             }
         });
 
-        app.MapPost("/sessions/{sid}/wingman/voice-turn", async (string sid, WingmanVoiceTurnRequest? req, CancellationToken ct) =>
+        app.MapPost("/sessions/{sid}/wingman/voice-turn", async (string sid, WingmanVoiceTurnRequest? req, HttpContext ctx, CancellationToken ct) =>
         {
             FileLog.Write($"[GatewayWingmanVoice] voice-turn sid={sid}, textLen={req?.Text?.Length ?? 0}");
+            var reqTenant = GatewayEndpoints.ResolveReadTenant(ctx, tenantBoundary);
+            if (reqTenant is null)
+                return Results.Json(new { error = "no tenant is bound to this request" }, statusCode: StatusCodes.Status403Forbidden);
             if (!Guid.TryParse(sid, out _))
                 return Results.Json(new { error = "invalid session id format" }, statusCode: StatusCodes.Status400BadRequest);
             if (req is null || string.IsNullOrWhiteSpace(req.Text))
                 return Results.Json(new { error = "text is required" }, statusCode: StatusCodes.Status400BadRequest);
 
-            var route = await ResolveRouteAsync(sid);
+            var route = await ResolveRouteAsync(reqTenant.Value, sid);
             if (route is null)
                 return Results.Json(new { error = "session not found on any director" }, statusCode: StatusCodes.Status404NotFound);
 
@@ -541,7 +563,7 @@ internal static class GatewayWingmanVoiceEndpoint
             // Clear them DETERMINISTICALLY here (do not rely on observing the Working state, which is
             // racy for fast turns) - the list stops showing it ready and nothing stale plays. The
             // fresh summary is stored below once the agent replies.
-            voice.OnSessionWorking(TenantId.Local, sid);
+            voice.OnSessionWorking(reqTenant.Value, sid);
 
             // Snapshot the widget list BEFORE sending: gives both (a) the count for the issue #366
             // guard (only read widgets that are new after the send) and (b) the prior conversation
@@ -564,7 +586,7 @@ internal static class GatewayWingmanVoiceEndpoint
             // The agent replied; now the wingman translates it. This is gateway-owned work
             // (CancellationToken.None) so navigating away does not lose the summary, and the
             // session shows YELLOW while the wingman runs, then back to red (issue #531 voice mode).
-            voice.BeginGenerating(TenantId.Local, sid);
+            voice.BeginGenerating(reqTenant.Value, sid);
             try
             {
                 // Full context: prior exchanges from the pre-send snapshot + the current question,
@@ -572,8 +594,8 @@ internal static class GatewayWingmanVoiceEndpoint
                 var recentContext = string.IsNullOrWhiteSpace(priorContext)
                     ? "You: " + req.Text.Trim()
                     : priorContext + "\n\nYou: " + req.Text.Trim();
-                var t = await translator.TranslateAsync(recentContext, reply, SessionTitle(sid), CancellationToken.None);
-                await voice.StoreSpokenAsync(TenantId.Local, sid, t.Spoken, reply, CancellationToken.None);   // make it a voice session + cache audio
+                var t = await translator.TranslateAsync(recentContext, reply, SessionTitle(reqTenant.Value, sid), CancellationToken.None);
+                await voice.StoreSpokenAsync(reqTenant.Value, sid, t.Spoken, reply, CancellationToken.None);   // make it a voice session + cache audio
                 FileLog.Write($"[GatewayWingmanVoice] voice-turn sid={sid}: replyLen={reply.Length}, spokenLen={t.Spoken.Length}");
                 // Training capture (no-op unless the setting is on); fire-and-forget so it adds no latency.
                 _ = voice.CaptureTrainingAsync(route, sid, "voice-turn", reply, recentContext, t.Spoken, t.ReplySeconds, CancellationToken.None);
@@ -585,7 +607,7 @@ internal static class GatewayWingmanVoiceEndpoint
                 return Results.Json(new { error = "wingman translation failed: " + ex.Message },
                     statusCode: StatusCodes.Status502BadGateway);
             }
-            finally { voice.EndGenerating(TenantId.Local, sid); }
+            finally { voice.EndGenerating(reqTenant.Value, sid); }
         });
 
         // Transcription (issue #531 follow-up): the phone records audio locally (survives a bad
@@ -645,13 +667,16 @@ internal static class GatewayWingmanVoiceEndpoint
         // LAST completed turn and speaks a faithful summary of it - WITHOUT sending anything into
         // the session. This is what the mobile Voice screen fires the moment you open a session,
         // so you get a spoken summary even though a normal (text) session never produced voice.
-        app.MapPost("/sessions/{sid}/wingman/explain", async (string sid, CancellationToken ct) =>
+        app.MapPost("/sessions/{sid}/wingman/explain", async (string sid, HttpContext ctx, CancellationToken ct) =>
         {
             FileLog.Write($"[GatewayWingmanVoice] explain sid={sid}");
+            var reqTenant = GatewayEndpoints.ResolveReadTenant(ctx, tenantBoundary);
+            if (reqTenant is null)
+                return Results.Json(new { error = "no tenant is bound to this request" }, statusCode: StatusCodes.Status403Forbidden);
             if (!Guid.TryParse(sid, out _))
                 return Results.Json(new { error = "invalid session id format" }, statusCode: StatusCodes.Status400BadRequest);
 
-            var route = await ResolveRouteAsync(sid);
+            var route = await ResolveRouteAsync(reqTenant.Value, sid);
             if (route is null)
                 return Results.Json(new { error = "session not found on any director" }, statusCode: StatusCodes.Status404NotFound);
 
@@ -661,13 +686,13 @@ internal static class GatewayWingmanVoiceEndpoint
             // Recent conversation so the wingman can give context to a short/terse reply.
             var recentContext = WingmanTranslator.BuildRecentContext(widgets);
 
-            voice.Mark(TenantId.Local, sid);   // opening voice on a session makes it a voice session (kept fresh on turn-end)
+            voice.Mark(reqTenant.Value, sid);   // opening voice on a session makes it a voice session (kept fresh on turn-end)
             if (string.IsNullOrWhiteSpace(lastReply))
             {
                 // No text reply to read aloud (waiting on a prompt / menu). Record the honest "nothing to
                 // narrate" fact so the Voice screen shows it via VoiceDisplayFold instead of a dead-end
                 // Generate button, then return the truthful canned line - no brain call.
-                voice.SetNothingToNarrate(TenantId.Local, sid, true);
+                voice.SetNothingToNarrate(reqTenant.Value, sid, true);
                 return Results.Json(new
                 {
                     reply = "",
@@ -682,12 +707,12 @@ internal static class GatewayWingmanVoiceEndpoint
             // navigates away or the request is abandoned mid-read - returning to the session then
             // loads the finished summary from cache instead of losing it. Mark the session generating
             // so it shows YELLOW ("not ready yet") for the duration, then back to red.
-            voice.SetNothingToNarrate(TenantId.Local, sid, false);   // there IS a text reply - clear any stale "nothing to narrate"
-            voice.BeginGenerating(TenantId.Local, sid);
+            voice.SetNothingToNarrate(reqTenant.Value, sid, false);   // there IS a text reply - clear any stale "nothing to narrate"
+            voice.BeginGenerating(reqTenant.Value, sid);
             try
             {
-                var t = await translator.TranslateAsync(recentContext, lastReply, SessionTitle(sid), CancellationToken.None);
-                await voice.StoreSpokenAsync(TenantId.Local, sid, t.Spoken, lastReply, CancellationToken.None);   // cache spoken + audio, ready to play
+                var t = await translator.TranslateAsync(recentContext, lastReply, SessionTitle(reqTenant.Value, sid), CancellationToken.None);
+                await voice.StoreSpokenAsync(reqTenant.Value, sid, t.Spoken, lastReply, CancellationToken.None);   // cache spoken + audio, ready to play
                 FileLog.Write($"[GatewayWingmanVoice] explain sid={sid}: replyLen={lastReply.Length}, spokenLen={t.Spoken.Length}");
                 // Training capture (no-op unless the setting is on); fire-and-forget so it adds no latency.
                 _ = voice.CaptureTrainingAsync(route, sid, "explain", lastReply, recentContext, t.Spoken, t.ReplySeconds, CancellationToken.None);
@@ -701,7 +726,7 @@ internal static class GatewayWingmanVoiceEndpoint
                 // return a benign 200, NOT the 502 the phone used to mislabel "this session's computer looks
                 // offline". Before this, a stalled model hung the request the full 180s and then 502'd, which
                 // is exactly the "I hit generate and nothing happens" the owner reported.
-                voice.NoteRetrying(TenantId.Local, sid);
+                voice.NoteRetrying(reqTenant.Value, sid);
                 FileLog.Write($"[GatewayWingmanVoice] explain sid={sid} model did not answer: {ex.Message} - Retrying (audio on its way)");
                 return Results.Json(new
                 {
@@ -717,7 +742,7 @@ internal static class GatewayWingmanVoiceEndpoint
                 return Results.Json(new { error = "wingman could not summarize: " + ex.Message },
                     statusCode: StatusCodes.Status502BadGateway);
             }
-            finally { voice.EndGenerating(TenantId.Local, sid); }
+            finally { voice.EndGenerating(reqTenant.Value, sid); }
         });
 
         app.MapPost("/wingman/ask-direct", async (WingmanVoiceTurnRequest? req, CancellationToken ct) =>
@@ -762,12 +787,15 @@ internal static class GatewayWingmanVoiceEndpoint
         // Menu handling (issue #531): is the agent showing an on-screen menu right now, and what are
         // the options? The phone reads this on entry to render pressable option buttons and speak the
         // choices. { isMenu, question, spoken, selectionMode, submit, options:[{key,send,note,recommended}] }.
-        app.MapGet("/sessions/{sid}/wingman/menu", async (string sid, CancellationToken ct) =>
+        app.MapGet("/sessions/{sid}/wingman/menu", async (string sid, HttpContext ctx, CancellationToken ct) =>
         {
             FileLog.Write($"[GatewayWingmanVoice] menu sid={sid}");
+            var reqTenant = GatewayEndpoints.ResolveReadTenant(ctx, tenantBoundary);
+            if (reqTenant is null)
+                return Results.Json(new { error = "no tenant is bound to this request" }, statusCode: StatusCodes.Status403Forbidden);
             if (!Guid.TryParse(sid, out _))
                 return Results.Json(new { error = "invalid session id format" }, statusCode: StatusCodes.Status400BadRequest);
-            var route = await ResolveRouteAsync(sid);
+            var route = await ResolveRouteAsync(reqTenant.Value, sid);
             if (route is null)
                 return Results.Json(new { error = "session not found on any director" }, statusCode: StatusCodes.Status404NotFound);
             var menu = await DetectMenuAtAsync(route, translator, sid, ct);
