@@ -121,8 +121,10 @@ ad-hoc-signed, **arm64-only** `CC Director.app` (no .NET runtime needed).
 
 **First install (one time):**
 
-1. Download `cc-director-mac-arm64.zip` from the release, unzip it, and drag
-   **`Director.app`** into `/Applications`.
+1. Download **`devthrottle-mac-arm64.dmg`** from the release, open it, and drag
+   **`Director.app`** onto the **Applications** shortcut inside. (The
+   `cc-director-mac-arm64.zip` asset holds the same bundle - it is what the
+   auto-updater consumes.)
 2. Because the app is **not notarized** (we use no paid Apple Developer
    certificate), macOS quarantines a freshly downloaded app. **Right-click the
    app → Open** once, then confirm. This is needed only for the very first launch.

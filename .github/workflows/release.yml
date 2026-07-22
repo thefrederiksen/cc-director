@@ -85,17 +85,20 @@ jobs:
           -p:IncludeNativeLibrariesForSelfExtract=true
           -p:UpdaterEnabled=true
 
-      - name: Package distributable .app bundle (zip)
+      - name: Package distributable .app bundle (zip + drag-to-Applications DMG)
         run: >
           scripts/package-mac-app.sh
           --binary src/CcDirector.Avalonia/bin/Release/net10.0/osx-arm64/publish/cc-director
           --out artifacts-mac
+          --dmg-name devthrottle-mac-arm64.dmg
 
       - name: Upload cc-director mac artifact
         uses: actions/upload-artifact@v6
         with:
           name: cc-director-mac
-          path: artifacts-mac/cc-director-mac-arm64.zip
+          path: |
+            artifacts-mac/cc-director-mac-arm64.zip
+            artifacts-mac/devthrottle-mac-arm64.dmg
           if-no-files-found: error
 
   # ---------------------------------------------------------------
@@ -624,6 +627,9 @@ jobs:
           # macOS main app (already a .app zip; keep the name the updater expects)
           cp release-artifacts/cc-director-mac/cc-director-mac-arm64.zip "$RELEASE_DIR/cc-director-mac-arm64.zip"
 
+          # macOS drag-to-Applications DMG (the human download; the zip stays the updater asset)
+          cp release-artifacts/cc-director-mac/devthrottle-mac-arm64.dmg "$RELEASE_DIR/devthrottle-mac-arm64.dmg"
+
           # macOS Python tools bundle (one shared-venv bundle: core tools only) + setup wizard .app
           cp release-artifacts/python-bundle-mac/cc-python-macos-arm64.tar.gz "$RELEASE_DIR/cc-python-macos-arm64.tar.gz"
           cp release-artifacts/python-bundle-mac/cc-tools-pyenv-macos-arm64.tar.gz "$RELEASE_DIR/cc-tools-pyenv-macos-arm64.tar.gz"
@@ -682,6 +688,7 @@ jobs:
           required=(
             cc-director-win-x64.exe
             cc-director-mac-arm64.zip
+            devthrottle-mac-arm64.dmg
             devthrottle-gateway-win-x64.exe
             devthrottle-gateway-mobile-win-x64.zip
             devthrottle-gateway-cockpit-win-x64.zip
