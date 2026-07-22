@@ -203,7 +203,12 @@ public sealed class HostedTenancyActivationTests : IDisposable
         string connId, string deviceKey, HostedTenantBoundary boundary, PushedSessionStore store)
     {
         var http = new DefaultHttpContext();
-        http.Items[AuthMiddleware.DeviceKeyItemKey] = deviceKey;
+        var tenant = boundary.ResolveForDeviceKey(deviceKey);
+        http.Items[AuthMiddleware.AuthenticatedDeviceItemKey] = new DeviceCredentialIdentity(
+            "test-device",
+            tenant?.Value,
+            DeviceRegistry.DefaultDeviceType,
+            DeviceRegistry.StatusActive);
         var ctx = new FakeHubCtx(connId, http);
         var registry = new DirectorRegistry(_tempDir);
         var inputStats = new GatewayInputStatsAggregator(Path.Combine(_tempDir, $"stats-{Guid.NewGuid():N}.db"));

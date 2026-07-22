@@ -70,11 +70,11 @@ public sealed class CrossTenantDuplicateDirectorIdTests : IAsyncLifetime
         await _gateway.StartAsync();
         _http = new HttpClient { BaseAddress = new Uri($"http://127.0.0.1:{_gateway.Port}/") };
 
-        // Two accounts, two device keys, each bound to its OWN GUID tenant.
-        _keyA = _gateway.Devices.Register("dev-a", MachineA).DeviceKey;
-        _keyB = _gateway.Devices.Register("dev-b", MachineBSecret).DeviceKey;
-        _gateway.Devices.SetAccountBinding("dev-a", "sub-alice", "33333333-3333-3333-3333-333333333333");
-        _gateway.Devices.SetAccountBinding("dev-b", "sub-bob", "44444444-4444-4444-4444-444444444444");
+        // Two accounts, two canonically minted tenants, and two atomically bound device keys.
+        _keyA = HostedTestEnrollment.Enroll(
+            _gateway, "sub-alice", "alice@example.com", "dev-a", MachineA).DeviceKey;
+        _keyB = HostedTestEnrollment.Enroll(
+            _gateway, "sub-bob", "bob@example.com", "dev-b", MachineBSecret).DeviceKey;
 
         // The COLLISION: both Directors register under the SAME id, each authenticated with its own device key
         // so the tunnel Hello binds it into its own tenant's partition - (tenant-alice, dir-shared) on MA and

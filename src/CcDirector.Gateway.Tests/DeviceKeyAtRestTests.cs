@@ -1,6 +1,7 @@
 using System.Security.Cryptography;
 using System.Text;
 using CcDirector.Gateway.Pairing;
+using Microsoft.Data.Sqlite;
 using Xunit;
 
 namespace CcDirector.Gateway.Tests;
@@ -26,6 +27,7 @@ public sealed class DeviceKeyAtRestTests : IDisposable
 {
     private readonly string _dir =
         Path.Combine(Path.GetTempPath(), "cc-devkeys-" + Guid.NewGuid().ToString("N"));
+    private readonly List<DeviceRegistry> _registries = new();
 
     private string StorePath => Path.Combine(_dir, "devices.json");
 
@@ -33,73 +35,90 @@ public sealed class DeviceKeyAtRestTests : IDisposable
 
     public void Dispose()
     {
+        foreach (var registry in _registries)
+            registry.Dispose();
         if (Directory.Exists(_dir)) Directory.Delete(_dir, recursive: true);
+    }
+
+    private DeviceRegistry OpenRegistry()
+    {
+        var registry = new DeviceRegistry(StorePath);
+        _registries.Add(registry);
+        return registry;
     }
 
     private static string ExpectedHash(string key) =>
         Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(key))).ToLowerInvariant();
+
+    private IReadOnlyList<string> StoredDatabaseValues()
+    {
+        using var connection = new SqliteConnection($"Data Source={StorePath}.gateway.db");
+        connection.Open();
+        using var command = connection.CreateCommand();
+        command.CommandText = "SELECT * FROM device_credentials";
+        using var reader = command.ExecuteReader();
+        var values = new List<string>();
+        while (reader.Read())
+        {
+            for (var index = 0; index < reader.FieldCount; index++)
+            {
+                if (!reader.IsDBNull(index))
+                    values.Add(reader.GetValue(index).ToString() ?? "");
+            }
+        }
+        return values;
+    }
 
     // ---- 1. What is written -------------------------------------------------------------------
 
     [Fact]
     public void EnrolledKey_IsNeverWrittenToTheRegistryFileInPlaintext()
     {
-        var registry = new DeviceRegistry(StorePath);
+        var registry = OpenRegistry();
         var issued = registry.Register("device-a", "MACHINE-A").DeviceKey;
 
-        var onDisk = File.ReadAllText(StorePath);
-
-        // The canary. It names the value that got through, so a failure is a one-line diagnosis: if the
-        // plaintext key is in the file, the file IS the credential and a read of it is a full compromise.
-        Assert.False(
-            onDisk.Contains(issued, StringComparison.Ordinal),
-            $"devices.json still holds the plaintext device key. The key that got through is: {issued}");
+        Assert.False(File.Exists(StorePath), "runtime enrollment must never recreate devices.json");
+        Assert.DoesNotContain(StoredDatabaseValues(),
+            value => value.Contains(issued, StringComparison.Ordinal));
     }
 
     [Fact]
     public void RegistryFile_HoldsTheOneWayHashOfTheKey()
     {
-        var registry = new DeviceRegistry(StorePath);
+        var registry = OpenRegistry();
         var issued = registry.Register("device-a", "MACHINE-A").DeviceKey;
 
-        var onDisk = File.ReadAllText(StorePath);
-
-        // The other half of the canary: the key is not merely absent (which an empty or broken file would
-        // also satisfy) - its hash is what took its place, so the record is still a usable verifier.
-        Assert.Contains(ExpectedHash(issued), onDisk, StringComparison.Ordinal);
+        Assert.Contains(ExpectedHash(issued), StoredDatabaseValues());
     }
 
     [Fact]
     public void EveryEnrolledKey_IsAbsentFromTheFile_EvenWithManyDevices()
     {
-        var registry = new DeviceRegistry(StorePath);
+        var registry = OpenRegistry();
         var keys = new List<string>();
         for (var i = 0; i < 5; i++)
             keys.Add(registry.Register($"device-{i}", $"MACHINE-{i}").DeviceKey);
 
-        var onDisk = File.ReadAllText(StorePath);
-
         foreach (var key in keys)
-            Assert.False(
-                onDisk.Contains(key, StringComparison.Ordinal),
-                $"devices.json still holds a plaintext device key. The key that got through is: {key}");
+            Assert.DoesNotContain(StoredDatabaseValues(),
+                value => value.Contains(key, StringComparison.Ordinal));
     }
 
     [Fact]
     public void IssuedKey_StillAuthenticates_AndSurvivesARestart()
     {
-        var registry = new DeviceRegistry(StorePath);
+        var registry = OpenRegistry();
         var issued = registry.Register("device-a", "MACHINE-A").DeviceKey;
 
         Assert.True(registry.IsValidDeviceKey(issued));
-        Assert.True(new DeviceRegistry(StorePath).IsValidDeviceKey(issued),
+        Assert.True(OpenRegistry().IsValidDeviceKey(issued),
             "a per-device key must keep working across a Gateway restart");
     }
 
     [Fact]
     public void AWrongKey_IsStillRejected()
     {
-        var registry = new DeviceRegistry(StorePath);
+        var registry = OpenRegistry();
         registry.Register("device-a", "MACHINE-A");
 
         Assert.False(registry.IsValidDeviceKey("not-a-real-key"));
@@ -144,7 +163,7 @@ public sealed class DeviceKeyAtRestTests : IDisposable
         const string alreadyIssuedKey = "pre-change-key-Ab3xQ9zK-do-not-invalidate";
         WritePreChangeStore("device-already-enrolled", alreadyIssuedKey, "tenant-already-enrolled");
 
-        var registry = new DeviceRegistry(StorePath);
+        var registry = OpenRegistry();
 
         Assert.True(registry.IsValidDeviceKey(alreadyIssuedKey),
             "a device enrolled before the keys were hashed must keep authenticating with the key it already holds");
@@ -156,7 +175,7 @@ public sealed class DeviceKeyAtRestTests : IDisposable
         const string alreadyIssuedKey = "pre-change-key-Ab3xQ9zK-do-not-invalidate";
         WritePreChangeStore("device-already-enrolled", alreadyIssuedKey, "tenant-already-enrolled");
 
-        var registry = new DeviceRegistry(StorePath);
+        var registry = OpenRegistry();
 
         // The hosted tenant boundary resolves the tenant from this same verified key on every request.
         Assert.Equal("tenant-already-enrolled", registry.TenantForKey(alreadyIssuedKey));
@@ -164,19 +183,19 @@ public sealed class DeviceKeyAtRestTests : IDisposable
     }
 
     [Fact]
-    public void LoadingAPreChangeStore_ScrubsThePlaintextKeyFromDisk()
+    public void LoadingAPreChangeStore_ArchivesLegacyAndStoresOnlyTheHashInTheDatabase()
     {
         const string alreadyIssuedKey = "pre-change-key-Ab3xQ9zK-do-not-invalidate";
         WritePreChangeStore("device-already-enrolled", alreadyIssuedKey, "tenant-already-enrolled");
         Assert.Contains(alreadyIssuedKey, File.ReadAllText(StorePath), StringComparison.Ordinal);
 
-        _ = new DeviceRegistry(StorePath);
+        _ = OpenRegistry();
 
-        var onDisk = File.ReadAllText(StorePath);
-        Assert.False(
-            onDisk.Contains(alreadyIssuedKey, StringComparison.Ordinal),
-            $"loading a pre-change registry must rewrite it without the plaintext. The key still on disk is: {alreadyIssuedKey}");
-        Assert.Contains(ExpectedHash(alreadyIssuedKey), onDisk, StringComparison.Ordinal);
+        Assert.False(File.Exists(StorePath));
+        Assert.Single(Directory.GetFiles(_dir, "devices.json.migrated-*"));
+        Assert.DoesNotContain(StoredDatabaseValues(),
+            value => value.Contains(alreadyIssuedKey, StringComparison.Ordinal));
+        Assert.Contains(ExpectedHash(alreadyIssuedKey), StoredDatabaseValues());
     }
 
     [Fact]
@@ -185,8 +204,8 @@ public sealed class DeviceKeyAtRestTests : IDisposable
         const string alreadyIssuedKey = "pre-change-key-Ab3xQ9zK-do-not-invalidate";
         WritePreChangeStore("device-already-enrolled", alreadyIssuedKey, "tenant-already-enrolled");
 
-        _ = new DeviceRegistry(StorePath);          // first start after the upgrade: migrates and rewrites
-        var afterRestart = new DeviceRegistry(StorePath); // and every start after that reads the hashed file
+        _ = OpenRegistry();          // first start after the upgrade: imports and archives
+        var afterRestart = OpenRegistry(); // and every start after that reads the authoritative database
 
         Assert.True(afterRestart.IsValidDeviceKey(alreadyIssuedKey));
         Assert.Equal("tenant-already-enrolled", afterRestart.TenantForKey(alreadyIssuedKey));
@@ -198,18 +217,20 @@ public sealed class DeviceKeyAtRestTests : IDisposable
         const string alreadyIssuedKey = "pre-change-key-Ab3xQ9zK-do-not-invalidate";
         WritePreChangeStore("device-already-enrolled", alreadyIssuedKey, "tenant-already-enrolled");
 
-        var registry = new DeviceRegistry(StorePath);
+        var registry = OpenRegistry();
 
         var entry = Assert.Single(registry.List());
         Assert.Equal("device-already-enrolled", entry.DeviceId);
         Assert.Equal("ALREADY-ENROLLED-MACHINE", entry.MachineName);
         Assert.Equal(DeviceRegistry.StatusActive, entry.Status);
 
-        // The cloud mirror mapping must survive too, or the next reconcile would re-mirror the device.
-        var mirrored = Assert.Single(registry.MirrorSnapshot());
-        Assert.Equal("cloud-device-77", mirrored.CloudDeviceId);
-        Assert.Equal("windows", mirrored.Platform);
-        Assert.Equal("workstation", mirrored.DeviceType);
+        // The hosted-bound row is deliberately absent from the Local child-mirror snapshot, while every
+        // mirror field remains in its authoritative database row.
+        Assert.Empty(registry.MirrorSnapshot());
+        var stored = StoredDatabaseValues();
+        Assert.Contains("cloud-device-77", stored);
+        Assert.Contains("windows", stored);
+        Assert.Contains("workstation", stored);
     }
 
     [Fact]
@@ -221,7 +242,7 @@ public sealed class DeviceKeyAtRestTests : IDisposable
         const string alreadyIssuedKey = "pre-change-key-Ab3xQ9zK-do-not-invalidate";
         WritePreChangeStore("device-already-enrolled", alreadyIssuedKey, "tenant-already-enrolled");
 
-        var entry = Assert.Single(new DeviceRegistry(StorePath).List());
+        var entry = Assert.Single(OpenRegistry().List());
 
         Assert.Equal(alreadyIssuedKey.Substring(0, 8), entry.KeyPrefix);
         Assert.Equal(alreadyIssuedKey.Substring(alreadyIssuedKey.Length - 4), entry.KeyLast4);
@@ -237,7 +258,7 @@ public sealed class DeviceKeyAtRestTests : IDisposable
         const string alreadyIssuedKey = "pre-change-key-Ab3xQ9zK-do-not-invalidate";
         WritePreChangeStore("device-already-enrolled", alreadyIssuedKey, "tenant-already-enrolled");
 
-        var registry = new DeviceRegistry(StorePath);
+        var registry = OpenRegistry();
 
         Assert.False(registry.IsValidDeviceKey("pre-change-key-Ab3xQ9zK-do-not-invalidat"), "a truncated key must not pass");
         Assert.False(registry.IsValidDeviceKey("PRE-CHANGE-KEY-AB3XQ9ZK-DO-NOT-INVALIDATE"), "a case-flipped key must not pass");
@@ -249,7 +270,7 @@ public sealed class DeviceKeyAtRestTests : IDisposable
     {
         // The stored value must be a verifier, not a password-equivalent: whoever reads devices.json must
         // not be able to authenticate by replaying what they read.
-        var registry = new DeviceRegistry(StorePath);
+        var registry = OpenRegistry();
         var issued = registry.Register("device-a", "MACHINE-A").DeviceKey;
 
         Assert.False(registry.IsValidDeviceKey(ExpectedHash(issued)));
@@ -273,7 +294,7 @@ public sealed class DeviceKeyAtRestTests : IDisposable
     [Fact]
     public void EnrollingTwice_RotatesToAFreshKey_AndNeverReplaysThePreviousOne()
     {
-        var registry = new DeviceRegistry(StorePath);
+        var registry = OpenRegistry();
 
         var first = registry.RegisterIfAbsent("device-a", "MACHINE-A").DeviceKey;
         var second = registry.RegisterIfAbsent("device-a", "MACHINE-A").DeviceKey;
@@ -291,7 +312,7 @@ public sealed class DeviceKeyAtRestTests : IDisposable
         // The lost-response scenario stated directly: the caller never received the first key (so it holds
         // nothing), retries, and must come away holding a valid credential. Rotation makes every attempt hand
         // back a fresh working key - the caller writes whichever one it receives.
-        var registry = new DeviceRegistry(StorePath);
+        var registry = OpenRegistry();
 
         string last = "";
         for (var retry = 0; retry < 5; retry++)
@@ -307,7 +328,7 @@ public sealed class DeviceKeyAtRestTests : IDisposable
     {
         // Rotation must not have been bought by leaving OLD keys working alongside new ones - that is exactly
         // the #1136 accumulation leak. One device, one key that validates, however many calls.
-        var registry = new DeviceRegistry(StorePath);
+        var registry = OpenRegistry();
 
         var keys = new List<string>();
         for (var call = 0; call < 6; call++)
@@ -325,7 +346,7 @@ public sealed class DeviceKeyAtRestTests : IDisposable
         // Sixteen enrollment calls in flight at once must not corrupt the one-key-per-device invariant: the
         // method is serialized, so they rotate one after another and end with a single entry and exactly one
         // key that validates (the last winner).
-        var registry = new DeviceRegistry(StorePath);
+        var registry = OpenRegistry();
         var issued = new System.Collections.Concurrent.ConcurrentBag<string>();
 
         Parallel.For(0, 16, _ => issued.Add(registry.RegisterIfAbsent("device-a", "MACHINE-A").DeviceKey));
@@ -337,7 +358,7 @@ public sealed class DeviceKeyAtRestTests : IDisposable
     [Fact]
     public void ReEnrollingADevice_KeepsItsAccountAndTenantBinding()
     {
-        var registry = new DeviceRegistry(StorePath);
+        var registry = OpenRegistry();
         registry.RegisterIfAbsent("device-a", "MACHINE-A");
         registry.SetAccountBinding("device-a", "sub-alice", "tenant-alice");
 
@@ -350,7 +371,7 @@ public sealed class DeviceKeyAtRestTests : IDisposable
     public void AnExplicitRePairing_AlsoRetiresThePreviousKey()
     {
         // Register (a re-pairing) rotates in place too: the previous key stops validating.
-        var registry = new DeviceRegistry(StorePath);
+        var registry = OpenRegistry();
         var enrolled = registry.RegisterIfAbsent("device-a", "MACHINE-A").DeviceKey;
 
         var rePaired = registry.Register("device-a", "MACHINE-A").DeviceKey;
@@ -368,15 +389,15 @@ public sealed class DeviceKeyAtRestTests : IDisposable
         // Direct evidence that no plaintext is persisted or cached: a registry re-read from disk holds only
         // hashes, so a post-restart enrollment rotates and the previous key is gone - it is nowhere to replay
         // from, and nowhere in the file.
-        var first = new DeviceRegistry(StorePath).RegisterIfAbsent("device-a", "MACHINE-A").DeviceKey;
+        var first = OpenRegistry().RegisterIfAbsent("device-a", "MACHINE-A").DeviceKey;
 
-        var afterRestart = new DeviceRegistry(StorePath);
+        var afterRestart = OpenRegistry();
         var second = afterRestart.RegisterIfAbsent("device-a", "MACHINE-A").DeviceKey;
 
         Assert.NotEqual(first, second);
         Assert.False(afterRestart.IsValidDeviceKey(first));
-        Assert.DoesNotContain(first, File.ReadAllText(StorePath));
-        Assert.DoesNotContain(second, File.ReadAllText(StorePath));
+        Assert.DoesNotContain(StoredDatabaseValues(), value => value.Contains(first, StringComparison.Ordinal));
+        Assert.DoesNotContain(StoredDatabaseValues(), value => value.Contains(second, StringComparison.Ordinal));
     }
 
     // ---- Masked key identity is present and non-secret (issue #1899) ----------------------------
@@ -384,7 +405,7 @@ public sealed class DeviceKeyAtRestTests : IDisposable
     [Fact]
     public void AFreshlyEnrolledDevice_ListsWithAMaskedKeyIdentity_NeverTheRawKey()
     {
-        var registry = new DeviceRegistry(StorePath);
+        var registry = OpenRegistry();
         var issued = registry.Register("device-a", "MACHINE-A").DeviceKey;
 
         var entry = Assert.Single(registry.List());
@@ -400,9 +421,9 @@ public sealed class DeviceKeyAtRestTests : IDisposable
     [Fact]
     public void TheMaskedIdentity_IsPersisted_AndSurvivesARestart()
     {
-        var issued = new DeviceRegistry(StorePath).Register("device-a", "MACHINE-A").DeviceKey;
+        var issued = OpenRegistry().Register("device-a", "MACHINE-A").DeviceKey;
 
-        var entry = Assert.Single(new DeviceRegistry(StorePath).List());
+        var entry = Assert.Single(OpenRegistry().List());
         Assert.Equal(issued.Substring(0, 8), entry.KeyPrefix);
         Assert.Equal(issued.Substring(issued.Length - 4), entry.KeyLast4);
     }

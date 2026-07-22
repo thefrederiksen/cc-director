@@ -65,7 +65,12 @@ public sealed class CockpitUrlEndpointTests
             // /gateway/about is credential-gated. On hosted the shared machine token is NO LONGER a valid
             // Bearer (production-readiness MH-2 - it authenticates with no tenant), so the credential is a
             // per-device key issued at enrollment, exactly as a real hosted caller uses.
-            var deviceKey = gateway.Devices.Register("cockpiturl-about", "PHONE").DeviceKey;
+            var deviceKey = HostedTestEnrollment.Enroll(
+                gateway,
+                "cockpiturl-about-subject",
+                "cockpiturl-about@example.com",
+                "cockpiturl-about",
+                "PHONE").DeviceKey;
             var about = await GetJson<AboutDto>(http, "gateway/about", bearer: deviceKey);
 
             Assert.Equal(ExpectedCockpit, about.CockpitUrl);
@@ -84,7 +89,12 @@ public sealed class CockpitUrlEndpointTests
             //
             // MH-2: authenticate with a per-device key, not the shared token (rejected on hosted) - so this
             // reaches the deny, not the auth gate.
-            var deviceKey = gateway.Devices.Register("cockpiturl-settings", "PHONE").DeviceKey;
+            var deviceKey = HostedTestEnrollment.Enroll(
+                gateway,
+                "cockpiturl-settings-subject",
+                "cockpiturl-settings@example.com",
+                "cockpiturl-settings",
+                "PHONE").DeviceKey;
             using var req = new HttpRequestMessage(HttpMethod.Get, "gateway/settings");
             req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", deviceKey);
             using var resp = await http.SendAsync(req);

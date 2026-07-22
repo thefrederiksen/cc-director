@@ -136,17 +136,16 @@ internal static class HostedEnrollmentEndpoint
         // idempotent for one account (same tenant -> same hash). The hash - not the subject and not the raw
         // tenant id, both of which must never be logged - is what the device registry logs as the device id.
         var scopedDeviceId = NamespaceHash(tenant.Value) + "|" + req.DeviceId;
-        var response = devices.RegisterIfAbsent(scopedDeviceId, req.MachineName, req.Platform, req.DeviceType);
-        devices.SetAccountBinding(scopedDeviceId, validation.Subject, tenant.Value);
+        var response = devices.RegisterForTenant(
+            tenant,
+            validation.Subject,
+            scopedDeviceId,
+            req.MachineName,
+            req.Platform,
+            req.DeviceType);
 
-        // TENANT-SCOPE the confirmation count. RegisterIfAbsent fills DeviceCount from the fleet-global
-        // registry size (correct for self-host, which is one tenant), but on hosted that leaks the TOTAL
-        // count of devices across every account back to this one tenant - a device-count enumeration surface:
-        // tenant B's first enrollment would report the fleet total after tenant A enrolled, and idempotent
-        // re-enrollment lets any tenant poll the whole hosted fleet size. After the account binding is in
-        // place, re-read the count as only THIS tenant's devices. Self-host never reaches this path (it enrolls
-        // through SignedInEnrollmentEndpoint), so its contract is untouched.
-        response.DeviceCount = devices.ListForTenant(tenant).Count;
+        // RegisterForTenant counts inside the same tenant-bound transaction, so the response never exposes
+        // the hosted fleet-wide count.
 
         FileLog.Write($"[HostedEnrollment] enrolled deviceId={req.DeviceId}, machine={req.MachineName} " +
                       $"-> bound to its account tenant (no subject/email logged), deviceCount={response.DeviceCount}");

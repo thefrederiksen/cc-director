@@ -62,12 +62,16 @@ internal static class AuthMiddleware
     /// <summary>
     /// HttpContext.Items key under which <see cref="HasValidToken"/> stashes the per-device key that
     /// authenticated the request, or leaves absent when the caller used the shared machine token (no device).
-    /// The hosted tenant boundary (Hosted Multi-Tenancy increment 1) reads it to resolve the request's tenant
-    /// from the SAME verified key that authenticated the call - the tenant is derived from the authenticated
-    /// credential, never from anything the client claims. The key is already present in the request headers,
-    /// so stashing it in request-scoped Items exposes nothing new.
+    /// Retained for request-scoped compatibility consumers. Tenant resolution uses
+    /// <see cref="AuthenticatedDeviceItemKey"/> and never hashes this raw credential a second time.
     /// </summary>
     public const string DeviceKeyItemKey = "cc.auth.DeviceKey";
+
+    /// <summary>
+    /// Request item containing the immutable device identity returned by the authoritative registry lookup.
+    /// Tenant boundaries consume this identity instead of reading and hashing the raw credential again.
+    /// </summary>
+    public const string AuthenticatedDeviceItemKey = "cc.auth.DeviceIdentity";
 
     /// <summary>
     /// HttpContext.Items key under which <see cref="HasValidToken"/> stashes THE EXACT CREDENTIAL STRING IT
@@ -85,8 +89,8 @@ internal static class AuthMiddleware
     /// Absent means NO credential was authenticated on this request (the host-wide gate is off), which is
     /// not an identity and must never be quietly replaced by re-reading the headers.
     ///
-    /// It is deliberately SEPARATE from <see cref="DeviceKeyItemKey"/>, whose absence means "the shared
-    /// machine token, no device" and is load-bearing for hosted tenant resolution.
+    /// It is deliberately separate from <see cref="AuthenticatedDeviceItemKey"/>, whose absence means
+    /// "the shared machine token, no device" for hosted tenant resolution.
     /// </summary>
     public const string AuthenticatedCredentialItemKey = "cc.auth.Credential";
 
@@ -202,9 +206,18 @@ internal static class AuthMiddleware
             return;
         }
 
-        if (HasValidToken(ctx, cfg.Token, cfg.Devices))
+        var authentication = AuthenticateRequest(ctx, cfg.Token, cfg.Devices, GatewayHostedMode.IsHosted);
+        if (authentication == AuthenticationResultKind.Authenticated)
         {
             await next();
+            return;
+        }
+
+        if (authentication == AuthenticationResultKind.RegistryUnavailable)
+        {
+            ctx.Response.StatusCode = StatusCodes.Status503ServiceUnavailable;
+            ctx.Response.ContentType = "application/json; charset=utf-8";
+            await ctx.Response.WriteAsync("{\"error\":\"device credential registry unavailable\",\"code\":\"device_registry_unavailable\"}");
             return;
         }
 
@@ -221,7 +234,9 @@ internal static class AuthMiddleware
 
         ctx.Response.StatusCode = StatusCodes.Status401Unauthorized;
         ctx.Response.ContentType = "application/json; charset=utf-8";
-        await ctx.Response.WriteAsync("{\"error\":\"missing or invalid token\"}");
+        await ctx.Response.WriteAsync(authentication == AuthenticationResultKind.RevokedCredential
+            ? "{\"error\":\"device credential revoked\",\"code\":\"device_credential_revoked\"}"
+            : "{\"error\":\"missing or invalid token\"}");
     }
 
     /// <summary>
@@ -258,7 +273,16 @@ internal static class AuthMiddleware
     /// the process environment.
     /// </summary>
     internal static bool HasValidToken(HttpContext ctx, string token, DeviceRegistry? devices, bool rejectSharedToken)
+        => AuthenticateRequest(ctx, token, devices, rejectSharedToken) == AuthenticationResultKind.Authenticated;
+
+    internal static AuthenticationResultKind AuthenticateRequest(
+        HttpContext ctx,
+        string token,
+        DeviceRegistry? devices,
+        bool rejectSharedToken)
     {
+        var strongestFailure = AuthenticationResultKind.UnknownCredential;
+
         // Bearer
         if (ctx.Request.Headers.TryGetValue("Authorization", out var header))
         {
@@ -270,12 +294,12 @@ internal static class AuthMiddleware
                 // MH-2: the shared machine token authenticates with no device (no tenant), so it is refused on
                 // hosted - the per-device key below is the only accepted credential there.
                 if (!rejectSharedToken && string.Equals(provided, token, StringComparison.Ordinal))
-                    return Accept(ctx, provided, deviceType: null);
-                // Issue #469: a unique per-device key issued at enrollment is equally valid. DevThrottle
-                // Stats: record the matched device's type so a remote prompt can be tagged with its surface.
-                var deviceType = devices?.DeviceTypeForKey(provided);
-                if (deviceType is not null)
-                    return Accept(ctx, provided, deviceType);
+                    return Accept(ctx, provided, identity: null);
+
+                var result = AuthenticateDevice(ctx, devices, provided);
+                if (result == AuthenticationResultKind.Authenticated)
+                    return result;
+                strongestFailure = StrongerFailure(strongestFailure, result);
             }
         }
 
@@ -293,15 +317,46 @@ internal static class AuthMiddleware
         {
             // MH-2: same as the Bearer branch - the shared machine token cookie is not accepted on hosted.
             if (!rejectSharedToken && string.Equals(cookieValue, token, StringComparison.Ordinal))
-                return Accept(ctx, cookieValue, deviceType: null);
-            // DevThrottle Stats: same device-key surface record as the Bearer branch (the live terminal
-            // stream authenticates via this cookie).
-            var cookieDeviceType = devices?.DeviceTypeForKey(cookieValue);
-            if (cookieDeviceType is not null)
-                return Accept(ctx, cookieValue, cookieDeviceType);
+                return Accept(ctx, cookieValue, identity: null);
+
+            var result = AuthenticateDevice(ctx, devices, cookieValue);
+            if (result == AuthenticationResultKind.Authenticated)
+                return result;
+            strongestFailure = StrongerFailure(strongestFailure, result);
         }
 
-        return false;
+        return strongestFailure;
+    }
+
+    private static AuthenticationResultKind AuthenticateDevice(
+        HttpContext ctx,
+        DeviceRegistry? devices,
+        string credential)
+    {
+        if (devices is null)
+            return AuthenticationResultKind.UnknownCredential;
+
+        var resolution = devices.ResolveCredential(credential);
+        return resolution.Kind switch
+        {
+            DeviceCredentialResolutionKind.Active when resolution.Identity is not null
+                => Accept(ctx, credential, resolution.Identity),
+            DeviceCredentialResolutionKind.Revoked => AuthenticationResultKind.RevokedCredential,
+            DeviceCredentialResolutionKind.Unavailable => AuthenticationResultKind.RegistryUnavailable,
+            _ => AuthenticationResultKind.UnknownCredential,
+        };
+    }
+
+    private static AuthenticationResultKind StrongerFailure(
+        AuthenticationResultKind current,
+        AuthenticationResultKind candidate)
+    {
+        if (candidate == AuthenticationResultKind.RegistryUnavailable)
+            return candidate;
+        if (candidate == AuthenticationResultKind.RevokedCredential
+            && current != AuthenticationResultKind.RegistryUnavailable)
+            return candidate;
+        return current;
     }
 
     /// <summary>
@@ -313,18 +368,20 @@ internal static class AuthMiddleware
     /// decision this whole mechanism exists to prevent.
     /// </summary>
     /// <param name="credential">The exact credential string that was validated.</param>
-    /// <param name="deviceType">The matched device's type, or null for the shared machine token (no device).
-    ///  Null deliberately leaves <see cref="DeviceKeyItemKey"/> absent, which hosted tenant resolution reads
-    ///  as "shared token, no device".</param>
-    private static bool Accept(HttpContext ctx, string credential, string? deviceType)
+    /// <param name="identity">The matched device identity, or null for the shared machine token.</param>
+    private static AuthenticationResultKind Accept(
+        HttpContext ctx,
+        string credential,
+        DeviceCredentialIdentity? identity)
     {
         ctx.Items[AuthenticatedCredentialItemKey] = credential;
-        if (deviceType is not null)
+        if (identity is not null)
         {
-            ctx.Items[DeviceTypeItemKey] = deviceType;
+            ctx.Items[DeviceTypeItemKey] = identity.DeviceType;
             ctx.Items[DeviceKeyItemKey] = credential;
+            ctx.Items[AuthenticatedDeviceItemKey] = identity;
         }
-        return true;
+        return AuthenticationResultKind.Authenticated;
     }
 
     private static IEnumerable<string> CookieValues(HttpContext ctx, string name)
@@ -377,5 +434,13 @@ internal static class AuthMiddleware
         /// as a valid Bearer alongside the shared machine token. Null disables per-device-key auth.
         /// </summary>
         public DeviceRegistry? Devices { get; init; }
+    }
+
+    internal enum AuthenticationResultKind
+    {
+        UnknownCredential,
+        Authenticated,
+        RevokedCredential,
+        RegistryUnavailable,
     }
 }

@@ -60,6 +60,8 @@ public sealed class DirectorRouteTenantScopingTests : IAsyncLifetime
     private string _keyA = "";
     private string _keyB = "";
     private string _keyUnbound = "";
+    private TenantId _tenantA;
+    private TenantId _tenantB;
 
     private readonly string _instancesDir =
         Path.Combine(Path.GetTempPath(), "cc-mtr01-" + Guid.NewGuid().ToString("N"));
@@ -79,11 +81,15 @@ public sealed class DirectorRouteTenantScopingTests : IAsyncLifetime
         _http = new HttpClient { BaseAddress = new Uri($"http://127.0.0.1:{_gateway.Port}/") };
 
         // Two accounts: two device keys, each bound to its OWN tenant, plus one registered-but-unbound key.
-        _keyA = _gateway.Devices.Register("dev-a", "MA").DeviceKey;
-        _keyB = _gateway.Devices.Register("dev-b", "MB").DeviceKey;
+        var deviceA = HostedTestEnrollment.Enroll(
+            _gateway, "sub-alice", "alice@example.com", "dev-a", "MA");
+        var deviceB = HostedTestEnrollment.Enroll(
+            _gateway, "sub-bob", "bob@example.com", "dev-b", "MB");
+        _tenantA = deviceA.Tenant;
+        _tenantB = deviceB.Tenant;
+        _keyA = deviceA.DeviceKey;
+        _keyB = deviceB.DeviceKey;
         _keyUnbound = _gateway.Devices.Register("dev-x", "MX").DeviceKey;
-        _gateway.Devices.SetAccountBinding("dev-a", "sub-alice", "tenant-alice");
-        _gateway.Devices.SetAccountBinding("dev-b", "sub-bob", "tenant-bob");
 
         // Each Director authenticates with its OWN device key -> the tunnel Hello binds its tenant -> its entry
         // lands in that tenant's partition. dir-shared is registered under BOTH tenants (the sharp case).
@@ -149,10 +155,10 @@ public sealed class DirectorRouteTenantScopingTests : IAsyncLifetime
     [Fact]
     public async Task A_device_key_with_no_bound_tenant_is_denied()
     {
-        // Deny-by-default: an authenticated but tenant-unbound key never falls back to the Local partition on a
-        // per-director route - read OR write.
-        Assert.Equal(HttpStatusCode.Forbidden, (await Get("directors/dir-shared/repos", _keyUnbound)).StatusCode);
-        Assert.Equal(HttpStatusCode.Forbidden,
+        // Deny-by-default: a tenant-unbound hosted credential is invalid and rejected by authentication before
+        // any per-director route can fall back to the Local partition - read OR write.
+        Assert.Equal(HttpStatusCode.Unauthorized, (await Get("directors/dir-shared/repos", _keyUnbound)).StatusCode);
+        Assert.Equal(HttpStatusCode.Unauthorized,
             (await Post("directors/dir-shared/sessions", _keyUnbound, new NewSessionRequest { RepoPath = "/repo" })).StatusCode);
     }
 
@@ -204,10 +210,10 @@ public sealed class DirectorRouteTenantScopingTests : IAsyncLifetime
     [Fact]
     public async Task Backfill_with_no_bound_tenant_is_denied()
     {
-        // Deny-by-default: an authenticated but tenant-unbound key never falls back to the Local partition on
-        // the backfill command surface, and no verb is dispatched.
+        // Deny-by-default: a tenant-unbound hosted credential is rejected by authentication, never falls back
+        // to the Local partition on the backfill command surface, and dispatches no verb.
         var resp = await PostEmpty("directors/dir-shared/backfill-numbers", _keyUnbound);
-        Assert.Equal(HttpStatusCode.Forbidden, resp.StatusCode);
+        Assert.Equal(HttpStatusCode.Unauthorized, resp.StatusCode);
         Assert.DoesNotContain("backfill-numbers", _aSharedVerbs);
         Assert.DoesNotContain("backfill-numbers", _bSharedVerbs);
     }
@@ -218,8 +224,8 @@ public sealed class DirectorRouteTenantScopingTests : IAsyncLifetime
         // The Local-shadow read: the event ring was one global queue per bare id, so tenant A could read tenant
         // B's ring for the same id. Keyed by (tenant, id), A's ring and B's ring for the IDENTICAL id
         // "dir-shared" are distinct queues. Seed both, then prove each account reads only its own.
-        _gateway.DirectorEvents.Record(new TenantId("tenant-alice"), "dir-shared", "sess-alice", DoorbellEvents.CronRunCompleted, "started");
-        _gateway.DirectorEvents.Record(new TenantId("tenant-bob"), "dir-shared", "sess-bob", DoorbellEvents.CronRunCompleted, "started");
+        _gateway.DirectorEvents.Record(_tenantA, "dir-shared", "sess-alice", DoorbellEvents.CronRunCompleted, "started");
+        _gateway.DirectorEvents.Record(_tenantB, "dir-shared", "sess-bob", DoorbellEvents.CronRunCompleted, "started");
 
         var aBody = await (await Get("directors/dir-shared/events", _keyA)).Content.ReadAsStringAsync();
         Assert.Contains("sess-alice", aBody);
@@ -235,7 +241,7 @@ public sealed class DirectorRouteTenantScopingTests : IAsyncLifetime
     {
         // Even with a seeded ring for the foreign id under B, A naming dir-b-only is refused at the registry
         // gate (404) - A does not own that Director, so it can never reach that ring.
-        _gateway.DirectorEvents.Record(new TenantId("tenant-bob"), "dir-b-only", "sess-bob", DoorbellEvents.CronRunCompleted, "started");
+        _gateway.DirectorEvents.Record(_tenantB, "dir-b-only", "sess-bob", DoorbellEvents.CronRunCompleted, "started");
 
         Assert.Equal(HttpStatusCode.NotFound, (await Get("directors/dir-b-only/events", _keyA)).StatusCode);
 
@@ -247,7 +253,7 @@ public sealed class DirectorRouteTenantScopingTests : IAsyncLifetime
     [Fact]
     public async Task Event_ring_read_with_no_bound_tenant_is_denied()
     {
-        Assert.Equal(HttpStatusCode.Forbidden, (await Get("directors/dir-shared/events", _keyUnbound)).StatusCode);
+        Assert.Equal(HttpStatusCode.Unauthorized, (await Get("directors/dir-shared/events", _keyUnbound)).StatusCode);
     }
 
     [Fact]
@@ -269,7 +275,7 @@ public sealed class DirectorRouteTenantScopingTests : IAsyncLifetime
         Assert.Equal(HttpStatusCode.Forbidden, register.StatusCode);
 
         // No-side-effect: the shadow id was never registered, in the attacker's tenant OR in Local.
-        Assert.Null(_gateway.Registry.Get(new TenantId("tenant-alice"), "shadow-x"));
+        Assert.Null(_gateway.Registry.Get(_tenantA, "shadow-x"));
         Assert.Null(_gateway.Registry.Get(TenantId.Local, "shadow-x"));
 
         Assert.Equal(HttpStatusCode.Forbidden,

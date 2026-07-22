@@ -88,10 +88,10 @@ public sealed class HostedInterruptedBriefQuarantineTests : IAsyncLifetime
         await _gateway.StartAsync();
         _http = new HttpClient { BaseAddress = new Uri($"http://127.0.0.1:{_gateway.Port}/") };
 
-        // A hosted caller resolves its tenant from an authenticated device key (bound to a real GUID tenant,
-        // as production mints them). Without it every read route 403s with no bound tenant.
-        _key = _gateway.Devices.Register("dev-a", "MA").DeviceKey;
-        _gateway.Devices.SetAccountBinding("dev-a", "sub-alice", "55555555-5555-5555-5555-555555555555");
+        // A hosted caller resolves its tenant from an atomically enrolled device key whose account mapping
+        // was canonically minted first. Without it every read route 403s with no bound tenant.
+        _key = HostedTestEnrollment.Enroll(
+            _gateway, "sub-alice", "alice@example.com", "dev-a", "MA").DeviceKey;
 
         // The caller's OWN live Director, tunnel-connected under that device key's tenant. It reports the crash
         // journal (interrupted-list) and answers the restore continuation verbs (create + patch).

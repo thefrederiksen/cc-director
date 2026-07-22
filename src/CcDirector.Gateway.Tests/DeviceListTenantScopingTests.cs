@@ -61,12 +61,12 @@ public sealed class DeviceListTenantScopingTests : IAsyncLifetime
         await _gateway.StartAsync();
         _http = new HttpClient { BaseAddress = new Uri($"http://127.0.0.1:{_gateway.Port}/") };
 
-        // Three devices: two bound to their own tenants, one registered-but-unbound.
-        _keyA = _gateway.Devices.Register("dev-a", "MACHINE-A").DeviceKey;
-        _keyB = _gateway.Devices.Register("dev-b", "MACHINE-B").DeviceKey;
+        // Three devices: two atomically bound to canonically minted tenants, one registered-but-unbound.
+        _keyA = HostedTestEnrollment.Enroll(
+            _gateway, "sub-alice", "alice@example.com", "dev-a", "MACHINE-A").DeviceKey;
+        _keyB = HostedTestEnrollment.Enroll(
+            _gateway, "sub-bob", "bob@example.com", "dev-b", "MACHINE-B").DeviceKey;
         _keyUnbound = _gateway.Devices.Register("dev-x", "MACHINE-X").DeviceKey;
-        _gateway.Devices.SetAccountBinding("dev-a", "sub-alice", "tenant-alice");
-        _gateway.Devices.SetAccountBinding("dev-b", "sub-bob", "tenant-bob");
     }
 
     public async Task DisposeAsync()
@@ -97,10 +97,10 @@ public sealed class DeviceListTenantScopingTests : IAsyncLifetime
     [Fact]
     public async Task An_unbound_device_key_is_denied_on_hosted()
     {
-        // Deny-by-default: an authenticated but tenant-unbound key never falls back to a Local read of the
-        // (unbound) devices - it is 403, and no listing is returned.
+        // Deny-by-default: a tenant-unbound key is not an authenticated hosted credential and never reaches
+        // tenant resolution or the Local device list.
         var resp = await Get("devices", _keyUnbound);
-        Assert.Equal(HttpStatusCode.Forbidden, resp.StatusCode);
+        Assert.Equal(HttpStatusCode.Unauthorized, resp.StatusCode);
     }
 
     private async Task<List<RegisteredDeviceDto>> GetDevices(string deviceKey)

@@ -59,10 +59,10 @@ public sealed class CronResolverCrossTenantTests : IAsyncLifetime
         await _gateway.StartAsync();
         _http = new HttpClient { BaseAddress = new Uri($"http://127.0.0.1:{_gateway.Port}/") };
 
-        _keyA = _gateway.Devices.Register("dev-a", "MA").DeviceKey;
-        _keyB = _gateway.Devices.Register("dev-b", "MB").DeviceKey;
-        _gateway.Devices.SetAccountBinding("dev-a", "sub-alice", "33333333-3333-3333-3333-333333333333");
-        _gateway.Devices.SetAccountBinding("dev-b", "sub-bob", "44444444-4444-4444-4444-444444444444");
+        _keyA = HostedTestEnrollment.Enroll(
+            _gateway, "sub-alice", "alice@example.com", "dev-a", "MA").DeviceKey;
+        _keyB = HostedTestEnrollment.Enroll(
+            _gateway, "sub-bob", "bob@example.com", "dev-b", "MB").DeviceKey;
 
         // ONLY tenant B has a Director on SHARED_TARGET (bound to B's partition by its authenticated Hello).
         // Tenant A owns nothing on that machine, so a correctly tenant-scoped resolve finds nothing there.

@@ -43,8 +43,10 @@ public sealed class HostedTenantBoundary
         if (_ambient is null)
             return TenantId.Local;
 
-        var bound = _devices.TenantForKey(deviceKey);
-        return string.IsNullOrEmpty(bound) ? (TenantId?)null : new TenantId(bound);
+        var resolution = _devices.ResolveCredential(deviceKey);
+        return resolution.Kind == DeviceCredentialResolutionKind.Active
+            ? ResolveIdentity(resolution.Identity)
+            : null;
     }
 
     /// <summary>
@@ -57,10 +59,22 @@ public sealed class HostedTenantBoundary
     /// </summary>
     public TenantId? ResolveRequestTenant(Microsoft.AspNetCore.Http.HttpContext ctx)
     {
-        var key = ctx?.Items.TryGetValue(Util.AuthMiddleware.DeviceKeyItemKey, out var value) == true
-            ? value as string
+        if (_ambient is null)
+            return TenantId.Local;
+
+        var identity = ctx?.Items.TryGetValue(Util.AuthMiddleware.AuthenticatedDeviceItemKey, out var value) == true
+            ? value as DeviceCredentialIdentity
             : null;
-        return ResolveForDeviceKey(key);
+        return ResolveIdentity(identity);
+    }
+
+    private static TenantId? ResolveIdentity(DeviceCredentialIdentity? identity)
+    {
+        if (identity is null || string.IsNullOrWhiteSpace(identity.TenantId))
+            return null;
+
+        var tenant = new TenantId(identity.TenantId);
+        return !tenant.IsValid || tenant.IsLocal || tenant.IsSystem ? null : tenant;
     }
 
     /// <summary>

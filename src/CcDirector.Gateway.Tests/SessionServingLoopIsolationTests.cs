@@ -49,8 +49,8 @@ public sealed class SessionServingLoopIsolationTests : IAsyncLifetime
     private const string Token = "test-token";
     private const string SessA = "loop-sess-a";
     private const string SessB = "loop-sess-b";
-    private static readonly TenantId TenantA = new("tenant-alice");
-    private static readonly TenantId TenantB = new("tenant-bob");
+    private TenantId TenantA { get; set; }
+    private TenantId TenantB { get; set; }
 
     private GatewayHost _gateway = null!;
     private FakeTunnelDirector _dirA = null!;
@@ -79,10 +79,14 @@ public sealed class SessionServingLoopIsolationTests : IAsyncLifetime
 
         // Two accounts: two device keys, each bound to its OWN tenant. The tunnel Hello binds each Director
         // into its key's tenant, so its pushed sessions land in that tenant's partition.
-        var keyA = _gateway.Devices.Register("dev-a", "MA").DeviceKey;
-        var keyB = _gateway.Devices.Register("dev-b", "MB").DeviceKey;
-        _gateway.Devices.SetAccountBinding("dev-a", "sub-alice", TenantA.Value);
-        _gateway.Devices.SetAccountBinding("dev-b", "sub-bob", TenantB.Value);
+        var deviceA = HostedTestEnrollment.Enroll(
+            _gateway, "sub-alice", "alice@example.com", "dev-a", "MA");
+        var deviceB = HostedTestEnrollment.Enroll(
+            _gateway, "sub-bob", "bob@example.com", "dev-b", "MB");
+        TenantA = deviceA.Tenant;
+        TenantB = deviceB.Tenant;
+        var keyA = deviceA.DeviceKey;
+        var keyB = deviceB.DeviceKey;
 
         _dirA = await FakeTunnelDirector.StartAsync(_gateway, keyA, "dir-a", "MA",
             dispatch: cmd => { _seenByA.Enqueue(cmd); return FakeTunnelDirector.Ok(new { ok = true }); });

@@ -60,8 +60,8 @@ namespace CcDirector.Gateway.Tests;
 public sealed class ContextLessDatabaseRouteTenancyTests : IAsyncLifetime
 {
     private const string SharedToken = "test-token";
-    private const string TenantA = "tenant-alice";
-    private const string TenantB = "tenant-bob";
+    private string TenantA { get; set; } = "";
+    private string TenantB { get; set; } = "";
 
     private readonly ITestOutputHelper _out;
     private GatewayHost _gateway = null!;
@@ -90,10 +90,14 @@ public sealed class ContextLessDatabaseRouteTenancyTests : IAsyncLifetime
         await _gateway.StartAsync();
         _http = new HttpClient { BaseAddress = new Uri($"http://127.0.0.1:{_gateway.Port}/") };
 
-        _keyA = _gateway.Devices.Register("dev-a", "MA").DeviceKey;
-        _keyB = _gateway.Devices.Register("dev-b", "MB").DeviceKey;
-        _gateway.Devices.SetAccountBinding("dev-a", "sub-alice", TenantA);
-        _gateway.Devices.SetAccountBinding("dev-b", "sub-bob", TenantB);
+        var deviceA = HostedTestEnrollment.Enroll(
+            _gateway, "sub-alice", "alice@example.com", "dev-a", "MA");
+        var deviceB = HostedTestEnrollment.Enroll(
+            _gateway, "sub-bob", "bob@example.com", "dev-b", "MB");
+        TenantA = deviceA.Tenant.Value;
+        TenantB = deviceB.Tenant.Value;
+        _keyA = deviceA.DeviceKey;
+        _keyB = deviceB.DeviceKey;
 
         Assert.True(_gateway.TenantBoundary.IsHosted, "The harness must be running the HOSTED tenant boundary.");
     }
@@ -367,17 +371,13 @@ public sealed class ContextLessDatabaseRouteTenancyTests : IAsyncLifetime
     /// bearer token:
     ///
     ///   device key BOUND to a tenant   -> 200, a served list  (a tenant resolved, the middleware entered its scope)
-    ///   device key with NO tenant      -> 500                  (authenticated, but bound to no tenant, so NO scope)
+    ///   active device row with NO tenant -> 401                (invalid hosted binding, rejected by authentication)
     ///   shared machine token           -> 401                  (on hosted it is not a credential at all)
     ///   garbage                        -> 401                  (never authenticated at all)
     ///
-    /// The "no tenant" arm is the one that proves a tenant scope is not free: a credential the middleware
-    /// ACCEPTS, that nonetheless carries no tenant, still cannot reach the database. On hosted the credential
-    /// that occupies that arm is an enrolled-but-unbound device key: it passes the auth layer
-    /// (<c>DeviceRegistry.IsValidDeviceKey</c>) yet resolves to nothing
-    /// (<c>HostedTenantBoundary.ResolveForDeviceKey</c> is deny-by-default), so no scope is entered and the
-    /// context-less handler hits the deny-by-default throw. The 500's exact body is asserted too, because the
-    /// pipeline boundary serves a fixed generic body.
+    /// The "no tenant" arm proves row status alone is insufficient: an active device row without a canonical
+    /// tenant/account mapping is an invalid hosted credential. Authentication rejects it before any request
+    /// scope or database route can be reached, and the typed revocation body is asserted exactly.
     ///
     /// The shared machine token USED to occupy that arm - it authenticated but carried no device, so it also
     /// reached the 500. Production-readiness MH-2 (commit 76e7b49e) closed that on hosted: the shared token no
@@ -387,9 +387,8 @@ public sealed class ContextLessDatabaseRouteTenancyTests : IAsyncLifetime
     /// honest about the current invariant. (Self-host still accepts the shared token; this file runs hosted,
     /// and <see cref="AuthMiddlewareTests"/> pins both halves without HTTP.)
     ///
-    /// This test deliberately does NOT claim to identify WHICH internal error produced the 500 - a status
-    /// code cannot carry that. The exact exception, its type and its message are pinned separately and
-    /// without HTTP in <see cref="ContextLessRouteTenancyMechanismProofTests"/>.
+    /// The separate scope and database-filter mechanisms remain pinned without HTTP in
+    /// <see cref="ContextLessRouteTenancyMechanismProofTests"/>.
     /// </summary>
     [Fact]
     public async Task OnOneRoute_TheCredentialAloneDecidesWhetherATenantScopeExists()
@@ -399,17 +398,16 @@ public sealed class ContextLessDatabaseRouteTenancyTests : IAsyncLifetime
             HttpStatusCode.OK, "BOUND DEVICE KEY   GET /cron/jobs (a scope IS entered)");
         Assert.Equal(JsonValueKind.Array, Arr(withBoundDeviceKey, "jobs").ValueKind);
 
-        // A device key that AUTHENTICATES but is bound to NO tenant. It is a real active key (so the auth
-        // layer admits it and stashes it) yet the hosted boundary resolves it to nothing, so no scope is
-        // entered and the context-less handler hits the deny-by-default throw -> 500 with the fixed body.
+        // A device row that is active but bound to NO canonical tenant. Hosted authentication treats that
+        // inconsistent binding as revoked, so it cannot enter any scope or reach the context-less handler.
         var unboundKey = _gateway.Devices.Register("dev-unbound", "MC").DeviceKey; // registered, never account-bound
         var withUnboundKey = await Send("GET", "cron/jobs", unboundKey, null);
         var unboundBody = await withUnboundKey.Content.ReadAsStringAsync();
         _out.WriteLine($"UNBOUND DEVICE KEY GET /cron/jobs -> {(int)withUnboundKey.StatusCode} " +
                        $"[{withUnboundKey.Content.Headers.ContentType?.MediaType}] {unboundBody}");
-        Assert.Equal(HttpStatusCode.InternalServerError, withUnboundKey.StatusCode);
+        Assert.Equal(HttpStatusCode.Unauthorized, withUnboundKey.StatusCode);
         Assert.Equal("application/json", withUnboundKey.Content.Headers.ContentType?.MediaType);
-        Assert.Equal("{\"error\":\"internal error\"}", unboundBody);
+        Assert.Equal("{\"error\":\"device credential revoked\",\"code\":\"device_credential_revoked\"}", unboundBody);
 
         // The shared machine token: on hosted (MH-2) it is not a credential at all, so it never reaches the
         // database - it is a 401, exactly as an unknown credential is.

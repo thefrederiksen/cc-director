@@ -38,8 +38,8 @@ public sealed class VoiceServingReadIsolationTests : IAsyncLifetime
     private const string SessB = "voice-read-sess-b";
     // Account tenants are minted GUIDs in production (WingmanVoiceService refuses a non-GUID, non-Local tenant
     // as a voice-state partition), so the device bindings here use real GUID tenant ids, not friendly labels.
-    private static readonly TenantId TenantA = new("11111111-1111-1111-1111-111111111111");
-    private static readonly TenantId TenantB = new("22222222-2222-2222-2222-222222222222");
+    private TenantId TenantA { get; set; }
+    private TenantId TenantB { get; set; }
     private static readonly byte[] AudioBytes = { 1, 2, 3, 4, 5 };
 
     private GatewayHost _gateway = null!;
@@ -69,11 +69,15 @@ public sealed class VoiceServingReadIsolationTests : IAsyncLifetime
         _http = new HttpClient { BaseAddress = new Uri($"http://127.0.0.1:{_gateway.Port}/") };
 
         // Two accounts (each a device key bound to its OWN tenant) plus one registered-but-unbound key.
-        _keyA = _gateway.Devices.Register("dev-a", "MA").DeviceKey;
-        _keyB = _gateway.Devices.Register("dev-b", "MB").DeviceKey;
+        var deviceA = HostedTestEnrollment.Enroll(
+            _gateway, "sub-alice", "alice@example.com", "dev-a", "MA");
+        var deviceB = HostedTestEnrollment.Enroll(
+            _gateway, "sub-bob", "bob@example.com", "dev-b", "MB");
+        TenantA = deviceA.Tenant;
+        TenantB = deviceB.Tenant;
+        _keyA = deviceA.DeviceKey;
+        _keyB = deviceB.DeviceKey;
         _keyUnbound = _gateway.Devices.Register("dev-x", "MX").DeviceKey;
-        _gateway.Devices.SetAccountBinding("dev-a", "sub-alice", TenantA.Value);
-        _gateway.Devices.SetAccountBinding("dev-b", "sub-bob", TenantB.Value);
 
         _dirA = await FakeTunnelDirector.StartAsync(_gateway, _keyA, "dir-a", "MA");
         _dirB = await FakeTunnelDirector.StartAsync(_gateway, _keyB, "dir-b", "MB");
@@ -134,11 +138,11 @@ public sealed class VoiceServingReadIsolationTests : IAsyncLifetime
     [Fact]
     public async Task A_device_key_with_no_bound_tenant_is_denied()
     {
-        // Deny-by-default across the voice read surface: an authenticated but tenant-unbound key never falls
-        // back to the Local partition - it is refused outright on every voice read route.
-        Assert.Equal(HttpStatusCode.Forbidden, (await Get("wingman/voice/ready", _keyUnbound)).StatusCode);
-        Assert.Equal(HttpStatusCode.Forbidden, (await Get($"sessions/{SessB}/wingman/voice", _keyUnbound)).StatusCode);
-        Assert.Equal(HttpStatusCode.Forbidden, (await Get($"sessions/{SessB}/wingman/voice/audio", _keyUnbound)).StatusCode);
+        // Deny-by-default across the voice read surface: a tenant-unbound hosted credential is rejected at
+        // authentication and never falls back to the Local partition.
+        Assert.Equal(HttpStatusCode.Unauthorized, (await Get("wingman/voice/ready", _keyUnbound)).StatusCode);
+        Assert.Equal(HttpStatusCode.Unauthorized, (await Get($"sessions/{SessB}/wingman/voice", _keyUnbound)).StatusCode);
+        Assert.Equal(HttpStatusCode.Unauthorized, (await Get($"sessions/{SessB}/wingman/voice/audio", _keyUnbound)).StatusCode);
     }
 
     private Task<HttpResponseMessage> Get(string path, string deviceKey)

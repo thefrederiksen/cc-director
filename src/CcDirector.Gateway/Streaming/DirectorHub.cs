@@ -266,10 +266,8 @@ public sealed class DirectorHub : Hub
         if (_tenantBoundary is null)
             return TenantId.Local;
 
-        var key = Context.GetHttpContext()?.Items.TryGetValue(AuthMiddleware.DeviceKeyItemKey, out var value) == true
-            ? value as string
-            : null;
-        return _tenantBoundary.ResolveForDeviceKey(key);
+        var httpContext = Context.GetHttpContext();
+        return httpContext is null ? null : _tenantBoundary.ResolveRequestTenant(httpContext);
     }
 
     /// <summary>Enter the bound tenant's scope for the duration of a push handler, so the EF-writing observers

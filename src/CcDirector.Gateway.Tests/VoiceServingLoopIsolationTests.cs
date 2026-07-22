@@ -47,8 +47,8 @@ public sealed class VoiceServingLoopIsolationTests : IAsyncLifetime
     private const string SessB = "voice-loop-sess-b";
     // Account tenants are minted GUIDs in production (WingmanVoiceService refuses a non-GUID, non-Local tenant
     // as a voice-state partition), so the device bindings here use real GUID tenant ids, not friendly labels.
-    private static readonly TenantId TenantA = new("11111111-1111-1111-1111-111111111111");
-    private static readonly TenantId TenantB = new("22222222-2222-2222-2222-222222222222");
+    private TenantId TenantA { get; set; }
+    private TenantId TenantB { get; set; }
 
     private GatewayHost _gateway = null!;
     private FakeTunnelDirector _dirA = null!;
@@ -73,10 +73,14 @@ public sealed class VoiceServingLoopIsolationTests : IAsyncLifetime
             streamMode: true);
         await _gateway.StartAsync();
 
-        var keyA = _gateway.Devices.Register("dev-a", "MA").DeviceKey;
-        var keyB = _gateway.Devices.Register("dev-b", "MB").DeviceKey;
-        _gateway.Devices.SetAccountBinding("dev-a", "sub-alice", TenantA.Value);
-        _gateway.Devices.SetAccountBinding("dev-b", "sub-bob", TenantB.Value);
+        var deviceA = HostedTestEnrollment.Enroll(
+            _gateway, "sub-alice", "alice@example.com", "dev-a", "MA");
+        var deviceB = HostedTestEnrollment.Enroll(
+            _gateway, "sub-bob", "bob@example.com", "dev-b", "MB");
+        TenantA = deviceA.Tenant;
+        TenantB = deviceB.Tenant;
+        var keyA = deviceA.DeviceKey;
+        var keyB = deviceB.DeviceKey;
 
         // Each Director captures every command it receives. A "turns" read answers with an empty widget set so
         // the generation reaches its "nothing to narrate" branch and never attempts a live hosted brain call -

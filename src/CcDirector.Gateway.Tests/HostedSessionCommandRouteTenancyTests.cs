@@ -62,27 +62,33 @@ public sealed class HostedSessionCommandRouteTenancyTests : IAsyncLifetime
     private readonly string _instancesDir =
         Path.Combine(Path.GetTempPath(), "cc-cmd-" + Guid.NewGuid().ToString("N"));
     private string? _priorHosted;
+    private bool _cleanedUp;
 
     public async Task InitializeAsync()
     {
         _priorHosted = Environment.GetEnvironmentVariable("CC_GATEWAY_HOSTED");
         Environment.SetEnvironmentVariable("CC_GATEWAY_HOSTED", "1");
 
-        _gateway = new GatewayHost(port: FreePort(), token: Token, authEnabled: true,
-            instancesDirectory: _instancesDir,
-            workListsPath: Path.Combine(_instancesDir, "worklists", "worklists.json"),
-            snoozePath: Path.Combine(_instancesDir, "snooze", "snooze.json"),
-            streamMode: true);
-        await _gateway.StartAsync();
+        try
+        {
+            await InitializeHostedAsync();
+        }
+        catch
+        {
+            await CleanupAsync();
+            throw;
+        }
+    }
+
+    private async Task InitializeHostedAsync()
+    {
+        await StartGatewayWithBindRetryAsync();
         _http = new HttpClient { BaseAddress = new Uri($"http://127.0.0.1:{_gateway.Port}/") };
 
-        _keyA = _gateway.Devices.Register("dev-a", "MA").DeviceKey;
-        _keyB = _gateway.Devices.Register("dev-b", "MB").DeviceKey;
-        // Account tenants are minted GUIDs in production (the roster's voice enrichment routes the request
-        // tenant into WingmanVoiceService, which refuses a non-GUID, non-Local partition key), so bind real
-        // GUID tenant ids here rather than friendly labels.
-        _gateway.Devices.SetAccountBinding("dev-a", "sub-alice", "55555555-5555-5555-5555-555555555555");
-        _gateway.Devices.SetAccountBinding("dev-b", "sub-bob", "66666666-6666-6666-6666-666666666666");
+        _keyA = HostedTestEnrollment.Enroll(
+            _gateway, "sub-alice", "alice@example.com", "dev-a", "MA").DeviceKey;
+        _keyB = HostedTestEnrollment.Enroll(
+            _gateway, "sub-bob", "bob@example.com", "dev-b", "MB").DeviceKey;
 
         // Both fake Directors answer every verb, so a route that reaches its Director gets a real answer and
         // any not-found body can only have come from the locate step - the step under test.
@@ -92,18 +98,66 @@ public sealed class HostedSessionCommandRouteTenancyTests : IAsyncLifetime
         await _dirB.PushSnapshotAsync(Sample(SessB));
     }
 
+    private async Task StartGatewayWithBindRetryAsync()
+    {
+        const int maximumAttempts = 3;
+        for (var attempt = 1; attempt <= maximumAttempts; attempt++)
+        {
+            _gateway = new GatewayHost(port: FreePort(), token: Token, authEnabled: true,
+                instancesDirectory: _instancesDir,
+                workListsPath: Path.Combine(_instancesDir, "worklists", "worklists.json"),
+                snoozePath: Path.Combine(_instancesDir, "snooze", "snooze.json"),
+                streamMode: true);
+            try
+            {
+                await _gateway.StartAsync();
+                return;
+            }
+            catch (Exception ex) when (attempt < maximumAttempts && IsAddressAlreadyInUse(ex))
+            {
+                await _gateway.StopAsync();
+            }
+        }
+    }
+
+    private static bool IsAddressAlreadyInUse(Exception exception)
+    {
+        for (Exception? current = exception; current is not null; current = current.InnerException)
+        {
+            if (current is SocketException { SocketErrorCode: SocketError.AddressAlreadyInUse })
+                return true;
+        }
+
+        return false;
+    }
+
     private static DirectorCommandResult AnswerAnything(DirectorCommand cmd) =>
         FakeTunnelDirector.Ok(new { ok = true, lines = Array.Empty<string>(), items = Array.Empty<object>() });
 
-    public async Task DisposeAsync()
+    public Task DisposeAsync() => CleanupAsync();
+
+    private async Task CleanupAsync()
     {
-        _http.Dispose();
-        await _dirA.DisposeAsync();
-        await _dirB.DisposeAsync();
-        await _gateway.StopAsync();
-        Environment.SetEnvironmentVariable("CC_GATEWAY_HOSTED", _priorHosted);
-        try { if (Directory.Exists(_instancesDir)) Directory.Delete(_instancesDir, true); }
-        catch { /* best-effort */ }
+        if (_cleanedUp)
+            return;
+        _cleanedUp = true;
+
+        try
+        {
+            _http?.Dispose();
+            if (_dirA is not null)
+                await _dirA.DisposeAsync();
+            if (_dirB is not null)
+                await _dirB.DisposeAsync();
+            if (_gateway is not null)
+                await _gateway.StopAsync();
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("CC_GATEWAY_HOSTED", _priorHosted);
+            try { if (Directory.Exists(_instancesDir)) Directory.Delete(_instancesDir, true); }
+            catch { /* best-effort */ }
+        }
     }
 
     /// <summary>
