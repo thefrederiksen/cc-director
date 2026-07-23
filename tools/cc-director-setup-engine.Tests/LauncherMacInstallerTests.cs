@@ -30,15 +30,29 @@ public class LauncherMacInstallerTests : IDisposable
         try { if (Directory.Exists(_dir)) Directory.Delete(_dir, true); } catch { /* best effort */ }
     }
 
-    /// <summary>An HTTP handler whose every response has the given status code.</summary>
-    private sealed class FixedStatusHandler(HttpStatusCode status) : HttpMessageHandler
+    /// <summary>An HTTP handler whose every response has the given status code and body.</summary>
+    private sealed class FixedStatusHandler(HttpStatusCode status, string body = "") : HttpMessageHandler
     {
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
-            => Task.FromResult(new HttpResponseMessage(status));
+            => Task.FromResult(new HttpResponseMessage(status) { Content = new StringContent(body) });
     }
 
-    private HttpClient HealthyClient() => new(new FixedStatusHandler(HttpStatusCode.OK));
+    /// <summary>A launcher /healthz answer: identity travels in the body (issue #2042).</summary>
+    private static string HealthBody(string version, int pid = 4242) =>
+        $$"""{"ok":true,"version":"{{version}}","pid":{{pid}},"uptimeS":1}""";
+
+    private HttpClient HealthyClient(string version = "1.7.4") =>
+        new(new FixedStatusHandler(HttpStatusCode.OK, HealthBody(version)));
     private HttpClient DeadClient() => new(new FixedStatusHandler(HttpStatusCode.ServiceUnavailable));
+
+    /// <summary>Record the launcher version the runner would have written when placing the binary -
+    /// the identity the health check must then see answering the port.</summary>
+    private void RecordPlacedLauncherVersion(string version)
+    {
+        var manifest = InstalledManifest.Load(_layout);
+        manifest.Set(ComponentRegistry.Launcher.Id, version);
+        manifest.Save(_layout);
+    }
 
     private void PlaceLauncherBinary()
     {
@@ -178,5 +192,70 @@ public class LauncherMacInstallerTests : IDisposable
 
         Assert.False(result.Success);
         Assert.Contains("launch agent", result.Message);
+    }
+
+    [Fact]
+    public async Task InstallAsync_WrongVersionAnswersThePort_FailsLoudNamingBothVersions()
+    {
+        if (!OperatingSystem.IsMacOS()) return;
+
+        // The real incident (issue #2042): the machine's OLD launcher held port 7900 and answered
+        // the health poll, so a completely failed install of the new binary still looked green.
+        PlaceLauncherBinary();
+        WritePlist();
+        RecordPlacedLauncherVersion("1.7.4");
+        var installer = new LauncherMacInstaller(_layout,
+            HealthyClient(version: "1.7.1"),
+            runCommand: (_, _) => (0, ""),
+            startProcess: (_, _, _) => 1234,
+            launchAgentPlistPath: _plistPath,
+            healthTimeout: TimeSpan.FromMilliseconds(1200));
+
+        var result = await installer.InstallAsync();
+
+        Assert.False(result.Success);
+        Assert.Contains("1.7.1", result.Message);
+        Assert.Contains("1.7.4", result.Message);
+        Assert.Contains("refusing to certify", result.Message);
+    }
+
+    [Fact]
+    public async Task InstallAsync_MatchingVersionAnswers_SucceedsAndReportsIdentity()
+    {
+        if (!OperatingSystem.IsMacOS()) return;
+
+        PlaceLauncherBinary();
+        WritePlist();
+        RecordPlacedLauncherVersion("1.7.4");
+        var installer = new LauncherMacInstaller(_layout,
+            HealthyClient(version: "1.7.4+abcdef"),   // build metadata must not break the match
+            runCommand: (_, _) => (0, ""),
+            startProcess: (_, _, _) => 1234,
+            launchAgentPlistPath: _plistPath);
+
+        var result = await installer.InstallAsync();
+
+        Assert.True(result.Success);
+        Assert.Contains(result.Steps, s => s.Contains("OK (version 1.7.4+abcdef, process id 4242)"));
+    }
+
+    [Fact]
+    public async Task InstallAsync_NoRecordedVersion_LegacyOkAnswerStillSucceeds()
+    {
+        if (!OperatingSystem.IsMacOS()) return;
+
+        // No installed.json entry (nothing was recorded): identity cannot be checked, so a
+        // well-formed ok answer is accepted - the pre-#2042 behavior, minus blind 200-trust.
+        PlaceLauncherBinary();
+        WritePlist();
+        var installer = new LauncherMacInstaller(_layout,
+            HealthyClient(),
+            runCommand: (_, _) => (0, ""),
+            startProcess: (_, _, _) => 1234,
+            launchAgentPlistPath: _plistPath);
+
+        var result = await installer.InstallAsync();
+
+        Assert.True(result.Success);
     }
 }

@@ -98,11 +98,23 @@ public sealed class LauncherMacInstaller
             }
         }
 
+        // Identity-verified health (issue #2042): the answer must come from the launcher version
+        // just placed, not from whatever process happens to hold the port. The expected version is
+        // what the runner recorded for the launcher when it placed the binary moments ago.
+        var expectedVersion = new InstalledStateReader(_layout).Read(ComponentRegistry.Launcher).Version;
         var healthUrl = $"http://127.0.0.1:{LauncherTrayInstaller.LauncherDefaultPort}/healthz";
-        var up = await WaitForHttpAsync(healthUrl, _healthTimeout, ct);
-        steps.Add($"launcher health endpoint on port {LauncherTrayInstaller.LauncherDefaultPort}: {(up ? "OK" : "no response")}");
-        if (!up)
+        var health = await LauncherHealthProbe.WaitForHealthyAsync(_http, healthUrl, expectedVersion, _healthTimeout, ct);
+        if (health is null)
+        {
+            steps.Add($"launcher health endpoint on port {LauncherTrayInstaller.LauncherDefaultPort}: no response");
             return Fail(steps, $"Launcher started but did not answer on port {LauncherTrayInstaller.LauncherDefaultPort}. Check {_layout.LogsDir}.");
+        }
+        if (!LauncherHealthProbe.Certifies(health, expectedVersion))
+        {
+            steps.Add($"launcher health endpoint on port {LauncherTrayInstaller.LauncherDefaultPort}: answered by version {health.Version ?? "unknown"} (process id {health.Pid})");
+            return Fail(steps, $"A launcher is answering on port {LauncherTrayInstaller.LauncherDefaultPort}, but it reports version {health.Version ?? "unknown"}, not the freshly installed {expectedVersion} - refusing to certify this install. Another launcher instance likely holds the port; check {_layout.LogsDir}.");
+        }
+        steps.Add($"launcher health endpoint on port {LauncherTrayInstaller.LauncherDefaultPort}: OK (version {health.Version ?? "unversioned"}, process id {health.Pid})");
 
         var registered = File.Exists(_launchAgentPlistPath);
         steps.Add($"launch agent property list: {(registered ? "registered" : "NOT registered")} at {_launchAgentPlistPath}");
