@@ -27,10 +27,13 @@ on:
   # The branch/tag picked when starting the run is the commit that ships.
   workflow_dispatch:
 
-# Never let two deploys race the same App Service; a newer one waits rather than clobbering.
+# Only the latest release should win. If a newer release is started while one is still running,
+# cancel the older one so we never spend a full build shipping code that is about to be replaced.
+# The cancel is safe during the ~5-minute build (nothing live has changed yet); the newer release
+# repeats the short repin+restart at the end, so the live service always lands on the latest commit.
 concurrency:
   group: deploy-hosted-gateway
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 permissions:
   id-token: write   # required for the Azure OIDC login
