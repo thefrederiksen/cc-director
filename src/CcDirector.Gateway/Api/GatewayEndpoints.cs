@@ -335,7 +335,7 @@ internal static class GatewayEndpoints
         var logoutVisibility = authEnabled ? "" : "style=\"display:none\"";
 
         // Phone recorder ingest (offline-recorded audio -> transcription -> vault).
-        RecordingEndpoints.Map(app, recordingKeyVault, transcriptionHistory, transcriptionAudioArchive);
+        RecordingEndpoints.Map(app, tenantBoundary, recordingKeyVault, transcriptionHistory, transcriptionAudioArchive);
 
         // Read-only view of the Communication Manager approval queue (see the phone's
         // pending drafts remotely). Step 1 of centralizing the comm queue on the Gateway.
