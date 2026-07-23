@@ -27,12 +27,10 @@
     </UserControl.Styles>
 
     <Grid ColumnDefinitions="Auto,1,*">
-        <Border Grid.Column="0" Background="#252526" MinWidth="140">
-            <StackPanel Spacing="1" Margin="0,6,0,0">
-                <TextBlock Text="REPOSITORIES" Foreground="#888888" FontSize="10"
-                           FontWeight="SemiBold" Margin="12,2,12,8" />
+        <Border Grid.Column="0" Background="#252526" MinWidth="150">
+            <StackPanel Spacing="1" Margin="0,8,0,0">
                 <Button x:Name="ReposRailButton" Classes="railItem active" Click="ReposRailButton_Click">
-                    <TextBlock Text="Repositories" VerticalAlignment="Center" />
+                    <TextBlock Text="Local repositories" VerticalAlignment="Center" />
                 </Button>
                 <Button x:Name="RootsRailButton" Classes="railItem" Click="RootsRailButton_Click">
                     <TextBlock Text="Root folders" VerticalAlignment="Center" />
@@ -46,21 +44,18 @@
             <controls:RepositoryListView x:Name="ReposPage" IsVisible="True" />
 
             <ScrollViewer x:Name="RootsPage" IsVisible="False" VerticalScrollBarVisibility="Auto">
-                <StackPanel Margin="16" Spacing="10">
-                    <TextBlock Text="Root folders" Foreground="#CCCCCC" FontSize="14" FontWeight="SemiBold" />
-                    <TextBlock Text="The directories scanned for repositories. Editing them inline moves here next; for now this shows what is registered."
-                               Foreground="#888888" FontSize="11" TextWrapping="Wrap" MaxWidth="560" />
-                    <ItemsControl x:Name="RootsList">
-                        <ItemsControl.ItemTemplate>
-                            <DataTemplate>
-                                <Border Background="#252526" BorderBrush="#3C3C3C" BorderThickness="1"
-                                        CornerRadius="4" Padding="12,8" Margin="0,0,0,6">
-                                    <TextBlock Text="{Binding}" Foreground="#CCCCCC" FontSize="12"
-                                               FontFamily="Cascadia Mono, Consolas" TextWrapping="Wrap" />
-                                </Border>
-                            </DataTemplate>
-                        </ItemsControl.ItemTemplate>
-                    </ItemsControl>
+                <StackPanel Margin="16" Spacing="12">
+                    <Grid ColumnDefinitions="*,Auto">
+                        <StackPanel Grid.Column="0" Spacing="3" VerticalAlignment="Center">
+                            <TextBlock Text="Root folders" Foreground="#CCCCCC" FontSize="14" FontWeight="SemiBold" />
+                            <TextBlock Text="The directories scanned for repositories. GitHub uses the gh login; Azure DevOps uses az."
+                                       Foreground="#888888" FontSize="11" TextWrapping="Wrap" MaxWidth="560" />
+                        </StackPanel>
+                        <Button Grid.Column="1" x:Name="AddRootButton" Content="+ Add root folder"
+                                Background="#0E639C" Foreground="White" Padding="12,6" FontSize="12"
+                                VerticalAlignment="Top" Click="AddRootButton_Click" />
+                    </Grid>
+                    <StackPanel x:Name="RootsContainer" Spacing="6" />
                 </StackPanel>
             </ScrollViewer>
         </Panel>

@@ -52,12 +52,10 @@
     <Grid RowDefinitions="Auto,*">
         <!-- Header -->
         <Border Grid.Row="0" Background="#252526" BorderBrush="#3C3C3C" BorderThickness="0,0,0,1" Padding="12,8">
-            <Grid ColumnDefinitions="Auto,*,Auto">
-                <TextBlock Grid.Column="0" Text="REPOSITORIES" Foreground="#CCCCCC" FontSize="12"
-                           FontWeight="SemiBold" VerticalAlignment="Center" />
-                <TextBlock Grid.Column="1" x:Name="SummaryText" Text="" Foreground="#8A8A8A" FontSize="11"
-                           VerticalAlignment="Center" Margin="12,0,0,0" />
-                <Button Grid.Column="2" x:Name="RefreshButton" Content="Refresh" Background="#3C3C3C"
+            <Grid ColumnDefinitions="*,Auto">
+                <TextBlock Grid.Column="0" x:Name="SummaryText" Text="" Foreground="#AAAAAA" FontSize="12"
+                           VerticalAlignment="Center" />
+                <Button Grid.Column="1" x:Name="RefreshButton" Content="Refresh" Background="#3C3C3C"
                         Foreground="#CCCCCC" Padding="12,4" FontSize="11" Click="RefreshButton_Click" />
             </Grid>
         </Border>

@@ -3679,23 +3679,8 @@ public partial class MainWindow : Window
 
         // ===== Session =====
         var session = new NativeMenuItem("Session") { Menu = new NativeMenu() };
-        session.Menu.Items.Add(Item("Repositories...", async () =>
-        {
-            FileLog.Write("[MainWindow] Menu: Repositories");
-            var dialog = new RepositoryManagerDialog(AppRef().RootDirectoryStore);
-            var result = await dialog.ShowDialog<bool?>(this);
-            if (result == true && dialog.LaunchSessionPath != null)
-            {
-                var vm = CreateSession(dialog.LaunchSessionPath);
-                if (vm != null)
-                {
-                    ShowRenameDialog(vm);
-                    SaveSessionToHistory(vm);
-                    SwitchLeftTab("Terminal");
-                }
-            }
-        }));
-        // "Repository status..." moved to the pinned Repositories entry in the sidebar (issue #507).
+        // Repositories (registration + live list) moved to the pinned Repositories entry in the
+        // sidebar - the Root folders page there handles add/edit/remove (issue #507).
         if (alpha)
         {
             session.Menu.Items.Add(new NativeMenuItemSeparator());
