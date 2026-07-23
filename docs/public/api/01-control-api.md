@@ -2,7 +2,7 @@
 
 Every running Director hosts a small REST Control API on loopback (`127.0.0.1`, port range 7879-7898, one stable port per Director).
 
-This surface is a **floor**, not a full remote-control API. It is deliberately narrow: health, the fleet verbs, local settings, the tool catalog, the workspace list, and the scheduler. It is reachable only from the machine the Director runs on.
+This surface is a **floor**, not a full remote-control API. It is deliberately narrow: health, the fleet verbs, local settings, the tool catalog, and the workspace list. It is reachable only from the machine the Director runs on.
 
 The Director does **not** expose routes for creating, reading, renaming or killing sessions directly, nor for terminal buffers, git, handovers, repositories, screenshots, dictation, text-to-speech or a terminal WebSocket stream. Those either live on the Gateway or no longer exist. If you are looking for the session surface, you want the Gateway, and the supported way to drive it is the `cc-devthrottle` command line tool.
 
@@ -95,7 +95,7 @@ The catalog of coding agent command lines this Director can launch.
 | POST | /settings/agents/command-line | Preview the command line an agent would launch with |
 | GET | /settings/agents/catalog | The catalog of known agents |
 
-### Tools, workspaces, scheduler
+### Tools, workspaces
 
 | Method | Route | Purpose |
 |--------|-------|---------|
@@ -107,8 +107,6 @@ The catalog of coding agent command lines this Director can launch.
 | GET | /workspaces | The workspace list |
 | GET | /workspaces/{slug} | One workspace |
 | GET | /history | Session history |
-| GET | /scheduler | The schedule list |
-| POST | /scheduler/{name}/run | Run one schedule now |
 
 ## Finding a Director's port
 

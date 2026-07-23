@@ -39,7 +39,6 @@ actions are wired; **partial** = the surface exists but is still being completed
 | Home / Status View | implemented | [Built-in Panels](04-panels.md) |
 | Tools Catalog | implemented | [Built-in Panels](04-panels.md) |
 | Connections | implemented | [Built-in Panels](04-panels.md) |
-| Scheduler | implemented | [Built-in Panels](04-panels.md) |
 | Communications Manager | partial | [Built-in Panels](04-panels.md) |
 | Wingman Briefing Tab | implemented | [Wingman and Voice](05-wingman-and-voice.md) |
 | Voice Tab | implemented | [Wingman and Voice](05-wingman-and-voice.md) |

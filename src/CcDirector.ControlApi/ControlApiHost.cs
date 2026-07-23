@@ -199,9 +199,6 @@ public sealed class ControlApiHost : IAsyncDisposable
     private Core.Sessions.SessionRecordsWatcher? _recordsWatcher;
     private Core.Storage.ConversationIngestor? _conversationIngestor;
     private Core.Storage.SessionLogManager? _sessionLogManager;
-    // Resolved lazily at request time: the scheduler is created AFTER the Control API host
-    // (StartControlApi runs before StartScheduler), so we capture an accessor, not the instance.
-    private readonly Func<Core.Scheduler.SchedulerService?>? _schedulerAccessor;
     private readonly string? _instancesDirectory;
     private bool _stopped;
     private bool _stateServicesStarted;
@@ -217,7 +214,7 @@ public sealed class ControlApiHost : IAsyncDisposable
     /// If true, bearer-token or cookie auth is required for all routes except /healthz/login/logout.
     /// If false (default), the Director is completely open. The Tailscale tailnet is the trust boundary.
     /// </param>
-    public ControlApiHost(SessionManager sessionManager, string version, Func<Task> requestShutdownAsync, bool useEphemeralPort = false, bool authEnabled = false, RepositoryRegistry? repositoryRegistry = null, string? directorId = null, Func<Core.Scheduler.SchedulerService?>? schedulerAccessor = null, string? instancesDirectory = null)
+    public ControlApiHost(SessionManager sessionManager, string version, Func<Task> requestShutdownAsync, bool useEphemeralPort = false, bool authEnabled = false, RepositoryRegistry? repositoryRegistry = null, string? directorId = null, string? instancesDirectory = null)
     {
         _sessionManager = sessionManager ?? throw new ArgumentNullException(nameof(sessionManager));
         _version = version ?? "0.0.0";
@@ -240,7 +237,6 @@ public sealed class ControlApiHost : IAsyncDisposable
         _useEphemeralPort = useEphemeralPort;
         _authEnabled = authEnabled;
         _repositoryRegistry = repositoryRegistry;
-        _schedulerAccessor = schedulerAccessor;
         // Tests pass an isolated instances directory so test Directors never appear in a real
         // Gateway's discovery (and a real Director never appears in a test Gateway's).
         _instancesDirectory = instancesDirectory;
@@ -514,7 +510,7 @@ public sealed class ControlApiHost : IAsyncDisposable
         // The usage/context/history/facts reads dispatch through the shared executors over the tunnel; the
         // live terminal producer moved to the up-stream (open-terminal-stream); dictation is now
         // client->Gateway audio; claude-transcripts and dispatch are dropped legacy. Only the Phase-4
-        // config surface below (settings/agents/tools/workspaces/scheduler) stays on the loopback floor for
+        // config surface below (settings/agents/tools/workspaces) stays on the loopback floor for
         // LOCAL access (the desktop app + cc-settings-api call it same-machine); remote config editing moves
         // to proper tunnel verbs in Phase 4.
         SettingsEndpoint.Map(_app, ReapplyGatewayAsync, () => Port);
@@ -524,7 +520,6 @@ public sealed class ControlApiHost : IAsyncDisposable
         AgentsEndpoint.Map(_app, _sessionManager.Options);
         ToolsEndpoint.Map(_app);
         WorkspacesEndpoint.Map(_app);
-        SchedulerEndpoint.Map(_app, _schedulerAccessor);
         await _app.StartAsync();
 
         if (_useEphemeralPort || _fellBackToEphemeral)
