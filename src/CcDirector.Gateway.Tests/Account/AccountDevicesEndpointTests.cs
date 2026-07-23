@@ -138,7 +138,9 @@ public sealed class AccountDevicesEndpointTests
             app.Use(async (ctx, next) => await AuthMiddleware.Run(ctx, requireToken, next));
         }
 
-        AccountDevicesEndpoint.Map(app, account, devices, ThisMachine);
+        // Self-host path: GatewayHostedMode is not hosted here, so the local registry and tenant boundary are
+        // never consulted - a bare registry satisfies the required argument and no boundary is passed.
+        AccountDevicesEndpoint.Map(app, account, devices, ThisMachine, new DeviceRegistry());
         await app.StartAsync();
 
         var baseUrl = app.Urls.First();
