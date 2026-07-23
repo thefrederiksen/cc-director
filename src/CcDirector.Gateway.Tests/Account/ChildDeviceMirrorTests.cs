@@ -231,7 +231,7 @@ public sealed class ChildDeviceMirrorTests
         }
 
         var cloudKey = $"{DeviceKeyMarker}-1";
-        Assert.DoesNotContain(cloudKey, File.ReadAllText(devices.StorePath), StringComparison.Ordinal);
+        Assert.False(File.Exists(devices.StorePath), "runtime mirroring must never recreate devices.json");
         Assert.DoesNotContain(lines, line => line.Contains(DeviceKeyMarker, StringComparison.Ordinal));
         Assert.DoesNotContain(lines, line => line.Contains(GatewayTestJwt.SigningSecret, StringComparison.Ordinal));
         Assert.Contains(lines, line => line.Contains("mirrored to cloud id=", StringComparison.Ordinal));

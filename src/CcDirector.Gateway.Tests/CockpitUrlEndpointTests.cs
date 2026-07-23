@@ -65,7 +65,12 @@ public sealed class CockpitUrlEndpointTests
             // /gateway/about is credential-gated. On hosted the shared machine token is NO LONGER a valid
             // Bearer (production-readiness MH-2 - it authenticates with no tenant), so the credential is a
             // per-device key issued at enrollment, exactly as a real hosted caller uses.
-            var deviceKey = gateway.Devices.Register("cockpiturl-about", "PHONE").DeviceKey;
+            var deviceKey = HostedTestEnrollment.Enroll(
+                gateway,
+                "cockpiturl-about-subject",
+                "cockpiturl-about@example.com",
+                "cockpiturl-about",
+                "PHONE").DeviceKey;
             var about = await GetJson<AboutDto>(http, "gateway/about", bearer: deviceKey);
 
             Assert.Equal(ExpectedCockpit, about.CockpitUrl);
@@ -81,14 +86,15 @@ public sealed class CockpitUrlEndpointTests
             // It carries only account settings - never the cockpit.url it once did. The live public-URL surfaces
             // are GET /cockpit and GET /gateway/about, asserted above.
             //
-            // An UNBOUND device resolves to no tenant, so it is refused with 403 - never the Local partition,
-            // never a cockpit url.
+            // An UNBOUND device is refused - never the Local partition, never a cockpit url. MTR-14B: on
+            // hosted an unbound device is an invalid credential (invalidHostedBinding -> Revoked), so it is
+            // denied at the auth gate with 401 before the tenant-boundary 403. Refused either way.
             var unboundKey = gateway.Devices.Register("cockpiturl-unbound", "PHONE").DeviceKey;
             using (var req = new HttpRequestMessage(HttpMethod.Get, "gateway/settings"))
             {
                 req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", unboundKey);
                 using var resp = await http.SendAsync(req);
-                Assert.Equal(HttpStatusCode.Forbidden, resp.StatusCode);
+                Assert.Equal(HttpStatusCode.Unauthorized, resp.StatusCode);
             }
 
             // An ENROLLED tenant is served the per-account snapshot, which carries NO cockpit block/url.

@@ -516,8 +516,8 @@ public sealed class NetDiagEndpointTenantIsolationTests : IAsyncLifetime
         var tenantB = _gateway.TenantRegistry.MintOrLookupBySubject("sub-bob", "bob@example.com");
         _gateway.Devices.SetAccountBinding("dev-b", "sub-bob", tenantB.Value);
 
-        // A key that authenticates but is bound to NO tenant. Proving who you are is not proving you own
-        // anything, so this caller must be refused rather than quietly served the Local partition.
+        // A device row with no canonical tenant binding is not a valid hosted credential, so this caller must
+        // be refused rather than quietly served the Local partition.
         _keyNoTenant = _gateway.Devices.Register("dev-none", "MC").DeviceKey;
     }
 
@@ -597,11 +597,10 @@ public sealed class NetDiagEndpointTenantIsolationTests : IAsyncLifetime
     [InlineData("diag/rollup")]
     public async Task A_key_with_no_bound_tenant_is_denied_on_every_diagnostic_route(string path)
     {
-        // DENY BY DEFAULT. An authenticated key with no tenant owns nothing; serving it the Local partition
-        // would be a wrong-tenant read, and serving it an empty list would be a false statement about a
-        // question it has no standing to ask.
+        // DENY BY DEFAULT. A hosted key with no tenant is rejected by authentication; serving it the Local
+        // partition would be a wrong-tenant read.
         var resp = await Get(path, _keyNoTenant);
-        Assert.Equal(HttpStatusCode.Forbidden, resp.StatusCode);
+        Assert.Equal(HttpStatusCode.Unauthorized, resp.StatusCode);
     }
 
     [Fact]
@@ -610,7 +609,7 @@ public sealed class NetDiagEndpointTenantIsolationTests : IAsyncLifetime
         // The write half of the same deny. A read-only refusal would be a DEFERRED leak: unattributable
         // records would keep accumulating behind it with nowhere correct to put them.
         var resp = await PostResultRaw(_keyNoTenant, "no-tenant");
-        Assert.Equal(HttpStatusCode.Forbidden, resp.StatusCode);
+        Assert.Equal(HttpStatusCode.Unauthorized, resp.StatusCode);
     }
 
     [Fact]

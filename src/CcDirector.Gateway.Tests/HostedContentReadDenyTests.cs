@@ -245,9 +245,8 @@ public sealed class HostedContentReadDenyTests : IAsyncLifetime
         var tenant = _gateway.TenantRegistry.MintOrLookupBySubject("sub-alice", "alice@example.com");
         _gateway.Devices.SetAccountBinding("dev-a", "sub-alice", tenant.Value);
 
-        // A second, enrolled but DELIBERATELY UNBOUND device key: registered, so the host-wide auth gate
-        // lets it through, but tied to no account and therefore to no tenant. See
-        // Every_family_is_refused_to_a_caller_carrying_no_tenant_at_all for why this caller exists.
+        // A second, deliberately unbound device row. Hosted authentication must reject it before any content
+        // route can answer. See Every_family_is_refused_to_a_caller_carrying_no_tenant_at_all.
         _unboundKey = _gateway.Devices.Register("dev-unbound", "MB").DeviceKey;
     }
 
@@ -316,10 +315,8 @@ public sealed class HostedContentReadDenyTests : IAsyncLifetime
     /// depended on tenant resolution succeeding. The property that justifies the design choice is
     /// invisible to them.
     ///
-    /// This is that property's case: a device key that is registered (so the host-wide auth gate admits
-    /// it) but bound to NO account and therefore carrying NO tenant - the closest thing this surface has
-    /// to "the caller omitted the argument". It must be refused exactly as the bound caller is, with the
-    /// same body, because the refusal was never about who is asking.
+    /// This is the invalid-credential case: a device row bound to no canonical account tenant. It must be
+    /// rejected by authentication before any route-level content refusal can disclose route behavior.
     /// </summary>
     [Theory]
     [InlineData("GET", "gateway/wingman/instructions", null, InstructionsRefusal)]
@@ -333,8 +330,11 @@ public sealed class HostedContentReadDenyTests : IAsyncLifetime
 
         var resp = await _http.SendAsync(req);
 
-        await AssertBodyIsNothingButTheRefusal(resp, refusal, $"{method} {path} (unbound caller)");
-        Assert.Equal(HttpStatusCode.NotFound, resp.StatusCode);
+        Assert.Equal(HttpStatusCode.Unauthorized, resp.StatusCode);
+        Assert.Equal(
+            "{\"error\":\"device credential revoked\",\"code\":\"device_credential_revoked\"}",
+            await resp.Content.ReadAsStringAsync());
+        Assert.NotEqual(refusal, await resp.Content.ReadAsStringAsync());
     }
 
     [Fact]

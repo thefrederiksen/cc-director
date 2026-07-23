@@ -72,13 +72,10 @@ public sealed class HostedSnoozeLifecycleTenancyTests : IAsyncLifetime
         await _gateway.StartAsync();
         _http = new HttpClient { BaseAddress = new Uri($"http://127.0.0.1:{_gateway.Port}/") };
 
-        _keyA = _gateway.Devices.Register("dev-a", "MA").DeviceKey;
-        _keyB = _gateway.Devices.Register("dev-b", "MB").DeviceKey;
-        // Account tenants are minted GUIDs in production (the roster's voice enrichment routes the request
-        // tenant into WingmanVoiceService, which refuses a non-GUID, non-Local partition key), so bind real
-        // GUID tenant ids here rather than friendly labels.
-        _gateway.Devices.SetAccountBinding("dev-a", "sub-alice", "55555555-5555-5555-5555-555555555555");
-        _gateway.Devices.SetAccountBinding("dev-b", "sub-bob", "66666666-6666-6666-6666-666666666666");
+        _keyA = HostedTestEnrollment.Enroll(
+            _gateway, "sub-alice", "alice@example.com", "dev-a", "MA").DeviceKey;
+        _keyB = HostedTestEnrollment.Enroll(
+            _gateway, "sub-bob", "bob@example.com", "dev-b", "MB").DeviceKey;
 
         // Both fake Directors answer every verb (including the set-display-state push the hold endpoint fires),
         // so a hold that reaches its Director gets a real answer and any failure can only be the registry step.

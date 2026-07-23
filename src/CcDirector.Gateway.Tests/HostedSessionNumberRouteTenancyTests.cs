@@ -30,8 +30,8 @@ namespace CcDirector.Gateway.Tests;
 public sealed class HostedSessionNumberRouteTenancyTests : IAsyncLifetime
 {
     private const string Token = "test-token";
-    private const string TenantAGuid = "55555555-5555-5555-5555-555555555555";
-    private const string TenantBGuid = "66666666-6666-6666-6666-666666666666";
+    private TenantId TenantA { get; set; }
+    private TenantId TenantB { get; set; }
 
     private GatewayHost _gateway = null!;
     private HttpClient _http = null!;
@@ -56,11 +56,15 @@ public sealed class HostedSessionNumberRouteTenancyTests : IAsyncLifetime
         await _gateway.StartAsync();
         _http = new HttpClient { BaseAddress = new Uri($"http://127.0.0.1:{_gateway.Port}/") };
 
-        _keyA = _gateway.Devices.Register("dev-a", "MA").DeviceKey;
-        _keyB = _gateway.Devices.Register("dev-b", "MB").DeviceKey;
+        var deviceA = HostedTestEnrollment.Enroll(
+            _gateway, "sub-alice", "alice@example.com", "dev-a", "MA");
+        var deviceB = HostedTestEnrollment.Enroll(
+            _gateway, "sub-bob", "bob@example.com", "dev-b", "MB");
+        TenantA = deviceA.Tenant;
+        TenantB = deviceB.Tenant;
+        _keyA = deviceA.DeviceKey;
+        _keyB = deviceB.DeviceKey;
         _keyUnbound = _gateway.Devices.Register("dev-unbound", "MU").DeviceKey;
-        _gateway.Devices.SetAccountBinding("dev-a", "sub-alice", TenantAGuid);
-        _gateway.Devices.SetAccountBinding("dev-b", "sub-bob", TenantBGuid);
         // dev-unbound is deliberately left with no account binding.
     }
 
@@ -85,27 +89,27 @@ public sealed class HostedSessionNumberRouteTenancyTests : IAsyncLifetime
         Assert.NotNull(bNum);
 
         // Each drew from its own partition, so each holds its own reservation.
-        Assert.Equal(aNum, _gateway.SessionNumbers.NumberFor(new TenantId(TenantAGuid), sharedSession));
-        Assert.Equal(bNum, _gateway.SessionNumbers.NumberFor(new TenantId(TenantBGuid), sharedSession));
+        Assert.Equal(aNum, _gateway.SessionNumbers.NumberFor(TenantA, sharedSession));
+        Assert.Equal(bNum, _gateway.SessionNumbers.NumberFor(TenantB, sharedSession));
 
         // Tenant A releases its identically-named session.
         var del = await Send(HttpMethod.Delete, $"session-numbers/{sharedSession}", _keyA, null);
         Assert.Equal(HttpStatusCode.NoContent, del.StatusCode);
 
         // DESTRUCTIBILITY CONTROL - A's own reservation is gone.
-        Assert.Null(_gateway.SessionNumbers.NumberFor(new TenantId(TenantAGuid), sharedSession));
+        Assert.Null(_gateway.SessionNumbers.NumberFor(TenantA, sharedSession));
         // THE PROPERTY - B's identically-named session still holds its number.
-        Assert.Equal(bNum, _gateway.SessionNumbers.NumberFor(new TenantId(TenantBGuid), sharedSession));
+        Assert.Equal(bNum, _gateway.SessionNumbers.NumberFor(TenantB, sharedSession));
     }
 
     [Fact]
     public async Task Allocate_with_no_bound_tenant_is_denied()
     {
-        // A device key that authenticates but binds to no account tenant is refused on hosted (deny by
-        // default), never served the Local partition.
+        // A key with no account tenant is an invalid hosted credential and is refused at authentication,
+        // never served the Local partition.
         var resp = await Send(HttpMethod.Post, "session-numbers/allocate", _keyUnbound,
             JsonContent.Create(new SessionNumberAllocateRequest { SessionId = "sess-x", DirectorId = "dir-x" }));
-        Assert.Equal(HttpStatusCode.Forbidden, resp.StatusCode);
+        Assert.Equal(HttpStatusCode.Unauthorized, resp.StatusCode);
     }
 
     private async Task<int?> AllocateAsync(string deviceKey, string sessionId, string directorId)

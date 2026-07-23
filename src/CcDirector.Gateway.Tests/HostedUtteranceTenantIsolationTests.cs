@@ -157,17 +157,16 @@ public sealed class HostedUtteranceTenantIsolationTests : IAsyncLifetime
     {
         var id = Guid.NewGuid().ToString();
 
-        // An authenticated device whose key has no bound tenant is refused outright on all three legs on
-        // hosted - never quietly served the shared/Local root.
-        Assert.Equal(HttpStatusCode.Forbidden, (await RegisterAsync(_httpUnbound, id)).StatusCode);
-        Assert.Equal(HttpStatusCode.Forbidden, (await PutChunkAsync(_httpUnbound, id, 0, SecretAudioB)).StatusCode);
-        Assert.Equal(HttpStatusCode.Forbidden, (await CompleteAsync(_httpUnbound, id, totalChunks: 1)).StatusCode);
+        // A device row without a canonical tenant binding is rejected by hosted authentication on all three
+        // legs and never quietly served the shared/Local root.
+        Assert.Equal(HttpStatusCode.Unauthorized, (await RegisterAsync(_httpUnbound, id)).StatusCode);
+        Assert.Equal(HttpStatusCode.Unauthorized, (await PutChunkAsync(_httpUnbound, id, 0, SecretAudioB)).StatusCode);
+        Assert.Equal(HttpStatusCode.Unauthorized, (await CompleteAsync(_httpUnbound, id, totalChunks: 1)).StatusCode);
 
-        // Positive control: the same three calls from a BOUND key are not refused, so the 403s are the tenant
-        // deny and not a route broken for everyone.
-        Assert.NotEqual(HttpStatusCode.Forbidden, (await RegisterAsync(_httpA, id)).StatusCode);
-        Assert.NotEqual(HttpStatusCode.Forbidden, (await PutChunkAsync(_httpA, id, 0, SecretAudioA)).StatusCode);
-        Assert.NotEqual(HttpStatusCode.Forbidden, (await CompleteAsync(_httpA, id, totalChunks: 1)).StatusCode);
+        // Positive control: the same three calls from a bound key pass authentication.
+        Assert.NotEqual(HttpStatusCode.Unauthorized, (await RegisterAsync(_httpA, id)).StatusCode);
+        Assert.NotEqual(HttpStatusCode.Unauthorized, (await PutChunkAsync(_httpA, id, 0, SecretAudioA)).StatusCode);
+        Assert.NotEqual(HttpStatusCode.Unauthorized, (await CompleteAsync(_httpA, id, totalChunks: 1)).StatusCode);
     }
 
     // ===== helpers =================================================================================

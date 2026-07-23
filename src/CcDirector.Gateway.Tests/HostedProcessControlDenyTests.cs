@@ -46,8 +46,6 @@ namespace CcDirector.Gateway.Tests;
 public sealed class HostedProcessControlDenyTests
 {
     private const string Token = "test-token";
-    private static readonly TenantId TenantB2 = new("tenant-b2");
-
     // ---- DELETE /directors/{id} force-kill ------------------------------------------------------------
 
     [Fact]
@@ -125,10 +123,10 @@ public sealed class HostedProcessControlDenyTests
             TenantId ownerTenant;
             if (hosted)
             {
-                var deviceKey = gateway.Devices.Register("dev-b2", "MB2").DeviceKey;
-                gateway.Devices.SetAccountBinding("dev-b2", "sub-b2", TenantB2.Value);
-                credential = deviceKey;
-                ownerTenant = TenantB2;
+                var device = HostedTestEnrollment.Enroll(
+                    gateway, "sub-b2", "b2@example.com", "dev-b2", "MB2");
+                credential = device.DeviceKey;
+                ownerTenant = device.Tenant;
             }
             else
             {
@@ -224,9 +222,8 @@ public sealed class HostedProcessControlDenyTests
             string credential;
             if (useDeviceKey)
             {
-                var deviceKey = gateway.Devices.Register("dev-b2", "MB2").DeviceKey;
-                gateway.Devices.SetAccountBinding("dev-b2", "sub-b2", TenantB2.Value);
-                credential = deviceKey;
+                credential = HostedTestEnrollment.Enroll(
+                    gateway, "sub-b2", "b2@example.com", "dev-b2", "MB2").DeviceKey;
             }
             else
             {

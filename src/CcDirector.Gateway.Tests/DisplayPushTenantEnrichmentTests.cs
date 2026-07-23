@@ -40,8 +40,8 @@ public sealed class DisplayPushTenantEnrichmentTests : IAsyncLifetime
     private const string Token = "test-token";
     // The COLLIDING id: both accounts run a voice-mode session called "s".
     private const string SharedSid = "s";
-    private static readonly TenantId TenantA = new("11111111-1111-1111-1111-111111111111");
-    private static readonly TenantId TenantB = new("22222222-2222-2222-2222-222222222222");
+    private TenantId TenantA { get; set; }
+    private TenantId TenantB { get; set; }
 
     private GatewayHost _gateway = null!;
     private FakeTunnelDirector _dirA = null!;
@@ -66,10 +66,14 @@ public sealed class DisplayPushTenantEnrichmentTests : IAsyncLifetime
             streamMode: true);
         await _gateway.StartAsync();
 
-        var keyA = _gateway.Devices.Register("dev-a", "MA").DeviceKey;
-        var keyB = _gateway.Devices.Register("dev-b", "MB").DeviceKey;
-        _gateway.Devices.SetAccountBinding("dev-a", "sub-alice", TenantA.Value);
-        _gateway.Devices.SetAccountBinding("dev-b", "sub-bob", TenantB.Value);
+        var deviceA = HostedTestEnrollment.Enroll(
+            _gateway, "sub-alice", "alice@example.com", "dev-a", "MA");
+        var deviceB = HostedTestEnrollment.Enroll(
+            _gateway, "sub-bob", "bob@example.com", "dev-b", "MB");
+        TenantA = deviceA.Tenant;
+        TenantB = deviceB.Tenant;
+        var keyA = deviceA.DeviceKey;
+        var keyB = deviceB.DeviceKey;
 
         _dirA = await FakeTunnelDirector.StartAsync(_gateway, keyA, "dir-a", "MA",
             dispatch: cmd => { _seenByA.Enqueue(cmd); return FakeTunnelDirector.Ok(new { ok = true }); });

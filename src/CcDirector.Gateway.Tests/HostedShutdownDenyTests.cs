@@ -99,8 +99,8 @@ public sealed class HostedShutdownDenyTests
 
             // A device key bound to a tenant is the hosted "authenticated non-owner" credential; the shared
             // token is self-host's credential (and is rejected on hosted).
-            var deviceKey = gateway.Devices.Register("dev-b2", "MB2").DeviceKey;
-            gateway.Devices.SetAccountBinding("dev-b2", "sub-b2", "tenant-b2");
+            var deviceKey = HostedTestEnrollment.Enroll(
+                gateway, "sub-b2", "b2@example.com", "dev-b2", "MB2").DeviceKey;
             var credential = useDeviceKey ? deviceKey : Token;
 
             using var http = new HttpClient { BaseAddress = new Uri($"http://127.0.0.1:{gateway.Port}/") };

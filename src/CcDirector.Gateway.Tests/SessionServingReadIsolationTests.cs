@@ -55,11 +55,26 @@ public sealed class SessionServingReadIsolationTests : IAsyncLifetime
     private readonly string _instancesDir =
         Path.Combine(Path.GetTempPath(), "cc-ss-" + Guid.NewGuid().ToString("N"));
     private string? _priorHosted;
+    private bool _cleanedUp;
 
     public async Task InitializeAsync()
     {
         _priorHosted = Environment.GetEnvironmentVariable("CC_GATEWAY_HOSTED");
         Environment.SetEnvironmentVariable("CC_GATEWAY_HOSTED", "1");
+
+        try
+        {
+            await InitializeHostedAsync();
+        }
+        catch
+        {
+            await CleanupAsync();
+            throw;
+        }
+    }
+
+    private async Task InitializeHostedAsync()
+    {
 
         _gateway = new GatewayHost(port: FreePort(), token: Token, authEnabled: true,
             instancesDirectory: _instancesDir,
@@ -69,17 +84,13 @@ public sealed class SessionServingReadIsolationTests : IAsyncLifetime
         await _gateway.StartAsync();
         _http = new HttpClient { BaseAddress = new Uri($"http://127.0.0.1:{_gateway.Port}/") };
 
-        // Two accounts: two device keys, each bound to its OWN tenant, plus one registered-but-unbound key.
-        // Binding directly (as the hosted hub isolation test does) - the read path partitions by the bound
-        // TenantId; no tenants-table mint sits on the read path.
-        _keyA = _gateway.Devices.Register("dev-a", "MA").DeviceKey;
-        _keyB = _gateway.Devices.Register("dev-b", "MB").DeviceKey;
+        // Two accounts: two canonically minted tenants with atomically bound device keys, plus one
+        // registered-but-unbound key that exercises the deny-by-default path.
+        _keyA = HostedTestEnrollment.Enroll(
+            _gateway, "sub-alice", "alice@example.com", "dev-a", "MA").DeviceKey;
+        _keyB = HostedTestEnrollment.Enroll(
+            _gateway, "sub-bob", "bob@example.com", "dev-b", "MB").DeviceKey;
         _keyUnbound = _gateway.Devices.Register("dev-x", "MX").DeviceKey;
-        // Account tenants are minted GUIDs in production (the roster's voice enrichment now routes the
-        // request tenant into WingmanVoiceService, which refuses a non-GUID, non-Local partition key), so
-        // bind real GUID tenant ids here rather than friendly labels.
-        _gateway.Devices.SetAccountBinding("dev-a", "sub-alice", "33333333-3333-3333-3333-333333333333");
-        _gateway.Devices.SetAccountBinding("dev-b", "sub-bob", "44444444-4444-4444-4444-444444444444");
 
         // Each Director authenticates with its OWN device key -> the tunnel Hello binds its tenant -> its pushed
         // session lands in that tenant's partition. dir-B answers the screenshots-list verb so the same-tenant
@@ -93,15 +104,30 @@ public sealed class SessionServingReadIsolationTests : IAsyncLifetime
         await _dirB.PushSnapshotAsync(Sample(SessB));
     }
 
-    public async Task DisposeAsync()
+    public Task DisposeAsync() => CleanupAsync();
+
+    private async Task CleanupAsync()
     {
-        _http.Dispose();
-        await _dirA.DisposeAsync();
-        await _dirB.DisposeAsync();
-        await _gateway.StopAsync();
-        Environment.SetEnvironmentVariable("CC_GATEWAY_HOSTED", _priorHosted);
-        try { if (Directory.Exists(_instancesDir)) Directory.Delete(_instancesDir, true); }
-        catch { /* best-effort */ }
+        if (_cleanedUp)
+            return;
+        _cleanedUp = true;
+
+        try
+        {
+            _http?.Dispose();
+            if (_dirA is not null)
+                await _dirA.DisposeAsync();
+            if (_dirB is not null)
+                await _dirB.DisposeAsync();
+            if (_gateway is not null)
+                await _gateway.StopAsync();
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("CC_GATEWAY_HOSTED", _priorHosted);
+            try { if (Directory.Exists(_instancesDir)) Directory.Delete(_instancesDir, true); }
+            catch { /* best-effort */ }
+        }
     }
 
     [Fact]
@@ -161,9 +187,9 @@ public sealed class SessionServingReadIsolationTests : IAsyncLifetime
     [Fact]
     public async Task Directors_list_denies_a_device_key_with_no_bound_tenant()
     {
-        // Deny-by-default: an authenticated but tenant-unbound key is refused outright. It must never be
-        // served the Local partition, and never the fleet-global list.
-        Assert.Equal(HttpStatusCode.Forbidden, (await Get("directors", _keyUnbound)).StatusCode);
+        // Deny-by-default: a tenant-unbound hosted credential is invalid and refused at authentication. It
+        // must never be served the Local partition or the fleet-global list.
+        Assert.Equal(HttpStatusCode.Unauthorized, (await Get("directors", _keyUnbound)).StatusCode);
     }
 
     [Fact]
@@ -241,9 +267,9 @@ public sealed class SessionServingReadIsolationTests : IAsyncLifetime
     [Fact]
     public async Task A_device_key_with_no_bound_tenant_is_denied()
     {
-        // Deny-by-default: an authenticated but tenant-unbound key never falls back to the Local partition.
-        Assert.Equal(HttpStatusCode.Forbidden, (await Get("sessions", _keyUnbound)).StatusCode);
-        Assert.Equal(HttpStatusCode.Forbidden, (await Get($"sessions/{SessA}", _keyUnbound)).StatusCode);
+        // Deny-by-default: a tenant-unbound hosted credential is invalid and never falls back to Local.
+        Assert.Equal(HttpStatusCode.Unauthorized, (await Get("sessions", _keyUnbound)).StatusCode);
+        Assert.Equal(HttpStatusCode.Unauthorized, (await Get($"sessions/{SessA}", _keyUnbound)).StatusCode);
     }
 
     private Task<HttpResponseMessage> Get(string path, string deviceKey)

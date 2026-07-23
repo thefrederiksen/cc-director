@@ -312,7 +312,15 @@ public sealed class StreamOwnershipTests : IDisposable
         PushedSessionStore store, GatewayStreamRegistry streams)
     {
         var http = new DefaultHttpContext();
-        http.Items[AuthMiddleware.DeviceKeyItemKey] = deviceKey;
+        var tenant = boundary.ResolveForDeviceKey(deviceKey);
+        if (tenant is not null)
+        {
+            http.Items[AuthMiddleware.AuthenticatedDeviceItemKey] = new DeviceCredentialIdentity(
+                "test-device",
+                tenant.Value.Value,
+                DeviceRegistry.DefaultDeviceType,
+                DeviceRegistry.StatusActive);
+        }
         var directors = new DirectorRegistry(_tempDir);
         var inputStats = new GatewayInputStatsAggregator(Path.Combine(_tempDir, $"stats-{Guid.NewGuid():N}.db"));
         return new DirectorHub(store, directors, inputStats, streams, tenantBoundary: boundary)

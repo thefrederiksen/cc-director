@@ -177,11 +177,10 @@ public sealed class HostedAccountStatusTests : IAsyncLifetime
     [Fact]
     public async Task A_caller_with_no_bound_tenant_is_denied_and_never_told_it_is_signed_out()
     {
-        // Deny-by-default, as on the other tenant-bearing reads. "I will not answer you" and "you are signed
-        // out" are different statements and only one of them is true; answering signedIn=false here would
-        // recreate the reported bug for this caller under a different code path.
+        // Deny-by-default, as on the other tenant-bearing reads. A tenant-unbound row is not a valid hosted
+        // credential; answering signedIn=false would recreate the reported bug through another code path.
         var resp = await Get(_keyUnbound);
-        Assert.Equal(HttpStatusCode.Forbidden, resp.StatusCode);
+        Assert.Equal(HttpStatusCode.Unauthorized, resp.StatusCode);
         Assert.DoesNotContain("signedIn", await resp.Content.ReadAsStringAsync());
     }
 

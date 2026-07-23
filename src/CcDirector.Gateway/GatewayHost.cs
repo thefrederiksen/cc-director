@@ -670,7 +670,6 @@ public sealed class GatewayHost : IAsyncDisposable
         var gatewayConfig = Core.Configuration.GatewayConfig.Load();
         // Gateway Cleanup: the tunnel is mandatory; the streamMode parameter is ignored and retained only for existing test call sites (removed with the test rewrite).
         _streamStaleAfter = TimeSpan.FromSeconds(gatewayConfig.StreamStaleAfterSeconds);
-        Devices = new Pairing.DeviceRegistry(devicesPath);
         AuthEnabled = ResolveAuthEnabled(authEnabled);
         if (AuthEnabled)
             FileLog.Write($"[GatewayHost] auth gate booted ON (enforced by default, issue #917 - a per-device key or the shared token is required, even on the tailnet; set {AuthDisabledEnvVar}=1 to disable for debugging)");
@@ -729,6 +728,9 @@ public sealed class GatewayHost : IAsyncDisposable
         }
 
         _gatewayDb = new Data.GatewayDatabase(_tenantContext);
+        // MTR-14B: the shared EF database is now the device registry authority. The legacy JSON path is
+        // supplied only to the one-time importer; no runtime authentication or mutation reads or writes it.
+        Devices = new Pairing.DeviceRegistry(_gatewayDb, devicesPath, GatewayHostedMode.IsHosted);
         // The account-to-tenant resolver (Hosted Multi-Tenancy increment 1): owns the tenants mapping table
         // and mints/looks up a tenant from a verified account subject. Built over the EF database; wired into
         // the hosted enrollment boundary (which validates the account token and stamps the resolved tenant on
@@ -1685,8 +1687,7 @@ public sealed class GatewayHost : IAsyncDisposable
         {
             _app.Use(async (ctx, next) =>
             {
-                var key = ctx.Items.TryGetValue(AuthMiddleware.DeviceKeyItemKey, out var k) ? k as string : null;
-                var tenant = key is null ? (Core.Tenancy.TenantId?)null : _tenantBoundary.ResolveForDeviceKey(key);
+                var tenant = _tenantBoundary.ResolveRequestTenant(ctx);
                 if (tenant is { } resolved)
                 {
                     using (_tenantBoundary.EnterScope(resolved))
@@ -2750,6 +2751,10 @@ public sealed class GatewayHost : IAsyncDisposable
         _turnEndWatcher = null;
         try { Brain.Dispose(); } catch (Exception ex) { FileLog.Write($"[GatewayHost] brain dispose error: {ex.Message}"); }
 
+        // The database-backed device facade owns no context or plaintext cache, but it must stop being used
+        // before the pooled database factory is disposed.
+        try { Devices.Dispose(); } catch (Exception ex) { FileLog.Write($"[GatewayHost] device registry dispose error: {ex.Message}"); }
+
         // The EF data layer: dispose the pooled context factory and release the SQLite connections so a
         // restart (and a test) can reopen or delete the database file cleanly.
         try { _gatewayDb.Dispose(); } catch (Exception ex) { FileLog.Write($"[GatewayHost] gateway db dispose error: {ex.Message}"); }
@@ -2760,11 +2765,6 @@ public sealed class GatewayHost : IAsyncDisposable
         _serveProvisioner.Dispose();
         Registry.Dispose();
         Launchers.Dispose();
-
-        // Stops the device registry's replayable-key eviction pass and drops any issued key it is still
-        // holding in memory for enrollment retry-safety (issue #1878). The enrolled devices themselves are
-        // on disk as hashes and are unaffected; only the short-lived plaintext goes.
-        try { Devices.Dispose(); } catch (Exception ex) { FileLog.Write($"[GatewayHost] device registry dispose error: {ex.Message}"); }
 
         if (_app is not null)
         {

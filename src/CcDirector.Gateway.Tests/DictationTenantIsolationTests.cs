@@ -332,27 +332,26 @@ public sealed class DictationTenantIsolationTests : IAsyncLifetime
     [Fact]
     public async Task Every_leg_denies_an_authenticated_key_with_no_bound_tenant()
     {
-        // Deny-by-default: on hosted, an authenticated device whose key has no bound tenant is refused
-        // outright - it is never quietly served the LOCAL partition, which is where self-host's uploads live.
+        // Deny-by-default: on hosted, a device row with no canonical tenant binding is rejected by
+        // authentication and never quietly served the LOCAL partition where self-host uploads live.
         var id = Guid.NewGuid().ToString();
         Store(_tenantA).MarkDelivered(id, submitted: true, movedOn: false, transcript: SecretTranscriptA);
 
-        Assert.Equal(HttpStatusCode.Forbidden, (await RegisterAsync(_httpUnbound, id)).StatusCode);
-        Assert.Equal(HttpStatusCode.Forbidden, (await PutChunkAsync(_httpUnbound, id, 0, SecretAudioB)).StatusCode);
-        Assert.Equal(HttpStatusCode.Forbidden, (await CompleteAsync(_httpUnbound, id)).StatusCode);
-        Assert.Equal(HttpStatusCode.Forbidden,
+        Assert.Equal(HttpStatusCode.Unauthorized, (await RegisterAsync(_httpUnbound, id)).StatusCode);
+        Assert.Equal(HttpStatusCode.Unauthorized, (await PutChunkAsync(_httpUnbound, id, 0, SecretAudioB)).StatusCode);
+        Assert.Equal(HttpStatusCode.Unauthorized, (await CompleteAsync(_httpUnbound, id)).StatusCode);
+        Assert.Equal(HttpStatusCode.Unauthorized,
             (await _httpUnbound.PostAsync($"/dictation/{id}/ack", content: null)).StatusCode);
-        Assert.Equal(HttpStatusCode.Forbidden,
+        Assert.Equal(HttpStatusCode.Unauthorized,
             (await _httpUnbound.PostAsync($"/dictation/{id}/abandon", content: null)).StatusCode);
 
-        // Positive control: the same five calls from a BOUND key are not refused, so the 403s above are the
-        // tenant deny and not a route that is simply broken for everyone.
-        Assert.NotEqual(HttpStatusCode.Forbidden, (await RegisterAsync(_httpA, id)).StatusCode);
-        Assert.NotEqual(HttpStatusCode.Forbidden, (await PutChunkAsync(_httpA, id, 0, SecretAudioA)).StatusCode);
-        Assert.NotEqual(HttpStatusCode.Forbidden, (await CompleteAsync(_httpA, id)).StatusCode);
-        Assert.NotEqual(HttpStatusCode.Forbidden,
+        // Positive control: the same five calls from a bound key pass authentication.
+        Assert.NotEqual(HttpStatusCode.Unauthorized, (await RegisterAsync(_httpA, id)).StatusCode);
+        Assert.NotEqual(HttpStatusCode.Unauthorized, (await PutChunkAsync(_httpA, id, 0, SecretAudioA)).StatusCode);
+        Assert.NotEqual(HttpStatusCode.Unauthorized, (await CompleteAsync(_httpA, id)).StatusCode);
+        Assert.NotEqual(HttpStatusCode.Unauthorized,
             (await _httpA.PostAsync($"/dictation/{id}/abandon", content: null)).StatusCode);
-        Assert.NotEqual(HttpStatusCode.Forbidden,
+        Assert.NotEqual(HttpStatusCode.Unauthorized,
             (await _httpA.PostAsync($"/dictation/{id}/ack", content: null)).StatusCode);
     }
 

@@ -291,10 +291,10 @@ public sealed class PromptLogTenantIsolationTests : IAsyncLifetime
     [Fact]
     public async Task Prompts_deny_a_device_key_with_no_bound_tenant()
     {
-        // Deny-by-default, on BOTH verbs: an authenticated but tenant-unbound key never falls back to the
-        // Local partition - not to read it, and not to write into it.
-        Assert.Equal(HttpStatusCode.Forbidden, (await ReadPrompts(_keyUnbound, DateTime.UtcNow)).StatusCode);
-        Assert.Equal(HttpStatusCode.Forbidden, (await PostPrompt(_keyUnbound, "should never land", DateTime.UtcNow)).StatusCode);
+        // Deny-by-default, on BOTH verbs: a tenant-unbound hosted credential is rejected at authentication
+        // and never falls back to Local for either reads or writes.
+        Assert.Equal(HttpStatusCode.Unauthorized, (await ReadPrompts(_keyUnbound, DateTime.UtcNow)).StatusCode);
+        Assert.Equal(HttpStatusCode.Unauthorized, (await PostPrompt(_keyUnbound, "should never land", DateTime.UtcNow)).StatusCode);
     }
 
     private Task<HttpResponseMessage> Get(string path, string deviceKey)
