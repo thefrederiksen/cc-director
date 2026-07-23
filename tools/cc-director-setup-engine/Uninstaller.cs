@@ -44,6 +44,15 @@ public sealed class Uninstaller
             // regardless of role.
             ("Launcher binaries", _layout.LauncherDir),
         };
+        if (!OperatingSystem.IsWindows())
+        {
+            // On macOS the Director is the .app bundle in ~/Applications (the Windows AppDir above
+            // simply does not exist there). Include the pre-rename bundle name too (issue #1821) so
+            // an uninstall on a legacy host removes the app it actually has.
+            dirs.Add(("Director app bundle", _layout.PathFor(ComponentRegistry.Director)));
+            foreach (var alias in _layout.LegacyAliasesFor(ComponentRegistry.Director))
+                dirs.Add(("Director app bundle (pre-rename name)", alias));
+        }
         if (role == InstallRole.Gateway)
         {
             dirs.Add(("Gateway binaries", _layout.GatewayDir));
@@ -76,6 +85,10 @@ public sealed class Uninstaller
             targets.Add(new UninstallTarget(
                 UninstallKind.Autostart, "Launcher autostart (HKCU Run key)",
                 LauncherAutostart.ValueName, LauncherAutostart.IsRegistered()));
+        else if (OperatingSystem.IsMacOS())
+            targets.Add(new UninstallTarget(
+                UninstallKind.Autostart, "Launcher launch agent (launchd)",
+                LauncherLaunchdAutostart.PlistPath, LauncherLaunchdAutostart.IsRegistered()));
 
         foreach (var (desc, path) in Directories(role))
             targets.Add(new UninstallTarget(UninstallKind.Directory, desc, path, Directory.Exists(path)));
@@ -136,6 +149,21 @@ public sealed class Uninstaller
             StopLauncherTrayApp(steps);
             progress?.Report("Removing the Launcher autostart");
             RemoveLauncherAutostart(steps, errors);
+        }
+        else if (OperatingSystem.IsMacOS())
+        {
+            // launchd owns the launcher on macOS: boot the agent out (which stops the process) and
+            // delete its property list, or launchd would resurrect a binary the next step deletes.
+            progress?.Report("Stopping the Launcher launch agent");
+            try
+            {
+                if (LauncherLaunchdAutostart.Unregister())
+                    steps.Add("Removed the Launcher launch agent (launchd)");
+            }
+            catch (Exception ex)
+            {
+                errors.Add($"Launcher launch agent: {ex.Message}");
+            }
         }
 
         progress?.Report("Removing the app and CLI tools");

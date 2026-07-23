@@ -7,6 +7,10 @@ namespace CcDirectorSetup.Steps;
 
 public partial class WelcomeStep : UserControl
 {
+    /// <summary>Raised when the user clicks Uninstall (update mode only). MainWindow runs the
+    /// in-wizard uninstall flow; the step itself stays UI-only.</summary>
+    public event EventHandler? UninstallRequested;
+
     public WelcomeStep()
     {
         InitializeComponent();
@@ -37,6 +41,10 @@ public partial class WelcomeStep : UserControl
                 VersionInfoText.Text = $"Currently installed: v{displayVersion}";
                 VersionInfoText.IsVisible = true;
             }
+
+            // An existing install is present, so offer to remove it (issue #257).
+            UninstallButton.IsVisible = true;
+            UninstallHint.IsVisible = true;
         }
         // Fresh install: there is no decision on this screen. The installer lays down the Director set
         // (DevThrottle app + every cc-* tool + the Launcher) with no account and no gateway (issue
@@ -45,6 +53,12 @@ public partial class WelcomeStep : UserControl
         // nothing to toggle here.
 
         SetupLog.Write($"[WelcomeStep] Created: isUpdate={isUpdate}");
+    }
+
+    private void UninstallButton_Click(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
+    {
+        SetupLog.Write("[WelcomeStep] UninstallButton_Click");
+        UninstallRequested?.Invoke(this, EventArgs.Empty);
     }
 
     public void UpdateVersionInfo(string? installedVersion, string? latestVersion)

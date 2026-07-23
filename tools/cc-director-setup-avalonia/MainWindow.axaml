@@ -134,7 +134,7 @@
         <!-- Right Content Area -->
         <DockPanel Grid.Column="1" Margin="0">
             <!-- Bottom navigation bar -->
-            <Border DockPanel.Dock="Bottom" Background="#252526"
+            <Border x:Name="NavBar" DockPanel.Dock="Bottom" Background="#252526"
                     Padding="20,12">
                 <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
                     <Button x:Name="BackButton" Content="Back"

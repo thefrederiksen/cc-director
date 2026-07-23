@@ -54,6 +54,12 @@ internal static class Program
             .UseHeadless(new AvaloniaHeadlessPlatformOptions { UseHeadlessDrawing = false })
             .SetupWithoutStarting();
 
+        // Uninstall-UI mode: drive the three uninstall views with a FAKE runner (the step's
+        // injection seam) - the real engine Apply would boot the machine's real launchd agent out,
+        // which is correct for a genuine uninstall and exactly what a UI capture must never do.
+        if (Array.Exists(args, a => string.Equals(a, "--uninstall-ui", StringComparison.OrdinalIgnoreCase)))
+            return RenderUninstallUi();
+
         var window = new MainWindow { Width = 900, Height = 640 };
         window.Show();
         Pump();
@@ -93,6 +99,66 @@ internal static class Program
 
         Console.WriteLine($"RENDER OK -> {_outDir}");
         return 0;
+    }
+
+    private static int RenderUninstallUi()
+    {
+        var layout = CcDirector.Setup.Engine.InstallLayout.Default();
+        var step = new CcDirectorSetup.Steps.UninstallStep(layout, CcDirector.Setup.Engine.InstallRole.Workstation,
+            progress =>
+            {
+                foreach (var phase in new[]
+                {
+                    "Stopping the Launcher launch agent",
+                    "Removing the app and CLI tools",
+                    "Removing the shell PATH entries and shims",
+                    "Removing the DevThrottle skills",
+                })
+                {
+                    progress.Report(phase);
+                    Thread.Sleep(30);
+                }
+                return new CcDirector.Setup.Engine.UninstallReport(
+                    Success: true,
+                    Steps: ["Removed Director app bundle", "Removed CLI tools", "Removed the Launcher launch agent (launchd)"],
+                    Errors: []);
+            });
+
+        // The same content margin MainWindow's StepContent gives every step.
+        var window = new Window
+        {
+            Width = 900, Height = 640,
+            Content = new Border { Child = step, Margin = new Thickness(32, 24) },
+            Background = Avalonia.Media.Brush.Parse("#1E1E1E"),
+        };
+        window.Show();
+        Pump();
+        Capture(window, "uninstall-confirm");
+
+        var box = FindDescendant<CheckBox>(window, "DeleteDataCheckbox")!;
+        box.IsChecked = true;
+        Pump();
+        Capture(window, "uninstall-confirm-delete-data");
+        box.IsChecked = false;
+        Pump();
+
+        Click(window, FindDescendantButton(window, "ConfirmUninstallButton")!);
+        PumpUntil(() => FindDescendant<DockPanel>(window, "CompleteView") is { IsVisible: true },
+            TimeSpan.FromSeconds(30), "the fake uninstall to finish");
+        Capture(window, "uninstall-complete");
+
+        Console.WriteLine($"RENDER OK -> {_outDir}");
+        return 0;
+    }
+
+    private static T? FindDescendant<T>(Visual root, string name) where T : Control
+    {
+        foreach (var child in root.GetVisualChildren())
+        {
+            if (child is T c && c.Name == name) return c;
+            if (child is Visual v && FindDescendant<T>(v, name) is { } found) return found;
+        }
+        return null;
     }
 
     // ---- Flow helpers ------------------------------------------------------

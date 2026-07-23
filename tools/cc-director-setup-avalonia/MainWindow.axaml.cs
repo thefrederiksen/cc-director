@@ -114,7 +114,7 @@ public partial class MainWindow : Window
 
         StepContent.Content = step switch
         {
-            StepWelcome => _welcomeStep ??= new WelcomeStep(_isUpdate, _installedVersion, _role),
+            StepWelcome => _welcomeStep ??= BuildWelcomeStep(),
             StepPrereq => _prerequisitesStep ??= new PrerequisitesStep(OnPrerequisitesChecked, _isUpdate),
             StepSkills => _skillsStep ??= new SkillsStep(_isUpdate),
             StepInstall => _installStep ??= new InstallStep(),
@@ -323,6 +323,44 @@ public partial class MainWindow : Window
 
         NextButton.Content = "Next";
         NextButton.IsEnabled = true;
+    }
+
+    /// <summary>Build the Welcome step and wire its Uninstall request (issue #257). The step
+    /// only shows the button in update mode, so the handler is harmless on a fresh install.</summary>
+    private WelcomeStep BuildWelcomeStep()
+    {
+        var step = new WelcomeStep(_isUpdate, _installedVersion, _role);
+        step.UninstallRequested += OnUninstallRequested;
+        return step;
+    }
+
+    /// <summary>
+    /// Show the in-wizard uninstall flow (confirm -> live progress -> completion) for the detected
+    /// role, mirroring the Windows wizard. macOS is Workstation-only, but the same
+    /// Gateway-presence probe keeps the two windows identical. Data under the per-user root is
+    /// preserved unless the user opts in to the wipe.
+    /// </summary>
+    private void OnUninstallRequested(object? sender, EventArgs e)
+    {
+        var layout = InstallLayout.Default();
+        var role = Directory.Exists(layout.GatewayDir) ? InstallRole.Gateway : InstallRole.Workstation;
+        SetupLog.Write($"[MainWindow] OnUninstallRequested: showing uninstall step, role={role}");
+
+        var step = new UninstallStep(layout, role);
+        step.Cancelled += (_, _) =>
+        {
+            // Back to the Welcome screen with the normal wizard chrome restored.
+            StepIndicators.IsVisible = true;
+            NavBar.IsVisible = true;
+            ShowStep(StepWelcome);
+        };
+        step.CloseRequested += (_, _) => Close();
+
+        // Hand the whole content area to the uninstall flow; it owns its own buttons, so hide the
+        // step rail and the Back/Next nav bar while it is shown.
+        StepIndicators.IsVisible = false;
+        NavBar.IsVisible = false;
+        StepContent.Content = step;
     }
 
     private void BackButton_Click(object? sender, RoutedEventArgs e)

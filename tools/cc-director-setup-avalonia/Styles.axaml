@@ -97,4 +97,29 @@
         <Setter Property="Opacity" Value="0.5" />
     </Style>
 
+    <!-- Danger (destructive) button: the uninstall call to action. Same full state coverage as
+         the other styles - background AND foreground pinned for hover and pressed. -->
+    <Style Selector="Button.danger">
+        <Setter Property="Background" Value="#8B2E2E" />
+        <Setter Property="Foreground" Value="White" />
+        <Setter Property="BorderThickness" Value="0" />
+        <Setter Property="MinHeight" Value="32" />
+        <Setter Property="VerticalContentAlignment" Value="Center" />
+        <Setter Property="HorizontalContentAlignment" Value="Center" />
+        <Setter Property="Padding" Value="16,0" />
+        <Setter Property="Cursor" Value="Hand" />
+        <Setter Property="CornerRadius" Value="3" />
+    </Style>
+    <Style Selector="Button.danger:pointerover /template/ ContentPresenter">
+        <Setter Property="Background" Value="#A63A3A" />
+        <Setter Property="Foreground" Value="White" />
+    </Style>
+    <Style Selector="Button.danger:pressed /template/ ContentPresenter">
+        <Setter Property="Background" Value="#702525" />
+        <Setter Property="Foreground" Value="White" />
+    </Style>
+    <Style Selector="Button.danger:disabled">
+        <Setter Property="Opacity" Value="0.5" />
+    </Style>
+
 </Styles>
