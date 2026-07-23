@@ -397,12 +397,22 @@
                         Margin="8,4,8,6" Padding="10,8" CornerRadius="4"
                         HorizontalAlignment="Stretch" HorizontalContentAlignment="Left" Cursor="Hand"
                         ToolTip.Tip="Repositories and worktrees across your machine">
-                    <StackPanel Orientation="Horizontal" Spacing="10" VerticalAlignment="Center">
-                        <TextBlock Text="[R]" Foreground="#4A9EFF" FontFamily="Cascadia Mono, Consolas"
-                                   FontSize="12" VerticalAlignment="Center" />
-                        <TextBlock Text="Repositories" Foreground="#CCCCCC" FontSize="12"
-                                   FontWeight="SemiBold" VerticalAlignment="Center" />
-                    </StackPanel>
+                    <DockPanel LastChildFill="True">
+                        <!-- Orphaned-worktree count: the reap opportunity, visible without opening. -->
+                        <Border x:Name="RepositoriesBadge" DockPanel.Dock="Right"
+                                Background="#EF4444" CornerRadius="8" Padding="6,1"
+                                VerticalAlignment="Center" IsVisible="False"
+                                ToolTip.Tip="Worktrees safe to reap">
+                            <TextBlock x:Name="RepositoriesBadgeText" Text="0" Foreground="White"
+                                       FontSize="9" FontWeight="SemiBold" />
+                        </Border>
+                        <StackPanel Orientation="Horizontal" Spacing="10" VerticalAlignment="Center">
+                            <TextBlock Text="[R]" Foreground="#4A9EFF" FontFamily="Cascadia Mono, Consolas"
+                                       FontSize="12" VerticalAlignment="Center" />
+                            <TextBlock Text="Repositories" Foreground="#CCCCCC" FontSize="12"
+                                       FontWeight="SemiBold" VerticalAlignment="Center" />
+                        </StackPanel>
+                    </DockPanel>
                 </Button>
 
                 <!-- Session list -->

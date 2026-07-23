@@ -35,7 +35,9 @@ public partial class App : Application
     /// The always-current model of the repositories under the registered roots. Owned by the app,
     /// scanned in the background from startup; the Repository screen subscribes and renders it.
     /// </summary>
-    public RepositoryMonitor RepositoryMonitor { get; } = new();
+    public RepositoryMonitor RepositoryMonitor { get; } = new(
+        cachePath: System.IO.Path.Combine(
+            CcDirector.Core.Storage.CcStorage.ToolConfig("director"), "repo-worktree-cache.json"));
     public SessionStateStore SessionStateStore { get; private set; } = null!;
 
     /// <summary>
@@ -171,8 +173,9 @@ public partial class App : Application
         RootDirectoryStore = new RootDirectoryStore();
         RootDirectoryStore.Load();
 
-        // Start scanning repositories in the background right away, so the Repository screen has
-        // content the moment it is opened (issue #507, phase 1).
+        // Warm start: show the last run's repositories instantly from the cache, then scan in the
+        // background to re-verify and reconcile (issue #507, phase 2).
+        RepositoryMonitor.LoadCache();
         StartRepositoryRescan();
 
         SessionStateStore = new SessionStateStore();
