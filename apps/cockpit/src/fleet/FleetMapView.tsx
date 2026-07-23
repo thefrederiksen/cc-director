@@ -11,7 +11,14 @@ import {
 } from "@devthrottle/client-core/fleet/fleetClient";
 import { useSharedRoster } from "@devthrottle/client-core/fleet/rosterStore";
 import { repoBasename, repoIdentity, relativeTime } from "./format";
-import { agentBadgeText, buildControllerTree } from "./fleetMapFormat";
+import {
+  agentBadgeText,
+  buildControllerTree,
+  groupByDirector,
+  machineKeyOf,
+  reachableDirectorsByMachine,
+  shortDir,
+} from "./fleetMapFormat";
 import { MissionsBoard, missionCounts } from "../missions/MissionsBoard";
 
 // Per-Director reachability for the Online / Wobbly / Offline node rendering (issue #1215), provided at
@@ -95,6 +102,9 @@ interface Lane {
   title: string;
   subtitle: string;
   sessions: SessionDto[];
+  // The machine's reachable Directors (machine pivot only; empty for every other pivot). Carries the
+  // idle Directors that have no sessions so the lane can render them as free slots.
+  directors: DirectorReachability[];
 }
 
 export function FleetMapView() {
@@ -124,8 +134,8 @@ export function FleetMapView() {
   // empty - a matching card never moves and the lanes never reorder (issue #1211). The flat "list"
   // pivot does not use lanes.
   const allLanes = useMemo(
-    () => (CANVAS_PIVOTS.has(pivot) ? buildLanes(list, pivot) : []),
-    [list, pivot],
+    () => (CANVAS_PIVOTS.has(pivot) ? buildLanes(list, pivot, directors) : []),
+    [list, pivot, directors],
   );
   const lanes = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -146,11 +156,17 @@ export function FleetMapView() {
     [pivot, flatSessions, lanes],
   );
 
+  // Distinct machines in the fleet - counted by the SAME machine key the "By machine" lanes use, and
+  // including a machine that has a reachable Director but no sessions (an available, empty machine). This
+  // is why the header can read "3 machines" while only one is running sessions: the other two are free
+  // capacity, and the machine pivot now shows them as such. Offline Directors are excluded (they surface
+  // in the unreachable-machines banner, not as available machines).
   const machineCount = useMemo(() => {
     const set = new Set<string>();
-    for (const s of list) set.add((s.machineName ?? "").toLowerCase());
+    for (const s of list) set.add(machineKeyOf(s.machineName).key);
+    for (const m of reachableDirectorsByMachine(directors)) set.add(m.key);
     return set.size;
-  }, [list]);
+  }, [list, directors]);
   // "N repos" counts distinct GitHub repositories, not checkouts: two worktrees of one repository are one
   // repo here (matching the "By repository" pivot). The "By working tree" pivot is where checkouts split.
   const repoCount = useMemo(() => {
@@ -257,7 +273,7 @@ export function FleetMapView() {
 
       {sessions === null && lastError === null && <div className="fmap-empty">Loading the fleet...</div>}
 
-      {sessions !== null && list.length === 0 && machineErrors.length === 0 && (
+      {sessions !== null && list.length === 0 && machineErrors.length === 0 && lanes.length === 0 && (
         <div className="fmap-empty">
           <p>No sessions are running anywhere on the fleet.</p>
           <p className="fmap-empty-sub">
@@ -424,8 +440,9 @@ function LanePanel({ lane, pivot, onOpen, headRef }: LanePanelProps) {
   const agg = aggregateColors(lane.sessions);
 
   // Machine pivot: sub-group the lane's sessions by Director so the panel reads machine -> Director ->
-  // session. Other pivots render a flat list (each card still tags its machine/Director).
-  const directorGroups = pivot === "machine" ? groupByDirector(lane.sessions) : null;
+  // session, folding in the machine's idle Directors so an empty Director shows as a free slot. Other
+  // pivots render a flat list (each card still tags its machine/Director).
+  const directorGroups = pivot === "machine" ? groupByDirector(lane.sessions, sessionSort, lane.directors) : null;
 
   return (
     <section className="fmap-lane">
@@ -445,7 +462,11 @@ function LanePanel({ lane, pivot, onOpen, headRef }: LanePanelProps) {
           ? directorGroups.map((dg) => (
               <div key={dg.key} className="fmap-dgroup">
                 <div className="fmap-subhead">{dg.label}</div>
-                <LaneCards sessions={dg.sessions} pivot={pivot} onOpen={onOpen} />
+                {dg.sessions.length > 0 ? (
+                  <LaneCards sessions={dg.sessions} pivot={pivot} onOpen={onOpen} />
+                ) : (
+                  <div className="fmap-freeslot">No sessions - free slot</div>
+                )}
               </div>
             ))
           : <LaneCards sessions={lane.sessions} pivot={pivot} onOpen={onOpen} />}
@@ -585,13 +606,13 @@ function NodeCard({
 
 // ---- grouping (pure) ----
 
-function buildLanes(sessions: SessionDto[], pivot: Pivot): Lane[] {
-  const byKey = new Map<string, { title: string; list: SessionDto[] }>();
+function buildLanes(sessions: SessionDto[], pivot: Pivot, directors: DirectorReachability[] = []): Lane[] {
+  const byKey = new Map<string, { title: string; list: SessionDto[]; directors: DirectorReachability[] }>();
   const keyOf = (s: SessionDto): { key: string; title: string } => {
     if (pivot === "machine") {
-      const name = (s.machineName ?? "").trim();
-      const title = name.length === 0 ? "(unknown machine)" : name;
-      return { key: title.toLowerCase(), title };
+      // Key through the shared machineKeyOf so a session's lane and an idle Director's lane collapse
+      // onto the same key (see fleetMapFormat).
+      return machineKeyOf(s.machineName);
     }
     if (pivot === "repo") {
       // GitHub "owner/repo" identity - worktrees and clones of one repository fold into one lane.
@@ -612,10 +633,25 @@ function buildLanes(sessions: SessionDto[], pivot: Pivot): Lane[] {
     const { key, title } = keyOf(s);
     let g = byKey.get(key);
     if (g === undefined) {
-      g = { title, list: [] };
+      g = { title, list: [], directors: [] };
       byKey.set(key, g);
     }
     g.list.push(s);
+  }
+
+  // Machine pivot only: fold in every reachable Director so a machine that has a Director but no sessions
+  // still gets a lane (a free, available machine), and a machine's idle Directors ride on the lane so the
+  // panel can render them as free slots. Other pivots group only real sessions - a repository or an agent
+  // with no session is not a thing to show. Offline Directors are already filtered out upstream.
+  if (pivot === "machine") {
+    for (const m of reachableDirectorsByMachine(directors)) {
+      let g = byKey.get(m.key);
+      if (g === undefined) {
+        g = { title: m.title, list: [], directors: [] };
+        byKey.set(m.key, g);
+      }
+      g.directors = m.directors;
+    }
   }
 
   const kindLabel = PIVOTS.find((p) => p.key === pivot)?.kindLabel ?? "";
@@ -625,18 +661,32 @@ function buildLanes(sessions: SessionDto[], pivot: Pivot): Lane[] {
       key,
       kindLabel,
       title: g.title,
-      subtitle: laneSubtitle(g.list, pivot),
+      subtitle: laneSubtitle(g.list, pivot, g.directors),
       sessions: [...g.list].sort(sessionSort),
+      directors: g.directors,
     }))
+    // Busiest lanes first, then by title; a free (zero-session) machine sorts to the end, after every
+    // machine that is actually running work.
     .sort((a, b) => b.sessions.length - a.sessions.length || a.title.toLowerCase().localeCompare(b.title.toLowerCase()));
 }
 
-function laneSubtitle(sessions: SessionDto[], pivot: Pivot): string {
+function laneSubtitle(sessions: SessionDto[], pivot: Pivot, machineDirectors: DirectorReachability[] = []): string {
   const n = sessions.length;
   const sessionWord = `${n} session${n === 1 ? "" : "s"}`;
   if (pivot === "machine") {
-    const directors = new Set(sessions.map((s) => (s.directorId ?? "").trim()).filter((x) => x.length > 0));
-    const d = directors.size;
+    // Count the machine's Directors from BOTH the sessions and the folded-in idle Directors, so an
+    // otherwise-empty machine still reads "1 director / 0 sessions" (an available slot) rather than
+    // "0 directors".
+    const ids = new Set<string>();
+    for (const s of sessions) {
+      const id = (s.directorId ?? "").trim();
+      if (id.length > 0) ids.add(id);
+    }
+    for (const d of machineDirectors) {
+      const id = (d.directorId ?? "").trim();
+      if (id.length > 0) ids.add(id);
+    }
+    const d = ids.size;
     return `${d} director${d === 1 ? "" : "s"} / ${sessionWord}`;
   }
   return sessionWord;
@@ -662,30 +712,8 @@ function flatSort(a: SessionDto, b: SessionDto): number {
   return String(a.sessionId ?? "").localeCompare(String(b.sessionId ?? ""));
 }
 
-function groupByDirector(sessions: SessionDto[]): Array<{ key: string; label: string; sessions: SessionDto[] }> {
-  const byDir = new Map<string, SessionDto[]>();
-  for (const s of sessions) {
-    const key = (s.directorId ?? "").trim();
-    const arr = byDir.get(key);
-    if (arr === undefined) byDir.set(key, [s]);
-    else arr.push(s);
-  }
-  return [...byDir.entries()]
-    .map(([key, arr]) => ({
-      key: key.length === 0 ? "(unknown)" : key,
-      label: `Director ${key.length === 0 ? "(unknown)" : shortDir(key)}`,
-      sessions: [...arr].sort(sessionSort),
-    }))
-    .sort((a, b) => a.key.localeCompare(b.key));
-}
-
-// A Director id shortened to its last segment (Directors are "<machine>-<n>" or a guid); keeps the
-// sub-header compact without losing which Director it is.
-function shortDir(directorId: string): string {
-  const dash = directorId.lastIndexOf("-");
-  const tail = dash >= 0 ? directorId.slice(dash + 1) : directorId;
-  return tail.length > 8 ? tail.slice(0, 8) : tail;
-}
+// groupByDirector and shortDir moved to fleetMapFormat.ts (pure, unit tested) - groupByDirector now folds
+// a machine's idle Directors in as empty groups so the machine pivot shows free slots. See the import.
 
 // The groupId "team" clustering that used to live here is GONE (issue #1626). It was a live consumer of
 // a producer that does not exist: SessionDto.groupId is only ever assigned from SessionManager's

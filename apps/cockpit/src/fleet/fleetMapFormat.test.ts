@@ -1,6 +1,18 @@
 import { describe, expect, it } from "vitest";
 import type { SessionDto } from "@devthrottle/client-core/api/client";
-import { agentBadgeText, buildControllerTree } from "./fleetMapFormat";
+import {
+  REACHABILITY_OFFLINE,
+  REACHABILITY_ONLINE,
+  REACHABILITY_WOBBLY,
+  type DirectorReachability,
+} from "@devthrottle/client-core/fleet/fleetClient";
+import {
+  agentBadgeText,
+  buildControllerTree,
+  groupByDirector,
+  machineKeyOf,
+  reachableDirectorsByMachine,
+} from "./fleetMapFormat";
 
 function session(overrides: Partial<SessionDto> = {}): SessionDto {
   return { sessionId: "s1", agent: "ClaudeCode", activityState: "Working", ...overrides } as SessionDto;
@@ -94,6 +106,85 @@ describe("buildControllerTree", () => {
 
   it("returns nothing for an empty lane", () => {
     expect(buildControllerTree([], byId)).toEqual([]);
+  });
+});
+
+function director(overrides: Partial<DirectorReachability> = {}): DirectorReachability {
+  return { directorId: "d1", machineName: "SOREN", state: REACHABILITY_ONLINE, ...overrides };
+}
+
+describe("machineKeyOf", () => {
+  it("keys a session and a Director with the same machine name to the same lane", () => {
+    // The whole join depends on this: a session on "SOREN" and a Director advertising " soren " must
+    // collapse onto one key, or the idle Director would open a second, empty "SOREN" lane.
+    expect(machineKeyOf("SOREN").key).toBe(machineKeyOf(" soren ").key);
+  });
+
+  it("falls back to (unknown machine) when the name is blank", () => {
+    expect(machineKeyOf("").title).toBe("(unknown machine)");
+    expect(machineKeyOf(null).title).toBe("(unknown machine)");
+    expect(machineKeyOf(undefined).title).toBe("(unknown machine)");
+  });
+});
+
+describe("reachableDirectorsByMachine", () => {
+  it("groups reachable Directors by their machine key", () => {
+    const out = reachableDirectorsByMachine([
+      director({ directorId: "a", machineName: "SOREN" }),
+      director({ directorId: "b", machineName: "SOREN" }),
+      director({ directorId: "c", machineName: "MAC" }),
+    ]);
+    const soren = out.find((m) => m.key === "soren");
+    const mac = out.find((m) => m.key === "mac");
+    expect(soren?.directors.map((d) => d.directorId)).toEqual(["a", "b"]);
+    expect(mac?.directors.map((d) => d.directorId)).toEqual(["c"]);
+  });
+
+  it("keeps a wobbly Director but drops an offline one - offline is not a free slot", () => {
+    const out = reachableDirectorsByMachine([
+      director({ directorId: "on", machineName: "M", state: REACHABILITY_ONLINE }),
+      director({ directorId: "wob", machineName: "M", state: REACHABILITY_WOBBLY }),
+      director({ directorId: "off", machineName: "M", state: REACHABILITY_OFFLINE }),
+    ]);
+    const m = out.find((x) => x.key === "m");
+    expect(m?.directors.map((d) => d.directorId)).toEqual(["on", "wob"]);
+  });
+});
+
+describe("groupByDirector", () => {
+  it("folds an idle Director in as an empty group - a free slot", () => {
+    const sessions = [session({ sessionId: "s1", directorId: "busy" })];
+    const out = groupByDirector(sessions, byId, [
+      director({ directorId: "busy" }),
+      director({ directorId: "idle" }),
+    ]);
+    const busy = out.find((g) => g.key === "busy");
+    const idle = out.find((g) => g.key === "idle");
+    expect(busy?.sessions.map((s) => s.sessionId)).toEqual(["s1"]);
+    expect(idle?.sessions).toEqual([]); // idle Director renders as a free slot
+  });
+
+  it("does not duplicate a Director that already has sessions", () => {
+    const sessions = [session({ sessionId: "s1", directorId: "d1" })];
+    const out = groupByDirector(sessions, byId, [director({ directorId: "d1" })]);
+    expect(out.filter((g) => g.key === "d1")).toHaveLength(1);
+    expect(out[0].sessions).toHaveLength(1);
+  });
+
+  it("skips a Director with no id - it is not an addressable slot", () => {
+    const out = groupByDirector([], byId, [director({ directorId: "" })]);
+    expect(out).toEqual([]);
+  });
+
+  it("groups sessions by Director when no idle list is given", () => {
+    const sessions = [
+      session({ sessionId: "s1", directorId: "a" }),
+      session({ sessionId: "s2", directorId: "a" }),
+      session({ sessionId: "s3", directorId: "b" }),
+    ];
+    const out = groupByDirector(sessions, byId);
+    expect(out.map((g) => g.key)).toEqual(["a", "b"]);
+    expect(out[0].sessions).toHaveLength(2);
   });
 });
 

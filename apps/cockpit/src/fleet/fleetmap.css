@@ -334,6 +334,17 @@
   background: var(--border);
 }
 
+/* An idle Director on the machine pivot: no sessions, so the sub-group renders this "free slot" line
+   instead of cards. A dashed, muted placeholder so it reads as available capacity, not a real node. */
+.fmap-freeslot {
+  border: 1px dashed var(--border);
+  border-radius: 9px;
+  padding: 9px 12px;
+  font-size: 12px;
+  color: var(--text-dim);
+  text-align: center;
+}
+
 /* team cluster */
 /* The .fmap-team / .fmap-team-cap / .fmap-team-tag rules are GONE (issue #1626): they styled the
    groupId clustering, which was a consumer of a producer that does not exist (no call site ever sets a

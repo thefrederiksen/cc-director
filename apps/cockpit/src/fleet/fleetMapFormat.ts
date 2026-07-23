@@ -1,4 +1,5 @@
 import type { SessionDto } from "@devthrottle/client-core/api/client";
+import { REACHABILITY_OFFLINE, type DirectorReachability } from "@devthrottle/client-core/fleet/fleetClient";
 
 /**
  * Pure helpers for the Fleet Map's card rendering, kept out of FleetMapView.tsx so they can be unit
@@ -108,6 +109,97 @@ export function buildControllerTree(
   for (const r of roots) walk(r, 0);
 
   return out;
+}
+
+/**
+ * The machine identity used by the "By machine" pivot: the trimmed machine name, or "(unknown machine)"
+ * when a session/Director carries no name. Both sides of the machine join - the lanes built from sessions
+ * AND the reachable-Director list folded in on top of them - MUST key through this one function, or an
+ * idle Director could land in a machine lane that its sessions never key to (a session on "SOREN" and a
+ * Director advertising "soren " would split into two lanes). One rule, one key.
+ */
+export function machineKeyOf(machineName: string | null | undefined): { key: string; title: string } {
+  const name = (machineName ?? "").trim();
+  const title = name.length === 0 ? "(unknown machine)" : name;
+  return { key: title.toLowerCase(), title };
+}
+
+/** A Director id shortened to its last segment (Directors are "<machine>-<n>" or a guid); keeps a
+ * sub-header compact without losing which Director it is. */
+export function shortDir(directorId: string): string {
+  const dash = directorId.lastIndexOf("-");
+  const tail = dash >= 0 ? directorId.slice(dash + 1) : directorId;
+  return tail.length > 8 ? tail.slice(0, 8) : tail;
+}
+
+/** One machine's reachable Directors, keyed exactly as the machine pivot's lanes are (machineKeyOf). */
+export interface MachineDirectors {
+  key: string;
+  title: string;
+  directors: DirectorReachability[];
+}
+
+/**
+ * The reachable Directors (Online or Wobbly) grouped by machine, keyed EXACTLY as the machine pivot's
+ * lanes are (machineKeyOf), so a machine that has a Director but no sessions still resolves to a lane and
+ * shows as a free slot the owner can start a session on. An OFFLINE Director is excluded on purpose: it
+ * cannot host a session, so it is not a free slot - the roster already surfaces it in the
+ * unreachable-machines banner (machineErrors), and showing it here as available would be a lie.
+ */
+export function reachableDirectorsByMachine(directors: DirectorReachability[]): MachineDirectors[] {
+  const byKey = new Map<string, MachineDirectors>();
+  for (const d of directors) {
+    if (d.state === REACHABILITY_OFFLINE) continue;
+    const { key, title } = machineKeyOf(d.machineName);
+    let g = byKey.get(key);
+    if (g === undefined) {
+      g = { key, title, directors: [] };
+      byKey.set(key, g);
+    }
+    g.directors.push(d);
+  }
+  return [...byKey.values()];
+}
+
+/** One Director sub-group inside a machine lane; `sessions` is empty for an idle Director (a free slot). */
+export interface DirectorGroup {
+  key: string;
+  label: string;
+  sessions: SessionDto[];
+}
+
+/**
+ * Group a machine lane's sessions by their owning Director, then FOLD IN every reachable Director on the
+ * machine that currently has no sessions, so an idle Director renders as an empty group - a free slot.
+ * This is what makes "By machine" show capacity (machine -> Director -> session) rather than only the
+ * Directors that happen to be busy. `directors` is the machine's reachable-Director list; a Director
+ * already present via a session is never duplicated, and an unidentified Director (no id) is skipped
+ * because it is not an addressable slot. Groups are ordered by Director id so a lane never reflows.
+ */
+export function groupByDirector(
+  sessions: SessionDto[],
+  sort: (a: SessionDto, b: SessionDto) => number,
+  directors: DirectorReachability[] = [],
+): DirectorGroup[] {
+  const byDir = new Map<string, SessionDto[]>();
+  for (const s of sessions) {
+    const key = (s.directorId ?? "").trim();
+    const arr = byDir.get(key);
+    if (arr === undefined) byDir.set(key, [s]);
+    else arr.push(s);
+  }
+  for (const d of directors) {
+    const key = (d.directorId ?? "").trim();
+    if (key.length === 0) continue; // an unidentified Director is not an addressable slot
+    if (!byDir.has(key)) byDir.set(key, []); // idle Director -> empty group -> free slot
+  }
+  return [...byDir.entries()]
+    .map(([key, arr]) => ({
+      key: key.length === 0 ? "(unknown)" : key,
+      label: `Director ${key.length === 0 ? "(unknown)" : shortDir(key)}`,
+      sessions: [...arr].sort(sort),
+    }))
+    .sort((a, b) => a.key.localeCompare(b.key));
 }
 
 /** The agent label to show on a card's meta row, or null when the card must not show one. */
