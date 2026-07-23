@@ -31,7 +31,7 @@ categories:
     title: Source Control and Repositories
     page: docs/public/features/03-source-control-and-repos.md
   - id: panels
-    title: Built-in Panels (Home, Tools, Connections, Scheduler)
+    title: Built-in Panels (Home, Tools, Connections)
     page: docs/public/features/04-panels.md
   - id: voice-wingman
     title: Wingman and Voice
@@ -163,17 +163,6 @@ features:
       - src/CcDirector.Avalonia/Controls/ConnectionsView.axaml.cs
     screenshot: connections-view.png
     summary: Cards for external service connections showing status, with add/connect/disconnect/delete actions.
-
-  - id: scheduler-view
-    title: Scheduler
-    category: panels
-    status: implemented
-    screen: main-window
-    source:
-      - src/CcDirector.Avalonia/Controls/SchedulerView.axaml
-      - src/CcDirector.Avalonia/Controls/SchedulerView.axaml.cs
-    screenshot: scheduler-view.png
-    summary: Registered cron runners with leader status, pending counts, a Run-now button, and an expandable last-result output box.
 
   - id: comm-manager
     title: Communications Manager

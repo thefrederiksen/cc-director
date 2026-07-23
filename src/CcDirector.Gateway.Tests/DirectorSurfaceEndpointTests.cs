@@ -99,22 +99,6 @@ public sealed class DirectorSurfaceEndpointTests : IAsyncLifetime
         Assert.Equal(HttpStatusCode.NotFound, resp.StatusCode);
     }
 
-    // ---- #6 scheduler (no scheduler wired in the test host -> 503, route still present) ----
-
-    [Fact]
-    public async Task Scheduler_get_returns_503_when_absent()
-    {
-        var resp = await _client.GetAsync("scheduler");
-        Assert.Equal(HttpStatusCode.ServiceUnavailable, resp.StatusCode);
-    }
-
-    [Fact]
-    public async Task Scheduler_run_returns_503_when_absent()
-    {
-        var resp = await _client.PostAsync("scheduler/some-runner/run", null);
-        Assert.Equal(HttpStatusCode.ServiceUnavailable, resp.StatusCode);
-    }
-
     // ---- #6 workspaces / history (read; present and 200 even when empty) ----
 
     [Fact]

@@ -11,7 +11,6 @@ using CcDirector.Core.Account;
 using CcDirector.Core.Agents;
 using CcDirector.Core.Claude;
 using CcDirector.Core.Configuration;
-using CcDirector.Core.Scheduler;
 using CcDirector.Core.Sessions;
 using CcDirector.Core.Settings;
 using CcDirector.Core.Storage;
@@ -46,7 +45,6 @@ public partial class App : Application
     public WorkspaceStore WorkspaceStore { get; private set; } = null!;
     public EngineHost? EngineHost { get; private set; }
     public ControlApiHost? ControlApiHost { get; private set; }
-    public SchedulerService? Scheduler { get; private set; }
     public UpdateService? Updater { get; private set; }
 
     /// <summary>
@@ -289,9 +287,6 @@ public partial class App : Application
 
         UpdateSplashStatus(splash, "Starting control API...");
         StartControlApi(log);
-
-        UpdateSplashStatus(splash, "Starting scheduler...");
-        StartScheduler(log);
     }
 
     /// <summary>
@@ -479,53 +474,6 @@ public partial class App : Application
         });
     }
 
-    private void StartScheduler(Action<string> log)
-    {
-        try
-        {
-            var tickInterval = TimeSpan.FromMinutes(5);
-            var configPath = Path.Combine(AppContext.BaseDirectory, "appsettings.json");
-            if (File.Exists(configPath))
-            {
-                try
-                {
-                    var json = File.ReadAllText(configPath);
-                    using var doc = JsonDocument.Parse(json);
-                    if (doc.RootElement.TryGetProperty("Scheduler", out var section)
-                        && section.TryGetProperty("TickIntervalMinutes", out var t)
-                        && t.TryGetInt32(out var mins)
-                        && mins > 0)
-                    {
-                        tickInterval = TimeSpan.FromMinutes(mins);
-                    }
-                }
-                catch (Exception ex)
-                {
-                    log($"Scheduler: failed to read TickIntervalMinutes from appsettings.json: {ex.Message}");
-                }
-            }
-
-            var statePath = Path.Combine(CcStorage.ToolConfig("director"), "scheduler-state.json");
-            var leaderIdentityPath = Path.Combine(CcStorage.ToolConfig("director"), "scheduler-leader.json");
-            var runnersConfigPath = RunnersConfig.DefaultPath();
-            Scheduler = new SchedulerService(
-                tickInterval: tickInterval,
-                statePath: statePath,
-                leaderIdentityPath: leaderIdentityPath,
-                runnersConfigPath: runnersConfigPath);
-
-            var runners = RunnersConfig.LoadOrSeed(log: log);
-            foreach (var runner in runners) Scheduler.RegisterRunner(runner);
-
-            Scheduler.Start();
-            log($"Scheduler started (tickInterval={tickInterval}, runners={Scheduler.Queue.Runners.Count}, configPath={RunnersConfig.DefaultPath()}, statePath={statePath})");
-        }
-        catch (Exception ex)
-        {
-            log($"Scheduler failed to start: {ex.Message}");
-        }
-    }
-
     private void StartControlApi(Action<string> log)
     {
         try
@@ -542,7 +490,7 @@ public partial class App : Application
                 return Task.CompletedTask;
             };
 
-            ControlApiHost = new ControlApiHost(SessionManager, version, requestShutdown, repositoryRegistry: RepositoryRegistry, schedulerAccessor: () => Scheduler);
+            ControlApiHost = new ControlApiHost(SessionManager, version, requestShutdown, repositoryRegistry: RepositoryRegistry);
 
             _ = Task.Run(async () =>
             {
@@ -690,12 +638,6 @@ public partial class App : Application
                 {
                     log($"ControlApiHost stop error: {ex.Message}");
                 }
-            }
-
-            if (Scheduler != null)
-            {
-                try { Scheduler.Stop(); Scheduler.Dispose(); }
-                catch (Exception ex) { log($"Scheduler stop error: {ex.Message}"); }
             }
 
             // Clean shutdown: delete the crash journal so this exit is NOT seen as a crash

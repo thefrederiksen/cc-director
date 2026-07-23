@@ -81,7 +81,7 @@ agent-lifecycle hooks, not for driving sessions:
 | POST | `/fleet/spawn` | Spawn on another machine, relayed via the Gateway |
 | POST | `/reconnect` | Bounce this Director's outbound tunnel |
 | POST | `/shutdown` | Ask this Director to stop |
-| GET/PUT | `/settings` (+ agents/tools/workspaces/scheduler) | Local config surface (desktop app + cc-settings-api) |
+| GET/PUT | `/settings` (+ agents/tools/workspaces) | Local config surface (desktop app + cc-settings-api) |
 | GET/POST | `/sessions/{sid}/fleet-preamble`, `/claude-hook` | Agent-lifecycle IPC (the SessionStart hook calls these) |
 
 "Is the app running / what version?" is the one raw call worth knowing:
