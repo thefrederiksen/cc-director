@@ -1,0 +1,82 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:controls="clr-namespace:CcDirector.Avalonia.Controls"
+             x:Class="CcDirector.Avalonia.Controls.SourceControlView"
+             Background="#1E1E1E">
+
+    <UserControl.Styles>
+        <!-- Left page-rail item -->
+        <Style Selector="Button.railItem">
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="Foreground" Value="#AAAAAA" />
+            <Setter Property="HorizontalAlignment" Value="Stretch" />
+            <Setter Property="HorizontalContentAlignment" Value="Left" />
+            <Setter Property="Padding" Value="12,7" />
+            <Setter Property="FontSize" Value="12" />
+            <Setter Property="CornerRadius" Value="0" />
+        </Style>
+        <Style Selector="Button.railItem:pointerover /template/ ContentPresenter">
+            <Setter Property="Background" Value="#2A2D2E" />
+        </Style>
+        <Style Selector="Button.railItem.active">
+            <Setter Property="Background" Value="#094771" />
+            <Setter Property="Foreground" Value="#FFFFFF" />
+        </Style>
+        <Style Selector="Button.railItem.active /template/ ContentPresenter">
+            <Setter Property="Background" Value="#094771" />
+        </Style>
+    </UserControl.Styles>
+
+    <Grid ColumnDefinitions="Auto,1,*">
+
+        <!-- Left page rail -->
+        <Border Grid.Column="0"
+                Background="#252526"
+                MinWidth="132">
+            <StackPanel Spacing="1" Margin="0,6,0,0">
+                <TextBlock Text="SOURCE CONTROL"
+                           Foreground="#888888"
+                           FontSize="10"
+                           FontWeight="SemiBold"
+                           Margin="12,2,12,8" />
+
+                <Button x:Name="ChangesRailButton"
+                        Classes="railItem active"
+                        Click="ChangesRailButton_Click">
+                    <TextBlock Text="Changes" VerticalAlignment="Center" />
+                </Button>
+
+                <Button x:Name="WorktreesRailButton"
+                        Classes="railItem"
+                        Click="WorktreesRailButton_Click">
+                    <DockPanel LastChildFill="False">
+                        <TextBlock Text="Worktrees" VerticalAlignment="Center" />
+                        <Border DockPanel.Dock="Right"
+                                x:Name="WorktreesRailBadge"
+                                Background="#EF4444"
+                                CornerRadius="8"
+                                Padding="6,1"
+                                Margin="8,0,0,0"
+                                VerticalAlignment="Center"
+                                IsVisible="False">
+                            <TextBlock x:Name="WorktreesRailBadgeText"
+                                       Text="0"
+                                       Foreground="White"
+                                       FontSize="9"
+                                       FontWeight="SemiBold" />
+                        </Border>
+                    </DockPanel>
+                </Button>
+            </StackPanel>
+        </Border>
+
+        <!-- Separator -->
+        <Border Grid.Column="1" Background="#3C3C3C" />
+
+        <!-- Page content -->
+        <Panel Grid.Column="2">
+            <controls:GitChangesView x:Name="ChangesPage" IsVisible="True" />
+            <controls:WorktreesView x:Name="WorktreesPage" IsVisible="False" />
+        </Panel>
+    </Grid>
+</UserControl>
