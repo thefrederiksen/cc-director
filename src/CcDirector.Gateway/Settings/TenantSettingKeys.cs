@@ -43,10 +43,16 @@ public static class TenantSettingKeys
     /// <c>time_zone</c>).</summary>
     public const string TimeZone = "time_zone";
 
+    /// <summary>The injected agent-launch text choice - the "use yours" flag and the user's own text -
+    /// stored as one JSON object so the null-vs-empty distinction survives (global default:
+    /// <c>injected_text</c>). The resolver owns serializing <c>InjectedTextSettings</c> to and from this
+    /// string.</summary>
+    public const string InjectedText = "injected_text";
+
     /// <summary>Every key this resolver serves, for validation and enumeration.</summary>
     public static readonly IReadOnlySet<string> All = new HashSet<string>(StringComparer.Ordinal)
     {
         WingmanModel, WingmanFastModel, TtsModel, TtsVoice,
-        CarModeModel, CarModeEndPhrase, SnoozePresets, SnoozeDefaultMinutes, TimeZone,
+        CarModeModel, CarModeEndPhrase, SnoozePresets, SnoozeDefaultMinutes, TimeZone, InjectedText,
     };
 }

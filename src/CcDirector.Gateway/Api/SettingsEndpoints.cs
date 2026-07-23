@@ -29,9 +29,9 @@ namespace CcDirector.Gateway.Api;
 ///                                       catalogAvailable }
 ///   PUT  /gateway/ai-provider     body { "provider": "devthrottle" } (resets this tenant's model defaults)
 ///   GET+PUT /gateway/tts-voice
+///   GET+PUT /gateway/injected-text              (per-account agent-launch text; issue #2057)
 ///
 ///   DENIED ON HOSTED (process-global, no tenant dimension):
-///   GET+PUT /gateway/injected-text              (the owner's process-global agent-launch words)
 ///   GET+PUT /gateway/transcription-mode         (single-valued process-global provider fact)
 ///
 /// ISSUE #2022 - THE MACHINE SETTINGS LEFT THIS SURFACE, and the per-account deny was RETIRED. The "This
@@ -41,11 +41,12 @@ namespace CcDirector.Gateway.Api;
 /// longer refuse on hosted: they SERVE, each resolving the caller's tenant and answering 403 on an unresolved
 /// identity - never the Local partition. So self-host IS the hosted Gateway with one tenant on this surface.
 ///
-/// STILL DENIED ON HOSTED (issue #1863). The process-global routes have NO TENANT DIMENSION AT ALL: config.json
-/// is one file for the whole process, so a write is a fleet-wide mutation performed by whichever authenticated
-/// caller sent it, and GET /gateway/injected-text hands back the owner's own agent-launch text. On shared
-/// hosted infrastructure there is no correct per-tenant answer to serve, only a leak to close, so they refuse.
-/// Self-host is single-tenant and these are legitimate owner function there, so on self-host nothing changes.
+/// STILL DENIED ON HOSTED (issue #1863). The remaining process-global route has NO TENANT DIMENSION AT ALL:
+/// config.json is one file for the whole process, so a write to transcription mode is a fleet-wide mutation
+/// performed by whichever authenticated caller sent it, and there is one single-valued provider fact with no
+/// correct per-tenant answer to serve - only a leak to close, so it refuses. (Injected text WAS here; it moved
+/// to a per-account home in issue #2057 and now serves per-tenant.) Self-host is single-tenant and this is a
+/// legitimate owner function there, so on self-host nothing changes.
 /// The AI model CATALOG and test-chat (AiModelsEndpoint) also stay denied on hosted - they spend the shared
 /// deployment provider credential with no per-caller scoping (see that file); the AI tab reads the Gateway-owned
 /// catalogAvailable flag on the ai-provider snapshot to disable browsing/Test on hosted rather than fail.
@@ -121,8 +122,8 @@ internal static class SettingsEndpoints
     ///    <see cref="MapServedRoutes"/>. Each resolves the CALLER's tenant with <c>ResolveReadTenant</c> and
     ///    answers 403 when none resolves - NEVER the Local partition - so they are safe on shared infrastructure
     ///    without a deny: a request that cannot be attributed to a tenant is refused, not served a wrong one.
-    ///  - The machine/process-global routes (injected text, transcription mode) have no per-tenant home and
-    ///    STAY denied on hosted, mapped onto the group handle in <see cref="MapDeniedRoutes"/>.
+    ///  - The remaining process-global route (transcription mode) has no per-tenant home and STAYS denied on
+    ///    hosted, mapped onto the group handle in <see cref="MapDeniedRoutes"/>.
     ///    That method receives ONLY the handle - <paramref name="outer"/> is out of scope there - so a denied
     ///    route cannot be moved onto the ungrouped builder by a one-word edit; changing its group means changing
     ///    the method signature, which moves them all. That is the un-bypassability the deny primitive buys.
@@ -413,31 +414,18 @@ internal static class SettingsEndpoints
             }
         });
 
-        // Issue #2022: the per-user autostart Run-key toggle (PUT /gateway/autostart) left this surface
-        // entirely. Start-at-login is now the installer default plus the `cc-devthrottle autostart
-        // on|off|status` command (the one home that works on a headless Linux server too, where a settings
-        // page cannot); the tray/menu-bar toggle stays as an optional desktop convenience. There is no
-        // machine-scoped autostart endpoint left here for a settings page to call.
-    }
-
-    /// <summary>
-    /// The machine/process-global owner-settings routes that STAY denied on hosted (issue #2022). Takes the
-    /// denied GROUP HANDLE and nothing else - the ungrouped builder is deliberately out of scope here so no
-    /// route can be mapped around the hosted refusal. These two families have NO per-tenant home: injected
-    /// text is the owner's process-global agent-launch words, and transcription mode is a single-valued
-    /// process-global provider fact. On shared hosted infrastructure there is no correct per-tenant answer to
-    /// serve, so they refuse rather than leak a fleet-wide value.
-    /// </summary>
-    private static void MapDeniedRoutes(HostedDenyGroup app, GatewayHost host)
-    {
-        _ = host; // the denied handlers read process-global config, not per-tenant host state; kept for symmetry.
-
-        // The injected text: the whole of what DevThrottle puts in front of an agent at the start of a
-        // session, and the user's choice to run their own words instead of ours. Process-global (the owner's
-        // own words) with no tenant dimension - denied on hosted permanently.
-        app.MapGet("/gateway/injected-text", () =>
+        // The injected text: what DevThrottle puts in front of an agent at the start of a session, and the
+        // user's choice to run their own words instead of ours. PER-ACCOUNT on hosted (issue #2057): each
+        // tenant has its own injected text, stored in the per-tenant settings store and served here for the
+        // CALLER's tenant - the same text the caller's own Directors download from this route to inject at
+        // launch, so a per-tenant read here is a per-tenant launch. A request with no resolvable tenant is
+        // refused (403), never served the Local partition. On self-host the tenant is Local and the resolver
+        // falls back to the existing config.json value, so nothing changes there.
+        app.MapGet("/gateway/injected-text", (HttpContext ctx) =>
         {
-            var s = Core.Configuration.InjectedTextConfig.Get();
+            var t = GatewayEndpoints.ResolveReadTenant(ctx, host.TenantBoundary);
+            if (t is null) return TenantRequired();
+            var s = host.TenantSettingsResolver.InjectedText(t.Value);
             return Results.Json(new
             {
                 use_yours = s.UseYours,
@@ -449,6 +437,8 @@ internal static class SettingsEndpoints
 
         app.MapPut("/gateway/injected-text", async (HttpContext ctx) =>
         {
+            var t = GatewayEndpoints.ResolveReadTenant(ctx, host.TenantBoundary);
+            if (t is null) return TenantRequired();
             try
             {
                 var node = await JsonNode.ParseAsync(ctx.Request.Body, cancellationToken: ctx.RequestAborted);
@@ -480,9 +470,9 @@ internal static class SettingsEndpoints
 
                 var settings = new Core.Configuration.InjectedTextSettings(useYours, yours);
 
-                // Validate before writing, and reject rather than store: a template that cannot render
-                // must never reach a Director, because the failure would land on agents at launch instead
-                // of on the person editing it here.
+                // Validate before writing, and reject rather than store: a template that cannot render must
+                // never reach a Director, because the failure would land on agents at launch instead of on the
+                // person editing it here.
                 var problem = Core.Configuration.InjectedTextConfig.Validate(settings);
                 if (problem is not null)
                 {
@@ -490,8 +480,8 @@ internal static class SettingsEndpoints
                     return Results.BadRequest(new { error = problem });
                 }
 
-                Core.Configuration.InjectedTextConfig.Set(settings);
-                FileLog.Write($"[SettingsEndpoints] injected_text set: use_yours={settings.UseYours}, has_yours={settings.Yours is not null}");
+                host.TenantSettingsResolver.SetInjectedText(t.Value, settings, DateTime.UtcNow);
+                FileLog.Write($"[SettingsEndpoints] injected_text set for tenant={t.Value.ToLogString()}: use_yours={settings.UseYours}, has_yours={settings.Yours is not null}");
                 return Results.Json(new
                 {
                     use_yours = settings.UseYours,
@@ -506,6 +496,25 @@ internal static class SettingsEndpoints
                 return Results.BadRequest(new { error = "invalid JSON" });
             }
         });
+
+        // Issue #2022: the per-user autostart Run-key toggle (PUT /gateway/autostart) left this surface
+        // entirely. Start-at-login is now the installer default plus the `cc-devthrottle autostart
+        // on|off|status` command (the one home that works on a headless Linux server too, where a settings
+        // page cannot); the tray/menu-bar toggle stays as an optional desktop convenience. There is no
+        // machine-scoped autostart endpoint left here for a settings page to call.
+    }
+
+    /// <summary>
+    /// The process-global owner-settings route that STAYS denied on hosted (issue #2022). Takes the denied
+    /// GROUP HANDLE and nothing else - the ungrouped builder is deliberately out of scope here so no route can
+    /// be mapped around the hosted refusal. Transcription mode has NO per-tenant home: it is a single-valued
+    /// process-global provider fact, so on shared hosted infrastructure there is no correct per-tenant answer
+    /// to serve and it refuses rather than leak a fleet-wide value. (Injected text used to be denied here too;
+    /// it moved to a per-account home and now serves in <see cref="MapServedRoutes"/> - issue #2057.)
+    /// </summary>
+    private static void MapDeniedRoutes(HostedDenyGroup app, GatewayHost host)
+    {
+        _ = host; // the denied handler reads process-global config, not per-tenant host state; kept for symmetry.
 
         // Transcription mode: DevThrottle hosted transcription is the only supported production capability.
         // A single-valued process-global provider fact with no tenant dimension - denied on hosted; the AI tab

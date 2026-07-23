@@ -98,6 +98,24 @@ public sealed class TenantSettingsResolver
         return TimeZoneConfig.Get();
     }
 
+    /// <summary>The tenant's injected agent-launch text choice (use-yours flag + the user's own text), or the
+    /// operator global default when unset or when the stored override cannot be parsed. The null-vs-empty
+    /// distinction on the text is preserved: a corrupt override degrades to the global default (the
+    /// tenant-neutral safe answer), never another tenant's value.</summary>
+    public InjectedTextSettings InjectedText(TenantId tenant)
+    {
+        var raw = _store.Get(tenant, TenantSettingKeys.InjectedText);
+        if (raw is null) return InjectedTextConfig.Get();
+        try
+        {
+            return System.Text.Json.JsonSerializer.Deserialize<InjectedTextSettings>(raw) ?? InjectedTextConfig.Get();
+        }
+        catch (System.Text.Json.JsonException)
+        {
+            return InjectedTextConfig.Get();
+        }
+    }
+
     // ---- writes: validate like the global setters, then persist a per-tenant override -------------------
 
     /// <summary>Set the tenant's wingman model for a role.</summary>
@@ -149,6 +167,14 @@ public sealed class TenantSettingsResolver
             throw new ArgumentException($"'{timeZone}' is not a valid time zone id.", nameof(timeZone));
         _store.Set(tenant, TenantSettingKeys.TimeZone, timeZone, nowUtc);
     }
+
+    /// <summary>Set the tenant's injected agent-launch text (the use-yours flag and the text). Serialized as
+    /// one JSON object so a null (cleared) text stays distinct from an empty ("inject nothing") one. Validate
+    /// with <see cref="InjectedTextConfig.Validate"/> before calling, exactly as the global setter's caller
+    /// does - this method persists, it does not re-validate.</summary>
+    public void SetInjectedText(TenantId tenant, InjectedTextSettings settings, DateTime nowUtc)
+        => _store.Set(tenant, TenantSettingKeys.InjectedText,
+            System.Text.Json.JsonSerializer.Serialize(settings), nowUtc);
 
     /// <summary>Reset this tenant's AI model/voice choices to the operator defaults by CLEARING those
     /// overrides (the legacy "reset to provider defaults" action). Snooze, time zone, and car-mode settings are
