@@ -115,6 +115,24 @@ public sealed class TenantRegistry
     }
 
     /// <summary>
+    /// The whole tenant census - every tenant id in the <c>tenants</c> mapping table. This is the fan-out
+    /// source for <see cref="TenantScopedSweep"/>: a background worker enumerates it once per cycle and runs
+    /// its per-tenant body inside each tenant's scope. Read through the UNSCOPED context because the mapping
+    /// table carries no tenant_id and no query filter (reading it needs no ambient tenant), exactly as the
+    /// mint/lookup paths do. Read-only; never mints. An empty census (no tenants yet) yields an empty list.
+    /// </summary>
+    public IReadOnlyList<TenantId> AllTenantIds()
+    {
+        using var ctx = _db.CreateUnscopedContext();
+        return ctx.Tenants
+            .AsNoTracking()
+            .Select(t => t.Id)
+            .ToList()
+            .Select(id => new TenantId(id))
+            .ToList();
+    }
+
+    /// <summary>
     /// The display email recorded on a tenant's row, or null when there is none (issue #1856). Read-only:
     /// it neither mints nor writes.
     ///
