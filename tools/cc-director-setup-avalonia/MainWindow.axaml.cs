@@ -11,14 +11,13 @@ namespace CcDirectorSetup;
 
 public partial class MainWindow : Window
 {
-    // 6-step flow: Welcome -> Prerequisites -> Skills -> Install -> Gateway -> Complete.
-    // (The old tool-group picker is gone: every cc-* tool ships as one shared-venv bundle.
-    // The Gateway step is the CC Launcher mission's out-of-the-box enrollment: OPTIONAL here,
-    // unlike the Windows wizard where joining the gateway is mandatory.)
-    private const int StepWelcome = 1, StepPrereq = 2, StepSkills = 3, StepInstall = 4, StepGateway = 5, StepComplete = 6;
+    // 5-step flow, identical to the Windows wizard (the master, issue #1807):
+    // Welcome -> Prerequisites -> Skills -> Install -> Complete. A fresh install makes no
+    // decision: no profile, no role, no account, no gateway - connecting a gateway is a later,
+    // optional act done from inside the app.
+    private const int StepWelcome = 1, StepPrereq = 2, StepSkills = 3, StepInstall = 4, StepComplete = 5;
 
     private int _currentStep = StepWelcome;
-    private InstallProfile _selectedProfile = InstallProfile.Standard;
     private List<PrerequisiteInfo> _prerequisites = [];
     private int _installedCount;
     private int _skippedCount;
@@ -33,11 +32,12 @@ public partial class MainWindow : Window
     private readonly EngineInstallRunner _runner = new();
     private EngineInstallRunner.Prep? _cachedPrep;
 
+    private readonly InstallRole _role = InstallRole.Workstation;
+
     private WelcomeStep? _welcomeStep;
     private PrerequisitesStep? _prerequisitesStep;
     private SkillsStep? _skillsStep;
     private InstallStep? _installStep;
-    private GatewayConnectStep? _gatewayStep;
     private CompleteStep? _completeStep;
 
     private readonly record struct StepUI(Border Circle, TextBlock Label, TextBlock? Number);
@@ -54,6 +54,12 @@ public partial class MainWindow : Window
         _isUpdate = InstallDetector.IsInstalled();
         _installedVersion = _isUpdate ? InstallDetector.GetInstalledVersion() : null;
         SetupLog.Write($"[MainWindow] Started: isUpdate={_isUpdate}, installedVersion={_installedVersion}");
+
+        // Role is a first-install choice the update wizard does not re-ask. Detect what is
+        // already installed (Windows parity; macOS is Workstation-only today so this always
+        // answers Workstation here).
+        if (_isUpdate)
+            _role = InstalledRoleDetector.Detect(InstallLayout.Default());
 
         if (_isUpdate)
         {
@@ -94,10 +100,9 @@ public partial class MainWindow : Window
         new(Step3Circle, Step3Label, Step3Num),
         new(Step4Circle, Step4Label, Step4Num),
         new(Step5Circle, Step5Label, Step5Num),
-        new(Step6Circle, Step6Label, Step6Num),
     ];
 
-    private Border[] GetLines() => [Line12, Line23, Line34, Line45, Line56];
+    private Border[] GetLines() => [Line12, Line23, Line34, Line45];
 
     private void ShowStep(int step)
     {
@@ -109,11 +114,10 @@ public partial class MainWindow : Window
 
         StepContent.Content = step switch
         {
-            StepWelcome => _welcomeStep ??= new WelcomeStep(_selectedProfile, p => _selectedProfile = p, _isUpdate, _installedVersion),
+            StepWelcome => _welcomeStep ??= BuildWelcomeStep(),
             StepPrereq => _prerequisitesStep ??= new PrerequisitesStep(OnPrerequisitesChecked, _isUpdate),
             StepSkills => _skillsStep ??= new SkillsStep(_isUpdate),
             StepInstall => _installStep ??= new InstallStep(),
-            StepGateway => _gatewayStep ??= CreateGatewayStep(),
             StepComplete => _completeStep ??= new CompleteStep(_installedCount, _skippedCount, _installPath, _isUpdate, _alreadyUpToDate, _latestVersion, BuildCapabilityNotice(), _skippedNames),
             _ => null
         };
@@ -186,33 +190,11 @@ public partial class MainWindow : Window
             NextButton.Content = "Next";
             UpdateNextButtonForPrereqs();
         }
-        else if (_currentStep == StepGateway)
-        {
-            // The gateway join is optional: the button always works, but it reads "Skip" until
-            // the join succeeds so the person understands what proceeding means.
-            NextButton.Content = _gatewayStep?.IsVerified == true ? "Next" : "Skip";
-            NextButton.IsEnabled = true;
-        }
         else
         {
             NextButton.Content = "Next";
             NextButton.IsEnabled = true;
         }
-    }
-
-    /// <summary>Build the gateway step and relabel Skip to Next the moment the join succeeds.</summary>
-    private GatewayConnectStep CreateGatewayStep()
-    {
-        var step = new GatewayConnectStep();
-        step.Connected += (_, _) =>
-        {
-            if (_currentStep == StepGateway)
-            {
-                NextButton.Content = "Next";
-                NextButton.IsEnabled = true;
-            }
-        };
-        return step;
     }
 
     private void OnPrerequisitesChecked(List<PrerequisiteInfo> prerequisites)
@@ -343,6 +325,44 @@ public partial class MainWindow : Window
         NextButton.IsEnabled = true;
     }
 
+    /// <summary>Build the Welcome step and wire its Uninstall request (issue #257). The step
+    /// only shows the button in update mode, so the handler is harmless on a fresh install.</summary>
+    private WelcomeStep BuildWelcomeStep()
+    {
+        var step = new WelcomeStep(_isUpdate, _installedVersion, _role);
+        step.UninstallRequested += OnUninstallRequested;
+        return step;
+    }
+
+    /// <summary>
+    /// Show the in-wizard uninstall flow (confirm -> live progress -> completion) for the detected
+    /// role, mirroring the Windows wizard. macOS is Workstation-only, but the same
+    /// Gateway-presence probe keeps the two windows identical. Data under the per-user root is
+    /// preserved unless the user opts in to the wipe.
+    /// </summary>
+    private void OnUninstallRequested(object? sender, EventArgs e)
+    {
+        var layout = InstallLayout.Default();
+        var role = Directory.Exists(layout.GatewayDir) ? InstallRole.Gateway : InstallRole.Workstation;
+        SetupLog.Write($"[MainWindow] OnUninstallRequested: showing uninstall step, role={role}");
+
+        var step = new UninstallStep(layout, role);
+        step.Cancelled += (_, _) =>
+        {
+            // Back to the Welcome screen with the normal wizard chrome restored.
+            StepIndicators.IsVisible = true;
+            NavBar.IsVisible = true;
+            ShowStep(StepWelcome);
+        };
+        step.CloseRequested += (_, _) => Close();
+
+        // Hand the whole content area to the uninstall flow; it owns its own buttons, so hide the
+        // step rail and the Back/Next nav bar while it is shown.
+        StepIndicators.IsVisible = false;
+        NavBar.IsVisible = false;
+        StepContent.Content = step;
+    }
+
     private void BackButton_Click(object? sender, RoutedEventArgs e)
     {
         if (_currentStep > StepWelcome)
@@ -365,17 +385,6 @@ public partial class MainWindow : Window
         }
 
         if (_currentStep < StepComplete)
-        {
-            if (_currentStep == StepWelcome)
-            {
-                _welcomeStep?.UpdateProfile(ref _selectedProfile);
-                _prerequisitesStep = null;
-                _skillsStep = null;
-                _installStep = null;
-                _gatewayStep = null;
-                _completeStep = null;
-            }
             ShowStep(_currentStep + 1);
-        }
     }
 }
