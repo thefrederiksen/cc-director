@@ -132,4 +132,48 @@ public class WorktreesViewTests
         Assert.Contains("Needs attention: 0", report);
         Assert.Contains("(none)", report);
     }
+
+    [Fact]
+    public void FormatActivity_Null_ReturnsEmpty()
+    {
+        Assert.Equal("", WorktreesView.FormatActivity(null));
+    }
+
+    [Fact]
+    public void FormatActivity_KnownUtc_FormatsAsLocalDateTime()
+    {
+        var utc = new DateTime(2026, 07, 23, 10, 30, 0, DateTimeKind.Utc);
+        var expectedLocal = utc.ToLocalTime();
+
+        var text = WorktreesView.FormatActivity(utc);
+
+        Assert.StartsWith("Last activity: ", text);
+        Assert.Contains(expectedLocal.ToString("yyyy-MM-dd HH:mm"), text);
+    }
+
+    [Fact]
+    public void BuildSafeRows_IncludesTimestamp_WhenActivityKnown()
+    {
+        var w = new WorktreeInfo
+        {
+            Path = "/repo/feat-a",
+            Branch = "feat-a",
+            Safety = WorktreeSafety.SafeToReap,
+            Reason = WorktreeSafetyReason.OriginBranchGone,
+            Explanation = "Origin branch deleted after merge.",
+            IsClean = true,
+            LastActivityUtc = new DateTime(2026, 07, 23, 9, 0, 0, DateTimeKind.Utc),
+        };
+        var row = Assert.Single(WorktreesView.BuildSafeRows(Inventory(w)));
+        Assert.True(row.HasTimestamp);
+        Assert.StartsWith("Last activity: ", row.Timestamp);
+    }
+
+    [Fact]
+    public void BuildSafeRows_NoTimestamp_WhenActivityUnknown()
+    {
+        var row = Assert.Single(WorktreesView.BuildSafeRows(Inventory(Safe("feat-a"))));
+        Assert.False(row.HasTimestamp);
+        Assert.Equal("", row.Timestamp);
+    }
 }

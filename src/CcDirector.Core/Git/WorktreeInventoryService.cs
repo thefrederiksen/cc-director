@@ -135,6 +135,7 @@ public sealed class WorktreeInventoryService
         };
 
         var verdict = WorktreeSafetyEvaluator.Evaluate(facts);
+        var lastActivity = await GetLastActivityUtcAsync(entry.Path, ct);
 
         return new WorktreeInfo
         {
@@ -148,10 +149,68 @@ public sealed class WorktreeInventoryService
             AheadOfMain = ahead,
             BehindMain = behind,
             HasOpenPullRequest = hasOpenPr,
+            LastActivityUtc = lastActivity,
             Safety = verdict.Safety,
             Reason = verdict.Reason,
             Explanation = verdict.Explanation,
         };
+    }
+
+    /// <summary>
+    /// Best-effort "last activity" timestamp: the most recent of the worktree's last commit, its
+    /// top-level folder modification time, and its HEAD reflog. Cheap (a couple of stats and one
+    /// git call) and only informational - deleting these folders removes real source directories,
+    /// so a human wants to see how recently one was touched. Returns null if nothing can be read.
+    /// </summary>
+    private async Task<DateTime?> GetLastActivityUtcAsync(string worktreePath, CancellationToken ct)
+    {
+        DateTime? best = null;
+
+        // Top-level folder modification time (files added/removed/renamed at the root, e.g. builds).
+        try
+        {
+            if (Directory.Exists(worktreePath))
+                best = Max(best, Directory.GetLastWriteTimeUtc(worktreePath));
+        }
+        catch { /* unreadable - fall through to the git signals */ }
+
+        // The HEAD reflog updates on commit/checkout/reset but NOT on a plain status, so it is a
+        // clean signal (unlike the index, which our own status scan can touch).
+        var reflogPath = await _git.RunAsync(worktreePath, new[] { "rev-parse", "--git-path", "logs/HEAD" }, ct);
+        if (reflogPath.Success)
+        {
+            var resolved = ResolveWorktreeRelativePath(worktreePath, reflogPath.Output.Trim());
+            try
+            {
+                if (resolved != null && File.Exists(resolved))
+                    best = Max(best, File.GetLastWriteTimeUtc(resolved));
+            }
+            catch { /* ignore */ }
+        }
+
+        // The last commit's committer date.
+        var commit = await _git.RunAsync(worktreePath, new[] { "log", "-1", "--format=%ct" }, ct);
+        if (commit.Success && long.TryParse(commit.Output.Trim(), out var unixSeconds))
+            best = Max(best, DateTimeOffset.FromUnixTimeSeconds(unixSeconds).UtcDateTime);
+
+        return best;
+    }
+
+    private static DateTime Max(DateTime? current, DateTime candidate) =>
+        current is null || candidate > current.Value ? candidate : current.Value;
+
+    private static string? ResolveWorktreeRelativePath(string worktreePath, string gitPath)
+    {
+        if (string.IsNullOrWhiteSpace(gitPath))
+            return null;
+        try
+        {
+            return Path.IsPathRooted(gitPath) ? gitPath : Path.GetFullPath(Path.Combine(worktreePath, gitPath));
+        }
+        catch
+        {
+            return null;
+        }
     }
 
     /// <summary>True if <c>git cherry</c> output contains a commit the upstream lacks (a line starting with '+').</summary>

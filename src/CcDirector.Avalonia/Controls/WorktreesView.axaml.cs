@@ -22,7 +22,9 @@ public sealed class WorktreeRowItem
     public string Path { get; init; } = "";
     public string Detail { get; init; } = "";
     public string Reason { get; init; } = "";
+    public string Timestamp { get; init; } = "";
     public bool HasDetail => Detail.Length > 0;
+    public bool HasTimestamp => Timestamp.Length > 0;
     public ISolidColorBrush AccentBrush { get; init; } = Brushes.Gray;
 }
 
@@ -321,6 +323,7 @@ public partial class WorktreesView : UserControl
             Path = w.Path,
             Detail = "",
             Reason = w.Explanation,
+            Timestamp = FormatActivity(w.LastActivityUtc),
             AccentBrush = SafeBrush,
         }).ToList();
 
@@ -331,11 +334,21 @@ public partial class WorktreesView : UserControl
             Path = w.Path,
             Detail = DetailFor(w),
             Reason = w.Explanation,
+            Timestamp = FormatActivity(w.LastActivityUtc),
             AccentBrush = AttentionBrush,
         }).ToList();
 
     private static string TitleFor(WorktreeInfo w) =>
         w.IsDetachedHead ? "(detached HEAD)" : (w.Branch ?? "(no branch)");
+
+    /// <summary>"Last activity: 2026-07-23 12:34" in local time, or empty when unknown.</summary>
+    internal static string FormatActivity(DateTime? lastActivityUtc)
+    {
+        if (lastActivityUtc is not { } utc)
+            return "";
+        var local = DateTime.SpecifyKind(utc, DateTimeKind.Utc).ToLocalTime();
+        return $"Last activity: {local:yyyy-MM-dd HH:mm}";
+    }
 
     /// <summary>The one-line status shown under a needs-attention worktree: dirt, or ahead/behind and open pull request.</summary>
     internal static string DetailFor(WorktreeInfo w)
@@ -368,6 +381,7 @@ public partial class WorktreesView : UserControl
         {
             sb.AppendLine($"  {TitleFor(w)}");
             sb.AppendLine($"    path:   {w.Path}");
+            AppendActivity(sb, w);
             sb.AppendLine($"    reason: {w.Explanation}");
         }
         sb.AppendLine();
@@ -380,11 +394,19 @@ public partial class WorktreesView : UserControl
             var detail = DetailFor(w);
             sb.AppendLine($"  {TitleFor(w)}");
             sb.AppendLine($"    path:   {w.Path}");
+            AppendActivity(sb, w);
             if (detail.Length > 0)
                 sb.AppendLine($"    status: {detail}");
             sb.AppendLine($"    reason: {w.Explanation}");
         }
 
         return sb.ToString();
+    }
+
+    private static void AppendActivity(StringBuilder sb, WorktreeInfo w)
+    {
+        var activity = FormatActivity(w.LastActivityUtc);
+        if (activity.Length > 0)
+            sb.AppendLine($"    {activity.ToLowerInvariant()}");
     }
 }

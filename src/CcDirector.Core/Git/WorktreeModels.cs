@@ -130,6 +130,13 @@ public sealed class WorktreeInfo
     public int BehindMain { get; init; }
     public bool HasOpenPullRequest { get; init; }
 
+    /// <summary>
+    /// Best-effort "last activity" for this worktree (UTC): the most recent of its last commit,
+    /// its top-level folder change, and its HEAD reflog. Shown so a human can judge whether a
+    /// worktree is still being worked in before removing it. Null when it cannot be determined.
+    /// </summary>
+    public DateTime? LastActivityUtc { get; init; }
+
     public WorktreeSafety Safety { get; init; }
     public WorktreeSafetyReason Reason { get; init; }
     public string Explanation { get; init; } = "";

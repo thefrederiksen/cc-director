@@ -38,6 +38,10 @@
                                    Foreground="#AAAAAA"
                                    FontSize="11"
                                    IsVisible="{Binding HasDetail}" />
+                        <TextBlock Text="{Binding Timestamp}"
+                                   Foreground="#888888"
+                                   FontSize="10"
+                                   IsVisible="{Binding HasTimestamp}" />
                         <TextBlock Text="{Binding Reason}"
                                    Foreground="{Binding AccentBrush}"
                                    FontSize="10" />
@@ -231,8 +235,8 @@
                                    FontWeight="SemiBold"
                                    Margin="0,0,0,6" />
                         <TextBlock DockPanel.Dock="Top"
-                                   Text="These worktrees are proven safe (work on origin/main, tree clean). Worktrees a live session is using are never removed."
-                                   Foreground="#AAAAAA"
+                                   Text="This deletes these folders from your disk. Their work is already on origin/main, so nothing should be lost - but please check no one is still working in them first. This cannot be undone."
+                                   Foreground="#E0B0A0"
                                    FontSize="11"
                                    TextWrapping="Wrap"
                                    Margin="0,0,0,10" />

@@ -237,6 +237,32 @@ public sealed class WorktreeInventoryIntegrationTests : IDisposable
         Assert.Contains(inventory.NeedsAttention, w => w.Branch == "stranded");
     }
 
+    // -------------------------------------------------------------------------------------------
+    // Every worktree reports a recent last-activity timestamp so a human can judge staleness.
+    // -------------------------------------------------------------------------------------------
+    [Fact]
+    public async Task LastActivityUtc_IsPopulated_AndRecent_ForEachWorktree()
+    {
+        var before = DateTime.UtcNow.AddMinutes(-5);
+
+        var wt = Path.Combine(_root, "wt-activity");
+        RunGit(_primary, "worktree", "add", "-b", "activity", wt, "main");
+        WriteFile(wt, "a.txt", "work\n");
+        RunGit(wt, "add", "-A");
+        RunGit(wt, "commit", "-m", "recent work");
+
+        var inventory = await new WorktreeInventoryService().GetInventoryAsync(_primary);
+
+        Assert.True(inventory.Success, inventory.Error);
+        foreach (var w in inventory.Worktrees)
+        {
+            Assert.NotNull(w.LastActivityUtc);
+            Assert.True(w.LastActivityUtc!.Value >= before,
+                $"{w.Path} last activity {w.LastActivityUtc} should be recent");
+            Assert.True(w.LastActivityUtc!.Value <= DateTime.UtcNow.AddMinutes(5));
+        }
+    }
+
     // ----- helpers -----
 
     private void ConfigureIdentity(string repo)
