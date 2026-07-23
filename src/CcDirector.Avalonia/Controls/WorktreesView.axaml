@@ -47,7 +47,7 @@
         </DataTemplate>
     </UserControl.DataTemplates>
 
-    <Grid RowDefinitions="Auto,*">
+    <Grid RowDefinitions="Auto,Auto,*">
 
         <!-- Header bar -->
         <Border Grid.Row="0"
@@ -55,7 +55,7 @@
                 BorderBrush="#3C3C3C"
                 BorderThickness="0,0,0,1"
                 Padding="10,6">
-            <Grid ColumnDefinitions="Auto,Auto,*,Auto,Auto">
+            <Grid ColumnDefinitions="Auto,Auto,*,Auto,Auto,Auto">
                 <TextBlock Grid.Column="0"
                            Text="WORKTREES"
                            Foreground="#CCCCCC"
@@ -79,7 +79,20 @@
                                FontWeight="SemiBold" />
                 </Border>
 
+                <!-- Remove orphaned worktrees (shown only when there is at least one) -->
                 <Button Grid.Column="3"
+                        x:Name="ReapButton"
+                        Content="Remove orphaned worktrees"
+                        Background="#8B2E2E"
+                        Foreground="White"
+                        Padding="10,3"
+                        FontSize="11"
+                        Margin="0,0,6,0"
+                        IsVisible="False"
+                        Click="ReapButton_Click"
+                        ToolTip.Tip="Remove the worktrees proven safe to reap" />
+
+                <Button Grid.Column="4"
                         x:Name="CopyReportButton"
                         Content="Copy report"
                         Background="#3C3C3C"
@@ -90,7 +103,7 @@
                         Click="CopyReportButton_Click"
                         ToolTip.Tip="Copy the full worktree listing as text" />
 
-                <Button Grid.Column="4"
+                <Button Grid.Column="5"
                         x:Name="RefreshButton"
                         Content="Refresh"
                         Background="#3C3C3C"
@@ -102,8 +115,22 @@
             </Grid>
         </Border>
 
+        <!-- Result banner (leftovers / skipped after a reap) -->
+        <Border Grid.Row="1"
+                x:Name="ResultBanner"
+                Background="#3A2A1B"
+                BorderBrush="#5A4326"
+                BorderThickness="0,0,0,1"
+                Padding="12,8"
+                IsVisible="False">
+            <TextBlock x:Name="ResultBannerText"
+                       Foreground="#F59E0B"
+                       FontSize="11"
+                       TextWrapping="Wrap" />
+        </Border>
+
         <!-- Content -->
-        <Panel Grid.Row="1">
+        <Panel Grid.Row="2">
 
             <!-- Loading / status -->
             <TextBlock x:Name="StatusText"
@@ -181,6 +208,64 @@
                                IsVisible="False" />
                 </StackPanel>
             </ScrollViewer>
+
+            <!-- Confirmation overlay: shows exactly what will be removed before acting -->
+            <Border x:Name="ConfirmOverlay"
+                    Background="#CC1E1E1E"
+                    IsVisible="False">
+                <Border Background="#252526"
+                        BorderBrush="#3C3C3C"
+                        BorderThickness="1"
+                        CornerRadius="6"
+                        Padding="18"
+                        MaxWidth="560"
+                        MaxHeight="440"
+                        HorizontalAlignment="Center"
+                        VerticalAlignment="Center">
+                    <DockPanel>
+                        <TextBlock DockPanel.Dock="Top"
+                                   x:Name="ConfirmTitle"
+                                   Text="Remove worktrees?"
+                                   Foreground="#CCCCCC"
+                                   FontSize="14"
+                                   FontWeight="SemiBold"
+                                   Margin="0,0,0,6" />
+                        <TextBlock DockPanel.Dock="Top"
+                                   Text="These worktrees are proven safe (work on origin/main, tree clean). Worktrees a live session is using are never removed."
+                                   Foreground="#AAAAAA"
+                                   FontSize="11"
+                                   TextWrapping="Wrap"
+                                   Margin="0,0,0,10" />
+                        <StackPanel DockPanel.Dock="Bottom"
+                                    Orientation="Horizontal"
+                                    HorizontalAlignment="Right"
+                                    Spacing="8"
+                                    Margin="0,12,0,0">
+                            <Button x:Name="ConfirmCancelButton"
+                                    Content="Cancel"
+                                    Background="#3C3C3C"
+                                    Foreground="#CCCCCC"
+                                    Padding="14,5"
+                                    FontSize="12"
+                                    Click="ConfirmCancelButton_Click" />
+                            <Button x:Name="ConfirmRemoveButton"
+                                    Content="Remove"
+                                    Background="#8B2E2E"
+                                    Foreground="White"
+                                    Padding="14,5"
+                                    FontSize="12"
+                                    Click="ConfirmRemoveButton_Click" />
+                        </StackPanel>
+                        <ScrollViewer VerticalScrollBarVisibility="Auto">
+                            <TextBlock x:Name="ConfirmList"
+                                       Foreground="#CCCCCC"
+                                       FontFamily="Cascadia Mono, Consolas"
+                                       FontSize="11"
+                                       TextWrapping="NoWrap" />
+                        </ScrollViewer>
+                    </DockPanel>
+                </Border>
+            </Border>
         </Panel>
     </Grid>
 </UserControl>
