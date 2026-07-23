@@ -244,6 +244,8 @@ public partial class MainWindow : Window
         // Wire source control view file event
         SourceControlView.ViewFileRequested += OnGitViewFileRequested;
         SourceControlView.OrphanedCountChanged += OnOrphanedWorktreeCountChanged;
+        // The reaper must never remove a worktree a live session is using: feed it their paths.
+        SourceControlView.ProtectedPathsProvider = GetLiveSessionWorkingDirectories;
 
         // Wire prompt input text changes for slash command autocomplete
         PromptInput.TextChanged += PromptInput_TextChanged;
@@ -4116,6 +4118,22 @@ public partial class MainWindow : Window
     {
         SourceControlOrphanBadgeText.Text = count.ToString();
         SourceControlOrphanBadge.IsVisible = count > 0;
+    }
+
+    /// <summary>
+    /// The working directories of every live session - the reaper must never remove one of these,
+    /// because deleting a worktree a session is running in would pull the ground out from under it.
+    /// </summary>
+    private IReadOnlySet<string> GetLiveSessionWorkingDirectories()
+    {
+        var set = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var vm in _sessions)
+        {
+            var path = vm.Session.RepoPath;
+            if (!string.IsNullOrWhiteSpace(path))
+                set.Add(path);
+        }
+        return set;
     }
 
     private void BtnSend_Click(object? sender, RoutedEventArgs e)

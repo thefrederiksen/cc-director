@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using Avalonia.Controls;
 using Avalonia.Interactivity;
 using CcDirector.Core.Utilities;
@@ -19,6 +20,16 @@ public partial class SourceControlView : UserControl
 
     /// <summary>Raised when the worktree safe-to-reap count changes, so the host can badge the outer tab.</summary>
     public event Action<int>? OrphanedCountChanged;
+
+    /// <summary>
+    /// Supplies the working directories of live sessions, which the reaper on the Worktrees page
+    /// must never remove. Forwarded to that page. Set by the host, which knows the fleet.
+    /// </summary>
+    public Func<IReadOnlySet<string>>? ProtectedPathsProvider
+    {
+        get => WorktreesPage.ProtectedPathsProvider;
+        set => WorktreesPage.ProtectedPathsProvider = value;
+    }
 
     public SourceControlView()
     {

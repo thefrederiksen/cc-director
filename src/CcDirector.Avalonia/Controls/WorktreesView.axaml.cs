@@ -27,10 +27,11 @@ public sealed class WorktreeRowItem
 }
 
 /// <summary>
-/// The read-only Worktrees page inside the Source Control tab. Enumerates every worktree for
-/// the selected repository and renders two groups - safe to reap, and needs attention - plus a
-/// copy-to-clipboard report. No delete button: the reaper is a later phase. The verdict comes
-/// wholly from <see cref="WorktreeInventoryService"/>; this view never re-derives it.
+/// The Worktrees page inside the Source Control tab. Enumerates every worktree for the selected
+/// repository and renders two groups - safe to reap, and needs attention - plus a copy-to-clipboard
+/// report and a one-button reaper for the safe set. The verdict comes wholly from
+/// <see cref="WorktreeInventoryService"/>; this view never re-derives it. The reaper re-checks
+/// safety immediately before acting and never removes a worktree a live session is using.
 /// </summary>
 public partial class WorktreesView : UserControl
 {
@@ -38,12 +39,20 @@ public partial class WorktreesView : UserControl
     private static readonly ISolidColorBrush AttentionBrush = new SolidColorBrush(Color.Parse("#F59E0B"));
 
     private readonly WorktreeInventoryService _service = new();
+    private readonly WorktreeReaperService _reaper = new();
     private string? _repoPath;
     private WorktreeInventory? _lastInventory;
     private bool _isLoading;
+    private bool _isReaping;
 
     /// <summary>Raised (on the UI thread) whenever the safe-to-reap count changes, so the host can badge the tab.</summary>
     public event Action<int>? OrphanedCountChanged;
+
+    /// <summary>
+    /// Supplies the working directories of live sessions, which the reaper must never remove.
+    /// Set by the host (which knows the fleet); if null, only the primary checkout is protected.
+    /// </summary>
+    public Func<IReadOnlySet<string>>? ProtectedPathsProvider { get; set; }
 
     /// <summary>The number of worktrees currently safe to reap - the badge count.</summary>
     public int OrphanedCount { get; private set; }
@@ -75,11 +84,15 @@ public partial class WorktreesView : UserControl
         ContentScroller.IsVisible = false;
         StatusText.Text = "Loading worktrees...";
         StatusText.IsVisible = true;
+        ReapButton.IsVisible = false;
+        ConfirmOverlay.IsVisible = false;
+        ResultBanner.IsVisible = false;
         SetOrphanedCount(0);
     }
 
     private void RefreshButton_Click(object? sender, RoutedEventArgs e)
     {
+        ResultBanner.IsVisible = false; // clear any stale reap result on an explicit refresh
         _ = RefreshAsync();
     }
 
@@ -166,6 +179,9 @@ public partial class WorktreesView : UserControl
         StatusText.IsVisible = false;
         ContentScroller.IsVisible = true;
 
+        ReapButton.Content = $"Remove {inventory.SafeToReapCount} orphaned worktree{(inventory.SafeToReapCount == 1 ? "" : "s")}";
+        ReapButton.IsVisible = inventory.SafeToReapCount > 0;
+
         SetOrphanedCount(inventory.SafeToReapCount);
     }
 
@@ -175,6 +191,125 @@ public partial class WorktreesView : UserControl
         OrphanBadgeText.Text = count.ToString();
         OrphanBadge.IsVisible = count > 0;
         OrphanedCountChanged?.Invoke(count);
+    }
+
+    // ----- reaper -----
+
+    /// <summary>Show the confirmation overlay listing exactly what will be removed.</summary>
+    private void ReapButton_Click(object? sender, RoutedEventArgs e)
+    {
+        if (_lastInventory is not { Success: true } inventory || inventory.SafeToReapCount == 0)
+            return;
+
+        var protectedPaths = GetProtectedPaths();
+        var toRemove = inventory.SafeToReap
+            .Where(w => !protectedPaths.Contains(WorktreeReaperService.NormalizePath(w.Path)))
+            .ToList();
+
+        if (toRemove.Count == 0)
+        {
+            ShowBanner("Every safe worktree is currently in use by a live session, so nothing was removed.");
+            return;
+        }
+
+        ConfirmTitle.Text = $"Remove {toRemove.Count} orphaned worktree{(toRemove.Count == 1 ? "" : "s")}?";
+        ConfirmList.Text = string.Join(Environment.NewLine,
+            toRemove.Select(w => $"{(w.Branch ?? "(detached HEAD)")}  ->  {w.Path}"));
+        ConfirmOverlay.IsVisible = true;
+    }
+
+    private void ConfirmCancelButton_Click(object? sender, RoutedEventArgs e)
+    {
+        ConfirmOverlay.IsVisible = false;
+    }
+
+    private async void ConfirmRemoveButton_Click(object? sender, RoutedEventArgs e)
+    {
+        ConfirmOverlay.IsVisible = false;
+        await RunReapAsync();
+    }
+
+    private async Task RunReapAsync()
+    {
+        var repoPath = _repoPath;
+        if (string.IsNullOrWhiteSpace(repoPath) || _isReaping)
+            return;
+
+        _isReaping = true;
+        ReapButton.IsEnabled = false;
+        StatusText.Text = "Removing worktrees...";
+        StatusText.IsVisible = true;
+        ContentScroller.IsVisible = false;
+        ResultBanner.IsVisible = false;
+
+        try
+        {
+            var protectedPaths = GetProtectedPaths();
+            var result = await Task.Run(() => _reaper.ReapAsync(repoPath, protectedPaths));
+
+            if (_repoPath != repoPath)
+                return;
+
+            // Re-scan first so the counts, badge, and listing reflect what actually happened,
+            // then lay the result banner on top of the refreshed view.
+            _isReaping = false;
+            await RefreshAsync();
+            ShowReapResult(result);
+        }
+        catch (Exception ex)
+        {
+            FileLog.Write($"[WorktreesView] RunReapAsync FAILED: {ex.Message}");
+            await RefreshAsync();
+            ShowBanner($"Reap failed: {ex.Message}");
+        }
+        finally
+        {
+            _isReaping = false;
+            ReapButton.IsEnabled = true;
+        }
+    }
+
+    private void ShowReapResult(ReapResult result)
+    {
+        if (!string.IsNullOrEmpty(result.Error))
+        {
+            ShowBanner($"Reap failed: {result.Error}");
+            return;
+        }
+
+        var parts = new List<string> { $"Removed {result.RemovedCount} worktree(s)." };
+        if (result.Skipped.Count > 0)
+            parts.Add($"Skipped {result.Skipped.Count} in use by a live session.");
+        if (result.Leftovers.Count > 0)
+        {
+            parts.Add($"Could NOT fully delete {result.Leftovers.Count} folder(s) (files locked); they remain and will be retried:");
+            parts.AddRange(result.Leftovers);
+        }
+
+        // Only surface the banner when there is something noteworthy beyond a clean removal.
+        if (result.Skipped.Count > 0 || result.Leftovers.Count > 0)
+            ShowBanner(string.Join(Environment.NewLine, parts));
+        else
+            ResultBanner.IsVisible = false;
+    }
+
+    private void ShowBanner(string message)
+    {
+        ResultBannerText.Text = message;
+        ResultBanner.IsVisible = true;
+    }
+
+    private IReadOnlySet<string> GetProtectedPaths()
+    {
+        try
+        {
+            return ProtectedPathsProvider?.Invoke() ?? new HashSet<string>();
+        }
+        catch (Exception ex)
+        {
+            FileLog.Write($"[WorktreesView] GetProtectedPaths FAILED: {ex.Message}");
+            return new HashSet<string>();
+        }
     }
 
     // ----- pure builders (unit-tested without a UI) -----
