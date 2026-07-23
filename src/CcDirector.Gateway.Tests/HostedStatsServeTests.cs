@@ -74,8 +74,11 @@ public sealed class HostedStatsServeTests : IAsyncLifetime
         _httpA = Enrolled("dev-a", "sub-alice", "alice@example.com", out _tenantA);
         _httpB = Enrolled("dev-b", "sub-bob", "bob@example.com", out _);
 
-        // An enrolled device key bound to NO account: the strongest UNRESOLVED caller. It must be refused
-        // (403), never served the Local partition.
+        // An enrolled device key bound to NO account: the strongest UNRESOLVED caller. It must be refused,
+        // never served the Local partition. MTR-14B: an unbound device on hosted is an invalid credential
+        // (invalidHostedBinding -> Revoked), so it is refused at the auth gate with 401 before reaching the
+        // stats route's tenant-boundary 403. Isolation unchanged (no bound tenant -> no access); only the
+        // denial layer moved.
         var unboundKey = _gateway.Devices.Register("dev-unbound", "MA").DeviceKey;
         _httpUnbound = new HttpClient { BaseAddress = new Uri($"http://127.0.0.1:{_gateway.Port}/") };
         _httpUnbound.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", unboundKey);
@@ -136,10 +139,11 @@ public sealed class HostedStatsServeTests : IAsyncLifetime
     /// the tenant-required 403, which is the whole reason the feed is safe to serve on shared infrastructure.
     /// </summary>
     [Fact]
-    public async Task The_stats_feed_refuses_an_unresolved_tenant_with_403()
+    public async Task The_stats_feed_refuses_an_unresolved_tenant_with_401()
     {
         var resp = await _httpUnbound.GetAsync("stats/data");
-        Assert.Equal(HttpStatusCode.Forbidden, resp.StatusCode);
+        // MTR-14B: unbound-on-hosted denied at the auth gate (401), before the route's tenant-boundary 403.
+        Assert.Equal(HttpStatusCode.Unauthorized, resp.StatusCode);
         var text = await resp.Content.ReadAsStringAsync();
         Assert.DoesNotContain("\"turns\"", text, StringComparison.Ordinal);
     }

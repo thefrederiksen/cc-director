@@ -69,7 +69,11 @@ public sealed class HostedPerAccountSettingsServeTests : IAsyncLifetime
         _httpB = Enrolled("dev-b", "sub-bob", "bob@example.com");
 
         // An enrolled device key that is NOT bound to any account: the strongest UNRESOLVED caller. It must
-        // be refused (403), never served the Local partition.
+        // be refused, never served the Local partition. MTR-14B: under the DB-authoritative device registry
+        // an unbound device on hosted is an invalid credential (invalidHostedBinding -> Revoked), so it is
+        // refused at the auth gate with 401 - it never authenticates far enough to reach the per-account
+        // route's own tenant-boundary 403. The isolation property is unchanged (no bound tenant -> no
+        // access, no Local/cross-tenant read); only the denial layer moved (tenant gate -> credential gate).
         var unboundKey = _gateway.Devices.Register("dev-unbound", "MA").DeviceKey;
         _httpUnbound = new HttpClient { BaseAddress = new Uri($"http://127.0.0.1:{_gateway.Port}/") };
         _httpUnbound.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", unboundKey);
@@ -157,10 +161,12 @@ public sealed class HostedPerAccountSettingsServeTests : IAsyncLifetime
     /// </summary>
     [Theory]
     [MemberData(nameof(AllServed))]
-    public async Task Every_per_account_route_refuses_an_unresolved_tenant_with_403(string verb, string path, string body)
+    public async Task Every_per_account_route_refuses_an_unresolved_tenant_with_401(string verb, string path, string body)
     {
         var response = await OwnerSettingsRoutes.SendAsync(_httpUnbound, verb, path, body);
-        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+        // MTR-14B: unbound-on-hosted is an invalid credential -> denied at the auth gate (401), before the
+        // route's tenant-boundary 403. Refused either way; no Local/cross-tenant read (see setup comment).
+        Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
     }
 
     /// <summary>
