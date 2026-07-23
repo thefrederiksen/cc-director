@@ -1,12 +1,17 @@
 name: Deploy hosted Gateway
 
-# Ships the hosted Gateway container to Azure App Service (devthrottle-gw) automatically after CI
-# passes on main - the Gateway equivalent of the website's Vercel auto-deploy. It REDEPLOYS only
-# (rebuild image -> repin the App Service to the new immutable digest -> restart -> verify /healthz);
-# it does NOT provision resources or set app settings (the resource group, ACR, plan, storage mount
-# and the CC_GATEWAY_DB_CONNECTION are already provisioned by docs/architecture/step3-azure-deploy in
-# devthrottle_internal and persist across deploys), so this workflow needs NO stored secrets - only an
-# Azure OIDC federated login as the devthrottle-hosted-gateway service principal.
+# Ships the hosted Gateway container to Azure App Service (devthrottle-gw) ONLY when a human (or an
+# agent acting for one) deliberately starts it - never automatically on a push. Releasing the live
+# Gateway is a separate, chosen act: we commit to main frequently, but updating production happens
+# only when someone runs this workflow. Start it from the GitHub Actions UI ("Run workflow") or with
+# `gh workflow run deploy-hosted-gateway.yml`; both are the same manual trigger.
+#
+# It REDEPLOYS only (rebuild image -> repin the App Service to the new immutable digest -> restart ->
+# verify /healthz); it does NOT provision resources or set app settings (the resource group, ACR,
+# plan, storage mount and the CC_GATEWAY_DB_CONNECTION are already provisioned by
+# docs/architecture/step3-azure-deploy in devthrottle_internal and persist across deploys), so this
+# workflow needs NO stored secrets - only an Azure OIDC federated login as the
+# devthrottle-hosted-gateway service principal.
 #
 # Auth is OIDC (workload identity federation): no client secret is stored in this PUBLIC repo. The
 # service principal (Contributor on the subscription) trusts a federated credential scoped to this
@@ -17,13 +22,9 @@ name: Deploy hosted Gateway
 # `az acr build` blocks until the remote build finishes, so no polling workaround is needed here.
 
 on:
-  # Deploy only AFTER CI has gone green for a push to main - reuses CI's build+test as the gate
-  # instead of duplicating it. A PR CI run never deploys (its head branch is not main).
-  workflow_run:
-    workflows: ["CI"]
-    types: [completed]
-    branches: [main]
-  # Manual redeploy of the current main (e.g. to re-pin after an infra change).
+  # Manual only. A human (or an agent) starts a release deliberately - from the Actions UI or via
+  # `gh workflow run`. Nothing here deploys on a push; committing to main never touches production.
+  # The branch/tag picked when starting the run is the commit that ships.
   workflow_dispatch:
 
 # Never let two deploys race the same App Service; a newer one waits rather than clobbering.
@@ -46,28 +47,12 @@ jobs:
   deploy:
     name: Build image and redeploy
     runs-on: ubuntu-latest
-    # Guard: fire only for a SUCCESSFUL, push-triggered CI run on main, or a manual dispatch.
-    if: >-
-      github.event_name == 'workflow_dispatch' ||
-      (github.event.workflow_run.conclusion == 'success' &&
-       github.event.workflow_run.event == 'push' &&
-       github.event.workflow_run.head_branch == 'main')
     environment: hosted-gateway-production
 
     steps:
-      # For a workflow_run trigger, build the EXACT commit CI validated; for a manual dispatch, HEAD of main.
-      - name: Resolve the commit to ship
-        id: sha
-        run: |
-          if [ "${{ github.event_name }}" = "workflow_run" ]; then
-            echo "sha=${{ github.event.workflow_run.head_sha }}" >> "$GITHUB_OUTPUT"
-          else
-            echo "sha=${{ github.sha }}" >> "$GITHUB_OUTPUT"
-          fi
-
+      # Check out the exact commit the run was started against (the branch/tag chosen in the UI, or
+      # the ref `gh workflow run` was given). That commit is what gets built and shipped.
       - uses: actions/checkout@v5
-        with:
-          ref: ${{ steps.sha.outputs.sha }}
 
       - name: Short SHA
         id: short
