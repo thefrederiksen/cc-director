@@ -97,17 +97,4 @@
         <Setter Property="Opacity" Value="0.5" />
     </Style>
 
-    <!-- Clickable option cards (the Welcome step's profile choice): a visible hover state so
-         they read as clickable, matching the buttons. -->
-    <Style Selector="Border.card">
-        <Setter Property="Transitions">
-            <Transitions>
-                <BrushTransition Property="Background" Duration="0:0:0.08" />
-            </Transitions>
-        </Setter>
-    </Style>
-    <Style Selector="Border.card:pointerover">
-        <Setter Property="Background" Value="#33373A" />
-    </Style>
-
 </Styles>

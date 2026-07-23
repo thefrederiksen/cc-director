@@ -1,35 +1,35 @@
 using Avalonia.Controls;
-using Avalonia.Input;
-using Avalonia.Media;
 using Avalonia.Threading;
-using CcDirectorSetup.Models;
+using CcDirector.Setup.Engine;
 using CcDirectorSetup.Services;
 
 namespace CcDirectorSetup.Steps;
 
 public partial class WelcomeStep : UserControl
 {
-    private InstallProfile _profile;
-    private readonly Action<InstallProfile>? _onProfileChanged;
-
     public WelcomeStep()
     {
         InitializeComponent();
     }
 
-    public WelcomeStep(InstallProfile initial, Action<InstallProfile> onProfileChanged,
-        bool isUpdate, string? installedVersion)
+    public WelcomeStep(bool isUpdate, string? installedVersion, InstallRole installedRole = InstallRole.Workstation)
     {
         InitializeComponent();
-        _profile = initial;
-        _onProfileChanged = onProfileChanged;
-        UpdateSelection();
 
         if (isUpdate)
         {
             TitleText.Text = "Update DevThrottle";
             DescriptionText.Text = "Checking for updates...";
-            ProfilePromptText.Text = "Update experience:";
+
+            // An update refreshes whatever is already installed. Show, read-only, which type this
+            // machine actually is (a first-install choice is never re-asked); a fresh install no
+            // longer makes this choice at all (issue #1807). macOS is Workstation-only today, so
+            // the detector always answers Workstation here - the panel matches Windows anyway so
+            // the two wizards read identically.
+            InstalledRoleText.Text = installedRole == InstallRole.Gateway
+                ? "Gateway -- DevThrottle app, all CLI tools, plus the Gateway tray app and Cockpit web UI. There should be only one Gateway."
+                : "Workstation -- DevThrottle app + all CLI tools on this machine. Connects to a Gateway; it is not the Gateway itself.";
+            InstalledRolePanel.IsVisible = true;
 
             if (installedVersion != null)
             {
@@ -38,8 +38,13 @@ public partial class WelcomeStep : UserControl
                 VersionInfoText.IsVisible = true;
             }
         }
+        // Fresh install: there is no decision on this screen. The installer lays down the Director set
+        // (DevThrottle app + every cc-* tool + the Launcher) with no account and no gateway (issue
+        // #1807); connecting a gateway is a later, optional step done from the app. The XAML defaults
+        // already show the "what gets installed" description and the "Click Next" hint, so there is
+        // nothing to toggle here.
 
-        SetupLog.Write($"[WelcomeStep] Created: profile={initial}, isUpdate={isUpdate}");
+        SetupLog.Write($"[WelcomeStep] Created: isUpdate={isUpdate}");
     }
 
     public void UpdateVersionInfo(string? installedVersion, string? latestVersion)
@@ -67,61 +72,5 @@ public partial class WelcomeStep : UserControl
                 VersionInfoText.IsVisible = true;
             }
         });
-    }
-
-    public void UpdateProfile(ref InstallProfile profile)
-    {
-        profile = _profile;
-    }
-
-    public void UpdateProfile(InstallProfile profile)
-    {
-        _profile = profile;
-        UpdateSelection();
-        SetupLog.Write($"[WelcomeStep] UpdateProfile: profile={profile}");
-    }
-
-    private void DeveloperCard_Click(object? sender, PointerPressedEventArgs e)
-    {
-        _profile = InstallProfile.Developer;
-        _onProfileChanged?.Invoke(_profile);
-        UpdateSelection();
-        SetupLog.Write("[WelcomeStep] Selected Developer profile");
-    }
-
-    private void StandardCard_Click(object? sender, PointerPressedEventArgs e)
-    {
-        _profile = InstallProfile.Standard;
-        _onProfileChanged?.Invoke(_profile);
-        UpdateSelection();
-        SetupLog.Write("[WelcomeStep] Selected Standard profile");
-    }
-
-    private void UpdateSelection()
-    {
-        var accentBrush = SolidColorBrush.Parse("#007ACC");
-        var inactiveBrush = SolidColorBrush.Parse("#3C3C3C");
-        var dimBrush = SolidColorBrush.Parse("#888888");
-
-        if (_profile == InstallProfile.Developer)
-        {
-            DeveloperCard.BorderBrush = accentBrush;
-            DeveloperRadio.Text = "(*)";
-            DeveloperRadio.Foreground = accentBrush;
-
-            StandardCard.BorderBrush = inactiveBrush;
-            StandardRadio.Text = "( )";
-            StandardRadio.Foreground = dimBrush;
-        }
-        else
-        {
-            DeveloperCard.BorderBrush = inactiveBrush;
-            DeveloperRadio.Text = "( )";
-            DeveloperRadio.Foreground = dimBrush;
-
-            StandardCard.BorderBrush = accentBrush;
-            StandardRadio.Text = "(*)";
-            StandardRadio.Foreground = accentBrush;
-        }
     }
 }

@@ -84,12 +84,7 @@ internal static class Program
             return 1;
         }
 
-        ClickNext(window);                       // -> Gateway connect
-        Pump();
-        Capture(window, "gateway");
-        HoverAndCapture(window, FindDescendantButton(window, "SignInButton"), "gateway-signin-hover");
-
-        ClickNext(window);                       // -> Complete ("Skip" on the gateway step)
+        ClickNext(window);                       // -> Complete
         Pump();
         Capture(window, "complete");
 

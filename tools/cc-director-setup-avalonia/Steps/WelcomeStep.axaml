@@ -1,96 +1,79 @@
 <UserControl xmlns="https://github.com/avaloniaui"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              x:Class="CcDirectorSetup.Steps.WelcomeStep">
-    <StackPanel>
-        <TextBlock x:Name="TitleText"
-                   Text="Welcome to DevThrottle"
-                   Foreground="White"
-                   FontSize="22"
-                   FontWeight="SemiBold" />
+    <!-- Mirrors the Windows wizard's WelcomeStep (the master, issue #1807): a fresh install makes
+         NO decision on this screen - no profile, no role, no account. The update path shows the
+         installed version and, read-only, which install type this machine is. -->
+    <ScrollViewer>
+        <StackPanel>
+            <Image Source="avares://cc-director-setup/Assets/AppIcon.png"
+                   Width="64"
+                   Height="64"
+                   HorizontalAlignment="Center"
+                   Margin="0,0,0,8" />
 
-        <TextBlock x:Name="DescriptionText"
-                   Text="DevThrottle is a suite of AI-powered CLI tools that extend Claude Code with document generation, browser automation, communication, media processing, and more."
-                   Foreground="#CCCCCC"
-                   FontSize="13"
-                   TextWrapping="Wrap"
-                   Margin="0,12,0,0"
-                   LineHeight="20" />
+            <TextBlock x:Name="TitleText"
+                       Text="Welcome to DevThrottle"
+                       Foreground="White"
+                       FontSize="22"
+                       FontWeight="SemiBold"
+                       HorizontalAlignment="Center" />
 
-        <TextBlock x:Name="VersionInfoText"
-                   Foreground="#888888"
-                   FontSize="12"
-                   Margin="0,8,0,0"
-                   IsVisible="False" />
+            <TextBlock Text="A toolkit for Claude Code developers"
+                       Foreground="#007ACC"
+                       FontSize="13"
+                       FontWeight="SemiBold"
+                       HorizontalAlignment="Center"
+                       Margin="0,4,0,0" />
 
-        <TextBlock x:Name="ProfilePromptText"
-                   Text="Choose your experience:"
-                   Foreground="#CCCCCC"
-                   FontSize="13"
-                   Margin="0,28,0,12" />
+            <!-- Fresh install: what the installer lays down. No account, no gateway, no role choice
+                 (issue #1807). The update path overwrites this text with the "Checking for updates /
+                 Up to date / Upgrade available" line. -->
+            <TextBlock x:Name="DescriptionText"
+                       Text="DevThrottle runs and manages multiple Claude Code sessions side by side, with a full suite of CLI tools for documents, browser automation, email, media, and more. No account is needed to install it."
+                       Foreground="#CCCCCC"
+                       FontSize="13"
+                       TextWrapping="Wrap"
+                       TextAlignment="Center"
+                       Margin="40,16,40,0"
+                       LineHeight="20" />
 
-        <!-- Standard card -->
-        <Border x:Name="StandardCard"
-                Classes="card"
-                Background="#2A2D2E"
-                BorderBrush="#007ACC"
-                BorderThickness="2"
-                CornerRadius="6"
-                Padding="16"
-                Cursor="Hand"
-                PointerPressed="StandardCard_Click">
-            <StackPanel>
-                <StackPanel Orientation="Horizontal">
-                    <TextBlock x:Name="StandardRadio" Text="(*)"
-                               Foreground="#007ACC"
-                               FontSize="14" FontWeight="Bold"
-                               VerticalAlignment="Center"
-                               Margin="0,0,10,0" />
-                    <TextBlock Text="Standard"
+            <TextBlock x:Name="VersionInfoText"
+                       Foreground="#888888"
+                       FontSize="12"
+                       HorizontalAlignment="Center"
+                       Margin="0,14,0,0"
+                       IsVisible="False" />
+
+            <!-- ============================ UPDATE MODE: read-only role ============================ -->
+            <!-- Role is a first-install choice the update wizard does not re-ask, so instead of an
+                 interactive picker we show, read-only, which type this machine was installed as.
+                 Detected from disk by InstalledRoleDetector and passed in by MainWindow. A fresh
+                 install makes no role choice at all (issue #1807). -->
+            <Border x:Name="InstalledRolePanel"
+                    Margin="40,24,40,0"
+                    Padding="16,12"
+                    Background="#2A2D2E"
+                    CornerRadius="6"
+                    IsVisible="False">
+                <StackPanel>
+                    <TextBlock Text="Install type"
                                Foreground="White"
-                               FontSize="15"
-                               FontWeight="SemiBold"
-                               VerticalAlignment="Center" />
+                               FontSize="13"
+                               FontWeight="SemiBold" />
+                    <TextBlock x:Name="InstalledRoleText"
+                               TextWrapping="Wrap"
+                               Foreground="#CCCCCC"
+                               Margin="0,8,0,0" />
                 </StackPanel>
-                <TextBlock Text="Simplified experience with a clean, guided interface. Ideal for everyday use -- document generation, email, media, and data tools."
-                           Foreground="#888888"
-                           FontSize="12"
-                           TextWrapping="Wrap"
-                           Margin="28,6,0,0"
-                           LineHeight="18" />
-            </StackPanel>
-        </Border>
+            </Border>
 
-        <!-- Developer card -->
-        <Border x:Name="DeveloperCard"
-                Classes="card"
-                Background="#2A2D2E"
-                BorderBrush="#3C3C3C"
-                BorderThickness="2"
-                CornerRadius="6"
-                Padding="16"
-                Margin="0,8,0,0"
-                Cursor="Hand"
-                PointerPressed="DeveloperCard_Click">
-            <StackPanel>
-                <StackPanel Orientation="Horizontal">
-                    <TextBlock x:Name="DeveloperRadio" Text="( )"
-                               Foreground="#888888"
-                               FontSize="14" FontWeight="Bold"
-                               VerticalAlignment="Center"
-                               Margin="0,0,10,0" />
-                    <TextBlock Text="Developer"
-                               Foreground="White"
-                               FontSize="15"
-                               FontWeight="SemiBold"
-                               VerticalAlignment="Center" />
-                </StackPanel>
-                <TextBlock Text="Terminal-first experience closer to raw Claude Code. GitHub integration, advanced configuration, and developer-oriented workflows."
-                           Foreground="#888888"
-                           FontSize="12"
-                           TextWrapping="Wrap"
-                           Margin="28,6,0,0"
-                           LineHeight="18" />
-            </StackPanel>
-        </Border>
-    </StackPanel>
+            <TextBlock x:Name="ClickNextHint"
+                       Text="Click Next to continue."
+                       Foreground="#888888"
+                       FontSize="12"
+                       HorizontalAlignment="Center"
+                       Margin="0,16,0,0" />
+        </StackPanel>
+    </ScrollViewer>
 </UserControl>
