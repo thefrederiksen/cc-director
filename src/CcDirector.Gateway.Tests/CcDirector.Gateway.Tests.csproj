@@ -11,6 +11,11 @@
 
   <ItemGroup>
     <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.*" />
+    <!-- G8 tenant-isolation architecture gate (TenantGateArchitectureTests): NetArchTest gives the type-graph
+         dependency check for DT-TEN-1, and Mono.Cecil (also NetArchTest's own engine) gives the precise
+         newobj scan that distinguishes CONSTRUCTING a GatewayDbContext from merely referencing one. -->
+    <PackageReference Include="NetArchTest.Rules" Version="1.3.2" />
+    <PackageReference Include="Mono.Cecil" Version="0.11.3" />
     <PackageReference Include="xunit" Version="2.*" />
     <PackageReference Include="xunit.runner.visualstudio" Version="2.*" />
     <!-- Issue #1176 (Phase 1a): the SignalR CLIENT (a separate package from the server, which ships in
