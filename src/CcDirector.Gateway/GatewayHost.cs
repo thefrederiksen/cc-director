@@ -18,6 +18,7 @@ using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.HttpOverrides;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.AspNetCore.SignalR; // Issue #1176: ClientProxyExtensions.InvokeAsync (client results) for the down-channel
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -763,6 +764,13 @@ public sealed class GatewayHost : IAsyncDisposable
             _accessRevoker = new Tenancy.TenantAccessRevoker(Devices, _directorConnections);
             _accessLeases = new Tenancy.HostedAccessLeaseService(EntitlementRegistry, TenantRegistry, _accessRevoker);
             _leaseMonitor = new Tenancy.EntitlementLeaseMonitor(_accessLeases);
+            // TEST ONLY: a hosted gateway that is NOT a real hosted image (a test forcing hosted mode via env,
+            // with no baked image marker) auto-provisions the entitlement production requires at the paid
+            // enrollment endpoint - which the low-level test enroll paths bypass - so the request-path cutoff
+            // does not deny every test tenant. A real hosted IMAGE (IsHostedImage) never wires this, so
+            // production always requires a genuine entitlement.
+            if (!GatewayHostedMode.IsHostedImage)
+                Devices.OnAccountBoundForTest = subject => SeedEntitlementForTest(subject);
         }
         // The auth-boundary tenant binder (Hosted Multi-Tenancy increment 1): the tunnel Hello and the
         // device-key HTTP middleware resolve a tenant from the AUTHENTICATED device key through this, and
@@ -2679,6 +2687,31 @@ public sealed class GatewayHost : IAsyncDisposable
         {
             Interlocked.Exchange(ref _leaseSweepInFlight, 0);
         }
+    }
+
+    /// <summary>
+    /// TEST SEAM (internal): seed a <c>gateway.entitlements</c> row so an enrolled test tenant is ENTITLED.
+    /// Production requires an active entitlement to enroll (the 402 gate on the paid endpoint), but the
+    /// low-level test enroll helper registers a device directly, bypassing that endpoint - so it must seed the
+    /// entitlement itself, or the MTR-15 request-path cutoff would deny every test tenant. Creates the
+    /// entitlements table if the test database has none (it is excluded from migrations - website-owned).
+    /// </summary>
+    internal void SeedEntitlementForTest(string subject, string status = "active", DateTime? currentPeriodEnd = null, bool livemode = true, string? tier = "hosted")
+    {
+        // Concrete, non-null values so ExecuteSqlRaw has a type mapping for every parameter (a DBNull.Value or a
+        // null array element trips EF's parameter type resolution). A far-future period end keeps an entitled
+        // test tenant entitled for the whole run.
+        var periodEnd = currentPeriodEnd ?? DateTime.UtcNow.AddYears(1);
+        var tierValue = tier ?? Tenancy.EntitlementRegistry.TierHosted;
+        using var ctx = _gatewayDb.CreateUnscopedContext();
+        ctx.Database.ExecuteSqlRaw(
+            "CREATE TABLE IF NOT EXISTS entitlements (" +
+            "subject TEXT NOT NULL PRIMARY KEY, status TEXT NOT NULL, " +
+            "current_period_end TEXT NULL, stripe_subscription_id TEXT NULL, updated_at TEXT NULL, " +
+            "livemode INTEGER NULL, tier TEXT NULL)");
+        ctx.Database.ExecuteSqlRaw(
+            "INSERT OR REPLACE INTO entitlements (subject, status, current_period_end, livemode, tier) VALUES ({0}, {1}, {2}, {3}, {4})",
+            subject, status, periodEnd, livemode, tierValue);
     }
 
     /// <summary>
