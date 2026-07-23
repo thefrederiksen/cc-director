@@ -284,7 +284,12 @@ public sealed class DirectorRouteTenantScopingTests : IAsyncLifetime
     {
         using var response = await SubscribeToEventsAsync(_keyUnbound);
 
-        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+        // MTR-14B contract: under the DB-authoritative device registry, a registered-but-unbound device is
+        // not a valid credential on hosted (invalidHostedBinding -> Revoked), so it is denied at the auth gate
+        // with 401 - it never authenticates far enough to reach the tenant boundary's 403. Either way the
+        // isolation property holds: no bound tenant -> no access, no cross-tenant read. The denial simply moves
+        // from the tenant layer (403) to the credential layer (401) because an unbound device cannot authenticate.
+        Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
     }
 
     [Fact]
@@ -298,7 +303,7 @@ public sealed class DirectorRouteTenantScopingTests : IAsyncLifetime
         using var tenantAReader = new StreamReader(await tenantASubscription.Content.ReadAsStreamAsync());
         using var tenantBReader = new StreamReader(await tenantBSubscription.Content.ReadAsStreamAsync());
 
-        var registered = _gateway.Registry.Get(new TenantId("tenant-bob"), "dir-b-feed-remove");
+        var registered = _gateway.Registry.Get(_tenantB, "dir-b-feed-remove");
         Assert.NotNull(registered);
         registered.LastSeen = DateTime.UtcNow - DirectorRegistry.HttpHeartbeatTimeout - TimeSpan.FromSeconds(1);
         _gateway.Registry.SweepStale();
