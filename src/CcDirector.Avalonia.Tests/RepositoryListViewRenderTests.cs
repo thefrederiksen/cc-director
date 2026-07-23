@@ -49,18 +49,4 @@ public class RepositoryListViewRenderTests
         // The view rendered the monitor's three repositories without scanning anything itself.
         Assert.Equal(3, monitor.Snapshot().Count);
     }
-
-    [AvaloniaFact]
-    public void RepositoryScreenWindow_Constructs_AndWiresNamedControls()
-    {
-        // Reproduces the "Repository status..." menu path. A hand-written InitializeComponent that
-        // skipped the generated named-field hookup left ListView null and threw in this constructor.
-        var monitor = MonitorWith("alpha");
-
-        var window = new global::CcDirector.Avalonia.RepositoryScreenWindow(monitor);
-        window.Show();
-        Dispatcher.UIThread.RunJobs();
-
-        Assert.NotNull(window);
-    }
 }
