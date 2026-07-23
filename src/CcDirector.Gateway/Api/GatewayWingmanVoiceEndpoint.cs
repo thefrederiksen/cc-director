@@ -547,8 +547,6 @@ internal static class GatewayWingmanVoiceEndpoint
                 var t = await translator.TranslateAsync(reqTenant.Value, recentContext, reply, SessionTitle(reqTenant.Value, sid), CancellationToken.None);
                 await voice.StoreSpokenAsync(reqTenant.Value, sid, t.Spoken, reply, CancellationToken.None);   // make it a voice session + cache audio
                 FileLog.Write($"[GatewayWingmanVoice] voice-turn sid={sid}: replyLen={reply.Length}, spokenLen={t.Spoken.Length}");
-                // Training capture (no-op unless the setting is on); fire-and-forget so it adds no latency.
-                _ = voice.CaptureTrainingAsync(route, sid, "voice-turn", reply, recentContext, t.Spoken, t.ReplySeconds, CancellationToken.None);
                 return Results.Json(new { reply, spoken = t.Spoken, replySeconds = t.ReplySeconds });
             }
             catch (Exception ex)
@@ -664,8 +662,6 @@ internal static class GatewayWingmanVoiceEndpoint
                 var t = await translator.TranslateAsync(reqTenant.Value, recentContext, lastReply, SessionTitle(reqTenant.Value, sid), CancellationToken.None);
                 await voice.StoreSpokenAsync(reqTenant.Value, sid, t.Spoken, lastReply, CancellationToken.None);   // cache spoken + audio, ready to play
                 FileLog.Write($"[GatewayWingmanVoice] explain sid={sid}: replyLen={lastReply.Length}, spokenLen={t.Spoken.Length}");
-                // Training capture (no-op unless the setting is on); fire-and-forget so it adds no latency.
-                _ = voice.CaptureTrainingAsync(route, sid, "explain", lastReply, recentContext, t.Spoken, t.ReplySeconds, CancellationToken.None);
                 return Results.Json(new { reply = lastReply, spoken = t.Spoken, replySeconds = t.ReplySeconds });
             }
             catch (Exception ex) when (ex is TimeoutException or HttpRequestException)

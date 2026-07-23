@@ -49,13 +49,11 @@ public static class OwnerSettingsRoutes
     /// autostart) - they do not exist any more. Issue #2022 part 2 RETIRED the deny for the per-account routes
     /// (the settings snapshot, snooze-default, snooze-presets, time-zone, ai-provider, tts-voice), which now
     /// SERVE on hosted (proved by <see cref="HostedPerAccountSettingsServeTests"/>). What remains DENIED here
-    /// is the process-global set with no tenant dimension: training capture, injected text, and transcription
-    /// mode. Injected text stays denied permanently.
+    /// is the process-global set with no tenant dimension: injected text and transcription mode. Injected
+    /// text stays denied permanently.
     /// </summary>
     public static readonly Route[] Settings =
     {
-        new("GET",  "gateway/wingman/training-capture", null, SettingsRefusal),
-        new("PUT",  "gateway/wingman/training-capture", "{\"enabled\":true}", SettingsRefusal),
         new("GET",  "gateway/injected-text",            null, SettingsRefusal),
         new("PUT",  "gateway/injected-text",            "{\"use_yours\":true,\"yours\":\"words from another tenant\"}", SettingsRefusal),
         new("GET",  "gateway/transcription-mode",       null, SettingsRefusal),
@@ -74,7 +72,7 @@ public static class OwnerSettingsRoutes
         new("POST", "gateway/ai/test-chat",           "{\"model\":\"some-model\"}", ModelsRefusal),
     };
 
-    /// <summary>All 8 route-and-verb pairs that STILL refuse on hosted after the issue #2022 deny retirement.</summary>
+    /// <summary>All 6 route-and-verb pairs that STILL refuse on hosted after the issue #2022 deny retirement.</summary>
     public static IEnumerable<Route> All => Settings.Concat(Models);
 
     /// <summary>
@@ -142,7 +140,7 @@ public static class OwnerSettingsRoutes
 /// <summary>
 /// Issue #1863: the WHOLE owner-settings group is DENIED on the hosted Gateway.
 ///
-/// THE DEFECT (as it stands after issue #2022 part 2). EIGHT routes across two endpoint classes read and
+/// THE DEFECT (as it stands after issue #2022 part 2). SIX routes across two endpoint classes read and
 /// write PROCESS-GLOBAL configuration with no tenant dimension: config.json is one file for the whole
 /// process, so a write is a FLEET-WIDE mutation performed by whichever authenticated caller sent it, and
 /// <c>GET /gateway/injected-text</c> hands back the owner's own agent-launch instruction text to any caller.
@@ -258,7 +256,7 @@ public sealed class HostedOwnerSettingsDenyTests : IAsyncLifetime
     [Fact]
     public async Task The_refusal_is_not_an_empty_settings_snapshot()
     {
-        foreach (var path in new[] { "gateway/injected-text", "gateway/wingman/training-capture", "gateway/transcription-mode" })
+        foreach (var path in new[] { "gateway/injected-text", "gateway/transcription-mode" })
         {
             var response = await _http.GetAsync(path);
             var body = await response.Content.ReadAsStringAsync();

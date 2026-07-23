@@ -34,10 +34,10 @@ namespace CcDirector.Gateway.Tests;
 ///
 /// AND IT ASSERTS A POSITIVE FACT PER ROUTE, NOT THE ABSENCE OF THE REFUSAL. "The refusal string is not
 /// in the body" is satisfied by an empty 200, by a single-page-application shell, and by a route that was
-/// deleted - it proves nothing about the route being alive. All twenty-four routes are proved by one of:
-///   - its REAL PAYLOAD, field by field (the nine read routes);
+/// deleted - it proves nothing about the route being alive. All twenty-two routes are proved by one of:
+///   - its REAL PAYLOAD, field by field (the eight read routes);
 ///   - an INDEPENDENTLY RE-READ EFFECT - the value is written over the wire and then read back out of the
-///     configuration store through the Core config class, not out of the response (eleven write routes);
+///     configuration store through the Core config class, not out of the response (ten write routes);
 ///   - a SEEDED TRANSITION off a sentinel the effect cannot produce, where the effect is a RESET rather
 ///     than a stored value (the provider, one route);
 ///   - SERVED-AND-REACHES-A-HANDLER, the deliberately NARROWED claim for the one route that can carry no
@@ -47,7 +47,7 @@ namespace CcDirector.Gateway.Tests;
 ///     day a second mode is added, so the narrowing cannot go stale (one route);
 ///   - a HANDLER-UNIQUE RECEIPT: a status and message only that one handler can produce, where the route
 ///     has no readable effect to assert - the two credential-resolution routes (two routes).
-/// Nine plus eleven plus one plus one plus two is twenty-four. No route is left over, and none is proved
+/// Eight plus ten plus one plus one plus two is twenty-two. No route is left over, and none is proved
 /// only by the absence of the refusal.
 ///
 /// Issue #2022 removed the five machine-scoped routes this control once also covered - brain restart (the
@@ -128,7 +128,6 @@ public sealed class HostedOwnerSettingsSelfHostControlTests : IAsyncLifetime
                 foreach (var path in new[]
                          {
                              "gateway/settings",
-                             "gateway/wingman/training-capture",
                              "gateway/snooze-default",
                              "gateway/injected-text",
                              "gateway/snooze-presets",
@@ -143,7 +142,7 @@ public sealed class HostedOwnerSettingsSelfHostControlTests : IAsyncLifetime
     }
 
     /// <summary>
-    /// The nine read routes, each asserted by the REAL PAYLOAD it carries - the fields, and where a field
+    /// The eight read routes, each asserted by the REAL PAYLOAD it carries - the fields, and where a field
     /// has an independently knowable value, that value. Format facts (status, media type) are asserted
     /// BEFORE the body is parsed, on this side too: if a route were gone, the Gateway's single-page
     /// -application fallback would answer with HTML and parsing first would turn that finding into a crash.
@@ -183,11 +182,6 @@ public sealed class HostedOwnerSettingsSelfHostControlTests : IAsyncLifetime
                 }, properties);
                 Assert.True(root.GetProperty("snoozePresets").GetArrayLength() > 0);
                 Assert.Equal(SnoozePresetsConfig.MaxPresets, root.GetProperty("snoozeMaxPresets").GetInt32());
-                break;
-
-            case "gateway/wingman/training-capture":
-                Assert.Equal(new[] { "enabled" }, properties);
-                Assert.Equal(WingmanTrainingCaptureConfig.Get(), root.GetProperty("enabled").GetBoolean());
                 break;
 
             case "gateway/snooze-default":
@@ -249,7 +243,6 @@ public sealed class HostedOwnerSettingsSelfHostControlTests : IAsyncLifetime
             var data = new TheoryData<string?, string, string, string, string, string>();
             foreach (var hosted in new string?[] { null, "0" })
             {
-                data.Add(hosted, "PUT", "gateway/wingman/training-capture", "{\"enabled\":true}", "training-capture", "true");
                 data.Add(hosted, "PUT", "gateway/snooze-default", "{\"minutes\":45}", "snooze-default", "45");
                 data.Add(hosted, "PUT", "gateway/injected-text", "{\"use_yours\":true,\"yours\":\"words from another tenant\"}", "injected-text", "words from another tenant");
                 data.Add(hosted, "PUT", "gateway/snooze-presets", "{\"presets\":[15,30,60],\"defaultMinutes\":30}", "snooze-presets", "15,30,60");
@@ -279,7 +272,6 @@ public sealed class HostedOwnerSettingsSelfHostControlTests : IAsyncLifetime
     /// </summary>
     private string ReadBack(string key) => key switch
     {
-        "training-capture" => WingmanTrainingCaptureConfig.Get() ? "true" : "false",
         "snooze-default" => _gateway.TenantSettingsResolver.SnoozeDefaultMinutes(TenantId.Local).ToString(),
         "injected-text" => InjectedTextConfig.Get().Yours ?? "",
         "snooze-presets" => string.Join(",", _gateway.TenantSettingsResolver.SnoozePresets(TenantId.Local)),

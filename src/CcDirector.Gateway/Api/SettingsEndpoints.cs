@@ -31,7 +31,6 @@ namespace CcDirector.Gateway.Api;
 ///   GET+PUT /gateway/tts-voice
 ///
 ///   DENIED ON HOSTED (process-global, no tenant dimension):
-///   GET+PUT /gateway/wingman/training-capture   (process-global capture toggle)
 ///   GET+PUT /gateway/injected-text              (the owner's process-global agent-launch words)
 ///   GET+PUT /gateway/transcription-mode         (single-valued process-global provider fact)
 ///
@@ -122,8 +121,8 @@ internal static class SettingsEndpoints
     ///    <see cref="MapServedRoutes"/>. Each resolves the CALLER's tenant with <c>ResolveReadTenant</c> and
     ///    answers 403 when none resolves - NEVER the Local partition - so they are safe on shared infrastructure
     ///    without a deny: a request that cannot be attributed to a tenant is refused, not served a wrong one.
-    ///  - The machine/process-global routes (injected text, training capture, transcription mode) have no
-    ///    per-tenant home and STAY denied on hosted, mapped onto the group handle in <see cref="MapDeniedRoutes"/>.
+    ///  - The machine/process-global routes (injected text, transcription mode) have no per-tenant home and
+    ///    STAY denied on hosted, mapped onto the group handle in <see cref="MapDeniedRoutes"/>.
     ///    That method receives ONLY the handle - <paramref name="outer"/> is out of scope there - so a denied
     ///    route cannot be moved onto the ungrouped builder by a one-word edit; changing its group means changing
     ///    the method signature, which moves them all. That is the un-bypassability the deny primitive buys.
@@ -424,42 +423,14 @@ internal static class SettingsEndpoints
     /// <summary>
     /// The machine/process-global owner-settings routes that STAY denied on hosted (issue #2022). Takes the
     /// denied GROUP HANDLE and nothing else - the ungrouped builder is deliberately out of scope here so no
-    /// route can be mapped around the hosted refusal. These three families have NO per-tenant home: injected
-    /// text is the owner's process-global agent-launch words; training capture is a process-global toggle; and
-    /// transcription mode is a single-valued process-global provider fact. On shared hosted infrastructure
-    /// there is no correct per-tenant answer to serve, so they refuse rather than leak a fleet-wide value.
+    /// route can be mapped around the hosted refusal. These two families have NO per-tenant home: injected
+    /// text is the owner's process-global agent-launch words, and transcription mode is a single-valued
+    /// process-global provider fact. On shared hosted infrastructure there is no correct per-tenant answer to
+    /// serve, so they refuse rather than leak a fleet-wide value.
     /// </summary>
     private static void MapDeniedRoutes(HostedDenyGroup app, GatewayHost host)
     {
         _ = host; // the denied handlers read process-global config, not per-tenant host state; kept for symmetry.
-
-        // Read wingman training-data capture state (issue #531 follow-up): when on, every wingman
-        // summary saves up to 20,000 chars of the session terminal + the wingman response as a
-        // labeled example for improving the wingman. Process-global with no tenant dimension - denied on hosted.
-        app.MapGet("/gateway/wingman/training-capture", () =>
-            Results.Json(new { enabled = Core.Configuration.WingmanTrainingCaptureConfig.Get() }));
-
-        // Write the training-data capture toggle. Takes effect immediately (read at capture time) - no restart.
-        app.MapPut("/gateway/wingman/training-capture", async (HttpContext ctx) =>
-        {
-            try
-            {
-                var body = await JsonSerializer.DeserializeAsync<WingmanBody>(
-                    ctx.Request.Body, JsonOpts, ctx.RequestAborted);
-                if (body is null)
-                    return Results.BadRequest(new { error = "body { \"enabled\": true|false } is required" });
-
-                Core.Configuration.CcDirectorConfigService.MergePatch(
-                    new System.Text.Json.Nodes.JsonObject { ["wingman_training_capture"] = body.Enabled });
-                FileLog.Write($"[SettingsEndpoints] wingman_training_capture set to {body.Enabled}");
-                return Results.Json(new { enabled = body.Enabled });
-            }
-            catch (JsonException ex)
-            {
-                FileLog.Write($"[SettingsEndpoints] PUT /gateway/wingman/training-capture bad JSON: {ex.Message}");
-                return Results.BadRequest(new { error = "invalid JSON" });
-            }
-        });
 
         // The injected text: the whole of what DevThrottle puts in front of an agent at the start of a
         // session, and the user's choice to run their own words instead of ours. Process-global (the owner's
@@ -610,5 +581,4 @@ internal static class SettingsEndpoints
     private sealed record SnoozeDefaultBody(int? Minutes);
     private sealed record SnoozePresetsBody(int[]? Presets, int? DefaultMinutes);
     private sealed record TimeZoneBody(string? TimeZone);
-    private sealed record WingmanBody(bool Enabled);
 }

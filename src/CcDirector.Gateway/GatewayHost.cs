@@ -506,8 +506,6 @@ public sealed class GatewayHost : IAsyncDisposable
     // Editable/versioned wingman instructions (issue #537); the voice translator reads the active set.
     // Constructed in the constructor body once the EF database is built (it persists to the data layer).
     private readonly Wingman.WingmanInstructionsStore _instructionsStore;
-    // Shared training-data store: the voice service WRITES captures, the instructions A/B test READS them.
-    private readonly Wingman.WingmanTrainingStore _trainingStore = new();
     private System.Threading.Timer? _voiceSweepTimer;
     // Durable dictation upload staging (issue #1006): the phone streams recorded audio here in chunks;
     // the Gateway assembles, transcribes, and injects the turn itself. Each upload id carries a durable
@@ -1463,7 +1461,7 @@ public sealed class GatewayHost : IAsyncDisposable
         // sessionTitleResolver: the wingman opens every narration with the session's title, so a
         // listener with the phone in a pocket knows WHICH session is talking before anything else
         // (WingmanTranslator.FidelityPrompt v5.2). Push-store read - no dial. See ResolveSessionTitle.
-        _voiceService ??= new Wingman.WingmanVoiceService(WingmanBrainAsync, _keyVault, _tenantSettingsResolver, training: _trainingStore, instructionsProvider: () => _instructionsStore.ActiveContent, sessionTitleResolver: ResolveSessionTitle);
+        _voiceService ??= new Wingman.WingmanVoiceService(WingmanBrainAsync, _keyVault, _tenantSettingsResolver, instructionsProvider: () => _instructionsStore.ActiveContent, sessionTitleResolver: ResolveSessionTitle);
         _turnEndWatcher = new TurnEndWatcher(
             onTurnEnd: signal =>
             {
@@ -2036,7 +2034,7 @@ public sealed class GatewayHost : IAsyncDisposable
         // sessionTitleResolver: the wingman opens every narration with the session's title, so a
         // listener with the phone in a pocket knows WHICH session is talking before anything else
         // (WingmanTranslator.FidelityPrompt v5.2). Push-store read - no dial. See ResolveSessionTitle.
-        _voiceService ??= new Wingman.WingmanVoiceService(WingmanBrainAsync, _keyVault, _tenantSettingsResolver, training: _trainingStore, instructionsProvider: () => _instructionsStore.ActiveContent, sessionTitleResolver: ResolveSessionTitle);
+        _voiceService ??= new Wingman.WingmanVoiceService(WingmanBrainAsync, _keyVault, _tenantSettingsResolver, instructionsProvider: () => _instructionsStore.ActiveContent, sessionTitleResolver: ResolveSessionTitle);
         GatewayWingmanVoiceEndpoint.Map(_app, Registry, WingmanBrainAsync, _keyVault, _voiceService, _tenantSettingsResolver,
             pushedSessions: PushedSessions,
             sendCommand: SendCommandAsync,
@@ -2072,7 +2070,7 @@ public sealed class GatewayHost : IAsyncDisposable
         Api.CarModeEndpoint.Map(_app, carModeBrain, _carModeTurnCache, _carModeDiagnostics, carModeWarmup, _tenantBoundary);
         // Editable/versioned wingman instructions settings surface (issue #537), incl. A/B test
         // over saved training sessions (reads the shared training store; uses the hosted wingman brain).
-        WingmanInstructionsEndpoint.Map(_app, _instructionsStore, _trainingStore, WingmanBrainAsync);
+        WingmanInstructionsEndpoint.Map(_app, _instructionsStore, WingmanBrainAsync);
         // The gateway OWNS keeping voice sessions' summaries pre-built (issue #531): a gentle
         // background sweep regenerates voice for any idle voice session that is missing it, so the
         // list shows it ready BEFORE you enter - including after a gateway restart (the voice-session

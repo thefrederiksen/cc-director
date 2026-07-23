@@ -319,7 +319,6 @@ public sealed class HostedContentDenyGroupFilterTests
                     return WingmanInstructionsEndpoint.Map(
                         app,
                         new WingmanInstructionsStore(db.Open(), db.LegacyPath("probe-legacy.json")),
-                        new WingmanTrainingStore(() => false, Path.Combine(root, "training")),
                         brain);
 
                 // NOTE: /wingman/utterance and /dictation are deliberately absent - they are un-denied and
