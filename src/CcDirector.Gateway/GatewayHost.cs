@@ -413,6 +413,10 @@ public sealed class GatewayHost : IAsyncDisposable
     // G8 increment 2: the cron sweep now fires through the per-tenant tenancy seam (TenantScopedSweep) so it
     // can run ON hosted, tenant-isolated, instead of being disabled. Constructed alongside _cronEngine.
     private Running.CronTenantSweep? _cronSweep;
+    // Reentrancy guard for the cron sweep. On hosted the per-tenant fan-out can take longer than the 60s tick,
+    // so a later tick must NOT start a second overlapping sweep (that could double-fire a job in the window
+    // between a tenant's ListAll and MarkFired). 0 = idle, 1 = a sweep is in flight (Interlocked-owned).
+    private int _cronSweepInFlight;
     // The cron firing sweep (epic #479, #483): wakes ~every minute and fires due jobs. Created in
     // StartAsync, disposed in StopAsync.
     private System.Threading.Timer? _cronTimer;
@@ -2592,15 +2596,32 @@ public sealed class GatewayHost : IAsyncDisposable
 
     private void SweepCron()
     {
+        // Skip this tick if the previous sweep is still fanning out (hosted, many tenants). Overlapping sweeps
+        // could double-fire a non-overlap-guarded job; one at a time is correct and a skipped tick simply
+        // fires on the next one (cron granularity is a minute, not a second).
+        if (Interlocked.CompareExchange(ref _cronSweepInFlight, 1, 0) != 0)
+            return;
+        _ = RunCronSweepAsync();
+    }
+
+    private async Task RunCronSweepAsync()
+    {
         try
         {
             // G8 increment 2: fire through the per-tenant seam (fans out over the tenant census on hosted,
-            // once under Local on self-host) instead of calling the engine with no ambient tenant.
-            _ = _cronSweep?.SweepAsync(CancellationToken.None);
+            // once under Local on self-host) instead of calling the engine with no ambient tenant. Awaited
+            // here (not fire-and-forget) so the guard is released only when the whole fan-out is done and so
+            // a fault in any tenant's async work is logged rather than lost.
+            if (_cronSweep is not null)
+                await _cronSweep.SweepAsync(CancellationToken.None).ConfigureAwait(false);
         }
         catch (Exception ex)
         {
             FileLog.Write($"[GatewayHost] cron sweep FAILED: {ex.Message}");
+        }
+        finally
+        {
+            Interlocked.Exchange(ref _cronSweepInFlight, 0);
         }
     }
 

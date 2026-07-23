@@ -16,9 +16,11 @@ namespace CcDirector.Gateway.Tenancy;
 /// <item>A body that forgot to enter a scope calls <c>CreateContext()</c> with no ambient tenant and FAILS
 /// CLOSED at runtime (the <c>AsyncLocalTenantContext.Current</c> throw) - it can never silently read another
 /// tenant's rows or default to Local.</item>
-/// <item>The DT-TEN-3 architecture test (increment 2) makes a worker that touches a store WITHOUT going
-/// through this base FAIL THE BUILD, so the skip is caught statically even when the offending path is disabled
-/// on hosted and its runtime throw would never fire in test.</item>
+/// <item>A follow-up static architecture gate (DT-TEN-3) is intended to make a worker that touches a store
+/// WITHOUT going through this base FAIL THE BUILD - catching a skip statically even when the offending path is
+/// disabled on hosted and its runtime throw would never fire in test. DT-TEN-3 is NOT shipped in this
+/// increment (it is deferred); until it lands, the runtime fail-closed guarantee above is the sole
+/// enforcement, so a NEW worker must be routed through this base by review, not yet by the build.</item>
 /// </list>
 ///
 /// Self-host is single-tenant and must not be burdened: when <see cref="HostedTenantBoundary.IsHosted"/> is
