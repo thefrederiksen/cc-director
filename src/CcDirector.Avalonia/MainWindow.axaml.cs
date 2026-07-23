@@ -3677,28 +3677,28 @@ public partial class MainWindow : Window
         file.Menu.Items.Add(Item("Exit", Close));
         menu.Items.Add(file);
 
-        // ===== Session =====
-        var session = new NativeMenuItem("Session") { Menu = new NativeMenu() };
-        // Repositories (registration + live list) moved to the pinned Repositories entry in the
-        // sidebar - the Root folders page there handles add/edit/remove (issue #507).
+        // ===== Developer (alpha only) =====
+        // The "Session" menu was retired: Repositories moved to the pinned sidebar entry (#507),
+        // which left only alpha developer tools. Those now live under a Developer menu, so the
+        // normal menu bar is just File / View / Help.
         if (alpha)
         {
-            session.Menu.Items.Add(new NativeMenuItemSeparator());
-            session.Menu.Items.Add(Item("Start FIFO", () => BtnFifo_Click(this, new RoutedEventArgs())));
-            session.Menu.Items.Add(Item("Accounts...", async () =>
+            var dev = new NativeMenuItem("Developer") { Menu = new NativeMenu() };
+            dev.Menu.Items.Add(Item("Start FIFO", () => BtnFifo_Click(this, new RoutedEventArgs())));
+            dev.Menu.Items.Add(Item("Accounts...", async () =>
             {
                 FileLog.Write("[MainWindow] Menu: Accounts");
                 var dialog = new AccountsDialog(AppRef().ClaudeAccountStore);
                 await dialog.ShowDialog<bool?>(this);
             }));
-            session.Menu.Items.Add(Item("Show Reviews", async () =>
+            dev.Menu.Items.Add(Item("Show Reviews", async () =>
             {
                 FileLog.Write("[MainWindow] Menu: Show Reviews");
                 var dialog = new TurnReviewDialog();
                 await dialog.ShowDialog(this);
             }));
+            menu.Items.Add(dev);
         }
-        menu.Items.Add(session);
 
         // ===== View =====
         var view = new NativeMenuItem("View") { Menu = new NativeMenu() };
