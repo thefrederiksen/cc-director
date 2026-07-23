@@ -3,7 +3,6 @@ using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
 using Avalonia.Controls;
-using Avalonia.Markup.Xaml;
 using CcDirector.Core.Configuration;
 using CcDirector.Core.Git;
 
@@ -17,6 +16,8 @@ public partial class RepositoryScreenWindow : Window
 {
     public RepositoryScreenWindow()
     {
+        // The generated InitializeComponent wires the x:Name controls (ListView). Do NOT replace it
+        // with a bare AvaloniaXamlLoader.Load(this) - that skips the field hookup and leaves ListView null.
         InitializeComponent();
     }
 
@@ -26,6 +27,4 @@ public partial class RepositoryScreenWindow : Window
         ListView.LiveSessionsProvider = liveSessionsProvider;
         ListView.Attach(store);
     }
-
-    private void InitializeComponent() => AvaloniaXamlLoader.Load(this);
 }
