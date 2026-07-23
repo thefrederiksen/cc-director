@@ -16,6 +16,7 @@ Environment variable overrides:
 """
 
 import os
+import sys
 from pathlib import Path
 
 
@@ -26,13 +27,25 @@ class CcStorage:
 
     @staticmethod
     def _base() -> Path:
-        """Base directory for cc-director local app data."""
+        """Base directory for cc-director local app data.
+
+        Must resolve to the SAME directory the Director itself uses, or the
+        Python tools silently read an empty world beside the real one. On
+        Windows that is %LOCALAPPDATA%/cc-director. On macOS the Director
+        lives in ~/Library/Application Support/cc-director - before this
+        branch existed the tools fell through to ~/.cc-director there and
+        could not see the Director's config (gateway address and token
+        included), which is how 'cc-devthrottle email owner' came to report
+        an unreachable Gateway on a fully enrolled Mac.
+        """
         override = os.environ.get("CC_DIRECTOR_ROOT")
         if override:
             return Path(override)
         local = os.environ.get("LOCALAPPDATA")
         if local:
             return Path(local) / "cc-director"
+        if sys.platform == "darwin":
+            return Path.home() / "Library" / "Application Support" / "cc-director"
         return Path.home() / ".cc-director"
 
     @staticmethod
