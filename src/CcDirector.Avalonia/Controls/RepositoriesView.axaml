@@ -1,0 +1,68 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:controls="clr-namespace:CcDirector.Avalonia.Controls"
+             x:Class="CcDirector.Avalonia.Controls.RepositoriesView"
+             Background="#1E1E1E">
+
+    <UserControl.Styles>
+        <Style Selector="Button.railItem">
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="Foreground" Value="#AAAAAA" />
+            <Setter Property="HorizontalAlignment" Value="Stretch" />
+            <Setter Property="HorizontalContentAlignment" Value="Left" />
+            <Setter Property="Padding" Value="12,7" />
+            <Setter Property="FontSize" Value="12" />
+            <Setter Property="CornerRadius" Value="0" />
+        </Style>
+        <Style Selector="Button.railItem:pointerover /template/ ContentPresenter">
+            <Setter Property="Background" Value="#2A2D2E" />
+        </Style>
+        <Style Selector="Button.railItem.active">
+            <Setter Property="Background" Value="#094771" />
+            <Setter Property="Foreground" Value="#FFFFFF" />
+        </Style>
+        <Style Selector="Button.railItem.active /template/ ContentPresenter">
+            <Setter Property="Background" Value="#094771" />
+        </Style>
+    </UserControl.Styles>
+
+    <Grid ColumnDefinitions="Auto,1,*">
+        <Border Grid.Column="0" Background="#252526" MinWidth="140">
+            <StackPanel Spacing="1" Margin="0,6,0,0">
+                <TextBlock Text="REPOSITORIES" Foreground="#888888" FontSize="10"
+                           FontWeight="SemiBold" Margin="12,2,12,8" />
+                <Button x:Name="ReposRailButton" Classes="railItem active" Click="ReposRailButton_Click">
+                    <TextBlock Text="Repositories" VerticalAlignment="Center" />
+                </Button>
+                <Button x:Name="RootsRailButton" Classes="railItem" Click="RootsRailButton_Click">
+                    <TextBlock Text="Root folders" VerticalAlignment="Center" />
+                </Button>
+            </StackPanel>
+        </Border>
+
+        <Border Grid.Column="1" Background="#3C3C3C" />
+
+        <Panel Grid.Column="2">
+            <controls:RepositoryListView x:Name="ReposPage" IsVisible="True" />
+
+            <ScrollViewer x:Name="RootsPage" IsVisible="False" VerticalScrollBarVisibility="Auto">
+                <StackPanel Margin="16" Spacing="10">
+                    <TextBlock Text="Root folders" Foreground="#CCCCCC" FontSize="14" FontWeight="SemiBold" />
+                    <TextBlock Text="The directories scanned for repositories. Editing them inline moves here next; for now this shows what is registered."
+                               Foreground="#888888" FontSize="11" TextWrapping="Wrap" MaxWidth="560" />
+                    <ItemsControl x:Name="RootsList">
+                        <ItemsControl.ItemTemplate>
+                            <DataTemplate>
+                                <Border Background="#252526" BorderBrush="#3C3C3C" BorderThickness="1"
+                                        CornerRadius="4" Padding="12,8" Margin="0,0,0,6">
+                                    <TextBlock Text="{Binding}" Foreground="#CCCCCC" FontSize="12"
+                                               FontFamily="Cascadia Mono, Consolas" TextWrapping="Wrap" />
+                                </Border>
+                            </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+                </StackPanel>
+            </ScrollViewer>
+        </Panel>
+    </Grid>
+</UserControl>
