@@ -410,6 +410,13 @@ public sealed class GatewayHost : IAsyncDisposable
     private readonly CronJobStore _cronJobs;
     private readonly CronRunHistoryStore _cronRuns;
     private readonly Running.CronEngine _cronEngine;
+    // G8 increment 2: the cron sweep now fires through the per-tenant tenancy seam (TenantScopedSweep) so it
+    // can run ON hosted, tenant-isolated, instead of being disabled. Constructed alongside _cronEngine.
+    private Running.CronTenantSweep? _cronSweep;
+    // Reentrancy guard for the cron sweep. On hosted the per-tenant fan-out can take longer than the 60s tick,
+    // so a later tick must NOT start a second overlapping sweep (that could double-fire a job in the window
+    // between a tenant's ListAll and MarkFired). 0 = idle, 1 = a sweep is in flight (Interlocked-owned).
+    private int _cronSweepInFlight;
     // The cron firing sweep (epic #479, #483): wakes ~every minute and fires due jobs. Created in
     // StartAsync, disposed in StopAsync.
     private System.Threading.Timer? _cronTimer;
@@ -1004,6 +1011,9 @@ public sealed class GatewayHost : IAsyncDisposable
             // run-now request scope on hosted, the single Local scope on self-host - the same seam the notifier
             // reads. A run-now for tenant A's cj_ id must never be refused by tenant B's in-flight same-id job.
             resolveTenant: () => _tenantPass.Current);
+        // G8 increment 2: wrap the cron engine in the per-tenant worker seam so the background sweep enters
+        // each tenant's scope before it reads the tenant-scoped cron_jobs store.
+        _cronSweep = new Running.CronTenantSweep(_tenantBoundary, TenantRegistry, _cronEngine);
 
         // Web Push (mobile app-icon "needs you" dot): load (or generate on first run) the VAPID key
         // pair and the set of subscribed devices. The notifier that fans out to these is built and
@@ -2372,19 +2382,12 @@ public sealed class GatewayHost : IAsyncDisposable
         // Cron firing sweep (epic #479, #483): wake ~every minute and fire due jobs. The first tick
         // also catches up a fire that came due while the Gateway was down (at most once per job).
         //
-        // Skipped when HOSTED (Hosted Multi-Tenancy): the cron drain reads the tenant-scoped cron_jobs store,
-        // which has no ambient tenant on a background timer and so would fail closed every tick. Firing cron
-        // per-tenant is part of the session-serving increment (the same increment makes these sweeps
-        // fail-loud/observed rather than fire-and-forget). Same guard shape as the NetDiag monitor below.
-        if (!GatewayHostedMode.IsHosted)
-        {
-            _cronTimer = new System.Threading.Timer(_ => SweepCron(), null, CronSweepInterval, CronSweepInterval);
-            FileLog.Write($"[GatewayHost] cron sweep started: every {CronSweepInterval.TotalSeconds:0}s");
-        }
-        else
-        {
-            FileLog.Write("[GatewayHost] cron sweep NOT started (hosted): per-tenant cron firing lands in the session-serving increment");
-        }
+        // G8 increment 2: the cron drain reads the tenant-scoped cron_jobs store. It now fires through the
+        // per-tenant worker seam (CronTenantSweep / TenantScopedSweep), which enters each tenant's ambient
+        // scope before reading, so the sweep runs ON hosted (tenant-isolated) instead of being disabled. On
+        // self-host the seam fires once under Local - the same single fire as before.
+        _cronTimer = new System.Threading.Timer(_ => SweepCron(), null, CronSweepInterval, CronSweepInterval);
+        FileLog.Write($"[GatewayHost] cron sweep started: every {CronSweepInterval.TotalSeconds:0}s ({(GatewayHostedMode.IsHosted ? "hosted, per-tenant via TenantScopedSweep" : "self-host, single Local tenant")})");
 
         // Scheduled-run auto-dismiss (issue #1200): close automated runs that declared themselves done, by
         // sending the kill verb DOWN the Director stream. The close has no REST fallback by design (the
@@ -2593,13 +2596,32 @@ public sealed class GatewayHost : IAsyncDisposable
 
     private void SweepCron()
     {
+        // Skip this tick if the previous sweep is still fanning out (hosted, many tenants). Overlapping sweeps
+        // could double-fire a non-overlap-guarded job; one at a time is correct and a skipped tick simply
+        // fires on the next one (cron granularity is a minute, not a second).
+        if (Interlocked.CompareExchange(ref _cronSweepInFlight, 1, 0) != 0)
+            return;
+        _ = RunCronSweepAsync();
+    }
+
+    private async Task RunCronSweepAsync()
+    {
         try
         {
-            _ = _cronEngine.EvaluateDueAsync(CancellationToken.None);
+            // G8 increment 2: fire through the per-tenant seam (fans out over the tenant census on hosted,
+            // once under Local on self-host) instead of calling the engine with no ambient tenant. Awaited
+            // here (not fire-and-forget) so the guard is released only when the whole fan-out is done and so
+            // a fault in any tenant's async work is logged rather than lost.
+            if (_cronSweep is not null)
+                await _cronSweep.SweepAsync(CancellationToken.None).ConfigureAwait(false);
         }
         catch (Exception ex)
         {
             FileLog.Write($"[GatewayHost] cron sweep FAILED: {ex.Message}");
+        }
+        finally
+        {
+            Interlocked.Exchange(ref _cronSweepInFlight, 0);
         }
     }
 
