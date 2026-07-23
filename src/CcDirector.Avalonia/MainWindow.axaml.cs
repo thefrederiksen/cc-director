@@ -934,7 +934,8 @@ public partial class MainWindow : Window
     /// </summary>
     private bool IsContentOverlayOpen()
         => CommsOverlay.IsVisible
-           || ConnectionsOverlay.IsVisible;
+           || ConnectionsOverlay.IsVisible
+           || RepositoriesOverlay.IsVisible;
 
     /// <summary>
     /// Show the full-screen home page exactly when this Director has zero sessions - it is
@@ -1759,6 +1760,8 @@ public partial class MainWindow : Window
             if (_connectionsInitialized)
                 ConnectionsView.StopPolling();
         }
+        if (RepositoriesOverlay.IsVisible)
+            RepositoriesOverlay.IsVisible = false;
 
         if (vm == _activeSession) return;
 
@@ -3692,13 +3695,7 @@ public partial class MainWindow : Window
                 }
             }
         }));
-        session.Menu.Items.Add(Item("Repository status...", async () =>
-        {
-            FileLog.Write("[MainWindow] Menu: Repository status");
-            var app = AppRef();
-            var window = new RepositoryScreenWindow(app.RepositoryMonitor, app.StartRepositoryRescan);
-            await window.ShowDialog(this);
-        }));
+        // "Repository status..." moved to the pinned Repositories entry in the sidebar (issue #507).
         if (alpha)
         {
             session.Menu.Items.Add(new NativeMenuItemSeparator());
@@ -4052,6 +4049,39 @@ public partial class MainWindow : Window
         if (_connectionsInitialized)
             ConnectionsView.StopPolling();
         UpdateHomeVisibility(); // restore Home if still at zero sessions (#447)
+    }
+
+    private void BtnRepositories_Click(object? sender, RoutedEventArgs e)
+    {
+        FileLog.Write("[MainWindow] BtnRepositories_Click: opening Repositories view");
+
+        // Close other center overlays first.
+        if (CommsOverlay.IsVisible)
+        {
+            CommsOverlay.IsVisible = false;
+            if (_commsInitialized)
+                CommManagerView.StopPolling();
+        }
+        if (ConnectionsOverlay.IsVisible)
+        {
+            ConnectionsOverlay.IsVisible = false;
+            if (_connectionsInitialized)
+                ConnectionsView.StopPolling();
+        }
+
+        if (global::Avalonia.Application.Current is App app)
+        {
+            RepositoriesView.Attach(app.RepositoryMonitor, app.RootDirectoryStore, app.StartRepositoryRescan);
+            RepositoriesOverlay.IsVisible = true;
+        }
+        UpdateHomeVisibility(); // hide Home so the overlay is not buried behind it
+    }
+
+    private void BtnRepositoriesClose_Click(object? sender, RoutedEventArgs e)
+    {
+        FileLog.Write("[MainWindow] BtnRepositoriesClose_Click: closing Repositories view");
+        RepositoriesOverlay.IsVisible = false;
+        UpdateHomeVisibility();
     }
 
     private void SwitchLeftTab(string tab)
