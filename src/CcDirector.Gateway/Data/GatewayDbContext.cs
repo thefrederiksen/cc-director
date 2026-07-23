@@ -365,6 +365,11 @@ public sealed class GatewayDbContext : DbContext
             b.Property(e => e.StripeSubscriptionId).HasColumnName("stripe_subscription_id");
             b.Property(e => e.UpdatedAt).HasColumnName("updated_at");
             b.Property(e => e.Livemode).HasColumnName("livemode");
+            // The two-tier plan column (hosted|pro), nullable. A plain text column on BOTH providers - no
+            // value converter and no uuid concern, unlike Subject - so it is mapped here in the provider-agnostic
+            // block, not in the Postgres-only section below. Read and exposed by EntitlementRegistry; never
+            // gates enrollment (either tier enrolls).
+            b.Property(e => e.Tier).HasColumnName("tier");
         });
 
         modelBuilder.Entity<TenantEntity>(b =>
