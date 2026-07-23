@@ -1,7 +1,9 @@
 using CcDirector.Core.Configuration;
+using CcDirector.Core.Tenancy;
 using CcDirector.Core.Utilities;
 using CcDirector.Gateway.CarMode;
 using CcDirector.Gateway.HostedAi;
+using CcDirector.Gateway.Tenancy;
 using CcDirector.Gateway.Util;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
@@ -38,7 +40,8 @@ namespace CcDirector.Gateway.Api;
 /// </summary>
 internal static class CarModeEndpoint
 {
-    public static void Map(IEndpointRouteBuilder app, CarModeBrain brain, CarModeTurnCache turnCache, CarModeDiagnosticsStore diagnostics, CarModeWarmup warmup)
+    public static void Map(IEndpointRouteBuilder app, CarModeBrain brain, CarModeTurnCache turnCache,
+        CarModeDiagnosticsStore diagnostics, CarModeWarmup warmup, HostedTenantBoundary tenantBoundary)
     {
         // Keep-warm (Car Mode performance round): the browser calls this the instant the owner taps Start,
         // and every few minutes WHILE Car Mode is open, so the hosted model + text-to-speech are hot before
@@ -46,11 +49,15 @@ internal static class CarModeEndpoint
         // Mode); when off it is a cheap no-op. The warmup runs in the BACKGROUND on CancellationToken.None
         // so the Start tap is never blocked and navigating away does not cancel the warm. Best-effort - a
         // warmup failure never surfaces to the owner.
-        app.MapPost("/carmode/warmup", () =>
+        app.MapPost("/carmode/warmup", (HttpContext ctx) =>
         {
+            var tenant = GatewayEndpoints.ResolveReadTenant(ctx, tenantBoundary);
+            if (tenant is null)
+                return Results.Json(new { error = "no tenant is bound to this request" },
+                    statusCode: StatusCodes.Status403Forbidden);
             if (!CarModeKeepWarmConfig.Enabled())
                 return Results.Json(new { warmed = false, reason = "keep-warm disabled" });
-            _ = Task.Run(() => warmup.WarmAsync(CancellationToken.None));
+            _ = Task.Run(() => warmup.WarmAsync(tenant.Value, CancellationToken.None));
             return Results.Json(new { warmed = true });
         });
 
@@ -74,6 +81,10 @@ internal static class CarModeEndpoint
         app.MapPost("/carmode/turn", async (HttpContext ctx, CarModeTurnRequest? req, CancellationToken ct) =>
         {
             FileLog.Write($"[CarModeEndpoint] turn: len={req?.Text?.Length ?? 0}");
+            var tenant = GatewayEndpoints.ResolveReadTenant(ctx, tenantBoundary);
+            if (tenant is null)
+                return Results.Json(new { error = "no tenant is bound to this request" },
+                    statusCode: StatusCodes.Status403Forbidden);
             if (req is null || string.IsNullOrWhiteSpace(req.Text))
                 return Results.Json(new { error = "text is required" }, statusCode: StatusCodes.Status400BadRequest);
 
@@ -94,7 +105,7 @@ internal static class CarModeEndpoint
                 CarModeTurnResponse result;
                 if (string.IsNullOrEmpty(idemKey))
                 {
-                    result = await brain.RunTurnAsync(deviceKey, text, ct);
+                    result = await brain.RunTurnAsync(tenant.Value, deviceKey, text, ct);
                 }
                 else
                 {
@@ -102,7 +113,7 @@ internal static class CarModeEndpoint
                     // cache, so a client that drops mid-turn does NOT abort the work - it completes and caches,
                     // and the client's retry gets the cached result instead of re-acting. Await with the request
                     // token so a disconnected client still returns promptly (the underlying work continues).
-                    var work = turnCache.GetOrRunAsync(deviceKey, idemKey, () => brain.RunTurnAsync(deviceKey, text, CancellationToken.None));
+                    var work = turnCache.GetOrRunAsync(deviceKey, idemKey, () => brain.RunTurnAsync(tenant.Value, deviceKey, text, CancellationToken.None));
                     result = await work.WaitAsync(ct);
                 }
                 return Results.Json(new

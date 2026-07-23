@@ -14,6 +14,7 @@ using CcDirector.Gateway.Api;
 using CcDirector.Gateway.Contracts;
 using CcDirector.Gateway.Discovery;
 using CcDirector.Gateway.HostedAi;
+using CcDirector.Gateway.Settings;
 
 namespace CcDirector.Gateway.Wingman;
 
@@ -71,7 +72,7 @@ public sealed class WingmanVoiceService
 
     private readonly WingmanTranslator _translator;
     private readonly KeyVault _vault;
-    private readonly WingmanTrainingStore _training;
+    private readonly TenantSettingsResolver _tenantSettings;
     /// <summary>Tenant partition key (see <see cref="CanonicalTenantKey"/>) -> that tenant's whole voice
     /// state. Ordinal, because the key is already canonical and two spellings must NEVER meet here.</summary>
     private readonly ConcurrentDictionary<string, TenantVoiceState> _tenants = new(StringComparer.Ordinal);
@@ -81,7 +82,7 @@ public sealed class WingmanVoiceService
     /// <summary>The directory the per-tenant partitions live under.</summary>
     private readonly string _baseDir;
     private readonly HttpClient? _ttsHttp;   // test seam for TtsAsync (issue #939); the shared static when null
-    private readonly Func<string, string?>? _sessionTitleResolver;   // sid -> session title, spoken first
+    private readonly Func<TenantId, string, string?>? _sessionTitleResolver;   // tenant + sid -> session title, spoken first
 
     /// <summary>
     /// True only for the EXACT form <see cref="Tenancy.TenantRegistry"/> mints: a canonical lowercase GUID.
@@ -272,15 +273,22 @@ public sealed class WingmanVoiceService
     /// first so a listener knows which session is talking. The host wires this to the pushed-session
     /// store; a null resolver (or one returning null for an unknown session) simply means no title is
     /// spoken, which is the correct degrade - a narration with no title is worth far more than none.</param>
-    public WingmanVoiceService(Func<Core.Configuration.WingmanModelRole, CancellationToken, Task<IAgentBrain>> brainProvider, KeyVault vault, string? persistPath = null, WingmanTrainingStore? training = null, Func<string>? instructionsProvider = null, HttpClient? ttsHttpClient = null, Func<string, string?>? sessionTitleResolver = null)
+    public WingmanVoiceService(
+        Func<TenantId, Core.Configuration.WingmanModelRole, CancellationToken, Task<IAgentBrain>> brainProvider,
+        KeyVault vault,
+        TenantSettingsResolver tenantSettings,
+        string? persistPath = null,
+        Func<string>? instructionsProvider = null,
+        HttpClient? ttsHttpClient = null,
+        Func<TenantId, string, string?>? sessionTitleResolver = null)
     {
         _translator = new WingmanTranslator(brainProvider, instructionsProvider: instructionsProvider);
-        _vault = vault;
+        _vault = vault ?? throw new ArgumentNullException(nameof(vault));
+        _tenantSettings = tenantSettings ?? throw new ArgumentNullException(nameof(tenantSettings));
         _sessionTitleResolver = sessionTitleResolver;
         // Post-cut: the owning Director is reached through the tunnel-only SessionVerbClient the callers pass
         // into GenerateAsync, so this service holds no Director client.
         _ttsHttp = ttsHttpClient;
-        _training = training ?? new WingmanTrainingStore();
         // Which sessions are voice sessions survives a gateway restart. Issue #553: the per-session
         // audio cache is now ALSO durable - it is persisted next to voice-sessions.json under a
         // "voice-audio" folder so the triangle does not vanish-then-reappear-empty across a restart
@@ -625,14 +633,6 @@ public sealed class WingmanVoiceService
                || ex is HttpRequestException
                || (ex is OperationCanceledException && !ct.IsCancellationRequested));
 
-    /// <summary>
-    /// Capture one wingman summary for the training dataset (no-op unless the setting is on).
-    /// Best-effort and fire-and-forget at the call site so it never delays a voice turn; the
-    /// store fetches up to 20,000 chars of the session terminal and appends the record itself.
-    /// </summary>
-    internal Task CaptureTrainingAsync(SessionVerbClient route, string sid, string source, string reply, string recentContext, string spoken, double replySeconds, CancellationToken ct = default)
-        => _training.CaptureAsync(route, sid, source, reply, recentContext, spoken, replySeconds, ct);
-
     public VoiceReady? Get(TenantId tenant, string sid) => StateFor(tenant).Ready.TryGetValue(sid, out var v) ? v : null;
     public byte[]? GetAudio(TenantId tenant, string sid) => StateFor(tenant).Ready.TryGetValue(sid, out var v) ? v.Audio : null;
     public string? GetAudioContentType(TenantId tenant, string sid) => StateFor(tenant).Ready.TryGetValue(sid, out var v) ? v.ContentType : null;
@@ -848,7 +848,7 @@ public sealed class WingmanVoiceService
             WingmanTranslation t;
             try
             {
-                t = await _translator.TranslateAsync(recentContext, lastReply, _sessionTitleResolver?.Invoke(sid), ct);
+                t = await _translator.TranslateAsync(tenant, recentContext, lastReply, _sessionTitleResolver?.Invoke(tenant, sid), ct);
             }
             catch (Exception ex) when (IsModelDidNotAnswer(ex, ct))
             {
@@ -874,9 +874,6 @@ public sealed class WingmanVoiceService
                 FileLog.Write($"[WingmanVoiceService] voice ready: sid={sid}, spokenLen={t.Spoken.Length}");
             else
                 FileLog.Write($"[WingmanVoiceService] voice NOT ready (text-to-speech produced no audio): sid={sid}, spokenLen={t.Spoken.Length}");
-            // Training capture (no-op unless the setting is on); fire-and-forget so it never
-            // delays the turn. CancellationToken.None so a captured turn is not lost on shutdown.
-            _ = _training.CaptureAsync(route, sid, "generate", lastReply, recentContext, t.Spoken, t.ReplySeconds, CancellationToken.None);
             // The model leg ran and answered - TranslateAsync returned rather than throwing
             // WingmanModelRateLimitedException. Reported as true purely so the return honestly says the
             // provider was reached (no caller acts on it now that the shared gate is gone).
@@ -937,8 +934,8 @@ public sealed class WingmanVoiceService
         if (wasCut)
             FileLog.Write($"[WingmanVoiceService] narration EXCEEDED {NarrationText.MaxChars} chars " +
                           $"({text.Length}) - spoken text cut and the listener told. The wingman is not summarising.");
-        var voice = TtsVoiceConfig.Resolve(mode);
-        var model = TtsModelConfig.Resolve(mode);
+        var voice = _tenantSettings.TtsVoice(tenant, mode);
+        var model = _tenantSettings.TtsModel(tenant, mode);
         var url = tts.BaseUrl.TrimEnd('/') + "/audio/speech";
         // The injected client (tests) or the shared static - never a per-call one. Auth goes on the
         // REQUEST, not the client's default headers, so one shared client is safe under concurrent

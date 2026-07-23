@@ -2,7 +2,9 @@ using System.Net.Http.Headers;
 using System.Text.Json;
 using CcDirector.Core;
 using CcDirector.Core.Configuration;
+using CcDirector.Core.Tenancy;
 using CcDirector.Core.Utilities;
+using CcDirector.Gateway.Settings;
 using CcDirector.Gateway.Tenancy;
 using CcDirector.Gateway.Wingman;
 using Microsoft.AspNetCore.Builder;
@@ -26,13 +28,17 @@ namespace CcDirector.Gateway.Api;
 /// DevThrottle serves a typed catalog (GET /models?type=chat|speech) where each speech model carries
 /// its own voices.
 ///
-/// DENIED IN WHOLE ON HOSTED (issue #1863). Every route in this group is refused on a hosted Gateway,
-/// through the shared refusal primitive (<see cref="HostedRouteDeny.Group"/>) - the same boundary the rest
-/// of the owner-settings group and the key-vault group adopt. The setters write PROCESS-GLOBAL config.json
-/// keys with no tenant dimension, so on shared hosted infrastructure any authenticated caller would be
-/// repointing the wingman, car-mode and speech models for EVERYONE; and the catalog and test-chat routes
-/// spend the deployment's own provider credential on whoever asks. Self-host is single-tenant and these are
-/// legitimate owner function there, so on self-host nothing changes.
+/// SPLIT ON HOSTED (issues #1863, #2022). The five per-account MODEL/VOICE SETTERS (wingman-model,
+/// wingman-fast-model, car-mode-model, car-mode-end-phrase, tts-model) now write only the CALLER's tenant
+/// override through <see cref="TenantSettingsResolver"/> (issue #2017 runtime threading), answering 403 on an
+/// unresolved identity - never Local - so they SERVE on hosted, mapped onto the ungrouped builder in
+/// <see cref="MapServedRoutes"/>. The CATALOG (GET /gateway/ai/models) and TEST-CHAT (POST /gateway/ai/test-chat)
+/// STAY denied on hosted: both spend the SHARED deployment provider credential (vault key DEVTHROTTLE_API_KEY)
+/// with no per-caller scoping, so serving them would let one tenant spend another account's credit. They map
+/// onto the denied group handle in <see cref="MapDeniedRoutes"/> - un-deny only once the credential is
+/// caller-scoped and quota/spend-controlled (see <c>Denial().unDenyInstruction</c>). Self-host serves both, as
+/// before. The AI tab reads the Gateway-owned <c>catalogAvailable</c> flag (on the ai-provider snapshot) to
+/// disable browsing/Test on hosted rather than offer a control that would refuse.
 ///
 /// PER-ROUTE MODE, not an exclusive prefix. Although these seven routes DO sit under <c>/gateway/ai</c>
 /// exclusively, the whole owner-settings group is expressed through ONE mechanism in ONE mode: its
@@ -73,29 +79,41 @@ internal static class AiModelsEndpoint
     /// test can map a BRAND-NEW route onto the handle and find it already refused on hosted with no deny of
     /// its own. Without that return value nothing outside this file can state the future-route property.
     /// </summary>
-    public static HostedDenyGroup Map(IEndpointRouteBuilder outer, KeyVault vault)
+    public static HostedDenyGroup Map(IEndpointRouteBuilder outer, KeyVault vault,
+        TenantSettingsResolver resolver, HostedTenantBoundary? tenantBoundary)
     {
-        FileLog.Write($"[AiModelsEndpoint] mapping the model settings; hosted={GatewayHostedMode.IsHosted} - on hosted EVERY route in this group is refused via the shared refusal primitive (issue #1863)");
+        FileLog.Write($"[AiModelsEndpoint] mapping the model settings; hosted={GatewayHostedMode.IsHosted} - per-account model setters serve; the catalog + test-chat (shared credential) are refused via the shared refusal primitive (issues #1863, #2022)");
 
-        // The whole group through ONE primitive-created handle - see the note in SettingsEndpoints for why a
-        // per-route guard rots. The empty prefix leaves every route path written out in full, so self-host is
-        // unchanged.
         var group = HostedRouteDeny.Group(outer, "", Denial());
 
-        // THE ROUTES ARE MAPPED WHERE `outer` IS NOT IN SCOPE - see the note in SettingsEndpoints.Map. Each
-        // of these seven routes could otherwise be mapped onto `outer` instead of the denied handle by a
-        // one-word edit, bypassing the refusal for that route alone while the rest stayed denied. Handing the
-        // typed handle to a method that never receives the ungrouped builder makes that INEXPRESSIBLE, and
-        // collapses seven independently bypassable primitives into one.
-        MapRoutes(group, vault);
+        // The per-account model/voice setters SERVE on hosted (issue #2022): each resolves the caller's tenant
+        // and writes only that tenant's override, answering 403 on an unresolved identity - never Local. They
+        // take the ungrouped builder because they are NOT denied; their fail-closed is ResolveReadTenant.
+        MapServedRoutes(outer, resolver, tenantBoundary);
+
+        // The catalog (GET /gateway/ai/models) and test-chat (POST /gateway/ai/test-chat) STAY denied on hosted:
+        // they spend the SHARED deployment provider credential (vault key DEVTHROTTLE_API_KEY) with no per-caller
+        // scoping, so serving them would let one tenant spend another account's credit. They map onto the group
+        // handle ONLY - `outer` is out of scope inside MapDeniedRoutes - so neither can be moved off the refusal
+        // by a one-word edit. Un-deny only after the credential is caller-scoped (see Denial().unDenyInstruction).
+        MapDeniedRoutes(group, vault);
         return group;
     }
 
+    /// <summary>The 403 a per-tenant model route answers when the caller's tenant cannot be resolved (issue
+    /// #2017) - never the Local partition on hosted. Self-host always resolves to Local, so this never fires
+    /// there.</summary>
+    private static IResult TenantRequired()
+        => Results.Json(new { error = "a tenant could not be resolved for this request" },
+            statusCode: StatusCodes.Status403Forbidden);
+
     /// <summary>
-    /// The seven model-settings routes. Takes the denied GROUP HANDLE and nothing else, deliberately, so no
-    /// route can be mapped around the hosted refusal.
+    /// The catalog + test-chat routes that STAY denied on hosted (issue #2022). Takes the denied GROUP HANDLE
+    /// and nothing else - the ungrouped builder is out of scope so neither can be mapped around the refusal.
+    /// Both spend the shared deployment provider credential from <paramref name="vault"/> with no per-caller
+    /// scoping, which is the un-deny precondition that is not yet met.
     /// </summary>
-    private static void MapRoutes(HostedDenyGroup app, KeyVault vault)
+    private static void MapDeniedRoutes(HostedDenyGroup app, KeyVault vault)
     {
         app.MapGet("/gateway/ai/models", async (string? kind, CancellationToken ct) =>
         {
@@ -148,17 +166,30 @@ internal static class AiModelsEndpoint
                 return Results.Json(new { ok = false, error = ex.Message }, statusCode: StatusCodes.Status502BadGateway);
             }
         });
+    }
+
+    /// <summary>
+    /// The five per-account model/voice setters that SERVE on hosted (issue #2022). Takes the ungrouped builder:
+    /// each resolves the caller's tenant through <paramref name="resolver"/> and answers 403 when none resolves,
+    /// so they are safe on shared infrastructure without a deny. The catalog/test-chat credential routes are the
+    /// ones that stay denied (see <see cref="MapDeniedRoutes"/>).
+    /// </summary>
+    private static void MapServedRoutes(IEndpointRouteBuilder app,
+        TenantSettingsResolver resolver, HostedTenantBoundary? tenantBoundary)
+    {
 
         app.MapPut("/gateway/ai/wingman-model", async (HttpContext ctx) =>
         {
+            var t = GatewayEndpoints.ResolveReadTenant(ctx, tenantBoundary);
+            if (t is null) return TenantRequired();
             try
             {
                 var body = await JsonSerializer.DeserializeAsync<ModelBody>(ctx.Request.Body, JsonOpts, ctx.RequestAborted);
                 if (body is null || string.IsNullOrWhiteSpace(body.Model))
                     return Results.BadRequest(new { error = "body { \"model\": \"<id>\" } is required" });
                 var model = body.Model.Trim();
-                WingmanModelConfig.Set(model);
-                FileLog.Write($"[AiModelsEndpoint] wingman thinking model set: {model}");
+                resolver.SetWingmanModel(t.Value, WingmanModelRole.Thinking, model, DateTime.UtcNow);
+                FileLog.Write($"[AiModelsEndpoint] wingman thinking model set: {model} for tenant={t.Value.ToLogString()}");
                 return Results.Json(new { model });
             }
             catch (JsonException) { return Results.BadRequest(new { error = "invalid JSON" }); }
@@ -166,14 +197,16 @@ internal static class AiModelsEndpoint
 
         app.MapPut("/gateway/ai/wingman-fast-model", async (HttpContext ctx) =>
         {
+            var t = GatewayEndpoints.ResolveReadTenant(ctx, tenantBoundary);
+            if (t is null) return TenantRequired();
             try
             {
                 var body = await JsonSerializer.DeserializeAsync<ModelBody>(ctx.Request.Body, JsonOpts, ctx.RequestAborted);
                 if (body is null || string.IsNullOrWhiteSpace(body.Model))
                     return Results.BadRequest(new { error = "body { \"model\": \"<id>\" } is required" });
                 var model = body.Model.Trim();
-                WingmanModelConfig.SetFast(model);
-                FileLog.Write($"[AiModelsEndpoint] wingman fast model set: {model}");
+                resolver.SetWingmanModel(t.Value, WingmanModelRole.Fast, model, DateTime.UtcNow);
+                FileLog.Write($"[AiModelsEndpoint] wingman fast model set: {model} for tenant={t.Value.ToLogString()}");
                 return Results.Json(new { model });
             }
             catch (JsonException) { return Results.BadRequest(new { error = "invalid JSON" }); }
@@ -181,14 +214,16 @@ internal static class AiModelsEndpoint
 
         app.MapPut("/gateway/ai/car-mode-model", async (HttpContext ctx) =>
         {
+            var t = GatewayEndpoints.ResolveReadTenant(ctx, tenantBoundary);
+            if (t is null) return TenantRequired();
             try
             {
                 var body = await JsonSerializer.DeserializeAsync<ModelBody>(ctx.Request.Body, JsonOpts, ctx.RequestAborted);
                 if (body is null || string.IsNullOrWhiteSpace(body.Model))
                     return Results.BadRequest(new { error = "body { \"model\": \"<id>\" } is required" });
                 var model = body.Model.Trim();
-                CarModeModelConfig.Set(model);
-                FileLog.Write($"[AiModelsEndpoint] car mode model set: {model}");
+                resolver.SetCarModeModel(t.Value, model, DateTime.UtcNow);
+                FileLog.Write($"[AiModelsEndpoint] car mode model set: {model} for tenant={t.Value.ToLogString()}");
                 return Results.Json(new { model });
             }
             catch (JsonException) { return Results.BadRequest(new { error = "invalid JSON" }); }
@@ -196,13 +231,16 @@ internal static class AiModelsEndpoint
 
         app.MapPut("/gateway/ai/car-mode-end-phrase", async (HttpContext ctx) =>
         {
+            var t = GatewayEndpoints.ResolveReadTenant(ctx, tenantBoundary);
+            if (t is null) return TenantRequired();
             try
             {
                 var body = await JsonSerializer.DeserializeAsync<EndPhraseBody>(ctx.Request.Body, JsonOpts, ctx.RequestAborted);
-                // A blank phrase resets to the default (an empty phrase would end every turn); CarModeEndPhraseConfig.Set enforces it.
-                CarModeEndPhraseConfig.Set(body?.Phrase ?? string.Empty);
-                var phrase = CarModeEndPhraseConfig.Get();
-                FileLog.Write($"[AiModelsEndpoint] car mode end phrase set: {phrase}");
+                // A blank phrase resets this tenant to the operator default (an empty phrase would end every
+                // turn): the resolver CLEARS the tenant override on blank so the read falls back to the default.
+                resolver.SetCarModeEndPhrase(t.Value, body?.Phrase ?? string.Empty, DateTime.UtcNow);
+                var phrase = resolver.CarModeEndPhrase(t.Value);
+                FileLog.Write($"[AiModelsEndpoint] car mode end phrase set: {phrase} for tenant={t.Value.ToLogString()}");
                 return Results.Json(new { phrase });
             }
             catch (JsonException) { return Results.BadRequest(new { error = "invalid JSON" }); }
@@ -210,14 +248,16 @@ internal static class AiModelsEndpoint
 
         app.MapPut("/gateway/ai/tts-model", async (HttpContext ctx) =>
         {
+            var t = GatewayEndpoints.ResolveReadTenant(ctx, tenantBoundary);
+            if (t is null) return TenantRequired();
             try
             {
                 var body = await JsonSerializer.DeserializeAsync<ModelBody>(ctx.Request.Body, JsonOpts, ctx.RequestAborted);
                 if (body is null || string.IsNullOrWhiteSpace(body.Model))
                     return Results.BadRequest(new { error = "body { \"model\": \"<id>\" } is required" });
-                TtsModelConfig.Set(body.Model);
-                var model = TtsModelConfig.Get();
-                FileLog.Write($"[AiModelsEndpoint] tts model set: {model}");
+                resolver.SetTtsModel(t.Value, body.Model, DateTime.UtcNow);
+                var model = body.Model.Trim();
+                FileLog.Write($"[AiModelsEndpoint] tts model set: {model} for tenant={t.Value.ToLogString()}");
                 return Results.Json(new { model });
             }
             catch (JsonException) { return Results.BadRequest(new { error = "invalid JSON" }); }

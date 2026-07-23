@@ -2,6 +2,8 @@ using System.Text;
 using CcDirector.AgentBrain;
 using CcDirector.Core;
 using CcDirector.Core.Tenancy;
+using CcDirector.Gateway.Settings;
+using CcDirector.Gateway.Tests.Data;
 using CcDirector.Gateway.Wingman;
 using Xunit;
 
@@ -25,8 +27,16 @@ namespace CcDirector.Gateway.Tests;
 /// clip is deleted). The save guard alone is not enough to keep the delete test green, and vice versa,
 /// so neither guard can be dropped without a red.
 /// </summary>
-public sealed class WingmanVoiceSidPathTraversalTests
+public sealed class WingmanVoiceSidPathTraversalTests : IDisposable
 {
+    private readonly GatewayDbTestHarness _settingsData = new();
+    private TenantSettingsResolver? _settings;
+
+    private TenantSettingsResolver Settings =>
+        _settings ??= new TenantSettingsResolver(new TenantSettingsStore(_settingsData.Open()));
+
+    public void Dispose() => _settingsData.Dispose();
+
     private static readonly TenantId TenantA = new("aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa");
     private static readonly TenantId TenantB = new("bbbbbbbb-2222-4222-8222-bbbbbbbbbbbb");
 
@@ -39,12 +49,12 @@ public sealed class WingmanVoiceSidPathTraversalTests
         return dir;
     }
 
-    private static WingmanVoiceService ServiceAt(string baseDir)
+    private WingmanVoiceService ServiceAt(string baseDir)
     {
-        Func<Core.Configuration.WingmanModelRole, CancellationToken, Task<IAgentBrain>> brain =
-            (_, _) => Task.FromResult<IAgentBrain>(null!);
+        Func<TenantId, Core.Configuration.WingmanModelRole, CancellationToken, Task<IAgentBrain>> brain =
+            (_, _, _) => Task.FromResult<IAgentBrain>(null!);
         var vault = new KeyVault(Path.Combine(baseDir, "vault.json"));
-        return new WingmanVoiceService(brain, vault, Path.Combine(baseDir, "voice-sessions.json"));
+        return new WingmanVoiceService(brain, vault, Settings, Path.Combine(baseDir, "voice-sessions.json"));
     }
 
     /// <summary>

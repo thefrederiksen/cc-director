@@ -210,35 +210,36 @@ public sealed class GatewayHostTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task GatewaySettings_returns_status_brain_and_autostart_snapshot()
+    public async Task GatewaySettings_returns_the_per_account_snapshot()
     {
+        // Issue #2022: the machine settings left the web page, so this snapshot carries only the per-account
+        // settings the collapsed page renders - no process diagnostics, no brain block, no autostart state.
+        // The diagnostics relocated to GET /gateway/about (proved by GatewayAbout_returns_runtime_diagnostics).
         var obj = await _http.GetFromJsonAsync<JsonObject>("gateway/settings");
         Assert.NotNull(obj);
-        Assert.Equal("Running", (string?)obj["state"]);
-        Assert.Equal(_gatewayPort, (int?)obj["port"]);
-        Assert.False(string.IsNullOrEmpty((string?)obj["version"]));
-        // No SettingsHooks are set on a bare host, so mode is unknown and autostart is unsupported.
-        Assert.Equal("unknown", (string?)obj["mode"]);
-
-        var autostart = obj["autostart"] as JsonObject;
-        Assert.NotNull(autostart);
-        Assert.False((bool?)autostart["supported"]);
-
-        // The brain never spawns just to report health: a dormant brain reads as not started.
-        var brain = obj["brain"] as JsonObject;
-        Assert.NotNull(brain);
-        Assert.False((bool?)brain["started"]);
-        Assert.Contains("not started", (string?)brain["detail"]);
+        Assert.True(obj!.ContainsKey("snoozeDefaultMinutes"));
+        Assert.True(obj.ContainsKey("snoozePresets"));
+        Assert.True(obj.ContainsKey("timeZone"));
+        // The machine fields are GONE - a regression that re-added any of them would redden here.
+        Assert.False(obj.ContainsKey("state"));
+        Assert.False(obj.ContainsKey("brain"));
+        Assert.False(obj.ContainsKey("autostart"));
+        Assert.False(obj.ContainsKey("addressingMode"));
     }
 
     [Fact]
-    public async Task GatewayAutostart_put_is_unsupported_without_a_hook()
+    public async Task GatewayAbout_returns_runtime_diagnostics()
     {
-        var resp = await _http.PutAsJsonAsync("gateway/autostart", new JsonObject { ["enabled"] = true });
-        resp.EnsureSuccessStatusCode();
-        var body = await resp.Content.ReadFromJsonAsync<JsonObject>();
-        Assert.NotNull(body);
-        Assert.False((bool?)body["supported"]);
+        // Issue #2022: the live process diagnostics the "This machine" tab used to show now live read-only on
+        // the About page, on both surfaces. A bare host sets no SettingsHooks, so the mode is "unknown".
+        var obj = await _http.GetFromJsonAsync<JsonObject>("gateway/about");
+        Assert.NotNull(obj);
+        Assert.Equal("Running", (string?)obj!["state"]);
+        Assert.Equal(_gatewayPort, (int?)obj["port"]);
+        Assert.False(string.IsNullOrEmpty((string?)obj["version"]));
+        Assert.Equal("unknown", (string?)obj["mode"]);
+        Assert.True(obj.ContainsKey("uptimeSeconds"));
+        Assert.True(obj.ContainsKey("directors"));
     }
 
     [Fact]

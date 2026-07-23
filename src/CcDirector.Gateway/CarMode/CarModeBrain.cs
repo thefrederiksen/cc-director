@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Text.Json;
+using CcDirector.Core.Tenancy;
 using CcDirector.Core.Utilities;
 
 namespace CcDirector.Gateway.CarMode;
@@ -47,12 +48,14 @@ public sealed class CarModeBrain
     /// specific exception on any other model/fleet failure, so the browser speaks a loud, specific failure
     /// - never a silent stall or a guess.
     /// </summary>
-    public async Task<CarModeTurnResponse> RunTurnAsync(string deviceKey, string userText, CancellationToken ct)
+    public async Task<CarModeTurnResponse> RunTurnAsync(TenantId tenant, string deviceKey, string userText, CancellationToken ct)
     {
+        if (!tenant.IsValid)
+            throw new ArgumentException("Car Mode requires an explicit tenant.", nameof(tenant));
         // Time the WHOLE turn from here, and collect per-model-call and per-fleet-read timings inside the
         // core loop, so the endpoint returns a real per-stage breakdown to the browser (performance round).
         var timer = new TurnTimer();
-        var response = await RunTurnCoreAsync(deviceKey, userText, timer, ct);
+        var response = await RunTurnCoreAsync(tenant, deviceKey, userText, timer, ct);
         timer.Total.Stop();
         var timing = timer.ToTiming();
         _log($"[CarModeBrain] turn timing: total={timing.TotalMs:F0}ms, models={timing.ModelCallCount} ({timing.ModelMsTotal:F0}ms), "
@@ -107,7 +110,7 @@ public sealed class CarModeBrain
         };
     }
 
-    private async Task<CarModeTurnResponse> RunTurnCoreAsync(string deviceKey, string userText, TurnTimer timer, CancellationToken ct)
+    private async Task<CarModeTurnResponse> RunTurnCoreAsync(TenantId tenant, string deviceKey, string userText, TurnTimer timer, CancellationToken ct)
     {
         if (string.IsNullOrWhiteSpace(userText))
             throw new ArgumentException("The command text is required.", nameof(userText));
@@ -155,7 +158,7 @@ public sealed class CarModeBrain
         {
             timer.Rounds = round + 1;
             var messagesJson = JsonSerializer.Serialize(messages);
-            var turn = await timer.TimeModelAsync(() => _chat.CompleteAsync(messagesJson, ToolCatalogJson, ct));
+            var turn = await timer.TimeModelAsync(() => _chat.CompleteAsync(tenant, messagesJson, ToolCatalogJson, ct));
 
             // Structural guard against the Car Mode hallucination gotcha (a known, recurring failure of the
             // fast model): under tool_choice=required the model MUST speak by calling speak_answer and act by

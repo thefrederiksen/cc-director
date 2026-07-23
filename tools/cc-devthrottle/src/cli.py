@@ -68,6 +68,11 @@ diag_app = typer.Typer(
     add_completion=False,
     no_args_is_help=True,
 )
+autostart_app = typer.Typer(
+    help="Start the Gateway at login (issue #2022): on | off | status.",
+    add_completion=False,
+    no_args_is_help=True,
+)
 app.add_typer(session_app, name="session")
 app.add_typer(mission_app, name="mission")
 app.add_typer(message_app, name="message")
@@ -77,6 +82,7 @@ app.add_typer(workflow_app, name="workflow")
 app.add_typer(setup_app, name="setup")
 app.add_typer(email_app, name="email")
 app.add_typer(diag_app, name="diag")
+app.add_typer(autostart_app, name="autostart")
 console = Console()
 
 _ACTIONS = [
@@ -85,6 +91,27 @@ _ACTIONS = [
         "description": "List every session in the fleet.",
         "command": "cc-devthrottle session list",
         "mutatesState": False,
+        "args": [],
+    },
+    {
+        "id": "autostart-status",
+        "description": "Show whether the Gateway starts at login, and the per-OS mechanism.",
+        "command": "cc-devthrottle autostart status",
+        "mutatesState": False,
+        "args": [],
+    },
+    {
+        "id": "autostart-on",
+        "description": "Start the Gateway when you log in (Windows Run key / macOS launch agent / Linux systemd --user).",
+        "command": "cc-devthrottle autostart on",
+        "mutatesState": True,
+        "args": [],
+    },
+    {
+        "id": "autostart-off",
+        "description": "Do not start the Gateway at login.",
+        "command": "cc-devthrottle autostart off",
+        "mutatesState": True,
         "args": [],
     },
     {
@@ -1130,6 +1157,30 @@ def setup_doctor(
 ) -> None:
     """Show setup diagnostics."""
     setup_ops.doctor(json_output)
+
+
+@autostart_app.command("on")
+def autostart_on(
+    json_output: bool = typer.Option(False, "--json", "-j", help="Output as JSON."),
+) -> None:
+    """Start the Gateway when you log in (issue #2022)."""
+    setup_ops.run_autostart("on", json_output)
+
+
+@autostart_app.command("off")
+def autostart_off(
+    json_output: bool = typer.Option(False, "--json", "-j", help="Output as JSON."),
+) -> None:
+    """Do not start the Gateway at login."""
+    setup_ops.run_autostart("off", json_output)
+
+
+@autostart_app.command("status")
+def autostart_status(
+    json_output: bool = typer.Option(False, "--json", "-j", help="Output as JSON."),
+) -> None:
+    """Show whether the Gateway starts at login, and the per-OS mechanism."""
+    setup_ops.run_autostart("status", json_output)
 
 
 @email_app.callback()

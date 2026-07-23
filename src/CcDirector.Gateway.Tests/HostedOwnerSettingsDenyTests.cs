@@ -42,48 +42,37 @@ public static class OwnerSettingsRoutes
     }
 
     /// <summary>
-    /// The 22 routes mapped directly by <c>SettingsEndpoints</c>. Bodies are WELL FORMED and would be
-    /// accepted on self-host, so a refusal here can never be mistaken for a validation rejection.
+    /// The routes mapped by <c>SettingsEndpoints</c> that STAY DENIED on hosted. Bodies are WELL FORMED and
+    /// would be accepted on self-host, so a refusal here can never be mistaken for a validation rejection.
+    ///
+    /// Issue #2022 part 1 removed five machine-scoped routes (brain restart/config, addressing GET+PUT,
+    /// autostart) - they do not exist any more. Issue #2022 part 2 RETIRED the deny for the per-account routes
+    /// (the settings snapshot, snooze-default, snooze-presets, time-zone, ai-provider, tts-voice), which now
+    /// SERVE on hosted (proved by <see cref="HostedPerAccountSettingsServeTests"/>). What remains DENIED here
+    /// is the process-global set with no tenant dimension: injected text and transcription mode. Injected
+    /// text stays denied permanently.
     /// </summary>
     public static readonly Route[] Settings =
     {
-        new("GET",  "gateway/settings",                 null, SettingsRefusal),
-        new("POST", "gateway/brain/restart",            null, SettingsRefusal),
-        new("PUT",  "gateway/brain/config",             "{\"agentId\":\"agent-1\",\"model\":\"opus\"}", SettingsRefusal),
-        new("GET",  "gateway/wingman/training-capture", null, SettingsRefusal),
-        new("PUT",  "gateway/wingman/training-capture", "{\"enabled\":true}", SettingsRefusal),
-        new("GET",  "gateway/addressing-mode",          null, SettingsRefusal),
-        new("PUT",  "gateway/addressing-mode",          "{\"mode\":\"lan\"}", SettingsRefusal),
-        new("GET",  "gateway/snooze-default",           null, SettingsRefusal),
-        new("PUT",  "gateway/snooze-default",           "{\"minutes\":45}", SettingsRefusal),
         new("GET",  "gateway/injected-text",            null, SettingsRefusal),
         new("PUT",  "gateway/injected-text",            "{\"use_yours\":true,\"yours\":\"words from another tenant\"}", SettingsRefusal),
-        new("GET",  "gateway/snooze-presets",           null, SettingsRefusal),
-        new("PUT",  "gateway/snooze-presets",           "{\"presets\":[15,30,60],\"defaultMinutes\":30}", SettingsRefusal),
-        new("GET",  "gateway/time-zone",                null, SettingsRefusal),
-        new("PUT",  "gateway/time-zone",                "{\"timeZone\":\"America/New_York\"}", SettingsRefusal),
         new("GET",  "gateway/transcription-mode",       null, SettingsRefusal),
         new("PUT",  "gateway/transcription-mode",       "{\"mode\":\"devthrottle\"}", SettingsRefusal),
-        new("GET",  "gateway/ai-provider",              null, SettingsRefusal),
-        new("PUT",  "gateway/ai-provider",              "{\"provider\":\"devthrottle\"}", SettingsRefusal),
-        new("GET",  "gateway/tts-voice",                null, SettingsRefusal),
-        new("PUT",  "gateway/tts-voice",                "{\"voice\":\"shimmer\"}", SettingsRefusal),
-        new("PUT",  "gateway/autostart",                "{\"enabled\":true}", SettingsRefusal),
     };
 
-    /// <summary>The 7 routes mapped by <c>AiModelsEndpoint</c>.</summary>
+    /// <summary>
+    /// The <c>AiModelsEndpoint</c> routes that STAY DENIED on hosted (issue #2022 part 2): the catalog and
+    /// test-chat, which spend the SHARED deployment provider credential with no per-caller scoping. The five
+    /// per-account model/voice setters were un-denied and now SERVE on hosted (see
+    /// <see cref="HostedPerAccountSettingsServeTests"/>).
+    /// </summary>
     public static readonly Route[] Models =
     {
         new("GET",  "gateway/ai/models",              null, ModelsRefusal),
         new("POST", "gateway/ai/test-chat",           "{\"model\":\"some-model\"}", ModelsRefusal),
-        new("PUT",  "gateway/ai/wingman-model",       "{\"model\":\"hosted-wingman\"}", ModelsRefusal),
-        new("PUT",  "gateway/ai/wingman-fast-model",  "{\"model\":\"hosted-fast\"}", ModelsRefusal),
-        new("PUT",  "gateway/ai/car-mode-model",      "{\"model\":\"hosted-car\"}", ModelsRefusal),
-        new("PUT",  "gateway/ai/car-mode-end-phrase", "{\"phrase\":\"finished here\"}", ModelsRefusal),
-        new("PUT",  "gateway/ai/tts-model",           "{\"model\":\"hosted-speech\"}", ModelsRefusal),
     };
 
-    /// <summary>All route-and-verb pairs the owner-settings group answers.</summary>
+    /// <summary>All 6 route-and-verb pairs that STILL refuse on hosted after the issue #2022 deny retirement.</summary>
     public static IEnumerable<Route> All => Settings.Concat(Models);
 
     /// <summary>
@@ -151,13 +140,16 @@ public static class OwnerSettingsRoutes
 /// <summary>
 /// Issue #1863: the WHOLE owner-settings group is DENIED on the hosted Gateway.
 ///
-/// THE DEFECT. Twenty-nine routes across two endpoint classes read and write PROCESS-GLOBAL
-/// configuration. There is no tenant dimension anywhere in them: config.json is one file for the whole
-/// process, so every write is a FLEET-WIDE mutation performed by whichever authenticated caller happened
-/// to send it - one tenant repointing the wingman model, the speech model, the time zone, the snooze
-/// lengths or the network addressing mode for everybody else. And
-/// <c>GET /gateway/injected-text</c> hands back the owner's own custom agent-launch instruction text,
-/// which is his words, to any caller.
+/// THE DEFECT (as it stands after issue #2022 part 2). SIX routes across two endpoint classes read and
+/// write PROCESS-GLOBAL configuration with no tenant dimension: config.json is one file for the whole
+/// process, so a write is a FLEET-WIDE mutation performed by whichever authenticated caller sent it, and
+/// <c>GET /gateway/injected-text</c> hands back the owner's own agent-launch instruction text to any caller.
+/// The AI catalog and test-chat spend the shared deployment credential with no per-caller scoping. These
+/// STAY refused on hosted. The per-account routes (the settings snapshot, snooze, time zone, ai-provider,
+/// tts-voice, and the five model/voice setters) were UN-DENIED once their runtime consumers were tenant
+/// -threaded - they now serve on hosted, resolving the caller's tenant, and are proved by
+/// <see cref="HostedPerAccountSettingsServeTests"/>. (Issue #2022 part 1 also removed five machine-scoped
+/// routes - brain restart/config, network addressing, autostart - by taking them off the web page.)
 ///
 /// WHY A DENY AND NOT A PARTITION. There is nothing to partition BY. These are not per-tenant records
 /// whose storage unit could carry a tenant - they are single global values, one per key, and a
@@ -199,7 +191,6 @@ public sealed class HostedOwnerSettingsDenyTests : IAsyncLifetime
     private GatewayHost _gateway = null!;
     private HttpClient _http = null!;
     private string _deviceKey = "";
-    private int _brainRestartInvocations;
 
     public HostedOwnerSettingsDenyTests()
     {
@@ -222,21 +213,6 @@ public sealed class HostedOwnerSettingsDenyTests : IAsyncLifetime
             snoozePath: Path.Combine(_instancesDir, "snooze", "snooze.json"));
         await _gateway.StartAsync();
         _http = new HttpClient { BaseAddress = new Uri($"http://127.0.0.1:{_gateway.Port}/") };
-
-        // POST /gateway/brain/restart must not start a coding-agent process from a test - not here, and
-        // ESPECIALLY not on a revert arm, where the deny is deliberately removed and the request would
-        // reach the live handler. Replacing the restart action with one that starts nothing means no
-        // mutation run can leave a stray agent behind. The route is still driven for real, and the
-        // refusal asserted, exactly like the other thirty.
-        //
-        // It also records whether it ran, which is what makes the deny claim STRONGER rather than weaker:
-        // the assertion below is that the refusal happened AND the action was never invoked - a filter
-        // that answered 404 after letting the handler run would be invisible without it.
-        _gateway.BrainRestartAction = _ =>
-        {
-            Interlocked.Increment(ref _brainRestartInvocations);
-            return Task.CompletedTask;
-        };
 
         // A fully enrolled, tenant-bound device key - the strongest caller hosted has. The point is that
         // even this one is refused: no credential makes an owner's control panel correct on shared
@@ -272,14 +248,15 @@ public sealed class HostedOwnerSettingsDenyTests : IAsyncLifetime
 
     /// <summary>
     /// The refusal is a REFUSAL, not an empty snapshot. The exact-property-set assertion above is what
-    /// enforces this; this states the intent in the terms the mistake would be made in - the settings page
-    /// must not be handed a snapshot that reads "you have no custom text, no presets, no time zone", which
-    /// is a false statement where an absent one is merely absent.
+    /// enforces this; this states the intent in the terms the mistake would be made in - a denied route must
+    /// not be handed a snapshot that reads "you have no custom text", which is a false statement where an
+    /// absent one is merely absent. Uses the STILL-DENIED routes only (issue #2022 part 2 un-denied the
+    /// per-account snapshot and snooze-presets, so those now serve - see HostedPerAccountSettingsServeTests).
     /// </summary>
     [Fact]
     public async Task The_refusal_is_not_an_empty_settings_snapshot()
     {
-        foreach (var path in new[] { "gateway/settings", "gateway/injected-text", "gateway/snooze-presets" })
+        foreach (var path in new[] { "gateway/injected-text", "gateway/transcription-mode" })
         {
             var response = await _http.GetAsync(path);
             var body = await response.Content.ReadAsStringAsync();
@@ -287,8 +264,7 @@ public sealed class HostedOwnerSettingsDenyTests : IAsyncLifetime
             Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
             Assert.Equal("application/json", response.Content.Headers.ContentType?.MediaType);
             Assert.DoesNotContain("\"placeholders\"", body, StringComparison.Ordinal);
-            Assert.DoesNotContain("\"presets\"", body, StringComparison.Ordinal);
-            Assert.DoesNotContain("\"brain\"", body, StringComparison.Ordinal);
+            Assert.DoesNotContain("\"enabled\"", body, StringComparison.Ordinal);
             Assert.Contains("not available on the hosted gateway", body, StringComparison.Ordinal);
         }
     }
@@ -312,24 +288,6 @@ public sealed class HostedOwnerSettingsDenyTests : IAsyncLifetime
         Assert.Equal(timeZoneBefore, TimeZoneConfig.Get());
         Assert.Equal(voiceBefore, TtsVoiceConfig.Resolve(TranscriptionModeConfig.Get()));
         Assert.Equal(carModelBefore, CarModeModelConfig.Get());
-    }
-
-    /// <summary>
-    /// The refused ACTION never ran. `POST /gateway/brain/restart` is not a disclosure but a process spawn,
-    /// so for it "the response was a 404" is the weaker half of the claim - the stronger half is that the
-    /// thing it would have done did not happen. Asserted against the injected restart seam, which counts its
-    /// own invocations, so a filter that answered 404 only AFTER letting the handler run would redden here
-    /// while looking perfect from outside.
-    /// </summary>
-    [Fact]
-    public async Task The_refused_brain_restart_never_invokes_the_restart_action()
-    {
-        Assert.Equal(0, Volatile.Read(ref _brainRestartInvocations));
-
-        var response = await OwnerSettingsRoutes.SendAsync(_http, "POST", "gateway/brain/restart", "");
-        await OwnerSettingsRoutes.AssertIsNothingButTheRefusal(response, OwnerSettingsRoutes.SettingsRefusal);
-
-        Assert.Equal(0, Volatile.Read(ref _brainRestartInvocations));
     }
 
     /// <summary>
@@ -403,7 +361,7 @@ internal sealed record CanaryBody(string Text);
 /// A guard line repeated in every handler passes EXACTLY the same tests as the group refusal for the routes
 /// that exist today, which is precisely what makes it dangerous rather than merely untidy: the difference
 /// only appears on the route somebody adds NEXT, when it is open on hosted by default and nothing fails.
-/// That difference is not observable by driving the routes that exist, so this class maps a BRAND-NEW
+/// That difference is not observable by driving the 31 routes that exist, so this class maps a BRAND-NEW
 /// probe route THROUGH each denied handle and asserts it is refused with no deny written for it anywhere.
 /// These are the tests that justify routing every handler through the primitive at all, and they are the
 /// reason all three <c>Map</c> methods now return their denied handle.
@@ -462,7 +420,7 @@ public sealed class HostedOwnerSettingsGroupFilterTests : IAsyncLifetime
     internal Func<IEndpointRouteBuilder, HostedDenyGroup> Family(string name) => name switch
     {
         "settings" => routes => SettingsEndpoints.Map(routes, _gateway),
-        "models" => routes => AiModelsEndpoint.Map(routes, new KeyVault(Path.Combine(_root, "vault.json"))),
+        "models" => routes => AiModelsEndpoint.Map(routes, new KeyVault(Path.Combine(_root, "vault.json")), _gateway.TenantSettingsResolver, _gateway.TenantBoundary),
         _ => throw new ArgumentOutOfRangeException(nameof(name), name, "unknown owner-settings family"),
     };
 
@@ -562,35 +520,36 @@ public sealed class HostedOwnerSettingsGroupFilterTests : IAsyncLifetime
     /// A VERB THE ROUTE NEVER SERVED meets the REFUSAL, not a 405 - the headline upgrade the shared refusal
     /// primitive buys over the old request-time group filter, and the reason this rework replaced the filter.
     ///
-    /// <c>POST /gateway/brain/restart</c> is the only verb this route ever served. Under the old
+    /// <c>gateway/injected-text</c> serves GET and PUT and stays denied on hosted (issue #2022 part 2 un-denied
+    /// the per-account routes but injected text is process-global and stays refused). Under the old
     /// <c>AddEndpointFilter</c> deny the route's handler was still MAPPED on hosted and the filter ran inside
-    /// it, so a GET to that path was answered by endpoint SELECTION with 405 <c>Allow: POST</c> - which
-    /// discloses that a route exists on a Gateway whose refusal says it does not. The primitive maps a
-    /// VERB-LESS refusal on the path and never maps the handler at all, so every verb - including one the
-    /// route never served - meets the same 404 refusal. A wrong verb IS a request shape, and the refusal is
+    /// it, so a POST to that path would be answered by endpoint SELECTION with 405 <c>Allow: GET, PUT</c> -
+    /// which discloses that a route exists on a Gateway whose refusal says it does not. The primitive maps a
+    /// VERB-LESS refusal on the path and never maps the handler at all, so every verb - including one the route
+    /// never served (POST) - meets the same 404 refusal. A wrong verb IS a request shape, and the refusal is
     /// uniform across shapes.
     ///
-    /// THIS IS REVERT-PROOF. Restore the real handler on hosted (map it instead of the refusal) and this GET
+    /// THIS IS REVERT-PROOF. Restore the real handler on hosted (map it instead of the refusal) and this POST
     /// goes back to 405, reddening the refusal assertion. And it still answers the question the old 405 did -
     /// a refused path is distinguished from one that was never mapped: the refused path carries the error
     /// body, a never-mapped path is a bare 404 with no body and no <c>Allow</c> header on this fallback-free
     /// probe host.
     /// </summary>
     [Fact]
-    public async Task The_brain_restart_route_answers_the_refusal_on_a_verb_it_never_served_on_hosted()
+    public async Task A_route_answers_the_refusal_on_a_verb_it_never_served_on_hosted()
     {
         var (app, http) = await OwnerSettingsProbeHost.StartAsync(Family("settings"));
         try
         {
-            // GET a POST-only route. NOT a 405 - the verb-less refusal answers it, uniformly across verbs.
-            var wrongVerb = await http.GetAsync("/gateway/brain/restart");
+            // POST a GET/PUT-only route. NOT a 405 - the verb-less refusal answers it, uniformly across verbs.
+            var wrongVerb = await http.PostAsync("/gateway/injected-text", new StringContent(""));
             await OwnerSettingsRoutes.AssertIsNothingButTheRefusal(wrongVerb, OwnerSettingsRoutes.SettingsRefusal);
             Assert.Empty(wrongVerb.Content.Headers.Allow);
 
             // The refusal above is this route's own, not a catch-all: a path NOT in the family answers a bare
             // 404 with no body on this fallback-free probe host. Per-route mode refuses only the paths the
             // family declares, so an undeclared sub-path is genuinely unmapped.
-            var neverMapped = await http.GetAsync("/gateway/brain/no-such-route");
+            var neverMapped = await http.GetAsync("/gateway/no-such-route");
             Assert.Equal(HttpStatusCode.NotFound, neverMapped.StatusCode);
             Assert.Empty(neverMapped.Content.Headers.Allow);
             Assert.Equal(string.Empty, await neverMapped.Content.ReadAsStringAsync());

@@ -4,6 +4,7 @@ using System.Net.Http.Json;
 using System.Text;
 using System.Text.Json.Nodes;
 using CcDirector.Core.Configuration;
+using CcDirector.Core.Tenancy;
 using CcDirector.Gateway;
 using Xunit;
 
@@ -79,13 +80,24 @@ public sealed class AiProviderEndpointTests : IAsyncLifetime
     [Fact]
     public async Task Put_ai_provider_devthrottle_restores_hosted_defaults()
     {
+        var mode = TranscriptionModeConfig.Get();
+        // Seed distinctive per-tenant overrides the reset must move away from (issue #2017: the AI tab writes
+        // per tenant, not to config.json).
+        _gateway.TenantSettingsResolver.SetWingmanModel(TenantId.Local, WingmanModelRole.Thinking, "sentinel-think", DateTime.UtcNow);
+        _gateway.TenantSettingsResolver.SetWingmanModel(TenantId.Local, WingmanModelRole.Fast, "sentinel-fast", DateTime.UtcNow);
+
         var resp = await _http.PutAsJsonAsync("gateway/ai-provider", new { provider = "devthrottle" });
         resp.EnsureSuccessStatusCode();
 
-        var onDisk = CcDirectorConfigService.ReadRaw();
-        Assert.Equal("devthrottle", (string?)onDisk["transcription_mode"]);
-        Assert.Equal("zai-org/GLM-5.2", (string?)onDisk["brain_model"]);
-        Assert.Equal("Qwen/Qwen2.5-72B-Instruct", (string?)onDisk["brain_model_fast"]);
+        // transcription_mode is a single-valued global provider fact, still written to config.json.
+        Assert.Equal("devthrottle", (string?)CcDirectorConfigService.ReadRaw()["transcription_mode"]);
+        // The reset CLEARS this tenant's model overrides, so the resolver falls back to the operator hosted
+        // defaults - the sentinels are gone.
+        Assert.Equal(WingmanModelConfig.Resolve(mode, WingmanModelRole.Thinking),
+            _gateway.TenantSettingsResolver.WingmanModel(TenantId.Local, mode, WingmanModelRole.Thinking));
+        Assert.Equal(WingmanModelConfig.Resolve(mode, WingmanModelRole.Fast),
+            _gateway.TenantSettingsResolver.WingmanModel(TenantId.Local, mode, WingmanModelRole.Fast));
+        Assert.NotEqual("sentinel-think", _gateway.TenantSettingsResolver.WingmanModel(TenantId.Local, mode, WingmanModelRole.Thinking));
     }
 
     [Fact]
@@ -130,7 +142,9 @@ public sealed class AiProviderEndpointTests : IAsyncLifetime
         resp.EnsureSuccessStatusCode();
         Assert.Equal("onyx", (string?)(await resp.Content.ReadFromJsonAsync<JsonObject>())!["voice"]);
 
-        Assert.Equal("onyx", (string?)CcDirectorConfigService.ReadRaw()["tts_voice"]);
+        // Issue #2017: the voice persists to the per-tenant store (this Gateway's local tenant), not the
+        // process-global config.json, so the write is read back through the resolver.
+        Assert.Equal("onyx", _gateway.TenantSettingsResolver.TtsVoice(TenantId.Local, TranscriptionModeConfig.Get()));
         var obj = await _http.GetFromJsonAsync<JsonObject>("gateway/tts-voice");
         Assert.Equal("onyx", (string?)obj!["voice"]);
     }
@@ -142,7 +156,8 @@ public sealed class AiProviderEndpointTests : IAsyncLifetime
         var resp = await _http.PutAsJsonAsync("gateway/tts-voice", new { voice = "af_bella" });
         resp.EnsureSuccessStatusCode();
         Assert.Equal("af_bella", (string?)(await resp.Content.ReadFromJsonAsync<JsonObject>())!["voice"]);
-        Assert.Equal("af_bella", (string?)CcDirectorConfigService.ReadRaw()["tts_voice"]);
+        // Per-tenant store (issue #2017), read back through the resolver for the local tenant.
+        Assert.Equal("af_bella", _gateway.TenantSettingsResolver.TtsVoice(TenantId.Local, TranscriptionModeConfig.Get()));
     }
 
     [Fact]

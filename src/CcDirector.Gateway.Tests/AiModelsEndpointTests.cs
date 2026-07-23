@@ -4,6 +4,7 @@ using System.Net.Http.Json;
 using System.Text;
 using System.Text.Json.Nodes;
 using CcDirector.Core.Configuration;
+using CcDirector.Core.Tenancy;
 using CcDirector.Gateway;
 using Xunit;
 
@@ -60,7 +61,10 @@ public sealed class AiModelsEndpointTests : IAsyncLifetime
         resp.EnsureSuccessStatusCode();
         Assert.Equal("kimi-k2", (string?)(await resp.Content.ReadFromJsonAsync<JsonObject>())!["model"]);
 
-        Assert.Equal("kimi-k2", (string?)CcDirectorConfigService.ReadRaw()["brain_model"]);
+        // Issue #2017: the model now persists to the per-tenant store, not config.json. Read it back directly
+        // from the resolver for the self-host local tenant (an independent store re-read), then confirm the
+        // snapshot reflects it too.
+        Assert.Equal("kimi-k2", _gateway.TenantSettingsResolver.WingmanModel(TenantId.Local, TranscriptionModeConfig.Get(), WingmanModelRole.Thinking));
         var snap = await _http.GetFromJsonAsync<JsonObject>("gateway/ai-provider");
         Assert.Equal("kimi-k2", (string?)snap!["wingmanModel"]);
     }
@@ -72,7 +76,7 @@ public sealed class AiModelsEndpointTests : IAsyncLifetime
         resp.EnsureSuccessStatusCode();
         Assert.Equal("qwen-fast", (string?)(await resp.Content.ReadFromJsonAsync<JsonObject>())!["model"]);
 
-        Assert.Equal("qwen-fast", (string?)CcDirectorConfigService.ReadRaw()["brain_model_fast"]);
+        Assert.Equal("qwen-fast", _gateway.TenantSettingsResolver.WingmanModel(TenantId.Local, TranscriptionModeConfig.Get(), WingmanModelRole.Fast));
         var snap = await _http.GetFromJsonAsync<JsonObject>("gateway/ai-provider");
         Assert.Equal("qwen-fast", (string?)snap!["wingmanFastModel"]);
     }
@@ -84,7 +88,7 @@ public sealed class AiModelsEndpointTests : IAsyncLifetime
         resp.EnsureSuccessStatusCode();
         Assert.Equal("kokoro", (string?)(await resp.Content.ReadFromJsonAsync<JsonObject>())!["model"]);
 
-        Assert.Equal("kokoro", (string?)CcDirectorConfigService.ReadRaw()["tts_model"]);
+        Assert.Equal("kokoro", _gateway.TenantSettingsResolver.TtsModel(TenantId.Local, TranscriptionModeConfig.Get()));
         var snap = await _http.GetFromJsonAsync<JsonObject>("gateway/ai-provider");
         Assert.Equal("kokoro", (string?)snap!["ttsModel"]);
     }

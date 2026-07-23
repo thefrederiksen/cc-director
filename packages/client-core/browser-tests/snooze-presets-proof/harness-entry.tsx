@@ -31,18 +31,11 @@ window.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
   const method = (init?.method ?? "GET").toUpperCase();
 
   if (url.includes("/gateway/settings") && method === "GET") {
+    // The per-account settings snapshot (issue #2022): machine diagnostics moved to the About page and the
+    // vestigial global fields (training capture, telemetry consent) are gone, so the snapshot is purely the
+    // account settings the collapsed page renders.
     return new Response(
       JSON.stringify({
-        version: "proof",
-        state: "up",
-        port: 7878,
-        uptimeSeconds: 1,
-        directors: 1,
-        mode: "proof",
-        addressingMode: "tailscale",
-        cockpit: { port: 7879, up: true, url: null },
-        autostart: { supported: false, enabled: null },
-        wingmanTrainingCapture: false,
         snoozeDefaultMinutes: window.__state.defaultMinutes,
         snoozePresets: window.__state.presets,
         snoozeMaxPresets: 5,

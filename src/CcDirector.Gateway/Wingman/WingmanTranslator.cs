@@ -4,6 +4,7 @@ using System.Text.RegularExpressions;
 using CcDirector.AgentBrain;
 using CcDirector.Core.Configuration;
 using CcDirector.Core.Drivers;
+using CcDirector.Core.Tenancy;
 using CcDirector.Core.Utilities;
 using CcDirector.Gateway.Contracts;
 
@@ -194,7 +195,7 @@ public sealed class WingmanTranslator
     /// </summary>
     public const string DefaultInstructionsVersion = "8";
 
-    private readonly Func<WingmanModelRole, CancellationToken, Task<IAgentBrain>> _brainProvider;
+    private readonly Func<TenantId, WingmanModelRole, CancellationToken, Task<IAgentBrain>> _brainProvider;
     private readonly Action<string> _log;
     private readonly Func<string> _instructions;
 
@@ -206,7 +207,7 @@ public sealed class WingmanTranslator
     /// the ACTIVE wingman instructions at call time - the user's edited/versioned prompt when set,
     /// else the deployed <see cref="FidelityPrompt"/> default; omit it to always use the default.
     /// </summary>
-    public WingmanTranslator(Func<WingmanModelRole, CancellationToken, Task<IAgentBrain>> brainProvider, Action<string>? log = null, Func<string>? instructionsProvider = null)
+    public WingmanTranslator(Func<TenantId, WingmanModelRole, CancellationToken, Task<IAgentBrain>> brainProvider, Action<string>? log = null, Func<string>? instructionsProvider = null)
     {
         _brainProvider = brainProvider ?? throw new ArgumentNullException(nameof(brainProvider));
         _log = log ?? FileLog.Write;
@@ -262,16 +263,17 @@ public sealed class WingmanTranslator
     /// </summary>
     /// <returns>The faithful, speakable translation and how long the brain took.</returns>
     /// <exception cref="ArgumentException">The latest reply is empty - there is nothing to translate.</exception>
-    public Task<WingmanTranslation> TranslateAsync(string recentContext, string latestReply, string? sessionTitle, CancellationToken ct = default)
-        => TranslateWithAsync(_instructions(), recentContext, latestReply, sessionTitle, ct);
+    public Task<WingmanTranslation> TranslateAsync(TenantId tenant, string recentContext, string latestReply, string? sessionTitle, CancellationToken ct = default)
+        => TranslateWithAsync(tenant, _instructions(), recentContext, latestReply, sessionTitle, ct);
 
     /// <summary>
     /// Same as <see cref="TranslateAsync"/> but with caller-supplied instructions instead of the
     /// active ones (issue #537 A/B testing): re-run a DRAFT prompt over a captured reply to compare
     /// its spoken output against what the wingman said before, without changing the live instructions.
     /// </summary>
-    public async Task<WingmanTranslation> TranslateWithAsync(string instructions, string recentContext, string latestReply, string? sessionTitle, CancellationToken ct = default)
+    public async Task<WingmanTranslation> TranslateWithAsync(TenantId tenant, string instructions, string recentContext, string latestReply, string? sessionTitle, CancellationToken ct = default)
     {
+        RequireTenant(tenant);
         if (string.IsNullOrWhiteSpace(latestReply))
             throw new ArgumentException("Latest reply is required - there is nothing to translate.", nameof(latestReply));
 
@@ -279,7 +281,7 @@ public sealed class WingmanTranslator
 
         var prompt = BuildPrompt(instructions ?? FidelityPrompt, recentContext ?? "", latestReply, sessionTitle);
 
-        var brain = await _brainProvider(WingmanModelRole.Fast, ct);
+        var brain = await _brainProvider(tenant, WingmanModelRole.Fast, ct);
         AskResult ask;
         try
         {
@@ -311,15 +313,16 @@ public sealed class WingmanTranslator
     /// speakable form. It does NOT act on files - if real code work is implied it says so and
     /// suggests handing it to the session. Same warm brain, cleared after the answer.
     /// </summary>
-    public async Task<WingmanTranslation> AskDirectAsync(string userMessage, CancellationToken ct = default)
+    public async Task<WingmanTranslation> AskDirectAsync(TenantId tenant, string userMessage, CancellationToken ct = default)
     {
+        RequireTenant(tenant);
         if (string.IsNullOrWhiteSpace(userMessage))
             throw new ArgumentException("A message is required to ask the wingman.", nameof(userMessage));
 
         _log($"[WingmanTranslator] AskDirectAsync: userLen={userMessage.Length}");
         var prompt = BuildDirectPrompt(userMessage);
 
-        var brain = await _brainProvider(WingmanModelRole.Thinking, ct);
+        var brain = await _brainProvider(tenant, WingmanModelRole.Thinking, ct);
         AskResult ask;
         try
         {
@@ -346,15 +349,16 @@ public sealed class WingmanTranslator
     /// DevThrottle's in-product help and answers only about the product, declining off-topic asks.
     /// Same warm brain as the other paths, cleared after the answer so context never accumulates.
     /// </summary>
-    public async Task<WingmanTranslation> AskAboutDevThrottleAsync(string question, CancellationToken ct = default)
+    public async Task<WingmanTranslation> AskAboutDevThrottleAsync(TenantId tenant, string question, CancellationToken ct = default)
     {
+        RequireTenant(tenant);
         if (string.IsNullOrWhiteSpace(question))
             throw new ArgumentException("A question is required to ask about DevThrottle.", nameof(question));
 
         _log($"[WingmanTranslator] AskAboutDevThrottleAsync: questionLen={question.Length}");
         var prompt = BuildDevThrottlePrompt(question);
 
-        var brain = await _brainProvider(WingmanModelRole.Thinking, ct);
+        var brain = await _brainProvider(tenant, WingmanModelRole.Thinking, ct);
         AskResult ask;
         try
         {
@@ -413,12 +417,13 @@ public sealed class WingmanTranslator
     /// <see cref="WingmanMenu.IsMenu"/>=false (never throws) when it is not a menu or parsing fails -
     /// the caller then treats the input as a normal typed prompt, which is the correct default.
     /// </summary>
-    public async Task<WingmanMenu> DetectMenuAsync(string terminalText, CancellationToken ct = default)
+    public async Task<WingmanMenu> DetectMenuAsync(TenantId tenant, string terminalText, CancellationToken ct = default)
     {
+        RequireTenant(tenant);
         if (string.IsNullOrWhiteSpace(terminalText)) return new WingmanMenu { IsMenu = false };
         _log($"[WingmanTranslator] DetectMenuAsync: terminalLen={terminalText.Length}");
 
-        var brain = await _brainProvider(WingmanModelRole.Fast, ct);
+        var brain = await _brainProvider(tenant, WingmanModelRole.Fast, ct);
         AskResult ask;
         try { ask = await brain.AskAsync(BuildMenuDetectPrompt(terminalText), ct); }
         finally { await brain.ClearAsync(CancellationToken.None); }
@@ -435,11 +440,12 @@ public sealed class WingmanTranslator
     /// local match (<see cref="WingmanMenuLogic.MatchOption"/>) was not confident. Returns the
     /// 0-based option index, or -1 when the brain says it is unclear.
     /// </summary>
-    public async Task<int> MapChoiceAsync(WingmanMenu menu, string userText, CancellationToken ct = default)
+    public async Task<int> MapChoiceAsync(TenantId tenant, WingmanMenu menu, string userText, CancellationToken ct = default)
     {
+        RequireTenant(tenant);
         if (menu?.Options is null || menu.Options.Count == 0 || string.IsNullOrWhiteSpace(userText)) return -1;
 
-        var brain = await _brainProvider(WingmanModelRole.Fast, ct);
+        var brain = await _brainProvider(tenant, WingmanModelRole.Fast, ct);
         AskResult ask;
         try { ask = await brain.AskAsync(BuildMenuMapPrompt(menu, userText), ct); }
         finally { await brain.ClearAsync(CancellationToken.None); }
@@ -453,6 +459,12 @@ public sealed class WingmanTranslator
         }
         _log("[WingmanTranslator] MapChoiceAsync: unclear (0/none)");
         return -1;
+    }
+
+    private static void RequireTenant(TenantId tenant)
+    {
+        if (!tenant.IsValid)
+            throw new ArgumentException("Wingman runtime selection requires an explicit tenant.", nameof(tenant));
     }
 
     /// <summary>The menu-detection prompt. Public so a test can assert its contract.</summary>

@@ -21,6 +21,14 @@ export interface AiProviderSnapshot {
   ttsVoice: string;
   /** Fallback voice set when the selected speech model does not advertise voices. */
   voices: string[];
+  /**
+   * Whether the live model CATALOG (GET /gateway/ai/models) and the Test button are available (issue #2022).
+   * Gateway-owned, never guessed from the surface: false on the hosted Gateway, where the catalog and
+   * test-chat routes stay denied because they spend the shared deployment credential with no per-caller
+   * scoping. The AI and Car Mode tabs read this to disable browsing/Test and show a concise explanation
+   * instead of offering a control that would fail. True on self-host.
+   */
+  catalogAvailable: boolean;
 }
 
 /** One model in the provider's catalog (GET /gateway/ai/models). */

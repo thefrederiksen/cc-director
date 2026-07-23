@@ -21,8 +21,25 @@ export interface AboutInfo {
   cockpitUrl?: string | null;
   /** Installed component id -> version (from installed.json on the Gateway box). */
   installedComponents: Record<string, string>;
+  /**
+   * Whether this is the shared HOSTED Gateway rather than a self-hosted one on the owner's own machine
+   * (issue #2017). The Settings page reads this always-available flag to choose its tab set, so the surface
+   * is Gateway-owned, not guessed from a failed fetch.
+   */
+  hosted: boolean;
   /** The Gateway's current time (ISO 8601 UTC). */
   serverTime: string;
+  /**
+   * The live process diagnostics relocated here from the retired "This machine" Settings tab (issue #2022):
+   * read-only on both surfaces. State is "Running" whenever the endpoint answers; address is the auto-resolved
+   * public base (manual network addressing was dropped), null in self-host when Tailscale is down.
+   */
+  state: string;
+  port: number;
+  uptimeSeconds: number;
+  directors: number;
+  mode: string;
+  address?: string | null;
 }
 
 async function gatewayErrorFrom(res: Response, label: string): Promise<GatewayError> {
@@ -61,6 +78,13 @@ export async function getAbout(signal?: AbortSignal): Promise<AboutInfo> {
     installRoot: body?.installRoot ?? "",
     cockpitUrl: body?.cockpitUrl ?? null,
     installedComponents: body?.installedComponents ?? {},
+    hosted: body?.hosted ?? false,
     serverTime: body?.serverTime ?? "",
+    state: body?.state ?? "",
+    port: Number(body?.port ?? 0),
+    uptimeSeconds: Number(body?.uptimeSeconds ?? 0),
+    directors: Number(body?.directors ?? 0),
+    mode: body?.mode ?? "unknown",
+    address: body?.address ?? null,
   };
 }

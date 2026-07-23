@@ -3,6 +3,8 @@ using System.Net.Http.Headers;
 using CcDirector.Core;
 using CcDirector.Gateway.Api;
 using CcDirector.Gateway.Discovery;
+using CcDirector.Gateway.Settings;
+using CcDirector.Gateway.Tests.Data;
 using CcDirector.Gateway.Voice;
 using CcDirector.Gateway.Wingman;
 using Microsoft.AspNetCore.Builder;
@@ -56,17 +58,21 @@ public sealed class VoiceUploadLimitsTests : IDisposable
         var vaultPath = Path.Combine(Path.GetTempPath(), "cc-voice-limits-" + Guid.NewGuid().ToString("N") + ".vault");
         var vault = new KeyVault(vaultPath);
         var persistPath = Path.Combine(Path.GetTempPath(), "cc-voice-limits-" + Guid.NewGuid().ToString("N") + ".json");
+        var settingsData = new GatewayDbTestHarness();
+        app.Lifetime.ApplicationStopped.Register(settingsData.Dispose);
+        var tenantSettings = new TenantSettingsResolver(new TenantSettingsStore(settingsData.Open()));
 
         var voice = new WingmanVoiceService(
-            (_, _) => throw new InvalidOperationException("the brain must not be reached by an upload-size test"),
-            vault, persistPath);
+            (_, _, _) => throw new InvalidOperationException("the brain must not be reached by an upload-size test"),
+            vault, tenantSettings, persistPath);
 
         GatewayWingmanVoiceEndpoint.Map(
             app,
             new DirectorRegistry(Path.Combine(Path.GetTempPath(), "cc-voice-limits-inst-" + Guid.NewGuid().ToString("N"))),
-            (_, _) => throw new InvalidOperationException("the brain must not be reached by an upload-size test"),
+            (_, _, _) => throw new InvalidOperationException("the brain must not be reached by an upload-size test"),
             vault,
-            voice);
+            voice,
+            tenantSettings);
 
         await app.StartAsync();
         return (app, new HttpClient { BaseAddress = new Uri(app.Urls.First()) });

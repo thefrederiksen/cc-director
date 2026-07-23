@@ -1,14 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
-import { TABS, tabFromParam, type TabId } from "./settingsTabs";
+import { visibleTabs, tabFromParam, type TabId } from "./settingsTabs";
 import {
   getGatewaySettings,
-  setAddressingMode,
-  setAutostart,
   setSnoozePresets,
   setTimeZone,
-  setTrainingCapture,
-  type AddressingMode,
   type GatewaySettings,
   type SnoozePresets,
 } from "@devthrottle/client-core/settings/settingsClient";
@@ -49,17 +45,21 @@ import {
 // The Cockpit Settings page (issue #1025, epic #967) - the React port of the retired Blazor
 // wwwroot/pages/settings.html. The left-rail "Settings" item used to be a dead full-load anchor to
 // /settings (nothing served it, so it fell through to the SPA "Not found"); this is the real page it now
-// routes to. With the Gateway headless these are the only settings the product has, so the page is
-// organised by WHAT a setting is about, not by which endpoint serves it:
+// routes to.
 //
-//   This machine  - the Gateway host itself: process diagnostics, network addressing, startup, time zone
-//   Notifications - how a session that needs you reaches you: snooze length, browser notifications
+// Issue #2022 - self-host IS the hosted Gateway with one tenant, so this page is IDENTICAL on both surfaces:
+// per-account, three tabs, no surface branching. The machine settings left the web page (diagnostics to the
+// About page, autostart to the installer + the `cc-devthrottle autostart` command, addressing dropped, brain
+// removed), so there is no "This machine" tab on either surface. The page is organised by WHAT a setting is
+// about:
+//
+//   Notifications - how a session that needs you reaches you: snooze length, display time zone, browser
+//                   notifications
 //   AI            - DevThrottle-hosted models, transcription, wingman, and voice
 //   Car Mode      - the phone's hands-free fleet control
-//   Training data - whether wingman summaries are retained for testing and improvement
 //
-// Every card carries a scope pill ("this machine" / "this browser" / "whole fleet") because the page
-// mixes all three and the reach of a change must be readable without reading the hint paragraph.
+// Every card carries a scope pill ("your account" / "this browser" / "included") so the reach of a change is
+// readable without reading the hint paragraph.
 //
 // A pure client of existing Gateway endpoints, same-origin (root-relative URLs, never a Director
 // address). Responsive (CodingStyle.md): each tab renders immediately with a loading line and loads
@@ -68,16 +68,19 @@ import {
 const SAMPLE_TEXT = "Hi, I'm your DevThrottle wingman. This is how I'll sound.";
 
 export function SettingsView() {
-  // The initial tab can be deep-linked with ?tab=. Unknown or retired values fall back to
-  // "This machine"; see settingsTabs.ts for the resolution rules.
   const [params] = useSearchParams();
+  // The tab set is the same on both surfaces (issue #2022), so the initial tab is resolved straight from
+  // ?tab= with no Gateway round-trip first - the page renders its tabs immediately, and each card loads its
+  // own data and shows its own error banner.
   const [tab, setTab] = useState<TabId>(() => tabFromParam(params.get("tab")));
+
+  const tabs = visibleTabs();
   return (
     <div className="page settings">
       <div className="page-head">
         <h1>Settings</h1>
       </div>
-      <p className="settings-lede">Gateway and fleet configuration for this machine.</p>
+      <p className="settings-lede">Your DevThrottle account settings.</p>
 
       <p className="settings-relocated">
         Looking for something else? Your <Link to="/account">DevThrottle account</Link> and{" "}
@@ -85,7 +88,7 @@ export function SettingsView() {
       </p>
 
       <div className="settings-tabs" role="tablist" aria-label="Settings sections">
-        {TABS.map((t) => (
+        {tabs.map((t) => (
           <button
             key={t.id}
             type="button"
@@ -99,23 +102,23 @@ export function SettingsView() {
         ))}
       </div>
 
-      {tab === "machine" ? (
-        <ThisMachineTab />
-      ) : tab === "notifications" ? (
+      {tab === "notifications" ? (
         <NotificationsTab />
       ) : tab === "ai" ? (
         <AiTab />
-      ) : tab === "carmode" ? (
-        <CarModeTab />
       ) : (
-        <TrainingDataTab />
+        <CarModeTab />
       )}
     </div>
   );
 }
 
+// The scope pill for a per-account setting (issue #2022): always "your account" now that self-host is the
+// hosted Gateway with one tenant. Held as a constant so every per-account card reads the same word.
+const ACCOUNT_SCOPE: Scope = "your account";
+
 // The scope of a setting: how far a change to it reaches. Rendered as the pill in every card heading.
-type Scope = "this machine" | "this browser" | "whole fleet";
+type Scope = "this browser" | "your account" | "included";
 
 function CardHead({ title, scope }: { title: string; scope: Scope }) {
   return (
@@ -125,58 +128,11 @@ function CardHead({ title, scope }: { title: string; scope: Scope }) {
   );
 }
 
-// ---- "Training data" tab --------------------------------------------------------------------------
-
-function TrainingDataTab() {
-  return <TrainingDataCard />;
-}
-
-// The wingman training-data capture switch. Reads/writes the same Gateway settings document as the "This
-// machine" cards, so it owns its own load of it (one fetch for this tab).
-function TrainingDataCard() {
-  const { settings, setSettings, error, busy, msg, runSave } = useGatewaySettings();
-
-  if (error !== null) {
-    return <div className="settings-error">Could not load the training setting: {error}</div>;
-  }
-  if (settings === null) {
-    return <p className="settings-loading">Loading...</p>;
-  }
-
-  const toggleTraining = (enabled: boolean) =>
-    void runSave(async () => {
-      const applied = await setTrainingCapture(enabled);
-      setSettings({ ...settings, wingmanTrainingCapture: applied });
-      return applied ? "Capturing wingman training data." : "Training capture turned off.";
-    });
-
-  return (
-    <section className="settings-card">
-      <CardHead title="Training data" scope="whole fleet" />
-      <p className="settings-hint">
-        When on, every wingman voice summary saves the session terminal plus the wingman&apos;s spoken
-        response to the Gateway machine - a labeled dataset for testing and improving the wingman. Takes
-        effect immediately, no restart.
-      </p>
-      <label className="settings-check">
-        <input
-          type="checkbox"
-          checked={settings.wingmanTrainingCapture}
-          disabled={busy}
-          onChange={(e) => toggleTraining(e.target.checked)}
-        />
-        Capture wingman training data
-      </label>
-      {msg !== "" && <div className="settings-msg">{msg}</div>}
-    </section>
-  );
-}
-
 // ---- The Gateway settings document -----------------------------------------------------------------
 //
-// Three tabs read this one document (This machine, Notifications' snooze, Training data), so
-// the load/error/busy/message plumbing lives here once. Each consumer mounts its own copy, which means one
-// fetch per tab - tabs unmount when you switch, so nothing double-fetches.
+// The Notifications tab's snooze and time-zone cards each read this one document, so the load/error/busy/
+// message plumbing lives here once. Each consumer mounts its own copy, which means one fetch per card - and
+// tabs unmount when you switch, so nothing lingers.
 //
 // runSave wraps a mutation in the immediate-feedback contract every card owes the user (CodingStyle.md):
 // the controls disable and the message reads "Saving..." before the call goes out, the caller's returned
@@ -230,8 +186,7 @@ function useGatewaySettings() {
   return { settings, setSettings, error, busy, msg, setMsg, runSave };
 }
 
-// ---- "This machine" tab: the Gateway host itself ---------------------------------------------------
-
+// A read-only label/value row, used by the AI tab's Transcription line.
 function Row({ label, value }: { label: string; value: string }) {
   return (
     <div className="settings-row">
@@ -241,45 +196,34 @@ function Row({ label, value }: { label: string; value: string }) {
   );
 }
 
-function formatUptime(totalSeconds: number): string {
-  if (totalSeconds <= 0) return "just started";
-  const days = Math.floor(totalSeconds / 86400);
-  const hours = Math.floor((totalSeconds % 86400) / 3600);
-  const minutes = Math.floor((totalSeconds % 3600) / 60);
-  const parts: string[] = [];
-  if (days > 0) parts.push(`${days}d`);
-  if (hours > 0) parts.push(`${hours}h`);
-  parts.push(`${minutes}m`);
-  return parts.join(" ");
+// ---- "Notifications" tab: how a session that needs you reaches you --------------------------------
+//
+// Snooze, the display time zone, and browser notifications are all per-account preferences about how the
+// fleet reaches and reads to you, so they sit together. The time zone moved here from the retired "This
+// machine" tab (issue #2022): it is a per-tenant display preference - which local hours the dashboards read
+// in - not a fact about the host, so it belongs with the account settings, not on the About page.
+
+function NotificationsTab() {
+  return (
+    <>
+      <SnoozeCard />
+      <TimeZoneCard />
+      <NotificationsCard />
+    </>
+  );
 }
 
-function ThisMachineTab() {
+// The display time zone (issue #2022 - relocated here from the retired "This machine" tab). A per-account
+// preference, so it owns its own load of the settings document (one fetch), the same pattern SnoozeCard uses.
+function TimeZoneCard() {
   const { settings, setSettings, error, busy, msg, runSave } = useGatewaySettings();
 
   if (error !== null) {
-    return <div className="settings-error">Could not load settings from the Gateway: {error}</div>;
+    return <div className="settings-error">Could not load the time zone setting: {error}</div>;
   }
   if (settings === null) {
     return <p className="settings-loading">Loading...</p>;
   }
-
-  const chooseAddressing = (mode: AddressingMode) => {
-    if (busy || mode === settings.addressingMode) return;
-    void runSave(async () => {
-      const applied = await setAddressingMode(mode);
-      setSettings({ ...settings, addressingMode: applied });
-      return applied === "lan"
-        ? "LAN mode saved. Applies to this machine's Directors on their next restart."
-        : "Tailscale mode saved. Applies to this machine's Directors on their next restart.";
-    });
-  };
-
-  const toggleAutostart = (enabled: boolean) =>
-    void runSave(async () => {
-      const state = await setAutostart(enabled);
-      setSettings({ ...settings, autostart: state });
-      return state.enabled ? "The Gateway will start when you log in." : "Autostart turned off.";
-    });
 
   const chooseTimeZone = (tz: string) => {
     if (busy || tz === settings.timeZone) return;
@@ -291,120 +235,41 @@ function ThisMachineTab() {
   };
 
   return (
-    <>
-      <section className="settings-card">
-        <CardHead title="Gateway" scope="this machine" />
-        <p className="settings-hint">The Gateway process serving this page and supervising the fleet.</p>
-        <Row label="State" value={settings.state} />
-        <Row label="Port" value={String(settings.port)} />
-        <Row label="Mode" value={settings.mode} />
-        <Row label="Cockpit" value={cockpitLabel(settings)} />
-        <Row label="Uptime" value={formatUptime(settings.uptimeSeconds)} />
-        <Row label="Version" value={settings.version} />
-        <Row label="Directors" value={String(settings.directors)} />
-      </section>
-
-      <section className="settings-card">
-        <CardHead title="Network addressing" scope="this machine" />
-        <p className="settings-hint">
-          How machines in the fleet address one another. Tailscale (default): each Director is reached
-          over its Tailscale front door. LAN: each Director is reached on its real LAN IP - use only on a
-          trusted network (LAN mode also turns on Director authentication). This is a per-machine setting
-          read at startup; it applies to this host&apos;s Directors on their next restart.
-        </p>
-        <div className="settings-field">
-          <label htmlFor="settings-addrmode">Mode</label>
-          <select
-            id="settings-addrmode"
-            className="settings-select"
-            value={settings.addressingMode}
+    <section className="settings-card">
+      <CardHead title="Display time zone" scope={ACCOUNT_SCOPE} />
+      <p className="settings-hint">
+        The zone your private dashboards read local clock hours in - the Your Throttle hourly charts. It
+        starts on this Gateway machine&apos;s own zone ({settings.timeZoneMachineDefault}); change it if you
+        want the charts shown in a different zone. Read at render time, so it applies on the next refresh.
+      </p>
+      <div className="settings-field">
+        <label htmlFor="settings-timezone">Zone</label>
+        <select
+          id="settings-timezone"
+          className="settings-select"
+          value={settings.timeZone}
+          disabled={busy}
+          onChange={(e) => chooseTimeZone(e.target.value)}
+        >
+          {timeZoneOptions(settings.timeZone).map((tz) => (
+            <option key={tz} value={tz}>
+              {tz}
+            </option>
+          ))}
+        </select>
+        {settings.timeZone !== settings.timeZoneMachineDefault && (
+          <button
+            type="button"
+            className="settings-btn"
             disabled={busy}
-            onChange={(e) => chooseAddressing(e.target.value === "lan" ? "lan" : "tailscale")}
+            onClick={() => chooseTimeZone(settings.timeZoneMachineDefault)}
           >
-            <option value="tailscale">Tailscale (front door)</option>
-            <option value="lan">LAN (direct IP)</option>
-          </select>
-        </div>
-      </section>
-
-      <section className="settings-card">
-        <CardHead title="Startup" scope="this machine" />
-        <p className="settings-hint">
-          Registers a per-user Run entry so the Gateway starts when you log in. The fleet only works
-          while you are logged in, so this is per-user, never a machine service.
-        </p>
-        <label className="settings-check">
-          <input
-            type="checkbox"
-            checked={settings.autostart.enabled === true}
-            disabled={busy || !settings.autostart.supported}
-            onChange={(e) => toggleAutostart(e.target.checked)}
-          />
-          Start the Gateway when I log in
-        </label>
-        {!settings.autostart.supported && (
-          <p className="settings-hint settings-hint-inline">Not supported on this host (no tray).</p>
+            Use gateway zone
+          </button>
         )}
-      </section>
-
-      <section className="settings-card">
-        <CardHead title="Time zone" scope="this machine" />
-        <p className="settings-hint">
-          The zone your private dashboards read local clock hours in - the Your Throttle hourly charts. It
-          starts on this Gateway machine&apos;s own zone ({settings.timeZoneMachineDefault}); change it if
-          you want the charts shown in a different zone. Read at render time, so it applies on the next
-          refresh.
-        </p>
-        <div className="settings-field">
-          <label htmlFor="settings-timezone">Zone</label>
-          <select
-            id="settings-timezone"
-            className="settings-select"
-            value={settings.timeZone}
-            disabled={busy}
-            onChange={(e) => chooseTimeZone(e.target.value)}
-          >
-            {timeZoneOptions(settings.timeZone).map((tz) => (
-              <option key={tz} value={tz}>
-                {tz}
-              </option>
-            ))}
-          </select>
-          {settings.timeZone !== settings.timeZoneMachineDefault && (
-            <button
-              type="button"
-              className="settings-btn"
-              disabled={busy}
-              onClick={() => chooseTimeZone(settings.timeZoneMachineDefault)}
-            >
-              Use gateway zone
-            </button>
-          )}
-        </div>
-      </section>
-
+      </div>
       {msg !== "" && <div className="settings-msg">{msg}</div>}
-    </>
-  );
-}
-
-function cockpitLabel(settings: GatewaySettings): string {
-  const state = settings.cockpit.up ? "up" : "down";
-  return `port ${settings.cockpit.port} (${state})`;
-}
-
-// ---- "Notifications" tab: how a session that needs you reaches you --------------------------------
-//
-// Snooze and browser notifications answer one question together - a session turned red, how and when does
-// that reach you - so they sit together. Snooze used to be on "This machine", which was wrong twice over:
-// it is a fleet-wide setting, and it is not about the machine.
-
-function NotificationsTab() {
-  return (
-    <>
-      <SnoozeCard />
-      <NotificationsCard />
-    </>
+    </section>
   );
 }
 
@@ -480,7 +345,7 @@ export function SnoozeCard() {
 
   return (
     <section className="settings-card">
-      <CardHead title="Snooze" scope="whole fleet" />
+      <CardHead title="Snooze" scope={ACCOUNT_SCOPE} />
       <p className="settings-hint">
         How long a snoozed session stays parked before it returns to &quot;needs you&quot; on its own - a
         dead-man&apos;s switch, so a session you snooze can never be lost. These are the lengths every Snooze
@@ -704,8 +569,12 @@ function AiTab() {
   const load = useCallback(async () => {
     try {
       setError(null);
-      setSnap(await getAiProvider());
-      await loadModels();
+      const s = await getAiProvider();
+      setSnap(s);
+      // The live catalog + Test spend the shared provider credential and stay denied on the hosted Gateway
+      // (issue #2022); the Gateway says so via catalogAvailable. Skip the catalog fetch there so the tab
+      // renders clean with the account's saved selections instead of painting a load error.
+      if (s.catalogAvailable !== false) await loadModels();
     } catch (e) {
       setError(errText(e));
     }
@@ -722,6 +591,9 @@ function AiTab() {
     return <p className="settings-loading">Loading...</p>;
   }
 
+  // Gateway-owned (issue #2022): whether the live catalog + Test are available. False on hosted, where model
+  // browsing and testing are disabled with a concise explanation rather than offered as controls that fail.
+  const catalogAvailable = snap.catalogAvailable !== false;
   const currentSpeech = speechModels.find((m) => m.id === snap.ttsModel);
   const voiceOptions = currentSpeech && currentSpeech.voices.length ? currentSpeech.voices : snap.voices;
 
@@ -825,7 +697,7 @@ function AiTab() {
 
   return (
     <section className="settings-card">
-      <CardHead title="AI" scope="whole fleet" />
+      <CardHead title="AI" scope={ACCOUNT_SCOPE} />
       <p className="settings-hint">
         DevThrottle hosts AI for this fleet: transcription, the wingman, and spoken voice all run on
         your DevThrottle account.
@@ -844,13 +716,20 @@ function AiTab() {
         </div>
       </div>
 
+      {!catalogAvailable && (
+        <p className="settings-hint settings-hint-inline">
+          Model browsing and testing aren&apos;t available on the hosted Gateway yet. Your saved models are
+          shown below; per-account model selection arrives with account-scoped billing.
+        </p>
+      )}
+
       <div className="settings-field">
         <label htmlFor="settings-ai-model">Thinking model</label>
         <select
           id="settings-ai-model"
           className="settings-select"
           value={snap.wingmanModel}
-          disabled={busy}
+          disabled={busy || !catalogAvailable}
           onChange={(e) => void chooseWingman(e.target.value)}
         >
           {ensureIds(snap.wingmanModel, chatModels).map((id) => (
@@ -860,7 +739,7 @@ function AiTab() {
           ))}
         </select>
         <div className="settings-actions">
-          <button type="button" className="settings-btn" disabled={busy} onClick={() => void runTest()}>
+          <button type="button" className="settings-btn" disabled={busy || !catalogAvailable} onClick={() => void runTest()}>
             Test
           </button>
           <span className="settings-inline-msg">
@@ -875,7 +754,7 @@ function AiTab() {
           id="settings-ai-fast-model"
           className="settings-select"
           value={snap.wingmanFastModel}
-          disabled={busy}
+          disabled={busy || !catalogAvailable}
           onChange={(e) => void chooseFastWingman(e.target.value)}
         >
           {ensureIds(snap.wingmanFastModel, chatModels).map((id) => (
@@ -885,7 +764,7 @@ function AiTab() {
           ))}
         </select>
         <div className="settings-actions">
-          <button type="button" className="settings-btn" disabled={busy} onClick={() => void runFastTest()}>
+          <button type="button" className="settings-btn" disabled={busy || !catalogAvailable} onClick={() => void runFastTest()}>
             Test
           </button>
           <span className="settings-inline-msg">
@@ -900,7 +779,7 @@ function AiTab() {
           id="settings-ai-ttsmodel"
           className="settings-select"
           value={snap.ttsModel}
-          disabled={busy}
+          disabled={busy || !catalogAvailable}
           onChange={(e) => void chooseSpeech(e.target.value)}
         >
           {ensureIds(snap.ttsModel, speechModels).map((id) => (
@@ -962,7 +841,8 @@ function CarModeTab() {
       const s = await getAiProvider();
       setSnap(s);
       setPhraseDraft(s.carModeEndPhrase);
-      setChatModels(await getAiModels("chat"));
+      // The model catalog stays denied on hosted (issue #2022); skip it there so the tab renders clean.
+      if (s.catalogAvailable !== false) setChatModels(await getAiModels("chat"));
     } catch (e) {
       setError(errText(e));
     }
@@ -977,6 +857,9 @@ function CarModeTab() {
   if (snap === null) {
     return <p className="settings-loading">Loading...</p>;
   }
+
+  // Gateway-owned (issue #2022): false on hosted, where model browsing is disabled with a concise note.
+  const catalogAvailable = snap.catalogAvailable !== false;
 
   const chooseModel = async (model: string) => {
     setBusy(true);
@@ -1009,7 +892,7 @@ function CarModeTab() {
 
   return (
     <section className="settings-card">
-      <CardHead title="Car Mode" scope="whole fleet" />
+      <CardHead title="Car Mode" scope={ACCOUNT_SCOPE} />
       <p className="settings-hint">
         Hands-free fleet control from your phone. Set the model it thinks with, the phrase that ends your
         turn, and test that the phrase is heard reliably - all in one place.
@@ -1021,7 +904,7 @@ function CarModeTab() {
           id="settings-carmode-model"
           className="settings-select"
           value={snap.carModeModel}
-          disabled={busy}
+          disabled={busy || !catalogAvailable}
           onChange={(e) => void chooseModel(e.target.value)}
         >
           {ensureIds(snap.carModeModel, chatModels).map((id) => (
@@ -1032,8 +915,9 @@ function CarModeTab() {
         </select>
         <div className="settings-actions">
           <span className="settings-inline-msg">
-            A fast model is recommended - it must also call tools reliably. GLM-5.2 is slower but a strong
-            tool-caller.
+            {catalogAvailable
+              ? "A fast model is recommended - it must also call tools reliably. GLM-5.2 is slower but a strong tool-caller."
+              : "Model browsing isn't available on the hosted Gateway yet; your saved model is shown."}
           </span>
         </div>
       </div>

@@ -9,6 +9,7 @@ using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using CcDirector.Core.Configuration;
+using CcDirector.Core.Tenancy;
 using CcDirector.Gateway.Tenancy;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
@@ -33,10 +34,10 @@ namespace CcDirector.Gateway.Tests;
 ///
 /// AND IT ASSERTS A POSITIVE FACT PER ROUTE, NOT THE ABSENCE OF THE REFUSAL. "The refusal string is not
 /// in the body" is satisfied by an empty 200, by a single-page-application shell, and by a route that was
-/// deleted - it proves nothing about the route being alive. All thirty-one routes are proved by one of:
-///   - its REAL PAYLOAD, field by field (the ten read routes);
+/// deleted - it proves nothing about the route being alive. All twenty-two routes are proved by one of:
+///   - its REAL PAYLOAD, field by field (the eight read routes);
 ///   - an INDEPENDENTLY RE-READ EFFECT - the value is written over the wire and then read back out of the
-///     configuration store through the Core config class, not out of the response (thirteen write routes);
+///     configuration store through the Core config class, not out of the response (ten write routes);
 ///   - a SEEDED TRANSITION off a sentinel the effect cannot produce, where the effect is a RESET rather
 ///     than a stored value (the provider, one route);
 ///   - SERVED-AND-REACHES-A-HANDLER, the deliberately NARROWED claim for the one route that can carry no
@@ -45,13 +46,14 @@ namespace CcDirector.Gateway.Tests;
 ///     The_transcription_mode_setting_is_single_valued_so_no_write_is_observable - which also reddens the
 ///     day a second mode is added, so the narrowing cannot go stale (one route);
 ///   - a HANDLER-UNIQUE RECEIPT: a status and message only that one handler can produce, where the route
-///     has no readable effect to assert - brain config, the two credential-resolution routes, autostart
-///     (four routes);
-///   - an INJECTED-SEAM RECEIPT with a destructibility control, for the one route whose real work is to
-///     start a process: brain restart. It is driven on its exact path AND verb; only the process spawn is
-///     replaced.
-/// Eleven plus thirteen plus one plus one plus four plus one is thirty-one. No route is left over, and
-/// none is proved only by the absence of the refusal.
+///     has no readable effect to assert - the two credential-resolution routes (two routes).
+/// Eight plus ten plus one plus one plus two is twenty-two. No route is left over, and none is proved
+/// only by the absence of the refusal.
+///
+/// Issue #2022 removed the five machine-scoped routes this control once also covered - brain restart (the
+/// injected-seam receipt), brain config and autostart (two of the handler-unique receipts), and the network
+/// addressing GET+PUT (one read + one write) - because those settings left the web page. Their served-side
+/// tests went with them; the arithmetic above is the post-removal accounting.
 ///
 /// These tests must stay GREEN through the revert. A control that moves with the change under test is not
 /// a control.
@@ -126,8 +128,6 @@ public sealed class HostedOwnerSettingsSelfHostControlTests : IAsyncLifetime
                 foreach (var path in new[]
                          {
                              "gateway/settings",
-                             "gateway/wingman/training-capture",
-                             "gateway/addressing-mode",
                              "gateway/snooze-default",
                              "gateway/injected-text",
                              "gateway/snooze-presets",
@@ -142,7 +142,7 @@ public sealed class HostedOwnerSettingsSelfHostControlTests : IAsyncLifetime
     }
 
     /// <summary>
-    /// The ten read routes, each asserted by the REAL PAYLOAD it carries - the fields, and where a field
+    /// The eight read routes, each asserted by the REAL PAYLOAD it carries - the fields, and where a field
     /// has an independently knowable value, that value. Format facts (status, media type) are asserted
     /// BEFORE the body is parsed, on this side too: if a route were gone, the Gateway's single-page
     /// -application fallback would answer with HTML and parsing first would turn that finding into a crash.
@@ -169,28 +169,19 @@ public sealed class HostedOwnerSettingsSelfHostControlTests : IAsyncLifetime
         switch (path)
         {
             case "gateway/settings":
-                foreach (var expected in new[]
-                         {
-                             "version", "state", "port", "uptimeSeconds", "directors", "mode",
-                             "addressingMode", "cockpit", "brain", "autostart", "wingmanTrainingCapture",
-                             "snoozeDefaultMinutes", "snoozePresets", "snoozeMaxPresets",
-                             "timeZone", "timeZoneMachineDefault",
-                         })
-                    Assert.Contains(expected, properties);
-                Assert.Equal("Running", root.GetProperty("state").GetString());
-                Assert.Equal(_gateway.Port, root.GetProperty("port").GetInt32());
-                Assert.False(string.IsNullOrWhiteSpace(root.GetProperty("version").GetString()));
-                Assert.True(root.GetProperty("brain").TryGetProperty("agents", out _));
-                break;
-
-            case "gateway/wingman/training-capture":
-                Assert.Equal(new[] { "enabled" }, properties);
-                Assert.Equal(WingmanTrainingCaptureConfig.Get(), root.GetProperty("enabled").GetBoolean());
-                break;
-
-            case "gateway/addressing-mode":
-                Assert.Equal(new[] { "mode" }, properties);
-                Assert.Equal(AddressingModeConfig.Get().ToConfigString(), root.GetProperty("mode").GetString());
+                // Issue #2022: the machine settings left the web page, so the snapshot carries only the
+                // per-account settings the collapsed page renders. The process diagnostics (version, state,
+                // port, uptime, directors, mode), the cockpit block, the brain block, the autostart state,
+                // and the addressing mode are GONE from here - they moved to GET /gateway/about or were
+                // dropped. An exact allow-list over the whole property set is what pins that removal: a
+                // regression that re-added any machine field would redden here, not slip through.
+                Assert.Equal(new[]
+                {
+                    "snoozeDefaultMinutes", "snoozePresets",
+                    "snoozeMaxPresets", "timeZone", "timeZoneMachineDefault",
+                }, properties);
+                Assert.True(root.GetProperty("snoozePresets").GetArrayLength() > 0);
+                Assert.Equal(SnoozePresetsConfig.MaxPresets, root.GetProperty("snoozeMaxPresets").GetInt32());
                 break;
 
             case "gateway/snooze-default":
@@ -252,8 +243,6 @@ public sealed class HostedOwnerSettingsSelfHostControlTests : IAsyncLifetime
             var data = new TheoryData<string?, string, string, string, string, string>();
             foreach (var hosted in new string?[] { null, "0" })
             {
-                data.Add(hosted, "PUT", "gateway/wingman/training-capture", "{\"enabled\":true}", "training-capture", "true");
-                data.Add(hosted, "PUT", "gateway/addressing-mode", "{\"mode\":\"lan\"}", "addressing-mode", "lan");
                 data.Add(hosted, "PUT", "gateway/snooze-default", "{\"minutes\":45}", "snooze-default", "45");
                 data.Add(hosted, "PUT", "gateway/injected-text", "{\"use_yours\":true,\"yours\":\"words from another tenant\"}", "injected-text", "words from another tenant");
                 data.Add(hosted, "PUT", "gateway/snooze-presets", "{\"presets\":[15,30,60],\"defaultMinutes\":30}", "snooze-presets", "15,30,60");
@@ -272,31 +261,36 @@ public sealed class HostedOwnerSettingsSelfHostControlTests : IAsyncLifetime
     }
 
     /// <summary>
-    /// Reads a setting back through the Core configuration class, NOT out of the response body. Reading the
-    /// response would only prove the handler can echo; reading the store proves the write landed.
+    /// Reads a setting back out of the STORE it actually persists to, NOT out of the response body. Reading
+    /// the response would only prove the handler can echo; reading the store proves the write landed.
+    ///
+    /// The per-tenant settings (issue #2017) now persist to the tenant_settings store, not config.json, so
+    /// they are re-read through this Gateway's own <see cref="GatewayHost.TenantSettingsResolver"/> for the
+    /// self-host local tenant - the same store the handler wrote to, read directly, so this is still an
+    /// independent store re-read and not a handler echo. The remaining machine-scoped settings still live in
+    /// config.json and are re-read through their Core config class.
     /// </summary>
-    private static string ReadBack(string key) => key switch
+    private string ReadBack(string key) => key switch
     {
-        "training-capture" => WingmanTrainingCaptureConfig.Get() ? "true" : "false",
-        "addressing-mode" => AddressingModeConfig.Get().ToConfigString(),
-        "snooze-default" => SnoozeDefaultConfig.Get().ToString(),
+        "snooze-default" => _gateway.TenantSettingsResolver.SnoozeDefaultMinutes(TenantId.Local).ToString(),
         "injected-text" => InjectedTextConfig.Get().Yours ?? "",
-        "snooze-presets" => string.Join(",", SnoozePresetsConfig.Get()),
-        "time-zone" => TimeZoneConfig.Get() ?? "",
+        "snooze-presets" => string.Join(",", _gateway.TenantSettingsResolver.SnoozePresets(TenantId.Local)),
+        "time-zone" => _gateway.TenantSettingsResolver.TimeZone(TenantId.Local),
         "transcription-mode" => TranscriptionModeConfig.Get().ToConfigString(),
-        "tts-voice" => TtsVoiceConfig.Resolve(TranscriptionModeConfig.Get()),
-        "wingman-model" => WingmanModelConfig.Resolve(TranscriptionModeConfig.Get()),
-        "wingman-fast-model" => WingmanModelConfig.ResolveFast(TranscriptionModeConfig.Get()),
-        "car-mode-model" => CarModeModelConfig.Get(),
-        "car-mode-end-phrase" => CarModeEndPhraseConfig.Get(),
-        "tts-model" => TtsModelConfig.Get(),
+        "tts-voice" => _gateway.TenantSettingsResolver.TtsVoice(TenantId.Local, TranscriptionModeConfig.Get()),
+        "wingman-model" => _gateway.TenantSettingsResolver.WingmanModel(TenantId.Local, TranscriptionModeConfig.Get(), WingmanModelRole.Thinking),
+        "wingman-fast-model" => _gateway.TenantSettingsResolver.WingmanModel(TenantId.Local, TranscriptionModeConfig.Get(), WingmanModelRole.Fast),
+        "car-mode-model" => _gateway.TenantSettingsResolver.CarModeModel(TenantId.Local),
+        "car-mode-end-phrase" => _gateway.TenantSettingsResolver.CarModeEndPhrase(TenantId.Local),
+        "tts-model" => _gateway.TenantSettingsResolver.TtsModel(TenantId.Local, TranscriptionModeConfig.Get()),
         _ => throw new ArgumentOutOfRangeException(nameof(key), key, "no read-back written for this setting"),
     };
 
     /// <summary>
-    /// Fourteen write routes, each proved by an INDEPENDENTLY RE-READ EFFECT: the value goes over the wire
+    /// The write routes, each proved by an INDEPENDENTLY RE-READ EFFECT: the value goes over the wire
     /// and is then read back out of the configuration store through its Core config class. A 200 alone
-    /// would not do - a handler that accepted the request and wrote nothing returns the same 200.
+    /// would not do - a handler that accepted the request and wrote nothing returns the same 200. (Issue
+    /// #2022 removed the PUT <c>gateway/addressing-mode</c> row along with the setting.)
     ///
     /// <c>PUT /gateway/transcription-mode</c> is the one row whose re-read cannot distinguish a write from
     /// a no-op, because "devthrottle" is the only value the endpoint accepts and is also the default. Its
@@ -390,10 +384,13 @@ public sealed class HostedOwnerSettingsSelfHostControlTests : IAsyncLifetime
     {
         DeclareSelfHost(hostedForm);
 
-        // A value the reset cannot possibly produce, so "unchanged" and "reset" cannot be confused.
+        // A value the reset cannot possibly produce, so "unchanged" and "reset" cannot be confused. The reset
+        // now clears the TENANT's override (issue #2017), so the before-state is seeded as a tenant override -
+        // exactly what the AI tab writes - not a global config value.
         const string Sentinel = "sentinel-model-no-provider-would-return";
-        WingmanModelConfig.Set(Sentinel);
-        Assert.Equal(Sentinel, WingmanModelConfig.Resolve(TranscriptionModeConfig.Get()));
+        var mode = TranscriptionModeConfig.Get();
+        _gateway.TenantSettingsResolver.SetWingmanModel(TenantId.Local, WingmanModelRole.Thinking, Sentinel, DateTime.UtcNow);
+        Assert.Equal(Sentinel, _gateway.TenantSettingsResolver.WingmanModel(TenantId.Local, mode, WingmanModelRole.Thinking));
 
         var response = await OwnerSettingsRoutes.SendAsync(_http, "PUT", "gateway/ai-provider",
             "{\"provider\":\"devthrottle\"}");
@@ -403,7 +400,7 @@ public sealed class HostedOwnerSettingsSelfHostControlTests : IAsyncLifetime
         using var document = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
         Assert.Equal("devthrottle", document.RootElement.GetProperty("provider").GetString());
 
-        var afterwards = WingmanModelConfig.Resolve(TranscriptionModeConfig.Get());
+        var afterwards = _gateway.TenantSettingsResolver.WingmanModel(TenantId.Local, mode, WingmanModelRole.Thinking);
         Assert.NotEqual(Sentinel, afterwards);
         Assert.False(string.IsNullOrWhiteSpace(afterwards));
     }
@@ -415,16 +412,10 @@ public sealed class HostedOwnerSettingsSelfHostControlTests : IAsyncLifetime
             var data = new TheoryData<string?, string, string, string, int, string>();
             foreach (var hosted in new string?[] { null, "0" })
             {
-                // The brain-config handler is the only place in the Gateway that says this sentence, and it
-                // can only say it after it has loaded this machine's registered agents and failed to find
-                // the one asked for - so the receipt proves the handler ran, not merely that something
-                // answered.
-                data.Add(hosted, "PUT", "gateway/brain/config", "{\"agentId\":\"agent-1\",\"model\":\"opus\"}",
-                    400, "agentId must be a registered, enabled agent on this machine");
-
                 // The catalog and test-chat routes both resolve the provider credential out of the key
                 // vault first. With no credential stored they answer 503 with this exact sentence - a
-                // handler-unique receipt that costs no network round-trip.
+                // handler-unique receipt that costs no network round-trip. (Issue #2022 removed the
+                // brain-config receipt route along with the endpoint.)
                 data.Add(hosted, "GET", "gateway/ai/models", "",
                     503, "not signed in to DevThrottle - sign in on the Account tab");
                 data.Add(hosted, "POST", "gateway/ai/test-chat", "{\"model\":\"some-model\"}",
@@ -435,7 +426,7 @@ public sealed class HostedOwnerSettingsSelfHostControlTests : IAsyncLifetime
     }
 
     /// <summary>
-    /// Three routes with no readable effect to assert, each proved by a HANDLER-UNIQUE RECEIPT: a status
+    /// Two routes with no readable effect to assert, each proved by a HANDLER-UNIQUE RECEIPT: a status
     /// and a sentence only that one handler can produce. A refusal is a 404 carrying one <c>error</c>
     /// property, so none of these can be confused with one - and, unlike "the refusal is absent", each of
     /// these is a positive statement about which code ran.
@@ -455,99 +446,11 @@ public sealed class HostedOwnerSettingsSelfHostControlTests : IAsyncLifetime
         Assert.Equal(expectedMessage, document.RootElement.GetProperty("error").GetString());
     }
 
-    /// <summary>
-    /// <c>POST /gateway/brain/restart</c> - the exact path AND verb, reaching its own handler, proved by a
-    /// receipt only that handler produces, and starting NO process.
-    ///
-    /// This route previously had no served-side handler proof at all. It was covered by asking for it with
-    /// the wrong verb and reading the 405 with <c>Allow: POST</c>, which proves the route is REGISTERED and
-    /// nothing more - the POST could have been wired to any handler, or to none. The reviewer was right to
-    /// call that insufficient, and right that driving the live path in a test would spawn a coding-agent
-    /// process on the machine running the suite.
-    ///
-    /// So the restart action is now an injected seam on the host (<c>GatewayHost.BrainRestartAction</c>,
-    /// which in production IS the real warm-brain restart). Here it is replaced with one that starts nothing
-    /// and records that it ran. Both halves are asserted: the handler's own success envelope comes back,
-    /// AND the seam was actually invoked - so this cannot pass against a handler that returns the right
-    /// shape without doing the work.
-    /// </summary>
-    [Theory]
-    [MemberData(nameof(NonHostedForms))]
-    public async Task The_brain_restart_route_reaches_its_handler_on_self_host_without_starting_a_process(
-        string? hostedForm)
-    {
-        DeclareSelfHost(hostedForm);
-
-        var invoked = 0;
-        _gateway.BrainRestartAction = _ =>
-        {
-            Interlocked.Increment(ref invoked);
-            return Task.CompletedTask;
-        };
-
-        var response = await OwnerSettingsRoutes.SendAsync(_http, "POST", "gateway/brain/restart", "");
-        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
-        Assert.Equal("application/json", response.Content.Headers.ContentType?.MediaType);
-
-        using var document = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
-        var root = document.RootElement;
-
-        // The receipt is this handler's own: { ok, brain: { ... } }. A refusal is a 404 whose single
-        // property is "error", so the two cannot be confused.
-        Assert.Equal(new[] { "ok", "brain" }, root.EnumerateObject().Select(p => p.Name).ToArray());
-        Assert.True(root.GetProperty("ok").GetBoolean());
-        Assert.True(root.GetProperty("brain").TryGetProperty("agents", out _));
-
-        // The handler did the work, not merely answer in the right shape.
-        Assert.Equal(1, invoked);
-    }
-
-    /// <summary>
-    /// The DESTRUCTIBILITY CONTROL for the receipt above. A test that only ever sees success cannot tell an
-    /// asserted receipt apart from a constant: if the handler ignored the seam entirely, the success case
-    /// would look identical. So the seam is made to FAIL, and the handler's own error envelope - a different
-    /// status and a different property set, carrying the exact failure text - must come back.
-    /// </summary>
-    [Theory]
-    [MemberData(nameof(NonHostedForms))]
-    public async Task The_brain_restart_route_reports_its_own_failure_on_self_host(string? hostedForm)
-    {
-        DeclareSelfHost(hostedForm);
-
-        const string Sentinel = "sentinel-restart-failure-no-other-code-path-says-this";
-        _gateway.BrainRestartAction = _ => throw new InvalidOperationException(Sentinel);
-
-        var response = await OwnerSettingsRoutes.SendAsync(_http, "POST", "gateway/brain/restart", "");
-        Assert.Equal(HttpStatusCode.InternalServerError, response.StatusCode);
-        Assert.Equal("application/json", response.Content.Headers.ContentType?.MediaType);
-
-        using var document = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
-        var root = document.RootElement;
-        Assert.Equal(new[] { "ok", "error" }, root.EnumerateObject().Select(p => p.Name).ToArray());
-        Assert.False(root.GetProperty("ok").GetBoolean());
-        Assert.Equal(Sentinel, root.GetProperty("error").GetString());
-    }
-
-    /// <summary>
-    /// <c>PUT /gateway/autostart</c>, the fourth receipt route. On a Gateway with no autostart hook - which
-    /// is every Gateway not hosted by the desktop tray application, including this test host - the handler
-    /// answers 200 with exactly <c>{ supported: false }</c>. Nothing else on the Gateway produces that
-    /// object, and a refusal could not: it is a 200, not a 404, and its one property is not <c>error</c>.
-    /// </summary>
-    [Theory]
-    [MemberData(nameof(NonHostedForms))]
-    public async Task The_autostart_route_answers_with_its_own_receipt_on_self_host(string? hostedForm)
-    {
-        DeclareSelfHost(hostedForm);
-
-        var response = await OwnerSettingsRoutes.SendAsync(_http, "PUT", "gateway/autostart", "{\"enabled\":true}");
-        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
-        Assert.Equal("application/json", response.Content.Headers.ContentType?.MediaType);
-
-        using var document = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
-        Assert.Equal(new[] { "supported" }, document.RootElement.EnumerateObject().Select(p => p.Name).ToArray());
-        Assert.False(document.RootElement.GetProperty("supported").GetBoolean());
-    }
+    // Issue #2022 removed the served-side proofs for the four machine-scoped routes that left the web page:
+    // the two brain-restart tests (a handler receipt + its destructibility control), and the autostart
+    // receipt. Those endpoints no longer exist, so there is nothing to serve. The brain-restart SEAM
+    // (GatewayHost.BrainRestartAction) stays for the automatic recovery path, but it is no longer reachable
+    // over HTTP.
 }
 
 /// <summary>
@@ -626,7 +529,7 @@ public sealed class HostedOwnerSettingsSelfHostProbeTests : IAsyncLifetime
         Func<IEndpointRouteBuilder, HostedDenyGroup> map = family switch
         {
             "settings" => routes => Api.SettingsEndpoints.Map(routes, _gateway),
-            "models" => routes => Api.AiModelsEndpoint.Map(routes, new Core.KeyVault(Path.Combine(_root, "vault.json"))),
+            "models" => routes => Api.AiModelsEndpoint.Map(routes, new Core.KeyVault(Path.Combine(_root, "vault.json")), _gateway.TenantSettingsResolver, _gateway.TenantBoundary),
             _ => throw new ArgumentOutOfRangeException(nameof(family), family, "unknown owner-settings family"),
         };
 

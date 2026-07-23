@@ -5,6 +5,8 @@ using System.Text;
 using CcDirector.Core;
 using CcDirector.Gateway.Api;
 using CcDirector.Gateway.Discovery;
+using CcDirector.Gateway.Settings;
+using CcDirector.Gateway.Tests.Data;
 using CcDirector.Gateway.Wingman;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.Extensions.Logging;
@@ -65,16 +67,20 @@ public sealed class WingmanTtsStatusPassthroughTests
         vault.Set("OPENAI_API_KEY", "sk-test-not-a-real-key");
 
         var persistPath = Path.Combine(Path.GetTempPath(), "cc-tts-pass-" + Guid.NewGuid().ToString("N") + ".json");
+        var settingsData = new GatewayDbTestHarness();
+        app.Lifetime.ApplicationStopped.Register(settingsData.Dispose);
+        var tenantSettings = new TenantSettingsResolver(new TenantSettingsStore(settingsData.Open()));
         var voice = new WingmanVoiceService(
-            (_, _) => throw new InvalidOperationException("the brain must not be reached by a tts status test"),
-            vault, persistPath);
+            (_, _, _) => throw new InvalidOperationException("the brain must not be reached by a tts status test"),
+            vault, tenantSettings, persistPath);
 
         GatewayWingmanVoiceEndpoint.Map(
             app,
             new DirectorRegistry(Path.Combine(Path.GetTempPath(), "cc-tts-pass-inst-" + Guid.NewGuid().ToString("N"))),
-            (_, _) => throw new InvalidOperationException("the brain must not be reached by a tts status test"),
+            (_, _, _) => throw new InvalidOperationException("the brain must not be reached by a tts status test"),
             vault,
             voice,
+            tenantSettings,
             ttsHttpClient: new HttpClient(upstream) { Timeout = Timeout.InfiniteTimeSpan });
 
         await app.StartAsync();
