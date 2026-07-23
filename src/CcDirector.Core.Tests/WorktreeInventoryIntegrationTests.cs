@@ -263,6 +263,56 @@ public sealed class WorktreeInventoryIntegrationTests : IDisposable
         }
     }
 
+    // -------------------------------------------------------------------------------------------
+    // A git-safe worktree that a live session is running in is classified "in use", not safe.
+    // -------------------------------------------------------------------------------------------
+    [Fact]
+    public async Task SafeWorktree_WithLiveSession_IsClassifiedInUse_NotSafe()
+    {
+        var wt = Path.Combine(_root, "wt-busy");
+        RunGit(_primary, "worktree", "add", "-b", "busy", wt, "main");
+        WriteFile(wt, "b.txt", "work\n");
+        RunGit(wt, "add", "-A");
+        RunGit(wt, "commit", "-m", "busy work");
+        RunGit(wt, "push", "-u", "origin", "busy");
+        RunGit(_primary, "merge", "--ff-only", "busy");
+        RunGit(_primary, "push", "origin", "main");
+
+        var live = new List<LiveSessionRef> { new() { RepoPath = wt, Label = "Busy Session (#9)" } };
+        var inventory = await new WorktreeInventoryService().GetInventoryAsync(_primary, fetchPrune: true, liveSessions: live);
+
+        Assert.True(inventory.Success, inventory.Error);
+        var busy = Assert.Single(inventory.Worktrees, w => w.Branch == "busy");
+        Assert.Equal(WorktreeSafety.InUseBySession, busy.Safety);
+        Assert.Equal(WorktreeSafetyReason.LiveSessionOpen, busy.Reason);
+        Assert.Contains("Busy Session (#9)", busy.OpenSessions);
+        Assert.DoesNotContain(inventory.SafeToReap, w => w.Branch == "busy");
+        Assert.Contains(inventory.InUseBySession, w => w.Branch == "busy");
+        Assert.Equal(0, inventory.SafeToReapCount);
+    }
+
+    [Fact]
+    public async Task SafeWorktree_WithNoMatchingSession_StaysSafe()
+    {
+        var wt = Path.Combine(_root, "wt-free");
+        RunGit(_primary, "worktree", "add", "-b", "free", wt, "main");
+        WriteFile(wt, "f.txt", "work\n");
+        RunGit(wt, "add", "-A");
+        RunGit(wt, "commit", "-m", "free work");
+        RunGit(wt, "push", "-u", "origin", "free");
+        RunGit(_primary, "merge", "--ff-only", "free");
+        RunGit(_primary, "push", "origin", "main");
+
+        // A live session, but in a DIFFERENT directory - must not affect this worktree.
+        var live = new List<LiveSessionRef> { new() { RepoPath = Path.Combine(_root, "somewhere-else"), Label = "Other (#3)" } };
+        var inventory = await new WorktreeInventoryService().GetInventoryAsync(_primary, fetchPrune: true, liveSessions: live);
+
+        Assert.True(inventory.Success, inventory.Error);
+        var free = Assert.Single(inventory.Worktrees, w => w.Branch == "free");
+        Assert.Equal(WorktreeSafety.SafeToReap, free.Safety);
+        Assert.Empty(free.OpenSessions);
+    }
+
     // ----- helpers -----
 
     private void ConfigureIdentity(string repo)

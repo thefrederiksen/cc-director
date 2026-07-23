@@ -38,7 +38,7 @@ public static class WorktreeSafetyEvaluator
         if (facts.IsDetachedHead)
         {
             return facts.DetachedHeadIsAncestorOfMain
-                ? Safe(WorktreeSafetyReason.DetachedHeadAncestorOfMain,
+                ? Safe(facts, WorktreeSafetyReason.DetachedHeadAncestorOfMain,
                     "Detached HEAD is contained in origin/main.")
                 : NeedsAttention(WorktreeSafetyReason.NotProvenMerged,
                     "Detached HEAD is not contained in origin/main.");
@@ -46,21 +46,32 @@ public static class WorktreeSafetyEvaluator
 
         // Branch: proven merged by at least one signal. Order is most-authoritative first.
         if (facts.PullRequestMerged)
-            return Safe(WorktreeSafetyReason.PullRequestMerged, "Pull request merged.");
+            return Safe(facts, WorktreeSafetyReason.PullRequestMerged, "Pull request merged.");
 
         if (facts.OriginBranchGone)
-            return Safe(WorktreeSafetyReason.OriginBranchGone, "Origin branch deleted after merge.");
+            return Safe(facts, WorktreeSafetyReason.OriginBranchGone, "Origin branch deleted after merge.");
 
         if (facts.ContainedInMain)
-            return Safe(WorktreeSafetyReason.ContainedInMain, "All commits already contained in origin/main.");
+            return Safe(facts, WorktreeSafetyReason.ContainedInMain, "All commits already contained in origin/main.");
 
         // No merge signal - stranded.
         return NeedsAttention(WorktreeSafetyReason.NotProvenMerged,
             "Commits not proven to be in origin/main.");
     }
 
-    private static WorktreeVerdict Safe(WorktreeSafetyReason reason, string explanation) =>
-        new() { Safety = WorktreeSafety.SafeToReap, Reason = reason, Explanation = explanation };
+    /// <summary>
+    /// A git-safe verdict, EXCEPT when a live session is running in the worktree: then it becomes
+    /// "in use by a session" and is held back from reaping until the session closes.
+    /// </summary>
+    private static WorktreeVerdict Safe(WorktreeFacts facts, WorktreeSafetyReason reason, string explanation) =>
+        facts.HasLiveSession
+            ? new WorktreeVerdict
+            {
+                Safety = WorktreeSafety.InUseBySession,
+                Reason = WorktreeSafetyReason.LiveSessionOpen,
+                Explanation = "Safe to remove, but a session is still open in it.",
+            }
+            : new WorktreeVerdict { Safety = WorktreeSafety.SafeToReap, Reason = reason, Explanation = explanation };
 
     private static WorktreeVerdict NeedsAttention(WorktreeSafetyReason reason, string explanation) =>
         new() { Safety = WorktreeSafety.NeedsAttention, Reason = reason, Explanation = explanation };

@@ -1,7 +1,10 @@
 using System;
 using System.Collections.Generic;
+using System.Threading;
+using System.Threading.Tasks;
 using Avalonia.Controls;
 using Avalonia.Interactivity;
+using CcDirector.Core.Git;
 using CcDirector.Core.Utilities;
 
 namespace CcDirector.Avalonia.Controls;
@@ -22,13 +25,14 @@ public partial class SourceControlView : UserControl
     public event Action<int>? OrphanedCountChanged;
 
     /// <summary>
-    /// Supplies the working directories of live sessions, which the reaper on the Worktrees page
-    /// must never remove. Forwarded to that page. Set by the host, which knows the fleet.
+    /// Supplies the live sessions on this machine (with working directories), so the Worktrees page
+    /// can show a session-occupied worktree as "in use" and never reap it. Forwarded to that page.
+    /// Set by the host, which knows the fleet.
     /// </summary>
-    public Func<IReadOnlySet<string>>? ProtectedPathsProvider
+    public Func<CancellationToken, Task<IReadOnlyList<LiveSessionRef>>>? LiveSessionsProvider
     {
-        get => WorktreesPage.ProtectedPathsProvider;
-        set => WorktreesPage.ProtectedPathsProvider = value;
+        get => WorktreesPage.LiveSessionsProvider;
+        set => WorktreesPage.LiveSessionsProvider = value;
     }
 
     public SourceControlView()

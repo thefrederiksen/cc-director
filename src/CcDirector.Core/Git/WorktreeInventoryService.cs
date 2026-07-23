@@ -22,11 +22,13 @@ public sealed class WorktreeInventoryService
     /// <summary>
     /// Enumerates the worktrees of <paramref name="repositoryPath"/> and returns their verdicts.
     /// When <paramref name="fetchPrune"/> is true a <c>git fetch --prune</c> runs first so the
-    /// origin-branch-gone signal (C2) is current.
+    /// origin-branch-gone signal (C2) is current. <paramref name="liveSessions"/> (already filtered
+    /// to this machine and to genuinely-alive sessions) lets a git-safe worktree that a session is
+    /// running in be classified "in use" rather than "safe to reap".
     /// </summary>
-    public async Task<WorktreeInventory> GetInventoryAsync(string repositoryPath, bool fetchPrune = true, CancellationToken ct = default)
+    public async Task<WorktreeInventory> GetInventoryAsync(string repositoryPath, bool fetchPrune = true, IReadOnlyList<LiveSessionRef>? liveSessions = null, CancellationToken ct = default)
     {
-        FileLog.Write($"[WorktreeInventoryService] GetInventoryAsync: repo={repositoryPath}, fetchPrune={fetchPrune}");
+        FileLog.Write($"[WorktreeInventoryService] GetInventoryAsync: repo={repositoryPath}, fetchPrune={fetchPrune}, liveSessions={liveSessions?.Count ?? 0}");
         try
         {
             if (string.IsNullOrWhiteSpace(repositoryPath) || !Directory.Exists(repositoryPath))
@@ -37,6 +39,7 @@ public sealed class WorktreeInventoryService
                 await _git.RunAsync(repositoryPath, new[] { "fetch", "--prune" }, ct);
 
             var mainRef = await ResolveMainRefAsync(repositoryPath, ct);
+            var sessionsByPath = BuildSessionMap(liveSessions);
 
             var listResult = await _git.RunAsync(repositoryPath, new[] { "worktree", "list", "--porcelain" }, ct);
             if (!listResult.Success)
@@ -55,7 +58,7 @@ public sealed class WorktreeInventoryService
                 bool isPrimary = !primaryAssigned;
                 primaryAssigned = true;
 
-                worktrees.Add(await BuildInfoAsync(repositoryPath, entry, isPrimary, mainRef, ct));
+                worktrees.Add(await BuildInfoAsync(repositoryPath, entry, isPrimary, mainRef, sessionsByPath, ct));
             }
 
             var safeCount = worktrees.Count(w => w.Safety == WorktreeSafety.SafeToReap);
@@ -75,7 +78,7 @@ public sealed class WorktreeInventoryService
         }
     }
 
-    private async Task<WorktreeInfo> BuildInfoAsync(string repositoryPath, RawWorktreeEntry entry, bool isPrimary, string? mainRef, CancellationToken ct)
+    private async Task<WorktreeInfo> BuildInfoAsync(string repositoryPath, RawWorktreeEntry entry, bool isPrimary, string? mainRef, IReadOnlyDictionary<string, List<string>> sessionsByPath, CancellationToken ct)
     {
         // Cleanliness is measured inside the worktree itself.
         var statusResult = await _git.RunAsync(entry.Path, new[] { "status", "--porcelain" }, ct);
@@ -122,6 +125,12 @@ public sealed class WorktreeInventoryService
             }
         }
 
+        // A live session sitting in this worktree (matched by full path) - only meaningful for a
+        // non-primary worktree that would otherwise be safe.
+        var openSessions = sessionsByPath.TryGetValue(WorktreeReaperService.NormalizePath(entry.Path), out var labels)
+            ? labels
+            : new List<string>();
+
         var facts = new WorktreeFacts
         {
             IsPrimary = isPrimary,
@@ -132,6 +141,7 @@ public sealed class WorktreeInventoryService
             ContainedInMain = containedInMain,
             DetachedHeadIsAncestorOfMain = detachedAncestor,
             InspectionSucceeded = inspectionOk,
+            HasLiveSession = !isPrimary && openSessions.Count > 0,
         };
 
         var verdict = WorktreeSafetyEvaluator.Evaluate(facts);
@@ -150,6 +160,7 @@ public sealed class WorktreeInventoryService
             BehindMain = behind,
             HasOpenPullRequest = hasOpenPr,
             LastActivityUtc = lastActivity,
+            OpenSessions = openSessions,
             Safety = verdict.Safety,
             Reason = verdict.Reason,
             Explanation = verdict.Explanation,
@@ -211,6 +222,28 @@ public sealed class WorktreeInventoryService
         {
             return null;
         }
+    }
+
+    /// <summary>
+    /// Groups the live-session refs by normalized worktree path, so a worktree lookup is O(1).
+    /// Multiple sessions can sit in the same directory, so the value is a list of labels.
+    /// </summary>
+    private static IReadOnlyDictionary<string, List<string>> BuildSessionMap(IReadOnlyList<LiveSessionRef>? liveSessions)
+    {
+        var map = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
+        if (liveSessions == null)
+            return map;
+
+        foreach (var s in liveSessions)
+        {
+            if (string.IsNullOrWhiteSpace(s.RepoPath))
+                continue;
+            var key = WorktreeReaperService.NormalizePath(s.RepoPath);
+            if (!map.TryGetValue(key, out var labels))
+                map[key] = labels = new List<string>();
+            labels.Add(string.IsNullOrWhiteSpace(s.Label) ? s.RepoPath : s.Label);
+        }
+        return map;
     }
 
     /// <summary>True if <c>git cherry</c> output contains a commit the upstream lacks (a line starting with '+').</summary>

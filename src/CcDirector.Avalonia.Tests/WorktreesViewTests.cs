@@ -47,6 +47,17 @@ public class WorktreesViewTests
         IsClean = true,
     };
 
+    private static WorktreeInfo InUse(string branch, params string[] sessions) => new()
+    {
+        Path = $"/repo/{branch}",
+        Branch = branch,
+        Safety = WorktreeSafety.InUseBySession,
+        Reason = WorktreeSafetyReason.LiveSessionOpen,
+        Explanation = "Safe to remove, but a session is still open in it.",
+        IsClean = true,
+        OpenSessions = sessions,
+    };
+
     private static WorktreeInventory Inventory(params WorktreeInfo[] worktrees) =>
         new() { RepositoryPath = "/repo", Worktrees = worktrees, Success = true };
 
@@ -175,5 +186,55 @@ public class WorktreesViewTests
         var row = Assert.Single(WorktreesView.BuildSafeRows(Inventory(Safe("feat-a"))));
         Assert.False(row.HasTimestamp);
         Assert.Equal("", row.Timestamp);
+    }
+
+    // --- In-use-by-a-session (third case) rendering ---
+
+    [Fact]
+    public void BuildInUseRows_ContainsInUseWorktrees_WithSessionNames()
+    {
+        var inv = Inventory(Primary(), Safe("free"), InUse("busy", "ERP KB Builder (#109)"));
+
+        var row = Assert.Single(WorktreesView.BuildInUseRows(inv));
+        Assert.Equal("busy", row.Title);
+        Assert.Contains("ERP KB Builder (#109)", row.Detail);
+        Assert.True(row.HasDetail);
+    }
+
+    [Fact]
+    public void BuildSafeRows_ExcludesInUseWorktrees()
+    {
+        var inv = Inventory(Safe("free"), InUse("busy", "Sess (#1)"));
+
+        var safe = WorktreesView.BuildSafeRows(inv);
+        Assert.Single(safe);
+        Assert.Equal("free", safe[0].Title);
+        Assert.DoesNotContain(safe, r => r.Title == "busy");
+        Assert.Equal(1, inv.SafeToReapCount); // only "free"; the in-use "busy" is excluded
+    }
+
+    [Fact]
+    public void SessionsFor_MultipleSessions_JoinsWithComma()
+    {
+        var w = InUse("busy", "A (#1)", "B (#2)");
+        Assert.Equal("Open sessions: A (#1), B (#2)", WorktreesView.SessionsFor(w));
+    }
+
+    [Fact]
+    public void SessionsFor_SingleSession_UsesSingular()
+    {
+        var w = InUse("busy", "A (#1)");
+        Assert.Equal("Open session: A (#1)", WorktreesView.SessionsFor(w));
+    }
+
+    [Fact]
+    public void BuildReport_IncludesInUseGroup()
+    {
+        var inv = Inventory(Safe("free"), InUse("busy", "Sess (#7)"));
+        var report = WorktreesView.BuildReport(inv);
+        Assert.Contains("IN USE BY AN OPEN SESSION", report);
+        Assert.Contains("busy", report);
+        Assert.Contains("sess (#7)", report); // lower-cased in the report
+        Assert.Contains("In use by a session: 1", report);
     }
 }

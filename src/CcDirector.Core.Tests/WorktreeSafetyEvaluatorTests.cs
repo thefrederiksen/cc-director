@@ -152,4 +152,51 @@ public class WorktreeSafetyEvaluatorTests
         Assert.Equal(WorktreeSafety.NeedsAttention, v.Safety);
         Assert.Equal(WorktreeSafetyReason.UncommittedChanges, v.Reason);
     }
+
+    // --- Third case: git-safe but a live session is open in the worktree ---
+
+    [Fact]
+    public void CleanBranch_ThatWouldBeSafe_WithLiveSession_IsInUseNotSafe()
+    {
+        var v = WorktreeSafetyEvaluator.Evaluate(Base() with { OriginBranchGone = true, HasLiveSession = true });
+        Assert.Equal(WorktreeSafety.InUseBySession, v.Safety);
+        Assert.Equal(WorktreeSafetyReason.LiveSessionOpen, v.Reason);
+    }
+
+    [Fact]
+    public void ContainedInMain_WithLiveSession_IsInUse()
+    {
+        var v = WorktreeSafetyEvaluator.Evaluate(Base() with { ContainedInMain = true, HasLiveSession = true });
+        Assert.Equal(WorktreeSafety.InUseBySession, v.Safety);
+    }
+
+    [Fact]
+    public void DetachedHead_AncestorOfMain_WithLiveSession_IsInUse()
+    {
+        var v = WorktreeSafetyEvaluator.Evaluate(Base() with
+        {
+            IsDetachedHead = true,
+            DetachedHeadIsAncestorOfMain = true,
+            HasLiveSession = true,
+        });
+        Assert.Equal(WorktreeSafety.InUseBySession, v.Safety);
+        Assert.Equal(WorktreeSafetyReason.LiveSessionOpen, v.Reason);
+    }
+
+    [Fact]
+    public void Dirty_WithLiveSession_StaysNeedsAttention_NotInUse()
+    {
+        // A dirty worktree was never safe; a live session does not change that.
+        var v = WorktreeSafetyEvaluator.Evaluate(Base() with { IsClean = false, HasLiveSession = true });
+        Assert.Equal(WorktreeSafety.NeedsAttention, v.Safety);
+        Assert.Equal(WorktreeSafetyReason.UncommittedChanges, v.Reason);
+    }
+
+    [Fact]
+    public void StrandedBranch_WithLiveSession_StaysNeedsAttention()
+    {
+        var v = WorktreeSafetyEvaluator.Evaluate(Base() with { HasLiveSession = true });
+        Assert.Equal(WorktreeSafety.NeedsAttention, v.Safety);
+        Assert.Equal(WorktreeSafetyReason.NotProvenMerged, v.Reason);
+    }
 }
