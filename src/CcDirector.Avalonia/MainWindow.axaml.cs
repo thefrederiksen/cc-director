@@ -248,6 +248,15 @@ public partial class MainWindow : Window
         // slots) so a session-occupied worktree is shown as "in use" and never reaped.
         SourceControlView.LiveSessionsProvider = GetLiveSessionsOnThisMachineAsync;
 
+        // Keep the pinned Repositories badge (safe-to-reap worktree count) in sync with the scan.
+        if (global::Avalonia.Application.Current is App appForRepo)
+        {
+            appForRepo.RepositoryMonitor.Upserted += _ => Dispatcher.UIThread.Post(UpdateRepositoriesBadge);
+            appForRepo.RepositoryMonitor.Removed += _ => Dispatcher.UIThread.Post(UpdateRepositoriesBadge);
+            appForRepo.RepositoryMonitor.ProgressChanged += () => Dispatcher.UIThread.Post(UpdateRepositoriesBadge);
+            UpdateRepositoriesBadge();
+        }
+
         // Wire prompt input text changes for slash command autocomplete
         PromptInput.TextChanged += PromptInput_TextChanged;
         PromptInput.LostFocus += (_, _) => SlashCommandPopup.IsOpen = false;
@@ -1761,7 +1770,10 @@ public partial class MainWindow : Window
                 ConnectionsView.StopPolling();
         }
         if (RepositoriesOverlay.IsVisible)
+        {
             RepositoriesOverlay.IsVisible = false;
+            SetRepositoriesActive(false);
+        }
 
         if (vm == _activeSession) return;
 
@@ -4058,6 +4070,7 @@ public partial class MainWindow : Window
         {
             RepositoriesView.Attach(app.RepositoryMonitor, app.RootDirectoryStore, app.StartRepositoryRescan);
             RepositoriesOverlay.IsVisible = true;
+            SetRepositoriesActive(true);
         }
         UpdateHomeVisibility(); // hide Home so the overlay is not buried behind it
     }
@@ -4066,7 +4079,26 @@ public partial class MainWindow : Window
     {
         FileLog.Write("[MainWindow] BtnRepositoriesClose_Click: closing Repositories view");
         RepositoriesOverlay.IsVisible = false;
+        SetRepositoriesActive(false);
         UpdateHomeVisibility();
+    }
+
+    /// <summary>Highlight the pinned Repositories entry while its view is open.</summary>
+    private void SetRepositoriesActive(bool active)
+    {
+        BtnRepositories.Background = new global::Avalonia.Media.SolidColorBrush(
+            global::Avalonia.Media.Color.Parse(active ? "#094771" : "#2A2A2A"));
+    }
+
+    /// <summary>Show the safe-to-reap worktree count on the pinned Repositories entry.</summary>
+    private void UpdateRepositoriesBadge()
+    {
+        var monitor = (global::Avalonia.Application.Current as App)?.RepositoryMonitor;
+        if (monitor is null)
+            return;
+        int reap = monitor.Snapshot().Sum(s => s.WorktreesSafeToReap);
+        RepositoriesBadgeText.Text = reap.ToString();
+        RepositoriesBadge.IsVisible = reap > 0;
     }
 
     private void SwitchLeftTab(string tab)
