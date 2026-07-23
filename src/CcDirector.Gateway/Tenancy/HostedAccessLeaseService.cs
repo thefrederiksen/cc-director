@@ -86,21 +86,42 @@ public sealed class HostedAccessLeaseService
             return HostedAccessDecision.DenyNotEntitled;
 
         var key = tenant.Value;
-        var now = _clock.GetUtcNow();
 
-        // Fast path: a live positive lease, no database.
+        // Fast path: a live positive lease, no database, no gate.
         if (_leases.TryGetValue(key, out var cached)
             && cached.Outcome == EntitlementOutcome.Entitled
-            && now < cached.ExpiresAtUtc)
+            && _clock.GetUtcNow() < cached.ExpiresAtUtc)
             return HostedAccessDecision.Allow;
 
+        return await ReadUnderGateAsync(tenant, key, honorFreshLease: true, ct).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// FORCE one entitlement read for a tenant, ignoring any still-valid lease, and apply the three-way rule
+    /// (renew / revoke / leave-on-unknown). This is what the 60s sweep calls: unlike <see cref="AuthorizeAsync"/>
+    /// it never short-circuits on a fresh lease, so a cancellation is caught within a sweep cycle instead of
+    /// waiting out the up-to-5-minute lease. Returns the same decision so a caller can act on a revoke.
+    /// </summary>
+    public Task<HostedAccessDecision> RefreshAsync(TenantId tenant, CancellationToken ct = default)
+    {
+        if (!tenant.IsValid)
+            return Task.FromResult(HostedAccessDecision.DenyNotEntitled);
+        return ReadUnderGateAsync(tenant, tenant.Value, honorFreshLease: false, ct);
+    }
+
+    // The single-flighted read + three-way apply, shared by the request path and the sweep. The gate coalesces
+    // concurrent refreshes per tenant so an expiry (or a sweep coinciding with a request) does not stampede the
+    // database. <paramref name="honorFreshLease"/> lets the request path return early if a concurrent read just
+    // filled a fresh lease, while the sweep always performs the read.
+    private async Task<HostedAccessDecision> ReadUnderGateAsync(TenantId tenant, string key, bool honorFreshLease, CancellationToken ct)
+    {
         var gate = _refreshGates.GetOrAdd(key, _ => new SemaphoreSlim(1, 1));
         await gate.WaitAsync(ct).ConfigureAwait(false);
         try
         {
-            // Re-check under the gate: a concurrent refresh may have just filled a fresh lease.
-            now = _clock.GetUtcNow();
-            if (_leases.TryGetValue(key, out cached)
+            var now = _clock.GetUtcNow();
+            if (honorFreshLease
+                && _leases.TryGetValue(key, out var cached)
                 && cached.Outcome == EntitlementOutcome.Entitled
                 && now < cached.ExpiresAtUtc)
                 return HostedAccessDecision.Allow;
