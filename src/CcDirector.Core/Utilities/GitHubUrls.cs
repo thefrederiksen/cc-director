@@ -117,6 +117,14 @@ public static class GitHubUrls
         throw new InvalidOperationException($"Origin is not a recognized GitHub or Azure DevOps remote: {originUrl}");
     }
 
+    /// <summary>GitHub (owner, repo) from a remote URL, or null when it is not a github.com remote. Non-throwing.</summary>
+    public static (string Owner, string Repo)? TryGitHubOwnerRepo(string? url)
+        => string.IsNullOrWhiteSpace(url) ? null : TryMatchGitHub(url.Trim());
+
+    /// <summary>Azure DevOps (org, repo) from a remote URL, or null when it is not an Azure DevOps remote. Non-throwing.</summary>
+    public static (string Org, string Repo)? TryAzureDevOpsOrgRepo(string? url)
+        => string.IsNullOrWhiteSpace(url) ? null : TryMatchAzureDevOps(url.Trim());
+
     // GitHub remote -> (owner, repo), or null when the URL is not a github.com remote. Accepts the SSH
     // (git@github.com:owner/repo), ssh:// and https:// shapes; the ".git" suffix is optional.
     private static (string owner, string repo)? TryMatchGitHub(string url)
